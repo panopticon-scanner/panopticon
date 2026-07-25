@@ -46,10 +46,37 @@ TEST_PATTERNS = [
     r"Tests\.cs$",
 ]
 
+ARCHITECTURE_PATTERNS = [
+    r"(^|/)(\.github|\.circleci|\.gitlab)/",
+    r"(^|/)Dockerfile",
+    r"(^|/)docker-compose",
+    r"(^|/)(k8s|kubernetes|helm|charts)/",
+    r"(^|/)\.dockerignore$",
+    r"(^|/)\.editorconfig$",
+    r"(^|/)\.gitignore$",
+    r"(^|/)(README|CONTRIBUTING|LICENSE)",
+]
+
+DATABASE_PATTERNS = [
+    r"\.sql$",
+    r"(^|/)(migrations|migrate)/",
+    r"(_migration|\.migration)\.",
+]
+
 
 def is_test_file(path):
     """Return True if path matches any test file pattern."""
     return any(re.search(p, path) for p in TEST_PATTERNS)
+
+
+def is_architecture_file(path):
+    """Return True if path matches any architecture/infrastructure pattern."""
+    return any(re.search(p, path) for p in ARCHITECTURE_PATTERNS)
+
+
+def is_database_file(path):
+    """Return True if path matches any database/migration pattern."""
+    return any(re.search(p, path) for p in DATABASE_PATTERNS)
 
 
 def chunk_files(files, max_per=15):
@@ -286,7 +313,8 @@ def discover_repo_files(repo):
 
 
 def build_result(repo, mode, target, facet, impl, tests,
-                 max_per_group=DEFAULT_MAX_PER_GROUP, group_files=None):
+                 max_per_group=DEFAULT_MAX_PER_GROUP, group_files=None,
+                 security_mode="standard"):
     """Build resolved target result with file groups, implementation, and test lists.
 
     Groups are chunked from ``group_files`` when provided, else from ``impl``.
@@ -300,6 +328,7 @@ def build_result(repo, mode, target, facet, impl, tests,
         for i, c in enumerate(chunks)
     ]
     return {
+        "security_mode": security_mode,
         "mode": mode,
         "target": target,
         "facet": facet,
@@ -324,6 +353,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="panopticon target resolver")
     ap.add_argument("--repo", default=".")
     ap.add_argument("--max-per-group", type=int, default=DEFAULT_MAX_PER_GROUP)
+    ap.add_argument("--security-mode", choices=["standard", "redteam"], default="standard",
+                    help="Security review mode")
     modes = ap.add_mutually_exclusive_group(required=True)
     modes.add_argument("--group", metavar="NAME")
     modes.add_argument("--directory", metavar="DIR")
@@ -345,7 +376,8 @@ def main(argv=None):
             return 2
         impl = [f for f in expand_patterns(repo, catalog[name]["patterns"])
                 if not is_test_file(f)]
-        emit(build_result(repo, "group", name, facet, impl, related_tests(repo, impl), args.max_per_group))
+        emit(build_result(repo, "group", name, facet, impl, related_tests(repo, impl),
+                          args.max_per_group, security_mode=args.security_mode))
         return 0
 
     if args.directory:
@@ -353,7 +385,8 @@ def main(argv=None):
         allf = expand_patterns(repo, [d + "/**/*"])
         impl = [f for f in allf if not is_test_file(f)]
         tests = [f for f in allf if is_test_file(f)]
-        emit(build_result(repo, "directory", d, None, impl, tests, args.max_per_group))
+        emit(build_result(repo, "directory", d, None, impl, tests, args.max_per_group,
+                          security_mode=args.security_mode))
         return 0
 
     if args.file:
@@ -361,14 +394,16 @@ def main(argv=None):
             print("no such file: %s" % args.file, file=sys.stderr)
             return 2
         emit(build_result(repo, "file", args.file, None, [args.file],
-                          related_tests(repo, [args.file]), args.max_per_group))
+                          related_tests(repo, [args.file]), args.max_per_group,
+                          security_mode=args.security_mode))
         return 0
 
     if args.files:
         impl = [f for f in args.files if not is_test_file(f)]
         tests = [f for f in args.files if is_test_file(f)]
         emit(build_result(repo, "files", "changeset", None, impl,
-                          sorted(set(tests) | set(related_tests(repo, impl))), args.max_per_group))
+                          sorted(set(tests) | set(related_tests(repo, impl))), args.max_per_group,
+                          security_mode=args.security_mode))
         return 0
 
     # --repo-scan
@@ -378,7 +413,7 @@ def main(argv=None):
     # Group impl AND real test sources so tests aren't silently dropped (only
     # their __pycache__ artifacts used to reach a group); counts stay impl-only.
     emit(build_result(repo, "repo", ".", None, impl, tests, args.max_per_group,
-                      group_files=impl + tests))
+                      group_files=impl + tests, security_mode=args.security_mode))
     return 0
 
 
