@@ -342,17 +342,22 @@ def build_result(repo, mode, target, facet, impl, tests,
     }
 
 
-def emit(obj):
-    """Serialize and emit object as indented JSON to stdout."""
-    json.dump(obj, sys.stdout, indent=2)
-    sys.stdout.write("\n")
+def emit(obj, fh=None):
+    """Serialize and emit object as indented JSON to stdout or a file."""
+    fh = fh or sys.stdout
+    json.dump(obj, fh, indent=2)
+    fh.write("\n")
 
 
 def main(argv=None):
     """Resolve panopticon targets to grouped file lists and emit as JSON."""
     ap = argparse.ArgumentParser(description="panopticon target resolver")
+    ap.add_argument("target", nargs="?", default=None,
+                    help="Repository path (overrides --repo)")
     ap.add_argument("--repo", default=".")
     ap.add_argument("--max-per-group", type=int, default=DEFAULT_MAX_PER_GROUP)
+    ap.add_argument("--out", default=None,
+                    help="Write JSON output to this file instead of stdout")
     ap.add_argument("--security-mode", choices=["standard", "redteam"], default="standard",
                     help="Security review mode")
     modes = ap.add_mutually_exclusive_group(required=True)
@@ -365,8 +370,9 @@ def main(argv=None):
     if args.max_per_group < 1:
         print("--max-per-group must be >= 1", file=sys.stderr)
         return 2
-    repo = os.path.abspath(args.repo)
+    repo = os.path.abspath(args.target if args.target is not None else args.repo)
 
+    result = None
     if args.group:
         name, facet = parse_group_arg(args.group)
         catalog = load_catalog(repo)
@@ -376,44 +382,48 @@ def main(argv=None):
             return 2
         impl = [f for f in expand_patterns(repo, catalog[name]["patterns"])
                 if not is_test_file(f)]
-        emit(build_result(repo, "group", name, facet, impl, related_tests(repo, impl),
-                          args.max_per_group, security_mode=args.security_mode))
-        return 0
+        result = build_result(repo, "group", name, facet, impl, related_tests(repo, impl),
+                              args.max_per_group, security_mode=args.security_mode)
 
-    if args.directory:
+    elif args.directory:
         d = args.directory.strip("/")
         allf = expand_patterns(repo, [d + "/**/*"])
         impl = [f for f in allf if not is_test_file(f)]
         tests = [f for f in allf if is_test_file(f)]
-        emit(build_result(repo, "directory", d, None, impl, tests, args.max_per_group,
-                          security_mode=args.security_mode))
-        return 0
+        result = build_result(repo, "directory", d, None, impl, tests, args.max_per_group,
+                              security_mode=args.security_mode)
 
-    if args.file:
+    elif args.file:
         if not os.path.isfile(os.path.join(repo, args.file)):
             print("no such file: %s" % args.file, file=sys.stderr)
             return 2
-        emit(build_result(repo, "file", args.file, None, [args.file],
-                          related_tests(repo, [args.file]), args.max_per_group,
-                          security_mode=args.security_mode))
-        return 0
+        result = build_result(repo, "file", args.file, None, [args.file],
+                              related_tests(repo, [args.file]), args.max_per_group,
+                              security_mode=args.security_mode)
 
-    if args.files:
+    elif args.files:
         impl = [f for f in args.files if not is_test_file(f)]
         tests = [f for f in args.files if is_test_file(f)]
-        emit(build_result(repo, "files", "changeset", None, impl,
-                          sorted(set(tests) | set(related_tests(repo, impl))), args.max_per_group,
-                          security_mode=args.security_mode))
-        return 0
+        result = build_result(repo, "files", "changeset", None, impl,
+                              sorted(set(tests) | set(related_tests(repo, impl))), args.max_per_group,
+                              security_mode=args.security_mode)
 
-    # --repo-scan
-    allf = discover_repo_files(repo)
-    impl = [f for f in allf if not is_test_file(f)]
-    tests = [f for f in allf if is_test_file(f)]
-    # Group impl AND real test sources so tests aren't silently dropped (only
-    # their __pycache__ artifacts used to reach a group); counts stay impl-only.
-    emit(build_result(repo, "repo", ".", None, impl, tests, args.max_per_group,
-                      group_files=impl + tests, security_mode=args.security_mode))
+    else:
+        # --repo-scan
+        allf = discover_repo_files(repo)
+        impl = [f for f in allf if not is_test_file(f)]
+        tests = [f for f in allf if is_test_file(f)]
+        # Group impl AND real test sources so tests aren't silently dropped (only
+        # their __pycache__ artifacts used to reach a group); counts stay impl-only.
+        result = build_result(repo, "repo", ".", None, impl, tests, args.max_per_group,
+                              group_files=impl + tests, security_mode=args.security_mode)
+
+    if args.out:
+        os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+        with open(args.out, "w", encoding="utf-8") as fh:
+            emit(result, fh)
+    else:
+        emit(result)
     return 0
 
 

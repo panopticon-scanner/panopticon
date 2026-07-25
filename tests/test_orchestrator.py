@@ -252,6 +252,31 @@ class TestCli(unittest.TestCase):
             out = json.loads(buf.getvalue())
             self.assertEqual(out["security_mode"], "redteam")
 
+    def test_main_repo_scan_writes_to_out_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._touch(d, "src/a.py")
+            out_path = os.path.join(d, "groups.json")
+            rc = orch.main(["--repo", d, "--repo-scan", "--out", out_path])
+            self.assertEqual(rc, 0)
+            self.assertTrue(os.path.isfile(out_path))
+            with open(out_path, encoding="utf-8") as fh:
+                out = json.load(fh)
+            self.assertEqual(out["mode"], "repo")
+            self.assertIn("src/a.py", [f for g in out["groups"] for f in g["files"]])
+
+    def test_main_repo_scan_accepts_positional_target_and_out(self):
+        """Regression for the brief's invocation style: --repo-scan TARGET --out PATH."""
+        with tempfile.TemporaryDirectory() as d:
+            self._touch(d, "src/a.py")
+            out_path = os.path.join(d, "groups.json")
+            rc = orch.main(["--repo-scan", d, "--out", out_path])
+            self.assertEqual(rc, 0)
+            self.assertTrue(os.path.isfile(out_path))
+            with open(out_path, encoding="utf-8") as fh:
+                out = json.load(fh)
+            self.assertEqual(out["mode"], "repo")
+            self.assertIn("src/a.py", [f for g in out["groups"] for f in g["files"]])
+
 
 class TestRepoScanDiscovery(unittest.TestCase):
     """Discovery-gap regressions for --repo-scan: noise exclusion, targeted

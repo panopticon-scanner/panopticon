@@ -118,7 +118,7 @@ def epss_lookup(cves, cache_path, opener=None):
             continue
         try:
             url = "https://api.first.org/data/v1/epss?cve=" + urllib.parse.quote(cve)
-            req = urllib.request.Request(url, headers={"User-Agent": "panopticon/2.3.0"})
+            req = urllib.request.Request(url, headers={"User-Agent": "panopticon/3.0.0"})
             with opener(req, timeout=8) as resp:
                 payload = json.loads(resp.read(1000000))
             rows = payload.get("data") or []
