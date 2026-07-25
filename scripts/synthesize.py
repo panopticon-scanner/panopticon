@@ -20,6 +20,13 @@ MODE_TO_REVIEW_TYPE = {
     "repo": "repo", "file": "file", "directory": "directory",
     "group": "group", "files": "changes",
 }
+VALID_PANELS = {"code", "test", "security", "architecture", "database", "redteam"}
+RELATED_PANELS = {
+    "security": {"architecture", "database", "redteam"},
+    "redteam": {"security", "architecture", "database"},
+    "architecture": {"security", "redteam"},
+    "database": {"security", "redteam"},
+}
 
 
 def load_json_tolerant(body):
@@ -47,8 +54,9 @@ def normalize_finding(f):
     else:
         verdict = str(f.get("verdict", "")).upper()
         f["confidence"] = VERDICT_TO_CONFIDENCE.get(verdict, "POSSIBLE")
-    if f.get("panel") not in ("code", "test", "security"):
+    if f.get("panel") not in VALID_PANELS:
         f["panel"] = "code"
+    f.setdefault("lens", None)
     if not isinstance(f.get("location"), dict):
         f["location"] = {}
     loc = f["location"]
@@ -240,6 +248,15 @@ def cross_panel_corroboration(findings, window=CORROBORATION_LINE_WINDOW):
             candidates.append((fkey, line, f))
     candidates.sort(key=lambda t: (t[0], t[1]))
 
+    def _panels_related(p1, p2):
+        if p1 == p2:
+            return False
+        # Panels outside the explicit map retain the legacy behavior: any two
+        # distinct panels corroborate (preserves code/test/security pairings).
+        if p1 in RELATED_PANELS and p2 in RELATED_PANELS:
+            return p2 in RELATED_PANELS[p1] or p1 in RELATED_PANELS[p2]
+        return True
+
     integration = []
     i, n = 0, len(candidates)
     while i < n:
@@ -252,7 +269,8 @@ def cross_panel_corroboration(findings, window=CORROBORATION_LINE_WINDOW):
         cluster = candidates[i:j]
         members = [c[2] for c in cluster]
         panels = sorted({m.get("panel") for m in members if m.get("panel")})
-        if len(panels) >= 2:
+        if len(panels) >= 2 and any(_panels_related(p1, p2)
+                                    for p1 in panels for p2 in panels):
             for m in members:
                 m["corroborated"] = True
                 m["corroborated_by"] = list(panels)
@@ -339,10 +357,11 @@ def _worst_grade(grades):
     return max(present, key=_GRADE_ORDER.index) if present else "A"
 
 
-def build_report(findings, groups_meta, target, fail_on, timestamp, review_type="repo"):
+def build_report(findings, groups_meta, target, fail_on, timestamp, review_type="repo",
+                 security_mode="standard"):
     """Build complete CodeReviewReport with deduplication, grading, and CI gate verdict."""
     findings = dedupe(findings)
-    by_panel = {"code": [], "test": [], "security": []}
+    by_panel = {p: [] for p in VALID_PANELS}
     for f in findings:
         by_panel.get(f["panel"], by_panel["code"]).append(f)
 
@@ -383,6 +402,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
             "review_type": review_type,
             "timestamp": timestamp,
             "version": "3.0.0",
+            "security_mode": security_mode,
         },
         "summary": {
             "overall_grade": overall,
@@ -417,7 +437,7 @@ def validate_report(report):
             errors.append("finding[%d] bad severity: %r" % (i, f.get("severity")))
         if f.get("confidence") not in CONFIDENCES:
             errors.append("finding[%d] bad confidence: %r" % (i, f.get("confidence")))
-        if f.get("panel") not in ("code", "test", "security"):
+        if f.get("panel") not in VALID_PANELS:
             errors.append("finding[%d] bad panel: %r" % (i, f.get("panel")))
         loc = f.get("location") or {}
         if not loc.get("file") or loc.get("line_start") is None:
@@ -519,6 +539,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="panopticon synthesizer")
     ap.add_argument("--target", default="unknown")
     ap.add_argument("--groups", metavar="PATH")
+    ap.add_argument("--security-mode", choices=["standard", "redteam"], default=None,
+                    help="Override security mode from groups.json")
     ap.add_argument("--fail-on", metavar="SEV", type=str.lower,
                     choices=["critical", "high", "medium", "low"])
     ap.add_argument("--out", default=None)
@@ -529,6 +551,7 @@ def main(argv=None):
 
     groups_meta = []
     review_type = "repo"
+    security_mode = args.security_mode
     if args.groups and os.path.isfile(args.groups):
         try:
             with open(args.groups, encoding="utf-8") as fh:
@@ -536,10 +559,14 @@ def main(argv=None):
             if isinstance(gj, dict):
                 groups_meta = gj.get("groups", [])
                 review_type = MODE_TO_REVIEW_TYPE.get(gj.get("mode"), "repo")
+                if security_mode is None:
+                    security_mode = gj.get("security_mode", "standard")
             else:
                 print("synthesize: --groups is not a JSON object; ignoring", file=sys.stderr)
         except (OSError, ValueError) as e:  # tolerant by design: never abort a run
             print("synthesize: could not read --groups (%s); ignoring" % e, file=sys.stderr)
+    if security_mode is None:
+        security_mode = "standard"
 
     from datetime import datetime, timezone
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -552,7 +579,8 @@ def main(argv=None):
     catalog = citations.load_cwe_catalog()
     citations.enrich_citations(findings, catalog, epss_enabled=args.epss,
                                cache_path=os.path.join(".panopticon", "epss-cache.json"))
-    report = build_report(findings, groups_meta, args.target, args.fail_on, ts, review_type)
+    report = build_report(findings, groups_meta, args.target, args.fail_on, ts, review_type,
+                          security_mode)
     errors, warnings = validate_report(report)
     for w in warnings:
         print("WARN: %s" % w, file=sys.stderr)
