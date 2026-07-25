@@ -236,6 +236,22 @@ class TestCli(unittest.TestCase):
         self.assertTrue(all(len(g["files"]) <= 2 for g in res["groups"]))
         self.assertEqual(res["counts"]["groups"], 3)
 
+    def test_build_result_includes_security_mode(self):
+        res = orch.build_result("/tmp", "repo", ".", None, [], [],
+                                security_mode="redteam")
+        self.assertEqual(res["security_mode"], "redteam")
+
+    def test_main_repo_scan_honors_security_mode_flag(self):
+        import io, contextlib
+        with tempfile.TemporaryDirectory() as d:
+            self._touch(d, "src/a.py")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = orch.main(["--repo", d, "--repo-scan", "--security-mode", "redteam"])
+            self.assertEqual(rc, 0)
+            out = json.loads(buf.getvalue())
+            self.assertEqual(out["security_mode"], "redteam")
+
 
 class TestRepoScanDiscovery(unittest.TestCase):
     """Discovery-gap regressions for --repo-scan: noise exclusion, targeted

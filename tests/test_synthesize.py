@@ -27,6 +27,15 @@ class TestNormalize(unittest.TestCase):
         f = syn.normalize_finding({"severity": "sorta-bad"})
         self.assertEqual(f["severity"], "INFO")
 
+    def test_normalize_accepts_new_panels(self):
+        for panel in ["architecture", "database", "redteam"]:
+            f = syn.normalize_finding({"panel": panel, "title": "x", "description": "y"})
+            self.assertEqual(f["panel"], panel)
+
+    def test_normalize_defaults_unknown_panel_to_code(self):
+        f = syn.normalize_finding({"panel": "unknown", "title": "x"})
+        self.assertEqual(f["panel"], "code")
+
     def test_location_coerced(self):
         f = syn.normalize_finding({"location": {"file": "a.py", "line_start": 10}})
         self.assertEqual(f["location"]["line_end"], 10)
@@ -298,6 +307,11 @@ class TestReport(unittest.TestCase):
                                    "2026-07-23T00:00:00Z", review_type="file")
         self.assertEqual(report["meta"]["review_type"], "file")
 
+    def test_build_report_includes_security_mode(self):
+        report = syn.build_report([], [], "src", None, "2026-07-23T00:00:00Z",
+                                  security_mode="redteam")
+        self.assertEqual(report["meta"]["security_mode"], "redteam")
+
     def test_main_maps_orchestrator_mode_to_review_type(self):
         with tempfile.TemporaryDirectory() as d:
             gj = os.path.join(d, "groups.json")
@@ -334,6 +348,16 @@ class TestCliAndSummary(unittest.TestCase):
         text = syn.render_summary(report)
         self.assertIn("a.rb:42", text)
         self.assertIn("FAIL", text)
+
+    def test_render_summary_includes_all_panel_grades(self):
+        report = syn.build_report(
+            [{"id": "CD-001", "title": "t", "severity": "LOW", "confidence": "POSSIBLE",
+              "panel": "architecture", "category": "structure",
+              "location": {"file": "a.py", "line_start": 1}}],
+            [{"name": "g1", "files": ["a.py"]}], "src", None, "2026-07-23T00:00:00Z")
+        text = syn.render_summary(report)
+        for panel in ["code", "test", "security", "architecture", "database", "redteam"]:
+            self.assertIn("%s " % panel, text)
 
     def test_main_returns_1_on_gate_fail(self):
         with tempfile.TemporaryDirectory() as d:
@@ -475,6 +499,16 @@ class TestGroupTag(unittest.TestCase):
                 json.dump({"findings": [{"severity": "LOW", "panel": "code"}]}, fh)
             out = syn.load_findings([p])
             self.assertEqual(out[0]["_group"], "mygroup")
+
+    def test_load_findings_tags_group_from_new_panel_filenames(self):
+        with tempfile.TemporaryDirectory() as d:
+            for panel in ["architecture", "database", "redteam"]:
+                p = os.path.join(d, "findings-mygroup-%s.json" % panel)
+                with open(p, "w") as fh:
+                    json.dump({"findings": [{"severity": "LOW", "panel": panel}]}, fh)
+                out = syn.load_findings([p])
+                self.assertEqual(out[0]["_group"], "mygroup")
+                self.assertEqual(out[0]["panel"], panel)
 
 
 class TestPipelineCitations(unittest.TestCase):
