@@ -16,12 +16,16 @@ Do not review the code for defects — only profile it.
 - `serialization` — (de)serialization of untrusted data
 - `templating` — server/client template rendering
 - `secrets_config` — secrets, credentials, environment/config handling
+- `architecture` — repo layout, CI/CD, Docker/k8s, GitHub configs
+- `database` — schema, ORM models, migrations, query builders
 
 ## Surface → security lens mapping
-- db_sql → injection
+- db_sql → injection, database
 - http_web, templating → injection, novel
 - auth, crypto, money_pii → novel, known_vulns
 - serialization, external_api, fs → injection, novel
+- architecture → architecture
+- database → database
 
 ## Facet scoping
 If a `facet` is supplied, populate `facet_scope` with the subset of files (and a
@@ -31,6 +35,25 @@ and, for ad-hoc facets, resolve the term semantically.
 ## Risk
 `high` if money_pii/auth/crypto present or a risky surface is untested; `med` for
 other code surfaces; `low` for docs/markup/style-only changes.
+
+## Panels
+Set `panels` to the panels scheduled for this group:
+- `code` always
+- `test` if tests or testable logic present
+- `security` if auth/crypto/money_pii/serialization/external_api/fs/templating/db_sql/http_web present
+- `architecture` if any file is repo-scope (root config, `.github/`, Dockerfile, k8s/helm, docker-compose)
+- `database` if `db_sql` surface present
+
+## Lenses
+Set `lenses` to an object mapping panel name to a list of `{name, spawn}` objects.
+Default lenses:
+- code: structure, correctness, style
+- test: coverage, test_quality, test_design
+- security: known_vulns, injection, novel
+- architecture: architecture
+- database: database
+
+Set `spawn: true` when the group has ≥5 files or `risk` is `high`; otherwise `spawn: false`.
 
 ## Tool selection (v2)
 If the container layer is in use, recommend which scanners to run in `tools` and set
