@@ -550,6 +550,73 @@ class TestReinforce(unittest.TestCase):
         self.assertEqual(out[0]["confidence"], "CERTAIN")
         self.assertIn("citations", out[0])
 
+    def test_tool_higher_confidence_keeps_agent_cvss_and_exploit(self):
+        # PT-002 regression: a tool finding with higher confidence must not
+        # discard the agent's cvss/exploit_scenario when it wins as survivor.
+        findings = [
+            {"id": "SG-001", "title": "SQL injection", "severity": "HIGH",
+             "confidence": "CERTAIN", "panel": "security",
+             "category": "sql-injection", "source": "tool:semgrep",
+             "location": {"file": "a.py", "line_start": 10},
+             "citations": {"cwe": [{"id": "CWE-89"}]}},
+            {"id": "SE-001", "title": "SQL injection", "severity": "HIGH",
+             "confidence": "LIKELY", "panel": "security",
+             "category": "sql-injection",
+             "location": {"file": "a.py", "line_start": 10},
+             "cvss": {"score": 8.1, "vector": "CVSS:3.1/AV:N"},
+             "exploit_scenario": "Attacker injects SQL via the search box."},
+        ]
+        out = syn.dedupe(findings)
+        self.assertEqual(len(out), 1)
+        self.assertTrue(out[0].get("reinforced"))
+        self.assertEqual(out[0]["confidence"], "CERTAIN")
+        self.assertEqual(out[0]["cvss"]["score"], 8.1)
+        self.assertEqual(out[0]["exploit_scenario"],
+                         "Attacker injects SQL via the search box.")
+        self.assertIn("cwe", out[0].get("citations", {}))
+
+        report = syn.build_report(out, [], "src", None, "2026-07-23T00:00:00Z")
+        errors, _ = syn.validate_report(report)
+        self.assertEqual(errors, [])
+
+    def test_agent_cvss_preferred_over_tool_cvss(self):
+        findings = [
+            {"id": "SG-001", "severity": "HIGH", "confidence": "CERTAIN", "panel": "security",
+             "category": "sql-injection", "source": "tool:semgrep",
+             "location": {"file": "a.py", "line_start": 10},
+             "cvss": {"score": 5.0}, "exploit_scenario": "tool scenario",
+             "citations": {"cwe": [{"id": "CWE-89"}]}},
+            {"id": "SE-001", "severity": "HIGH", "confidence": "LIKELY", "panel": "security",
+             "category": "sql-injection",
+             "location": {"file": "a.py", "line_start": 10},
+             "cvss": {"score": 8.5}, "exploit_scenario": "agent scenario"},
+        ]
+        out = syn.dedupe(findings)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["cvss"]["score"], 8.5)
+        self.assertEqual(out[0]["exploit_scenario"], "agent scenario")
+        self.assertIn("cwe", out[0].get("citations", {}))
+
+    def test_merge_preserves_missing_text_fields(self):
+        findings = [
+            {"id": "SG-001", "severity": "HIGH", "confidence": "CERTAIN", "panel": "security",
+             "category": "sql-injection", "source": "tool:semgrep",
+             "location": {"file": "a.py", "line_start": 10},
+             "citations": {"cwe": [{"id": "CWE-89"}]},
+             "impact": "Data exfiltration", "references": ["https://example.com"]},
+            {"id": "SE-001", "severity": "HIGH", "confidence": "LIKELY", "panel": "security",
+             "category": "sql-injection",
+             "location": {"file": "a.py", "line_start": 10},
+             "cvss": {"score": 8.1}, "exploit_scenario": "x",
+             "remediation": "Use parameterized queries"},
+        ]
+        out = syn.dedupe(findings)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["impact"], "Data exfiltration")
+        self.assertEqual(out[0]["references"], ["https://example.com"])
+        self.assertEqual(out[0]["remediation"], "Use parameterized queries")
+        self.assertEqual(out[0]["cvss"]["score"], 8.1)
+
 
 class TestToolsDirIntegration(unittest.TestCase):
     def test_tool_findings_merged_and_reinforced(self):

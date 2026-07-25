@@ -131,6 +131,39 @@ def _is_tool_sourced(f):
     return str(f.get("source", "")).startswith("tool:")
 
 
+def _merge_citations(best, other):
+    """Merge other['citations'] into best['citations'] without overwriting
+    keys that already exist in best."""
+    oc = other.get("citations")
+    if not oc:
+        return
+    if not best.get("citations"):
+        best["citations"] = {}
+    bc = best["citations"]
+    for key, value in oc.items():
+        if not value:
+            continue
+        if key not in bc or not bc[key]:
+            bc[key] = value
+
+
+def _reinforce_merge(best, other):
+    """Pull missing enrichment from other into best. The agent's cvss and
+    exploit_scenario are preferred when either finding has them; other text
+    fields are filled only if best lacks them; citations are merged rather
+    than overwritten."""
+    # Prefer agent-authored cvss/exploit_scenario.
+    if not _is_tool_sourced(other):
+        for field in ("cvss", "exploit_scenario"):
+            if other.get(field):
+                best[field] = other[field]
+    # Fall back to the other finding for any still-missing enrichment.
+    for field in ("cvss", "exploit_scenario", "impact", "remediation", "references"):
+        if not best.get(field) and other.get(field):
+            best[field] = other[field]
+    _merge_citations(best, other)
+
+
 def _norm_line(v):
     try:
         return int(v)
@@ -172,10 +205,10 @@ def dedupe(findings):
         agent_srcd = [f for f in group if not _is_tool_sourced(f)]
         if len(group) == 2 and len(tool_srcd) == 1 and len(agent_srcd) == 1:
             best = min(group, key=lambda f: (_sev_rank(f), _conf_rank(f)))
+            other = agent_srcd[0] if _is_tool_sourced(best) else tool_srcd[0]
             best["reinforced"] = True
             best["confidence"] = "CERTAIN"
-            if "citations" not in best and tool_srcd[0].get("citations"):
-                best["citations"] = tool_srcd[0]["citations"]
+            _reinforce_merge(best, other)
             result.append(best)
         else:
             by_cat = {}
@@ -193,11 +226,10 @@ def dedupe(findings):
                         and any(not _is_tool_sourced(m) for m in members)):
                     best["reinforced"] = True
                     best["confidence"] = "CERTAIN"
-                    if "citations" not in best:
-                        for m in members:
-                            if _is_tool_sourced(m) and m.get("citations"):
-                                best["citations"] = m["citations"]
-                                break
+                    for m in members:
+                        if m is best:
+                            continue
+                        _reinforce_merge(best, m)
                 result.append(best)
     return result + passthrough
 
