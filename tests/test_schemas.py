@@ -18,8 +18,9 @@ class TestSchemas(unittest.TestCase):
 
     def test_scope_profile_required_fields(self):
         schema = self._load("scope-profile-schema.json")
-        for field in ("group", "languages", "surfaces", "risk", "suggested_lenses"):
+        for field in ("group", "languages", "surfaces", "risk", "lenses", "panels"):
             self.assertIn(field, schema["required"])
+        self.assertNotIn("suggested_lenses", schema["required"])
 
     def test_scope_profile_has_tools_field(self):
         schema = self._load("scope-profile-schema.json")
