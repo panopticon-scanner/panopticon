@@ -12,6 +12,10 @@ the path + count.
 ## Lenses
 {lenses}
 
+## Security checklists
+For `security` and `redteam` panels, apply the relevant language-specific sections
+from `reference/security-checklists.md` to the files being reviewed.
+
 ## Side-effect boundary
 Your ONLY action is writing that one findings file. Perform NO GitHub writes, NO repo
 mutations, NO dispatches, NO credential mints. Never report an action you did not

@@ -22,7 +22,7 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
 - `-d <dir>` / `--directory <dir>` — directory review.
 - `-g <name>` / `--group <name>` — group from `.panopticon/groups.yml` (use `-g "Group[Facet]"` for a facet).
 - `-c` / `--changes` — branch diff vs merge base (fallback `HEAD~1`).
-- `--pr <n>` — PR diff.
+- `--pr <n>` — PR diff (fetch the PR diff via `gh` or `curl`, extract changed paths, and pass them to the internal `--files` path).
 - `-e` / `--explore` — discover and catalog groups; no panels unless asked.
 - *(none)* — whole-repo scan.
 

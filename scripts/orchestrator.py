@@ -423,9 +423,6 @@ def build_result(repo, mode, target, facet, impl, tests,
     groups = []
     for i, c in enumerate(chunks):
         panels = compute_group_panels(c, security_mode)
-        if security_mode == "redteam":
-            panels = ["redteam" if p == "security" else p for p in panels]
-            panels = list(dict.fromkeys(panels))
         groups.append({
             "name": "%s_%d" % (base, i + 1),
             "files": c,
