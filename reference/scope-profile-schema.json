@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ScopeProfile",
+  "type": "object",
+  "required": ["group", "languages", "surfaces", "risk", "suggested_lenses"],
+  "properties": {
+    "group": {"type": "string"},
+    "facet": {"type": ["string", "null"]},
+    "languages": {"type": "array", "items": {"type": "string"}},
+    "surfaces": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["db_sql", "http_web", "auth", "crypto", "fs", "concurrency",
+                 "external_api", "money_pii", "serialization", "templating", "secrets_config"]
+      }
+    },
+    "size": {"type": "object", "properties": {"files": {"type": "integer"}, "loc": {"type": "integer"}}},
+    "has_tests": {"type": "boolean"},
+    "risk": {"type": "string", "enum": ["low", "med", "high"]},
+    "facet_scope": {
+      "type": "object",
+      "properties": {"files": {"type": "array", "items": {"type": "string"}}, "rationale": {"type": "string"}}
+    },
+    "suggested_lenses": {
+      "type": "object",
+      "properties": {
+        "code": {"type": "array", "items": {"type": "string"}},
+        "test": {"type": "array", "items": {"type": "string"}},
+        "security": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "tools": { "type": "array", "items": { "type": "string" } },
+    "has_deps": { "type": "boolean" }
+  }
+}

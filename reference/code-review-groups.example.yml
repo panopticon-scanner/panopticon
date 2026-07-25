@@ -1,0 +1,10 @@
+# .panopticon/groups.yml — learned by `panopticon -e`, hand-editable.
+# Lives in the TARGET repo under .panopticon/ (gitignored by default).
+groups:
+  Products:
+    patterns:
+      - "**/product*"
+      - "**/*product*/**"
+    facets:
+      Uploads: [upload, attachment, multipart, storage, blob, s3]
+      Pricing: [price, discount, tax]

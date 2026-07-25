@@ -1,0 +1,127 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "CodeReviewReport",
+  "type": "object",
+  "required": ["meta", "summary", "groups", "findings", "cross_panel", "recommendations"],
+  "properties": {
+    "meta": {
+      "type": "object",
+      "required": ["target", "review_type", "timestamp", "version"],
+      "properties": {
+        "target": {"type": "string"},
+        "review_type": {"type": "string", "enum": ["repo", "file", "directory", "group", "changes", "pr"]},
+        "timestamp": {"type": "string"},
+        "version": {"type": "string"},
+        "parts": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": ["overall_grade", "risk_level", "top_issues", "effort_to_remediate", "gate"],
+      "properties": {
+        "overall_grade": {"type": "string", "enum": ["A", "B", "C", "D", "F"]},
+        "risk_level": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"]},
+        "top_issues": {"type": "array", "items": {"type": "string"}, "maxItems": 3},
+        "effort_to_remediate": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH", "EXTENSIVE"]},
+        "gate": {"type": "string", "enum": ["PASS", "FAIL", "OFF"]},
+        "stats": {"type": "object"}
+      }
+    },
+    "groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "files", "panel_grades"],
+        "properties": {
+          "name": {"type": "string"},
+          "files": {"type": "array", "items": {"type": "string"}},
+          "panel_grades": {"type": "object"},
+          "panel_summaries": {"type": "object"},
+          "key_findings": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "severity", "confidence", "panel", "category"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[A-Z]{2,4}-[0-9]{3,}$"},
+          "title": {"type": "string"},
+          "severity": {"type": "string", "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]},
+          "confidence": {"type": "string", "enum": ["CERTAIN", "LIKELY", "POSSIBLE", "NOTE"]},
+          "panel": {"type": "string", "enum": ["code", "test", "security"]},
+          "category": {"type": "string"},
+          "location": {
+            "type": "object",
+            "required": ["file", "line_start"],
+            "properties": {
+              "file": {"type": "string"},
+              "line_start": {"type": "integer"},
+              "line_end": {"type": "integer"},
+              "function": {"type": "string"}
+            }
+          },
+          "description": {"type": "string"},
+          "impact": {"type": "string"},
+          "remediation": {"type": "string"},
+          "references": {"type": "array", "items": {"type": "string"}},
+          "cvss": {"type": "object", "properties": {"score": {"type": "number"}, "vector": {"type": "string"}}},
+          "exploit_scenario": {"type": "string"},
+          "source": { "type": "string" },
+          "reinforced": { "type": "boolean" },
+          "corroborated": { "type": "boolean" },
+          "corroborated_by": { "type": "array", "items": { "type": "string" } },
+          "citations": {
+            "type": "object",
+            "properties": {
+              "cwe": { "type": "array", "items": { "type": "object" } },
+              "owasp": { "type": "array", "items": { "type": "string" } },
+              "ssvc": { "type": "object" },
+              "cve": { "type": "array", "items": { "type": "string" } },
+              "epss": { "type": "array", "items": { "type": "object" } }
+            }
+          }
+        }
+      }
+    },
+    "cross_panel": {
+      "type": "object",
+      "required": ["integration_findings"],
+      "properties": {
+        "integration_findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["location", "panels", "finding_ids"],
+            "properties": {
+              "location": {
+                "type": "object",
+                "properties": {
+                  "file": {"type": "string"},
+                  "line_start": {"type": "integer"},
+                  "line_end": {"type": "integer"}
+                }
+              },
+              "panels": {"type": "array", "items": {"type": "string"}},
+              "categories": {"type": "array", "items": {"type": "string"}},
+              "finding_ids": {"type": "array", "items": {"type": "string"}},
+              "severity": {"type": "string", "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]},
+              "confidence": {"type": "string", "enum": ["CERTAIN", "LIKELY", "POSSIBLE", "NOTE"]},
+              "summary": {"type": "string"}
+            }
+          }
+        }
+      }
+    },
+    "recommendations": {
+      "type": "object",
+      "properties": {
+        "immediate": {"type": "array", "items": {"type": "string"}},
+        "short_term": {"type": "array", "items": {"type": "string"}},
+        "long_term": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}

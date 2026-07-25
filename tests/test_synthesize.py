@@ -1,0 +1,744 @@
+import os
+import sys
+import json
+import tempfile
+import unittest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "scripts"))
+import synthesize as syn
+
+
+class TestNormalize(unittest.TestCase):
+    def test_verdict_maps_to_confidence(self):
+        f = syn.normalize_finding({"severity": "high", "verdict": "CONFIRMED",
+                                   "panel": "security"})
+        self.assertEqual(f["severity"], "HIGH")
+        self.assertEqual(f["confidence"], "CERTAIN")
+
+    def test_plausible_maps_to_likely(self):
+        f = syn.normalize_finding({"verdict": "PLAUSIBLE"})
+        self.assertEqual(f["confidence"], "LIKELY")
+
+    def test_unlabeled_defaults_possible(self):
+        f = syn.normalize_finding({"severity": "MEDIUM"})
+        self.assertEqual(f["confidence"], "POSSIBLE")
+
+    def test_invalid_severity_becomes_info(self):
+        f = syn.normalize_finding({"severity": "sorta-bad"})
+        self.assertEqual(f["severity"], "INFO")
+
+    def test_location_coerced(self):
+        f = syn.normalize_finding({"location": {"file": "a.py", "line_start": 10}})
+        self.assertEqual(f["location"]["line_end"], 10)
+
+
+class TestLoad(unittest.TestCase):
+    def test_tolerant_json_with_fences(self):
+        body = "```json\n{\"findings\": [{\"severity\": \"LOW\"}]}\n```"
+        data = syn.load_json_tolerant(body)
+        self.assertEqual(len(data["findings"]), 1)
+
+    def test_load_findings_skips_missing(self):
+        with tempfile.TemporaryDirectory() as d:
+            good = os.path.join(d, "findings-x-code.json")
+            with open(good, "w") as fh:
+                json.dump({"findings": [{"severity": "HIGH", "panel": "code"}]}, fh)
+            findings = syn.load_findings([good, os.path.join(d, "missing.json")])
+            self.assertEqual(len(findings), 1)
+            self.assertEqual(findings[0]["confidence"], "POSSIBLE")
+
+    def test_load_findings_skips_non_dict_toplevel(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "findings-x-code.json")
+            with open(p, "w") as fh:
+                fh.write("[1, 2, 3]")
+            self.assertEqual(syn.load_findings([p]), [])
+
+    def test_load_findings_skips_non_dict_finding_entries(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "findings-x-code.json")
+            with open(p, "w") as fh:
+                json.dump({"findings": ["oops", {"severity": "LOW", "panel": "code"}]}, fh)
+            out = syn.load_findings([p])
+            self.assertEqual(len(out), 1)
+            self.assertEqual(out[0]["severity"], "LOW")
+
+    def test_tolerant_json_with_prose_around_object(self):
+        # The regex fallback: panel output wrapped in prose (no code fence).
+        body = "Sure, here is the JSON:\n{\"findings\": [{\"severity\": \"LOW\"}]}\nHope that helps!"
+        self.assertEqual(syn.load_json_tolerant(body), {"findings": [{"severity": "LOW"}]})
+
+    def test_load_findings_skips_invalid_json_and_continues(self):
+        import contextlib, io
+        with tempfile.TemporaryDirectory() as d:
+            bad = os.path.join(d, "findings-g-code.json")
+            good = os.path.join(d, "findings-g-test.json")
+            with open(bad, "w") as fh:
+                fh.write("{ not valid json ")
+            with open(good, "w") as fh:
+                json.dump({"findings": [{"severity": "LOW", "panel": "test",
+                          "location": {"file": "a.py", "line_start": 1}}]}, fh)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                out = syn.load_findings([bad, good])
+            self.assertIn("PARSE ERROR", err.getvalue())
+            self.assertEqual(len(out), 1)                # good file still processed
+
+    def test_load_findings_skips_non_list_findings_key(self):
+        import contextlib, io
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "findings-g-code.json")
+            with open(p, "w") as fh:
+                json.dump({"findings": "not-a-list"}, fh)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                out = syn.load_findings([p])
+            self.assertIn("no findings list", err.getvalue())
+            self.assertEqual(out, [])
+
+
+class TestDedupe(unittest.TestCase):
+    def test_merges_same_location_and_category(self):
+        findings = [
+            {"severity": "LOW", "confidence": "POSSIBLE", "category": "injection",
+             "location": {"file": "a.rb", "line_start": 10}},
+            {"severity": "HIGH", "confidence": "CERTAIN", "category": "injection",
+             "location": {"file": "a.rb", "line_start": 10}},
+        ]
+        out = syn.dedupe(findings)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["severity"], "HIGH")
+
+    def test_same_source_distinct_categories_kept_separate(self):
+        # Same source (no cross-source corroboration), different categories at
+        # the same file+line: these are genuinely distinct findings and must
+        # NOT be merged just because they share a locus.
+        findings = [
+            {"severity": "HIGH", "confidence": "CERTAIN", "category": "injection",
+             "location": {"file": "a.rb", "line_start": 10}},
+            {"severity": "HIGH", "confidence": "CERTAIN", "category": "structure",
+             "location": {"file": "a.rb", "line_start": 10}},
+        ]
+        self.assertEqual(len(syn.dedupe(findings)), 2)
+
+    def test_two_agent_findings_same_line_both_kept(self):
+        # Two agent-sourced findings (different panels/categories) at the same
+        # file+line are NOT cross-source corroboration -> kept separate.
+        findings = [
+            {"severity": "HIGH", "confidence": "LIKELY", "panel": "code",
+             "category": "structure", "source": "agent:code-reviewer",
+             "location": {"file": "a.py", "line_start": 5}},
+            {"severity": "HIGH", "confidence": "LIKELY", "panel": "security",
+             "category": "sql-injection", "source": "agent:security-reviewer",
+             "location": {"file": "a.py", "line_start": 5}},
+        ]
+        out = syn.dedupe(findings)
+        self.assertEqual(len(out), 2)
+        self.assertFalse(any(f.get("reinforced") for f in out))
+
+    def test_keeps_distinct_files(self):
+        findings = [
+            {"severity": "HIGH", "confidence": "CERTAIN", "category": "injection",
+             "location": {"file": "a.rb", "line_start": 10}},
+            {"severity": "HIGH", "confidence": "CERTAIN", "category": "injection",
+             "location": {"file": "b.rb", "line_start": 10}},
+        ]
+        self.assertEqual(len(syn.dedupe(findings)), 2)
+
+    def test_no_file_findings_not_merged(self):
+        findings = [
+            {"severity": "LOW", "confidence": "NOTE", "category": "x", "location": {}},
+            {"severity": "LOW", "confidence": "NOTE", "category": "x", "location": {}},
+        ]
+        self.assertEqual(len(syn.dedupe(findings)), 2)
+
+    def test_no_line_same_category_both_kept(self):
+        # CD-001 regression: two distinct issues in the same file that both omit
+        # line_start must NOT collapse on file+category alone. Without a concrete
+        # line they can't be reliably clustered -> both pass through.
+        findings = [
+            {"severity": "MEDIUM", "confidence": "LIKELY", "category": "correctness",
+             "source": "agent:code-reviewer", "location": {"file": "a.py"}},
+            {"severity": "HIGH", "confidence": "CERTAIN", "category": "correctness",
+             "source": "agent:code-reviewer", "location": {"file": "a.py"}},
+        ]
+        self.assertEqual(len(syn.dedupe(findings)), 2)
+
+    def test_reinforce_sourceless_agent_with_tool(self):
+        # Production shape: real panel findings carry NO 'source' field; only
+        # tool findings do. A tool+agent pair at the same locus must still
+        # reinforce (regression for the dead-branch bug where the reinforce
+        # condition required a literal 'agent' source token that never existed).
+        findings = [
+            {"id": "SG-1", "severity": "MEDIUM", "confidence": "CERTAIN", "panel": "security",
+             "category": "sqli", "source": "tool:semgrep",
+             "location": {"file": "db.py", "line_start": 10},
+             "citations": {"cwe": [{"id": "CWE-89", "verified": True}]}},
+            {"id": "SE-1", "severity": "HIGH", "confidence": "LIKELY", "panel": "security",
+             "category": "novel",                       # no 'source' key -> real agent shape
+             "location": {"file": "db.py", "line_start": 10}},
+        ]
+        out = syn.dedupe(findings)
+        self.assertEqual(len(out), 1)
+        self.assertTrue(out[0].get("reinforced"))
+        self.assertEqual(out[0].get("confidence"), "CERTAIN")
+        self.assertIn("citations", out[0])              # tool CWE carried to the survivor
+
+    def test_reinforce_across_type_and_category_mismatch(self):
+        findings = [
+            {"id":"SE-001","severity":"HIGH","confidence":"LIKELY","panel":"security",
+             "category":"novel","source":"agent:security-reviewer",
+             "location":{"file":"webapp.py","line_start":151}},
+            {"id":"SG-001","severity":"MEDIUM","confidence":"CERTAIN","panel":"security",
+             "category":"django-csrf","source":"tool:semgrep",
+             "location":{"file":"webapp.py","line_start":"151"},
+             "citations":{"cwe":[{"id":"CWE-352","name":"CSRF","verified":True}]}},
+        ]
+        out = syn.dedupe(findings)
+        self.assertEqual(len(out), 1)
+        self.assertTrue(out[0].get("reinforced"))
+
+    def test_three_findings_at_locus_keeps_unrelated(self):
+        # tool + agent corroborate on sql-injection at the same line, plus an
+        # UNRELATED agent 'structure' finding on that line -> the unrelated one survives.
+        findings = [
+            {"id":"TR-001","severity":"HIGH","confidence":"CERTAIN","panel":"security",
+             "category":"sql-injection","source":"tool:semgrep",
+             "location":{"file":"db.py","line_start":10}},
+            {"id":"SE-001","severity":"HIGH","confidence":"LIKELY","panel":"security",
+             "category":"sql-injection","source":"agent:security-reviewer",
+             "location":{"file":"db.py","line_start":10}},
+            {"id":"CD-001","severity":"MEDIUM","confidence":"POSSIBLE","panel":"code",
+             "category":"structure","source":"agent:code-reviewer",
+             "location":{"file":"db.py","line_start":10}},
+        ]
+        out = syn.dedupe(findings)
+        cats = sorted(f.get("category") for f in out)
+        self.assertIn("structure", cats)                 # unrelated finding NOT dropped
+        self.assertEqual(len(out), 2)                     # sql-injection (collapsed) + structure
+        sql = [f for f in out if f.get("category") == "sql-injection"][0]
+        self.assertTrue(sql.get("reinforced"))           # corroboration reinforces even in >2 clusters
+        self.assertEqual(sql.get("confidence"), "CERTAIN")
+
+
+class TestGrading(unittest.TestCase):
+    def _f(self, sev):
+        return {"severity": sev}
+
+    def test_grade_rule(self):
+        self.assertEqual(syn.grade([self._f("CRITICAL")]), "F")
+        self.assertEqual(syn.grade([self._f("HIGH")]), "D")
+        self.assertEqual(syn.grade([self._f("MEDIUM")]), "C")
+        self.assertEqual(syn.grade([self._f("LOW")]), "B")
+        self.assertEqual(syn.grade([self._f("INFO")]), "A")
+        self.assertEqual(syn.grade([]), "A")
+
+    def test_risk_level(self):
+        self.assertEqual(syn.risk_level([self._f("HIGH"), self._f("LOW")]), "HIGH")
+        self.assertEqual(syn.risk_level([self._f("INFO")]), "LOW")
+
+    def test_gate_off_when_no_threshold(self):
+        self.assertEqual(syn.gate_verdict([self._f("CRITICAL")], None), "OFF")
+
+    def test_gate_fail_at_or_above_threshold(self):
+        self.assertEqual(syn.gate_verdict([self._f("HIGH")], "high"), "FAIL")
+        self.assertEqual(syn.gate_verdict([self._f("CRITICAL")], "high"), "FAIL")
+        self.assertEqual(syn.gate_verdict([self._f("MEDIUM")], "high"), "PASS")
+
+    def test_severity_stats(self):
+        stats = syn.severity_stats([self._f("HIGH"), self._f("HIGH"), self._f("LOW")])
+        self.assertEqual(stats["high"], 2)
+        self.assertEqual(stats["low"], 1)
+        self.assertEqual(stats["critical"], 0)
+
+
+class TestReport(unittest.TestCase):
+    def _finding(self, **kw):
+        base = {"id": "CD-001", "title": "t", "severity": "LOW", "confidence": "POSSIBLE",
+                "panel": "code", "category": "structure",
+                "location": {"file": "a.py", "line_start": 3}}
+        base.update(kw)
+        return base
+
+    def test_build_report_has_grades_and_gate(self):
+        findings = [self._finding(severity="HIGH", panel="code")]
+        report = syn.build_report(findings, [{"name": "g1", "files": ["a.py"]}],
+                                  "src", "high", "2026-07-23T00:00:00Z")
+        self.assertEqual(report["summary"]["overall_grade"], "D")
+        self.assertEqual(report["summary"]["gate"], "FAIL")
+        self.assertEqual(report["groups"][0]["panel_grades"]["code"], "D")
+
+    def test_validate_clean_report(self):
+        findings = [self._finding()]
+        report = syn.build_report(findings, [{"name": "g1", "files": ["a.py"]}],
+                                  "src", None, "2026-07-23T00:00:00Z")
+        errors, _ = syn.validate_report(report)
+        self.assertEqual(errors, [])
+
+    def test_validate_flags_bad_id_and_missing_cvss(self):
+        bad = self._finding(id="lowercase", panel="security", severity="CRITICAL")
+        report = syn.build_report([bad], [{"name": "g1", "files": ["a.py"]}],
+                                  "src", None, "2026-07-23T00:00:00Z")
+        errors, _ = syn.validate_report(report)
+        self.assertTrue(any("id" in e for e in errors))
+        self.assertTrue(any("cvss" in e or "exploit" in e for e in errors))
+
+    def test_validate_flags_duplicate_ids(self):
+        report = syn.build_report(
+            [self._finding(id="CD-001", title="a", category="x",
+                            location={"file": "a", "line_start": 1}),
+             self._finding(id="CD-001", title="b", category="y",
+                            location={"file": "b", "line_start": 2})],
+            [], "t", None, "2026-07-23T00:00:00Z")
+        errors, _ = syn.validate_report(report)
+        self.assertTrue(any("duplicate" in e.lower() for e in errors))
+
+    def test_build_report_honors_review_type(self):
+        report = syn.build_report([], [], "src/app.py", None,
+                                   "2026-07-23T00:00:00Z", review_type="file")
+        self.assertEqual(report["meta"]["review_type"], "file")
+
+    def test_main_maps_orchestrator_mode_to_review_type(self):
+        with tempfile.TemporaryDirectory() as d:
+            gj = os.path.join(d, "groups.json")
+            with open(gj, "w") as fh:
+                json.dump({"mode": "directory", "groups": [{"name": "g1", "files": ["a.py"]}]}, fh)
+            fpath = os.path.join(d, "findings-g1-code.json")
+            with open(fpath, "w") as fh:
+                json.dump({"findings": [{"id": "CD-001", "title": "x", "severity": "LOW",
+                    "confidence": "POSSIBLE", "panel": "code", "category": "structure",
+                    "location": {"file": "a.py", "line_start": 1}}]}, fh)
+            out = os.path.join(d, "report.json")
+            import io, contextlib
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                syn.main(["--target", "src", "--groups", gj, "--out", out, fpath])
+            with open(out) as _fh:
+                report = json.load(_fh)
+            self.assertEqual(report["meta"]["review_type"], "directory")
+
+    def test_main_rejects_invalid_fail_on(self):
+        with self.assertRaises(SystemExit):
+            syn.main(["--target", "src", "--fail-on", "bogus", "x.json"])
+
+
+class TestCliAndSummary(unittest.TestCase):
+    def test_render_summary_contains_grade_and_location(self):
+        report = syn.build_report(
+            [{"id": "CD-001", "title": "SQL injection", "severity": "HIGH",
+              "confidence": "CERTAIN", "panel": "security", "category": "injection",
+              "location": {"file": "a.rb", "line_start": 42},
+              "cvss": {"score": 8.1, "vector": "CVSS:3.1/AV:N"},
+              "exploit_scenario": "..."}],
+            [{"name": "g1", "files": ["a.rb"]}], "src", "high", "2026-07-23T00:00:00Z")
+        text = syn.render_summary(report)
+        self.assertIn("a.rb:42", text)
+        self.assertIn("FAIL", text)
+
+    def test_main_returns_1_on_gate_fail(self):
+        with tempfile.TemporaryDirectory() as d:
+            fpath = os.path.join(d, "findings-g1-security.json")
+            with open(fpath, "w") as fh:
+                json.dump({"findings": [{"id": "SE-001", "title": "x", "severity": "CRITICAL",
+                                         "confidence": "CERTAIN", "panel": "security",
+                                         "category": "injection",
+                                         "location": {"file": "a.rb", "line_start": 1},
+                                         "cvss": {"score": 9.0, "vector": "CVSS:3.1/x"},
+                                         "exploit_scenario": "y"}]}, fh)
+            out = os.path.join(d, "report.json")
+            import io
+            import contextlib
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = syn.main(["--target", "src", "--fail-on", "high",
+                               "--out", out, fpath])
+            self.assertEqual(rc, 1)
+            self.assertTrue(os.path.isfile(out))
+
+    def test_write_report_split_preserves_findings_without_mutating_input(self):
+        findings = [{"id": "CD-%03d" % i, "title": "t" * 40, "severity": "LOW",
+                     "confidence": "POSSIBLE", "panel": "code", "category": "structure",
+                     "location": {"file": "a.py", "line_start": i}}
+                    for i in range(1, 400)]
+        report = syn.build_report(findings, [], "src", None, "2026-07-23T00:00:00Z")
+        n_before = len(report["findings"])
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "report.json")
+            paths = syn.write_report(report, out, max_bytes=1000)
+            self.assertEqual(len(paths), 2)
+            with open(paths[0]) as _fh:
+                main_doc = json.load(_fh)
+            with open(paths[1]) as _fh:
+                part_doc = json.load(_fh)
+            self.assertIn("parts", main_doc["meta"])
+            self.assertEqual(len(main_doc["findings"]) + len(part_doc["findings"]), n_before)
+            self.assertEqual(len(report["findings"]), n_before)  # caller not mutated
+
+    def test_main_returns_0_when_gate_not_fail(self):
+        with tempfile.TemporaryDirectory() as d:
+            fpath = os.path.join(d, "findings-g1-code.json")
+            with open(fpath, "w") as fh:
+                json.dump({"findings": [{"id": "CD-001", "title": "x", "severity": "MEDIUM",
+                    "confidence": "POSSIBLE", "panel": "code", "category": "structure",
+                    "location": {"file": "a.py", "line_start": 1}}]}, fh)
+            out = os.path.join(d, "report.json")
+            import io, contextlib
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = syn.main(["--target", "src", "--out", out, fpath])
+            self.assertEqual(rc, 0)
+
+
+class TestReconciliation(unittest.TestCase):
+    def test_normalize_backfills_title_category(self):
+        f = syn.normalize_finding({"description": "First line.\nSecond", "severity": "LOW"})
+        self.assertEqual(f["title"], "First line.")
+        self.assertEqual(f["category"], "general")
+
+    def test_normalize_untitled_when_no_description(self):
+        f = syn.normalize_finding({"severity": "LOW"})
+        self.assertEqual(f["title"], "(untitled)")
+
+    def test_normalize_collapses_multiline_title(self):
+        f = syn.normalize_finding({"title": "Package: requests\nInstalled: 2.19.0\nCVE-x",
+                                   "severity": "MEDIUM"})
+        self.assertEqual(f["title"], "Package: requests Installed: 2.19.0 CVE-x")
+
+    def test_main_survives_malformed_citation_and_writes_report(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "findings-g1-security.json")
+            with open(p, "w") as fh:
+                json.dump({"findings": [
+                    {"id":"SE-001","title":"crit","severity":"CRITICAL","confidence":"CERTAIN",
+                     "panel":"security","category":"x","source":"agent:sr",
+                     "location":{"file":"a","line_start":1},
+                     "cvss":{"score":9.0,"vector":"v"},"exploit_scenario":"e"},
+                    {"id":"SE-002","title":"bad","severity":"LOW","confidence":"POSSIBLE",
+                     "panel":"security","category":"y","source":"agent:sr",
+                     "location":{"file":"b","line_start":2},"citations":{"ssvc":"active"}}]}, fh)
+            out = os.path.join(d, "report.json")
+            import io, contextlib
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = syn.main(["--target","t","--fail-on","high","--out",out, p])
+            self.assertTrue(os.path.isfile(out))          # report written despite malformed citation
+            self.assertEqual(rc, 1)                        # gate FAIL evaluated (CRITICAL present)
+            with open(out) as _fh:
+                report = json.load(_fh)
+            self.assertTrue(any(f["id"]=="SE-001" for f in report["findings"]))
+
+    def test_validate_returns_errors_and_warnings(self):
+        report = syn.build_report(
+            [{"id": "CD-001", "title": "t", "severity": "LOW", "confidence": "POSSIBLE",
+              "panel": "code", "category": "general", "location": {}}],
+            [], "src", None, "2026-07-23T00:00:00Z")
+        errors, warnings = syn.validate_report(report)
+        self.assertEqual(errors, [])
+        self.assertTrue(any("location" in w for w in warnings))
+
+    def test_tool_security_finding_exempt_from_cvss(self):
+        report = syn.build_report(
+            [{"id": "TR-001", "title": "t", "severity": "HIGH", "confidence": "CERTAIN",
+              "panel": "security", "category": "general", "source": "tool:trivy",
+              "location": {"file": "a", "line_start": 1}}],
+            [], "src", None, "2026-07-23T00:00:00Z")
+        errors, _ = syn.validate_report(report)
+        self.assertEqual(errors, [])
+
+    def test_four_digit_tool_id_is_valid(self):
+        report = syn.build_report(
+            [{"id": "SG-1000", "title": "t", "severity": "LOW", "confidence": "CERTAIN",
+              "panel": "security", "category": "x", "source": "tool:semgrep",
+              "location": {"file": "a", "line_start": 1}}],
+            [], "src", None, "2026-07-23T00:00:00Z")
+        errors, _ = syn.validate_report(report)
+        self.assertFalse(any("id" in e for e in errors))
+
+
+class TestGroupTag(unittest.TestCase):
+    def test_test_panel_grade_reflects_test_findings(self):
+        # a test-panel finding on a path NOT in group files, tagged by _group
+        findings = [{"id": "TS-001", "title": "weak test", "severity": "HIGH",
+                     "confidence": "LIKELY", "panel": "test", "category": "quality",
+                     "location": {"file": "spec/foo_spec.rb", "line_start": 3},
+                     "_group": "g1"}]
+        report = syn.build_report(findings, [{"name": "g1", "files": ["app/foo.rb"]}],
+                                  "src", None, "2026-07-23T00:00:00Z")
+        self.assertEqual(report["groups"][0]["panel_grades"]["test"], "D")  # not "A"
+        # _group scrubbed from emitted findings
+        self.assertNotIn("_group", report["findings"][0])
+
+    def test_load_findings_tags_group_from_filename(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "findings-mygroup-code.json")
+            with open(p, "w") as fh:
+                json.dump({"findings": [{"severity": "LOW", "panel": "code"}]}, fh)
+            out = syn.load_findings([p])
+            self.assertEqual(out[0]["_group"], "mygroup")
+
+
+class TestPipelineCitations(unittest.TestCase):
+    def test_citations_enriched_end_to_end(self):
+        with tempfile.TemporaryDirectory() as d:
+            fp = os.path.join(d, "findings-g1-security.json")
+            with open(fp, "w") as fh:
+                json.dump({"findings": [{"id": "SE-001", "title": "sqli",
+                    "severity": "HIGH", "confidence": "CERTAIN", "panel": "security",
+                    "category": "injection", "source": "tool:semgrep",
+                    "location": {"file": "a.py", "line_start": 1},
+                    "citations": {"cwe": ["CWE-89"]}}]}, fh)
+            out = os.path.join(d, "report.json")
+            import io, contextlib
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = syn.main(["--target", "src", "--out", out, fp])
+            with open(out) as _fh:
+                report = json.load(_fh)
+            cites = report["findings"][0]["citations"]
+            self.assertEqual(cites["cwe"][0]["name"][:3], "Imp")
+            self.assertIn("A03:2021-Injection", cites["owasp"])
+
+
+class TestReinforce(unittest.TestCase):
+    def test_tool_and_agent_reinforce(self):
+        findings = [
+            {"id": "SE-001", "severity": "HIGH", "confidence": "LIKELY", "panel": "security",
+             "category": "sql-injection", "source": "agent:security-reviewer",
+             "location": {"file": "a.py", "line_start": 10}},
+            {"id": "SG-001", "severity": "HIGH", "confidence": "CERTAIN", "panel": "security",
+             "category": "sql-injection", "source": "tool:semgrep",
+             "location": {"file": "a.py", "line_start": 10},
+             "citations": {"cwe": [{"id": "CWE-89", "name": "SQLi", "verified": True}]}},
+        ]
+        out = syn.dedupe(findings)
+        self.assertEqual(len(out), 1)
+        self.assertTrue(out[0].get("reinforced"))
+        self.assertEqual(out[0]["confidence"], "CERTAIN")
+        self.assertIn("citations", out[0])
+
+
+class TestToolsDirIntegration(unittest.TestCase):
+    def test_tool_findings_merged_and_reinforced(self):
+        with tempfile.TemporaryDirectory() as d:
+            agent = os.path.join(d, "findings-g1-security.json")
+            with open(agent, "w") as fh:
+                json.dump({"findings": [{"id": "SE-001", "title": "sqli", "severity": "HIGH",
+                    "confidence": "LIKELY", "panel": "security", "category": "sql-injection",
+                    "source": "agent:security-reviewer",
+                    "location": {"file": "app/db.py", "line_start": 42},
+                    "cvss": {"score": 8.1, "vector": "x"}, "exploit_scenario": "y"}]}, fh)
+            td = os.path.join(d, "tools"); os.makedirs(td)
+            with open(os.path.join(td, "semgrep.sarif"), "w") as fh:
+                json.dump({"runs": [{"tool": {"driver": {"name": "semgrep", "rules": [
+                    {"id": "sql-injection", "properties": {"tags": ["CWE-89"]}}]}},
+                    "results": [{"ruleId": "sql-injection", "level": "error",
+                    "message": {"text": "SQL injection"},
+                    "locations": [{"physicalLocation": {"artifactLocation": {"uri": "app/db.py"},
+                    "region": {"startLine": 42}}}]}]}]}, fh)
+            out = os.path.join(d, "report.json")
+            import io, contextlib
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                syn.main(["--target", "src", "--tools-dir", td, "--out", out, agent])
+            with open(out) as _fh:
+                report = json.load(_fh)
+            secs = [f for f in report["findings"] if f["panel"] == "security"]
+            self.assertEqual(len(secs), 1)          # agent+tool at same locus deduped to one
+            self.assertTrue(secs[0].get("reinforced"))
+            self.assertIn("cwe", secs[0].get("citations", {}))  # tool CWE-89 carried onto survivor
+
+
+class TestSummaryCitations(unittest.TestCase):
+    def test_summary_shows_cwe_and_provenance(self):
+        report = syn.build_report(
+            [{"id": "SG-001", "title": "sqli", "severity": "HIGH", "confidence": "CERTAIN",
+              "panel": "security", "category": "injection", "source": "tool:semgrep",
+              "reinforced": True, "location": {"file": "a.py", "line_start": 1},
+              "citations": {"cwe": [{"id": "CWE-89", "name": "SQLi", "verified": True}],
+                            "ssvc": {"decision": "Act", "model": "deployer-reduced", "inputs": {}}}}],
+            [], "src", None, "2026-07-23T00:00:00Z")
+        text = syn.render_summary(report)
+        self.assertIn("CWE-89", text)
+        self.assertIn("Act", text)
+        self.assertIn("reinforced", text)
+
+    def test_summary_shows_panel_label(self):
+        report = syn.build_report(
+            [{"id": "SE-001", "title": "x", "severity": "HIGH", "confidence": "CERTAIN",
+              "panel": "security", "category": "novel", "source": "agent:sr",
+              "location": {"file": "a", "line_start": 1},
+              "cvss": {"score": 8, "vector": "v"}, "exploit_scenario": "e"}],
+            [], "t", None, "2026-07-23T00:00:00Z")
+        self.assertIn("security", syn.render_summary(report))
+
+
+class TestCrossPanelCorroboration(unittest.TestCase):
+    """Cross-LENS agreement: the same real issue seen through different panels
+    carries DIFFERENT categories by nature (security 'input-validation' vs test
+    'test-coverage' vs code 'error-handling'), so it never matches dedupe's
+    (file, line, category) key. A separate corroboration pass surfaces that N
+    distinct panels independently flagged the same locus, WITHOUT collapsing the
+    distinct-lens findings into one."""
+
+    def _f(self, fid, panel, category, line, sev="HIGH", conf="POSSIBLE",
+           file="app/resolver.py", **kw):
+        base = {"id": fid, "title": fid, "severity": sev, "confidence": conf,
+                "panel": panel, "category": category,
+                "location": {"file": file, "line_start": line}}
+        base.update(kw)
+        return base
+
+    def test_different_panels_same_locus_corroborate(self):
+        # SEC-701 (security, input-validation) + TST-701 (test, test-coverage)
+        # at the SAME file:line, DIFFERENT categories -> corroboration.
+        findings = [
+            self._f("SEC-701", "security", "input-validation", 42,
+                    cvss={"score": 8.1, "vector": "v"}, exploit_scenario="e"),
+            self._f("TST-701", "test", "test-coverage", 42),
+        ]
+        report = syn.build_report(findings, [], "src", None, "2026-07-23T00:00:00Z")
+        integ = report["cross_panel"]["integration_findings"]
+        self.assertEqual(len(integ), 1)
+        entry = integ[0]
+        self.assertEqual(entry["location"]["file"], "app/resolver.py")
+        self.assertEqual(entry["location"]["line_start"], 42)
+        self.assertEqual(sorted(entry["panels"]), ["security", "test"])
+        self.assertEqual(sorted(entry["finding_ids"]), ["SEC-701", "TST-701"])
+        # both distinct-lens findings survive (NOT collapsed into one)
+        self.assertEqual(len(report["findings"]), 2)
+        self.assertTrue(all(f.get("corroborated") for f in report["findings"]))
+
+    def test_three_lens_agreement(self):
+        # security + test + code all converge on one locus, different categories.
+        findings = [
+            self._f("SE-1", "security", "input-validation", 151,
+                    cvss={"score": 9, "vector": "v"}, exploit_scenario="e"),
+            self._f("TS-1", "test", "test-coverage", 151),
+            self._f("CD-1", "code", "error-handling", 151),
+        ]
+        report = syn.build_report(findings, [], "src", None, "2026-07-23T00:00:00Z")
+        integ = report["cross_panel"]["integration_findings"]
+        self.assertEqual(len(integ), 1)
+        self.assertEqual(sorted(integ[0]["panels"]), ["code", "security", "test"])
+        self.assertEqual(len(report["findings"]), 3)          # none collapsed
+
+    def test_negative_different_files_do_not_corroborate(self):
+        # Two findings, different panels, but at genuinely different loci
+        # (different files) -> NO false corroboration.
+        findings = [
+            self._f("SE-1", "security", "input-validation", 42, file="a.py",
+                    cvss={"score": 8, "vector": "v"}, exploit_scenario="e"),
+            self._f("TS-1", "test", "test-coverage", 42, file="b.py"),
+        ]
+        report = syn.build_report(findings, [], "src", None, "2026-07-23T00:00:00Z")
+        self.assertEqual(report["cross_panel"]["integration_findings"], [])
+        self.assertFalse(any(f.get("corroborated") for f in report["findings"]))
+
+    def test_negative_far_apart_lines_do_not_corroborate(self):
+        # Same file, different panels, but lines beyond the proximity window
+        # -> genuinely different issues, not corroboration.
+        findings = [
+            self._f("SE-1", "security", "input-validation", 10,
+                    cvss={"score": 8, "vector": "v"}, exploit_scenario="e"),
+            self._f("TS-1", "test", "test-coverage", 90),
+        ]
+        report = syn.build_report(findings, [], "src", None, "2026-07-23T00:00:00Z")
+        self.assertEqual(report["cross_panel"]["integration_findings"], [])
+
+    def test_negative_same_panel_not_cross_panel(self):
+        # Two SAME-panel findings at one line are within-lens, not cross-panel
+        # corroboration (only ONE distinct panel present at the locus).
+        findings = [
+            self._f("CD-1", "code", "structure", 5),
+            self._f("CD-2", "code", "naming", 5),
+        ]
+        report = syn.build_report(findings, [], "src", None, "2026-07-23T00:00:00Z")
+        self.assertEqual(report["cross_panel"]["integration_findings"], [])
+        self.assertFalse(any(f.get("corroborated") for f in report["findings"]))
+
+    def test_proximity_window_adjacent_lines(self):
+        # Panels citing adjacent lines (function def at 150, vulnerable call at
+        # 151) within CORROBORATION_LINE_WINDOW still corroborate.
+        self.assertGreaterEqual(syn.CORROBORATION_LINE_WINDOW, 1)
+        findings = [
+            self._f("SE-1", "security", "input-validation", 150,
+                    cvss={"score": 8, "vector": "v"}, exploit_scenario="e"),
+            self._f("CD-1", "code", "error-handling", 151),
+        ]
+        report = syn.build_report(findings, [], "src", None, "2026-07-23T00:00:00Z")
+        self.assertEqual(len(report["cross_panel"]["integration_findings"]), 1)
+
+    def test_confidence_raised_not_lowered(self):
+        # Corroboration raises a weak finding's confidence one rank but never
+        # lowers a strong one.
+        integ = syn.cross_panel_corroboration([
+            self._f("SE-1", "security", "input-validation", 7, conf="POSSIBLE"),
+            self._f("CD-1", "code", "error-handling", 7, conf="CERTAIN"),
+        ])
+        self.assertEqual(len(integ), 1)
+        by_id = {}
+        # re-run to inspect annotation on the same objects
+        fs = [
+            self._f("SE-1", "security", "input-validation", 7, conf="POSSIBLE"),
+            self._f("CD-1", "code", "error-handling", 7, conf="CERTAIN"),
+        ]
+        syn.cross_panel_corroboration(fs)
+        for f in fs:
+            by_id[f["id"]] = f
+        self.assertEqual(by_id["SE-1"]["confidence"], "LIKELY")   # POSSIBLE -> LIKELY
+        self.assertEqual(by_id["CD-1"]["confidence"], "CERTAIN")  # not lowered
+
+    def test_integration_entry_records_max_severity(self):
+        integ = syn.cross_panel_corroboration([
+            self._f("SE-1", "security", "input-validation", 3, sev="CRITICAL"),
+            self._f("CD-1", "code", "error-handling", 3, sev="LOW"),
+        ])
+        self.assertEqual(integ[0]["severity"], "CRITICAL")
+
+    def test_does_not_break_tool_agent_reinforce(self):
+        # A tool+agent pair (dedupe collapses -> 1 security finding) plus an
+        # independent test finding at the same locus -> the reinforced survivor
+        # AND the test finding corroborate cross-panel.
+        findings = [
+            {"id": "SG-1", "severity": "HIGH", "confidence": "CERTAIN",
+             "panel": "security", "category": "sqli", "source": "tool:semgrep",
+             "location": {"file": "db.py", "line_start": 10},
+             "citations": {"cwe": [{"id": "CWE-89", "verified": True}]}},
+            {"id": "SE-1", "severity": "HIGH", "confidence": "LIKELY",
+             "panel": "security", "category": "sqli",
+             "location": {"file": "db.py", "line_start": 10},
+             "cvss": {"score": 8, "vector": "v"}, "exploit_scenario": "e"},
+            {"id": "TS-1", "severity": "MEDIUM", "confidence": "POSSIBLE",
+             "panel": "test", "category": "test-coverage",
+             "location": {"file": "db.py", "line_start": 10}},
+        ]
+        report = syn.build_report(findings, [], "src", None, "2026-07-23T00:00:00Z")
+        secs = [f for f in report["findings"] if f["panel"] == "security"]
+        self.assertEqual(len(secs), 1)                      # tool+agent still collapsed
+        self.assertTrue(secs[0].get("reinforced"))          # reinforce preserved
+        self.assertEqual(len(report["cross_panel"]["integration_findings"]), 1)
+
+    def test_summary_renders_corroboration_section(self):
+        findings = [
+            self._f("SE-1", "security", "input-validation", 42,
+                    cvss={"score": 8, "vector": "v"}, exploit_scenario="e"),
+            self._f("TS-1", "test", "test-coverage", 42),
+        ]
+        report = syn.build_report(findings, [], "src", None, "2026-07-23T00:00:00Z")
+        text = syn.render_summary(report)
+        self.assertIn("Cross-panel", text)
+        self.assertIn("app/resolver.py:42", text)
+
+    def test_schema_defines_integration_finding_items(self):
+        ref = os.path.join(os.path.dirname(__file__), os.pardir, "reference",
+                           "report-schema.json")
+        with open(ref, encoding="utf-8") as fh:
+            schema = json.load(fh)
+        items = schema["properties"]["cross_panel"]["properties"]["integration_findings"]["items"]
+        self.assertEqual(items["type"], "object")
+        self.assertIn("panels", items["properties"])
+        self.assertIn("finding_ids", items["properties"])
+        # the finding-level corroboration annotations are documented too
+        fprops = schema["properties"]["findings"]["items"]["properties"]
+        self.assertIn("corroborated", fprops)
+        self.assertIn("corroborated_by", fprops)
