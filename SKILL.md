@@ -3,7 +3,7 @@ name: panopticon
 description: "Discovery → scout → fan-out → synthesis code review. Profiles a target with a cheap scout, builds a risk-tuned plan, dispatches the native code-reviewer/security-reviewer/test-reviewer agents in parallel across cohesive file groups, and synthesizes a CodeReviewReport (markdown summary + JSON artifact) with CI gating. USE FOR: code review, PR/branch review, security audit, test-quality assessment, risk-scoped review, exploring an unfamiliar repo for high-value targets. DO NOT USE FOR: writing new code, formatting/linting, or performance benchmarking."
 license: MIT
 metadata:
-  version: "2.3.0"
+  version: "3.0.0"
 ---
 
 # panopticon
