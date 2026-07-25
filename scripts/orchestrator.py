@@ -8,6 +8,7 @@ import glob
 import json
 import os
 import re
+import subprocess
 import sys
 
 DEFAULT_MAX_PER_GROUP = 15
@@ -77,6 +78,102 @@ def is_architecture_file(path):
 def is_database_file(path):
     """Return True if path matches any database/migration pattern."""
     return any(re.search(p, path) for p in DATABASE_PATTERNS)
+
+
+def compute_group_surfaces(files):
+    """Return architecture/database surface labels for a group of files.
+
+    These surface labels travel with the group metadata so the scout and the
+    dispatch template can reason about repo-scope / data surfaces without
+    re-deriving them from filenames.
+    """
+    surfaces = set()
+    for f in files:
+        if is_architecture_file(f):
+            surfaces.add("architecture")
+        if is_database_file(f):
+            surfaces.add("database")
+    return sorted(surfaces)
+
+
+def compute_group_panels(files, security_mode="standard"):
+    """Return default panel schedule for a group.
+
+    Panels are a starting plan; the scout may refine them based on the actual
+    code surfaces. In redteam mode the security panel is replaced by redteam.
+    """
+    panels = ["code"]
+    if any(is_test_file(f) for f in files):
+        panels.append("test")
+    if security_mode == "redteam":
+        panels.append("redteam")
+    else:
+        panels.append("security")
+    if any(is_architecture_file(f) for f in files):
+        panels.append("architecture")
+    if any(is_database_file(f) for f in files):
+        panels.append("database")
+    return panels
+
+
+def collect_changed_files(repo):
+    """Collect repo-relative paths changed since the merge base (or HEAD~1).
+
+    Tries the default upstream branches first, then falls back to HEAD~1. Only
+    files that still exist in the working tree are returned. Returns None if no
+    git history is available.
+    """
+    base = None
+    for branch in ("main", "master"):
+        try:
+            out = subprocess.run(
+                ["git", "-C", repo, "merge-base", "HEAD", branch],
+                capture_output=True, text=True, check=True, timeout=30,
+            )
+            base = out.stdout.strip()
+            if base:
+                break
+        except Exception:
+            continue
+    if not base:
+        try:
+            out = subprocess.run(
+                ["git", "-C", repo, "rev-parse", "HEAD~1"],
+                capture_output=True, text=True, check=True, timeout=30,
+            )
+            base = out.stdout.strip()
+        except Exception:
+            return None
+    changed = set()
+    try:
+        out = subprocess.run(
+            ["git", "-C", repo, "diff", "--name-only", "--diff-filter=d", base],
+            capture_output=True, text=True, check=True, timeout=30,
+        )
+        for p in out.stdout.splitlines():
+            p = p.strip()
+            if p:
+                changed.add(p)
+    except Exception:
+        return None
+    # Include new untracked files so a branch with only added files isn't empty.
+    try:
+        out = subprocess.run(
+            ["git", "-C", repo, "ls-files", "--others", "--exclude-standard"],
+            capture_output=True, text=True, check=True, timeout=30,
+        )
+        for p in out.stdout.splitlines():
+            p = p.strip()
+            if p:
+                changed.add(p)
+    except Exception:
+        pass
+    out = []
+    for p in sorted(changed):
+        full = os.path.join(repo, p)
+        if os.path.isfile(full) and _within(repo, full):
+            out.append(p.replace(os.sep, "/"))
+    return out
 
 
 def chunk_files(files, max_per=15):
@@ -323,10 +420,18 @@ def build_result(repo, mode, target, facet, impl, tests,
     """
     chunks = chunk_files(impl if group_files is None else group_files, max_per_group)
     base = os.path.basename(target.rstrip("/")) or target or "root"
-    groups = [
-        {"name": "%s_%d" % (base, i + 1), "files": c}
-        for i, c in enumerate(chunks)
-    ]
+    groups = []
+    for i, c in enumerate(chunks):
+        panels = compute_group_panels(c, security_mode)
+        if security_mode == "redteam":
+            panels = ["redteam" if p == "security" else p for p in panels]
+            panels = list(dict.fromkeys(panels))
+        groups.append({
+            "name": "%s_%d" % (base, i + 1),
+            "files": c,
+            "surfaces": compute_group_surfaces(c),
+            "panels": panels,
+        })
     return {
         "security_mode": security_mode,
         "mode": mode,
@@ -358,13 +463,15 @@ def main(argv=None):
     ap.add_argument("--max-per-group", type=int, default=DEFAULT_MAX_PER_GROUP)
     ap.add_argument("--out", default=None,
                     help="Write JSON output to this file instead of stdout")
-    ap.add_argument("--security-mode", choices=["standard", "redteam"], default="standard",
+    ap.add_argument("--security", choices=["standard", "redteam"], default="standard",
                     help="Security review mode")
     modes = ap.add_mutually_exclusive_group(required=True)
     modes.add_argument("--group", metavar="NAME")
     modes.add_argument("--directory", metavar="DIR")
     modes.add_argument("--file", metavar="PATH")
     modes.add_argument("--files", nargs="+", metavar="PATH")
+    modes.add_argument("--changes", "-c", action="store_true",
+                       help="Review changed files vs merge base (fallback HEAD~1)")
     modes.add_argument("--repo-scan", action="store_true")
     args = ap.parse_args(argv)
     if args.max_per_group < 1:
@@ -383,7 +490,7 @@ def main(argv=None):
         impl = [f for f in expand_patterns(repo, catalog[name]["patterns"])
                 if not is_test_file(f)]
         result = build_result(repo, "group", name, facet, impl, related_tests(repo, impl),
-                              args.max_per_group, security_mode=args.security_mode)
+                              args.max_per_group, security_mode=args.security)
 
     elif args.directory:
         d = args.directory.strip("/")
@@ -391,7 +498,7 @@ def main(argv=None):
         impl = [f for f in allf if not is_test_file(f)]
         tests = [f for f in allf if is_test_file(f)]
         result = build_result(repo, "directory", d, None, impl, tests, args.max_per_group,
-                              security_mode=args.security_mode)
+                              security_mode=args.security)
 
     elif args.file:
         if not os.path.isfile(os.path.join(repo, args.file)):
@@ -399,14 +506,29 @@ def main(argv=None):
             return 2
         result = build_result(repo, "file", args.file, None, [args.file],
                               related_tests(repo, [args.file]), args.max_per_group,
-                              security_mode=args.security_mode)
+                              security_mode=args.security)
 
     elif args.files:
         impl = [f for f in args.files if not is_test_file(f)]
         tests = [f for f in args.files if is_test_file(f)]
         result = build_result(repo, "files", "changeset", None, impl,
                               sorted(set(tests) | set(related_tests(repo, impl))), args.max_per_group,
-                              security_mode=args.security_mode)
+                              security_mode=args.security)
+
+    elif args.changes:
+        changed = collect_changed_files(repo)
+        if changed is None:
+            print("could not determine changed files; is %s a git repository?" % repo,
+                  file=sys.stderr)
+            return 2
+        if not changed:
+            print("no changed files found", file=sys.stderr)
+            return 0
+        impl = [f for f in changed if not is_test_file(f)]
+        tests = [f for f in changed if is_test_file(f)]
+        result = build_result(repo, "changes", "changes", None, impl,
+                              sorted(set(tests) | set(related_tests(repo, impl))), args.max_per_group,
+                              security_mode=args.security)
 
     else:
         # --repo-scan
@@ -416,7 +538,7 @@ def main(argv=None):
         # Group impl AND real test sources so tests aren't silently dropped (only
         # their __pycache__ artifacts used to reach a group); counts stay impl-only.
         result = build_result(repo, "repo", ".", None, impl, tests, args.max_per_group,
-                              group_files=impl + tests, security_mode=args.security_mode)
+                              group_files=impl + tests, security_mode=args.security)
 
     if args.out:
         os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)

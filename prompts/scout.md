@@ -44,6 +44,9 @@ Set `panels` to the panels scheduled for this group:
 - `architecture` if any file is repo-scope (root config, `.github/`, Dockerfile, k8s/helm, docker-compose)
 - `database` if `db_sql` surface present
 
+When the provided `security_mode` is `redteam`, schedule `redteam` instead of
+`security` and do not include `security` in the panel list.
+
 ## Lenses
 Set `lenses` to an object mapping panel name to a list of `{name, spawn}` objects.
 Default lenses:
