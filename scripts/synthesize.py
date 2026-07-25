@@ -18,7 +18,7 @@ CONFIDENCES = {"CERTAIN", "LIKELY", "POSSIBLE", "NOTE"}
 VERDICT_TO_CONFIDENCE = {"CONFIRMED": "CERTAIN", "PLAUSIBLE": "LIKELY"}
 MODE_TO_REVIEW_TYPE = {
     "repo": "repo", "file": "file", "directory": "directory",
-    "group": "group", "files": "changes",
+    "group": "group", "files": "changes", "changes": "changes",
 }
 VALID_PANELS = {"code", "test", "security", "architecture", "database", "redteam"}
 PANEL_ORDER = ["code", "test", "security", "architecture", "database", "redteam"]
@@ -57,7 +57,11 @@ def normalize_finding(f):
         f["confidence"] = VERDICT_TO_CONFIDENCE.get(verdict, "POSSIBLE")
     if f.get("panel") not in VALID_PANELS:
         f["panel"] = "code"
-    f.setdefault("lens", None)
+    lens = f.get("lens")
+    if lens:
+        f["lens"] = str(lens)
+    else:
+        f.pop("lens", None)
     if not isinstance(f.get("location"), dict):
         f["location"] = {}
     loc = f["location"]
@@ -476,11 +480,11 @@ def validate_report(report):
         if not loc.get("file") or loc.get("line_start") is None:
             warnings.append("finding[%d] missing location.file/line_start" % i)
         agent_sourced = not str(f.get("source", "")).startswith("tool:")
-        if agent_sourced and f.get("panel") == "security" and f.get("severity") in ("CRITICAL", "HIGH"):
+        if agent_sourced and f.get("panel") in ("security", "redteam") and f.get("severity") in ("CRITICAL", "HIGH"):
             if not f.get("cvss"):
-                errors.append("finding[%d] security %s missing cvss" % (i, f["severity"]))
+                errors.append("finding[%d] %s %s missing cvss" % (i, f["panel"], f["severity"]))
             if not f.get("exploit_scenario"):
-                errors.append("finding[%d] security %s missing exploit_scenario" % (i, f["severity"]))
+                errors.append("finding[%d] %s %s missing exploit_scenario" % (i, f["panel"], f["severity"]))
     id_counts = {}
     for f in report.get("findings", []):
         fid = f.get("id")
@@ -572,10 +576,15 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="panopticon synthesizer")
     ap.add_argument("--target", default="unknown")
     ap.add_argument("--groups", metavar="PATH")
-    ap.add_argument("--security-mode", choices=["standard", "redteam"], default=None,
+    ap.add_argument("--security", choices=["standard", "redteam"], default=None,
                     help="Override security mode from groups.json")
     ap.add_argument("--fail-on", metavar="SEV", type=str.lower,
                     choices=["critical", "high", "medium", "low"])
+    ap.add_argument("--severity", metavar="LEVEL", type=str.lower,
+                    choices=["all", "medium", "high", "critical"], default="all",
+                    help="Minimum severity to include in the report (all, medium, high, critical)")
+    ap.add_argument("--changes", "-c", action="store_true",
+                    help="Alias for a changes/diff review type")
     ap.add_argument("--out", default=None)
     ap.add_argument("--epss", action="store_true")
     ap.add_argument("--tools-dir", metavar="DIR")
@@ -583,15 +592,15 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     groups_meta = []
-    review_type = "repo"
-    security_mode = args.security_mode
+    review_type = "changes" if args.changes else "repo"
+    security_mode = args.security
     if args.groups and os.path.isfile(args.groups):
         try:
             with open(args.groups, encoding="utf-8") as fh:
                 gj = json.load(fh)
             if isinstance(gj, dict):
                 groups_meta = gj.get("groups", [])
-                review_type = MODE_TO_REVIEW_TYPE.get(gj.get("mode"), "repo")
+                review_type = MODE_TO_REVIEW_TYPE.get(gj.get("mode"), review_type)
                 if security_mode is None:
                     security_mode = gj.get("security_mode", "standard")
             else:
@@ -612,6 +621,9 @@ def main(argv=None):
     catalog = citations.load_cwe_catalog()
     citations.enrich_citations(findings, catalog, epss_enabled=args.epss,
                                cache_path=os.path.join(".panopticon", "epss-cache.json"))
+    if args.severity and args.severity != "all":
+        threshold = SEV_ORDER.index(args.severity.upper())
+        findings = [f for f in findings if _sev_rank(f) <= threshold]
     report = build_report(findings, groups_meta, args.target, args.fail_on, ts, review_type,
                           security_mode)
     errors, warnings = validate_report(report)
