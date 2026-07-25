@@ -382,7 +382,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
             "target": target,
             "review_type": review_type,
             "timestamp": timestamp,
-            "version": "2.3.0",
+            "version": "3.0.0",
         },
         "summary": {
             "overall_grade": overall,
