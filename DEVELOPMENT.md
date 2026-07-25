@@ -1,10 +1,10 @@
 # Panopticon — Development Notes
 
-Ruthless, standards-cited code review for Claude Code. This file is the durable
+Ruthless, standards-cited code review for Kimi Code. This file is the durable
 design record that travels with the skill (installed dir / OneDrive), so future
 work has context without the original spec/plan docs.
 
-**Current version: 2.2.1** (semver — see Versioning below).
+**Current version: 3.0.0** (semver — see Versioning below).
 
 ## What it is
 A **discovery → scout → fan-out → synthesis** pipeline. It profiles a target with a
@@ -66,7 +66,10 @@ History:
   tolerance, cross-source reinforce (2-member tool+agent), citations hardening (case-insensitive
   ids, CWE-95, EPSS size-cap/UA), DoS guards, bandit noise floor, id-uniqueness + panel label,
   `--max-per-group` guard, docstrings, and test-coverage for the non-deterministic seams.
-- **2.3.0** (current) — cross-dogfood round from a 61-panel run against a real 3-repo estate. Four
+- **3.0.0** (current) — Kimi port: introduces architecture, database, and redteam panels;
+  replaces the fixed 9-lens catalog with a flexible lens model; rewrites orchestration for the
+  Kimi Code agent platform; major version bump reflecting breaking changes to the skill contract.
+- **2.3.0** — cross-dogfood round from a 61-panel run against a real 3-repo estate. Four
   fixes: (1) **cross-panel corroboration** — `synthesize` now runs a distinct agent-vs-agent pass
   (`cross_panel_corroboration`, keyed on file + line-proximity across DISTINCT panels, not category)
   that populates the previously-always-empty `cross_panel.integration_findings` and annotates
