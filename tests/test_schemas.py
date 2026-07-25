@@ -32,6 +32,10 @@ class TestSchemas(unittest.TestCase):
         prop = schema["properties"]["meta"]["properties"]["security_mode"]
         self.assertEqual(set(prop["enum"]), {"standard", "redteam"})
 
+    def test_report_schema_requires_security_mode(self):
+        schema = self._load("report-schema.json")
+        self.assertIn("security_mode", schema["properties"]["meta"]["required"])
+
     def test_scope_profile_panels_include_new_panels(self):
         schema = self._load("scope-profile-schema.json")
         panels = schema["properties"]["panels"]["items"]["enum"]

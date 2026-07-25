@@ -36,6 +36,14 @@ class TestNormalize(unittest.TestCase):
         f = syn.normalize_finding({"panel": "unknown", "title": "x"})
         self.assertEqual(f["panel"], "code")
 
+    def test_normalize_omits_empty_lens(self):
+        f = syn.normalize_finding({"title": "x"})
+        self.assertNotIn("lens", f)
+
+    def test_normalize_preserves_nonempty_lens(self):
+        f = syn.normalize_finding({"title": "x", "lens": "injection"})
+        self.assertEqual(f["lens"], "injection")
+
     def test_location_coerced(self):
         f = syn.normalize_finding({"location": {"file": "a.py", "line_start": 10}})
         self.assertEqual(f["location"]["line_end"], 10)
@@ -334,6 +342,64 @@ class TestReport(unittest.TestCase):
     def test_main_rejects_invalid_fail_on(self):
         with self.assertRaises(SystemExit):
             syn.main(["--target", "src", "--fail-on", "bogus", "x.json"])
+
+    def test_validate_redteam_high_requires_cvss_and_exploit(self):
+        bad = self._finding(id="RT-001", panel="redteam", severity="HIGH")
+        report = syn.build_report([bad], [{"name": "g1", "files": ["a.py"]}],
+                                  "src", None, "2026-07-23T00:00:00Z")
+        errors, _ = syn.validate_report(report)
+        self.assertTrue(any("cvss" in e for e in errors))
+        self.assertTrue(any("exploit" in e for e in errors))
+
+    def test_validate_redteam_critical_filled_is_clean(self):
+        good = self._finding(id="RT-001", panel="redteam", severity="CRITICAL",
+                             cvss={"score": 9.0}, exploit_scenario="x")
+        report = syn.build_report([good], [{"name": "g1", "files": ["a.py"]}],
+                                  "src", None, "2026-07-23T00:00:00Z")
+        errors, _ = syn.validate_report(report)
+        self.assertEqual(errors, [])
+
+    def test_main_severity_filter_excludes_lower(self):
+        with tempfile.TemporaryDirectory() as d:
+            findings = [
+                {"id": "SE-001", "title": "crit", "severity": "CRITICAL",
+                 "confidence": "CERTAIN", "panel": "security", "category": "x",
+                 "location": {"file": "a", "line_start": 1},
+                 "cvss": {"score": 9}, "exploit_scenario": "y"},
+                {"id": "CD-001", "title": "low", "severity": "LOW",
+                 "confidence": "POSSIBLE", "panel": "code", "category": "z",
+                 "location": {"file": "a", "line_start": 2}},
+            ]
+            p = os.path.join(d, "findings-g1-security.json")
+            with open(p, "w") as fh:
+                json.dump({"findings": findings}, fh)
+            out = os.path.join(d, "report.json")
+            import io, contextlib
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = syn.main(["--target", "src", "--severity", "high", "--out", out, p])
+            self.assertEqual(rc, 0)  # gate default OFF
+            with open(out) as _fh:
+                report = json.load(_fh)
+            ids = {f["id"] for f in report["findings"]}
+            self.assertEqual(ids, {"SE-001"})
+
+    def test_main_changes_alias_sets_review_type(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "findings-g1-code.json")
+            with open(p, "w") as fh:
+                json.dump({"findings": [{"id": "CD-001", "title": "x", "severity": "LOW",
+                    "confidence": "POSSIBLE", "panel": "code", "category": "structure",
+                    "location": {"file": "a.py", "line_start": 1}}]}, fh)
+            out = os.path.join(d, "report.json")
+            import io, contextlib
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = syn.main(["--target", "src", "--changes", "--out", out, p])
+            self.assertEqual(rc, 0)
+            with open(out) as _fh:
+                report = json.load(_fh)
+            self.assertEqual(report["meta"]["review_type"], "changes")
 
 
 class TestCliAndSummary(unittest.TestCase):

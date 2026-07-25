@@ -20,14 +20,14 @@ Discovery → scout → fan-out → synthesis code review for Kimi Code. Profile
 Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly:
 - `-f <path>` / `--file <path>` — single file + related tests + neighbors.
 - `-d <dir>` / `--directory <dir>` — directory review.
-- `-g <name>` / `--group <name>` — group from `.panopticon/groups.yml`.
+- `-g <name>` / `--group <name>` — group from `.panopticon/groups.yml` (use `-g "Group[Facet]"` for a facet).
 - `-c` / `--changes` — branch diff vs merge base (fallback `HEAD~1`).
 - `--pr <n>` — PR diff.
 - `-e` / `--explore` — discover and catalog groups; no panels unless asked.
 - *(none)* — whole-repo scan.
 
 ## Global flags
-`--full` (force all panels), `--security {standard,redteam}` (default standard), `--fail-on {critical,high,medium,low}`, `--severity {all,medium,high,critical}`, `--out PATH`, `--tools` (require tool scan), `--no-tools` (skip tool scan), `--epss` (enrich CVE citations).
+`--full` (force all panels), `--security {standard,redteam}` (default standard), `--fail-on {critical,high,medium,low}`, `--severity {all,medium,high,critical}` (report only findings at or above the threshold), `--out PATH`, `--tools` (require tool scan), `--no-tools` (skip tool scan), `--epss` (enrich CVE citations).
 
 ## Pipeline
 1. `TodoList`: discovery → scout → tools → panels → lens sub-reviews → synthesis.

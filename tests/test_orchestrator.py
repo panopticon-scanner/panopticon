@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import sys
 import unittest
 import tempfile
@@ -247,7 +248,7 @@ class TestCli(unittest.TestCase):
             self._touch(d, "src/a.py")
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
-                rc = orch.main(["--repo", d, "--repo-scan", "--security-mode", "redteam"])
+                rc = orch.main(["--repo", d, "--repo-scan", "--security", "redteam"])
             self.assertEqual(rc, 0)
             out = json.loads(buf.getvalue())
             self.assertEqual(out["security_mode"], "redteam")
@@ -276,6 +277,56 @@ class TestCli(unittest.TestCase):
                 out = json.load(fh)
             self.assertEqual(out["mode"], "repo")
             self.assertIn("src/a.py", [f for g in out["groups"] for f in g["files"]])
+
+    def test_main_changes_mode_uses_git_diff(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._touch(d, "src/a.py")
+            self._touch(d, "src/b.py")
+            subprocess.run(["git", "init", "-q", d], check=True)
+            subprocess.run(["git", "-C", d, "config", "user.email", "t@e.com"], check=True)
+            subprocess.run(["git", "-C", d, "config", "user.name", "Test"], check=True)
+            subprocess.run(["git", "-C", d, "add", "."], check=True)
+            subprocess.run(["git", "-C", d, "commit", "-q", "-m", "init"], check=True)
+            # modify a.py and add c.py on a feature branch
+            with open(os.path.join(d, "src", "a.py"), "w") as fh:
+                fh.write("# changed")
+            self._touch(d, "src/c.py")
+            out_path = os.path.join(d, "groups.json")
+            rc = orch.main(["--repo", d, "--changes", "--out", out_path])
+            self.assertEqual(rc, 0)
+            with open(out_path, encoding="utf-8") as fh:
+                out = json.load(fh)
+            self.assertEqual(out["mode"], "changes")
+            grouped = [f for g in out["groups"] for f in g["files"]]
+            self.assertIn("src/a.py", grouped)
+            self.assertIn("src/c.py", grouped)
+            self.assertNotIn("src/b.py", grouped)
+
+    def test_main_changes_without_git_warns(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._touch(d, "src/a.py")
+            rc = orch.main(["--repo", d, "--changes"])
+            self.assertEqual(rc, 2)
+
+    def test_build_result_computes_surfaces_and_panels(self):
+        impl = ["Dockerfile", "src/models.py", "migrations/001.sql"]
+        res = orch.build_result("/tmp", "repo", ".", None, impl, [],
+                                security_mode="standard")
+        g = res["groups"][0]
+        self.assertEqual(sorted(g["surfaces"]), ["architecture", "database"])
+        self.assertIn("code", g["panels"])
+        self.assertIn("security", g["panels"])
+        self.assertIn("architecture", g["panels"])
+        self.assertIn("database", g["panels"])
+
+    def test_redteam_replaces_security_panel(self):
+        impl = ["src/web.py"]
+        res = orch.build_result("/tmp", "repo", ".", None, impl, [],
+                                security_mode="redteam")
+        g = res["groups"][0]
+        self.assertIn("redteam", g["panels"])
+        self.assertNotIn("security", g["panels"])
+        self.assertEqual(res["security_mode"], "redteam")
 
 
 class TestRepoScanDiscovery(unittest.TestCase):
