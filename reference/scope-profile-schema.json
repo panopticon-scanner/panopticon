@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "ScopeProfile",
   "type": "object",
-  "required": ["group", "languages", "surfaces", "risk", "suggested_lenses"],
+  "required": ["group", "languages", "surfaces", "risk", "lenses", "panels"],
   "properties": {
     "group": {"type": "string"},
     "facet": {"type": ["string", "null"]},
@@ -12,7 +12,8 @@
       "items": {
         "type": "string",
         "enum": ["db_sql", "http_web", "auth", "crypto", "fs", "concurrency",
-                 "external_api", "money_pii", "serialization", "templating", "secrets_config"]
+                 "external_api", "money_pii", "serialization", "templating", "secrets_config",
+                 "architecture", "database"]
       }
     },
     "size": {"type": "object", "properties": {"files": {"type": "integer"}, "loc": {"type": "integer"}}},
@@ -22,12 +23,25 @@
       "type": "object",
       "properties": {"files": {"type": "array", "items": {"type": "string"}}, "rationale": {"type": "string"}}
     },
-    "suggested_lenses": {
+    "lenses": {
       "type": "object",
-      "properties": {
-        "code": {"type": "array", "items": {"type": "string"}},
-        "test": {"type": "array", "items": {"type": "string"}},
-        "security": {"type": "array", "items": {"type": "string"}}
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["name", "spawn"],
+          "properties": {
+            "name": {"type": "string"},
+            "spawn": {"type": "boolean"}
+          }
+        }
+      }
+    },
+    "panels": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["code", "test", "security", "architecture", "database", "redteam"]
       }
     },
     "tools": { "type": "array", "items": { "type": "string" } },
