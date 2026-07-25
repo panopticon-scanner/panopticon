@@ -6,7 +6,7 @@ Security mode: {security_mode}
 
 ## Your task
 Review ONLY the listed files through the {panel} lens. Emit findings as raw JSON
-`{"findings": [...]}` to `.panopticon/findings-{group}-{panel}.json` and return ONLY
+`{{"findings": [...]}}` to `.panopticon/findings-{group}-{panel}.json` and return ONLY
 the path + count.
 
 ## Lenses
@@ -20,13 +20,13 @@ description, or any output; cite file:line and the secret class only.
 
 ## Finding format
 Each finding:
-- `id`: ^[A-Z]{2,4}-\d{3,}$
+- id: ^[A-Z]{{2,4}}-\d{{3,}}$
 - `severity`: CRITICAL|HIGH|MEDIUM|LOW|INFO
 - `panel`: "{panel}"
 - `lens`: (lens name, if spawned from a lens)
 - `category`: (lens name)
-- `location`: {file, line_start[, line_end, function]}
+- `location`: {{file, line_start[, line_end, function]}}
 - `title`, `description`, `impact`, `remediation`, `references[]`
-- Security/Red-team CRITICAL/HIGH: add `cvss` {score, vector} and `exploit_scenario`.
+- Security/Red-team CRITICAL/HIGH: add `cvss` {{score, vector}} and `exploit_scenario`.
 
 Use `Read`, `Grep`, and `Bash` as needed to examine files and cross-references.
