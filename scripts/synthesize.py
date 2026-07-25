@@ -21,6 +21,7 @@ MODE_TO_REVIEW_TYPE = {
     "group": "group", "files": "changes",
 }
 VALID_PANELS = {"code", "test", "security", "architecture", "database", "redteam"}
+PANEL_ORDER = ["code", "test", "security", "architecture", "database", "redteam"]
 RELATED_PANELS = {
     "security": {"architecture", "database", "redteam"},
     "redteam": {"security", "architecture", "database"},
@@ -348,7 +349,7 @@ def severity_stats(findings):
 
 
 ID_RE = re.compile(r"^[A-Z]{2,4}-\d{3,}$")
-GROUP_RE = re.compile(r"^findings-(.+)-(?:code|test|security)\.json$")
+GROUP_RE = re.compile(r"^findings-(.+)-(?:code|test|security|architecture|database|redteam)\.json$")
 _GRADE_ORDER = ["A", "B", "C", "D", "F"]
 
 
@@ -475,8 +476,8 @@ def render_summary(report):
     ]
     for g in report["groups"]:
         pg = g["panel_grades"]
-        lines.append("- **%s** — code %s / test %s / security %s" % (
-            g["name"], pg["code"], pg["test"], pg["security"]))
+        grades = " / ".join("%s %s" % (p, pg[p]) for p in PANEL_ORDER)
+        lines.append("- **%s** — %s" % (g["name"], grades))
     lines.append("")
     lines.append("## Top findings")
     for f in sorted(report["findings"], key=_sev_rank)[:10]:
