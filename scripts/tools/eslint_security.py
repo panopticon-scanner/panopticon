@@ -1,5 +1,26 @@
-"""eslint-plugin-security adapter (placeholder for Task 5)."""
+"""eslint-plugin-security adapter for JS/TS security anti-patterns."""
 from __future__ import annotations
+import glob
+import json
+import os
+import subprocess
+from .base import normalize_severity, new_finding_id
+
+
+# CWE mappings for eslint-plugin-security rules (best-effort).
+RULE_CWE = {
+    "security/detect-eval-with-expression": "CWE-95",
+    "security/detect-non-literal-require": "CWE-114",
+    "security/detect-non-literal-fs-filename": "CWE-22",
+    "security/detect-unsafe-regex": "CWE-185",
+    "security/detect-buffer-noassert": "CWE-119",
+    "security/detect-child-process": "CWE-78",
+    "security/detect-disable-mustache-escape": "CWE-79",
+    "security/detect-no-csrf-before-method-override": "CWE-352",
+    "security/detect-object-injection": "CWE-94",
+    "security/detect-possible-timing-attacks": "CWE-208",
+    "security/detect-pseudoRandomBytes": "CWE-338",
+}
 
 
 class EslintSecurityAdapter:
@@ -7,10 +28,71 @@ class EslintSecurityAdapter:
     prefix = "ESS"
 
     def is_applicable(self, target: str) -> bool:
-        return False
+        return bool(glob.glob(os.path.join(target, "**/*.js"), recursive=True) or
+                    glob.glob(os.path.join(target, "**/*.ts"), recursive=True) or
+                    glob.glob(os.path.join(target, "**/*.jsx"), recursive=True) or
+                    glob.glob(os.path.join(target, "**/*.tsx"), recursive=True) or
+                    os.path.isfile(os.path.join(target, "package.json")))
 
     def invoke(self, target: str) -> tuple[bytes, int]:
-        raise NotImplementedError("eslint-security adapter not yet implemented")
+        config = self._write_temp_config()
+        cmd = [
+            "eslint", "--no-eslintrc", "--parser-options", "ecmaVersion:latest",
+            "--plugin", "security", "--rule", "security/detect-eval-with-expression: error",
+            "--rule", "security/detect-non-literal-require: error",
+            "--rule", "security/detect-non-literal-fs-filename: error",
+            "--rule", "security/detect-unsafe-regex: error",
+            "--rule", "security/detect-child-process: error",
+            "--rule", "security/detect-object-injection: error",
+            "--format", "json", target,
+        ]
+        try:
+            res = subprocess.run(cmd, capture_output=True, timeout=300)
+        finally:
+            if config and os.path.isfile(config):
+                os.unlink(config)
+        return res.stdout, res.returncode
+
+    def _write_temp_config(self) -> str | None:
+        return None
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
-        raise NotImplementedError("eslint-security adapter not yet implemented")
+        data = json.loads(raw.decode("utf-8", errors="replace"))
+        out = []
+        n = 1
+        for file_result in data:
+            file_path = file_result.get("filePath", "")
+            rel = self._strip_prefix(file_path)
+            for msg in file_result.get("messages", []):
+                rule = msg.get("ruleId", "")
+                if not rule.startswith("security/"):
+                    continue
+                severity = "HIGH" if msg.get("severity") == 2 else "MEDIUM"
+                cwe = RULE_CWE.get(rule)
+                finding = {
+                    "id": new_finding_id(self.prefix, n),
+                    "title": msg.get("message", rule),
+                    "severity": severity,
+                    "confidence": "CERTAIN",
+                    "panel": "security",
+                    "category": "code_security",
+                    "source": f"tool:{self.name}",
+                    "location": {"file": rel, "line_start": msg.get("line", 1)},
+                    "description": f"eslint-plugin-security rule {rule} triggered.",
+                    "impact": "Potential security weakness in JavaScript/TypeScript code.",
+                    "remediation": "Review the flagged code and follow the plugin's guidance.",
+                    "references": [],
+                    "tool_evidence": {"rule_id": rule},
+                    "_group": group,
+                }
+                if cwe:
+                    finding["citations"] = {"cwe": [cwe]}
+                out.append(finding)
+                n += 1
+        return out
+
+    def _strip_prefix(self, path: str) -> str:
+        for prefix in ["/src/", "/"]:
+            if path.startswith(prefix):
+                return path[len(prefix):]
+        return path
