@@ -277,7 +277,7 @@ def _render_compare_dashboard(matches):
     for m in matches:
         counts[m["delta"]] = counts.get(m["delta"], 0) + 1
     delta_cards = " ".join(
-        f"<div class='delta-card {k.replace(' ', '-')}'><div class='delta-label'>{k}</div>"
+        f"<div class='delta-card delta-{k.replace(' ', '-')}'><div class='delta-label'>{_escape(k)}</div>"
         f"<div class='delta-value'>{v}</div></div>"
         for k, v in counts.items()
     )
