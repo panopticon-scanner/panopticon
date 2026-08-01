@@ -32,10 +32,10 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
 ## Pipeline
 1. `TodoList`: discovery → scout → tools → panels → lens sub-reviews → synthesis.
 2. **Discovery** — run `python3 scripts/orchestrator.py` to produce `groups.json`.
-3. **Scout** — dispatch a `coder` subagent per group with `prompts/scout.md`; output `ScopeProfile`.
+3. **Scout** — dispatch the `scout` custom agent (`agents/scout.md`) per group; output `ScopeProfile`.
 4. **Plan** — code always; test iff tests/logic present; security iff risky surfaces; architecture iff repo-scope files; database iff `db_sql` surface. `--full` overrides.
 5. **Tool scan** — optional Docker container; SARIF ingested by `scripts/ingest_tools.py`.
-6. **Fan-out** — `AgentSwarm` of panel reviewers (`coder` subagents with `prompts/panel-template.md`). Each panel spawns lens specialists when the scout flags `spawn: true`.
+6. **Fan-out** — `AgentSwarm` of `panel-review` custom agents (`agents/panel-review.md`; `prompts/panel-template.md` is preserved as a fallback). Each panel spawns `lens-sweep` agents when the scout flags `spawn: true`.
 7. **Synthesize** — `python3 scripts/synthesize.py` merges findings into `CodeReviewReport`.
 8. **Validate** — `verification-before-completion`: check gate, print summary, write JSON.
 

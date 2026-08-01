@@ -16,7 +16,7 @@ class TestSkillMd(unittest.TestCase):
 
     def test_references_scripts_and_prompts(self):
         for ref in ["scripts/orchestrator.py", "scripts/synthesize.py",
-                    "prompts/scout.md", "prompts/panel-template.md"]:
+                    "agents/scout.md", "prompts/panel-template.md"]:
             self.assertIn(ref, self.text, ref)
 
     def test_documents_bounded_floor_and_gate(self):

@@ -16,7 +16,7 @@ class TestAssets(unittest.TestCase):
             self.assertIn(lens, text, lens)
 
     def test_scout_defines_surfaces_and_output(self):
-        text = self._read("prompts/scout.md")
+        text = self._read("agents/scout.md")
         self.assertIn("ScopeProfile", text)
         for surface in ["db_sql", "http_web", "auth", "crypto"]:
             self.assertIn(surface, text)
