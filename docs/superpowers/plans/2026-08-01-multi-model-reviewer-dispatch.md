@@ -1234,26 +1234,28 @@ In `scripts/synthesize.py`, after `cross_panel_corroboration`, add:
 
 ```python
 def flag_for_advisor(findings, depth="standard"):
-    """Return indices of findings that need independent advisor review."""
+    """Return findings that need independent advisor review."""
     flagged = []
-    for i, f in enumerate(findings):
+    for f in findings:
         refs = f.get("references") or []
         confidence = f.get("confidence", "POSSIBLE")
         severity = f.get("severity", "INFO")
 
-        # Uncited and low confidence
-        if confidence in ("NOTE", "POSSIBLE") and not refs:
-            flagged.append(i)
+        # HIGH/CRITICAL uncited and low confidence
+        if (severity in ("HIGH", "CRITICAL")
+                and confidence in ("NOTE", "POSSIBLE")
+                and not refs):
+            flagged.append(f)
             continue
 
         # HIGH/CRITICAL with fewer than 2 citations
         if severity in ("HIGH", "CRITICAL") and len(refs) < 2:
-            flagged.append(i)
+            flagged.append(f)
             continue
 
         # Deep mode: any uncited finding in risky panels
         if depth == "deep" and f.get("panel") in ("security", "redteam") and not refs:
-            flagged.append(i)
+            flagged.append(f)
             continue
     return flagged
 
