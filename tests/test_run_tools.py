@@ -117,10 +117,20 @@ class TestAdapterDispatch(unittest.TestCase):
             finally:
                 rt.ADAPTERS.pop("fake", None)
             self.assertEqual(len(calls), 1)
-            self.assertTrue(any("_run_adapter.py" in arg for arg in calls[0]))
+            self.assertIn("/opt/panopticon/scripts/_run_adapter.py", calls[0])
             self.assertIn("fake", calls[0])
             with open(os.path.join(out_dir, "fake.json"), "rb") as fh:
                 self.assertEqual(fh.read(), R.stdout)
+
+    def test_default_selection_includes_phase1_adapters(self):
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, "requirements.txt"), "w").close()
+            open(os.path.join(d, "package-lock.json"), "w").close()
+            chosen = rt.select_tools([], has_deps=False) + [
+                name for name in rt.select_adapters(d) if name in rt.PHASE1_ADAPTERS
+            ]
+            self.assertIn("pip-audit", chosen)
+            self.assertIn("npm-audit", chosen)
 
 
 class TestRunAdapterHelper(unittest.TestCase):
@@ -144,3 +154,20 @@ class TestRunAdapterHelper(unittest.TestCase):
             self.assertEqual(stdout.getvalue(), b'{"ok":true}')
         finally:
             ra.ADAPTERS.pop("fake", None)
+
+    def test_main_skips_unregistered_adapter(self):
+        rc = ra.main(["_run_adapter.py", "not-a-real-adapter", "/tmp/target"])
+        self.assertEqual(rc, 0)
+
+    def test_main_skips_adapter_that_crashes(self):
+        class CrashingAdapter:
+            name = "crash"
+            def invoke(self, target):
+                raise RuntimeError("boom")
+
+        ra.ADAPTERS["crash"] = CrashingAdapter()
+        try:
+            rc = ra.main(["_run_adapter.py", "crash", "/tmp/target"])
+            self.assertEqual(rc, 0)
+        finally:
+            ra.ADAPTERS.pop("crash", None)

@@ -96,6 +96,73 @@ class TestNpmAuditAdapter(unittest.TestCase):
             timeout=300,
         )
 
+    def test_parse_v2_produces_finding(self):
+        sample = json.dumps({
+            "auditReportVersion": 2,
+            "vulnerabilities": {
+                "lodash": {
+                    "name": "lodash",
+                    "severity": "high",
+                    "range": "<4.17.21",
+                    "via": [{
+                        "source": 1234,
+                        "name": "lodash",
+                        "dependency": "lodash",
+                        "title": "Prototype Pollution in lodash",
+                        "url": "https://npmjs.com/advisories/1234",
+                        "severity": "high",
+                        "range": "<4.17.21",
+                        "cves": ["CVE-2021-23337"],
+                    }],
+                    "fixAvailable": {"name": "lodash", "version": "4.17.21"},
+                }
+            }
+        }).encode()
+        findings = na.NpmAuditAdapter().parse(sample, "g1")
+        self.assertEqual(len(findings), 1)
+        f = findings[0]
+        self.assertEqual(f["source"], "tool:npm-audit")
+        self.assertEqual(f["severity"], "HIGH")
+        self.assertEqual(f["citations"]["cve"], ["CVE-2021-23337"])
+        self.assertEqual(f["tool_evidence"]["package_name"], "lodash")
+        self.assertEqual(f["tool_evidence"]["fixed_version"], "4.17.21")
+
+    def test_parse_v2_skips_string_via_entries(self):
+        sample = json.dumps({
+            "auditReportVersion": 2,
+            "vulnerabilities": {
+                "lodash": {
+                    "name": "lodash",
+                    "severity": "high",
+                    "range": "<4.17.21",
+                    "via": ["another-package"],
+                    "fixAvailable": False,
+                }
+            }
+        }).encode()
+        findings = na.NpmAuditAdapter().parse(sample, "g1")
+        self.assertEqual(len(findings), 0)
+
+    def test_parse_v2_uses_vuln_severity_when_via_lacks_it(self):
+        sample = json.dumps({
+            "auditReportVersion": 2,
+            "vulnerabilities": {
+                "lodash": {
+                    "name": "lodash",
+                    "severity": "moderate",
+                    "range": "<4.17.21",
+                    "via": [{
+                        "source": 1234,
+                        "title": "Prototype Pollution in lodash",
+                        "cves": [],
+                    }],
+                    "fixAvailable": True,
+                }
+            }
+        }).encode()
+        findings = na.NpmAuditAdapter().parse(sample, "g1")
+        self.assertEqual(findings[0]["severity"], "MEDIUM")
+
 
 if __name__ == "__main__":
     unittest.main()

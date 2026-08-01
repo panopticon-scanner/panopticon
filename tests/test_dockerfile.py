@@ -15,7 +15,7 @@ class TestDockerfile(unittest.TestCase):
 
 
 class TestDockerfilePhase1(unittest.TestCase):
-    def test_pip_audit_mentioned(self):
+    def test_phase1_adapters_mentioned(self):
         text = (Path(ROOT) / "Dockerfile").read_text()
         self.assertIn("pip-audit", text)
         self.assertIn("osv-scanner", text)
