@@ -1,7 +1,7 @@
 # panopticon-tools: bundled static-analysis tools for grounded code review.
 # Build:  docker build -t panopticon-tools .
 # Run:    docker run --rm -v "$PWD":/src:ro panopticon-tools <tool> ...
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 ARG GITLEAKS_VERSION=8.18.4
 ARG GOSEC_VERSION=2.20.0
