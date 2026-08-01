@@ -409,6 +409,30 @@ def discover_repo_files(repo):
     return sorted(out)
 
 
+RISKY_SURFACES = frozenset({"auth", "crypto", "money_pii", "external_api", "db_sql", "http_web"})
+
+
+def _looks_risky(path):
+    """Crude heuristic for risky code surfaces until scout provides them."""
+    lowered = path.lower()
+    return any(k in lowered for k in ("auth", "login", "password", "payment", "pii", "encrypt", "token", "api"))
+
+
+def _compute_depth(files, panels, security_mode):
+    """Assign shallow/standard/deep based on surfaces, panel mix, and security mode."""
+    if security_mode == "redteam":
+        return "deep"
+    risky_files = any(
+        is_architecture_file(f) or is_database_file(f) or _looks_risky(f)
+        for f in files
+    )
+    if risky_files:
+        return "standard"
+    if any(p in ("redteam", "database") for p in panels):
+        return "standard"
+    return "shallow"
+
+
 def build_result(repo, mode, target, facet, impl, tests,
                  max_per_group=DEFAULT_MAX_PER_GROUP, group_files=None,
                  security_mode="standard"):
@@ -423,11 +447,13 @@ def build_result(repo, mode, target, facet, impl, tests,
     groups = []
     for i, c in enumerate(chunks):
         panels = compute_group_panels(c, security_mode)
+        depth = _compute_depth(c, panels, security_mode)
         groups.append({
             "name": "%s_%d" % (base, i + 1),
             "files": c,
             "surfaces": compute_group_surfaces(c),
             "panels": panels,
+            "depth": depth,
         })
     return {
         "security_mode": security_mode,
