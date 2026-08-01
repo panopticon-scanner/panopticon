@@ -19,6 +19,8 @@
     "size": {"type": "object", "properties": {"files": {"type": "integer"}, "loc": {"type": "integer"}}},
     "has_tests": {"type": "boolean"},
     "risk": {"type": "string", "enum": ["low", "med", "high"]},
+    "files": {"type": "array", "items": {"type": "string"}},
+    "depth": {"type": "string", "enum": ["shallow", "standard", "deep"]},
     "facet_scope": {
       "type": "object",
       "properties": {"files": {"type": "array", "items": {"type": "string"}}, "rationale": {"type": "string"}}
@@ -32,7 +34,9 @@
           "required": ["name", "spawn"],
           "properties": {
             "name": {"type": "string"},
-            "spawn": {"type": "boolean"}
+            "spawn": {"type": "boolean"},
+            "priority": {"type": "integer", "minimum": 0},
+            "depth_threshold": {"type": "string", "enum": ["shallow", "standard", "deep"]}
           }
         }
       }

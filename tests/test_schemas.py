@@ -211,5 +211,22 @@ class TestAdapterFindingsValidateAgainstSchema(unittest.TestCase):
         validate(instance=finding["tool_evidence"], schema=evidence_schema)
 
 
+def test_multi_model_fields_in_schemas():
+    with open(os.path.join(REF, "scope-profile-schema.json"), encoding="utf-8") as fh:
+        scope = json.load(fh)
+    assert "depth" in scope["properties"]
+    assert "files" in scope["properties"]
+    lens_items = scope["properties"]["lenses"]["additionalProperties"]["items"]
+    assert "priority" in lens_items["properties"]
+    assert "depth_threshold" in lens_items["properties"]
+
+    with open(os.path.join(REF, "report-schema.json"), encoding="utf-8") as fh:
+        report = json.load(fh)
+    finding_props = report["properties"]["findings"]["items"]["properties"]
+    assert "source_role" in finding_props
+    assert "advisor_verdict" in finding_props
+    assert "depth" in finding_props
+
+
 if __name__ == "__main__":
     unittest.main()

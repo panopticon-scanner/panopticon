@@ -55,6 +55,9 @@
           "panel": {"type": "string", "enum": ["code", "test", "security", "architecture", "database", "redteam"]},
           "lens": {"type": "string"},
           "category": {"type": "string"},
+          "source_role": {"type": "string", "enum": ["lens_sweep", "panel_review", "advisor"]},
+          "advisor_verdict": {"type": "string", "enum": ["CONFIRMED", "REJECTED", "NEEDS_MORE_INFO"]},
+          "depth": {"type": "string", "enum": ["shallow", "standard", "deep"]},
           "location": {
             "type": "object",
             "required": ["file", "line_start"],
