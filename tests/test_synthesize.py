@@ -1,3 +1,4 @@
+import io
 import os
 import sys
 import json
@@ -952,3 +953,47 @@ class TestHtmlOut(unittest.TestCase):
             with open(out) as fh:
                 content = fh.read()
                 self.assertIn("new", content)
+
+    def test_compare_missing_file_errors_cleanly(self):
+        with tempfile.TemporaryDirectory() as d:
+            valid = os.path.join(d, "valid.json")
+            missing = os.path.join(d, "missing.json")
+            out = os.path.join(d, "compare.html")
+            with open(valid, "w") as fh:
+                json.dump({
+                    "meta": {"target": "t", "review_type": "repo", "timestamp": "2026-08-01",
+                             "version": "3.0.0", "security_mode": "standard"},
+                    "summary": {"overall_grade": "A", "risk_level": "LOW", "top_issues": [],
+                                "effort_to_remediate": "LOW", "gate": "PASS",
+                                "stats": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}},
+                    "groups": [], "findings": [],
+                    "cross_panel": {"integration_findings": []},
+                    "recommendations": {"immediate": [], "short_term": [], "long_term": []},
+                }, fh)
+            with unittest.mock.patch("sys.stderr", new_callable=io.StringIO) as captured:
+                rc = syn.main(["--compare", missing, valid, "--html-out", out])
+            self.assertNotEqual(rc, 0)
+            self.assertIn("cannot read", captured.getvalue())
+
+    def test_compare_invalid_json_errors_cleanly(self):
+        with tempfile.TemporaryDirectory() as d:
+            valid = os.path.join(d, "valid.json")
+            invalid = os.path.join(d, "invalid.json")
+            out = os.path.join(d, "compare.html")
+            with open(valid, "w") as fh:
+                json.dump({
+                    "meta": {"target": "t", "review_type": "repo", "timestamp": "2026-08-01",
+                             "version": "3.0.0", "security_mode": "standard"},
+                    "summary": {"overall_grade": "A", "risk_level": "LOW", "top_issues": [],
+                                "effort_to_remediate": "LOW", "gate": "PASS",
+                                "stats": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}},
+                    "groups": [], "findings": [],
+                    "cross_panel": {"integration_findings": []},
+                    "recommendations": {"immediate": [], "short_term": [], "long_term": []},
+                }, fh)
+            with open(invalid, "w") as fh:
+                fh.write("not json")
+            with unittest.mock.patch("sys.stderr", new_callable=io.StringIO) as captured:
+                rc = syn.main(["--compare", invalid, valid, "--html-out", out])
+            self.assertNotEqual(rc, 0)
+            self.assertIn("invalid JSON", captured.getvalue())

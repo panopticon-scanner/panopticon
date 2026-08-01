@@ -652,10 +652,24 @@ def main(argv=None):
 
     if args.compare:
         a_path, b_path = args.compare
-        with open(a_path, encoding="utf-8") as fh:
-            report_a = json.load(fh)
-        with open(b_path, encoding="utf-8") as fh:
-            report_b = json.load(fh)
+        try:
+            with open(a_path, encoding="utf-8") as fh:
+                report_a = json.load(fh)
+        except OSError as e:
+            print("ERROR: cannot read %s: %s" % (a_path, e), file=sys.stderr)
+            return 2
+        except ValueError as e:
+            print("ERROR: invalid JSON in %s: %s" % (a_path, e), file=sys.stderr)
+            return 2
+        try:
+            with open(b_path, encoding="utf-8") as fh:
+                report_b = json.load(fh)
+        except OSError as e:
+            print("ERROR: cannot read %s: %s" % (b_path, e), file=sys.stderr)
+            return 2
+        except ValueError as e:
+            print("ERROR: invalid JSON in %s: %s" % (b_path, e), file=sys.stderr)
+            return 2
         html_out = args.html_out or (_derive_html_path(args.out) if args.out else None)
         if not html_out:
             ap.error("--compare requires --html-out or --out")
