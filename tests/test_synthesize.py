@@ -591,7 +591,7 @@ class TestPipelineCitations(unittest.TestCase):
             import io, contextlib
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
-                rc = syn.main(["--target", "src", "--out", out, fp])
+                syn.main(["--target", "src", "--out", out, fp])
             with open(out) as _fh:
                 report = json.load(_fh)
             cites = report["findings"][0]["citations"]

@@ -1,5 +1,4 @@
 import os
-import re
 import unittest
 
 ROOT = os.path.join(os.path.dirname(__file__), os.pardir)

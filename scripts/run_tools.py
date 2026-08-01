@@ -4,7 +4,6 @@ read-only mount of the target. Network is allowed (tools only parse source,
 never execute it). Degrades gracefully when Docker is absent.
 Stdlib-only.
 """
-import json
 import os
 import subprocess
 import sys
