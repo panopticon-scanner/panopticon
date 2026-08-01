@@ -84,6 +84,18 @@
               "cve": { "type": "array", "items": { "type": "string" } },
               "epss": { "type": "array", "items": { "type": "object" } }
             }
+          },
+          "tool_evidence": {
+            "type": "object",
+            "properties": {
+              "rule_id": { "type": "string" },
+              "advisory_url": { "type": "string" },
+              "package_name": { "type": "string" },
+              "vulnerable_versions": { "type": "string" },
+              "fixed_version": { "type": "string" },
+              "cvss_score": { "type": "number" },
+              "ecosystem": { "type": "string" }
+            }
           }
         }
       }

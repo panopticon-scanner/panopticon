@@ -41,3 +41,29 @@ class TestSchemas(unittest.TestCase):
         panels = schema["properties"]["panels"]["items"]["enum"]
         for panel in ["architecture", "database", "redteam"]:
             self.assertIn(panel, panels)
+
+
+class TestToolEvidenceSchema(unittest.TestCase):
+    def _load(self, name):
+        with open(os.path.join(REF, name), encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def test_tool_evidence_in_finding_schema(self):
+        schema = self._load("report-schema.json")
+        props = schema["properties"]["findings"]["items"]["properties"]
+        self.assertIn("tool_evidence", props)
+        self.assertEqual(props["tool_evidence"]["type"], "object")
+
+    def test_tool_evidence_optional(self):
+        schema = self._load("report-schema.json")
+        required = schema["properties"]["findings"]["items"]["required"]
+        self.assertNotIn("tool_evidence", required)
+
+    def test_tool_evidence_expected_fields(self):
+        schema = self._load("report-schema.json")
+        evidence_props = schema["properties"]["findings"]["items"]["properties"]["tool_evidence"]["properties"]
+        expected = {
+            "rule_id", "advisory_url", "package_name", "vulnerable_versions",
+            "fixed_version", "cvss_score", "ecosystem"
+        }
+        self.assertTrue(expected.issubset(set(evidence_props.keys())))
