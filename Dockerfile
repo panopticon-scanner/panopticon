@@ -19,6 +19,17 @@ RUN gem install --no-document brakeman
 # Node (eslint + security plugin)
 RUN npm install -g eslint eslint-plugin-security @microsoft/eslint-formatter-sarif
 
+# Python dependency audit
+RUN pip install --no-cache-dir pip-audit
+
+# OSV scanner (static Go binary)
+ARG OSV_SCANNER_VERSION=1.8.2
+RUN arch="$(dpkg --print-architecture)" \
+    && case "$arch" in amd64) osv="amd64" ;; arm64) osv="arm64" ;; *) osv="${arch}" ;; esac \
+    && curl -sfL "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_${osv}" \
+        -o /usr/local/bin/osv-scanner \
+    && chmod +x /usr/local/bin/osv-scanner
+
 # gitleaks (architecture-aware: amd64->x64, arm64->arm64)
 RUN arch="$(dpkg --print-architecture)" \
     && case "$arch" in amd64) gl="x64" ;; arm64) gl="arm64" ;; *) gl="$arch" ;; esac \
