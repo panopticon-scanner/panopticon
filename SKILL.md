@@ -1,6 +1,14 @@
 ---
 name: panopticon
-description: "Use when reviewing code, pull requests, branches, security posture, test quality, architecture, or database surfaces in a codebase. Use for repo-wide scans, directory reviews, changed-file reviews, or targeted file/group review. Do not use for writing new code, formatting/linting only, or performance benchmarking."
+description: Discovery → scout → fan-out → synthesis code review for Kimi Code. Profiles a target, groups files, dispatches specialized reviewers in parallel, and synthesizes a validated CodeReviewReport with CI gating.
+type: prompt
+whenToUse: When reviewing code, pull requests, branches, security posture, test quality, architecture, or database surfaces in a codebase
+arguments:
+  - target
+  - mode
+  - security
+  - out
+disableModelInvocation: false
 license: MIT
 metadata:
   version: "3.0.0"
@@ -32,11 +40,14 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
 ## Pipeline
 1. `TodoList`: discovery → scout → tools → panels → lens sub-reviews → synthesis.
 2. **Discovery** — run `python3 scripts/orchestrator.py` to produce `groups.json`.
-3. **Scout** — dispatch the `scout` custom agent (`agents/scout.md`) per group; output `ScopeProfile`.
-4. **Plan** — code always; test iff tests/logic present; security iff risky surfaces; architecture iff repo-scope files; database iff `db_sql` surface. `--full` overrides.
-5. **Tool scan** — optional Docker container; SARIF ingested by `scripts/ingest_tools.py`.
-6. **Fan-out** — `AgentSwarm` of `panel-review` custom agents (`agents/panel-review.md`; `prompts/panel-template.md` is preserved as a fallback). Each panel spawns `lens-sweep` agents when the scout flags `spawn: true`.
-7. **Synthesize** — `python3 scripts/synthesize.py` merges findings into `CodeReviewReport`.
+3. **Scout** — dispatch the `scout` custom agent (`agents/scout.md`) per group; output `ScopeProfile` to `.panopticon/scout-{group}.json`.
+4. **Tool scan** — optional Docker container; SARIF ingested by `scripts/ingest_tools.py`.
+5. **Plan dispatch** — run `python3 scripts/dispatch.py <scope-profile.json> --host <host> --out .panopticon/dispatch-plan.json` to produce a `DispatchPlan` of role-based agents.
+6. **Fan-out** — `AgentSwarm` dispatching custom agents by name from the plan:
+   - `panel-review` agents for holistic panel review
+   - `lens-sweep` agents for mechanical lens sweeps
+   - Each agent writes its findings file to `.panopticon/findings-{group}-{panel}-{role}-{lens}.json`
+7. **Synthesize** — `python3 scripts/synthesize.py` merges findings, tags tenuous claims, and (if any are flagged) spawns `advisor` agents (`agents/advisor.md`) before producing the final `CodeReviewReport`.
 8. **Validate** — `verification-before-completion`: check gate, print summary, write JSON.
 
 ## Output
