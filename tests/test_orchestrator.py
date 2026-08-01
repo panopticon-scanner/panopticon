@@ -330,12 +330,12 @@ class TestCli(unittest.TestCase):
 
 
 class TestDepth(unittest.TestCase):
-    def test_style_group_is_shallow(self):
-        result = orch.build_result(".", "repo", ".", None, ["docs/style.md"], [], 15)
-        self.assertEqual(result["groups"][0]["depth"], "shallow")
+    def test_clean_group_is_shallow(self):
+        depth = orch._compute_depth(["docs/style.md"], ["code"], "standard")
+        self.assertEqual(depth, "shallow")
 
     def test_security_panel_is_standard(self):
-        result = orch.build_result(".", "repo", ".", None, ["app/auth.py"], [], 15, security_mode="standard")
+        result = orch.build_result(".", "repo", ".", None, ["app/views.py"], [], 15, security_mode="standard")
         self.assertEqual(result["groups"][0]["depth"], "standard")
 
     def test_redteam_is_deep(self):

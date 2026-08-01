@@ -409,9 +409,6 @@ def discover_repo_files(repo):
     return sorted(out)
 
 
-RISKY_SURFACES = frozenset({"auth", "crypto", "money_pii", "external_api", "db_sql", "http_web"})
-
-
 def _looks_risky(path):
     """Crude heuristic for risky code surfaces until scout provides them."""
     lowered = path.lower()
@@ -428,7 +425,7 @@ def _compute_depth(files, panels, security_mode):
     )
     if risky_files:
         return "standard"
-    if any(p in ("redteam", "database") for p in panels):
+    if any(p in ("security", "redteam", "database") for p in panels):
         return "standard"
     return "shallow"
 
