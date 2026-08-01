@@ -1,3 +1,4 @@
+import io
 import os
 import sys
 import json
@@ -909,3 +910,96 @@ class TestCrossPanelCorroboration(unittest.TestCase):
         fprops = schema["properties"]["findings"]["items"]["properties"]
         self.assertIn("corroborated", fprops)
         self.assertIn("corroborated_by", fprops)
+
+
+class TestHtmlOut(unittest.TestCase):
+    def test_html_out_writes_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            out_json = os.path.join(d, "report.json")
+            out_html = os.path.join(d, "report.html")
+            finding = os.path.join(d, "findings-x-code.json")
+            with open(finding, "w") as fh:
+                json.dump({"findings": [{"id": "CODE-001", "title": "x", "severity": "LOW",
+                                          "panel": "code", "category": "style",
+                                          "location": {"file": "a.py", "line_start": 1}}]}, fh)
+            rc = syn.main(["--target", "test", "--out", out_json, "--html-out", out_html, finding])
+            self.assertEqual(rc, 0)
+            self.assertTrue(os.path.exists(out_html))
+            with open(out_html) as fh:
+                self.assertIn("<!DOCTYPE html>", fh.read())
+
+    def test_compare_mode_writes_html(self):
+        with tempfile.TemporaryDirectory() as d:
+            a = os.path.join(d, "a.json")
+            b = os.path.join(d, "b.json")
+            out = os.path.join(d, "compare.html")
+            for path, findings in [(a, []), (b, [{"id": "CODE-001", "title": "x", "severity": "LOW",
+                                                   "panel": "code", "category": "style",
+                                                   "location": {"file": "a.py", "line_start": 1}}])]:
+                with open(path, "w") as fh:
+                    json.dump({
+                        "meta": {"target": "t", "review_type": "repo", "timestamp": "2026-08-01",
+                                 "version": "3.0.0", "security_mode": "standard"},
+                        "summary": {"overall_grade": "A", "risk_level": "LOW", "top_issues": [],
+                                    "effort_to_remediate": "LOW", "gate": "PASS",
+                                    "stats": {"critical": 0, "high": 0, "medium": 0, "low": len(findings), "info": 0}},
+                        "groups": [], "findings": findings,
+                        "cross_panel": {"integration_findings": []},
+                        "recommendations": {"immediate": [], "short_term": [], "long_term": []},
+                    }, fh)
+            rc = syn.main(["--compare", a, b, "--html-out", out])
+            self.assertEqual(rc, 0)
+            self.assertTrue(os.path.exists(out))
+            with open(out) as fh:
+                content = fh.read()
+                self.assertIn("new", content)
+
+    def test_compare_missing_file_errors_cleanly(self):
+        with tempfile.TemporaryDirectory() as d:
+            valid = os.path.join(d, "valid.json")
+            missing = os.path.join(d, "missing.json")
+            out = os.path.join(d, "compare.html")
+            with open(valid, "w") as fh:
+                json.dump({
+                    "meta": {"target": "t", "review_type": "repo", "timestamp": "2026-08-01",
+                             "version": "3.0.0", "security_mode": "standard"},
+                    "summary": {"overall_grade": "A", "risk_level": "LOW", "top_issues": [],
+                                "effort_to_remediate": "LOW", "gate": "PASS",
+                                "stats": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}},
+                    "groups": [], "findings": [],
+                    "cross_panel": {"integration_findings": []},
+                    "recommendations": {"immediate": [], "short_term": [], "long_term": []},
+                }, fh)
+            with unittest.mock.patch("sys.stderr", new_callable=io.StringIO) as captured:
+                rc = syn.main(["--compare", missing, valid, "--html-out", out])
+            self.assertNotEqual(rc, 0)
+            self.assertIn("cannot read", captured.getvalue())
+
+    def test_compare_invalid_json_errors_cleanly(self):
+        with tempfile.TemporaryDirectory() as d:
+            valid = os.path.join(d, "valid.json")
+            invalid = os.path.join(d, "invalid.json")
+            out = os.path.join(d, "compare.html")
+            with open(valid, "w") as fh:
+                json.dump({
+                    "meta": {"target": "t", "review_type": "repo", "timestamp": "2026-08-01",
+                             "version": "3.0.0", "security_mode": "standard"},
+                    "summary": {"overall_grade": "A", "risk_level": "LOW", "top_issues": [],
+                                "effort_to_remediate": "LOW", "gate": "PASS",
+                                "stats": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}},
+                    "groups": [], "findings": [],
+                    "cross_panel": {"integration_findings": []},
+                    "recommendations": {"immediate": [], "short_term": [], "long_term": []},
+                }, fh)
+            with open(invalid, "w") as fh:
+                fh.write("not json")
+            with unittest.mock.patch("sys.stderr", new_callable=io.StringIO) as captured:
+                rc = syn.main(["--compare", invalid, valid, "--html-out", out])
+            self.assertNotEqual(rc, 0)
+            self.assertIn("invalid JSON", captured.getvalue())
+
+    def test_derive_html_path_is_case_insensitive(self):
+        self.assertEqual(syn._derive_html_path("report.json"), "report.json.html")
+        self.assertEqual(syn._derive_html_path("report.JSON"), "report.JSON.html")
+        self.assertEqual(syn._derive_html_path("report.Json"), "report.Json.html")
+        self.assertEqual(syn._derive_html_path("dir"), os.path.join("dir", "report.html"))
