@@ -14,9 +14,10 @@ class TestSkillMd(unittest.TestCase):
         self.assertTrue(self.text.startswith("---"))
         self.assertRegex(self.text, r"(?m)^name:\s*panopticon\s*$")
 
-    def test_references_scripts_and_prompts(self):
+    def test_references_scripts_and_agents(self):
         for ref in ["scripts/orchestrator.py", "scripts/synthesize.py",
-                    "agents/scout.md", "prompts/panel-template.md"]:
+                    "scripts/dispatch.py", "agents/scout.md",
+                    "agents/advisor.md"]:
             self.assertIn(ref, self.text, ref)
 
     def test_documents_bounded_floor_and_gate(self):
