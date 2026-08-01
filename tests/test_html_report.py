@@ -134,3 +134,48 @@ class TestHtmlReport(unittest.TestCase):
         self.assertIn("resolved", out)
         self.assertIn("XSS", out)
         self.assertIn("SQL injection", out)
+
+    def test_compare_duplicate_fingerprints(self):
+        finding = {
+            "id": "SEC-001", "title": "SQL injection", "severity": "HIGH", "confidence": "CERTAIN",
+            "panel": "security", "category": "injection", "location": {"file": "app.py", "line_start": 10},
+            "description": "dup", "impact": "", "remediation": "", "references": [],
+        }
+        base = _minimal_report(findings=[finding, dict(finding)])
+        head = _minimal_report(findings=[finding])
+        out = hr.render(head, compare_report=base)
+        self.assertIn("resolved", out)
+        self.assertIn("unchanged", out)
+        self.assertIn("SQL injection", out)
+        # One paired (unchanged) and one unmatched base finding (resolved).
+        self.assertIn("resolved</div><div class='delta-value'>1</div>", out)
+        self.assertIn("new</div><div class='delta-value'>0</div>", out)
+        self.assertIn("unchanged</div><div class='delta-value'>1</div>", out)
+
+    def test_compare_severity_changed(self):
+        base = _minimal_report(findings=[
+            {"id": "SEC-001", "title": "SQL injection", "severity": "HIGH", "confidence": "CERTAIN",
+             "panel": "security", "category": "injection", "location": {"file": "app.py", "line_start": 10},
+             "description": "x", "impact": "", "remediation": "", "references": []},
+        ])
+        head = _minimal_report(findings=[
+            {"id": "SEC-001", "title": "SQL injection", "severity": "MEDIUM", "confidence": "CERTAIN",
+             "panel": "security", "category": "injection", "location": {"file": "app.py", "line_start": 10},
+             "description": "x", "impact": "", "remediation": "", "references": []},
+        ])
+        out = hr.render(head, compare_report=base)
+        self.assertIn("severity changed", out)
+        self.assertIn("severity changed</div><div class='delta-value'>1</div>", out)
+
+    def test_compare_unchanged(self):
+        finding = {
+            "id": "SEC-001", "title": "SQL injection", "severity": "HIGH", "confidence": "CERTAIN",
+            "panel": "security", "category": "injection", "location": {"file": "app.py", "line_start": 10},
+            "description": "x", "impact": "", "remediation": "", "references": [],
+        }
+        base = _minimal_report(findings=[finding])
+        head = _minimal_report(findings=[dict(finding)])
+        out = hr.render(head, compare_report=base)
+        self.assertIn("unchanged", out)
+        self.assertIn("unchanged</div><div class='delta-value'>1</div>", out)
+        self.assertIn("severity changed</div><div class='delta-value'>0</div>", out)

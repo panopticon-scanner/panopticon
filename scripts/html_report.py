@@ -157,23 +157,34 @@ def _fingerprint(finding):
 
 
 def _match_findings(a_findings, b_findings):
-    """Return dict fingerprint -> {'a': finding|None, 'b': finding|None, 'delta': str}."""
-    a_by_fp = {_fingerprint(f): f for f in a_findings}
-    b_by_fp = {_fingerprint(f): f for f in b_findings}
+    """Return a list of match dicts with keys fingerprint, a, b, delta.
+
+    Findings are grouped by fingerprint and paired greedily. Paired findings
+    are marked 'unchanged' or 'severity changed'; unmatched head findings are
+    'new'; unmatched base findings are 'resolved'.
+    """
+    a_by_fp = {}
+    for f in a_findings:
+        a_by_fp.setdefault(_fingerprint(f), []).append(f)
+    b_by_fp = {}
+    for f in b_findings:
+        b_by_fp.setdefault(_fingerprint(f), []).append(f)
+
     all_fps = sorted(set(a_by_fp) | set(b_by_fp))
     matches = []
     for fp in all_fps:
-        af = a_by_fp.get(fp)
-        bf = b_by_fp.get(fp)
-        if af and bf:
+        a_list = a_by_fp.get(fp, [])
+        b_list = b_by_fp.get(fp, [])
+        paired = list(zip(a_list, b_list))
+        for af, bf in paired:
             delta = "unchanged"
             if af.get("severity") != bf.get("severity"):
                 delta = "severity changed"
-        elif bf:
-            delta = "new"
-        else:
-            delta = "resolved"
-        matches.append({"fingerprint": fp, "a": af, "b": bf, "delta": delta})
+            matches.append({"fingerprint": fp, "a": af, "b": bf, "delta": delta})
+        for af in a_list[len(paired):]:
+            matches.append({"fingerprint": fp, "a": af, "b": None, "delta": "resolved"})
+        for bf in b_list[len(paired):]:
+            matches.append({"fingerprint": fp, "a": None, "b": bf, "delta": "new"})
     return matches
 
 

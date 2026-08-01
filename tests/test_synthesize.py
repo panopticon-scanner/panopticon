@@ -997,3 +997,9 @@ class TestHtmlOut(unittest.TestCase):
                 rc = syn.main(["--compare", invalid, valid, "--html-out", out])
             self.assertNotEqual(rc, 0)
             self.assertIn("invalid JSON", captured.getvalue())
+
+    def test_derive_html_path_is_case_insensitive(self):
+        self.assertEqual(syn._derive_html_path("report.json"), "report.json.html")
+        self.assertEqual(syn._derive_html_path("report.JSON"), "report.JSON.html")
+        self.assertEqual(syn._derive_html_path("report.Json"), "report.Json.html")
+        self.assertEqual(syn._derive_html_path("dir"), os.path.join("dir", "report.html"))

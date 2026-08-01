@@ -621,7 +621,7 @@ def write_report(report, out_path, max_bytes=800000):
 
 
 def _derive_html_path(json_path):
-    if json_path.endswith(".json"):
+    if json_path.lower().endswith(".json"):
         return json_path + ".html"
     return os.path.join(json_path, "report.html")
 
