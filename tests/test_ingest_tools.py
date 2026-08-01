@@ -155,10 +155,14 @@ class TestIngest(unittest.TestCase):
         out = it.sarif_to_findings(sarif, "semgrep", "g1", "SG")
         self.assertEqual(out[0]["title"], "line one line two line three")
 
-    def test_ingest_tools_imports_legacy_adapter(self):
-        # ingest_tools.py imports the legacy SARIF adapter at the top level as
-        # preparation for Task 7 adapter routing.
-        self.assertTrue(hasattr(it.scripts.tools.legacy_sarif, "LegacySarifAdapter"))
+    def test_ingest_tools_and_legacy_adapter_share_sarif_utils(self):
+        # The legacy adapter and ingest_tools must both use the shared SARIF
+        # utilities without a circular import between the two modules.
+        import scripts.tools.legacy_sarif as ls
+        import scripts.tools.sarif_utils as su
+        self.assertTrue(hasattr(ls, "LegacySarifAdapter"))
+        self.assertIs(it.sarif_to_findings, su.sarif_to_findings)
+        self.assertEqual(it.PREFIX, su.PREFIX)
 
 
 class TestAdapterRouting(unittest.TestCase):

@@ -31,13 +31,15 @@ def build_plan(scope_profile, host=None, model_overrides=None):
     """Return a DispatchPlan: list of agent invocations.
 
     Each invocation has:
-    - role: lens_sweep | panel_review | advisor
+    - role: lens_sweep | panel_review
     - agent: Kimi Code custom agent name
     - model: resolved model config dict
     - panel: panel name
     - lens: lens name (for lens_sweep only)
     - files: list of files to review
     - group: group name
+    - depth: panel depth
+    - lenses: list of non-spawned lens names (for panel_review only)
     - out_file: where the agent should write findings
     """
     host = host or _detect_host()
@@ -49,6 +51,9 @@ def build_plan(scope_profile, host=None, model_overrides=None):
 
     for panel_name in scope_profile.get("panels", []):
         spawned = depth_planner.plan_lenses(scope_profile, panel_name)
+        panel_lenses = scope_profile.get("lenses", {}).get(panel_name, [])
+        spawned_set = set(spawned)
+        non_spawned = [l["name"] for l in panel_lenses if l["name"] not in spawned_set]
 
         # main panel reviewer
         plan.append({
@@ -60,6 +65,7 @@ def build_plan(scope_profile, host=None, model_overrides=None):
             "files": files,
             "group": group_name,
             "depth": depth,
+            "lenses": non_spawned,
             "out_file": ".panopticon/findings-%s-%s-panel_review.json" % (group_name, panel_name),
         })
 
@@ -96,8 +102,15 @@ def main(argv=None):
     ap.add_argument("--model-advisor", default=None)
     args = ap.parse_args(argv)
 
-    with open(args.profile, encoding="utf-8") as fh:
-        profile = json.load(fh)
+    try:
+        with open(args.profile, encoding="utf-8") as fh:
+            profile = json.load(fh)
+    except FileNotFoundError:
+        print("dispatch: profile not found: %s" % args.profile, file=sys.stderr)
+        return 1
+    except json.JSONDecodeError as e:
+        print("dispatch: invalid JSON in profile %s: %s" % (args.profile, e), file=sys.stderr)
+        return 1
 
     overrides = {}
     if args.model_lens_sweep:
@@ -110,9 +123,18 @@ def main(argv=None):
     plan = build_plan(profile, host=args.host, model_overrides=overrides)
 
     if args.out:
-        os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
-        with open(args.out, "w", encoding="utf-8") as fh:
-            emit_plan(plan, fh)
+        out_dir = os.path.dirname(os.path.abspath(args.out))
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+        except OSError as e:
+            print("dispatch: cannot create output directory %s: %s" % (out_dir, e), file=sys.stderr)
+            return 1
+        try:
+            with open(args.out, "w", encoding="utf-8") as fh:
+                emit_plan(plan, fh)
+        except OSError as e:
+            print("dispatch: cannot write output file %s: %s" % (args.out, e), file=sys.stderr)
+            return 1
     else:
         emit_plan(plan)
     return 0

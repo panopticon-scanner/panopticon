@@ -1,5 +1,5 @@
-import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -10,12 +10,11 @@ import dispatch
 
 
 class TestDispatchIntegration(unittest.TestCase):
-    def test_style_repo_is_shallow(self):
+    def test_style_repo_caps_sweeps(self):
         with tempfile.TemporaryDirectory() as td:
             os.makedirs(os.path.join(td, "docs"))
             with open(os.path.join(td, "docs", "readme.md"), "w") as fh:
                 fh.write("# hello")
-            import subprocess
             subprocess.run(["git", "init", td], capture_output=True)
             result = orch.build_result(td, "repo", ".", None, ["docs/readme.md"], [], 15)
             depth = result["groups"][0].get("depth", "standard")

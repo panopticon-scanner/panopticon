@@ -81,7 +81,7 @@
           "citations": {
             "type": "object",
             "properties": {
-              "cwe": { "type": "array", "items": { "type": "object" } },
+              "cwe": { "type": "array", "items": { "anyOf": [{ "type": "string" }, { "type": "object" }] } },
               "owasp": { "type": "array", "items": { "type": "string" } },
               "ssvc": { "type": "object" },
               "cve": { "type": "array", "items": { "type": "string" } },

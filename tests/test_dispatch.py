@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import os
 import sys
@@ -60,6 +62,29 @@ class TestDispatchPlan(unittest.TestCase):
         plan = dispatch.build_plan(profile, host="kimi")
         self.assertEqual(len(plan), 1)
         self.assertEqual(plan[0]["role"], "panel_review")
+        self.assertEqual(plan[0]["lenses"], ["style"])
+
+    def test_panel_review_includes_non_spawned_lenses(self):
+        profile = {
+            "group": "g1",
+            "panels": ["security"],
+            "depth": "standard",
+            "files": ["app.py"],
+            "lenses": {
+                "security": [
+                    {"name": "known_vulns", "spawn": True, "priority": 1, "depth_threshold": "standard"},
+                    {"name": "injection", "spawn": True, "priority": 2, "depth_threshold": "standard"},
+                    {"name": "novel", "spawn": True, "priority": 3, "depth_threshold": "deep"},
+                ]
+            },
+            "tools": [],
+            "has_deps": False,
+        }
+        plan = dispatch.build_plan(profile, host="kimi")
+        panel = [p for p in plan if p["role"] == "panel_review"][0]
+        spawned = [p["lens"] for p in plan if p["role"] == "lens_sweep"]
+        self.assertEqual(panel["lenses"], ["novel"])
+        self.assertNotIn("novel", spawned)
 
     def test_models_resolved_per_host(self):
         plan = dispatch.build_plan(self._profile("standard"), host="claude")
@@ -88,3 +113,39 @@ class TestDispatchPlan(unittest.TestCase):
         finally:
             os.unlink(profile_path)
             os.unlink(out_path)
+
+    def test_main_missing_profile_returns_one(self):
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            rc = dispatch.main(["does-not-exist.json"])
+        self.assertEqual(rc, 1)
+        self.assertIn("does-not-exist.json", stderr.getvalue())
+
+    def test_main_malformed_profile_returns_one(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as fh:
+            fh.write("{not json")
+            profile_path = fh.name
+        try:
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                rc = dispatch.main([profile_path])
+            self.assertEqual(rc, 1)
+            self.assertIn("invalid JSON", stderr.getvalue())
+        finally:
+            os.unlink(profile_path)
+
+    def test_main_unwritable_out_directory_returns_one(self):
+        profile = self._profile("standard")
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as fh:
+            json.dump(profile, fh)
+            profile_path = fh.name
+        try:
+            # Use a path under /dev/null which cannot be created as a directory.
+            out_path = "/dev/null/cannot-create/findings.json"
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                rc = dispatch.main([profile_path, "--out", out_path])
+            self.assertEqual(rc, 1)
+            self.assertIn("cannot create output directory", stderr.getvalue())
+        finally:
+            os.unlink(profile_path)

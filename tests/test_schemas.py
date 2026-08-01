@@ -203,12 +203,30 @@ class TestAdapterFindingsValidateAgainstSchema(unittest.TestCase):
         ]).encode()
         findings = es.EslintSecurityAdapter().parse(sample, "g1")
         self.assertEqual(len(findings), 1)
-        # The report schema currently declares citations.cwe items as objects,
-        # while adapters emit string CWE identifiers. That pre-existing mismatch
-        # is outside the scope of this fix, so validate tool_evidence only.
-        finding = findings[0]
-        evidence_schema = self._finding_schema()["properties"]["tool_evidence"]
-        validate(instance=finding["tool_evidence"], schema=evidence_schema)
+        self._validate(findings[0])
+
+    def test_string_cwe_validates(self):
+        finding = self._valid_finding()
+        finding["citations"] = {"cwe": ["CWE-89"]}
+        self._validate(finding)
+
+    def test_object_cwe_validates(self):
+        finding = self._valid_finding()
+        finding["citations"] = {"cwe": [{"id": "CWE-89", "name": "SQL Injection"}]}
+        self._validate(finding)
+
+    def _valid_finding(self):
+        return {
+            "id": "XX-001",
+            "title": "x",
+            "severity": "HIGH",
+            "confidence": "CERTAIN",
+            "panel": "security",
+            "category": "x",
+            "source_role": "lens_sweep",
+            "depth": "standard",
+            "location": {"file": "app.py", "line_start": 1},
+        }
 
 
 def test_multi_model_fields_in_schemas():

@@ -46,7 +46,7 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
 6. **Fan-out** — `AgentSwarm` dispatching custom agents by name from the plan:
    - `panel-review` agents for holistic panel review
    - `lens-sweep` agents for mechanical lens sweeps
-   - Each agent writes its findings file to `.panopticon/findings-{group}-{panel}-{role}-{lens}.json`
+   - Each agent writes its findings file to `.panopticon/findings-{group}-{panel}-{role}-{lens}.json` (`panel_review` entries omit `{lens}`)
 7. **Synthesize** — `python3 scripts/synthesize.py` merges findings, tags tenuous claims, and (if any are flagged) spawns `advisor` agents (`agents/advisor.md`) before producing the final `CodeReviewReport`.
 8. **Validate** — `verification-before-completion`: check gate, print summary, write JSON.
 

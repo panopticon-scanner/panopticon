@@ -2,7 +2,7 @@
 from __future__ import annotations
 import json
 
-import scripts.ingest_tools as it
+import scripts.tools.sarif_utils as su
 
 
 class LegacySarifAdapter:
@@ -11,7 +11,7 @@ class LegacySarifAdapter:
 
     @property
     def prefix(self) -> str:
-        return it.PREFIX.get(self.name, "TL")
+        return su.PREFIX.get(self.name, "TL")
 
     def is_applicable(self, target: str) -> bool:
         return True
@@ -21,4 +21,4 @@ class LegacySarifAdapter:
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
         sarif = json.loads(raw)
-        return it.sarif_to_findings(sarif, self.name, group, self.prefix)
+        return su.sarif_to_findings(sarif, self.name, group, self.prefix)

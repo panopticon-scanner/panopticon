@@ -5,14 +5,30 @@ import sys
 
 
 def _load_profiles():
-    """Load model profiles from reference/model-profiles.yml."""
+    """Load model profiles from reference/model-profiles.yml.
+
+    Falls back to hardcoded defaults when PyYAML is missing or the profile file
+    cannot be read/parsed; a warning is emitted to stderr so configuration
+    problems are not silently ignored.
+    """
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                         os.pardir, "reference", "model-profiles.yml")
     try:
         import yaml
+    except ImportError:
+        print("WARNING: PyYAML not installed; using hardcoded model profiles",
+              file=sys.stderr)
+        return {}
+    try:
         with open(path, encoding="utf-8") as fh:
             return yaml.safe_load(fh) or {}
-    except Exception:
+    except OSError as e:
+        print("WARNING: cannot read model profiles %s: %s; using hardcoded fallback"
+              % (path, e), file=sys.stderr)
+        return {}
+    except yaml.YAMLError as e:
+        print("WARNING: model profiles %s contains invalid YAML: %s; using hardcoded fallback"
+              % (path, e), file=sys.stderr)
         return {}
 
 

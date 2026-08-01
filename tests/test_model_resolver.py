@@ -1,6 +1,10 @@
+import builtins
+import contextlib
+import io
 import os
 import sys
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "scripts"))
 import model_resolver as mr
@@ -42,3 +46,29 @@ class TestModelResolver(unittest.TestCase):
             )
         finally:
             del os.environ["PANOPTICON_MODEL_ADVISOR"]
+
+    def test_missing_yaml_warns_and_falls_back(self):
+        real_import = builtins.__import__
+
+        def block_yaml(name, *args, **kwargs):
+            if name == "yaml":
+                raise ImportError("No module named 'yaml'")
+            return real_import(name, *args, **kwargs)
+
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            with patch.object(builtins, "__import__", side_effect=block_yaml):
+                profiles = mr._load_profiles()
+        self.assertEqual(profiles, {})
+        self.assertIn("PyYAML not installed", stderr.getvalue())
+        # Fallback still resolves a model.
+        self.assertEqual(mr.resolve_model("kimi", "lens_sweep")["model"], "kimi-for-coding")
+
+    def test_unreadable_profiles_warns_and_falls_back(self):
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            with patch("builtins.open", side_effect=OSError("permission denied")):
+                profiles = mr._load_profiles()
+        self.assertEqual(profiles, {})
+        self.assertIn("cannot read model profiles", stderr.getvalue())
+        self.assertEqual(mr.resolve_model("kimi", "lens_sweep")["model"], "kimi-for-coding")

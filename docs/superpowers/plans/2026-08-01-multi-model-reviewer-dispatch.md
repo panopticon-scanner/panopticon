@@ -441,7 +441,10 @@ for i, c in enumerate(chunks):
 Add `_compute_depth` above `build_result`:
 
 ```python
-RISKY_SURFACES = frozenset({"auth", "crypto", "money_pii", "external_api", "db_sql", "http_web"})
+def _looks_risky(path):
+    """Crude heuristic for risky code surfaces until scout provides them."""
+    lowered = path.lower()
+    return any(k in lowered for k in ("auth", "login", "password", "payment", "pii", "encrypt", "token", "api"))
 
 
 def _compute_depth(files, panels, security_mode):
@@ -457,12 +460,6 @@ def _compute_depth(files, panels, security_mode):
     if any(p in ("security", "redteam", "database") for p in panels):
         return "standard"
     return "shallow"
-
-
-def _looks_risky(path):
-    """Crude heuristic for risky code surfaces until scout provides them."""
-    lowered = path.lower()
-    return any(k in lowered for k in ("auth", "login", "password", "payment", "pii", "encrypt", "token", "api"))
 ```
 
 - [ ] **Step 2: Update orchestrator tests**
@@ -564,7 +561,7 @@ class TestDepthPlanner(unittest.TestCase):
     def test_unspawnable_lenses_excluded(self):
         profile = self._profile("deep")
         profile["lenses"]["code"][0]["spawn"] = False
-        self.assertEqual(dp.plan_lenses(profile, "code"), [])
+        self.assertEqual(dp.plan_lenses(profile, "code"), ["correctness", "style"])
 
     def test_panel_not_in_profile_returns_empty(self):
         self.assertEqual(dp.plan_lenses(self._profile("deep"), "architecture"), [])
