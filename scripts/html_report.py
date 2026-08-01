@@ -27,12 +27,13 @@ body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Ro
 .sev-medium { background: var(--medium); color: #000; }
 .sev-low { background: var(--low); color: #000; }
 .sev-info { background: var(--info); color: #fff; }
+.badge.grade { background: #0d6efd; color: #fff; }
+.badge.gate-pass { background: var(--pass); color: #fff; }
+.badge.gate-fail { background: var(--fail); color: #fff; }
+.badge.gate-off { background: var(--info); color: #fff; }
 .meta { color: var(--muted); margin-bottom: .5rem; }
 .meta span { margin-right: 1rem; }
 .badges { margin: 1rem 0; }
-.badge.grade { background: #0d6efd; color: #fff; }
-.badge.risk { background: var(--high); color: #fff; }
-.badge.gate { background: var(--pass); color: #fff; }
 .dashboard { background: var(--card); border: 1px solid var(--border); border-radius: .5rem; padding: 1rem; margin: 1rem 0; }
 .stats { display: flex; gap: .5rem; margin-bottom: 1rem; }
 .stat-card { flex: 1; padding: .75rem; border-radius: .25rem; text-align: center; }
@@ -43,6 +44,8 @@ body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Ro
 .grades th:first-child { text-align: left; }
 .top-issues { margin: 0; padding-left: 1.25rem; }
 .findings { margin-top: 1rem; }
+.findings-controls { margin-bottom: .5rem; }
+.findings-controls button { margin-right: .25rem; }
 .tabs { display: flex; gap: .25rem; border-bottom: 1px solid var(--border); margin-bottom: .5rem; }
 .tab { background: var(--card); border: 1px solid var(--border); border-bottom: none; padding: .5rem 1rem; cursor: pointer; border-radius: .25rem .25rem 0 0; }
 .tab[aria-selected="true"] { background: var(--bg); font-weight: 700; }
@@ -96,6 +99,35 @@ _JS = """
         tab.setAttribute('aria-selected', 'true');
         group.querySelectorAll('[data-panel]').forEach(function (p) {
           p.hidden = p.getAttribute('data-panel') !== target;
+        });
+      });
+    });
+
+    document.querySelectorAll('[data-expand-all]').forEach(function (btn) {
+      var expanded = false;
+      var section = btn.closest('.findings');
+      btn.textContent = 'Expand all';
+      btn.addEventListener('click', function () {
+        expanded = !expanded;
+        var details = section ? section.querySelectorAll('details.finding-card') : [];
+        details.forEach(function (d) { d.open = expanded; });
+        btn.textContent = expanded ? 'Collapse all' : 'Expand all';
+      });
+    });
+
+    document.querySelectorAll('[data-compare-findings]').forEach(function (section) {
+      var buttons = section.querySelectorAll('[data-compare-filter]');
+      buttons.forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          var mode = btn.getAttribute('data-compare-filter');
+          buttons.forEach(function (b) { b.setAttribute('aria-pressed', 'false'); });
+          btn.setAttribute('aria-pressed', 'true');
+          section.querySelectorAll('details.finding-card').forEach(function (card) {
+            var badge = card.querySelector('.delta-badge');
+            var delta = badge ? badge.getAttribute('data-delta') : 'unchanged';
+            var isDelta = delta !== 'unchanged';
+            card.hidden = (mode === 'deltas' && !isDelta);
+          });
         });
       });
     });
@@ -189,7 +221,14 @@ def _match_findings(a_findings, b_findings):
 
 
 def _severity_class(severity):
-    return f"sev-{str(severity).lower()}"
+    """Map a severity to a CSS class, stripping non-alphanumeric characters."""
+    clean = "".join(c for c in str(severity) if c.isalnum()).lower()
+    return f"sev-{clean}"
+
+
+def _gate_class(gate):
+    """Map a gate verdict to a CSS class using the severity palette."""
+    return {"PASS": "gate-pass", "FAIL": "gate-fail"}.get(str(gate).upper(), "gate-off")
 
 
 def _render_header(report):
@@ -204,8 +243,10 @@ def _render_header(report):
         "</div>",
         "<div class='badges'>",
         f"<span class='badge grade'>Grade: {_escape(summary.get('overall_grade', '-'))}</span>",
-        f"<span class='badge risk'>Risk: {_escape(summary.get('risk_level', '-'))}</span>",
-        f"<span class='badge gate'>Gate: {_escape(summary.get('gate', 'OFF'))}</span>",
+        f"<span class='badge {_severity_class(summary.get('risk_level', 'INFO'))}'>"
+        f"Risk: {_escape(summary.get('risk_level', '-'))}</span>",
+        f"<span class='badge {_gate_class(summary.get('gate', 'OFF'))}'>"
+        f"Gate: {_escape(summary.get('gate', 'OFF'))}</span>",
         "</div>",
     ]
     return "\n".join(parts)
@@ -223,7 +264,8 @@ def _render_compare_summary(label, report):
 <h3>{_escape(label)}</h3>
 <div class="badges">
 <span class="badge grade">{_escape(summary.get('overall_grade', '-'))}</span>
-<span class="badge gate">{_escape(summary.get('gate', 'OFF'))}</span>
+<span class="badge {_severity_class(summary.get('risk_level', 'INFO'))}">Risk: {_escape(summary.get('risk_level', '-'))}</span>
+<span class="badge {_gate_class(summary.get('gate', 'OFF'))}">Gate: {_escape(summary.get('gate', 'OFF'))}</span>
 </div>
 <div class="stat-minis">{stat_cards}</div>
 </div>
@@ -256,8 +298,13 @@ def _render_compare_findings(matches):
         if m["b"]:
             right.append(_render_card(m["b"], delta=m["delta"]))
     return f"""
-<section class="findings compare-findings">
+<section class="findings compare-findings" data-compare-findings>
 <h2>Findings</h2>
+<div class="findings-controls">
+<button type="button" class="toggle-all" data-expand-all>Expand all</button>
+<button type="button" data-compare-filter="all" aria-pressed="true">Show all</button>
+<button type="button" data-compare-filter="deltas" aria-pressed="false">Only deltas</button>
+</div>
 <div class="compare-columns">
 <div class="compare-col"><h3>Base</h3>{''.join(left)}</div>
 <div class="compare-col"><h3>Head</h3>{''.join(right)}</div>
@@ -271,7 +318,8 @@ def _render_dashboard(report):
     stats = summary.get("stats", {})
     stat_cards = "\n".join(
         f"<div class='stat-card {_severity_class(sev)}'>"
-        f"<div class='stat-label stat-value'>{sev} {stats.get(sev.lower(), 0)}</div></div>"
+        f"<div class='stat-label'>{sev}</div>"
+        f"<div class='stat-value'>{stats.get(sev.lower(), 0)}</div></div>"
         for sev in _SEV_ORDER
     )
 
@@ -317,7 +365,10 @@ def _render_card(finding, delta=None):
     )
     delta_badge = ""
     if delta:
-        delta_badge = f"<span class='badge delta-{_escape(delta.replace(' ', '-'))}-badge'>{_escape(delta)}</span>"
+        delta_badge = (
+            f"<span class='badge delta-badge delta-{_escape(delta.replace(' ', '-'))}-badge' "
+            f"data-delta='{_escape(delta)}'>{_escape(delta)}</span>"
+        )
 
     details = []
     for label, key in [("Description", "description"), ("Impact", "impact"), ("Remediation", "remediation")]:
@@ -343,6 +394,15 @@ def _render_card(finding, delta=None):
         chips.append(f"<span class='chip'>{_escape(cid)}</span>")
     for owasp in citations.get("owasp") or []:
         chips.append(f"<span class='chip'>{_escape(owasp)}</span>")
+    ssvc = citations.get("ssvc")
+    if isinstance(ssvc, dict) and ssvc.get("decision"):
+        chips.append(f"<span class='chip'>SSVC:{_escape(ssvc['decision'])}</span>")
+    for cve in citations.get("cve") or []:
+        chips.append(f"<span class='chip'>{_escape(cve)}</span>")
+    epss_list = citations.get("epss")
+    if isinstance(epss_list, list) and epss_list:
+        max_score = max(e.get("score", 0.0) for e in epss_list)
+        chips.append(f"<span class='chip'>EPSS:{max_score:.2f}</span>")
     if chips:
         details.append(f"<dt>Citations</dt><dd>{' '.join(chips)}</dd>")
 
@@ -381,7 +441,14 @@ def _heatmap_data(findings):
         entry["counts"][sev] = entry["counts"].get(sev, 0) + 1
         if _SEV_RANK.get(sev, 99) < _SEV_RANK.get(entry["worst"], 99):
             entry["worst"] = sev
-    return sorted(files.items())
+    return sorted(
+        files.items(),
+        key=lambda item: (
+            -sum(item[1]["counts"].values()),
+            _SEV_RANK.get(item[1]["worst"], 99),
+            item[0],
+        ),
+    )
 
 
 def _render_heatmap(findings):
@@ -428,6 +495,9 @@ def _render_findings(findings):
     return f"""
 <section class="findings" data-tab-group="findings">
 <h2>Findings</h2>
+<div class="findings-controls">
+<button type="button" class="toggle-all" data-expand-all>Expand all</button>
+</div>
 <div class="tabs" role="tablist">{"".join(tabs)}</div>
 {"".join(panels)}
 </section>
@@ -451,8 +521,8 @@ def render(report, compare_report=None):
             _render_compare_dashboard(matches) +
             _render_compare_findings(matches)
         )
-        title = f"Panopticon Compare — {_escape(report.get('meta', {}).get('target', 'report'))}"
+        title = f"Panopticon Compare — {report.get('meta', {}).get('target', 'report')}"
     else:
         body = _render_header(report) + _render_dashboard(report) + _render_findings(report.get("findings", []))
-        title = f"Panopticon — {_escape(report.get('meta', {}).get('target', 'report'))}"
+        title = f"Panopticon — {report.get('meta', {}).get('target', 'report')}"
     return _html_doc(title, body)

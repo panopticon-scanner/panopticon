@@ -67,14 +67,23 @@ class TestHtmlReport(unittest.TestCase):
         self.assertIn(hr._CSS, doc)
         self.assertIn(hr._JS, doc)
 
+    def test_title_escaped_once(self):
+        report = _minimal_report()
+        report["meta"]["target"] = "<script>"
+        out = hr.render(report)
+        self.assertIn("<title>Panopticon — &lt;script&gt;</title>", out)
+        self.assertNotIn("&amp;lt;", out)
+
     def test_dashboard_renders_summary(self):
         report = _minimal_report()
         out = hr.render(report)
         self.assertIn("Grade: A", out)
         self.assertIn("Risk: LOW", out)
         self.assertIn("Gate: PASS", out)
-        self.assertIn("CRITICAL 0", out)
-        self.assertIn("HIGH 1", out)
+        self.assertIn("<div class='stat-label'>CRITICAL</div>", out)
+        self.assertIn("<div class='stat-value'>0</div>", out)
+        self.assertIn("<div class='stat-label'>HIGH</div>", out)
+        self.assertIn("<div class='stat-value'>1</div>", out)
 
     def test_dashboard_renders_group_grades(self):
         report = _minimal_report()
@@ -96,6 +105,12 @@ class TestHtmlReport(unittest.TestCase):
         self.assertIn('data-tab="HIGH"', out)
         self.assertIn('data-tab="CRITICAL"', out)
 
+    def test_findings_has_expand_all_button(self):
+        report = _minimal_report()
+        out = hr.render(report)
+        self.assertIn("data-expand-all", out)
+        self.assertIn("Expand all", out)
+
     def test_finding_card_renders_details(self):
         report = _minimal_report()
         out = hr.render(report)
@@ -105,11 +120,61 @@ class TestHtmlReport(unittest.TestCase):
         self.assertIn("User input used directly in query.", out)
         self.assertIn("Use parameterized queries.", out)
 
+    def test_finding_card_renders_citations(self):
+        finding = {
+            "id": "SEC-001",
+            "title": "SQL injection",
+            "severity": "HIGH",
+            "confidence": "CERTAIN",
+            "panel": "security",
+            "category": "injection",
+            "location": {"file": "app.py", "line_start": 10},
+            "description": "User input used directly in query.",
+            "impact": "Data exfiltration.",
+            "remediation": "Use parameterized queries.",
+            "references": [],
+            "citations": {
+                "cwe": [{"id": "CWE-89"}],
+                "owasp": ["A03:2021"],
+                "ssvc": {"decision": "Act"},
+                "cve": ["CVE-2023-1234"],
+                "epss": [{"score": 0.1234}, {"score": 0.5678}],
+            },
+        }
+        report = _minimal_report(findings=[finding])
+        out = hr.render(report)
+        self.assertIn("CWE-89", out)
+        self.assertIn("A03:2021", out)
+        self.assertIn("SSVC:Act", out)
+        self.assertIn("CVE-2023-1234", out)
+        self.assertIn("EPSS:0.57", out)
+
     def test_heatmap_renders_files(self):
         report = _minimal_report()
         out = hr.render(report)
         self.assertIn("File heatmap", out)
         self.assertIn("app.py", out)
+
+    def test_heatmap_ordered_by_count_and_severity(self):
+        findings = [
+            {"id": "A", "title": "a", "severity": "LOW", "location": {"file": "z.py"}},
+            {"id": "B", "title": "b", "severity": "HIGH", "location": {"file": "z.py"}},
+            {"id": "C", "title": "c", "severity": "CRITICAL", "location": {"file": "a.py"}},
+        ]
+        data = hr._heatmap_data(findings)
+        paths = [p for p, _ in data]
+        self.assertEqual(paths, ["z.py", "a.py"])
+
+    def test_heatmap_tie_breaker_by_worst_severity(self):
+        findings = [
+            {"id": "A", "title": "a", "severity": "HIGH", "location": {"file": "b.py"}},
+            {"id": "B", "title": "b", "severity": "HIGH", "location": {"file": "b.py"}},
+            {"id": "C", "title": "c", "severity": "CRITICAL", "location": {"file": "a.py"}},
+            {"id": "D", "title": "d", "severity": "CRITICAL", "location": {"file": "a.py"}},
+        ]
+        data = hr._heatmap_data(findings)
+        paths = [p for p, _ in data]
+        self.assertEqual(paths, ["a.py", "b.py"])
 
     def test_fingerprint_ignores_line_number(self):
         a = {"panel": "security", "category": "injection", "location": {"file": "app.py", "line_start": 10},
@@ -134,6 +199,18 @@ class TestHtmlReport(unittest.TestCase):
         self.assertIn("resolved", out)
         self.assertIn("XSS", out)
         self.assertIn("SQL injection", out)
+
+    def test_compare_has_filter_buttons(self):
+        base = _minimal_report(findings=[])
+        head = _minimal_report(findings=[
+            {"id": "SEC-002", "title": "XSS", "severity": "HIGH", "confidence": "CERTAIN",
+             "panel": "security", "category": "xss", "location": {"file": "app.py", "line_start": 15},
+             "description": "y", "impact": "", "remediation": "", "references": []},
+        ])
+        out = hr.render(head, compare_report=base)
+        self.assertIn("data-compare-filter", out)
+        self.assertIn("Show all", out)
+        self.assertIn("Only deltas", out)
 
     def test_compare_duplicate_fingerprints(self):
         finding = {
@@ -179,3 +256,18 @@ class TestHtmlReport(unittest.TestCase):
         self.assertIn("unchanged", out)
         self.assertIn("unchanged</div><div class='delta-value'>1</div>", out)
         self.assertIn("severity changed</div><div class='delta-value'>0</div>", out)
+
+    def test_dynamic_badge_colors(self):
+        report = _minimal_report()
+        report["summary"]["gate"] = "FAIL"
+        report["summary"]["risk_level"] = "CRITICAL"
+        out = hr.render(report)
+        self.assertIn("badge gate-fail", out)
+        self.assertIn("badge sev-critical", out)
+        self.assertNotIn("badge gate-pass", out)
+
+    def test_severity_class_sanitizes_input(self):
+        self.assertEqual(hr._severity_class("HIGH"), "sev-high")
+        self.assertEqual(hr._severity_class("HIGH extra"), "sev-highextra")
+        self.assertEqual(hr._severity_class("CRITICAL<script>"), "sev-criticalscript")
+        self.assertEqual(hr._severity_class(""), "sev-")
