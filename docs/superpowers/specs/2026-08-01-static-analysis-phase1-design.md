@@ -189,6 +189,9 @@ This benchmark becomes the foundation for measuring panopticon's catch rate and 
 - **Phase 2**: Java/Kotlin (`PMD`, `SpotBugs` + FindSecBugs, `detekt`, `OWASP dependency-check`).
 - **Phase 3**: Rust, C#, and systems languages (`clippy`, `cargo-audit`, `cargo-deny`, Roslyn analyzers).
 - **Phase 4**: Cross-tool intelligence, deduplication scoring, public benchmark corpus.
+- **Phase 5**: Formatted HTML report renderer with grades, heatmaps, and interactive issue lists. Converts the JSON `CodeReviewReport` into a self-contained HTML artifact that visualizes risk distribution, file-level heatmaps, and drill-down finding cards with citations and provenance.
+- **Phase 6**: Comparison mode for reviewing progress or regressions between two revisions. Runs panopticon against a base commit and a head commit (or two branches), then produces a delta report showing new, fixed, and unchanged findings, plus citation-density trends.
+- **Phase 7**: Remediation risk classification. For each finding, assess whether the proposed remediation would alter happy-path application logic or have real-world business impact (e.g., rounding changes in accounting, ordering/availability changes in commerce, authorization changes affecting workflows). Surface this as a `remediation_risk` or `business_logic_impact` field so reviewers can prioritize fixes that are safe from those that need deeper product review.
 
 ## Open-Source Considerations
 
