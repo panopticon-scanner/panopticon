@@ -73,10 +73,12 @@ RUN curl -sfL "https://github.com/jeremylong/DependencyCheck/releases/download/v
     && unzip -q /tmp/dc.zip -d /opt/dependency-check \
     && rm /tmp/dc.zip
 
-# Rust + cargo-audit
+# Rust + cargo-audit (system-wide so the scanner user can invoke cargo/rustc)
+ENV CARGO_HOME=/usr/local/cargo
+ENV RUSTUP_HOME=/usr/local/rustup
+ENV PATH="/usr/local/cargo/bin:${PATH}"
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-ENV PATH="/root/.cargo/bin:${PATH}"
-RUN . "$HOME/.cargo/env" && cargo install cargo-audit
+RUN cargo install cargo-audit
 
 # .NET SDK (system-wide so the scanner user can invoke dotnet)
 RUN curl -sfL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 8.0 --install-dir /usr/share/dotnet
