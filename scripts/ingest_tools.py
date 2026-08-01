@@ -7,7 +7,6 @@ adapter for parsing. SARIF or JSON files whose basename has no registered
 adapter are skipped with a diagnostic. Stdlib-only.
 """
 import glob
-import json
 import os
 import sys
 

@@ -53,7 +53,7 @@ def build_plan(scope_profile, host=None, model_overrides=None):
         spawned = depth_planner.plan_lenses(scope_profile, panel_name)
         panel_lenses = scope_profile.get("lenses", {}).get(panel_name, [])
         spawned_set = set(spawned)
-        non_spawned = [l["name"] for l in panel_lenses if l["name"] not in spawned_set]
+        non_spawned = [lens["name"] for lens in panel_lenses if lens["name"] not in spawned_set]
 
         # main panel reviewer
         plan.append({
