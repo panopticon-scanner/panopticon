@@ -9,8 +9,7 @@ import os
 import re
 import sys
 
-# Pull in the adapter layer so ingest_tools is aware of legacy SARIF adapters
-# (preparation for Task 7 adapter routing).
+# Keep the legacy SARIF adapter reachable for callers/tests.
 import scripts.tools.legacy_sarif
 
 LEVEL_TO_SEV = {"error": "HIGH", "warning": "MEDIUM", "note": "LOW", "none": "INFO"}
@@ -118,27 +117,28 @@ def sarif_to_findings(sarif, tool_name, group, prefix, start=1):
 
 
 def ingest_dir(tools_dir, group):
-    """Ingest SARIF tool-output files from a directory. Files that parse but are
-    not SARIF (no top-level 'runs' key) are skipped with a stderr diagnostic
-    rather than silently dropped."""
+    """Ingest raw tool-output files from a directory and route them to the
+    registered adapter for parsing. Files without a registered adapter or that
+    fail to parse are skipped with a stderr diagnostic."""
+    # Lazy import to avoid a circular import: legacy_sarif imports this module.
+    from scripts.tools import ADAPTERS
     out = []
     for path in sorted(glob.glob(os.path.join(tools_dir, "*.sarif"))
                        + glob.glob(os.path.join(tools_dir, "*.json"))):
-        tool = os.path.splitext(os.path.basename(path))[0].split("-")[0].lower()
-        prefix = PREFIX.get(tool, "TL")
+        tool = os.path.splitext(os.path.basename(path))[0]
+        adapter = ADAPTERS.get(tool)
+        if adapter is None:
+            print("ingest skip %s: no adapter registered" % path, file=sys.stderr)
+            continue
         try:
-            with open(path, encoding="utf-8") as fh:
-                data = json.load(fh)
-        except (OSError, ValueError, RecursionError) as e:
+            with open(path, "rb") as fh:
+                raw = fh.read()
+        except OSError as e:
             print("ingest skip %s: %s" % (path, e), file=sys.stderr)
             continue
-        if isinstance(data, dict) and "runs" in data:
-            try:
-                out.extend(sarif_to_findings(data, tool, group, prefix, start=len(out) + 1))
-            except Exception as e:  # noqa: BLE001 - tolerant by design
-                print("ingest error %s: %s" % (path, e), file=sys.stderr)
-                continue
-        else:
-            print("ingest skip %s: not SARIF (no 'runs' key); native-JSON "
-                  "ingestion not implemented" % path, file=sys.stderr)
+        try:
+            out.extend(adapter.parse(raw, group))
+        except Exception as e:  # noqa: BLE001 - tolerant by design
+            print("ingest error %s: %s" % (path, e), file=sys.stderr)
+            continue
     return out

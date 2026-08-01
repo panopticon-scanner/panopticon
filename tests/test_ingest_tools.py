@@ -38,8 +38,7 @@ class TestIngest(unittest.TestCase):
             self.assertEqual(len(out), 1)
 
     def test_ingest_dir_skips_non_sarif_json_with_diagnostic(self):
-        # CD-003 regression: valid JSON that isn't SARIF (no 'runs') must be
-        # skipped with a diagnostic, not silently dropped.
+        # Files without a registered adapter are skipped with a diagnostic.
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "custom.json"), "w") as fh:
                 json.dump({"findings": [{"id": "X-1"}]}, fh)
@@ -48,7 +47,7 @@ class TestIngest(unittest.TestCase):
                 out = it.ingest_dir(d, "g1")
             self.assertEqual(out, [])
             self.assertIn("custom.json", stderr.getvalue())
-            self.assertIn("not SARIF", stderr.getvalue())
+            self.assertIn("no adapter registered", stderr.getvalue())
 
     def test_sarif_uri_normalized_to_repo_relative(self):
         sarif = {"runs":[{"tool":{"driver":{"name":"semgrep","rules":[]}},
@@ -160,3 +159,17 @@ class TestIngest(unittest.TestCase):
         # ingest_tools.py imports the legacy SARIF adapter at the top level as
         # preparation for Task 7 adapter routing.
         self.assertTrue(hasattr(it.scripts.tools.legacy_sarif, "LegacySarifAdapter"))
+
+
+class TestAdapterRouting(unittest.TestCase):
+    def test_ingest_routes_json_to_adapter(self):
+        raw = json.dumps({"dependencies": [{"name": "x", "version": "1.0", "vulns": []}]})
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "pip-audit.json"), "w") as fh:
+                fh.write(raw)
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                out = it.ingest_dir(d, "g1")
+            self.assertEqual(out, [])
+            self.assertNotIn("not SARIF", stderr.getvalue())
+            self.assertNotIn("no adapter registered", stderr.getvalue())
