@@ -30,4 +30,12 @@ class TestDependencyCheckAdapter(unittest.TestCase):
         f = findings[0]
         self.assertEqual(f["source"], "tool:dependency-check")
         self.assertEqual(f["citations"]["cve"], ["CVE-2022-22965"])
+        self.assertEqual(f["citations"]["cwe"], ["CWE-94"])
         self.assertEqual(f["tool_evidence"]["package_name"], "spring-core-5.2.0.RELEASE.jar")
+
+    def test_normalize_cwe_handles_multiple_formats(self):
+        adapter = dc.DependencyCheckAdapter()
+        self.assertEqual(adapter._normalize_cwe(94), "CWE-94")
+        self.assertEqual(adapter._normalize_cwe("CWE-94"), "CWE-94")
+        self.assertEqual(adapter._normalize_cwe("94"), "CWE-94")
+        self.assertIsNone(adapter._normalize_cwe("invalid"))
