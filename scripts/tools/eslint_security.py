@@ -36,13 +36,21 @@ class EslintSecurityAdapter:
 
     def invoke(self, target: str) -> tuple[bytes, int]:
         cmd = [
-            "eslint", "--no-eslintrc", "--parser-options", "ecmaVersion:latest",
+            "eslint", "--no-config-lookup", "--parser-options", "ecmaVersion:latest",
             "--plugin", "security",
         ]
         for rule in RULE_CWE:
             cmd.extend(["--rule", f"{rule}: error"])
         cmd.extend(["--format", "json", target])
-        res = subprocess.run(cmd, capture_output=True, timeout=300)
+        env = os.environ.copy()
+        # eslint v10 resolves plugins relative to the project root; ensure the
+        # globally installed plugin is discoverable inside the container.
+        for global_node in ["/usr/local/lib/node_modules", "/usr/lib/node_modules"]:
+            if os.path.isdir(global_node):
+                existing = env.get("NODE_PATH", "")
+                env["NODE_PATH"] = f"{existing}:{global_node}" if existing else global_node
+                break
+        res = subprocess.run(cmd, capture_output=True, timeout=300, env=env)
         return res.stdout, res.returncode
 
     def parse(self, raw: bytes, group: str) -> list[dict]:

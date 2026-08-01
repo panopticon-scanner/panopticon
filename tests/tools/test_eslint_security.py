@@ -137,6 +137,7 @@ class TestEslintSecurityAdapter(unittest.TestCase):
         self.assertEqual(rc, 0)
         args, kwargs = fake_run.call_args
         self.assertEqual(args[0][0], "eslint")
+        self.assertIn("--no-config-lookup", args[0])
         self.assertIn("security", args[0])
         self.assertIn("--format", args[0])
         self.assertIn("json", args[0])
