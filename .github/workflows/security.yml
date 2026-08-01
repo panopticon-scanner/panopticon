@@ -1,0 +1,80 @@
+name: Security Scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  TOOLS_OUT: .panopticon/tools
+
+jobs:
+  build-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build panopticon-tools image
+        run: docker build -t panopticon-tools .
+      - name: Save image for downstream jobs
+        run: |
+          mkdir -p /tmp/panopticon-image
+          docker save panopticon-tools | gzip > /tmp/panopticon-image/image.tar.gz
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: panopticon-tools-image
+          path: /tmp/panopticon-image/image.tar.gz
+          retention-days: 1
+
+  scan:
+    runs-on: ubuntu-latest
+    needs: build-image
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml jsonschema
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: panopticon-tools-image
+          path: /tmp/panopticon-image
+      - name: Load image
+        run: docker load < /tmp/panopticon-image/image.tar.gz
+      - name: Run static-analysis tools
+        run: |
+          mkdir -p ${{ env.TOOLS_OUT }}
+          python scripts/run_tools.py --target . --out ${{ env.TOOLS_OUT }} --deps
+      - name: Ingest findings and gate on HIGH/CRITICAL
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'scripts'))
+          import ingest_tools as it
+          findings = it.ingest_dir(os.environ['TOOLS_OUT'], 'ci')
+          high = [f for f in findings if f.get('severity') in ('HIGH', 'CRITICAL')]
+          print(f"Ingested {len(findings)} tool findings; {len(high)} HIGH/CRITICAL")
+          if high:
+              for f in high[:20]:
+                  loc = f.get('location', {})
+                  print(f"  {f.get('severity')} {f.get('id')} {loc.get('file')}:{loc.get('line_start')} - {f.get('title')}")
+              sys.exit(1)
+          PY
+      - name: Upload SARIF to GitHub Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ env.TOOLS_OUT }}
