@@ -1,6 +1,4 @@
-import json
 import os
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -37,6 +35,7 @@ class TestPhase1Integration(unittest.TestCase):
             with open(os.path.join(d, "pip-audit.json"), "wb") as fh:
                 fh.write(raw)
             findings = it.ingest_dir(d, "g1")
+            self.assertTrue(findings)
             self.assertTrue(all(f.get("source") == "tool:pip-audit" for f in findings))
 
 
