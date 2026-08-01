@@ -1,5 +1,10 @@
-"""pip-audit adapter (placeholder for Task 2)."""
+"""pip-audit adapter for Python dependency CVEs."""
 from __future__ import annotations
+import glob
+import json
+import os
+import subprocess
+from .base import normalize_severity, new_finding_id
 
 
 class PipAuditAdapter:
@@ -7,10 +12,61 @@ class PipAuditAdapter:
     prefix = "PA"
 
     def is_applicable(self, target: str) -> bool:
+        patterns = ["requirements.txt", "requirements*.txt", "pyproject.toml", "setup.py", "setup.cfg"]
+        for pat in patterns:
+            path = os.path.join(target, pat)
+            if "*" in pat:
+                if glob.glob(path):
+                    return True
+            elif os.path.exists(path):
+                return True
         return False
 
     def invoke(self, target: str) -> tuple[bytes, int]:
-        raise NotImplementedError("pip-audit adapter not yet implemented")
+        cmd = ["pip-audit", "--format=json", "--desc", "--requirement"]
+        req = self._find_requirement(target)
+        if req:
+            cmd.extend([req])
+        else:
+            cmd.extend([os.path.join(target, "pyproject.toml")])
+        res = subprocess.run(cmd, capture_output=True, timeout=300)
+        return res.stdout, res.returncode
+
+    def _find_requirement(self, target: str) -> str | None:
+        for path in sorted(glob.glob(os.path.join(target, "requirements*.txt"))):
+            return path
+        return None
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
-        raise NotImplementedError("pip-audit adapter not yet implemented")
+        data = json.loads(raw.decode("utf-8", errors="replace"))
+        out = []
+        n = 1
+        for dep in data.get("dependencies", []):
+            for vuln in dep.get("vulns", []):
+                cves = [a.upper() for a in vuln.get("aliases", []) if a.upper().startswith("CVE-")]
+                finding = {
+                    "id": new_finding_id(self.prefix, n),
+                    "title": f"{dep['name']} {dep['version']}: {vuln.get('id', 'vulnerability')}",
+                    "severity": normalize_severity(vuln.get("severity") or "MEDIUM"),
+                    "confidence": "CERTAIN",
+                    "panel": "security",
+                    "category": "dependency_vulnerability",
+                    "source": f"tool:{self.name}",
+                    "location": {"file": "requirements.txt", "line_start": 1},
+                    "description": vuln.get("description", "No description provided."),
+                    "impact": f"Vulnerable dependency {dep['name']}=={dep['version']} is used.",
+                    "remediation": f"Upgrade to a fixed version: {', '.join(vuln.get('fix_versions', [])) or 'see advisory'}",
+                    "references": [],
+                    "tool_evidence": {
+                        "rule_id": vuln.get("id"),
+                        "package_name": dep["name"],
+                        "vulnerable_versions": dep["version"],
+                        "fixed_version": vuln.get("fix_versions", [None])[0],
+                    },
+                    "_group": group,
+                }
+                if cves:
+                    finding["citations"] = {"cve": cves}
+                out.append(finding)
+                n += 1
+        return out
