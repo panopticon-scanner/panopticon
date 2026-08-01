@@ -58,6 +58,10 @@ body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Ro
 .prov-reinforced { background: var(--pass); color: #fff; }
 .prov-corroborated { background: #0dcaf0; color: #000; }
 .prov-agent { background: var(--muted); color: #fff; }
+.heatmap-grid { display: flex; flex-wrap: wrap; gap: .25rem; margin-bottom: 1rem; }
+.heatmap-cell { padding: .25rem .5rem; border-radius: .25rem; font-size: .85rem; font-family: monospace; }
+.heatmap-cell .count { margin-left: .25rem; font-weight: 700; }
+.heatmap-more { padding: .25rem .5rem; color: var(--muted); }
 """
 
 _JS = """
@@ -161,6 +165,7 @@ def _render_dashboard(report):
 <section class="dashboard">
 <h2>Dashboard</h2>
 <div class="stats">{stat_cards}</div>
+{_render_heatmap(report.get('findings', []))}
 {grades_table}
 <h3>Top issues</h3>
 <ul class="top-issues">{top_list}</ul>
@@ -226,6 +231,46 @@ def _render_card(finding, delta=None):
 </summary>
 <div class="finding-body">{body}</div>
 </details>
+"""
+
+
+_SEV_RANK = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
+
+
+def _heatmap_data(findings):
+    files = {}
+    for f in findings:
+        loc = f.get("location") or {}
+        path = loc.get("file")
+        if not path:
+            continue
+        entry = files.setdefault(
+            path, {"counts": {s: 0 for s in _SEV_ORDER}, "worst": "INFO"}
+        )
+        sev = f.get("severity", "INFO")
+        entry["counts"][sev] = entry["counts"].get(sev, 0) + 1
+        if _SEV_RANK.get(sev, 99) < _SEV_RANK.get(entry["worst"], 99):
+            entry["worst"] = sev
+    return sorted(files.items())
+
+
+def _render_heatmap(findings):
+    data = _heatmap_data(findings)
+    cells = []
+    for path, info in data[:50]:
+        total = sum(info["counts"].values())
+        tooltip = f"{total} finding(s) in {path}"
+        cells.append(
+            f"<div class='heatmap-cell {_severity_class(info['worst'])}' "
+            f"title='{_escape(tooltip)}'>"
+            f"{_escape(path)} <span class='count'>{total}</span></div>"
+        )
+    more = "<div class='heatmap-more'>...</div>" if len(data) > 50 else ""
+    return f"""
+<section class="heatmap">
+<h3>File heatmap</h3>
+<div class="heatmap-grid">{''.join(cells)}{more}</div>
+</section>
 """
 
 

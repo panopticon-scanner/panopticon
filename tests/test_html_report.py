@@ -104,3 +104,9 @@ class TestHtmlReport(unittest.TestCase):
         self.assertIn("app.py:10", out)
         self.assertIn("User input used directly in query.", out)
         self.assertIn("Use parameterized queries.", out)
+
+    def test_heatmap_renders_files(self):
+        report = _minimal_report()
+        out = hr.render(report)
+        self.assertIn("File heatmap", out)
+        self.assertIn("app.py", out)
