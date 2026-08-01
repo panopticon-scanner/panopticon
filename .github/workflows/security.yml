@@ -37,10 +37,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Pull panopticon-tools image
+      - name: Pull or build panopticon-tools image
         run: |
-          docker pull ${{ env.IMAGE }}
-          docker tag ${{ env.IMAGE }} panopticon-tools
+          if docker pull ${{ env.IMAGE }}; then
+            docker tag ${{ env.IMAGE }} panopticon-tools
+          else
+            echo "Pre-built image not found; building locally."
+            docker build -t panopticon-tools .
+          fi
 
       - name: Run static-analysis tools
         run: |
