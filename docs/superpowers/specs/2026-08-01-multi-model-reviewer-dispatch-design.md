@@ -13,14 +13,22 @@ Panopticon currently groups files, dispatches one panel reviewer per panel, and 
 - **No infinite recursion**: the advisor runs at most once per flagged claim.
 - **Minimal integration changes**: existing grouping, tool scanning, and SARIF ingestion are left untouched.
 - **Read-only reviews**: agents parse source only; no repo or GitHub mutations.
+- **Native Kimi features**: use Kimi Code custom agent files and `model_preference` so roles bind to the right model tier automatically.
 
 ## Roles
 
 | Role | Purpose | Typical model (Kimi) | Typical model (Claude) |
 |---|---|---|---|
+| `scout` | Profile files and choose depth/lenses | K2.7 Coding | Claude Haiku |
 | `lens_sweep` | Narrow mechanical check of a single lens | K2.7 Coding | Claude Haiku |
 | `panel_review` | Holistic panel review across all assigned lenses | K2.7 Coding | Claude Sonnet |
 | `advisor` | Independent verification of tenuous claims | K3 | Claude Opus |
+
+### `scout`
+
+- Reads the assigned files and emits a `ScopeProfile`.
+- Detects surfaces, sets group `depth`, ranks lenses, and assigns `priority` and `depth_threshold` to each lens.
+- Uses a large context window because it ingests the whole group at once.
 
 ### `lens_sweep`
 
@@ -28,6 +36,7 @@ Panopticon currently groups files, dispatches one panel reviewer per panel, and 
 - Emits only candidate findings for that lens.
 - Each finding must include a citation or rule reference.
 - Output is raw JSON: `{"findings": [...]}`.
+- Tool allowlist is narrow: `Read`, `Grep`, `Glob` only.
 
 ### `panel_review`
 
@@ -43,7 +52,7 @@ Panopticon currently groups files, dispatches one panel reviewer per panel, and 
 
 ## Depth Levels
 
-The scout assigns a `depth` to each panel based on detected surfaces and change risk.
+The scout assigns a `depth` to each group based on detected surfaces and change risk.
 
 | Depth | Trigger | Lens agents spawned | Advisor |
 |---|---|---|---|
@@ -55,31 +64,56 @@ Lenses are ranked by the scout. Lenses that do not get their own `lens_sweep` ag
 
 ## Model Resolver
 
-A host-agnostic model profile maps roles to concrete model identifiers.
+A host-agnostic model profile maps roles to concrete model identifiers, context windows, and output budgets.
 
 **`reference/model-profiles.yml`**:
 
 ```yaml
 hosts:
   kimi:
-    lens_sweep: k2.7-coding
-    panel_review: k2.7-coding
-    advisor: k3
+    scout:
+      model: kimi-for-coding
+      max_context_size: 131072
+      max_output_size: 16384
+    lens_sweep:
+      model: kimi-for-coding
+      max_context_size: 131072
+      max_output_size: 8192
+    panel_review:
+      model: kimi-for-coding
+      max_context_size: 131072
+      max_output_size: 16384
+    advisor:
+      model: k3
+      max_context_size: 524288
+      max_output_size: 32768
   claude:
-    lens_sweep: claude-haiku
-    panel_review: claude-sonnet
-    advisor: claude-opus
+    scout:
+      model: claude-haiku
+      max_context_size: 200000
+      max_output_size: 4096
+    lens_sweep:
+      model: claude-haiku
+      max_context_size: 200000
+      max_output_size: 4096
+    panel_review:
+      model: claude-sonnet
+      max_context_size: 200000
+      max_output_size: 8192
+    advisor:
+      model: claude-opus
+      max_context_size: 200000
+      max_output_size: 16384
 
 roles:
+  scout:
+    description: Profiles files and selects depth/lenses
   lens_sweep:
     description: Cheap, narrow mechanical lens sweep
-    max_tokens: 8192
   panel_review:
     description: Main reviewer for a panel
-    max_tokens: 16384
   advisor:
     description: Independent claim verification
-    max_tokens: 16384
 ```
 
 **Resolution order** (highest precedence first):
@@ -90,6 +124,10 @@ roles:
 4. Hardcoded fallback
 
 The host is detected from environment hints or via `--host kimi|claude|openrouter`.
+
+### Secondary model binding (Kimi Code)
+
+On Kimi Code, enabling the experimental `secondary_model` config causes agents with `model_preference: secondary` to bind to the configured secondary model automatically. This lets `lens_sweep` agents run on a cheap model while `panel_review` and `advisor` stay on the primary model, without the skill manually selecting models per spawn.
 
 ## Advisor Trigger Flow
 
@@ -133,28 +171,59 @@ Advisor recursion is capped at one pass.
 
 ## Pipeline Integration
 
-1. **Scout** enriches each panel with `depth` and ranks lenses by priority.
+1. **Scout** (`agents/scout.md`) reads files and emits a `ScopeProfile` with `depth`, ranked lenses, and file list.
 2. **New `scripts/dispatch.py`** module:
    - Reads the `ScopeProfile`
    - Calls `DepthPlanner` to decide which lenses become mechanical agents
    - Calls `ModelResolver` to pick models
-   - Emits a `DispatchPlan`: list of agent invocations with role, model, prompt file, panel, lens, files
-3. **Fan-out** runs the mixed agent swarm in parallel:
-   - One `panel_review` agent per panel
-   - 0–3 `lens_sweep` agents per panel
-4. **Findings files** keep the same naming convention but include role and lens:
-   - `.panopticon/findings-{group}-{panel}-{role}-{lens}.json`
-   - The `lens` segment is omitted for `panel_review` and `advisor` findings
-   - Existing files without role/lens remain readable for backward compatibility
-5. **Synthesizer** merges findings, tags tenuous claims, and conditionally spawns advisors.
+   - Emits a `DispatchPlan`: list of agent invocations with role, agent name, model config, panel, lens, files
+3. **Fan-out** runs the mixed agent swarm in parallel using Kimi Code `AgentSwarm`:
+   - Dispatches `panel_review`, `lens_sweep`, and `advisor` agents by name
+   - Each agent writes its findings file to `.panopticon/findings-{group}-{panel}-{role}-{lens}.json`
+4. **Synthesizer** merges findings, tags tenuous claims, and conditionally spawns advisors.
 
-## Prompt Files
+## Custom Agent Files
 
-Three new role-specific prompts replace the single panel template for role-aware invocations:
+Three role-specific Kimi Code agent files replace the single panel template for role-aware invocations:
 
-- `prompts/roles/lens-sweep.md`
-- `prompts/roles/panel-review.md`
-- `prompts/roles/advisor.md`
+- `agents/lens-sweep.md`
+- `agents/panel-review.md`
+- `agents/advisor.md`
+
+Each file has YAML frontmatter declaring:
+
+- `name`: agent identifier used in `AgentSwarm`
+- `description`: shown to the main agent when selecting a sub-agent
+- `model_preference`: `primary` for panel/advisor, `secondary` for lens sweep
+- `tools`: allowlist appropriate to the role
+- `disallowedTools`: prevents destructive operations
+
+Example `agents/lens-sweep.md`:
+
+```markdown
+---
+name: lens-sweep
+description: Cheap mechanical lens sweep for panopticon; emits narrow, cited findings only
+model_preference: secondary
+tools:
+  - Read
+  - Grep
+  - Glob
+disallowedTools:
+  - Bash
+  - Edit
+  - Write
+  - Agent
+---
+
+You are the {lens} lens sweep for panopticon panel {panel} in group {group}.
+Files: {file_list}
+Security mode: {security_mode}
+Depth: {depth}
+
+Emit findings as raw JSON `{"findings": [...]}` to `{out_file}` and return ONLY the path + count.
+Each finding must cite a rule, pattern, or line of code.
+```
 
 The existing `prompts/panel-template.md` is preserved as a fallback for hosts or callers that do not yet use role-based dispatch.
 
@@ -162,10 +231,10 @@ The existing `prompts/panel-template.md` is preserved as a fallback for hosts or
 
 ### `reference/scope-profile-schema.json`
 
-- `panel.depth`: `"shallow" | "standard" | "deep"`
+- `depth`: `"shallow" | "standard" | "deep"` at the group level
+- `files`: list of files reviewed by the scout
 - `lens.priority`: integer rank within the panel
 - `lens.depth_threshold`: minimum depth at which this lens spawns its own agent
-- `panel.spawned_lenses`: lenses selected for mechanical agents after planning
 
 ### `reference/report-schema.json`
 

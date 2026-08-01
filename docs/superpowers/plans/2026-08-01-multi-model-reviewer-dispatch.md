@@ -4,7 +4,7 @@
 
 **Goal:** Add a role-based dispatch layer to panopticon so each panel runs a main reviewer plus up to three lens-sweep agents, with an independent advisor verifying uncited claims, across Kimi and Claude hosts.
 
-**Architecture:** A new `scripts/dispatch.py` consumes the enriched `ScopeProfile`, uses `DepthPlanner` to choose which lenses become mechanical agents and `ModelResolver` to pick per-host models, then emits a `DispatchPlan`. The skill fan-out step runs the mixed agent swarm in parallel. `synthesize.py` tags tenuous claims and spawns advisors before final report generation.
+**Architecture:** A new `scripts/dispatch.py` consumes the enriched `ScopeProfile`, uses `DepthPlanner` to choose which lenses become mechanical agents and `ModelResolver` to pick per-host models, then emits a `DispatchPlan`. The skill fan-out step dispatches Kimi Code custom agents (`lens-sweep`, `panel-review`, `advisor`) by name, each with its own tool policy and model preference. `synthesize.py` tags tenuous claims and spawns advisors before final report generation.
 
 **Tech Stack:** Python 3.11+, stdlib + pytest, YAML model profiles, JSON schemas.
 
@@ -23,18 +23,19 @@
 
 | File | Responsibility |
 |---|---|
-| `reference/model-profiles.yml` | Host → role → model mapping (Kimi, Claude, OpenRouter) |
-| `reference/scope-profile-schema.json` | Validates `depth`, `lens.priority`, `lens.depth_threshold` |
+| `reference/model-profiles.yml` | Host → role → model config (model id, context, output) |
+| `reference/scope-profile-schema.json` | Validates `depth`, `files`, `lens.priority`, `lens.depth_threshold` |
 | `reference/report-schema.json` | Validates `source_role`, `advisor_verdict`, `depth` |
-| `scripts/model_resolver.py` | Resolves `(host, role)` to a concrete model string with CLI/env overrides |
+| `scripts/model_resolver.py` | Resolves `(host, role)` to model config dict with CLI/env overrides |
 | `scripts/depth_planner.py` | Ranks lenses per panel and selects which ones get mechanical agents |
 | `scripts/dispatch.py` | Reads `ScopeProfile` and emits `DispatchPlan` JSON |
-| `prompts/roles/lens-sweep.md` | Narrow mechanical lens prompt |
-| `prompts/roles/panel-review.md` | Holistic panel reviewer prompt |
-| `prompts/roles/advisor.md` | Independent claim-verification prompt |
-| `prompts/scout.md` | Updated to emit `depth` and ranked lenses |
+| `agents/lens-sweep.md` | Kimi Code custom agent for narrow mechanical lens sweep |
+| `agents/panel-review.md` | Kimi Code custom agent for holistic panel review |
+| `agents/advisor.md` | Kimi Code custom agent for independent claim verification |
+| `agents/scout.md` | Kimi Code custom agent for profiling and depth selection |
+| `prompts/scout.md` | Removed; logic moved to `agents/scout.md` |
 | `scripts/synthesize.py` | Updated to tag tenuous claims, run advisors, and emit advisor verdicts |
-| `SKILL.md` | Updated fan-out step to consume `DispatchPlan` and spawn agents by role |
+| `SKILL.md` | Updated frontmatter and fan-out step to dispatch custom agents by name |
 | `tests/test_model_resolver.py` | ModelResolver tests |
 | `tests/test_depth_planner.py` | DepthPlanner tests |
 | `tests/test_dispatch.py` | DispatchPlan generation tests |
@@ -57,28 +58,66 @@
 ```yaml
 hosts:
   kimi:
-    lens_sweep: k2.7-coding
-    panel_review: k2.7-coding
-    advisor: k3
+    scout:
+      model: kimi-for-coding
+      max_context_size: 131072
+      max_output_size: 16384
+    lens_sweep:
+      model: kimi-for-coding
+      max_context_size: 131072
+      max_output_size: 8192
+    panel_review:
+      model: kimi-for-coding
+      max_context_size: 131072
+      max_output_size: 16384
+    advisor:
+      model: k3
+      max_context_size: 524288
+      max_output_size: 32768
   claude:
-    lens_sweep: claude-haiku
-    panel_review: claude-sonnet
-    advisor: claude-opus
+    scout:
+      model: claude-haiku
+      max_context_size: 200000
+      max_output_size: 4096
+    lens_sweep:
+      model: claude-haiku
+      max_context_size: 200000
+      max_output_size: 4096
+    panel_review:
+      model: claude-sonnet
+      max_context_size: 200000
+      max_output_size: 8192
+    advisor:
+      model: claude-opus
+      max_context_size: 200000
+      max_output_size: 16384
   openrouter:
-    lens_sweep: openai/gpt-4o-mini
-    panel_review: anthropic/claude-sonnet
-    advisor: anthropic/claude-opus
+    scout:
+      model: openai/gpt-4o-mini
+      max_context_size: 128000
+      max_output_size: 4096
+    lens_sweep:
+      model: openai/gpt-4o-mini
+      max_context_size: 128000
+      max_output_size: 4096
+    panel_review:
+      model: anthropic/claude-sonnet
+      max_context_size: 200000
+      max_output_size: 8192
+    advisor:
+      model: anthropic/claude-opus
+      max_context_size: 200000
+      max_output_size: 16384
 
 roles:
+  scout:
+    description: Profiles files and selects depth/lenses
   lens_sweep:
     description: Cheap, narrow mechanical lens sweep
-    max_tokens: 8192
   panel_review:
     description: Main reviewer for a panel
-    max_tokens: 16384
   advisor:
     description: Independent claim verification
-    max_tokens: 16384
 ```
 
 - [ ] **Step 2: Validate YAML loads**
@@ -195,7 +234,7 @@ git commit -m "schema: add depth, source_role, advisor_verdict for multi-model d
 
 **Interfaces:**
 - Consumes: `reference/model-profiles.yml`, CLI flags, environment variables
-- Produces: `resolve_model(host, role, cli_overrides=None)` → string
+- Produces: `resolve_model(host, role, cli_overrides=None)` → dict with `model`, `max_context_size`, `max_output_size`
 
 - [ ] **Step 1: Write failing test**
 
@@ -212,26 +251,28 @@ import model_resolver as mr
 
 class TestModelResolver(unittest.TestCase):
     def test_kimi_defaults(self):
-        self.assertEqual(mr.resolve_model("kimi", "lens_sweep"), "k2.7-coding")
-        self.assertEqual(mr.resolve_model("kimi", "panel_review"), "k2.7-coding")
-        self.assertEqual(mr.resolve_model("kimi", "advisor"), "k3")
+        cfg = mr.resolve_model("kimi", "lens_sweep")
+        self.assertEqual(cfg["model"], "kimi-for-coding")
+        self.assertEqual(cfg["max_output_size"], 8192)
+        self.assertEqual(mr.resolve_model("kimi", "advisor")["model"], "k3")
 
     def test_claude_defaults(self):
-        self.assertEqual(mr.resolve_model("claude", "lens_sweep"), "claude-haiku")
-        self.assertEqual(mr.resolve_model("claude", "panel_review"), "claude-sonnet")
-        self.assertEqual(mr.resolve_model("claude", "advisor"), "claude-opus")
+        self.assertEqual(mr.resolve_model("claude", "lens_sweep")["model"], "claude-haiku")
+        self.assertEqual(mr.resolve_model("claude", "panel_review")["model"], "claude-sonnet")
+        self.assertEqual(mr.resolve_model("claude", "advisor")["model"], "claude-opus")
 
     def test_unknown_host_falls_back(self):
-        self.assertEqual(mr.resolve_model("unknown", "lens_sweep"), "k2.7-coding")
+        cfg = mr.resolve_model("unknown", "lens_sweep")
+        self.assertEqual(cfg["model"], "kimi-for-coding")
 
     def test_cli_override(self):
-        overrides = {"advisor": "custom-model"}
-        self.assertEqual(mr.resolve_model("kimi", "advisor", overrides), "custom-model")
+        overrides = {"advisor": {"model": "custom-model"}}
+        self.assertEqual(mr.resolve_model("kimi", "advisor", overrides)["model"], "custom-model")
 
     def test_env_override(self):
         os.environ["PANOPTICON_MODEL_ADVISOR"] = "env-advisor"
         try:
-            self.assertEqual(mr.resolve_model("kimi", "advisor"), "env-advisor")
+            self.assertEqual(mr.resolve_model("kimi", "advisor")["model"], "env-advisor")
         finally:
             del os.environ["PANOPTICON_MODEL_ADVISOR"]
 
@@ -239,7 +280,7 @@ class TestModelResolver(unittest.TestCase):
         os.environ["PANOPTICON_MODEL_ADVISOR"] = "env-advisor"
         try:
             self.assertEqual(
-                mr.resolve_model("kimi", "advisor", {"advisor": "cli-advisor"}),
+                mr.resolve_model("kimi", "advisor", {"advisor": {"model": "cli-advisor"}})["model"],
                 "cli-advisor"
             )
         finally:
@@ -284,39 +325,68 @@ def _profiles():
 
 def _hardcoded_fallback(role):
     return {
-        "lens_sweep": "k2.7-coding",
-        "panel_review": "k2.7-coding",
-        "advisor": "k3",
-    }.get(role, "k2.7-coding")
+        "scout": {"model": "kimi-for-coding", "max_context_size": 131072, "max_output_size": 16384},
+        "lens_sweep": {"model": "kimi-for-coding", "max_context_size": 131072, "max_output_size": 8192},
+        "panel_review": {"model": "kimi-for-coding", "max_context_size": 131072, "max_output_size": 16384},
+        "advisor": {"model": "k3", "max_context_size": 524288, "max_output_size": 32768},
+    }.get(role, {"model": "kimi-for-coding", "max_context_size": 131072, "max_output_size": 8192})
+
+
+def _env_override(role):
+    """Parse PANOPTICON_MODEL_<ROLE> env var.
+
+    Supports two forms:
+    - plain string model id: "k3"
+    - JSON object: '{"model":"k3","max_context_size":524288}'
+    """
+    env_key = "PANOPTICON_MODEL_%s" % role.upper()
+    env_value = os.environ.get(env_key)
+    if not env_value:
+        return None
+    env_value = env_value.strip()
+    if env_value.startswith("{"):
+        try:
+            import json
+            return json.loads(env_value)
+        except ValueError:
+            pass
+    return {"model": env_value}
 
 
 def resolve_model(host, role, cli_overrides=None):
-    """Resolve a host + role to a model identifier.
+    """Resolve a host + role to a model config dict.
 
     Precedence (highest first):
     1. cli_overrides[role]
     2. PANOPTICON_MODEL_<ROLE> environment variable
     3. host default in reference/model-profiles.yml
     4. hardcoded fallback
+
+    Returns dict with at least {"model": ..., "max_context_size": ..., "max_output_size": ...}
     """
     if cli_overrides and role in cli_overrides:
-        return cli_overrides[role]
+        override = cli_overrides[role]
+        if isinstance(override, dict):
+            return override
+        return {"model": override}
 
-    env_key = "PANOPTICON_MODEL_%s" % role.upper()
-    env_value = os.environ.get(env_key)
-    if env_value:
-        return env_value
+    env_override = _env_override(role)
+    if env_override:
+        return env_override
 
     profiles = _profiles()
     host_defaults = (profiles.get("hosts") or {}).get(host) or {}
     if role in host_defaults:
-        return host_defaults[role]
+        cfg = host_defaults[role]
+        if isinstance(cfg, dict):
+            return cfg
+        return {"model": cfg}
 
     return _hardcoded_fallback(role)
 
 
 def role_config(role):
-    """Return role metadata (description, max_tokens) from profiles."""
+    """Return role metadata (description) from profiles."""
     profiles = _profiles()
     return (profiles.get("roles") or {}).get(role) or {}
 
@@ -643,7 +713,10 @@ class TestDispatchPlan(unittest.TestCase):
         advisor = [p for p in plan if p["role"] == "advisor"]
         self.assertEqual(len(advisor), 0)
         panel = [p for p in plan if p["role"] == "panel_review"][0]
-        self.assertEqual(panel["model"], "claude-sonnet")
+        self.assertEqual(panel["model"]["model"], "claude-sonnet")
+        self.assertEqual(panel["agent"], "panel-review")
+        sweep = [p for p in plan if p["role"] == "lens_sweep"][0]
+        self.assertEqual(sweep["agent"], "lens-sweep")
 
     def test_main_writes_json_plan(self):
         profile = self._profile("standard")
@@ -693,13 +766,21 @@ def _detect_host():
     return "kimi"
 
 
+AGENT_NAME = {
+    "scout": "scout",
+    "panel_review": "panel-review",
+    "lens_sweep": "lens-sweep",
+    "advisor": "advisor",
+}
+
+
 def build_plan(scope_profile, host=None, model_overrides=None):
     """Return a DispatchPlan: list of agent invocations.
 
     Each invocation has:
     - role: lens_sweep | panel_review | advisor
-    - model: resolved model identifier
-    - prompt_file: path to role prompt
+    - agent: Kimi Code custom agent name
+    - model: resolved model config dict
     - panel: panel name
     - lens: lens name (for lens_sweep only)
     - files: list of files to review
@@ -719,8 +800,8 @@ def build_plan(scope_profile, host=None, model_overrides=None):
         # main panel reviewer
         plan.append({
             "role": "panel_review",
+            "agent": AGENT_NAME["panel_review"],
             "model": model_resolver.resolve_model(host, "panel_review", overrides),
-            "prompt_file": "prompts/roles/panel-review.md",
             "panel": panel_name,
             "lens": None,
             "files": files,
@@ -733,8 +814,8 @@ def build_plan(scope_profile, host=None, model_overrides=None):
         for lens_name in spawned:
             plan.append({
                 "role": "lens_sweep",
+                "agent": AGENT_NAME["lens_sweep"],
                 "model": model_resolver.resolve_model(host, "lens_sweep", overrides),
-                "prompt_file": "prompts/roles/lens-sweep.md",
                 "panel": panel_name,
                 "lens": lens_name,
                 "files": files,
@@ -802,25 +883,40 @@ git commit -m "feat(dispatch): add dispatch planner that emits role-based agent 
 
 ---
 
-## Task 7: Create role prompts
+## Task 7: Create custom agent files
 
 **Files:**
-- Create: `prompts/roles/lens-sweep.md`
-- Create: `prompts/roles/panel-review.md`
-- Create: `prompts/roles/advisor.md`
+- Create: `agents/lens-sweep.md`
+- Create: `agents/panel-review.md`
+- Create: `agents/advisor.md`
+- Create: `agents/scout.md`
 
 **Interfaces:**
-- Consumes: template placeholders `{panel}`, `{group}`, `{lens}`, `{file_list}`, `{security_mode}`
-- Produces: rendered prompts passed to subagents
+- Consumes: Kimi Code agent discovery; template placeholders rendered by SKILL.md
+- Produces: custom agents dispatched by name in `AgentSwarm`
 
-- [ ] **Step 1: Create `prompts/roles/lens-sweep.md`**
+- [ ] **Step 1: Create `agents/lens-sweep.md`**
 
 ```markdown
-# Lens Sweep Agent
+---
+name: lens-sweep
+description: Cheap mechanical lens sweep for panopticon; emits narrow, cited findings only
+model_preference: secondary
+tools:
+  - Read
+  - Grep
+  - Glob
+disallowedTools:
+  - Bash
+  - Edit
+  - Write
+  - Agent
+---
 
 You are the `{lens}` lens sweep for panopticon panel `{panel}` in group `{group}`.
 Files: {file_list}
 Security mode: {security_mode}
+Depth: {depth}
 
 ## Your task
 
@@ -847,10 +943,23 @@ Emit findings as raw JSON `{{"findings": [...]}}` to `{out_file}` and return ONL
 - depth: "{depth}"
 ```
 
-- [ ] **Step 2: Create `prompts/roles/panel-review.md`**
+- [ ] **Step 2: Create `agents/panel-review.md`**
 
 ```markdown
-# Panel Reviewer
+---
+name: panel-review
+description: Holistic panopticon panel reviewer covering all non-mechanical lenses
+model_preference: primary
+tools:
+  - Read
+  - Grep
+  - Glob
+  - Bash
+disallowedTools:
+  - Edit
+  - Write
+  - Agent
+---
 
 You are the `{panel}` reviewer for panopticon group `{group}`.
 Files: {file_list}
@@ -888,10 +997,23 @@ Your ONLY action is writing that one findings file. Perform NO GitHub writes, NO
 For `security`/`redteam` CRITICAL/HIGH findings, add `cvss` {{score, vector}} and `exploit_scenario`.
 ```
 
-- [ ] **Step 3: Create `prompts/roles/advisor.md`**
+- [ ] **Step 3: Create `agents/advisor.md`**
 
 ```markdown
-# Independent Advisor
+---
+name: advisor
+description: Independent panopticon advisor that verifies tenuous findings
+model_preference: primary
+tools:
+  - Read
+  - Grep
+  - Glob
+disallowedTools:
+  - Bash
+  - Edit
+  - Write
+  - Agent
+---
 
 You are an independent advisor verifying a single claim produced by another reviewer.
 
@@ -919,32 +1041,82 @@ Return ONLY a raw JSON object:
 Do not invent evidence. If a reference is needed and missing, say so in reasoning.
 ```
 
-- [ ] **Step 4: Commit**
-
-```bash
-git add prompts/roles/
-git commit -m "feat(prompts): add role-specific prompts for lens, panel, and advisor"
-```
-
----
-
-## Task 8: Update scout prompt
-
-**Files:**
-- Modify: `prompts/scout.md`
-
-**Interfaces:**
-- Consumes: existing scout instructions
-- Produces: scout emits `depth`, `lens.priority`, `lens.depth_threshold`
-
-- [ ] **Step 1: Append depth/lens ranking section to `prompts/scout.md`**
-
-After the "Lenses" section, add:
+- [ ] **Step 4: Create `agents/scout.md`**
 
 ```markdown
-## Files
+---
+name: scout
+description: Panopticon scout that profiles files and selects depth/lenses
+model_preference: secondary
+tools:
+  - Read
+  - Grep
+  - Glob
+  - Bash
+disallowedTools:
+  - Edit
+  - Write
+  - Agent
+---
 
-Include the list of files you reviewed in the `files` field of the ScopeProfile.
+You are the panopticon scout. Read the assigned files and emit a single **ScopeProfile** JSON object conforming to `reference/scope-profile-schema.json`.
+Do not review the code for defects — only profile it.
+
+## Detect these surfaces
+
+- `db_sql` — SQL, ORM raw queries, migrations, direct DB drivers
+- `http_web` — HTTP handlers, routes, controllers, views, templates, client fetch
+- `auth` — authentication, sessions, tokens, permission checks
+- `crypto` — hashing, encryption, signing, randomness, key handling
+- `fs` — file read/write, uploads, path handling
+- `concurrency` — threads, async, locks, background jobs, queues
+- `external_api` — outbound calls to third-party services
+- `money_pii` — payments, PII, financial or regulated data
+- `serialization` — (de)serialization of untrusted data
+- `templating` — server/client template rendering
+- `secrets_config` — secrets, credentials, environment/config handling
+- `architecture` — repo layout, CI/CD, Docker/k8s, GitHub configs
+- `database` — schema, ORM models, migrations, query builders
+
+## Surface → security lens mapping
+
+- db_sql → injection, database
+- http_web, templating → injection, novel
+- auth, crypto, money_pii → novel, known_vulns
+- serialization, external_api, fs → injection, novel
+- architecture → architecture
+- database → database
+
+## Risk
+
+`high` if money_pii/auth/crypto present or a risky surface is untested; `med` for other code surfaces; `low` for docs/markup/style-only changes.
+
+## Panels
+
+Set `panels` to the panels scheduled for this group:
+- `code` always
+- `test` if tests or testable logic present
+- `security` if auth/crypto/money_pii/serialization/external_api/fs/templating/db_sql/http_web present
+- `architecture` if any file is repo-scope
+- `database` if `db_sql` surface present
+
+When `security_mode` is `redteam`, schedule `redteam` instead of `security`.
+
+## Lenses
+
+Set `lenses` to an object mapping panel name to a list of `{name, spawn, priority, depth_threshold}` objects.
+Default lenses:
+- code: structure, correctness, style
+- test: coverage, test_quality, test_design
+- security: known_vulns, injection, novel
+- architecture: architecture
+- database: database
+
+Set `spawn: true` when the group has ≥5 files or `risk` is `high`; otherwise `spawn: false`.
+
+For each lens, add:
+- `priority`: integer rank (lower = higher priority)
+- `depth_threshold`: minimum depth (`shallow`, `standard`, `deep`) at which this lens gets its own `lens-sweep` agent
 
 ## Depth
 
@@ -953,27 +1125,29 @@ Set `depth` for the group to one of `shallow`, `standard`, or `deep`:
 - `standard` — normal code changes or medium-risk surfaces (http_web, db_sql, fs, external_api).
 - `deep` — auth, crypto, money_pii, serialization, templating present, or `security_mode` is `redteam`.
 
-## Lens ranking
+## Files
 
-For each lens in each panel, add:
-- `priority`: integer rank (lower = higher priority). Known-vulnerability and injection lenses should be low numbers.
-- `depth_threshold`: minimum depth at which this lens gets its own dedicated `lens_sweep` agent (`shallow`, `standard`, `deep`).
+Include the list of files you reviewed in the `files` field.
 
-Example for a `security` panel in `deep` mode:
-```json
-"security": [
-  {"name": "known_vulns", "spawn": true, "priority": 1, "depth_threshold": "standard"},
-  {"name": "injection", "spawn": true, "priority": 2, "depth_threshold": "standard"},
-  {"name": "novel", "spawn": true, "priority": 3, "depth_threshold": "deep"}
-]
-```
+## Tool selection
+
+If the container layer is in use, recommend scanners in `tools` and set `has_deps` true when a dependency manifest is present.
+
+Return ONLY the ScopeProfile JSON. No prose.
 ```
 
-- [ ] **Step 2: Commit**
+- [ ] **Step 5: Remove old `prompts/scout.md` and `prompts/roles/`**
 
 ```bash
-git add prompts/scout.md
-git commit -m "feat(scout): emit depth and ranked lens thresholds"
+rm -rf prompts/scout.md prompts/roles/
+```
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add agents/
+git rm -f prompts/scout.md prompts/roles/lens-sweep.md prompts/roles/panel-review.md prompts/roles/advisor.md 2>/dev/null || rm -rf prompts/roles/
+git commit -m "feat(agents): add Kimi Code custom agents for scout, lens, panel, advisor"
 ```
 
 ---
@@ -1143,26 +1317,50 @@ git commit -m "feat(synthesize): flag uncited claims and apply advisor verdicts"
 - Consumes: updated pipeline
 - Produces: skill instructions that use `scripts/dispatch.py` and role-aware AgentSwarm
 
-- [ ] **Step 1: Replace fan-out step in `SKILL.md`**
+- [ ] **Step 1: Update SKILL.md frontmatter**
 
-Replace step 6 with:
+Replace the frontmatter block with:
+
+```yaml
+---
+name: panopticon
+description: Discovery → scout → fan-out → synthesis code review for Kimi Code. Profiles a target, groups files, dispatches specialized reviewers in parallel, and synthesizes a validated CodeReviewReport with CI gating.
+type: prompt
+whenToUse: When reviewing code, pull requests, branches, security posture, test quality, architecture, or database surfaces in a codebase
+arguments:
+  - target
+  - mode
+  - security
+  - out
+disableModelInvocation: false
+license: MIT
+metadata:
+  version: "3.0.0"
+---
+```
+
+- [ ] **Step 2: Replace fan-out step in `SKILL.md`**
+
+Replace step 3 (scout) and step 6 (fan-out) with:
 
 ```markdown
-6. **Plan dispatch** — run `python3 scripts/dispatch.py <scope-profile.json> --host <host> --out .panopticon/dispatch-plan.json` to produce a `DispatchPlan` of role-based agents.
-7. **Fan-out** — `AgentSwarm` of agents from the dispatch plan:
-   - `panel_review` agents use `prompts/roles/panel-review.md`
-   - `lens_sweep` agents use `prompts/roles/lens-sweep.md`
+3. **Scout** — dispatch the `scout` custom agent (`agents/scout.md`) per group; output `ScopeProfile` to `.panopticon/scout-{group}.json`.
+4. **Tool scan** — optional Docker container; SARIF ingested by `scripts/ingest_tools.py`.
+5. **Plan dispatch** — run `python3 scripts/dispatch.py <scope-profile.json> --host <host> --out .panopticon/dispatch-plan.json` to produce a `DispatchPlan` of role-based agents.
+6. **Fan-out** — `AgentSwarm` dispatching custom agents by name from the plan:
+   - `panel-review` agents for holistic panel review
+   - `lens-sweep` agents for mechanical lens sweeps
    - Each agent writes its findings file to `.panopticon/findings-{group}-{panel}-{role}-{lens}.json`
-8. **Synthesize** — `python3 scripts/synthesize.py` merges findings, tags tenuous claims, and (if any are flagged) spawns `advisor` agents with `prompts/roles/advisor.md` before producing the final `CodeReviewReport`.
+7. **Synthesize** — `python3 scripts/synthesize.py` merges findings, tags tenuous claims, and (if any are flagged) spawns `advisor` agents (`agents/advisor.md`) before producing the final `CodeReviewReport`.
 ```
 
 Update the numbered list so steps remain sequential.
 
-- [ ] **Step 2: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
 git add SKILL.md
-git commit -m "docs(skill): update pipeline to use role-based dispatch plan"
+git commit -m "docs(skill): add frontmatter and dispatch custom agents by name"
 ```
 
 ---
@@ -1235,7 +1433,7 @@ class TestDispatchIntegration(unittest.TestCase):
             "has_deps": False,
         }
         plan = dispatch.build_plan(profile, host="claude")
-        models = {p["role"]: p["model"] for p in plan}
+        models = {p["role"]: p["model"]["model"] for p in plan}
         self.assertEqual(models["lens_sweep"], "claude-haiku")
         self.assertEqual(models["panel_review"], "claude-sonnet")
         self.assertEqual(len([p for p in plan if p["role"] == "lens_sweep"]), 3)
@@ -1285,9 +1483,10 @@ git commit -m "fix: address review feedback on multi-model dispatch" || true
 
 | Spec section | Implementing task |
 |---|---|
-| 3 roles (lens_sweep, panel_review, advisor) | Tasks 5, 6, 7 |
+| 4 roles (scout, lens_sweep, panel_review, advisor) | Tasks 5, 6, 7 |
+| Custom agent files with tool policies | Task 7 |
 | Depth levels (shallow/standard/deep) | Tasks 2, 4, 5, 6 |
-| ModelResolver cross-platform | Tasks 1, 3 |
+| ModelResolver cross-platform with context/output sizes | Tasks 1, 3 |
 | Advisor trigger flow | Tasks 2, 9 |
 | Pipeline integration (dispatch.py) | Task 6 |
 | Schema additions | Task 2 |
@@ -1302,7 +1501,7 @@ git commit -m "fix: address review feedback on multi-model dispatch" || true
 
 ## Type Consistency Check
 
-- `resolve_model(host, role, cli_overrides=None)` → string used consistently.
+- `resolve_model(host, role, cli_overrides=None)` → dict used consistently.
 - `plan_lenses(profile, panel_name)` → list of strings used in `dispatch.py`.
 - `build_plan(scope_profile, host, model_overrides)` → list of plan dicts.
 - `flag_for_advisor(findings, depth)` → list of indices.
