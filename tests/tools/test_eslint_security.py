@@ -96,6 +96,13 @@ class TestEslintSecurityAdapter(unittest.TestCase):
         findings = es.EslintSecurityAdapter().parse(json.dumps([]).encode(), "g1")
         self.assertEqual(len(findings), 0)
 
+    def test_strip_prefix_removes_src_and_leading_slash(self):
+        adapter = es.EslintSecurityAdapter()
+        self.assertEqual(adapter._strip_prefix("/src/app.js"), "app.js")
+        self.assertEqual(adapter._strip_prefix("src/app.js"), "app.js")
+        self.assertEqual(adapter._strip_prefix("/app.js"), "app.js")
+        self.assertEqual(adapter._strip_prefix("app.js"), "app.js")
+
     def test_is_applicable_detects_js_files(self):
         with tempfile.TemporaryDirectory() as d:
             open(os.path.join(d, "app.js"), "w").close()
@@ -135,6 +142,17 @@ class TestEslintSecurityAdapter(unittest.TestCase):
         self.assertIn("json", args[0])
         self.assertEqual(kwargs["capture_output"], True)
         self.assertEqual(kwargs["timeout"], 300)
+
+    def test_invoke_enables_all_rule_cwe_rules(self):
+        adapter = es.EslintSecurityAdapter()
+        fake_run = mock.Mock(return_value=mock.Mock(stdout=b"[]", returncode=0))
+        with mock.patch("scripts.tools.eslint_security.subprocess.run", fake_run):
+            adapter.invoke("/tmp/fake")
+        args, _ = fake_run.call_args
+        cmd = args[0]
+        for rule in es.RULE_CWE:
+            self.assertIn("--rule", cmd)
+            self.assertIn(f"{rule}: error", cmd)
 
     def test_adapter_metadata(self):
         adapter = es.EslintSecurityAdapter()

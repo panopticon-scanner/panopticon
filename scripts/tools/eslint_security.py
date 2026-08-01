@@ -4,7 +4,7 @@ import glob
 import json
 import os
 import subprocess
-from .base import normalize_severity, new_finding_id
+from .base import new_finding_id
 
 
 # CWE mappings for eslint-plugin-security rules (best-effort).
@@ -35,26 +35,15 @@ class EslintSecurityAdapter:
                     os.path.isfile(os.path.join(target, "package.json")))
 
     def invoke(self, target: str) -> tuple[bytes, int]:
-        config = self._write_temp_config()
         cmd = [
             "eslint", "--no-eslintrc", "--parser-options", "ecmaVersion:latest",
-            "--plugin", "security", "--rule", "security/detect-eval-with-expression: error",
-            "--rule", "security/detect-non-literal-require: error",
-            "--rule", "security/detect-non-literal-fs-filename: error",
-            "--rule", "security/detect-unsafe-regex: error",
-            "--rule", "security/detect-child-process: error",
-            "--rule", "security/detect-object-injection: error",
-            "--format", "json", target,
+            "--plugin", "security",
         ]
-        try:
-            res = subprocess.run(cmd, capture_output=True, timeout=300)
-        finally:
-            if config and os.path.isfile(config):
-                os.unlink(config)
+        for rule in RULE_CWE:
+            cmd.extend(["--rule", f"{rule}: error"])
+        cmd.extend(["--format", "json", target])
+        res = subprocess.run(cmd, capture_output=True, timeout=300)
         return res.stdout, res.returncode
-
-    def _write_temp_config(self) -> str | None:
-        return None
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
         data = json.loads(raw.decode("utf-8", errors="replace"))
@@ -92,7 +81,7 @@ class EslintSecurityAdapter:
         return out
 
     def _strip_prefix(self, path: str) -> str:
-        for prefix in ["/src/", "/"]:
+        for prefix in ["/src/", "src/", "/"]:
             if path.startswith(prefix):
                 return path[len(prefix):]
         return path
