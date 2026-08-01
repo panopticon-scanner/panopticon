@@ -1,15 +1,17 @@
 """Adapter that preserves the existing SARIF ingestion for semgrep/bandit/etc."""
 from __future__ import annotations
 import json
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir))
-import ingest_tools as it
+
+import scripts.ingest_tools as it
 
 
 class LegacySarifAdapter:
     def __init__(self, name: str):
         self.name = name
-        self.prefix = it.PREFIX.get(name, "TL")
+
+    @property
+    def prefix(self) -> str:
+        return it.PREFIX.get(self.name, "TL")
 
     def is_applicable(self, target: str) -> bool:
         return True

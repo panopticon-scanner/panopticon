@@ -1,6 +1,6 @@
 import contextlib, io, os, sys, json, tempfile, unittest
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "scripts"))
-import ingest_tools as it
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir))
+import scripts.ingest_tools as it
 
 SARIF = {
   "runs": [{
@@ -155,3 +155,8 @@ class TestIngest(unittest.TestCase):
             "region":{"startLine":1}}}]}]}]}
         out = it.sarif_to_findings(sarif, "semgrep", "g1", "SG")
         self.assertEqual(out[0]["title"], "line one line two line three")
+
+    def test_ingest_tools_imports_legacy_adapter(self):
+        # ingest_tools.py imports the legacy SARIF adapter at the top level as
+        # preparation for Task 7 adapter routing.
+        self.assertTrue(hasattr(it.scripts.tools.legacy_sarif, "LegacySarifAdapter"))

@@ -9,6 +9,10 @@ import os
 import re
 import sys
 
+# Pull in the adapter layer so ingest_tools is aware of legacy SARIF adapters
+# (preparation for Task 7 adapter routing).
+import scripts.tools.legacy_sarif
+
 LEVEL_TO_SEV = {"error": "HIGH", "warning": "MEDIUM", "note": "LOW", "none": "INFO"}
 PREFIX = {"semgrep": "SG", "trivy": "TR", "gitleaks": "GL", "bandit": "BN",
           "brakeman": "BR", "gosec": "GS", "eslint": "ES"}

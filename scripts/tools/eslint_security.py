@@ -4,7 +4,7 @@ from __future__ import annotations
 
 class EslintSecurityAdapter:
     name = "eslint-security"
-    prefix = "ES"
+    prefix = "ESS"
 
     def is_applicable(self, target: str) -> bool:
         return False
