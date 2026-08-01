@@ -1,0 +1,11 @@
+# Global code owners
+* @psyberone
+
+# CI / security tooling
+/.github/ @psyberone
+/Dockerfile @psyberone
+/scripts/run_tools.py @psyberone
+/scripts/tools/ @psyberone
+
+# Schemas and reference data
+/reference/ @psyberone
