@@ -10,7 +10,7 @@
 - Added Kimi Code custom agent files under `agents/`.
 - Updated `SKILL.md` frontmatter and fan-out step.
 - Added CI workflows for tests, lint, CodeQL, and full static-analysis scans.
-- Added `pyproject.toml`, `LICENSE`, `README.md`, `CODEOWNERS`, `CONTRIBUTORS.md`, `CONTRIBUTING.md`.
+- Updated `pyproject.toml` with project metadata; added `LICENSE`, `README.md`, `CODEOWNERS`, `CONTRIBUTORS.md`, `CONTRIBUTING.md`.
 
 ## Earlier releases
 
