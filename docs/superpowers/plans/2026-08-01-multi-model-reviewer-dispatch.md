@@ -1152,7 +1152,7 @@ git commit -m "feat(agents): add Kimi Code custom agents for scout, lens, panel,
 
 ---
 
-## Task 9: Update synthesize.py for advisor triggers
+## Task 8: Update synthesize.py for advisor triggers
 
 **Files:**
 - Modify: `scripts/synthesize.py`
@@ -1308,7 +1308,7 @@ git commit -m "feat(synthesize): flag uncited claims and apply advisor verdicts"
 
 ---
 
-## Task 10: Update SKILL.md fan-out step
+## Task 9: Update SKILL.md fan-out step
 
 **Files:**
 - Modify: `SKILL.md`
@@ -1365,7 +1365,7 @@ git commit -m "docs(skill): add frontmatter and dispatch custom agents by name"
 
 ---
 
-## Task 11: Add integration test
+## Task 10: Add integration test
 
 **Files:**
 - Create: `tests/test_dispatch_integration.py`
@@ -1453,7 +1453,7 @@ git commit -m "test(dispatch): add end-to-end dispatch integration tests"
 
 ---
 
-## Task 12: Full test run and final verification
+## Task 11: Full test run and final verification
 
 - [ ] **Step 1: Run full test suite**
 
@@ -1487,11 +1487,11 @@ git commit -m "fix: address review feedback on multi-model dispatch" || true
 | Custom agent files with tool policies | Task 7 |
 | Depth levels (shallow/standard/deep) | Tasks 2, 4, 5, 6 |
 | ModelResolver cross-platform with context/output sizes | Tasks 1, 3 |
-| Advisor trigger flow | Tasks 2, 9 |
+| Advisor trigger flow | Tasks 2, 8 |
 | Pipeline integration (dispatch.py) | Task 6 |
 | Schema additions | Task 2 |
-| Error handling | Tasks 3, 5, 6, 9 |
-| Testing | Tasks 3, 4, 5, 6, 9, 11, 12 |
+| Error handling | Tasks 3, 5, 6, 8 |
+| Testing | Tasks 3, 4, 5, 6, 8, 10, 11 |
 
 ## Placeholder Scan
 
