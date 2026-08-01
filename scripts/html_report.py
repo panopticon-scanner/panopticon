@@ -378,7 +378,10 @@ def _render_card(finding, delta=None):
 
     refs = finding.get("references") or []
     if refs:
-        links = "\n".join(f"<li><a href='{_escape(r)}'>{_escape(r)}</a></li>" for r in refs)
+        links = "\n".join(
+            f"<li><a href='{_escape(r)}' rel='noreferrer noopener'>{_escape(r)}</a></li>" if str(r).lower().startswith(("http://", "https://")) else f"<li>{_escape(r)}</li>"
+            for r in refs
+        )
         details.append(f"<dt>References</dt><dd><ul>{links}</ul></dd>")
 
     cvss = finding.get("cvss")
