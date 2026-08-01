@@ -10,6 +10,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import scripts.citations as citations
+import scripts.html_report as html_report
 import scripts.ingest_tools as ingest_tools
 
 SEVERITIES = {"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"}
@@ -619,6 +620,12 @@ def write_report(report, out_path, max_bytes=800000):
     return [out_path, part_path]
 
 
+def _derive_html_path(json_path):
+    if json_path.endswith(".json"):
+        return json_path + ".html"
+    return os.path.join(json_path, "report.html")
+
+
 def main(argv=None):
     """Main entry point: load findings, enrich citations, build and validate report."""
     ap = argparse.ArgumentParser(description="panopticon synthesizer")
@@ -634,10 +641,27 @@ def main(argv=None):
     ap.add_argument("--changes", "-c", action="store_true",
                     help="Alias for a changes/diff review type")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--html-out", metavar="PATH", default=None,
+                    help="Write HTML report to PATH")
+    ap.add_argument("--compare", metavar="JSON", nargs=2, default=None,
+                    help="Compare two JSON reports and emit HTML")
     ap.add_argument("--epss", action="store_true")
     ap.add_argument("--tools-dir", metavar="DIR")
     ap.add_argument("files", nargs="*")
     args = ap.parse_args(argv)
+
+    if args.compare:
+        a_path, b_path = args.compare
+        with open(a_path, encoding="utf-8") as fh:
+            report_a = json.load(fh)
+        with open(b_path, encoding="utf-8") as fh:
+            report_b = json.load(fh)
+        html_out = args.html_out or (_derive_html_path(args.out) if args.out else None)
+        if not html_out:
+            ap.error("--compare requires --html-out or --out")
+        html_report.write_html(report_b, html_out, compare_report=report_a)
+        print("Compare HTML: %s" % html_out)
+        return 0
 
     groups_meta = []
     review_type = "changes" if args.changes else "repo"
@@ -681,6 +705,12 @@ def main(argv=None):
         print("SCHEMA: %s" % e, file=sys.stderr)
 
     paths = write_report(report, out)
+    html_out = args.html_out
+    if html_out is None and args.out:
+        html_out = _derive_html_path(paths[0])
+    if html_out:
+        html_report.write_html(report, html_out)
+        print("HTML artifact: %s" % html_out)
     print(render_summary(report))
     print("\nJSON artifact: %s" % ", ".join(paths))
     return 1 if report["summary"]["gate"] == "FAIL" else 0

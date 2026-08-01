@@ -423,6 +423,13 @@ def _render_findings(findings):
 """
 
 
+def write_html(report, path, compare_report=None):
+    """Write a rendered HTML report to disk."""
+    os.makedirs(os.path.dirname(os.path.abspath(path)) if os.path.dirname(path) else ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(render(report, compare_report=compare_report))
+
+
 def render(report, compare_report=None):
     """Render a CodeReviewReport (optionally with a second report for compare)."""
     if compare_report:
