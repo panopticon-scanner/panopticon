@@ -26,14 +26,17 @@ class PipAuditAdapter:
         return False
 
     def invoke(self, target: str) -> tuple[bytes, int]:
-        cmd = ["pip-audit", "--format=json", "--desc", "--requirement"]
+        cmd = ["pip-audit", "--format=json", "--desc"]
         req = self._find_requirement(target)
         if req:
             self._manifest_path = req
-            cmd.extend([req])
+            cmd.extend(["--requirement", req])
         else:
+            # pip-audit accepts a project directory as a positional argument or
+            # via --path. Use the positional form so pyproject.toml projects are
+            # audited without the invalid --requirement flag.
             self._manifest_path = os.path.join(target, "pyproject.toml")
-            cmd.extend([self._manifest_path])
+            cmd.append(target)
         res = subprocess.run(cmd, capture_output=True, timeout=300)
         return res.stdout, res.returncode
 
