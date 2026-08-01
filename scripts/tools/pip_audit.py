@@ -11,8 +11,11 @@ class PipAuditAdapter:
     name = "pip-audit"
     prefix = "PA"
 
+    def __init__(self) -> None:
+        self._manifest_path: str | None = None
+
     def is_applicable(self, target: str) -> bool:
-        patterns = ["requirements.txt", "requirements*.txt", "pyproject.toml", "setup.py", "setup.cfg"]
+        patterns = ["requirements.txt", "requirements*.txt", "pyproject.toml"]
         for pat in patterns:
             path = os.path.join(target, pat)
             if "*" in pat:
@@ -26,9 +29,11 @@ class PipAuditAdapter:
         cmd = ["pip-audit", "--format=json", "--desc", "--requirement"]
         req = self._find_requirement(target)
         if req:
+            self._manifest_path = req
             cmd.extend([req])
         else:
-            cmd.extend([os.path.join(target, "pyproject.toml")])
+            self._manifest_path = os.path.join(target, "pyproject.toml")
+            cmd.extend([self._manifest_path])
         res = subprocess.run(cmd, capture_output=True, timeout=300)
         return res.stdout, res.returncode
 
@@ -52,7 +57,7 @@ class PipAuditAdapter:
                     "panel": "security",
                     "category": "dependency_vulnerability",
                     "source": f"tool:{self.name}",
-                    "location": {"file": "requirements.txt", "line_start": 1},
+                    "location": {"file": self._manifest_path or "requirements.txt", "line_start": 1},
                     "description": vuln.get("description", "No description provided."),
                     "impact": f"Vulnerable dependency {dep['name']}=={dep['version']} is used.",
                     "remediation": f"Upgrade to a fixed version: {', '.join(vuln.get('fix_versions', [])) or 'see advisory'}",
