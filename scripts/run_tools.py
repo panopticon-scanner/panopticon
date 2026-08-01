@@ -11,14 +11,17 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.tools import ADAPTERS
 
-LANG_TOOL = {"python": "bandit", "ruby": "brakeman", "go": "gosec",
+LANG_TOOL = {"python": "bandit", "go": "gosec",
              "javascript": "eslint", "typescript": "eslint"}
 
-LEGACY_SARIF_TOOLS = {"semgrep", "bandit", "trivy", "gitleaks", "gosec", "brakeman", "eslint"}
+LEGACY_SARIF_TOOLS = {"semgrep", "bandit", "trivy", "gitleaks", "gosec", "eslint"}
 
 # Phase 1 adapters selected by ecosystem detection; they are dispatched through
 # _run_adapter.py inside the panopticon-tools container.
 PHASE1_ADAPTERS = {"pip-audit", "npm-audit", "osv-scanner", "eslint-security"}
+
+# Phase 2 adapters selected by applicability to the target repo.
+PHASE2_ADAPTERS = {"brakeman", "bundler-audit"}
 
 # Max seconds to let a single docker-run tool invocation run before it's killed;
 # prevents a hung tool from blocking the whole batch (CD-007).
@@ -32,7 +35,6 @@ TOOL_CMD = {
     "trivy": ["trivy", "fs", "--format", "sarif", "/src"],
     "bandit": ["bandit", "-r", "/src", "-f", "sarif"],
     "gosec": ["gosec", "-fmt=sarif", "./..."],
-    "brakeman": ["brakeman", "-f", "sarif", "/src"],
     "eslint": ["eslint", "-f", "@microsoft/eslint-formatter-sarif", "/src"],
 }
 
@@ -159,6 +161,7 @@ if __name__ == "__main__":
         chosen = a.tools
     else:
         phase1 = [name for name in select_adapters(a.target) if name in PHASE1_ADAPTERS]
-        chosen = select_tools(a.languages, a.deps) + phase1
+        phase2 = [name for name in select_adapters(a.target) if name in PHASE2_ADAPTERS]
+        chosen = select_tools(a.languages, a.deps) + phase1 + phase2
     paths = run_tools(a.target, chosen, a.out)
     print("\n".join(paths))

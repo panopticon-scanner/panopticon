@@ -44,7 +44,7 @@ class TestLegacySarifAdapter(unittest.TestCase):
         self.assertEqual(adapter.prefix, "TL")
 
     def test_registry_contains_legacy_adapters(self):
-        for name in ("semgrep", "bandit", "trivy", "gitleaks", "gosec", "brakeman", "eslint"):
+        for name in ("semgrep", "bandit", "trivy", "gitleaks", "gosec", "eslint"):
             self.assertIn(name, ADAPTERS)
             self.assertIsInstance(ADAPTERS[name], legacy.LegacySarifAdapter)
             self.assertEqual(ADAPTERS[name].name, name)
