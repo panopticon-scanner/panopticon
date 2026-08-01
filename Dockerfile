@@ -78,9 +78,23 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --de
 ENV PATH="/root/.cargo/bin:${PATH}"
 RUN . "$HOME/.cargo/env" && cargo install cargo-audit
 
-# .NET SDK
-RUN curl -sfL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 8.0
-ENV PATH="/root/.dotnet:${PATH}"
+# .NET SDK (system-wide so the scanner user can invoke dotnet)
+RUN curl -sfL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 8.0 --install-dir /usr/share/dotnet
+RUN ln -s /usr/share/dotnet/dotnet /usr/bin/dotnet
+ENV DOTNET_ROOT=/usr/share/dotnet
+ENV PATH="/usr/share/dotnet:${PATH}"
+
+# SecurityCodeScan Roslyn analyzer - applied to all C# projects built under /src
+# via MSBuild's parent-directory Directory.Build.props discovery.
+RUN printf '%s\n' \
+    '<Project>' \
+    '  <ItemGroup>' \
+    '    <PackageReference Include="AdaskoTheBeAsT.SecurityCodeScan.VS2022" Version="5.6.7.200">' \
+    '      <PrivateAssets>all</PrivateAssets>' \
+    '      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>' \
+    '    </PackageReference>' \
+    '  </ItemGroup>' \
+    '</Project>' > /Directory.Build.props
 
 RUN useradd -m -u 1000 scanner
 USER scanner
