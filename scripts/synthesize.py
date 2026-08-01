@@ -672,7 +672,8 @@ def main(argv=None):
             return 2
         html_out = args.html_out or (_derive_html_path(args.out) if args.out else None)
         if not html_out:
-            ap.error("--compare requires --html-out or --out")
+            print("ERROR: --compare requires --html-out or --out", file=sys.stderr)
+            return 2
         html_report.write_html(report_b, html_out, compare_report=report_a)
         print("Compare HTML: %s" % html_out)
         return 0
