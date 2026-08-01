@@ -17,6 +17,10 @@ LANG_TOOL = {"python": "bandit", "ruby": "brakeman", "go": "gosec",
 
 LEGACY_SARIF_TOOLS = {"semgrep", "bandit", "trivy", "gitleaks", "gosec", "brakeman", "eslint"}
 
+# Phase 1 adapters selected by ecosystem detection; they are dispatched through
+# _run_adapter.py inside the panopticon-tools container.
+PHASE1_ADAPTERS = {"pip-audit", "npm-audit", "osv-scanner", "eslint-security"}
+
 # Max seconds to let a single docker-run tool invocation run before it's killed;
 # prevents a hung tool from blocking the whole batch (CD-007).
 TOOL_TIMEOUT = 900
@@ -123,7 +127,7 @@ def run_tools(target, tools, out_dir, image="panopticon-tools", runner=None):
             out_path = os.path.join(out_dir, "%s.%s" % (tool, ext))
             docker = ["docker", "run", "--rm",
                       "-v", "%s:/src:ro" % os.path.abspath(target), image,
-                      "python3", "/src/scripts/_run_adapter.py", tool]
+                      "python3", "/opt/panopticon/scripts/_run_adapter.py", tool]
             try:
                 res = runner(docker, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                              timeout=TOOL_TIMEOUT)
@@ -152,6 +156,10 @@ if __name__ == "__main__":
     if not docker_available():
         print("panopticon-tools image not available; skipping tool scan", file=sys.stderr)
         sys.exit(0)
-    chosen = a.tools or select_tools(a.languages, a.deps)
+    if a.tools:
+        chosen = a.tools
+    else:
+        phase1 = [name for name in select_adapters(a.target) if name in PHASE1_ADAPTERS]
+        chosen = select_tools(a.languages, a.deps) + phase1
     paths = run_tools(a.target, chosen, a.out)
     print("\n".join(paths))

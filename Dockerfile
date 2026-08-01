@@ -47,6 +47,11 @@ RUN arch="$(dpkg --print-architecture)" \
     && curl -sfL "https://github.com/securego/gosec/releases/download/v${GOSEC_VERSION}/gosec_${GOSEC_VERSION}_linux_${arch}.tar.gz" \
         | tar -xz -C /usr/local/bin gosec
 
+# Copy panopticon adapter dispatcher into the image so Docker-based runs can
+# invoke Phase 1 adapters without relying on the target repo providing it.
+COPY scripts /opt/panopticon/scripts
+ENV PYTHONPATH=/opt/panopticon
+
 RUN useradd -m -u 1000 scanner
 USER scanner
 WORKDIR /src
