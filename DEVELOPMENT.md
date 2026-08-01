@@ -57,6 +57,14 @@ Fresh session → `/panopticon` (`-f file`, `-d dir`, `-g "Group[Facet]"`, `-c` 
 gates CI (keys off `summary.gate` in the JSON). Tool layer: build the image once (above);
 it's used automatically when present, `--no-tools` to skip.
 
+## Adding a new static-analysis tool
+
+1. Create `scripts/tools/<tool_name>.py` implementing `is_applicable()`, `invoke()`, and `parse()`.
+2. Register it in `scripts/tools/__init__.py` under `ADAPTERS`.
+3. Add unit tests in `tests/tools/test_<tool_name>.py`.
+4. If the tool needs installation, add it to `Dockerfile`.
+5. Run `python3 -m pytest tests/tools/ tests/test_ingest_tools.py tests/test_run_tools.py -v`.
+
 ## Versioning
 Scheme: a **minor** bump (2.x.0) per release round; **major** (x.0.0) reserved for breaking
 changes to the report schema, CLI, or grade contract. Bump `SKILL.md` `metadata.version` and
