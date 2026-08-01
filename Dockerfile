@@ -13,8 +13,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Python tools
 RUN pip install --no-cache-dir semgrep bandit bandit-sarif-formatter
 
-# Ruby (brakeman)
-RUN gem install --no-document brakeman
+# Ruby (brakeman + bundler-audit)
+RUN gem install --no-document brakeman bundler-audit
 
 # Node (eslint + security plugin)
 RUN npm install -g eslint eslint-plugin-security @microsoft/eslint-formatter-sarif
@@ -51,6 +51,36 @@ RUN arch="$(dpkg --print-architecture)" \
 # invoke Phase 1 adapters without relying on the target repo providing it.
 COPY scripts /opt/panopticon/scripts
 ENV PYTHONPATH=/opt/panopticon
+
+# OpenJDK (needed by SpotBugs and dependency-check)
+RUN apt-get update && apt-get install -y --no-install-recommends default-jdk unzip build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# SpotBugs + FindSecBugs plugin
+ARG SPOTBUGS_VERSION=4.8.6
+RUN curl -sfL "https://github.com/spotbugs/spotbugs/releases/download/${SPOTBUGS_VERSION}/spotbugs-${SPOTBUGS_VERSION}.tgz" \
+        | tar -xz -C /opt \
+    && ln -s "/opt/spotbugs-${SPOTBUGS_VERSION}" /opt/spotbugs
+ARG FINDSECBUGS_VERSION=1.13.0
+RUN mkdir -p /opt/spotbugs/plugin \
+    && curl -sfL "https://search.maven.org/remotecontent?filepath=com/h3xstream/findsecbugs/findsecbugs-plugin/${FINDSECBUGS_VERSION}/findsecbugs-plugin-${FINDSECBUGS_VERSION}.jar" \
+        -o /opt/spotbugs/plugin/findsecbugs-plugin.jar
+
+# OWASP dependency-check
+ARG DEPENDENCY_CHECK_VERSION=10.0.3
+RUN curl -sfL "https://github.com/jeremylong/DependencyCheck/releases/download/v${DEPENDENCY_CHECK_VERSION}/dependency-check-${DEPENDENCY_CHECK_VERSION}-release.zip" \
+        -o /tmp/dc.zip \
+    && unzip -q /tmp/dc.zip -d /opt/dependency-check \
+    && rm /tmp/dc.zip
+
+# Rust + cargo-audit
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+ENV PATH="/root/.cargo/bin:${PATH}"
+RUN . "$HOME/.cargo/env" && cargo install cargo-audit
+
+# .NET SDK
+RUN curl -sfL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 8.0
+ENV PATH="/root/.dotnet:${PATH}"
 
 RUN useradd -m -u 1000 scanner
 USER scanner
