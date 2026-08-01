@@ -37,6 +37,10 @@ class TestEslintSecurityAdapter(unittest.TestCase):
         self.assertEqual(f["location"]["line_start"], 10)
         self.assertEqual(f["tool_evidence"]["rule_id"], "security/detect-eval-with-expression")
 
+    def test_parse_tool_evidence_has_only_rule_id(self):
+        findings = es.EslintSecurityAdapter().parse(ESLINT_SAMPLE, "g1")
+        self.assertEqual(findings[0]["tool_evidence"], {"rule_id": "security/detect-eval-with-expression"})
+
     def test_parse_uses_ess_prefix(self):
         findings = es.EslintSecurityAdapter().parse(ESLINT_SAMPLE, "g1")
         self.assertTrue(findings[0]["id"].startswith("ESS-"))

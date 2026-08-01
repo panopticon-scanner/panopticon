@@ -1,7 +1,12 @@
 """Shared base utilities for tool adapters."""
 from __future__ import annotations
 import re
-from typing import Protocol
+from typing import Any, Protocol
+
+
+def omit_none(mapping: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of *mapping* with keys whose values are None removed."""
+    return {k: v for k, v in mapping.items() if v is not None}
 
 
 SEV_MAP = {

@@ -163,6 +163,54 @@ class TestNpmAuditAdapter(unittest.TestCase):
         findings = na.NpmAuditAdapter().parse(sample, "g1")
         self.assertEqual(findings[0]["severity"], "MEDIUM")
 
+    def test_parse_omits_none_tool_evidence_fields_v1(self):
+        sample = json.dumps({
+            "advisories": {
+                "1234": {
+                    "id": 1234,
+                    "title": "Prototype Pollution in lodash",
+                    "module_name": "lodash",
+                    "overview": "...",
+                    "severity": "high",
+                    "cves": ["CVE-2021-23337"],
+                    "vulnerable_versions": "<4.17.21",
+                }
+            }
+        }).encode()
+        findings = na.NpmAuditAdapter().parse(sample, "g1")
+        self.assertEqual(len(findings), 1)
+        evidence = findings[0]["tool_evidence"]
+        self.assertNotIn("fixed_version", evidence)
+        self.assertEqual(evidence["rule_id"], "1234")
+
+    def test_parse_omits_none_tool_evidence_fields_v2(self):
+        sample = json.dumps({
+            "auditReportVersion": 2,
+            "vulnerabilities": {
+                "lodash": {
+                    "name": "lodash",
+                    "severity": "high",
+                    "range": "<4.17.21",
+                    "via": [{
+                        "source": 1234,
+                        "name": "lodash",
+                        "dependency": "lodash",
+                        "title": "Prototype Pollution in lodash",
+                        "url": "https://npmjs.com/advisories/1234",
+                        "severity": "high",
+                        "range": "<4.17.21",
+                        "cves": ["CVE-2021-23337"],
+                    }],
+                    "fixAvailable": False,
+                }
+            }
+        }).encode()
+        findings = na.NpmAuditAdapter().parse(sample, "g1")
+        self.assertEqual(len(findings), 1)
+        evidence = findings[0]["tool_evidence"]
+        self.assertNotIn("fixed_version", evidence)
+        self.assertEqual(evidence["rule_id"], "1234")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -88,6 +88,29 @@ class TestOsvScannerAdapter(unittest.TestCase):
             timeout=300,
         )
 
+    def test_parse_omits_none_tool_evidence_fields(self):
+        sample = json.dumps({
+            "results": [
+                {
+                    "package": {"name": "django"},
+                    "vulnerabilities": [
+                        {
+                            "id": "GHSA-XXXX-XXXX",
+                            "aliases": ["CVE-2022-1234"],
+                            "severity": "HIGH",
+                            "summary": "SQL injection in Django"
+                        }
+                    ]
+                }
+            ]
+        }).encode()
+        findings = osv.OsvScannerAdapter().parse(sample, "g1")
+        self.assertEqual(len(findings), 1)
+        evidence = findings[0]["tool_evidence"]
+        self.assertNotIn("ecosystem", evidence)
+        self.assertNotIn("vulnerable_versions", evidence)
+        self.assertEqual(evidence["package_name"], "django")
+
 
 if __name__ == "__main__":
     unittest.main()

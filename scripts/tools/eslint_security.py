@@ -4,7 +4,7 @@ import glob
 import json
 import os
 import subprocess
-from .base import new_finding_id
+from .base import new_finding_id, omit_none
 
 
 # CWE mappings for eslint-plugin-security rules (best-effort).
@@ -79,7 +79,7 @@ class EslintSecurityAdapter:
                     "impact": "Potential security weakness in JavaScript/TypeScript code.",
                     "remediation": "Review the flagged code and follow the plugin's guidance.",
                     "references": [],
-                    "tool_evidence": {"rule_id": rule},
+                    "tool_evidence": omit_none({"rule_id": rule}),
                     "_group": group,
                 }
                 if cwe:

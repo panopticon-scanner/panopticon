@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from .base import normalize_severity, new_finding_id
+from .base import normalize_severity, new_finding_id, omit_none
 
 
 class NpmAuditAdapter:
@@ -40,12 +40,12 @@ class NpmAuditAdapter:
                 "impact": f"Vulnerable Node dependency {adv.get('module_name')} is used.",
                 "remediation": f"Upgrade to a fixed version: {adv.get('patched_versions', 'see advisory')}",
                 "references": [adv.get("url")] if adv.get("url") else [],
-                "tool_evidence": {
-                    "rule_id": str(adv.get("id")),
+                "tool_evidence": omit_none({
+                    "rule_id": str(adv.get("id")) if adv.get("id") is not None else None,
                     "package_name": adv.get("module_name"),
                     "vulnerable_versions": adv.get("vulnerable_versions"),
                     "fixed_version": adv.get("patched_versions"),
-                },
+                }),
                 "_group": group,
             }
             if cves:
@@ -74,12 +74,12 @@ class NpmAuditAdapter:
                 "impact": f"Vulnerable Node dependency {vuln.get('name')} is used.",
                 "remediation": f"Upgrade to a fixed version: {fixed_version or 'see advisory'}",
                 "references": [via.get("url")] if via.get("url") else [],
-                "tool_evidence": {
-                    "rule_id": str(via.get("source")),
+                "tool_evidence": omit_none({
+                    "rule_id": str(via.get("source")) if via.get("source") is not None else None,
                     "package_name": vuln.get("name"),
                     "vulnerable_versions": vuln.get("range"),
                     "fixed_version": fixed_version,
-                },
+                }),
                 "_group": group,
             }
             if cves:

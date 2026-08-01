@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from .base import normalize_severity, new_finding_id
+from .base import normalize_severity, new_finding_id, omit_none
 
 
 class OsvScannerAdapter:
@@ -46,12 +46,12 @@ class OsvScannerAdapter:
                     "impact": f"Vulnerable dependency {pkg.get('name')}=={pkg.get('version')} is used.",
                     "remediation": "Upgrade to a patched version or see the OSV advisory.",
                     "references": [],
-                    "tool_evidence": {
+                    "tool_evidence": omit_none({
                         "rule_id": vuln.get("id"),
                         "package_name": pkg.get("name"),
                         "vulnerable_versions": pkg.get("version"),
                         "ecosystem": pkg.get("ecosystem"),
-                    },
+                    }),
                     "_group": group,
                 }
                 if cves:

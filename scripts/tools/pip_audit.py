@@ -4,7 +4,7 @@ import glob
 import json
 import os
 import subprocess
-from .base import normalize_severity, new_finding_id
+from .base import normalize_severity, new_finding_id, omit_none
 
 
 class PipAuditAdapter:
@@ -65,12 +65,12 @@ class PipAuditAdapter:
                     "impact": f"Vulnerable dependency {dep['name']}=={dep['version']} is used.",
                     "remediation": f"Upgrade to a fixed version: {', '.join(vuln.get('fix_versions', [])) or 'see advisory'}",
                     "references": [],
-                    "tool_evidence": {
+                    "tool_evidence": omit_none({
                         "rule_id": vuln.get("id"),
                         "package_name": dep["name"],
                         "vulnerable_versions": dep["version"],
                         "fixed_version": vuln.get("fix_versions", [None])[0],
-                    },
+                    }),
                     "_group": group,
                 }
                 if cves:

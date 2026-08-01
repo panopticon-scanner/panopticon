@@ -48,6 +48,27 @@ class TestPipAuditAdapter(unittest.TestCase):
         findings = adapter.parse(PIP_AUDIT_SAMPLE, "g1")
         self.assertEqual(findings[0]["location"]["file"], "requirements.txt")
 
+    def test_parse_omits_none_tool_evidence_fields(self):
+        sample = json.dumps({
+            "dependencies": [
+                {
+                    "name": "requests",
+                    "version": "2.25.1",
+                    "vulns": [
+                        {
+                            "id": "PYSEC-2023-1",
+                            "description": "Missing fixed version",
+                        }
+                    ]
+                }
+            ]
+        }).encode()
+        findings = pa.PipAuditAdapter().parse(sample, "g1")
+        self.assertEqual(len(findings), 1)
+        evidence = findings[0]["tool_evidence"]
+        self.assertNotIn("fixed_version", evidence)
+        self.assertEqual(evidence["package_name"], "requests")
+
     def test_is_applicable_when_requirements_present(self):
         with mock.patch("os.path.exists", side_effect=lambda p: p.endswith("requirements.txt")):
             self.assertTrue(pa.PipAuditAdapter().is_applicable("/tmp/fake"))
