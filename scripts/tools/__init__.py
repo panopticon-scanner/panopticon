@@ -8,6 +8,8 @@ from scripts.tools.brakeman import BrakemanAdapter
 from scripts.tools.bundler_audit import BundlerAuditAdapter
 from scripts.tools.spotbugs import SpotBugsAdapter
 from scripts.tools.dependency_check import DependencyCheckAdapter
+from scripts.tools.cargo_audit import CargoAuditAdapter
+from scripts.tools.roslyn_secguard import RoslynSecGuardAdapter
 
 ADAPTERS = {
     "pip-audit": PipAuditAdapter(),
@@ -24,4 +26,6 @@ ADAPTERS = {
     "bundler-audit": BundlerAuditAdapter(),
     "spotbugs": SpotBugsAdapter(),
     "dependency-check": DependencyCheckAdapter(),
+    "cargo-audit": CargoAuditAdapter(),
+    "roslyn-secguard": RoslynSecGuardAdapter(),
 }

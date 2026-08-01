@@ -21,7 +21,10 @@ LEGACY_SARIF_TOOLS = {"semgrep", "bandit", "trivy", "gitleaks", "gosec", "eslint
 PHASE1_ADAPTERS = {"pip-audit", "npm-audit", "osv-scanner", "eslint-security"}
 
 # Phase 2 adapters selected by applicability to the target repo.
-PHASE2_ADAPTERS = {"brakeman", "bundler-audit", "spotbugs", "dependency-check"}
+PHASE2_ADAPTERS = {
+    "brakeman", "bundler-audit", "spotbugs", "dependency-check",
+    "cargo-audit", "roslyn-secguard",
+}
 
 # Max seconds to let a single docker-run tool invocation run before it's killed;
 # prevents a hung tool from blocking the whole batch (CD-007).
