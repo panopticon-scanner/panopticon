@@ -5,6 +5,20 @@ import os
 import subprocess
 from .base import normalize_severity, new_finding_id, omit_none
 
+
+_CONFIDENCE_MAP = {
+    "high": "CERTAIN",
+    "medium": "LIKELY",
+    "low": "POSSIBLE",
+}
+
+
+def _normalize_confidence(value: str | None) -> str:
+    if not isinstance(value, str):
+        return "POSSIBLE"
+    return _CONFIDENCE_MAP.get(value.lower().strip(), "POSSIBLE")
+
+
 _BRAKEMAN_CWE = {
     "SQL Injection": "CWE-89",
     "Cross-Site Scripting": "CWE-79",
@@ -53,7 +67,7 @@ class BrakemanAdapter:
                 "id": new_finding_id(self.prefix, n),
                 "title": f"{wtype}: {w.get('message', '')}",
                 "severity": normalize_severity(w.get("confidence", "medium")),
-                "confidence": normalize_severity(w.get("confidence", "medium")),
+                "confidence": _normalize_confidence(w.get("confidence", "medium")),
                 "panel": "security",
                 "category": "rails_security",
                 "source": f"tool:{self.name}",

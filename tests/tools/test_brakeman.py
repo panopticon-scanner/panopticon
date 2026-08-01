@@ -29,6 +29,7 @@ class TestBrakemanAdapter(unittest.TestCase):
         f = findings[0]
         self.assertEqual(f["source"], "tool:brakeman")
         self.assertEqual(f["severity"], "HIGH")
+        self.assertEqual(f["confidence"], "CERTAIN")
         self.assertEqual(f["location"]["file"], "app/controllers/users_controller.rb")
         self.assertEqual(f["location"]["line_start"], 12)
         self.assertIn("CWE-89", f["citations"]["cwe"])
