@@ -8,8 +8,7 @@ on:
 
 env:
   TOOLS_OUT: .panopticon/tools
-  IMAGE: ghcr.io/psyberone/panopticon-tools:latest
-
+  IMAGE: ghcr.io/${{ github.repository }}-tools:latest
 jobs:
   scan:
     runs-on: ubuntu-latest
