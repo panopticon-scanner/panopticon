@@ -31,9 +31,10 @@ class SpotBugsAdapter:
         if not os.path.isdir(classes):
             classes = target
         spotbugs_home = os.environ.get("SPOTBUGS_HOME", "/opt/spotbugs")
+        plugin_jar = os.path.join(spotbugs_home, "plugin", "findsecbugs-plugin.jar")
         cmd = [
             os.path.join(spotbugs_home, "bin", "spotbugs"),
-            "-textui", "-xml", "-include", os.path.join(spotbugs_home, "plugin", "findsecbugs-plugin.jar"),
+            "-textui", "-xml", "-pluginList", plugin_jar,
             classes,
         ]
         res = subprocess.run(cmd, capture_output=True, timeout=600)
