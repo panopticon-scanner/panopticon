@@ -8,9 +8,9 @@ import os
 import re
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import citations
-import ingest_tools
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import scripts.citations as citations
+import scripts.ingest_tools as ingest_tools
 
 SEVERITIES = {"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"}
 SEV_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
@@ -335,6 +335,48 @@ def cross_panel_corroboration(findings, window=CORROBORATION_LINE_WINDOW):
     return integration
 
 
+def flag_for_advisor(findings, depth="standard"):
+    """Return findings that need independent advisor review."""
+    flagged = []
+    for f in findings:
+        refs = f.get("references") or []
+        confidence = f.get("confidence", "POSSIBLE")
+        severity = f.get("severity", "INFO")
+
+        # HIGH/CRITICAL uncited and low confidence
+        if (severity in ("HIGH", "CRITICAL")
+                and confidence in ("NOTE", "POSSIBLE")
+                and not refs):
+            flagged.append(f)
+            continue
+
+        # HIGH/CRITICAL with fewer than 2 citations
+        if severity in ("HIGH", "CRITICAL") and len(refs) < 2:
+            flagged.append(f)
+            continue
+
+        # Deep mode: any uncited finding in risky panels
+        if depth == "deep" and f.get("panel") in ("security", "redteam") and not refs:
+            flagged.append(f)
+            continue
+    return flagged
+
+
+def apply_advisor_verdict(finding, verdict):
+    """Update a finding based on advisor verdict."""
+    finding["advisor_verdict"] = verdict.get("verdict")
+    if verdict.get("verdict") == "CONFIRMED":
+        finding["confidence"] = _bump_confidence(finding.get("confidence"))
+        existing = set(finding.get("references") or [])
+        for ref in verdict.get("references", []):
+            if ref not in existing:
+                finding.setdefault("references", []).append(ref)
+    elif verdict.get("verdict") == "REJECTED":
+        finding["severity"] = "INFO"
+        finding["confidence"] = "NOTE"
+    # NEEDS_MORE_INFO: leave as-is, just mark verdict
+
+
 def _present(findings, sev):
     return any(f.get("severity") == sev for f in findings)
 
@@ -395,9 +437,15 @@ def _worst_grade(grades):
 
 
 def build_report(findings, groups_meta, target, fail_on, timestamp, review_type="repo",
-                 security_mode="standard"):
+                 security_mode="standard", advisor_results=None):
     """Build complete CodeReviewReport with deduplication, grading, and CI gate verdict."""
     findings = dedupe(findings)
+    if advisor_results:
+        for finding_id, verdict in advisor_results.items():
+            for f in findings:
+                if f.get("id") == finding_id:
+                    apply_advisor_verdict(f, verdict)
+                    break
     by_panel = {p: [] for p in VALID_PANELS}
     for f in findings:
         by_panel.get(f["panel"], by_panel["code"]).append(f)

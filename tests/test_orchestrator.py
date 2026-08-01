@@ -329,6 +329,20 @@ class TestCli(unittest.TestCase):
         self.assertEqual(res["security_mode"], "redteam")
 
 
+class TestDepth(unittest.TestCase):
+    def test_clean_group_is_shallow(self):
+        depth = orch._compute_depth(["docs/style.md"], ["code"], "standard")
+        self.assertEqual(depth, "shallow")
+
+    def test_security_panel_is_standard(self):
+        result = orch.build_result(".", "repo", ".", None, ["app/views.py"], [], 15, security_mode="standard")
+        self.assertEqual(result["groups"][0]["depth"], "standard")
+
+    def test_redteam_is_deep(self):
+        result = orch.build_result(".", "repo", ".", None, ["app/auth.py"], [], 15, security_mode="redteam")
+        self.assertEqual(result["groups"][0]["depth"], "deep")
+
+
 class TestRepoScanDiscovery(unittest.TestCase):
     """Discovery-gap regressions for --repo-scan: noise exclusion, targeted
     dotdir inclusion (.github/workflows), and real test-file surfacing."""

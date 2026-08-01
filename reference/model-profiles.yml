@@ -1,0 +1,62 @@
+hosts:
+  kimi:
+    scout:
+      model: kimi-for-coding
+      max_context_size: 131072
+      max_output_size: 16384
+    lens_sweep:
+      model: kimi-for-coding
+      max_context_size: 131072
+      max_output_size: 8192
+    panel_review:
+      model: kimi-for-coding
+      max_context_size: 131072
+      max_output_size: 16384
+    advisor:
+      model: k3
+      max_context_size: 524288
+      max_output_size: 32768
+  claude:
+    scout:
+      model: claude-haiku
+      max_context_size: 200000
+      max_output_size: 4096
+    lens_sweep:
+      model: claude-haiku
+      max_context_size: 200000
+      max_output_size: 4096
+    panel_review:
+      model: claude-sonnet
+      max_context_size: 200000
+      max_output_size: 8192
+    advisor:
+      model: claude-opus
+      max_context_size: 200000
+      max_output_size: 16384
+  openrouter:
+    scout:
+      model: openai/gpt-4o-mini
+      max_context_size: 128000
+      max_output_size: 4096
+    lens_sweep:
+      model: openai/gpt-4o-mini
+      max_context_size: 128000
+      max_output_size: 4096
+    panel_review:
+      model: anthropic/claude-sonnet
+      max_context_size: 200000
+      max_output_size: 8192
+    advisor:
+      model: anthropic/claude-opus
+      max_context_size: 200000
+      max_output_size: 16384
+
+roles:
+  scout:
+    description: Profiles files and selects depth/lenses
+  lens_sweep:
+    description: Cheap, narrow mechanical lens sweep
+  panel_review:
+    description: Main reviewer for a panel
+  advisor:
+    description: Independent claim verification

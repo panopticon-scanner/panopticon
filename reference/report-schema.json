@@ -55,6 +55,9 @@
           "panel": {"type": "string", "enum": ["code", "test", "security", "architecture", "database", "redteam"]},
           "lens": {"type": "string"},
           "category": {"type": "string"},
+          "source_role": {"type": "string", "enum": ["lens_sweep", "panel_review", "advisor"]},
+          "advisor_verdict": {"type": "string", "enum": ["CONFIRMED", "REJECTED", "NEEDS_MORE_INFO"]},
+          "depth": {"type": "string", "enum": ["shallow", "standard", "deep"]},
           "location": {
             "type": "object",
             "required": ["file", "line_start"],
@@ -78,11 +81,23 @@
           "citations": {
             "type": "object",
             "properties": {
-              "cwe": { "type": "array", "items": { "type": "object" } },
+              "cwe": { "type": "array", "items": { "anyOf": [{ "type": "string" }, { "type": "object" }] } },
               "owasp": { "type": "array", "items": { "type": "string" } },
               "ssvc": { "type": "object" },
               "cve": { "type": "array", "items": { "type": "string" } },
               "epss": { "type": "array", "items": { "type": "object" } }
+            }
+          },
+          "tool_evidence": {
+            "type": "object",
+            "properties": {
+              "rule_id": { "type": "string" },
+              "advisory_url": { "type": "string" },
+              "package_name": { "type": "string" },
+              "vulnerable_versions": { "type": "string" },
+              "fixed_version": { "type": "string" },
+              "cvss_score": { "type": "number" },
+              "ecosystem": { "type": "string" }
             }
           }
         }

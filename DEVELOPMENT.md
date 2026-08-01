@@ -8,10 +8,10 @@ work has context without the original spec/plan docs.
 
 ## What it is
 A **discovery → scout → fan-out → synthesis** pipeline. It profiles a target with a
-cheap "scout", builds a risk-tuned plan, and fans out to Kimi `coder` subagents in
-parallel via `AgentSwarm`. Each subagent receives a panel role prompt
-(`prompts/panel-template.md`) and reviews the assigned files through one of six
-panels: **code**, **test**, **security**, **architecture**, **database**, and **redteam**.
+cheap "scout", builds a risk-tuned plan, and fans out to Kimi custom agents in
+parallel via `AgentSwarm`. Each panel is reviewed by the `panel-review` agent
+(`agents/panel-review.md`; `prompts/panel-template.md` is preserved as a fallback)
+through one of six panels: **code**, **test**, **security**, **architecture**, **database**, and **redteam**.
 Optionally, findings are grounded with real static-analysis tools from a Docker
 container. It synthesizes everything into a `CodeReviewReport` (terminal markdown
 summary + JSON artifact) with standards citations and CI gating.
@@ -32,14 +32,14 @@ summary + JSON artifact) with standards citations and CI gating.
   eslint. Build once: `docker build -t panopticon-tools <this dir>`.
 - `reference/` — `report-schema.json`, `scope-profile-schema.json`, `cwe-catalog.json`
   (curated CWE→OWASP map), `security-checklists.md`, `code-review-groups.example.yml`.
-- `prompts/` — `scout.md` (surface profiling + tool selection), `panel-template.md`
-  (dispatch prompt for the six-panel review model), `lenses.md` (per-panel lens catalog).
+- `agents/` — Kimi Code custom agents: `scout.md`, `lens-sweep.md`, `panel-review.md`, `advisor.md`.
+- `prompts/` — `panel-template.md` (fallback dispatch prompt for the six-panel review model),
+  `lenses.md` (per-panel lens catalog).
 
 ## Key design decisions (don't relitigate without reason)
-- **Fan out via `AgentSwarm`** of Kimi `coder` subagents, each loaded with a panel
-  role prompt. The six panels (code/test/security/architecture/database/redteam)
-  are selected per group by `compute_group_panels`; lenses are spawned only when
-  the scout flags a surface.
+- **Fan out via `AgentSwarm`** of Kimi custom agents (`scout`, `panel-review`, `lens-sweep`, `advisor`).
+  The six panels (code/test/security/architecture/database/redteam) are selected per group
+  by `compute_group_panels`; lenses are spawned only when the scout flags a surface.
 - **Grade = worst-severity A–F rollup** (F if any CRITICAL … A if none). Deliberate for a
   gate; do NOT replace it. Severity + CVSS follow industry scales; the letter grade is ours.
 - **Citations are hybrid**: tools emit CWE/OWASP/CVE natively (authoritative); agents assert;
@@ -56,6 +56,14 @@ Fresh session → `/panopticon` (`-f file`, `-d dir`, `-g "Group[Facet]"`, `-c` 
 `--pr N`, `-e` explore, or whole repo). `--epss` enables EPSS lookups; `--fail-on high`
 gates CI (keys off `summary.gate` in the JSON). Tool layer: build the image once (above);
 it's used automatically when present, `--no-tools` to skip.
+
+## Adding a new static-analysis tool
+
+1. Create `scripts/tools/<tool_name>.py` implementing `is_applicable()`, `invoke()`, and `parse()`.
+2. Register it in `scripts/tools/__init__.py` under `ADAPTERS`.
+3. Add unit tests in `tests/tools/test_<tool_name>.py`.
+4. If the tool needs installation, add it to `Dockerfile`.
+5. Run `python3 -m pytest tests/tools/ tests/test_ingest_tools.py tests/test_run_tools.py -v`.
 
 ## Versioning
 Scheme: a **minor** bump (2.x.0) per release round; **major** (x.0.0) reserved for breaking

@@ -4,8 +4,8 @@ import json
 import tempfile
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "scripts"))
-import synthesize as syn
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir))
+import scripts.synthesize as syn
 
 
 class TestNormalize(unittest.TestCase):

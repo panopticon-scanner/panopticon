@@ -1,6 +1,6 @@
 import contextlib, io, os, sys, json, tempfile, unittest
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "scripts"))
-import ingest_tools as it
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir))
+import scripts.ingest_tools as it
 
 SARIF = {
   "runs": [{
@@ -38,8 +38,7 @@ class TestIngest(unittest.TestCase):
             self.assertEqual(len(out), 1)
 
     def test_ingest_dir_skips_non_sarif_json_with_diagnostic(self):
-        # CD-003 regression: valid JSON that isn't SARIF (no 'runs') must be
-        # skipped with a diagnostic, not silently dropped.
+        # Files without a registered adapter are skipped with a diagnostic.
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "custom.json"), "w") as fh:
                 json.dump({"findings": [{"id": "X-1"}]}, fh)
@@ -48,7 +47,7 @@ class TestIngest(unittest.TestCase):
                 out = it.ingest_dir(d, "g1")
             self.assertEqual(out, [])
             self.assertIn("custom.json", stderr.getvalue())
-            self.assertIn("not SARIF", stderr.getvalue())
+            self.assertIn("no adapter registered", stderr.getvalue())
 
     def test_sarif_uri_normalized_to_repo_relative(self):
         sarif = {"runs":[{"tool":{"driver":{"name":"semgrep","rules":[]}},
@@ -155,3 +154,26 @@ class TestIngest(unittest.TestCase):
             "region":{"startLine":1}}}]}]}]}
         out = it.sarif_to_findings(sarif, "semgrep", "g1", "SG")
         self.assertEqual(out[0]["title"], "line one line two line three")
+
+    def test_ingest_tools_and_legacy_adapter_share_sarif_utils(self):
+        # The legacy adapter and ingest_tools must both use the shared SARIF
+        # utilities without a circular import between the two modules.
+        import scripts.tools.legacy_sarif as ls
+        import scripts.tools.sarif_utils as su
+        self.assertTrue(hasattr(ls, "LegacySarifAdapter"))
+        self.assertIs(it.sarif_to_findings, su.sarif_to_findings)
+        self.assertEqual(it.PREFIX, su.PREFIX)
+
+
+class TestAdapterRouting(unittest.TestCase):
+    def test_ingest_routes_json_to_adapter(self):
+        raw = json.dumps({"dependencies": [{"name": "x", "version": "1.0", "vulns": []}]})
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "pip-audit.json"), "w") as fh:
+                fh.write(raw)
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                out = it.ingest_dir(d, "g1")
+            self.assertEqual(out, [])
+            self.assertNotIn("not SARIF", stderr.getvalue())
+            self.assertNotIn("no adapter registered", stderr.getvalue())
