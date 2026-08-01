@@ -20,7 +20,8 @@ Clone or symlink the repository into your Kimi skills directory:
 
 ```bash
 # default Kimi skills location (see `kimi config get skills_dir`)
-ln -s "$(pwd)/panopticon" ~/.kimi/skills/panopticon
+mkdir -p ~/.kimi/skills
+ln -s "$(pwd)" ~/.kimi/skills/panopticon
 ```
 
 Then invoke it with:
