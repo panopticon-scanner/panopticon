@@ -1506,5 +1506,5 @@ git commit -m "fix: address review feedback on multi-model dispatch" || true
 - `resolve_model(host, role, cli_overrides=None)` → dict used consistently.
 - `plan_lenses(profile, panel_name)` → list of strings used in `dispatch.py`.
 - `build_plan(scope_profile, host, model_overrides)` → list of plan dicts.
-- `flag_for_advisor(findings, depth)` → list of indices.
+- `flag_for_advisor(findings, depth)` → list of findings.
 - `apply_advisor_verdict(finding, verdict)` mutates finding in place.
