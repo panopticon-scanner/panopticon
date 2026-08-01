@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Render a CodeReviewReport as a self-contained HTML document."""
+import hashlib
 import html
+import os
 
 _CSS = """
 :root {
@@ -62,6 +64,23 @@ body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Ro
 .heatmap-cell { padding: .25rem .5rem; border-radius: .25rem; font-size: .85rem; font-family: monospace; }
 .heatmap-cell .count { margin-left: .25rem; font-weight: 700; }
 .heatmap-more { padding: .25rem .5rem; color: var(--muted); }
+.compare-dashboard { display: flex; gap: .5rem; flex-wrap: wrap; }
+.compare-panel { flex: 1; min-width: 250px; background: var(--card); border: 1px solid var(--border); border-radius: .5rem; padding: 1rem; }
+.stat-minis { margin-top: .5rem; }
+.stat-mini { display: inline-block; padding: .1rem .4rem; border-radius: .25rem; font-size: .75rem; margin-right: .25rem; }
+.delta-card { flex: 1; min-width: 120px; background: var(--card); border: 1px solid var(--border); border-radius: .25rem; padding: .75rem; text-align: center; }
+.delta-label { font-size: .75rem; text-transform: uppercase; }
+.delta-value { font-size: 1.25rem; font-weight: 700; }
+.delta-new { border-left: 4px solid var(--high); }
+.delta-resolved { border-left: 4px solid var(--pass); }
+.delta-unchanged { border-left: 4px solid var(--info); }
+.delta-severity-changed { border-left: 4px solid var(--medium); }
+.compare-columns { display: flex; gap: 1rem; }
+.compare-col { flex: 1; min-width: 0; }
+.delta-new-badge { background: var(--high); color: #fff; }
+.delta-resolved-badge { background: var(--pass); color: #fff; }
+.delta-unchanged-badge { background: var(--info); color: #fff; }
+.delta-severity-changed-badge { background: var(--medium); color: #000; }
 """
 
 _JS = """
@@ -113,6 +132,51 @@ _SEV_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
 _PANEL_ORDER = ["code", "test", "security", "architecture", "database", "redteam"]
 
 
+def _normalize_path(path):
+    """Strip leading ./ and normalize separators for stable matching."""
+    if not path:
+        return ""
+    p = str(path).replace(os.sep, "/")
+    while p.startswith("./"):
+        p = p[2:]
+    return p
+
+
+def _fingerprint(finding):
+    """Stable fingerprint that ignores line numbers so moved issues match."""
+    loc = finding.get("location") or {}
+    parts = [
+        finding.get("panel", ""),
+        finding.get("category", ""),
+        _normalize_path(loc.get("file", "")),
+        finding.get("title", ""),
+        finding.get("description", ""),
+    ]
+    payload = "|".join(parts).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()[:16]
+
+
+def _match_findings(a_findings, b_findings):
+    """Return dict fingerprint -> {'a': finding|None, 'b': finding|None, 'delta': str}."""
+    a_by_fp = {_fingerprint(f): f for f in a_findings}
+    b_by_fp = {_fingerprint(f): f for f in b_findings}
+    all_fps = sorted(set(a_by_fp) | set(b_by_fp))
+    matches = []
+    for fp in all_fps:
+        af = a_by_fp.get(fp)
+        bf = b_by_fp.get(fp)
+        if af and bf:
+            delta = "unchanged"
+            if af.get("severity") != bf.get("severity"):
+                delta = "severity changed"
+        elif bf:
+            delta = "new"
+        else:
+            delta = "resolved"
+        matches.append({"fingerprint": fp, "a": af, "b": bf, "delta": delta})
+    return matches
+
+
 def _severity_class(severity):
     return f"sev-{str(severity).lower()}"
 
@@ -134,6 +198,61 @@ def _render_header(report):
         "</div>",
     ]
     return "\n".join(parts)
+
+
+def _render_compare_summary(label, report):
+    summary = report.get("summary", {})
+    stats = summary.get("stats", {})
+    stat_cards = " ".join(
+        f"<span class='stat-mini {_severity_class(sev)}'>{sev} {stats.get(sev.lower(), 0)}</span>"
+        for sev in _SEV_ORDER
+    )
+    return f"""
+<div class="compare-panel">
+<h3>{_escape(label)}</h3>
+<div class="badges">
+<span class="badge grade">{_escape(summary.get('overall_grade', '-'))}</span>
+<span class="badge gate">{_escape(summary.get('gate', 'OFF'))}</span>
+</div>
+<div class="stat-minis">{stat_cards}</div>
+</div>
+"""
+
+
+def _render_compare_dashboard(matches):
+    counts = {"new": 0, "resolved": 0, "unchanged": 0, "severity changed": 0}
+    for m in matches:
+        counts[m["delta"]] = counts.get(m["delta"], 0) + 1
+    delta_cards = " ".join(
+        f"<div class='delta-card {k.replace(' ', '-')}'><div class='delta-label'>{k}</div>"
+        f"<div class='delta-value'>{v}</div></div>"
+        for k, v in counts.items()
+    )
+    return f"""
+<section class="dashboard compare-dashboard">
+<h2>Compare</h2>
+{delta_cards}
+</section>
+"""
+
+
+def _render_compare_findings(matches):
+    left = []
+    right = []
+    for m in matches:
+        if m["a"]:
+            left.append(_render_card(m["a"], delta=m["delta"]))
+        if m["b"]:
+            right.append(_render_card(m["b"], delta=m["delta"]))
+    return f"""
+<section class="findings compare-findings">
+<h2>Findings</h2>
+<div class="compare-columns">
+<div class="compare-col"><h3>Base</h3>{''.join(left)}</div>
+<div class="compare-col"><h3>Head</h3>{''.join(right)}</div>
+</div>
+</section>
+"""
 
 
 def _render_dashboard(report):
@@ -187,7 +306,7 @@ def _render_card(finding, delta=None):
     )
     delta_badge = ""
     if delta:
-        delta_badge = f"<span class='badge delta-{_escape(delta)}'>{_escape(delta)}</span>"
+        delta_badge = f"<span class='badge delta-{_escape(delta.replace(' ', '-'))}-badge'>{_escape(delta)}</span>"
 
     details = []
     for label, key in [("Description", "description"), ("Impact", "impact"), ("Remediation", "remediation")]:
@@ -306,6 +425,16 @@ def _render_findings(findings):
 
 def render(report, compare_report=None):
     """Render a CodeReviewReport (optionally with a second report for compare)."""
-    body = _render_header(report) + _render_dashboard(report) + _render_findings(report.get("findings", []))
-    title = f"Panopticon — {_escape(report.get('meta', {}).get('target', 'report'))}"
+    if compare_report:
+        matches = _match_findings(compare_report.get("findings", []), report.get("findings", []))
+        body = (
+            _render_compare_summary("Base", compare_report) +
+            _render_compare_summary("Head", report) +
+            _render_compare_dashboard(matches) +
+            _render_compare_findings(matches)
+        )
+        title = f"Panopticon Compare — {_escape(report.get('meta', {}).get('target', 'report'))}"
+    else:
+        body = _render_header(report) + _render_dashboard(report) + _render_findings(report.get("findings", []))
+        title = f"Panopticon — {_escape(report.get('meta', {}).get('target', 'report'))}"
     return _html_doc(title, body)

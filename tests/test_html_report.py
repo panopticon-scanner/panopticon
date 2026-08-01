@@ -110,3 +110,27 @@ class TestHtmlReport(unittest.TestCase):
         out = hr.render(report)
         self.assertIn("File heatmap", out)
         self.assertIn("app.py", out)
+
+    def test_fingerprint_ignores_line_number(self):
+        a = {"panel": "security", "category": "injection", "location": {"file": "app.py", "line_start": 10},
+             "title": "SQLi", "description": "bad"}
+        b = dict(a)
+        b["location"] = {"file": "app.py", "line_start": 20}
+        self.assertEqual(hr._fingerprint(a), hr._fingerprint(b))
+
+    def test_compare_shows_new_and_resolved(self):
+        base = _minimal_report(findings=[
+            {"id": "SEC-001", "title": "SQL injection", "severity": "HIGH", "confidence": "CERTAIN",
+             "panel": "security", "category": "injection", "location": {"file": "app.py", "line_start": 10},
+             "description": "x", "impact": "", "remediation": "", "references": []},
+        ])
+        head = _minimal_report(findings=[
+            {"id": "SEC-002", "title": "XSS", "severity": "HIGH", "confidence": "CERTAIN",
+             "panel": "security", "category": "xss", "location": {"file": "app.py", "line_start": 15},
+             "description": "y", "impact": "", "remediation": "", "references": []},
+        ])
+        out = hr.render(head, compare_report=base)
+        self.assertIn("new", out)
+        self.assertIn("resolved", out)
+        self.assertIn("XSS", out)
+        self.assertIn("SQL injection", out)
