@@ -4,3 +4,15 @@ __pycache__/
 .panopticon/
 .superpowers/
 .worktrees/
+
+# OS / editor noise
+.DS_Store
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Runtime artifacts
+groups.json
+CodeReviewReport_*.json
+
