@@ -6,6 +6,8 @@ from scripts.tools.eslint_security import EslintSecurityAdapter
 from scripts.tools.legacy_sarif import LegacySarifAdapter
 from scripts.tools.brakeman import BrakemanAdapter
 from scripts.tools.bundler_audit import BundlerAuditAdapter
+from scripts.tools.spotbugs import SpotBugsAdapter
+from scripts.tools.dependency_check import DependencyCheckAdapter
 
 ADAPTERS = {
     "pip-audit": PipAuditAdapter(),
@@ -20,4 +22,6 @@ ADAPTERS = {
     "eslint": LegacySarifAdapter("eslint"),
     "brakeman": BrakemanAdapter(),
     "bundler-audit": BundlerAuditAdapter(),
+    "spotbugs": SpotBugsAdapter(),
+    "dependency-check": DependencyCheckAdapter(),
 }
