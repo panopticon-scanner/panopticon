@@ -60,7 +60,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends default-jdk unz
 ARG SPOTBUGS_VERSION=4.8.6
 RUN curl -sfL "https://github.com/spotbugs/spotbugs/releases/download/${SPOTBUGS_VERSION}/spotbugs-${SPOTBUGS_VERSION}.tgz" \
         | tar -xz -C /opt \
-    && ln -s "/opt/spotbugs-${SPOTBUGS_VERSION}" /opt/spotbugs
+    && ln -s "/opt/spotbugs-${SPOTBUGS_VERSION}" /opt/spotbugs \
+    && chmod +x /opt/spotbugs/bin/spotbugs
 ARG FINDSECBUGS_VERSION=1.13.0
 RUN mkdir -p /opt/spotbugs/plugin \
     && curl -sfL "https://search.maven.org/remotecontent?filepath=com/h3xstream/findsecbugs/findsecbugs-plugin/${FINDSECBUGS_VERSION}/findsecbugs-plugin-${FINDSECBUGS_VERSION}.jar" \
@@ -70,7 +71,7 @@ RUN mkdir -p /opt/spotbugs/plugin \
 ARG DEPENDENCY_CHECK_VERSION=10.0.3
 RUN curl -sfL "https://github.com/jeremylong/DependencyCheck/releases/download/v${DEPENDENCY_CHECK_VERSION}/dependency-check-${DEPENDENCY_CHECK_VERSION}-release.zip" \
         -o /tmp/dc.zip \
-    && unzip -q /tmp/dc.zip -d /opt/dependency-check \
+    && unzip -q /tmp/dc.zip -d /opt \
     && rm /tmp/dc.zip
 
 # Rust + cargo-audit (system-wide so the scanner user can invoke cargo/rustc)
@@ -98,7 +99,10 @@ RUN printf '%s\n' \
     '  </ItemGroup>' \
     '</Project>' > /Directory.Build.props
 
-RUN useradd -m -u 1000 scanner
+RUN useradd -m -u 1000 scanner \
+    && mkdir -p /home/scanner/.cargo \
+    && chown scanner:scanner /home/scanner/.cargo
+ENV CARGO_HOME=/home/scanner/.cargo
 USER scanner
 WORKDIR /src
 ENTRYPOINT []
