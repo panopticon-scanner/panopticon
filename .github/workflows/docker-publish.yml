@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
     paths:
+      - .github/workflows/docker-publish.yml
       - Dockerfile
       - scripts/tools/**
       - scripts/_run_adapter.py
