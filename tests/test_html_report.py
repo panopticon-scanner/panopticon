@@ -88,3 +88,19 @@ class TestHtmlReport(unittest.TestCase):
         out = hr.render(report)
         self.assertIn("Top issues", out)
         self.assertIn("SQL injection", out)
+
+    def test_findings_section_has_tabs(self):
+        report = _minimal_report()
+        out = hr.render(report)
+        self.assertIn('data-tab="ALL"', out)
+        self.assertIn('data-tab="HIGH"', out)
+        self.assertIn('data-tab="CRITICAL"', out)
+
+    def test_finding_card_renders_details(self):
+        report = _minimal_report()
+        out = hr.render(report)
+        self.assertIn("SEC-001", out)
+        self.assertIn("SQL injection", out)
+        self.assertIn("app.py:10", out)
+        self.assertIn("User input used directly in query.", out)
+        self.assertIn("Use parameterized queries.", out)

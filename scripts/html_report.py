@@ -40,6 +40,24 @@ body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Ro
 .grades th, .grades td { border: 1px solid var(--border); padding: .5rem; text-align: center; }
 .grades th:first-child { text-align: left; }
 .top-issues { margin: 0; padding-left: 1.25rem; }
+.findings { margin-top: 1rem; }
+.tabs { display: flex; gap: .25rem; border-bottom: 1px solid var(--border); margin-bottom: .5rem; }
+.tab { background: var(--card); border: 1px solid var(--border); border-bottom: none; padding: .5rem 1rem; cursor: pointer; border-radius: .25rem .25rem 0 0; }
+.tab[aria-selected="true"] { background: var(--bg); font-weight: 700; }
+.finding-card { background: var(--card); border: 1px solid var(--border); border-radius: .25rem; margin-bottom: .5rem; }
+.finding-card summary { padding: .75rem; cursor: pointer; display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+.finding-card .title { flex: 1; font-weight: 600; }
+.finding-card .where { color: var(--muted); font-family: monospace; }
+.finding-card .meta { color: var(--muted); font-size: .85rem; }
+.finding-body { padding: .75rem; border-top: 1px solid var(--border); }
+.finding-body dl { margin: 0; }
+.finding-body dt { font-weight: 700; margin-top: .75rem; }
+.finding-body dd { margin-left: 0; }
+.chip { display: inline-block; background: #e9ecef; border-radius: .25rem; padding: .1rem .4rem; font-size: .8rem; margin-right: .25rem; }
+.prov-tool { background: #6f42c1; color: #fff; }
+.prov-reinforced { background: var(--pass); color: #fff; }
+.prov-corroborated { background: #0dcaf0; color: #000; }
+.prov-agent { background: var(--muted); color: #fff; }
 """
 
 _JS = """
@@ -150,8 +168,99 @@ def _render_dashboard(report):
 """
 
 
+def _render_card(finding, delta=None):
+    loc = finding.get("location") or {}
+    where = f"{_escape(loc.get('file', '?'))}:{_escape(loc.get('line_start', '?'))}"
+    sev = finding.get("severity", "INFO")
+    panel = finding.get("panel", "code")
+    category = finding.get("category", "general")
+    confidence = finding.get("confidence", "NOTE")
+    provenance = "tool" if str(finding.get("source", "")).startswith("tool:") else (
+        "reinforced" if finding.get("reinforced") else (
+            "corroborated" if finding.get("corroborated") else "agent"
+        )
+    )
+    delta_badge = ""
+    if delta:
+        delta_badge = f"<span class='badge delta-{_escape(delta)}'>{_escape(delta)}</span>"
+
+    details = []
+    for label, key in [("Description", "description"), ("Impact", "impact"), ("Remediation", "remediation")]:
+        value = finding.get(key)
+        if value:
+            details.append(f"<dt>{label}</dt><dd>{_escape(value)}</dd>")
+
+    refs = finding.get("references") or []
+    if refs:
+        links = "\n".join(f"<li><a href='{_escape(r)}'>{_escape(r)}</a></li>" for r in refs)
+        details.append(f"<dt>References</dt><dd><ul>{links}</ul></dd>")
+
+    cvss = finding.get("cvss")
+    if cvss:
+        details.append(f"<dt>CVSS</dt><dd>{_escape(cvss.get('score', ''))} {_escape(cvss.get('vector', ''))}</dd>")
+    if finding.get("exploit_scenario"):
+        details.append(f"<dt>Exploit scenario</dt><dd>{_escape(finding['exploit_scenario'])}</dd>")
+
+    citations = finding.get("citations") or {}
+    chips = []
+    for cwe in citations.get("cwe") or []:
+        cid = cwe.get("id") if isinstance(cwe, dict) else cwe
+        chips.append(f"<span class='chip'>{_escape(cid)}</span>")
+    for owasp in citations.get("owasp") or []:
+        chips.append(f"<span class='chip'>{_escape(owasp)}</span>")
+    if chips:
+        details.append(f"<dt>Citations</dt><dd>{' '.join(chips)}</dd>")
+
+    body = f"<dl>{''.join(details)}</dl>" if details else ""
+
+    return f"""
+<details class="finding-card">
+<summary>
+<span class="badge {_severity_class(sev)}">{_escape(sev)}</span>
+<strong>{_escape(finding.get('id', '???'))}</strong>
+<span class="title">{_escape(finding.get('title', ''))}</span>
+<span class="where">{where}</span>
+<span class="meta">{_escape(panel)} / {_escape(category)} / {_escape(confidence)}</span>
+<span class="badge prov-{provenance}">{_escape(provenance)}</span>
+{delta_badge}
+</summary>
+<div class="finding-body">{body}</div>
+</details>
+"""
+
+
+def _render_findings(findings):
+    by_sev = {sev: [] for sev in _SEV_ORDER}
+    by_sev["ALL"] = []
+    for f in findings:
+        by_sev["ALL"].append(f)
+        sev = f.get("severity", "INFO")
+        if sev in by_sev:
+            by_sev[sev].append(f)
+
+    tabs = []
+    panels = []
+    for sev in ["ALL"] + _SEV_ORDER:
+        count = len(by_sev[sev])
+        tabs.append(
+            f'<button class="tab" data-tab="{sev}" aria-selected="{str(sev == "ALL").lower()}">'
+            f"{sev} <span class='count'>{count}</span></button>"
+        )
+        cards = "\n".join(_render_card(f) for f in by_sev[sev])
+        hidden = "" if sev == "ALL" else "hidden"
+        panels.append(f'<div class="tab-panel" data-panel="{sev}" {hidden}>{cards}</div>')
+
+    return f"""
+<section class="findings" data-tab-group="findings">
+<h2>Findings</h2>
+<div class="tabs" role="tablist">{"".join(tabs)}</div>
+{"".join(panels)}
+</section>
+"""
+
+
 def render(report, compare_report=None):
     """Render a CodeReviewReport (optionally with a second report for compare)."""
-    body = _render_header(report) + _render_dashboard(report)
+    body = _render_header(report) + _render_dashboard(report) + _render_findings(report.get("findings", []))
     title = f"Panopticon — {_escape(report.get('meta', {}).get('target', 'report'))}"
     return _html_doc(title, body)
