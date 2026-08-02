@@ -41,7 +41,9 @@ class SpotBugsAdapter:
         return res.stdout, res.returncode
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
-        text = raw.decode("utf-8", errors="replace")
+        text = raw.decode("utf-8", errors="replace").strip()
+        if not text:
+            return []
         root = ET.fromstring(text)
         out = []
         n = 1

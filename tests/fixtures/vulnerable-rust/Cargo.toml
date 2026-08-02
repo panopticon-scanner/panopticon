@@ -7,3 +7,11 @@ edition = "2021"
 # time 0.1.x is flagged by RUSTSEC-2020-0071 (potential segfault).
 time = "0.1.44"
 serde_cbor = "0.10.2"
+# smallvec 0.6.13 is flagged by RUSTSEC-2021-0003 (buffer overflow in insert_many).
+smallvec = "=0.6.13"
+# serde_yaml 0.8.25 is flagged by RUSTSEC-2024-0327 (untrusted code execution).
+serde_yaml = "=0.8.25"
+# chrono 0.4.19 depends on time 0.1 and is flagged by RUSTSEC-2020-0159 (potential segfault).
+chrono = "=0.4.19"
+# regex 1.4.0 is flagged by RUSTSEC-2022-0013 (regex denial of service).
+regex = "=1.4.0"

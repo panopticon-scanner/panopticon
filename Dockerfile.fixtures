@@ -25,7 +25,7 @@ WORKDIR /opt/panopticon-fixtures
 ARG RAILS_GOAT_REF=main
 RUN git clone --depth 1 --branch ${RAILS_GOAT_REF} https://github.com/OWASP/railsgoat.git
 
-ARG WEB_GOAT_REF=main
+ARG WEB_GOAT_REF=v2023.8
 RUN git clone --depth 1 --branch ${WEB_GOAT_REF} https://github.com/WebGoat/WebGoat.git
 
 ARG ASP_GOAT_REF=main

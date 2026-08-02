@@ -31,3 +31,7 @@ class TestSpotBugsAdapter(unittest.TestCase):
     def test_is_applicable_when_pom_present(self):
         with mock.patch("os.path.exists", side_effect=lambda p: p.endswith("pom.xml")):
             self.assertTrue(sb.SpotBugsAdapter().is_applicable("/tmp/fake"))
+
+    def test_parse_empty_output_returns_no_findings(self):
+        findings = sb.SpotBugsAdapter().parse(b"", "g1")
+        self.assertEqual(findings, [])

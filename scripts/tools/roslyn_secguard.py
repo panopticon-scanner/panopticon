@@ -2,14 +2,20 @@
 from __future__ import annotations
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 from .base import normalize_severity, new_finding_id, omit_none
 
 _ROSLYN_CWE = {
-    "SCS0001": "CWE-89",
+    "SCS0001": "CWE-78",
+    "SCS0002": "CWE-89",
+    "SCS0007": "CWE-611",
+    "SCS0016": "CWE-352",
+    "SCS0018": "CWE-22",
     "SCS0026": "CWE-79",
-    "SCS0018": "CWE-78",
+    "SCS0027": "CWE-601",
+    "SCS0028": "CWE-502",
     "SCS0041": "CWE-22",
 }
 
@@ -42,20 +48,21 @@ class RoslynSecGuardAdapter:
         return target
 
     def invoke(self, target: str) -> tuple[bytes, int]:
-        # Experimental: build with SecurityCodeScan analyzer and output SARIF.
-        # If the target does not reference the analyzer, this returns few/no findings.
-        import shutil
-
+        # Build the target with the SecurityCodeScan analyzer and output SARIF.
+        # The project is copied to a temporary directory so read-only mounts and
+        # stale incremental build state do not break analysis.
         tmp = tempfile.mkdtemp(prefix="roslyn-")
         try:
-            sarif = os.path.join(tmp, "out.sarif")
             build_target = self._build_target(target)
+            rel_target = os.path.relpath(build_target, target)
+            tmp_target = os.path.join(tmp, rel_target)
+            shutil.copytree(target, tmp, dirs_exist_ok=True)
+
+            sarif = os.path.join(tmp, "out.sarif")
             cmd = [
-                "dotnet", "build", build_target,
+                "dotnet", "build", tmp_target,
                 "-p:TreatWarningsAsErrors=false",
                 "-p:ErrorLog=" + sarif + ",version=2.1",
-                "-p:BaseIntermediateOutputPath=" + os.path.join(tmp, "obj"),
-                "-p:BaseOutputPath=" + os.path.join(tmp, "bin"),
             ]
             res = subprocess.run(cmd, capture_output=True, timeout=600)
             if os.path.exists(sarif):
@@ -65,6 +72,41 @@ class RoslynSecGuardAdapter:
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def _location(self, loc: dict) -> dict:
+        # SARIF v1 uses resultFile; v2 uses physicalLocation/artifactLocation.
+        if not isinstance(loc, dict):
+            loc = {}
+        phys = loc.get("physicalLocation", {})
+        if phys:
+            artifact = phys.get("artifactLocation", {})
+            region = phys.get("region", {})
+            uri = artifact.get("uri", "")
+            line = region.get("startLine", 1)
+        else:
+            result_file = loc.get("resultFile", {})
+            region = result_file.get("region", {})
+            uri = result_file.get("uri", "")
+            line = region.get("startLine", 1)
+        # Strip the file:// scheme and temporary build prefix if present.
+        if uri.startswith("file://"):
+            uri = uri[7:]
+        return {"file": uri, "line_start": line}
+
+    @staticmethod
+    def _message_text(result: dict, default: str = "") -> str:
+        """Return the message text from a SARIF result.
+
+        SARIF allows ``message`` to be either a plain string or a dict with a
+        ``text`` property. Some tools (including older SecurityCodeScan builds)
+        emit the string form, so handle both.
+        """
+        message = result.get("message", default)
+        if isinstance(message, dict):
+            return message.get("text", default)
+        if isinstance(message, str):
+            return message
+        return default
+
     def parse(self, raw: bytes, group: str) -> list[dict]:
         data = json.loads(raw.decode("utf-8", errors="replace"))
         out = []
@@ -73,23 +115,19 @@ class RoslynSecGuardAdapter:
             for result in run.get("results", []):
                 rule_id = result.get("ruleId", "")
                 loc = result.get("locations", [{}])[0]
-                phys = loc.get("physicalLocation", {})
-                artifact = phys.get("artifactLocation", {})
-                region = phys.get("region", {})
+                location = self._location(loc)
                 cwe = _ROSLYN_CWE.get(rule_id)
+                message = self._message_text(result, rule_id)
                 finding = {
                     "id": new_finding_id(self.prefix, n),
-                    "title": result.get("message", {}).get("text", rule_id),
+                    "title": message,
                     "severity": normalize_severity("HIGH"),
                     "confidence": "LIKELY",
                     "panel": "security",
                     "category": "csharp_security",
                     "source": f"tool:{self.name}",
-                    "location": {
-                        "file": artifact.get("uri", ""),
-                        "line_start": region.get("startLine", 1),
-                    },
-                    "description": result.get("message", {}).get("text", "No description provided."),
+                    "location": location,
+                    "description": message or "No description provided.",
                     "impact": "Potential security issue in C# code.",
                     "remediation": "Review the SecurityCodeScan rule and refactor.",
                     "references": [],
