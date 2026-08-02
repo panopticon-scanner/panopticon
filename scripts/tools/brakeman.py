@@ -53,7 +53,13 @@ class BrakemanAdapter:
     def invoke(self, target: str) -> tuple[bytes, int]:
         cmd = ["brakeman", "--format", "json", "--quiet", "--run-all-checks", target]
         res = subprocess.run(cmd, capture_output=True, timeout=300)
-        return res.stdout, res.returncode
+        rc = res.returncode
+        # Brakeman exits 2 when warnings are found and 3 when warnings plus minor
+        # parsing errors occur. Treat both as successful scans so the output is
+        # preserved for ingestion.
+        if rc in (2, 3):
+            rc = 0
+        return res.stdout, rc
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
         data = json.loads(raw.decode("utf-8", errors="replace"))
