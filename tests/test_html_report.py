@@ -312,3 +312,33 @@ class TestChartAggregations(unittest.TestCase):
         findings = [{"category": "a"}, {"category": "b"}]
         self.assertEqual(hr._top_category_counts(findings, limit=3),
                          [("a", 1), ("b", 1)])
+
+
+class TestDashboardCharts(unittest.TestCase):
+    def test_dashboard_renders_severity_chart(self):
+        report = _minimal_report()
+        out = hr.render(report)
+        self.assertIn("Findings by severity", out)
+        self.assertIn("chart-bar sev-high", out)
+        self.assertIn(">HIGH<", out)
+        self.assertIn("chart-value", out)
+
+    def test_dashboard_renders_panel_chart(self):
+        report = _minimal_report()
+        out = hr.render(report)
+        self.assertIn("Findings by panel", out)
+        self.assertIn("chart-bar panel-security", out)
+
+    def test_dashboard_renders_category_chart(self):
+        report = _minimal_report()
+        out = hr.render(report)
+        self.assertIn("Top finding categories", out)
+        self.assertIn("injection", out)
+
+    def test_charts_handle_empty_findings(self):
+        report = _minimal_report(findings=[])
+        out = hr.render(report)
+        self.assertIn("Findings by severity", out)
+        self.assertIn("Findings by panel", out)
+        self.assertIn("Top finding categories", out)
+        self.assertNotIn("chart-bar sev-high", out)
