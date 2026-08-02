@@ -164,6 +164,42 @@ _SEV_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
 _PANEL_ORDER = ["code", "test", "security", "architecture", "database", "redteam"]
 
 
+def _severity_counts(findings):
+    """Return finding counts keyed by severity in display order."""
+    counts = {sev: 0 for sev in _SEV_ORDER}
+    for f in findings:
+        sev = f.get("severity", "INFO")
+        if sev in counts:
+            counts[sev] += 1
+    return counts
+
+
+def _panel_counts(findings):
+    """Return finding counts keyed by panel in display order."""
+    counts = {panel: 0 for panel in _PANEL_ORDER}
+    for f in findings:
+        panel = f.get("panel", "code")
+        if panel in counts:
+            counts[panel] += 1
+        else:
+            counts["code"] += 1
+    return counts
+
+
+def _top_category_counts(findings, limit=8):
+    """Return the top `limit` categories by count, plus an 'Other' bucket."""
+    counts = {}
+    for f in findings:
+        cat = f.get("category") or "unknown"
+        counts[cat] = counts.get(cat, 0) + 1
+    sorted_cats = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    top = sorted_cats[:limit]
+    other_count = sum(c for _, c in sorted_cats[limit:])
+    if other_count:
+        top.append(("Other", other_count))
+    return top
+
+
 def _normalize_path(path):
     """Strip leading ./ and normalize separators for stable matching."""
     if not path:

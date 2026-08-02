@@ -271,3 +271,44 @@ class TestHtmlReport(unittest.TestCase):
         self.assertEqual(hr._severity_class("HIGH extra"), "sev-highextra")
         self.assertEqual(hr._severity_class("CRITICAL<script>"), "sev-criticalscript")
         self.assertEqual(hr._severity_class(""), "sev-")
+
+
+class TestChartAggregations(unittest.TestCase):
+    def test_severity_counts_empty(self):
+        self.assertEqual(hr._severity_counts([]),
+                         {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0})
+
+    def test_severity_counts_groups(self):
+        findings = [
+            {"severity": "HIGH"}, {"severity": "HIGH"},
+            {"severity": "MEDIUM"}, {"severity": "INFO"},
+        ]
+        self.assertEqual(hr._severity_counts(findings),
+                         {"CRITICAL": 0, "HIGH": 2, "MEDIUM": 1, "LOW": 0, "INFO": 1})
+
+    def test_panel_counts_defaults_to_code(self):
+        self.assertEqual(hr._panel_counts([]),
+                         {"code": 0, "test": 0, "security": 0,
+                          "architecture": 0, "database": 0, "redteam": 0})
+
+    def test_panel_counts_groups(self):
+        findings = [
+            {"panel": "security"}, {"panel": "security"}, {"panel": "test"},
+        ]
+        self.assertEqual(hr._panel_counts(findings),
+                         {"code": 0, "test": 1, "security": 2,
+                          "architecture": 0, "database": 0, "redteam": 0})
+
+    def test_top_category_counts_limit_and_other(self):
+        findings = [
+            {"category": "injection"}, {"category": "injection"},
+            {"category": "xss"}, {"category": "xss"},
+            {"category": "auth"}, {"category": "config"},
+        ]
+        result = hr._top_category_counts(findings, limit=2)
+        self.assertEqual(result, [("injection", 2), ("xss", 2), ("Other", 2)])
+
+    def test_top_category_counts_no_other_when_within_limit(self):
+        findings = [{"category": "a"}, {"category": "b"}]
+        self.assertEqual(hr._top_category_counts(findings, limit=3),
+                         [("a", 1), ("b", 1)])
