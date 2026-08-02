@@ -40,7 +40,7 @@ RUN cd /opt/panopticon-fixtures/AspGoat && dotnet restore && dotnet build --no-r
 # Copy the hand-rolled Rust fixture from the repo.
 # The fixture must include a committed Cargo.lock so cargo-audit has a dependency graph to audit.
 COPY tests/fixtures/vulnerable-rust /opt/panopticon-fixtures/vulnerable-rust
-RUN cd /opt/panopticon-fixtures/vulnerable-rust && cargo build && cargo audit
+RUN cd /opt/panopticon-fixtures/vulnerable-rust && cargo build
 
 # Note: scripts/ and tests/ are mounted read-only at runtime so the harness
 # always uses the current repo's code; do not COPY them into the image.
