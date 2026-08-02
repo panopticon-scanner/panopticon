@@ -26,7 +26,7 @@ class BundlerAuditAdapter:
         return os.path.exists(os.path.join(target, "Gemfile.lock"))
 
     def invoke(self, target: str) -> tuple[bytes, int]:
-        cmd = ["bundle-audit", "check", "--update"]
+        cmd = ["bundle-audit", "check"]
         res = subprocess.run(cmd, capture_output=True, timeout=300, cwd=target)
         return res.stdout, res.returncode
 

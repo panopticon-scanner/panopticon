@@ -44,6 +44,6 @@ class TestBundlerAuditAdapter(unittest.TestCase):
             stdout, rc = ba.BundlerAuditAdapter().invoke("/tmp/fake")
         self.assertEqual(rc, 0)
         fake_run.assert_called_once_with(
-            ["bundle-audit", "check", "--update"],
+            ["bundle-audit", "check"],
             capture_output=True, timeout=300, cwd="/tmp/fake",
         )

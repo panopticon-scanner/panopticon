@@ -14,7 +14,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip install --no-cache-dir semgrep bandit bandit-sarif-formatter
 
 # Ruby (brakeman + bundler-audit)
-RUN gem install --no-document brakeman bundler-audit
+RUN gem install --no-document brakeman bundler-audit \
+    && bundle-audit update
 
 # Node (eslint + security plugin)
 RUN npm install -g eslint eslint-plugin-security @microsoft/eslint-formatter-sarif
@@ -101,7 +102,10 @@ RUN printf '%s\n' \
 
 RUN useradd -m -u 1000 scanner \
     && mkdir -p /home/scanner/.cargo \
-    && chown scanner:scanner /home/scanner/.cargo
+    && chown scanner:scanner /home/scanner/.cargo \
+    && mkdir -p /home/scanner/.local/share \
+    && cp -r /root/.local/share/ruby-advisory-db /home/scanner/.local/share/ \
+    && chown -R scanner:scanner /home/scanner/.local/share/ruby-advisory-db
 ENV CARGO_HOME=/home/scanner/.cargo
 USER scanner
 WORKDIR /src
