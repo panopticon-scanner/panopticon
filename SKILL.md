@@ -53,5 +53,21 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
 ## Output
 Terminal markdown summary + JSON artifact at `--out`. CI gate key: `summary.gate`.
 
+## Testing scanner fixtures (optional)
+Panopticon includes a local Docker-based fixture suite for validating scanner adapters against intentionally vulnerable applications.
+
+```bash
+# Use existing fixtures image
+python3 scripts/run_fixture_tests.py
+
+# Force rebuild (clones latest public fixtures)
+python3 scripts/run_fixture_tests.py --rebuild
+
+# Run only one language/test target
+python3 scripts/run_fixture_tests.py --test rust
+```
+
+This is optional and not part of CI. Rebuild the image periodically to pull updated fixtures.
+
 ## Notes
 Reviewers are read-only: no repo/GitHub writes, no claiming unperformed actions, no materializing discovered secrets.
