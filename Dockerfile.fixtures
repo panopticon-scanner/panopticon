@@ -44,6 +44,9 @@ RUN cd /opt/panopticon-fixtures/vulnerable-rust && cargo build
 # Note: scripts/ and tests/ are mounted read-only at runtime so the harness
 # always uses the current repo's code; do not COPY them into the image.
 
+# pytest is needed by the integration-test harness that runs inside this image.
+RUN pip install --no-cache-dir pytest
+
 ENV PYTHONPATH=/opt/panopticon
 ENV FIXTURE_ROOT=/opt/panopticon-fixtures
 WORKDIR /opt/panopticon
