@@ -379,7 +379,6 @@ def _render_compare_findings(matches):
 
 def _render_bar_chart(rows, color_class_fn, title):
     """Render a horizontal bar chart from (label, count) rows."""
-    rows = [r for r in rows if r[1]]
     row_html = []
     if rows:
         max_count = max(count for _, count in rows)

@@ -334,6 +334,30 @@ class TestDashboardCharts(unittest.TestCase):
         out = hr.render(report)
         self.assertIn("Top finding categories", out)
         self.assertIn("injection", out)
+        self.assertIn("<span class='chart-value'>1</span>", out)
+
+    def test_category_chart_shows_other_bucket(self):
+        findings = [
+            {"category": cat, "severity": "HIGH"}
+            for cat in [
+                "injection", "injection",
+                "xss", "xss",
+                "auth",
+                "config",
+                "crypto",
+                "logging",
+                "headers",
+                "csrf",
+                "ssrf",
+            ]
+        ]
+        report = _minimal_report(findings=findings)
+        out = hr.render(report)
+        self.assertIn("Top finding categories", out)
+        self.assertIn("injection", out)
+        self.assertIn("xss", out)
+        self.assertIn(">Other<", out)
+        self.assertIn("<span class='chart-value'>1</span>", out)
 
     def test_charts_handle_empty_findings(self):
         report = _minimal_report(findings=[])
@@ -341,4 +365,5 @@ class TestDashboardCharts(unittest.TestCase):
         self.assertIn("Findings by severity", out)
         self.assertIn("Findings by panel", out)
         self.assertIn("Top finding categories", out)
-        self.assertNotIn("chart-bar sev-high", out)
+        self.assertIn(">HIGH<", out)
+        self.assertTrue("chart-bar sev-high" in out and "width: 0.0%" in out)
