@@ -16,8 +16,6 @@ class TestJavaIntegration(unittest.TestCase):
 
     def test_spotbugs_finds_webgoat_issues(self):
         target = self._target("WebGoat")
-        if "spotbugs" not in ADAPTERS:
-            self.skipTest("spotbugs adapter not registered")
         adapter = ADAPTERS["spotbugs"]
         if not os.path.isdir(target):
             self.skipTest("WebGoat fixture not vendored")
@@ -31,8 +29,6 @@ class TestJavaIntegration(unittest.TestCase):
 
     def test_dependency_check_finds_webgoat_vulns(self):
         target = self._target("WebGoat")
-        if "dependency-check" not in ADAPTERS:
-            self.skipTest("dependency-check adapter not registered")
         adapter = ADAPTERS["dependency-check"]
         if not os.path.isdir(target):
             self.skipTest("WebGoat fixture not vendored")

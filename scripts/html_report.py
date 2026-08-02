@@ -18,6 +18,13 @@ _CSS = """
   --info: #6c757d;
   --pass: #198754;
   --fail: #dc3545;
+  --panel-code: #0d6efd;
+  --panel-test: #20c997;
+  --panel-security: #dc3545;
+  --panel-architecture: #6f42c1;
+  --panel-database: #fd7e14;
+  --panel-redteam: #d63384;
+  --panel-unknown: #6c757d;
 }
 body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--fg); margin: 0; padding: 1rem; line-height: 1.5; }
 .container { max-width: 1200px; margin: 0 auto; }
@@ -31,6 +38,21 @@ body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Ro
 .badge.gate-pass { background: var(--pass); color: #fff; }
 .badge.gate-fail { background: var(--fail); color: #fff; }
 .badge.gate-off { background: var(--info); color: #fff; }
+.panel-code { background: var(--panel-code); }
+.panel-test { background: var(--panel-test); }
+.panel-security { background: var(--panel-security); }
+.panel-architecture { background: var(--panel-architecture); }
+.panel-database { background: var(--panel-database); }
+.panel-redteam { background: var(--panel-redteam); }
+.panel-unknown { background: var(--panel-unknown); }
+.chart { background: var(--card); border: 1px solid var(--border); border-radius: .5rem; padding: 1rem; margin: 1rem 0; }
+.chart h3 { margin-top: 0; margin-bottom: .75rem; }
+.chart-rows { display: flex; flex-direction: column; gap: .5rem; }
+.chart-row { display: flex; align-items: center; gap: .5rem; }
+.chart-label { min-width: 6.5rem; font-weight: 600; text-align: right; }
+.chart-bar-wrap { flex: 1; background: #e9ecef; border-radius: .25rem; height: 1.25rem; overflow: hidden; }
+.chart-bar { height: 100%; border-radius: .25rem; transition: width .3s ease; min-width: 0; }
+.chart-value { min-width: 2rem; text-align: right; font-weight: 600; }
 .meta { color: var(--muted); margin-bottom: .5rem; }
 .meta span { margin-right: 1rem; }
 .badges { margin: 1rem 0; }
@@ -164,6 +186,42 @@ _SEV_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
 _PANEL_ORDER = ["code", "test", "security", "architecture", "database", "redteam"]
 
 
+def _severity_counts(findings):
+    """Return finding counts keyed by severity in display order."""
+    counts = {sev: 0 for sev in _SEV_ORDER}
+    for f in findings:
+        sev = f.get("severity", "INFO")
+        if sev in counts:
+            counts[sev] += 1
+    return counts
+
+
+def _panel_counts(findings):
+    """Return finding counts keyed by panel in display order."""
+    counts = {panel: 0 for panel in _PANEL_ORDER}
+    for f in findings:
+        panel = f.get("panel", "code")
+        if panel in counts:
+            counts[panel] += 1
+        else:
+            counts["code"] += 1
+    return counts
+
+
+def _top_category_counts(findings, limit=8):
+    """Return the top `limit` categories by count, plus an 'Other' bucket."""
+    counts = {}
+    for f in findings:
+        cat = f.get("category") or "unknown"
+        counts[cat] = counts.get(cat, 0) + 1
+    sorted_cats = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    top = sorted_cats[:limit]
+    other_count = sum(c for _, c in sorted_cats[limit:])
+    if other_count:
+        top.append(("Other", other_count))
+    return top
+
+
 def _normalize_path(path):
     """Strip leading ./ and normalize separators for stable matching."""
     if not path:
@@ -229,6 +287,12 @@ def _severity_class(severity):
 def _gate_class(gate):
     """Map a gate verdict to a CSS class using the severity palette."""
     return {"PASS": "gate-pass", "FAIL": "gate-fail"}.get(str(gate).upper(), "gate-off")
+
+
+def _panel_class(panel):
+    """Map a panel name to a CSS class, stripping non-alphanumeric chars."""
+    clean = "".join(c for c in str(panel) if c.isalnum()).lower()
+    return f"panel-{clean}"
 
 
 def _render_header(report):
@@ -313,6 +377,32 @@ def _render_compare_findings(matches):
 """
 
 
+def _render_bar_chart(rows, color_class_fn, title):
+    """Render a horizontal bar chart from (label, count) rows."""
+    row_html = []
+    if rows:
+        max_count = max(count for _, count in rows)
+        if max_count == 0:
+            max_count = 1
+        for label, count in rows:
+            pct = (count / max_count) * 100
+            row_html.append(
+                f"<div class='chart-row'>"
+                f"<span class='chart-label'>{_escape(label)}</span>"
+                f"<div class='chart-bar-wrap'>"
+                f"<div class='chart-bar {color_class_fn(label)}' style='width: {pct:.1f}%'></div>"
+                f"</div>"
+                f"<span class='chart-value'>{count}</span>"
+                f"</div>"
+            )
+    return f"""
+<section class="chart">
+<h3>{_escape(title)}</h3>
+<div class="chart-rows">{''.join(row_html)}</div>
+</section>
+"""
+
+
 def _render_dashboard(report):
     summary = report.get("summary", {})
     stats = summary.get("stats", {})
@@ -339,11 +429,23 @@ def _render_dashboard(report):
     top = summary.get("top_issues", [])[:3]
     top_list = "\n".join(f"<li>{_escape(t)}</li>" for t in top) or "<li>None</li>"
 
+    findings = report.get("findings", [])
+    severity_rows = list(_severity_counts(findings).items())
+    panel_rows = list(_panel_counts(findings).items())
+    category_rows = _top_category_counts(findings)
+
+    charts = "\n".join([
+        _render_bar_chart(severity_rows, _severity_class, "Findings by severity"),
+        _render_bar_chart(panel_rows, _panel_class, "Findings by panel"),
+        _render_bar_chart(category_rows, lambda _: "sev-info", "Top finding categories"),
+    ])
+
     return f"""
 <section class="dashboard">
 <h2>Dashboard</h2>
 <div class="stats">{stat_cards}</div>
-{_render_heatmap(report.get('findings', []))}
+{charts}
+{_render_heatmap(findings)}
 {grades_table}
 <h3>Top issues</h3>
 <ul class="top-issues">{top_list}</ul>
