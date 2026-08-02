@@ -1,0 +1,9 @@
+[package]
+name = "vulnerable-rust"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# time 0.1.x is flagged by RUSTSEC-2020-0071 (potential segfault).
+time = "0.1.44"
+serde_cbor = "0.10.2"
