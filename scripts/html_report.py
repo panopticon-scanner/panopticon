@@ -51,7 +51,7 @@ body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Ro
 .chart-row { display: flex; align-items: center; gap: .5rem; }
 .chart-label { min-width: 6.5rem; font-weight: 600; text-align: right; }
 .chart-bar-wrap { flex: 1; background: #e9ecef; border-radius: .25rem; height: 1.25rem; overflow: hidden; }
-.chart-bar { height: 100%; border-radius: .25rem; transition: width .3s ease; min-width: 2px; }
+.chart-bar { height: 100%; border-radius: .25rem; transition: width .3s ease; min-width: 0; }
 .chart-value { min-width: 2rem; text-align: right; font-weight: 600; }
 .meta { color: var(--muted); margin-bottom: .5rem; }
 .meta span { margin-right: 1rem; }
