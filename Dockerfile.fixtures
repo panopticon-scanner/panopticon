@@ -1,0 +1,54 @@
+# panopticon-fixtures: vulnerable-by-design applications for scanner validation.
+# Build:  docker build -f Dockerfile.fixtures -t panopticon-fixtures:latest .
+# Rebuild: docker build --no-cache -f Dockerfile.fixtures -t panopticon-fixtures:$(date +%Y-%m-%d) .
+FROM panopticon-tools:latest
+
+USER root
+
+# Ruby runtime for RailsGoat and Java runtime for WebGoat.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ruby ruby-dev build-essential libsqlite3-dev \
+        default-jdk \
+    && rm -rf /var/lib/apt/lists/*
+
+# .NET SDK for AspGoat.
+RUN curl -sfL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 8.0
+ENV PATH="/root/.dotnet:${PATH}"
+
+# Rust toolchain for the hand-rolled fixture.
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+ENV PATH="/root/.cargo/bin:${PATH}"
+RUN cargo install cargo-audit
+
+WORKDIR /opt/panopticon-fixtures
+
+# Clone public fixtures at build time.
+ARG RAILS_GOAT_REF=main
+RUN git clone --depth 1 --branch ${RAILS_GOAT_REF} https://github.com/OWASP/railsgoat.git
+
+ARG WEB_GOAT_REF=main
+RUN git clone --depth 1 --branch ${WEB_GOAT_REF} https://github.com/WebGoat/WebGoat.git
+
+ARG ASP_GOAT_REF=main
+RUN git clone --depth 1 --branch ${ASP_GOAT_REF} https://github.com/Soham7-dev/AspGoat.git
+
+# Prepare fixture dependencies so scans are fast at runtime.
+RUN cd /opt/panopticon-fixtures/railsgoat && bundle install --deployment 2>/dev/null || bundle install
+RUN cd /opt/panopticon-fixtures/WebGoat && ./mvnw clean compile -DskipTests || mvn clean compile -DskipTests
+RUN cd /opt/panopticon-fixtures/AspGoat && dotnet restore && dotnet build --no-restore
+
+# Copy the hand-rolled Rust fixture from the repo.
+# The fixture must include a committed Cargo.lock so cargo-audit has a dependency graph to audit.
+COPY tests/fixtures/vulnerable-rust /opt/panopticon-fixtures/vulnerable-rust
+RUN cd /opt/panopticon-fixtures/vulnerable-rust && cargo build && cargo audit
+
+# Note: scripts/ and tests/ are mounted read-only at runtime so the harness
+# always uses the current repo's code; do not COPY them into the image.
+
+ENV PYTHONPATH=/opt/panopticon
+ENV FIXTURE_ROOT=/opt/panopticon-fixtures
+WORKDIR /opt/panopticon
+
+# The fixtures image runs as root because it installs language toolchains and
+# writes build artifacts during image build. It is intended for local test use only.
+CMD ["python", "scripts/run_fixture_tests.py"]
