@@ -28,18 +28,23 @@ class RoslynSecGuardAdapter:
     def invoke(self, target: str) -> tuple[bytes, int]:
         # Experimental: build with SecurityCodeScan analyzer and output SARIF.
         # If the target does not reference the analyzer, this returns few/no findings.
+        import shutil
+
         tmp = tempfile.mkdtemp(prefix="roslyn-")
-        sarif = os.path.join(tmp, "out.sarif")
-        cmd = [
-            "dotnet", "build", target,
-            "-p:TreatWarningsAsErrors=false",
-            "-p:ErrorLog=" + sarif + ",version=2.1",
-        ]
-        res = subprocess.run(cmd, capture_output=True, timeout=600)
-        if os.path.exists(sarif):
-            with open(sarif, "rb") as fh:
-                return fh.read(), res.returncode
-        return b"{}", res.returncode
+        try:
+            sarif = os.path.join(tmp, "out.sarif")
+            cmd = [
+                "dotnet", "build", target,
+                "-p:TreatWarningsAsErrors=false",
+                "-p:ErrorLog=" + sarif + ",version=2.1",
+            ]
+            res = subprocess.run(cmd, capture_output=True, timeout=600)
+            if os.path.exists(sarif):
+                with open(sarif, "rb") as fh:
+                    return fh.read(), res.returncode
+            return b"{}", res.returncode
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
         data = json.loads(raw.decode("utf-8", errors="replace"))

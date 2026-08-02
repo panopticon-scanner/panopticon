@@ -134,9 +134,12 @@ def run_tools(target, tools, out_dir, image="panopticon-tools", runner=None):
             ext = "sarif" if tool in LEGACY_SARIF_TOOLS else "json"
             out_path = os.path.join(out_dir, "%s.%s" % (tool, ext))
             mount_mode = "rw" if tool in NEEDS_WRITE_ADAPTERS else "ro"
-            docker = ["docker", "run", "--rm",
-                      "-v", "%s:/src:%s" % (os.path.abspath(target), mount_mode), image,
-                      "python3", "/opt/panopticon/scripts/_run_adapter.py", tool]
+            docker = ["docker", "run", "--rm"]
+            if os.environ.get("NVD_API_KEY"):
+                docker.extend(["-e", "NVD_API_KEY"])
+            docker.extend([
+                "-v", "%s:/src:%s" % (os.path.abspath(target), mount_mode), image,
+                "python3", "/opt/panopticon/scripts/_run_adapter.py", tool])
             try:
                 res = runner(docker, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                              timeout=TOOL_TIMEOUT)
