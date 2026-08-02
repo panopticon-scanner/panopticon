@@ -1,0 +1,28 @@
+{
+  "fixtures": [
+    {
+      "name": "railsgoat",
+      "language": "ruby",
+      "source": "https://github.com/OWASP/railsgoat",
+      "adapters": ["brakeman", "bundler-audit"]
+    },
+    {
+      "name": "WebGoat",
+      "language": "java",
+      "source": "https://github.com/WebGoat/WebGoat",
+      "adapters": ["spotbugs", "dependency-check"]
+    },
+    {
+      "name": "AspGoat",
+      "language": "csharp",
+      "source": "https://github.com/Soham7-dev/AspGoat",
+      "adapters": ["roslyn-secguard"]
+    },
+    {
+      "name": "vulnerable-rust",
+      "language": "rust",
+      "source": "local",
+      "adapters": ["cargo-audit"]
+    }
+  ]
+}
