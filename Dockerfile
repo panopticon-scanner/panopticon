@@ -13,8 +13,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Python tools
 RUN pip install --no-cache-dir semgrep bandit bandit-sarif-formatter
 
-# Ruby (brakeman)
-RUN gem install --no-document brakeman
+# Ruby (brakeman + bundler-audit)
+RUN gem install --no-document brakeman bundler-audit \
+    && bundle-audit update
 
 # Node (eslint + security plugin)
 RUN npm install -g eslint eslint-plugin-security @microsoft/eslint-formatter-sarif
@@ -52,7 +53,60 @@ RUN arch="$(dpkg --print-architecture)" \
 COPY scripts /opt/panopticon/scripts
 ENV PYTHONPATH=/opt/panopticon
 
-RUN useradd -m -u 1000 scanner
+# OpenJDK (needed by SpotBugs and dependency-check)
+RUN apt-get update && apt-get install -y --no-install-recommends default-jdk unzip build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# SpotBugs + FindSecBugs plugin
+ARG SPOTBUGS_VERSION=4.8.6
+RUN curl -sfL "https://github.com/spotbugs/spotbugs/releases/download/${SPOTBUGS_VERSION}/spotbugs-${SPOTBUGS_VERSION}.tgz" \
+        | tar -xz -C /opt \
+    && ln -s "/opt/spotbugs-${SPOTBUGS_VERSION}" /opt/spotbugs \
+    && chmod +x /opt/spotbugs/bin/spotbugs
+ARG FINDSECBUGS_VERSION=1.13.0
+RUN mkdir -p /opt/spotbugs/plugin \
+    && curl -sfL "https://search.maven.org/remotecontent?filepath=com/h3xstream/findsecbugs/findsecbugs-plugin/${FINDSECBUGS_VERSION}/findsecbugs-plugin-${FINDSECBUGS_VERSION}.jar" \
+        -o /opt/spotbugs/plugin/findsecbugs-plugin.jar
+
+# OWASP dependency-check
+ARG DEPENDENCY_CHECK_VERSION=10.0.3
+RUN curl -sfL "https://github.com/jeremylong/DependencyCheck/releases/download/v${DEPENDENCY_CHECK_VERSION}/dependency-check-${DEPENDENCY_CHECK_VERSION}-release.zip" \
+        -o /tmp/dc.zip \
+    && unzip -q /tmp/dc.zip -d /opt \
+    && rm /tmp/dc.zip
+
+# Rust + cargo-audit (system-wide so the scanner user can invoke cargo/rustc)
+ENV CARGO_HOME=/usr/local/cargo
+ENV RUSTUP_HOME=/usr/local/rustup
+ENV PATH="/usr/local/cargo/bin:${PATH}"
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+RUN cargo install cargo-audit
+
+# .NET SDK (system-wide so the scanner user can invoke dotnet)
+RUN curl -sfL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 8.0 --install-dir /usr/share/dotnet
+RUN ln -s /usr/share/dotnet/dotnet /usr/bin/dotnet
+ENV DOTNET_ROOT=/usr/share/dotnet
+ENV PATH="/usr/share/dotnet:${PATH}"
+
+# SecurityCodeScan Roslyn analyzer - applied to all C# projects built under /src
+# via MSBuild's parent-directory Directory.Build.props discovery.
+RUN printf '%s\n' \
+    '<Project>' \
+    '  <ItemGroup>' \
+    '    <PackageReference Include="AdaskoTheBeAsT.SecurityCodeScan.VS2022" Version="5.6.7.200">' \
+    '      <PrivateAssets>all</PrivateAssets>' \
+    '      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>' \
+    '    </PackageReference>' \
+    '  </ItemGroup>' \
+    '</Project>' > /Directory.Build.props
+
+RUN useradd -m -u 1000 scanner \
+    && mkdir -p /home/scanner/.cargo \
+    && chown scanner:scanner /home/scanner/.cargo \
+    && mkdir -p /home/scanner/.local/share \
+    && cp -r /root/.local/share/ruby-advisory-db /home/scanner/.local/share/ \
+    && chown -R scanner:scanner /home/scanner/.local/share/ruby-advisory-db
+ENV CARGO_HOME=/home/scanner/.cargo
 USER scanner
 WORKDIR /src
 ENTRYPOINT []
