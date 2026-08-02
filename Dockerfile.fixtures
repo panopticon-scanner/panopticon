@@ -8,7 +8,7 @@ USER root
 # Ruby runtime for RailsGoat and Java runtime for WebGoat.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ruby ruby-dev build-essential libsqlite3-dev \
-        default-jdk \
+        openjdk-17-jdk-headless \
     && rm -rf /var/lib/apt/lists/*
 
 # .NET SDK for AspGoat.
@@ -18,7 +18,7 @@ ENV PATH="/root/.dotnet:${PATH}"
 # Rust toolchain for the hand-rolled fixture.
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
 ENV PATH="/root/.cargo/bin:${PATH}"
-RUN cargo install cargo-audit
+RUN cargo install cargo-audit --version 0.22.2
 
 WORKDIR /opt/panopticon-fixtures
 
