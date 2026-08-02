@@ -122,7 +122,7 @@ class TestAdapterDispatch(unittest.TestCase):
             with open(os.path.join(out_dir, "fake.json"), "rb") as fh:
                 self.assertEqual(fh.read(), R.stdout)
 
-    def test_run_tools_uses_writable_src_mount_for_build_adapters(self):
+    def test_run_tools_uses_readonly_src_mount_for_phase2_build_adapters(self):
         calls = []
         class R: returncode = 0; stdout = b'{"runs":[]}'; stderr = b''
         def runner(cmd, **kw):
@@ -134,8 +134,8 @@ class TestAdapterDispatch(unittest.TestCase):
                 rt.run_tools(d, [tool], out_dir, image="panopticon-tools", runner=runner)
             mounts = [cmd[cmd.index("-v") + 1] for cmd in calls]
             self.assertEqual(mounts, [
-                "%s:/src:rw" % os.path.abspath(d),
-                "%s:/src:rw" % os.path.abspath(d),
+                "%s:/src:ro" % os.path.abspath(d),
+                "%s:/src:ro" % os.path.abspath(d),
             ])
 
     def test_run_tools_propagates_nvd_api_key_when_set(self):

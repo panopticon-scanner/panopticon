@@ -25,6 +25,22 @@ class RoslynSecGuardAdapter:
             if os.path.isfile(os.path.join(target, f))
         )
 
+    def _build_target(self, target: str) -> str:
+        sln_files = []
+        csproj_files = []
+        for root, _dirs, files in os.walk(target):
+            for file in files:
+                full_path = os.path.join(root, file)
+                if file.endswith(".sln"):
+                    sln_files.append(full_path)
+                elif file.endswith(".csproj"):
+                    csproj_files.append(full_path)
+        if sln_files:
+            return sorted(sln_files)[0]
+        if csproj_files:
+            return sorted(csproj_files)[0]
+        return target
+
     def invoke(self, target: str) -> tuple[bytes, int]:
         # Experimental: build with SecurityCodeScan analyzer and output SARIF.
         # If the target does not reference the analyzer, this returns few/no findings.
@@ -33,10 +49,13 @@ class RoslynSecGuardAdapter:
         tmp = tempfile.mkdtemp(prefix="roslyn-")
         try:
             sarif = os.path.join(tmp, "out.sarif")
+            build_target = self._build_target(target)
             cmd = [
-                "dotnet", "build", target,
+                "dotnet", "build", build_target,
                 "-p:TreatWarningsAsErrors=false",
                 "-p:ErrorLog=" + sarif + ",version=2.1",
+                "-p:BaseIntermediateOutputPath=" + os.path.join(tmp, "obj"),
+                "-p:BaseOutputPath=" + os.path.join(tmp, "bin"),
             ]
             res = subprocess.run(cmd, capture_output=True, timeout=600)
             if os.path.exists(sarif):

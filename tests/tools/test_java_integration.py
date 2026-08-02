@@ -11,6 +11,7 @@ from scripts.tools import ADAPTERS
 WEBGOAT = "https://github.com/WebGoat/WebGoat.git"
 
 
+@unittest.skip("dependency-check integration requires Java runtime and large DB")
 class TestJavaIntegration(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -31,4 +32,3 @@ class TestJavaIntegration(unittest.TestCase):
         adapter = ADAPTERS["dependency-check"]
         if not adapter.is_applicable(self.repo):
             raise unittest.SkipTest("Fixture does not look like a Java project")
-        raise unittest.SkipTest("dependency-check integration requires Java runtime and large DB")

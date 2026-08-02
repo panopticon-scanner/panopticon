@@ -20,10 +20,6 @@ LEGACY_SARIF_TOOLS = {"semgrep", "bandit", "trivy", "gitleaks", "gosec", "eslint
 # _run_adapter.py inside the panopticon-tools container.
 PHASE1_ADAPTERS = {"pip-audit", "npm-audit", "osv-scanner", "eslint-security"}
 
-# Adapters that need a writable /src mount because they build the target
-# (e.g. Roslyn SecurityCodeScan needs to write obj/bin, SpotBugs needs classes).
-NEEDS_WRITE_ADAPTERS = {"spotbugs", "roslyn-secguard"}
-
 # Phase 2 adapters selected by applicability to the target repo.
 PHASE2_ADAPTERS = {
     "brakeman", "bundler-audit", "spotbugs", "dependency-check",
@@ -133,12 +129,11 @@ def run_tools(target, tools, out_dir, image="panopticon-tools", runner=None):
         if adapter:
             ext = "sarif" if tool in LEGACY_SARIF_TOOLS else "json"
             out_path = os.path.join(out_dir, "%s.%s" % (tool, ext))
-            mount_mode = "rw" if tool in NEEDS_WRITE_ADAPTERS else "ro"
             docker = ["docker", "run", "--rm"]
             if os.environ.get("NVD_API_KEY"):
                 docker.extend(["-e", "NVD_API_KEY"])
             docker.extend([
-                "-v", "%s:/src:%s" % (os.path.abspath(target), mount_mode), image,
+                "-v", "%s:/src:ro" % os.path.abspath(target), image,
                 "python3", "/opt/panopticon/scripts/_run_adapter.py", tool])
             try:
                 res = runner(docker, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -171,8 +166,9 @@ if __name__ == "__main__":
     if a.tools:
         chosen = a.tools
     else:
-        phase1 = [name for name in select_adapters(a.target) if name in PHASE1_ADAPTERS]
-        phase2 = [name for name in select_adapters(a.target) if name in PHASE2_ADAPTERS]
+        selected_adapters = select_adapters(a.target)
+        phase1 = [name for name in selected_adapters if name in PHASE1_ADAPTERS]
+        phase2 = [name for name in selected_adapters if name in PHASE2_ADAPTERS]
         chosen = select_tools(a.languages, a.deps) + phase1 + phase2
     paths = run_tools(a.target, chosen, a.out)
     print("\n".join(paths))
