@@ -29,7 +29,17 @@ Decide whether the claim is independently supported by the code and any existing
 Return ONLY a raw JSON object:
 
 ```json
-{"verdict": "CONFIRMED|REJECTED|NEEDS_MORE_INFO", "confidence": "CERTAIN|LIKELY|POSSIBLE", "reasoning": "...", "references": ["..."]}
+{
+  "verdict": "CONFIRMED|REJECTED|NEEDS_MORE_INFO",
+  "confidence": "CERTAIN|LIKELY|POSSIBLE",
+  "reasoning": "...",
+  "references": ["..."],
+  "citations": {
+    "cwe": ["CWE-89"],
+    "owasp": ["A03:2021"],
+    "cve": ["CVE-2023-1234"]
+  }
+}
 ```
 
 - CONFIRMED: the claim is clearly supported by the code.
@@ -37,3 +47,5 @@ Return ONLY a raw JSON object:
 - NEEDS_MORE_INFO: you cannot determine from the provided context.
 
 Do not invent evidence. If a reference is needed and missing, say so in reasoning.
+
+If the original finding lacks hard citations, supply them in the `citations` object. Do not invent CVEs; only include CVE IDs you can verify from the provided context or references.

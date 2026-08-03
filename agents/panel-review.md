@@ -46,4 +46,25 @@ Your ONLY action is writing that one findings file. Perform NO GitHub writes, NO
 - source_role: "panel_review"
 - depth: "{depth}"
 
+Each finding MUST include a `provenance` object:
+
+```json
+"provenance": {
+  "discovered_by": "agent:panel_review",
+  "expanded_by": null,
+  "confirmed_by": null,
+  "model": "<model-name>",
+  "model_version": "<version>",
+  "confirmation_status": "UNVERIFIED",
+  "confirmation_reasoning": null
+}
+```
+
+If the panel review elaborates on a lens finding, set `"expanded_by": "agent:lens_sweep"`.
+
+And a `citations` object with at least one of:
+- `cwe`: list of CWE IDs (e.g., `["CWE-89"]`)
+- `owasp`: list of OWASP Top 10 categories (e.g., `["A03:2021"]`)
+- `cve`: list of CVE IDs (if applicable)
+
 For `security`/`redteam` CRITICAL/HIGH findings, add `cvss` {score, vector} and `exploit_scenario`.
