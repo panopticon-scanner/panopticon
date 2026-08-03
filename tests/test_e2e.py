@@ -43,4 +43,6 @@ class TestEndToEnd(unittest.TestCase):
             self.assertIn("Grade:", r2.stdout)
             with open(out) as _fh:
                 report = json.load(_fh)
-            self.assertEqual(report["summary"]["overall_grade"], "C")
+            # The panel-agent finding carries no verdict, so it is unverified
+            # under the two-axis model and does not move the grade by default.
+            self.assertEqual(report["summary"]["overall_grade"], "A")

@@ -279,12 +279,15 @@ class TestReport(unittest.TestCase):
         return base
 
     def test_build_report_has_grades_and_gate(self):
+        # A HIGH finding with no source/verdict is agentic + unverified, and
+        # unverified findings are not gate-eligible by default -> grade/gate
+        # reflect the (empty) gate-eligible set, not the raw severity.
         findings = [self._finding(severity="HIGH", panel="code")]
         report = syn.build_report(findings, [{"name": "g1", "files": ["a.py"]}],
                                   "src", "high", "2026-07-23T00:00:00Z")
-        self.assertEqual(report["summary"]["overall_grade"], "D")
-        self.assertEqual(report["summary"]["gate"], "FAIL")
-        self.assertEqual(report["groups"][0]["panel_grades"]["code"], "D")
+        self.assertEqual(report["summary"]["overall_grade"], "A")
+        self.assertEqual(report["summary"]["gate"], "PASS")
+        self.assertEqual(report["groups"][0]["panel_grades"]["code"], "A")
 
     def test_validate_clean_report(self):
         findings = [self._finding()]
@@ -430,13 +433,16 @@ class TestReport(unittest.TestCase):
 
 class TestCliAndSummary(unittest.TestCase):
     def test_render_summary_contains_grade_and_location(self):
+        # gate_unverified=True: this test is about render_summary's formatting
+        # (location string, FAIL label), not the default gating policy.
         report = syn.build_report(
             [{"id": "CD-001", "title": "SQL injection", "severity": "HIGH",
               "confidence": "CERTAIN", "panel": "security", "category": "injection",
               "location": {"file": "a.rb", "line_start": 42},
               "cvss": {"score": 8.1, "vector": "CVSS:3.1/AV:N"},
               "exploit_scenario": "..."}],
-            [{"name": "g1", "files": ["a.rb"]}], "src", "high", "2026-07-23T00:00:00Z")
+            [{"name": "g1", "files": ["a.rb"]}], "src", "high", "2026-07-23T00:00:00Z",
+            gate_unverified=True)
         text = syn.render_summary(report)
         self.assertIn("a.rb:42", text)
         self.assertIn("FAIL", text)
@@ -455,9 +461,11 @@ class TestCliAndSummary(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             fpath = os.path.join(d, "findings-g1-security.json")
             with open(fpath, "w") as fh:
+                # tool-sourced: tool_confirmed is gate-eligible by default, so
+                # this exercises the CLI FAIL path without needing a verdict.
                 json.dump({"findings": [{"id": "SE-001", "title": "x", "severity": "CRITICAL",
                                          "confidence": "CERTAIN", "panel": "security",
-                                         "category": "injection",
+                                         "category": "injection", "source": "tool:semgrep",
                                          "location": {"file": "a.rb", "line_start": 1},
                                          "cvss": {"score": 9.0, "vector": "CVSS:3.1/x"},
                                          "exploit_scenario": "y"}]}, fh)
@@ -538,7 +546,9 @@ class TestReconciliation(unittest.TestCase):
             with contextlib.redirect_stdout(buf):
                 rc = syn.main(["--target","t","--fail-on","high","--out",out, p])
             self.assertTrue(os.path.isfile(out))          # report written despite malformed citation
-            self.assertEqual(rc, 1)                        # gate FAIL evaluated (CRITICAL present)
+            # Both findings are agentic and carry no verdict -> unverified,
+            # which does not gate by default under the two-axis model.
+            self.assertEqual(rc, 0)
             with open(out) as _fh:
                 report = json.load(_fh)
             self.assertTrue(any(f["id"]=="SE-001" for f in report["findings"]))
@@ -573,13 +583,16 @@ class TestReconciliation(unittest.TestCase):
 
 class TestGroupTag(unittest.TestCase):
     def test_test_panel_grade_reflects_test_findings(self):
-        # a test-panel finding on a path NOT in group files, tagged by _group
+        # a test-panel finding on a path NOT in group files, tagged by _group.
+        # gate_unverified=True: this test verifies _group attribution feeds
+        # panel_grades, not the default gating policy (the finding is agentic
+        # with no verdict, so it would be excluded from grading otherwise).
         findings = [{"id": "TS-001", "title": "weak test", "severity": "HIGH",
                      "confidence": "LIKELY", "panel": "test", "category": "quality",
                      "location": {"file": "spec/foo_spec.rb", "line_start": 3},
                      "_group": "g1"}]
         report = syn.build_report(findings, [{"name": "g1", "files": ["app/foo.rb"]}],
-                                  "src", None, "2026-07-23T00:00:00Z")
+                                  "src", None, "2026-07-23T00:00:00Z", gate_unverified=True)
         self.assertEqual(report["groups"][0]["panel_grades"]["test"], "D")  # not "A"
         # _group scrubbed from emitted findings
         self.assertNotIn("_group", report["findings"][0])
@@ -754,7 +767,8 @@ class TestSummaryCitations(unittest.TestCase):
         text = syn.render_summary(report)
         self.assertIn("CWE-89", text)
         self.assertIn("Act", text)
-        self.assertIn("reinforced", text)
+        # the provenance chip now shows the evidence status, not "reinforced"
+        self.assertIn("tool_confirmed", text)
 
     def test_summary_shows_panel_label(self):
         report = syn.build_report(
@@ -961,17 +975,19 @@ class TestHtmlOut(unittest.TestCase):
             out = os.path.join(d, "compare.html")
             for path, findings in [(a, []), (b, [{"id": "CODE-001", "title": "x", "severity": "LOW",
                                                    "panel": "code", "category": "style",
-                                                   "location": {"file": "a.py", "line_start": 1}}])]:
+                                                   "location": {"file": "a.py", "line_start": 1},
+                                                   "evidence": {"status": "unverified", "verified_by": None,
+                                                                "reasoning": None, "citation_quality": "none"}}])]:
                 with open(path, "w") as fh:
                     json.dump({
                         "meta": {"target": "t", "review_type": "repo", "timestamp": "2026-08-01",
-                                 "version": "3.0.0", "security_mode": "standard"},
+                                 "version": "4.0.0", "security_mode": "standard"},
                         "summary": {"overall_grade": "A", "risk_level": "LOW", "top_issues": [],
-                                    "effort_to_remediate": "LOW", "gate": "PASS",
-                                    "stats": {"critical": 0, "high": 0, "medium": 0, "low": len(findings), "info": 0}},
+                                    "gate": "PASS", "gate_policy": "confirmed_only",
+                                    "stats": {"critical": 0, "high": 0, "medium": 0, "low": len(findings), "info": 0},
+                                    "evidence_stats": {}},
                         "groups": [], "findings": findings,
                         "cross_panel": {"integration_findings": []},
-                        "recommendations": {"immediate": [], "short_term": [], "long_term": []},
                     }, fh)
             rc = syn.main(["--compare", a, b, "--html-out", out])
             self.assertEqual(rc, 0)
@@ -988,13 +1004,13 @@ class TestHtmlOut(unittest.TestCase):
             with open(valid, "w") as fh:
                 json.dump({
                     "meta": {"target": "t", "review_type": "repo", "timestamp": "2026-08-01",
-                             "version": "3.0.0", "security_mode": "standard"},
+                             "version": "4.0.0", "security_mode": "standard"},
                     "summary": {"overall_grade": "A", "risk_level": "LOW", "top_issues": [],
-                                "effort_to_remediate": "LOW", "gate": "PASS",
-                                "stats": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}},
+                                "gate": "PASS", "gate_policy": "confirmed_only",
+                                "stats": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0},
+                                "evidence_stats": {}},
                     "groups": [], "findings": [],
                     "cross_panel": {"integration_findings": []},
-                    "recommendations": {"immediate": [], "short_term": [], "long_term": []},
                 }, fh)
             with unittest.mock.patch("sys.stderr", new_callable=io.StringIO) as captured:
                 rc = syn.main(["--compare", missing, valid, "--html-out", out])
@@ -1009,13 +1025,13 @@ class TestHtmlOut(unittest.TestCase):
             with open(valid, "w") as fh:
                 json.dump({
                     "meta": {"target": "t", "review_type": "repo", "timestamp": "2026-08-01",
-                             "version": "3.0.0", "security_mode": "standard"},
+                             "version": "4.0.0", "security_mode": "standard"},
                     "summary": {"overall_grade": "A", "risk_level": "LOW", "top_issues": [],
-                                "effort_to_remediate": "LOW", "gate": "PASS",
-                                "stats": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}},
+                                "gate": "PASS", "gate_policy": "confirmed_only",
+                                "stats": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0},
+                                "evidence_stats": {}},
                     "groups": [], "findings": [],
                     "cross_panel": {"integration_findings": []},
-                    "recommendations": {"immediate": [], "short_term": [], "long_term": []},
                 }, fh)
             with open(invalid, "w") as fh:
                 fh.write("not json")
@@ -1031,255 +1047,6 @@ class TestHtmlOut(unittest.TestCase):
         self.assertEqual(syn._derive_html_path("dir"), os.path.join("dir", "report.html"))
 
 
-class TestAdvisorConfirmation(unittest.TestCase):
-    def _agentic_finding(self, **kw):
-        base = {
-            "id": "SEC-001", "title": "SQLi", "severity": "HIGH", "confidence": "LIKELY",
-            "panel": "security", "category": "injection",
-            "provenance": {"discovered_by": "agent:lens_sweep"},
-            "location": {"file": "app.py", "line_start": 10},
-        }
-        base.update(kw)
-        return base
-
-    def test_tool_finding_is_auto_confirmed(self):
-        f = {
-            "id": "SEC-001", "title": "SQLi", "severity": "HIGH", "confidence": "CERTAIN",
-            "panel": "security", "category": "injection",
-            "provenance": {"discovered_by": "tool:brakeman", "confirmation_status": "TOOL"},
-            "citation_quality": "partial",
-        }
-        confirmed, discarded, unverified = syn._partition_findings([f])
-        self.assertEqual(len(confirmed), 1)
-        self.assertEqual(len(discarded), 0)
-        self.assertEqual(len(unverified), 0)
-
-    def test_agentic_finding_without_citations_is_unverified(self):
-        f = self._agentic_finding(
-            provenance={"discovered_by": "agent:lens_sweep", "confirmation_status": "UNVERIFIED"})
-        confirmed, discarded, unverified = syn._partition_findings([f])
-        self.assertEqual(len(confirmed), 0)
-        self.assertEqual(len(discarded), 0)
-        self.assertEqual(len(unverified), 1)
-        self.assertEqual(unverified[0]["severity"], "INFO")
-
-    def test_agentic_finding_rejected_by_advisor_is_discarded(self):
-        f = self._agentic_finding()
-
-        def reject(_):
-            return {"verdict": "REJECTED", "reasoning": "No exploitable sink."}
-
-        confirmed, discarded, unverified = syn._partition_findings([f], advisor_dispatch=reject)
-        self.assertEqual(len(confirmed), 0)
-        self.assertEqual(len(discarded), 1)
-        self.assertEqual(len(unverified), 0)
-        self.assertEqual(discarded[0]["severity"], "INFO")
-        self.assertEqual(discarded[0]["confidence"], "NOTE")
-        self.assertEqual(discarded[0]["provenance"]["confirmation_status"], "REJECTED")
-        self.assertEqual(discarded[0]["provenance"]["confirmed_by"], "agent:advisor")
-        self.assertEqual(discarded[0]["provenance"]["confirmation_reasoning"], "No exploitable sink.")
-
-    def test_rejected_finding_records_confirmed_by_model(self):
-        f = self._agentic_finding()
-
-        def reject_with_model(_):
-            return {
-                "verdict": "REJECTED",
-                "reasoning": "No exploitable sink.",
-                "confirmed_by_model": "kimi-cli-0.29.2",
-            }
-
-        confirmed, discarded, unverified = syn._partition_findings([f], advisor_dispatch=reject_with_model)
-        self.assertEqual(len(confirmed), 0)
-        self.assertEqual(len(discarded), 1)
-        self.assertEqual(len(unverified), 0)
-        self.assertEqual(discarded[0]["provenance"]["confirmed_by_model"], "kimi-cli-0.29.2")
-
-    def test_advisor_citations_merged_on_confirm(self):
-        f = self._agentic_finding(citations={"cwe": [{"id": "CWE-89"}]})
-
-        def confirm(_):
-            return {
-                "verdict": "CONFIRMED",
-                "reasoning": "Verified sink.",
-                "citations": {"owasp": ["A03:2021-Injection"]},
-            }
-
-        confirmed, _, _ = syn._partition_findings([f], advisor_dispatch=confirm)
-        self.assertEqual(len(confirmed), 1)
-        self.assertEqual(confirmed[0]["provenance"]["confirmation_status"], "CONFIRMED")
-        cites = confirmed[0]["citations"]
-        self.assertEqual(cites["cwe"][0]["id"], "CWE-89")
-        self.assertIn("A03:2021-Injection", cites["owasp"])
-
-    def test_advisor_results_confirmed_updates_provenance(self):
-        f = self._agentic_finding(
-            id="SEC-CONF", provenance={"discovered_by": "agent:lens_sweep"})
-        report = syn.build_report(
-            [f], [], "src", None, "2026-07-23T00:00:00Z",
-            advisor_results={"SEC-CONF": {"verdict": "CONFIRMED", "reasoning": "Confirmed by advisor.",
-                                           "citations": {"cwe": ["CWE-89"]}}})
-        matching = [x for x in report["findings"] if x["id"] == "SEC-CONF"]
-        self.assertEqual(len(matching), 1)
-        self.assertEqual(matching[0]["provenance"]["confirmation_status"], "CONFIRMED")
-        self.assertEqual(matching[0]["provenance"]["confirmed_by"], "agent:advisor")
-        self.assertEqual(matching[0]["provenance"]["confirmation_reasoning"], "Confirmed by advisor.")
-        self.assertEqual(report["summary"]["unverified_findings_count"], 0)
-
-    def test_agentic_without_status_is_unverified(self):
-        f = self._agentic_finding(provenance={"discovered_by": "agent:lens_sweep"})
-        confirmed, discarded, unverified = syn._partition_findings([f])
-        self.assertEqual(len(confirmed), 0)
-        self.assertEqual(len(discarded), 0)
-        self.assertEqual(len(unverified), 1)
-        self.assertEqual(unverified[0]["severity"], "INFO")
-        self.assertEqual(unverified[0]["provenance"]["confirmation_status"], "NEEDS_MORE_INFO")
-
-    def test_legacy_sourceless_finding_without_status_is_confirmed(self):
-        f = {"id": "LEG-001", "title": "Legacy", "severity": "MEDIUM", "confidence": "LIKELY",
-             "panel": "code", "category": "structure",
-             "location": {"file": "a.py", "line_start": 1}}
-        confirmed, discarded, unverified = syn._partition_findings([f])
-        self.assertEqual(len(confirmed), 1)
-        self.assertEqual(len(discarded), 0)
-        self.assertEqual(len(unverified), 0)
-
-    def test_advisor_dispatch_error_treated_as_unverified(self):
-        f = self._agentic_finding()
-
-        def boom(_):
-            raise RuntimeError("advisor unavailable")
-
-        import contextlib, io
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err):
-            confirmed, discarded, unverified = syn._partition_findings([f], advisor_dispatch=boom)
-        self.assertEqual(len(confirmed), 0)
-        self.assertEqual(len(discarded), 0)
-        self.assertEqual(len(unverified), 1)
-        self.assertIn("advisor dispatch failed", err.getvalue())
-        self.assertEqual(unverified[0]["severity"], "INFO")
-
-    def test_advisor_dispatch_non_dict_treated_as_unverified(self):
-        f = self._agentic_finding()
-
-        def bad(_):
-            return "not a dict"
-
-        import contextlib, io
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err):
-            confirmed, discarded, unverified = syn._partition_findings([f], advisor_dispatch=bad)
-        self.assertEqual(len(confirmed), 0)
-        self.assertEqual(len(discarded), 0)
-        self.assertEqual(len(unverified), 1)
-        self.assertIn("advisor dispatch returned non-dict", err.getvalue())
-        self.assertEqual(unverified[0]["severity"], "INFO")
-
-    def test_discarded_findings_remain_in_report_body(self):
-        f = self._agentic_finding(id="SEC-DISC")
-        report = syn.build_report(
-            [f], [], "src", None, "2026-07-23T00:00:00Z",
-            advisor_results={"SEC-DISC": {"verdict": "REJECTED", "reasoning": "False positive."}})
-        self.assertNotIn("SEC-DISC", [x["id"] for x in report["findings"]])
-        discarded = [x for x in report.get("discarded_claims", []) if x["id"] == "SEC-DISC"]
-        self.assertEqual(len(discarded), 1)
-        self.assertEqual(discarded[0]["severity"], "INFO")
-        self.assertEqual(discarded[0]["confidence"], "NOTE")
-        self.assertEqual(report["summary"]["discarded_claims_count"], 1)
-
-    def test_agentic_finding_confirmed_by_advisor(self):
-        f = {
-            "id": "SEC-002", "title": "Logic flaw", "severity": "HIGH", "confidence": "LIKELY",
-            "panel": "security", "category": "general",
-            "provenance": {"discovered_by": "agent:lens_sweep", "confirmation_status": "UNVERIFIED"},
-            "citation_quality": "none",
-        }
-
-        def fake_advisor(_finding):
-            return {"verdict": "CONFIRMED", "reasoning": "Confirmed.", "citations": {"cwe": ["CWE-20"]}}
-
-        confirmed, _discarded, _unverified = syn._partition_findings([f], advisor_dispatch=fake_advisor)
-        self.assertEqual(len(confirmed), 1)
-        self.assertEqual(confirmed[0]["provenance"]["confirmation_status"], "CONFIRMED")
-        self.assertEqual(confirmed[0]["citations"]["cwe"][0]["id"], "CWE-20")
-        self.assertTrue(confirmed[0]["citations"]["cwe"][0]["verified"])
-
-    def test_preconfirmed_agentic_with_no_citations_is_unverified(self):
-        f = self._agentic_finding(
-            provenance={"discovered_by": "agent:lens_sweep", "confirmation_status": "CONFIRMED"},
-            citations={},
-            citation_quality="none",
-        )
-        confirmed, discarded, unverified = syn._partition_findings([f])
-        self.assertEqual(len(confirmed), 0)
-        self.assertEqual(len(discarded), 0)
-        self.assertEqual(len(unverified), 1)
-        self.assertEqual(unverified[0]["provenance"]["confirmation_status"], "NEEDS_MORE_INFO")
-        self.assertEqual(unverified[0]["severity"], "INFO")
-        self.assertEqual(unverified[0]["confidence"], "NOTE")
-
-    def test_preconfirmed_agentic_with_real_citation_stays_confirmed(self):
-        f = self._agentic_finding(
-            provenance={"discovered_by": "agent:lens_sweep", "confirmation_status": "CONFIRMED"},
-            citations={"cwe": [{"id": "CWE-89"}]},
-            citation_quality="partial",
-        )
-        confirmed, discarded, unverified = syn._partition_findings([f])
-        self.assertEqual(len(confirmed), 1)
-        self.assertEqual(len(discarded), 0)
-        self.assertEqual(len(unverified), 0)
-        self.assertEqual(confirmed[0]["provenance"]["confirmation_status"], "CONFIRMED")
-
-
-    def test_advisor_confirmed_without_citations_is_unverified(self):
-        f = self._agentic_finding()
-
-        def fake_advisor(_finding):
-            return {"verdict": "CONFIRMED", "reasoning": "Looks bad."}
-
-        confirmed, discarded, unverified = syn._partition_findings([f], advisor_dispatch=fake_advisor)
-        self.assertEqual(len(confirmed), 0)
-        self.assertEqual(len(discarded), 0)
-        self.assertEqual(len(unverified), 1)
-        self.assertEqual(unverified[0]["provenance"]["confirmation_status"], "NEEDS_MORE_INFO")
-        self.assertEqual(unverified[0]["severity"], "INFO")
-        self.assertEqual(unverified[0]["confidence"], "NOTE")
-        self.assertIn("no hard citations", unverified[0]["provenance"]["confirmation_reasoning"])
-
-    def test_advisor_results_confirmed_without_citations_is_unverified(self):
-        f = self._agentic_finding(
-            id="SEC-CONF", provenance={"discovered_by": "agent:lens_sweep"})
-        report = syn.build_report(
-            [f], [], "src", None, "2026-07-23T00:00:00Z",
-            advisor_results={"SEC-CONF": {"verdict": "CONFIRMED", "reasoning": "Confirmed by advisor."}})
-        matching = [x for x in report["findings"] if x["id"] == "SEC-CONF"]
-        self.assertEqual(len(matching), 1)
-        self.assertEqual(matching[0]["provenance"]["confirmation_status"], "NEEDS_MORE_INFO")
-        self.assertEqual(matching[0]["severity"], "INFO")
-        self.assertEqual(matching[0]["confidence"], "NOTE")
-        self.assertEqual(report["summary"]["unverified_findings_count"], 1)
-        self.assertEqual(report["summary"]["discarded_claims_count"], 0)
-
-    def test_advisor_confirmed_with_bogus_cwe_is_unverified(self):
-        f = self._agentic_finding()
-
-        def fake_advisor(_finding):
-            return {
-                "verdict": "CONFIRMED",
-                "reasoning": "Confirmed.",
-                "citations": {"cwe": ["CWE-99999"]},
-            }
-
-        confirmed, discarded, unverified = syn._partition_findings([f], advisor_dispatch=fake_advisor)
-        self.assertEqual(len(confirmed), 0)
-        self.assertEqual(len(discarded), 0)
-        self.assertEqual(len(unverified), 1)
-        self.assertEqual(unverified[0]["provenance"]["confirmation_status"], "NEEDS_MORE_INFO")
-        self.assertEqual(unverified[0]["citation_quality"], "minimal")
-        self.assertFalse(unverified[0]["citations"]["cwe"][0]["verified"])
-
-
 class TestInternalFieldCleanup(unittest.TestCase):
     def test_build_report_does_not_leak_internal_fields(self):
         f = {
@@ -1290,9 +1057,10 @@ class TestInternalFieldCleanup(unittest.TestCase):
             "_group": "backend",
             "_repo_root": "/some/path",
         }
+        verdicts = {"000-SEC-001": {"finding_id": "SEC-001", "verdict": "REJECTED",
+                                    "reasoning": "False positive."}}
         report = syn.build_report(
-            [f], [], "src", None, "2026-07-23T00:00:00Z",
-            advisor_results={"SEC-001": {"verdict": "REJECTED", "reasoning": "False positive."}})
+            [f], [], "src", None, "2026-07-23T00:00:00Z", verdicts=verdicts)
         for finding in report["findings"]:
             self.assertNotIn("_group", finding)
             self.assertNotIn("_repo_root", finding)
@@ -1321,3 +1089,123 @@ class TestGroupReMatchesDispatchNames(unittest.TestCase):
         m = syn.GROUP_RE.match("findings-changes_1-security.json")
         self.assertIsNotNone(m)
         self.assertEqual(m.group(1), "changes_1")
+
+
+def _agentic(fid="AG-001", sev="HIGH", **kw):
+    f = {"id": fid, "title": "finding %s" % fid, "severity": sev,
+         "confidence": "POSSIBLE", "panel": "security", "category": "injection",
+         "location": {"file": "app.py", "line_start": 10},
+         "provenance": {"discovered_by": "agent:panel_review",
+                        "confirmation_status": "UNVERIFIED"}}
+    f.update(kw)
+    return f
+
+
+class TestEvidenceReport(unittest.TestCase):
+    def _report(self, findings, verdicts=None, gate_unverified=False, fail_on="high"):
+        return syn.build_report(findings, [], "target", fail_on, "2026-08-03T00:00:00Z",
+                                verdicts=verdicts, gate_unverified=gate_unverified)
+
+    def test_unverified_keeps_severity_and_does_not_gate(self):
+        report = self._report([_agentic(sev="CRITICAL")])
+        f = report["findings"][0]
+        self.assertEqual(f["severity"], "CRITICAL")
+        self.assertEqual(f["evidence"]["status"], "unverified")
+        self.assertEqual(report["summary"]["gate"], "PASS")
+        self.assertEqual(report["summary"]["overall_grade"], "A")
+
+    def test_gate_unverified_opts_in(self):
+        report = self._report([_agentic(sev="CRITICAL")], gate_unverified=True)
+        self.assertEqual(report["summary"]["gate"], "FAIL")
+        self.assertEqual(report["summary"]["overall_grade"], "F")
+        self.assertEqual(report["summary"]["gate_policy"], "include_unverified")
+
+    def test_confirmed_verdict_gates(self):
+        verdicts = {"000-AG-001": {"finding_id": "AG-001", "verdict": "CONFIRMED",
+                                   "reasoning": "verified"}}
+        report = self._report([_agentic()], verdicts=verdicts)
+        f = report["findings"][0]
+        self.assertEqual(f["evidence"]["status"], "advisor_confirmed")
+        self.assertEqual(report["summary"]["gate"], "FAIL")
+        self.assertEqual(report["summary"]["overall_grade"], "D")
+
+    def test_rejected_moves_to_discarded_with_severity_intact(self):
+        verdicts = {"000-AG-001": {"finding_id": "AG-001", "verdict": "REJECTED",
+                                   "reasoning": "not exploitable"}}
+        report = self._report([_agentic()], verdicts=verdicts)
+        self.assertEqual(report["findings"], [])
+        d = report["discarded_claims"][0]
+        self.assertEqual(d["severity"], "HIGH")
+        self.assertEqual(d["evidence"]["status"], "rejected")
+        self.assertEqual(d["evidence"]["reasoning"], "not exploitable")
+        self.assertEqual(report["summary"]["gate"], "PASS")
+
+    def test_needs_more_info_stays_visible_not_gating(self):
+        verdicts = {"000-AG-001": {"finding_id": "AG-001",
+                                   "verdict": "NEEDS_MORE_INFO",
+                                   "reasoning": "need deploy config"}}
+        report = self._report([_agentic()], verdicts=verdicts)
+        f = report["findings"][0]
+        self.assertEqual(f["evidence"]["status"], "needs_more_info")
+        self.assertEqual(f["severity"], "HIGH")
+        self.assertEqual(report["summary"]["gate"], "PASS")
+
+    def test_tool_finding_gates_without_verdict(self):
+        tool = {"id": "TL-001", "title": "sqli", "severity": "HIGH",
+                "confidence": "CERTAIN", "panel": "security",
+                "category": "injection", "source": "tool:semgrep",
+                "location": {"file": "app.py", "line_start": 5},
+                "provenance": {"discovered_by": "tool:semgrep",
+                               "confirmation_status": "TOOL"}}
+        report = self._report([syn.normalize_finding(tool)])
+        self.assertEqual(report["findings"][0]["evidence"]["status"],
+                         "tool_confirmed")
+        self.assertEqual(report["summary"]["gate"], "FAIL")
+
+    def test_evidence_stats_counts_everything(self):
+        verdicts = {"000-AG-001": {"finding_id": "AG-001", "verdict": "REJECTED",
+                                   "reasoning": "r"}}
+        # distinct locus for AG-002 so dedupe doesn't collapse it into AG-001
+        # (same file/line/category would otherwise keep only the more severe one).
+        report = self._report(
+            [_agentic(), _agentic(fid="AG-002", sev="LOW",
+                                  location={"file": "app.py", "line_start": 99})],
+            verdicts=verdicts)
+        stats = report["summary"]["evidence_stats"]
+        self.assertEqual(stats["rejected"], 1)
+        self.assertEqual(stats["unverified"], 1)
+
+    def test_schema_theater_removed(self):
+        report = self._report([_agentic()])
+        self.assertNotIn("effort_to_remediate", report["summary"])
+        self.assertNotIn("recommendations", report)
+        self.assertEqual(report["meta"]["version"], "4.0.0")
+
+    def test_citation_quality_lives_in_evidence(self):
+        report = self._report([_agentic(citations={"cwe": ["CWE-89"]})])
+        f = report["findings"][0]
+        self.assertNotIn("citation_quality", f)
+        self.assertIn(f["evidence"]["citation_quality"],
+                      ("full", "partial", "minimal", "none"))
+
+
+class TestSeverityImmutability(unittest.TestCase):
+    def test_no_path_mutates_severity(self):
+        cases = []
+        for sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"):
+            cases.append((_agentic(fid="AG-%s" % sev[:2], sev=sev), None))
+        cases.append((_agentic(fid="AG-101"), {"verdict": "REJECTED", "reasoning": "r"}))
+        cases.append((_agentic(fid="AG-102"), {"verdict": "NEEDS_MORE_INFO",
+                                               "reasoning": "r"}))
+        cases.append((_agentic(fid="AG-103"), {"verdict": "CONFIRMED",
+                                               "reasoning": "r"}))
+        for finding, verdict in cases:
+            original = finding["severity"]
+            verdicts = ({"000-%s" % finding["id"]:
+                         dict(verdict, finding_id=finding["id"])}
+                        if verdict else None)
+            report = syn.build_report([finding], [], "t", "high",
+                                      "2026-08-03T00:00:00Z", verdicts=verdicts)
+            everywhere = report["findings"] + report["discarded_claims"]
+            self.assertEqual(everywhere[0]["severity"], original,
+                             "severity mutated for verdict=%r" % verdict)
