@@ -13,7 +13,18 @@
         "timestamp": {"type": "string"},
         "version": {"type": "string"},
         "security_mode": {"type": "string", "enum": ["standard", "redteam"]},
-        "parts": {"type": "array", "items": {"type": "string"}}
+        "parts": {"type": "array", "items": {"type": "string"}},
+        "models_used": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "model": {"type": "string"},
+              "version": {"type": "string"},
+              "role": {"type": "string"}
+            }
+          }
+        }
       }
     },
     "summary": {
@@ -25,7 +36,9 @@
         "top_issues": {"type": "array", "items": {"type": "string"}, "maxItems": 3},
         "effort_to_remediate": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH", "EXTENSIVE"]},
         "gate": {"type": "string", "enum": ["PASS", "FAIL", "OFF"]},
-        "stats": {"type": "object"}
+        "stats": {"type": "object"},
+        "discarded_claims_count": {"type": "integer"},
+        "unverified_findings_count": {"type": "integer"}
       }
     },
     "groups": {
@@ -78,6 +91,25 @@
           "reinforced": { "type": "boolean" },
           "corroborated": { "type": "boolean" },
           "corroborated_by": { "type": "array", "items": { "type": "string" } },
+          "citation_quality": {
+            "type": "string",
+            "enum": ["full", "partial", "minimal", "none"]
+          },
+          "provenance": {
+            "type": "object",
+            "properties": {
+              "discovered_by": { "type": "string" },
+              "expanded_by": { "type": ["string", "null"] },
+              "confirmed_by": { "type": ["string", "null"] },
+              "model": { "type": ["string", "null"] },
+              "model_version": { "type": ["string", "null"] },
+              "confirmation_status": {
+                "type": "string",
+                "enum": ["TOOL", "CONFIRMED", "REJECTED", "NEEDS_MORE_INFO", "UNVERIFIED"]
+              },
+              "confirmation_reasoning": { "type": ["string", "null"] }
+            }
+          },
           "citations": {
             "type": "object",
             "properties": {
