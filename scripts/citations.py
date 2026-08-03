@@ -237,6 +237,8 @@ def enrich_citations(findings, catalog, epss_enabled=False, cache_path=None, ope
                 derived = _derive_cwe_from_category(f["category"], catalog)
                 if derived:
                     clean["cwe"] = [derived]
+            if raw.get("epss"):
+                clean["epss"] = raw["epss"]
             f["citation_quality"] = _compute_citation_quality(clean, f.get("cvss"))
             if clean:
                 f["citations"] = clean

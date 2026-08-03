@@ -277,6 +277,19 @@ class TestEnrich(unittest.TestCase):
         self.assertIn("CVE-2023-1234", f["citations"]["cve"])
         self.assertNotIn("epss", f["citations"])
 
+    def test_enrich_preserves_existing_epss(self):
+        f = {
+            "source": "agent:security-reviewer",
+            "citations": {
+                "cwe": ["CWE-89"],
+                "epss": [{"cve": "CVE-2023-1234", "score": 0.42, "percentile": 0.97}],
+            },
+        }
+        cit.enrich_citations([f], self.cat, epss_enabled=False)
+        self.assertIn("epss", f["citations"])
+        self.assertEqual(f["citations"]["epss"][0]["cve"], "CVE-2023-1234")
+        self.assertAlmostEqual(f["citations"]["epss"][0]["score"], 0.42)
+
     def test_enrich_tolerant_of_malformed_subfields(self):
         findings = [
             {"source": "agent:x", "citations": {"ssvc": "active"}},   # ssvc as string
