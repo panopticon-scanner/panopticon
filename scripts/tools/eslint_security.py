@@ -4,7 +4,7 @@ import glob
 import json
 import os
 import subprocess
-from .base import new_finding_id, omit_none
+from .base import attach_tool_provenance, new_finding_id, omit_none
 
 
 # CWE mappings for eslint-plugin-security rules (best-effort).
@@ -84,6 +84,7 @@ class EslintSecurityAdapter:
                 }
                 if cwe:
                     finding["citations"] = {"cwe": [cwe]}
+                attach_tool_provenance(finding, self.name, reasoning=finding["tool_evidence"].get("rule_id"))
                 out.append(finding)
                 n += 1
         return out

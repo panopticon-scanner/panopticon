@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from .base import new_finding_id, omit_none, normalize_severity
+from .base import attach_tool_provenance, new_finding_id, omit_none, normalize_severity
 
 
 def _cvss_v3_score(cvss: str) -> float | None:
@@ -100,6 +100,7 @@ class CargoAuditAdapter:
             }
             if not finding["citations"]:
                 finding.pop("citations", None)
+            attach_tool_provenance(finding, self.name, reasoning=finding["tool_evidence"].get("rule_id"))
             out.append(finding)
             n += 1
         return out

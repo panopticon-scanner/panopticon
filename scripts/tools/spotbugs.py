@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 import xml.etree.ElementTree as ET
-from .base import new_finding_id, omit_none
+from .base import attach_tool_provenance, new_finding_id, omit_none
 
 _SPOTBUGS_CWE = {
     "SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE": "CWE-89",
@@ -74,6 +74,7 @@ class SpotBugsAdapter:
             }
             if not finding["citations"]:
                 finding.pop("citations", None)
+            attach_tool_provenance(finding, self.name, reasoning=finding["tool_evidence"].get("rule_id"))
             out.append(finding)
             n += 1
         return out

@@ -98,6 +98,12 @@ class TestPipAuditAdapter(unittest.TestCase):
             with mock.patch("scripts.tools.pip_audit.glob.glob", return_value=[]):
                 self.assertFalse(pa.PipAuditAdapter().is_applicable("/tmp/fake"))
 
+    def test_parse_includes_provenance(self):
+        findings = pa.PipAuditAdapter().parse(PIP_AUDIT_SAMPLE, "g1")
+        self.assertTrue(findings)
+        self.assertEqual(findings[0]["provenance"]["discovered_by"], "tool:pip-audit")
+        self.assertEqual(findings[0]["provenance"]["confirmation_status"], "TOOL")
+
     def test_invoke_uses_requirements_txt_when_present(self):
         adapter = pa.PipAuditAdapter()
         fake_run = mock.Mock(return_value=mock.Mock(stdout=b"[]", returncode=0))

@@ -83,6 +83,12 @@ class TestNpmAuditAdapter(unittest.TestCase):
         with mock.patch("os.path.isfile", return_value=False):
             self.assertFalse(na.NpmAuditAdapter().is_applicable("/tmp/fake"))
 
+    def test_parse_includes_provenance(self):
+        findings = na.NpmAuditAdapter().parse(NPM_AUDIT_SAMPLE, "g1")
+        self.assertTrue(findings)
+        self.assertEqual(findings[0]["provenance"]["discovered_by"], "tool:npm-audit")
+        self.assertEqual(findings[0]["provenance"]["confirmation_status"], "TOOL")
+
     def test_invoke_runs_npm_audit_json(self):
         adapter = na.NpmAuditAdapter()
         fake_run = mock.Mock(return_value=mock.Mock(stdout=b"{}", returncode=0))

@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-from .base import normalize_severity, new_finding_id, omit_none
+from .base import attach_tool_provenance, normalize_severity, new_finding_id, omit_none
 
 _BLOCK_RE = re.compile(
     r"Name:\s*(?P<name>[^\n]+)\n"
@@ -60,6 +60,7 @@ class BundlerAuditAdapter:
             }
             if not finding["citations"]:
                 finding.pop("citations", None)
+            attach_tool_provenance(finding, self.name, reasoning=finding["tool_evidence"].get("rule_id"))
             out.append(finding)
             n += 1
         return out
