@@ -41,13 +41,17 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
 1. `TodoList`: discovery → scout → tools → panels → lens sub-reviews → synthesis.
 2. **Discovery** — run `python3 scripts/orchestrator.py` to produce `groups.json`.
 3. **Scout** — dispatch the `scout` role (`agents/scout.md`) per group — its template has no placeholders; dispatch its body plus tool-policy line as the prompt; output `ScopeProfile` to `.panopticon/scout-{group}.json`.
+   Append the group's name, its file list from `groups.json`, and the `security_mode` to the prompt body — the scout template itself carries no assignment.
 4. **Tool scan** — optional Docker container; SARIF ingested by `scripts/ingest_tools.py`.
 5. **Plan dispatch** — run `python3 scripts/dispatch.py <scope-profile.json> --host <your host: claude|kimi|generic> --out .panopticon/dispatch-plan.json` to produce a `DispatchPlan` of role-based agents.
    Pass your host explicitly — env detection is fallback only.
 6. **Fan-out** — for each entry in `.panopticon/dispatch-plan.json`, dispatch
    `entry.prompt` with the model named by `entry.model.model` via your host's agent mechanism (see Host
-   dispatch below). Each reviewer writes its findings file to the entry's
-   `out_file`; `panel_review` entries omit `{lens}` in the filename.
+   dispatch below). `panel_review` reviewers write their own findings file to
+   the entry's `out_file` (their tool policy allows Bash); `lens_sweep`
+   reviewers RETURN the findings JSON and the orchestrator writes it to the
+   entry's `out_file` (their tool policy is read-only). `panel_review`
+   filenames omit `{lens}`.
 7. **Synthesize (pass 1)** — `python3 scripts/synthesize.py --emit-verify-queue [flags] .panopticon/findings-*.json`.
    If it prints a "verify queue: N entries" line, proceed to step 8; if it printed a report, skip to step 9.
 8. **Verify** — Run `python3 scripts/dispatch.py --render-advisor .panopticon/verify-queue.json --out .panopticon/advisor-prompts`,
@@ -72,8 +76,10 @@ One plan, one prompt per reviewer; each host dispatches with its own mechanism:
 - **Other hosts** — run the entries sequentially in-session with the same
   prompts; expect no parallelism.
 
-Tool policy is enforced by prompt on all raw-prompt hosts: each rendered prompt
-ends with the role's allowed/forbidden tool list. Treat it as binding.
+Tool policy is advisory: each rendered prompt ends with the role's
+allowed/forbidden tool list, but no host enforces it under raw-prompt
+dispatch (native enforcement is planned for round 3). Do not treat reviewer
+output as produced under enforced tool restrictions.
 
 ## Output
 Terminal markdown summary + JSON artifact at `--out`. CI gate key: `summary.gate`.

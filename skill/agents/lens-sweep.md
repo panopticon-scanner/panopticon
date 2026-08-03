@@ -14,7 +14,7 @@ Depth: {depth}
 ## Your task
 
 Perform a narrow, mechanical review of the listed files **only through the `{lens}` lens**.
-Emit findings as raw JSON `{"findings": [...]}` to `{out_file}` and return ONLY the path + count.
+Return ONLY a raw JSON object `{"findings": [...]}` as your final message — you cannot write files; the orchestrator writes your findings to `{out_file}`.
 
 ## Rules
 

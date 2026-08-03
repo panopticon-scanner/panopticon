@@ -135,6 +135,26 @@ class TestDispatchPlan(unittest.TestCase):
         finally:
             os.unlink(profile_path)
 
+    def test_main_template_failure_returns_one_cleanly(self):
+        # build_plan() raises ValueError when a role template can't be found
+        # (e.g. a corrupt/relocated install). main() must catch it and return
+        # 1 with a clean stderr message, matching the sibling error paths --
+        # not propagate a bare traceback.
+        profile = self._profile("standard")
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as fh:
+            json.dump(profile, fh)
+            profile_path = fh.name
+        try:
+            with tempfile.TemporaryDirectory() as empty_template_dir:
+                with mock.patch.object(dispatch, "TEMPLATE_DIR", empty_template_dir):
+                    stderr = io.StringIO()
+                    with contextlib.redirect_stderr(stderr):
+                        rc = dispatch.main([profile_path, "--host", "kimi"])
+                    self.assertEqual(rc, 1)
+                    self.assertIn("dispatch:", stderr.getvalue())
+        finally:
+            os.unlink(profile_path)
+
     def test_main_unwritable_out_directory_returns_one(self):
         profile = self._profile("standard")
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as fh:
@@ -230,15 +250,21 @@ class TestRenderPrompt(unittest.TestCase):
 
 class TestRenderGoldens(unittest.TestCase):
     def test_rendered_output_matches_goldens(self):
-        mapping = {"panel": "security", "group": "g1", "file_list": "a.py, b.py",
-                   "security_mode": "standard", "depth": "standard",
-                   "lenses": "- known_vulns\n- novel", "lens": "injection",
-                   "out_file": ".panopticon/findings-g1-security-panel_review.json"}
+        base = {"panel": "security", "group": "g1", "file_list": "a.py, b.py",
+                "security_mode": "standard", "depth": "standard",
+                "lenses": "- known_vulns\n- novel", "lens": "injection"}
+        # Distinct out_file per role: panel_review and lens_sweep write to
+        # different files (lens_sweep is read-only and returns its findings
+        # for the orchestrator to write), so their goldens must not share a
+        # mapping.
+        out_files = {
+            "panel-review.md": ".panopticon/findings-g1-security-panel_review.json",
+            "lens-sweep.md": ".panopticon/findings-g1-security-lens_sweep-injection.json",
+            "scout.md": ".panopticon/scout-g1.json",
+        }
         gdir = os.path.join(os.path.dirname(__file__), "goldens")
-        for role in ("panel-review.md", "lens-sweep.md", "scout.md"):
-            m = dict(mapping)
-            if role == "scout.md":
-                m["out_file"] = ".panopticon/scout-g1.json"
+        for role, out_file in out_files.items():
+            m = dict(base, out_file=out_file)
             expected = open(os.path.join(gdir, role[:-3] + ".rendered.txt"),
                             encoding="utf-8").read()
             self.assertEqual(dispatch.render_prompt(role, m), expected, role)
@@ -306,3 +332,21 @@ class TestRenderAdvisor(unittest.TestCase):
                 json.dump(queue, fh)
             with self.assertRaises(ValueError):
                 dispatch.render_advisor_prompts(qpath, tmp)
+
+    def test_unsafe_queue_id_fails_fast(self):
+        # queue_id is OUR artifact (built by evidence.build_verify_queue), but
+        # render_advisor_prompts validates it anyway: a corrupt/tampered queue
+        # file with a path-shaped queue_id must not reach os.path.join.
+        with tempfile.TemporaryDirectory() as tmp:
+            queue = {"version": "4.0.0", "cut_by_max_verify": 0, "entries": [
+                {"queue_id": "000-../evil", "priority": 1,
+                 "finding": {"id": "SEC-001", "title": "x", "severity": "HIGH",
+                              "panel": "security", "category": "injection",
+                              "location": {"file": "app.py", "line_start": 1}}},
+            ]}
+            qpath = os.path.join(tmp, "unsafe-queue.json")
+            with open(qpath, "w") as fh:
+                json.dump(queue, fh)
+            with self.assertRaises(ValueError) as ctx:
+                dispatch.render_advisor_prompts(qpath, tmp)
+            self.assertIn("unsafe queue_id", str(ctx.exception))

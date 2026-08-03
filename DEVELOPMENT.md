@@ -1,6 +1,7 @@
 # Panopticon — Development Notes
 
-Ruthless, standards-cited code review for Kimi Code. This file is the durable
+Ruthless, standards-cited code review skill; Claude Code first-class, Kimi Code
+supported, other SKILL.md hosts degraded-sequential. This file is the durable
 design record that travels with the skill (installed dir / OneDrive), so future
 work has context without the original spec/plan docs.
 
@@ -8,9 +9,9 @@ work has context without the original spec/plan docs.
 
 ## What it is
 A **discovery → scout → fan-out → synthesis** pipeline. It profiles a target with a
-cheap "scout", builds a risk-tuned plan, and fans out to Kimi custom agents in
-parallel via `AgentSwarm`. Each panel is reviewed by the `panel-review` agent
-(`agents/panel-review.md`)
+cheap "scout", builds a risk-tuned plan, and fans out rendered role prompts in
+parallel via the host's agent mechanism (Agent tool on Claude Code, AgentSwarm
+on Kimi). Each panel is reviewed by the `panel-review` agent (`agents/panel-review.md`)
 through one of six panels: **code**, **test**, **security**, **architecture**, **database**, and **redteam**.
 Optionally, findings are grounded with real static-analysis tools from a Docker
 container. It synthesizes everything into a `CodeReviewReport` (terminal markdown
@@ -24,6 +25,10 @@ summary + JSON artifact) with standards citations and CI gating.
   ≤15-file groups (`groups.json`). Language-neutral. stdlib only.
 - `skill/scripts/synthesize.py` — merge per-panel finding files (+ optional `--tools-dir` tool
   findings) into a validated `CodeReviewReport`: dedupe/reinforce, grade, gate, citations.
+- `skill/scripts/dispatch.py` — DispatchPlan builder + template renderer (host-neutral frontmatter
+  parser, rendered prompts, --render-advisor).
+- `skill/scripts/model_resolver.py` — role+host → model resolution (profiles yml, env/CLI
+  overrides, host-aware fallbacks).
 - `skill/scripts/citations.py` — CWE validation (bundled catalog), OWASP derivation, reduced-SSVC,
   opt-in EPSS (`--epss`, stdlib urllib). Tolerant: a malformed citation never aborts a run.
 - `skill/scripts/run_tools.py` — detect the `panopticon-tools` Docker image, run selected scanners
@@ -34,11 +39,11 @@ summary + JSON artifact) with standards citations and CI gating.
   eslint. Build once: `docker build -t panopticon-tools <this dir>`.
 - `skill/reference/` — `report-schema.json`, `scope-profile-schema.json`, `cwe-catalog.json`
   (curated CWE→OWASP map), `security-checklists.md`, `code-review-groups.example.yml`.
-- `skill/agents/` — Kimi Code custom agents: `scout.md`, `lens-sweep.md`, `panel-review.md`, `advisor.md`.
+- `skill/agents/` — host-neutral role prompt templates: `scout.md`, `lens-sweep.md`, `panel-review.md`, `advisor.md`.
 - `skill/prompts/` — `lenses.md` (per-panel lens catalog).
 
 ## Key design decisions (don't relitigate without reason)
-- **Fan out via `AgentSwarm`** of Kimi custom agents (`scout`, `panel-review`, `lens-sweep`, `advisor`).
+- **Fan out via rendered prompts** dispatched by the host's agent mechanism (`scout`, `panel-review`, `lens-sweep`, `advisor`).
   The six panels (code/test/security/architecture/database/redteam) are selected per group
   by `compute_group_panels`; lenses are spawned only when the scout flags a surface.
 - **Grade = worst-severity A–F rollup** (F if any CRITICAL … A if none). Deliberate for a
@@ -79,8 +84,9 @@ Rebuild cadence: monthly, or whenever a new adapter is added. The image pulls pu
 
 ## Versioning
 Scheme: a **minor** bump (2.x.0) per release round; **major** (x.0.0) reserved for breaking
-changes to the report schema, CLI, or grade contract. Bump `SKILL.md` `metadata.version` and
-`synthesize.build_report`'s `meta.version` together.
+changes to the report schema, CLI, or grade contract. Bump `SKILL.md` `metadata.version`,
+`synthesize.build_report`'s `meta.version`, and `evidence.write_verify_queue`'s payload
+`version` together.
 
 History:
 - **4.1.0** (current) — Claude Code port: all reviewer dispatch moves to
@@ -91,7 +97,7 @@ History:
   env fallback (`CLAUDECODE`; unknown → generic, model inherited). Claude
   model policy: scout/lens=haiku, panel=sonnet, advisor=opus. SKILL.md
   description is trigger-only; Host dispatch section maps the per-host
-  mechanisms (research: docs/superpowers/specs/2026-08-03-host-portability-research.md).
+  mechanisms (research: `docs/superpowers/specs/2026-08-03-host-portability-research.md`).
 - **2.0.0** — static-analysis upgrade: standards citations (CWE/OWASP/SSVC/EPSS) + the Docker
   tool container.
 - **2.1.0** — bug-fix round: must-fixes surfaced by the build's review gates and the
@@ -104,7 +110,7 @@ History:
 - **3.0.0** — Kimi port: introduces architecture, database, and redteam panels;
   replaces the fixed 9-lens catalog with a flexible lens model; rewrites orchestration for the
   Kimi Code agent platform; major version bump reflecting breaking changes to the skill contract.
-- **4.0.0** (current) — epistemics core: two-axis severity × evidence model.
+- **4.0.0** — epistemics core: two-axis severity × evidence model.
   Severity is never mutated; evidence.status (tool_confirmed/advisor_confirmed/
   corroborated/needs_more_info/unverified/rejected) is the pipeline's verdict.
   Verification moved out of synthesize (kimi-CLI subprocess loop deleted) into an

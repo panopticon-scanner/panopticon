@@ -245,6 +245,9 @@ def render_advisor_prompts(queue_path, out_dir):
         if not queue_id or not isinstance(finding, dict):
             raise ValueError("verify queue %s: malformed entry %r"
                              % (queue_path, entry.get("queue_id")))
+        if not re.match(r"^[0-9]{3}-[A-Za-z0-9_-]+$", queue_id):
+            raise ValueError("verify queue %s: unsafe queue_id %r"
+                             % (queue_path, queue_id))
         claim = json.dumps(finding, indent=2, ensure_ascii=False)
         prompt = render_prompt("advisor.md", {"claim_json": claim})
         path = os.path.join(out_dir, "%s.md" % queue_id)
@@ -257,7 +260,8 @@ def render_advisor_prompts(queue_path, out_dir):
 def main(argv=None):
     ap = argparse.ArgumentParser(description="panopticon dispatch planner")
     ap.add_argument("profile", nargs="?", default=None, help="Path to ScopeProfile JSON")
-    ap.add_argument("--host", default=None, help="Host platform (kimi, claude, openrouter)")
+    ap.add_argument("--host", default=None,
+                    help="Host platform: claude|kimi|generic (any model-profiles.yml host key accepted)")
     ap.add_argument("--out", default=None, help="Write DispatchPlan JSON to this file")
     ap.add_argument("--render-advisor", metavar="QUEUE", default=None,
                     help="Render advisor prompts from a verify-queue JSON into --out DIR")
@@ -298,7 +302,11 @@ def main(argv=None):
     if args.model_advisor:
         overrides["advisor"] = args.model_advisor
 
-    plan = build_plan(profile, host=args.host, model_overrides=overrides)
+    try:
+        plan = build_plan(profile, host=args.host, model_overrides=overrides)
+    except ValueError as e:
+        print("dispatch: %s" % e, file=sys.stderr)
+        return 1
 
     if args.out:
         out_dir = os.path.dirname(os.path.abspath(args.out))

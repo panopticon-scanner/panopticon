@@ -100,6 +100,9 @@ def build_verify_queue(findings, max_verify=None):
     would be pointless and would make tool/verdict collisions possible.
     Stable order: (priority, input index), so recomputation in pass 2
     reproduces pass 1's queue_ids exactly.
+
+    queue_id's id component is sanitized to [A-Za-z0-9_-] — findings are
+    external input and their ids feed filenames.
     """
     agentic = [(i, f) for i, f in enumerate(findings)
               if not is_tool_sourced(f) and not f.get("reinforced")]
@@ -110,7 +113,8 @@ def build_verify_queue(findings, max_verify=None):
         agentic = agentic[:max_verify]
     entries = []
     for qi, (_, f) in enumerate(agentic):
-        entries.append({"queue_id": "%03d-%s" % (qi, f.get("id", "UNKNOWN")),
+        fid = re.sub(r"[^A-Za-z0-9_-]", "_", str(f.get("id", "UNKNOWN")))
+        entries.append({"queue_id": "%03d-%s" % (qi, fid),
                         "priority": triage_priority(f),
                         "finding": f})
     return entries, cut
