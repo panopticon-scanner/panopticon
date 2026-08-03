@@ -603,8 +603,9 @@ def _render_heatmap(findings):
 
 
 def _render_findings(findings):
-    verified = [f for f in findings if f.get("provenance", {}).get("confirmation_status") != "NEEDS_MORE_INFO"]
-    unverified = [f for f in findings if f.get("provenance", {}).get("confirmation_status") == "NEEDS_MORE_INFO"]
+    unverified_statuses = ("NEEDS_MORE_INFO", "UNVERIFIED")
+    verified = [f for f in findings if f.get("provenance", {}).get("confirmation_status") not in unverified_statuses]
+    unverified = [f for f in findings if f.get("provenance", {}).get("confirmation_status") in unverified_statuses]
 
     by_sev = {sev: [] for sev in _SEV_ORDER}
     by_sev["ALL"] = []

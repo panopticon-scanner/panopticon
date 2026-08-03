@@ -160,23 +160,25 @@ def epss_lookup(cves, cache_path, opener=None):
 def _derive_cwe_from_category(category, catalog):
     cid = CATEGORY_CWE_OVERRIDES.get(str(category).lower().replace(" ", "_"))
     if cid and cid in catalog["cwe"]:
-        return {"id": cid, "name": catalog["cwe"][cid], "verified": True}
+        return {"id": cid, "name": catalog["cwe"][cid], "verified": True, "derived": True}
     return None
 
 
 def _compute_citation_quality(citations, finding_cvss=None):
     if not isinstance(citations, dict):
         return "none"
-    has_cwe = bool(citations.get("cwe"))
+    cwe_list = citations.get("cwe") or []
+    has_real_cwe = any(not (isinstance(c, dict) and c.get("derived")) for c in cwe_list)
+    has_derived_cwe = any(isinstance(c, dict) and c.get("derived") for c in cwe_list)
     has_owasp = bool(citations.get("owasp"))
     has_cve_or_cvss = bool(
         citations.get("cve") or citations.get("cvss") or finding_cvss
     )
-    if (has_cwe or has_owasp) and has_cve_or_cvss:
+    if (has_real_cwe or has_owasp) and has_cve_or_cvss:
         return "full"
-    if has_cwe or has_owasp:
+    if has_real_cwe or has_owasp:
         return "partial"
-    if citations:
+    if has_derived_cwe or citations or finding_cvss:
         return "minimal"
     return "none"
 

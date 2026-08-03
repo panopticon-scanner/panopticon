@@ -196,8 +196,14 @@ class TestCitationQuality(unittest.TestCase):
     def test_category_mapping(self):
         f = {"category": "injection", "citations": {}}
         cit.enrich_citations([f], self.catalog)
-        self.assertEqual(f["citation_quality"], "partial")
+        self.assertEqual(f["citation_quality"], "minimal")
         self.assertIn("CWE-89", [c["id"] for c in f["citations"]["cwe"]])
+
+    def test_real_cwe_is_partial_not_minimal(self):
+        f = {"citations": {"cwe": ["CWE-89"]}}
+        cit.enrich_citations([f], self.catalog)
+        self.assertEqual(f["citation_quality"], "partial")
+        self.assertTrue(all(not c.get("derived") for c in f["citations"]["cwe"]))
 
     def test_top_level_cvss_counts_for_full_quality(self):
         f = {
@@ -207,14 +213,14 @@ class TestCitationQuality(unittest.TestCase):
         cit.enrich_citations([f], self.catalog)
         self.assertEqual(f["citation_quality"], "full")
 
-    def test_category_derived_cwe_with_top_level_cvss_is_full(self):
+    def test_category_derived_cwe_with_top_level_cvss_is_minimal(self):
         f = {
             "category": "sql_injection",
             "citations": {},
             "cvss": {"score": 8.1, "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"},
         }
         cit.enrich_citations([f], self.catalog)
-        self.assertEqual(f["citation_quality"], "full")
+        self.assertEqual(f["citation_quality"], "minimal")
         self.assertIn("CWE-89", [c["id"] for c in f["citations"]["cwe"]])
 
 

@@ -507,7 +507,10 @@ def _render_advisor_prompt(finding, repo_root=None):
         m = re.search(r"^---\s*\n.*?\n---\s*\n", template, re.DOTALL)
         if m:
             template = template[m.end():]
-    claim_json = json.dumps(finding, indent=2, default=str)
+    claim = dict(finding)
+    claim.pop("_group", None)
+    claim.pop("_repo_root", None)
+    claim_json = json.dumps(claim, indent=2, ensure_ascii=False)
     code_context = _read_code_context(finding, repo_root=repo_root)
     # Two-step replacement avoids claim_json containing {code_context} corrupting
     # the prompt.
