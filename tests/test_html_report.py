@@ -1,5 +1,6 @@
 import os
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir))
@@ -21,6 +22,12 @@ def _minimal_report(findings=None):
                 "impact": "Data exfiltration.",
                 "remediation": "Use parameterized queries.",
                 "references": [],
+                "evidence": {
+                    "status": "advisor_confirmed",
+                    "verified_by": "agent:advisor",
+                    "reasoning": "verified",
+                    "citation_quality": "partial"
+                }
             }
         ]
     return {
@@ -35,8 +42,9 @@ def _minimal_report(findings=None):
             "overall_grade": "A",
             "risk_level": "LOW",
             "top_issues": ["SQL injection"],
-            "effort_to_remediate": "MEDIUM",
             "gate": "PASS",
+            "gate_policy": "confirmed_only",
+            "evidence_stats": {"unverified": 1},
             "stats": {"critical": 0, "high": 1, "medium": 0, "low": 0, "info": 0},
         },
         "groups": [
@@ -44,13 +52,11 @@ def _minimal_report(findings=None):
                 "name": "App",
                 "files": ["app.py"],
                 "panel_grades": {"code": "A", "test": "A", "security": "B"},
-                "panel_summaries": {},
                 "key_findings": ["SQL injection"],
             }
         ],
         "findings": findings,
         "cross_panel": {"integration_findings": []},
-        "recommendations": {"immediate": [], "short_term": [], "long_term": []},
     }
 
 
@@ -356,7 +362,10 @@ class TestHtmlReport(unittest.TestCase):
                 "discovered_by": "tool:brakeman", "confirmation_status": "TOOL",
                 "model": None, "model_version": None,
             },
-            "citation_quality": "partial",
+            "evidence": {
+                "status": "advisor_confirmed", "verified_by": "tool:brakeman",
+                "reasoning": "verified", "citation_quality": "partial"
+            }
         }
         report = _minimal_report(findings=[finding])
         out = hr.render(report)
@@ -372,7 +381,10 @@ class TestHtmlReport(unittest.TestCase):
                 "discovered_by": "agent:lens_sweep", "confirmation_status": "NEEDS_MORE_INFO",
                 "model": "kimi-k2.7-coding", "model_version": "v1",
             },
-            "citation_quality": "none",
+            "evidence": {
+                "status": "needs_more_info", "verified_by": "agent:lens_sweep",
+                "reasoning": "need more info", "citation_quality": "none"
+            }
         }
         report = _minimal_report(findings=[finding])
         out = hr.render(report)
@@ -388,6 +400,10 @@ class TestHtmlReport(unittest.TestCase):
                 "discovered_by": "agent:lens_sweep", "confirmation_status": "NEEDS_MORE_INFO",
                 "model": "kimi-k2.7-coding", "model_version": "v1",
             },
+            "evidence": {
+                "status": "needs_more_info", "verified_by": "agent:lens_sweep",
+                "reasoning": "need more info", "citation_quality": "none"
+            }
         }
         report = _minimal_report(findings=[finding])
         out = hr.render(report)
@@ -520,3 +536,17 @@ class TestDashboardCharts(unittest.TestCase):
         report["discarded_claims"] = [finding]
         out = hr.render(report)
         self.assertIn("prov-rejected", out)
+
+
+class TestEvidencePartition(unittest.TestCase):
+    def test_unverified_section_keys_on_evidence(self):
+        report = _minimal_report()
+        report["findings"][0]["evidence"] = {
+            "status": "needs_more_info", "verified_by": "agent:advisor",
+            "reasoning": "need config", "citation_quality": "none"}
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "r.html")
+            hr.write_html(report, path)
+            with open(path, encoding="utf-8") as fh:
+                html = fh.read()
+        self.assertIn("Unverified findings", html)
