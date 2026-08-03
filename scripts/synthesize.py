@@ -12,7 +12,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import scripts.citations as citations
-from scripts.citations import _compute_citation_quality
+from scripts.citations import _compute_citation_quality, load_cwe_catalog
 import scripts.html_report as html_report
 import scripts.ingest_tools as ingest_tools
 
@@ -664,7 +664,14 @@ def _partition_findings(findings, advisor_dispatch=None):
             continue
 
         if status == "CONFIRMED":
-            confirmed.append(f)
+            if _is_agentic(f) and f.get("citation_quality") in ("none", "minimal"):
+                prov["confirmation_status"] = "NEEDS_MORE_INFO"
+                prov["confirmation_reasoning"] = "CONFIRMED status but insufficient hard citations; downgraded."
+                f["severity"] = "INFO"
+                f["confidence"] = "NOTE"
+                unverified.append(f)
+            else:
+                confirmed.append(f)
             continue
 
         if status == "REJECTED":
@@ -819,6 +826,8 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                     apply_advisor_verdict(f, verdict)
                     break
     confirmed, discarded, unverified = _partition_findings(findings, advisor_dispatch=advisor_dispatch)
+    catalog = load_cwe_catalog()
+    citations.enrich_citations(confirmed, catalog, epss_enabled=False)
     # Confirmed findings drive grades/gate. Unverified findings stay visible in the
     # main report body at INFO/NOTE severity but do not influence grades. Discarded
     # claims are moved to a separate appendix.

@@ -748,7 +748,8 @@ class TestSummaryCitations(unittest.TestCase):
               "panel": "security", "category": "injection", "source": "tool:semgrep",
               "reinforced": True, "location": {"file": "a.py", "line_start": 1},
               "citations": {"cwe": [{"id": "CWE-89", "name": "SQLi", "verified": True}],
-                            "ssvc": {"decision": "Act", "model": "deployer-reduced", "inputs": {}}}}],
+                            "ssvc": {"decision": "Act", "model": "deployer-reduced",
+                                     "inputs": {"exploitation": "active", "exposure": "open", "impact": "high"}}}}],
             [], "src", None, "2026-07-23T00:00:00Z")
         text = syn.render_summary(report)
         self.assertIn("CWE-89", text)
@@ -1202,6 +1203,32 @@ class TestAdvisorConfirmation(unittest.TestCase):
         self.assertEqual(len(confirmed), 1)
         self.assertEqual(confirmed[0]["provenance"]["confirmation_status"], "CONFIRMED")
         self.assertEqual(confirmed[0]["citations"]["cwe"], ["CWE-20"])
+
+    def test_preconfirmed_agentic_with_no_citations_is_unverified(self):
+        f = self._agentic_finding(
+            provenance={"discovered_by": "agent:lens_sweep", "confirmation_status": "CONFIRMED"},
+            citations={},
+            citation_quality="none",
+        )
+        confirmed, discarded, unverified = syn._partition_findings([f])
+        self.assertEqual(len(confirmed), 0)
+        self.assertEqual(len(discarded), 0)
+        self.assertEqual(len(unverified), 1)
+        self.assertEqual(unverified[0]["provenance"]["confirmation_status"], "NEEDS_MORE_INFO")
+        self.assertEqual(unverified[0]["severity"], "INFO")
+        self.assertEqual(unverified[0]["confidence"], "NOTE")
+
+    def test_preconfirmed_agentic_with_real_citation_stays_confirmed(self):
+        f = self._agentic_finding(
+            provenance={"discovered_by": "agent:lens_sweep", "confirmation_status": "CONFIRMED"},
+            citations={"cwe": [{"id": "CWE-89"}]},
+            citation_quality="partial",
+        )
+        confirmed, discarded, unverified = syn._partition_findings([f])
+        self.assertEqual(len(confirmed), 1)
+        self.assertEqual(len(discarded), 0)
+        self.assertEqual(len(unverified), 0)
+        self.assertEqual(confirmed[0]["provenance"]["confirmation_status"], "CONFIRMED")
 
 
     def test_advisor_confirmed_without_citations_is_unverified(self):
