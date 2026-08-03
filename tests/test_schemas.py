@@ -3,7 +3,7 @@ import os
 import sys
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill"))
 from jsonschema import validate
 
 import scripts.tools.pip_audit as pa
@@ -11,7 +11,7 @@ import scripts.tools.npm_audit as na
 import scripts.tools.osv_scanner as osv
 import scripts.tools.eslint_security as es
 
-REF = os.path.join(os.path.dirname(__file__), os.pardir, "reference")
+REF = os.path.join(os.path.dirname(__file__), os.pardir, "skill", "reference")
 
 
 class TestSchemas(unittest.TestCase):

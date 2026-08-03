@@ -6,10 +6,10 @@ on:
     paths:
       - .github/workflows/docker-publish.yml
       - Dockerfile
-      - scripts/tools/**
-      - scripts/_run_adapter.py
-      - scripts/ingest_tools.py
-      - scripts/run_tools.py
+      - skill/scripts/tools/**
+      - skill/scripts/_run_adapter.py
+      - skill/scripts/ingest_tools.py
+      - skill/scripts/run_tools.py
   workflow_dispatch:
 
 env:

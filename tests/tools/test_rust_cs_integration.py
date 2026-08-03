@@ -3,7 +3,7 @@ import shutil
 import sys
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, "skill"))
 from scripts.tools import ADAPTERS
 
 

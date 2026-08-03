@@ -21,7 +21,7 @@ Clone or symlink the repository into your Kimi skills directory:
 ```bash
 # default Kimi skills location (see `kimi config get skills_dir`)
 mkdir -p ~/.kimi/skills
-ln -s "$(pwd)" ~/.kimi/skills/panopticon
+ln -s "$(pwd)/skill" ~/.kimi/skills/panopticon
 ```
 
 Then invoke it with:
@@ -35,7 +35,7 @@ kimi /panopticon
 Clone or symlink into Claude's skills directory:
 
 ```bash
-ln -s "$(pwd)/panopticon" ~/.claude/skills/panopticon
+ln -s "$(pwd)/skill" ~/.claude/skills/panopticon
 ```
 
 Then invoke it with `/panopticon` or describe a review task.
@@ -60,10 +60,11 @@ kimi /panopticon --mode pr --pr 217
 
 | Path | Purpose |
 |------|---------|
-| `SKILL.md` | Skill entry point and orchestration spec |
-| `scripts/` | Runnable Python modules (orchestrator, synthesizer, dispatch, tools) |
-| `agents/` | Kimi Code custom agent definitions (`scout`, `panel-review`, `lens-sweep`, `advisor`) |
-| `reference/` | Schemas, CWE catalog, security checklists, example group profiles |
+| `skill/` | The installable skill surface — symlink THIS directory into your agent's skills dir |
+| `skill/SKILL.md` | Skill entry point and orchestration spec |
+| `skill/scripts/` | Runnable Python modules (orchestrator, synthesizer, dispatch, tools) |
+| `skill/agents/` | Custom agent definitions (`scout`, `panel-review`, `lens-sweep`, `advisor`) |
+| `skill/reference/` | Schemas, CWE catalog, security checklists, example group profiles |
 | `tests/` | pytest suite |
 | `Dockerfile` | `panopticon-tools` scanner image |
 | `docs/` | Design docs and implementation plans |
@@ -76,7 +77,7 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for architecture decisions, version history
 
 ```bash
 python -m pytest tests/ -q
-python -m ruff check scripts/ tests/
+python -m ruff check skill/scripts/ tests/
 ```
 
 ### Running static-analysis tools locally
@@ -90,7 +91,7 @@ docker build -t panopticon-tools .
 Then run:
 
 ```bash
-python scripts/run_tools.py --target . --deps
+python skill/scripts/run_tools.py --target . --deps
 ```
 
 ## License

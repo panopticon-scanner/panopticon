@@ -50,7 +50,7 @@ RUN arch="$(dpkg --print-architecture)" \
 
 # Copy panopticon adapter dispatcher into the image so Docker-based runs can
 # invoke Phase 1 adapters without relying on the target repo providing it.
-COPY scripts /opt/panopticon/scripts
+COPY skill/scripts /opt/panopticon/scripts
 ENV PYTHONPATH=/opt/panopticon
 
 # OpenJDK (needed by SpotBugs and dependency-check)

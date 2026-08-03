@@ -48,15 +48,15 @@ jobs:
       - name: Run static-analysis tools
         run: |
           mkdir -p ${{ env.TOOLS_OUT }}
-          python scripts/run_tools.py --target . --out ${{ env.TOOLS_OUT }} --deps
+          python skill/scripts/run_tools.py --target . --out ${{ env.TOOLS_OUT }} --deps
 
       - name: Ingest findings and gate on HIGH/CRITICAL
         run: |
           python - <<'PY'
           import os
           import sys
-          sys.path.insert(0, os.path.join(os.getcwd(), 'scripts'))
-          import ingest_tools as it
+          sys.path.insert(0, os.path.join(os.getcwd(), 'skill'))
+          import scripts.ingest_tools as it
           findings = it.ingest_dir(os.environ['TOOLS_OUT'], 'ci')
           # Ignore intentionally vulnerable test fixtures.
           def _is_fixture(f):

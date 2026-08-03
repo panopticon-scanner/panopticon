@@ -41,7 +41,7 @@ RUN cd /opt/panopticon-fixtures/AspGoat && (dotnet restore && dotnet build --no-
 COPY tests/fixtures/vulnerable-rust /opt/panopticon-fixtures/vulnerable-rust
 RUN cd /opt/panopticon-fixtures/vulnerable-rust && cargo build
 
-# Note: scripts/ and tests/ are mounted read-only at runtime so the harness
+# Note: skill/scripts/ and tests/ are mounted read-only at runtime so the harness
 # always uses the current repo's code; do not COPY them into the image.
 
 # pytest is needed by the integration-test harness that runs inside this image.
@@ -53,4 +53,4 @@ WORKDIR /opt/panopticon
 
 # The fixtures image runs as root because it installs language toolchains and
 # writes build artifacts during image build. It is intended for local test use only.
-CMD ["python", "scripts/run_fixture_tests.py"]
+CMD ["python", "skill/scripts/run_fixture_tests.py"]

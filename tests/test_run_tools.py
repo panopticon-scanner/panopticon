@@ -1,6 +1,6 @@
 import io
 import json, os, sys, tempfile, unittest
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill"))
 import scripts.run_tools as rt
 import scripts._run_adapter as ra
 
