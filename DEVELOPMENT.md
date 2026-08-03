@@ -17,24 +17,25 @@ container. It synthesizes everything into a `CodeReviewReport` (terminal markdow
 summary + JSON artifact) with standards citations and CI gating.
 
 ## Architecture
-- `SKILL.md` — orchestration spec (modes, pipeline, dispatch templates, flags). Instructions
+- `skill/` — the installable skill surface (symlink target); everything an agent loads lives here.
+- `skill/SKILL.md` — orchestration spec (modes, pipeline, dispatch templates, flags). Instructions
   to the orchestrating agent; not a runnable script.
-- `scripts/orchestrator.py` — resolve a target (`-f/-d/-g/-c/--pr/-e`/repo) to cohesive
+- `skill/scripts/orchestrator.py` — resolve a target (`-f/-d/-g/-c/--pr/-e`/repo) to cohesive
   ≤15-file groups (`groups.json`). Language-neutral. stdlib only.
-- `scripts/synthesize.py` — merge per-panel finding files (+ optional `--tools-dir` tool
+- `skill/scripts/synthesize.py` — merge per-panel finding files (+ optional `--tools-dir` tool
   findings) into a validated `CodeReviewReport`: dedupe/reinforce, grade, gate, citations.
-- `scripts/citations.py` — CWE validation (bundled catalog), OWASP derivation, reduced-SSVC,
+- `skill/scripts/citations.py` — CWE validation (bundled catalog), OWASP derivation, reduced-SSVC,
   opt-in EPSS (`--epss`, stdlib urllib). Tolerant: a malformed citation never aborts a run.
-- `scripts/run_tools.py` — detect the `panopticon-tools` Docker image, run selected scanners
+- `skill/scripts/run_tools.py` — detect the `panopticon-tools` Docker image, run selected scanners
   against a read-only mount, collect SARIF. Degrades gracefully if Docker/image absent.
-- `scripts/ingest_tools.py` — SARIF → normalized findings (source `tool:<name>`, CWE/CVE citations).
-- `scripts/evidence.py` — evidence axis: status derivation, verify-queue triage, verdict ingestion.
+- `skill/scripts/ingest_tools.py` — SARIF → normalized findings (source `tool:<name>`, CWE/CVE citations).
+- `skill/scripts/evidence.py` — evidence axis: status derivation, verify-queue triage, verdict ingestion.
 - `Dockerfile` — `panopticon-tools` image: semgrep, gitleaks, trivy, bandit, brakeman, gosec,
   eslint. Build once: `docker build -t panopticon-tools <this dir>`.
-- `reference/` — `report-schema.json`, `scope-profile-schema.json`, `cwe-catalog.json`
+- `skill/reference/` — `report-schema.json`, `scope-profile-schema.json`, `cwe-catalog.json`
   (curated CWE→OWASP map), `security-checklists.md`, `code-review-groups.example.yml`.
-- `agents/` — Kimi Code custom agents: `scout.md`, `lens-sweep.md`, `panel-review.md`, `advisor.md`.
-- `prompts/` — `panel-template.md` (fallback dispatch prompt for the six-panel review model),
+- `skill/agents/` — Kimi Code custom agents: `scout.md`, `lens-sweep.md`, `panel-review.md`, `advisor.md`.
+- `skill/prompts/` — `panel-template.md` (fallback dispatch prompt for the six-panel review model),
   `lenses.md` (per-panel lens catalog).
 
 ## Key design decisions (don't relitigate without reason)
@@ -60,8 +61,8 @@ it's used automatically when present, `--no-tools` to skip.
 
 ## Adding a new static-analysis tool
 
-1. Create `scripts/tools/<tool_name>.py` implementing `is_applicable()`, `invoke()`, and `parse()`.
-2. Register it in `scripts/tools/__init__.py` under `ADAPTERS`.
+1. Create `skill/scripts/tools/<tool_name>.py` implementing `is_applicable()`, `invoke()`, and `parse()`.
+2. Register it in `skill/scripts/tools/__init__.py` under `ADAPTERS`.
 3. Add unit tests in `tests/tools/test_<tool_name>.py`.
 4. If the tool needs installation, add it to `Dockerfile`.
 5. Run `python3 -m pytest tests/tools/ tests/test_ingest_tools.py tests/test_run_tools.py -v`.
@@ -71,8 +72,8 @@ it's used automatically when present, `--no-tools` to skip.
 The `panopticon-fixtures` image contains vulnerable-by-design applications used to validate scanner adapters.
 
 - Build: `docker build -f Dockerfile.fixtures -t panopticon-fixtures:latest .`
-- Run tests: `python3 scripts/run_fixture_tests.py`
-- Force rebuild: `python3 scripts/run_fixture_tests.py --rebuild`
+- Run tests: `python3 skill/scripts/run_fixture_tests.py`
+- Force rebuild: `python3 skill/scripts/run_fixture_tests.py --rebuild`
 - Tag snapshots: `docker tag panopticon-fixtures:latest panopticon-fixtures:YYYY-MM-DD`
 
 Rebuild cadence: monthly, or whenever a new adapter is added. The image pulls public fixtures at build time, so test runs require no network.

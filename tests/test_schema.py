@@ -3,11 +3,11 @@ import os
 import sys
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill"))
 
 from scripts.synthesize import build_report
 
-SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "..", "reference", "report-schema.json")
+SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "..", "skill", "reference", "report-schema.json")
 
 try:
     import jsonschema

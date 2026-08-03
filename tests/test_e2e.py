@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 ROOT = os.path.join(os.path.dirname(__file__), os.pardir)
-SCRIPTS = os.path.join(ROOT, "scripts")
+SCRIPTS = os.path.join(ROOT, "skill", "scripts")
 
 
 class TestEndToEnd(unittest.TestCase):

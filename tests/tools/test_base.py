@@ -1,6 +1,6 @@
 import unittest
 import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, "skill"))
 import scripts.tools.base as base
 
 

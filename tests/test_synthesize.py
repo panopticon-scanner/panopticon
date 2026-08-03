@@ -6,7 +6,7 @@ import json
 import tempfile
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill"))
 import scripts.synthesize as syn
 
 
@@ -947,7 +947,7 @@ class TestCrossPanelCorroboration(unittest.TestCase):
         self.assertIn("app/resolver.py:42", text)
 
     def test_schema_defines_integration_finding_items(self):
-        ref = os.path.join(os.path.dirname(__file__), os.pardir, "reference",
+        ref = os.path.join(os.path.dirname(__file__), os.pardir, "skill", "reference",
                            "report-schema.json")
         with open(ref, encoding="utf-8") as fh:
             schema = json.load(fh)

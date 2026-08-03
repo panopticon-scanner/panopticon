@@ -3,7 +3,7 @@ import sys
 import unittest
 from unittest import mock
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, "skill"))
 import scripts.tools.spotbugs as sb
 
 SPOTBUGS_SAMPLE = b"""<?xml version="1.0" encoding="UTF-8"?>

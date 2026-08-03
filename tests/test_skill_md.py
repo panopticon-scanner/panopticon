@@ -1,7 +1,7 @@
 import os
 import unittest
 
-ROOT = os.path.join(os.path.dirname(__file__), os.pardir)
+ROOT = os.path.join(os.path.dirname(__file__), os.pardir, "skill")
 
 
 class TestSkillMd(unittest.TestCase):

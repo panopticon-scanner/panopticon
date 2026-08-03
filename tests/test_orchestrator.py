@@ -5,7 +5,7 @@ import sys
 import unittest
 import tempfile
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "scripts"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill", "scripts"))
 import orchestrator as orch
 
 

@@ -11,7 +11,7 @@ Thanks for your interest in improving Panopticon.
 5. Run the full test suite and lint locally:
    ```bash
    python -m pytest tests/ -q
-   python -m ruff check scripts/ tests/
+   python -m ruff check skill/scripts/ tests/
    ```
 6. Open a pull request against `main`.
 
@@ -19,7 +19,7 @@ Thanks for your interest in improving Panopticon.
 
 - Python 3.11+.
 - Ruff is used for linting; configuration is in `pyproject.toml`.
-- Keep the skill cross-platform: avoid host-specific code paths outside `scripts/model_resolver.py`.
+- Keep the skill cross-platform: avoid host-specific code paths outside `skill/scripts/model_resolver.py`.
 - Agent prompts and skill docs should not name competitors.
 
 ## Testing

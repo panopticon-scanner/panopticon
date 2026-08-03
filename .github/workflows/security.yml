@@ -48,7 +48,7 @@ jobs:
       - name: Run static-analysis tools
         run: |
           mkdir -p ${{ env.TOOLS_OUT }}
-          python scripts/run_tools.py --target . --out ${{ env.TOOLS_OUT }} --deps
+          python skill/scripts/run_tools.py --target . --out ${{ env.TOOLS_OUT }} --deps
 
       - name: Ingest findings and gate on HIGH/CRITICAL
         run: |

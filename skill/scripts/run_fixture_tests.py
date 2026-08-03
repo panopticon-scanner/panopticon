@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DOCKERFILE = REPO_ROOT / "Dockerfile.fixtures"
 MANIFEST = REPO_ROOT / "tests" / "fixtures" / "manifest.json"
 DEFAULT_IMAGE = "panopticon-fixtures:latest"
