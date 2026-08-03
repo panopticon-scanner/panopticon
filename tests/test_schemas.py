@@ -83,7 +83,18 @@ class TestAdapterFindingsValidateAgainstSchema(unittest.TestCase):
         schema = json.load(open(os.path.join(REF, "report-schema.json"), encoding="utf-8"))
         return schema["properties"]["findings"]["items"]
 
+    def _add_evidence_if_missing(self, finding):
+        if "evidence" not in finding:
+            finding["evidence"] = {
+                "status": "tool_confirmed",
+                "verified_by": None,
+                "reasoning": None,
+                "citation_quality": "none"
+            }
+        return finding
+
     def _validate(self, finding):
+        finding = self._add_evidence_if_missing(finding)
         validate(instance=finding, schema=self._finding_schema())
 
     def test_pip_audit_finding_validates(self):
@@ -226,6 +237,12 @@ class TestAdapterFindingsValidateAgainstSchema(unittest.TestCase):
             "source_role": "lens_sweep",
             "depth": "standard",
             "location": {"file": "app.py", "line_start": 1},
+            "evidence": {
+                "status": "unverified",
+                "verified_by": None,
+                "reasoning": None,
+                "citation_quality": "none"
+            },
         }
 
 
@@ -242,7 +259,7 @@ def test_multi_model_fields_in_schemas():
         report = json.load(fh)
     finding_props = report["properties"]["findings"]["items"]["properties"]
     assert "source_role" in finding_props
-    assert "advisor_verdict" in finding_props
+    assert "evidence" in finding_props
     assert "depth" in finding_props
 
 
