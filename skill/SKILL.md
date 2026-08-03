@@ -45,7 +45,7 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
 5. **Plan dispatch** — run `python3 scripts/dispatch.py <scope-profile.json> --host <your host: claude|kimi|generic> --out .panopticon/dispatch-plan.json` to produce a `DispatchPlan` of role-based agents.
    Pass your host explicitly — env detection is fallback only.
 6. **Fan-out** — for each entry in `.panopticon/dispatch-plan.json`, dispatch
-   `entry.prompt` with `entry.model` via your host's agent mechanism (see Host
+   `entry.prompt` with the model named by `entry.model.model` via your host's agent mechanism (see Host
    dispatch below). Each reviewer writes its findings file to the entry's
    `out_file`; `panel_review` entries omit `{lens}` in the filename.
 7. **Synthesize (pass 1)** — `python3 scripts/synthesize.py --emit-verify-queue [flags] .panopticon/findings-*.json`.
@@ -55,6 +55,9 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
    as an `advisor` agent (`agents/advisor.md`) in parallel. The advisor RETURNS a
    verdict JSON; write it verbatim to `.panopticon/verdicts/{queue_id}.json`.
    Advisors are read-only; the orchestrator performs the write.
+   Then run
+   `python3 scripts/synthesize.py --verdicts-dir .panopticon/verdicts [same flags] .panopticon/findings-*.json`
+   to produce the final report.
 9. **Validate** — `verification-before-completion`: check gate, print summary, write JSON.
 
 ## Host dispatch
@@ -62,7 +65,7 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
 One plan, one prompt per reviewer; each host dispatches with its own mechanism:
 
 - **Claude Code** — Agent tool, general-purpose subagents, in parallel; pass
-  `entry.model` (`haiku`/`sonnet`/`opus`); omit the model when it is null.
+  `entry.model.model` (`haiku`/`sonnet`/`opus`) as the agent model; omit it when null.
 - **Kimi Code** — AgentSwarm raw-prompt dispatch (`prompt_template`/`items`);
   select an appropriate profile via `subagent_type`; model overrides are
   experimental-flag-gated.

@@ -44,5 +44,5 @@ class TestSkillMd(unittest.TestCase):
 
     def test_pins_round1_flags_and_render_advisor(self):
         for token in ["--gate-unverified", "--max-verify", "--render-advisor",
-                      "--host"]:
+                      "--host", "--verdicts-dir"]:
             self.assertIn(token, self.text, token)
