@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+from string import Template
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import scripts.citations as citations
@@ -448,7 +449,10 @@ def _render_advisor_prompt(finding, repo_root=None):
             template = template[m.end():]
     claim_json = json.dumps(finding, indent=2, default=str)
     code_context = _read_code_context(finding, repo_root=repo_root)
-    rendered = template.replace("{claim_json}", claim_json).replace("{code_context}", code_context)
+    rendered = Template(template).substitute(
+        claim_json=claim_json,
+        code_context=code_context,
+    )
     if "{claim_json}" in rendered or "{code_context}" in rendered:
         raise ValueError("Advisor prompt still contains unsubstituted placeholders")
     return rendered
@@ -623,10 +627,11 @@ def _partition_findings(findings, advisor_dispatch=None):
                 prov["confirmed_by"] = "agent:advisor"
                 prov["confirmation_status"] = "CONFIRMED"
                 prov["confirmation_reasoning"] = advisor_result.get("reasoning")
-                # Merge advisor citations if present.
+                # Merge advisor citations if present without overwriting keys
+                # that already exist on the finding.
                 advisor_citations = advisor_result.get("citations")
                 if advisor_citations:
-                    f.setdefault("citations", {}).update(advisor_citations)
+                    _merge_citations(f, {"citations": advisor_citations})
                 confirmed.append(f)
                 continue
             if verdict == "REJECTED":
