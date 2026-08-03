@@ -46,3 +46,14 @@ class TestEndToEnd(unittest.TestCase):
             # The panel-agent finding carries no verdict, so it is unverified
             # under the two-axis model and does not move the grade by default.
             self.assertEqual(report["summary"]["overall_grade"], "A")
+            self.assertEqual(report["summary"]["evidence_stats"]["unverified"], 1)
+            # opting unverified findings into the gate restores the old behavior
+            r3 = subprocess.run(
+                [sys.executable, os.path.join(SCRIPTS, "synthesize.py"),
+                 "--target", "src", "--groups", gj, "--gate-unverified",
+                 "--out", out, fp],
+                capture_output=True, text=True)
+            self.assertEqual(r3.returncode, 0, r3.stderr)
+            with open(out) as _fh:
+                report = json.load(_fh)
+            self.assertEqual(report["summary"]["overall_grade"], "C")

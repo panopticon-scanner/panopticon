@@ -1,3 +1,4 @@
+import contextlib
 import io
 import os
 import sys
@@ -7,6 +8,16 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir))
 import scripts.synthesize as syn
+
+
+@contextlib.contextmanager
+def _chdir(path):
+    prev = os.getcwd()
+    os.chdir(path)
+    try:
+        yield
+    finally:
+        os.chdir(prev)
 
 
 class TestNormalize(unittest.TestCase):
@@ -1250,3 +1261,63 @@ class TestSeverityImmutability(unittest.TestCase):
             everywhere = report["findings"] + report["discarded_claims"]
             self.assertEqual(everywhere[0]["confidence"], original,
                              "confidence mutated for verdict=%r" % verdict)
+
+
+class TestTwoPassCli(unittest.TestCase):
+    def _write_findings(self, d, findings):
+        fp = os.path.join(d, ".panopticon", "findings-g1-security-panel_review.json")
+        os.makedirs(os.path.dirname(fp), exist_ok=True)
+        with open(fp, "w") as fh:
+            json.dump({"findings": findings}, fh)
+        return fp
+
+    def test_pass1_emits_queue_not_report(self):
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            fp = self._write_findings(d, [_agentic()])
+            out = os.path.join(d, "report.json")
+            rc = syn.main(["--emit-verify-queue", "--out", out, fp])
+            self.assertEqual(rc, 0)
+            self.assertFalse(os.path.exists(out))
+            with open(os.path.join(d, ".panopticon", "verify-queue.json")) as fh:
+                queue = json.load(fh)
+            self.assertEqual(queue["entries"][0]["queue_id"], "000-AG-001")
+
+    def test_pass1_empty_queue_falls_through_to_report(self):
+        tool = {"id": "TL-001", "title": "t", "severity": "LOW",
+                "confidence": "CERTAIN", "panel": "security", "category": "x",
+                "source": "tool:semgrep",
+                "location": {"file": "a.py", "line_start": 1},
+                "provenance": {"discovered_by": "tool:semgrep",
+                               "confirmation_status": "TOOL"}}
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            fp = self._write_findings(d, [tool])
+            out = os.path.join(d, "report.json")
+            rc = syn.main(["--emit-verify-queue", "--out", out, fp])
+            self.assertEqual(rc, 0)
+            self.assertTrue(os.path.exists(out))
+
+    def test_pass2_applies_verdicts(self):
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            fp = self._write_findings(d, [_agentic()])
+            vd = os.path.join(d, ".panopticon", "verdicts")
+            os.makedirs(vd)
+            with open(os.path.join(vd, "000-AG-001.json"), "w") as fh:
+                json.dump({"finding_id": "AG-001", "verdict": "CONFIRMED",
+                           "reasoning": "verified"}, fh)
+            out = os.path.join(d, "report.json")
+            rc = syn.main(["--verdicts-dir", vd, "--fail-on", "high",
+                           "--out", out, fp])
+            self.assertEqual(rc, 1)  # gate FAIL -> exit 1
+            with open(out) as fh:
+                report = json.load(fh)
+            self.assertEqual(report["findings"][0]["evidence"]["status"],
+                             "advisor_confirmed")
+            self.assertEqual(report["summary"]["gate"], "FAIL")
+
+    def test_gate_unverified_flag(self):
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            fp = self._write_findings(d, [_agentic(sev="CRITICAL")])
+            out = os.path.join(d, "report.json")
+            rc = syn.main(["--gate-unverified", "--fail-on", "critical",
+                           "--out", out, fp])
+            self.assertEqual(rc, 1)

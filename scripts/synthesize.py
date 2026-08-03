@@ -453,14 +453,17 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
     queue, _cut = evidence_mod.build_verify_queue(findings, max_verify)
     verdicts = verdicts or {}
     matched = {}
+    unanswered = 0
     for entry in queue:
         v = evidence_mod.match_verdict(entry, verdicts)
         if v is not None:
             evidence_mod.apply_verdict(entry["finding"], v)
         elif verdicts:
-            print("synthesize: no verdict for queued finding %s; unverified"
-                  % entry["queue_id"], file=sys.stderr)
+            unanswered += 1
         matched[id(entry["finding"])] = v
+    if unanswered:
+        print("synthesize: %d queued findings had no verdict; left unverified"
+              % unanswered, file=sys.stderr)
     # Re-validate citations after advisor merges (idempotent; preserves epss).
     citations.enrich_citations(findings, catalog, epss_enabled=False)
     for f in findings:
@@ -673,6 +676,17 @@ def main(argv=None):
                     help="Compare two JSON reports and emit HTML")
     ap.add_argument("--epss", action="store_true")
     ap.add_argument("--tools-dir", metavar="DIR")
+    ap.add_argument("--emit-verify-queue", action="store_true",
+                    help="Pass 1: write .panopticon/verify-queue.json and skip the "
+                         "report when agentic findings need verification")
+    ap.add_argument("--verdicts-dir", metavar="DIR", default=None,
+                    help="Pass 2: ingest advisor verdict files from DIR")
+    ap.add_argument("--gate-unverified", action="store_true",
+                    help="Let corroborated/needs_more_info/unverified findings "
+                         "drive grades and the gate")
+    ap.add_argument("--max-verify", type=int, default=None, metavar="N",
+                    help="Cap the verify queue at the top-priority N entries "
+                         "(pass the same value to both passes)")
     ap.add_argument("files", nargs="*")
     args = ap.parse_args(argv)
 
@@ -737,8 +751,24 @@ def main(argv=None):
     if args.severity and args.severity != "all":
         threshold = SEV_ORDER.index(args.severity.upper())
         findings = [f for f in findings if _sev_rank(f) <= threshold]
-    report = build_report(findings, groups_meta, args.target, args.fail_on, ts, review_type,
-                          security_mode)
+
+    if args.emit_verify_queue:
+        import copy
+        prepared, _ = prepare_findings(copy.deepcopy(findings))
+        queue, cut = evidence_mod.build_verify_queue(prepared, args.max_verify)
+        if queue:
+            qpath = os.path.join(".panopticon", "verify-queue.json")
+            evidence_mod.write_verify_queue(queue, cut, qpath)
+            print("verify queue: %d entries (%d cut by --max-verify) -> %s"
+                  % (len(queue), cut, qpath))
+            return 0
+        print("verify queue empty; emitting final report", file=sys.stderr)
+
+    verdicts = evidence_mod.load_verdicts(args.verdicts_dir)
+    report = build_report(findings, groups_meta, args.target, args.fail_on, ts,
+                          review_type, security_mode, verdicts=verdicts,
+                          gate_unverified=args.gate_unverified,
+                          max_verify=args.max_verify)
     errors, warnings = validate_report(report)
     for w in warnings:
         print("WARN: %s" % w, file=sys.stderr)
