@@ -1005,8 +1005,17 @@ class TestHtmlOut(unittest.TestCase):
         self.assertEqual(syn._derive_html_path("dir"), os.path.join("dir", "report.html"))
 
 
-
 class TestAdvisorConfirmation(unittest.TestCase):
+    def _agentic_finding(self, **kw):
+        base = {
+            "id": "SEC-001", "title": "SQLi", "severity": "HIGH", "confidence": "LIKELY",
+            "panel": "security", "category": "injection",
+            "provenance": {"discovered_by": "agent:lens_sweep"},
+            "location": {"file": "app.py", "line_start": 10},
+        }
+        base.update(kw)
+        return base
+
     def test_tool_finding_is_auto_confirmed(self):
         f = {
             "id": "SEC-001", "title": "SQLi", "severity": "HIGH", "confidence": "CERTAIN",
@@ -1020,14 +1029,117 @@ class TestAdvisorConfirmation(unittest.TestCase):
         self.assertEqual(len(unverified), 0)
 
     def test_agentic_finding_without_citations_is_unverified(self):
-        f = {
-            "id": "SEC-002", "title": "Logic flaw", "severity": "HIGH", "confidence": "LIKELY",
-            "panel": "security", "category": "general",
-            "provenance": {"discovered_by": "agent:lens_sweep", "confirmation_status": "UNVERIFIED"},
-            "citation_quality": "none",
-        }
+        f = self._agentic_finding(
+            provenance={"discovered_by": "agent:lens_sweep", "confirmation_status": "UNVERIFIED"})
         confirmed, discarded, unverified = syn._partition_findings([f])
         self.assertEqual(len(confirmed), 0)
         self.assertEqual(len(discarded), 0)
         self.assertEqual(len(unverified), 1)
         self.assertEqual(unverified[0]["severity"], "INFO")
+
+    def test_agentic_finding_rejected_by_advisor_is_discarded(self):
+        f = self._agentic_finding()
+
+        def reject(_):
+            return {"verdict": "REJECTED", "reasoning": "No exploitable sink."}
+
+        confirmed, discarded, unverified = syn._partition_findings([f], advisor_dispatch=reject)
+        self.assertEqual(len(confirmed), 0)
+        self.assertEqual(len(discarded), 1)
+        self.assertEqual(len(unverified), 0)
+        self.assertEqual(discarded[0]["severity"], "INFO")
+        self.assertEqual(discarded[0]["confidence"], "NOTE")
+        self.assertEqual(discarded[0]["provenance"]["confirmation_status"], "REJECTED")
+        self.assertEqual(discarded[0]["provenance"]["confirmed_by"], "agent:advisor")
+        self.assertEqual(discarded[0]["provenance"]["confirmation_reasoning"], "No exploitable sink.")
+
+    def test_advisor_citations_merged_on_confirm(self):
+        f = self._agentic_finding(citations={"cwe": [{"id": "CWE-89"}]})
+
+        def confirm(_):
+            return {
+                "verdict": "CONFIRMED",
+                "reasoning": "Verified sink.",
+                "citations": {"owasp": ["A03:2021-Injection"]},
+            }
+
+        confirmed, _, _ = syn._partition_findings([f], advisor_dispatch=confirm)
+        self.assertEqual(len(confirmed), 1)
+        self.assertEqual(confirmed[0]["provenance"]["confirmation_status"], "CONFIRMED")
+        cites = confirmed[0]["citations"]
+        self.assertEqual(cites["cwe"][0]["id"], "CWE-89")
+        self.assertIn("A03:2021-Injection", cites["owasp"])
+
+    def test_advisor_results_confirmed_updates_provenance(self):
+        f = self._agentic_finding(
+            id="SEC-CONF", provenance={"discovered_by": "agent:lens_sweep"})
+        report = syn.build_report(
+            [f], [], "src", None, "2026-07-23T00:00:00Z",
+            advisor_results={"SEC-CONF": {"verdict": "CONFIRMED", "reasoning": "Confirmed by advisor."}})
+        matching = [x for x in report["findings"] if x["id"] == "SEC-CONF"]
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(matching[0]["provenance"]["confirmation_status"], "CONFIRMED")
+        self.assertEqual(matching[0]["provenance"]["confirmed_by"], "agent:advisor")
+        self.assertEqual(matching[0]["provenance"]["confirmation_reasoning"], "Confirmed by advisor.")
+        self.assertEqual(report["summary"]["unverified_findings_count"], 0)
+
+    def test_agentic_without_status_is_unverified(self):
+        f = self._agentic_finding(provenance={"discovered_by": "agent:lens_sweep"})
+        confirmed, discarded, unverified = syn._partition_findings([f])
+        self.assertEqual(len(confirmed), 0)
+        self.assertEqual(len(discarded), 0)
+        self.assertEqual(len(unverified), 1)
+        self.assertEqual(unverified[0]["severity"], "INFO")
+        self.assertEqual(unverified[0]["provenance"]["confirmation_status"], "NEEDS_MORE_INFO")
+
+    def test_legacy_sourceless_finding_without_status_is_confirmed(self):
+        f = {"id": "LEG-001", "title": "Legacy", "severity": "MEDIUM", "confidence": "LIKELY",
+             "panel": "code", "category": "structure",
+             "location": {"file": "a.py", "line_start": 1}}
+        confirmed, discarded, unverified = syn._partition_findings([f])
+        self.assertEqual(len(confirmed), 1)
+        self.assertEqual(len(discarded), 0)
+        self.assertEqual(len(unverified), 0)
+
+    def test_advisor_dispatch_error_treated_as_unverified(self):
+        f = self._agentic_finding()
+
+        def boom(_):
+            raise RuntimeError("advisor unavailable")
+
+        import contextlib, io
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            confirmed, discarded, unverified = syn._partition_findings([f], advisor_dispatch=boom)
+        self.assertEqual(len(confirmed), 0)
+        self.assertEqual(len(discarded), 0)
+        self.assertEqual(len(unverified), 1)
+        self.assertIn("advisor dispatch failed", err.getvalue())
+        self.assertEqual(unverified[0]["severity"], "INFO")
+
+    def test_advisor_dispatch_non_dict_treated_as_unverified(self):
+        f = self._agentic_finding()
+
+        def bad(_):
+            return "not a dict"
+
+        import contextlib, io
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            confirmed, discarded, unverified = syn._partition_findings([f], advisor_dispatch=bad)
+        self.assertEqual(len(confirmed), 0)
+        self.assertEqual(len(discarded), 0)
+        self.assertEqual(len(unverified), 1)
+        self.assertIn("advisor dispatch returned non-dict", err.getvalue())
+        self.assertEqual(unverified[0]["severity"], "INFO")
+
+    def test_discarded_findings_remain_in_report_body(self):
+        f = self._agentic_finding(id="SEC-DISC")
+        report = syn.build_report(
+            [f], [], "src", None, "2026-07-23T00:00:00Z",
+            advisor_results={"SEC-DISC": {"verdict": "REJECTED", "reasoning": "False positive."}})
+        matching = [x for x in report["findings"] if x["id"] == "SEC-DISC"]
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(matching[0]["severity"], "INFO")
+        self.assertEqual(matching[0]["confidence"], "NOTE")
+        self.assertEqual(report["summary"]["discarded_claims_count"], 1)

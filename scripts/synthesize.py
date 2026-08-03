@@ -364,15 +364,27 @@ def flag_for_advisor(findings, depth="standard"):
 
 
 def apply_advisor_verdict(finding, verdict):
-    """Update a finding based on advisor verdict."""
+    """Update a finding based on advisor verdict.
+
+    Also mirrors the verdict into ``provenance.confirmation_status`` so that
+    downstream partitioning treats pre-advised findings consistently with
+    findings that went through the runtime advisor loop.
+    """
     finding["advisor_verdict"] = verdict.get("verdict")
+    prov = finding.setdefault("provenance", {})
     if verdict.get("verdict") == "CONFIRMED":
+        prov["confirmation_status"] = "CONFIRMED"
+        prov["confirmed_by"] = "agent:advisor"
+        prov["confirmation_reasoning"] = verdict.get("reasoning")
         finding["confidence"] = _bump_confidence(finding.get("confidence"))
         existing = set(finding.get("references") or [])
         for ref in verdict.get("references", []):
             if ref not in existing:
                 finding.setdefault("references", []).append(ref)
     elif verdict.get("verdict") == "REJECTED":
+        prov["confirmation_status"] = "REJECTED"
+        prov["confirmed_by"] = "agent:advisor"
+        prov["confirmation_reasoning"] = verdict.get("reasoning")
         finding["severity"] = "INFO"
         finding["confidence"] = "NOTE"
     # NEEDS_MORE_INFO: leave as-is, just mark verdict
@@ -398,8 +410,10 @@ def _partition_findings(findings, advisor_dispatch=None):
     the advisor unless they already have full/partial citations and a CONFIRMED
     status. Unconfirmed agentic findings are downgraded to INFO.
 
-    Findings without a ``confirmation_status`` are kept as confirmed so legacy
-    reports that predate provenance tracking continue to behave as before.
+    Findings without a ``confirmation_status`` are treated as confirmed only
+    when they are tool-sourced or predate provenance tracking; agentic findings
+    without a status are routed through the advisor loop and, if no advisor is
+    available, downgraded to unverified INFO-level findings.
     """
     confirmed = []
     discarded = []
@@ -408,6 +422,7 @@ def _partition_findings(findings, advisor_dispatch=None):
     for f in findings:
         prov = f.get("provenance") or {}
         status = prov.get("confirmation_status")
+        discovered_by = str(prov.get("discovered_by", ""))
 
         if status == "TOOL":
             confirmed.append(f)
@@ -423,14 +438,26 @@ def _partition_findings(findings, advisor_dispatch=None):
             discarded.append(f)
             continue
 
-        # No explicit status: preserve legacy behavior and keep the finding.
+        # No explicit status: legacy reports without provenance are kept as
+        # confirmed. Agentic findings without a status still need review.
         if status is None:
-            confirmed.append(f)
-            continue
+            if discovered_by.startswith("agent:"):
+                status = "UNVERIFIED"
+            else:
+                confirmed.append(f)
+                continue
 
         # UNVERIFIED or NEEDS_MORE_INFO: agentic findings needing review.
         if advisor_dispatch and _is_agentic(f):
-            advisor_result = advisor_dispatch(f)
+            try:
+                advisor_result = advisor_dispatch(f)
+            except Exception as e:  # noqa: BLE001 - advisor failure is non-fatal
+                advisor_result = None
+                print("advisor dispatch failed: %s" % e, file=sys.stderr)
+            if not isinstance(advisor_result, dict):
+                print("advisor dispatch returned non-dict result", file=sys.stderr)
+                advisor_result = {"verdict": "NEEDS_MORE_INFO",
+                                  "reasoning": "Advisor returned invalid response."}
             verdict = str(advisor_result.get("verdict", "")).upper()
             if verdict == "CONFIRMED":
                 prov["confirmed_by"] = "agent:advisor"
@@ -530,8 +557,9 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                     apply_advisor_verdict(f, verdict)
                     break
     confirmed, discarded, unverified = _partition_findings(findings, advisor_dispatch=_dispatch_advisor)
-    findings = confirmed + unverified  # confirmed are actionable; unverified stay visible but info-level.
-    # discarded claims go into a special report section later.
+    # Confirmed findings drive grades/gate. Unverified and discarded findings stay
+    # visible in the report body at INFO/NOTE severity but do not influence grades.
+    findings = confirmed + unverified + discarded
     by_panel = {p: [] for p in VALID_PANELS}
     for f in findings:
         by_panel.get(f["panel"], by_panel["code"]).append(f)
