@@ -504,3 +504,19 @@ class TestDashboardCharts(unittest.TestCase):
         self.assertIn("Top finding categories", out)
         self.assertIn(">HIGH<", out)
         self.assertTrue("chart-bar sev-high" in out and "width: 0.0%" in out)
+
+
+    def test_rejected_badge_has_distinct_style(self):
+        finding = {
+            "id": "SEC-003", "title": "Discarded", "severity": "INFO", "confidence": "NOTE",
+            "panel": "security", "category": "general", "location": {"file": "app.py", "line_start": 12},
+            "description": "x", "impact": "", "remediation": "", "references": [],
+            "provenance": {
+                "discovered_by": "agent:lens_sweep", "confirmation_status": "REJECTED",
+                "model": "kimi-k2.7-coding", "model_version": "v1",
+            },
+        }
+        report = _minimal_report(findings=[finding])
+        report["discarded_claims"] = [finding]
+        out = hr.render(report)
+        self.assertIn("prov-rejected", out)

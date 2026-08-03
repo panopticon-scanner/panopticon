@@ -231,13 +231,11 @@ def enrich_citations(findings, catalog, epss_enabled=False, cache_path=None, ope
             if cves:
                 clean["cve"] = cves
                 all_cves.update(cves)
-            f["citation_quality"] = _compute_citation_quality(clean, f.get("cvss"))
             if not clean.get("cwe") and f.get("category"):
                 derived = _derive_cwe_from_category(f["category"], catalog)
                 if derived:
                     clean["cwe"] = [derived]
-                    if f["citation_quality"] == "none":
-                        f["citation_quality"] = "minimal"
+            f["citation_quality"] = _compute_citation_quality(clean, f.get("cvss"))
             if clean:
                 f["citations"] = clean
             else:

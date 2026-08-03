@@ -1116,7 +1116,8 @@ class TestAdvisorConfirmation(unittest.TestCase):
             id="SEC-CONF", provenance={"discovered_by": "agent:lens_sweep"})
         report = syn.build_report(
             [f], [], "src", None, "2026-07-23T00:00:00Z",
-            advisor_results={"SEC-CONF": {"verdict": "CONFIRMED", "reasoning": "Confirmed by advisor."}})
+            advisor_results={"SEC-CONF": {"verdict": "CONFIRMED", "reasoning": "Confirmed by advisor.",
+                                           "citations": {"cwe": ["CWE-89"]}}})
         matching = [x for x in report["findings"] if x["id"] == "SEC-CONF"]
         self.assertEqual(len(matching), 1)
         self.assertEqual(matching[0]["provenance"]["confirmation_status"], "CONFIRMED")
@@ -1201,3 +1202,54 @@ class TestAdvisorConfirmation(unittest.TestCase):
         self.assertEqual(len(confirmed), 1)
         self.assertEqual(confirmed[0]["provenance"]["confirmation_status"], "CONFIRMED")
         self.assertEqual(confirmed[0]["citations"]["cwe"], ["CWE-20"])
+
+
+    def test_advisor_confirmed_without_citations_is_unverified(self):
+        f = self._agentic_finding()
+
+        def fake_advisor(_finding):
+            return {"verdict": "CONFIRMED", "reasoning": "Looks bad."}
+
+        confirmed, discarded, unverified = syn._partition_findings([f], advisor_dispatch=fake_advisor)
+        self.assertEqual(len(confirmed), 0)
+        self.assertEqual(len(discarded), 0)
+        self.assertEqual(len(unverified), 1)
+        self.assertEqual(unverified[0]["provenance"]["confirmation_status"], "NEEDS_MORE_INFO")
+        self.assertEqual(unverified[0]["severity"], "INFO")
+        self.assertEqual(unverified[0]["confidence"], "NOTE")
+        self.assertIn("no hard citations", unverified[0]["provenance"]["confirmation_reasoning"])
+
+    def test_advisor_results_confirmed_without_citations_is_unverified(self):
+        f = self._agentic_finding(
+            id="SEC-CONF", provenance={"discovered_by": "agent:lens_sweep"})
+        report = syn.build_report(
+            [f], [], "src", None, "2026-07-23T00:00:00Z",
+            advisor_results={"SEC-CONF": {"verdict": "CONFIRMED", "reasoning": "Confirmed by advisor."}})
+        matching = [x for x in report["findings"] if x["id"] == "SEC-CONF"]
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(matching[0]["provenance"]["confirmation_status"], "NEEDS_MORE_INFO")
+        self.assertEqual(matching[0]["severity"], "INFO")
+        self.assertEqual(matching[0]["confidence"], "NOTE")
+        self.assertEqual(report["summary"]["unverified_findings_count"], 1)
+        self.assertEqual(report["summary"]["discarded_claims_count"], 0)
+
+
+class TestInternalFieldCleanup(unittest.TestCase):
+    def test_build_report_does_not_leak_internal_fields(self):
+        f = {
+            "id": "SEC-001", "title": "SQLi", "severity": "HIGH", "confidence": "LIKELY",
+            "panel": "security", "category": "injection",
+            "provenance": {"discovered_by": "agent:lens_sweep"},
+            "location": {"file": "app.py", "line_start": 10},
+            "_group": "backend",
+            "_repo_root": "/some/path",
+        }
+        report = syn.build_report(
+            [f], [], "src", None, "2026-07-23T00:00:00Z",
+            advisor_results={"SEC-001": {"verdict": "REJECTED", "reasoning": "False positive."}})
+        for finding in report["findings"]:
+            self.assertNotIn("_group", finding)
+            self.assertNotIn("_repo_root", finding)
+        for finding in report.get("discarded_claims", []):
+            self.assertNotIn("_group", finding)
+            self.assertNotIn("_repo_root", finding)

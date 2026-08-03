@@ -442,9 +442,19 @@ def apply_advisor_verdict(finding, verdict):
     advisor_citations = verdict.get("citations")
     if advisor_citations:
         _merge_citations(finding, {"citations": advisor_citations})
-        finding["citation_quality"] = _compute_citation_quality(
-            finding.get("citations", {}), finding.get("cvss")
-        )
+    finding["citation_quality"] = _compute_citation_quality(
+        finding.get("citations", {}), finding.get("cvss")
+    )
+    # A confirmed verdict is only trustworthy when backed by hard citations.
+    # Downgrade to NEEDS_MORE_INFO if citation quality is still none or minimal.
+    if prov.get("confirmation_status") == "CONFIRMED" and finding.get("citation_quality") in ("none", "minimal"):
+        prov["confirmation_status"] = "NEEDS_MORE_INFO"
+        prov["confirmation_reasoning"] = (
+            (prov.get("confirmation_reasoning") or "")
+            + " Advisor confirmed but provided no hard citations; downgraded."
+        ).strip()
+        finding["severity"] = "INFO"
+        finding["confidence"] = "NOTE"
 
 
 def _read_code_context(finding, window=10, repo_root=None):
@@ -688,14 +698,31 @@ def _partition_findings(findings, advisor_dispatch=None):
                 confirmed_by_model = advisor_result.get("confirmed_by_model")
                 if confirmed_by_model:
                     prov["confirmed_by_model"] = confirmed_by_model
-                # Merge advisor citations if present without overwriting keys
-                # that already exist on the finding.
+                # Merge advisor citations and references if present without
+                # overwriting keys that already exist on the finding.
                 advisor_citations = advisor_result.get("citations")
                 if advisor_citations:
                     _merge_citations(f, {"citations": advisor_citations})
-                    f["citation_quality"] = _compute_citation_quality(
-                        f.get("citations", {}), f.get("cvss")
-                    )
+                existing = set(f.get("references") or [])
+                for ref in advisor_result.get("references", []):
+                    if ref not in existing:
+                        f.setdefault("references", []).append(ref)
+                f["citation_quality"] = _compute_citation_quality(
+                    f.get("citations", {}), f.get("cvss")
+                )
+                # A confirmed verdict is only trustworthy when backed by hard
+                # citations. Downgrade to NEEDS_MORE_INFO if citation quality is
+                # still none or minimal.
+                if f.get("citation_quality") in ("none", "minimal"):
+                    prov["confirmation_status"] = "NEEDS_MORE_INFO"
+                    prov["confirmation_reasoning"] = (
+                        (prov.get("confirmation_reasoning") or "")
+                        + " Advisor confirmed but provided no hard citations; downgraded."
+                    ).strip()
+                    f["severity"] = "INFO"
+                    f["confidence"] = "NOTE"
+                    unverified.append(f)
+                    continue
                 confirmed.append(f)
                 continue
             if verdict == "REJECTED":
@@ -828,8 +855,10 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
     integration_findings = cross_panel_corroboration(findings)
     for f in findings:
         f.pop("_group", None)
+        f.pop("_repo_root", None)
     for f in discarded:
         f.pop("_group", None)
+        f.pop("_repo_root", None)
     return {
         "meta": {
             "target": target,

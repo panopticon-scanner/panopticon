@@ -85,6 +85,7 @@ body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Ro
 .prov-status { background: var(--pass); color: #fff; }
 .prov-status.prov-needs-more-info { background: var(--medium); color: #000; }
 .prov-status.prov-unverified { background: var(--muted); color: #fff; }
+.prov-status.prov-rejected { background: var(--fail); color: #fff; }
 .prov-source, .prov-model { background: #e9ecef; color: var(--fg); }
 .cit-quality { background: #f8f9fa; border: 1px solid var(--border); color: var(--fg); }
 .cit-full { background: var(--pass); color: #fff; }
