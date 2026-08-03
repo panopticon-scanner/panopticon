@@ -168,6 +168,38 @@ class TestEpss(unittest.TestCase):
         self.assertEqual(holder["resp"].last_read_size, 1000000)
 
 
+class TestCitationQuality(unittest.TestCase):
+    def setUp(self):
+        self.catalog = cit.load_cwe_catalog()
+
+    def test_full_quality(self):
+        f = {
+            "citations": {
+                "cwe": [{"id": "CWE-89"}],
+                "owasp": ["A03:2021"],
+                "cve": ["CVE-2023-1234"],
+            }
+        }
+        cit.enrich_citations([f], self.catalog)
+        self.assertEqual(f["citation_quality"], "full")
+
+    def test_partial_quality(self):
+        f = {"citations": {"cwe": [{"id": "CWE-89"}]}}
+        cit.enrich_citations([f], self.catalog)
+        self.assertEqual(f["citation_quality"], "partial")
+
+    def test_none_quality(self):
+        f = {"citations": {}}
+        cit.enrich_citations([f], self.catalog)
+        self.assertEqual(f["citation_quality"], "none")
+
+    def test_category_mapping(self):
+        f = {"category": "injection", "citations": {}}
+        cit.enrich_citations([f], self.catalog)
+        self.assertEqual(f["citation_quality"], "minimal")
+        self.assertIn("CWE-89", [c["id"] for c in f["citations"]["cwe"]])
+
+
 class TestEnrich(unittest.TestCase):
     def setUp(self):
         self.cat = cit.load_cwe_catalog()
