@@ -225,12 +225,16 @@ def render_advisor_prompts(queue_path, out_dir):
             queue = json.load(fh)
     except (OSError, ValueError) as e:
         raise ValueError("cannot read verify queue %s: %s" % (queue_path, e))
+    if not isinstance(queue, dict):
+        raise ValueError("verify queue %s is not a JSON object" % queue_path)
     entries = queue.get("entries")
     if not isinstance(entries, list):
         raise ValueError("verify queue %s has no entries list" % queue_path)
     os.makedirs(out_dir, exist_ok=True)
     written = []
     for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError("verify queue %s: malformed entry (not an object)" % queue_path)
         queue_id = entry.get("queue_id")
         finding = entry.get("finding")
         if not queue_id or not isinstance(finding, dict):

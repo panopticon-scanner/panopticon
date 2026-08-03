@@ -267,3 +267,20 @@ class TestRenderAdvisor(unittest.TestCase):
             rc = dispatch.main(["--render-advisor", qpath, "--out", outdir])
             self.assertEqual(rc, 0)
             self.assertTrue(os.path.isfile(os.path.join(outdir, "000-SEC-001.md")))
+
+    def test_non_dict_queue_fails_fast(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            qpath = os.path.join(tmp, "array.json")
+            with open(qpath, "w") as fh:
+                json.dump([], fh)
+            with self.assertRaises(ValueError):
+                dispatch.render_advisor_prompts(qpath, tmp)
+
+    def test_non_dict_entry_fails_fast(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            queue = {"version": "4.0.0", "cut_by_max_verify": 0, "entries": [None]}
+            qpath = os.path.join(tmp, "bad-entry.json")
+            with open(qpath, "w") as fh:
+                json.dump(queue, fh)
+            with self.assertRaises(ValueError):
+                dispatch.render_advisor_prompts(qpath, tmp)
