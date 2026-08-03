@@ -42,6 +42,29 @@ class TestLoadVerdicts(unittest.TestCase):
         self.assertEqual(evidence.load_verdicts("/nonexistent/dir"), {})
         self.assertEqual(evidence.load_verdicts(None), {})
 
+    def test_loads_fenced_verdict(self):
+        # Advisors routinely wrap their JSON output in a markdown fence (see
+        # agents/advisor.md's own output example) -> must not be treated as
+        # malformed, or a CONFIRMED verdict silently degrades to unverified.
+        with tempfile.TemporaryDirectory() as d:
+            _write(d, "000-SEC-001.json",
+                   "```json\n"
+                   '{"finding_id": "SEC-001", "verdict": "CONFIRMED", "reasoning": "r"}\n'
+                   "```")
+            out = evidence.load_verdicts(d)
+        self.assertEqual(set(out), {"000-SEC-001"})
+        self.assertEqual(out["000-SEC-001"]["verdict"], "CONFIRMED")
+
+    def test_loads_verdict_wrapped_in_prose(self):
+        with tempfile.TemporaryDirectory() as d:
+            _write(d, "000-SEC-001.json",
+                   "Here is my verdict: "
+                   '{"finding_id": "SEC-001", "verdict": "CONFIRMED", "reasoning": "r"} '
+                   "Let me know if you need anything else.")
+            out = evidence.load_verdicts(d)
+        self.assertEqual(set(out), {"000-SEC-001"})
+        self.assertEqual(out["000-SEC-001"]["verdict"], "CONFIRMED")
+
 
 class TestMatchVerdict(unittest.TestCase):
     def test_match_with_echo(self):

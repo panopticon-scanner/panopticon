@@ -8,6 +8,7 @@ evidence.status records how hard the claim has been verified.
 
 import json
 import os
+import re
 import sys
 
 SEV_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
@@ -147,11 +148,29 @@ def merge_citations(best, other):
             bc[key] = value
 
 
+def load_json_tolerant(body):
+    """Parse JSON from text, stripping markdown code blocks and searching for JSON object."""
+    body = body.strip()
+    if body.startswith("```"):
+        body = re.sub(r"^```[a-zA-Z]*\s*", "", body)
+        body = re.sub(r"\s*```\s*$", "", body).strip()
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError:
+        m = re.search(r"(\{.*\})", body, re.DOTALL)
+        if m:
+            return json.loads(m.group(1))
+        raise
+
+
 def load_verdicts(verdicts_dir):
     """Load advisor verdict files keyed by queue_id (filename stem).
 
     Tolerant by design: unreadable/malformed files and files without a valid
-    verdict key are skipped with a stderr note; never raises.
+    verdict key are skipped with a stderr note; never raises. Advisors
+    routinely wrap their JSON output in a markdown fence (see agents/advisor.md's
+    own output example) or add surrounding prose, so parsing goes through
+    load_json_tolerant rather than a strict json.load.
     """
     out = {}
     if not verdicts_dir or not os.path.isdir(verdicts_dir):
@@ -162,7 +181,7 @@ def load_verdicts(verdicts_dir):
         path = os.path.join(verdicts_dir, name)
         try:
             with open(path, encoding="utf-8") as fh:
-                data = json.load(fh)
+                data = load_json_tolerant(fh.read())
         except (OSError, ValueError) as e:
             print("evidence: skipping malformed verdict %s: %s" % (name, e),
                   file=sys.stderr)

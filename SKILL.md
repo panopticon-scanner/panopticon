@@ -48,7 +48,7 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
    - `lens-sweep` agents for mechanical lens sweeps
    - Each agent writes its findings file to `.panopticon/findings-{group}-{panel}-{role}-{lens}.json` (`panel_review` entries omit `{lens}`)
 7. **Synthesize (pass 1)** — `python3 scripts/synthesize.py --emit-verify-queue [flags] .panopticon/findings-*.json`.
-   If it writes `.panopticon/verify-queue.json`, proceed to step 8; if it printed a report, skip to step 9.
+   If it prints a "verify queue: N entries" line, proceed to step 8; if it printed a report, skip to step 9.
 8. **Verify** — for each entry in `verify-queue.json`, dispatch the `advisor` agent
    (`agents/advisor.md`) (parallel) with the entry's `finding` JSON rendered into the agent prompt. The
    advisor RETURNS a verdict JSON; write it verbatim to

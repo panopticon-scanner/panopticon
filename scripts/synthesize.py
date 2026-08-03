@@ -15,6 +15,12 @@ import scripts.evidence as evidence_mod
 import scripts.html_report as html_report
 import scripts.ingest_tools as ingest_tools
 
+# Moved to evidence.py (also used by evidence.load_verdicts for advisor
+# verdict files, which are just as likely to be fence-wrapped or prose-
+# wrapped as panel/lens findings files). Delegation keeps this name importable
+# as scripts.synthesize.load_json_tolerant for existing callers/tests.
+load_json_tolerant = evidence_mod.load_json_tolerant
+
 SEVERITIES = {"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"}
 SEV_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
 CONFIDENCES = {"CERTAIN", "LIKELY", "POSSIBLE", "NOTE"}
@@ -31,21 +37,6 @@ RELATED_PANELS = {
     "architecture": {"security", "redteam"},
     "database": {"security", "redteam"},
 }
-
-
-def load_json_tolerant(body):
-    """Parse JSON from text, stripping markdown code blocks and searching for JSON object."""
-    body = body.strip()
-    if body.startswith("```"):
-        body = re.sub(r"^```[a-zA-Z]*\s*", "", body)
-        body = re.sub(r"\s*```\s*$", "", body).strip()
-    try:
-        return json.loads(body)
-    except json.JSONDecodeError:
-        m = re.search(r"(\{.*\})", body, re.DOTALL)
-        if m:
-            return json.loads(m.group(1))
-        raise
 
 
 def normalize_finding(f):
@@ -440,13 +431,15 @@ def _issue_sort(f):
 
 def build_report(findings, groups_meta, target, fail_on, timestamp, review_type="repo",
                  security_mode="standard", verdicts=None, gate_unverified=False,
-                 max_verify=None):
+                 max_verify=None, verdicts_supplied=False):
     """Build a CodeReviewReport under the two-axis severity x evidence model.
 
     Severity is never mutated here. Verdicts (from evidence.load_verdicts) are
     applied to queued findings; every finding gets an evidence object; grades
     and the gate are computed from gate-eligible findings only (all non-rejected
-    when gate_unverified is set).
+    when gate_unverified is set). `verdicts_supplied` records whether --verdicts-dir
+    was passed at all (distinct from whether it yielded any verdicts) so the
+    aggregate "no verdict" note still fires for an existing-but-empty dir.
     """
     findings, integration_findings = prepare_findings(findings)
     catalog = load_cwe_catalog()
@@ -458,12 +451,16 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
         v = evidence_mod.match_verdict(entry, verdicts)
         if v is not None:
             evidence_mod.apply_verdict(entry["finding"], v)
-        elif verdicts:
+        elif verdicts_supplied:
             unanswered += 1
         matched[id(entry["finding"])] = v
     if unanswered:
         print("synthesize: %d queued findings had no verdict; left unverified"
               % unanswered, file=sys.stderr)
+    unknown = set(verdicts) - {e["queue_id"] for e in queue}
+    if unknown:
+        print("synthesize: verdict file(s) for unknown queue_id(s): %s"
+              % ", ".join(sorted(unknown)), file=sys.stderr)
     # Re-validate citations after advisor merges (idempotent; preserves epss).
     citations.enrich_citations(findings, catalog, epss_enabled=False)
     for f in findings:
@@ -756,19 +753,30 @@ def main(argv=None):
         import copy
         prepared, _ = prepare_findings(copy.deepcopy(findings))
         queue, cut = evidence_mod.build_verify_queue(prepared, args.max_verify)
+        qpath = os.path.join(".panopticon", "verify-queue.json")
         if queue:
-            qpath = os.path.join(".panopticon", "verify-queue.json")
             evidence_mod.write_verify_queue(queue, cut, qpath)
             print("verify queue: %d entries (%d cut by --max-verify) -> %s"
                   % (len(queue), cut, qpath))
             return 0
+        # Nothing to verify this run: a queue file left by a PREVIOUS run
+        # (with agentic findings) would otherwise mislead step 7's re-run --
+        # the orchestrator branches on the file's existence, so a stale one
+        # would send it to the verify phase with stale/absent entries.
+        if os.path.isfile(qpath):
+            try:
+                os.remove(qpath)
+            except OSError as e:
+                print("synthesize: could not remove stale %s: %s" % (qpath, e),
+                      file=sys.stderr)
         print("verify queue empty; emitting final report", file=sys.stderr)
 
     verdicts = evidence_mod.load_verdicts(args.verdicts_dir)
     report = build_report(findings, groups_meta, args.target, args.fail_on, ts,
                           review_type, security_mode, verdicts=verdicts,
                           gate_unverified=args.gate_unverified,
-                          max_verify=args.max_verify)
+                          max_verify=args.max_verify,
+                          verdicts_supplied=args.verdicts_dir is not None)
     errors, warnings = validate_report(report)
     for w in warnings:
         print("WARN: %s" % w, file=sys.stderr)

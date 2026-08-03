@@ -1217,6 +1217,19 @@ class TestEvidenceReport(unittest.TestCase):
         self.assertEqual(f["evidence"]["status"], "tool_confirmed")
         self.assertEqual(report["summary"]["gate"], "FAIL")
 
+    def test_unknown_queue_id_verdict_ignored(self):
+        # A verdict file whose stem doesn't match any current queue_id (e.g.
+        # a stale verdict from a prior pass) must not silently vanish -> spec
+        # requires a stderr warning naming it, and the report is unaffected.
+        verdicts = {"999-UNKNOWN": {"finding_id": "AG-999", "verdict": "CONFIRMED",
+                                    "reasoning": "r"}}
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            report = self._report([_agentic()], verdicts=verdicts)
+        f = report["findings"][0]
+        self.assertEqual(f["evidence"]["status"], "unverified")
+        self.assertIn("999-UNKNOWN", err.getvalue())
+
 
 class TestSeverityImmutability(unittest.TestCase):
     def test_no_path_mutates_severity(self):
@@ -1321,3 +1334,43 @@ class TestTwoPassCli(unittest.TestCase):
             rc = syn.main(["--gate-unverified", "--fail-on", "critical",
                            "--out", out, fp])
             self.assertEqual(rc, 1)
+
+    def test_pass1_empty_queue_removes_stale_queue_file(self):
+        # A queue file left by a PREVIOUS run (with agentic findings) must not
+        # survive a run whose queue is empty this time -> SKILL.md step 7
+        # branches on the file's existence, and a stale file would mislead a
+        # re-run into the verify phase.
+        tool = {"id": "TL-001", "title": "t", "severity": "LOW",
+                "confidence": "CERTAIN", "panel": "security", "category": "x",
+                "source": "tool:semgrep",
+                "location": {"file": "a.py", "line_start": 1},
+                "provenance": {"discovered_by": "tool:semgrep",
+                               "confirmation_status": "TOOL"}}
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            fp = self._write_findings(d, [tool])
+            qpath = os.path.join(d, ".panopticon", "verify-queue.json")
+            with open(qpath, "w") as fh:
+                json.dump({"version": "4.0.0", "cut_by_max_verify": 0,
+                           "entries": [{"queue_id": "000-STALE", "priority": 1,
+                                        "finding": {}}]}, fh)
+            out = os.path.join(d, "report.json")
+            rc = syn.main(["--emit-verify-queue", "--out", out, fp])
+            self.assertEqual(rc, 0)
+            self.assertTrue(os.path.exists(out))
+            self.assertFalse(os.path.exists(qpath))
+
+    def test_verdicts_dir_empty_but_present_prints_aggregate_note(self):
+        # --verdicts-dir pointing at an existing but EMPTY directory must
+        # still surface the aggregate "no verdict" note for queued agentic
+        # findings -- keying the note on the dict being non-empty silently
+        # swallowed this case.
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            fp = self._write_findings(d, [_agentic()])
+            vd = os.path.join(d, ".panopticon", "verdicts")
+            os.makedirs(vd)
+            out = os.path.join(d, "report.json")
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                rc = syn.main(["--verdicts-dir", vd, "--out", out, fp])
+            self.assertEqual(rc, 0)
+            self.assertIn("no verdict", err.getvalue())
