@@ -220,3 +220,50 @@ class TestRenderGoldens(unittest.TestCase):
             expected = open(os.path.join(gdir, role[:-3] + ".rendered.txt"),
                             encoding="utf-8").read()
             self.assertEqual(dispatch.render_prompt(role, m), expected, role)
+
+
+class TestRenderAdvisor(unittest.TestCase):
+    def _queue(self, tmp):
+        queue = {"version": "4.0.0", "cut_by_max_verify": 0, "entries": [
+            {"queue_id": "000-SEC-001", "priority": 1,
+             "finding": {"id": "SEC-001", "title": "sqli", "severity": "HIGH",
+                          "panel": "security", "category": "injection",
+                          "location": {"file": "app.py", "line_start": 10},
+                          "description": "raw query with {code_context} text"}},
+            {"queue_id": "001-CD-002", "priority": 3,
+             "finding": {"id": "CD-002", "title": "leak", "severity": "LOW",
+                          "panel": "code", "category": "correctness",
+                          "location": {"file": "b.py", "line_start": 4}}},
+        ]}
+        qpath = os.path.join(tmp, "verify-queue.json")
+        with open(qpath, "w") as fh:
+            json.dump(queue, fh)
+        return qpath
+
+    def test_writes_one_prompt_per_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            qpath = self._queue(tmp)
+            outdir = os.path.join(tmp, "advisor-prompts")
+            written = dispatch.render_advisor_prompts(qpath, outdir)
+            self.assertEqual([os.path.basename(p) for p in written],
+                             ["000-SEC-001.md", "001-CD-002.md"])
+            text = open(written[0], encoding="utf-8").read()
+            self.assertIn('"id": "SEC-001"', text)        # claim embedded
+            self.assertIn("{code_context}", text)          # brace-safe: survives
+            self.assertNotIn("{claim_json}", text)         # placeholder filled
+            self.assertNotIn("---\nname:", text)           # frontmatter stripped
+
+    def test_malformed_queue_fails_fast(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            qpath = os.path.join(tmp, "bad.json")
+            open(qpath, "w").write("{not json")
+            with self.assertRaises(ValueError):
+                dispatch.render_advisor_prompts(qpath, tmp)
+
+    def test_cli_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            qpath = self._queue(tmp)
+            outdir = os.path.join(tmp, "out")
+            rc = dispatch.main(["--render-advisor", qpath, "--out", outdir])
+            self.assertEqual(rc, 0)
+            self.assertTrue(os.path.isfile(os.path.join(outdir, "000-SEC-001.md")))

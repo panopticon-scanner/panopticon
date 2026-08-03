@@ -213,15 +213,63 @@ def emit_plan(plan, fh=None):
     fh.write("\n")
 
 
+def render_advisor_prompts(queue_path, out_dir):
+    """Render one advisor prompt per verify-queue entry to out_dir.
+
+    Deterministic replacement for the orchestrating agent hand-rendering
+    claim JSON into the advisor template. The queue is OUR artifact but is
+    parsed fail-fast anyway (a corrupt queue means an upstream bug).
+    """
+    try:
+        with open(queue_path, encoding="utf-8") as fh:
+            queue = json.load(fh)
+    except (OSError, ValueError) as e:
+        raise ValueError("cannot read verify queue %s: %s" % (queue_path, e))
+    entries = queue.get("entries")
+    if not isinstance(entries, list):
+        raise ValueError("verify queue %s has no entries list" % queue_path)
+    os.makedirs(out_dir, exist_ok=True)
+    written = []
+    for entry in entries:
+        queue_id = entry.get("queue_id")
+        finding = entry.get("finding")
+        if not queue_id or not isinstance(finding, dict):
+            raise ValueError("verify queue %s: malformed entry %r"
+                             % (queue_path, entry.get("queue_id")))
+        claim = json.dumps(finding, indent=2, ensure_ascii=False)
+        prompt = render_prompt("advisor.md", {"claim_json": claim})
+        path = os.path.join(out_dir, "%s.md" % queue_id)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(prompt)
+        written.append(path)
+    return written
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="panopticon dispatch planner")
-    ap.add_argument("profile", help="Path to ScopeProfile JSON")
+    ap.add_argument("profile", nargs="?", default=None, help="Path to ScopeProfile JSON")
     ap.add_argument("--host", default=None, help="Host platform (kimi, claude, openrouter)")
     ap.add_argument("--out", default=None, help="Write DispatchPlan JSON to this file")
+    ap.add_argument("--render-advisor", metavar="QUEUE", default=None,
+                    help="Render advisor prompts from a verify-queue JSON into --out DIR")
     ap.add_argument("--model-lens-sweep", default=None)
     ap.add_argument("--model-panel-review", default=None)
     ap.add_argument("--model-advisor", default=None)
     args = ap.parse_args(argv)
+
+    if args.render_advisor:
+        if not args.out:
+            print("dispatch: --render-advisor requires --out DIR", file=sys.stderr)
+            return 2
+        try:
+            written = render_advisor_prompts(args.render_advisor, args.out)
+        except ValueError as e:
+            print("dispatch: %s" % e, file=sys.stderr)
+            return 1
+        print("rendered %d advisor prompt(s) -> %s" % (len(written), args.out))
+        return 0
+    if not args.profile:
+        ap.error("profile is required unless --render-advisor is given")
 
     try:
         with open(args.profile, encoding="utf-8") as fh:
