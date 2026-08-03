@@ -378,6 +378,88 @@ def apply_advisor_verdict(finding, verdict):
     # NEEDS_MORE_INFO: leave as-is, just mark verdict
 
 
+def _dispatch_advisor(finding):
+    """Placeholder: dispatch the advisor agent for an agentic finding.
+
+    Real implementation will spawn the advisor subagent with code context.
+    """
+    return {"verdict": "NEEDS_MORE_INFO", "reasoning": "Advisor not yet wired."}
+
+
+def _is_agentic(f):
+    prov = f.get("provenance") or {}
+    return str(prov.get("discovered_by", "")).startswith("agent:")
+
+
+def _partition_findings(findings, advisor_dispatch=None):
+    """Separate findings into confirmed, discarded, and unverified sets.
+
+    Tool findings are confirmed automatically. Agentic findings are sent to
+    the advisor unless they already have full/partial citations and a CONFIRMED
+    status. Unconfirmed agentic findings are downgraded to INFO.
+
+    Findings without a ``confirmation_status`` are kept as confirmed so legacy
+    reports that predate provenance tracking continue to behave as before.
+    """
+    confirmed = []
+    discarded = []
+    unverified = []
+
+    for f in findings:
+        prov = f.get("provenance") or {}
+        status = prov.get("confirmation_status")
+
+        if status == "TOOL":
+            confirmed.append(f)
+            continue
+
+        if status == "CONFIRMED":
+            confirmed.append(f)
+            continue
+
+        if status == "REJECTED":
+            f["severity"] = "INFO"
+            f["confidence"] = "NOTE"
+            discarded.append(f)
+            continue
+
+        # No explicit status: preserve legacy behavior and keep the finding.
+        if status is None:
+            confirmed.append(f)
+            continue
+
+        # UNVERIFIED or NEEDS_MORE_INFO: agentic findings needing review.
+        if advisor_dispatch and _is_agentic(f):
+            advisor_result = advisor_dispatch(f)
+            verdict = str(advisor_result.get("verdict", "")).upper()
+            if verdict == "CONFIRMED":
+                prov["confirmed_by"] = "agent:advisor"
+                prov["confirmation_status"] = "CONFIRMED"
+                prov["confirmation_reasoning"] = advisor_result.get("reasoning")
+                # Merge advisor citations if present.
+                advisor_citations = advisor_result.get("citations")
+                if advisor_citations:
+                    f.setdefault("citations", {}).update(advisor_citations)
+                confirmed.append(f)
+                continue
+            if verdict == "REJECTED":
+                prov["confirmed_by"] = "agent:advisor"
+                prov["confirmation_status"] = "REJECTED"
+                prov["confirmation_reasoning"] = advisor_result.get("reasoning")
+                f["severity"] = "INFO"
+                f["confidence"] = "NOTE"
+                discarded.append(f)
+                continue
+
+        # Fallback: keep as unverified, downgrade severity.
+        prov["confirmation_status"] = "NEEDS_MORE_INFO"
+        f["severity"] = "INFO"
+        f["confidence"] = "NOTE"
+        unverified.append(f)
+
+    return confirmed, discarded, unverified
+
+
 def _present(findings, sev):
     return any(f.get("severity") == sev for f in findings)
 
@@ -447,6 +529,9 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                 if f.get("id") == finding_id:
                     apply_advisor_verdict(f, verdict)
                     break
+    confirmed, discarded, unverified = _partition_findings(findings, advisor_dispatch=_dispatch_advisor)
+    findings = confirmed + unverified  # confirmed are actionable; unverified stay visible but info-level.
+    # discarded claims go into a special report section later.
     by_panel = {p: [] for p in VALID_PANELS}
     for f in findings:
         by_panel.get(f["panel"], by_panel["code"]).append(f)
@@ -498,6 +583,8 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
             "effort_to_remediate": "MEDIUM",
             "gate": gate_verdict(findings, fail_on),
             "stats": stats,
+            "discarded_claims_count": len(discarded),
+            "unverified_findings_count": len(unverified),
         },
         "groups": group_objs,
         "findings": findings,

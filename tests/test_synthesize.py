@@ -1003,3 +1003,31 @@ class TestHtmlOut(unittest.TestCase):
         self.assertEqual(syn._derive_html_path("report.JSON"), "report.JSON.html")
         self.assertEqual(syn._derive_html_path("report.Json"), "report.Json.html")
         self.assertEqual(syn._derive_html_path("dir"), os.path.join("dir", "report.html"))
+
+
+
+class TestAdvisorConfirmation(unittest.TestCase):
+    def test_tool_finding_is_auto_confirmed(self):
+        f = {
+            "id": "SEC-001", "title": "SQLi", "severity": "HIGH", "confidence": "CERTAIN",
+            "panel": "security", "category": "injection",
+            "provenance": {"discovered_by": "tool:brakeman", "confirmation_status": "TOOL"},
+            "citation_quality": "partial",
+        }
+        confirmed, discarded, unverified = syn._partition_findings([f])
+        self.assertEqual(len(confirmed), 1)
+        self.assertEqual(len(discarded), 0)
+        self.assertEqual(len(unverified), 0)
+
+    def test_agentic_finding_without_citations_is_unverified(self):
+        f = {
+            "id": "SEC-002", "title": "Logic flaw", "severity": "HIGH", "confidence": "LIKELY",
+            "panel": "security", "category": "general",
+            "provenance": {"discovered_by": "agent:lens_sweep", "confirmation_status": "UNVERIFIED"},
+            "citation_quality": "none",
+        }
+        confirmed, discarded, unverified = syn._partition_findings([f])
+        self.assertEqual(len(confirmed), 0)
+        self.assertEqual(len(discarded), 0)
+        self.assertEqual(len(unverified), 1)
+        self.assertEqual(unverified[0]["severity"], "INFO")
