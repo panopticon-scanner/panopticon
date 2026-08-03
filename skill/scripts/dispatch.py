@@ -3,11 +3,77 @@
 import argparse
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import depth_planner
 import model_resolver
+
+
+TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            os.pardir, "agents")
+
+_FM_SCALAR_RE = re.compile(r"^([a-z_]+):\s*(.*)$")
+_FM_LIST_RE = re.compile(r"^\s{2}(allowed|forbidden):\s*\[([^\]]*)\]\s*$")
+
+
+def parse_template_frontmatter(text, source="<template>"):
+    """Parse the constrained host-neutral template frontmatter.
+
+    Expected shape (inline flow lists only):
+        ---
+        name: scout
+        description: ...
+        tool_policy:
+          allowed: [Read, Grep, Glob]
+          forbidden: [Edit, Write, Agent]
+        ---
+    Fail-fast by design: templates are shipped assets, so any deviation is a
+    bug — raise ValueError naming the source rather than degrade.
+    """
+    if not text.startswith("---"):
+        raise ValueError("%s: template has no frontmatter block" % source)
+    end = text.find("\n---", 3)
+    if end == -1:
+        raise ValueError("%s: unterminated frontmatter block" % source)
+    header = text[3:end].strip("\n")
+    body = text[end + len("\n---"):].lstrip("\n")
+    meta = {"tool_policy": {}}
+    in_policy = False
+    for line in header.splitlines():
+        if not line.strip():
+            continue
+        m = _FM_LIST_RE.match(line)
+        if m and in_policy:
+            items = [x.strip() for x in m.group(2).split(",") if x.strip()]
+            meta["tool_policy"][m.group(1)] = items
+            continue
+        m = _FM_SCALAR_RE.match(line)
+        if not m:
+            raise ValueError("%s: cannot parse frontmatter line %r" % (source, line))
+        key, value = m.group(1), m.group(2).strip()
+        if key == "tool_policy":
+            in_policy = True
+            continue
+        in_policy = False
+        meta[key] = value
+    for required in ("name", "description"):
+        if not meta.get(required):
+            raise ValueError("%s: frontmatter missing %r" % (source, required))
+    for required in ("allowed", "forbidden"):
+        if required not in meta["tool_policy"]:
+            raise ValueError("%s: tool_policy missing %r list" % (source, required))
+    return meta, body
+
+
+def load_template(role_file):
+    """Load and parse an agent template by basename (e.g. 'scout.md')."""
+    path = os.path.join(TEMPLATE_DIR, role_file)
+    if not os.path.isfile(path):
+        raise ValueError("template not found: %s (looked in %s)" % (role_file, TEMPLATE_DIR))
+    with open(path, encoding="utf-8") as fh:
+        return parse_template_frontmatter(fh.read(), source=role_file)
 
 
 def _detect_host():

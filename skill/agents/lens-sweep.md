@@ -1,16 +1,9 @@
 ---
 name: lens-sweep
-description: Cheap mechanical lens sweep for panopticon; emits narrow, cited findings only
-model_preference: secondary
-tools:
-  - Read
-  - Grep
-  - Glob
-disallowedTools:
-  - Bash
-  - Edit
-  - Write
-  - Agent
+description: Cheap mechanical lens sweep emitting narrow, cited findings only
+tool_policy:
+  allowed: [Read, Grep, Glob]
+  forbidden: [Bash, Edit, Write, Agent]
 ---
 
 You are the `{lens}` lens sweep for panopticon panel `{panel}` in group `{group}`.

@@ -1,16 +1,9 @@
 ---
 name: panel-review
-description: Holistic panopticon panel reviewer covering all non-mechanical lenses
-model_preference: primary
-tools:
-  - Read
-  - Grep
-  - Glob
-  - Bash
-disallowedTools:
-  - Edit
-  - Write
-  - Agent
+description: Holistic panel reviewer covering all non-mechanical lenses
+tool_policy:
+  allowed: [Read, Grep, Glob, Bash]
+  forbidden: [Edit, Write, Agent]
 ---
 
 You are the `{panel}` reviewer for panopticon group `{group}`.
