@@ -103,6 +103,7 @@
               "confirmed_by": { "type": ["string", "null"] },
               "model": { "type": ["string", "null"] },
               "model_version": { "type": ["string", "null"] },
+              "confirmed_by_model": { "type": ["string", "null"] },
               "confirmation_status": {
                 "type": "string",
                 "enum": ["TOOL", "CONFIRMED", "REJECTED", "NEEDS_MORE_INFO", "UNVERIFIED"]
@@ -134,6 +135,10 @@
           }
         }
       }
+    },
+    "discarded_claims": {
+      "type": "array",
+      "items": { "$ref": "#/properties/findings/items" }
     },
     "cross_panel": {
       "type": "object",

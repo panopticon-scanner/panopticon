@@ -12,6 +12,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import scripts.citations as citations
+from scripts.citations import _compute_citation_quality
 import scripts.html_report as html_report
 import scripts.ingest_tools as ingest_tools
 
@@ -140,6 +141,50 @@ def _is_tool_sourced(f):
     carry no source field. Mirrors the provenance convention in validate_report
     and render_summary (anything not 'tool:' is agent-sourced)."""
     return str(f.get("source", "")).startswith("tool:")
+
+
+def _role_from_discovered_by(discovered_by):
+    """Map a provenance discovered_by value to a model role."""
+    if not discovered_by:
+        return None
+    discovered_by = str(discovered_by)
+    if discovered_by.startswith("agent:"):
+        return discovered_by.split(":", 1)[1]
+    return discovered_by
+
+
+def _collect_models_used(findings):
+    """Collect unique model/version/role triples from agent findings.
+
+    Tool findings (model is null) are skipped. Agent findings contribute their
+    provenance model/version plus a role derived from discovered_by. Advisor
+    confirmations contribute the confirming model with role 'advisor'.
+    """
+    seen = set()
+    out = []
+    for f in findings:
+        prov = f.get("provenance") or {}
+        model = prov.get("model")
+        version = prov.get("model_version")
+        # Skip tool and other entries without a model identifier.
+        if not model:
+            continue
+        role = _role_from_discovered_by(prov.get("discovered_by"))
+        key = (model, version, role)
+        if key in seen:
+            continue
+        seen.add(key)
+        entry = {"model": model, "role": role}
+        if version:
+            entry["version"] = version
+        out.append(entry)
+        confirmed_by_model = prov.get("confirmed_by_model")
+        if confirmed_by_model:
+            advisor_key = (confirmed_by_model, None, "advisor")
+            if advisor_key not in seen:
+                seen.add(advisor_key)
+                out.append({"model": confirmed_by_model, "role": "advisor"})
+    return out
 
 
 def _merge_citations(best, other):
@@ -394,6 +439,12 @@ def apply_advisor_verdict(finding, verdict):
         finding["severity"] = "INFO"
         finding["confidence"] = "NOTE"
     # NEEDS_MORE_INFO: leave as-is, just mark verdict
+    advisor_citations = verdict.get("citations")
+    if advisor_citations:
+        _merge_citations(finding, {"citations": advisor_citations})
+        finding["citation_quality"] = _compute_citation_quality(
+            finding.get("citations", {}), finding.get("cvss")
+        )
 
 
 def _read_code_context(finding, window=10, repo_root=None):
@@ -642,6 +693,9 @@ def _partition_findings(findings, advisor_dispatch=None):
                 advisor_citations = advisor_result.get("citations")
                 if advisor_citations:
                     _merge_citations(f, {"citations": advisor_citations})
+                    f["citation_quality"] = _compute_citation_quality(
+                        f.get("citations", {}), f.get("cvss")
+                    )
                 confirmed.append(f)
                 continue
             if verdict == "REJECTED":
@@ -735,9 +789,10 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                     apply_advisor_verdict(f, verdict)
                     break
     confirmed, discarded, unverified = _partition_findings(findings, advisor_dispatch=_dispatch_advisor)
-    # Confirmed findings drive grades/gate. Unverified and discarded findings stay
-    # visible in the report body at INFO/NOTE severity but do not influence grades.
-    findings = confirmed + unverified + discarded
+    # Confirmed findings drive grades/gate. Unverified findings stay visible in the
+    # main report body at INFO/NOTE severity but do not influence grades. Discarded
+    # claims are moved to a separate appendix.
+    findings = confirmed + unverified
     by_panel = {p: [] for p in VALID_PANELS}
     for f in findings:
         by_panel.get(f["panel"], by_panel["code"]).append(f)
@@ -773,6 +828,8 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
     integration_findings = cross_panel_corroboration(findings)
     for f in findings:
         f.pop("_group", None)
+    for f in discarded:
+        f.pop("_group", None)
     return {
         "meta": {
             "target": target,
@@ -780,6 +837,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
             "timestamp": timestamp,
             "version": "3.0.0",
             "security_mode": security_mode,
+            "models_used": _collect_models_used(confirmed + unverified + discarded),
         },
         "summary": {
             "overall_grade": overall,
@@ -794,6 +852,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
         },
         "groups": group_objs,
         "findings": findings,
+        "discarded_claims": discarded,
         "cross_panel": {"integration_findings": integration_findings},
         "recommendations": {"immediate": [], "short_term": [], "long_term": []},
     }
@@ -1004,6 +1063,14 @@ def main(argv=None):
     if args.severity and args.severity != "all":
         threshold = SEV_ORDER.index(args.severity.upper())
         findings = [f for f in findings if _sev_rank(f) <= threshold]
+    if os.path.isdir(args.target):
+        repo_root = os.path.abspath(args.target)
+    elif args.groups:
+        repo_root = os.path.abspath(os.path.dirname(args.groups))
+    else:
+        repo_root = os.path.abspath(os.getcwd())
+    for f in findings:
+        f["_repo_root"] = repo_root
     report = build_report(findings, groups_meta, args.target, args.fail_on, ts, review_type,
                           security_mode)
     errors, warnings = validate_report(report)

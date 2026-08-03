@@ -81,17 +81,15 @@ body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Ro
 .finding-body dt { font-weight: 700; margin-top: .75rem; }
 .finding-body dd { margin-left: 0; }
 .chip { display: inline-block; background: #e9ecef; border-radius: .25rem; padding: .1rem .4rem; font-size: .8rem; margin-right: .25rem; }
-.prov-tool { background: #6f42c1; color: #fff; }
-.prov-reinforced { background: var(--pass); color: #fff; }
-.prov-corroborated { background: #0dcaf0; color: #000; }
-.prov-agent { background: var(--muted); color: #fff; }
 .prov-status, .prov-source, .prov-model, .cit-quality { display: inline-block; border-radius: .25rem; padding: .1rem .4rem; font-size: .75rem; margin-right: .25rem; font-weight: 600; text-transform: uppercase; }
 .prov-status { background: var(--pass); color: #fff; }
 .prov-status.prov-needs-more-info { background: var(--medium); color: #000; }
 .prov-status.prov-unverified { background: var(--muted); color: #fff; }
 .prov-source, .prov-model { background: #e9ecef; color: var(--fg); }
 .cit-quality { background: #f8f9fa; border: 1px solid var(--border); color: var(--fg); }
+.cit-full { background: var(--pass); color: #fff; }
 .cit-partial { background: var(--medium); color: #000; }
+.cit-minimal { background: var(--low); color: #000; }
 .cit-none { background: var(--muted); color: #fff; }
 .unverified-findings { margin-top: 1rem; }
 .unverified-findings > details { background: var(--card); border: 1px solid var(--border); border-radius: .5rem; padding: 1rem; }
@@ -652,6 +650,20 @@ def _render_findings(findings):
 """
 
 
+def _render_discarded_claims(discarded):
+    if not discarded:
+        return ""
+    cards = "\n".join(_render_card(f) for f in discarded)
+    return f"""
+<section class="findings discarded-claims">
+<details>
+<summary>Discarded claims <span class='count'>({len(discarded)})</span></summary>
+{cards}
+</details>
+</section>
+"""
+
+
 def write_html(report, path, compare_report=None):
     """Write a rendered HTML report to disk."""
     os.makedirs(os.path.dirname(os.path.abspath(path)) if os.path.dirname(path) else ".", exist_ok=True)
@@ -671,6 +683,11 @@ def render(report, compare_report=None):
         )
         title = f"Panopticon Compare — {report.get('meta', {}).get('target', 'report')}"
     else:
-        body = _render_header(report) + _render_dashboard(report) + _render_findings(report.get("findings", []))
+        body = (
+            _render_header(report)
+            + _render_dashboard(report)
+            + _render_findings(report.get("findings", []))
+            + _render_discarded_claims(report.get("discarded_claims", []))
+        )
         title = f"Panopticon — {report.get('meta', {}).get('target', 'report')}"
     return _html_doc(title, body)

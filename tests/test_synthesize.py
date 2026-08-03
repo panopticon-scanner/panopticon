@@ -321,6 +321,31 @@ class TestReport(unittest.TestCase):
                                   security_mode="redteam")
         self.assertEqual(report["meta"]["security_mode"], "redteam")
 
+    def test_build_report_populates_models_used(self):
+        findings = [
+            self._finding(
+                id="CD-001", panel="code", location={"file": "a.py", "line_start": 1},
+                provenance={"discovered_by": "agent:lens_sweep",
+                            "confirmation_status": "CONFIRMED",
+                            "model": "kimi-k2.7-coding", "model_version": "v1"}),
+            self._finding(
+                id="CD-002", panel="code", location={"file": "a.py", "line_start": 2},
+                provenance={"discovered_by": "agent:panel_review",
+                            "confirmation_status": "CONFIRMED",
+                            "model": "kimi-k2.7-coding", "model_version": "v1"}),
+            self._finding(
+                id="CD-003", panel="code", location={"file": "a.py", "line_start": 3},
+                provenance={"discovered_by": "agent:lens_sweep",
+                            "confirmation_status": "CONFIRMED",
+                            "model": "other-model"}),
+        ]
+        report = syn.build_report(findings, [], "src", None, "2026-07-23T00:00:00Z")
+        models = report["meta"]["models_used"]
+        self.assertEqual(len(models), 3)
+        self.assertIn({"model": "kimi-k2.7-coding", "version": "v1", "role": "lens_sweep"}, models)
+        self.assertIn({"model": "kimi-k2.7-coding", "version": "v1", "role": "panel_review"}, models)
+        self.assertIn({"model": "other-model", "role": "lens_sweep"}, models)
+
     def test_main_maps_orchestrator_mode_to_review_type(self):
         with tempfile.TemporaryDirectory() as d:
             gj = os.path.join(d, "groups.json")
@@ -1154,10 +1179,11 @@ class TestAdvisorConfirmation(unittest.TestCase):
         report = syn.build_report(
             [f], [], "src", None, "2026-07-23T00:00:00Z",
             advisor_results={"SEC-DISC": {"verdict": "REJECTED", "reasoning": "False positive."}})
-        matching = [x for x in report["findings"] if x["id"] == "SEC-DISC"]
-        self.assertEqual(len(matching), 1)
-        self.assertEqual(matching[0]["severity"], "INFO")
-        self.assertEqual(matching[0]["confidence"], "NOTE")
+        self.assertNotIn("SEC-DISC", [x["id"] for x in report["findings"]])
+        discarded = [x for x in report.get("discarded_claims", []) if x["id"] == "SEC-DISC"]
+        self.assertEqual(len(discarded), 1)
+        self.assertEqual(discarded[0]["severity"], "INFO")
+        self.assertEqual(discarded[0]["confidence"], "NOTE")
         self.assertEqual(report["summary"]["discarded_claims_count"], 1)
 
     def test_agentic_finding_confirmed_by_advisor(self):

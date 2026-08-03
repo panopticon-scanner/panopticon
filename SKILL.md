@@ -77,6 +77,8 @@ Every finding is tagged with its source:
 - **Agentic findings** (from lens or panel reviewers) require confirmation by the advisor agent and must be anchored with CWE/OWASP/CVE/CVSS/EPSS citations.
 - Findings that are unconfirmed remain visible in the report as `INFO`/`NOTE` items but do not influence the CI gate.
 
+**Note:** Advisor confirmation dispatches the `agents/advisor.md` agent via the Kimi Code CLI (`kimi` must be in PATH). It uses the v2 experimental agent-file flag and stream-json output; if `kimi` is unavailable, unconfirmed agentic findings are downgraded to `INFO`/`NOTE` instead of blocking the pipeline.
+
 Use `--epss` to enrich CVE citations with EPSS scores.
 
 ## Notes

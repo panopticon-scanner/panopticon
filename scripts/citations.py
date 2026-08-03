@@ -164,12 +164,14 @@ def _derive_cwe_from_category(category, catalog):
     return None
 
 
-def _compute_citation_quality(citations):
+def _compute_citation_quality(citations, finding_cvss=None):
     if not isinstance(citations, dict):
         return "none"
     has_cwe = bool(citations.get("cwe"))
     has_owasp = bool(citations.get("owasp"))
-    has_cve_or_cvss = bool(citations.get("cve") or citations.get("cvss"))
+    has_cve_or_cvss = bool(
+        citations.get("cve") or citations.get("cvss") or finding_cvss
+    )
     if (has_cwe or has_owasp) and has_cve_or_cvss:
         return "full"
     if has_cwe or has_owasp:
@@ -229,7 +231,7 @@ def enrich_citations(findings, catalog, epss_enabled=False, cache_path=None, ope
             if cves:
                 clean["cve"] = cves
                 all_cves.update(cves)
-            f["citation_quality"] = _compute_citation_quality(clean)
+            f["citation_quality"] = _compute_citation_quality(clean, f.get("cvss"))
             if not clean.get("cwe") and f.get("category"):
                 derived = _derive_cwe_from_category(f["category"], catalog)
                 if derived:

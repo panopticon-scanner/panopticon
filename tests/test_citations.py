@@ -199,6 +199,14 @@ class TestCitationQuality(unittest.TestCase):
         self.assertEqual(f["citation_quality"], "minimal")
         self.assertIn("CWE-89", [c["id"] for c in f["citations"]["cwe"]])
 
+    def test_top_level_cvss_counts_for_full_quality(self):
+        f = {
+            "citations": {"cwe": [{"id": "CWE-89"}]},
+            "cvss": {"score": 8.1, "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"},
+        }
+        cit.enrich_citations([f], self.catalog)
+        self.assertEqual(f["citation_quality"], "full")
+
 
 class TestEnrich(unittest.TestCase):
     def setUp(self):
