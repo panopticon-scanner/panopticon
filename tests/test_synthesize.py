@@ -1143,3 +1143,19 @@ class TestAdvisorConfirmation(unittest.TestCase):
         self.assertEqual(matching[0]["severity"], "INFO")
         self.assertEqual(matching[0]["confidence"], "NOTE")
         self.assertEqual(report["summary"]["discarded_claims_count"], 1)
+
+    def test_agentic_finding_confirmed_by_advisor(self):
+        f = {
+            "id": "SEC-002", "title": "Logic flaw", "severity": "HIGH", "confidence": "LIKELY",
+            "panel": "security", "category": "general",
+            "provenance": {"discovered_by": "agent:lens_sweep", "confirmation_status": "UNVERIFIED"},
+            "citation_quality": "none",
+        }
+
+        def fake_advisor(_finding):
+            return {"verdict": "CONFIRMED", "reasoning": "Confirmed.", "citations": {"cwe": ["CWE-20"]}}
+
+        confirmed, _discarded, _unverified = syn._partition_findings([f], advisor_dispatch=fake_advisor)
+        self.assertEqual(len(confirmed), 1)
+        self.assertEqual(confirmed[0]["provenance"]["confirmation_status"], "CONFIRMED")
+        self.assertEqual(confirmed[0]["citations"]["cwe"], ["CWE-20"])

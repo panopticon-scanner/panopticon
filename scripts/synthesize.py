@@ -6,6 +6,8 @@ import argparse
 import json
 import os
 import re
+import shlex
+import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -390,12 +392,104 @@ def apply_advisor_verdict(finding, verdict):
     # NEEDS_MORE_INFO: leave as-is, just mark verdict
 
 
-def _dispatch_advisor(finding):
-    """Placeholder: dispatch the advisor agent for an agentic finding.
+def _read_code_context(finding, window=10):
+    """Read up to ``window`` lines before and after the finding's line_start."""
+    loc = finding.get("location") or {}
+    fpath = loc.get("file")
+    line_start = loc.get("line_start")
+    if not fpath or line_start is None:
+        return "No file/line context available."
+    target = fpath if os.path.isabs(fpath) else os.path.join(os.getcwd(), fpath)
+    if not os.path.isfile(target):
+        return "File not found: %s" % fpath
+    try:
+        with open(target, encoding="utf-8") as fh:
+            lines = fh.readlines()
+    except Exception as e:  # noqa: BLE001 - context read is best-effort
+        return "Could not read file %s: %s" % (fpath, e)
+    try:
+        idx = max(0, int(line_start) - 1)
+    except (TypeError, ValueError):
+        return "Invalid line number: %s" % line_start
+    start = max(0, idx - window)
+    end = min(len(lines), idx + window + 1)
+    out = []
+    for i in range(start, end):
+        out.append("%4d | %s" % (i + 1, lines[i].rstrip("\n")))
+    return "\n".join(out) if out else "Empty context."
 
-    Real implementation will spawn the advisor subagent with code context.
+
+def _render_advisor_prompt(finding):
+    """Render the advisor prompt template with claim JSON and code context."""
+    template_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "agents", "advisor.md")
+    try:
+        with open(template_path, encoding="utf-8") as fh:
+            template = fh.read()
+    except Exception:  # noqa: BLE001 - tolerant fallback template
+        template = (
+            "## Claim\n\n{claim_json}\n\n"
+            "## Code context\n\n{code_context}\n\n"
+            "Return JSON with verdict, reasoning, references, citations."
+        )
+    claim_json = json.dumps(finding, indent=2, default=str)
+    code_context = _read_code_context(finding)
+    return template.replace("{claim_json}", claim_json).replace("{code_context}", code_context)
+
+
+def _dispatch_advisor(finding):
+    """Dispatch the advisor agent for an agentic finding.
+
+    If ``PANOPTICON_ADVISOR_COMMAND`` is set, invoke it as a subprocess with a
+    JSON payload on stdin containing the rendered prompt and finding. The
+    command must print a JSON verdict object on stdout. If the hook is not
+    configured or any invocation/parse step fails, fall back to a safe
+    ``NEEDS_MORE_INFO`` verdict so the pipeline never crashes.
     """
-    return {"verdict": "NEEDS_MORE_INFO", "reasoning": "Advisor not yet wired."}
+    prompt = _render_advisor_prompt(finding)
+    command = os.environ.get("PANOPTICON_ADVISOR_COMMAND")
+    if not command:
+        return {"verdict": "NEEDS_MORE_INFO",
+                "reasoning": "PANOPTICON_ADVISOR_COMMAND not configured."}
+    payload = {
+        "prompt": prompt,
+        "finding": finding,
+        "template_path": os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "agents", "advisor.md"),
+    }
+    try:
+        result = subprocess.run(
+            shlex.split(command),
+            input=json.dumps(payload).encode("utf-8"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=120,
+            check=False,
+        )
+    except Exception as e:  # noqa: BLE001 - advisor failure is non-fatal
+        print("advisor subprocess invocation failed: %s" % e, file=sys.stderr)
+        return {"verdict": "NEEDS_MORE_INFO",
+                "reasoning": "Advisor subprocess failed: %s" % e}
+    if result.returncode != 0:
+        stderr = result.stderr.decode("utf-8", errors="replace")[:500]
+        print("advisor subprocess exited %d: %s" % (result.returncode, stderr),
+              file=sys.stderr)
+        return {"verdict": "NEEDS_MORE_INFO",
+                "reasoning": "Advisor subprocess exited with code %d." % result.returncode}
+    try:
+        verdict = load_json_tolerant(result.stdout.decode("utf-8"))
+    except Exception as e:  # noqa: BLE001 - advisor failure is non-fatal
+        stdout = result.stdout.decode("utf-8", errors="replace")[:500]
+        print("advisor subprocess returned invalid JSON: %s (stdout: %s)" % (e, stdout),
+              file=sys.stderr)
+        return {"verdict": "NEEDS_MORE_INFO",
+                "reasoning": "Advisor returned invalid JSON."}
+    if not isinstance(verdict, dict) or not verdict.get("verdict"):
+        return {"verdict": "NEEDS_MORE_INFO",
+                "reasoning": "Advisor returned malformed verdict."}
+    return verdict
 
 
 def _is_agentic(f):
