@@ -76,6 +76,44 @@ def load_template(role_file):
         return parse_template_frontmatter(fh.read(), source=role_file)
 
 
+PLACEHOLDER_RE = re.compile(r"\{([a-z_]+)\}")
+
+
+def _tool_policy_line(meta):
+    tp = meta["tool_policy"]
+    return ("\n## Tool policy\n\nYour only tools are %s. "
+             "You must not use %s under any circumstances.\n"
+             % (", ".join(tp["allowed"]), ", ".join(tp["forbidden"])))
+
+
+def render_prompt(role_file, mapping):
+    """Render a role template into a dispatchable prompt.
+
+    Brace-safe two-step replacement: placeholders are first swapped for unique
+    sentinel tokens, then sentinels for values — so values containing
+    '{placeholder}' syntax pass through literally. Fail-fast: any known-token
+    placeholder left unfilled, and any {token} in the template that is not in
+    mapping, is an error naming the template and token. JSON/regex braces in
+    template bodies are ignored because the detector matches only
+    single-word lowercase tokens.
+    """
+    meta, body = load_template(role_file)
+    tokens = set(PLACEHOLDER_RE.findall(body))
+    missing = sorted(t for t in tokens if t not in mapping)
+    if missing:
+        raise ValueError("%s: no value for placeholder(s): %s"
+                          % (role_file, ", ".join(missing)))
+    rendered = body
+    sentinels = {}
+    for i, tok in enumerate(sorted(tokens)):
+        sentinel = "\x00PANOPTICON%d\x00" % i
+        sentinels[sentinel] = str(mapping[tok])
+        rendered = rendered.replace("{%s}" % tok, sentinel)
+    for sentinel, value in sentinels.items():
+        rendered = rendered.replace(sentinel, value)
+    return rendered + _tool_policy_line(meta)
+
+
 def _detect_host():
     """Best-effort host detection from environment."""
     if os.environ.get("KIMI_CODE_VERSION") or os.environ.get("KIMI_SESSION_ID"):
@@ -122,6 +160,7 @@ def build_plan(scope_profile, host=None, model_overrides=None):
         non_spawned = [lens["name"] for lens in panel_lenses if lens["name"] not in spawned_set]
 
         # main panel reviewer
+        panel_out_file = ".panopticon/findings-%s-%s-panel_review.json" % (group_name, panel_name)
         plan.append({
             "role": "panel_review",
             "agent": AGENT_NAME["panel_review"],
@@ -132,11 +171,20 @@ def build_plan(scope_profile, host=None, model_overrides=None):
             "group": group_name,
             "depth": depth,
             "lenses": non_spawned,
-            "out_file": ".panopticon/findings-%s-%s-panel_review.json" % (group_name, panel_name),
+            "out_file": panel_out_file,
+            "prompt": render_prompt(AGENT_NAME["panel_review"] + ".md", {
+                "panel": panel_name, "group": group_name,
+                "file_list": ", ".join(files),
+                "security_mode": scope_profile.get("security_mode", "standard"),
+                "depth": depth,
+                "lenses": "\n".join("- %s" % n for n in non_spawned) or "- (all lenses)",
+                "out_file": panel_out_file,
+            }),
         })
 
         # mechanical lens sweeps
         for lens_name in spawned:
+            sweep_out_file = ".panopticon/findings-%s-%s-lens_sweep-%s.json" % (group_name, panel_name, lens_name)
             plan.append({
                 "role": "lens_sweep",
                 "agent": AGENT_NAME["lens_sweep"],
@@ -146,7 +194,14 @@ def build_plan(scope_profile, host=None, model_overrides=None):
                 "files": files,
                 "group": group_name,
                 "depth": depth,
-                "out_file": ".panopticon/findings-%s-%s-lens_sweep-%s.json" % (group_name, panel_name, lens_name),
+                "out_file": sweep_out_file,
+                "prompt": render_prompt(AGENT_NAME["lens_sweep"] + ".md", {
+                    "panel": panel_name, "group": group_name,
+                    "file_list": ", ".join(files),
+                    "security_mode": scope_profile.get("security_mode", "standard"),
+                    "depth": depth, "lens": lens_name,
+                    "out_file": sweep_out_file,
+                }),
             })
 
     return plan

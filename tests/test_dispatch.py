@@ -149,3 +149,74 @@ class TestDispatchPlan(unittest.TestCase):
             self.assertIn("cannot create output directory", stderr.getvalue())
         finally:
             os.unlink(profile_path)
+
+
+class TestRenderPrompt(unittest.TestCase):
+    def _entry_mapping(self):
+        return {
+            "panel": "security", "group": "g1",
+            "file_list": "a.py, b.py", "security_mode": "standard",
+            "depth": "standard", "lenses": "- known_vulns\n- novel",
+            "lens": "injection",
+            "out_file": ".panopticon/findings-g1-security-panel_review.json",
+        }
+
+    def test_rendered_panel_prompt_properties(self):
+        p = dispatch.render_prompt("panel-review.md", self._entry_mapping())
+        self.assertNotIn("---\nname:", p)               # frontmatter stripped
+        self.assertIn("security", p)                     # {panel} filled
+        self.assertIn("a.py, b.py", p)                   # {file_list} filled
+        self.assertIn(".panopticon/findings-g1-security-panel_review.json", p)
+        # tool-policy line injected, naming allowed and forbidden tools
+        self.assertIn("Read", p)
+        self.assertIn("must not use", p.lower())
+        # no known placeholder tokens survive; JSON/regex braces in the body do
+        for tok in dispatch.PLACEHOLDER_RE.findall(p):
+            self.assertNotIn(tok, self._entry_mapping(), tok)
+
+    def test_unfilled_placeholder_fails_fast(self):
+        mapping = self._entry_mapping()
+        del mapping["depth"]
+        with self.assertRaises(ValueError) as ctx:
+            dispatch.render_prompt("panel-review.md", mapping)
+        self.assertIn("depth", str(ctx.exception))
+        self.assertIn("panel-review.md", str(ctx.exception))
+
+    def test_brace_safety_value_containing_placeholder_syntax(self):
+        mapping = self._entry_mapping()
+        mapping["file_list"] = "weird-{depth}-name.py"   # value contains {depth}
+        p = dispatch.render_prompt("panel-review.md", mapping)
+        self.assertIn("weird-{depth}-name.py", p)        # survives literally
+
+    def test_build_plan_entries_carry_prompts(self):
+        profile = {"group": "g1", "files": ["a.py"], "depth": "standard",
+                   "panels": ["security"],
+                   "lenses": {"security": [
+                       {"name": "injection", "spawn": True, "priority": 1,
+                        "depth_threshold": "shallow"},
+                       {"name": "novel", "spawn": False, "priority": 2,
+                        "depth_threshold": "standard"}]},
+                   "security_mode": "standard"}
+        plan = dispatch.build_plan(profile, host="claude")
+        self.assertTrue(plan)
+        for entry in plan:
+            self.assertIn("prompt", entry)
+            self.assertNotIn("{file_list}", entry["prompt"])
+        sweep = [e for e in plan if e["role"] == "lens_sweep"][0]
+        self.assertIn("injection", sweep["prompt"])
+
+
+class TestRenderGoldens(unittest.TestCase):
+    def test_rendered_output_matches_goldens(self):
+        mapping = {"panel": "security", "group": "g1", "file_list": "a.py, b.py",
+                   "security_mode": "standard", "depth": "standard",
+                   "lenses": "- known_vulns\n- novel", "lens": "injection",
+                   "out_file": ".panopticon/findings-g1-security-panel_review.json"}
+        gdir = os.path.join(os.path.dirname(__file__), "goldens")
+        for role in ("panel-review.md", "lens-sweep.md", "scout.md"):
+            m = dict(mapping)
+            if role == "scout.md":
+                m["out_file"] = ".panopticon/scout-g1.json"
+            expected = open(os.path.join(gdir, role[:-3] + ".rendered.txt"),
+                            encoding="utf-8").read()
+            self.assertEqual(dispatch.render_prompt(role, m), expected, role)
