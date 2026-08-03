@@ -1053,6 +1053,22 @@ class TestAdvisorConfirmation(unittest.TestCase):
         self.assertEqual(discarded[0]["provenance"]["confirmed_by"], "agent:advisor")
         self.assertEqual(discarded[0]["provenance"]["confirmation_reasoning"], "No exploitable sink.")
 
+    def test_rejected_finding_records_confirmed_by_model(self):
+        f = self._agentic_finding()
+
+        def reject_with_model(_):
+            return {
+                "verdict": "REJECTED",
+                "reasoning": "No exploitable sink.",
+                "confirmed_by_model": "kimi-cli-0.29.2",
+            }
+
+        confirmed, discarded, unverified = syn._partition_findings([f], advisor_dispatch=reject_with_model)
+        self.assertEqual(len(confirmed), 0)
+        self.assertEqual(len(discarded), 1)
+        self.assertEqual(len(unverified), 0)
+        self.assertEqual(discarded[0]["provenance"]["confirmed_by_model"], "kimi-cli-0.29.2")
+
     def test_advisor_citations_merged_on_confirm(self):
         f = self._agentic_finding(citations={"cwe": [{"id": "CWE-89"}]})
 

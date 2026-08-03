@@ -648,6 +648,9 @@ def _partition_findings(findings, advisor_dispatch=None):
                 prov["confirmed_by"] = "agent:advisor"
                 prov["confirmation_status"] = "REJECTED"
                 prov["confirmation_reasoning"] = advisor_result.get("reasoning")
+                confirmed_by_model = advisor_result.get("confirmed_by_model")
+                if confirmed_by_model:
+                    prov["confirmed_by_model"] = confirmed_by_model
                 f["severity"] = "INFO"
                 f["confidence"] = "NOTE"
                 discarded.append(f)
