@@ -14,7 +14,7 @@
 
 - Python stdlib only in `scripts/` (no new dependencies).
 - Tolerant by design: malformed input is skipped with a stderr note; a run never aborts (see spec Section 5).
-- `severity` and `confidence` are NEVER mutated by evidence code. `confidence` keeps only the existing corroboration bump in `cross_panel_corroboration` and dedupe's reinforce.
+- `severity` and `confidence` are NEVER mutated by the pipeline after `normalize_finding` — no exceptions (amended: the legacy dedupe/corroboration confidence bumps are removed).
 - Evidence statuses, exactly: `tool_confirmed`, `advisor_confirmed`, `corroborated`, `needs_more_info`, `unverified`, `rejected`.
 - Gate-eligible by default: `tool_confirmed`, `advisor_confirmed` only.
 - Report `meta.version` and schema version: `4.0.0`.

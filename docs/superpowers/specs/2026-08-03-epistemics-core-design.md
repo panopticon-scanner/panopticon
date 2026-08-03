@@ -92,25 +92,32 @@ Every finding in the 4.0.0 report carries:
 
 Status derivation is deterministic, precedence order:
 
-1. `tool_confirmed` — `source` is `tool:*` (unchanged auto-confirm). Tool findings
-   never enter the verify queue, so tool/advisor verdict collisions are impossible.
+1. `tool_confirmed` — `source` is `tool:*` (unchanged auto-confirm), OR the finding
+   is `reinforced` (tool+agent same-locus merge: a tool reported that locus by
+   construction, so agent agreement never weakens it; `verified_by: "tool+agent"`).
+   Neither enters the verify queue, so tool/advisor verdict collisions are
+   impossible. *(Amended during implementation review: reinforced originally
+   derived `corroborated`, which let agent agreement strip a scanner finding's
+   gate influence.)*
 2. `advisor_confirmed` — advisor verdict CONFIRMED.
 3. `rejected` — advisor verdict REJECTED. Severity untouched; finding moves to the
    `discarded_claims` appendix with reasoning attached.
 4. `needs_more_info` — advisor verdict NEEDS_MORE_INFO: an advisor looked and could
    not determine. Stays in the main findings list at claimed severity. Reasoning
    must state what information is missing.
-5. `corroborated` — no advisor verdict, but tool+agent reinforcement or cross-panel
-   corroboration fired. Agent+agent corroboration is `corroborated`, never any
-   `*_confirmed` status (correlated witnesses are not independent evidence).
+5. `corroborated` — no advisor verdict, but cross-panel corroboration fired.
+   Agent+agent corroboration is `corroborated`, never any `*_confirmed` status
+   (correlated witnesses are not independent evidence).
 6. `unverified` — everything else: no one has looked. Stays in the main findings
    list at claimed severity, clearly labeled.
 
 Invariants:
 
 - **`severity` is never mutated by the pipeline** after `normalize_finding`.
-- `confidence` remains the reviewer's self-assessment; the existing corroboration
-  bump is kept. It is an input signal, never the pipeline's verdict.
+- **`confidence` is never mutated by the pipeline either** — it is purely the
+  reviewer's self-assessment. *(Amended during implementation review: the
+  original spec kept the legacy dedupe/corroboration confidence bumps; they are
+  confidence-laundering now that the evidence axis exists, and are removed.)*
 - `citation_quality` moves inside `evidence` as pure metadata — computed,
   displayed, never gating, never downgrading. The CONFIRMED→NEEDS_MORE_INFO
   citation demotion is deleted.
