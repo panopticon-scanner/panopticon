@@ -8,6 +8,7 @@ evidence.status records how hard the claim has been verified.
 
 import json
 import os
+import sys
 
 SEV_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
 EVIDENCE_STATUSES = ("tool_confirmed", "advisor_confirmed", "corroborated",
@@ -120,3 +121,92 @@ def write_verify_queue(entries, cut, path):
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=2)
         fh.write("\n")
+
+
+def merge_citations(best, other):
+    """Merge other['citations'] into best['citations'] without overwriting
+    keys that already exist in best. (Moved from synthesize._merge_citations.)"""
+    oc = other.get("citations")
+    if not oc:
+        return
+    if not best.get("citations"):
+        best["citations"] = {}
+    bc = best["citations"]
+    for key, value in oc.items():
+        if not value:
+            continue
+        if key not in bc or not bc[key]:
+            bc[key] = value
+
+
+def load_verdicts(verdicts_dir):
+    """Load advisor verdict files keyed by queue_id (filename stem).
+
+    Tolerant by design: unreadable/malformed files and files without a valid
+    verdict key are skipped with a stderr note; never raises.
+    """
+    out = {}
+    if not verdicts_dir or not os.path.isdir(verdicts_dir):
+        return out
+    for name in sorted(os.listdir(verdicts_dir)):
+        if not name.endswith(".json"):
+            continue
+        path = os.path.join(verdicts_dir, name)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError) as e:
+            print("evidence: skipping malformed verdict %s: %s" % (name, e),
+                  file=sys.stderr)
+            continue
+        if (not isinstance(data, dict)
+                or str(data.get("verdict", "")).upper() not in VERDICT_VALUES):
+            print("evidence: skipping verdict %s: missing/invalid verdict key" % name,
+                  file=sys.stderr)
+            continue
+        out[name[:-len(".json")]] = data
+    return out
+
+
+def match_verdict(entry, verdicts):
+    """Return the verdict for a queue entry, enforcing the finding_id echo.
+
+    An explicit echo mismatch means the verdict answered a different claim ->
+    treated as malformed (None). A missing echo is accepted with a warning.
+    """
+    v = verdicts.get(entry["queue_id"])
+    if v is None:
+        return None
+    fid = entry["finding"].get("id")
+    echoed = v.get("finding_id")
+    if echoed is None:
+        print("evidence: verdict %s has no finding_id echo; accepting"
+              % entry["queue_id"], file=sys.stderr)
+        return v
+    if str(echoed) != str(fid):
+        print("evidence: verdict %s echoes finding_id %r, expected %r; ignoring"
+              % (entry["queue_id"], echoed, fid), file=sys.stderr)
+        return None
+    return v
+
+
+def apply_verdict(finding, verdict):
+    """Merge an advisor verdict into provenance/citations/references.
+
+    Never touches severity or confidence — the two-axis invariant. Citation
+    re-validation happens afterwards via citations.enrich_citations.
+    """
+    prov = finding.setdefault("provenance", {})
+    v = str(verdict.get("verdict", "")).upper()
+    prov["confirmation_status"] = {"CONFIRMED": "CONFIRMED",
+                                   "REJECTED": "REJECTED"}.get(v, "NEEDS_MORE_INFO")
+    prov["confirmed_by"] = "agent:advisor"
+    prov["confirmation_reasoning"] = verdict.get("reasoning")
+    if verdict.get("model"):
+        prov["confirmed_by_model"] = verdict["model"]
+    merge_citations(finding, {"citations": verdict.get("citations") or {}})
+    existing = set(finding.get("references") or [])
+    for ref in verdict.get("references") or []:
+        if ref not in existing:
+            finding.setdefault("references", []).append(ref)
+            existing.add(ref)
