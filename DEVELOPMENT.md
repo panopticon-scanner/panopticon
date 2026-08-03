@@ -4,13 +4,13 @@ Ruthless, standards-cited code review for Kimi Code. This file is the durable
 design record that travels with the skill (installed dir / OneDrive), so future
 work has context without the original spec/plan docs.
 
-**Current version: 4.0.0** (semver — see Versioning below).
+**Current version: 4.1.0** (semver — see Versioning below).
 
 ## What it is
 A **discovery → scout → fan-out → synthesis** pipeline. It profiles a target with a
 cheap "scout", builds a risk-tuned plan, and fans out to Kimi custom agents in
 parallel via `AgentSwarm`. Each panel is reviewed by the `panel-review` agent
-(`agents/panel-review.md`; `prompts/panel-template.md` is preserved as a fallback)
+(`agents/panel-review.md`)
 through one of six panels: **code**, **test**, **security**, **architecture**, **database**, and **redteam**.
 Optionally, findings are grounded with real static-analysis tools from a Docker
 container. It synthesizes everything into a `CodeReviewReport` (terminal markdown
@@ -35,8 +35,7 @@ summary + JSON artifact) with standards citations and CI gating.
 - `skill/reference/` — `report-schema.json`, `scope-profile-schema.json`, `cwe-catalog.json`
   (curated CWE→OWASP map), `security-checklists.md`, `code-review-groups.example.yml`.
 - `skill/agents/` — Kimi Code custom agents: `scout.md`, `lens-sweep.md`, `panel-review.md`, `advisor.md`.
-- `skill/prompts/` — `panel-template.md` (fallback dispatch prompt for the six-panel review model),
-  `lenses.md` (per-panel lens catalog).
+- `skill/prompts/` — `lenses.md` (per-panel lens catalog).
 
 ## Key design decisions (don't relitigate without reason)
 - **Fan out via `AgentSwarm`** of Kimi custom agents (`scout`, `panel-review`, `lens-sweep`, `advisor`).
@@ -84,6 +83,15 @@ changes to the report schema, CLI, or grade contract. Bump `SKILL.md` `metadata.
 `synthesize.build_report`'s `meta.version` together.
 
 History:
+- **4.1.0** (current) — Claude Code port: all reviewer dispatch moves to
+  deterministic rendered prompts (dispatch plan entries carry `prompt`;
+  `--render-advisor` renders verify-queue entries). Agent templates get
+  host-neutral frontmatter (`tool_policy` as data; advisory-by-prompt on
+  raw-prompt hosts). Host selection is explicit (`--host`) with fixed
+  env fallback (`CLAUDECODE`; unknown → generic, model inherited). Claude
+  model policy: scout/lens=haiku, panel=sonnet, advisor=opus. SKILL.md
+  description is trigger-only; Host dispatch section maps the per-host
+  mechanisms (research: docs/superpowers/specs/2026-08-03-host-portability-research.md).
 - **2.0.0** — static-analysis upgrade: standards citations (CWE/OWASP/SSVC/EPSS) + the Docker
   tool container.
 - **2.1.0** — bug-fix round: must-fixes surfaced by the build's review gates and the

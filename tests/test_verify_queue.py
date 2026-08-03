@@ -97,7 +97,7 @@ class TestWriteVerifyQueue(unittest.TestCase):
             evidence.write_verify_queue(entries, cut, path)
             with open(path) as fh:
                 payload = json.load(fh)
-        self.assertEqual(payload["version"], "4.0.0")
+        self.assertEqual(payload["version"], "4.1.0")
         self.assertEqual(payload["cut_by_max_verify"], 0)
         self.assertEqual(payload["entries"][0]["queue_id"], "000-AG-050")
         self.assertNotIn("_group", payload["entries"][0]["finding"])

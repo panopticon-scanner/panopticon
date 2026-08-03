@@ -167,7 +167,7 @@ class TestReportSchema(unittest.TestCase):
 
         # Verify key structure
         self.assertIn("version", report["meta"])
-        self.assertEqual(report["meta"]["version"], "4.0.0")
+        self.assertEqual(report["meta"]["version"], "4.1.0")
         self.assertIn("evidence", report["findings"][0])
         self.assertNotIn("recommendations", report)
 
