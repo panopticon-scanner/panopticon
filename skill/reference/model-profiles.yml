@@ -18,21 +18,13 @@ hosts:
       max_output_size: 32768
   claude:
     scout:
-      model: claude-haiku
-      max_context_size: 200000
-      max_output_size: 4096
+      model: haiku
     lens_sweep:
-      model: claude-haiku
-      max_context_size: 200000
-      max_output_size: 4096
+      model: haiku
     panel_review:
-      model: claude-sonnet
-      max_context_size: 200000
-      max_output_size: 8192
+      model: sonnet
     advisor:
-      model: claude-opus
-      max_context_size: 200000
-      max_output_size: 16384
+      model: opus
   openrouter:
     scout:
       model: openai/gpt-4o-mini

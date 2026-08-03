@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill", "scripts"))
 import dispatch
@@ -91,7 +92,7 @@ class TestDispatchPlan(unittest.TestCase):
         advisor = [p for p in plan if p["role"] == "advisor"]
         self.assertEqual(len(advisor), 0)
         panel = [p for p in plan if p["role"] == "panel_review"][0]
-        self.assertEqual(panel["model"]["model"], "claude-sonnet")
+        self.assertEqual(panel["model"]["model"], "sonnet")
         self.assertEqual(panel["agent"], "panel-review")
         sweep = [p for p in plan if p["role"] == "lens_sweep"][0]
         self.assertEqual(sweep["agent"], "lens-sweep")
@@ -149,6 +150,27 @@ class TestDispatchPlan(unittest.TestCase):
             self.assertIn("cannot create output directory", stderr.getvalue())
         finally:
             os.unlink(profile_path)
+
+
+class TestDetectHost(unittest.TestCase):
+    def _detect(self, env):
+        with mock.patch.dict(os.environ, env, clear=True):
+            return dispatch._detect_host()
+
+    def test_kimi_env(self):
+        self.assertEqual(self._detect({"KIMI_CODE_VERSION": "1"}), "kimi")
+        self.assertEqual(self._detect({"KIMI_SESSION_ID": "x"}), "kimi")
+
+    def test_claude_env(self):
+        self.assertEqual(self._detect({"CLAUDECODE": "1"}), "claude")
+        self.assertEqual(self._detect({"CLAUDE_CODE_SESSION_ID": "abc"}), "claude")
+
+    def test_no_env_is_generic_not_kimi(self):
+        self.assertEqual(self._detect({}), "generic")
+
+    def test_kimi_wins_over_claude_when_both(self):
+        self.assertEqual(
+            self._detect({"KIMI_SESSION_ID": "x", "CLAUDECODE": "1"}), "kimi")
 
 
 class TestRenderPrompt(unittest.TestCase):

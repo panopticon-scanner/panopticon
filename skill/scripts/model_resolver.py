@@ -42,13 +42,33 @@ def _profiles():
     return _PROFILES
 
 
-def _hardcoded_fallback(role):
-    return {
-        "scout": {"model": "kimi-for-coding", "max_context_size": 131072, "max_output_size": 16384},
-        "lens_sweep": {"model": "kimi-for-coding", "max_context_size": 131072, "max_output_size": 8192},
-        "panel_review": {"model": "kimi-for-coding", "max_context_size": 131072, "max_output_size": 16384},
-        "advisor": {"model": "k3", "max_context_size": 524288, "max_output_size": 32768},
-    }.get(role, {"model": "kimi-for-coding", "max_context_size": 131072, "max_output_size": 8192})
+_KIMI_FALLBACK = {
+    "scout": {"model": "kimi-for-coding", "max_context_size": 131072, "max_output_size": 16384},
+    "lens_sweep": {"model": "kimi-for-coding", "max_context_size": 131072, "max_output_size": 8192},
+    "panel_review": {"model": "kimi-for-coding", "max_context_size": 131072, "max_output_size": 16384},
+    "advisor": {"model": "k3", "max_context_size": 524288, "max_output_size": 32768},
+}
+_CLAUDE_FALLBACK = {
+    "scout": {"model": "haiku"},
+    "lens_sweep": {"model": "haiku"},
+    "panel_review": {"model": "sonnet"},
+    "advisor": {"model": "opus"},
+}
+
+
+def _hardcoded_fallback(host, role):
+    """Last-resort role->model mapping when profiles are unavailable.
+
+    Unknown hosts resolve to model=None, meaning "inherit the session's
+    model" — never silently assume kimi.
+    """
+    if host == "kimi":
+        return _KIMI_FALLBACK.get(role, {"model": "kimi-for-coding",
+                                         "max_context_size": 131072,
+                                         "max_output_size": 8192})
+    if host == "claude":
+        return _CLAUDE_FALLBACK.get(role, {"model": "sonnet"})
+    return {"model": None}
 
 
 def _env_override(role):
@@ -101,7 +121,7 @@ def resolve_model(host, role, cli_overrides=None):
             return cfg
         return {"model": cfg}
 
-    return _hardcoded_fallback(role)
+    return _hardcoded_fallback(host, role)
 
 
 def role_config(role):

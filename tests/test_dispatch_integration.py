@@ -54,6 +54,6 @@ class TestDispatchIntegration(unittest.TestCase):
         }
         plan = dispatch.build_plan(profile, host="claude")
         models = {p["role"]: p["model"]["model"] for p in plan}
-        self.assertEqual(models["lens_sweep"], "claude-haiku")
-        self.assertEqual(models["panel_review"], "claude-sonnet")
+        self.assertEqual(models["lens_sweep"], "haiku")
+        self.assertEqual(models["panel_review"], "sonnet")
         self.assertEqual(len([p for p in plan if p["role"] == "lens_sweep"]), 3)
