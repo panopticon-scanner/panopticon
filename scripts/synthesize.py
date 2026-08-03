@@ -414,7 +414,7 @@ def flag_for_advisor(findings, depth="standard"):
     return flagged
 
 
-def apply_advisor_verdict(finding, verdict):
+def apply_advisor_verdict(finding, verdict, catalog=None):
     """Update a finding based on advisor verdict.
 
     Also mirrors the verdict into ``provenance.confirmation_status`` so that
@@ -442,8 +442,16 @@ def apply_advisor_verdict(finding, verdict):
     advisor_citations = verdict.get("citations")
     if advisor_citations:
         _merge_citations(finding, {"citations": advisor_citations})
+    citations_dict = finding.get("citations", {})
+    cwe_list = citations_dict.get("cwe")
+    if isinstance(cwe_list, list):
+        if catalog is None:
+            catalog = load_cwe_catalog()
+        citations_dict["cwe"] = citations.normalize_cwe_entries(
+            cwe_list, catalog, tool_sourced=_is_tool_sourced(finding)
+        )
     finding["citation_quality"] = _compute_citation_quality(
-        finding.get("citations", {}), finding.get("cvss")
+        citations_dict, finding.get("cvss")
     )
     # A confirmed verdict is only trustworthy when backed by hard citations.
     # Downgrade to NEEDS_MORE_INFO if citation quality is still none or minimal.
@@ -638,7 +646,7 @@ def _is_agentic(f):
     return str(prov.get("discovered_by", "")).startswith("agent:")
 
 
-def _partition_findings(findings, advisor_dispatch=None):
+def _partition_findings(findings, advisor_dispatch=None, catalog=None):
     """Separate findings into confirmed, discarded, and unverified sets.
 
     Tool findings are confirmed automatically. Agentic findings are sent to
@@ -650,6 +658,8 @@ def _partition_findings(findings, advisor_dispatch=None):
     without a status are routed through the advisor loop and, if no advisor is
     available, downgraded to unverified INFO-level findings.
     """
+    if catalog is None:
+        catalog = load_cwe_catalog()
     confirmed = []
     discarded = []
     unverified = []
@@ -717,8 +727,14 @@ def _partition_findings(findings, advisor_dispatch=None):
                 for ref in advisor_result.get("references", []):
                     if ref not in existing:
                         f.setdefault("references", []).append(ref)
+                citations_dict = f.get("citations", {})
+                cwe_list = citations_dict.get("cwe")
+                if isinstance(cwe_list, list):
+                    citations_dict["cwe"] = citations.normalize_cwe_entries(
+                        cwe_list, catalog, tool_sourced=_is_tool_sourced(f)
+                    )
                 f["citation_quality"] = _compute_citation_quality(
-                    f.get("citations", {}), f.get("cvss")
+                    citations_dict, f.get("cvss")
                 )
                 # A confirmed verdict is only trustworthy when backed by hard
                 # citations. Downgrade to NEEDS_MORE_INFO if citation quality is
@@ -819,14 +835,16 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                  security_mode="standard", advisor_results=None, advisor_dispatch=None):
     """Build complete CodeReviewReport with deduplication, grading, and CI gate verdict."""
     findings = dedupe(findings)
+    catalog = load_cwe_catalog()
     if advisor_results:
         for finding_id, verdict in advisor_results.items():
             for f in findings:
                 if f.get("id") == finding_id:
-                    apply_advisor_verdict(f, verdict)
+                    apply_advisor_verdict(f, verdict, catalog=catalog)
                     break
-    confirmed, discarded, unverified = _partition_findings(findings, advisor_dispatch=advisor_dispatch)
-    catalog = load_cwe_catalog()
+    confirmed, discarded, unverified = _partition_findings(
+        findings, advisor_dispatch=advisor_dispatch, catalog=catalog
+    )
     citations.enrich_citations(confirmed, catalog, epss_enabled=False)
     # Confirmed findings drive grades/gate. Unverified findings stay visible in the
     # main report body at INFO/NOTE severity but do not influence grades. Discarded

@@ -188,6 +188,19 @@ class TestCitationQuality(unittest.TestCase):
         cit.enrich_citations([f], self.catalog)
         self.assertEqual(f["citation_quality"], "partial")
 
+    def test_unverified_cwe_scores_minimal(self):
+        f = {"citations": {"cwe": ["CWE-99999"]}}
+        cit.enrich_citations([f], self.catalog)
+        self.assertEqual(f["citation_quality"], "minimal")
+        self.assertFalse(f["citations"]["cwe"][0]["verified"])
+
+    def test_verified_real_cwe_scores_partial(self):
+        f = {"citations": {"cwe": ["CWE-89"]}}
+        cit.enrich_citations([f], self.catalog)
+        self.assertEqual(f["citation_quality"], "partial")
+        self.assertTrue(f["citations"]["cwe"][0]["verified"])
+        self.assertFalse(f["citations"]["cwe"][0].get("derived"))
+
     def test_none_quality(self):
         f = {"citations": {}}
         cit.enrich_citations([f], self.catalog)
@@ -198,6 +211,8 @@ class TestCitationQuality(unittest.TestCase):
         cit.enrich_citations([f], self.catalog)
         self.assertEqual(f["citation_quality"], "minimal")
         self.assertIn("CWE-89", [c["id"] for c in f["citations"]["cwe"]])
+        self.assertTrue(all(c.get("derived") for c in f["citations"]["cwe"]))
+        self.assertTrue(all(c.get("verified") is False for c in f["citations"]["cwe"]))
 
     def test_real_cwe_is_partial_not_minimal(self):
         f = {"citations": {"cwe": ["CWE-89"]}}

@@ -63,6 +63,23 @@ def validate_cwe(cwe_id, catalog, tool_sourced=False):
     return {"id": cwe_id, "name": None, "verified": bool(tool_sourced)}
 
 
+def normalize_cwe_entries(entries, catalog, tool_sourced=False):
+    """Normalize a mixed list of CWE strings/dicts to validated dicts.
+
+    Dict entries are preserved as-is; string entries are validated against
+    the catalog. Invalid or malformed entries are dropped.
+    """
+    out = []
+    for entry in entries:
+        if isinstance(entry, dict):
+            out.append(entry)
+        elif isinstance(entry, str):
+            v = validate_cwe(entry, catalog, tool_sourced=tool_sourced)
+            if v:
+                out.append(v)
+    return out
+
+
 def derive_owasp(cwe_ids, asserted, catalog):
     """Derive OWASP mappings from CWE IDs and asserted OWASP tags."""
     out = []
@@ -160,23 +177,25 @@ def epss_lookup(cves, cache_path, opener=None):
 def _derive_cwe_from_category(category, catalog):
     cid = CATEGORY_CWE_OVERRIDES.get(str(category).lower().replace(" ", "_"))
     if cid and cid in catalog["cwe"]:
-        return {"id": cid, "name": catalog["cwe"][cid], "verified": True, "derived": True}
+        return {"id": cid, "name": catalog["cwe"][cid], "verified": False, "derived": True}
     return None
 
 
 def _compute_citation_quality(citations, finding_cvss=None):
-    if not isinstance(citations, dict):
-        return "none"
+    if not isinstance(citations, dict) or not citations:
+        return "minimal" if finding_cvss else "none"
     cwe_list = citations.get("cwe") or []
-    has_real_cwe = any(not (isinstance(c, dict) and c.get("derived")) for c in cwe_list)
+    has_verified_real_cwe = any(
+        isinstance(c, dict) and c.get("verified") and not c.get("derived")
+        for c in cwe_list
+    )
     has_derived_cwe = any(isinstance(c, dict) and c.get("derived") for c in cwe_list)
     has_owasp = bool(citations.get("owasp"))
-    has_cve_or_cvss = bool(
-        citations.get("cve") or citations.get("cvss") or finding_cvss
-    )
-    if (has_real_cwe or has_owasp) and has_cve_or_cvss:
+    has_cve = bool(citations.get("cve"))
+    has_cvss = bool(citations.get("cvss")) or bool(finding_cvss)
+    if (has_verified_real_cwe or has_owasp) and (has_cve or has_cvss):
         return "full"
-    if has_real_cwe or has_owasp:
+    if has_verified_real_cwe or has_owasp:
         return "partial"
     if has_derived_cwe or citations or finding_cvss:
         return "minimal"

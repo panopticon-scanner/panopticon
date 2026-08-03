@@ -1202,7 +1202,8 @@ class TestAdvisorConfirmation(unittest.TestCase):
         confirmed, _discarded, _unverified = syn._partition_findings([f], advisor_dispatch=fake_advisor)
         self.assertEqual(len(confirmed), 1)
         self.assertEqual(confirmed[0]["provenance"]["confirmation_status"], "CONFIRMED")
-        self.assertEqual(confirmed[0]["citations"]["cwe"], ["CWE-20"])
+        self.assertEqual(confirmed[0]["citations"]["cwe"][0]["id"], "CWE-20")
+        self.assertTrue(confirmed[0]["citations"]["cwe"][0]["verified"])
 
     def test_preconfirmed_agentic_with_no_citations_is_unverified(self):
         f = self._agentic_finding(
@@ -1259,6 +1260,24 @@ class TestAdvisorConfirmation(unittest.TestCase):
         self.assertEqual(matching[0]["confidence"], "NOTE")
         self.assertEqual(report["summary"]["unverified_findings_count"], 1)
         self.assertEqual(report["summary"]["discarded_claims_count"], 0)
+
+    def test_advisor_confirmed_with_bogus_cwe_is_unverified(self):
+        f = self._agentic_finding()
+
+        def fake_advisor(_finding):
+            return {
+                "verdict": "CONFIRMED",
+                "reasoning": "Confirmed.",
+                "citations": {"cwe": ["CWE-99999"]},
+            }
+
+        confirmed, discarded, unverified = syn._partition_findings([f], advisor_dispatch=fake_advisor)
+        self.assertEqual(len(confirmed), 0)
+        self.assertEqual(len(discarded), 0)
+        self.assertEqual(len(unverified), 1)
+        self.assertEqual(unverified[0]["provenance"]["confirmation_status"], "NEEDS_MORE_INFO")
+        self.assertEqual(unverified[0]["citation_quality"], "minimal")
+        self.assertFalse(unverified[0]["citations"]["cwe"][0]["verified"])
 
 
 class TestInternalFieldCleanup(unittest.TestCase):
