@@ -25,6 +25,10 @@ MODE_TO_REVIEW_TYPE = {
 }
 VALID_PANELS = {"code", "test", "security", "architecture", "database", "redteam"}
 PANEL_ORDER = ["code", "test", "security", "architecture", "database", "redteam"]
+_ADVISOR_TEMPLATE_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "agents", "advisor.md")
+_KIMI_VERSION_CACHE = {}
 RELATED_PANELS = {
     "security": {"architecture", "database", "redteam"},
     "redteam": {"security", "architecture", "database"},
@@ -392,14 +396,20 @@ def apply_advisor_verdict(finding, verdict):
     # NEEDS_MORE_INFO: leave as-is, just mark verdict
 
 
-def _read_code_context(finding, window=10):
-    """Read up to ``window`` lines before and after the finding's line_start."""
+def _read_code_context(finding, window=10, repo_root=None):
+    """Read up to ``window`` lines before and after the finding's line_start.
+
+    Relative file paths are resolved against ``repo_root`` (defaulting to the
+    current working directory for backward compatibility).
+    """
     loc = finding.get("location") or {}
     fpath = loc.get("file")
     line_start = loc.get("line_start")
     if not fpath or line_start is None:
         return "No file/line context available."
-    target = fpath if os.path.isabs(fpath) else os.path.join(os.getcwd(), fpath)
+    if repo_root is None:
+        repo_root = os.getcwd()
+    target = fpath if os.path.isabs(fpath) else os.path.join(repo_root, fpath)
     if not os.path.isfile(target):
         return "File not found: %s" % fpath
     try:
@@ -419,13 +429,10 @@ def _read_code_context(finding, window=10):
     return "\n".join(out) if out else "Empty context."
 
 
-def _render_advisor_prompt(finding):
+def _render_advisor_prompt(finding, repo_root=None):
     """Render the advisor prompt template with claim JSON and code context."""
-    template_path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "agents", "advisor.md")
     try:
-        with open(template_path, encoding="utf-8") as fh:
+        with open(_ADVISOR_TEMPLATE_PATH, encoding="utf-8") as fh:
             template = fh.read()
     except Exception:  # noqa: BLE001 - tolerant fallback template
         template = (
@@ -440,35 +447,70 @@ def _render_advisor_prompt(finding):
         if m:
             template = template[m.end():]
     claim_json = json.dumps(finding, indent=2, default=str)
-    code_context = _read_code_context(finding)
-    return template.replace("{claim_json}", claim_json).replace("{code_context}", code_context)
+    code_context = _read_code_context(finding, repo_root=repo_root)
+    rendered = template.replace("{claim_json}", claim_json).replace("{code_context}", code_context)
+    if "{claim_json}" in rendered or "{code_context}" in rendered:
+        raise ValueError("Advisor prompt still contains unsubstituted placeholders")
+    return rendered
+
+
+def _get_kimi_version(kimi_bin):
+    """Return a normalized version string for the Kimi Code CLI, cached."""
+    if kimi_bin in _KIMI_VERSION_CACHE:
+        return _KIMI_VERSION_CACHE[kimi_bin]
+    version = "kimi-cli-unknown"
+    try:
+        result = subprocess.run(
+            [kimi_bin, "--version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+            check=False,
+            text=True,
+        )
+        output = (result.stdout or "").strip()
+        m = re.search(r"(\d+\.\d+\.\d+)", output)
+        if m:
+            version = "kimi-cli-%s" % m.group(1)
+        elif output:
+            version = "kimi-cli-%s" % output
+    except Exception:  # noqa: BLE001 - version lookup is best-effort
+        pass
+    _KIMI_VERSION_CACHE[kimi_bin] = version
+    return version
 
 
 def _dispatch_advisor(finding):
     """Dispatch the advisor agent for an agentic finding via the Kimi Code CLI.
 
     Resolves ``kimi`` in PATH, invokes it with ``--agent-file agents/advisor.md``
-    and the rendered prompt. Parses the JSON verdict from stdout. Any failure
-    (CLI missing, subprocess error, timeout, invalid JSON, missing verdict key)
-    falls back to a safe ``NEEDS_MORE_INFO`` verdict so the pipeline never crashes.
+    and the rendered prompt. Parses the JSON verdict from the ``stream-json``
+    stdout (JSONL with ``role``-typed lines). Any failure (CLI missing,
+    subprocess error, timeout, invalid JSON, missing assistant message, or
+    malformed verdict key) falls back to a safe ``NEEDS_MORE_INFO`` verdict so
+    the pipeline never crashes.
     """
     kimi = shutil.which("kimi")
     if not kimi:
         return {"verdict": "NEEDS_MORE_INFO",
                 "reasoning": "Kimi Code CLI not available; cannot dispatch advisor."}
-    template_path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "agents", "advisor.md")
-    prompt = _render_advisor_prompt(finding)
+    repo_root = finding.get("_repo_root") or os.getcwd()
+    prompt = _render_advisor_prompt(finding, repo_root=repo_root)
+    # The prompt is passed as a single --prompt argument. The CLI's stream-json
+    # output format requires prompt mode, so stdin cannot be used here; revisit
+    # if the CLI later supports streaming output with piped input.
+    env = os.environ.copy()
+    env["KIMI_CODE_EXPERIMENTAL_FLAG"] = "1"
     try:
         result = subprocess.run(
-            [kimi, "--agent-file", template_path, "--prompt", prompt,
-             "--output-format", "text"],
+            [kimi, "--agent-file", _ADVISOR_TEMPLATE_PATH, "--prompt", prompt,
+             "--output-format", "stream-json"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=120,
             check=False,
             text=True,
+            env=env,
         )
         if result.returncode != 0:
             stderr = (result.stderr or "")[:500]
@@ -476,11 +518,39 @@ def _dispatch_advisor(finding):
                   file=sys.stderr)
             return {"verdict": "NEEDS_MORE_INFO",
                     "reasoning": "Advisor subprocess exited with code %d." % result.returncode}
-        verdict = load_json_tolerant(result.stdout)
+
+        assistant_content = None
+        system_version = None
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            role = obj.get("role")
+            if role == "assistant":
+                assistant_content = obj.get("content")
+            elif role == "meta" and obj.get("type") == "system.version":
+                system_version = obj.get("version")
+
+        if assistant_content is None:
+            print("advisor subprocess returned no assistant message", file=sys.stderr)
+            return {"verdict": "NEEDS_MORE_INFO",
+                    "reasoning": "Advisor returned no assistant message."}
+
+        verdict = load_json_tolerant(assistant_content)
         if not isinstance(verdict, dict) or "verdict" not in verdict:
             print("advisor subprocess returned malformed verdict", file=sys.stderr)
             return {"verdict": "NEEDS_MORE_INFO",
                     "reasoning": "Advisor returned malformed verdict."}
+
+        if verdict.get("verdict") in ("CONFIRMED", "REJECTED"):
+            version = _get_kimi_version(kimi)
+            if version == "kimi-cli-unknown" and system_version:
+                version = "kimi-cli-%s" % system_version
+            finding.setdefault("provenance", {})["confirmed_by_model"] = version
         return verdict
     except Exception as e:  # noqa: BLE001 - advisor failure is non-fatal
         print("advisor dispatch failed: %s" % e, file=sys.stderr)
