@@ -122,6 +122,42 @@ class TestAdapterDispatch(unittest.TestCase):
             with open(os.path.join(out_dir, "fake.json"), "rb") as fh:
                 self.assertEqual(fh.read(), R.stdout)
 
+    def test_run_tools_uses_readonly_src_mount_for_phase2_build_adapters(self):
+        calls = []
+        class R: returncode = 0; stdout = b'{"runs":[]}'; stderr = b''
+        def runner(cmd, **kw):
+            calls.append(cmd); return R()
+
+        with tempfile.TemporaryDirectory() as d:
+            out_dir = os.path.join(d, "out")
+            for tool in ("spotbugs", "roslyn-secguard"):
+                rt.run_tools(d, [tool], out_dir, image="panopticon-tools", runner=runner)
+            mounts = [cmd[cmd.index("-v") + 1] for cmd in calls]
+            self.assertEqual(mounts, [
+                "%s:/src:ro" % os.path.abspath(d),
+                "%s:/src:ro" % os.path.abspath(d),
+            ])
+
+    def test_run_tools_propagates_nvd_api_key_when_set(self):
+        calls = []
+        class R: returncode = 0; stdout = b'{"runs":[]}'; stderr = b''
+        def runner(cmd, **kw):
+            calls.append(cmd); return R()
+
+        old_key = os.environ.get("NVD_API_KEY")
+        os.environ["NVD_API_KEY"] = "secret-key"
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                out_dir = os.path.join(d, "out")
+                rt.run_tools(d, ["dependency-check"], out_dir, image="panopticon-tools", runner=runner)
+                self.assertIn("-e", calls[0])
+                self.assertIn("NVD_API_KEY", calls[0])
+        finally:
+            if old_key is None:
+                os.environ.pop("NVD_API_KEY", None)
+            else:
+                os.environ["NVD_API_KEY"] = old_key
+
     def test_default_selection_includes_phase1_adapters(self):
         with tempfile.TemporaryDirectory() as d:
             open(os.path.join(d, "requirements.txt"), "w").close()
