@@ -33,10 +33,10 @@ def sev_rank(finding):
 def derive_evidence(finding, verdict=None):
     """Return the evidence dict for a finding.
 
-    Precedence: tool_confirmed > advisor verdicts (CONFIRMED/REJECTED/
-    NEEDS_MORE_INFO) > corroborated > unverified. Never mutates the finding.
-    Self-asserted provenance.confirmation_status is deliberately ignored —
-    a reviewer cannot confirm its own finding.
+    Precedence: tool_confirmed (incl. reinforced tool+agent merges) > advisor
+    verdicts (CONFIRMED/REJECTED/NEEDS_MORE_INFO) > corroborated > unverified.
+    Never mutates the finding. Self-asserted provenance.confirmation_status is
+    deliberately ignored — a reviewer cannot confirm its own finding.
     """
     quality = finding.get("citation_quality") or "none"
     prov = finding.get("provenance") or {}
@@ -46,16 +46,19 @@ def derive_evidence(finding, verdict=None):
                 "reasoning": prov.get("confirmation_reasoning")
                 or "Reported by static-analysis tool",
                 "citation_quality": quality}
+    if finding.get("reinforced"):
+        # A tool+agent same-locus merge is tool-reported by construction, even
+        # when the surviving finding's own `source` isn't `tool:*` -> gates the
+        # same as a plain tool finding, never demoted to mere `corroborated`.
+        return {"status": "tool_confirmed", "verified_by": "tool+agent",
+                "reasoning": "Same locus reported independently by a tool and an agent",
+                "citation_quality": quality}
     v = str((verdict or {}).get("verdict", "")).upper()
     if v in VERDICT_VALUES:
         status = {"CONFIRMED": "advisor_confirmed",
                   "REJECTED": "rejected"}.get(v, "needs_more_info")
         return {"status": status, "verified_by": "agent:advisor",
                 "reasoning": (verdict or {}).get("reasoning"),
-                "citation_quality": quality}
-    if finding.get("reinforced"):
-        return {"status": "corroborated", "verified_by": "tool+agent",
-                "reasoning": "Same locus reported independently by a tool and an agent",
                 "citation_quality": quality}
     if finding.get("corroborated"):
         panels = list(finding.get("corroborated_by") or [])
@@ -90,10 +93,15 @@ def build_verify_queue(findings, max_verify=None):
 
     Entries hold REFERENCES to the original finding dicts (verdict application
     must mutate the real objects). Self-asserted provenance confirmation is
-    ignored — everything non-tool queues. Stable order: (priority, input index),
-    so recomputation in pass 2 reproduces pass 1's queue_ids exactly.
+    ignored — everything non-tool queues, except reinforced (tool+agent
+    same-locus merge) findings: they are tool-reported by construction and
+    already derive tool_confirmed, so queuing them for advisor verification
+    would be pointless and would make tool/verdict collisions possible.
+    Stable order: (priority, input index), so recomputation in pass 2
+    reproduces pass 1's queue_ids exactly.
     """
-    agentic = [(i, f) for i, f in enumerate(findings) if not is_tool_sourced(f)]
+    agentic = [(i, f) for i, f in enumerate(findings)
+              if not is_tool_sourced(f) and not f.get("reinforced")]
     agentic.sort(key=lambda t: (triage_priority(t[1]), t[0]))
     cut = 0
     if max_verify is not None and max_verify >= 0 and len(agentic) > max_verify:

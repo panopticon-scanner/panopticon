@@ -62,9 +62,12 @@ class TestDeriveEvidence(unittest.TestCase):
         self.assertEqual(ev["status"], "corroborated")
         self.assertEqual(ev["verified_by"], ["security", "database"])
 
-    def test_reinforced_is_corroborated(self):
+    def test_reinforced_is_tool_confirmed(self):
+        # A tool+agent same-locus merge is tool-reported by construction, so it
+        # gates the same as a plain tool finding (amended spec) rather than
+        # being demoted to mere `corroborated`.
         ev = evidence.derive_evidence(_finding(reinforced=True))
-        self.assertEqual(ev["status"], "corroborated")
+        self.assertEqual(ev["status"], "tool_confirmed")
         self.assertEqual(ev["verified_by"], "tool+agent")
 
     def test_default_is_unverified(self):

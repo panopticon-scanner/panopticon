@@ -76,6 +76,17 @@ class TestBuildVerifyQueue(unittest.TestCase):
         self.assertEqual([e["finding"]["id"] for e in entries],
                          ["AG-040", "AG-041"])
 
+    def test_reinforced_agentic_finding_excluded(self):
+        # A reinforced (tool+agent same-locus merge) finding already derives
+        # tool_confirmed -> it's tool-reported by construction and never needs
+        # advisor verification, so it must not enter the queue even though its
+        # own `source` isn't `tool:*`.
+        fs = [_finding("AG-050", "HIGH", reinforced=True),
+              _finding("AG-051", "HIGH")]
+        entries, cut = evidence.build_verify_queue(fs)
+        self.assertEqual(cut, 0)
+        self.assertEqual([e["finding"]["id"] for e in entries], ["AG-051"])
+
 
 class TestWriteVerifyQueue(unittest.TestCase):
     def test_writes_payload_and_strips_private_keys(self):

@@ -199,7 +199,9 @@ class TestDedupe(unittest.TestCase):
         out = syn.dedupe(findings)
         self.assertEqual(len(out), 1)
         self.assertTrue(out[0].get("reinforced"))
-        self.assertEqual(out[0].get("confidence"), "CERTAIN")
+        # confidence is never mutated by the pipeline (amended spec) — the
+        # survivor keeps its own original confidence.
+        self.assertEqual(out[0].get("confidence"), "LIKELY")
         self.assertIn("citations", out[0])              # tool CWE carried to the survivor
 
     def test_reinforce_across_type_and_category_mismatch(self):
@@ -876,25 +878,21 @@ class TestCrossPanelCorroboration(unittest.TestCase):
         report = syn.build_report(findings, [], "src", None, "2026-07-23T00:00:00Z")
         self.assertEqual(len(report["cross_panel"]["integration_findings"]), 1)
 
-    def test_confidence_raised_not_lowered(self):
-        # Corroboration raises a weak finding's confidence one rank but never
-        # lowers a strong one.
-        integ = syn.cross_panel_corroboration([
-            self._f("SE-1", "security", "input-validation", 7, conf="POSSIBLE"),
-            self._f("CD-1", "code", "error-handling", 7, conf="CERTAIN"),
-        ])
-        self.assertEqual(len(integ), 1)
-        by_id = {}
-        # re-run to inspect annotation on the same objects
+    def test_confidence_not_mutated_by_corroboration(self):
+        # Amended spec: confidence is never mutated by the pipeline — it is
+        # purely the reviewer's self-assessment. Corroboration still annotates
+        # `corroborated`/`corroborated_by` but must leave confidence as-is.
         fs = [
             self._f("SE-1", "security", "input-validation", 7, conf="POSSIBLE"),
             self._f("CD-1", "code", "error-handling", 7, conf="CERTAIN"),
         ]
-        syn.cross_panel_corroboration(fs)
-        for f in fs:
-            by_id[f["id"]] = f
-        self.assertEqual(by_id["SE-1"]["confidence"], "LIKELY")   # POSSIBLE -> LIKELY
-        self.assertEqual(by_id["CD-1"]["confidence"], "CERTAIN")  # not lowered
+        integ = syn.cross_panel_corroboration(fs)
+        self.assertEqual(len(integ), 1)
+        by_id = {f["id"]: f for f in fs}
+        self.assertEqual(by_id["SE-1"]["confidence"], "POSSIBLE")
+        self.assertEqual(by_id["CD-1"]["confidence"], "CERTAIN")
+        self.assertTrue(by_id["SE-1"]["corroborated"])
+        self.assertTrue(by_id["CD-1"]["corroborated"])
 
     def test_integration_entry_records_max_severity(self):
         integ = syn.cross_panel_corroboration([
@@ -1188,6 +1186,26 @@ class TestEvidenceReport(unittest.TestCase):
         self.assertIn(f["evidence"]["citation_quality"],
                       ("full", "partial", "minimal", "none"))
 
+    def test_reinforced_tool_agent_merge_gates_as_tool_confirmed(self):
+        # Regression (amended spec): a tool HIGH + agent CRITICAL at the same
+        # locus reinforce to a single survivor. Previously the survivor derived
+        # `corroborated` (not gate-eligible), which let agent agreement strip a
+        # scanner finding's gate influence. It must now derive tool_confirmed
+        # and gate FAIL under --fail-on high.
+        tool = {"id": "TL-002", "title": "sqli", "severity": "HIGH",
+                "confidence": "CERTAIN", "panel": "security", "category": "injection",
+                "source": "tool:semgrep",
+                "location": {"file": "app.py", "line_start": 20}}
+        agent = {"id": "AG-201", "title": "sqli (agent)", "severity": "CRITICAL",
+                 "confidence": "POSSIBLE", "panel": "security", "category": "injection",
+                 "location": {"file": "app.py", "line_start": 20}}
+        report = self._report([tool, agent])
+        self.assertEqual(len(report["findings"]), 1)
+        f = report["findings"][0]
+        self.assertTrue(f.get("reinforced"))
+        self.assertEqual(f["evidence"]["status"], "tool_confirmed")
+        self.assertEqual(report["summary"]["gate"], "FAIL")
+
 
 class TestSeverityImmutability(unittest.TestCase):
     def test_no_path_mutates_severity(self):
@@ -1209,3 +1227,26 @@ class TestSeverityImmutability(unittest.TestCase):
             everywhere = report["findings"] + report["discarded_claims"]
             self.assertEqual(everywhere[0]["severity"], original,
                              "severity mutated for verdict=%r" % verdict)
+
+    def test_no_path_mutates_confidence(self):
+        # Amended spec: confidence, like severity, is never mutated by the
+        # pipeline after normalize_finding — no exceptions (the legacy
+        # dedupe/corroboration confidence bumps are removed).
+        cases = []
+        for sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"):
+            cases.append((_agentic(fid="AG-%s" % sev[:2], sev=sev), None))
+        cases.append((_agentic(fid="AG-101"), {"verdict": "REJECTED", "reasoning": "r"}))
+        cases.append((_agentic(fid="AG-102"), {"verdict": "NEEDS_MORE_INFO",
+                                               "reasoning": "r"}))
+        cases.append((_agentic(fid="AG-103"), {"verdict": "CONFIRMED",
+                                               "reasoning": "r"}))
+        for finding, verdict in cases:
+            original = finding["confidence"]
+            verdicts = ({"000-%s" % finding["id"]:
+                         dict(verdict, finding_id=finding["id"])}
+                        if verdict else None)
+            report = syn.build_report([finding], [], "t", "high",
+                                      "2026-08-03T00:00:00Z", verdicts=verdicts)
+            everywhere = report["findings"] + report["discarded_claims"]
+            self.assertEqual(everywhere[0]["confidence"], original,
+                             "confidence mutated for verdict=%r" % verdict)

@@ -242,7 +242,6 @@ def dedupe(findings):
             best = min(group, key=lambda f: (_sev_rank(f), _conf_rank(f)))
             other = agent_srcd[0] if _is_tool_sourced(best) else tool_srcd[0]
             best["reinforced"] = True
-            best["confidence"] = "CERTAIN"
             _reinforce_merge(best, other)
             result.append(best)
         else:
@@ -260,7 +259,6 @@ def dedupe(findings):
                 if (any(_is_tool_sourced(m) for m in members)
                         and any(not _is_tool_sourced(m) for m in members)):
                     best["reinforced"] = True
-                    best["confidence"] = "CERTAIN"
                     for m in members:
                         if m is best:
                             continue
@@ -274,18 +272,6 @@ def dedupe(findings):
 # transitive chaining); 2 catches adjacent-line citations (e.g. a function def
 # vs the vulnerable call inside it) while staying tight against false joins.
 CORROBORATION_LINE_WINDOW = 2
-
-# ascending confidence ranks (weakest -> strongest) for a monotonic raise
-_CONF_ASC = ["NOTE", "POSSIBLE", "LIKELY", "CERTAIN"]
-
-
-def _bump_confidence(conf):
-    """Raise a confidence one rank (capped at CERTAIN); never lowers it."""
-    try:
-        idx = _CONF_ASC.index(str(conf).upper())
-    except ValueError:
-        idx = 0
-    return _CONF_ASC[min(idx + 1, len(_CONF_ASC) - 1)]
 
 
 def _max_severity(findings):
@@ -301,11 +287,12 @@ def cross_panel_corroboration(findings, window=CORROBORATION_LINE_WINDOW):
     across DIFFERENT panels — deliberately NOT on category, because the same real
     issue seen through security/test/code lenses carries different categories by
     nature. When >=2 DISTINCT panels flag a nearby locus, each participating
-    finding is annotated in place (`corroborated`/`corroborated_by`, confidence
-    bumped one rank) and a summary entry is returned for cross_panel.
-    integration_findings. Requiring >=2 distinct panels is the guard against
-    false corroboration: two same-panel findings, or findings at different files
-    or beyond the line window, do NOT corroborate.
+    finding is annotated in place (`corroborated`/`corroborated_by`; confidence is
+    left untouched — it is the reviewer's self-assessment, never the pipeline's)
+    and a summary entry is returned for cross_panel.integration_findings.
+    Requiring >=2 distinct panels is the guard against false corroboration: two
+    same-panel findings, or findings at different files or beyond the line
+    window, do NOT corroborate.
     """
     candidates = []
     for f in findings:
@@ -342,7 +329,6 @@ def cross_panel_corroboration(findings, window=CORROBORATION_LINE_WINDOW):
             for m in members:
                 m["corroborated"] = True
                 m["corroborated_by"] = list(panels)
-                m["confidence"] = _bump_confidence(m.get("confidence"))
             line_starts = [c[1] for c in cluster]
             line_ends = []
             for c in cluster:
