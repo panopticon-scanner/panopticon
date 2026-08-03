@@ -65,6 +65,17 @@ it's used automatically when present, `--no-tools` to skip.
 4. If the tool needs installation, add it to `Dockerfile`.
 5. Run `python3 -m pytest tests/tools/ tests/test_ingest_tools.py tests/test_run_tools.py -v`.
 
+## Local scanner fixture suite
+
+The `panopticon-fixtures` image contains vulnerable-by-design applications used to validate scanner adapters.
+
+- Build: `docker build -f Dockerfile.fixtures -t panopticon-fixtures:latest .`
+- Run tests: `python3 scripts/run_fixture_tests.py`
+- Force rebuild: `python3 scripts/run_fixture_tests.py --rebuild`
+- Tag snapshots: `docker tag panopticon-fixtures:latest panopticon-fixtures:YYYY-MM-DD`
+
+Rebuild cadence: monthly, or whenever a new adapter is added. The image pulls public fixtures at build time, so test runs require no network.
+
 ## Versioning
 Scheme: a **minor** bump (2.x.0) per release round; **major** (x.0.0) reserved for breaking
 changes to the report schema, CLI, or grade contract. Bump `SKILL.md` `metadata.version` and

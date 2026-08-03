@@ -257,6 +257,96 @@ class TestHtmlReport(unittest.TestCase):
         self.assertIn("unchanged</div><div class='delta-value'>1</div>", out)
         self.assertIn("severity changed</div><div class='delta-value'>0</div>", out)
 
+    def _compare_finding(self, level, variant="base", issue="sqli"):
+        """Build a finding of the requested complexity for compare scenarios."""
+        base = {
+            "id": f"SEC-{variant}-{level}-{issue}",
+            "title": "SQL injection" if issue == "sqli" else "XSS",
+            "severity": "HIGH",
+            "confidence": "CERTAIN",
+            "panel": "security",
+            "category": "injection" if issue == "sqli" else "xss",
+            "location": {"file": "app.py", "line_start": 10},
+            "description": "User input used directly in query.",
+            "impact": "",
+            "remediation": "",
+            "references": [],
+        }
+        if level in ("medium", "complex"):
+            base.update({
+                "impact": "Data exfiltration or unauthorized access.",
+                "remediation": "Use parameterized queries.",
+                "references": ["https://cwe.mitre.org/data/definitions/89.html"],
+            })
+        if level == "complex":
+            base.update({
+                "description": (
+                    "User input used directly in query. The tainted value flows from "
+                    "the request handler into the database call without validation."
+                ),
+                "references": [
+                    "https://cwe.mitre.org/data/definitions/89.html",
+                    "https://owasp.org/Top10/A03_2021-Injection/",
+                ],
+                "citations": {
+                    "cwe": [{"id": "CWE-89"}],
+                    "owasp": ["A03:2021"],
+                },
+            })
+        return base
+
+    def _assert_delta_counts(self, out, new=0, resolved=0, unchanged=0, severity_changed=0):
+        self.assertIn(f"new</div><div class='delta-value'>{new}</div>", out)
+        self.assertIn(f"resolved</div><div class='delta-value'>{resolved}</div>", out)
+        self.assertIn(f"unchanged</div><div class='delta-value'>{unchanged}</div>", out)
+        self.assertIn(f"severity changed</div><div class='delta-value'>{severity_changed}</div>", out)
+
+    def test_compare_scenario_matrix(self):
+        """Exercise compare hashing across complexity levels and change scenarios.
+
+        Scenarios:
+        a) nothing changed -> unchanged
+        b) something else in the file changed -> new + resolved
+        c) vulnerable code changed but not fixed -> resolved + new (fingerprint changed)
+        d) fix correctly applied -> resolved
+        """
+        for level in ("simple", "medium", "complex"):
+            with self.subTest(level=level, scenario="unchanged"):
+                f = self._compare_finding(level)
+                base = _minimal_report(findings=[f])
+                head = _minimal_report(findings=[dict(f)])
+                out = hr.render(head, compare_report=base)
+                self._assert_delta_counts(out, new=0, resolved=0, unchanged=1, severity_changed=0)
+                self.assertIn("unchanged", out)
+
+            with self.subTest(level=level, scenario="new_issue_elsewhere"):
+                base = _minimal_report(findings=[self._compare_finding(level, issue="sqli")])
+                head = _minimal_report(findings=[self._compare_finding(level, issue="xss")])
+                out = hr.render(head, compare_report=base)
+                self._assert_delta_counts(out, new=1, resolved=1, unchanged=0, severity_changed=0)
+                self.assertIn("new", out)
+                self.assertIn("resolved", out)
+
+            with self.subTest(level=level, scenario="changed_not_fixed"):
+                f_base = self._compare_finding(level)
+                f_head = dict(f_base)
+                # Modify the description so the SHA fingerprint changes, simulating a
+                # code edit that leaves the vulnerability in place.
+                f_head["description"] = f_base["description"] + " Still vulnerable after edit."
+                base = _minimal_report(findings=[f_base])
+                head = _minimal_report(findings=[f_head])
+                out = hr.render(head, compare_report=base)
+                self._assert_delta_counts(out, new=1, resolved=1, unchanged=0, severity_changed=0)
+                self.assertIn("new", out)
+                self.assertIn("resolved", out)
+
+            with self.subTest(level=level, scenario="fixed"):
+                base = _minimal_report(findings=[self._compare_finding(level)])
+                head = _minimal_report(findings=[])
+                out = hr.render(head, compare_report=base)
+                self._assert_delta_counts(out, new=0, resolved=1, unchanged=0, severity_changed=0)
+                self.assertIn("resolved", out)
+
     def test_dynamic_badge_colors(self):
         report = _minimal_report()
         report["summary"]["gate"] = "FAIL"

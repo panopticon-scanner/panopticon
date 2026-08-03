@@ -93,7 +93,7 @@ ENV PATH="/usr/share/dotnet:${PATH}"
 RUN printf '%s\n' \
     '<Project>' \
     '  <ItemGroup>' \
-    '    <PackageReference Include="AdaskoTheBeAsT.SecurityCodeScan.VS2022" Version="5.6.7.200">' \
+    '    <PackageReference Include="AdaskoTheBeAsT.SecurityCodeScan.VS2022" Version="5.6.7.31">' \
     '      <PrivateAssets>all</PrivateAssets>' \
     '      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>' \
     '    </PackageReference>' \
