@@ -779,7 +779,7 @@ def _worst_grade(grades):
 
 
 def build_report(findings, groups_meta, target, fail_on, timestamp, review_type="repo",
-                 security_mode="standard", advisor_results=None):
+                 security_mode="standard", advisor_results=None, advisor_dispatch=None):
     """Build complete CodeReviewReport with deduplication, grading, and CI gate verdict."""
     findings = dedupe(findings)
     if advisor_results:
@@ -788,7 +788,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                 if f.get("id") == finding_id:
                     apply_advisor_verdict(f, verdict)
                     break
-    confirmed, discarded, unverified = _partition_findings(findings, advisor_dispatch=_dispatch_advisor)
+    confirmed, discarded, unverified = _partition_findings(findings, advisor_dispatch=advisor_dispatch)
     # Confirmed findings drive grades/gate. Unverified findings stay visible in the
     # main report body at INFO/NOTE severity but do not influence grades. Discarded
     # claims are moved to a separate appendix.
@@ -1072,7 +1072,7 @@ def main(argv=None):
     for f in findings:
         f["_repo_root"] = repo_root
     report = build_report(findings, groups_meta, args.target, args.fail_on, ts, review_type,
-                          security_mode)
+                          security_mode, advisor_dispatch=_dispatch_advisor)
     errors, warnings = validate_report(report)
     for w in warnings:
         print("WARN: %s" % w, file=sys.stderr)
