@@ -81,10 +81,20 @@ body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Ro
 .finding-body dt { font-weight: 700; margin-top: .75rem; }
 .finding-body dd { margin-left: 0; }
 .chip { display: inline-block; background: #e9ecef; border-radius: .25rem; padding: .1rem .4rem; font-size: .8rem; margin-right: .25rem; }
-.prov-tool { background: #6f42c1; color: #fff; }
-.prov-reinforced { background: var(--pass); color: #fff; }
-.prov-corroborated { background: #0dcaf0; color: #000; }
-.prov-agent { background: var(--muted); color: #fff; }
+.prov-status, .prov-source, .prov-model, .cit-quality { display: inline-block; border-radius: .25rem; padding: .1rem .4rem; font-size: .75rem; margin-right: .25rem; font-weight: 600; text-transform: uppercase; }
+.prov-status { background: var(--pass); color: #fff; }
+.prov-status.prov-needs-more-info { background: var(--medium); color: #000; }
+.prov-status.prov-unverified { background: var(--muted); color: #fff; }
+.prov-status.prov-rejected { background: var(--fail); color: #fff; }
+.prov-source, .prov-model { background: #e9ecef; color: var(--fg); }
+.cit-quality { background: #f8f9fa; border: 1px solid var(--border); color: var(--fg); }
+.cit-full { background: var(--pass); color: #fff; }
+.cit-partial { background: var(--medium); color: #000; }
+.cit-minimal { background: var(--low); color: #000; }
+.cit-none { background: var(--muted); color: #fff; }
+.unverified-findings { margin-top: 1rem; }
+.unverified-findings > details { background: var(--card); border: 1px solid var(--border); border-radius: .5rem; padding: 1rem; }
+.unverified-findings summary { cursor: pointer; font-weight: 700; }
 .heatmap-grid { display: flex; flex-wrap: wrap; gap: .25rem; margin-bottom: 1rem; }
 .heatmap-cell { padding: .25rem .5rem; border-radius: .25rem; font-size: .85rem; font-family: monospace; }
 .heatmap-cell .count { margin-left: .25rem; font-weight: 700; }
@@ -295,6 +305,24 @@ def _panel_class(panel):
     return f"panel-{clean}"
 
 
+def _render_provenance(provenance):
+    if not isinstance(provenance, dict):
+        return ""
+    status = provenance.get("confirmation_status", "UNVERIFIED")
+    source = provenance.get("discovered_by", "unknown")
+    model = provenance.get("model")
+    parts = [f"<span class='prov-status prov-{status.lower().replace(' ', '-').replace('_', '-')}'>{_escape(status)}</span>",
+             f"<span class='prov-source'>{_escape(source)}</span>"]
+    if model:
+        parts.append(f"<span class='prov-model'>{_escape(model)}</span>")
+    return " ".join(parts)
+
+
+def _render_citation_quality(quality):
+    quality = str(quality).lower() if quality else "none"
+    return f"<span class='cit-quality cit-{quality}'>{_escape(quality)}</span>"
+
+
 def _render_header(report):
     meta = report.get("meta", {})
     summary = report.get("summary", {})
@@ -460,11 +488,8 @@ def _render_card(finding, delta=None):
     panel = finding.get("panel", "code")
     category = finding.get("category", "general")
     confidence = finding.get("confidence", "NOTE")
-    provenance = "tool" if str(finding.get("source", "")).startswith("tool:") else (
-        "reinforced" if finding.get("reinforced") else (
-            "corroborated" if finding.get("corroborated") else "agent"
-        )
-    )
+    provenance_html = _render_provenance(finding.get("provenance"))
+    quality_html = _render_citation_quality(finding.get("citation_quality"))
     delta_badge = ""
     if delta:
         delta_badge = (
@@ -521,7 +546,8 @@ def _render_card(finding, delta=None):
 <span class="title">{_escape(finding.get('title', ''))}</span>
 <span class="where">{where}</span>
 <span class="meta">{_escape(panel)} / {_escape(category)} / {_escape(confidence)}</span>
-<span class="badge prov-{provenance}">{_escape(provenance)}</span>
+{provenance_html}
+{quality_html}
 {delta_badge}
 </summary>
 <div class="finding-body">{body}</div>
@@ -577,9 +603,13 @@ def _render_heatmap(findings):
 
 
 def _render_findings(findings):
+    unverified_statuses = ("NEEDS_MORE_INFO", "UNVERIFIED")
+    verified = [f for f in findings if f.get("provenance", {}).get("confirmation_status") not in unverified_statuses]
+    unverified = [f for f in findings if f.get("provenance", {}).get("confirmation_status") in unverified_statuses]
+
     by_sev = {sev: [] for sev in _SEV_ORDER}
     by_sev["ALL"] = []
-    for f in findings:
+    for f in verified:
         by_sev["ALL"].append(f)
         sev = f.get("severity", "INFO")
         if sev in by_sev:
@@ -597,6 +627,18 @@ def _render_findings(findings):
         hidden = "" if sev == "ALL" else "hidden"
         panels.append(f'<div class="tab-panel" data-panel="{sev}" {hidden}>{cards}</div>')
 
+    unverified_section = ""
+    if unverified:
+        unverified_cards = "\n".join(_render_card(f) for f in unverified)
+        unverified_section = f"""
+<section class="findings unverified-findings">
+<details>
+<summary>Unverified findings <span class='count'>({len(unverified)})</span></summary>
+{unverified_cards}
+</details>
+</section>
+"""
+
     return f"""
 <section class="findings" data-tab-group="findings">
 <h2>Findings</h2>
@@ -605,6 +647,21 @@ def _render_findings(findings):
 </div>
 <div class="tabs" role="tablist">{"".join(tabs)}</div>
 {"".join(panels)}
+</section>
+{unverified_section}
+"""
+
+
+def _render_discarded_claims(discarded):
+    if not discarded:
+        return ""
+    cards = "\n".join(_render_card(f) for f in discarded)
+    return f"""
+<section class="findings discarded-claims">
+<details>
+<summary>Discarded claims <span class='count'>({len(discarded)})</span></summary>
+{cards}
+</details>
 </section>
 """
 
@@ -628,6 +685,11 @@ def render(report, compare_report=None):
         )
         title = f"Panopticon Compare — {report.get('meta', {}).get('target', 'report')}"
     else:
-        body = _render_header(report) + _render_dashboard(report) + _render_findings(report.get("findings", []))
+        body = (
+            _render_header(report)
+            + _render_dashboard(report)
+            + _render_findings(report.get("findings", []))
+            + _render_discarded_claims(report.get("discarded_claims", []))
+        )
         title = f"Panopticon — {report.get('meta', {}).get('target', 'report')}"
     return _html_doc(title, body)

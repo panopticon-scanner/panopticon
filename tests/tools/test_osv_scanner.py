@@ -75,6 +75,12 @@ class TestOsvScannerAdapter(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             self.assertFalse(osv.OsvScannerAdapter().is_applicable(d))
 
+    def test_parse_includes_provenance(self):
+        findings = osv.OsvScannerAdapter().parse(OSV_SAMPLE, "g1")
+        self.assertTrue(findings)
+        self.assertEqual(findings[0]["provenance"]["discovered_by"], "tool:osv-scanner")
+        self.assertEqual(findings[0]["provenance"]["confirmation_status"], "TOOL")
+
     def test_invoke_runs_osv_scanner_json(self):
         adapter = osv.OsvScannerAdapter()
         fake_run = mock.Mock(return_value=mock.Mock(stdout=b"{}", returncode=0))

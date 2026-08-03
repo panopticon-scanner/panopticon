@@ -347,6 +347,53 @@ class TestHtmlReport(unittest.TestCase):
                 self._assert_delta_counts(out, new=0, resolved=1, unchanged=0, severity_changed=0)
                 self.assertIn("resolved", out)
 
+    def test_finding_card_renders_provenance(self):
+        finding = {
+            "id": "SEC-001", "title": "SQL injection", "severity": "HIGH", "confidence": "CERTAIN",
+            "panel": "security", "category": "injection", "location": {"file": "app.py", "line_start": 10},
+            "description": "x", "impact": "", "remediation": "", "references": [],
+            "provenance": {
+                "discovered_by": "tool:brakeman", "confirmation_status": "TOOL",
+                "model": None, "model_version": None,
+            },
+            "citation_quality": "partial",
+        }
+        report = _minimal_report(findings=[finding])
+        out = hr.render(report)
+        self.assertIn("tool:brakeman", out)
+        self.assertIn("partial", out)
+
+    def test_unverified_findings_render_separately(self):
+        finding = {
+            "id": "SEC-002", "title": "Unverified", "severity": "INFO", "confidence": "NOTE",
+            "panel": "security", "category": "general", "location": {"file": "app.py", "line_start": 11},
+            "description": "x", "impact": "", "remediation": "", "references": [],
+            "provenance": {
+                "discovered_by": "agent:lens_sweep", "confirmation_status": "NEEDS_MORE_INFO",
+                "model": "kimi-k2.7-coding", "model_version": "v1",
+            },
+            "citation_quality": "none",
+        }
+        report = _minimal_report(findings=[finding])
+        out = hr.render(report)
+        self.assertIn("Unverified findings", out)
+        self.assertIn("agent:lens_sweep", out)
+
+    def test_provenance_needs_more_info_class_is_hyphenated(self):
+        finding = {
+            "id": "SEC-002", "title": "Unverified", "severity": "INFO", "confidence": "NOTE",
+            "panel": "security", "category": "general", "location": {"file": "app.py", "line_start": 11},
+            "description": "x", "impact": "", "remediation": "", "references": [],
+            "provenance": {
+                "discovered_by": "agent:lens_sweep", "confirmation_status": "NEEDS_MORE_INFO",
+                "model": "kimi-k2.7-coding", "model_version": "v1",
+            },
+        }
+        report = _minimal_report(findings=[finding])
+        out = hr.render(report)
+        self.assertIn("prov-needs-more-info", out)
+        self.assertNotIn("prov-needs_more_info", out)
+
     def test_dynamic_badge_colors(self):
         report = _minimal_report()
         report["summary"]["gate"] = "FAIL"
@@ -457,3 +504,19 @@ class TestDashboardCharts(unittest.TestCase):
         self.assertIn("Top finding categories", out)
         self.assertIn(">HIGH<", out)
         self.assertTrue("chart-bar sev-high" in out and "width: 0.0%" in out)
+
+
+    def test_rejected_badge_has_distinct_style(self):
+        finding = {
+            "id": "SEC-003", "title": "Discarded", "severity": "INFO", "confidence": "NOTE",
+            "panel": "security", "category": "general", "location": {"file": "app.py", "line_start": 12},
+            "description": "x", "impact": "", "remediation": "", "references": [],
+            "provenance": {
+                "discovered_by": "agent:lens_sweep", "confirmation_status": "REJECTED",
+                "model": "kimi-k2.7-coding", "model_version": "v1",
+            },
+        }
+        report = _minimal_report(findings=[finding])
+        report["discarded_claims"] = [finding]
+        out = hr.render(report)
+        self.assertIn("prov-rejected", out)

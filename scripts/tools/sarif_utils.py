@@ -6,6 +6,10 @@ and scripts.tools.legacy_sarif. It is stdlib-only.
 import json
 import os
 import re
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
+from scripts.provenance import tool_provenance
 
 
 LEVEL_TO_SEV = {"error": "HIGH", "warning": "MEDIUM", "note": "LOW", "none": "INFO"}
@@ -103,6 +107,7 @@ def sarif_to_findings(sarif, tool_name, group, prefix, start=1):
                     "location": loc,
                     "_group": group,
                 }
+                finding["provenance"] = tool_provenance(tool_name, reasoning=res.get("ruleId"))
                 if cites:
                     finding["citations"] = cites
             except Exception:  # noqa: BLE001 - tolerant by design: skip only this result

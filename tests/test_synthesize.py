@@ -321,6 +321,31 @@ class TestReport(unittest.TestCase):
                                   security_mode="redteam")
         self.assertEqual(report["meta"]["security_mode"], "redteam")
 
+    def test_build_report_populates_models_used(self):
+        findings = [
+            self._finding(
+                id="CD-001", panel="code", location={"file": "a.py", "line_start": 1},
+                provenance={"discovered_by": "agent:lens_sweep",
+                            "confirmation_status": "CONFIRMED",
+                            "model": "kimi-k2.7-coding", "model_version": "v1"}),
+            self._finding(
+                id="CD-002", panel="code", location={"file": "a.py", "line_start": 2},
+                provenance={"discovered_by": "agent:panel_review",
+                            "confirmation_status": "CONFIRMED",
+                            "model": "kimi-k2.7-coding", "model_version": "v1"}),
+            self._finding(
+                id="CD-003", panel="code", location={"file": "a.py", "line_start": 3},
+                provenance={"discovered_by": "agent:lens_sweep",
+                            "confirmation_status": "CONFIRMED",
+                            "model": "other-model"}),
+        ]
+        report = syn.build_report(findings, [], "src", None, "2026-07-23T00:00:00Z")
+        models = report["meta"]["models_used"]
+        self.assertEqual(len(models), 3)
+        self.assertIn({"model": "kimi-k2.7-coding", "version": "v1", "role": "lens_sweep"}, models)
+        self.assertIn({"model": "kimi-k2.7-coding", "version": "v1", "role": "panel_review"}, models)
+        self.assertIn({"model": "other-model", "role": "lens_sweep"}, models)
+
     def test_main_maps_orchestrator_mode_to_review_type(self):
         with tempfile.TemporaryDirectory() as d:
             gj = os.path.join(d, "groups.json")
@@ -723,7 +748,8 @@ class TestSummaryCitations(unittest.TestCase):
               "panel": "security", "category": "injection", "source": "tool:semgrep",
               "reinforced": True, "location": {"file": "a.py", "line_start": 1},
               "citations": {"cwe": [{"id": "CWE-89", "name": "SQLi", "verified": True}],
-                            "ssvc": {"decision": "Act", "model": "deployer-reduced", "inputs": {}}}}],
+                            "ssvc": {"decision": "Act", "model": "deployer-reduced",
+                                     "inputs": {"exploitation": "active", "exposure": "open", "impact": "high"}}}}],
             [], "src", None, "2026-07-23T00:00:00Z")
         text = syn.render_summary(report)
         self.assertIn("CWE-89", text)
@@ -1003,3 +1029,273 @@ class TestHtmlOut(unittest.TestCase):
         self.assertEqual(syn._derive_html_path("report.JSON"), "report.JSON.html")
         self.assertEqual(syn._derive_html_path("report.Json"), "report.Json.html")
         self.assertEqual(syn._derive_html_path("dir"), os.path.join("dir", "report.html"))
+
+
+class TestAdvisorConfirmation(unittest.TestCase):
+    def _agentic_finding(self, **kw):
+        base = {
+            "id": "SEC-001", "title": "SQLi", "severity": "HIGH", "confidence": "LIKELY",
+            "panel": "security", "category": "injection",
+            "provenance": {"discovered_by": "agent:lens_sweep"},
+            "location": {"file": "app.py", "line_start": 10},
+        }
+        base.update(kw)
+        return base
+
+    def test_tool_finding_is_auto_confirmed(self):
+        f = {
+            "id": "SEC-001", "title": "SQLi", "severity": "HIGH", "confidence": "CERTAIN",
+            "panel": "security", "category": "injection",
+            "provenance": {"discovered_by": "tool:brakeman", "confirmation_status": "TOOL"},
+            "citation_quality": "partial",
+        }
+        confirmed, discarded, unverified = syn._partition_findings([f])
+        self.assertEqual(len(confirmed), 1)
+        self.assertEqual(len(discarded), 0)
+        self.assertEqual(len(unverified), 0)
+
+    def test_agentic_finding_without_citations_is_unverified(self):
+        f = self._agentic_finding(
+            provenance={"discovered_by": "agent:lens_sweep", "confirmation_status": "UNVERIFIED"})
+        confirmed, discarded, unverified = syn._partition_findings([f])
+        self.assertEqual(len(confirmed), 0)
+        self.assertEqual(len(discarded), 0)
+        self.assertEqual(len(unverified), 1)
+        self.assertEqual(unverified[0]["severity"], "INFO")
+
+    def test_agentic_finding_rejected_by_advisor_is_discarded(self):
+        f = self._agentic_finding()
+
+        def reject(_):
+            return {"verdict": "REJECTED", "reasoning": "No exploitable sink."}
+
+        confirmed, discarded, unverified = syn._partition_findings([f], advisor_dispatch=reject)
+        self.assertEqual(len(confirmed), 0)
+        self.assertEqual(len(discarded), 1)
+        self.assertEqual(len(unverified), 0)
+        self.assertEqual(discarded[0]["severity"], "INFO")
+        self.assertEqual(discarded[0]["confidence"], "NOTE")
+        self.assertEqual(discarded[0]["provenance"]["confirmation_status"], "REJECTED")
+        self.assertEqual(discarded[0]["provenance"]["confirmed_by"], "agent:advisor")
+        self.assertEqual(discarded[0]["provenance"]["confirmation_reasoning"], "No exploitable sink.")
+
+    def test_rejected_finding_records_confirmed_by_model(self):
+        f = self._agentic_finding()
+
+        def reject_with_model(_):
+            return {
+                "verdict": "REJECTED",
+                "reasoning": "No exploitable sink.",
+                "confirmed_by_model": "kimi-cli-0.29.2",
+            }
+
+        confirmed, discarded, unverified = syn._partition_findings([f], advisor_dispatch=reject_with_model)
+        self.assertEqual(len(confirmed), 0)
+        self.assertEqual(len(discarded), 1)
+        self.assertEqual(len(unverified), 0)
+        self.assertEqual(discarded[0]["provenance"]["confirmed_by_model"], "kimi-cli-0.29.2")
+
+    def test_advisor_citations_merged_on_confirm(self):
+        f = self._agentic_finding(citations={"cwe": [{"id": "CWE-89"}]})
+
+        def confirm(_):
+            return {
+                "verdict": "CONFIRMED",
+                "reasoning": "Verified sink.",
+                "citations": {"owasp": ["A03:2021-Injection"]},
+            }
+
+        confirmed, _, _ = syn._partition_findings([f], advisor_dispatch=confirm)
+        self.assertEqual(len(confirmed), 1)
+        self.assertEqual(confirmed[0]["provenance"]["confirmation_status"], "CONFIRMED")
+        cites = confirmed[0]["citations"]
+        self.assertEqual(cites["cwe"][0]["id"], "CWE-89")
+        self.assertIn("A03:2021-Injection", cites["owasp"])
+
+    def test_advisor_results_confirmed_updates_provenance(self):
+        f = self._agentic_finding(
+            id="SEC-CONF", provenance={"discovered_by": "agent:lens_sweep"})
+        report = syn.build_report(
+            [f], [], "src", None, "2026-07-23T00:00:00Z",
+            advisor_results={"SEC-CONF": {"verdict": "CONFIRMED", "reasoning": "Confirmed by advisor.",
+                                           "citations": {"cwe": ["CWE-89"]}}})
+        matching = [x for x in report["findings"] if x["id"] == "SEC-CONF"]
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(matching[0]["provenance"]["confirmation_status"], "CONFIRMED")
+        self.assertEqual(matching[0]["provenance"]["confirmed_by"], "agent:advisor")
+        self.assertEqual(matching[0]["provenance"]["confirmation_reasoning"], "Confirmed by advisor.")
+        self.assertEqual(report["summary"]["unverified_findings_count"], 0)
+
+    def test_agentic_without_status_is_unverified(self):
+        f = self._agentic_finding(provenance={"discovered_by": "agent:lens_sweep"})
+        confirmed, discarded, unverified = syn._partition_findings([f])
+        self.assertEqual(len(confirmed), 0)
+        self.assertEqual(len(discarded), 0)
+        self.assertEqual(len(unverified), 1)
+        self.assertEqual(unverified[0]["severity"], "INFO")
+        self.assertEqual(unverified[0]["provenance"]["confirmation_status"], "NEEDS_MORE_INFO")
+
+    def test_legacy_sourceless_finding_without_status_is_confirmed(self):
+        f = {"id": "LEG-001", "title": "Legacy", "severity": "MEDIUM", "confidence": "LIKELY",
+             "panel": "code", "category": "structure",
+             "location": {"file": "a.py", "line_start": 1}}
+        confirmed, discarded, unverified = syn._partition_findings([f])
+        self.assertEqual(len(confirmed), 1)
+        self.assertEqual(len(discarded), 0)
+        self.assertEqual(len(unverified), 0)
+
+    def test_advisor_dispatch_error_treated_as_unverified(self):
+        f = self._agentic_finding()
+
+        def boom(_):
+            raise RuntimeError("advisor unavailable")
+
+        import contextlib, io
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            confirmed, discarded, unverified = syn._partition_findings([f], advisor_dispatch=boom)
+        self.assertEqual(len(confirmed), 0)
+        self.assertEqual(len(discarded), 0)
+        self.assertEqual(len(unverified), 1)
+        self.assertIn("advisor dispatch failed", err.getvalue())
+        self.assertEqual(unverified[0]["severity"], "INFO")
+
+    def test_advisor_dispatch_non_dict_treated_as_unverified(self):
+        f = self._agentic_finding()
+
+        def bad(_):
+            return "not a dict"
+
+        import contextlib, io
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            confirmed, discarded, unverified = syn._partition_findings([f], advisor_dispatch=bad)
+        self.assertEqual(len(confirmed), 0)
+        self.assertEqual(len(discarded), 0)
+        self.assertEqual(len(unverified), 1)
+        self.assertIn("advisor dispatch returned non-dict", err.getvalue())
+        self.assertEqual(unverified[0]["severity"], "INFO")
+
+    def test_discarded_findings_remain_in_report_body(self):
+        f = self._agentic_finding(id="SEC-DISC")
+        report = syn.build_report(
+            [f], [], "src", None, "2026-07-23T00:00:00Z",
+            advisor_results={"SEC-DISC": {"verdict": "REJECTED", "reasoning": "False positive."}})
+        self.assertNotIn("SEC-DISC", [x["id"] for x in report["findings"]])
+        discarded = [x for x in report.get("discarded_claims", []) if x["id"] == "SEC-DISC"]
+        self.assertEqual(len(discarded), 1)
+        self.assertEqual(discarded[0]["severity"], "INFO")
+        self.assertEqual(discarded[0]["confidence"], "NOTE")
+        self.assertEqual(report["summary"]["discarded_claims_count"], 1)
+
+    def test_agentic_finding_confirmed_by_advisor(self):
+        f = {
+            "id": "SEC-002", "title": "Logic flaw", "severity": "HIGH", "confidence": "LIKELY",
+            "panel": "security", "category": "general",
+            "provenance": {"discovered_by": "agent:lens_sweep", "confirmation_status": "UNVERIFIED"},
+            "citation_quality": "none",
+        }
+
+        def fake_advisor(_finding):
+            return {"verdict": "CONFIRMED", "reasoning": "Confirmed.", "citations": {"cwe": ["CWE-20"]}}
+
+        confirmed, _discarded, _unverified = syn._partition_findings([f], advisor_dispatch=fake_advisor)
+        self.assertEqual(len(confirmed), 1)
+        self.assertEqual(confirmed[0]["provenance"]["confirmation_status"], "CONFIRMED")
+        self.assertEqual(confirmed[0]["citations"]["cwe"][0]["id"], "CWE-20")
+        self.assertTrue(confirmed[0]["citations"]["cwe"][0]["verified"])
+
+    def test_preconfirmed_agentic_with_no_citations_is_unverified(self):
+        f = self._agentic_finding(
+            provenance={"discovered_by": "agent:lens_sweep", "confirmation_status": "CONFIRMED"},
+            citations={},
+            citation_quality="none",
+        )
+        confirmed, discarded, unverified = syn._partition_findings([f])
+        self.assertEqual(len(confirmed), 0)
+        self.assertEqual(len(discarded), 0)
+        self.assertEqual(len(unverified), 1)
+        self.assertEqual(unverified[0]["provenance"]["confirmation_status"], "NEEDS_MORE_INFO")
+        self.assertEqual(unverified[0]["severity"], "INFO")
+        self.assertEqual(unverified[0]["confidence"], "NOTE")
+
+    def test_preconfirmed_agentic_with_real_citation_stays_confirmed(self):
+        f = self._agentic_finding(
+            provenance={"discovered_by": "agent:lens_sweep", "confirmation_status": "CONFIRMED"},
+            citations={"cwe": [{"id": "CWE-89"}]},
+            citation_quality="partial",
+        )
+        confirmed, discarded, unverified = syn._partition_findings([f])
+        self.assertEqual(len(confirmed), 1)
+        self.assertEqual(len(discarded), 0)
+        self.assertEqual(len(unverified), 0)
+        self.assertEqual(confirmed[0]["provenance"]["confirmation_status"], "CONFIRMED")
+
+
+    def test_advisor_confirmed_without_citations_is_unverified(self):
+        f = self._agentic_finding()
+
+        def fake_advisor(_finding):
+            return {"verdict": "CONFIRMED", "reasoning": "Looks bad."}
+
+        confirmed, discarded, unverified = syn._partition_findings([f], advisor_dispatch=fake_advisor)
+        self.assertEqual(len(confirmed), 0)
+        self.assertEqual(len(discarded), 0)
+        self.assertEqual(len(unverified), 1)
+        self.assertEqual(unverified[0]["provenance"]["confirmation_status"], "NEEDS_MORE_INFO")
+        self.assertEqual(unverified[0]["severity"], "INFO")
+        self.assertEqual(unverified[0]["confidence"], "NOTE")
+        self.assertIn("no hard citations", unverified[0]["provenance"]["confirmation_reasoning"])
+
+    def test_advisor_results_confirmed_without_citations_is_unverified(self):
+        f = self._agentic_finding(
+            id="SEC-CONF", provenance={"discovered_by": "agent:lens_sweep"})
+        report = syn.build_report(
+            [f], [], "src", None, "2026-07-23T00:00:00Z",
+            advisor_results={"SEC-CONF": {"verdict": "CONFIRMED", "reasoning": "Confirmed by advisor."}})
+        matching = [x for x in report["findings"] if x["id"] == "SEC-CONF"]
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(matching[0]["provenance"]["confirmation_status"], "NEEDS_MORE_INFO")
+        self.assertEqual(matching[0]["severity"], "INFO")
+        self.assertEqual(matching[0]["confidence"], "NOTE")
+        self.assertEqual(report["summary"]["unverified_findings_count"], 1)
+        self.assertEqual(report["summary"]["discarded_claims_count"], 0)
+
+    def test_advisor_confirmed_with_bogus_cwe_is_unverified(self):
+        f = self._agentic_finding()
+
+        def fake_advisor(_finding):
+            return {
+                "verdict": "CONFIRMED",
+                "reasoning": "Confirmed.",
+                "citations": {"cwe": ["CWE-99999"]},
+            }
+
+        confirmed, discarded, unverified = syn._partition_findings([f], advisor_dispatch=fake_advisor)
+        self.assertEqual(len(confirmed), 0)
+        self.assertEqual(len(discarded), 0)
+        self.assertEqual(len(unverified), 1)
+        self.assertEqual(unverified[0]["provenance"]["confirmation_status"], "NEEDS_MORE_INFO")
+        self.assertEqual(unverified[0]["citation_quality"], "minimal")
+        self.assertFalse(unverified[0]["citations"]["cwe"][0]["verified"])
+
+
+class TestInternalFieldCleanup(unittest.TestCase):
+    def test_build_report_does_not_leak_internal_fields(self):
+        f = {
+            "id": "SEC-001", "title": "SQLi", "severity": "HIGH", "confidence": "LIKELY",
+            "panel": "security", "category": "injection",
+            "provenance": {"discovered_by": "agent:lens_sweep"},
+            "location": {"file": "app.py", "line_start": 10},
+            "_group": "backend",
+            "_repo_root": "/some/path",
+        }
+        report = syn.build_report(
+            [f], [], "src", None, "2026-07-23T00:00:00Z",
+            advisor_results={"SEC-001": {"verdict": "REJECTED", "reasoning": "False positive."}})
+        for finding in report["findings"]:
+            self.assertNotIn("_group", finding)
+            self.assertNotIn("_repo_root", finding)
+        for finding in report.get("discarded_claims", []):
+            self.assertNotIn("_group", finding)
+            self.assertNotIn("_repo_root", finding)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from .base import normalize_severity, new_finding_id, omit_none
+from .base import attach_tool_provenance, normalize_severity, new_finding_id, omit_none
 
 
 _CONFIDENCE_MAP = {
@@ -91,6 +91,7 @@ class BrakemanAdapter:
             }
             if not finding["citations"]:
                 finding.pop("citations", None)
+            attach_tool_provenance(finding, self.name, reasoning=finding["tool_evidence"].get("rule_id"))
             out.append(finding)
             n += 1
         return out

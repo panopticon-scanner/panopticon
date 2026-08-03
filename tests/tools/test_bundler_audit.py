@@ -38,6 +38,12 @@ class TestBundlerAuditAdapter(unittest.TestCase):
         with mock.patch("os.path.exists", side_effect=lambda p: p.endswith("Gemfile.lock")):
             self.assertTrue(ba.BundlerAuditAdapter().is_applicable("/tmp/fake"))
 
+    def test_parse_includes_provenance(self):
+        findings = ba.BundlerAuditAdapter().parse(BUNDLE_AUDIT_SAMPLE, "g1")
+        self.assertTrue(findings)
+        self.assertEqual(findings[0]["provenance"]["discovered_by"], "tool:bundler-audit")
+        self.assertEqual(findings[0]["provenance"]["confirmation_status"], "TOOL")
+
     def test_invoke_runs_bundle_audit(self):
         fake_run = mock.Mock(return_value=mock.Mock(stdout=b"", returncode=0))
         with mock.patch("scripts.tools.bundler_audit.subprocess.run", fake_run):

@@ -4,7 +4,7 @@ import glob
 import json
 import os
 import subprocess
-from .base import normalize_severity, new_finding_id, omit_none
+from .base import attach_tool_provenance, normalize_severity, new_finding_id, omit_none
 
 
 class PipAuditAdapter:
@@ -75,6 +75,7 @@ class PipAuditAdapter:
                 }
                 if cves:
                     finding["citations"] = {"cve": cves}
+                attach_tool_provenance(finding, self.name, reasoning=finding["tool_evidence"].get("rule_id"))
                 out.append(finding)
                 n += 1
         return out

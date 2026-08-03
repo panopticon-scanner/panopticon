@@ -47,7 +47,7 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
    - `panel-review` agents for holistic panel review
    - `lens-sweep` agents for mechanical lens sweeps
    - Each agent writes its findings file to `.panopticon/findings-{group}-{panel}-{role}-{lens}.json` (`panel_review` entries omit `{lens}`)
-7. **Synthesize** — `python3 scripts/synthesize.py` merges findings, tags tenuous claims, and (if any are flagged) spawns `advisor` agents (`agents/advisor.md`) before producing the final `CodeReviewReport`.
+7. **Synthesize** — `python3 scripts/synthesize.py` merges findings, tags tenuous claims, and (if any unconfirmed agentic findings remain) dispatches the advisor agent via the Kimi Code CLI (`kimi --agent-file agents/advisor.md`) before producing the final `CodeReviewReport`.
 8. **Validate** — `verification-before-completion`: check gate, print summary, write JSON.
 
 ## Output
@@ -68,6 +68,18 @@ python3 scripts/run_fixture_tests.py --test rust
 ```
 
 This is optional and not part of CI. Rebuild the image periodically to pull updated fixtures.
+
+## Citation and Provenance
+
+Every finding is tagged with its source:
+
+- **Tool findings** are auto-confirmed when they include a rule ID, CVE, or CWE.
+- **Agentic findings** (from lens or panel reviewers) require confirmation by the advisor agent and must be anchored with CWE/OWASP/CVE/CVSS/EPSS citations.
+- Findings that are unconfirmed remain visible in the report as `INFO`/`NOTE` items but do not influence the CI gate.
+
+**Note:** Advisor confirmation dispatches the `agents/advisor.md` agent via the Kimi Code CLI (`kimi` must be in PATH). It uses the v2 experimental agent-file flag and stream-json output; if `kimi` is unavailable, unconfirmed agentic findings are downgraded to `INFO`/`NOTE` instead of blocking the pipeline.
+
+Use `--epss` to enrich CVE citations with EPSS scores.
 
 ## Notes
 Reviewers are read-only: no repo/GitHub writes, no claiming unperformed actions, no materializing discovered secrets.

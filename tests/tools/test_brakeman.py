@@ -43,6 +43,12 @@ class TestBrakemanAdapter(unittest.TestCase):
             with mock.patch("os.path.isdir", return_value=False):
                 self.assertFalse(br.BrakemanAdapter().is_applicable("/tmp/fake"))
 
+    def test_parse_includes_provenance(self):
+        findings = br.BrakemanAdapter().parse(BRAKEMAN_SAMPLE, "g1")
+        self.assertTrue(findings)
+        self.assertEqual(findings[0]["provenance"]["discovered_by"], "tool:brakeman")
+        self.assertEqual(findings[0]["provenance"]["confirmation_status"], "TOOL")
+
     def test_invoke_runs_brakeman_json(self):
         adapter = br.BrakemanAdapter()
         fake_run = mock.Mock(return_value=mock.Mock(stdout=b"{}", returncode=0))

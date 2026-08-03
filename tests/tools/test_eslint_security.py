@@ -159,6 +159,12 @@ class TestEslintSecurityAdapter(unittest.TestCase):
             self.assertIn("--rule", cmd)
             self.assertIn(f"{rule}: error", cmd)
 
+    def test_parse_includes_provenance(self):
+        findings = es.EslintSecurityAdapter().parse(ESLINT_SAMPLE, "g1")
+        self.assertTrue(findings)
+        self.assertEqual(findings[0]["provenance"]["discovered_by"], "tool:eslint-security")
+        self.assertEqual(findings[0]["provenance"]["confirmation_status"], "TOOL")
+
     def test_adapter_metadata(self):
         adapter = es.EslintSecurityAdapter()
         self.assertEqual(adapter.name, "eslint-security")

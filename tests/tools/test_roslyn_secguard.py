@@ -81,6 +81,12 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
         self.assertEqual(findings[0]["location"]["file"], "Controllers/HomeController.cs")
         self.assertIn("CWE-22", findings[0]["citations"]["cwe"])
 
+    def test_parse_includes_provenance(self):
+        findings = rs.RoslynSecGuardAdapter().parse(ROSLYN_SAMPLE, "g1")
+        self.assertTrue(findings)
+        self.assertEqual(findings[0]["provenance"]["discovered_by"], "tool:roslyn-secguard")
+        self.assertEqual(findings[0]["provenance"]["confirmation_status"], "TOOL")
+
     def test_build_target_prefers_solution(self):
         adapter = rs.RoslynSecGuardAdapter()
         with tempfile.TemporaryDirectory() as d:

@@ -13,6 +13,21 @@ CVE_RE = re.compile(r"^CVE-\d{4}-\d{4,}$", re.IGNORECASE)
 CWE_RE = re.compile(r"^CWE-\d+$", re.IGNORECASE)
 SSVC_MODEL = "deployer-reduced"
 
+CATEGORY_CWE_OVERRIDES = {
+    "injection": "CWE-89",
+    "xss": "CWE-79",
+    "auth": "CWE-287",
+    "crypto": "CWE-327",
+    "config": "CWE-16",
+    "logging": "CWE-778",
+    "headers": "CWE-693",
+    "csrf": "CWE-352",
+    "ssrf": "CWE-918",
+    "path_traversal": "CWE-22",
+    "command_injection": "CWE-78",
+    "sql_injection": "CWE-89",
+}
+
 
 def _catalog_path():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -46,6 +61,23 @@ def validate_cwe(cwe_id, catalog, tool_sourced=False):
     if name is not None:
         return {"id": cwe_id, "name": name, "verified": True}
     return {"id": cwe_id, "name": None, "verified": bool(tool_sourced)}
+
+
+def normalize_cwe_entries(entries, catalog, tool_sourced=False):
+    """Normalize a mixed list of CWE strings/dicts to validated dicts.
+
+    Dict entries are preserved as-is; string entries are validated against
+    the catalog. Invalid or malformed entries are dropped.
+    """
+    out = []
+    for entry in entries:
+        if isinstance(entry, dict):
+            out.append(entry)
+        elif isinstance(entry, str):
+            v = validate_cwe(entry, catalog, tool_sourced=tool_sourced)
+            if v:
+                out.append(v)
+    return out
 
 
 def derive_owasp(cwe_ids, asserted, catalog):
@@ -142,6 +174,34 @@ def epss_lookup(cves, cache_path, opener=None):
     return out
 
 
+def _derive_cwe_from_category(category, catalog):
+    cid = CATEGORY_CWE_OVERRIDES.get(str(category).lower().replace(" ", "_"))
+    if cid and cid in catalog["cwe"]:
+        return {"id": cid, "name": catalog["cwe"][cid], "verified": False, "derived": True}
+    return None
+
+
+def _compute_citation_quality(citations, finding_cvss=None):
+    if not isinstance(citations, dict) or not citations:
+        return "minimal" if finding_cvss else "none"
+    cwe_list = citations.get("cwe") or []
+    has_verified_real_cwe = any(
+        isinstance(c, dict) and c.get("verified") and not c.get("derived")
+        for c in cwe_list
+    )
+    has_derived_cwe = any(isinstance(c, dict) and c.get("derived") for c in cwe_list)
+    has_owasp = bool(citations.get("owasp"))
+    has_cve = bool(citations.get("cve"))
+    has_cvss = bool(citations.get("cvss")) or bool(finding_cvss)
+    if (has_verified_real_cwe or has_owasp) and (has_cve or has_cvss):
+        return "full"
+    if has_verified_real_cwe or has_owasp:
+        return "partial"
+    if has_derived_cwe or citations or finding_cvss:
+        return "minimal"
+    return "none"
+
+
 def _raw_cwe_ids(raw):
     ids = []
     entries = raw.get("cwe")
@@ -163,6 +223,7 @@ def enrich_citations(findings, catalog, epss_enabled=False, cache_path=None, ope
         raw = f.get("citations")
         if not isinstance(raw, dict):
             f.pop("citations", None)
+            f["citation_quality"] = "none"
             continue
         try:
             tool_sourced = str(f.get("source", "")).startswith("tool:")
@@ -191,6 +252,13 @@ def enrich_citations(findings, catalog, epss_enabled=False, cache_path=None, ope
             if cves:
                 clean["cve"] = cves
                 all_cves.update(cves)
+            if not clean.get("cwe") and f.get("category"):
+                derived = _derive_cwe_from_category(f["category"], catalog)
+                if derived:
+                    clean["cwe"] = [derived]
+            if raw.get("epss"):
+                clean["epss"] = raw["epss"]
+            f["citation_quality"] = _compute_citation_quality(clean, f.get("cvss"))
             if clean:
                 f["citations"] = clean
             else:
@@ -198,6 +266,7 @@ def enrich_citations(findings, catalog, epss_enabled=False, cache_path=None, ope
         except Exception as e:  # noqa: BLE001 - citation enrichment must never abort synthesis
             print("citation enrich error (finding %s): %s" % (f.get("id"), e), file=sys.stderr)
             f.pop("citations", None)
+            f["citation_quality"] = "none"
 
     if epss_enabled and all_cves:
         scores = epss_lookup(sorted(all_cves), cache_path or ".panopticon/epss-cache.json",

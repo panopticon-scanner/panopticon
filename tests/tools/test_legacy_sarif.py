@@ -34,6 +34,16 @@ class TestLegacySarifAdapter(unittest.TestCase):
         self.assertTrue(f["id"].startswith("SG-"))
         self.assertIn("CWE-89", f["citations"]["cwe"])
 
+    def test_parse_attaches_tool_provenance(self):
+        adapter = legacy.LegacySarifAdapter("semgrep")
+        raw = json.dumps(SARIF).encode("utf-8")
+        findings = adapter.parse(raw, "g1")
+        self.assertEqual(len(findings), 1)
+        prov = findings[0].get("provenance")
+        self.assertIsNotNone(prov)
+        self.assertEqual(prov["discovered_by"], "tool:semgrep")
+        self.assertEqual(prov["confirmation_status"], "TOOL")
+
     def test_invoke_raises_not_implemented(self):
         adapter = legacy.LegacySarifAdapter("bandit")
         with self.assertRaises(NotImplementedError):

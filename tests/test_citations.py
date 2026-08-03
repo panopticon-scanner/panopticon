@@ -168,6 +168,77 @@ class TestEpss(unittest.TestCase):
         self.assertEqual(holder["resp"].last_read_size, 1000000)
 
 
+class TestCitationQuality(unittest.TestCase):
+    def setUp(self):
+        self.catalog = cit.load_cwe_catalog()
+
+    def test_full_quality(self):
+        f = {
+            "citations": {
+                "cwe": [{"id": "CWE-89"}],
+                "owasp": ["A03:2021"],
+                "cve": ["CVE-2023-1234"],
+            }
+        }
+        cit.enrich_citations([f], self.catalog)
+        self.assertEqual(f["citation_quality"], "full")
+
+    def test_partial_quality(self):
+        f = {"citations": {"cwe": [{"id": "CWE-89"}]}}
+        cit.enrich_citations([f], self.catalog)
+        self.assertEqual(f["citation_quality"], "partial")
+
+    def test_unverified_cwe_scores_minimal(self):
+        f = {"citations": {"cwe": ["CWE-99999"]}}
+        cit.enrich_citations([f], self.catalog)
+        self.assertEqual(f["citation_quality"], "minimal")
+        self.assertFalse(f["citations"]["cwe"][0]["verified"])
+
+    def test_verified_real_cwe_scores_partial(self):
+        f = {"citations": {"cwe": ["CWE-89"]}}
+        cit.enrich_citations([f], self.catalog)
+        self.assertEqual(f["citation_quality"], "partial")
+        self.assertTrue(f["citations"]["cwe"][0]["verified"])
+        self.assertFalse(f["citations"]["cwe"][0].get("derived"))
+
+    def test_none_quality(self):
+        f = {"citations": {}}
+        cit.enrich_citations([f], self.catalog)
+        self.assertEqual(f["citation_quality"], "none")
+
+    def test_category_mapping(self):
+        f = {"category": "injection", "citations": {}}
+        cit.enrich_citations([f], self.catalog)
+        self.assertEqual(f["citation_quality"], "minimal")
+        self.assertIn("CWE-89", [c["id"] for c in f["citations"]["cwe"]])
+        self.assertTrue(all(c.get("derived") for c in f["citations"]["cwe"]))
+        self.assertTrue(all(c.get("verified") is False for c in f["citations"]["cwe"]))
+
+    def test_real_cwe_is_partial_not_minimal(self):
+        f = {"citations": {"cwe": ["CWE-89"]}}
+        cit.enrich_citations([f], self.catalog)
+        self.assertEqual(f["citation_quality"], "partial")
+        self.assertTrue(all(not c.get("derived") for c in f["citations"]["cwe"]))
+
+    def test_top_level_cvss_counts_for_full_quality(self):
+        f = {
+            "citations": {"cwe": [{"id": "CWE-89"}]},
+            "cvss": {"score": 8.1, "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"},
+        }
+        cit.enrich_citations([f], self.catalog)
+        self.assertEqual(f["citation_quality"], "full")
+
+    def test_category_derived_cwe_with_top_level_cvss_is_minimal(self):
+        f = {
+            "category": "sql_injection",
+            "citations": {},
+            "cvss": {"score": 8.1, "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"},
+        }
+        cit.enrich_citations([f], self.catalog)
+        self.assertEqual(f["citation_quality"], "minimal")
+        self.assertIn("CWE-89", [c["id"] for c in f["citations"]["cwe"]])
+
+
 class TestEnrich(unittest.TestCase):
     def setUp(self):
         self.cat = cit.load_cwe_catalog()
@@ -220,6 +291,19 @@ class TestEnrich(unittest.TestCase):
                                  cache_path=os.path.join(d, "epss-cache.json"), opener=opener)
         self.assertIn("CVE-2023-1234", f["citations"]["cve"])
         self.assertNotIn("epss", f["citations"])
+
+    def test_enrich_preserves_existing_epss(self):
+        f = {
+            "source": "agent:security-reviewer",
+            "citations": {
+                "cwe": ["CWE-89"],
+                "epss": [{"cve": "CVE-2023-1234", "score": 0.42, "percentile": 0.97}],
+            },
+        }
+        cit.enrich_citations([f], self.cat, epss_enabled=False)
+        self.assertIn("epss", f["citations"])
+        self.assertEqual(f["citations"]["epss"][0]["cve"], "CVE-2023-1234")
+        self.assertAlmostEqual(f["citations"]["epss"][0]["score"], 0.42)
 
     def test_enrich_tolerant_of_malformed_subfields(self):
         findings = [

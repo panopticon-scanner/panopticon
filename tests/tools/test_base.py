@@ -26,6 +26,13 @@ class TestBase(unittest.TestCase):
     def test_omit_none_preserves_zero_and_false(self):
         self.assertEqual(base.omit_none({"a": 0, "b": False, "c": None}), {"a": 0, "b": False})
 
+    def test_attach_tool_provenance_adds_tool_status(self):
+        finding = {"id": "TEST-001"}
+        base.attach_tool_provenance(finding, "demo", reasoning="rule-123")
+        self.assertEqual(finding["provenance"]["discovered_by"], "tool:demo")
+        self.assertEqual(finding["provenance"]["confirmation_status"], "TOOL")
+        self.assertEqual(finding["provenance"]["confirmation_reasoning"], "rule-123")
+
 
 if __name__ == "__main__":
     unittest.main()
