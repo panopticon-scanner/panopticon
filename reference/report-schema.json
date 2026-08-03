@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "CodeReviewReport",
   "type": "object",
-  "required": ["meta", "summary", "groups", "findings", "cross_panel", "recommendations"],
+  "required": ["meta", "summary", "groups", "findings", "cross_panel"],
   "properties": {
     "meta": {
       "type": "object",
@@ -29,16 +29,25 @@
     },
     "summary": {
       "type": "object",
-      "required": ["overall_grade", "risk_level", "top_issues", "effort_to_remediate", "gate"],
+      "required": ["overall_grade", "risk_level", "top_issues", "gate"],
       "properties": {
         "overall_grade": {"type": "string", "enum": ["A", "B", "C", "D", "F"]},
         "risk_level": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"]},
         "top_issues": {"type": "array", "items": {"type": "string"}, "maxItems": 3},
-        "effort_to_remediate": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH", "EXTENSIVE"]},
         "gate": {"type": "string", "enum": ["PASS", "FAIL", "OFF"]},
-        "stats": {"type": "object"},
-        "discarded_claims_count": {"type": "integer"},
-        "unverified_findings_count": {"type": "integer"}
+        "gate_policy": {"type": "string", "enum": ["confirmed_only", "include_unverified"]},
+        "evidence_stats": {
+          "type": "object",
+          "properties": {
+            "tool_confirmed": {"type": "integer"},
+            "advisor_confirmed": {"type": "integer"},
+            "corroborated": {"type": "integer"},
+            "needs_more_info": {"type": "integer"},
+            "unverified": {"type": "integer"},
+            "rejected": {"type": "integer"}
+          }
+        },
+        "stats": {"type": "object"}
       }
     },
     "groups": {
@@ -50,7 +59,6 @@
           "name": {"type": "string"},
           "files": {"type": "array", "items": {"type": "string"}},
           "panel_grades": {"type": "object"},
-          "panel_summaries": {"type": "object"},
           "key_findings": {"type": "array", "items": {"type": "string"}}
         }
       }
@@ -59,7 +67,7 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["id", "title", "severity", "confidence", "panel", "category"],
+        "required": ["id", "title", "severity", "confidence", "panel", "category", "evidence"],
         "properties": {
           "id": {"type": "string", "pattern": "^[A-Z]{2,4}-[0-9]{3,}$"},
           "title": {"type": "string"},
@@ -69,7 +77,6 @@
           "lens": {"type": "string"},
           "category": {"type": "string"},
           "source_role": {"type": "string", "enum": ["lens_sweep", "panel_review", "advisor"]},
-          "advisor_verdict": {"type": "string", "enum": ["CONFIRMED", "REJECTED", "NEEDS_MORE_INFO"]},
           "depth": {"type": "string", "enum": ["shallow", "standard", "deep"]},
           "location": {
             "type": "object",
@@ -94,6 +101,19 @@
           "citation_quality": {
             "type": "string",
             "enum": ["full", "partial", "minimal", "none"]
+          },
+          "evidence": {
+            "type": "object",
+            "required": ["status"],
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": ["tool_confirmed", "advisor_confirmed", "corroborated", "needs_more_info", "unverified", "rejected"]
+              },
+              "verified_by": {},
+              "reasoning": {"type": ["string", "null"]},
+              "citation_quality": {"type": "string", "enum": ["full", "partial", "minimal", "none"]}
+            }
           },
           "provenance": {
             "type": "object",
@@ -167,14 +187,6 @@
             }
           }
         }
-      }
-    },
-    "recommendations": {
-      "type": "object",
-      "properties": {
-        "immediate": {"type": "array", "items": {"type": "string"}},
-        "short_term": {"type": "array", "items": {"type": "string"}},
-        "long_term": {"type": "array", "items": {"type": "string"}}
       }
     }
   }

@@ -4,7 +4,7 @@ Ruthless, standards-cited code review for Kimi Code. This file is the durable
 design record that travels with the skill (installed dir / OneDrive), so future
 work has context without the original spec/plan docs.
 
-**Current version: 3.0.0** (semver — see Versioning below).
+**Current version: 4.0.0** (semver — see Versioning below).
 
 ## What it is
 A **discovery → scout → fan-out → synthesis** pipeline. It profiles a target with a
@@ -28,6 +28,7 @@ summary + JSON artifact) with standards citations and CI gating.
 - `scripts/run_tools.py` — detect the `panopticon-tools` Docker image, run selected scanners
   against a read-only mount, collect SARIF. Degrades gracefully if Docker/image absent.
 - `scripts/ingest_tools.py` — SARIF → normalized findings (source `tool:<name>`, CWE/CVE citations).
+- `scripts/evidence.py` — evidence axis: status derivation, verify-queue triage, verdict ingestion.
 - `Dockerfile` — `panopticon-tools` image: semgrep, gitleaks, trivy, bandit, brakeman, gosec,
   eslint. Build once: `docker build -t panopticon-tools <this dir>`.
 - `reference/` — `report-schema.json`, `scope-profile-schema.json`, `cwe-catalog.json`
@@ -91,9 +92,18 @@ History:
   tolerance, cross-source reinforce (2-member tool+agent), citations hardening (case-insensitive
   ids, CWE-95, EPSS size-cap/UA), DoS guards, bandit noise floor, id-uniqueness + panel label,
   `--max-per-group` guard, docstrings, and test-coverage for the non-deterministic seams.
-- **3.0.0** (current) — Kimi port: introduces architecture, database, and redteam panels;
+- **3.0.0** — Kimi port: introduces architecture, database, and redteam panels;
   replaces the fixed 9-lens catalog with a flexible lens model; rewrites orchestration for the
   Kimi Code agent platform; major version bump reflecting breaking changes to the skill contract.
+- **4.0.0** (current) — epistemics core: two-axis severity × evidence model.
+  Severity is never mutated; evidence.status (tool_confirmed/advisor_confirmed/
+  corroborated/needs_more_info/unverified/rejected) is the pipeline's verdict.
+  Verification moved out of synthesize (kimi-CLI subprocess loop deleted) into an
+  orchestrator-dispatched verify phase (`--emit-verify-queue` → advisor fan-out →
+  `--verdicts-dir`). Citations demoted to audit metadata. Gate/grades key on
+  confirmed evidence (default) with `--gate-unverified` opt-in. GROUP_RE fixed for
+  3.0 filenames; effort_to_remediate/recommendations schema theater removed.
+  Reinforced (tool+agent) findings gate as tool_confirmed; the legacy dedupe/corroboration confidence bumps are removed (confidence is never pipeline-mutated).
 - **2.3.0** — cross-dogfood round from a 61-panel run against a real 3-repo estate. Four
   fixes: (1) **cross-panel corroboration** — `synthesize` now runs a distinct agent-vs-agent pass
   (`cross_panel_corroboration`, keyed on file + line-proximity across DISTINCT panels, not category)

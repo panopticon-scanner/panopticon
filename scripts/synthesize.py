@@ -6,15 +6,20 @@ import argparse
 import json
 import os
 import re
-import shutil
-import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import scripts.citations as citations
-from scripts.citations import _compute_citation_quality, load_cwe_catalog
+from scripts.citations import load_cwe_catalog
+import scripts.evidence as evidence_mod
 import scripts.html_report as html_report
 import scripts.ingest_tools as ingest_tools
+
+# Moved to evidence.py (also used by evidence.load_verdicts for advisor
+# verdict files, which are just as likely to be fence-wrapped or prose-
+# wrapped as panel/lens findings files). Delegation keeps this name importable
+# as scripts.synthesize.load_json_tolerant for existing callers/tests.
+load_json_tolerant = evidence_mod.load_json_tolerant
 
 SEVERITIES = {"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"}
 SEV_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
@@ -26,31 +31,12 @@ MODE_TO_REVIEW_TYPE = {
 }
 VALID_PANELS = {"code", "test", "security", "architecture", "database", "redteam"}
 PANEL_ORDER = ["code", "test", "security", "architecture", "database", "redteam"]
-_ADVISOR_TEMPLATE_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "agents", "advisor.md")
-_KIMI_VERSION_CACHE = {}
 RELATED_PANELS = {
     "security": {"architecture", "database", "redteam"},
     "redteam": {"security", "architecture", "database"},
     "architecture": {"security", "redteam"},
     "database": {"security", "redteam"},
 }
-
-
-def load_json_tolerant(body):
-    """Parse JSON from text, stripping markdown code blocks and searching for JSON object."""
-    body = body.strip()
-    if body.startswith("```"):
-        body = re.sub(r"^```[a-zA-Z]*\s*", "", body)
-        body = re.sub(r"\s*```\s*$", "", body).strip()
-    try:
-        return json.loads(body)
-    except json.JSONDecodeError:
-        m = re.search(r"(\{.*\})", body, re.DOTALL)
-        if m:
-            return json.loads(m.group(1))
-        raise
 
 
 def normalize_finding(f):
@@ -187,22 +173,6 @@ def _collect_models_used(findings):
     return out
 
 
-def _merge_citations(best, other):
-    """Merge other['citations'] into best['citations'] without overwriting
-    keys that already exist in best."""
-    oc = other.get("citations")
-    if not oc:
-        return
-    if not best.get("citations"):
-        best["citations"] = {}
-    bc = best["citations"]
-    for key, value in oc.items():
-        if not value:
-            continue
-        if key not in bc or not bc[key]:
-            bc[key] = value
-
-
 def _reinforce_merge(best, other):
     """Pull missing enrichment from other into best. The agent's cvss and
     exploit_scenario are preferred when either finding has them; other text
@@ -217,7 +187,7 @@ def _reinforce_merge(best, other):
     for field in ("cvss", "exploit_scenario", "impact", "remediation", "references"):
         if not best.get(field) and other.get(field):
             best[field] = other[field]
-    _merge_citations(best, other)
+    evidence_mod.merge_citations(best, other)
 
 
 def _norm_line(v):
@@ -263,7 +233,6 @@ def dedupe(findings):
             best = min(group, key=lambda f: (_sev_rank(f), _conf_rank(f)))
             other = agent_srcd[0] if _is_tool_sourced(best) else tool_srcd[0]
             best["reinforced"] = True
-            best["confidence"] = "CERTAIN"
             _reinforce_merge(best, other)
             result.append(best)
         else:
@@ -281,7 +250,6 @@ def dedupe(findings):
                 if (any(_is_tool_sourced(m) for m in members)
                         and any(not _is_tool_sourced(m) for m in members)):
                     best["reinforced"] = True
-                    best["confidence"] = "CERTAIN"
                     for m in members:
                         if m is best:
                             continue
@@ -295,18 +263,6 @@ def dedupe(findings):
 # transitive chaining); 2 catches adjacent-line citations (e.g. a function def
 # vs the vulnerable call inside it) while staying tight against false joins.
 CORROBORATION_LINE_WINDOW = 2
-
-# ascending confidence ranks (weakest -> strongest) for a monotonic raise
-_CONF_ASC = ["NOTE", "POSSIBLE", "LIKELY", "CERTAIN"]
-
-
-def _bump_confidence(conf):
-    """Raise a confidence one rank (capped at CERTAIN); never lowers it."""
-    try:
-        idx = _CONF_ASC.index(str(conf).upper())
-    except ValueError:
-        idx = 0
-    return _CONF_ASC[min(idx + 1, len(_CONF_ASC) - 1)]
 
 
 def _max_severity(findings):
@@ -322,11 +278,12 @@ def cross_panel_corroboration(findings, window=CORROBORATION_LINE_WINDOW):
     across DIFFERENT panels — deliberately NOT on category, because the same real
     issue seen through security/test/code lenses carries different categories by
     nature. When >=2 DISTINCT panels flag a nearby locus, each participating
-    finding is annotated in place (`corroborated`/`corroborated_by`, confidence
-    bumped one rank) and a summary entry is returned for cross_panel.
-    integration_findings. Requiring >=2 distinct panels is the guard against
-    false corroboration: two same-panel findings, or findings at different files
-    or beyond the line window, do NOT corroborate.
+    finding is annotated in place (`corroborated`/`corroborated_by`; confidence is
+    left untouched — it is the reviewer's self-assessment, never the pipeline's)
+    and a summary entry is returned for cross_panel.integration_findings.
+    Requiring >=2 distinct panels is the guard against false corroboration: two
+    same-panel findings, or findings at different files or beyond the line
+    window, do NOT corroborate.
     """
     candidates = []
     for f in findings:
@@ -363,7 +320,6 @@ def cross_panel_corroboration(findings, window=CORROBORATION_LINE_WINDOW):
             for m in members:
                 m["corroborated"] = True
                 m["corroborated_by"] = list(panels)
-                m["confidence"] = _bump_confidence(m.get("confidence"))
             line_starts = [c[1] for c in cluster]
             line_ends = []
             for c in cluster:
@@ -385,391 +341,6 @@ def cross_panel_corroboration(findings, window=CORROBORATION_LINE_WINDOW):
             })
         i = j
     return integration
-
-
-def flag_for_advisor(findings, depth="standard"):
-    """Return findings that need independent advisor review."""
-    flagged = []
-    for f in findings:
-        refs = f.get("references") or []
-        confidence = f.get("confidence", "POSSIBLE")
-        severity = f.get("severity", "INFO")
-
-        # HIGH/CRITICAL uncited and low confidence
-        if (severity in ("HIGH", "CRITICAL")
-                and confidence in ("NOTE", "POSSIBLE")
-                and not refs):
-            flagged.append(f)
-            continue
-
-        # HIGH/CRITICAL with fewer than 2 citations
-        if severity in ("HIGH", "CRITICAL") and len(refs) < 2:
-            flagged.append(f)
-            continue
-
-        # Deep mode: any uncited finding in risky panels
-        if depth == "deep" and f.get("panel") in ("security", "redteam") and not refs:
-            flagged.append(f)
-            continue
-    return flagged
-
-
-def apply_advisor_verdict(finding, verdict, catalog=None):
-    """Update a finding based on advisor verdict.
-
-    Also mirrors the verdict into ``provenance.confirmation_status`` so that
-    downstream partitioning treats pre-advised findings consistently with
-    findings that went through the runtime advisor loop.
-    """
-    finding["advisor_verdict"] = verdict.get("verdict")
-    prov = finding.setdefault("provenance", {})
-    if verdict.get("verdict") == "CONFIRMED":
-        prov["confirmation_status"] = "CONFIRMED"
-        prov["confirmed_by"] = "agent:advisor"
-        prov["confirmation_reasoning"] = verdict.get("reasoning")
-        finding["confidence"] = _bump_confidence(finding.get("confidence"))
-        existing = set(finding.get("references") or [])
-        for ref in verdict.get("references", []):
-            if ref not in existing:
-                finding.setdefault("references", []).append(ref)
-    elif verdict.get("verdict") == "REJECTED":
-        prov["confirmation_status"] = "REJECTED"
-        prov["confirmed_by"] = "agent:advisor"
-        prov["confirmation_reasoning"] = verdict.get("reasoning")
-        finding["severity"] = "INFO"
-        finding["confidence"] = "NOTE"
-    # NEEDS_MORE_INFO: leave as-is, just mark verdict
-    advisor_citations = verdict.get("citations")
-    if advisor_citations:
-        _merge_citations(finding, {"citations": advisor_citations})
-    citations_dict = finding.get("citations", {})
-    cwe_list = citations_dict.get("cwe")
-    if isinstance(cwe_list, list):
-        if catalog is None:
-            catalog = load_cwe_catalog()
-        citations_dict["cwe"] = citations.normalize_cwe_entries(
-            cwe_list, catalog, tool_sourced=_is_tool_sourced(finding)
-        )
-    finding["citation_quality"] = _compute_citation_quality(
-        citations_dict, finding.get("cvss")
-    )
-    # A confirmed verdict is only trustworthy when backed by hard citations.
-    # Downgrade to NEEDS_MORE_INFO if citation quality is still none or minimal.
-    if prov.get("confirmation_status") == "CONFIRMED" and finding.get("citation_quality") in ("none", "minimal"):
-        prov["confirmation_status"] = "NEEDS_MORE_INFO"
-        prov["confirmation_reasoning"] = (
-            (prov.get("confirmation_reasoning") or "")
-            + " Advisor confirmed but provided no hard citations; downgraded."
-        ).strip()
-        finding["severity"] = "INFO"
-        finding["confidence"] = "NOTE"
-
-
-def _read_code_context(finding, window=10, repo_root=None):
-    """Read up to ``window`` lines before and after the finding's line_start.
-
-    Relative file paths are resolved against ``repo_root`` (defaulting to the
-    current working directory for backward compatibility).
-    """
-    loc = finding.get("location") or {}
-    fpath = loc.get("file")
-    line_start = loc.get("line_start")
-    if not fpath or line_start is None:
-        return "No file/line context available."
-    if repo_root is None:
-        repo_root = os.getcwd()
-    target = fpath if os.path.isabs(fpath) else os.path.join(repo_root, fpath)
-    if not os.path.isfile(target):
-        return "File not found: %s" % fpath
-    try:
-        with open(target, encoding="utf-8") as fh:
-            lines = fh.readlines()
-    except Exception as e:  # noqa: BLE001 - context read is best-effort
-        return "Could not read file %s: %s" % (fpath, e)
-    try:
-        idx = max(0, int(line_start) - 1)
-    except (TypeError, ValueError):
-        return "Invalid line number: %s" % line_start
-    start = max(0, idx - window)
-    end = min(len(lines), idx + window + 1)
-    out = []
-    for i in range(start, end):
-        out.append("%4d | %s" % (i + 1, lines[i].rstrip("\n")))
-    return "\n".join(out) if out else "Empty context."
-
-
-def _render_advisor_prompt(finding, repo_root=None):
-    """Render the advisor prompt template with claim JSON and code context."""
-    try:
-        with open(_ADVISOR_TEMPLATE_PATH, encoding="utf-8") as fh:
-            template = fh.read()
-    except Exception:  # noqa: BLE001 - tolerant fallback template
-        template = (
-            "## Claim\n\n{claim_json}\n\n"
-            "## Code context\n\n{code_context}\n\n"
-            "Return JSON with verdict, reasoning, references, citations."
-        )
-    # The advisor markdown file carries YAML frontmatter metadata for Kimi Code;
-    # strip it so the rendered prompt contains only the instructions + placeholders.
-    if template.startswith("---"):
-        m = re.search(r"^---\s*\n.*?\n---\s*\n", template, re.DOTALL)
-        if m:
-            template = template[m.end():]
-    claim = dict(finding)
-    claim.pop("_group", None)
-    claim.pop("_repo_root", None)
-    claim_json = json.dumps(claim, indent=2, ensure_ascii=False)
-    code_context = _read_code_context(finding, repo_root=repo_root)
-    # Two-step replacement avoids claim_json containing {code_context} corrupting
-    # the prompt.
-    t1, t2 = "§§CLAIM_JSON§§", "§§CODE_CONTEXT§§"
-    rendered = template.replace("{claim_json}", t1).replace("{code_context}", t2)
-    rendered = rendered.replace(t1, claim_json).replace(t2, code_context)
-    if "{claim_json}" in rendered or "{code_context}" in rendered:
-        raise ValueError("Advisor prompt still contains unsubstituted placeholders")
-    return rendered
-
-
-def _get_kimi_version(kimi_bin):
-    """Return a normalized version string for the Kimi Code CLI, cached."""
-    if kimi_bin in _KIMI_VERSION_CACHE:
-        return _KIMI_VERSION_CACHE[kimi_bin]
-    version = "kimi-cli-unknown"
-    try:
-        result = subprocess.run(
-            [kimi_bin, "--version"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=10,
-            check=False,
-            text=True,
-        )
-        output = (result.stdout or "").strip()
-        m = re.search(r"(\d+\.\d+\.\d+)", output)
-        if m:
-            version = "kimi-cli-%s" % m.group(1)
-        elif output:
-            version = "kimi-cli-%s" % output
-    except Exception:  # noqa: BLE001 - version lookup is best-effort
-        pass
-    _KIMI_VERSION_CACHE[kimi_bin] = version
-    return version
-
-
-def _dispatch_advisor(finding):
-    """Dispatch the advisor agent for an agentic finding via the Kimi Code CLI.
-
-    Resolves ``kimi`` in PATH, invokes it with ``--agent-file agents/advisor.md``
-    and the rendered prompt. Parses the JSON verdict from the ``stream-json``
-    stdout (JSONL with ``role``-typed lines). Any failure (CLI missing,
-    subprocess error, timeout, invalid JSON, missing assistant message, or
-    malformed verdict key) falls back to a safe ``NEEDS_MORE_INFO`` verdict so
-    the pipeline never crashes.
-    """
-    kimi = shutil.which("kimi")
-    if not kimi:
-        return {"verdict": "NEEDS_MORE_INFO",
-                "reasoning": "Kimi Code CLI not available; cannot dispatch advisor."}
-    repo_root = finding.get("_repo_root") or os.getcwd()
-    prompt = _render_advisor_prompt(finding, repo_root=repo_root)
-    # The prompt is passed as a single --prompt argument. The CLI's stream-json
-    # output format requires prompt mode, so stdin cannot be used here; revisit
-    # if the CLI later supports streaming output with piped input.
-    env = os.environ.copy()
-    env["KIMI_CODE_EXPERIMENTAL_FLAG"] = "1"
-    try:
-        result = subprocess.run(
-            [kimi, "--agent-file", _ADVISOR_TEMPLATE_PATH, "--prompt", prompt,
-             "--output-format", "stream-json"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=120,
-            check=False,
-            text=True,
-            env=env,
-        )
-        if result.returncode != 0:
-            stderr = (result.stderr or "")[:500]
-            print("advisor subprocess exited %d: %s" % (result.returncode, stderr),
-                  file=sys.stderr)
-            return {"verdict": "NEEDS_MORE_INFO",
-                    "reasoning": "Advisor subprocess exited with code %d." % result.returncode}
-
-        assistant_content = None
-        system_version = None
-        for line in result.stdout.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            role = obj.get("role")
-            if role == "assistant":
-                assistant_content = obj.get("content")
-            elif role == "meta" and obj.get("type") == "system.version":
-                system_version = obj.get("version")
-
-        if assistant_content is None:
-            print("advisor subprocess returned no assistant message", file=sys.stderr)
-            return {"verdict": "NEEDS_MORE_INFO",
-                    "reasoning": "Advisor returned no assistant message."}
-
-        verdict = load_json_tolerant(assistant_content)
-        if not isinstance(verdict, dict) or "verdict" not in verdict:
-            print("advisor subprocess returned malformed verdict", file=sys.stderr)
-            return {"verdict": "NEEDS_MORE_INFO",
-                    "reasoning": "Advisor returned malformed verdict."}
-
-        confirmed_by_model = None
-        if verdict.get("verdict") in ("CONFIRMED", "REJECTED"):
-            version = _get_kimi_version(kimi)
-            if version == "kimi-cli-unknown" and system_version:
-                version = "kimi-cli-%s" % system_version
-            confirmed_by_model = version
-        return {
-            "verdict": verdict.get("verdict"),
-            "reasoning": verdict.get("reasoning"),
-            "references": verdict.get("references", []),
-            "citations": verdict.get("citations", {}),
-            "confirmed_by_model": confirmed_by_model,
-        }
-    except Exception as e:  # noqa: BLE001 - advisor failure is non-fatal
-        print("advisor dispatch failed: %s" % e, file=sys.stderr)
-        return {"verdict": "NEEDS_MORE_INFO",
-                "reasoning": "Advisor dispatch failed: %s" % e}
-
-
-def _is_agentic(f):
-    prov = f.get("provenance") or {}
-    return str(prov.get("discovered_by", "")).startswith("agent:")
-
-
-def _partition_findings(findings, advisor_dispatch=None, catalog=None):
-    """Separate findings into confirmed, discarded, and unverified sets.
-
-    Tool findings are confirmed automatically. Agentic findings are sent to
-    the advisor unless they already have full/partial citations and a CONFIRMED
-    status. Unconfirmed agentic findings are downgraded to INFO.
-
-    Findings without a ``confirmation_status`` are treated as confirmed only
-    when they are tool-sourced or predate provenance tracking; agentic findings
-    without a status are routed through the advisor loop and, if no advisor is
-    available, downgraded to unverified INFO-level findings.
-    """
-    if catalog is None:
-        catalog = load_cwe_catalog()
-    confirmed = []
-    discarded = []
-    unverified = []
-
-    for f in findings:
-        prov = f.get("provenance") or {}
-        status = prov.get("confirmation_status")
-        discovered_by = str(prov.get("discovered_by", ""))
-
-        if status == "TOOL":
-            confirmed.append(f)
-            continue
-
-        if status == "CONFIRMED":
-            if _is_agentic(f) and f.get("citation_quality") in ("none", "minimal"):
-                prov["confirmation_status"] = "NEEDS_MORE_INFO"
-                prov["confirmation_reasoning"] = "CONFIRMED status but insufficient hard citations; downgraded."
-                f["severity"] = "INFO"
-                f["confidence"] = "NOTE"
-                unverified.append(f)
-            else:
-                confirmed.append(f)
-            continue
-
-        if status == "REJECTED":
-            f["severity"] = "INFO"
-            f["confidence"] = "NOTE"
-            discarded.append(f)
-            continue
-
-        # No explicit status: legacy reports without provenance are kept as
-        # confirmed. Agentic findings without a status still need review.
-        if status is None:
-            if discovered_by.startswith("agent:"):
-                status = "UNVERIFIED"
-            else:
-                confirmed.append(f)
-                continue
-
-        # UNVERIFIED or NEEDS_MORE_INFO: agentic findings needing review.
-        if advisor_dispatch and _is_agentic(f):
-            try:
-                advisor_result = advisor_dispatch(f)
-            except Exception as e:  # noqa: BLE001 - advisor failure is non-fatal
-                advisor_result = None
-                print("advisor dispatch failed: %s" % e, file=sys.stderr)
-            if not isinstance(advisor_result, dict):
-                print("advisor dispatch returned non-dict result", file=sys.stderr)
-                advisor_result = {"verdict": "NEEDS_MORE_INFO",
-                                  "reasoning": "Advisor returned invalid response."}
-            verdict = str(advisor_result.get("verdict", "")).upper()
-            if verdict == "CONFIRMED":
-                prov["confirmed_by"] = "agent:advisor"
-                prov["confirmation_status"] = "CONFIRMED"
-                prov["confirmation_reasoning"] = advisor_result.get("reasoning")
-                confirmed_by_model = advisor_result.get("confirmed_by_model")
-                if confirmed_by_model:
-                    prov["confirmed_by_model"] = confirmed_by_model
-                # Merge advisor citations and references if present without
-                # overwriting keys that already exist on the finding.
-                advisor_citations = advisor_result.get("citations")
-                if advisor_citations:
-                    _merge_citations(f, {"citations": advisor_citations})
-                existing = set(f.get("references") or [])
-                for ref in advisor_result.get("references", []):
-                    if ref not in existing:
-                        f.setdefault("references", []).append(ref)
-                citations_dict = f.get("citations", {})
-                cwe_list = citations_dict.get("cwe")
-                if isinstance(cwe_list, list):
-                    citations_dict["cwe"] = citations.normalize_cwe_entries(
-                        cwe_list, catalog, tool_sourced=_is_tool_sourced(f)
-                    )
-                f["citation_quality"] = _compute_citation_quality(
-                    citations_dict, f.get("cvss")
-                )
-                # A confirmed verdict is only trustworthy when backed by hard
-                # citations. Downgrade to NEEDS_MORE_INFO if citation quality is
-                # still none or minimal.
-                if f.get("citation_quality") in ("none", "minimal"):
-                    prov["confirmation_status"] = "NEEDS_MORE_INFO"
-                    prov["confirmation_reasoning"] = (
-                        (prov.get("confirmation_reasoning") or "")
-                        + " Advisor confirmed but provided no hard citations; downgraded."
-                    ).strip()
-                    f["severity"] = "INFO"
-                    f["confidence"] = "NOTE"
-                    unverified.append(f)
-                    continue
-                confirmed.append(f)
-                continue
-            if verdict == "REJECTED":
-                prov["confirmed_by"] = "agent:advisor"
-                prov["confirmation_status"] = "REJECTED"
-                prov["confirmation_reasoning"] = advisor_result.get("reasoning")
-                confirmed_by_model = advisor_result.get("confirmed_by_model")
-                if confirmed_by_model:
-                    prov["confirmed_by_model"] = confirmed_by_model
-                f["severity"] = "INFO"
-                f["confidence"] = "NOTE"
-                discarded.append(f)
-                continue
-
-        # Fallback: keep as unverified, downgrade severity.
-        prov["confirmation_status"] = "NEEDS_MORE_INFO"
-        f["severity"] = "INFO"
-        f["confidence"] = "NOTE"
-        unverified.append(f)
-
-    return confirmed, discarded, unverified
 
 
 def _present(findings, sev):
@@ -822,7 +393,9 @@ def severity_stats(findings):
 
 
 ID_RE = re.compile(r"^[A-Z]{2,4}-\d{3,}$")
-GROUP_RE = re.compile(r"^findings-(.+)-(?:code|test|security|architecture|database|redteam)\.json$")
+GROUP_RE = re.compile(
+    r"^findings-(.+)-(?:code|test|security|architecture|database|redteam)"
+    r"(?:-panel_review|-lens_sweep-[A-Za-z0-9_]+)?\.json$")
 _GRADE_ORDER = ["A", "B", "C", "D", "F"]
 
 
@@ -831,62 +404,100 @@ def _worst_grade(grades):
     return max(present, key=_GRADE_ORDER.index) if present else "A"
 
 
-def build_report(findings, groups_meta, target, fail_on, timestamp, review_type="repo",
-                 security_mode="standard", advisor_results=None, advisor_dispatch=None):
-    """Build complete CodeReviewReport with deduplication, grading, and CI gate verdict."""
+def prepare_findings(findings):
+    """Dedupe + cross-panel corroboration. Extracted so pass 1 (--emit-verify-queue)
+    can compute the queue with the same deterministic pipeline as pass 2."""
     findings = dedupe(findings)
-    catalog = load_cwe_catalog()
-    if advisor_results:
-        for finding_id, verdict in advisor_results.items():
-            for f in findings:
-                if f.get("id") == finding_id:
-                    apply_advisor_verdict(f, verdict, catalog=catalog)
-                    break
-    confirmed, discarded, unverified = _partition_findings(
-        findings, advisor_dispatch=advisor_dispatch, catalog=catalog
-    )
-    citations.enrich_citations(confirmed, catalog, epss_enabled=False)
-    # Confirmed findings drive grades/gate. Unverified findings stay visible in the
-    # main report body at INFO/NOTE severity but do not influence grades. Discarded
-    # claims are moved to a separate appendix.
-    findings = confirmed + unverified
-    by_panel = {p: [] for p in VALID_PANELS}
+    integration = cross_panel_corroboration(findings)
+    return findings, integration
+
+
+def evidence_stats(findings):
+    """Count findings by evidence status."""
+    stats = {s: 0 for s in evidence_mod.EVIDENCE_STATUSES}
     for f in findings:
+        st = (f.get("evidence") or {}).get("status")
+        if st in stats:
+            stats[st] += 1
+    return stats
+
+
+def _issue_sort(f):
+    """Severity first; among equals, gate-eligible evidence leads."""
+    eligible = ((f.get("evidence") or {}).get("status")
+                in evidence_mod.GATE_ELIGIBLE_DEFAULT)
+    return (_sev_rank(f), 0 if eligible else 1)
+
+
+def build_report(findings, groups_meta, target, fail_on, timestamp, review_type="repo",
+                 security_mode="standard", verdicts=None, gate_unverified=False,
+                 max_verify=None, verdicts_supplied=False):
+    """Build a CodeReviewReport under the two-axis severity x evidence model.
+
+    Severity is never mutated here. Verdicts (from evidence.load_verdicts) are
+    applied to queued findings; every finding gets an evidence object; grades
+    and the gate are computed from gate-eligible findings only (all non-rejected
+    when gate_unverified is set). `verdicts_supplied` records whether --verdicts-dir
+    was passed at all (distinct from whether it yielded any verdicts) so the
+    aggregate "no verdict" note still fires for an existing-but-empty dir.
+    """
+    findings, integration_findings = prepare_findings(findings)
+    catalog = load_cwe_catalog()
+    queue, _cut = evidence_mod.build_verify_queue(findings, max_verify)
+    verdicts = verdicts or {}
+    matched = {}
+    unanswered = 0
+    for entry in queue:
+        v = evidence_mod.match_verdict(entry, verdicts)
+        if v is not None:
+            evidence_mod.apply_verdict(entry["finding"], v)
+        elif verdicts_supplied:
+            unanswered += 1
+        matched[id(entry["finding"])] = v
+    if unanswered:
+        print("synthesize: %d queued findings had no verdict; left unverified"
+              % unanswered, file=sys.stderr)
+    unknown = set(verdicts) - {e["queue_id"] for e in queue}
+    if unknown:
+        print("synthesize: verdict file(s) for unknown queue_id(s): %s"
+              % ", ".join(sorted(unknown)), file=sys.stderr)
+    # Re-validate citations after advisor merges (idempotent; preserves epss).
+    citations.enrich_citations(findings, catalog, epss_enabled=False)
+    for f in findings:
+        f["evidence"] = evidence_mod.derive_evidence(f, matched.get(id(f)))
+        f.pop("citation_quality", None)
+
+    rejected = [f for f in findings if f["evidence"]["status"] == "rejected"]
+    active = [f for f in findings if f["evidence"]["status"] != "rejected"]
+    gate_eligible = (active if gate_unverified else
+                     [f for f in active
+                      if f["evidence"]["status"] in evidence_mod.GATE_ELIGIBLE_DEFAULT])
+
+    by_panel = {p: [] for p in VALID_PANELS}
+    for f in gate_eligible:
         by_panel.get(f["panel"], by_panel["code"]).append(f)
 
     known_groups = {g["name"] for g in groups_meta}
     group_objs = []
     for g in groups_meta:
         gfiles = set(g["files"])
-        # Attribute a finding to this group if its _group tag matches by name, or
-        # (when _group is absent OR names a group that isn't in this run's metadata)
-        # its file belongs to the group. The latter fallback keeps a finding from
-        # vanishing from per-group grades just because its _group token — derived
-        # from the finding filename — doesn't line up with a groups_meta name.
-        gfind = [f for f in findings
+        gfind = [f for f in active
                  if (f.get("_group") == g["name"])
                  or (f.get("_group") not in known_groups
                      and (f.get("location") or {}).get("file") in gfiles)]
-        gp = {p: [x for x in gfind if x["panel"] == p] for p in by_panel}
+        eligible_ids = {id(x) for x in gate_eligible}
+        geligible = [f for f in gfind if id(f) in eligible_ids]
+        gp = {p: [x for x in geligible if x["panel"] == p] for p in by_panel}
         group_objs.append({
             "name": g["name"],
             "files": g["files"],
             "panel_grades": {p: grade(gp[p]) for p in by_panel},
-            "panel_summaries": {},
             "key_findings": [f.get("title", "") for f in gfind
                              if f["severity"] in ("CRITICAL", "HIGH")][:5],
         })
 
     overall = _worst_grade([grade(by_panel[p]) for p in by_panel])
-    stats = severity_stats(findings)
-    # Cross-panel corroboration runs AFTER dedupe on the surviving findings: it
-    # annotates them in place and yields the integration summary. It does not
-    # touch severity, so grade/gate/stats above are unaffected.
-    integration_findings = cross_panel_corroboration(findings)
     for f in findings:
-        f.pop("_group", None)
-        f.pop("_repo_root", None)
-    for f in discarded:
         f.pop("_group", None)
         f.pop("_repo_root", None)
     return {
@@ -894,33 +505,32 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
             "target": target,
             "review_type": review_type,
             "timestamp": timestamp,
-            "version": "3.0.0",
+            "version": "4.0.0",
             "security_mode": security_mode,
-            "models_used": _collect_models_used(confirmed + unverified + discarded),
+            "models_used": _collect_models_used(findings),
         },
         "summary": {
             "overall_grade": overall,
-            "risk_level": risk_level(findings),
+            "risk_level": risk_level(gate_eligible),
             "top_issues": [f.get("title", "") for f in
-                           sorted(findings, key=_sev_rank)[:3]],
-            "effort_to_remediate": "MEDIUM",
-            "gate": gate_verdict(findings, fail_on),
-            "stats": stats,
-            "discarded_claims_count": len(discarded),
-            "unverified_findings_count": len(unverified),
+                           sorted(active, key=_issue_sort)[:3]],
+            "gate": gate_verdict(gate_eligible, fail_on),
+            "gate_policy": ("include_unverified" if gate_unverified
+                            else "confirmed_only"),
+            "stats": severity_stats(active),
+            "evidence_stats": evidence_stats(findings),
         },
         "groups": group_objs,
-        "findings": findings,
-        "discarded_claims": discarded,
+        "findings": active,
+        "discarded_claims": rejected,
         "cross_panel": {"integration_findings": integration_findings},
-        "recommendations": {"immediate": [], "short_term": [], "long_term": []},
     }
 
 
 def validate_report(report):
     """Validate report structure and content, returning error and warning lists."""
     errors, warnings = [], []
-    for key in ("meta", "summary", "groups", "findings", "cross_panel", "recommendations"):
+    for key in ("meta", "summary", "groups", "findings", "cross_panel"):
         if key not in report:
             errors.append("missing top-level key: %s" % key)
     for i, f in enumerate(report.get("findings", [])):
@@ -936,6 +546,9 @@ def validate_report(report):
             errors.append("finding[%d] bad confidence: %r" % (i, f.get("confidence")))
         if f.get("panel") not in VALID_PANELS:
             errors.append("finding[%d] bad panel: %r" % (i, f.get("panel")))
+        ev = f.get("evidence") or {}
+        if ev.get("status") not in evidence_mod.EVIDENCE_STATUSES:
+            errors.append("finding[%d] bad evidence.status: %r" % (i, ev.get("status")))
         loc = f.get("location") or {}
         if not loc.get("file") or loc.get("line_start") is None:
             warnings.append("finding[%d] missing location.file/line_start" % i)
@@ -968,6 +581,9 @@ def render_summary(report):
         "**Findings:** %s" % ", ".join(
             "%s %d" % (k.upper(), v) for k, v in s["stats"].items() if v),
         "",
+        "**Evidence:** %s" % ", ".join(
+            "%s %d" % (k, v) for k, v in s["evidence_stats"].items() if v),
+        "",
         "## Groups",
     ]
     for g in report["groups"]:
@@ -976,7 +592,7 @@ def render_summary(report):
         lines.append("- **%s** — %s" % (g["name"], grades))
     lines.append("")
     lines.append("## Top findings")
-    for f in sorted(report["findings"], key=_sev_rank)[:10]:
+    for f in sorted(report["findings"], key=_issue_sort)[:10]:
         loc = f.get("location") or {}
         where = "%s:%s" % (loc.get("file", "?"), loc.get("line_start", "?"))
         chips = []
@@ -988,12 +604,11 @@ def render_summary(report):
             chips.append("SSVC:%s" % c["ssvc"].get("decision", ""))
         if c.get("epss"):
             chips.append("EPSS:%.2f" % max(e.get("score", 0.0) for e in c["epss"]))
-        prov = "reinforced" if f.get("reinforced") else (
-            "tool" if str(f.get("source", "")).startswith("tool:") else "agent")
+        ev_status = (f.get("evidence") or {}).get("status", "unverified")
         suffix = (" — " + ", ".join(x for x in chips if x)) if chips else ""
         cor = " ⁂corroborated" if f.get("corroborated") else ""
         lines.append("- `[%s]` **%s** %s (%s) [%s·%s%s]%s" % (
-            f["severity"], f.get("title", ""), where, f["confidence"], prov,
+            f["severity"], f.get("title", ""), where, f["confidence"], ev_status,
             f.get("panel", ""), cor, suffix))
     integ = (report.get("cross_panel") or {}).get("integration_findings") or []
     if integ:
@@ -1058,6 +673,17 @@ def main(argv=None):
                     help="Compare two JSON reports and emit HTML")
     ap.add_argument("--epss", action="store_true")
     ap.add_argument("--tools-dir", metavar="DIR")
+    ap.add_argument("--emit-verify-queue", action="store_true",
+                    help="Pass 1: write .panopticon/verify-queue.json and skip the "
+                         "report when agentic findings need verification")
+    ap.add_argument("--verdicts-dir", metavar="DIR", default=None,
+                    help="Pass 2: ingest advisor verdict files from DIR")
+    ap.add_argument("--gate-unverified", action="store_true",
+                    help="Let corroborated/needs_more_info/unverified findings "
+                         "drive grades and the gate")
+    ap.add_argument("--max-verify", type=int, default=None, metavar="N",
+                    help="Cap the verify queue at the top-priority N entries "
+                         "(pass the same value to both passes)")
     ap.add_argument("files", nargs="*")
     args = ap.parse_args(argv)
 
@@ -1122,16 +748,35 @@ def main(argv=None):
     if args.severity and args.severity != "all":
         threshold = SEV_ORDER.index(args.severity.upper())
         findings = [f for f in findings if _sev_rank(f) <= threshold]
-    if os.path.isdir(args.target):
-        repo_root = os.path.abspath(args.target)
-    elif args.groups:
-        repo_root = os.path.abspath(os.path.dirname(args.groups))
-    else:
-        repo_root = os.path.abspath(os.getcwd())
-    for f in findings:
-        f["_repo_root"] = repo_root
-    report = build_report(findings, groups_meta, args.target, args.fail_on, ts, review_type,
-                          security_mode, advisor_dispatch=_dispatch_advisor)
+
+    if args.emit_verify_queue:
+        import copy
+        prepared, _ = prepare_findings(copy.deepcopy(findings))
+        queue, cut = evidence_mod.build_verify_queue(prepared, args.max_verify)
+        qpath = os.path.join(".panopticon", "verify-queue.json")
+        if queue:
+            evidence_mod.write_verify_queue(queue, cut, qpath)
+            print("verify queue: %d entries (%d cut by --max-verify) -> %s"
+                  % (len(queue), cut, qpath))
+            return 0
+        # Nothing to verify this run: a queue file left by a PREVIOUS run
+        # (with agentic findings) would otherwise mislead step 7's re-run --
+        # the orchestrator branches on the file's existence, so a stale one
+        # would send it to the verify phase with stale/absent entries.
+        if os.path.isfile(qpath):
+            try:
+                os.remove(qpath)
+            except OSError as e:
+                print("synthesize: could not remove stale %s: %s" % (qpath, e),
+                      file=sys.stderr)
+        print("verify queue empty; emitting final report", file=sys.stderr)
+
+    verdicts = evidence_mod.load_verdicts(args.verdicts_dir)
+    report = build_report(findings, groups_meta, args.target, args.fail_on, ts,
+                          review_type, security_mode, verdicts=verdicts,
+                          gate_unverified=args.gate_unverified,
+                          max_verify=args.max_verify,
+                          verdicts_supplied=args.verdicts_dir is not None)
     errors, warnings = validate_report(report)
     for w in warnings:
         print("WARN: %s" % w, file=sys.stderr)

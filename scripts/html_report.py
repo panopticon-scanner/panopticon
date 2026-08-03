@@ -489,7 +489,8 @@ def _render_card(finding, delta=None):
     category = finding.get("category", "general")
     confidence = finding.get("confidence", "NOTE")
     provenance_html = _render_provenance(finding.get("provenance"))
-    quality_html = _render_citation_quality(finding.get("citation_quality"))
+    quality_html = _render_citation_quality(
+        (finding.get("evidence") or {}).get("citation_quality"))
     delta_badge = ""
     if delta:
         delta_badge = (
@@ -603,9 +604,11 @@ def _render_heatmap(findings):
 
 
 def _render_findings(findings):
-    unverified_statuses = ("NEEDS_MORE_INFO", "UNVERIFIED")
-    verified = [f for f in findings if f.get("provenance", {}).get("confirmation_status") not in unverified_statuses]
-    unverified = [f for f in findings if f.get("provenance", {}).get("confirmation_status") in unverified_statuses]
+    unverified_statuses = ("needs_more_info", "unverified")
+    verified = [f for f in findings
+                if (f.get("evidence") or {}).get("status") not in unverified_statuses]
+    unverified = [f for f in findings
+                  if (f.get("evidence") or {}).get("status") in unverified_statuses]
 
     by_sev = {sev: [] for sev in _SEV_ORDER}
     by_sev["ALL"] = []

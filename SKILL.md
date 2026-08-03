@@ -11,7 +11,7 @@ arguments:
 disableModelInvocation: false
 license: MIT
 metadata:
-  version: "3.0.0"
+  version: "4.0.0"
 ---
 
 # panopticon
@@ -35,7 +35,7 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
 - *(none)* — whole-repo scan.
 
 ## Global flags
-`--full` (force all panels), `--security {standard,redteam}` (default standard), `--fail-on {critical,high,medium,low}`, `--severity {all,medium,high,critical}` (report only findings at or above the threshold), `--out PATH`, `--tools` (require tool scan), `--no-tools` (skip tool scan), `--epss` (enrich CVE citations).
+`--full` (force all panels), `--security {standard,redteam}` (default standard), `--fail-on {critical,high,medium,low}`, `--severity {all,medium,high,critical}` (report only findings at or above the threshold), `--out PATH`, `--tools` (require tool scan), `--no-tools` (skip tool scan), `--epss` (enrich CVE citations), `--gate-unverified` (unverified findings drive grades/gate), `--max-verify N` (cap the verify queue).
 
 ## Pipeline
 1. `TodoList`: discovery → scout → tools → panels → lens sub-reviews → synthesis.
@@ -47,8 +47,15 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
    - `panel-review` agents for holistic panel review
    - `lens-sweep` agents for mechanical lens sweeps
    - Each agent writes its findings file to `.panopticon/findings-{group}-{panel}-{role}-{lens}.json` (`panel_review` entries omit `{lens}`)
-7. **Synthesize** — `python3 scripts/synthesize.py` merges findings, tags tenuous claims, and (if any unconfirmed agentic findings remain) dispatches the advisor agent via the Kimi Code CLI (`kimi --agent-file agents/advisor.md`) before producing the final `CodeReviewReport`.
-8. **Validate** — `verification-before-completion`: check gate, print summary, write JSON.
+7. **Synthesize (pass 1)** — `python3 scripts/synthesize.py --emit-verify-queue [flags] .panopticon/findings-*.json`.
+   If it prints a "verify queue: N entries" line, proceed to step 8; if it printed a report, skip to step 9.
+8. **Verify** — for each entry in `verify-queue.json`, dispatch the `advisor` agent
+   (`agents/advisor.md`) (parallel) with the entry's `finding` JSON rendered into the agent prompt. The
+   advisor RETURNS a verdict JSON; write it verbatim to
+   `.panopticon/verdicts/{queue_id}.json`. Advisors are read-only; the orchestrator
+   performs the write. Then run
+   `python3 scripts/synthesize.py --verdicts-dir .panopticon/verdicts [same flags] .panopticon/findings-*.json`.
+9. **Validate** — `verification-before-completion`: check gate, print summary, write JSON.
 
 ## Output
 Terminal markdown summary + JSON artifact at `--out`. CI gate key: `summary.gate`.
@@ -69,17 +76,20 @@ python3 scripts/run_fixture_tests.py --test rust
 
 This is optional and not part of CI. Rebuild the image periodically to pull updated fixtures.
 
-## Citation and Provenance
+## Evidence
 
-Every finding is tagged with its source:
+Findings carry two independent axes: **severity** (impact if true — never rewritten)
+and **evidence.status** (how hard the claim was verified):
 
-- **Tool findings** are auto-confirmed when they include a rule ID, CVE, or CWE.
-- **Agentic findings** (from lens or panel reviewers) require confirmation by the advisor agent and must be anchored with CWE/OWASP/CVE/CVSS/EPSS citations.
-- Findings that are unconfirmed remain visible in the report as `INFO`/`NOTE` items but do not influence the CI gate.
+- `tool_confirmed` — emitted by a static-analysis tool, or a tool+agent same-locus merge (reinforced).
+- `advisor_confirmed` / `rejected` / `needs_more_info` — advisor verdicts from the
+  verify phase. Rejected claims keep their severity and move to `discarded_claims`.
+- `corroborated` — multi-panel agreement (correlated witnesses: prioritized for verification, not gate-eligible by default).
+- `unverified` — no verification attempted.
 
-**Note:** Advisor confirmation dispatches the `agents/advisor.md` agent via the Kimi Code CLI (`kimi` must be in PATH). It uses the v2 experimental agent-file flag and stream-json output; if `kimi` is unavailable, unconfirmed agentic findings are downgraded to `INFO`/`NOTE` instead of blocking the pipeline.
-
-Use `--epss` to enrich CVE citations with EPSS scores.
+Grades and the CI gate count `tool_confirmed`/`advisor_confirmed` findings only;
+`--gate-unverified` opts in everything non-rejected. Citations (CWE/OWASP/CVE/EPSS)
+are audit metadata — they annotate findings but never decide truth.
 
 ## Notes
 Reviewers are read-only: no repo/GitHub writes, no claiming unperformed actions, no materializing discovered secrets.
