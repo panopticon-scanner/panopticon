@@ -312,7 +312,7 @@ def _render_provenance(provenance):
     status = provenance.get("confirmation_status", "UNVERIFIED")
     source = provenance.get("discovered_by", "unknown")
     model = provenance.get("model")
-    parts = [f"<span class='prov-status prov-{status.lower().replace(' ', '-')}'>{_escape(status)}</span>",
+    parts = [f"<span class='prov-status prov-{status.lower().replace(' ', '-').replace('_', '-')}'>{_escape(status)}</span>",
              f"<span class='prov-source'>{_escape(source)}</span>"]
     if model:
         parts.append(f"<span class='prov-model'>{_escape(model)}</span>")

@@ -379,6 +379,21 @@ class TestHtmlReport(unittest.TestCase):
         self.assertIn("Unverified findings", out)
         self.assertIn("agent:lens_sweep", out)
 
+    def test_provenance_needs_more_info_class_is_hyphenated(self):
+        finding = {
+            "id": "SEC-002", "title": "Unverified", "severity": "INFO", "confidence": "NOTE",
+            "panel": "security", "category": "general", "location": {"file": "app.py", "line_start": 11},
+            "description": "x", "impact": "", "remediation": "", "references": [],
+            "provenance": {
+                "discovered_by": "agent:lens_sweep", "confirmation_status": "NEEDS_MORE_INFO",
+                "model": "kimi-k2.7-coding", "model_version": "v1",
+            },
+        }
+        report = _minimal_report(findings=[finding])
+        out = hr.render(report)
+        self.assertIn("prov-needs-more-info", out)
+        self.assertNotIn("prov-needs_more_info", out)
+
     def test_dynamic_badge_colors(self):
         report = _minimal_report()
         report["summary"]["gate"] = "FAIL"
