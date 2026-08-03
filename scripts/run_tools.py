@@ -10,11 +10,10 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.tools import ADAPTERS
+from scripts.tools.legacy_sarif import LEGACY_SARIF_TOOLS, TOOL_CMD
 
 LANG_TOOL = {"python": "bandit", "go": "gosec",
              "javascript": "eslint", "typescript": "eslint"}
-
-LEGACY_SARIF_TOOLS = {"semgrep", "bandit", "trivy", "gitleaks", "gosec", "eslint"}
 
 # Phase 1 adapters selected by ecosystem detection; they are dispatched through
 # _run_adapter.py inside the panopticon-tools container.
@@ -29,17 +28,6 @@ PHASE2_ADAPTERS = {
 # Max seconds to let a single docker-run tool invocation run before it's killed;
 # prevents a hung tool from blocking the whole batch (CD-007).
 TOOL_TIMEOUT = 900
-
-# Per-tool argv producing SARIF on stdout or to /out (kept minimal; extended per tool).
-TOOL_CMD = {
-    "semgrep": ["semgrep", "scan", "--config", "auto", "--sarif", "--quiet", "/src"],
-    "gitleaks": ["gitleaks", "detect", "--no-git", "--source", "/src", "--report-format", "sarif",
-                 "--report-path", "/dev/stdout", "--no-banner"],
-    "trivy": ["trivy", "fs", "--format", "sarif", "/src"],
-    "bandit": ["bandit", "-r", "/src", "-f", "sarif"],
-    "gosec": ["gosec", "-fmt=sarif", "./..."],
-    "eslint": ["eslint", "-f", "@microsoft/eslint-formatter-sarif", "/src"],
-}
 
 
 def docker_available(image="panopticon-tools", runner=None):

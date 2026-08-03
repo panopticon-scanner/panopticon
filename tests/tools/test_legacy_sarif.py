@@ -1,7 +1,9 @@
 import json
 import os
+import subprocess
 import sys
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
 import scripts.tools.legacy_sarif as legacy
@@ -44,8 +46,34 @@ class TestLegacySarifAdapter(unittest.TestCase):
         self.assertEqual(prov["discovered_by"], "tool:semgrep")
         self.assertEqual(prov["confirmation_status"], "TOOL")
 
-    def test_invoke_raises_not_implemented(self):
+    def test_invoke_runs_tool_command(self):
         adapter = legacy.LegacySarifAdapter("bandit")
+        mock_stdout = json.dumps(SARIF).encode("utf-8")
+        with patch.object(subprocess, "run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=[], returncode=1, stdout=mock_stdout, stderr=b""
+            )
+            stdout, rc = adapter.invoke("/some/target")
+        self.assertEqual(rc, 1)
+        self.assertEqual(stdout, mock_stdout)
+        mock_run.assert_called_once()
+        called_args, called_kwargs = mock_run.call_args
+        self.assertEqual(called_kwargs.get("cwd"), None)
+        self.assertIn("/some/target", called_args[0])
+
+    def test_invoke_runs_gosec_in_target_directory(self):
+        adapter = legacy.LegacySarifAdapter("gosec")
+        with patch.object(subprocess, "run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout=b"{}", stderr=b""
+            )
+            adapter.invoke("/go/project")
+        called_args, called_kwargs = mock_run.call_args
+        self.assertEqual(called_kwargs.get("cwd"), "/go/project")
+        self.assertNotIn("/src", called_args[0])
+
+    def test_invoke_raises_not_implemented_for_unknown_tool(self):
+        adapter = legacy.LegacySarifAdapter("unknown")
         with self.assertRaises(NotImplementedError):
             adapter.invoke(".")
 
