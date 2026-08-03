@@ -55,7 +55,7 @@ jobs:
           python - <<'PY'
           import os
           import sys
-          sys.path.insert(0, os.path.join(os.getcwd(), 'scripts'))
+          sys.path.insert(0, os.path.join(os.getcwd(), 'skill', 'scripts'))
           import ingest_tools as it
           findings = it.ingest_dir(os.environ['TOOLS_OUT'], 'ci')
           # Ignore intentionally vulnerable test fixtures.
