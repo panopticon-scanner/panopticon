@@ -9,7 +9,6 @@ import re
 import shutil
 import subprocess
 import sys
-from string import Template
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import scripts.citations as citations
@@ -449,10 +448,11 @@ def _render_advisor_prompt(finding, repo_root=None):
             template = template[m.end():]
     claim_json = json.dumps(finding, indent=2, default=str)
     code_context = _read_code_context(finding, repo_root=repo_root)
-    rendered = Template(template).substitute(
-        claim_json=claim_json,
-        code_context=code_context,
-    )
+    # Two-step replacement avoids claim_json containing {code_context} corrupting
+    # the prompt.
+    t1, t2 = "§§CLAIM_JSON§§", "§§CODE_CONTEXT§§"
+    rendered = template.replace("{claim_json}", t1).replace("{code_context}", t2)
+    rendered = rendered.replace(t1, claim_json).replace(t2, code_context)
     if "{claim_json}" in rendered or "{code_context}" in rendered:
         raise ValueError("Advisor prompt still contains unsubstituted placeholders")
     return rendered
@@ -550,12 +550,19 @@ def _dispatch_advisor(finding):
             return {"verdict": "NEEDS_MORE_INFO",
                     "reasoning": "Advisor returned malformed verdict."}
 
+        confirmed_by_model = None
         if verdict.get("verdict") in ("CONFIRMED", "REJECTED"):
             version = _get_kimi_version(kimi)
             if version == "kimi-cli-unknown" and system_version:
                 version = "kimi-cli-%s" % system_version
-            finding.setdefault("provenance", {})["confirmed_by_model"] = version
-        return verdict
+            confirmed_by_model = version
+        return {
+            "verdict": verdict.get("verdict"),
+            "reasoning": verdict.get("reasoning"),
+            "references": verdict.get("references", []),
+            "citations": verdict.get("citations", {}),
+            "confirmed_by_model": confirmed_by_model,
+        }
     except Exception as e:  # noqa: BLE001 - advisor failure is non-fatal
         print("advisor dispatch failed: %s" % e, file=sys.stderr)
         return {"verdict": "NEEDS_MORE_INFO",
@@ -627,6 +634,9 @@ def _partition_findings(findings, advisor_dispatch=None):
                 prov["confirmed_by"] = "agent:advisor"
                 prov["confirmation_status"] = "CONFIRMED"
                 prov["confirmation_reasoning"] = advisor_result.get("reasoning")
+                confirmed_by_model = advisor_result.get("confirmed_by_model")
+                if confirmed_by_model:
+                    prov["confirmed_by_model"] = confirmed_by_model
                 # Merge advisor citations if present without overwriting keys
                 # that already exist on the finding.
                 advisor_citations = advisor_result.get("citations")
