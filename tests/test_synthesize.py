@@ -1299,3 +1299,25 @@ class TestInternalFieldCleanup(unittest.TestCase):
         for finding in report.get("discarded_claims", []):
             self.assertNotIn("_group", finding)
             self.assertNotIn("_repo_root", finding)
+
+
+class TestGroupReMatchesDispatchNames(unittest.TestCase):
+    def test_matches_names_actually_produced_by_dispatch(self):
+        import scripts.dispatch as dispatch
+        profile = {"group": "changes_1", "files": ["a.py"], "depth": "standard",
+                   "panels": ["security"],
+                   "lenses": {"security": [
+                       {"name": "injection", "spawn": True, "priority": 1,
+                        "depth_threshold": "shallow"}]}}
+        plan = dispatch.build_plan(profile, host="claude")
+        self.assertTrue(plan)
+        for inv in plan:
+            base = os.path.basename(inv["out_file"])
+            m = syn.GROUP_RE.match(base)
+            self.assertIsNotNone(m, base)
+            self.assertEqual(m.group(1), "changes_1", base)
+
+    def test_still_matches_legacy_2x_names(self):
+        m = syn.GROUP_RE.match("findings-changes_1-security.json")
+        self.assertIsNotNone(m)
+        self.assertEqual(m.group(1), "changes_1")

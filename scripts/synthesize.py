@@ -822,7 +822,9 @@ def severity_stats(findings):
 
 
 ID_RE = re.compile(r"^[A-Z]{2,4}-\d{3,}$")
-GROUP_RE = re.compile(r"^findings-(.+)-(?:code|test|security|architecture|database|redteam)\.json$")
+GROUP_RE = re.compile(
+    r"^findings-(.+)-(?:code|test|security|architecture|database|redteam)"
+    r"(?:-panel_review|-lens_sweep-[A-Za-z0-9_]+)?\.json$")
 _GRADE_ORDER = ["A", "B", "C", "D", "F"]
 
 
