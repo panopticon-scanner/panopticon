@@ -50,7 +50,7 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
 7. **Synthesize (pass 1)** — `python3 scripts/synthesize.py --emit-verify-queue [flags] .panopticon/findings-*.json`.
    If it writes `.panopticon/verify-queue.json`, proceed to step 8; if it printed a report, skip to step 9.
 8. **Verify** — for each entry in `verify-queue.json`, dispatch the `advisor` agent
-   (parallel) with the entry's `finding` JSON rendered into the agent prompt. The
+   (`agents/advisor.md`) (parallel) with the entry's `finding` JSON rendered into the agent prompt. The
    advisor RETURNS a verdict JSON; write it verbatim to
    `.panopticon/verdicts/{queue_id}.json`. Advisors are read-only; the orchestrator
    performs the write. Then run
