@@ -6,7 +6,7 @@ import argparse
 import json
 import os
 import re
-import shlex
+import shutil
 import subprocess
 import sys
 
@@ -433,63 +433,59 @@ def _render_advisor_prompt(finding):
             "## Code context\n\n{code_context}\n\n"
             "Return JSON with verdict, reasoning, references, citations."
         )
+    # The advisor markdown file carries YAML frontmatter metadata for Kimi Code;
+    # strip it so the rendered prompt contains only the instructions + placeholders.
+    if template.startswith("---"):
+        m = re.search(r"^---\s*\n.*?\n---\s*\n", template, re.DOTALL)
+        if m:
+            template = template[m.end():]
     claim_json = json.dumps(finding, indent=2, default=str)
     code_context = _read_code_context(finding)
     return template.replace("{claim_json}", claim_json).replace("{code_context}", code_context)
 
 
 def _dispatch_advisor(finding):
-    """Dispatch the advisor agent for an agentic finding.
+    """Dispatch the advisor agent for an agentic finding via the Kimi Code CLI.
 
-    If ``PANOPTICON_ADVISOR_COMMAND`` is set, invoke it as a subprocess with a
-    JSON payload on stdin containing the rendered prompt and finding. The
-    command must print a JSON verdict object on stdout. If the hook is not
-    configured or any invocation/parse step fails, fall back to a safe
-    ``NEEDS_MORE_INFO`` verdict so the pipeline never crashes.
+    Resolves ``kimi`` in PATH, invokes it with ``--agent-file agents/advisor.md``
+    and the rendered prompt. Parses the JSON verdict from stdout. Any failure
+    (CLI missing, subprocess error, timeout, invalid JSON, missing verdict key)
+    falls back to a safe ``NEEDS_MORE_INFO`` verdict so the pipeline never crashes.
     """
-    prompt = _render_advisor_prompt(finding)
-    command = os.environ.get("PANOPTICON_ADVISOR_COMMAND")
-    if not command:
+    kimi = shutil.which("kimi")
+    if not kimi:
         return {"verdict": "NEEDS_MORE_INFO",
-                "reasoning": "PANOPTICON_ADVISOR_COMMAND not configured."}
-    payload = {
-        "prompt": prompt,
-        "finding": finding,
-        "template_path": os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "agents", "advisor.md"),
-    }
+                "reasoning": "Kimi Code CLI not available; cannot dispatch advisor."}
+    template_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "agents", "advisor.md")
+    prompt = _render_advisor_prompt(finding)
     try:
         result = subprocess.run(
-            shlex.split(command),
-            input=json.dumps(payload).encode("utf-8"),
+            [kimi, "--agent-file", template_path, "--prompt", prompt,
+             "--output-format", "text"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=120,
             check=False,
+            text=True,
         )
+        if result.returncode != 0:
+            stderr = (result.stderr or "")[:500]
+            print("advisor subprocess exited %d: %s" % (result.returncode, stderr),
+                  file=sys.stderr)
+            return {"verdict": "NEEDS_MORE_INFO",
+                    "reasoning": "Advisor subprocess exited with code %d." % result.returncode}
+        verdict = load_json_tolerant(result.stdout)
+        if not isinstance(verdict, dict) or "verdict" not in verdict:
+            print("advisor subprocess returned malformed verdict", file=sys.stderr)
+            return {"verdict": "NEEDS_MORE_INFO",
+                    "reasoning": "Advisor returned malformed verdict."}
+        return verdict
     except Exception as e:  # noqa: BLE001 - advisor failure is non-fatal
-        print("advisor subprocess invocation failed: %s" % e, file=sys.stderr)
+        print("advisor dispatch failed: %s" % e, file=sys.stderr)
         return {"verdict": "NEEDS_MORE_INFO",
-                "reasoning": "Advisor subprocess failed: %s" % e}
-    if result.returncode != 0:
-        stderr = result.stderr.decode("utf-8", errors="replace")[:500]
-        print("advisor subprocess exited %d: %s" % (result.returncode, stderr),
-              file=sys.stderr)
-        return {"verdict": "NEEDS_MORE_INFO",
-                "reasoning": "Advisor subprocess exited with code %d." % result.returncode}
-    try:
-        verdict = load_json_tolerant(result.stdout.decode("utf-8"))
-    except Exception as e:  # noqa: BLE001 - advisor failure is non-fatal
-        stdout = result.stdout.decode("utf-8", errors="replace")[:500]
-        print("advisor subprocess returned invalid JSON: %s (stdout: %s)" % (e, stdout),
-              file=sys.stderr)
-        return {"verdict": "NEEDS_MORE_INFO",
-                "reasoning": "Advisor returned invalid JSON."}
-    if not isinstance(verdict, dict) or not verdict.get("verdict"):
-        return {"verdict": "NEEDS_MORE_INFO",
-                "reasoning": "Advisor returned malformed verdict."}
-    return verdict
+                "reasoning": "Advisor dispatch failed: %s" % e}
 
 
 def _is_agentic(f):
