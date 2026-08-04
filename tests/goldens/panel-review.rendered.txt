@@ -19,7 +19,7 @@ For `security` and `redteam` panels, apply the relevant language-specific sectio
 
 ## Side-effect boundary
 
-Your ONLY action is writing that one findings file. Perform NO GitHub writes, NO repo mutations, NO dispatches, NO credential mints.
+Your ONLY output is the single findings JSON object returned as your final message. Perform NO GitHub writes, NO repo mutations, NO dispatches, NO credential mints, NO file writes.
 
 ## Finding format
 
