@@ -76,4 +76,4 @@ Return ONLY the ScopeProfile JSON. No prose.
 
 ## Tool policy
 
-Your only tools are Read, Grep, Glob, Bash. You must not use Edit, Write, Agent under any circumstances.
+Your only tools are Read, Grep, Glob. You must not use Bash, Edit, Write, Agent under any circumstances.

@@ -6,7 +6,7 @@ Depth: standard
 ## Your task
 
 Review the listed files through the `security` panel. Cover all lenses assigned to this panel that are NOT being handled by dedicated lens sweep agents.
-Emit findings as raw JSON `{"findings": [...]}` to `.panopticon/findings-g1-security-panel_review.json` and return ONLY the path + count.
+Return ONLY a raw JSON object `{"findings": [...]}` as your final message — you cannot write files; the orchestrator writes your findings to `.panopticon/findings-g1-security-panel_review.json`.
 
 ## Lenses assigned to this panel
 
@@ -57,4 +57,4 @@ For `security`/`redteam` CRITICAL/HIGH findings, add `cvss` {score, vector} and 
 
 ## Tool policy
 
-Your only tools are Read, Grep, Glob, Bash. You must not use Edit, Write, Agent under any circumstances.
+Your only tools are Read, Grep, Glob. You must not use Bash, Edit, Write, Agent under any circumstances.

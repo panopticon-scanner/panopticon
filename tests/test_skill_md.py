@@ -46,3 +46,7 @@ class TestSkillMd(unittest.TestCase):
         for token in ["--gate-unverified", "--max-verify", "--render-advisor",
                       "--host", "--verdicts-dir"]:
             self.assertIn(token, self.text, token)
+
+    def test_uniform_return_json_contract(self):
+        self.assertIn("every reviewer RETURNS its JSON", self.text)
+        self.assertNotIn("their tool policy allows Bash", self.text)

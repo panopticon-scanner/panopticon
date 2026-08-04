@@ -40,18 +40,16 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
 ## Pipeline
 1. `TodoList`: discovery → scout → tools → panels → lens sub-reviews → synthesis.
 2. **Discovery** — run `python3 scripts/orchestrator.py` to produce `groups.json`.
-3. **Scout** — dispatch the `scout` role (`agents/scout.md`) per group — its template has no placeholders; dispatch its body plus tool-policy line as the prompt; output `ScopeProfile` to `.panopticon/scout-{group}.json`.
+3. **Scout** — dispatch the `scout` role (`agents/scout.md`) per group — its template has no placeholders; dispatch its body plus tool-policy line as the prompt; the scout RETURNS the ScopeProfile JSON; the orchestrator writes it to `.panopticon/scout-{group}.json`.
    Append the group's name, its file list from `groups.json`, and the `security_mode` to the prompt body — the scout template itself carries no assignment.
 4. **Tool scan** — optional Docker container; SARIF ingested by `scripts/ingest_tools.py`.
 5. **Plan dispatch** — run `python3 scripts/dispatch.py <scope-profile.json> --host <your host: claude|kimi|generic> --out .panopticon/dispatch-plan.json` to produce a `DispatchPlan` of role-based agents.
    Pass your host explicitly — env detection is fallback only.
 6. **Fan-out** — for each entry in `.panopticon/dispatch-plan.json`, dispatch
    `entry.prompt` with the model named by `entry.model.model` via your host's agent mechanism (see Host
-   dispatch below). `panel_review` reviewers write their own findings file to
-   the entry's `out_file` (their tool policy allows Bash); `lens_sweep`
-   reviewers RETURN the findings JSON and the orchestrator writes it to the
-   entry's `out_file` (their tool policy is read-only). `panel_review`
-   filenames omit `{lens}`.
+   dispatch below). Every reviewer role is read-only: every reviewer RETURNS its JSON as the
+   final message and the orchestrator writes it to the entry's `out_file`.
+   `panel_review` filenames omit `{lens}`.
 7. **Synthesize (pass 1)** — `python3 scripts/synthesize.py --emit-verify-queue [flags] .panopticon/findings-*.json`.
    If it prints a "verify queue: N entries" line, proceed to step 8; if it printed a report, skip to step 9.
 8. **Verify** — Run `python3 scripts/dispatch.py --render-advisor .panopticon/verify-queue.json --out .panopticon/advisor-prompts`,

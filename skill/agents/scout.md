@@ -2,8 +2,8 @@
 name: scout
 description: Profiles files and selects depth/lenses for a review group
 tool_policy:
-  allowed: [Read, Grep, Glob, Bash]
-  forbidden: [Edit, Write, Agent]
+  allowed: [Read, Grep, Glob]
+  forbidden: [Bash, Edit, Write, Agent]
 ---
 
 You are the panopticon scout. Read the assigned files and emit a single **ScopeProfile** JSON object conforming to `reference/scope-profile-schema.json`.
