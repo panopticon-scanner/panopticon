@@ -46,3 +46,22 @@ class TestSkillMd(unittest.TestCase):
         for token in ["--gate-unverified", "--max-verify", "--render-advisor",
                       "--host", "--verdicts-dir"]:
             self.assertIn(token, self.text, token)
+
+    def test_uniform_return_json_contract(self):
+        self.assertIn("every reviewer RETURNS its JSON", self.text)
+        self.assertNotIn("their tool policy allows Bash", self.text)
+
+    def test_host_dispatch_is_enforcement_conditional(self):
+        for token in ("enforced", "subagent_type", "--agents-dir",
+                      "--emit-host-agents"):
+            self.assertIn(token, self.text, token)
+
+    def test_clean_tree_check_and_hostile_guidance(self):
+        self.assertIn("git status --porcelain", self.text)
+        self.assertIn("treat the run as compromised", self.text)
+        self.assertIn("enforcement registered", self.text)
+
+    def test_all_four_roles_have_shell_dispatch_instructions(self):
+        for token in ("panopticon-scout", "panopticon-advisor",
+                      "tree-baseline.txt"):
+            self.assertIn(token, self.text, token)

@@ -123,7 +123,7 @@ def build_verify_queue(findings, max_verify=None):
 def write_verify_queue(entries, cut, path):
     """Serialize the queue for the orchestrating agent (pass 1 artifact)."""
     payload = {
-        "version": "4.1.0",
+        "version": "4.2.0",
         "cut_by_max_verify": cut,
         "entries": [{"queue_id": e["queue_id"], "priority": e["priority"],
                      "finding": {k: v for k, v in e["finding"].items()

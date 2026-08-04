@@ -167,9 +167,16 @@ class TestReportSchema(unittest.TestCase):
 
         # Verify key structure
         self.assertIn("version", report["meta"])
-        self.assertEqual(report["meta"]["version"], "4.1.0")
+        self.assertEqual(report["meta"]["version"], "4.2.0")
         self.assertIn("evidence", report["findings"][0])
         self.assertNotIn("recommendations", report)
+
+    def test_schema_declares_tool_policy_mode(self):
+        with open(SCHEMA_PATH, encoding="utf-8") as fh:
+            schema = json.load(fh)
+        meta_props = schema["properties"]["meta"]["properties"]
+        self.assertEqual(meta_props["tool_policy_mode"]["enum"],
+                         ["enforced", "advisory", "mixed"])
 
 
 if __name__ == "__main__":

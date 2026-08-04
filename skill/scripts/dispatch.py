@@ -78,6 +78,68 @@ def load_template(role_file):
 
 PLACEHOLDER_RE = re.compile(r"\{([a-z_]+)\}")
 
+ROLE_FILES = {"scout": "scout.md", "panel_review": "panel-review.md",
+              "lens_sweep": "lens-sweep.md", "advisor": "advisor.md"}
+CLAUDE_AGENTS_DIR = os.path.join(os.path.expanduser("~"), ".claude", "agents")
+
+# Emission is deterministic policy — ambient PANOPTICON_MODEL_* overrides apply
+# to per-run dispatch plans, never to persisted registrations.
+EMIT_MODEL_POLICY = {"claude": {"scout": "haiku", "lens_sweep": "haiku",
+                                 "panel_review": "sonnet", "advisor": "opus"}}
+
+_CHARTER = (
+    "You are panopticon's `%s` reviewer (a registered enforcement shell).\n"
+    "Follow the dispatched task message exactly — it contains your full\n"
+    "instructions for this run. Your tool restrictions are host-enforced:\n"
+    "you may use only %s and must never attempt %s.\n"
+    "Return your result as the task message instructs.\n")
+
+
+def registered_agent_name(role_file):
+    """panopticon-<stem>, e.g. scout.md -> panopticon-scout."""
+    return "panopticon-" + role_file[:-len(".md")]
+
+
+def emit_host_agents(host, out_dir):
+    """Generate host-native registered agent files (enforcement shells).
+
+    Frontmatter carries the enforceable surface (name, description, tools,
+    model); the body is a short charter. The rendered prompt still arrives as
+    the task message at dispatch time — registration changes what an agent MAY
+    do, never what it is asked to do. Fail-fast on template errors (shipped
+    assets); idempotent for unchanged templates.
+    """
+    if host not in ("claude", "kimi"):
+        raise ValueError("emit-host-agents: unsupported host %r (claude|kimi)" % host)
+    os.makedirs(out_dir, exist_ok=True)
+    written = []
+    for role, role_file in sorted(ROLE_FILES.items()):
+        meta, _body = load_template(role_file)
+        tp = meta["tool_policy"]
+        agent = registered_agent_name(role_file)
+        charter = _CHARTER % (role, ", ".join(tp["allowed"]),
+                              ", ".join(tp["forbidden"]))
+        if host == "claude":
+            model = EMIT_MODEL_POLICY.get("claude", {}).get(role)
+            fm = ["---", "name: %s" % agent,
+                  "description: %s" % meta["description"],
+                  "tools: %s" % ", ".join(tp["allowed"])]
+            if model:
+                fm.append("model: %s" % model)
+            fm.append("---")
+        else:
+            fm = (["---", "name: %s" % agent,
+                   "description: %s" % meta["description"], "tools:"]
+                  + ["  - %s" % t for t in tp["allowed"]]
+                  + ["disallowedTools:"]
+                  + ["  - %s" % t for t in tp["forbidden"]]
+                  + ["---"])
+        path = os.path.join(out_dir, agent + ".md")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(fm) + "\n\n" + charter)
+        written.append(path)
+    return written
+
 
 def _tool_policy_line(meta):
     tp = meta["tool_policy"]
@@ -136,18 +198,33 @@ AGENT_NAME = {
 }
 
 
-def build_plan(scope_profile, host=None, model_overrides=None):
+def _registration_dir(host, agents_dir):
+    """Explicit dir wins; claude defaults to the user-level agents dir; any
+    other host has no default (never enforced without --agents-dir)."""
+    if agents_dir:
+        return agents_dir
+    return CLAUDE_AGENTS_DIR if host == "claude" else None
+
+
+def _is_registered(reg_dir, role_file):
+    """Check if a role is registered in the registration directory."""
+    return bool(reg_dir) and os.path.isfile(
+        os.path.join(reg_dir, registered_agent_name(role_file) + ".md"))
+
+
+def build_plan(scope_profile, host=None, model_overrides=None, agents_dir=None):
     """Return a DispatchPlan: list of agent invocations.
 
     Each invocation has:
     - role: lens_sweep | panel_review
-    - agent: Kimi Code custom agent name
+    - agent: Kimi Code custom agent name (or registered name if enforced)
     - model: resolved model config dict
     - panel: panel name
     - lens: lens name (for lens_sweep only)
     - files: list of files to review
     - group: group name
     - depth: panel depth
+    - enforced: boolean, true if this role is registered in agents_dir
     - lenses: list of non-spawned lens names (for panel_review only)
     - out_file: where the agent should write findings
     """
@@ -157,6 +234,17 @@ def build_plan(scope_profile, host=None, model_overrides=None):
     files = scope_profile.get("files", [])
     depth = scope_profile.get("depth", "standard")
     plan = []
+
+    # Compute registration directory once
+    reg_dir = _registration_dir(host, agents_dir)
+
+    # Pre-compute enforcement status for each role to avoid triple stat calls
+    panel_enforced = _is_registered(reg_dir, ROLE_FILES["panel_review"])
+    lens_enforced = _is_registered(reg_dir, ROLE_FILES["lens_sweep"])
+    panel_agent = (registered_agent_name(ROLE_FILES["panel_review"])
+                   if panel_enforced else AGENT_NAME["panel_review"])
+    lens_agent = (registered_agent_name(ROLE_FILES["lens_sweep"])
+                  if lens_enforced else AGENT_NAME["lens_sweep"])
 
     for panel_name in scope_profile.get("panels", []):
         spawned = depth_planner.plan_lenses(scope_profile, panel_name)
@@ -168,7 +256,8 @@ def build_plan(scope_profile, host=None, model_overrides=None):
         panel_out_file = ".panopticon/findings-%s-%s-panel_review.json" % (group_name, panel_name)
         plan.append({
             "role": "panel_review",
-            "agent": AGENT_NAME["panel_review"],
+            "agent": panel_agent,
+            "enforced": panel_enforced,
             "model": model_resolver.resolve_model(host, "panel_review", overrides),
             "panel": panel_name,
             "lens": None,
@@ -192,7 +281,8 @@ def build_plan(scope_profile, host=None, model_overrides=None):
             sweep_out_file = ".panopticon/findings-%s-%s-lens_sweep-%s.json" % (group_name, panel_name, lens_name)
             plan.append({
                 "role": "lens_sweep",
-                "agent": AGENT_NAME["lens_sweep"],
+                "agent": lens_agent,
+                "enforced": lens_enforced,
                 "model": model_resolver.resolve_model(host, "lens_sweep", overrides),
                 "panel": panel_name,
                 "lens": lens_name,
@@ -269,10 +359,27 @@ def main(argv=None):
     ap.add_argument("--out", default=None, help="Write DispatchPlan JSON to this file")
     ap.add_argument("--render-advisor", metavar="QUEUE", default=None,
                     help="Render advisor prompts from a verify-queue JSON into --out DIR")
+    ap.add_argument("--emit-host-agents", metavar="HOST", choices=["claude", "kimi"], default=None)
+    ap.add_argument("--agents-dir", default=None,
+                    help="Directory containing registered agent .md files")
     ap.add_argument("--model-lens-sweep", default=None)
     ap.add_argument("--model-panel-review", default=None)
     ap.add_argument("--model-advisor", default=None)
     args = ap.parse_args(argv)
+
+    if args.emit_host_agents:
+        out_dir = args.out or (CLAUDE_AGENTS_DIR if args.emit_host_agents == "claude" else None)
+        if not out_dir:
+            print("dispatch: --emit-host-agents kimi requires --out DIR", file=sys.stderr)
+            return 2
+        try:
+            written = emit_host_agents(args.emit_host_agents, out_dir)
+        except ValueError as e:
+            print("dispatch: %s" % e, file=sys.stderr)
+            return 1
+        for p in written:
+            print(p)
+        return 0
 
     if args.render_advisor:
         if not args.out:
@@ -307,7 +414,8 @@ def main(argv=None):
         overrides["advisor"] = args.model_advisor
 
     try:
-        plan = build_plan(profile, host=args.host, model_overrides=overrides)
+        plan = build_plan(profile, host=args.host, model_overrides=overrides,
+                          agents_dir=args.agents_dir)
     except ValueError as e:
         print("dispatch: %s" % e, file=sys.stderr)
         return 1

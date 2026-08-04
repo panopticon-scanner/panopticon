@@ -27,25 +27,15 @@ class TestTemplateFrontmatter(unittest.TestCase):
             self.assertNotIn("model_preference", raw, role_file)
             self.assertNotIn("disallowedTools", raw, role_file)
 
-    def test_tool_policy_values_preserved_this_round(self):
-        meta, _ = dispatch.load_template("scout.md")
-        self.assertEqual(meta["tool_policy"]["allowed"],
-                         ["Read", "Grep", "Glob", "Bash"])
-        self.assertEqual(meta["tool_policy"]["forbidden"],
-                         ["Edit", "Write", "Agent"])
-        meta, _ = dispatch.load_template("lens-sweep.md")
-        self.assertEqual(meta["tool_policy"]["allowed"], ["Read", "Grep", "Glob"])
-        self.assertEqual(meta["tool_policy"]["forbidden"],
-                         ["Bash", "Edit", "Write", "Agent"])
-        meta, _ = dispatch.load_template("advisor.md")
-        self.assertEqual(meta["tool_policy"]["allowed"], ["Read", "Grep", "Glob"])
-        self.assertEqual(meta["tool_policy"]["forbidden"],
-                         ["Bash", "Edit", "Write", "Agent"])
-        meta, _ = dispatch.load_template("panel-review.md")
-        self.assertEqual(meta["tool_policy"]["allowed"],
-                         ["Read", "Grep", "Glob", "Bash"])
-        self.assertEqual(meta["tool_policy"]["forbidden"],
-                         ["Edit", "Write", "Agent"])
+    def test_tool_policy_uniform_least_privilege(self):
+        # Round 3a: every role is read-only; reviewers return JSON and the
+        # orchestrator writes all artifacts.
+        for role_file in ROLES:
+            meta, _ = dispatch.load_template(role_file)
+            self.assertEqual(meta["tool_policy"]["allowed"],
+                             ["Read", "Grep", "Glob"], role_file)
+            self.assertEqual(meta["tool_policy"]["forbidden"],
+                             ["Bash", "Edit", "Write", "Agent"], role_file)
 
     def test_malformed_frontmatter_fails_fast(self):
         with self.assertRaises(ValueError) as ctx:
