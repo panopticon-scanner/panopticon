@@ -11,6 +11,7 @@ Usage:  python3 .panopticon/file_issues.py [--dry-run] [--limit N]
 """
 import argparse
 import json
+import os
 import subprocess
 import sys
 
@@ -151,9 +152,30 @@ def main():
     a = ap.parse_args()
 
     report = json.load(open(REPORT, encoding="utf-8"))
+    findings = list(report["findings"])
+    # A large report is split; meta.parts names the continuation files, resolved
+    # beside the main artifact. Reading only the first part silently under-files.
+    for part in (report.get("meta") or {}).get("parts") or []:
+        part = str(part)
+        base_dir = os.path.dirname(REPORT)
+        ppath = os.path.normpath(os.path.join(base_dir, part))
+        base_dir_norm = os.path.normpath(base_dir)
+        if os.path.isabs(part) or not (ppath == base_dir_norm or ppath.startswith(base_dir_norm + os.sep)):
+            raise ValueError("invalid meta.parts entry: %r" % part)
+        try:
+            with open(ppath, encoding="utf-8") as fh:
+                pdata = json.load(fh)
+        except (OSError, json.JSONDecodeError) as e:
+            print("FAILED to load report part %s (%s)" % (ppath, e), file=sys.stderr)
+            raise
+
+        part_findings = pdata.get("findings") or []
+        findings.extend(part_findings)
+        print("loaded %d finding(s) from part %s" % (len(part_findings), part), file=sys.stderr)
+
     work = []
     if a.only != "rejected":
-        for f in report["findings"]:
+        for f in findings:
             work.append((f, False))
     if a.only != "findings":
         for f in report.get("discarded_claims", []):
