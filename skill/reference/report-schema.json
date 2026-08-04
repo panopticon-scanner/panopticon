@@ -24,7 +24,8 @@
               "role": {"type": "string"}
             }
           }
-        }
+        },
+        "tool_policy_mode": {"type": "string", "enum": ["enforced", "advisory", "mixed"]}
       }
     },
     "summary": {

@@ -1188,7 +1188,7 @@ class TestEvidenceReport(unittest.TestCase):
         report = self._report([_agentic()])
         self.assertNotIn("effort_to_remediate", report["summary"])
         self.assertNotIn("recommendations", report)
-        self.assertEqual(report["meta"]["version"], "4.1.0")
+        self.assertEqual(report["meta"]["version"], "4.2.0")
 
     def test_citation_quality_lives_in_evidence(self):
         report = self._report([_agentic(citations={"cwe": ["CWE-89"]})])
@@ -1442,3 +1442,43 @@ class TestCalibrationFixmes(unittest.TestCase):
             self.assertIsNotNone(syn.ID_RE.match(good), good)
         for bad in ("A-001", "ABCDEFGHI-001", "struct-001", "SEC-01"):
             self.assertIsNone(syn.ID_RE.match(bad), bad)
+
+
+class TestToolPolicyMode(unittest.TestCase):
+    def _write_plan(self, d, flags):
+        os.makedirs(os.path.join(d, ".panopticon"), exist_ok=True)
+        plan = [{"role": "panel_review", "enforced": f} for f in flags]
+        with open(os.path.join(d, ".panopticon", "dispatch-plan.json"), "w") as fh:
+            json.dump(plan, fh)
+
+    def test_all_enforced(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._write_plan(d, [True, True])
+            self.assertEqual(
+                syn.derive_tool_policy_mode(os.path.join(d, ".panopticon")),
+                "enforced")
+
+    def test_none_enforced(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._write_plan(d, [False, False])
+            self.assertEqual(
+                syn.derive_tool_policy_mode(os.path.join(d, ".panopticon")),
+                "advisory")
+
+    def test_mixed(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._write_plan(d, [True, False])
+            self.assertEqual(
+                syn.derive_tool_policy_mode(os.path.join(d, ".panopticon")),
+                "mixed")
+
+    def test_no_plan_files_is_advisory(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(syn.derive_tool_policy_mode(d), "advisory")
+
+    def test_report_meta_carries_mode_and_new_version(self):
+        f = _agentic()
+        report = syn.build_report([f], [], "t", None, "2026-08-03T00:00:00Z",
+                                  tool_policy_mode="mixed")
+        self.assertEqual(report["meta"]["tool_policy_mode"], "mixed")
+        self.assertEqual(report["meta"]["version"], "4.2.0")

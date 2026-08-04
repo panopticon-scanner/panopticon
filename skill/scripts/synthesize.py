@@ -3,6 +3,7 @@
 grades and a CI gate verdict. Stdlib-only.
 """
 import argparse
+import glob
 import json
 import os
 import re
@@ -462,9 +463,32 @@ def _issue_sort(f):
     return (_sev_rank(f), 0 if eligible else 1)
 
 
+def derive_tool_policy_mode(panopticon_dir=".panopticon"):
+    """Derive the run's tool-policy posture from dispatch plan files.
+
+    enforced: every entry across every plan file is enforced; advisory: none
+    are (or no plan files exist — nothing was enforced); mixed: some are.
+    Tolerant: unreadable/malformed plan files are ignored.
+    """
+    flags = []
+    for path in sorted(glob.glob(os.path.join(panopticon_dir, "dispatch-plan*.json"))):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                plan = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if isinstance(plan, list):
+            flags.extend(bool(e.get("enforced")) for e in plan if isinstance(e, dict))
+    if flags and all(flags):
+        return "enforced"
+    if any(flags):
+        return "mixed"
+    return "advisory"
+
+
 def build_report(findings, groups_meta, target, fail_on, timestamp, review_type="repo",
                  security_mode="standard", verdicts=None, gate_unverified=False,
-                 max_verify=None, verdicts_supplied=False):
+                 max_verify=None, verdicts_supplied=False, tool_policy_mode=None):
     """Build a CodeReviewReport under the two-axis severity x evidence model.
 
     Severity is never mutated here. Verdicts (from evidence.load_verdicts) are
@@ -538,9 +562,10 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
             "target": target,
             "review_type": review_type,
             "timestamp": timestamp,
-            "version": "4.1.0",
+            "version": "4.2.0",
             "security_mode": security_mode,
             "models_used": _collect_models_used(findings),
+            **({"tool_policy_mode": tool_policy_mode} if tool_policy_mode else {}),
         },
         "summary": {
             "overall_grade": overall,
@@ -809,11 +834,13 @@ def main(argv=None):
         print("verify queue empty; emitting final report", file=sys.stderr)
 
     verdicts = evidence_mod.load_verdicts(args.verdicts_dir)
+    tool_policy_mode = derive_tool_policy_mode()
     report = build_report(findings, groups_meta, args.target, args.fail_on, ts,
                           review_type, security_mode, verdicts=verdicts,
                           gate_unverified=args.gate_unverified,
                           max_verify=args.max_verify,
-                          verdicts_supplied=args.verdicts_dir is not None)
+                          verdicts_supplied=args.verdicts_dir is not None,
+                          tool_policy_mode=tool_policy_mode)
     errors, warnings = validate_report(report)
     for w in warnings:
         print("WARN: %s" % w, file=sys.stderr)
