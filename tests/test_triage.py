@@ -172,5 +172,72 @@ class TestApply(unittest.TestCase):
         self.assertEqual(runner.calls, [])
 
 
+class SequencingFakeRunner:
+    """Returns scripted sequence of (returncode, stdout, stderr) results."""
+    def __init__(self, results):
+        self.results = results  # list of (returncode, stdout, stderr)
+        self.calls = []
+        self.call_index = 0
+
+    def __call__(self, argv, **kw):
+        self.calls.append(argv)
+        if self.call_index >= len(self.results):
+            raise RuntimeError("SequencingFakeRunner: exhausted results")
+        rc, stdout, stderr = self.results[self.call_index]
+        self.call_index += 1
+        class R:
+            pass
+        R.returncode = rc
+        R.stdout = stdout
+        R.stderr = stderr
+        return R
+
+
+class TestGhRetry(unittest.TestCase):
+    def test_rate_limit_retry_and_succeed(self):
+        """Rate limit on first call, success on second."""
+        sleep_calls = []
+        fake_sleep = lambda s: sleep_calls.append(s)
+        runner = SequencingFakeRunner([
+            (1, "", "rate limit exceeded"),  # first call fails with rate limit
+            (0, "success output", ""),        # second call succeeds
+        ])
+        result = triage.gh(["gh", "test"], runner=runner, sleep=fake_sleep)
+        self.assertEqual(result, "success output")
+        self.assertEqual(runner.call_index, 2)  # called twice
+        self.assertEqual(sleep_calls, [60])     # slept once with 60
+
+    def test_non_rate_limit_failure_raises_immediately(self):
+        """Non-rate-limit failure raises RuntimeError without retry."""
+        sleep_calls = []
+        fake_sleep = lambda s: sleep_calls.append(s)
+        runner = SequencingFakeRunner([
+            (1, "", "not found"),  # failure without rate limit hint
+        ])
+        with self.assertRaises(RuntimeError):
+            triage.gh(["gh", "test"], runner=runner, sleep=fake_sleep)
+        self.assertEqual(runner.call_index, 1)  # called only once
+        self.assertEqual(sleep_calls, [])       # never slept
+
+    def test_all_five_attempts_rate_limited_then_fail(self):
+        """All 5 attempts rate-limited, raises RuntimeError on 5th attempt."""
+        sleep_calls = []
+        fake_sleep = lambda s: sleep_calls.append(s)
+        runner = SequencingFakeRunner([
+            (1, "", "rate limit exceeded"),    # attempt 1
+            (1, "", "secondary rate limit"),   # attempt 2
+            (1, "", "abuse detection active"), # attempt 3
+            (1, "", "was submitted too quickly"), # attempt 4
+            (1, "", "rate limit"),             # attempt 5 - raises since attempt < 5 is false
+        ])
+        with self.assertRaises(RuntimeError) as cm:
+            triage.gh(["gh", "test"], runner=runner, sleep=fake_sleep)
+        # On attempt 5, rate limit doesn't trigger retry (since attempt < 5 is false)
+        # so it raises immediately with the error message
+        self.assertIn("failed", str(cm.exception))
+        self.assertEqual(runner.call_index, 5)  # all 5 attempts made
+        self.assertEqual(sleep_calls, [60, 120, 180, 240])  # sleeps before attempts 2-5
+
+
 if __name__ == "__main__":
     unittest.main()
