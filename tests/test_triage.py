@@ -197,7 +197,8 @@ class TestGhRetry(unittest.TestCase):
     def test_rate_limit_retry_and_succeed(self):
         """Rate limit on first call, success on second."""
         sleep_calls = []
-        fake_sleep = lambda s: sleep_calls.append(s)
+        def fake_sleep(s):
+            sleep_calls.append(s)
         runner = SequencingFakeRunner([
             (1, "", "rate limit exceeded"),  # first call fails with rate limit
             (0, "success output", ""),        # second call succeeds
@@ -210,7 +211,8 @@ class TestGhRetry(unittest.TestCase):
     def test_non_rate_limit_failure_raises_immediately(self):
         """Non-rate-limit failure raises RuntimeError without retry."""
         sleep_calls = []
-        fake_sleep = lambda s: sleep_calls.append(s)
+        def fake_sleep(s):
+            sleep_calls.append(s)
         runner = SequencingFakeRunner([
             (1, "", "not found"),  # failure without rate limit hint
         ])
@@ -222,7 +224,8 @@ class TestGhRetry(unittest.TestCase):
     def test_all_five_attempts_rate_limited_then_fail(self):
         """All 5 attempts rate-limited, raises RuntimeError on 5th attempt."""
         sleep_calls = []
-        fake_sleep = lambda s: sleep_calls.append(s)
+        def fake_sleep(s):
+            sleep_calls.append(s)
         runner = SequencingFakeRunner([
             (1, "", "rate limit exceeded"),    # attempt 1
             (1, "", "secondary rate limit"),   # attempt 2
