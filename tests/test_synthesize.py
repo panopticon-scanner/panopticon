@@ -1547,3 +1547,127 @@ class TestSchemaErrorsAreNotSilent(unittest.TestCase):
         errors, _ = syn.validate_report(report)
         syn.attach_schema_status(report, errors)
         self.assertEqual(report["meta"]["schema_errors"], 0)
+
+
+class TestFindingFingerprint(unittest.TestCase):
+    """Issues need identity that survives across runs and re-wordings."""
+
+    def _f(self, **kw):
+        f = {"id": "SG-001", "title": "t", "severity": "MEDIUM", "confidence": "CERTAIN",
+             "panel": "security", "category": "injection",
+             "location": {"file": "a.py", "line_start": 10}}
+        f.update(kw)
+        return f
+
+    def test_stable_across_line_moves(self):
+        a = syn.finding_fingerprint(self._f())
+        b = syn.finding_fingerprint(self._f(location={"file": "a.py", "line_start": 99}))
+        self.assertEqual(a, b)
+
+    def test_stable_across_agent_rewording(self):
+        # Agent prose varies run to run; identity must not.
+        a = syn.finding_fingerprint(self._f(title="Module mixes concerns",
+                                            description="one phrasing"))
+        b = syn.finding_fingerprint(self._f(title="Module mixes concerns",
+                                            description="a totally different phrasing"))
+        self.assertEqual(a, b)
+
+    def test_rule_id_discriminates_tool_findings_at_one_locus(self):
+        a = syn.finding_fingerprint(self._f(source="tool:semgrep",
+                                            tool_evidence={"rule_id": "R-AAA"}))
+        b = syn.finding_fingerprint(self._f(source="tool:semgrep",
+                                            tool_evidence={"rule_id": "R-BBB"}))
+        self.assertNotEqual(a, b)
+
+    def test_different_files_differ(self):
+        a = syn.finding_fingerprint(self._f())
+        b = syn.finding_fingerprint(self._f(location={"file": "b.py", "line_start": 10}))
+        self.assertNotEqual(a, b)
+
+    def test_report_findings_carry_fingerprints(self):
+        report = syn.build_report([_agentic()], [], "t", None, "2026-08-03T00:00:00Z")
+        self.assertTrue(report["findings"][0]["fingerprint"])
+        self.assertEqual(len(report["findings"][0]["fingerprint"]), 16)
+
+
+class TestToolFindingAggregation(unittest.TestCase):
+    """41 identical rule hits should be one issue with many loci, not 41 issues."""
+
+    def _hit(self, fid, line, rule="ACTIONS-PIN"):
+        return {"id": fid, "title": "mutable tag", "severity": "MEDIUM",
+                "confidence": "CERTAIN", "panel": "security", "category": "known_vulns",
+                "source": "tool:semgrep", "tool_evidence": {"rule_id": rule},
+                "location": {"file": ".github/workflows/ci.yml", "line_start": line},
+                "provenance": {"discovered_by": "tool:semgrep",
+                               "confirmation_status": "TOOL"}}
+
+    def test_same_rule_same_file_collapses_with_loci(self):
+        out = syn.aggregate_tool_findings([self._hit("A-001", 13),
+                                           self._hit("A-002", 20),
+                                           self._hit("A-003", 31)])
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["location"]["line_start"], 13)
+        self.assertEqual(len(out[0]["additional_loci"]), 2)
+        self.assertEqual(out[0]["occurrences"], 3)
+
+    def test_different_rules_stay_separate(self):
+        out = syn.aggregate_tool_findings([self._hit("A-001", 13, "R1"),
+                                           self._hit("A-002", 20, "R2")])
+        self.assertEqual(len(out), 2)
+
+    def test_agent_findings_never_aggregated(self):
+        a = {"id": "AG-001", "title": "x", "severity": "LOW", "confidence": "NOTE",
+             "panel": "code", "category": "style",
+             "location": {"file": "a.py", "line_start": 1}}
+        b = dict(a, id="AG-002", location={"file": "a.py", "line_start": 2})
+        self.assertEqual(len(syn.aggregate_tool_findings([a, b])), 2)
+
+
+class TestShortTitle(unittest.TestCase):
+    def test_long_tool_message_gets_a_short_title(self):
+        long = ("This Dependabot configuration does not set a cooldown period. "
+                "Newly published packages can be malicious or unstable. " + "x" * 400)
+        f = syn.normalize_finding({"id": "SG-001", "title": long, "severity": "LOW",
+                                   "confidence": "CERTAIN", "panel": "security",
+                                   "category": "x",
+                                   "location": {"file": "a.yml", "line_start": 1}})
+        self.assertLessEqual(len(f["short_title"]), 100)
+        self.assertEqual(f["title"], " ".join(long.split()))
+        self.assertTrue(f["short_title"].endswith("…"))
+
+    def test_short_title_passes_through_unchanged(self):
+        f = syn.normalize_finding({"id": "SG-002", "title": "Short and sweet",
+                                   "severity": "LOW", "confidence": "CERTAIN",
+                                   "panel": "code", "category": "x",
+                                   "location": {"file": "a.py", "line_start": 1}})
+        self.assertEqual(f["short_title"], "Short and sweet")
+
+
+class TestToolsDirSilentSkipGuard(unittest.TestCase):
+    def test_warns_when_tools_present_but_not_ingested(self):
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            os.makedirs(os.path.join(d, ".panopticon", "tools"))
+            with open(os.path.join(d, ".panopticon", "tools", "semgrep.sarif"), "w") as fh:
+                fh.write("{}")
+            fp = os.path.join(d, "findings-g1-code-panel_review.json")
+            with open(fp, "w") as fh:
+                json.dump({"findings": []}, fh)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                syn.main(["--target", ".", "--out", os.path.join(d, "r.json"), fp])
+        self.assertIn("--tools-dir", err.getvalue())
+
+    def test_no_warning_when_tools_dir_supplied(self):
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            tools = os.path.join(d, ".panopticon", "tools")
+            os.makedirs(tools)
+            with open(os.path.join(tools, "semgrep.sarif"), "w") as fh:
+                fh.write('{"runs":[]}')
+            fp = os.path.join(d, "findings-g1-code-panel_review.json")
+            with open(fp, "w") as fh:
+                json.dump({"findings": []}, fh)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                syn.main(["--target", ".", "--tools-dir", tools,
+                          "--out", os.path.join(d, "r.json"), fp])
+        self.assertNotIn("appears un-ingested", err.getvalue())

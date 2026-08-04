@@ -3,6 +3,7 @@
 grades and a CI gate verdict. Stdlib-only.
 """
 import argparse
+import hashlib
 import glob
 import json
 import os
@@ -70,6 +71,12 @@ def normalize_finding(f):
         desc = str(f.get("description", "")).strip()
         title = desc.splitlines()[0].strip() if desc else "(untitled)"
     f["title"] = " ".join(str(title).split())
+    # Tool messages can be whole remediation paragraphs (observed: 438 chars);
+    # issue titles need a short form with the full text kept in the body.
+    if len(f["title"]) > SHORT_TITLE_MAX:
+        f["short_title"] = f["title"][:SHORT_TITLE_MAX - 1].rstrip() + "\u2026"
+    else:
+        f["short_title"] = f["title"]
     if not f.get("category"):
         f["category"] = "general"
     return f
@@ -502,6 +509,63 @@ def derive_tool_policy_mode(panopticon_dir=".panopticon"):
     return "advisory"
 
 
+SHORT_TITLE_MAX = 100
+
+
+def finding_fingerprint(finding):
+    """Stable cross-run identity for a finding, for issue round-tripping.
+
+    Keys on panel + category + normalized file + the discriminator that is
+    actually stable for that source: a tool's rule_id, or an agent finding's
+    title. Deliberately EXCLUDES line numbers (issues survive code moves) and
+    free-text description (agent prose is re-worded every run).
+    """
+    loc = finding.get("location") or {}
+    fpath = str(loc.get("file") or "").replace("\\", "/").lstrip("./")
+    rule = (finding.get("tool_evidence") or {}).get("rule_id")
+    discriminator = str(rule) if rule else str(finding.get("title") or "")
+    payload = "|".join([str(finding.get("panel") or ""),
+                        str(finding.get("category") or ""),
+                        fpath, discriminator]).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()[:16]
+
+
+def aggregate_tool_findings(findings):
+    """Collapse repeated tool hits of one rule in one file into a single finding.
+
+    A scanner rule that fires 18 times in a workflow file is ONE issue with 18
+    loci, not 18 issues. Only tool-sourced findings aggregate; agent findings
+    are distinct judgements and pass through untouched. The survivor keeps the
+    lowest line as its primary locus and records the rest in `additional_loci`.
+    """
+    out, groups, order = [], {}, []
+    for f in findings:
+        rule = (f.get("tool_evidence") or {}).get("rule_id")
+        if not evidence_mod.is_tool_sourced(f) or not rule:
+            out.append(f)
+            continue
+        key = (f.get("panel"), f.get("category"),
+               str(((f.get("location") or {}).get("file")) or ""), str(rule))
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(f)
+    for key in order:
+        members = sorted(groups[key],
+                         key=lambda x: _norm_line((x.get("location") or {}).get("line_start"))
+                         if isinstance(_norm_line((x.get("location") or {}).get("line_start")), int)
+                         else 0)
+        best = members[0]
+        if len(members) > 1:
+            best["additional_loci"] = [
+                {"file": (m.get("location") or {}).get("file"),
+                 "line_start": (m.get("location") or {}).get("line_start")}
+                for m in members[1:]]
+        best["occurrences"] = len(members)
+        out.append(best)
+    return out
+
+
 def build_report(findings, groups_meta, target, fail_on, timestamp, review_type="repo",
                  security_mode="standard", verdicts=None, gate_unverified=False,
                  max_verify=None, verdicts_supplied=False, tool_policy_mode=None):
@@ -514,6 +578,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
     was passed at all (distinct from whether it yielded any verdicts) so the
     aggregate "no verdict" note still fires for an existing-but-empty dir.
     """
+    findings = aggregate_tool_findings(findings)
     findings, integration_findings = prepare_findings(findings)
     catalog = load_cwe_catalog()
     queue, _cut = evidence_mod.build_verify_queue(findings, max_verify)
@@ -538,6 +603,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
     citations.enrich_citations(findings, catalog, epss_enabled=False)
     for f in findings:
         f["evidence"] = evidence_mod.derive_evidence(f, matched.get(id(f)))
+        f["fingerprint"] = finding_fingerprint(f)
         f.pop("citation_quality", None)
 
     rejected = [f for f in findings if f["evidence"]["status"] == "rejected"]
@@ -826,6 +892,12 @@ def main(argv=None):
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     out = args.out or os.path.join(".panopticon", "report-%s.json" % ts.replace(":", ""))
 
+    if not args.tools_dir:
+        default_tools = os.path.join(".panopticon", "tools")
+        if os.path.isdir(default_tools) and os.listdir(default_tools):
+            print("synthesize: %s appears un-ingested — pass --tools-dir %s to "
+                  "include tool findings in this report"
+                  % (default_tools, default_tools), file=sys.stderr)
     findings = load_findings(args.files)
     if args.tools_dir and os.path.isdir(args.tools_dir):
         for tf in ingest_tools.ingest_dir(args.tools_dir, None,
