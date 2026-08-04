@@ -85,3 +85,24 @@ dispositioned in B1; #58 closed there as a duplicate.)
 | — | #81 | duplicate → #229 | HIGH filing of the roslyn dotnet-build locus |
 | — | #194 | duplicate → #193 | Verbatim duplicate; both advisors flagged the pair |
 | — | #199 | defer | Untested dev-local helper with no CI/runtime path; revisit if it enters CI |
+
+### B3b — supply chain / image build (2026-08-04)
+
+11 rows: 3 fix, 1 duplicate, 7 reject. Spot-checks: 1 batched advisor run
+covering all 7 rejected issues — **all rejections stand, 0 overturns** (every
+cited install line unchanged and unpinned; no lockfile appeared; lodash
+fixture still spec-mandated with detection tests).
+
+| Rank | Issue | Verdict | Rationale |
+|---|---|---|---|
+| 1 | #268 | fix | Pin-and-verify umbrella for the tools image: unpinned installs, unchecksummed fetches, both curl\|sh installers, floating base image; published to ghcr, consumed by CI |
+| 2 | #62 | fix | Full target read + unrestricted egress in one container; egress allow-list or offline rules/DB; the exfil channel the #229 package assumes closed |
+| 3 | #303 | fix | Fixtures image: floating-`main` clones built as root, manifest lacks a ref field, own curl\|sh instance |
+| — | #46 | duplicate → #268 | curl\|sh pair = two loci inside #268's umbrella |
+| — | #331–#340 (6) | reject | Inverted mechanism (unpinned = most-patched, no CVE named); kernel queued as #268 |
+| — | #419 | reject | Documented lodash fixture whose detection two tests assert; systemic fix is #434 |
+
+Calibration note: the advisors rejected six near-identical scanner-style
+pinning claims while the panel's correct framing of the same concern (#268)
+was independently confirmed — the two-axis model separating noise from the
+actionable form of the same underlying hygiene issue.
