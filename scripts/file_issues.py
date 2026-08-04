@@ -14,6 +14,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 REPORT = "docs/superpowers/2026-08-04-self-scan-report.json"
 REPORT_URL = ("https://github.com/psyberone/panopticon/blob/main/"
@@ -125,7 +126,36 @@ def scrub(text):
     return str(text).replace(REPO_ROOT, "").replace(REPO_ROOT.rstrip("/"), "the repo root")
 
 
-def create(title, body, labels, dry):
+LEDGER = ".panopticon/filed-issues.json"
+
+
+def load_ledger():
+    """Filing is resumable: a run that dies partway must not re-file."""
+    try:
+        with open(LEDGER, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
+
+
+def record(ledger, key, url):
+    ledger[key] = url
+    tmp = LEDGER + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(ledger, fh, indent=1, sort_keys=True)
+    os.replace(tmp, LEDGER)
+
+
+def key_for(f, rejected):
+    loc = f.get("location") or {}
+    return "%s|%s|%s|%s" % (f.get("fingerprint") or "", f.get("id") or "",
+                            loc.get("file") or "", "rejected" if rejected else "finding")
+
+
+RATE_HINTS = ("rate limit", "secondary rate", "abuse detection", "was submitted too quickly")
+
+
+def create(title, body, labels, dry, throttle=0.0):
     if dry:
         print("\n" + "=" * 78)
         print("TITLE : %s" % title)
@@ -133,15 +163,27 @@ def create(title, body, labels, dry):
         print("-" * 78)
         print(body[:900])
         return None
-    r = subprocess.run(["gh", "issue", "create", "--title", title,
-                        "--body", body, "--label", ",".join(labels)],
-                       capture_output=True, text=True)
-    if r.returncode != 0:
-        print("FAILED: %s\n%s" % (title, r.stderr.strip()), file=sys.stderr)
+    delay = throttle
+    for attempt in range(1, 6):
+        r = subprocess.run(["gh", "issue", "create", "--title", title,
+                            "--body", body, "--label", ",".join(labels)],
+                           capture_output=True, text=True)
+        if r.returncode == 0:
+            url = r.stdout.strip().splitlines()[-1]
+            print("%s  %s" % (url, title[:70]), flush=True)
+            if throttle:
+                time.sleep(throttle)
+            return url
+        err = (r.stderr or "").strip()
+        if any(h in err.lower() for h in RATE_HINTS) and attempt < 5:
+            backoff = 60 * attempt
+            print("rate limited (attempt %d); sleeping %ds" % (attempt, backoff),
+                  file=sys.stderr, flush=True)
+            time.sleep(backoff)
+            continue
+        print("FAILED: %s\n%s" % (title, err), file=sys.stderr, flush=True)
         return None
-    url = r.stdout.strip().splitlines()[-1]
-    print("%s  %s" % (url, title[:70]))
-    return url
+    return None
 
 
 def main():
@@ -149,6 +191,8 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--limit", type=int)
     ap.add_argument("--only", choices=["findings", "rejected"])
+    ap.add_argument("--throttle", type=float, default=1.5,
+                    help="seconds between creates; GitHub throttles bursts")
     a = ap.parse_args()
 
     report = json.load(open(REPORT, encoding="utf-8"))
@@ -183,10 +227,24 @@ def main():
     if a.limit:
         work = work[:a.limit]
 
-    print("filing %d issue(s)%s" % (len(work), " (DRY RUN)" if a.dry_run else ""))
-    for f, rej in work:
-        create(scrub(title_for(f)), scrub(body_for(f, rej)),
-               labels_for(f, rej), a.dry_run)
+    ledger = {} if a.dry_run else load_ledger()
+    todo = [(f, rej) for f, rej in work if key_for(f, rej) not in ledger]
+    skipped = len(work) - len(todo)
+    print("filing %d issue(s)%s%s" % (
+        len(todo), " (DRY RUN)" if a.dry_run else "",
+        "; %d already filed, skipping" % skipped if skipped else ""))
+
+    created = 0
+    for f, rej in todo:
+        url = create(scrub(title_for(f)), scrub(body_for(f, rej)),
+                     labels_for(f, rej), a.dry_run, a.throttle)
+        if url:
+            record(ledger, key_for(f, rej), url)
+            created += 1
+    if not a.dry_run:
+        print("\ncreated %d of %d; ledger: %s" % (created, len(todo), LEDGER))
+        if created < len(todo):
+            print("re-run the same command to file the remainder", file=sys.stderr)
 
 
 if __name__ == "__main__":
