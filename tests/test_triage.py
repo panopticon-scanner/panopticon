@@ -125,5 +125,52 @@ class TestStale(unittest.TestCase):
                         "updatedAt": "2026-08-04T12:00:00Z"}))
 
 
+class FakeRunner:
+    """Records argv; returns canned stdout per command prefix."""
+    def __init__(self, view_json='{"state": "OPEN", "updatedAt": "2026-08-04T12:00:00Z"}'):
+        self.calls, self.view_json = [], view_json
+
+    def __call__(self, argv, **kw):
+        self.calls.append(argv)
+        class R:
+            returncode, stderr = 0, ""
+        R.stdout = self.view_json if argv[1:3] == ["issue", "view"] else "{}"
+        return R
+
+
+class TestApply(unittest.TestCase):
+    def test_applies_only_approved_rows_and_flips_status(self):
+        rows = [fix_row(status="approved"), fix_row(issue=431, rank=2)]
+        done, stale = triage.apply(rows, runner=FakeRunner(),
+                                   sleep=lambda s: None)
+        self.assertEqual((done, stale), (1, 0))
+        self.assertEqual(rows[0]["status"], "applied")
+        self.assertEqual(rows[1]["status"], "proposed")
+
+    def test_stale_row_is_flagged_not_applied(self):
+        runner = FakeRunner(view_json='{"state": "CLOSED", '
+                                      '"updatedAt": "2026-08-01T00:00:00Z"}')
+        rows = [fix_row(status="approved")]
+        done, stale = triage.apply(rows, runner=runner, sleep=lambda s: None)
+        self.assertEqual((done, stale), (0, 1))
+        self.assertEqual(rows[0]["status"], "stale")
+        # nothing beyond the state fetch was run
+        self.assertEqual([c[1:3] for c in runner.calls], [["issue", "view"]])
+
+    def test_dry_run_touches_nothing(self):
+        runner = FakeRunner()
+        rows = [fix_row(status="approved")]
+        triage.apply(rows, dry=True, runner=runner, sleep=lambda s: None)
+        self.assertEqual(runner.calls, [])
+        self.assertEqual(rows[0]["status"], "approved")
+
+    def test_invalid_approved_row_raises_before_any_mutation(self):
+        runner = FakeRunner()
+        rows = [fix_row(status="approved", rank=None)]
+        with self.assertRaises(ValueError):
+            triage.apply(rows, runner=runner, sleep=lambda s: None)
+        self.assertEqual(runner.calls, [])
+
+
 if __name__ == "__main__":
     unittest.main()

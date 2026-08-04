@@ -135,3 +135,99 @@ def is_stale(row, issue_state):
     if issue_state.get("state") != "OPEN":
         return True
     return str(issue_state.get("updatedAt") or "") > str(row.get("triaged_at") or "")
+
+
+RATE_HINTS = ("rate limit", "secondary rate", "abuse detection",
+              "was submitted too quickly")
+
+
+def gh(argv, runner=subprocess.run, sleep=time.sleep):
+    for attempt in range(1, 6):
+        r = runner(argv, capture_output=True, text=True)
+        if r.returncode == 0:
+            return r.stdout
+        err = (r.stderr or "").strip()
+        if any(h in err.lower() for h in RATE_HINTS) and attempt < 5:
+            backoff = 60 * attempt
+            print("rate limited (attempt %d); sleeping %ds"
+                  % (attempt, backoff), file=sys.stderr, flush=True)
+            sleep(backoff)
+            continue
+        raise RuntimeError("%s failed: %s" % (" ".join(argv[:4]), err))
+    raise RuntimeError("%s failed after retries" % " ".join(argv[:4]))
+
+
+def apply(rows, dry=False, throttle=1.5, runner=subprocess.run,
+          sleep=time.sleep):
+    for row in rows:              # validate the whole batch before mutating
+        if row.get("status") == "approved":
+            validate(row)
+    applied = stale = 0
+    for row in rows:
+        if row.get("status") != "approved":
+            continue
+        if dry:
+            for cmd in plan_mutations(row):
+                print("DRY #%s: %s" % (row["issue"], " ".join(cmd[:6])))
+            continue
+        state = json.loads(gh(["gh", "issue", "view", str(row["issue"]),
+                               "--json", "state,updatedAt"],
+                              runner=runner, sleep=sleep))
+        if is_stale(row, state):
+            row["status"] = "stale"
+            stale += 1
+            print("STALE  #%s — changed on GitHub since triage; re-triage"
+                  % row["issue"], flush=True)
+            continue
+        for cmd in plan_mutations(row):
+            gh(cmd, runner=runner, sleep=sleep)
+            sleep(throttle)
+        row["status"] = "applied"
+        applied += 1
+        print("applied #%s %s" % (row["issue"], row["verdict"]), flush=True)
+    return applied, stale
+
+
+def setup(runner=subprocess.run):
+    for verdict in VERDICTS:
+        name, color, desc = LABELS[verdict]
+        gh(["gh", "label", "create", name, "--color", color,
+            "--description", desc, "--force"], runner=runner)
+        print("label   %s" % name)
+    titles = json.loads(gh(["gh", "api",
+                            "repos/{owner}/{repo}/milestones?state=all",
+                            "--jq", "[.[].title]"], runner=runner) or "[]")
+    if MILESTONE in titles:
+        print("milestone exists: %s" % MILESTONE)
+    else:
+        gh(["gh", "api", "-X", "POST", "repos/{owner}/{repo}/milestones",
+            "-f", "title=%s" % MILESTONE,
+            "-f", "description=Ranked fix queue from the remediation triage "
+                  "arc — see %s" % SPEC], runner=runner)
+        print("milestone created: %s" % MILESTONE)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("setup")
+    p_apply = sub.add_parser("apply")
+    p_apply.add_argument("--dry-run", action="store_true")
+    p_apply.add_argument("--throttle", type=float, default=1.5)
+    a = ap.parse_args()
+    if a.cmd == "setup":
+        setup()
+        return
+    rows = load_rows()
+    if not rows:
+        sys.exit("no ledger at %s" % LEDGER)
+    try:
+        applied, stale = apply(rows, dry=a.dry_run, throttle=a.throttle)
+    finally:
+        if not a.dry_run:
+            save_rows(rows)       # persist progress even on mid-run failure
+    print("applied %d; stale %d; ledger: %s" % (applied, stale, LEDGER))
+
+
+if __name__ == "__main__":
+    main()
