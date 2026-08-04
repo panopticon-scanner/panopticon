@@ -60,3 +60,8 @@ class TestSkillMd(unittest.TestCase):
         self.assertIn("git status --porcelain", self.text)
         self.assertIn("treat the run as compromised", self.text)
         self.assertIn("enforcement registered", self.text)
+
+    def test_all_four_roles_have_shell_dispatch_instructions(self):
+        for token in ("panopticon-scout", "panopticon-advisor",
+                      "tree-baseline.txt"):
+            self.assertIn(token, self.text, token)

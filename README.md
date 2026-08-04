@@ -24,6 +24,12 @@ mkdir -p ~/.kimi/skills
 ln -s "$(pwd)/skill" ~/.kimi/skills/panopticon
 ```
 
+Then register the enforcement shells into your Kimi agents directory (one-time; re-run after template changes):
+
+```bash
+python3 skill/scripts/dispatch.py --emit-host-agents kimi --out <your kimi agents dir>
+```
+
 Then invoke it with:
 
 ```bash
@@ -38,9 +44,7 @@ Clone or symlink into Claude's skills directory:
 ln -s "$(pwd)/skill" ~/.claude/skills/panopticon
 ```
 
-Then invoke it with `/panopticon` or describe a review task.
-
-Then register the enforcement shells (one-time; re-run after template changes):
+Then invoke it with `/panopticon` or describe a review task, and register the enforcement shells (one-time; re-run after template changes):
 
 ```bash
 python3 skill/scripts/dispatch.py --emit-host-agents claude

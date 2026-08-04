@@ -40,7 +40,7 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
 ## Pipeline
 1. `TodoList`: discovery → scout → tools → panels → lens sub-reviews → synthesis.
 2. **Discovery** — run `python3 scripts/orchestrator.py` to produce `groups.json`.
-3. **Scout** — dispatch the `scout` role (`agents/scout.md`) per group — its template has no placeholders; dispatch its body plus tool-policy line as the prompt; the scout RETURNS the ScopeProfile JSON; the orchestrator writes it to `.panopticon/scout-{group}.json`.
+3. **Scout** — dispatch the `scout` role (`agents/scout.md`) per group — its template has no placeholders; dispatch its body plus tool-policy line as the prompt — via `subagent_type: panopticon-scout` when that registered shell exists (fresh session after registration), else a general-purpose agent; the scout RETURNS the ScopeProfile JSON; the orchestrator writes it to `.panopticon/scout-{group}.json`.
    Append the group's name, its file list from `groups.json`, and the `security_mode` to the prompt body — the scout template itself carries no assignment.
 4. **Tool scan** — optional Docker container; SARIF ingested by `scripts/ingest_tools.py`.
 5. **Plan dispatch** — run `python3 scripts/dispatch.py <scope-profile.json> --host <your host: claude|kimi|generic> --out .panopticon/dispatch-plan.json` to produce a `DispatchPlan` of role-based agents.
@@ -50,20 +50,23 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
    dispatch below). Every reviewer role is read-only: every reviewer RETURNS its JSON as the
    final message and the orchestrator writes it to the entry's `out_file`.
    `panel_review` filenames omit `{lens}`.
+   Before dispatching, if the target is a git repository, capture a baseline: `git status --porcelain > .panopticon/tree-baseline.txt`.
 7. **Synthesize (pass 1)** — `python3 scripts/synthesize.py --emit-verify-queue [flags] .panopticon/findings-*.json`.
    If it prints a "verify queue: N entries" line, proceed to step 8; if it printed a report, skip to step 9.
 8. **Verify** — Run `python3 scripts/dispatch.py --render-advisor .panopticon/verify-queue.json --out .panopticon/advisor-prompts`,
    then dispatch each `.panopticon/advisor-prompts/{queue_id}.md` file's contents
-   as an `advisor` agent (`agents/advisor.md`) in parallel. The advisor RETURNS a
+   as an `advisor` agent (`agents/advisor.md`) in parallel — via `subagent_type: panopticon-advisor` when that registered shell exists, else general-purpose. The advisor RETURNS a
    verdict JSON; write it verbatim to `.panopticon/verdicts/{queue_id}.json`.
    Advisors are read-only; the orchestrator performs the write.
    Then run
    `python3 scripts/synthesize.py --verdicts-dir .panopticon/verdicts [same flags] .panopticon/findings-*.json`
    to produce the final report.
-9. **Validate** — `verification-before-completion`: run `git status --porcelain`
-   on the target; ANY modification outside `.panopticon/` means a reviewer had
-   side effects — treat the run as compromised: discard the findings files,
-   report the violation, and re-run. Then check gate, print summary, write JSON.
+9. **Validate** — `verification-before-completion`: compare `git status --porcelain`
+   against `.panopticon/tree-baseline.txt`; any NEW modification outside `.panopticon/`
+   means a reviewer had side effects — treat the run as compromised: discard the
+   findings files, restore or flag the modified paths to the user (never silently
+   delete their content), report the violation, and re-run. Then check gate, print
+   summary, write JSON.
 
 ## Host dispatch
 
@@ -77,14 +80,18 @@ One plan, one prompt per reviewer; each host dispatches with its own mechanism:
   Register once with `python3 scripts/dispatch.py --emit-host-agents claude`.
 - **Kimi Code** — AgentSwarm raw-prompt dispatch (`prompt_template`/`items`);
   select an appropriate profile via `subagent_type`; model overrides are
-  experimental-flag-gated.
+  experimental-flag-gated. When `entry.enforced` is true, dispatch via the
+  registered `panopticon-*` profile (`subagent_type`) instead of raw-prompt —
+  raw-prompt dispatch does not honor the shell.
 - **Other hosts** — run the entries sequentially in-session with the same
   prompts; expect no parallelism.
 
 Tool policy is host-ENFORCED for entries with `enforced: true` (registered
 shells) and prompt-advisory otherwise. The report's `meta.tool_policy_mode`
 records which posture a run actually had. When any entry is unenforced, tell
-the user in one line before fan-out.
+the user in one line before fan-out. `tool_policy_mode` is derived from the
+fan-out plan entries (panel_review/lens_sweep); scout and advisor shell
+dispatch is instructed in steps 3 and 8 but not recorded in the mode.
 
 ## Output
 Terminal markdown summary + JSON artifact at `--out`. CI gate key: `summary.gate`.
@@ -126,4 +133,3 @@ Reviewers are read-only: no repo/GitHub writes, no claiming unperformed actions,
 Hostile-content review (redteam mode, deliberately vulnerable corpora, repos that may
 contain planted injection payloads) should run with enforcement registered via
 `--emit-host-agents` so `meta.tool_policy_mode` reads `enforced`.
-
