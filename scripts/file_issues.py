@@ -11,6 +11,7 @@ Usage:  python3 .panopticon/file_issues.py [--dry-run] [--limit N]
 """
 import argparse
 import json
+import os
 import subprocess
 import sys
 
@@ -151,9 +152,19 @@ def main():
     a = ap.parse_args()
 
     report = json.load(open(REPORT, encoding="utf-8"))
+    findings = list(report["findings"])
+    # A large report is split; meta.parts names the continuation files, resolved
+    # beside the main artifact. Reading only the first part silently under-files.
+    for part in (report.get("meta") or {}).get("parts") or []:
+        ppath = os.path.join(os.path.dirname(REPORT), part)
+        with open(ppath, encoding="utf-8") as fh:
+            pdata = json.load(fh)
+        findings.extend(pdata.get("findings") or [])
+        print("loaded %d finding(s) from part %s" % (len(pdata.get("findings") or []), part))
+
     work = []
     if a.only != "rejected":
-        for f in report["findings"]:
+        for f in findings:
             work.append((f, False))
     if a.only != "findings":
         for f in report.get("discarded_claims", []):
