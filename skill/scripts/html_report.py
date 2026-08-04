@@ -3,6 +3,7 @@
 import hashlib
 import html
 import os
+import re
 
 _CSS = """
 :root {
@@ -308,10 +309,13 @@ def _panel_class(panel):
 def _render_provenance(provenance):
     if not isinstance(provenance, dict):
         return ""
-    status = provenance.get("confirmation_status", "UNVERIFIED")
+    status = str(provenance.get("confirmation_status", "UNVERIFIED"))
+    # SEC-101: agent-authored value; restrict the class token to a safe
+    # charset instead of interpolating it raw into the HTML attribute.
+    status_class = re.sub(r"[^a-z0-9-]", "-", status.lower()) or "unknown"
     source = provenance.get("discovered_by", "unknown")
     model = provenance.get("model")
-    parts = [f"<span class='prov-status prov-{status.lower().replace(' ', '-').replace('_', '-')}'>{_escape(status)}</span>",
+    parts = [f"<span class='prov-status prov-{status_class}'>{_escape(status)}</span>",
              f"<span class='prov-source'>{_escape(source)}</span>"]
     if model:
         parts.append(f"<span class='prov-model'>{_escape(model)}</span>")

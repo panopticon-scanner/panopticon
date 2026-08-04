@@ -75,8 +75,19 @@ def normalize_finding(f):
     return f
 
 
+# Fields that confer trust and must NEVER come from an agent-authored payload
+# (SEC-102, found by our own self-scan): `source` drives is_tool_sourced() ->
+# tool_confirmed evidence + verify-queue exclusion + gate eligibility, and
+# `reinforced` short-circuits verification the same way. Only ingest_tools
+# (tool output) and dedupe's real merge branches may set them.
+AGENT_FORBIDDEN_FIELDS = ("source", "reinforced")
+
+
 def load_findings(paths):
-    """Load and normalize findings from JSON files."""
+    """Load and normalize findings from agent-authored JSON files.
+
+    Agent-settable trust fields are stripped here — see AGENT_FORBIDDEN_FIELDS.
+    """
     out = []
     for path in paths:
         if not os.path.isfile(path):
@@ -101,6 +112,11 @@ def load_findings(paths):
             if not isinstance(f, dict):
                 print("skipping non-object finding in %s" % path, file=sys.stderr)
                 continue
+            for forbidden in AGENT_FORBIDDEN_FIELDS:
+                if forbidden in f:
+                    print("synthesize: stripped self-asserted %r from %s in %s"
+                          % (forbidden, f.get("id", "?"), path), file=sys.stderr)
+                    f.pop(forbidden, None)
             nf = normalize_finding(f)
             if group is not None:
                 nf["_group"] = group
@@ -585,6 +601,17 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
     }
 
 
+def attach_schema_status(report, errors):
+    """Record schema-validation results in the artifact itself.
+
+    Validation stays advisory — a run never aborts — but the count is no longer
+    stderr-only, so a downstream consumer (issue tracker, CI) can see that a
+    report failed its own schema.
+    """
+    report.setdefault("meta", {})["schema_errors"] = len(errors)
+    return report
+
+
 def validate_report(report):
     """Validate report structure and content, returning error and warning lists."""
     errors, warnings = [], []
@@ -842,6 +869,7 @@ def main(argv=None):
                           verdicts_supplied=args.verdicts_dir is not None,
                           tool_policy_mode=tool_policy_mode)
     errors, warnings = validate_report(report)
+    attach_schema_status(report, errors)
     for w in warnings:
         print("WARN: %s" % w, file=sys.stderr)
     for e in errors:

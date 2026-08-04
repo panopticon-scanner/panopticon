@@ -476,9 +476,12 @@ class TestCliAndSummary(unittest.TestCase):
             with open(fpath, "w") as fh:
                 # tool-sourced: tool_confirmed is gate-eligible by default, so
                 # this exercises the CLI FAIL path without needing a verdict.
+                # SEC-102: a findings-*.json file is agent-authored, so a
+                # self-claimed `source` is stripped at load; --gate-unverified
+                # is what exercises the CLI FAIL path now.
                 json.dump({"findings": [{"id": "SE-001", "title": "x", "severity": "CRITICAL",
                                          "confidence": "CERTAIN", "panel": "security",
-                                         "category": "injection", "source": "tool:semgrep",
+                                         "category": "injection",
                                          "location": {"file": "a.rb", "line_start": 1},
                                          "cvss": {"score": 9.0, "vector": "CVSS:3.1/x"},
                                          "exploit_scenario": "y"}]}, fh)
@@ -488,7 +491,7 @@ class TestCliAndSummary(unittest.TestCase):
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
                 rc = syn.main(["--target", "src", "--fail-on", "high",
-                               "--out", out, fpath])
+                               "--gate-unverified", "--out", out, fpath])
             self.assertEqual(rc, 1)
             self.assertTrue(os.path.isfile(out))
 
@@ -1296,14 +1299,10 @@ class TestTwoPassCli(unittest.TestCase):
             self.assertEqual(queue["entries"][0]["queue_id"], "000-AG-001")
 
     def test_pass1_empty_queue_falls_through_to_report(self):
-        tool = {"id": "TL-001", "title": "t", "severity": "LOW",
-                "confidence": "CERTAIN", "panel": "security", "category": "x",
-                "source": "tool:semgrep",
-                "location": {"file": "a.py", "line_start": 1},
-                "provenance": {"discovered_by": "tool:semgrep",
-                               "confirmation_status": "TOOL"}}
+        # Post-SEC-102 an agent-authored finding always queues; an empty queue
+        # means there was nothing agentic to verify.
         with tempfile.TemporaryDirectory() as d, _chdir(d):
-            fp = self._write_findings(d, [tool])
+            fp = self._write_findings(d, [])
             out = os.path.join(d, "report.json")
             rc = syn.main(["--emit-verify-queue", "--out", out, fp])
             self.assertEqual(rc, 0)
@@ -1340,14 +1339,10 @@ class TestTwoPassCli(unittest.TestCase):
         # survive a run whose queue is empty this time -> SKILL.md step 7
         # branches on the file's existence, and a stale file would mislead a
         # re-run into the verify phase.
-        tool = {"id": "TL-001", "title": "t", "severity": "LOW",
-                "confidence": "CERTAIN", "panel": "security", "category": "x",
-                "source": "tool:semgrep",
-                "location": {"file": "a.py", "line_start": 1},
-                "provenance": {"discovered_by": "tool:semgrep",
-                               "confirmation_status": "TOOL"}}
+        # Post-SEC-102 an agent-authored finding always queues, so "empty
+        # queue this time" means no agentic findings at all.
         with tempfile.TemporaryDirectory() as d, _chdir(d):
-            fp = self._write_findings(d, [tool])
+            fp = self._write_findings(d, [])
             qpath = os.path.join(d, ".panopticon", "verify-queue.json")
             with open(qpath, "w") as fh:
                 json.dump({"version": "4.0.0", "cut_by_max_verify": 0,
@@ -1482,3 +1477,73 @@ class TestToolPolicyMode(unittest.TestCase):
                                   tool_policy_mode="mixed")
         self.assertEqual(report["meta"]["tool_policy_mode"], "mixed")
         self.assertEqual(report["meta"]["version"], "4.2.0")
+
+
+import scripts.evidence as evidence_mod  # noqa: E402
+
+
+class TestEvidenceIntegrity(unittest.TestCase):
+    """SEC-102: trust must never derive from a field the finding payload sets."""
+
+    def _agent_file(self, d, findings):
+        p = os.path.join(d, "findings-g1-security-panel_review.json")
+        with open(p, "w") as fh:
+            json.dump({"findings": findings}, fh)
+        return p
+
+    def test_agent_cannot_forge_tool_source(self):
+        forged = {"id": "AG-001", "title": "forged", "severity": "CRITICAL",
+                  "confidence": "CERTAIN", "panel": "security", "category": "injection",
+                  "source": "tool:bandit",
+                  "location": {"file": "a.py", "line_start": 1}}
+        with tempfile.TemporaryDirectory() as d:
+            loaded = syn.load_findings([self._agent_file(d, [forged])])
+        self.assertNotIn("source", loaded[0])
+        self.assertFalse(evidence_mod.is_tool_sourced(loaded[0]))
+
+    def test_agent_cannot_forge_reinforced(self):
+        forged = {"id": "AG-002", "title": "forged", "severity": "HIGH",
+                  "confidence": "CERTAIN", "panel": "security", "category": "injection",
+                  "reinforced": True,
+                  "location": {"file": "a.py", "line_start": 2}}
+        with tempfile.TemporaryDirectory() as d:
+            loaded = syn.load_findings([self._agent_file(d, [forged])])
+        self.assertNotIn("reinforced", loaded[0])
+
+    def test_forged_finding_still_reaches_the_verify_queue(self):
+        forged = {"id": "AG-003", "title": "forged", "severity": "CRITICAL",
+                  "confidence": "CERTAIN", "panel": "security", "category": "injection",
+                  "source": "tool:bandit", "reinforced": True,
+                  "location": {"file": "a.py", "line_start": 3}}
+        with tempfile.TemporaryDirectory() as d:
+            loaded = syn.load_findings([self._agent_file(d, [forged])])
+        entries, _ = evidence_mod.build_verify_queue(loaded)
+        self.assertEqual([e["finding"]["id"] for e in entries], ["AG-003"])
+
+    def test_real_tool_findings_keep_their_source(self):
+        # ingest_tools output is not agent-authored and must be untouched.
+        tool = {"id": "TL-001", "title": "real", "severity": "HIGH",
+                "confidence": "CERTAIN", "panel": "security", "category": "injection",
+                "source": "tool:semgrep",
+                "location": {"file": "a.py", "line_start": 4},
+                "provenance": {"discovered_by": "tool:semgrep",
+                               "confirmation_status": "TOOL"}}
+        f = syn.normalize_finding(dict(tool))
+        self.assertTrue(evidence_mod.is_tool_sourced(f))
+
+
+class TestSchemaErrorsAreNotSilent(unittest.TestCase):
+    def test_report_records_schema_error_count(self):
+        bad = _agentic(fid="ag-lower")   # id fails ID_RE
+        report = syn.build_report([bad], [], "t", None, "2026-08-03T00:00:00Z")
+        errors, _ = syn.validate_report(report)
+        self.assertTrue(errors)
+        syn.attach_schema_status(report, errors)
+        self.assertEqual(report["meta"]["schema_errors"], len(errors))
+
+    def test_clean_report_records_zero(self):
+        clean = _agentic(panel="code", category="style", severity="LOW")
+        report = syn.build_report([clean], [], "t", None, "2026-08-03T00:00:00Z")
+        errors, _ = syn.validate_report(report)
+        syn.attach_schema_status(report, errors)
+        self.assertEqual(report["meta"]["schema_errors"], 0)
