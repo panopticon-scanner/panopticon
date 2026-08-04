@@ -5,7 +5,7 @@ supported, other SKILL.md hosts degraded-sequential. This file is the durable
 design record that travels with the skill (installed dir / OneDrive), so future
 work has context without the original spec/plan docs.
 
-**Current version: 4.1.0** (semver — see Versioning below).
+**Current version: 4.2.0** (semver — see Versioning below).
 
 ## What it is
 A **discovery → scout → fan-out → synthesis** pipeline. It profiles a target with a
@@ -89,7 +89,13 @@ changes to the report schema, CLI, or grade contract. Bump `SKILL.md` `metadata.
 `version` together.
 
 History:
-- **4.1.0** (current) — Claude Code port: all reviewer dispatch moves to
+- **4.2.0** (current) — tool-policy enforcement: uniform read-only/return-JSON
+  role contracts; `--emit-host-agents` generates registered enforcement shells
+  (claude/kimi dialects) from the host-neutral templates; per-role `enforced`
+  plan entries dispatched via `subagent_type`; `meta.tool_policy_mode`
+  (enforced/advisory/mixed) in the audit artifact; clean-tree check in the
+  validate step. SEC-101 remediation.
+- **4.1.0** — Claude Code port: all reviewer dispatch moves to
   deterministic rendered prompts (dispatch plan entries carry `prompt`;
   `--render-advisor` renders verify-queue entries). Agent templates get
   host-neutral frontmatter (`tool_policy` as data; advisory-by-prompt on

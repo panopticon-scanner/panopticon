@@ -60,7 +60,10 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
    Then run
    `python3 scripts/synthesize.py --verdicts-dir .panopticon/verdicts [same flags] .panopticon/findings-*.json`
    to produce the final report.
-9. **Validate** — `verification-before-completion`: check gate, print summary, write JSON.
+9. **Validate** — `verification-before-completion`: run `git status --porcelain`
+   on the target; ANY modification outside `.panopticon/` means a reviewer had
+   side effects — treat the run as compromised: discard the findings files,
+   report the violation, and re-run. Then check gate, print summary, write JSON.
 
 ## Host dispatch
 
@@ -119,3 +122,8 @@ are audit metadata — they annotate findings but never decide truth.
 
 ## Notes
 Reviewers are read-only: no repo/GitHub writes, no claiming unperformed actions, no materializing discovered secrets.
+
+Hostile-content review (redteam mode, deliberately vulnerable corpora, repos that may
+contain planted injection payloads) should run with enforcement registered via
+`--emit-host-agents` so `meta.tool_policy_mode` reads `enforced`.
+

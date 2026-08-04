@@ -55,3 +55,8 @@ class TestSkillMd(unittest.TestCase):
         for token in ("enforced", "subagent_type", "--agents-dir",
                       "--emit-host-agents"):
             self.assertIn(token, self.text, token)
+
+    def test_clean_tree_check_and_hostile_guidance(self):
+        self.assertIn("git status --porcelain", self.text)
+        self.assertIn("treat the run as compromised", self.text)
+        self.assertIn("enforcement registered", self.text)

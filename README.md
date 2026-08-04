@@ -40,6 +40,12 @@ ln -s "$(pwd)/skill" ~/.claude/skills/panopticon
 
 Then invoke it with `/panopticon` or describe a review task.
 
+Then register the enforcement shells (one-time; re-run after template changes):
+
+```bash
+python3 skill/scripts/dispatch.py --emit-host-agents claude
+```
+
 ## Quick start
 
 From inside a repo you want to review:
