@@ -44,7 +44,7 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
    Append the group's name, its file list from `groups.json`, and the `security_mode` to the prompt body — the scout template itself carries no assignment.
 4. **Tool scan** — optional Docker container; SARIF ingested by `scripts/ingest_tools.py`.
 5. **Plan dispatch** — run `python3 scripts/dispatch.py <scope-profile.json> --host <your host: claude|kimi|generic> --out .panopticon/dispatch-plan.json` to produce a `DispatchPlan` of role-based agents.
-   Pass your host explicitly — env detection is fallback only.
+   Pass your host explicitly — env detection is fallback only. Add --agents-dir DIR when your registered agents live somewhere non-default.
 6. **Fan-out** — for each entry in `.panopticon/dispatch-plan.json`, dispatch
    `entry.prompt` with the model named by `entry.model.model` via your host's agent mechanism (see Host
    dispatch below). Every reviewer role is read-only: every reviewer RETURNS its JSON as the
@@ -66,18 +66,22 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
 
 One plan, one prompt per reviewer; each host dispatches with its own mechanism:
 
-- **Claude Code** — Agent tool, general-purpose subagents, in parallel; pass
-  `entry.model.model` (`haiku`/`sonnet`/`opus`) as the agent model; omit it when null.
+- **Claude Code** — in parallel via the Agent tool. If `entry.enforced` is
+  true, dispatch with `subagent_type: entry.agent` (a registered
+  `panopticon-*` enforcement shell — tools and model are host-enforced) and
+  `entry.prompt` as the task. If false, dispatch general-purpose with
+  `entry.prompt` and the model named by `entry.model.model` (omit when null).
+  Register once with `python3 scripts/dispatch.py --emit-host-agents claude`.
 - **Kimi Code** — AgentSwarm raw-prompt dispatch (`prompt_template`/`items`);
   select an appropriate profile via `subagent_type`; model overrides are
   experimental-flag-gated.
 - **Other hosts** — run the entries sequentially in-session with the same
   prompts; expect no parallelism.
 
-Tool policy is advisory: each rendered prompt ends with the role's
-allowed/forbidden tool list, but no host enforces it under raw-prompt
-dispatch (native enforcement is planned for round 3). Do not treat reviewer
-output as produced under enforced tool restrictions.
+Tool policy is host-ENFORCED for entries with `enforced: true` (registered
+shells) and prompt-advisory otherwise. The report's `meta.tool_policy_mode`
+records which posture a run actually had. When any entry is unenforced, tell
+the user in one line before fan-out.
 
 ## Output
 Terminal markdown summary + JSON artifact at `--out`. CI gate key: `summary.gate`.

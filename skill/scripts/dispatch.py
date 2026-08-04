@@ -198,18 +198,33 @@ AGENT_NAME = {
 }
 
 
-def build_plan(scope_profile, host=None, model_overrides=None):
+def _registration_dir(host, agents_dir):
+    """Explicit dir wins; claude defaults to the user-level agents dir; any
+    other host has no default (never enforced without --agents-dir)."""
+    if agents_dir:
+        return agents_dir
+    return CLAUDE_AGENTS_DIR if host == "claude" else None
+
+
+def _is_registered(reg_dir, role_file):
+    """Check if a role is registered in the registration directory."""
+    return bool(reg_dir) and os.path.isfile(
+        os.path.join(reg_dir, registered_agent_name(role_file) + ".md"))
+
+
+def build_plan(scope_profile, host=None, model_overrides=None, agents_dir=None):
     """Return a DispatchPlan: list of agent invocations.
 
     Each invocation has:
     - role: lens_sweep | panel_review
-    - agent: Kimi Code custom agent name
+    - agent: Kimi Code custom agent name (or registered name if enforced)
     - model: resolved model config dict
     - panel: panel name
     - lens: lens name (for lens_sweep only)
     - files: list of files to review
     - group: group name
     - depth: panel depth
+    - enforced: boolean, true if this role is registered in agents_dir
     - lenses: list of non-spawned lens names (for panel_review only)
     - out_file: where the agent should write findings
     """
@@ -219,6 +234,17 @@ def build_plan(scope_profile, host=None, model_overrides=None):
     files = scope_profile.get("files", [])
     depth = scope_profile.get("depth", "standard")
     plan = []
+
+    # Compute registration directory once
+    reg_dir = _registration_dir(host, agents_dir)
+
+    # Pre-compute enforcement status for each role to avoid triple stat calls
+    panel_enforced = _is_registered(reg_dir, ROLE_FILES["panel_review"])
+    lens_enforced = _is_registered(reg_dir, ROLE_FILES["lens_sweep"])
+    panel_agent = (registered_agent_name(ROLE_FILES["panel_review"])
+                   if panel_enforced else AGENT_NAME["panel_review"])
+    lens_agent = (registered_agent_name(ROLE_FILES["lens_sweep"])
+                  if lens_enforced else AGENT_NAME["lens_sweep"])
 
     for panel_name in scope_profile.get("panels", []):
         spawned = depth_planner.plan_lenses(scope_profile, panel_name)
@@ -230,7 +256,8 @@ def build_plan(scope_profile, host=None, model_overrides=None):
         panel_out_file = ".panopticon/findings-%s-%s-panel_review.json" % (group_name, panel_name)
         plan.append({
             "role": "panel_review",
-            "agent": AGENT_NAME["panel_review"],
+            "agent": panel_agent,
+            "enforced": panel_enforced,
             "model": model_resolver.resolve_model(host, "panel_review", overrides),
             "panel": panel_name,
             "lens": None,
@@ -254,7 +281,8 @@ def build_plan(scope_profile, host=None, model_overrides=None):
             sweep_out_file = ".panopticon/findings-%s-%s-lens_sweep-%s.json" % (group_name, panel_name, lens_name)
             plan.append({
                 "role": "lens_sweep",
-                "agent": AGENT_NAME["lens_sweep"],
+                "agent": lens_agent,
+                "enforced": lens_enforced,
                 "model": model_resolver.resolve_model(host, "lens_sweep", overrides),
                 "panel": panel_name,
                 "lens": lens_name,
@@ -332,6 +360,8 @@ def main(argv=None):
     ap.add_argument("--render-advisor", metavar="QUEUE", default=None,
                     help="Render advisor prompts from a verify-queue JSON into --out DIR")
     ap.add_argument("--emit-host-agents", metavar="HOST", choices=["claude", "kimi"], default=None)
+    ap.add_argument("--agents-dir", default=None,
+                    help="Directory containing registered agent .md files")
     ap.add_argument("--model-lens-sweep", default=None)
     ap.add_argument("--model-panel-review", default=None)
     ap.add_argument("--model-advisor", default=None)
@@ -384,7 +414,8 @@ def main(argv=None):
         overrides["advisor"] = args.model_advisor
 
     try:
-        plan = build_plan(profile, host=args.host, model_overrides=overrides)
+        plan = build_plan(profile, host=args.host, model_overrides=overrides,
+                          agents_dir=args.agents_dir)
     except ValueError as e:
         print("dispatch: %s" % e, file=sys.stderr)
         return 1

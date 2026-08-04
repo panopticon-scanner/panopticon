@@ -50,3 +50,8 @@ class TestSkillMd(unittest.TestCase):
     def test_uniform_return_json_contract(self):
         self.assertIn("every reviewer RETURNS its JSON", self.text)
         self.assertNotIn("their tool policy allows Bash", self.text)
+
+    def test_host_dispatch_is_enforcement_conditional(self):
+        for token in ("enforced", "subagent_type", "--agents-dir",
+                      "--emit-host-agents"):
+            self.assertIn(token, self.text, token)

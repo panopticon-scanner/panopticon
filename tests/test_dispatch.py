@@ -377,6 +377,46 @@ class TestQueueIdResiduals(unittest.TestCase):
                 dispatch.render_advisor_prompts(qpath, os.path.join(tmp, "o"))
 
 
+class TestEnforcedPlanEntries(unittest.TestCase):
+    def _profile(self):
+        return {"group": "g1", "files": ["a.py"], "depth": "standard",
+                "panels": ["security"], "security_mode": "standard",
+                "lenses": {"security": [
+                    {"name": "injection", "spawn": True, "priority": 1,
+                     "depth_threshold": "shallow"}]}}
+
+    def test_enforced_true_when_registered(self):
+        with tempfile.TemporaryDirectory() as d:
+            dispatch.emit_host_agents("claude", d)
+            plan = dispatch.build_plan(self._profile(), host="claude", agents_dir=d)
+        for e in plan:
+            self.assertTrue(e["enforced"], e["role"])
+        panel = [e for e in plan if e["role"] == "panel_review"][0]
+        self.assertEqual(panel["agent"], "panopticon-panel-review")
+
+    def test_enforced_false_without_registration(self):
+        with tempfile.TemporaryDirectory() as d:
+            plan = dispatch.build_plan(self._profile(), host="claude", agents_dir=d)
+        for e in plan:
+            self.assertFalse(e["enforced"], e["role"])
+        panel = [e for e in plan if e["role"] == "panel_review"][0]
+        self.assertEqual(panel["agent"], "panel-review")  # legacy name preserved
+
+    def test_partial_registration_is_per_role(self):
+        with tempfile.TemporaryDirectory() as d:
+            dispatch.emit_host_agents("claude", d)
+            os.remove(os.path.join(d, "panopticon-lens-sweep.md"))
+            plan = dispatch.build_plan(self._profile(), host="claude", agents_dir=d)
+        by_role = {e["role"]: e for e in plan}
+        self.assertTrue(by_role["panel_review"]["enforced"])
+        self.assertFalse(by_role["lens_sweep"]["enforced"])
+
+    def test_generic_host_never_enforced_by_default(self):
+        plan = dispatch.build_plan(self._profile(), host="generic")
+        for e in plan:
+            self.assertFalse(e["enforced"])
+
+
 class TestEmitHostAgents(unittest.TestCase):
     def test_claude_files_written_for_all_roles(self):
         with tempfile.TemporaryDirectory() as d:
