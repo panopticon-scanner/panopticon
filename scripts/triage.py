@@ -91,3 +91,47 @@ def validate(row):
     if problems:
         raise ValueError("issue %s: %s" % (row.get("issue"),
                                            "; ".join(problems)))
+
+
+def comment_for(row):
+    v = row["verdict"]
+    head = {
+        "fix": "**Triage: fix** — milestone %s, rank %s (provisional within "
+               "batch %s)" % (MILESTONE, row.get("rank"), row["batch"]),
+        "duplicate": "**Triage: duplicate** of #%s — closing; the fix lands "
+                     "on the canonical issue" % row.get("duplicate_of"),
+        "already-fixed": "**Triage: already fixed** by %s"
+                         % row.get("fixed_by"),
+        "reject": "**Triage: rejected** — the run-2 advisor rejection was "
+                  "spot-checked against the current tree and stands",
+        "defer": "**Triage: deferred** — parked, out of the current "
+                 "remediation arc",
+    }[v]
+    lines = [head, "", row["rationale"]]
+    if row.get("spot_check"):
+        lines += ["", "**Spot-check:** %s" % row["spot_check"]]
+    lines += ["", "---",
+              "*Remediation triage (batch %s) — spec: `%s`*"
+              % (row["batch"], SPEC)]
+    return "\n".join(lines)
+
+
+def plan_mutations(row):
+    n = str(row["issue"])
+    cmds = [["gh", "issue", "comment", n, "--body", comment_for(row)]]
+    edit = ["gh", "issue", "edit", n, "--add-label", LABELS[row["verdict"]][0]]
+    if row["verdict"] == "fix":
+        edit += ["--milestone", MILESTONE]
+    cmds.append(edit)
+    close_reason = {"duplicate": "not planned", "reject": "not planned",
+                    "already-fixed": "completed"}.get(row["verdict"])
+    if close_reason:
+        cmds.append(["gh", "issue", "close", n, "--reason", close_reason])
+    return cmds
+
+
+def is_stale(row, issue_state):
+    # Both timestamps are UTC ISO-8601 "Z" strings; lexicographic compare.
+    if issue_state.get("state") != "OPEN":
+        return True
+    return str(issue_state.get("updatedAt") or "") > str(row.get("triaged_at") or "")
