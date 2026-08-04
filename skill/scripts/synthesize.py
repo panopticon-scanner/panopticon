@@ -41,6 +41,9 @@ RELATED_PANELS = {
 }
 
 
+SHORT_TITLE_MAX = 100
+
+
 def normalize_finding(f):
     """Normalize and validate finding fields with sensible defaults."""
     sev = str(f.get("severity", "INFO")).upper()
@@ -509,9 +512,6 @@ def derive_tool_policy_mode(panopticon_dir=".panopticon"):
     return "advisory"
 
 
-SHORT_TITLE_MAX = 100
-
-
 def finding_fingerprint(finding):
     """Stable cross-run identity for a finding, for issue round-tripping.
 
@@ -521,7 +521,11 @@ def finding_fingerprint(finding):
     free-text description (agent prose is re-worded every run).
     """
     loc = finding.get("location") or {}
-    fpath = str(loc.get("file") or "").replace("\\", "/").lstrip("./")
+    fpath = str(loc.get("file") or "").replace("\\", "/")
+    # Strip only a `./` prefix. `lstrip("./")` would eat the leading dot of
+    # every dotfile path, collapsing `.github/x` onto `github/x`.
+    while fpath.startswith("./"):
+        fpath = fpath[2:]
     rule = (finding.get("tool_evidence") or {}).get("rule_id")
     discriminator = str(rule) if rule else str(finding.get("title") or "")
     payload = "|".join([str(finding.get("panel") or ""),
@@ -536,8 +540,23 @@ def aggregate_tool_findings(findings):
     A scanner rule that fires 18 times in a workflow file is ONE issue with 18
     loci, not 18 issues. Only tool-sourced findings aggregate; agent findings
     are distinct judgements and pass through untouched. The survivor keeps the
-    lowest line as its primary locus and records the rest in `additional_loci`.
+    lowest line as its primary locus and records the rest in `additional_loci`
+    — except where an agent independently flagged one of the other lines, in
+    which case that locus wins. This runs before dedupe, which reinforces on an
+    EXACT (file, line) match: moving the tool witness off a line an agent also
+    flagged would silently cost that finding its tool_confirmed evidence.
     """
+    agent_loci = {
+        (str(((f.get("location") or {}).get("file")) or ""),
+         _norm_line((f.get("location") or {}).get("line_start")))
+        for f in findings if not evidence_mod.is_tool_sourced(f)}
+
+    def _sort_key(f):
+        loc = f.get("location") or {}
+        line = _norm_line(loc.get("line_start"))
+        corroborated = (str(loc.get("file") or ""), line) in agent_loci
+        return (0 if corroborated else 1, line if isinstance(line, int) else 0)
+
     out, groups, order = [], {}, []
     for f in findings:
         rule = (f.get("tool_evidence") or {}).get("rule_id")
@@ -551,16 +570,14 @@ def aggregate_tool_findings(findings):
             order.append(key)
         groups[key].append(f)
     for key in order:
-        members = sorted(groups[key],
-                         key=lambda x: _norm_line((x.get("location") or {}).get("line_start"))
-                         if isinstance(_norm_line((x.get("location") or {}).get("line_start")), int)
-                         else 0)
+        members = sorted(groups[key], key=_sort_key)
         best = members[0]
         if len(members) > 1:
+            rest = sorted(members[1:], key=lambda m: _sort_key(m)[1])
             best["additional_loci"] = [
                 {"file": (m.get("location") or {}).get("file"),
                  "line_start": (m.get("location") or {}).get("line_start")}
-                for m in members[1:]]
+                for m in rest]
         best["occurrences"] = len(members)
         out.append(best)
     return out

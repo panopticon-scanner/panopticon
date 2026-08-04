@@ -1584,6 +1584,18 @@ class TestFindingFingerprint(unittest.TestCase):
         b = syn.finding_fingerprint(self._f(location={"file": "b.py", "line_start": 10}))
         self.assertNotEqual(a, b)
 
+    def test_leading_dot_of_a_dotfile_path_is_not_stripped(self):
+        # `.github/workflows/ci.yml` and `github/workflows/ci.yml` are different
+        # paths; only a `./` prefix is noise.
+        a = syn.finding_fingerprint(self._f(location={"file": ".github/w/ci.yml"}))
+        b = syn.finding_fingerprint(self._f(location={"file": "github/w/ci.yml"}))
+        self.assertNotEqual(a, b)
+
+    def test_dot_slash_prefix_is_normalized_away(self):
+        a = syn.finding_fingerprint(self._f(location={"file": "./a.py"}))
+        b = syn.finding_fingerprint(self._f(location={"file": "a.py"}))
+        self.assertEqual(a, b)
+
     def test_report_findings_carry_fingerprints(self):
         report = syn.build_report([_agentic()], [], "t", None, "2026-08-03T00:00:00Z")
         self.assertTrue(report["findings"][0]["fingerprint"])
@@ -1621,6 +1633,27 @@ class TestToolFindingAggregation(unittest.TestCase):
              "location": {"file": "a.py", "line_start": 1}}
         b = dict(a, id="AG-002", location={"file": "a.py", "line_start": 2})
         self.assertEqual(len(syn.aggregate_tool_findings([a, b])), 2)
+
+    def test_aggregation_preserves_a_tool_plus_agent_reinforcement(self):
+        # Aggregation runs before dedupe, and dedupe reinforces on an EXACT
+        # (file, line) match. Collapsing a multi-hit rule to its lowest line
+        # would move the tool witness away from the line an agent independently
+        # flagged, silently downgrading a tool_confirmed finding.
+        agent = {"id": "AG-001", "title": "agent claim", "severity": "HIGH",
+                 "confidence": "LIKELY", "panel": "security",
+                 "category": "known_vulns",
+                 "location": {"file": ".github/workflows/ci.yml",
+                              "line_start": 20}}
+        aggregated = syn.aggregate_tool_findings(
+            [self._hit("A-001", 13), self._hit("A-002", 20),
+             self._hit("A-003", 31), agent])
+        tool_survivor = [f for f in aggregated if f.get("id", "").startswith("A-")]
+        self.assertEqual(len(tool_survivor), 1)
+        self.assertEqual(tool_survivor[0]["occurrences"], 3)
+        # The survivor sits on the corroborated line, not the lowest one.
+        self.assertEqual(tool_survivor[0]["location"]["line_start"], 20)
+        deduped, _ = syn.prepare_findings(aggregated)
+        self.assertTrue(any(f.get("reinforced") for f in deduped))
 
 
 class TestShortTitle(unittest.TestCase):
