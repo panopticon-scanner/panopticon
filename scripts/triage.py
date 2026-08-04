@@ -76,6 +76,9 @@ def validate(row):
         problems.append("unknown status %r" % row.get("status"))
     if not str(row.get("rationale") or "").strip():
         problems.append("rationale required")
+    triaged_at = row.get("triaged_at")
+    if not isinstance(triaged_at, str) or not triaged_at.strip() or not triaged_at.endswith("Z"):
+        problems.append("triaged_at must be a UTC ISO-8601 Z timestamp")
     v = row.get("verdict")
     if v == "fix" and not isinstance(row.get("rank"), int):
         problems.append("fix needs an integer rank")
