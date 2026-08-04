@@ -273,6 +273,15 @@ def dedupe(findings):
                         # every surviving member of the category reinforced;
                         # enrichment merges stay within the same rule bucket.
                         best["reinforced"] = True
+                        # If the surviving member is agent-sourced (rk is None),
+                        # merge a representative tool finding so `reinforced`
+                        # remains tool-reported by construction (see evidence.py).
+                        if rk is None:
+                            best_tool = min(
+                                [m for m in members if _is_tool_sourced(m)],
+                                key=lambda f: (_sev_rank(f), _conf_rank(f)),
+                            )
+                            _reinforce_merge(best, best_tool)
                         for m in sub:
                             if m is not best:
                                 _reinforce_merge(best, m)
