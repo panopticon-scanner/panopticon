@@ -124,3 +124,26 @@ both rejected issues — **both stand, 0 overturns.**
 | — | #38 | duplicate → #439 | Version-literal kernel of FIXME-9; test-pinning detail transfers |
 | — | #361 | reject | Confidence defaulted pre-validation (re-verified); residual reviewer-contract kernel → #431/#432 package |
 | — | #368 | reject | Zero concurrency in codebase; benign lazy init (re-verified) |
+
+### B3d — tests & parser robustness (2026-08-04)
+
+15 rows: 5 fix, 10 reject. Spot-checks: 1 batched advisor run covering all 10
+rejected issues — **all stand, 0 overturns.**
+
+| Rank | Issue | Verdict | Rationale |
+|---|---|---|---|
+| 1 | #117 | fix | `_cvss_v3_score` untested; swallowed exceptions silently default severity to HIGH |
+| 2 | #79 | fix | dependency_check invoke/is_applicable lack effective unit coverage; convention outlier |
+| 3 | #114 | fix | `assertTrue(True)` tautology test; replace or delete |
+| 4 | #65 | fix | Mid-file `__main__` guard silently skips five tests under direct execution; move to EOF |
+| 5 | #106 | fix | Manual global monkey-patching, lone outlier vs `mock.patch` convention |
+| — | #353 | reject | Claimed discovery mechanism false; the real narrow defect is queued as #65 |
+| — | #333 | reject | `sarif_file` accepts a directory by contract; proposed input doesn't exist |
+| — | #344/#345/#346 | reject | FIXTURE_ROOT is the trusted base by design; no boundary asserted |
+| — | #394/#398/#399 | reject | Ingest boundary is the documented, tested handler; pattern uniform across adapters |
+| — | #378 | reject | Premise false — `TestRunAdapterHelper` covers the named handlers |
+| — | #401 | reject | Claimed missing safety net exists and is regression-tested |
+
+Consistency note: the advisors confirmed #253 (silent clean-looking scan) while
+rejecting #394/#398/#401 (announced stderr-skip = documented design) — the
+degradation-semantics line held across five independent advisor runs.
