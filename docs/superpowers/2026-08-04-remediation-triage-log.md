@@ -99,7 +99,7 @@ fixture still spec-mandated with detection tests).
 | 2 | #62 | fix | Full target read + unrestricted egress in one container; egress allow-list or offline rules/DB; the exfil channel the #229 package assumes closed |
 | 3 | #303 | fix | Fixtures image: floating-`main` clones built as root, manifest lacks a ref field, own curl\|sh instance |
 | — | #46 | duplicate → #268 | curl\|sh pair = two loci inside #268's umbrella |
-| — | #331–#340 (6) | reject | Inverted mechanism (unpinned = most-patched, no CVE named); kernel queued as #268 |
+| — | #331, #332, #337, #338, #339, #340 | reject | Inverted mechanism (unpinned = most-patched, no CVE named); kernel queued as #268 |
 | — | #419 | reject | Documented lodash fixture whose detection two tests assert; systemic fix is #434 |
 
 Calibration note: the advisors rejected six near-identical scanner-style
@@ -208,12 +208,12 @@ clustering demanded it):
 | 25 | #222 spotbugs axis swap | P6 |
 | 26 | #253 locations[] guard | P6 |
 | 27 | #117 _cvss_v3_score tests | P6 |
-| 28 | #79 dependency_check tests | P8 test hygiene |
-| 29 | #155 phantom explore mode | P7 docs alignment |
-| 30 | #49 README flags | P7 |
-| 31 | #154 stale spec supersession | P7 |
-| 32 | #437 group naming (FIXME-7) | P7 |
-| 33 | #439 version single-sourcing (FIXME-9) | P7 |
+| 28 | #155 phantom explore mode | P7 docs alignment |
+| 29 | #49 README flags | P7 |
+| 30 | #154 stale spec supersession | P7 |
+| 31 | #437 group naming (FIXME-7) | P7 |
+| 32 | #439 version single-sourcing (FIXME-9) | P7 |
+| 33 | #79 dependency_check tests | P8 test hygiene |
 | 34 | #114 tautology test | P8 |
 | 35 | #65 __main__ guard | P8 |
 | 36 | #106 mock.patch swap | P8 |

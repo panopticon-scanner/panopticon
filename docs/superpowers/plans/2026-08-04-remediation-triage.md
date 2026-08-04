@@ -635,7 +635,7 @@ git commit -m "feat(triage): apply/setup subcommands with throttle, backoff, sta
 
 **Files:**
 - Create: `docs/superpowers/2026-08-04-remediation-triage-log.md` (header + B1 table)
-- Ledger: 15 new rows, `set: "FIXME"`, `batch: "B1"`
+- Ledger: 16 new rows (15 FIXMEs + the #58 duplicate pull), `set: "FIXME"`, `batch: "B1"`
 
 **Interfaces:**
 - Consumes: `scripts/triage.py apply`, the Shared Definitions procedure/templates.
