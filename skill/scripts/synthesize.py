@@ -201,10 +201,12 @@ def dedupe(findings):
     """Cluster findings by (file, line). An exactly-two cluster with one tool- and
     one agent-sourced finding is treated as the same issue seen twice (even across
     categories) -> collapse to one reinforced survivor. Larger clusters keep one
-    survivor per category — the most severe — never merging across categories (so
-    distinct issues at a busy line are not silently lost); a category corroborated
-    by BOTH a tool and an agent within such a cluster is still reinforced in place.
-    Same file+line+category findings are intentionally deduped to the most severe.
+    survivor per category AND per tool rule id — the most severe — never merging
+    across categories or across distinct rule ids (dependency scanners emit many
+    distinct advisories at one manifest locus; each is a distinct issue); a
+    category corroborated by BOTH a tool and an agent within such a cluster is
+    still reinforced in place. Same file+line+category+rule findings are
+    intentionally deduped to the most severe.
     Findings without a file OR without a concrete integer line pass through
     unmerged (clustering them on file+category alone would drop distinct issues
     that merely omit a line number)."""
@@ -246,15 +248,35 @@ def dedupe(findings):
                 by_cat[ck].append(f)
             for ck in corder:
                 members = by_cat[ck]
-                best = min(members, key=lambda f: (_sev_rank(f), _conf_rank(f)))
-                if (any(_is_tool_sourced(m) for m in members)
-                        and any(not _is_tool_sourced(m) for m in members)):
-                    best["reinforced"] = True
-                    for m in members:
-                        if m is best:
-                            continue
-                        _reinforce_merge(best, m)
-                result.append(best)
+                cat_has_tool = any(_is_tool_sourced(m) for m in members)
+                cat_has_agent = any(not _is_tool_sourced(m) for m in members)
+                # Sub-bucket by tool rule id: dependency scanners emit MANY
+                # distinct advisories at the same manifest locus (lockfile:1)
+                # under one category — collapsing those to one-per-category
+                # silently discarded real CVEs (calibration 2026-08-03: 22
+                # osv findings -> 3 survivors). Distinct rule_ids are distinct
+                # issues; agent findings (no rule_id) share one bucket as before.
+                by_rule = {}
+                rorder = []
+                for m in members:
+                    rk = ((m.get("tool_evidence") or {}).get("rule_id")
+                          if _is_tool_sourced(m) else None)
+                    if rk not in by_rule:
+                        by_rule[rk] = []
+                        rorder.append(rk)
+                    by_rule[rk].append(m)
+                for rk in rorder:
+                    sub = by_rule[rk]
+                    best = min(sub, key=lambda f: (_sev_rank(f), _conf_rank(f)))
+                    if cat_has_tool and cat_has_agent:
+                        # Category-level tool+agent corroboration still marks
+                        # every surviving member of the category reinforced;
+                        # enrichment merges stay within the same rule bucket.
+                        best["reinforced"] = True
+                        for m in sub:
+                            if m is not best:
+                                _reinforce_merge(best, m)
+                    result.append(best)
     return result + passthrough
 
 

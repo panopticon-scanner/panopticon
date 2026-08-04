@@ -56,6 +56,16 @@ def ingest_dir(tools_dir, group):
         except OSError as e:
             print("ingest skip %s: %s" % (path, e), file=sys.stderr)
             continue
+        # Some tools decorate stdout before the JSON payload (calibration
+        # 2026-08-03: bandit's progress bar corrupted its SARIF). Trim to the
+        # first JSON start token — object OR array (eslint emits a top-level
+        # array) — so a cosmetic prefix never discards real findings.
+        starts = [i for i in (raw.find(b"{"), raw.find(b"[")) if i != -1]
+        first = min(starts) if starts else -1
+        if first > 0:
+            print("ingest note %s: stripped %d bytes of non-JSON prefix"
+                  % (path, first), file=sys.stderr)
+            raw = raw[first:]
         try:
             out.extend(adapter.parse(raw, group))
         except Exception as e:  # noqa: BLE001 - tolerant by design

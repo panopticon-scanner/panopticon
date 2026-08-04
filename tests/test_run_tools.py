@@ -207,3 +207,23 @@ class TestRunAdapterHelper(unittest.TestCase):
             self.assertEqual(rc, 0)
         finally:
             ra.ADAPTERS.pop("crash", None)
+
+
+class TestDetectLanguages(unittest.TestCase):
+    def test_detects_by_extension_with_pruning(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "pkg"))
+            os.makedirs(os.path.join(d, "node_modules", "dep"))
+            open(os.path.join(d, "pkg", "app.py"), "w").close()
+            open(os.path.join(d, "pkg", "ui.tsx"), "w").close()
+            open(os.path.join(d, "node_modules", "dep", "index.js"), "w").close()
+            langs = rt.detect_languages(d)
+        self.assertIn("python", langs)
+        self.assertIn("typescript", langs)
+        self.assertNotIn("javascript", langs)  # only under pruned node_modules
+
+    def test_empty_tree_detects_nothing(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(rt.detect_languages(d), [])

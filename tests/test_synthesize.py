@@ -1374,3 +1374,47 @@ class TestTwoPassCli(unittest.TestCase):
                 rc = syn.main(["--verdicts-dir", vd, "--out", out, fp])
             self.assertEqual(rc, 0)
             self.assertIn("no verdict", err.getvalue())
+
+
+class TestDedupeRuleIdDiscrimination(unittest.TestCase):
+    """Calibration 2026-08-03: distinct advisories at the same manifest locus
+    must not collapse to one-per-category (22 real osv findings survived as 3)."""
+
+    def _dep(self, fid, rule, sev="MEDIUM"):
+        return {"id": fid, "title": rule, "severity": sev, "confidence": "CERTAIN",
+                "panel": "security", "category": "dependency_vulnerability",
+                "source": "tool:osv-scanner",
+                "location": {"file": "requirements.txt", "line_start": 1},
+                "tool_evidence": {"rule_id": rule},
+                "provenance": {"discovered_by": "tool:osv-scanner",
+                               "confirmation_status": "TOOL"}}
+
+    def test_distinct_rule_ids_all_survive(self):
+        findings = [self._dep("OS-001", "GHSA-aaaa"), self._dep("OS-002", "GHSA-bbbb"),
+                    self._dep("OS-003", "GHSA-cccc", sev="CRITICAL")]
+        out = syn.dedupe(findings)
+        self.assertEqual(len(out), 3)
+        self.assertEqual({f["tool_evidence"]["rule_id"] for f in out},
+                         {"GHSA-aaaa", "GHSA-bbbb", "GHSA-cccc"})
+
+    def test_same_rule_id_still_collapses_to_most_severe(self):
+        findings = [self._dep("OS-001", "GHSA-aaaa", sev="MEDIUM"),
+                    self._dep("OS-002", "GHSA-aaaa", sev="HIGH"),
+                    self._dep("OS-003", "GHSA-bbbb")]
+        out = syn.dedupe(findings)
+        self.assertEqual(len(out), 2)
+        kept = {f["tool_evidence"]["rule_id"]: f["severity"] for f in out}
+        self.assertEqual(kept["GHSA-aaaa"], "HIGH")
+
+    def test_tool_agent_reinforce_survives_rule_bucketing(self):
+        agent = {"id": "AG-001", "title": "vulnerable dep use", "severity": "HIGH",
+                 "confidence": "POSSIBLE", "panel": "security",
+                 "category": "dependency_vulnerability",
+                 "location": {"file": "requirements.txt", "line_start": 1},
+                 "provenance": {"discovered_by": "agent:panel_review",
+                                "confirmation_status": "UNVERIFIED"}}
+        findings = [self._dep("OS-001", "GHSA-aaaa"), self._dep("OS-002", "GHSA-bbbb"),
+                    agent]
+        out = syn.dedupe(findings)
+        self.assertEqual(len(out), 3)  # two rules + the agent bucket
+        self.assertTrue(all(f.get("reinforced") for f in out))

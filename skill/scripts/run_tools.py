@@ -12,8 +12,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.tools import ADAPTERS
 from scripts.tools.legacy_sarif import LEGACY_SARIF_TOOLS, TOOL_CMD
 
-LANG_TOOL = {"python": "bandit", "go": "gosec",
-             "javascript": "eslint", "typescript": "eslint"}
+# JS/TS SAST runs via the eslint-security ADAPTER (bundled flat config);
+# the legacy bare-eslint tool can never run on arbitrary targets (eslint >=9
+# requires a project eslint.config.js) and was retired from language selection
+# (calibration 2026-08-03: perpetual "tool eslint exited 2; skipping").
+LANG_TOOL = {"python": "bandit", "go": "gosec"}
 
 # Phase 1 adapters selected by ecosystem detection; they are dispatched through
 # _run_adapter.py inside the panopticon-tools container.
@@ -39,6 +42,35 @@ def docker_available(image="panopticon-tools", runner=None):
         return getattr(res, "returncode", 1) == 0
     except Exception:  # noqa: BLE001
         return False
+
+
+_LANG_EXTS = {".py": "python", ".go": "go",
+              ".js": "javascript", ".jsx": "javascript",
+              ".ts": "typescript", ".tsx": "typescript"}
+_DETECT_PRUNE = {".git", ".venv", "venv", "node_modules", "__pycache__",
+                 ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", "tmp"}
+
+
+def detect_languages(target):
+    """Best-effort language detection by source-file extension.
+
+    The bare CLI invocation (README/CI) passes no --languages, which previously
+    meant the language-keyed SAST tools (bandit/gosec/eslint) NEVER ran
+    (calibration 2026-08-03). Walks with noise-dir pruning; stops once every
+    known language is seen.
+    """
+    found = set()
+    want = set(_LANG_EXTS.values())
+    for dirpath, dirnames, filenames in os.walk(target):
+        dirnames[:] = [d for d in dirnames
+                       if d not in _DETECT_PRUNE and not d.startswith(".")]
+        for fn in filenames:
+            lang = _LANG_EXTS.get(os.path.splitext(fn)[1].lower())
+            if lang:
+                found.add(lang)
+                if found == want:
+                    return sorted(found)
+    return sorted(found)
 
 
 def select_tools(languages, has_deps):
@@ -120,8 +152,14 @@ def run_tools(target, tools, out_dir, image="panopticon-tools", runner=None):
             docker = ["docker", "run", "--rm"]
             if os.environ.get("NVD_API_KEY"):
                 docker.extend(["-e", "NVD_API_KEY"])
+            # Mount the checkout's adapter code over the image's baked-in copy
+            # so local adapter fixes take effect without an image rebuild
+            # (calibration 2026-08-03: fixed adapters silently kept failing
+            # because the image carried the stale code).
+            scripts_dir = os.path.dirname(os.path.abspath(__file__))
             docker.extend([
-                "-v", "%s:/src:ro" % os.path.abspath(target), image,
+                "-v", "%s:/src:ro" % os.path.abspath(target),
+                "-v", "%s:/opt/panopticon/scripts:ro" % scripts_dir, image,
                 "python3", "/opt/panopticon/scripts/_run_adapter.py", tool])
             try:
                 res = runner(docker, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -157,6 +195,7 @@ if __name__ == "__main__":
         selected_adapters = select_adapters(a.target)
         phase1 = [name for name in selected_adapters if name in PHASE1_ADAPTERS]
         phase2 = [name for name in selected_adapters if name in PHASE2_ADAPTERS]
-        chosen = select_tools(a.languages, a.deps) + phase1 + phase2
+        languages = a.languages or detect_languages(a.target)
+        chosen = select_tools(languages, a.deps) + phase1 + phase2
     paths = run_tools(a.target, chosen, a.out)
     print("\n".join(paths))

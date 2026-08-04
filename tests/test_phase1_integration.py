@@ -45,13 +45,21 @@ class TestPhase1Integration(unittest.TestCase):
         raw = json.dumps({
             "results": [
                 {
-                    "package": {"name": "lodash", "version": "4.17.20", "ecosystem": "npm"},
-                    "vulnerabilities": [
+                    "source": {"path": "/src/package-lock.json", "type": "lockfile"},
+                    "packages": [
                         {
-                            "id": "GHSA-35jh-r3h4-6jhm",
-                            "aliases": ["CVE-2021-23337"],
-                            "severity": "HIGH",
-                            "summary": "Command Injection in lodash",
+                            "package": {"name": "lodash", "version": "4.17.20", "ecosystem": "npm"},
+                            "vulnerabilities": [
+                                {
+                                    "id": "GHSA-35jh-r3h4-6jhm",
+                                    "aliases": ["CVE-2021-23337"],
+                                    "severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}],
+                                    "summary": "Command Injection in lodash",
+                                }
+                            ],
+                            "groups": [
+                                {"ids": ["GHSA-35jh-r3h4-6jhm"], "aliases": ["CVE-2021-23337"], "max_severity": "7.2"}
+                            ],
                         }
                     ],
                 }

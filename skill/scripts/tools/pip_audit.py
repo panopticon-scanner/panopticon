@@ -26,7 +26,10 @@ class PipAuditAdapter:
         return False
 
     def invoke(self, target: str) -> tuple[bytes, int]:
-        cmd = ["pip-audit", "--format=json", "--desc"]
+        # --desc takes an optional value; the bare form swallows a following
+        # positional path (calibration 2026-08-03: --desc /src -> argparse
+        # error, exit 2). Always use the explicit-value form.
+        cmd = ["pip-audit", "--format=json", "--desc=on"]
         req = self._find_requirement(target)
         if req:
             self._manifest_path = req
