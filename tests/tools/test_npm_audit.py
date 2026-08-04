@@ -92,7 +92,7 @@ class TestNpmAuditAdapter(unittest.TestCase):
     def test_invoke_runs_npm_audit_json(self):
         adapter = na.NpmAuditAdapter()
         fake_run = mock.Mock(return_value=mock.Mock(stdout=b"{}", returncode=0))
-        with mock.patch("scripts.tools.npm_audit.subprocess.run", fake_run):
+        with mock.patch("scripts.tools.base.subprocess.run", fake_run):
             stdout, rc = adapter.invoke("/tmp/fake")
         self.assertEqual(stdout, b"{}")
         self.assertEqual(rc, 0)

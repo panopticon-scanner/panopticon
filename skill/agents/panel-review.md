@@ -30,7 +30,7 @@ Your ONLY action is writing that one findings file. Perform NO GitHub writes, NO
 
 ## Finding format
 
-- id: ^[A-Z]{2,4}-\d{3,}$
+- id: ^[A-Z]{2,8}-\d{3,}$
 - severity: CRITICAL|HIGH|MEDIUM|LOW|INFO
 - panel: "{panel}"
 - category: (lens name or "general")

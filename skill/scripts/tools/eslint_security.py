@@ -3,8 +3,7 @@ from __future__ import annotations
 import glob
 import json
 import os
-import subprocess
-from .base import attach_tool_provenance, new_finding_id, omit_none
+from .base import attach_tool_provenance, new_finding_id, omit_none, run_tool
 
 
 # CWE mappings for eslint-plugin-security rules (best-effort).
@@ -50,8 +49,7 @@ class EslintSecurityAdapter:
                 existing = env.get("NODE_PATH", "")
                 env["NODE_PATH"] = f"{existing}:{global_node}" if existing else global_node
                 break
-        res = subprocess.run(cmd, capture_output=True, timeout=300, env=env)
-        return res.stdout, res.returncode
+        return run_tool(cmd, timeout=300, env=env)
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
         data = json.loads(raw.decode("utf-8", errors="replace"))

@@ -2,8 +2,7 @@
 from __future__ import annotations
 import json
 import os
-import subprocess
-from .base import attach_tool_provenance, normalize_severity, new_finding_id, omit_none
+from .base import attach_tool_provenance, normalize_severity, new_finding_id, omit_none, run_tool
 
 
 class NpmAuditAdapter:
@@ -16,8 +15,7 @@ class NpmAuditAdapter:
 
     def invoke(self, target: str) -> tuple[bytes, int]:
         cmd = ["npm", "audit", "--json", "--prefix", target]
-        res = subprocess.run(cmd, capture_output=True, timeout=300)
-        return res.stdout, res.returncode
+        return run_tool(cmd, timeout=300)
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
         data = json.loads(raw.decode("utf-8", errors="replace"))

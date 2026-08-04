@@ -350,3 +350,28 @@ class TestRenderAdvisor(unittest.TestCase):
             with self.assertRaises(ValueError) as ctx:
                 dispatch.render_advisor_prompts(qpath, tmp)
             self.assertIn("unsafe queue_id", str(ctx.exception))
+
+
+class TestQueueIdResiduals(unittest.TestCase):
+    """Round-2 parked residuals: >=1000-entry queue ids and non-string ids."""
+
+    def _queue(self, tmp, entries):
+        qpath = os.path.join(tmp, "q.json")
+        with open(qpath, "w") as fh:
+            json.dump({"version": "4.1.0", "cut_by_max_verify": 0,
+                       "entries": entries}, fh)
+        return qpath
+
+    def test_four_digit_queue_index_accepted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            qpath = self._queue(tmp, [{"queue_id": "1000-AB-001", "priority": 1,
+                                       "finding": {"id": "AB-001", "title": "t"}}])
+            written = dispatch.render_advisor_prompts(qpath, os.path.join(tmp, "o"))
+        self.assertEqual(os.path.basename(written[0]), "1000-AB-001.md")
+
+    def test_non_string_queue_id_raises_valueerror(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            qpath = self._queue(tmp, [{"queue_id": 7, "priority": 1,
+                                       "finding": {"id": "AB-001"}}])
+            with self.assertRaises(ValueError):
+                dispatch.render_advisor_prompts(qpath, os.path.join(tmp, "o"))

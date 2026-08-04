@@ -2,8 +2,7 @@
 from __future__ import annotations
 import json
 import os
-import subprocess
-from .base import attach_tool_provenance, normalize_severity, new_finding_id, omit_none
+from .base import attach_tool_provenance, normalize_severity, new_finding_id, omit_none, run_tool
 from .sarif_utils import _norm_uri
 
 
@@ -34,8 +33,7 @@ class OsvScannerAdapter:
 
     def invoke(self, target: str) -> tuple[bytes, int]:
         cmd = ["osv-scanner", "--format", "json", "--recursive", target]
-        res = subprocess.run(cmd, capture_output=True, timeout=300)
-        return res.stdout, res.returncode
+        return run_tool(cmd, timeout=300)
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
         """Parse real osv-scanner --format json output.

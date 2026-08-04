@@ -133,7 +133,11 @@ def run_tools(target, tools, out_dir, image="panopticon-tools", runner=None):
                 res = runner(docker, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                              timeout=TOOL_TIMEOUT)
                 if getattr(res, "returncode", 1) not in (0, 1):  # 1 == findings for many tools
-                    print("tool %s exited %s; skipping" % (tool, res.returncode), file=sys.stderr)
+                    excerpt = (getattr(res, "stderr", b"") or b"")[-500:].decode(
+                        "utf-8", errors="replace").strip()
+                    print("tool %s exited %s; skipping%s" % (
+                        tool, res.returncode,
+                        (" — " + excerpt) if excerpt else ""), file=sys.stderr)
                     continue
                 with open(out_path, "wb") as fh:
                     fh.write(res.stdout or b"")

@@ -2,8 +2,7 @@
 from __future__ import annotations
 import os
 import re
-import subprocess
-from .base import attach_tool_provenance, normalize_severity, new_finding_id, omit_none
+from .base import attach_tool_provenance, normalize_severity, new_finding_id, omit_none, run_tool
 
 _BLOCK_RE = re.compile(
     r"Name:\s*(?P<name>[^\n]+)\n"
@@ -27,8 +26,7 @@ class BundlerAuditAdapter:
 
     def invoke(self, target: str) -> tuple[bytes, int]:
         cmd = ["bundle-audit", "check"]
-        res = subprocess.run(cmd, capture_output=True, timeout=300, cwd=target)
-        return res.stdout, res.returncode
+        return run_tool(cmd, timeout=300, cwd=target)
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
         text = raw.decode("utf-8", errors="replace")

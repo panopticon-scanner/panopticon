@@ -57,12 +57,10 @@ jobs:
           import sys
           sys.path.insert(0, os.path.join(os.getcwd(), 'skill'))
           import scripts.ingest_tools as it
-          findings = it.ingest_dir(os.environ['TOOLS_OUT'], 'ci')
-          # Ignore intentionally vulnerable test fixtures.
-          def _is_fixture(f):
-              path = (f.get('location') or {}).get('file', '')
-              return 'tests/fixtures/' in path
-          findings = [f for f in findings if not _is_fixture(f)]
+          # Fixture exclusion is the standard ingest mechanism (F-CAL-2),
+          # not CI-only inline filtering.
+          findings = it.ingest_dir(os.environ['TOOLS_OUT'], 'ci',
+                                   exclude_globs=['tests/fixtures/*'])
           high = [f for f in findings if f.get('severity') in ('HIGH', 'CRITICAL')]
           print(f"Ingested {len(findings)} non-fixture tool findings; {len(high)} HIGH/CRITICAL")
           if high:

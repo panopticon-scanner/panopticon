@@ -37,12 +37,21 @@ __all__ = [
 ]
 
 
-def ingest_dir(tools_dir, group):
+def ingest_dir(tools_dir, group, exclude_globs=None):
     """Ingest raw tool-output files from a directory and route them to the
     registered adapter for parsing. Files without a registered adapter or that
-    fail to parse are skipped with a stderr diagnostic."""
+    fail to parse are skipped with a stderr diagnostic.
+
+    exclude_globs (F-CAL-2): fnmatch patterns matched against each finding's
+    location.file; matches are dropped with a single aggregate stderr note.
+    Standardizes the fixture-noise filter that previously lived only as inline
+    Python in CI (intentionally vulnerable apps under tests/fixtures/ dominate
+    self-scans otherwise).
+    """
+    import fnmatch
     from scripts.tools import ADAPTERS
     out = []
+    excluded = 0
     for path in sorted(glob.glob(os.path.join(tools_dir, "*.sarif"))
                        + glob.glob(os.path.join(tools_dir, "*.json"))):
         tool = os.path.splitext(os.path.basename(path))[0]
@@ -67,8 +76,21 @@ def ingest_dir(tools_dir, group):
                   % (path, first), file=sys.stderr)
             raw = raw[first:]
         try:
-            out.extend(adapter.parse(raw, group))
+            parsed = adapter.parse(raw, group)
         except Exception as e:  # noqa: BLE001 - tolerant by design
             print("ingest error %s: %s" % (path, e), file=sys.stderr)
             continue
+        if exclude_globs:
+            kept = []
+            for f in parsed:
+                fpath = str((f.get("location") or {}).get("file", ""))
+                if any(fnmatch.fnmatch(fpath, g) for g in exclude_globs):
+                    excluded += 1
+                else:
+                    kept.append(f)
+            parsed = kept
+        out.extend(parsed)
+    if excluded:
+        print("ingest: excluded %d finding(s) matching %s"
+              % (excluded, ", ".join(exclude_globs)), file=sys.stderr)
     return out

@@ -120,7 +120,7 @@ class TestOsvScannerAdapter(unittest.TestCase):
     def test_invoke_runs_osv_scanner_json(self):
         adapter = osv.OsvScannerAdapter()
         fake_run = mock.Mock(return_value=mock.Mock(stdout=b"{}", returncode=0))
-        with mock.patch("scripts.tools.osv_scanner.subprocess.run", fake_run):
+        with mock.patch("scripts.tools.base.subprocess.run", fake_run):
             stdout, rc = adapter.invoke("/tmp/fake")
         self.assertEqual(stdout, b"{}")
         self.assertEqual(rc, 0)

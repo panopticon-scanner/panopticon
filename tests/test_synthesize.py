@@ -1418,3 +1418,27 @@ class TestDedupeRuleIdDiscrimination(unittest.TestCase):
         out = syn.dedupe(findings)
         self.assertEqual(len(out), 3)  # two rules + the agent bucket
         self.assertTrue(all(f.get("reinforced") for f in out))
+
+
+class TestCalibrationFixmes(unittest.TestCase):
+    def test_models_used_dedups_inconsistent_versions(self):
+        # F-CAL-3: same model+role with three self-reported version spellings -> 1 entry
+        fs = []
+        for i, ver in enumerate(("claude-haiku-4-5-20251001", "4.5", "20251001")):
+            fs.append({"id": "AG-%03d" % i, "title": "t", "severity": "LOW",
+                       "confidence": "NOTE", "panel": "code", "category": "style",
+                       "location": {"file": "a.py", "line_start": i + 1},
+                       "provenance": {"discovered_by": "agent:lens_sweep",
+                                      "model": "claude-haiku-4-5-20251001",
+                                      "model_version": ver,
+                                      "confirmation_status": "UNVERIFIED"}})
+        entries = syn._collect_models_used(fs)
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["model"], "claude-haiku-4-5-20251001")
+
+    def test_id_re_accepts_real_agent_prefixes(self):
+        # F-CAL-4: observed real ids like STRUCT-001 (6 letters) must validate
+        for good in ("CD-001", "STRUCT-001", "ABCDEFGH-123"):
+            self.assertIsNotNone(syn.ID_RE.match(good), good)
+        for bad in ("A-001", "ABCDEFGHI-001", "struct-001", "SEC-01"):
+            self.assertIsNone(syn.ID_RE.match(bad), bad)

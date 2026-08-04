@@ -198,3 +198,32 @@ class TestNonJsonPrefixTolerance(unittest.TestCase):
                 fh.write(json.dumps([{"filePath": "/src/a.js", "messages": []}]).encode())
             out = it.ingest_dir(d, "g1")
         self.assertEqual(out, [])  # array payload reaches the adapter intact
+
+
+class TestExcludeGlobs(unittest.TestCase):
+    """F-CAL-2: fixture-noise exclusion is a standard ingest mechanism."""
+
+    def _sarif(self, path):
+        return {"runs": [{"tool": {"driver": {"name": "t", "rules": []}},
+                          "results": [{"ruleId": "R1", "level": "warning",
+                                       "message": {"text": "m"},
+                                       "locations": [{"physicalLocation": {
+                                           "artifactLocation": {"uri": path},
+                                           "region": {"startLine": 1}}}]}]}]}
+
+    def test_excluded_paths_dropped_with_note(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "semgrep.sarif"), "w") as fh:
+                json.dump(self._sarif("tests/fixtures/insecure-js/app.js"), fh)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                out = it.ingest_dir(d, "g1", exclude_globs=["tests/fixtures/*"])
+        self.assertEqual(out, [])
+        self.assertIn("excluded 1 finding", err.getvalue())
+
+    def test_non_matching_paths_kept(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "semgrep.sarif"), "w") as fh:
+                json.dump(self._sarif("skill/scripts/dispatch.py"), fh)
+            out = it.ingest_dir(d, "g1", exclude_globs=["tests/fixtures/*"])
+        self.assertEqual(len(out), 1)

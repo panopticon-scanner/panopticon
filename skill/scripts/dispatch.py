@@ -245,7 +245,11 @@ def render_advisor_prompts(queue_path, out_dir):
         if not queue_id or not isinstance(finding, dict):
             raise ValueError("verify queue %s: malformed entry %r"
                              % (queue_path, entry.get("queue_id")))
-        if not re.match(r"^[0-9]{3}-[A-Za-z0-9_-]+$", queue_id):
+        if not isinstance(queue_id, str):
+            raise ValueError("verify queue %s: non-string queue_id %r"
+                             % (queue_path, queue_id))
+        # {3,}: %03d is minimum-width, so 1000+ entries yield 4+ digits.
+        if not re.match(r"^[0-9]{3,}-[A-Za-z0-9_-]+$", queue_id):
             raise ValueError("verify queue %s: unsafe queue_id %r"
                              % (queue_path, queue_id))
         claim = json.dumps(finding, indent=2, ensure_ascii=False)
