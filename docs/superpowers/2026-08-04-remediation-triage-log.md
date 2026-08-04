@@ -106,3 +106,21 @@ Calibration note: the advisors rejected six near-identical scanner-style
 pinning claims while the panel's correct framing of the same concern (#268)
 was independently confirmed — the two-axis model separating noise from the
 actionable form of the same underlying hygiene issue.
+
+### B3c — orchestration, policy, docs drift (2026-08-04)
+
+10 rows: 7 fix, 1 duplicate, 2 reject. Spot-checks: 1 advisor run covering
+both rejected issues — **both stand, 0 overturns.**
+
+| Rank | Issue | Verdict | Rationale |
+|---|---|---|---|
+| 1 | #146 | fix | Clean-tree check exempts `.panopticon/`; add plan-vs-artifact reconciliation; rides the #436 write-scoping package |
+| 2 | #275 | fix | Silent advisory degradation on unregistered hosts; make it loud + content-verifying registration |
+| 3 | #171 | fix | `secrets_config`/`concurrency` surfaces route nowhere (real run dropped a security panel); scout-contract package |
+| 4 | #166 | fix | Scout cheat sheet omits redteam; scout-contract package |
+| 5 | #155 | fix | Phantom `-e/--explore` mode documented in three places; implement or excise |
+| 6 | #49 | fix | README `--mode` flags exist nowhere; docs alignment with #155 |
+| 7 | #154 | fix | Stale spec prescribes removed severity-downgrade; mark superseded |
+| — | #38 | duplicate → #439 | Version-literal kernel of FIXME-9; test-pinning detail transfers |
+| — | #361 | reject | Confidence defaulted pre-validation (re-verified); residual reviewer-contract kernel → #431/#432 package |
+| — | #368 | reject | Zero concurrency in codebase; benign lazy init (re-verified) |
