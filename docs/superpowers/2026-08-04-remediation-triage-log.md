@@ -38,3 +38,24 @@ FIXME-15 but changed no code; the defect is present and enters the queue.
 `build_verify_queue` excludes tool-sourced findings (`evidence.py:107-108`,
 locked by `tests/test_verify_queue.py:36-41`); no `tool_reported` status; no
 tool-axis rejection rate in meta. Overturn count for the closing summary: 1.
+
+## Batch B2 — CRITICALs (2026-08-04)
+
+5 rows: 1 fix, 1 duplicate, 3 reject. Spot-checks: 2 advisor runs covering
+the 3 rejected issues (#418/#422 share one locus and one check); **both
+rejections stand — 0 overturns.**
+
+| Rank | Issue | Verdict | Rationale |
+|---|---|---|---|
+| 1 | #229 | fix | `dotnet build` on scanned code: arbitrary MSBuild/NuGet execution in the networked scanning container, NVD_API_KEY passthrough; breaks the documented no-execution invariant. Canonical for the roslyn locus |
+| — | #82 | duplicate → #229 | Code-panel filing of the same defect; its own advisor verdict declares the duplication |
+| — | #418 | reject | Never-executed eslint-security calibration fixture; exclusion mechanism intact (re-verified). Systemic prevention queued as #434 |
+| — | #422 | reject | Duplicate filing of #418's claim, same re-verified grounds |
+| — | #330 | reject | CRITICAL impact mechanisms nonexistent (no version consumer, no build path — re-verified); kernel queued as #439 |
+
+**Spot-check records:** #418/#422 — advisor NOT-REAL: fixture still two lines,
+sole consumer is the static eslint lint (`test_phase1_integration.py:80-93`),
+`exclude_globs` intact (`security.yml:62-63`, regression-tested). #330 —
+advisor NOT-REAL: no `[build-system]`, zero version consumers; report metadata
+already 4.2.0 (`synthesize.py:682`, `evidence.py:126`); only stale literals are
+`pyproject.toml:3` and `citations.py:153`.
