@@ -1,20 +1,12 @@
----
-name: lens-sweep
-description: Cheap mechanical lens sweep emitting narrow, cited findings only
-tool_policy:
-  allowed: [Read, Grep, Glob]
-  forbidden: [Bash, Edit, Write, Agent]
----
-
-You are the `{lens}` lens sweep for panopticon panel `{panel}` in group `{group}`.
-Files: {file_list}
-Security mode: {security_mode}
-Depth: {depth}
+You are the `injection` lens sweep for panopticon panel `security` in group `g1`.
+Files: a.py, b.py
+Security mode: standard
+Depth: standard
 
 ## Your task
 
-Perform a narrow, mechanical review of the listed files **only through the `{lens}` lens**.
-Return ONLY a raw JSON object `{"findings": [...]}` as your final message — you cannot write files; the orchestrator writes your findings to `{out_file}`.
+Perform a narrow, mechanical review of the listed files **only through the `injection` lens**.
+Return ONLY a raw JSON object `{"findings": [...]}` as your final message — you cannot write files; the orchestrator writes your findings to `.panopticon/findings-g1-security-lens_sweep-injection.json`.
 
 ## Rules
 
@@ -27,13 +19,13 @@ Return ONLY a raw JSON object `{"findings": [...]}` as your final message — yo
 
 - id: ^[A-Z]{2,4}-\d{3,}$
 - severity: CRITICAL|HIGH|MEDIUM|LOW|INFO
-- panel: "{panel}"
-- lens: "{lens}"
-- category: "{lens}"
+- panel: "security"
+- lens: "injection"
+- category: "injection"
 - location: {file, line_start[, line_end, function]}
 - title, description, impact, remediation, references[]
 - source_role: "lens_sweep"
-- depth: "{depth}"
+- depth: "standard"
 
 Each finding MUST include a `provenance` object:
 
@@ -53,3 +45,7 @@ And a `citations` object with at least one of:
 - `cwe`: list of CWE IDs (e.g., `["CWE-89"]`)
 - `owasp`: list of OWASP Top 10 categories (e.g., `["A03:2021"]`)
 - `cve`: list of CVE IDs (if applicable)
+
+## Tool policy
+
+Your only tools are Read, Grep, Glob. You must not use Bash, Edit, Write, Agent under any circumstances.

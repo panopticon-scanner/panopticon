@@ -1188,7 +1188,7 @@ class TestEvidenceReport(unittest.TestCase):
         report = self._report([_agentic()])
         self.assertNotIn("effort_to_remediate", report["summary"])
         self.assertNotIn("recommendations", report)
-        self.assertEqual(report["meta"]["version"], "4.0.0")
+        self.assertEqual(report["meta"]["version"], "4.1.0")
 
     def test_citation_quality_lives_in_evidence(self):
         report = self._report([_agentic(citations={"cwe": ["CWE-89"]})])

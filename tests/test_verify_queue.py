@@ -76,6 +76,21 @@ class TestBuildVerifyQueue(unittest.TestCase):
         self.assertEqual([e["finding"]["id"] for e in entries],
                          ["AG-040", "AG-041"])
 
+    def test_queue_id_sanitized_for_filenames(self):
+        # Finding ids are external LLM output; real agents have emitted
+        # nonconforming ids (observed: 6-letter prefixes). The id component
+        # of queue_id feeds a filename downstream (advisor prompt / verdict
+        # paths), so it must be sanitized rather than strictly validated.
+        f = _finding("../../evil", "HIGH")
+        entries, cut = evidence.build_verify_queue([f])
+        self.assertEqual(cut, 0)
+        queue_id = entries[0]["queue_id"]
+        self.assertTrue(queue_id.startswith("000-"))
+        id_component = queue_id[len("000-"):]
+        self.assertNotIn("/", id_component)
+        self.assertNotIn(".", id_component)
+        self.assertEqual(id_component, "______evil")
+
     def test_reinforced_agentic_finding_excluded(self):
         # A reinforced (tool+agent same-locus merge) finding already derives
         # tool_confirmed -> it's tool-reported by construction and never needs
@@ -97,7 +112,7 @@ class TestWriteVerifyQueue(unittest.TestCase):
             evidence.write_verify_queue(entries, cut, path)
             with open(path) as fh:
                 payload = json.load(fh)
-        self.assertEqual(payload["version"], "4.0.0")
+        self.assertEqual(payload["version"], "4.1.0")
         self.assertEqual(payload["cut_by_max_verify"], 0)
         self.assertEqual(payload["entries"][0]["queue_id"], "000-AG-050")
         self.assertNotIn("_group", payload["entries"][0]["finding"])

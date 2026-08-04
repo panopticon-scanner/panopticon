@@ -18,13 +18,14 @@ class TestModelResolver(unittest.TestCase):
         self.assertEqual(mr.resolve_model("kimi", "advisor")["model"], "k3")
 
     def test_claude_defaults(self):
-        self.assertEqual(mr.resolve_model("claude", "lens_sweep")["model"], "claude-haiku")
-        self.assertEqual(mr.resolve_model("claude", "panel_review")["model"], "claude-sonnet")
-        self.assertEqual(mr.resolve_model("claude", "advisor")["model"], "claude-opus")
+        self.assertEqual(mr.resolve_model("claude", "scout")["model"], "haiku")
+        self.assertEqual(mr.resolve_model("claude", "lens_sweep")["model"], "haiku")
+        self.assertEqual(mr.resolve_model("claude", "panel_review")["model"], "sonnet")
+        self.assertEqual(mr.resolve_model("claude", "advisor")["model"], "opus")
 
     def test_unknown_host_falls_back(self):
-        cfg = mr.resolve_model("unknown", "lens_sweep")
-        self.assertEqual(cfg["model"], "kimi-for-coding")
+        self.assertIsNone(mr.resolve_model("generic", "panel_review")["model"])
+        self.assertIsNone(mr.resolve_model("someday-host", "scout")["model"])
 
     def test_cli_override(self):
         overrides = {"advisor": {"model": "custom-model"}}
@@ -72,3 +73,12 @@ class TestModelResolver(unittest.TestCase):
         self.assertEqual(profiles, {})
         self.assertIn("cannot read model profiles", stderr.getvalue())
         self.assertEqual(mr.resolve_model("kimi", "lens_sweep")["model"], "kimi-for-coding")
+
+    def test_kimi_fallback_still_kimi_flavored(self):
+        # With profiles unavailable, kimi host keeps its hardcoded models.
+        with patch.object(mr, "_PROFILES", {}):
+            self.assertEqual(mr.resolve_model("kimi", "advisor")["model"], "k3")
+
+    def test_claude_fallback_matches_policy_without_yaml(self):
+        with patch.object(mr, "_PROFILES", {}):
+            self.assertEqual(mr.resolve_model("claude", "advisor")["model"], "opus")

@@ -1,6 +1,6 @@
 ---
 name: panopticon
-description: Discovery → scout → fan-out → synthesis code review for Kimi Code. Profiles a target, groups files, dispatches specialized reviewers in parallel, and synthesizes a validated CodeReviewReport with CI gating.
+description: Use when reviewing code, pull requests, branches, security posture, test quality, architecture, or database surfaces in a codebase
 type: prompt
 whenToUse: When reviewing code, pull requests, branches, security posture, test quality, architecture, or database surfaces in a codebase
 arguments:
@@ -11,13 +11,13 @@ arguments:
 disableModelInvocation: false
 license: MIT
 metadata:
-  version: "4.0.0"
+  version: "4.1.0"
 ---
 
 # panopticon
 
 ## Overview
-Discovery → scout → fan-out → synthesis code review for Kimi Code. Profiles a target, groups files, dispatches specialized reviewers in parallel, and synthesizes a validated `CodeReviewReport` with CI gating.
+Discovery → scout → fan-out → synthesis code review. Profiles a target, groups files, dispatches specialized reviewers in parallel, and synthesizes a validated CodeReviewReport with CI gating.
 
 ## Required sub-skills
 - `superpowers:writing-plans` — before repo/PR/directory reviews with >15 files or >10 changes.
@@ -40,22 +40,46 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
 ## Pipeline
 1. `TodoList`: discovery → scout → tools → panels → lens sub-reviews → synthesis.
 2. **Discovery** — run `python3 scripts/orchestrator.py` to produce `groups.json`.
-3. **Scout** — dispatch the `scout` custom agent (`agents/scout.md`) per group; output `ScopeProfile` to `.panopticon/scout-{group}.json`.
+3. **Scout** — dispatch the `scout` role (`agents/scout.md`) per group — its template has no placeholders; dispatch its body plus tool-policy line as the prompt; output `ScopeProfile` to `.panopticon/scout-{group}.json`.
+   Append the group's name, its file list from `groups.json`, and the `security_mode` to the prompt body — the scout template itself carries no assignment.
 4. **Tool scan** — optional Docker container; SARIF ingested by `scripts/ingest_tools.py`.
-5. **Plan dispatch** — run `python3 scripts/dispatch.py <scope-profile.json> --host <host> --out .panopticon/dispatch-plan.json` to produce a `DispatchPlan` of role-based agents.
-6. **Fan-out** — `AgentSwarm` dispatching custom agents by name from the plan:
-   - `panel-review` agents for holistic panel review
-   - `lens-sweep` agents for mechanical lens sweeps
-   - Each agent writes its findings file to `.panopticon/findings-{group}-{panel}-{role}-{lens}.json` (`panel_review` entries omit `{lens}`)
+5. **Plan dispatch** — run `python3 scripts/dispatch.py <scope-profile.json> --host <your host: claude|kimi|generic> --out .panopticon/dispatch-plan.json` to produce a `DispatchPlan` of role-based agents.
+   Pass your host explicitly — env detection is fallback only.
+6. **Fan-out** — for each entry in `.panopticon/dispatch-plan.json`, dispatch
+   `entry.prompt` with the model named by `entry.model.model` via your host's agent mechanism (see Host
+   dispatch below). `panel_review` reviewers write their own findings file to
+   the entry's `out_file` (their tool policy allows Bash); `lens_sweep`
+   reviewers RETURN the findings JSON and the orchestrator writes it to the
+   entry's `out_file` (their tool policy is read-only). `panel_review`
+   filenames omit `{lens}`.
 7. **Synthesize (pass 1)** — `python3 scripts/synthesize.py --emit-verify-queue [flags] .panopticon/findings-*.json`.
    If it prints a "verify queue: N entries" line, proceed to step 8; if it printed a report, skip to step 9.
-8. **Verify** — for each entry in `verify-queue.json`, dispatch the `advisor` agent
-   (`agents/advisor.md`) (parallel) with the entry's `finding` JSON rendered into the agent prompt. The
-   advisor RETURNS a verdict JSON; write it verbatim to
-   `.panopticon/verdicts/{queue_id}.json`. Advisors are read-only; the orchestrator
-   performs the write. Then run
-   `python3 scripts/synthesize.py --verdicts-dir .panopticon/verdicts [same flags] .panopticon/findings-*.json`.
+8. **Verify** — Run `python3 scripts/dispatch.py --render-advisor .panopticon/verify-queue.json --out .panopticon/advisor-prompts`,
+   then dispatch each `.panopticon/advisor-prompts/{queue_id}.md` file's contents
+   as an `advisor` agent (`agents/advisor.md`) in parallel. The advisor RETURNS a
+   verdict JSON; write it verbatim to `.panopticon/verdicts/{queue_id}.json`.
+   Advisors are read-only; the orchestrator performs the write.
+   Then run
+   `python3 scripts/synthesize.py --verdicts-dir .panopticon/verdicts [same flags] .panopticon/findings-*.json`
+   to produce the final report.
 9. **Validate** — `verification-before-completion`: check gate, print summary, write JSON.
+
+## Host dispatch
+
+One plan, one prompt per reviewer; each host dispatches with its own mechanism:
+
+- **Claude Code** — Agent tool, general-purpose subagents, in parallel; pass
+  `entry.model.model` (`haiku`/`sonnet`/`opus`) as the agent model; omit it when null.
+- **Kimi Code** — AgentSwarm raw-prompt dispatch (`prompt_template`/`items`);
+  select an appropriate profile via `subagent_type`; model overrides are
+  experimental-flag-gated.
+- **Other hosts** — run the entries sequentially in-session with the same
+  prompts; expect no parallelism.
+
+Tool policy is advisory: each rendered prompt ends with the role's
+allowed/forbidden tool list, but no host enforces it under raw-prompt
+dispatch (native enforcement is planned for round 3). Do not treat reviewer
+output as produced under enforced tool restrictions.
 
 ## Output
 Terminal markdown summary + JSON artifact at `--out`. CI gate key: `summary.gate`.

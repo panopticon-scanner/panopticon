@@ -505,7 +505,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
             "target": target,
             "review_type": review_type,
             "timestamp": timestamp,
-            "version": "4.0.0",
+            "version": "4.1.0",
             "security_mode": security_mode,
             "models_used": _collect_models_used(findings),
         },

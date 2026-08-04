@@ -8,9 +8,9 @@ Panopticon profiles a target codebase, groups files by risk, dispatches speciali
 
 The skill uses the open `SKILL.md` format and works with:
 
-- [Kimi Code CLI](https://code.kimi.com/)
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview)
-- Other agents that read `SKILL.md` files
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) — first-class: parallel fan-out via the Agent tool
+- [Kimi Code CLI](https://code.kimi.com/) — supported: AgentSwarm raw-prompt dispatch
+- Other agents that read `SKILL.md` files — degraded: sequential dispatch, same prompts
 
 ## Installation
 
