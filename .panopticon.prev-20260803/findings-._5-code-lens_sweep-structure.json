@@ -1,0 +1,292 @@
+{
+  "findings": [
+    {
+      "id": "STRUCT-001",
+      "severity": "HIGH",
+      "panel": "code",
+      "lens": "structure",
+      "category": "structure",
+      "location": {
+        "file": "skill/scripts/synthesize.py",
+        "line_start": 1
+      },
+      "title": "Module mixes five distinct concerns without separation",
+      "description": "synthesize.py (864 lines) conflates normalization, dedupe, evidence derivation, report building/validation, and serialization across 27 functions.",
+      "impact": "",
+      "remediation": "Decompose into finding_processing / report_builder / report_validator / output_handler modules.",
+      "references": [],
+      "source_role": "lens_sweep",
+      "depth": "standard",
+      "provenance": {
+        "discovered_by": "agent:lens_sweep",
+        "expanded_by": null,
+        "confirmed_by": null,
+        "model": "claude-haiku-4-5-20251001",
+        "model_version": "4.5",
+        "confirmation_status": "UNVERIFIED",
+        "confirmation_reasoning": null
+      },
+      "citations": {
+        "cwe": [
+          "CWE-1176"
+        ]
+      }
+    },
+    {
+      "id": "STRUCT-002",
+      "severity": "HIGH",
+      "panel": "code",
+      "lens": "structure",
+      "category": "structure",
+      "location": {
+        "file": "skill/scripts/orchestrator.py",
+        "line_start": 1
+      },
+      "title": "Module mixes file discovery, grouping, and catalog concerns",
+      "description": "orchestrator.py (574 lines) combines discovery, group/panel computation, a 65-line YAML parser, and CLI orchestration.",
+      "impact": "",
+      "remediation": "Split into file_discovery / catalog / panel_config modules.",
+      "references": [],
+      "source_role": "lens_sweep",
+      "depth": "standard",
+      "provenance": {
+        "discovered_by": "agent:lens_sweep",
+        "expanded_by": null,
+        "confirmed_by": null,
+        "model": "claude-haiku-4-5-20251001",
+        "model_version": "4.5",
+        "confirmation_status": "UNVERIFIED",
+        "confirmation_reasoning": null
+      },
+      "citations": {
+        "cwe": [
+          "CWE-1176"
+        ]
+      }
+    },
+    {
+      "id": "STRUCT-003",
+      "severity": "MEDIUM",
+      "panel": "code",
+      "lens": "structure",
+      "category": "structure",
+      "location": {
+        "file": "skill/scripts/synthesize.py",
+        "line_start": 203
+      },
+      "title": "dedupe() exceeds complexity threshold",
+      "description": "90 lines, nested clustering loops, cyclomatic complexity ~12; _reinforce_merge shared with cross_panel_corroboration creates hidden coupling.",
+      "impact": "",
+      "remediation": "Extract _cluster_by_locus / _process_two_way_cluster / _process_multiway_cluster.",
+      "references": [],
+      "source_role": "lens_sweep",
+      "depth": "standard",
+      "provenance": {
+        "discovered_by": "agent:lens_sweep",
+        "expanded_by": null,
+        "confirmed_by": null,
+        "model": "claude-haiku-4-5-20251001",
+        "model_version": "4.5",
+        "confirmation_status": "UNVERIFIED",
+        "confirmation_reasoning": null
+      },
+      "citations": {
+        "cwe": [
+          "CWE-1120"
+        ]
+      }
+    },
+    {
+      "id": "STRUCT-004",
+      "severity": "MEDIUM",
+      "panel": "code",
+      "lens": "structure",
+      "category": "structure",
+      "location": {
+        "file": "skill/scripts/synthesize.py",
+        "line_start": 307
+      },
+      "title": "cross_panel_corroboration() nested closure, high cognitive load",
+      "description": "71 lines with nested _panels_related() and 3-level nesting mixing window logic and panel matching.",
+      "impact": "",
+      "remediation": "Hoist _panels_related to module level; extract _group_by_locus.",
+      "references": [],
+      "source_role": "lens_sweep",
+      "depth": "standard",
+      "provenance": {
+        "discovered_by": "agent:lens_sweep",
+        "expanded_by": null,
+        "confirmed_by": null,
+        "model": "claude-haiku-4-5-20251001",
+        "model_version": "4.5",
+        "confirmation_status": "UNVERIFIED",
+        "confirmation_reasoning": null
+      },
+      "citations": {
+        "cwe": [
+          "CWE-1120"
+        ]
+      }
+    },
+    {
+      "id": "STRUCT-005",
+      "severity": "MEDIUM",
+      "panel": "code",
+      "lens": "structure",
+      "category": "structure",
+      "location": {
+        "file": "skill/scripts/synthesize.py",
+        "line_start": 111
+      },
+      "title": "_sev_rank/_conf_rank duplicate evidence.py; SEV_ORDER defined twice",
+      "description": "synthesize.py:111-124 near-duplicates evidence.sev_rank; SEV_ORDER at synthesize.py:26 and evidence.py:14.",
+      "impact": "",
+      "remediation": "Import from evidence; move _conf_rank there.",
+      "references": [],
+      "source_role": "lens_sweep",
+      "depth": "standard",
+      "provenance": {
+        "discovered_by": "agent:lens_sweep",
+        "expanded_by": null,
+        "confirmed_by": null,
+        "model": "claude-haiku-4-5-20251001",
+        "model_version": "4.5",
+        "confirmation_status": "UNVERIFIED",
+        "confirmation_reasoning": null
+      },
+      "citations": {
+        "cwe": [
+          "CWE-1170"
+        ]
+      }
+    },
+    {
+      "id": "STRUCT-006",
+      "severity": "MEDIUM",
+      "panel": "code",
+      "lens": "structure",
+      "category": "structure",
+      "location": {
+        "file": "skill/scripts/synthesize.py",
+        "line_start": 713
+      },
+      "title": "main() 147 lines with 6 mode branches",
+      "description": "CLI parsing tightly coupled to execution across compare/groups/tools-dir/verify modes.",
+      "impact": "",
+      "remediation": "Extract per-mode handlers; dispatch table.",
+      "references": [],
+      "source_role": "lens_sweep",
+      "depth": "standard",
+      "provenance": {
+        "discovered_by": "agent:lens_sweep",
+        "expanded_by": null,
+        "confirmed_by": null,
+        "model": "claude-haiku-4-5-20251001",
+        "model_version": "4.5",
+        "confirmation_status": "UNVERIFIED",
+        "confirmation_reasoning": null
+      },
+      "citations": {
+        "cwe": [
+          "CWE-1120"
+        ]
+      }
+    },
+    {
+      "id": "STRUCT-007",
+      "severity": "MEDIUM",
+      "panel": "code",
+      "lens": "structure",
+      "category": "structure",
+      "location": {
+        "file": "skill/scripts/orchestrator.py",
+        "line_start": 214
+      },
+      "title": "_parse_catalog_yaml implicit state machine",
+      "description": "65 lines, 4 nesting levels, indentation-driven state tracking; raises on any unrecognized line.",
+      "impact": "",
+      "remediation": "Prefer PyYAML when available; make the fallback an explicit state machine.",
+      "references": [],
+      "source_role": "lens_sweep",
+      "depth": "standard",
+      "provenance": {
+        "discovered_by": "agent:lens_sweep",
+        "expanded_by": null,
+        "confirmed_by": null,
+        "model": "claude-haiku-4-5-20251001",
+        "model_version": "4.5",
+        "confirmation_status": "UNVERIFIED",
+        "confirmation_reasoning": null
+      },
+      "citations": {
+        "cwe": [
+          "CWE-1120"
+        ]
+      }
+    },
+    {
+      "id": "STRUCT-008",
+      "severity": "MEDIUM",
+      "panel": "code",
+      "lens": "structure",
+      "category": "structure",
+      "location": {
+        "file": "skill/scripts/dispatch.py",
+        "line_start": 1
+      },
+      "title": "dispatch.py combines template parsing, rendering, and agent emission",
+      "description": "Three concerns plus hardcoded EMIT_MODEL_POLICY and intertwined CLI.",
+      "impact": "",
+      "remediation": "Split template_parser / prompt_renderer / agent_emitter; move policy to model_resolver.",
+      "references": [],
+      "source_role": "lens_sweep",
+      "depth": "standard",
+      "provenance": {
+        "discovered_by": "agent:lens_sweep",
+        "expanded_by": null,
+        "confirmed_by": null,
+        "model": "claude-haiku-4-5-20251001",
+        "model_version": "4.5",
+        "confirmation_status": "UNVERIFIED",
+        "confirmation_reasoning": null
+      },
+      "citations": {
+        "cwe": [
+          "CWE-1176"
+        ]
+      }
+    },
+    {
+      "id": "STRUCT-009",
+      "severity": "LOW",
+      "panel": "code",
+      "lens": "structure",
+      "category": "structure",
+      "location": {
+        "file": "skill/scripts/run_tools.py",
+        "line_start": 115
+      },
+      "title": "Duplicated Docker invocation setup between tool paths",
+      "description": "Legacy SARIF and adapter paths repeat docker cmd build, timeout, and stderr handling.",
+      "impact": "",
+      "remediation": "Extract _run_docker_tool(cmd, name, timeout).",
+      "references": [],
+      "source_role": "lens_sweep",
+      "depth": "standard",
+      "provenance": {
+        "discovered_by": "agent:lens_sweep",
+        "expanded_by": null,
+        "confirmed_by": null,
+        "model": "claude-haiku-4-5-20251001",
+        "model_version": "4.5",
+        "confirmation_status": "UNVERIFIED",
+        "confirmation_reasoning": null
+      },
+      "citations": {
+        "cwe": [
+          "CWE-1170"
+        ]
+      }
+    }
+  ]
+}

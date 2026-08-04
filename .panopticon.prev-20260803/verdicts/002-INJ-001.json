@@ -1,0 +1,23 @@
+{
+  "finding_id": "INJ-001",
+  "verdict": "CONFIRMED",
+  "confidence": "LIKELY",
+  "model": "opus",
+  "reasoning": "Lines 52-58 interpolate manifest paths into 'if [ -d \"{p}\" ]' passed to sh -c; a path containing '\"; id; #' escapes and executes. Sink is real and unsanitized. Severity caveat: the only source is a repo-committed file (attacker needs commit access) and execution lands in an ephemeral --rm container with no mounts. Remediation correct.",
+  "explored": [
+    "skill/scripts/run_fixture_tests.py",
+    "tests/fixtures/manifest.json",
+    "Dockerfile.fixtures"
+  ],
+  "references": [
+    "https://cwe.mitre.org/data/definitions/78.html"
+  ],
+  "citations": {
+    "cwe": [
+      "CWE-78"
+    ],
+    "owasp": [
+      "A03:2021"
+    ]
+  }
+}

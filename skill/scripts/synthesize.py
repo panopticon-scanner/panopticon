@@ -288,8 +288,7 @@ def dedupe(findings):
                 by_rule = {}
                 rorder = []
                 for m in members:
-                    rk = ((m.get("tool_evidence") or {}).get("rule_id")
-                          if _is_tool_sourced(m) else None)
+                    rk = tool_rule_id(m) if _is_tool_sourced(m) else None
                     if rk not in by_rule:
                         by_rule[rk] = []
                         rorder.append(rk)
@@ -512,6 +511,23 @@ def derive_tool_policy_mode(panopticon_dir=".panopticon"):
     return "advisory"
 
 
+def tool_rule_id(finding):
+    """The scanner rule a tool finding came from, wherever its adapter put it.
+
+    Two adapter families disagree: the dependency scanners (pip_audit,
+    bundler_audit, dependency_check, eslint_security) set
+    `tool_evidence.rule_id`, while everything on the SARIF path (bandit,
+    semgrep, trivy, ...) sets no tool_evidence at all and carries the rule id
+    in `provenance.confirmation_reasoning` via attach_tool_provenance. Reading
+    only the first form made every SARIF finding look rule-less, which silently
+    disabled both aggregation and rule-based fingerprint identity for them.
+    """
+    rule = (finding.get("tool_evidence") or {}).get("rule_id")
+    if rule:
+        return rule
+    return (finding.get("provenance") or {}).get("confirmation_reasoning") or None
+
+
 def finding_fingerprint(finding):
     """Stable cross-run identity for a finding, for issue round-tripping.
 
@@ -526,7 +542,9 @@ def finding_fingerprint(finding):
     # every dotfile path, collapsing `.github/x` onto `github/x`.
     while fpath.startswith("./"):
         fpath = fpath[2:]
-    rule = (finding.get("tool_evidence") or {}).get("rule_id")
+    # Gate on tool-sourcing: on an AGENT finding, confirmation_reasoning holds
+    # advisor prose, which would be a disastrous identity discriminator.
+    rule = tool_rule_id(finding) if _is_tool_sourced(finding) else None
     discriminator = str(rule) if rule else str(finding.get("title") or "")
     payload = "|".join([str(finding.get("panel") or ""),
                         str(finding.get("category") or ""),
@@ -559,7 +577,7 @@ def aggregate_tool_findings(findings):
 
     out, groups, order = [], {}, []
     for f in findings:
-        rule = (f.get("tool_evidence") or {}).get("rule_id")
+        rule = tool_rule_id(f)
         if not evidence_mod.is_tool_sourced(f) or not rule:
             out.append(f)
             continue

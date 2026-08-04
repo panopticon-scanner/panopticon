@@ -1,0 +1,353 @@
+[
+  {
+    "role": "panel_review",
+    "agent": "panopticon-panel-review",
+    "enforced": true,
+    "model": {
+      "model": "sonnet"
+    },
+    "panel": "code",
+    "lens": null,
+    "files": [
+      "tests/test_agent_templates.py",
+      "tests/test_assets.py",
+      "tests/test_citations.py",
+      "tests/test_depth_planner.py",
+      "tests/test_dispatch.py",
+      "tests/test_dispatch_integration.py",
+      "tests/test_dockerfile.py",
+      "tests/test_e2e.py",
+      "tests/test_evidence.py",
+      "tests/test_html_report.py",
+      "tests/test_ingest_tools.py",
+      "tests/test_model_resolver.py",
+      "tests/test_orchestrator.py",
+      "tests/test_phase1_integration.py",
+      "tests/test_provenance.py"
+    ],
+    "group": "._7",
+    "depth": "standard",
+    "lenses": [
+      "style"
+    ],
+    "out_file": ".panopticon/findings-._7-code-panel_review.json",
+    "prompt": "You are the `code` reviewer for panopticon group `._7`.\nFiles: tests/test_agent_templates.py, tests/test_assets.py, tests/test_citations.py, tests/test_depth_planner.py, tests/test_dispatch.py, tests/test_dispatch_integration.py, tests/test_dockerfile.py, tests/test_e2e.py, tests/test_evidence.py, tests/test_html_report.py, tests/test_ingest_tools.py, tests/test_model_resolver.py, tests/test_orchestrator.py, tests/test_phase1_integration.py, tests/test_provenance.py\nSecurity mode: standard\nDepth: standard\n\n## Your task\n\nReview the listed files through the `code` panel. Cover all lenses assigned to this panel that are NOT being handled by dedicated lens sweep agents.\nReturn ONLY a raw JSON object `{\"findings\": [...]}` as your final message \u2014 you cannot write files; the orchestrator writes your findings to `.panopticon/findings-._7-code-panel_review.json`.\n\n## Lenses assigned to this panel\n\n- style\n\n## Security checklists\n\nFor `security` and `redteam` panels, apply the relevant language-specific sections from `reference/security-checklists.md`.\n\n## Side-effect boundary\n\nYour ONLY output is the single findings JSON object returned as your final message. Perform NO GitHub writes, NO repo mutations, NO dispatches, NO credential mints, NO file writes.\n\n## Finding format\n\n- id: ^[A-Z]{2,8}-\\d{3,}$\n- severity: CRITICAL|HIGH|MEDIUM|LOW|INFO\n- panel: \"code\"\n- category: (lens name or \"general\")\n- location: {file, line_start[, line_end, function]}\n- title, description, impact, remediation, references[]\n- source_role: \"panel_review\"\n- depth: \"standard\"\n\nEach finding MUST include a `provenance` object:\n\n```json\n\"provenance\": {\n  \"discovered_by\": \"agent:panel_review\",\n  \"expanded_by\": null,\n  \"confirmed_by\": null,\n  \"model\": \"<model-name>\",\n  \"model_version\": \"<version>\",\n  \"confirmation_status\": \"UNVERIFIED\",\n  \"confirmation_reasoning\": null\n}\n```\n\nIf the panel review elaborates on a lens finding, set `\"expanded_by\": \"agent:lens_sweep\"`.\n\nAnd a `citations` object with at least one of:\n- `cwe`: list of CWE IDs (e.g., `[\"CWE-89\"]`)\n- `owasp`: list of OWASP Top 10 categories (e.g., `[\"A03:2021\"]`)\n- `cve`: list of CVE IDs (if applicable)\n\nFor `security`/`redteam` CRITICAL/HIGH findings, add `cvss` {score, vector} and `exploit_scenario`.\n\n## Tool policy\n\nYour only tools are Read, Grep, Glob. You must not use Bash, Edit, Write, Agent under any circumstances.\n"
+  },
+  {
+    "role": "lens_sweep",
+    "agent": "panopticon-lens-sweep",
+    "enforced": true,
+    "model": {
+      "model": "haiku"
+    },
+    "panel": "code",
+    "lens": "structure",
+    "files": [
+      "tests/test_agent_templates.py",
+      "tests/test_assets.py",
+      "tests/test_citations.py",
+      "tests/test_depth_planner.py",
+      "tests/test_dispatch.py",
+      "tests/test_dispatch_integration.py",
+      "tests/test_dockerfile.py",
+      "tests/test_e2e.py",
+      "tests/test_evidence.py",
+      "tests/test_html_report.py",
+      "tests/test_ingest_tools.py",
+      "tests/test_model_resolver.py",
+      "tests/test_orchestrator.py",
+      "tests/test_phase1_integration.py",
+      "tests/test_provenance.py"
+    ],
+    "group": "._7",
+    "depth": "standard",
+    "out_file": ".panopticon/findings-._7-code-lens_sweep-structure.json",
+    "prompt": "You are the `structure` lens sweep for panopticon panel `code` in group `._7`.\nFiles: tests/test_agent_templates.py, tests/test_assets.py, tests/test_citations.py, tests/test_depth_planner.py, tests/test_dispatch.py, tests/test_dispatch_integration.py, tests/test_dockerfile.py, tests/test_e2e.py, tests/test_evidence.py, tests/test_html_report.py, tests/test_ingest_tools.py, tests/test_model_resolver.py, tests/test_orchestrator.py, tests/test_phase1_integration.py, tests/test_provenance.py\nSecurity mode: standard\nDepth: standard\n\n## Your task\n\nPerform a narrow, mechanical review of the listed files **only through the `structure` lens**.\nReturn ONLY a raw JSON object `{\"findings\": [...]}` as your final message \u2014 you cannot write files; the orchestrator writes your findings to `.panopticon/findings-._7-code-lens_sweep-structure.json`.\n\n## Rules\n\n- Findings must cite a rule, pattern, or line of code. Uncited claims are not allowed.\n- Keep descriptions short and factual.\n- Do not write narrative or general advice.\n- Do not perform GitHub writes, repo mutations, or credential mints.\n\n## Finding format\n\n- id: ^[A-Z]{2,8}-\\d{3,}$\n- severity: CRITICAL|HIGH|MEDIUM|LOW|INFO\n- panel: \"code\"\n- lens: \"structure\"\n- category: \"structure\"\n- location: {file, line_start[, line_end, function]}\n- title, description, impact, remediation, references[]\n- source_role: \"lens_sweep\"\n- depth: \"standard\"\n\nEach finding MUST include a `provenance` object:\n\n```json\n\"provenance\": {\n  \"discovered_by\": \"agent:lens_sweep\",\n  \"expanded_by\": null,\n  \"confirmed_by\": null,\n  \"model\": \"<model-name>\",\n  \"model_version\": \"<version>\",\n  \"confirmation_status\": \"UNVERIFIED\",\n  \"confirmation_reasoning\": null\n}\n```\n\nAnd a `citations` object with at least one of:\n- `cwe`: list of CWE IDs (e.g., `[\"CWE-89\"]`)\n- `owasp`: list of OWASP Top 10 categories (e.g., `[\"A03:2021\"]`)\n- `cve`: list of CVE IDs (if applicable)\n\n## Tool policy\n\nYour only tools are Read, Grep, Glob. You must not use Bash, Edit, Write, Agent under any circumstances.\n"
+  },
+  {
+    "role": "lens_sweep",
+    "agent": "panopticon-lens-sweep",
+    "enforced": true,
+    "model": {
+      "model": "haiku"
+    },
+    "panel": "code",
+    "lens": "correctness",
+    "files": [
+      "tests/test_agent_templates.py",
+      "tests/test_assets.py",
+      "tests/test_citations.py",
+      "tests/test_depth_planner.py",
+      "tests/test_dispatch.py",
+      "tests/test_dispatch_integration.py",
+      "tests/test_dockerfile.py",
+      "tests/test_e2e.py",
+      "tests/test_evidence.py",
+      "tests/test_html_report.py",
+      "tests/test_ingest_tools.py",
+      "tests/test_model_resolver.py",
+      "tests/test_orchestrator.py",
+      "tests/test_phase1_integration.py",
+      "tests/test_provenance.py"
+    ],
+    "group": "._7",
+    "depth": "standard",
+    "out_file": ".panopticon/findings-._7-code-lens_sweep-correctness.json",
+    "prompt": "You are the `correctness` lens sweep for panopticon panel `code` in group `._7`.\nFiles: tests/test_agent_templates.py, tests/test_assets.py, tests/test_citations.py, tests/test_depth_planner.py, tests/test_dispatch.py, tests/test_dispatch_integration.py, tests/test_dockerfile.py, tests/test_e2e.py, tests/test_evidence.py, tests/test_html_report.py, tests/test_ingest_tools.py, tests/test_model_resolver.py, tests/test_orchestrator.py, tests/test_phase1_integration.py, tests/test_provenance.py\nSecurity mode: standard\nDepth: standard\n\n## Your task\n\nPerform a narrow, mechanical review of the listed files **only through the `correctness` lens**.\nReturn ONLY a raw JSON object `{\"findings\": [...]}` as your final message \u2014 you cannot write files; the orchestrator writes your findings to `.panopticon/findings-._7-code-lens_sweep-correctness.json`.\n\n## Rules\n\n- Findings must cite a rule, pattern, or line of code. Uncited claims are not allowed.\n- Keep descriptions short and factual.\n- Do not write narrative or general advice.\n- Do not perform GitHub writes, repo mutations, or credential mints.\n\n## Finding format\n\n- id: ^[A-Z]{2,8}-\\d{3,}$\n- severity: CRITICAL|HIGH|MEDIUM|LOW|INFO\n- panel: \"code\"\n- lens: \"correctness\"\n- category: \"correctness\"\n- location: {file, line_start[, line_end, function]}\n- title, description, impact, remediation, references[]\n- source_role: \"lens_sweep\"\n- depth: \"standard\"\n\nEach finding MUST include a `provenance` object:\n\n```json\n\"provenance\": {\n  \"discovered_by\": \"agent:lens_sweep\",\n  \"expanded_by\": null,\n  \"confirmed_by\": null,\n  \"model\": \"<model-name>\",\n  \"model_version\": \"<version>\",\n  \"confirmation_status\": \"UNVERIFIED\",\n  \"confirmation_reasoning\": null\n}\n```\n\nAnd a `citations` object with at least one of:\n- `cwe`: list of CWE IDs (e.g., `[\"CWE-89\"]`)\n- `owasp`: list of OWASP Top 10 categories (e.g., `[\"A03:2021\"]`)\n- `cve`: list of CVE IDs (if applicable)\n\n## Tool policy\n\nYour only tools are Read, Grep, Glob. You must not use Bash, Edit, Write, Agent under any circumstances.\n"
+  },
+  {
+    "role": "panel_review",
+    "agent": "panopticon-panel-review",
+    "enforced": true,
+    "model": {
+      "model": "sonnet"
+    },
+    "panel": "test",
+    "lens": null,
+    "files": [
+      "tests/test_agent_templates.py",
+      "tests/test_assets.py",
+      "tests/test_citations.py",
+      "tests/test_depth_planner.py",
+      "tests/test_dispatch.py",
+      "tests/test_dispatch_integration.py",
+      "tests/test_dockerfile.py",
+      "tests/test_e2e.py",
+      "tests/test_evidence.py",
+      "tests/test_html_report.py",
+      "tests/test_ingest_tools.py",
+      "tests/test_model_resolver.py",
+      "tests/test_orchestrator.py",
+      "tests/test_phase1_integration.py",
+      "tests/test_provenance.py"
+    ],
+    "group": "._7",
+    "depth": "standard",
+    "lenses": [
+      "test_design"
+    ],
+    "out_file": ".panopticon/findings-._7-test-panel_review.json",
+    "prompt": "You are the `test` reviewer for panopticon group `._7`.\nFiles: tests/test_agent_templates.py, tests/test_assets.py, tests/test_citations.py, tests/test_depth_planner.py, tests/test_dispatch.py, tests/test_dispatch_integration.py, tests/test_dockerfile.py, tests/test_e2e.py, tests/test_evidence.py, tests/test_html_report.py, tests/test_ingest_tools.py, tests/test_model_resolver.py, tests/test_orchestrator.py, tests/test_phase1_integration.py, tests/test_provenance.py\nSecurity mode: standard\nDepth: standard\n\n## Your task\n\nReview the listed files through the `test` panel. Cover all lenses assigned to this panel that are NOT being handled by dedicated lens sweep agents.\nReturn ONLY a raw JSON object `{\"findings\": [...]}` as your final message \u2014 you cannot write files; the orchestrator writes your findings to `.panopticon/findings-._7-test-panel_review.json`.\n\n## Lenses assigned to this panel\n\n- test_design\n\n## Security checklists\n\nFor `security` and `redteam` panels, apply the relevant language-specific sections from `reference/security-checklists.md`.\n\n## Side-effect boundary\n\nYour ONLY output is the single findings JSON object returned as your final message. Perform NO GitHub writes, NO repo mutations, NO dispatches, NO credential mints, NO file writes.\n\n## Finding format\n\n- id: ^[A-Z]{2,8}-\\d{3,}$\n- severity: CRITICAL|HIGH|MEDIUM|LOW|INFO\n- panel: \"test\"\n- category: (lens name or \"general\")\n- location: {file, line_start[, line_end, function]}\n- title, description, impact, remediation, references[]\n- source_role: \"panel_review\"\n- depth: \"standard\"\n\nEach finding MUST include a `provenance` object:\n\n```json\n\"provenance\": {\n  \"discovered_by\": \"agent:panel_review\",\n  \"expanded_by\": null,\n  \"confirmed_by\": null,\n  \"model\": \"<model-name>\",\n  \"model_version\": \"<version>\",\n  \"confirmation_status\": \"UNVERIFIED\",\n  \"confirmation_reasoning\": null\n}\n```\n\nIf the panel review elaborates on a lens finding, set `\"expanded_by\": \"agent:lens_sweep\"`.\n\nAnd a `citations` object with at least one of:\n- `cwe`: list of CWE IDs (e.g., `[\"CWE-89\"]`)\n- `owasp`: list of OWASP Top 10 categories (e.g., `[\"A03:2021\"]`)\n- `cve`: list of CVE IDs (if applicable)\n\nFor `security`/`redteam` CRITICAL/HIGH findings, add `cvss` {score, vector} and `exploit_scenario`.\n\n## Tool policy\n\nYour only tools are Read, Grep, Glob. You must not use Bash, Edit, Write, Agent under any circumstances.\n"
+  },
+  {
+    "role": "lens_sweep",
+    "agent": "panopticon-lens-sweep",
+    "enforced": true,
+    "model": {
+      "model": "haiku"
+    },
+    "panel": "test",
+    "lens": "coverage",
+    "files": [
+      "tests/test_agent_templates.py",
+      "tests/test_assets.py",
+      "tests/test_citations.py",
+      "tests/test_depth_planner.py",
+      "tests/test_dispatch.py",
+      "tests/test_dispatch_integration.py",
+      "tests/test_dockerfile.py",
+      "tests/test_e2e.py",
+      "tests/test_evidence.py",
+      "tests/test_html_report.py",
+      "tests/test_ingest_tools.py",
+      "tests/test_model_resolver.py",
+      "tests/test_orchestrator.py",
+      "tests/test_phase1_integration.py",
+      "tests/test_provenance.py"
+    ],
+    "group": "._7",
+    "depth": "standard",
+    "out_file": ".panopticon/findings-._7-test-lens_sweep-coverage.json",
+    "prompt": "You are the `coverage` lens sweep for panopticon panel `test` in group `._7`.\nFiles: tests/test_agent_templates.py, tests/test_assets.py, tests/test_citations.py, tests/test_depth_planner.py, tests/test_dispatch.py, tests/test_dispatch_integration.py, tests/test_dockerfile.py, tests/test_e2e.py, tests/test_evidence.py, tests/test_html_report.py, tests/test_ingest_tools.py, tests/test_model_resolver.py, tests/test_orchestrator.py, tests/test_phase1_integration.py, tests/test_provenance.py\nSecurity mode: standard\nDepth: standard\n\n## Your task\n\nPerform a narrow, mechanical review of the listed files **only through the `coverage` lens**.\nReturn ONLY a raw JSON object `{\"findings\": [...]}` as your final message \u2014 you cannot write files; the orchestrator writes your findings to `.panopticon/findings-._7-test-lens_sweep-coverage.json`.\n\n## Rules\n\n- Findings must cite a rule, pattern, or line of code. Uncited claims are not allowed.\n- Keep descriptions short and factual.\n- Do not write narrative or general advice.\n- Do not perform GitHub writes, repo mutations, or credential mints.\n\n## Finding format\n\n- id: ^[A-Z]{2,8}-\\d{3,}$\n- severity: CRITICAL|HIGH|MEDIUM|LOW|INFO\n- panel: \"test\"\n- lens: \"coverage\"\n- category: \"coverage\"\n- location: {file, line_start[, line_end, function]}\n- title, description, impact, remediation, references[]\n- source_role: \"lens_sweep\"\n- depth: \"standard\"\n\nEach finding MUST include a `provenance` object:\n\n```json\n\"provenance\": {\n  \"discovered_by\": \"agent:lens_sweep\",\n  \"expanded_by\": null,\n  \"confirmed_by\": null,\n  \"model\": \"<model-name>\",\n  \"model_version\": \"<version>\",\n  \"confirmation_status\": \"UNVERIFIED\",\n  \"confirmation_reasoning\": null\n}\n```\n\nAnd a `citations` object with at least one of:\n- `cwe`: list of CWE IDs (e.g., `[\"CWE-89\"]`)\n- `owasp`: list of OWASP Top 10 categories (e.g., `[\"A03:2021\"]`)\n- `cve`: list of CVE IDs (if applicable)\n\n## Tool policy\n\nYour only tools are Read, Grep, Glob. You must not use Bash, Edit, Write, Agent under any circumstances.\n"
+  },
+  {
+    "role": "lens_sweep",
+    "agent": "panopticon-lens-sweep",
+    "enforced": true,
+    "model": {
+      "model": "haiku"
+    },
+    "panel": "test",
+    "lens": "test_quality",
+    "files": [
+      "tests/test_agent_templates.py",
+      "tests/test_assets.py",
+      "tests/test_citations.py",
+      "tests/test_depth_planner.py",
+      "tests/test_dispatch.py",
+      "tests/test_dispatch_integration.py",
+      "tests/test_dockerfile.py",
+      "tests/test_e2e.py",
+      "tests/test_evidence.py",
+      "tests/test_html_report.py",
+      "tests/test_ingest_tools.py",
+      "tests/test_model_resolver.py",
+      "tests/test_orchestrator.py",
+      "tests/test_phase1_integration.py",
+      "tests/test_provenance.py"
+    ],
+    "group": "._7",
+    "depth": "standard",
+    "out_file": ".panopticon/findings-._7-test-lens_sweep-test_quality.json",
+    "prompt": "You are the `test_quality` lens sweep for panopticon panel `test` in group `._7`.\nFiles: tests/test_agent_templates.py, tests/test_assets.py, tests/test_citations.py, tests/test_depth_planner.py, tests/test_dispatch.py, tests/test_dispatch_integration.py, tests/test_dockerfile.py, tests/test_e2e.py, tests/test_evidence.py, tests/test_html_report.py, tests/test_ingest_tools.py, tests/test_model_resolver.py, tests/test_orchestrator.py, tests/test_phase1_integration.py, tests/test_provenance.py\nSecurity mode: standard\nDepth: standard\n\n## Your task\n\nPerform a narrow, mechanical review of the listed files **only through the `test_quality` lens**.\nReturn ONLY a raw JSON object `{\"findings\": [...]}` as your final message \u2014 you cannot write files; the orchestrator writes your findings to `.panopticon/findings-._7-test-lens_sweep-test_quality.json`.\n\n## Rules\n\n- Findings must cite a rule, pattern, or line of code. Uncited claims are not allowed.\n- Keep descriptions short and factual.\n- Do not write narrative or general advice.\n- Do not perform GitHub writes, repo mutations, or credential mints.\n\n## Finding format\n\n- id: ^[A-Z]{2,8}-\\d{3,}$\n- severity: CRITICAL|HIGH|MEDIUM|LOW|INFO\n- panel: \"test\"\n- lens: \"test_quality\"\n- category: \"test_quality\"\n- location: {file, line_start[, line_end, function]}\n- title, description, impact, remediation, references[]\n- source_role: \"lens_sweep\"\n- depth: \"standard\"\n\nEach finding MUST include a `provenance` object:\n\n```json\n\"provenance\": {\n  \"discovered_by\": \"agent:lens_sweep\",\n  \"expanded_by\": null,\n  \"confirmed_by\": null,\n  \"model\": \"<model-name>\",\n  \"model_version\": \"<version>\",\n  \"confirmation_status\": \"UNVERIFIED\",\n  \"confirmation_reasoning\": null\n}\n```\n\nAnd a `citations` object with at least one of:\n- `cwe`: list of CWE IDs (e.g., `[\"CWE-89\"]`)\n- `owasp`: list of OWASP Top 10 categories (e.g., `[\"A03:2021\"]`)\n- `cve`: list of CVE IDs (if applicable)\n\n## Tool policy\n\nYour only tools are Read, Grep, Glob. You must not use Bash, Edit, Write, Agent under any circumstances.\n"
+  },
+  {
+    "role": "panel_review",
+    "agent": "panopticon-panel-review",
+    "enforced": true,
+    "model": {
+      "model": "sonnet"
+    },
+    "panel": "security",
+    "lens": null,
+    "files": [
+      "tests/test_agent_templates.py",
+      "tests/test_assets.py",
+      "tests/test_citations.py",
+      "tests/test_depth_planner.py",
+      "tests/test_dispatch.py",
+      "tests/test_dispatch_integration.py",
+      "tests/test_dockerfile.py",
+      "tests/test_e2e.py",
+      "tests/test_evidence.py",
+      "tests/test_html_report.py",
+      "tests/test_ingest_tools.py",
+      "tests/test_model_resolver.py",
+      "tests/test_orchestrator.py",
+      "tests/test_phase1_integration.py",
+      "tests/test_provenance.py"
+    ],
+    "group": "._7",
+    "depth": "standard",
+    "lenses": [
+      "novel"
+    ],
+    "out_file": ".panopticon/findings-._7-security-panel_review.json",
+    "prompt": "You are the `security` reviewer for panopticon group `._7`.\nFiles: tests/test_agent_templates.py, tests/test_assets.py, tests/test_citations.py, tests/test_depth_planner.py, tests/test_dispatch.py, tests/test_dispatch_integration.py, tests/test_dockerfile.py, tests/test_e2e.py, tests/test_evidence.py, tests/test_html_report.py, tests/test_ingest_tools.py, tests/test_model_resolver.py, tests/test_orchestrator.py, tests/test_phase1_integration.py, tests/test_provenance.py\nSecurity mode: standard\nDepth: standard\n\n## Your task\n\nReview the listed files through the `security` panel. Cover all lenses assigned to this panel that are NOT being handled by dedicated lens sweep agents.\nReturn ONLY a raw JSON object `{\"findings\": [...]}` as your final message \u2014 you cannot write files; the orchestrator writes your findings to `.panopticon/findings-._7-security-panel_review.json`.\n\n## Lenses assigned to this panel\n\n- novel\n\n## Security checklists\n\nFor `security` and `redteam` panels, apply the relevant language-specific sections from `reference/security-checklists.md`.\n\n## Side-effect boundary\n\nYour ONLY output is the single findings JSON object returned as your final message. Perform NO GitHub writes, NO repo mutations, NO dispatches, NO credential mints, NO file writes.\n\n## Finding format\n\n- id: ^[A-Z]{2,8}-\\d{3,}$\n- severity: CRITICAL|HIGH|MEDIUM|LOW|INFO\n- panel: \"security\"\n- category: (lens name or \"general\")\n- location: {file, line_start[, line_end, function]}\n- title, description, impact, remediation, references[]\n- source_role: \"panel_review\"\n- depth: \"standard\"\n\nEach finding MUST include a `provenance` object:\n\n```json\n\"provenance\": {\n  \"discovered_by\": \"agent:panel_review\",\n  \"expanded_by\": null,\n  \"confirmed_by\": null,\n  \"model\": \"<model-name>\",\n  \"model_version\": \"<version>\",\n  \"confirmation_status\": \"UNVERIFIED\",\n  \"confirmation_reasoning\": null\n}\n```\n\nIf the panel review elaborates on a lens finding, set `\"expanded_by\": \"agent:lens_sweep\"`.\n\nAnd a `citations` object with at least one of:\n- `cwe`: list of CWE IDs (e.g., `[\"CWE-89\"]`)\n- `owasp`: list of OWASP Top 10 categories (e.g., `[\"A03:2021\"]`)\n- `cve`: list of CVE IDs (if applicable)\n\nFor `security`/`redteam` CRITICAL/HIGH findings, add `cvss` {score, vector} and `exploit_scenario`.\n\n## Tool policy\n\nYour only tools are Read, Grep, Glob. You must not use Bash, Edit, Write, Agent under any circumstances.\n"
+  },
+  {
+    "role": "lens_sweep",
+    "agent": "panopticon-lens-sweep",
+    "enforced": true,
+    "model": {
+      "model": "haiku"
+    },
+    "panel": "security",
+    "lens": "known_vulns",
+    "files": [
+      "tests/test_agent_templates.py",
+      "tests/test_assets.py",
+      "tests/test_citations.py",
+      "tests/test_depth_planner.py",
+      "tests/test_dispatch.py",
+      "tests/test_dispatch_integration.py",
+      "tests/test_dockerfile.py",
+      "tests/test_e2e.py",
+      "tests/test_evidence.py",
+      "tests/test_html_report.py",
+      "tests/test_ingest_tools.py",
+      "tests/test_model_resolver.py",
+      "tests/test_orchestrator.py",
+      "tests/test_phase1_integration.py",
+      "tests/test_provenance.py"
+    ],
+    "group": "._7",
+    "depth": "standard",
+    "out_file": ".panopticon/findings-._7-security-lens_sweep-known_vulns.json",
+    "prompt": "You are the `known_vulns` lens sweep for panopticon panel `security` in group `._7`.\nFiles: tests/test_agent_templates.py, tests/test_assets.py, tests/test_citations.py, tests/test_depth_planner.py, tests/test_dispatch.py, tests/test_dispatch_integration.py, tests/test_dockerfile.py, tests/test_e2e.py, tests/test_evidence.py, tests/test_html_report.py, tests/test_ingest_tools.py, tests/test_model_resolver.py, tests/test_orchestrator.py, tests/test_phase1_integration.py, tests/test_provenance.py\nSecurity mode: standard\nDepth: standard\n\n## Your task\n\nPerform a narrow, mechanical review of the listed files **only through the `known_vulns` lens**.\nReturn ONLY a raw JSON object `{\"findings\": [...]}` as your final message \u2014 you cannot write files; the orchestrator writes your findings to `.panopticon/findings-._7-security-lens_sweep-known_vulns.json`.\n\n## Rules\n\n- Findings must cite a rule, pattern, or line of code. Uncited claims are not allowed.\n- Keep descriptions short and factual.\n- Do not write narrative or general advice.\n- Do not perform GitHub writes, repo mutations, or credential mints.\n\n## Finding format\n\n- id: ^[A-Z]{2,8}-\\d{3,}$\n- severity: CRITICAL|HIGH|MEDIUM|LOW|INFO\n- panel: \"security\"\n- lens: \"known_vulns\"\n- category: \"known_vulns\"\n- location: {file, line_start[, line_end, function]}\n- title, description, impact, remediation, references[]\n- source_role: \"lens_sweep\"\n- depth: \"standard\"\n\nEach finding MUST include a `provenance` object:\n\n```json\n\"provenance\": {\n  \"discovered_by\": \"agent:lens_sweep\",\n  \"expanded_by\": null,\n  \"confirmed_by\": null,\n  \"model\": \"<model-name>\",\n  \"model_version\": \"<version>\",\n  \"confirmation_status\": \"UNVERIFIED\",\n  \"confirmation_reasoning\": null\n}\n```\n\nAnd a `citations` object with at least one of:\n- `cwe`: list of CWE IDs (e.g., `[\"CWE-89\"]`)\n- `owasp`: list of OWASP Top 10 categories (e.g., `[\"A03:2021\"]`)\n- `cve`: list of CVE IDs (if applicable)\n\n## Tool policy\n\nYour only tools are Read, Grep, Glob. You must not use Bash, Edit, Write, Agent under any circumstances.\n"
+  },
+  {
+    "role": "lens_sweep",
+    "agent": "panopticon-lens-sweep",
+    "enforced": true,
+    "model": {
+      "model": "haiku"
+    },
+    "panel": "security",
+    "lens": "injection",
+    "files": [
+      "tests/test_agent_templates.py",
+      "tests/test_assets.py",
+      "tests/test_citations.py",
+      "tests/test_depth_planner.py",
+      "tests/test_dispatch.py",
+      "tests/test_dispatch_integration.py",
+      "tests/test_dockerfile.py",
+      "tests/test_e2e.py",
+      "tests/test_evidence.py",
+      "tests/test_html_report.py",
+      "tests/test_ingest_tools.py",
+      "tests/test_model_resolver.py",
+      "tests/test_orchestrator.py",
+      "tests/test_phase1_integration.py",
+      "tests/test_provenance.py"
+    ],
+    "group": "._7",
+    "depth": "standard",
+    "out_file": ".panopticon/findings-._7-security-lens_sweep-injection.json",
+    "prompt": "You are the `injection` lens sweep for panopticon panel `security` in group `._7`.\nFiles: tests/test_agent_templates.py, tests/test_assets.py, tests/test_citations.py, tests/test_depth_planner.py, tests/test_dispatch.py, tests/test_dispatch_integration.py, tests/test_dockerfile.py, tests/test_e2e.py, tests/test_evidence.py, tests/test_html_report.py, tests/test_ingest_tools.py, tests/test_model_resolver.py, tests/test_orchestrator.py, tests/test_phase1_integration.py, tests/test_provenance.py\nSecurity mode: standard\nDepth: standard\n\n## Your task\n\nPerform a narrow, mechanical review of the listed files **only through the `injection` lens**.\nReturn ONLY a raw JSON object `{\"findings\": [...]}` as your final message \u2014 you cannot write files; the orchestrator writes your findings to `.panopticon/findings-._7-security-lens_sweep-injection.json`.\n\n## Rules\n\n- Findings must cite a rule, pattern, or line of code. Uncited claims are not allowed.\n- Keep descriptions short and factual.\n- Do not write narrative or general advice.\n- Do not perform GitHub writes, repo mutations, or credential mints.\n\n## Finding format\n\n- id: ^[A-Z]{2,8}-\\d{3,}$\n- severity: CRITICAL|HIGH|MEDIUM|LOW|INFO\n- panel: \"security\"\n- lens: \"injection\"\n- category: \"injection\"\n- location: {file, line_start[, line_end, function]}\n- title, description, impact, remediation, references[]\n- source_role: \"lens_sweep\"\n- depth: \"standard\"\n\nEach finding MUST include a `provenance` object:\n\n```json\n\"provenance\": {\n  \"discovered_by\": \"agent:lens_sweep\",\n  \"expanded_by\": null,\n  \"confirmed_by\": null,\n  \"model\": \"<model-name>\",\n  \"model_version\": \"<version>\",\n  \"confirmation_status\": \"UNVERIFIED\",\n  \"confirmation_reasoning\": null\n}\n```\n\nAnd a `citations` object with at least one of:\n- `cwe`: list of CWE IDs (e.g., `[\"CWE-89\"]`)\n- `owasp`: list of OWASP Top 10 categories (e.g., `[\"A03:2021\"]`)\n- `cve`: list of CVE IDs (if applicable)\n\n## Tool policy\n\nYour only tools are Read, Grep, Glob. You must not use Bash, Edit, Write, Agent under any circumstances.\n"
+  },
+  {
+    "role": "panel_review",
+    "agent": "panopticon-panel-review",
+    "enforced": true,
+    "model": {
+      "model": "sonnet"
+    },
+    "panel": "architecture",
+    "lens": null,
+    "files": [
+      "tests/test_agent_templates.py",
+      "tests/test_assets.py",
+      "tests/test_citations.py",
+      "tests/test_depth_planner.py",
+      "tests/test_dispatch.py",
+      "tests/test_dispatch_integration.py",
+      "tests/test_dockerfile.py",
+      "tests/test_e2e.py",
+      "tests/test_evidence.py",
+      "tests/test_html_report.py",
+      "tests/test_ingest_tools.py",
+      "tests/test_model_resolver.py",
+      "tests/test_orchestrator.py",
+      "tests/test_phase1_integration.py",
+      "tests/test_provenance.py"
+    ],
+    "group": "._7",
+    "depth": "standard",
+    "lenses": [],
+    "out_file": ".panopticon/findings-._7-architecture-panel_review.json",
+    "prompt": "You are the `architecture` reviewer for panopticon group `._7`.\nFiles: tests/test_agent_templates.py, tests/test_assets.py, tests/test_citations.py, tests/test_depth_planner.py, tests/test_dispatch.py, tests/test_dispatch_integration.py, tests/test_dockerfile.py, tests/test_e2e.py, tests/test_evidence.py, tests/test_html_report.py, tests/test_ingest_tools.py, tests/test_model_resolver.py, tests/test_orchestrator.py, tests/test_phase1_integration.py, tests/test_provenance.py\nSecurity mode: standard\nDepth: standard\n\n## Your task\n\nReview the listed files through the `architecture` panel. Cover all lenses assigned to this panel that are NOT being handled by dedicated lens sweep agents.\nReturn ONLY a raw JSON object `{\"findings\": [...]}` as your final message \u2014 you cannot write files; the orchestrator writes your findings to `.panopticon/findings-._7-architecture-panel_review.json`.\n\n## Lenses assigned to this panel\n\n- (all lenses)\n\n## Security checklists\n\nFor `security` and `redteam` panels, apply the relevant language-specific sections from `reference/security-checklists.md`.\n\n## Side-effect boundary\n\nYour ONLY output is the single findings JSON object returned as your final message. Perform NO GitHub writes, NO repo mutations, NO dispatches, NO credential mints, NO file writes.\n\n## Finding format\n\n- id: ^[A-Z]{2,8}-\\d{3,}$\n- severity: CRITICAL|HIGH|MEDIUM|LOW|INFO\n- panel: \"architecture\"\n- category: (lens name or \"general\")\n- location: {file, line_start[, line_end, function]}\n- title, description, impact, remediation, references[]\n- source_role: \"panel_review\"\n- depth: \"standard\"\n\nEach finding MUST include a `provenance` object:\n\n```json\n\"provenance\": {\n  \"discovered_by\": \"agent:panel_review\",\n  \"expanded_by\": null,\n  \"confirmed_by\": null,\n  \"model\": \"<model-name>\",\n  \"model_version\": \"<version>\",\n  \"confirmation_status\": \"UNVERIFIED\",\n  \"confirmation_reasoning\": null\n}\n```\n\nIf the panel review elaborates on a lens finding, set `\"expanded_by\": \"agent:lens_sweep\"`.\n\nAnd a `citations` object with at least one of:\n- `cwe`: list of CWE IDs (e.g., `[\"CWE-89\"]`)\n- `owasp`: list of OWASP Top 10 categories (e.g., `[\"A03:2021\"]`)\n- `cve`: list of CVE IDs (if applicable)\n\nFor `security`/`redteam` CRITICAL/HIGH findings, add `cvss` {score, vector} and `exploit_scenario`.\n\n## Tool policy\n\nYour only tools are Read, Grep, Glob. You must not use Bash, Edit, Write, Agent under any circumstances.\n"
+  },
+  {
+    "role": "lens_sweep",
+    "agent": "panopticon-lens-sweep",
+    "enforced": true,
+    "model": {
+      "model": "haiku"
+    },
+    "panel": "architecture",
+    "lens": "architecture",
+    "files": [
+      "tests/test_agent_templates.py",
+      "tests/test_assets.py",
+      "tests/test_citations.py",
+      "tests/test_depth_planner.py",
+      "tests/test_dispatch.py",
+      "tests/test_dispatch_integration.py",
+      "tests/test_dockerfile.py",
+      "tests/test_e2e.py",
+      "tests/test_evidence.py",
+      "tests/test_html_report.py",
+      "tests/test_ingest_tools.py",
+      "tests/test_model_resolver.py",
+      "tests/test_orchestrator.py",
+      "tests/test_phase1_integration.py",
+      "tests/test_provenance.py"
+    ],
+    "group": "._7",
+    "depth": "standard",
+    "out_file": ".panopticon/findings-._7-architecture-lens_sweep-architecture.json",
+    "prompt": "You are the `architecture` lens sweep for panopticon panel `architecture` in group `._7`.\nFiles: tests/test_agent_templates.py, tests/test_assets.py, tests/test_citations.py, tests/test_depth_planner.py, tests/test_dispatch.py, tests/test_dispatch_integration.py, tests/test_dockerfile.py, tests/test_e2e.py, tests/test_evidence.py, tests/test_html_report.py, tests/test_ingest_tools.py, tests/test_model_resolver.py, tests/test_orchestrator.py, tests/test_phase1_integration.py, tests/test_provenance.py\nSecurity mode: standard\nDepth: standard\n\n## Your task\n\nPerform a narrow, mechanical review of the listed files **only through the `architecture` lens**.\nReturn ONLY a raw JSON object `{\"findings\": [...]}` as your final message \u2014 you cannot write files; the orchestrator writes your findings to `.panopticon/findings-._7-architecture-lens_sweep-architecture.json`.\n\n## Rules\n\n- Findings must cite a rule, pattern, or line of code. Uncited claims are not allowed.\n- Keep descriptions short and factual.\n- Do not write narrative or general advice.\n- Do not perform GitHub writes, repo mutations, or credential mints.\n\n## Finding format\n\n- id: ^[A-Z]{2,8}-\\d{3,}$\n- severity: CRITICAL|HIGH|MEDIUM|LOW|INFO\n- panel: \"architecture\"\n- lens: \"architecture\"\n- category: \"architecture\"\n- location: {file, line_start[, line_end, function]}\n- title, description, impact, remediation, references[]\n- source_role: \"lens_sweep\"\n- depth: \"standard\"\n\nEach finding MUST include a `provenance` object:\n\n```json\n\"provenance\": {\n  \"discovered_by\": \"agent:lens_sweep\",\n  \"expanded_by\": null,\n  \"confirmed_by\": null,\n  \"model\": \"<model-name>\",\n  \"model_version\": \"<version>\",\n  \"confirmation_status\": \"UNVERIFIED\",\n  \"confirmation_reasoning\": null\n}\n```\n\nAnd a `citations` object with at least one of:\n- `cwe`: list of CWE IDs (e.g., `[\"CWE-89\"]`)\n- `owasp`: list of OWASP Top 10 categories (e.g., `[\"A03:2021\"]`)\n- `cve`: list of CVE IDs (if applicable)\n\n## Tool policy\n\nYour only tools are Read, Grep, Glob. You must not use Bash, Edit, Write, Agent under any circumstances.\n"
+  }
+]
