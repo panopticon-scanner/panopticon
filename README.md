@@ -46,6 +46,9 @@ Then register the enforcement shells (one-time; re-run after template changes):
 python3 skill/scripts/dispatch.py --emit-host-agents claude
 ```
 
+Note: Claude Code loads registered agents at session start — after first registration (or re-registration), start a fresh session before the enforcement shells are dispatchable.
+
+
 ## Quick start
 
 From inside a repo you want to review:
