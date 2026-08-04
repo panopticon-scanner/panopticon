@@ -79,7 +79,7 @@ def run_tests(tag: str, test: str | None = None) -> int:
     cmd = [
         "docker", "run", "--rm",
         "-e", "FIXTURE_ROOT=/opt/panopticon-fixtures",
-        "-v", f"{repo}/scripts:/opt/panopticon/scripts:ro",
+        "-v", f"{repo}/skill:/opt/panopticon/skill:ro",
         "-v", f"{repo}/tests:/opt/panopticon/tests:ro",
         tag,
         *pytest_args,

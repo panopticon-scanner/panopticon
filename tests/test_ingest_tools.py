@@ -177,3 +177,24 @@ class TestAdapterRouting(unittest.TestCase):
             self.assertEqual(out, [])
             self.assertNotIn("not SARIF", stderr.getvalue())
             self.assertNotIn("no adapter registered", stderr.getvalue())
+
+
+class TestNonJsonPrefixTolerance(unittest.TestCase):
+    """Calibration 2026-08-03: bandit's stdout progress bar preceded its SARIF;
+    the trim must not behead array-payload tools (eslint emits a top-level list)."""
+
+    def test_object_payload_with_progress_prefix_is_ingested(self):
+        sarif = {"runs": [{"tool": {"driver": {"name": "Bandit", "rules": []}},
+                           "results": []}]}
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "bandit.sarif"), "wb") as fh:
+                fh.write(b"Working... 100% 0:00:00\n" + json.dumps(sarif).encode())
+            out = it.ingest_dir(d, "g1")
+        self.assertEqual(out, [])  # parsed cleanly (no results), not an error
+
+    def test_array_payload_is_not_trimmed(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "eslint-security.json"), "wb") as fh:
+                fh.write(json.dumps([{"filePath": "/src/a.js", "messages": []}]).encode())
+            out = it.ingest_dir(d, "g1")
+        self.assertEqual(out, [])  # array payload reaches the adapter intact

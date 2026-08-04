@@ -16,7 +16,7 @@ TOOL_CMD = {
     "gitleaks": ["gitleaks", "detect", "--no-git", "--source", "/src", "--report-format", "sarif",
                  "--report-path", "/dev/stdout", "--no-banner"],
     "trivy": ["trivy", "fs", "--format", "sarif", "/src"],
-    "bandit": ["bandit", "-r", "/src", "-f", "sarif"],
+    "bandit": ["bandit", "-q", "-r", "/src", "-f", "sarif"],
     "gosec": ["gosec", "-fmt=sarif", "./..."],
     "eslint": ["eslint", "-f", "@microsoft/eslint-formatter-sarif", "/src"],
 }
