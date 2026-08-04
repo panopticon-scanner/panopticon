@@ -82,6 +82,11 @@ ROLE_FILES = {"scout": "scout.md", "panel_review": "panel-review.md",
               "lens_sweep": "lens-sweep.md", "advisor": "advisor.md"}
 CLAUDE_AGENTS_DIR = os.path.join(os.path.expanduser("~"), ".claude", "agents")
 
+# Emission is deterministic policy — ambient PANOPTICON_MODEL_* overrides apply
+# to per-run dispatch plans, never to persisted registrations.
+EMIT_MODEL_POLICY = {"claude": {"scout": "haiku", "lens_sweep": "haiku",
+                                 "panel_review": "sonnet", "advisor": "opus"}}
+
 _CHARTER = (
     "You are panopticon's `%s` reviewer (a registered enforcement shell).\n"
     "Follow the dispatched task message exactly — it contains your full\n"
@@ -115,7 +120,7 @@ def emit_host_agents(host, out_dir):
         charter = _CHARTER % (role, ", ".join(tp["allowed"]),
                               ", ".join(tp["forbidden"]))
         if host == "claude":
-            model = model_resolver.resolve_model("claude", role).get("model")
+            model = EMIT_MODEL_POLICY.get("claude", {}).get(role)
             fm = ["---", "name: %s" % agent,
                   "description: %s" % meta["description"],
                   "tools: %s" % ", ".join(tp["allowed"])]

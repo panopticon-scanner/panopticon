@@ -435,3 +435,11 @@ class TestEmitHostAgents(unittest.TestCase):
             rc = dispatch.main(["--emit-host-agents", "claude", "--out", d])
             self.assertEqual(rc, 0)
             self.assertTrue(os.path.isfile(os.path.join(d, "panopticon-scout.md")))
+
+    def test_emission_ignores_ambient_model_env_overrides(self):
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.dict(os.environ, {"PANOPTICON_MODEL_ADVISOR": "haiku"}):
+            dispatch.emit_host_agents("claude", d)
+            text = open(os.path.join(d, "panopticon-advisor.md")).read()
+        self.assertIn("model: opus", text)
+        self.assertNotIn("model: haiku", text)
