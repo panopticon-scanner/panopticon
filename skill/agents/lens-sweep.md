@@ -25,7 +25,7 @@ Return ONLY a raw JSON object `{"findings": [...]}` as your final message — yo
 
 ## Finding format
 
-- id: ^[A-Z]{2,4}-\d{3,}$
+- id: ^[A-Z]{2,8}-\d{3,}$
 - severity: CRITICAL|HIGH|MEDIUM|LOW|INFO
 - panel: "{panel}"
 - lens: "{lens}"

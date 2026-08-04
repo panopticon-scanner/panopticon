@@ -3,8 +3,7 @@ from __future__ import annotations
 import glob
 import json
 import os
-import subprocess
-from .base import attach_tool_provenance, normalize_severity, new_finding_id, omit_none
+from .base import attach_tool_provenance, normalize_severity, new_finding_id, omit_none, run_tool
 
 
 class PipAuditAdapter:
@@ -40,8 +39,7 @@ class PipAuditAdapter:
             # audited without the invalid --requirement flag.
             self._manifest_path = os.path.join(target, "pyproject.toml")
             cmd.append(target)
-        res = subprocess.run(cmd, capture_output=True, timeout=300)
-        return res.stdout, res.returncode
+        return run_tool(cmd, timeout=300)
 
     def _find_requirement(self, target: str) -> str | None:
         for path in sorted(glob.glob(os.path.join(target, "requirements*.txt"))):

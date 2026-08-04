@@ -135,7 +135,7 @@ class TestEslintSecurityAdapter(unittest.TestCase):
     def test_invoke_runs_eslint_security(self):
         adapter = es.EslintSecurityAdapter()
         fake_run = mock.Mock(return_value=mock.Mock(stdout=b"[]", returncode=0))
-        with mock.patch("scripts.tools.eslint_security.subprocess.run", fake_run):
+        with mock.patch("scripts.tools.base.subprocess.run", fake_run):
             stdout, rc = adapter.invoke("/tmp/fake")
         self.assertEqual(stdout, b"[]")
         self.assertEqual(rc, 0)
@@ -151,7 +151,7 @@ class TestEslintSecurityAdapter(unittest.TestCase):
     def test_invoke_enables_all_rule_cwe_rules(self):
         adapter = es.EslintSecurityAdapter()
         fake_run = mock.Mock(return_value=mock.Mock(stdout=b"[]", returncode=0))
-        with mock.patch("scripts.tools.eslint_security.subprocess.run", fake_run):
+        with mock.patch("scripts.tools.base.subprocess.run", fake_run):
             adapter.invoke("/tmp/fake")
         args, _ = fake_run.call_args
         cmd = args[0]

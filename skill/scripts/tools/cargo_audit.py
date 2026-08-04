@@ -2,8 +2,7 @@
 from __future__ import annotations
 import json
 import os
-import subprocess
-from .base import attach_tool_provenance, new_finding_id, omit_none, normalize_severity
+from .base import attach_tool_provenance, new_finding_id, omit_none, normalize_severity, run_tool
 
 
 def _cvss_v3_score(cvss: str) -> float | None:
@@ -50,8 +49,7 @@ class CargoAuditAdapter:
 
     def invoke(self, target: str) -> tuple[bytes, int]:
         cmd = ["cargo", "audit", "--format", "json"]
-        res = subprocess.run(cmd, capture_output=True, timeout=300, cwd=target)
-        return res.stdout, res.returncode
+        return run_tool(cmd, timeout=300, cwd=target)
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
         data = json.loads(raw.decode("utf-8", errors="replace"))

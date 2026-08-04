@@ -52,7 +52,25 @@ provenance/citations/paths → dedupe → report).
    targets (perpetual "exited 2; skipping"); JS/TS SAST is the eslint-security
    adapter with its bundled config.
 
-## FIXMEs collected (deferred — round 3 candidates)
+## FIXME resolution (fix round, same day — PR #25)
+
+All seven addressed: F-CAL-1 via a shared `base.run_tool` helper (capped stderr
+excerpts on failure exits, all 16 adapters + the legacy TOOL_CMD path);
+F-CAL-2 via `ingest_dir(..., exclude_globs=...)` + `synthesize --tools-exclude`,
+with CI switched off its inline filter; F-CAL-3 by deduping `models_used` on
+(model, role); F-CAL-4 by widening ID_RE to `{2,8}` and aligning the agent
+templates (goldens regenerated); F-CAL-5 by deleting the legacy eslint entries;
+F-CAL-6 resolved by decision (see below); F-CAL-7 documented in DEVELOPMENT.md.
+The two parked round-2 queue_id residuals (non-string TypeError, >=1000-entry
+width) were fixed in the same pass.
+
+**F-CAL-6 decision:** semgrep's rule set stays untuned. Its MEDIUMs never gate
+(CI gates HIGH/CRITICAL; local gates use --fail-on), the flagged
+dependabot/workflow rules are legitimate hardening advice, and the new
+`--tools-exclude` handles the only systematic noise source (fixtures). Revisit
+only if semgrep MEDIUM volume becomes a triage burden in real audits.
+
+## Original FIXME list (as collected — deferred at the time)
 
 - **F-CAL-1: adapter `invoke()` contract discards stderr** across all 16
   adapters — every tool failure surfaces as "exited N; skipping" with no reason

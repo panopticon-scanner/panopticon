@@ -52,7 +52,7 @@ class TestBrakemanAdapter(unittest.TestCase):
     def test_invoke_runs_brakeman_json(self):
         adapter = br.BrakemanAdapter()
         fake_run = mock.Mock(return_value=mock.Mock(stdout=b"{}", returncode=0))
-        with mock.patch("scripts.tools.brakeman.subprocess.run", fake_run):
+        with mock.patch("scripts.tools.base.subprocess.run", fake_run):
             stdout, rc = adapter.invoke("/tmp/fake")
         self.assertEqual(rc, 0)
         fake_run.assert_called_once_with(

@@ -1,9 +1,8 @@
 """SpotBugs + FindSecBugs adapter for Java/Kotlin security findings."""
 from __future__ import annotations
 import os
-import subprocess
 import xml.etree.ElementTree as ET
-from .base import attach_tool_provenance, new_finding_id, omit_none
+from .base import attach_tool_provenance, new_finding_id, omit_none, run_tool
 
 _SPOTBUGS_CWE = {
     "SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE": "CWE-89",
@@ -37,8 +36,7 @@ class SpotBugsAdapter:
             "-textui", "-xml", "-pluginList", plugin_jar,
             classes,
         ]
-        res = subprocess.run(cmd, capture_output=True, timeout=600)
-        return res.stdout, res.returncode
+        return run_tool(cmd, timeout=600)
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
         text = raw.decode("utf-8", errors="replace").strip()

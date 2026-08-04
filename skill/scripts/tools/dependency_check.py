@@ -3,9 +3,8 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
 import tempfile
-from .base import attach_tool_provenance, normalize_severity, new_finding_id, omit_none
+from .base import attach_tool_provenance, normalize_severity, new_finding_id, omit_none, run_tool
 
 
 class DependencyCheckAdapter:
@@ -33,12 +32,12 @@ class DependencyCheckAdapter:
             ]
             if not has_nvd_key:
                 cmd.append("--noupdate")
-            res = subprocess.run(cmd, capture_output=True, timeout=900)
+            _stdout, rc = run_tool(cmd, timeout=900)
             out_path = os.path.join(out_dir, "dependency-check-report.json")
             if os.path.exists(out_path):
                 with open(out_path, "rb") as fh:
-                    return fh.read(), res.returncode
-            return b"{}", res.returncode
+                    return fh.read(), rc
+            return b"{}", rc
         finally:
             shutil.rmtree(out_dir, ignore_errors=True)
 

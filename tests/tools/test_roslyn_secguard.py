@@ -104,8 +104,11 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
 
         class Result:
             returncode = 0
+            stdout = b""
+            stderr = b""
 
-        old_run = rs.subprocess.run
+        import scripts.tools.base as tools_base
+        old_run = tools_base.subprocess.run
         old_copytree = rs.shutil.copytree
         try:
             def fake_copytree(src, dst, dirs_exist_ok=False):
@@ -118,7 +121,7 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
                 return Result()
 
             rs.shutil.copytree = fake_copytree
-            rs.subprocess.run = fake_run
+            tools_base.subprocess.run = fake_run
             with tempfile.TemporaryDirectory() as d:
                 open(os.path.join(d, "x.csproj"), "w").close()
                 raw, rc = adapter.invoke(d)
@@ -126,7 +129,7 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
                 self.assertEqual(rc, 0)
                 self.assertEqual(copied_src, [d])
         finally:
-            rs.subprocess.run = old_run
+            tools_base.subprocess.run = old_run
             rs.shutil.copytree = old_copytree
 
         cmd = calls[0][0]

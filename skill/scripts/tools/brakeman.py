@@ -2,8 +2,7 @@
 from __future__ import annotations
 import json
 import os
-import subprocess
-from .base import attach_tool_provenance, normalize_severity, new_finding_id, omit_none
+from .base import attach_tool_provenance, normalize_severity, new_finding_id, omit_none, run_tool
 
 
 _CONFIDENCE_MAP = {
@@ -52,14 +51,13 @@ class BrakemanAdapter:
 
     def invoke(self, target: str) -> tuple[bytes, int]:
         cmd = ["brakeman", "--format", "json", "--quiet", "--run-all-checks", target]
-        res = subprocess.run(cmd, capture_output=True, timeout=300)
-        rc = res.returncode
+        stdout, rc = run_tool(cmd, timeout=300, ok_codes=(0, 1, 2, 3))
         # Brakeman exits 2 when warnings are found and 3 when warnings plus minor
         # parsing errors occur. Treat both as successful scans so the output is
         # preserved for ingestion.
         if rc in (2, 3):
             rc = 0
-        return res.stdout, rc
+        return stdout, rc
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
         data = json.loads(raw.decode("utf-8", errors="replace"))

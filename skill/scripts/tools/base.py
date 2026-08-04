@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import subprocess
 from typing import Any, Protocol
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
@@ -59,3 +60,19 @@ class ToolAdapter(Protocol):
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
         ...
+
+def run_tool(cmd, timeout, ok_codes=(0, 1), **kwargs):
+    """Run a scanner subprocess, preserving failure diagnostics (F-CAL-1).
+
+    Returns (stdout, returncode) — the adapter invoke() contract. On exit
+    codes outside ok_codes (1 == findings for most scanners; brakeman also
+    uses 2/3), a capped stderr excerpt is written to our stderr so
+    'exited N; skipping' is diagnosable.
+    """
+    res = subprocess.run(cmd, capture_output=True, timeout=timeout, **kwargs)
+    rc = res.returncode
+    if rc not in ok_codes:
+        excerpt = (res.stderr or b"")[-1000:].decode("utf-8", errors="replace").strip()
+        print("tool %s exited %d%s" % (cmd[0], rc,
+              (": %s" % excerpt) if excerpt else ""), file=sys.stderr)
+    return res.stdout, rc

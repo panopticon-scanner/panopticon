@@ -80,7 +80,7 @@ The `panopticon-fixtures` image contains vulnerable-by-design applications used 
 - Force rebuild: `python3 skill/scripts/run_fixture_tests.py --rebuild`
 - Tag snapshots: `docker tag panopticon-fixtures:latest panopticon-fixtures:YYYY-MM-DD`
 
-Rebuild cadence: monthly, or whenever a new adapter is added. The image pulls public fixtures at build time, so test runs require no network.
+Rebuild cadence: monthly, or whenever a new adapter is added. The same monthly cadence applies to the `panopticon-tools` image: adapter CODE is mounted from the checkout at run time (never stale), but the scanner BINARIES and their rule/advisory databases age with the image. The image pulls public fixtures at build time, so test runs require no network.
 
 ## Versioning
 Scheme: a **minor** bump (2.x.0) per release round; **major** (x.0.0) reserved for breaking

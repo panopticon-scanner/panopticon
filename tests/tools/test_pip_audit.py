@@ -107,7 +107,7 @@ class TestPipAuditAdapter(unittest.TestCase):
     def test_invoke_uses_requirements_txt_when_present(self):
         adapter = pa.PipAuditAdapter()
         fake_run = mock.Mock(return_value=mock.Mock(stdout=b"[]", returncode=0))
-        with mock.patch("scripts.tools.pip_audit.subprocess.run", fake_run):
+        with mock.patch("scripts.tools.base.subprocess.run", fake_run):
             with mock.patch("scripts.tools.pip_audit.glob.glob", return_value=["/tmp/fake/requirements.txt"]):
                 stdout, rc = adapter.invoke("/tmp/fake")
         self.assertEqual(stdout, b"[]")
@@ -121,7 +121,7 @@ class TestPipAuditAdapter(unittest.TestCase):
     def test_invoke_falls_back_to_pyproject_toml(self):
         adapter = pa.PipAuditAdapter()
         fake_run = mock.Mock(return_value=mock.Mock(stdout=b"[]", returncode=0))
-        with mock.patch("scripts.tools.pip_audit.subprocess.run", fake_run):
+        with mock.patch("scripts.tools.base.subprocess.run", fake_run):
             with mock.patch("scripts.tools.pip_audit.glob.glob", return_value=[]):
                 stdout, rc = adapter.invoke("/tmp/fake")
         self.assertEqual(stdout, b"[]")

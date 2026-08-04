@@ -3,9 +3,8 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
 import tempfile
-from .base import attach_tool_provenance, normalize_severity, new_finding_id, omit_none
+from .base import attach_tool_provenance, normalize_severity, new_finding_id, omit_none, run_tool
 
 _ROSLYN_CWE = {
     "SCS0001": "CWE-78",
@@ -64,11 +63,11 @@ class RoslynSecGuardAdapter:
                 "-p:TreatWarningsAsErrors=false",
                 "-p:ErrorLog=" + sarif + ",version=2.1",
             ]
-            res = subprocess.run(cmd, capture_output=True, timeout=600)
+            _stdout, rc = run_tool(cmd, timeout=600)
             if os.path.exists(sarif):
                 with open(sarif, "rb") as fh:
-                    return fh.read(), res.returncode
-            return b"{}", res.returncode
+                    return fh.read(), rc
+            return b"{}", rc
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 

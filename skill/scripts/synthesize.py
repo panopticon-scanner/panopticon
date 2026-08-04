@@ -156,7 +156,9 @@ def _collect_models_used(findings):
         if not model:
             continue
         role = _role_from_discovered_by(prov.get("discovered_by"))
-        key = (model, version, role)
+        # Dedup by (model, role): agents self-report model_version
+        # inconsistently (F-CAL-3), which produced duplicate entries.
+        key = (model, role)
         if key in seen:
             continue
         seen.add(key)
@@ -423,7 +425,7 @@ def severity_stats(findings):
     return stats
 
 
-ID_RE = re.compile(r"^[A-Z]{2,4}-\d{3,}$")
+ID_RE = re.compile(r"^[A-Z]{2,8}-\d{3,}$")  # {2,8}: real agents emit e.g. STRUCT-001
 GROUP_RE = re.compile(
     r"^findings-(.+)-(?:code|test|security|architecture|database|redteam)"
     r"(?:-panel_review|-lens_sweep-[A-Za-z0-9_]+)?\.json$")
@@ -704,6 +706,9 @@ def main(argv=None):
                     help="Compare two JSON reports and emit HTML")
     ap.add_argument("--epss", action="store_true")
     ap.add_argument("--tools-dir", metavar="DIR")
+    ap.add_argument("--tools-exclude", metavar="GLOB", action="append", default=None,
+                    help="Drop tool findings whose location.file matches GLOB "
+                         "(repeatable; e.g. 'tests/fixtures/*')")
     ap.add_argument("--emit-verify-queue", action="store_true",
                     help="Pass 1: write .panopticon/verify-queue.json and skip the "
                          "report when agentic findings need verification")
@@ -771,7 +776,8 @@ def main(argv=None):
 
     findings = load_findings(args.files)
     if args.tools_dir and os.path.isdir(args.tools_dir):
-        for tf in ingest_tools.ingest_dir(args.tools_dir, None):
+        for tf in ingest_tools.ingest_dir(args.tools_dir, None,
+                                          exclude_globs=args.tools_exclude):
             findings.append(normalize_finding(tf))
     catalog = citations.load_cwe_catalog()
     citations.enrich_citations(findings, catalog, epss_enabled=args.epss,

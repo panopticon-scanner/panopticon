@@ -1,13 +1,16 @@
 """Adapter that preserves the existing SARIF ingestion for semgrep/bandit/etc."""
 from __future__ import annotations
 import json
-import subprocess
 
 import scripts.tools.sarif_utils as su
+from scripts.tools.base import run_tool
 
 
 # Tools that produce SARIF output and are dispatched through this adapter.
-LEGACY_SARIF_TOOLS = {"semgrep", "bandit", "trivy", "gitleaks", "gosec", "eslint"}
+# "eslint" retired (F-CAL-5): eslint >=9 requires a project flat config, so a
+# bare invocation can never run on arbitrary targets; JS/TS SAST is the
+# eslint-security adapter with its bundled config.
+LEGACY_SARIF_TOOLS = {"semgrep", "bandit", "trivy", "gitleaks", "gosec"}
 
 # Per-tool argv producing SARIF on stdout. /src is substituted with the actual
 # target path at invocation time.
@@ -18,7 +21,6 @@ TOOL_CMD = {
     "trivy": ["trivy", "fs", "--format", "sarif", "/src"],
     "bandit": ["bandit", "-q", "-r", "/src", "-f", "sarif"],
     "gosec": ["gosec", "-fmt=sarif", "./..."],
-    "eslint": ["eslint", "-f", "@microsoft/eslint-formatter-sarif", "/src"],
 }
 
 # Max seconds to let a single tool invocation run before it's killed.
@@ -43,10 +45,9 @@ class LegacySarifAdapter:
         cmd = [target if arg == "/src" else arg for arg in TOOL_CMD[self.name]]
         # gosec scans relative to the working directory.
         cwd = target if self.name == "gosec" else None
-        res = subprocess.run(cmd, capture_output=True, timeout=TOOL_TIMEOUT, cwd=cwd)
-        # Most security scanners exit 1 when findings are present; preserve that
-        # as a successful scan so the SARIF output can still be ingested.
-        return res.stdout, res.returncode
+        # Most security scanners exit 1 when findings are present; run_tool
+        # treats (0, 1) as clean and logs a stderr excerpt on anything else.
+        return run_tool(cmd, timeout=TOOL_TIMEOUT, cwd=cwd)
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
         sarif = json.loads(raw)
