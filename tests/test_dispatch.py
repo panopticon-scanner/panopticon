@@ -88,7 +88,9 @@ class TestDispatchPlan(unittest.TestCase):
         self.assertNotIn("novel", spawned)
 
     def test_models_resolved_per_host(self):
-        plan = dispatch.build_plan(self._profile("standard"), host="claude")
+        with tempfile.TemporaryDirectory() as d:
+            plan = dispatch.build_plan(self._profile("standard"), host="claude",
+                                       agents_dir=d)
         advisor = [p for p in plan if p["role"] == "advisor"]
         self.assertEqual(len(advisor), 0)
         panel = [p for p in plan if p["role"] == "panel_review"][0]
@@ -239,7 +241,8 @@ class TestRenderPrompt(unittest.TestCase):
                        {"name": "novel", "spawn": False, "priority": 2,
                         "depth_threshold": "standard"}]},
                    "security_mode": "standard"}
-        plan = dispatch.build_plan(profile, host="claude")
+        with tempfile.TemporaryDirectory() as d:
+            plan = dispatch.build_plan(profile, host="claude", agents_dir=d)
         self.assertTrue(plan)
         for entry in plan:
             self.assertIn("prompt", entry)
