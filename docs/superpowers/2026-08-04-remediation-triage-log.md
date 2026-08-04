@@ -59,3 +59,29 @@ sole consumer is the static eslint lint (`test_phase1_integration.py:80-93`),
 advisor NOT-REAL: no `[build-system]`, zero version consumers; report metadata
 already 4.2.0 (`synthesize.py:682`, `evidence.py:126`); only stale literals are
 `pyproject.toml:3` and `citations.py:153`.
+
+## Batch B3 — HIGHs
+
+47 issues in four thematic sub-batches: **B3a** adapter execution surface,
+**B3b** supply chain / image build, **B3c** orchestration/policy/docs drift,
+**B3d** tests & parser-robustness rejected cluster. (The four FIXME HIGHs were
+dispositioned in B1; #58 closed there as a duplicate.)
+
+### B3a — adapter execution surface (2026-08-04)
+
+11 rows: 7 fix, 3 duplicate, 1 defer. Spot-checks: 0 (no rejected-class rows;
+#218's missing information lives outside the repo, per the run-2 advisor).
+
+| Rank | Issue | Verdict | Rationale |
+|---|---|---|---|
+| 1 | #86 | fix | copytree symlink dereference into the build workspace; fix = escaping-symlink rejection (not `symlinks=True`); rides the #229 package |
+| 2 | #218 | fix | pip-audit PEP 517 execution question; queue the settling (pin + marker-file probe) + fallback hardening in the #229 package |
+| 3 | #83 | fix | eslint plugin hijack via target `node_modules` (cwd = scanned repo); pin child cwd or absolute-path plugin config |
+| 4 | #210 | fix | SecurityCodeScan findings all stamped HIGH, SARIF level discarded; severity drives the CI gate — deliberate mapping needed |
+| 5 | #222 | fix | SpotBugs confidence axis mapped to severity; fix spec + mapping + pinning test (two-axis invariant) |
+| 6 | #253 | fix | `locations: []` → IndexError → silent loss of every C# finding; per-result guard + missing tests |
+| 7 | #193 | fix | Real CWE-78 in `sh -c` interpolation, advisor-scoped LOW; cheap `shlex.quote` hardening |
+| — | #85 | duplicate → #86 | Code-panel filing of the same symlink defect |
+| — | #81 | duplicate → #229 | HIGH filing of the roslyn dotnet-build locus |
+| — | #194 | duplicate → #193 | Verbatim duplicate; both advisors flagged the pair |
+| — | #199 | defer | Untested dev-local helper with no CI/runtime path; revisit if it enters CI |
