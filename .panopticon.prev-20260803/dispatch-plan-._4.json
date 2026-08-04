@@ -1,0 +1,115 @@
+[
+  {
+    "role": "panel_review",
+    "agent": "panopticon-panel-review",
+    "enforced": true,
+    "model": {
+      "model": "sonnet"
+    },
+    "panel": "code",
+    "lens": null,
+    "files": [
+      "skill/agents/advisor.md",
+      "skill/agents/lens-sweep.md",
+      "skill/agents/panel-review.md",
+      "skill/agents/scout.md",
+      "skill/prompts/lenses.md",
+      "skill/reference/code-review-groups.example.yml",
+      "skill/reference/cwe-catalog.json",
+      "skill/reference/model-profiles.yml",
+      "skill/reference/report-schema.json",
+      "skill/reference/scope-profile-schema.json",
+      "skill/reference/security-checklists.md"
+    ],
+    "group": "._4",
+    "depth": "shallow",
+    "lenses": [
+      "correctness",
+      "style"
+    ],
+    "out_file": ".panopticon/findings-._4-code-panel_review.json",
+    "prompt": "You are the `code` reviewer for panopticon group `._4`.\nFiles: skill/agents/advisor.md, skill/agents/lens-sweep.md, skill/agents/panel-review.md, skill/agents/scout.md, skill/prompts/lenses.md, skill/reference/code-review-groups.example.yml, skill/reference/cwe-catalog.json, skill/reference/model-profiles.yml, skill/reference/report-schema.json, skill/reference/scope-profile-schema.json, skill/reference/security-checklists.md\nSecurity mode: standard\nDepth: shallow\n\n## Your task\n\nReview the listed files through the `code` panel. Cover all lenses assigned to this panel that are NOT being handled by dedicated lens sweep agents.\nReturn ONLY a raw JSON object `{\"findings\": [...]}` as your final message \u2014 you cannot write files; the orchestrator writes your findings to `.panopticon/findings-._4-code-panel_review.json`.\n\n## Lenses assigned to this panel\n\n- correctness\n- style\n\n## Security checklists\n\nFor `security` and `redteam` panels, apply the relevant language-specific sections from `reference/security-checklists.md`.\n\n## Side-effect boundary\n\nYour ONLY output is the single findings JSON object returned as your final message. Perform NO GitHub writes, NO repo mutations, NO dispatches, NO credential mints, NO file writes.\n\n## Finding format\n\n- id: ^[A-Z]{2,8}-\\d{3,}$\n- severity: CRITICAL|HIGH|MEDIUM|LOW|INFO\n- panel: \"code\"\n- category: (lens name or \"general\")\n- location: {file, line_start[, line_end, function]}\n- title, description, impact, remediation, references[]\n- source_role: \"panel_review\"\n- depth: \"shallow\"\n\nEach finding MUST include a `provenance` object:\n\n```json\n\"provenance\": {\n  \"discovered_by\": \"agent:panel_review\",\n  \"expanded_by\": null,\n  \"confirmed_by\": null,\n  \"model\": \"<model-name>\",\n  \"model_version\": \"<version>\",\n  \"confirmation_status\": \"UNVERIFIED\",\n  \"confirmation_reasoning\": null\n}\n```\n\nIf the panel review elaborates on a lens finding, set `\"expanded_by\": \"agent:lens_sweep\"`.\n\nAnd a `citations` object with at least one of:\n- `cwe`: list of CWE IDs (e.g., `[\"CWE-89\"]`)\n- `owasp`: list of OWASP Top 10 categories (e.g., `[\"A03:2021\"]`)\n- `cve`: list of CVE IDs (if applicable)\n\nFor `security`/`redteam` CRITICAL/HIGH findings, add `cvss` {score, vector} and `exploit_scenario`.\n\n## Tool policy\n\nYour only tools are Read, Grep, Glob. You must not use Bash, Edit, Write, Agent under any circumstances.\n"
+  },
+  {
+    "role": "lens_sweep",
+    "agent": "panopticon-lens-sweep",
+    "enforced": true,
+    "model": {
+      "model": "haiku"
+    },
+    "panel": "code",
+    "lens": "structure",
+    "files": [
+      "skill/agents/advisor.md",
+      "skill/agents/lens-sweep.md",
+      "skill/agents/panel-review.md",
+      "skill/agents/scout.md",
+      "skill/prompts/lenses.md",
+      "skill/reference/code-review-groups.example.yml",
+      "skill/reference/cwe-catalog.json",
+      "skill/reference/model-profiles.yml",
+      "skill/reference/report-schema.json",
+      "skill/reference/scope-profile-schema.json",
+      "skill/reference/security-checklists.md"
+    ],
+    "group": "._4",
+    "depth": "shallow",
+    "out_file": ".panopticon/findings-._4-code-lens_sweep-structure.json",
+    "prompt": "You are the `structure` lens sweep for panopticon panel `code` in group `._4`.\nFiles: skill/agents/advisor.md, skill/agents/lens-sweep.md, skill/agents/panel-review.md, skill/agents/scout.md, skill/prompts/lenses.md, skill/reference/code-review-groups.example.yml, skill/reference/cwe-catalog.json, skill/reference/model-profiles.yml, skill/reference/report-schema.json, skill/reference/scope-profile-schema.json, skill/reference/security-checklists.md\nSecurity mode: standard\nDepth: shallow\n\n## Your task\n\nPerform a narrow, mechanical review of the listed files **only through the `structure` lens**.\nReturn ONLY a raw JSON object `{\"findings\": [...]}` as your final message \u2014 you cannot write files; the orchestrator writes your findings to `.panopticon/findings-._4-code-lens_sweep-structure.json`.\n\n## Rules\n\n- Findings must cite a rule, pattern, or line of code. Uncited claims are not allowed.\n- Keep descriptions short and factual.\n- Do not write narrative or general advice.\n- Do not perform GitHub writes, repo mutations, or credential mints.\n\n## Finding format\n\n- id: ^[A-Z]{2,8}-\\d{3,}$\n- severity: CRITICAL|HIGH|MEDIUM|LOW|INFO\n- panel: \"code\"\n- lens: \"structure\"\n- category: \"structure\"\n- location: {file, line_start[, line_end, function]}\n- title, description, impact, remediation, references[]\n- source_role: \"lens_sweep\"\n- depth: \"shallow\"\n\nEach finding MUST include a `provenance` object:\n\n```json\n\"provenance\": {\n  \"discovered_by\": \"agent:lens_sweep\",\n  \"expanded_by\": null,\n  \"confirmed_by\": null,\n  \"model\": \"<model-name>\",\n  \"model_version\": \"<version>\",\n  \"confirmation_status\": \"UNVERIFIED\",\n  \"confirmation_reasoning\": null\n}\n```\n\nAnd a `citations` object with at least one of:\n- `cwe`: list of CWE IDs (e.g., `[\"CWE-89\"]`)\n- `owasp`: list of OWASP Top 10 categories (e.g., `[\"A03:2021\"]`)\n- `cve`: list of CVE IDs (if applicable)\n\n## Tool policy\n\nYour only tools are Read, Grep, Glob. You must not use Bash, Edit, Write, Agent under any circumstances.\n"
+  },
+  {
+    "role": "panel_review",
+    "agent": "panopticon-panel-review",
+    "enforced": true,
+    "model": {
+      "model": "sonnet"
+    },
+    "panel": "architecture",
+    "lens": null,
+    "files": [
+      "skill/agents/advisor.md",
+      "skill/agents/lens-sweep.md",
+      "skill/agents/panel-review.md",
+      "skill/agents/scout.md",
+      "skill/prompts/lenses.md",
+      "skill/reference/code-review-groups.example.yml",
+      "skill/reference/cwe-catalog.json",
+      "skill/reference/model-profiles.yml",
+      "skill/reference/report-schema.json",
+      "skill/reference/scope-profile-schema.json",
+      "skill/reference/security-checklists.md"
+    ],
+    "group": "._4",
+    "depth": "shallow",
+    "lenses": [],
+    "out_file": ".panopticon/findings-._4-architecture-panel_review.json",
+    "prompt": "You are the `architecture` reviewer for panopticon group `._4`.\nFiles: skill/agents/advisor.md, skill/agents/lens-sweep.md, skill/agents/panel-review.md, skill/agents/scout.md, skill/prompts/lenses.md, skill/reference/code-review-groups.example.yml, skill/reference/cwe-catalog.json, skill/reference/model-profiles.yml, skill/reference/report-schema.json, skill/reference/scope-profile-schema.json, skill/reference/security-checklists.md\nSecurity mode: standard\nDepth: shallow\n\n## Your task\n\nReview the listed files through the `architecture` panel. Cover all lenses assigned to this panel that are NOT being handled by dedicated lens sweep agents.\nReturn ONLY a raw JSON object `{\"findings\": [...]}` as your final message \u2014 you cannot write files; the orchestrator writes your findings to `.panopticon/findings-._4-architecture-panel_review.json`.\n\n## Lenses assigned to this panel\n\n- (all lenses)\n\n## Security checklists\n\nFor `security` and `redteam` panels, apply the relevant language-specific sections from `reference/security-checklists.md`.\n\n## Side-effect boundary\n\nYour ONLY output is the single findings JSON object returned as your final message. Perform NO GitHub writes, NO repo mutations, NO dispatches, NO credential mints, NO file writes.\n\n## Finding format\n\n- id: ^[A-Z]{2,8}-\\d{3,}$\n- severity: CRITICAL|HIGH|MEDIUM|LOW|INFO\n- panel: \"architecture\"\n- category: (lens name or \"general\")\n- location: {file, line_start[, line_end, function]}\n- title, description, impact, remediation, references[]\n- source_role: \"panel_review\"\n- depth: \"shallow\"\n\nEach finding MUST include a `provenance` object:\n\n```json\n\"provenance\": {\n  \"discovered_by\": \"agent:panel_review\",\n  \"expanded_by\": null,\n  \"confirmed_by\": null,\n  \"model\": \"<model-name>\",\n  \"model_version\": \"<version>\",\n  \"confirmation_status\": \"UNVERIFIED\",\n  \"confirmation_reasoning\": null\n}\n```\n\nIf the panel review elaborates on a lens finding, set `\"expanded_by\": \"agent:lens_sweep\"`.\n\nAnd a `citations` object with at least one of:\n- `cwe`: list of CWE IDs (e.g., `[\"CWE-89\"]`)\n- `owasp`: list of OWASP Top 10 categories (e.g., `[\"A03:2021\"]`)\n- `cve`: list of CVE IDs (if applicable)\n\nFor `security`/`redteam` CRITICAL/HIGH findings, add `cvss` {score, vector} and `exploit_scenario`.\n\n## Tool policy\n\nYour only tools are Read, Grep, Glob. You must not use Bash, Edit, Write, Agent under any circumstances.\n"
+  },
+  {
+    "role": "lens_sweep",
+    "agent": "panopticon-lens-sweep",
+    "enforced": true,
+    "model": {
+      "model": "haiku"
+    },
+    "panel": "architecture",
+    "lens": "architecture",
+    "files": [
+      "skill/agents/advisor.md",
+      "skill/agents/lens-sweep.md",
+      "skill/agents/panel-review.md",
+      "skill/agents/scout.md",
+      "skill/prompts/lenses.md",
+      "skill/reference/code-review-groups.example.yml",
+      "skill/reference/cwe-catalog.json",
+      "skill/reference/model-profiles.yml",
+      "skill/reference/report-schema.json",
+      "skill/reference/scope-profile-schema.json",
+      "skill/reference/security-checklists.md"
+    ],
+    "group": "._4",
+    "depth": "shallow",
+    "out_file": ".panopticon/findings-._4-architecture-lens_sweep-architecture.json",
+    "prompt": "You are the `architecture` lens sweep for panopticon panel `architecture` in group `._4`.\nFiles: skill/agents/advisor.md, skill/agents/lens-sweep.md, skill/agents/panel-review.md, skill/agents/scout.md, skill/prompts/lenses.md, skill/reference/code-review-groups.example.yml, skill/reference/cwe-catalog.json, skill/reference/model-profiles.yml, skill/reference/report-schema.json, skill/reference/scope-profile-schema.json, skill/reference/security-checklists.md\nSecurity mode: standard\nDepth: shallow\n\n## Your task\n\nPerform a narrow, mechanical review of the listed files **only through the `architecture` lens**.\nReturn ONLY a raw JSON object `{\"findings\": [...]}` as your final message \u2014 you cannot write files; the orchestrator writes your findings to `.panopticon/findings-._4-architecture-lens_sweep-architecture.json`.\n\n## Rules\n\n- Findings must cite a rule, pattern, or line of code. Uncited claims are not allowed.\n- Keep descriptions short and factual.\n- Do not write narrative or general advice.\n- Do not perform GitHub writes, repo mutations, or credential mints.\n\n## Finding format\n\n- id: ^[A-Z]{2,8}-\\d{3,}$\n- severity: CRITICAL|HIGH|MEDIUM|LOW|INFO\n- panel: \"architecture\"\n- lens: \"architecture\"\n- category: \"architecture\"\n- location: {file, line_start[, line_end, function]}\n- title, description, impact, remediation, references[]\n- source_role: \"lens_sweep\"\n- depth: \"shallow\"\n\nEach finding MUST include a `provenance` object:\n\n```json\n\"provenance\": {\n  \"discovered_by\": \"agent:lens_sweep\",\n  \"expanded_by\": null,\n  \"confirmed_by\": null,\n  \"model\": \"<model-name>\",\n  \"model_version\": \"<version>\",\n  \"confirmation_status\": \"UNVERIFIED\",\n  \"confirmation_reasoning\": null\n}\n```\n\nAnd a `citations` object with at least one of:\n- `cwe`: list of CWE IDs (e.g., `[\"CWE-89\"]`)\n- `owasp`: list of OWASP Top 10 categories (e.g., `[\"A03:2021\"]`)\n- `cve`: list of CVE IDs (if applicable)\n\n## Tool policy\n\nYour only tools are Read, Grep, Glob. You must not use Bash, Edit, Write, Agent under any circumstances.\n"
+  }
+]

@@ -1,0 +1,76 @@
+{
+  "group": "._5",
+  "surfaces": [
+    "external_api",
+    "fs",
+    "serialization",
+    "secrets_config",
+    "crypto",
+    "templating",
+    "architecture"
+  ],
+  "panels": [
+    "code",
+    "security"
+  ],
+  "depth": "standard",
+  "risk": "high",
+  "security_mode": "standard",
+  "files": [
+    "skill/scripts/_run_adapter.py",
+    "skill/scripts/citations.py",
+    "skill/scripts/depth_planner.py",
+    "skill/scripts/dispatch.py",
+    "skill/scripts/evidence.py",
+    "skill/scripts/html_report.py",
+    "skill/scripts/ingest_tools.py",
+    "skill/scripts/model_resolver.py",
+    "skill/scripts/orchestrator.py",
+    "skill/scripts/provenance.py",
+    "skill/scripts/run_fixture_tests.py",
+    "skill/scripts/run_tools.py",
+    "skill/scripts/synthesize.py"
+  ],
+  "lenses": {
+    "code": [
+      {
+        "name": "structure",
+        "spawn": true,
+        "priority": 1,
+        "depth_threshold": "shallow"
+      },
+      {
+        "name": "correctness",
+        "spawn": true,
+        "priority": 2,
+        "depth_threshold": "shallow"
+      },
+      {
+        "name": "style",
+        "spawn": false,
+        "priority": 3,
+        "depth_threshold": "deep"
+      }
+    ],
+    "security": [
+      {
+        "name": "known_vulns",
+        "spawn": true,
+        "priority": 1,
+        "depth_threshold": "shallow"
+      },
+      {
+        "name": "injection",
+        "spawn": true,
+        "priority": 2,
+        "depth_threshold": "shallow"
+      },
+      {
+        "name": "novel",
+        "spawn": true,
+        "priority": 3,
+        "depth_threshold": "standard"
+      }
+    ]
+  }
+}

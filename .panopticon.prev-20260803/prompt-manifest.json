@@ -1,0 +1,187 @@
+[
+  {
+    "tag": "00-._1-code",
+    "agent": "panopticon-panel-review",
+    "out_file": ".panopticon/findings-._1-code-panel_review.json"
+  },
+  {
+    "tag": "01-._1-code-structure",
+    "agent": "panopticon-lens-sweep",
+    "out_file": ".panopticon/findings-._1-code-lens_sweep-structure.json"
+  },
+  {
+    "tag": "02-._1-architecture",
+    "agent": "panopticon-panel-review",
+    "out_file": ".panopticon/findings-._1-architecture-panel_review.json"
+  },
+  {
+    "tag": "03-._1-architecture-architecture",
+    "agent": "panopticon-lens-sweep",
+    "out_file": ".panopticon/findings-._1-architecture-lens_sweep-architecture.json"
+  },
+  {
+    "tag": "04-._4-code",
+    "agent": "panopticon-panel-review",
+    "out_file": ".panopticon/findings-._4-code-panel_review.json"
+  },
+  {
+    "tag": "05-._4-code-structure",
+    "agent": "panopticon-lens-sweep",
+    "out_file": ".panopticon/findings-._4-code-lens_sweep-structure.json"
+  },
+  {
+    "tag": "06-._4-architecture",
+    "agent": "panopticon-panel-review",
+    "out_file": ".panopticon/findings-._4-architecture-panel_review.json"
+  },
+  {
+    "tag": "07-._4-architecture-architecture",
+    "agent": "panopticon-lens-sweep",
+    "out_file": ".panopticon/findings-._4-architecture-lens_sweep-architecture.json"
+  },
+  {
+    "tag": "08-._5-code",
+    "agent": "panopticon-panel-review",
+    "out_file": ".panopticon/findings-._5-code-panel_review.json"
+  },
+  {
+    "tag": "09-._5-code-structure",
+    "agent": "panopticon-lens-sweep",
+    "out_file": ".panopticon/findings-._5-code-lens_sweep-structure.json"
+  },
+  {
+    "tag": "10-._5-code-correctness",
+    "agent": "panopticon-lens-sweep",
+    "out_file": ".panopticon/findings-._5-code-lens_sweep-correctness.json"
+  },
+  {
+    "tag": "11-._5-security",
+    "agent": "panopticon-panel-review",
+    "out_file": ".panopticon/findings-._5-security-panel_review.json"
+  },
+  {
+    "tag": "12-._5-security-known_vulns",
+    "agent": "panopticon-lens-sweep",
+    "out_file": ".panopticon/findings-._5-security-lens_sweep-known_vulns.json"
+  },
+  {
+    "tag": "13-._5-security-injection",
+    "agent": "panopticon-lens-sweep",
+    "out_file": ".panopticon/findings-._5-security-lens_sweep-injection.json"
+  },
+  {
+    "tag": "14-._6-code",
+    "agent": "panopticon-panel-review",
+    "out_file": ".panopticon/findings-._6-code-panel_review.json"
+  },
+  {
+    "tag": "15-._6-code-correctness",
+    "agent": "panopticon-lens-sweep",
+    "out_file": ".panopticon/findings-._6-code-lens_sweep-correctness.json"
+  },
+  {
+    "tag": "16-._6-code-structure",
+    "agent": "panopticon-lens-sweep",
+    "out_file": ".panopticon/findings-._6-code-lens_sweep-structure.json"
+  },
+  {
+    "tag": "17-._6-code-style",
+    "agent": "panopticon-lens-sweep",
+    "out_file": ".panopticon/findings-._6-code-lens_sweep-style.json"
+  },
+  {
+    "tag": "18-._6-test",
+    "agent": "panopticon-panel-review",
+    "out_file": ".panopticon/findings-._6-test-panel_review.json"
+  },
+  {
+    "tag": "19-._6-test-coverage",
+    "agent": "panopticon-lens-sweep",
+    "out_file": ".panopticon/findings-._6-test-lens_sweep-coverage.json"
+  },
+  {
+    "tag": "20-._6-test-test_quality",
+    "agent": "panopticon-lens-sweep",
+    "out_file": ".panopticon/findings-._6-test-lens_sweep-test_quality.json"
+  },
+  {
+    "tag": "21-._6-test-test_design",
+    "agent": "panopticon-lens-sweep",
+    "out_file": ".panopticon/findings-._6-test-lens_sweep-test_design.json"
+  },
+  {
+    "tag": "22-._6-security",
+    "agent": "panopticon-panel-review",
+    "out_file": ".panopticon/findings-._6-security-panel_review.json"
+  },
+  {
+    "tag": "23-._6-security-injection",
+    "agent": "panopticon-lens-sweep",
+    "out_file": ".panopticon/findings-._6-security-lens_sweep-injection.json"
+  },
+  {
+    "tag": "24-._6-security-novel",
+    "agent": "panopticon-lens-sweep",
+    "out_file": ".panopticon/findings-._6-security-lens_sweep-novel.json"
+  },
+  {
+    "tag": "25-._6-security-known_vulns",
+    "agent": "panopticon-lens-sweep",
+    "out_file": ".panopticon/findings-._6-security-lens_sweep-known_vulns.json"
+  },
+  {
+    "tag": "26-._7-code",
+    "agent": "panopticon-panel-review",
+    "out_file": ".panopticon/findings-._7-code-panel_review.json"
+  },
+  {
+    "tag": "27-._7-code-structure",
+    "agent": "panopticon-lens-sweep",
+    "out_file": ".panopticon/findings-._7-code-lens_sweep-structure.json"
+  },
+  {
+    "tag": "28-._7-code-correctness",
+    "agent": "panopticon-lens-sweep",
+    "out_file": ".panopticon/findings-._7-code-lens_sweep-correctness.json"
+  },
+  {
+    "tag": "29-._7-test",
+    "agent": "panopticon-panel-review",
+    "out_file": ".panopticon/findings-._7-test-panel_review.json"
+  },
+  {
+    "tag": "30-._7-test-coverage",
+    "agent": "panopticon-lens-sweep",
+    "out_file": ".panopticon/findings-._7-test-lens_sweep-coverage.json"
+  },
+  {
+    "tag": "31-._7-test-test_quality",
+    "agent": "panopticon-lens-sweep",
+    "out_file": ".panopticon/findings-._7-test-lens_sweep-test_quality.json"
+  },
+  {
+    "tag": "32-._7-security",
+    "agent": "panopticon-panel-review",
+    "out_file": ".panopticon/findings-._7-security-panel_review.json"
+  },
+  {
+    "tag": "33-._7-security-known_vulns",
+    "agent": "panopticon-lens-sweep",
+    "out_file": ".panopticon/findings-._7-security-lens_sweep-known_vulns.json"
+  },
+  {
+    "tag": "34-._7-security-injection",
+    "agent": "panopticon-lens-sweep",
+    "out_file": ".panopticon/findings-._7-security-lens_sweep-injection.json"
+  },
+  {
+    "tag": "35-._7-architecture",
+    "agent": "panopticon-panel-review",
+    "out_file": ".panopticon/findings-._7-architecture-panel_review.json"
+  },
+  {
+    "tag": "36-._7-architecture-architecture",
+    "agent": "panopticon-lens-sweep",
+    "out_file": ".panopticon/findings-._7-architecture-lens_sweep-architecture.json"
+  }
+]

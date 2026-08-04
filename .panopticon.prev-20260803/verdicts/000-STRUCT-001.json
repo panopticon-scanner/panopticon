@@ -1,0 +1,23 @@
+{
+  "finding_id": "STRUCT-001",
+  "verdict": "CONFIRMED",
+  "confidence": "LIKELY",
+  "model": "opus",
+  "reasoning": "synthesize.py is 863 lines / 28 top-level defs and genuinely spans normalization, clustering, grading, assembly, validation, rendering, serialization and CLI. Caveats: evidence/citations/HTML are already delegated out, impact is purely maintainability, so HIGH is inflated (LOW/MEDIUM fits). CWE-1176 is misapplied; CWE-1080/1120 are correct.",
+  "explored": [
+    "skill/scripts/synthesize.py",
+    "skill/scripts/evidence.py",
+    "skill/scripts/html_report.py",
+    "skill/scripts/citations.py",
+    "tests/test_synthesize.py"
+  ],
+  "references": [
+    "https://cwe.mitre.org/data/definitions/1080.html"
+  ],
+  "citations": {
+    "cwe": [
+      "CWE-1080",
+      "CWE-1120"
+    ]
+  }
+}

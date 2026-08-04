@@ -1,0 +1,3701 @@
+{
+  "meta": {
+    "target": ".",
+    "review_type": "repo",
+    "timestamp": "2026-08-04T04:47:24Z",
+    "version": "4.2.0",
+    "security_mode": "standard",
+    "models_used": [
+      {
+        "model": "claude-haiku-4-5-20251001",
+        "role": "lens_sweep",
+        "version": "4.5"
+      },
+      {
+        "model": "claude-sonnet-5",
+        "role": "panel_review",
+        "version": "sonnet-5"
+      }
+    ],
+    "tool_policy_mode": "enforced"
+  },
+  "summary": {
+    "overall_grade": "D",
+    "risk_level": "HIGH",
+    "top_issues": [
+      "Module mixes five distinct concerns without separation",
+      "Module mixes file discovery, grouping, and catalog concerns",
+      "OS command injection via unsanitized shell script construction"
+    ],
+    "gate": "FAIL",
+    "gate_policy": "confirmed_only",
+    "stats": {
+      "critical": 0,
+      "high": 5,
+      "medium": 35,
+      "low": 30,
+      "info": 2
+    },
+    "evidence_stats": {
+      "tool_confirmed": 48,
+      "advisor_confirmed": 3,
+      "corroborated": 0,
+      "needs_more_info": 0,
+      "unverified": 21,
+      "rejected": 1
+    }
+  },
+  "groups": [
+    {
+      "name": "._1",
+      "files": [
+        "CHANGELOG.md",
+        "CODEOWNERS",
+        "CONTRIBUTING.md",
+        "CONTRIBUTORS.md",
+        "DEVELOPMENT.md",
+        "Dockerfile",
+        "Dockerfile.fixtures",
+        "LICENSE",
+        "README.md",
+        "pyproject.toml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/codeql.yml",
+        ".github/workflows/docker-publish.yml",
+        ".github/workflows/security.yml",
+        "docs/superpowers/2026-08-03-calibration-fixmes.md"
+      ],
+      "panel_grades": {
+        "security": "C",
+        "redteam": "A",
+        "architecture": "A",
+        "code": "A",
+        "database": "A",
+        "test": "A"
+      },
+      "key_findings": []
+    },
+    {
+      "name": "._2",
+      "files": [
+        "docs/superpowers/plans/2026-07-25-panopticon-kimi-port.md",
+        "docs/superpowers/plans/2026-08-01-html-report-dashboard-charts.md",
+        "docs/superpowers/plans/2026-08-01-html-report.md",
+        "docs/superpowers/plans/2026-08-01-multi-model-reviewer-dispatch.md",
+        "docs/superpowers/plans/2026-08-01-scanner-ecosystem-expansion.md",
+        "docs/superpowers/plans/2026-08-01-static-analysis-phase1.md",
+        "docs/superpowers/plans/2026-08-02-local-scanner-fixture-suite.md",
+        "docs/superpowers/plans/2026-08-03-claude-code-port.md",
+        "docs/superpowers/plans/2026-08-03-epistemics-core.md",
+        "docs/superpowers/plans/2026-08-03-provenance-citation-anchoring.md",
+        "docs/superpowers/plans/2026-08-03-tool-policy-enforcement.md"
+      ],
+      "panel_grades": {
+        "security": "A",
+        "redteam": "A",
+        "architecture": "A",
+        "code": "A",
+        "database": "A",
+        "test": "A"
+      },
+      "key_findings": []
+    },
+    {
+      "name": "._3",
+      "files": [
+        "docs/superpowers/specs/2026-07-25-panopticon-kimi-port-design.md",
+        "docs/superpowers/specs/2026-08-01-html-report-dashboard-charts-design.md",
+        "docs/superpowers/specs/2026-08-01-html-report-design.md",
+        "docs/superpowers/specs/2026-08-01-multi-model-reviewer-dispatch-design.md",
+        "docs/superpowers/specs/2026-08-01-scanner-ecosystem-expansion-design.md",
+        "docs/superpowers/specs/2026-08-01-static-analysis-phase1-design.md",
+        "docs/superpowers/specs/2026-08-02-local-scanner-fixture-suite-design.md",
+        "docs/superpowers/specs/2026-08-03-bursarbuddy-calibration-corpus-design.md",
+        "docs/superpowers/specs/2026-08-03-claude-code-port-design.md",
+        "docs/superpowers/specs/2026-08-03-epistemics-core-design.md",
+        "docs/superpowers/specs/2026-08-03-host-portability-research.md",
+        "docs/superpowers/specs/2026-08-03-provenance-citation-anchoring-design.md",
+        "docs/superpowers/specs/2026-08-03-tool-policy-enforcement-design.md",
+        "skill/SKILL.md"
+      ],
+      "panel_grades": {
+        "security": "A",
+        "redteam": "A",
+        "architecture": "A",
+        "code": "A",
+        "database": "A",
+        "test": "A"
+      },
+      "key_findings": []
+    },
+    {
+      "name": "._4",
+      "files": [
+        "skill/agents/advisor.md",
+        "skill/agents/lens-sweep.md",
+        "skill/agents/panel-review.md",
+        "skill/agents/scout.md",
+        "skill/prompts/lenses.md",
+        "skill/reference/code-review-groups.example.yml",
+        "skill/reference/cwe-catalog.json",
+        "skill/reference/model-profiles.yml",
+        "skill/reference/report-schema.json",
+        "skill/reference/scope-profile-schema.json",
+        "skill/reference/security-checklists.md"
+      ],
+      "panel_grades": {
+        "security": "A",
+        "redteam": "A",
+        "architecture": "A",
+        "code": "A",
+        "database": "A",
+        "test": "A"
+      },
+      "key_findings": []
+    },
+    {
+      "name": "._5",
+      "files": [
+        "skill/scripts/_run_adapter.py",
+        "skill/scripts/citations.py",
+        "skill/scripts/depth_planner.py",
+        "skill/scripts/dispatch.py",
+        "skill/scripts/evidence.py",
+        "skill/scripts/html_report.py",
+        "skill/scripts/ingest_tools.py",
+        "skill/scripts/model_resolver.py",
+        "skill/scripts/orchestrator.py",
+        "skill/scripts/provenance.py",
+        "skill/scripts/run_fixture_tests.py",
+        "skill/scripts/run_tools.py",
+        "skill/scripts/synthesize.py"
+      ],
+      "panel_grades": {
+        "security": "D",
+        "redteam": "A",
+        "architecture": "A",
+        "code": "D",
+        "database": "A",
+        "test": "A"
+      },
+      "key_findings": [
+        "Module mixes five distinct concerns without separation",
+        "Module mixes file discovery, grouping, and catalog concerns",
+        "OS command injection via unsanitized shell script construction",
+        "Unescaped provenance.confirmation_status enables HTML attribute-injection XSS in generated reports",
+        "Self-asserted source/reinforced fields let an agent finding forge tool_confirmed evidence and bypass advisor verification"
+      ]
+    },
+    {
+      "name": "._6",
+      "files": [
+        "skill/scripts/tools/__init__.py",
+        "skill/scripts/tools/base.py",
+        "skill/scripts/tools/brakeman.py",
+        "skill/scripts/tools/bundler_audit.py",
+        "skill/scripts/tools/cargo_audit.py",
+        "skill/scripts/tools/dependency_check.py",
+        "skill/scripts/tools/eslint_security.py",
+        "skill/scripts/tools/legacy_sarif.py",
+        "skill/scripts/tools/npm_audit.py",
+        "skill/scripts/tools/osv_scanner.py",
+        "skill/scripts/tools/pip_audit.py",
+        "skill/scripts/tools/roslyn_secguard.py",
+        "skill/scripts/tools/sarif_utils.py",
+        "skill/scripts/tools/spotbugs.py"
+      ],
+      "panel_grades": {
+        "security": "C",
+        "redteam": "A",
+        "architecture": "A",
+        "code": "A",
+        "database": "A",
+        "test": "A"
+      },
+      "key_findings": []
+    },
+    {
+      "name": "._7",
+      "files": [
+        "tests/test_agent_templates.py",
+        "tests/test_assets.py",
+        "tests/test_citations.py",
+        "tests/test_depth_planner.py",
+        "tests/test_dispatch.py",
+        "tests/test_dispatch_integration.py",
+        "tests/test_dockerfile.py",
+        "tests/test_e2e.py",
+        "tests/test_evidence.py",
+        "tests/test_html_report.py",
+        "tests/test_ingest_tools.py",
+        "tests/test_model_resolver.py",
+        "tests/test_orchestrator.py",
+        "tests/test_phase1_integration.py",
+        "tests/test_provenance.py"
+      ],
+      "panel_grades": {
+        "security": "A",
+        "redteam": "A",
+        "architecture": "A",
+        "code": "A",
+        "database": "A",
+        "test": "A"
+      },
+      "key_findings": []
+    },
+    {
+      "name": "._8",
+      "files": [
+        "tests/test_run_tools.py",
+        "tests/test_schema.py",
+        "tests/test_schemas.py",
+        "tests/test_skill_md.py",
+        "tests/test_synthesize.py",
+        "tests/test_verdict_ingest.py",
+        "tests/test_verify_queue.py",
+        "tests/fixtures/manifest.json",
+        "tests/fixtures/semgrep.sarif",
+        "tests/fixtures/insecure-js/app.js",
+        "tests/fixtures/vulnerable-node/package-lock.json",
+        "tests/fixtures/vulnerable-node/package.json",
+        "tests/fixtures/vulnerable-python/requirements.txt"
+      ],
+      "panel_grades": {
+        "security": "A",
+        "redteam": "A",
+        "architecture": "A",
+        "code": "A",
+        "database": "A",
+        "test": "A"
+      },
+      "key_findings": []
+    },
+    {
+      "name": "._9",
+      "files": [
+        "tests/fixtures/vulnerable-rust/.gitignore",
+        "tests/fixtures/vulnerable-rust/Cargo.lock",
+        "tests/fixtures/vulnerable-rust/Cargo.toml",
+        "tests/fixtures/vulnerable-rust/src/main.rs",
+        "tests/goldens/lens-sweep.rendered.txt",
+        "tests/goldens/panel-review.rendered.txt",
+        "tests/goldens/scout.rendered.txt"
+      ],
+      "panel_grades": {
+        "security": "A",
+        "redteam": "A",
+        "architecture": "A",
+        "code": "A",
+        "database": "A",
+        "test": "A"
+      },
+      "key_findings": []
+    },
+    {
+      "name": "._10",
+      "files": [
+        "tests/tools/test_base.py",
+        "tests/tools/test_brakeman.py",
+        "tests/tools/test_bundler_audit.py",
+        "tests/tools/test_cargo_audit.py",
+        "tests/tools/test_csharp_integration.py",
+        "tests/tools/test_dependency_check.py",
+        "tests/tools/test_eslint_security.py",
+        "tests/tools/test_java_integration.py",
+        "tests/tools/test_legacy_sarif.py",
+        "tests/tools/test_npm_audit.py",
+        "tests/tools/test_osv_scanner.py",
+        "tests/tools/test_pip_audit.py",
+        "tests/tools/test_roslyn_secguard.py",
+        "tests/tools/test_ruby_integration.py",
+        "tests/tools/test_rust_cs_integration.py"
+      ],
+      "panel_grades": {
+        "security": "A",
+        "redteam": "A",
+        "architecture": "A",
+        "code": "A",
+        "database": "A",
+        "test": "A"
+      },
+      "key_findings": []
+    },
+    {
+      "name": "._11",
+      "files": [
+        "tests/tools/test_rust_integration.py",
+        "tests/tools/test_spotbugs.py"
+      ],
+      "panel_grades": {
+        "security": "A",
+        "redteam": "A",
+        "architecture": "A",
+        "code": "A",
+        "database": "A",
+        "test": "A"
+      },
+      "key_findings": []
+    }
+  ],
+  "findings": [
+    {
+      "id": "RUN-001",
+      "severity": "MEDIUM",
+      "panel": "code",
+      "lens": "correctness",
+      "category": "correctness",
+      "location": {
+        "file": "skill/scripts/_run_adapter.py",
+        "line_start": 16,
+        "line_end": 16,
+        "function": null
+      },
+      "title": "Missing bounds check on argv access",
+      "description": "argv[1] accessed without verifying len(argv) >= 2; bare invocation raises IndexError.",
+      "impact": "",
+      "remediation": "Guard len(argv) before access.",
+      "references": [],
+      "source_role": "lens_sweep",
+      "depth": "standard",
+      "provenance": {
+        "discovered_by": "agent:lens_sweep",
+        "expanded_by": null,
+        "confirmed_by": null,
+        "model": "claude-haiku-4-5-20251001",
+        "model_version": "4.5",
+        "confirmation_status": "UNVERIFIED",
+        "confirmation_reasoning": null
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-129",
+            "name": null,
+            "verified": false
+          }
+        ]
+      },
+      "confidence": "POSSIBLE",
+      "evidence": {
+        "status": "unverified",
+        "verified_by": null,
+        "reasoning": null,
+        "citation_quality": "minimal"
+      }
+    },
+    {
+      "id": "DEPTH-001",
+      "severity": "MEDIUM",
+      "panel": "code",
+      "lens": "correctness",
+      "category": "correctness",
+      "location": {
+        "file": "skill/scripts/depth_planner.py",
+        "line_start": 34,
+        "line_end": 34,
+        "function": null
+      },
+      "title": "Unvalidated lens['name'] access",
+      "description": "spawn and depth_threshold are guarded but 'name' is not; a lens lacking it raises KeyError.",
+      "impact": "",
+      "remediation": "Use lens.get('name') or validate.",
+      "references": [],
+      "source_role": "lens_sweep",
+      "depth": "standard",
+      "provenance": {
+        "discovered_by": "agent:lens_sweep",
+        "expanded_by": null,
+        "confirmed_by": null,
+        "model": "claude-haiku-4-5-20251001",
+        "model_version": "4.5",
+        "confirmation_status": "UNVERIFIED",
+        "confirmation_reasoning": null
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-20",
+            "name": "Improper Input Validation",
+            "verified": true
+          }
+        ],
+        "owasp": [
+          "A03:2021-Injection"
+        ]
+      },
+      "confidence": "POSSIBLE",
+      "evidence": {
+        "status": "unverified",
+        "verified_by": null,
+        "reasoning": null,
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "DISP-001",
+      "severity": "MEDIUM",
+      "panel": "code",
+      "lens": "correctness",
+      "category": "correctness",
+      "location": {
+        "file": "skill/scripts/dispatch.py",
+        "line_start": 253,
+        "line_end": 253,
+        "function": null
+      },
+      "title": "Unsafe lens['name'] in list comprehension",
+      "description": "build_plan indexes lens['name'] without validating presence.",
+      "impact": "",
+      "remediation": "Use lens.get('name').",
+      "references": [],
+      "source_role": "lens_sweep",
+      "depth": "standard",
+      "provenance": {
+        "discovered_by": "agent:lens_sweep",
+        "expanded_by": null,
+        "confirmed_by": null,
+        "model": "claude-haiku-4-5-20251001",
+        "model_version": "4.5",
+        "confirmation_status": "UNVERIFIED",
+        "confirmation_reasoning": null
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-20",
+            "name": "Improper Input Validation",
+            "verified": true
+          }
+        ],
+        "owasp": [
+          "A03:2021-Injection"
+        ]
+      },
+      "confidence": "POSSIBLE",
+      "evidence": {
+        "status": "unverified",
+        "verified_by": null,
+        "reasoning": null,
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "SYNT-001",
+      "severity": "MEDIUM",
+      "panel": "code",
+      "lens": "correctness",
+      "category": "correctness",
+      "location": {
+        "file": "skill/scripts/synthesize.py",
+        "line_start": 304,
+        "line_end": 304,
+        "function": null
+      },
+      "title": "min() on potentially empty sequence in _max_severity",
+      "description": "min(findings, key=_sev_rank) raises ValueError on an empty cluster.",
+      "impact": "",
+      "remediation": "Return 'INFO' when findings is empty.",
+      "references": [],
+      "source_role": "lens_sweep",
+      "depth": "standard",
+      "provenance": {
+        "discovered_by": "agent:lens_sweep",
+        "expanded_by": null,
+        "confirmed_by": null,
+        "model": "claude-haiku-4-5-20251001",
+        "model_version": "4.5",
+        "confirmation_status": "UNVERIFIED",
+        "confirmation_reasoning": null
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-20",
+            "name": "Improper Input Validation",
+            "verified": true
+          }
+        ],
+        "owasp": [
+          "A03:2021-Injection"
+        ]
+      },
+      "confidence": "POSSIBLE",
+      "evidence": {
+        "status": "unverified",
+        "verified_by": null,
+        "reasoning": null,
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "FIXT-001",
+      "severity": "MEDIUM",
+      "panel": "code",
+      "lens": "correctness",
+      "category": "correctness",
+      "location": {
+        "file": "skill/scripts/run_fixture_tests.py",
+        "line_start": 117,
+        "line_end": 117,
+        "function": null
+      },
+      "title": "Unvalidated manifest fixture keys",
+      "description": "fixture['name']/['language'] accessed without validating manifest structure.",
+      "impact": "",
+      "remediation": "Use .get() with defaults or validate the manifest.",
+      "references": [],
+      "source_role": "lens_sweep",
+      "depth": "standard",
+      "provenance": {
+        "discovered_by": "agent:lens_sweep",
+        "expanded_by": null,
+        "confirmed_by": null,
+        "model": "claude-haiku-4-5-20251001",
+        "model_version": "4.5",
+        "confirmation_status": "UNVERIFIED",
+        "confirmation_reasoning": null
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-20",
+            "name": "Improper Input Validation",
+            "verified": true
+          }
+        ],
+        "owasp": [
+          "A03:2021-Injection"
+        ]
+      },
+      "confidence": "POSSIBLE",
+      "evidence": {
+        "status": "unverified",
+        "verified_by": null,
+        "reasoning": null,
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "STRUCT-001",
+      "severity": "HIGH",
+      "panel": "code",
+      "lens": "structure",
+      "category": "structure",
+      "location": {
+        "file": "skill/scripts/synthesize.py",
+        "line_start": 1,
+        "line_end": 1,
+        "function": null
+      },
+      "title": "Module mixes five distinct concerns without separation",
+      "description": "synthesize.py (864 lines) conflates normalization, dedupe, evidence derivation, report building/validation, and serialization across 27 functions.",
+      "impact": "",
+      "remediation": "Decompose into finding_processing / report_builder / report_validator / output_handler modules.",
+      "references": [
+        "https://cwe.mitre.org/data/definitions/1080.html"
+      ],
+      "source_role": "lens_sweep",
+      "depth": "standard",
+      "provenance": {
+        "discovered_by": "agent:lens_sweep",
+        "expanded_by": null,
+        "confirmed_by": "agent:advisor",
+        "model": "claude-haiku-4-5-20251001",
+        "model_version": "4.5",
+        "confirmation_status": "CONFIRMED",
+        "confirmation_reasoning": "synthesize.py is 863 lines / 28 top-level defs and genuinely spans normalization, clustering, grading, assembly, validation, rendering, serialization and CLI. Caveats: evidence/citations/HTML are already delegated out, impact is purely maintainability, so HIGH is inflated (LOW/MEDIUM fits). CWE-1176 is misapplied; CWE-1080/1120 are correct.",
+        "confirmed_by_model": "opus"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-1176",
+            "name": null,
+            "verified": false
+          }
+        ]
+      },
+      "confidence": "POSSIBLE",
+      "evidence": {
+        "status": "advisor_confirmed",
+        "verified_by": "agent:advisor",
+        "reasoning": "synthesize.py is 863 lines / 28 top-level defs and genuinely spans normalization, clustering, grading, assembly, validation, rendering, serialization and CLI. Caveats: evidence/citations/HTML are already delegated out, impact is purely maintainability, so HIGH is inflated (LOW/MEDIUM fits). CWE-1176 is misapplied; CWE-1080/1120 are correct.",
+        "citation_quality": "minimal"
+      }
+    },
+    {
+      "id": "STRUCT-002",
+      "severity": "HIGH",
+      "panel": "code",
+      "lens": "structure",
+      "category": "structure",
+      "location": {
+        "file": "skill/scripts/orchestrator.py",
+        "line_start": 1,
+        "line_end": 1,
+        "function": null
+      },
+      "title": "Module mixes file discovery, grouping, and catalog concerns",
+      "description": "orchestrator.py (574 lines) combines discovery, group/panel computation, a 65-line YAML parser, and CLI orchestration.",
+      "impact": "",
+      "remediation": "Split into file_discovery / catalog / panel_config modules.",
+      "references": [],
+      "source_role": "lens_sweep",
+      "depth": "standard",
+      "provenance": {
+        "discovered_by": "agent:lens_sweep",
+        "expanded_by": null,
+        "confirmed_by": "agent:advisor",
+        "model": "claude-haiku-4-5-20251001",
+        "model_version": "4.5",
+        "confirmation_status": "CONFIRMED",
+        "confirmation_reasoning": "orchestrator.py is 574 lines holding discovery, grouping/panel/depth logic, a 65-line hand-rolled YAML fallback parser, and CLI. But HIGH is unsupported: no correctness or security impact, functions are small, and the fallback parser exists because the module is deliberately stdlib-only. Treat as LOW/INFO maintainability. CWE-1176 mis-assigned.",
+        "confirmed_by_model": "opus"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-1176",
+            "name": null,
+            "verified": false
+          }
+        ]
+      },
+      "confidence": "POSSIBLE",
+      "evidence": {
+        "status": "advisor_confirmed",
+        "verified_by": "agent:advisor",
+        "reasoning": "orchestrator.py is 574 lines holding discovery, grouping/panel/depth logic, a 65-line hand-rolled YAML fallback parser, and CLI. But HIGH is unsupported: no correctness or security impact, functions are small, and the fallback parser exists because the module is deliberately stdlib-only. Treat as LOW/INFO maintainability. CWE-1176 mis-assigned.",
+        "citation_quality": "minimal"
+      }
+    },
+    {
+      "id": "STYLE-003",
+      "severity": "INFO",
+      "panel": "code",
+      "category": "style",
+      "location": {
+        "file": "skill/scripts/orchestrator.py",
+        "line_start": 1,
+        "line_end": 1,
+        "function": null
+      },
+      "title": "Filename 'orchestrator.py' collides with 'the orchestrator' used elsewhere for the pipeline agent",
+      "description": "Module is a target resolver; SKILL.md uses 'orchestrator' for the pipeline-driving agent.",
+      "impact": "",
+      "remediation": "Rename to target_resolver.py or clarify scope in the docstring.",
+      "references": [],
+      "source_role": "panel_review",
+      "confidence": "LIKELY",
+      "depth": "standard",
+      "provenance": {
+        "discovered_by": "agent:panel_review",
+        "expanded_by": null,
+        "confirmed_by": null,
+        "model": "claude-sonnet-5",
+        "model_version": "sonnet-5",
+        "confirmation_status": "UNVERIFIED",
+        "confirmation_reasoning": null
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-1099",
+            "name": null,
+            "verified": false
+          }
+        ]
+      },
+      "evidence": {
+        "status": "unverified",
+        "verified_by": null,
+        "reasoning": null,
+        "citation_quality": "minimal"
+      }
+    },
+    {
+      "id": "STRUCT-003",
+      "severity": "MEDIUM",
+      "panel": "code",
+      "lens": "structure",
+      "category": "structure",
+      "location": {
+        "file": "skill/scripts/synthesize.py",
+        "line_start": 203,
+        "line_end": 203,
+        "function": null
+      },
+      "title": "dedupe() exceeds complexity threshold",
+      "description": "90 lines, nested clustering loops, cyclomatic complexity ~12; _reinforce_merge shared with cross_panel_corroboration creates hidden coupling.",
+      "impact": "",
+      "remediation": "Extract _cluster_by_locus / _process_two_way_cluster / _process_multiway_cluster.",
+      "references": [],
+      "source_role": "lens_sweep",
+      "depth": "standard",
+      "provenance": {
+        "discovered_by": "agent:lens_sweep",
+        "expanded_by": null,
+        "confirmed_by": null,
+        "model": "claude-haiku-4-5-20251001",
+        "model_version": "4.5",
+        "confirmation_status": "UNVERIFIED",
+        "confirmation_reasoning": null
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-1120",
+            "name": null,
+            "verified": false
+          }
+        ]
+      },
+      "confidence": "POSSIBLE",
+      "evidence": {
+        "status": "unverified",
+        "verified_by": null,
+        "reasoning": null,
+        "citation_quality": "minimal"
+      }
+    },
+    {
+      "id": "STRUCT-004",
+      "severity": "MEDIUM",
+      "panel": "code",
+      "lens": "structure",
+      "category": "structure",
+      "location": {
+        "file": "skill/scripts/synthesize.py",
+        "line_start": 307,
+        "line_end": 307,
+        "function": null
+      },
+      "title": "cross_panel_corroboration() nested closure, high cognitive load",
+      "description": "71 lines with nested _panels_related() and 3-level nesting mixing window logic and panel matching.",
+      "impact": "",
+      "remediation": "Hoist _panels_related to module level; extract _group_by_locus.",
+      "references": [],
+      "source_role": "lens_sweep",
+      "depth": "standard",
+      "provenance": {
+        "discovered_by": "agent:lens_sweep",
+        "expanded_by": null,
+        "confirmed_by": null,
+        "model": "claude-haiku-4-5-20251001",
+        "model_version": "4.5",
+        "confirmation_status": "UNVERIFIED",
+        "confirmation_reasoning": null
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-1120",
+            "name": null,
+            "verified": false
+          }
+        ]
+      },
+      "confidence": "POSSIBLE",
+      "evidence": {
+        "status": "unverified",
+        "verified_by": null,
+        "reasoning": null,
+        "citation_quality": "minimal"
+      }
+    },
+    {
+      "id": "STRUCT-005",
+      "severity": "MEDIUM",
+      "panel": "code",
+      "lens": "structure",
+      "category": "structure",
+      "location": {
+        "file": "skill/scripts/synthesize.py",
+        "line_start": 111,
+        "line_end": 111,
+        "function": null
+      },
+      "title": "_sev_rank/_conf_rank duplicate evidence.py; SEV_ORDER defined twice",
+      "description": "synthesize.py:111-124 near-duplicates evidence.sev_rank; SEV_ORDER at synthesize.py:26 and evidence.py:14.",
+      "impact": "",
+      "remediation": "Import from evidence; move _conf_rank there.",
+      "references": [],
+      "source_role": "lens_sweep",
+      "depth": "standard",
+      "provenance": {
+        "discovered_by": "agent:lens_sweep",
+        "expanded_by": null,
+        "confirmed_by": null,
+        "model": "claude-haiku-4-5-20251001",
+        "model_version": "4.5",
+        "confirmation_status": "UNVERIFIED",
+        "confirmation_reasoning": null
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-1170",
+            "name": null,
+            "verified": false
+          }
+        ]
+      },
+      "confidence": "POSSIBLE",
+      "evidence": {
+        "status": "unverified",
+        "verified_by": null,
+        "reasoning": null,
+        "citation_quality": "minimal"
+      }
+    },
+    {
+      "id": "STRUCT-006",
+      "severity": "MEDIUM",
+      "panel": "code",
+      "lens": "structure",
+      "category": "structure",
+      "location": {
+        "file": "skill/scripts/synthesize.py",
+        "line_start": 713,
+        "line_end": 713,
+        "function": null
+      },
+      "title": "main() 147 lines with 6 mode branches",
+      "description": "CLI parsing tightly coupled to execution across compare/groups/tools-dir/verify modes.",
+      "impact": "",
+      "remediation": "Extract per-mode handlers; dispatch table.",
+      "references": [],
+      "source_role": "lens_sweep",
+      "depth": "standard",
+      "provenance": {
+        "discovered_by": "agent:lens_sweep",
+        "expanded_by": null,
+        "confirmed_by": null,
+        "model": "claude-haiku-4-5-20251001",
+        "model_version": "4.5",
+        "confirmation_status": "UNVERIFIED",
+        "confirmation_reasoning": null
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-1120",
+            "name": null,
+            "verified": false
+          }
+        ]
+      },
+      "confidence": "POSSIBLE",
+      "evidence": {
+        "status": "unverified",
+        "verified_by": null,
+        "reasoning": null,
+        "citation_quality": "minimal"
+      }
+    },
+    {
+      "id": "STRUCT-007",
+      "severity": "MEDIUM",
+      "panel": "code",
+      "lens": "structure",
+      "category": "structure",
+      "location": {
+        "file": "skill/scripts/orchestrator.py",
+        "line_start": 214,
+        "line_end": 214,
+        "function": null
+      },
+      "title": "_parse_catalog_yaml implicit state machine",
+      "description": "65 lines, 4 nesting levels, indentation-driven state tracking; raises on any unrecognized line.",
+      "impact": "",
+      "remediation": "Prefer PyYAML when available; make the fallback an explicit state machine.",
+      "references": [],
+      "source_role": "lens_sweep",
+      "depth": "standard",
+      "provenance": {
+        "discovered_by": "agent:lens_sweep",
+        "expanded_by": null,
+        "confirmed_by": null,
+        "model": "claude-haiku-4-5-20251001",
+        "model_version": "4.5",
+        "confirmation_status": "UNVERIFIED",
+        "confirmation_reasoning": null
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-1120",
+            "name": null,
+            "verified": false
+          }
+        ]
+      },
+      "confidence": "POSSIBLE",
+      "evidence": {
+        "status": "unverified",
+        "verified_by": null,
+        "reasoning": null,
+        "citation_quality": "minimal"
+      }
+    },
+    {
+      "id": "STRUCT-008",
+      "severity": "MEDIUM",
+      "panel": "code",
+      "lens": "structure",
+      "category": "structure",
+      "location": {
+        "file": "skill/scripts/dispatch.py",
+        "line_start": 1,
+        "line_end": 1,
+        "function": null
+      },
+      "title": "dispatch.py combines template parsing, rendering, and agent emission",
+      "description": "Three concerns plus hardcoded EMIT_MODEL_POLICY and intertwined CLI.",
+      "impact": "",
+      "remediation": "Split template_parser / prompt_renderer / agent_emitter; move policy to model_resolver.",
+      "references": [],
+      "source_role": "lens_sweep",
+      "depth": "standard",
+      "provenance": {
+        "discovered_by": "agent:lens_sweep",
+        "expanded_by": null,
+        "confirmed_by": null,
+        "model": "claude-haiku-4-5-20251001",
+        "model_version": "4.5",
+        "confirmation_status": "UNVERIFIED",
+        "confirmation_reasoning": null
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-1176",
+            "name": null,
+            "verified": false
+          }
+        ]
+      },
+      "confidence": "POSSIBLE",
+      "evidence": {
+        "status": "unverified",
+        "verified_by": null,
+        "reasoning": null,
+        "citation_quality": "minimal"
+      }
+    },
+    {
+      "id": "STRUCT-009",
+      "severity": "LOW",
+      "panel": "code",
+      "lens": "structure",
+      "category": "structure",
+      "location": {
+        "file": "skill/scripts/run_tools.py",
+        "line_start": 115,
+        "line_end": 115,
+        "function": null
+      },
+      "title": "Duplicated Docker invocation setup between tool paths",
+      "description": "Legacy SARIF and adapter paths repeat docker cmd build, timeout, and stderr handling.",
+      "impact": "",
+      "remediation": "Extract _run_docker_tool(cmd, name, timeout).",
+      "references": [],
+      "source_role": "lens_sweep",
+      "depth": "standard",
+      "provenance": {
+        "discovered_by": "agent:lens_sweep",
+        "expanded_by": null,
+        "confirmed_by": null,
+        "model": "claude-haiku-4-5-20251001",
+        "model_version": "4.5",
+        "confirmation_status": "UNVERIFIED",
+        "confirmation_reasoning": null
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-1170",
+            "name": null,
+            "verified": false
+          }
+        ]
+      },
+      "confidence": "POSSIBLE",
+      "evidence": {
+        "status": "unverified",
+        "verified_by": null,
+        "reasoning": null,
+        "citation_quality": "minimal"
+      }
+    },
+    {
+      "id": "STYLE-001",
+      "severity": "LOW",
+      "panel": "code",
+      "category": "style",
+      "location": {
+        "file": "skill/scripts/depth_planner.py",
+        "line_start": 8,
+        "line_end": 8,
+        "function": null
+      },
+      "title": "Misleading helper name _depth_gte actually computes lens_depth <= panel_depth",
+      "description": "Name documents the opposite comparison direction from the body; call site depends on the inverted meaning.",
+      "impact": "",
+      "remediation": "Rename to _meets_depth_threshold or invert body; add a docstring stating direction.",
+      "references": [],
+      "source_role": "panel_review",
+      "confidence": "LIKELY",
+      "depth": "standard",
+      "provenance": {
+        "discovered_by": "agent:panel_review",
+        "expanded_by": null,
+        "confirmed_by": null,
+        "model": "claude-sonnet-5",
+        "model_version": "sonnet-5",
+        "confirmation_status": "UNVERIFIED",
+        "confirmation_reasoning": null
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-1099",
+            "name": null,
+            "verified": false
+          }
+        ]
+      },
+      "evidence": {
+        "status": "unverified",
+        "verified_by": null,
+        "reasoning": null,
+        "citation_quality": "minimal"
+      }
+    },
+    {
+      "id": "STYLE-002",
+      "severity": "LOW",
+      "panel": "code",
+      "category": "style",
+      "location": {
+        "file": "skill/scripts/orchestrator.py",
+        "line_start": 136,
+        "line_end": 136,
+        "function": null
+      },
+      "title": "collect_changed_files breaks the codebase's diagnostic/noqa convention for broad excepts",
+      "description": "Four bare except Exception blocks swallow errors with no stderr diagnostic and no # noqa: BLE001, unlike every sibling module.",
+      "impact": "",
+      "remediation": "Log a diagnostic and annotate with # noqa: BLE001 - reason.",
+      "references": [],
+      "source_role": "panel_review",
+      "confidence": "CERTAIN",
+      "depth": "standard",
+      "provenance": {
+        "discovered_by": "agent:panel_review",
+        "expanded_by": null,
+        "confirmed_by": null,
+        "model": "claude-sonnet-5",
+        "model_version": "sonnet-5",
+        "confirmation_status": "UNVERIFIED",
+        "confirmation_reasoning": null
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-1078",
+            "name": null,
+            "verified": false
+          }
+        ]
+      },
+      "reinforced": true,
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool+agent",
+        "reasoning": "Same locus reported independently by a tool and an agent",
+        "citation_quality": "minimal"
+      }
+    },
+    {
+      "id": "STYLE-004",
+      "severity": "LOW",
+      "panel": "code",
+      "category": "style",
+      "location": {
+        "file": "skill/scripts/run_tools.py",
+        "line_start": 94,
+        "line_end": 94,
+        "function": null
+      },
+      "title": "Mixed f-string and %-formatting for near-identical diagnostics in one file",
+      "description": "run_adapters uses f-strings; run_tools uses % for the same message category.",
+      "impact": "",
+      "remediation": "Normalize on the file's majority %-style.",
+      "references": [],
+      "source_role": "panel_review",
+      "confidence": "CERTAIN",
+      "depth": "standard",
+      "provenance": {
+        "discovered_by": "agent:panel_review",
+        "expanded_by": null,
+        "confirmed_by": null,
+        "model": "claude-sonnet-5",
+        "model_version": "sonnet-5",
+        "confirmation_status": "UNVERIFIED",
+        "confirmation_reasoning": null
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-1078",
+            "name": null,
+            "verified": false
+          }
+        ]
+      },
+      "evidence": {
+        "status": "unverified",
+        "verified_by": null,
+        "reasoning": null,
+        "citation_quality": "minimal"
+      }
+    },
+    {
+      "id": "STYLE-005",
+      "severity": "INFO",
+      "panel": "code",
+      "category": "style",
+      "location": {
+        "file": "skill/scripts/run_tools.py",
+        "line_start": 88,
+        "line_end": 88,
+        "function": null
+      },
+      "title": "Partial type-hint adoption (2 of 7 functions)",
+      "description": "No __future__ annotations import; only select_adapters and run_adapters annotated.",
+      "impact": "",
+      "remediation": "Annotate the module's public functions or drop the partial hints.",
+      "references": [],
+      "source_role": "panel_review",
+      "confidence": "CERTAIN",
+      "depth": "standard",
+      "provenance": {
+        "discovered_by": "agent:panel_review",
+        "expanded_by": null,
+        "confirmed_by": null,
+        "model": "claude-sonnet-5",
+        "model_version": "sonnet-5",
+        "confirmation_status": "UNVERIFIED",
+        "confirmation_reasoning": null
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-1078",
+            "name": null,
+            "verified": false
+          }
+        ]
+      },
+      "evidence": {
+        "status": "unverified",
+        "verified_by": null,
+        "reasoning": null,
+        "citation_quality": "minimal"
+      }
+    },
+    {
+      "id": "STYLE-006",
+      "severity": "LOW",
+      "panel": "code",
+      "category": "style",
+      "location": {
+        "file": "skill/scripts/synthesize.py",
+        "line_start": 83,
+        "line_end": 83,
+        "function": null
+      },
+      "title": "Five different stderr diagnostic prefix conventions in one module",
+      "description": "Bare category words, module-tagged lowercase, bare ERROR:, WARN:/SCHEMA: tags, and unprefixed prints coexist.",
+      "impact": "",
+      "remediation": "Standardize on 'synthesize: <message>'.",
+      "references": [],
+      "source_role": "panel_review",
+      "confidence": "CERTAIN",
+      "depth": "standard",
+      "provenance": {
+        "discovered_by": "agent:panel_review",
+        "expanded_by": null,
+        "confirmed_by": null,
+        "model": "claude-sonnet-5",
+        "model_version": "sonnet-5",
+        "confirmation_status": "UNVERIFIED",
+        "confirmation_reasoning": null
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-1078",
+            "name": null,
+            "verified": false
+          }
+        ]
+      },
+      "evidence": {
+        "status": "unverified",
+        "verified_by": null,
+        "reasoning": null,
+        "citation_quality": "minimal"
+      }
+    },
+    {
+      "id": "STYLE-007",
+      "severity": "MEDIUM",
+      "panel": "code",
+      "category": "style",
+      "location": {
+        "file": "skill/scripts/synthesize.py",
+        "line_start": 26,
+        "line_end": 26,
+        "function": null
+      },
+      "title": "SEV_ORDER and its rank helper hand-duplicated across evidence.py, synthesize.py, html_report.py",
+      "description": "Three independent copies drive grading, gating, and HTML buckets; synthesize already imports evidence_mod but redefines both.",
+      "impact": "",
+      "remediation": "Single-source SEV_ORDER/sev_rank in evidence.py and import it.",
+      "references": [],
+      "source_role": "panel_review",
+      "confidence": "CERTAIN",
+      "depth": "standard",
+      "provenance": {
+        "discovered_by": "agent:panel_review",
+        "expanded_by": null,
+        "confirmed_by": null,
+        "model": "claude-sonnet-5",
+        "model_version": "sonnet-5",
+        "confirmation_status": "UNVERIFIED",
+        "confirmation_reasoning": null
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-1041",
+            "name": null,
+            "verified": false
+          }
+        ]
+      },
+      "evidence": {
+        "status": "unverified",
+        "verified_by": null,
+        "reasoning": null,
+        "citation_quality": "minimal"
+      }
+    },
+    {
+      "id": "INJ-001",
+      "severity": "HIGH",
+      "panel": "security",
+      "lens": "injection",
+      "category": "injection",
+      "location": {
+        "file": "skill/scripts/run_fixture_tests.py",
+        "line_start": 53,
+        "line_end": 58,
+        "function": "check_fixtures"
+      },
+      "title": "OS command injection via unsanitized shell script construction",
+      "description": "check_fixtures builds a shell script by f-string interpolating manifest paths into 'if [ -d \"{p}\" ]...' and runs it via sh -c. Paths containing shell metacharacters execute as commands.",
+      "impact": "An attacker able to modify tests/fixtures/manifest.json executes arbitrary commands in the container context.",
+      "remediation": "shlex.quote() the paths, or drop the shell entirely and pass a list argv (e.g. ['test','-d',p]).",
+      "references": [
+        "https://cwe.mitre.org/data/definitions/78.html",
+        "https://owasp.org/www-community/attacks/Command_Injection"
+      ],
+      "source_role": "lens_sweep",
+      "depth": "standard",
+      "provenance": {
+        "discovered_by": "agent:lens_sweep",
+        "expanded_by": null,
+        "confirmed_by": "agent:advisor",
+        "model": "claude-haiku-4-5-20251001",
+        "model_version": "4.5",
+        "confirmation_status": "CONFIRMED",
+        "confirmation_reasoning": "Lines 52-58 interpolate manifest paths into 'if [ -d \"{p}\" ]' passed to sh -c; a path containing '\"; id; #' escapes and executes. Sink is real and unsanitized. Severity caveat: the only source is a repo-committed file (attacker needs commit access) and execution lands in an ephemeral --rm container with no mounts. Remediation correct.",
+        "confirmed_by_model": "opus"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-78",
+            "name": "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')",
+            "verified": true
+          },
+          {
+            "id": "CWE-94",
+            "name": "Improper Control of Generation of Code ('Code Injection')",
+            "verified": true
+          }
+        ],
+        "owasp": [
+          "A03:2021-Injection"
+        ]
+      },
+      "confidence": "POSSIBLE",
+      "evidence": {
+        "status": "advisor_confirmed",
+        "verified_by": "agent:advisor",
+        "reasoning": "Lines 52-58 interpolate manifest paths into 'if [ -d \"{p}\" ]' passed to sh -c; a path containing '\"; id; #' escapes and executes. Sink is real and unsanitized. Severity caveat: the only source is a repo-committed file (attacker needs commit access) and execution lands in an ephemeral --rm container with no mounts. Remediation correct.",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "SEC-101",
+      "severity": "HIGH",
+      "panel": "security",
+      "category": "novel",
+      "location": {
+        "file": "skill/scripts/html_report.py",
+        "line_start": 308,
+        "line_end": 318,
+        "function": "_render_provenance"
+      },
+      "title": "Unescaped provenance.confirmation_status enables HTML attribute-injection XSS in generated reports",
+      "description": "_render_provenance interpolates provenance.confirmation_status into a single-quoted class attribute with only .lower()/.replace() applied, bypassing the module's _escape(). The value is agent-authored; normalize_finding never touches provenance and validate_report only checks the derived evidence.status. The report-schema enum on this field is never enforced (no jsonschema import anywhere in scripts/).",
+      "impact": "A prompt-injected reviewer can emit a confirmation_status that breaks out of the attribute, giving stored XSS in the HTML report when a developer or CI dashboard opens it. A non-string value also crashes report generation via AttributeError.",
+      "remediation": "Escape and coerce: _escape(re.sub(r'[^a-z0-9-]','-',str(status).lower())), or validate against the enum with a safe default. More broadly, actually enforce report-schema.json before rendering.",
+      "references": [
+        "https://owasp.org/www-community/attacks/xss/"
+      ],
+      "source_role": "panel_review",
+      "confidence": "LIKELY",
+      "depth": "standard",
+      "provenance": {
+        "discovered_by": "agent:panel_review",
+        "expanded_by": null,
+        "confirmed_by": null,
+        "model": "claude-sonnet-5",
+        "model_version": null,
+        "confirmation_status": "UNVERIFIED",
+        "confirmation_reasoning": null
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-79",
+            "name": "Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')",
+            "verified": true
+          }
+        ],
+        "owasp": [
+          "A03:2021-Injection"
+        ]
+      },
+      "cvss": {
+        "score": 6.1,
+        "vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:R/S:C/C:L/I:L/A:N"
+      },
+      "exploit_scenario": "Injection payload in a reviewed diff manipulates the reviewer into emitting confirmation_status containing an img onerror; the payload executes when the HTML report is opened.",
+      "evidence": {
+        "status": "unverified",
+        "verified_by": null,
+        "reasoning": null,
+        "citation_quality": "full"
+      }
+    },
+    {
+      "id": "SEC-102",
+      "severity": "HIGH",
+      "panel": "security",
+      "category": "novel",
+      "location": {
+        "file": "skill/scripts/evidence.py",
+        "line_start": 21,
+        "line_end": 120,
+        "function": "derive_evidence"
+      },
+      "title": "Self-asserted source/reinforced fields let an agent finding forge tool_confirmed evidence and bypass advisor verification",
+      "description": "evidence.py deliberately ignores self-asserted provenance.confirmation_status, but is_tool_sourced() trusts finding['source'] \u2014 an ordinary JSON key the reviewing agent fully controls (its instructed field is source_role). derive_evidence returns tool_confirmed for it; build_verify_queue excludes tool-sourced AND reinforced findings from verification; normalize_finding/load_findings never strip either key; citations.enrich_citations also marks unrecognized CWEs verified:true for self-claimed tool sources.",
+      "impact": "A hallucinating or prompt-injected reviewer grants its own claim the pipeline's highest trust tier, skipping verification, becoming gate-eligible (able to fail CI on a clean change), and fabricating 'verified' citations \u2014 defeating the anti-self-assertion design via an unprotected equivalent field.",
+      "remediation": "Never derive trust from a field the payload can set: have load_findings pop 'source'/'reinforced' from agent-authored findings immediately after parsing, and let only ingest_tools and dedupe's real merge branches set them.",
+      "references": [
+        "https://cwe.mitre.org/data/definitions/345.html",
+        "https://owasp.org/Top10/A08_2021-Software_and_Data_Integrity_Failures/"
+      ],
+      "source_role": "panel_review",
+      "confidence": "LIKELY",
+      "depth": "standard",
+      "provenance": {
+        "discovered_by": "agent:panel_review",
+        "expanded_by": null,
+        "confirmed_by": null,
+        "model": "claude-sonnet-5",
+        "model_version": null,
+        "confirmation_status": "UNVERIFIED",
+        "confirmation_reasoning": null
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-345",
+            "name": null,
+            "verified": false
+          },
+          {
+            "id": "CWE-290",
+            "name": null,
+            "verified": false
+          }
+        ]
+      },
+      "cvss": {
+        "score": 6.5,
+        "vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:C/C:N/I:H/A:N"
+      },
+      "exploit_scenario": "An injected reviewer emits source:'tool:bandit' with severity CRITICAL on a harmless line; it is marked tool_confirmed, never verified, and fails CI with the authority of a real scanner.",
+      "evidence": {
+        "status": "unverified",
+        "verified_by": null,
+        "reasoning": null,
+        "citation_quality": "minimal"
+      }
+    },
+    {
+      "id": "SEC-103",
+      "severity": "MEDIUM",
+      "panel": "security",
+      "category": "novel",
+      "location": {
+        "file": "skill/scripts/run_fixture_tests.py",
+        "line_start": 47,
+        "line_end": 58,
+        "function": "check_fixtures"
+      },
+      "title": "Unsanitized fixture paths interpolated into a sh -c shell script (command injection)",
+      "description": "check_fixtures f-string-interpolates manifest 'path' values into a combined shell script passed to docker run ... sh -c, with no shlex.quote. Any path containing a quote, backtick, $() or ; injects commands executed inside the fixtures container.",
+      "impact": "tests/fixtures/manifest.json is PR-modifiable; a malicious entry achieves arbitrary command execution in the container a maintainer or CI spins up.",
+      "remediation": "Run one argv-list docker invocation per fixture (no shell), or shlex.quote every path.",
+      "references": [
+        "https://cwe.mitre.org/data/definitions/78.html"
+      ],
+      "source_role": "panel_review",
+      "confidence": "LIKELY",
+      "depth": "standard",
+      "provenance": {
+        "discovered_by": "agent:panel_review",
+        "expanded_by": null,
+        "confirmed_by": null,
+        "model": "claude-sonnet-5",
+        "model_version": null,
+        "confirmation_status": "UNVERIFIED",
+        "confirmation_reasoning": null
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-78",
+            "name": "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')",
+            "verified": true
+          }
+        ],
+        "owasp": [
+          "A03:2021-Injection"
+        ]
+      },
+      "evidence": {
+        "status": "unverified",
+        "verified_by": null,
+        "reasoning": null,
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "BN-001",
+      "title": "Try, Except, Continue detected.",
+      "severity": "LOW",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "B112",
+      "source": "tool:bandit",
+      "location": {
+        "file": "skill/scripts/citations.py",
+        "line_start": 170,
+        "line_end": 170,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:bandit",
+        "expanded_by": null,
+        "confirmed_by": "tool:bandit",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "B112"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-703",
+            "name": null,
+            "verified": true
+          }
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:bandit",
+        "reasoning": "B112",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "BN-002",
+      "title": "Possible hardcoded password: 'gate-pass'",
+      "severity": "LOW",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "B105",
+      "source": "tool:bandit",
+      "location": {
+        "file": "skill/scripts/html_report.py",
+        "line_start": 299,
+        "line_end": 299,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:bandit",
+        "expanded_by": null,
+        "confirmed_by": "tool:bandit",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "B105"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-259",
+            "name": null,
+            "verified": true
+          }
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:bandit",
+        "reasoning": "B105",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "BN-003",
+      "title": "Consider possible security implications associated with the subprocess module.",
+      "severity": "LOW",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "B404",
+      "source": "tool:bandit",
+      "location": {
+        "file": "skill/scripts/orchestrator.py",
+        "line_start": 11,
+        "line_end": 11,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:bandit",
+        "expanded_by": null,
+        "confirmed_by": "tool:bandit",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "B404"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-78",
+            "name": "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')",
+            "verified": true
+          }
+        ],
+        "owasp": [
+          "A03:2021-Injection"
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:bandit",
+        "reasoning": "B404",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "BN-004",
+      "title": "Starting a process with a partial executable path",
+      "severity": "LOW",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "B607",
+      "source": "tool:bandit",
+      "location": {
+        "file": "skill/scripts/orchestrator.py",
+        "line_start": 129,
+        "line_end": 129,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:bandit",
+        "expanded_by": null,
+        "confirmed_by": "tool:bandit",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "B607"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-78",
+            "name": "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')",
+            "verified": true
+          }
+        ],
+        "owasp": [
+          "A03:2021-Injection"
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:bandit",
+        "reasoning": "B607",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "BN-005",
+      "title": "subprocess call - check for execution of untrusted input.",
+      "severity": "LOW",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "B603",
+      "source": "tool:bandit",
+      "location": {
+        "file": "skill/scripts/orchestrator.py",
+        "line_start": 129,
+        "line_end": 129,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:bandit",
+        "expanded_by": null,
+        "confirmed_by": "tool:bandit",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "B603"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-78",
+            "name": "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')",
+            "verified": true
+          }
+        ],
+        "owasp": [
+          "A03:2021-Injection"
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:bandit",
+        "reasoning": "B603",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "BN-007",
+      "title": "Starting a process with a partial executable path",
+      "severity": "LOW",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "B607",
+      "source": "tool:bandit",
+      "location": {
+        "file": "skill/scripts/orchestrator.py",
+        "line_start": 140,
+        "line_end": 140,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:bandit",
+        "expanded_by": null,
+        "confirmed_by": "tool:bandit",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "B607"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-78",
+            "name": "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')",
+            "verified": true
+          }
+        ],
+        "owasp": [
+          "A03:2021-Injection"
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:bandit",
+        "reasoning": "B607",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "BN-008",
+      "title": "subprocess call - check for execution of untrusted input.",
+      "severity": "LOW",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "B603",
+      "source": "tool:bandit",
+      "location": {
+        "file": "skill/scripts/orchestrator.py",
+        "line_start": 140,
+        "line_end": 140,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:bandit",
+        "expanded_by": null,
+        "confirmed_by": "tool:bandit",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "B603"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-78",
+            "name": "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')",
+            "verified": true
+          }
+        ],
+        "owasp": [
+          "A03:2021-Injection"
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:bandit",
+        "reasoning": "B603",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "BN-009",
+      "title": "Starting a process with a partial executable path",
+      "severity": "LOW",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "B607",
+      "source": "tool:bandit",
+      "location": {
+        "file": "skill/scripts/orchestrator.py",
+        "line_start": 149,
+        "line_end": 149,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:bandit",
+        "expanded_by": null,
+        "confirmed_by": "tool:bandit",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "B607"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-78",
+            "name": "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')",
+            "verified": true
+          }
+        ],
+        "owasp": [
+          "A03:2021-Injection"
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:bandit",
+        "reasoning": "B607",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "BN-010",
+      "title": "subprocess call - check for execution of untrusted input.",
+      "severity": "LOW",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "B603",
+      "source": "tool:bandit",
+      "location": {
+        "file": "skill/scripts/orchestrator.py",
+        "line_start": 149,
+        "line_end": 149,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:bandit",
+        "expanded_by": null,
+        "confirmed_by": "tool:bandit",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "B603"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-78",
+            "name": "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')",
+            "verified": true
+          }
+        ],
+        "owasp": [
+          "A03:2021-Injection"
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:bandit",
+        "reasoning": "B603",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "BN-011",
+      "title": "Starting a process with a partial executable path",
+      "severity": "LOW",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "B607",
+      "source": "tool:bandit",
+      "location": {
+        "file": "skill/scripts/orchestrator.py",
+        "line_start": 161,
+        "line_end": 161,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:bandit",
+        "expanded_by": null,
+        "confirmed_by": "tool:bandit",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "B607"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-78",
+            "name": "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')",
+            "verified": true
+          }
+        ],
+        "owasp": [
+          "A03:2021-Injection"
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:bandit",
+        "reasoning": "B607",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "BN-012",
+      "title": "subprocess call - check for execution of untrusted input.",
+      "severity": "LOW",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "B603",
+      "source": "tool:bandit",
+      "location": {
+        "file": "skill/scripts/orchestrator.py",
+        "line_start": 161,
+        "line_end": 161,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:bandit",
+        "expanded_by": null,
+        "confirmed_by": "tool:bandit",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "B603"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-78",
+            "name": "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')",
+            "verified": true
+          }
+        ],
+        "owasp": [
+          "A03:2021-Injection"
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:bandit",
+        "reasoning": "B603",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "BN-013",
+      "title": "Try, Except, Pass detected.",
+      "severity": "LOW",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "B110",
+      "source": "tool:bandit",
+      "location": {
+        "file": "skill/scripts/orchestrator.py",
+        "line_start": 169,
+        "line_end": 169,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:bandit",
+        "expanded_by": null,
+        "confirmed_by": "tool:bandit",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "B110"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-703",
+            "name": null,
+            "verified": true
+          }
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:bandit",
+        "reasoning": "B110",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "BN-014",
+      "title": "Consider possible security implications associated with the subprocess module.",
+      "severity": "LOW",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "B404",
+      "source": "tool:bandit",
+      "location": {
+        "file": "skill/scripts/run_fixture_tests.py",
+        "line_start": 7,
+        "line_end": 7,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:bandit",
+        "expanded_by": null,
+        "confirmed_by": "tool:bandit",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "B404"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-78",
+            "name": "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')",
+            "verified": true
+          }
+        ],
+        "owasp": [
+          "A03:2021-Injection"
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:bandit",
+        "reasoning": "B404",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "BN-015",
+      "title": "subprocess call - check for execution of untrusted input.",
+      "severity": "LOW",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "B603",
+      "source": "tool:bandit",
+      "location": {
+        "file": "skill/scripts/run_fixture_tests.py",
+        "line_start": 19,
+        "line_end": 19,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:bandit",
+        "expanded_by": null,
+        "confirmed_by": "tool:bandit",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "B603"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-78",
+            "name": "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')",
+            "verified": true
+          }
+        ],
+        "owasp": [
+          "A03:2021-Injection"
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:bandit",
+        "reasoning": "B603",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "BN-016",
+      "title": "Starting a process with a partial executable path",
+      "severity": "LOW",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "B607",
+      "source": "tool:bandit",
+      "location": {
+        "file": "skill/scripts/run_fixture_tests.py",
+        "line_start": 23,
+        "line_end": 23,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:bandit",
+        "expanded_by": null,
+        "confirmed_by": "tool:bandit",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "B607"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-78",
+            "name": "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')",
+            "verified": true
+          }
+        ],
+        "owasp": [
+          "A03:2021-Injection"
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:bandit",
+        "reasoning": "B607",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "BN-017",
+      "title": "subprocess call - check for execution of untrusted input.",
+      "severity": "LOW",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "B603",
+      "source": "tool:bandit",
+      "location": {
+        "file": "skill/scripts/run_fixture_tests.py",
+        "line_start": 23,
+        "line_end": 23,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:bandit",
+        "expanded_by": null,
+        "confirmed_by": "tool:bandit",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "B603"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-78",
+            "name": "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')",
+            "verified": true
+          }
+        ],
+        "owasp": [
+          "A03:2021-Injection"
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:bandit",
+        "reasoning": "B603",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "BN-018",
+      "title": "Starting a process with a partial executable path",
+      "severity": "LOW",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "B607",
+      "source": "tool:bandit",
+      "location": {
+        "file": "skill/scripts/run_fixture_tests.py",
+        "line_start": 31,
+        "line_end": 31,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:bandit",
+        "expanded_by": null,
+        "confirmed_by": "tool:bandit",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "B607"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-78",
+            "name": "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')",
+            "verified": true
+          }
+        ],
+        "owasp": [
+          "A03:2021-Injection"
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:bandit",
+        "reasoning": "B607",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "BN-019",
+      "title": "subprocess call - check for execution of untrusted input.",
+      "severity": "LOW",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "B603",
+      "source": "tool:bandit",
+      "location": {
+        "file": "skill/scripts/run_fixture_tests.py",
+        "line_start": 31,
+        "line_end": 31,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:bandit",
+        "expanded_by": null,
+        "confirmed_by": "tool:bandit",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "B603"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-78",
+            "name": "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')",
+            "verified": true
+          }
+        ],
+        "owasp": [
+          "A03:2021-Injection"
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:bandit",
+        "reasoning": "B603",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "BN-020",
+      "title": "subprocess call - check for execution of untrusted input.",
+      "severity": "LOW",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "B603",
+      "source": "tool:bandit",
+      "location": {
+        "file": "skill/scripts/run_fixture_tests.py",
+        "line_start": 58,
+        "line_end": 58,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:bandit",
+        "expanded_by": null,
+        "confirmed_by": "tool:bandit",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "B603"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-78",
+            "name": "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')",
+            "verified": true
+          }
+        ],
+        "owasp": [
+          "A03:2021-Injection"
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:bandit",
+        "reasoning": "B603",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "BN-021",
+      "title": "subprocess call - check for execution of untrusted input.",
+      "severity": "LOW",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "B603",
+      "source": "tool:bandit",
+      "location": {
+        "file": "skill/scripts/run_fixture_tests.py",
+        "line_start": 87,
+        "line_end": 87,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:bandit",
+        "expanded_by": null,
+        "confirmed_by": "tool:bandit",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "B603"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-78",
+            "name": "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')",
+            "verified": true
+          }
+        ],
+        "owasp": [
+          "A03:2021-Injection"
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:bandit",
+        "reasoning": "B603",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "BN-022",
+      "title": "Consider possible security implications associated with the subprocess module.",
+      "severity": "LOW",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "B404",
+      "source": "tool:bandit",
+      "location": {
+        "file": "skill/scripts/run_tools.py",
+        "line_start": 8,
+        "line_end": 8,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:bandit",
+        "expanded_by": null,
+        "confirmed_by": "tool:bandit",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "B404"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-78",
+            "name": "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')",
+            "verified": true
+          }
+        ],
+        "owasp": [
+          "A03:2021-Injection"
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:bandit",
+        "reasoning": "B404",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "BN-023",
+      "title": "Consider possible security implications associated with the subprocess module.",
+      "severity": "LOW",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "B404",
+      "source": "tool:bandit",
+      "location": {
+        "file": "skill/scripts/tools/base.py",
+        "line_start": 6,
+        "line_end": 6,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:bandit",
+        "expanded_by": null,
+        "confirmed_by": "tool:bandit",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "B404"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-78",
+            "name": "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')",
+            "verified": true
+          }
+        ],
+        "owasp": [
+          "A03:2021-Injection"
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:bandit",
+        "reasoning": "B404",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "BN-024",
+      "title": "subprocess call - check for execution of untrusted input.",
+      "severity": "LOW",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "B603",
+      "source": "tool:bandit",
+      "location": {
+        "file": "skill/scripts/tools/base.py",
+        "line_start": 72,
+        "line_end": 72,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:bandit",
+        "expanded_by": null,
+        "confirmed_by": "tool:bandit",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "B603"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-78",
+            "name": "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')",
+            "verified": true
+          }
+        ],
+        "owasp": [
+          "A03:2021-Injection"
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:bandit",
+        "reasoning": "B603",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "BN-025",
+      "title": "Try, Except, Continue detected.",
+      "severity": "LOW",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "B112",
+      "source": "tool:bandit",
+      "location": {
+        "file": "skill/scripts/tools/sarif_utils.py",
+        "line_start": 113,
+        "line_end": 113,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:bandit",
+        "expanded_by": null,
+        "confirmed_by": "tool:bandit",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "B112"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-703",
+            "name": null,
+            "verified": true
+          }
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:bandit",
+        "reasoning": "B112",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "BN-026",
+      "title": "Using xml.etree.ElementTree to parse untrusted XML data is known to be vulnerable to XML attacks. Replace xml.etree.ElementTree with the equivalent defusedxml package, or make sure defusedxml.defuse_stdlib() is called.",
+      "severity": "LOW",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "B405",
+      "source": "tool:bandit",
+      "location": {
+        "file": "skill/scripts/tools/spotbugs.py",
+        "line_start": 4,
+        "line_end": 4,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:bandit",
+        "expanded_by": null,
+        "confirmed_by": "tool:bandit",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "B405"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-20",
+            "name": "Improper Input Validation",
+            "verified": true
+          }
+        ],
+        "owasp": [
+          "A03:2021-Injection"
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:bandit",
+        "reasoning": "B405",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "BN-027",
+      "title": "Using xml.etree.ElementTree.fromstring to parse untrusted XML data is known to be vulnerable to XML attacks. Replace xml.etree.ElementTree.fromstring with its defusedxml equivalent function or make sure defusedxml.defuse_stdlib() is called",
+      "severity": "MEDIUM",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "B314",
+      "source": "tool:bandit",
+      "location": {
+        "file": "skill/scripts/tools/spotbugs.py",
+        "line_start": 45,
+        "line_end": 45,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:bandit",
+        "expanded_by": null,
+        "confirmed_by": "tool:bandit",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "B314"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-20",
+            "name": "Improper Input Validation",
+            "verified": true
+          }
+        ],
+        "owasp": [
+          "A03:2021-Injection"
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:bandit",
+        "reasoning": "B314",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "SG-001",
+      "title": "This Dependabot configuration does not set a cooldown period. Newly published packages can be malicious or unstable. Add a `cooldown` block with `default-days: 7` to each `package-ecosystem` entry under `updates` to wait 7 days before proposing updates to newly published package versions. Reference: https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file#cooldown",
+      "severity": "MEDIUM",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "package_managers.dependabot.dependabot-missing-cooldown.dependabot-missing-cooldown",
+      "source": "tool:semgrep",
+      "location": {
+        "file": ".github/dependabot.yml",
+        "line_start": 3,
+        "line_end": 3,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:semgrep",
+        "expanded_by": null,
+        "confirmed_by": "tool:semgrep",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "package_managers.dependabot.dependabot-missing-cooldown.dependabot-missing-cooldown"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-829",
+            "name": null,
+            "verified": true
+          }
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:semgrep",
+        "reasoning": "package_managers.dependabot.dependabot-missing-cooldown.dependabot-missing-cooldown",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "SG-002",
+      "title": "This Dependabot configuration does not set a cooldown period. Newly published packages can be malicious or unstable. Add a `cooldown` block with `default-days: 7` to each `package-ecosystem` entry under `updates` to wait 7 days before proposing updates to newly published package versions. Reference: https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file#cooldown",
+      "severity": "MEDIUM",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "package_managers.dependabot.dependabot-missing-cooldown.dependabot-missing-cooldown",
+      "source": "tool:semgrep",
+      "location": {
+        "file": ".github/dependabot.yml",
+        "line_start": 13,
+        "line_end": 13,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:semgrep",
+        "expanded_by": null,
+        "confirmed_by": "tool:semgrep",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "package_managers.dependabot.dependabot-missing-cooldown.dependabot-missing-cooldown"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-829",
+            "name": null,
+            "verified": true
+          }
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:semgrep",
+        "reasoning": "package_managers.dependabot.dependabot-missing-cooldown.dependabot-missing-cooldown",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "SG-003",
+      "title": "This Dependabot configuration does not set a cooldown period. Newly published packages can be malicious or unstable. Add a `cooldown` block with `default-days: 7` to each `package-ecosystem` entry under `updates` to wait 7 days before proposing updates to newly published package versions. Reference: https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file#cooldown",
+      "severity": "MEDIUM",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "package_managers.dependabot.dependabot-missing-cooldown.dependabot-missing-cooldown",
+      "source": "tool:semgrep",
+      "location": {
+        "file": ".github/dependabot.yml",
+        "line_start": 23,
+        "line_end": 23,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:semgrep",
+        "expanded_by": null,
+        "confirmed_by": "tool:semgrep",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "package_managers.dependabot.dependabot-missing-cooldown.dependabot-missing-cooldown"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-829",
+            "name": null,
+            "verified": true
+          }
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:semgrep",
+        "reasoning": "package_managers.dependabot.dependabot-missing-cooldown.dependabot-missing-cooldown",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "SG-004",
+      "title": "GitHub Actions step uses a mutable tag or branch reference. Tags and branch names can be silently repointed by the action owner, enabling supply-chain attacks \u2014 as seen in the trivy-action and kics-github-action compromises. Pin the reference to a full 40-character commit SHA instead, e.g. `uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608`.",
+      "severity": "MEDIUM",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+      "source": "tool:semgrep",
+      "location": {
+        "file": ".github/workflows/ci.yml",
+        "line_start": 13,
+        "line_end": 13,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:semgrep",
+        "expanded_by": null,
+        "confirmed_by": "tool:semgrep",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-1357",
+            "name": null,
+            "verified": true
+          },
+          {
+            "id": "CWE-353",
+            "name": null,
+            "verified": true
+          }
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:semgrep",
+        "reasoning": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "SG-005",
+      "title": "GitHub Actions step uses a mutable tag or branch reference. Tags and branch names can be silently repointed by the action owner, enabling supply-chain attacks \u2014 as seen in the trivy-action and kics-github-action compromises. Pin the reference to a full 40-character commit SHA instead, e.g. `uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608`.",
+      "severity": "MEDIUM",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+      "source": "tool:semgrep",
+      "location": {
+        "file": ".github/workflows/ci.yml",
+        "line_start": 15,
+        "line_end": 15,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:semgrep",
+        "expanded_by": null,
+        "confirmed_by": "tool:semgrep",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-1357",
+            "name": null,
+            "verified": true
+          },
+          {
+            "id": "CWE-353",
+            "name": null,
+            "verified": true
+          }
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:semgrep",
+        "reasoning": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "SG-006",
+      "title": "GitHub Actions step uses a mutable tag or branch reference. Tags and branch names can be silently repointed by the action owner, enabling supply-chain attacks \u2014 as seen in the trivy-action and kics-github-action compromises. Pin the reference to a full 40-character commit SHA instead, e.g. `uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608`.",
+      "severity": "MEDIUM",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+      "source": "tool:semgrep",
+      "location": {
+        "file": ".github/workflows/ci.yml",
+        "line_start": 31,
+        "line_end": 31,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:semgrep",
+        "expanded_by": null,
+        "confirmed_by": "tool:semgrep",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-1357",
+            "name": null,
+            "verified": true
+          },
+          {
+            "id": "CWE-353",
+            "name": null,
+            "verified": true
+          }
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:semgrep",
+        "reasoning": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "SG-007",
+      "title": "GitHub Actions step uses a mutable tag or branch reference. Tags and branch names can be silently repointed by the action owner, enabling supply-chain attacks \u2014 as seen in the trivy-action and kics-github-action compromises. Pin the reference to a full 40-character commit SHA instead, e.g. `uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608`.",
+      "severity": "MEDIUM",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+      "source": "tool:semgrep",
+      "location": {
+        "file": ".github/workflows/ci.yml",
+        "line_start": 33,
+        "line_end": 33,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:semgrep",
+        "expanded_by": null,
+        "confirmed_by": "tool:semgrep",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-1357",
+            "name": null,
+            "verified": true
+          },
+          {
+            "id": "CWE-353",
+            "name": null,
+            "verified": true
+          }
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:semgrep",
+        "reasoning": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "SG-008",
+      "title": "GitHub Actions step uses a mutable tag or branch reference. Tags and branch names can be silently repointed by the action owner, enabling supply-chain attacks \u2014 as seen in the trivy-action and kics-github-action compromises. Pin the reference to a full 40-character commit SHA instead, e.g. `uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608`.",
+      "severity": "MEDIUM",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+      "source": "tool:semgrep",
+      "location": {
+        "file": ".github/workflows/codeql.yml",
+        "line_start": 27,
+        "line_end": 27,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:semgrep",
+        "expanded_by": null,
+        "confirmed_by": "tool:semgrep",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-1357",
+            "name": null,
+            "verified": true
+          },
+          {
+            "id": "CWE-353",
+            "name": null,
+            "verified": true
+          }
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:semgrep",
+        "reasoning": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "SG-009",
+      "title": "GitHub Actions step uses a mutable tag or branch reference. Tags and branch names can be silently repointed by the action owner, enabling supply-chain attacks \u2014 as seen in the trivy-action and kics-github-action compromises. Pin the reference to a full 40-character commit SHA instead, e.g. `uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608`.",
+      "severity": "MEDIUM",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+      "source": "tool:semgrep",
+      "location": {
+        "file": ".github/workflows/codeql.yml",
+        "line_start": 30,
+        "line_end": 30,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:semgrep",
+        "expanded_by": null,
+        "confirmed_by": "tool:semgrep",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-1357",
+            "name": null,
+            "verified": true
+          },
+          {
+            "id": "CWE-353",
+            "name": null,
+            "verified": true
+          }
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:semgrep",
+        "reasoning": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "SG-010",
+      "title": "GitHub Actions step uses a mutable tag or branch reference. Tags and branch names can be silently repointed by the action owner, enabling supply-chain attacks \u2014 as seen in the trivy-action and kics-github-action compromises. Pin the reference to a full 40-character commit SHA instead, e.g. `uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608`.",
+      "severity": "MEDIUM",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+      "source": "tool:semgrep",
+      "location": {
+        "file": ".github/workflows/codeql.yml",
+        "line_start": 35,
+        "line_end": 35,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:semgrep",
+        "expanded_by": null,
+        "confirmed_by": "tool:semgrep",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-1357",
+            "name": null,
+            "verified": true
+          },
+          {
+            "id": "CWE-353",
+            "name": null,
+            "verified": true
+          }
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:semgrep",
+        "reasoning": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "SG-011",
+      "title": "GitHub Actions step uses a mutable tag or branch reference. Tags and branch names can be silently repointed by the action owner, enabling supply-chain attacks \u2014 as seen in the trivy-action and kics-github-action compromises. Pin the reference to a full 40-character commit SHA instead, e.g. `uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608`.",
+      "severity": "MEDIUM",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+      "source": "tool:semgrep",
+      "location": {
+        "file": ".github/workflows/codeql.yml",
+        "line_start": 38,
+        "line_end": 38,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:semgrep",
+        "expanded_by": null,
+        "confirmed_by": "tool:semgrep",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-1357",
+            "name": null,
+            "verified": true
+          },
+          {
+            "id": "CWE-353",
+            "name": null,
+            "verified": true
+          }
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:semgrep",
+        "reasoning": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "SG-012",
+      "title": "GitHub Actions step uses a mutable tag or branch reference. Tags and branch names can be silently repointed by the action owner, enabling supply-chain attacks \u2014 as seen in the trivy-action and kics-github-action compromises. Pin the reference to a full 40-character commit SHA instead, e.g. `uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608`.",
+      "severity": "MEDIUM",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+      "source": "tool:semgrep",
+      "location": {
+        "file": ".github/workflows/docker-publish.yml",
+        "line_start": 30,
+        "line_end": 30,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:semgrep",
+        "expanded_by": null,
+        "confirmed_by": "tool:semgrep",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-1357",
+            "name": null,
+            "verified": true
+          },
+          {
+            "id": "CWE-353",
+            "name": null,
+            "verified": true
+          }
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:semgrep",
+        "reasoning": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "SG-013",
+      "title": "GitHub Actions step uses a mutable tag or branch reference. Tags and branch names can be silently repointed by the action owner, enabling supply-chain attacks \u2014 as seen in the trivy-action and kics-github-action compromises. Pin the reference to a full 40-character commit SHA instead, e.g. `uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608`.",
+      "severity": "MEDIUM",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+      "source": "tool:semgrep",
+      "location": {
+        "file": ".github/workflows/docker-publish.yml",
+        "line_start": 33,
+        "line_end": 33,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:semgrep",
+        "expanded_by": null,
+        "confirmed_by": "tool:semgrep",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-1357",
+            "name": null,
+            "verified": true
+          },
+          {
+            "id": "CWE-353",
+            "name": null,
+            "verified": true
+          }
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:semgrep",
+        "reasoning": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "SG-014",
+      "title": "GitHub Actions step uses a mutable tag or branch reference. Tags and branch names can be silently repointed by the action owner, enabling supply-chain attacks \u2014 as seen in the trivy-action and kics-github-action compromises. Pin the reference to a full 40-character commit SHA instead, e.g. `uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608`.",
+      "severity": "MEDIUM",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+      "source": "tool:semgrep",
+      "location": {
+        "file": ".github/workflows/docker-publish.yml",
+        "line_start": 36,
+        "line_end": 36,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:semgrep",
+        "expanded_by": null,
+        "confirmed_by": "tool:semgrep",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-1357",
+            "name": null,
+            "verified": true
+          },
+          {
+            "id": "CWE-353",
+            "name": null,
+            "verified": true
+          }
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:semgrep",
+        "reasoning": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "SG-015",
+      "title": "GitHub Actions step uses a mutable tag or branch reference. Tags and branch names can be silently repointed by the action owner, enabling supply-chain attacks \u2014 as seen in the trivy-action and kics-github-action compromises. Pin the reference to a full 40-character commit SHA instead, e.g. `uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608`.",
+      "severity": "MEDIUM",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+      "source": "tool:semgrep",
+      "location": {
+        "file": ".github/workflows/docker-publish.yml",
+        "line_start": 44,
+        "line_end": 44,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:semgrep",
+        "expanded_by": null,
+        "confirmed_by": "tool:semgrep",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-1357",
+            "name": null,
+            "verified": true
+          },
+          {
+            "id": "CWE-353",
+            "name": null,
+            "verified": true
+          }
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:semgrep",
+        "reasoning": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "SG-016",
+      "title": "GitHub Actions step uses a mutable tag or branch reference. Tags and branch names can be silently repointed by the action owner, enabling supply-chain attacks \u2014 as seen in the trivy-action and kics-github-action compromises. Pin the reference to a full 40-character commit SHA instead, e.g. `uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608`.",
+      "severity": "MEDIUM",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+      "source": "tool:semgrep",
+      "location": {
+        "file": ".github/workflows/docker-publish.yml",
+        "line_start": 53,
+        "line_end": 53,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:semgrep",
+        "expanded_by": null,
+        "confirmed_by": "tool:semgrep",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-1357",
+            "name": null,
+            "verified": true
+          },
+          {
+            "id": "CWE-353",
+            "name": null,
+            "verified": true
+          }
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:semgrep",
+        "reasoning": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "SG-017",
+      "title": "GitHub Actions step uses a mutable tag or branch reference. Tags and branch names can be silently repointed by the action owner, enabling supply-chain attacks \u2014 as seen in the trivy-action and kics-github-action compromises. Pin the reference to a full 40-character commit SHA instead, e.g. `uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608`.",
+      "severity": "MEDIUM",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+      "source": "tool:semgrep",
+      "location": {
+        "file": ".github/workflows/docker-publish.yml",
+        "line_start": 63,
+        "line_end": 63,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:semgrep",
+        "expanded_by": null,
+        "confirmed_by": "tool:semgrep",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-1357",
+            "name": null,
+            "verified": true
+          },
+          {
+            "id": "CWE-353",
+            "name": null,
+            "verified": true
+          }
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:semgrep",
+        "reasoning": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "SG-018",
+      "title": "GitHub Actions step uses a mutable tag or branch reference. Tags and branch names can be silently repointed by the action owner, enabling supply-chain attacks \u2014 as seen in the trivy-action and kics-github-action compromises. Pin the reference to a full 40-character commit SHA instead, e.g. `uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608`.",
+      "severity": "MEDIUM",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+      "source": "tool:semgrep",
+      "location": {
+        "file": ".github/workflows/security.yml",
+        "line_start": 20,
+        "line_end": 20,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:semgrep",
+        "expanded_by": null,
+        "confirmed_by": "tool:semgrep",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-1357",
+            "name": null,
+            "verified": true
+          },
+          {
+            "id": "CWE-353",
+            "name": null,
+            "verified": true
+          }
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:semgrep",
+        "reasoning": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "SG-019",
+      "title": "GitHub Actions step uses a mutable tag or branch reference. Tags and branch names can be silently repointed by the action owner, enabling supply-chain attacks \u2014 as seen in the trivy-action and kics-github-action compromises. Pin the reference to a full 40-character commit SHA instead, e.g. `uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608`.",
+      "severity": "MEDIUM",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+      "source": "tool:semgrep",
+      "location": {
+        "file": ".github/workflows/security.yml",
+        "line_start": 23,
+        "line_end": 23,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:semgrep",
+        "expanded_by": null,
+        "confirmed_by": "tool:semgrep",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-1357",
+            "name": null,
+            "verified": true
+          },
+          {
+            "id": "CWE-353",
+            "name": null,
+            "verified": true
+          }
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:semgrep",
+        "reasoning": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "SG-020",
+      "title": "GitHub Actions step uses a mutable tag or branch reference. Tags and branch names can be silently repointed by the action owner, enabling supply-chain attacks \u2014 as seen in the trivy-action and kics-github-action compromises. Pin the reference to a full 40-character commit SHA instead, e.g. `uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608`.",
+      "severity": "MEDIUM",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+      "source": "tool:semgrep",
+      "location": {
+        "file": ".github/workflows/security.yml",
+        "line_start": 33,
+        "line_end": 33,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:semgrep",
+        "expanded_by": null,
+        "confirmed_by": "tool:semgrep",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-1357",
+            "name": null,
+            "verified": true
+          },
+          {
+            "id": "CWE-353",
+            "name": null,
+            "verified": true
+          }
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:semgrep",
+        "reasoning": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "id": "SG-021",
+      "title": "GitHub Actions step uses a mutable tag or branch reference. Tags and branch names can be silently repointed by the action owner, enabling supply-chain attacks \u2014 as seen in the trivy-action and kics-github-action compromises. Pin the reference to a full 40-character commit SHA instead, e.g. `uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608`.",
+      "severity": "MEDIUM",
+      "confidence": "CERTAIN",
+      "panel": "security",
+      "category": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+      "source": "tool:semgrep",
+      "location": {
+        "file": ".github/workflows/security.yml",
+        "line_start": 75,
+        "line_end": 75,
+        "function": null
+      },
+      "provenance": {
+        "discovered_by": "tool:semgrep",
+        "expanded_by": null,
+        "confirmed_by": "tool:semgrep",
+        "model": null,
+        "model_version": null,
+        "confirmation_status": "TOOL",
+        "confirmation_reasoning": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-1357",
+            "name": null,
+            "verified": true
+          },
+          {
+            "id": "CWE-353",
+            "name": null,
+            "verified": true
+          }
+        ]
+      },
+      "references": [],
+      "impact": "",
+      "remediation": "",
+      "evidence": {
+        "status": "tool_confirmed",
+        "verified_by": "tool:semgrep",
+        "reasoning": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+        "citation_quality": "partial"
+      }
+    }
+  ],
+  "discarded_claims": [
+    {
+      "id": "CMD-078",
+      "severity": "HIGH",
+      "panel": "security",
+      "lens": "known_vulns",
+      "category": "known_vulns",
+      "location": {
+        "file": "skill/scripts/run_fixture_tests.py",
+        "line_start": 53,
+        "line_end": 57,
+        "function": "check_fixtures"
+      },
+      "title": "Command injection via unescaped fixture paths in shell script construction",
+      "description": "check_fixtures builds a shell script by f-string interpolating manifest paths into 'if [ -d \"{p}\" ]...' and runs it via sh -c. Paths containing shell metacharacters execute as commands.",
+      "impact": "An attacker able to modify tests/fixtures/manifest.json executes arbitrary commands in the container context.",
+      "remediation": "shlex.quote() the paths, or drop the shell entirely and pass a list argv (e.g. ['test','-d',p]).",
+      "references": [
+        "https://cwe.mitre.org/data/definitions/78.html",
+        "https://owasp.org/www-community/attacks/Command_Injection"
+      ],
+      "source_role": "lens_sweep",
+      "depth": "standard",
+      "provenance": {
+        "discovered_by": "agent:lens_sweep",
+        "expanded_by": null,
+        "confirmed_by": "agent:advisor",
+        "model": "claude-haiku-4-5-20251001",
+        "model_version": "4.5",
+        "confirmation_status": "REJECTED",
+        "confirmation_reasoning": "Pattern quoted accurately but no trust boundary is crossed: MANIFEST resolves to panopticon's OWN repo file, never a scan target; all four path values are static committed constants, never written by any code path. The precondition (attacker can modify manifest.json) already implies write access to run_fixture_tests.py itself, so injection grants zero extra capability. Dev-only harness; a shlex.quote hardening nit, not HIGH.",
+        "confirmed_by_model": "opus"
+      },
+      "citations": {
+        "cwe": [
+          {
+            "id": "CWE-78",
+            "name": "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')",
+            "verified": true
+          }
+        ],
+        "owasp": [
+          "A03:2021-Injection"
+        ]
+      },
+      "confidence": "POSSIBLE",
+      "evidence": {
+        "status": "rejected",
+        "verified_by": "agent:advisor",
+        "reasoning": "Pattern quoted accurately but no trust boundary is crossed: MANIFEST resolves to panopticon's OWN repo file, never a scan target; all four path values are static committed constants, never written by any code path. The precondition (attacker can modify manifest.json) already implies write access to run_fixture_tests.py itself, so injection grants zero extra capability. Dev-only harness; a shlex.quote hardening nit, not HIGH.",
+        "citation_quality": "partial"
+      }
+    }
+  ],
+  "cross_panel": {
+    "integration_findings": []
+  }
+}

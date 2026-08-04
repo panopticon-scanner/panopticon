@@ -1,0 +1,199 @@
+{
+  "version": "4.2.0",
+  "cut_by_max_verify": 21,
+  "entries": [
+    {
+      "queue_id": "000-STRUCT-001",
+      "priority": 1,
+      "finding": {
+        "id": "STRUCT-001",
+        "severity": "HIGH",
+        "panel": "code",
+        "lens": "structure",
+        "category": "structure",
+        "location": {
+          "file": "skill/scripts/synthesize.py",
+          "line_start": 1,
+          "line_end": 1,
+          "function": null
+        },
+        "title": "Module mixes five distinct concerns without separation",
+        "description": "synthesize.py (864 lines) conflates normalization, dedupe, evidence derivation, report building/validation, and serialization across 27 functions.",
+        "impact": "",
+        "remediation": "Decompose into finding_processing / report_builder / report_validator / output_handler modules.",
+        "references": [],
+        "source_role": "lens_sweep",
+        "depth": "standard",
+        "provenance": {
+          "discovered_by": "agent:lens_sweep",
+          "expanded_by": null,
+          "confirmed_by": null,
+          "model": "claude-haiku-4-5-20251001",
+          "model_version": "4.5",
+          "confirmation_status": "UNVERIFIED",
+          "confirmation_reasoning": null
+        },
+        "citations": {
+          "cwe": [
+            {
+              "id": "CWE-1176",
+              "name": null,
+              "verified": false
+            }
+          ]
+        },
+        "confidence": "POSSIBLE",
+        "citation_quality": "minimal"
+      }
+    },
+    {
+      "queue_id": "001-STRUCT-002",
+      "priority": 1,
+      "finding": {
+        "id": "STRUCT-002",
+        "severity": "HIGH",
+        "panel": "code",
+        "lens": "structure",
+        "category": "structure",
+        "location": {
+          "file": "skill/scripts/orchestrator.py",
+          "line_start": 1,
+          "line_end": 1,
+          "function": null
+        },
+        "title": "Module mixes file discovery, grouping, and catalog concerns",
+        "description": "orchestrator.py (574 lines) combines discovery, group/panel computation, a 65-line YAML parser, and CLI orchestration.",
+        "impact": "",
+        "remediation": "Split into file_discovery / catalog / panel_config modules.",
+        "references": [],
+        "source_role": "lens_sweep",
+        "depth": "standard",
+        "provenance": {
+          "discovered_by": "agent:lens_sweep",
+          "expanded_by": null,
+          "confirmed_by": null,
+          "model": "claude-haiku-4-5-20251001",
+          "model_version": "4.5",
+          "confirmation_status": "UNVERIFIED",
+          "confirmation_reasoning": null
+        },
+        "citations": {
+          "cwe": [
+            {
+              "id": "CWE-1176",
+              "name": null,
+              "verified": false
+            }
+          ]
+        },
+        "confidence": "POSSIBLE",
+        "citation_quality": "minimal"
+      }
+    },
+    {
+      "queue_id": "002-INJ-001",
+      "priority": 1,
+      "finding": {
+        "id": "INJ-001",
+        "severity": "HIGH",
+        "panel": "security",
+        "lens": "injection",
+        "category": "injection",
+        "location": {
+          "file": "skill/scripts/run_fixture_tests.py",
+          "line_start": 53,
+          "line_end": 58,
+          "function": "check_fixtures"
+        },
+        "title": "OS command injection via unsanitized shell script construction",
+        "description": "check_fixtures builds a shell script by f-string interpolating manifest paths into 'if [ -d \"{p}\" ]...' and runs it via sh -c. Paths containing shell metacharacters execute as commands.",
+        "impact": "An attacker able to modify tests/fixtures/manifest.json executes arbitrary commands in the container context.",
+        "remediation": "shlex.quote() the paths, or drop the shell entirely and pass a list argv (e.g. ['test','-d',p]).",
+        "references": [
+          "https://cwe.mitre.org/data/definitions/78.html",
+          "https://owasp.org/www-community/attacks/Command_Injection"
+        ],
+        "source_role": "lens_sweep",
+        "depth": "standard",
+        "provenance": {
+          "discovered_by": "agent:lens_sweep",
+          "expanded_by": null,
+          "confirmed_by": null,
+          "model": "claude-haiku-4-5-20251001",
+          "model_version": "4.5",
+          "confirmation_status": "UNVERIFIED",
+          "confirmation_reasoning": null
+        },
+        "citations": {
+          "cwe": [
+            {
+              "id": "CWE-78",
+              "name": "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')",
+              "verified": true
+            },
+            {
+              "id": "CWE-94",
+              "name": "Improper Control of Generation of Code ('Code Injection')",
+              "verified": true
+            }
+          ],
+          "owasp": [
+            "A03:2021-Injection"
+          ]
+        },
+        "confidence": "POSSIBLE",
+        "citation_quality": "partial"
+      }
+    },
+    {
+      "queue_id": "003-CMD-078",
+      "priority": 1,
+      "finding": {
+        "id": "CMD-078",
+        "severity": "HIGH",
+        "panel": "security",
+        "lens": "known_vulns",
+        "category": "known_vulns",
+        "location": {
+          "file": "skill/scripts/run_fixture_tests.py",
+          "line_start": 53,
+          "line_end": 57,
+          "function": "check_fixtures"
+        },
+        "title": "Command injection via unescaped fixture paths in shell script construction",
+        "description": "check_fixtures builds a shell script by f-string interpolating manifest paths into 'if [ -d \"{p}\" ]...' and runs it via sh -c. Paths containing shell metacharacters execute as commands.",
+        "impact": "An attacker able to modify tests/fixtures/manifest.json executes arbitrary commands in the container context.",
+        "remediation": "shlex.quote() the paths, or drop the shell entirely and pass a list argv (e.g. ['test','-d',p]).",
+        "references": [
+          "https://cwe.mitre.org/data/definitions/78.html",
+          "https://owasp.org/www-community/attacks/Command_Injection"
+        ],
+        "source_role": "lens_sweep",
+        "depth": "standard",
+        "provenance": {
+          "discovered_by": "agent:lens_sweep",
+          "expanded_by": null,
+          "confirmed_by": null,
+          "model": "claude-haiku-4-5-20251001",
+          "model_version": "4.5",
+          "confirmation_status": "UNVERIFIED",
+          "confirmation_reasoning": null
+        },
+        "citations": {
+          "cwe": [
+            {
+              "id": "CWE-78",
+              "name": "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')",
+              "verified": true
+            }
+          ],
+          "owasp": [
+            "A03:2021-Injection"
+          ]
+        },
+        "confidence": "POSSIBLE",
+        "citation_quality": "partial"
+      }
+    }
+  ]
+}

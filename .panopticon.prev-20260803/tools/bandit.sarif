@@ -1,0 +1,4566 @@
+{
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "Bandit",
+          "organization": "PyCQA",
+          "rules": [
+            {
+              "id": "B112",
+              "name": "try_except_continue",
+              "properties": {
+                "tags": [
+                  "security",
+                  "external/cwe/cwe-703"
+                ],
+                "precision": "high"
+              },
+              "helpUri": "https://bandit.readthedocs.io/en/1.9.4/plugins/b112_try_except_continue.html"
+            },
+            {
+              "id": "B105",
+              "name": "hardcoded_password_string",
+              "properties": {
+                "tags": [
+                  "security",
+                  "external/cwe/cwe-259"
+                ],
+                "precision": "medium"
+              },
+              "helpUri": "https://bandit.readthedocs.io/en/1.9.4/plugins/b105_hardcoded_password_string.html"
+            },
+            {
+              "id": "B404",
+              "name": "blacklist",
+              "properties": {
+                "tags": [
+                  "security",
+                  "external/cwe/cwe-78"
+                ],
+                "precision": "high"
+              },
+              "helpUri": "https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_imports.html#b404-import-subprocess"
+            },
+            {
+              "id": "B607",
+              "name": "start_process_with_partial_path",
+              "properties": {
+                "tags": [
+                  "security",
+                  "external/cwe/cwe-78"
+                ],
+                "precision": "high"
+              },
+              "helpUri": "https://bandit.readthedocs.io/en/1.9.4/plugins/b607_start_process_with_partial_path.html"
+            },
+            {
+              "id": "B603",
+              "name": "subprocess_without_shell_equals_true",
+              "properties": {
+                "tags": [
+                  "security",
+                  "external/cwe/cwe-78"
+                ],
+                "precision": "high"
+              },
+              "helpUri": "https://bandit.readthedocs.io/en/1.9.4/plugins/b603_subprocess_without_shell_equals_true.html"
+            },
+            {
+              "id": "B110",
+              "name": "try_except_pass",
+              "properties": {
+                "tags": [
+                  "security",
+                  "external/cwe/cwe-703"
+                ],
+                "precision": "high"
+              },
+              "helpUri": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html"
+            },
+            {
+              "id": "B405",
+              "name": "blacklist",
+              "properties": {
+                "tags": [
+                  "security",
+                  "external/cwe/cwe-20"
+                ],
+                "precision": "high"
+              },
+              "helpUri": "https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_imports.html#b405-import-xml-etree"
+            },
+            {
+              "id": "B314",
+              "name": "blacklist",
+              "properties": {
+                "tags": [
+                  "security",
+                  "external/cwe/cwe-20"
+                ],
+                "precision": "high"
+              },
+              "helpUri": "https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_calls.html#b313-b320-xml-bad-elementtree"
+            },
+            {
+              "id": "B108",
+              "name": "hardcoded_tmp_directory",
+              "properties": {
+                "tags": [
+                  "security",
+                  "external/cwe/cwe-377"
+                ],
+                "precision": "medium"
+              },
+              "helpUri": "https://bandit.readthedocs.io/en/1.9.4/plugins/b108_hardcoded_tmp_directory.html"
+            },
+            {
+              "id": "B101",
+              "name": "assert_used",
+              "properties": {
+                "tags": [
+                  "security",
+                  "external/cwe/cwe-703"
+                ],
+                "precision": "high"
+              },
+              "helpUri": "https://bandit.readthedocs.io/en/1.9.4/plugins/b101_assert_used.html"
+            }
+          ],
+          "version": "1.9.4",
+          "semanticVersion": "1.9.4"
+        }
+      },
+      "invocations": [
+        {
+          "executionSuccessful": true,
+          "endTimeUtc": "2026-08-04T04:32:06Z"
+        }
+      ],
+      "properties": {
+        "metrics": {
+          "_totals": {
+            "loc": 9930,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "SEVERITY.LOW": 53,
+            "CONFIDENCE.LOW": 0,
+            "SEVERITY.MEDIUM": 44,
+            "CONFIDENCE.MEDIUM": 44,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.HIGH": 53
+          },
+          "/src/skill/scripts/_run_adapter.py": {
+            "loc": 28,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/skill/scripts/citations.py": {
+            "loc": 247,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 1,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 1
+          },
+          "/src/skill/scripts/depth_planner.py": {
+            "loc": 29,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/skill/scripts/dispatch.py": {
+            "loc": 377,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/skill/scripts/evidence.py": {
+            "loc": 207,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/skill/scripts/html_report.py": {
+            "loc": 620,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 1,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 1,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/skill/scripts/ingest_tools.py": {
+            "loc": 84,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/skill/scripts/model_resolver.py": {
+            "loc": 109,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/skill/scripts/orchestrator.py": {
+            "loc": 490,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 11,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 11
+          },
+          "/src/skill/scripts/provenance.py": {
+            "loc": 31,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/skill/scripts/run_fixture_tests.py": {
+            "loc": 115,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 8,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 8
+          },
+          "/src/skill/scripts/run_tools.py": {
+            "loc": 165,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 1,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 1
+          },
+          "/src/skill/scripts/synthesize.py": {
+            "loc": 745,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/skill/scripts/tools/__init__.py": {
+            "loc": 30,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/skill/scripts/tools/base.py": {
+            "loc": 59,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 2,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 2
+          },
+          "/src/skill/scripts/tools/brakeman.py": {
+            "loc": 81,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/skill/scripts/tools/bundler_audit.py": {
+            "loc": 58,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/skill/scripts/tools/cargo_audit.py": {
+            "loc": 97,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/skill/scripts/tools/dependency_check.py": {
+            "loc": 94,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/skill/scripts/tools/eslint_security.py": {
+            "loc": 83,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/skill/scripts/tools/legacy_sarif.py": {
+            "loc": 33,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/skill/scripts/tools/npm_audit.py": {
+            "loc": 93,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/skill/scripts/tools/osv_scanner.py": {
+            "loc": 100,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/skill/scripts/tools/pip_audit.py": {
+            "loc": 69,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/skill/scripts/tools/roslyn_secguard.py": {
+            "loc": 126,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/skill/scripts/tools/sarif_utils.py": {
+            "loc": 97,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 1,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 1
+          },
+          "/src/skill/scripts/tools/spotbugs.py": {
+            "loc": 72,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 1,
+            "SEVERITY.MEDIUM": 1,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 2
+          },
+          "/src/tests/test_agent_templates.py": {
+            "loc": 43,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/tests/test_assets.py": {
+            "loc": 21,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/tests/test_citations.py": {
+            "loc": 263,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/tests/test_depth_planner.py": {
+            "loc": 47,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/tests/test_dispatch.py": {
+            "loc": 418,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 1,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 1,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/tests/test_dispatch_integration.py": {
+            "loc": 55,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 3,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 3
+          },
+          "/src/tests/test_dockerfile.py": {
+            "loc": 17,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/tests/test_e2e.py": {
+            "loc": 50,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 4,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 4
+          },
+          "/src/tests/test_evidence.py": {
+            "loc": 72,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/tests/test_html_report.py": {
+            "loc": 497,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/tests/test_ingest_tools.py": {
+            "loc": 187,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/tests/test_model_resolver.py": {
+            "loc": 68,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/tests/test_orchestrator.py": {
+            "loc": 377,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 11,
+            "SEVERITY.MEDIUM": 4,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 4,
+            "CONFIDENCE.HIGH": 11
+          },
+          "/src/tests/test_phase1_integration.py": {
+            "loc": 101,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/tests/test_provenance.py": {
+            "loc": 24,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/tests/test_run_tools.py": {
+            "loc": 195,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 1,
+            "SEVERITY.MEDIUM": 3,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 3,
+            "CONFIDENCE.HIGH": 1
+          },
+          "/src/tests/test_schema.py": {
+            "loc": 159,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/tests/test_schemas.py": {
+            "loc": 241,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 7,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 7
+          },
+          "/src/tests/test_skill_md.py": {
+            "loc": 53,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/tests/test_synthesize.py": {
+            "loc": 1257,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/tests/test_verdict_ingest.py": {
+            "loc": 96,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/tests/test_verify_queue.py": {
+            "loc": 97,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/tests/tools/test_base.py": {
+            "loc": 73,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/tests/tools/test_brakeman.py": {
+            "loc": 53,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 4,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 4,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/tests/tools/test_bundler_audit.py": {
+            "loc": 47,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 3,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 3,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/tests/tools/test_cargo_audit.py": {
+            "loc": 47,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 3,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 3,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/tests/tools/test_csharp_integration.py": {
+            "loc": 25,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/tests/tools/test_dependency_check.py": {
+            "loc": 41,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/tests/tools/test_eslint_security.py": {
+            "loc": 157,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 2,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 2,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/tests/tools/test_java_integration.py": {
+            "loc": 41,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/tests/tools/test_legacy_sarif.py": {
+            "loc": 79,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 1,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 1
+          },
+          "/src/tests/tools/test_npm_audit.py": {
+            "loc": 204,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 5,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 5,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/tests/tools/test_osv_scanner.py": {
+            "loc": 127,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 2,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 2,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/tests/tools/test_pip_audit.py": {
+            "loc": 119,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 14,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 14,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/tests/tools/test_roslyn_secguard.py": {
+            "loc": 122,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 1,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 1,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/tests/tools/test_ruby_integration.py": {
+            "loc": 37,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/tests/tools/test_rust_cs_integration.py": {
+            "loc": 13,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/tests/tools/test_rust_integration.py": {
+            "loc": 32,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 0,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 0,
+            "CONFIDENCE.HIGH": 0
+          },
+          "/src/tests/tools/test_spotbugs.py": {
+            "loc": 36,
+            "nosec": 0,
+            "skipped_tests": 0,
+            "SEVERITY.UNDEFINED": 0,
+            "SEVERITY.LOW": 0,
+            "SEVERITY.MEDIUM": 1,
+            "SEVERITY.HIGH": 0,
+            "CONFIDENCE.UNDEFINED": 0,
+            "CONFIDENCE.LOW": 0,
+            "CONFIDENCE.MEDIUM": 1,
+            "CONFIDENCE.HIGH": 0
+          }
+        }
+      },
+      "results": [
+        {
+          "message": {
+            "text": "Try, Except, Continue detected."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "        except Exception:  # noqa: BLE001 - lookup is best-effort by design\n"
+                  },
+                  "endColumn": 21,
+                  "endLine": 171,
+                  "startColumn": 9,
+                  "startLine": 170
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/skill/scripts/citations.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "            dirty = True\n        except Exception:  # noqa: BLE001 - lookup is best-effort by design\n            continue\n    if dirty:\n"
+                  },
+                  "endLine": 172,
+                  "startLine": 169
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B112",
+          "ruleIndex": 0
+        },
+        {
+          "message": {
+            "text": "Possible hardcoded password: 'gate-pass'"
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "    return {\"PASS\": \"gate-pass\", \"FAIL\": \"gate-fail\"}.get(str(gate).upper(), \"gate-off\")\n"
+                  },
+                  "endColumn": 19,
+                  "endLine": 299,
+                  "startColumn": 13,
+                  "startLine": 299
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/skill/scripts/html_report.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "    \"\"\"Map a gate verdict to a CSS class using the severity palette.\"\"\"\n    return {\"PASS\": \"gate-pass\", \"FAIL\": \"gate-fail\"}.get(str(gate).upper(), \"gate-off\")\n\n"
+                  },
+                  "endLine": 300,
+                  "startLine": 298
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B105",
+          "ruleIndex": 1
+        },
+        {
+          "message": {
+            "text": "Consider possible security implications associated with the subprocess module."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "import subprocess\n"
+                  },
+                  "endColumn": 18,
+                  "endLine": 11,
+                  "startColumn": 1,
+                  "startLine": 11
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/skill/scripts/orchestrator.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "import re\nimport subprocess\nimport sys\n"
+                  },
+                  "endLine": 12,
+                  "startLine": 10
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B404",
+          "ruleIndex": 2
+        },
+        {
+          "message": {
+            "text": "Starting a process with a partial executable path"
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            out = subprocess.run(\n"
+                  },
+                  "endColumn": 14,
+                  "endLine": 130,
+                  "startColumn": 19,
+                  "startLine": 129
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/skill/scripts/orchestrator.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "        try:\n            out = subprocess.run(\n                [\"git\", \"-C\", repo, \"merge-base\", \"HEAD\", branch],\n                capture_output=True, text=True, check=True, timeout=30,\n            )\n            base = out.stdout.strip()\n"
+                  },
+                  "endLine": 133,
+                  "startLine": 128
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B607",
+          "ruleIndex": 3
+        },
+        {
+          "message": {
+            "text": "subprocess call - check for execution of untrusted input."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            out = subprocess.run(\n"
+                  },
+                  "endColumn": 14,
+                  "endLine": 130,
+                  "startColumn": 19,
+                  "startLine": 129
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/skill/scripts/orchestrator.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "        try:\n            out = subprocess.run(\n                [\"git\", \"-C\", repo, \"merge-base\", \"HEAD\", branch],\n                capture_output=True, text=True, check=True, timeout=30,\n            )\n            base = out.stdout.strip()\n"
+                  },
+                  "endLine": 133,
+                  "startLine": 128
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B603",
+          "ruleIndex": 4
+        },
+        {
+          "message": {
+            "text": "Try, Except, Continue detected."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "        except Exception:\n"
+                  },
+                  "endColumn": 21,
+                  "endLine": 137,
+                  "startColumn": 9,
+                  "startLine": 136
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/skill/scripts/orchestrator.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "                break\n        except Exception:\n            continue\n    if not base:\n"
+                  },
+                  "endLine": 138,
+                  "startLine": 135
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B112",
+          "ruleIndex": 0
+        },
+        {
+          "message": {
+            "text": "Starting a process with a partial executable path"
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            out = subprocess.run(\n"
+                  },
+                  "endColumn": 14,
+                  "endLine": 141,
+                  "startColumn": 19,
+                  "startLine": 140
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/skill/scripts/orchestrator.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "        try:\n            out = subprocess.run(\n                [\"git\", \"-C\", repo, \"rev-parse\", \"HEAD~1\"],\n                capture_output=True, text=True, check=True, timeout=30,\n            )\n            base = out.stdout.strip()\n"
+                  },
+                  "endLine": 144,
+                  "startLine": 139
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B607",
+          "ruleIndex": 3
+        },
+        {
+          "message": {
+            "text": "subprocess call - check for execution of untrusted input."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            out = subprocess.run(\n"
+                  },
+                  "endColumn": 14,
+                  "endLine": 141,
+                  "startColumn": 19,
+                  "startLine": 140
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/skill/scripts/orchestrator.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "        try:\n            out = subprocess.run(\n                [\"git\", \"-C\", repo, \"rev-parse\", \"HEAD~1\"],\n                capture_output=True, text=True, check=True, timeout=30,\n            )\n            base = out.stdout.strip()\n"
+                  },
+                  "endLine": 144,
+                  "startLine": 139
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B603",
+          "ruleIndex": 4
+        },
+        {
+          "message": {
+            "text": "Starting a process with a partial executable path"
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "        out = subprocess.run(\n"
+                  },
+                  "endColumn": 10,
+                  "endLine": 150,
+                  "startColumn": 15,
+                  "startLine": 149
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/skill/scripts/orchestrator.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "    try:\n        out = subprocess.run(\n            [\"git\", \"-C\", repo, \"diff\", \"--name-only\", \"--diff-filter=d\", base],\n            capture_output=True, text=True, check=True, timeout=30,\n        )\n        for p in out.stdout.splitlines():\n"
+                  },
+                  "endLine": 153,
+                  "startLine": 148
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B607",
+          "ruleIndex": 3
+        },
+        {
+          "message": {
+            "text": "subprocess call - check for execution of untrusted input."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "        out = subprocess.run(\n"
+                  },
+                  "endColumn": 10,
+                  "endLine": 150,
+                  "startColumn": 15,
+                  "startLine": 149
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/skill/scripts/orchestrator.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "    try:\n        out = subprocess.run(\n            [\"git\", \"-C\", repo, \"diff\", \"--name-only\", \"--diff-filter=d\", base],\n            capture_output=True, text=True, check=True, timeout=30,\n        )\n        for p in out.stdout.splitlines():\n"
+                  },
+                  "endLine": 153,
+                  "startLine": 148
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B603",
+          "ruleIndex": 4
+        },
+        {
+          "message": {
+            "text": "Starting a process with a partial executable path"
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "        out = subprocess.run(\n"
+                  },
+                  "endColumn": 10,
+                  "endLine": 162,
+                  "startColumn": 15,
+                  "startLine": 161
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/skill/scripts/orchestrator.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "    try:\n        out = subprocess.run(\n            [\"git\", \"-C\", repo, \"ls-files\", \"--others\", \"--exclude-standard\"],\n            capture_output=True, text=True, check=True, timeout=30,\n        )\n        for p in out.stdout.splitlines():\n"
+                  },
+                  "endLine": 165,
+                  "startLine": 160
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B607",
+          "ruleIndex": 3
+        },
+        {
+          "message": {
+            "text": "subprocess call - check for execution of untrusted input."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "        out = subprocess.run(\n"
+                  },
+                  "endColumn": 10,
+                  "endLine": 162,
+                  "startColumn": 15,
+                  "startLine": 161
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/skill/scripts/orchestrator.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "    try:\n        out = subprocess.run(\n            [\"git\", \"-C\", repo, \"ls-files\", \"--others\", \"--exclude-standard\"],\n            capture_output=True, text=True, check=True, timeout=30,\n        )\n        for p in out.stdout.splitlines():\n"
+                  },
+                  "endLine": 165,
+                  "startLine": 160
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B603",
+          "ruleIndex": 4
+        },
+        {
+          "message": {
+            "text": "Try, Except, Pass detected."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "    except Exception:\n"
+                  },
+                  "endColumn": 13,
+                  "endLine": 170,
+                  "startColumn": 5,
+                  "startLine": 169
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/skill/scripts/orchestrator.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "                changed.add(p)\n    except Exception:\n        pass\n    out = []\n"
+                  },
+                  "endLine": 171,
+                  "startLine": 168
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B110",
+          "ruleIndex": 5
+        },
+        {
+          "message": {
+            "text": "Consider possible security implications associated with the subprocess module."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "import subprocess\n"
+                  },
+                  "endColumn": 18,
+                  "endLine": 7,
+                  "startColumn": 1,
+                  "startLine": 7
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/skill/scripts/run_fixture_tests.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "import json\nimport subprocess\nimport sys\n"
+                  },
+                  "endLine": 8,
+                  "startLine": 6
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B404",
+          "ruleIndex": 2
+        },
+        {
+          "message": {
+            "text": "subprocess call - check for execution of untrusted input."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "    return subprocess.run(cmd, check=True, **kwargs)\n"
+                  },
+                  "endColumn": 53,
+                  "endLine": 19,
+                  "startColumn": 12,
+                  "startLine": 19
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/skill/scripts/run_fixture_tests.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "    print(\"+\", \" \".join(cmd), flush=True)\n    return subprocess.run(cmd, check=True, **kwargs)\n\n"
+                  },
+                  "endLine": 20,
+                  "startLine": 18
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B603",
+          "ruleIndex": 4
+        },
+        {
+          "message": {
+            "text": "Starting a process with a partial executable path"
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "    result = subprocess.run(\n"
+                  },
+                  "endColumn": 6,
+                  "endLine": 24,
+                  "startColumn": 14,
+                  "startLine": 23
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/skill/scripts/run_fixture_tests.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "def docker_available() -> bool:\n    result = subprocess.run(\n        [\"docker\", \"version\"],\n        capture_output=True,\n    )\n    return result.returncode == 0\n"
+                  },
+                  "endLine": 27,
+                  "startLine": 22
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B607",
+          "ruleIndex": 3
+        },
+        {
+          "message": {
+            "text": "subprocess call - check for execution of untrusted input."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "    result = subprocess.run(\n"
+                  },
+                  "endColumn": 6,
+                  "endLine": 24,
+                  "startColumn": 14,
+                  "startLine": 23
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/skill/scripts/run_fixture_tests.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "def docker_available() -> bool:\n    result = subprocess.run(\n        [\"docker\", \"version\"],\n        capture_output=True,\n    )\n    return result.returncode == 0\n"
+                  },
+                  "endLine": 27,
+                  "startLine": 22
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B603",
+          "ruleIndex": 4
+        },
+        {
+          "message": {
+            "text": "Starting a process with a partial executable path"
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "    result = subprocess.run(\n"
+                  },
+                  "endColumn": 6,
+                  "endLine": 32,
+                  "startColumn": 14,
+                  "startLine": 31
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/skill/scripts/run_fixture_tests.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "def image_exists(tag: str) -> bool:\n    result = subprocess.run(\n        [\"docker\", \"image\", \"inspect\", tag],\n        capture_output=True,\n    )\n    return result.returncode == 0\n"
+                  },
+                  "endLine": 35,
+                  "startLine": 30
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B607",
+          "ruleIndex": 3
+        },
+        {
+          "message": {
+            "text": "subprocess call - check for execution of untrusted input."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "    result = subprocess.run(\n"
+                  },
+                  "endColumn": 6,
+                  "endLine": 32,
+                  "startColumn": 14,
+                  "startLine": 31
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/skill/scripts/run_fixture_tests.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "def image_exists(tag: str) -> bool:\n    result = subprocess.run(\n        [\"docker\", \"image\", \"inspect\", tag],\n        capture_output=True,\n    )\n    return result.returncode == 0\n"
+                  },
+                  "endLine": 35,
+                  "startLine": 30
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B603",
+          "ruleIndex": 4
+        },
+        {
+          "message": {
+            "text": "subprocess call - check for execution of untrusted input."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "    result = subprocess.run(cmd, capture_output=True, text=True)\n"
+                  },
+                  "endColumn": 65,
+                  "endLine": 58,
+                  "startColumn": 14,
+                  "startLine": 58
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/skill/scripts/run_fixture_tests.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "    cmd.append(test_script)\n    result = subprocess.run(cmd, capture_output=True, text=True)\n    present = []\n"
+                  },
+                  "endLine": 59,
+                  "startLine": 57
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B603",
+          "ruleIndex": 4
+        },
+        {
+          "message": {
+            "text": "subprocess call - check for execution of untrusted input."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "    result = subprocess.run(cmd)\n"
+                  },
+                  "endColumn": 33,
+                  "endLine": 87,
+                  "startColumn": 14,
+                  "startLine": 87
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/skill/scripts/run_fixture_tests.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "    ]\n    result = subprocess.run(cmd)\n    return result.returncode\n"
+                  },
+                  "endLine": 88,
+                  "startLine": 86
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B603",
+          "ruleIndex": 4
+        },
+        {
+          "message": {
+            "text": "Consider possible security implications associated with the subprocess module."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "import subprocess\n"
+                  },
+                  "endColumn": 18,
+                  "endLine": 8,
+                  "startColumn": 1,
+                  "startLine": 8
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/skill/scripts/run_tools.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "import os\nimport subprocess\nimport sys\n"
+                  },
+                  "endLine": 9,
+                  "startLine": 7
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B404",
+          "ruleIndex": 2
+        },
+        {
+          "message": {
+            "text": "Consider possible security implications associated with the subprocess module."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "import subprocess\n"
+                  },
+                  "endColumn": 18,
+                  "endLine": 6,
+                  "startColumn": 1,
+                  "startLine": 6
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/skill/scripts/tools/base.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "import sys\nimport subprocess\nfrom typing import Any, Protocol\n"
+                  },
+                  "endLine": 7,
+                  "startLine": 5
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B404",
+          "ruleIndex": 2
+        },
+        {
+          "message": {
+            "text": "subprocess call - check for execution of untrusted input."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "    res = subprocess.run(cmd, capture_output=True, timeout=timeout, **kwargs)\n"
+                  },
+                  "endColumn": 78,
+                  "endLine": 72,
+                  "startColumn": 11,
+                  "startLine": 72
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/skill/scripts/tools/base.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "    \"\"\"\n    res = subprocess.run(cmd, capture_output=True, timeout=timeout, **kwargs)\n    rc = res.returncode\n"
+                  },
+                  "endLine": 73,
+                  "startLine": 71
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B603",
+          "ruleIndex": 4
+        },
+        {
+          "message": {
+            "text": "Try, Except, Continue detected."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            except Exception:  # noqa: BLE001 - tolerant by design: skip only this result\n"
+                  },
+                  "endColumn": 25,
+                  "endLine": 114,
+                  "startColumn": 13,
+                  "startLine": 113
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/skill/scripts/tools/sarif_utils.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "                    finding[\"citations\"] = cites\n            except Exception:  # noqa: BLE001 - tolerant by design: skip only this result\n                continue\n            out.append(finding)\n"
+                  },
+                  "endLine": 115,
+                  "startLine": 112
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B112",
+          "ruleIndex": 0
+        },
+        {
+          "message": {
+            "text": "Using xml.etree.ElementTree to parse untrusted XML data is known to be vulnerable to XML attacks. Replace xml.etree.ElementTree with the equivalent defusedxml package, or make sure defusedxml.defuse_stdlib() is called."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "import xml.etree.ElementTree as ET\n"
+                  },
+                  "endColumn": 35,
+                  "endLine": 4,
+                  "startColumn": 1,
+                  "startLine": 4
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/skill/scripts/tools/spotbugs.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "import os\nimport xml.etree.ElementTree as ET\nfrom .base import attach_tool_provenance, new_finding_id, omit_none, run_tool\n"
+                  },
+                  "endLine": 5,
+                  "startLine": 3
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B405",
+          "ruleIndex": 6
+        },
+        {
+          "message": {
+            "text": "Using xml.etree.ElementTree.fromstring to parse untrusted XML data is known to be vulnerable to XML attacks. Replace xml.etree.ElementTree.fromstring with its defusedxml equivalent function or make sure defusedxml.defuse_stdlib() is called"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "        root = ET.fromstring(text)\n"
+                  },
+                  "endColumn": 35,
+                  "endLine": 45,
+                  "startColumn": 16,
+                  "startLine": 45
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/skill/scripts/tools/spotbugs.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "            return []\n        root = ET.fromstring(text)\n        out = []\n"
+                  },
+                  "endLine": 46,
+                  "startLine": 44
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B314",
+          "ruleIndex": 7
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            dispatch.emit_host_agents(\"generic\", \"/tmp/x\")\n"
+                  },
+                  "endColumn": 58,
+                  "endLine": 470,
+                  "startColumn": 50,
+                  "startLine": 470
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/test_dispatch.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "        with self.assertRaises(ValueError):\n            dispatch.emit_host_agents(\"generic\", \"/tmp/x\")\n\n"
+                  },
+                  "endLine": 471,
+                  "startLine": 469
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Consider possible security implications associated with the subprocess module."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "import subprocess\n"
+                  },
+                  "endColumn": 18,
+                  "endLine": 2,
+                  "startColumn": 1,
+                  "startLine": 2
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/test_dispatch_integration.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "import os\nimport subprocess\nimport sys\n"
+                  },
+                  "endLine": 3,
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B404",
+          "ruleIndex": 2
+        },
+        {
+          "message": {
+            "text": "Starting a process with a partial executable path"
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            subprocess.run([\"git\", \"init\", td], capture_output=True)\n"
+                  },
+                  "endColumn": 69,
+                  "endLine": 18,
+                  "startColumn": 13,
+                  "startLine": 18
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/test_dispatch_integration.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "                fh.write(\"# hello\")\n            subprocess.run([\"git\", \"init\", td], capture_output=True)\n            result = orch.build_result(td, \"repo\", \".\", None, [\"docs/readme.md\"], [], 15)\n"
+                  },
+                  "endLine": 19,
+                  "startLine": 17
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B607",
+          "ruleIndex": 3
+        },
+        {
+          "message": {
+            "text": "subprocess call - check for execution of untrusted input."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            subprocess.run([\"git\", \"init\", td], capture_output=True)\n"
+                  },
+                  "endColumn": 69,
+                  "endLine": 18,
+                  "startColumn": 13,
+                  "startLine": 18
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/test_dispatch_integration.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "                fh.write(\"# hello\")\n            subprocess.run([\"git\", \"init\", td], capture_output=True)\n            result = orch.build_result(td, \"repo\", \".\", None, [\"docs/readme.md\"], [], 15)\n"
+                  },
+                  "endLine": 19,
+                  "startLine": 17
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B603",
+          "ruleIndex": 4
+        },
+        {
+          "message": {
+            "text": "Consider possible security implications associated with the subprocess module."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "import subprocess\n"
+                  },
+                  "endColumn": 18,
+                  "endLine": 3,
+                  "startColumn": 1,
+                  "startLine": 3
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/test_e2e.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "import os\nimport subprocess\nimport sys\n"
+                  },
+                  "endLine": 4,
+                  "startLine": 2
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B404",
+          "ruleIndex": 2
+        },
+        {
+          "message": {
+            "text": "subprocess call - check for execution of untrusted input."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            r = subprocess.run(\n"
+                  },
+                  "endColumn": 48,
+                  "endLine": 19,
+                  "startColumn": 17,
+                  "startLine": 18
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/test_e2e.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "            # 1. resolve target\n            r = subprocess.run(\n                [sys.executable, os.path.join(SCRIPTS, \"orchestrator.py\"),\n                 \"--repo\", d, \"--directory\", \"src\"],\n                capture_output=True, text=True)\n            self.assertEqual(r.returncode, 0, r.stderr)\n"
+                  },
+                  "endLine": 22,
+                  "startLine": 17
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B603",
+          "ruleIndex": 4
+        },
+        {
+          "message": {
+            "text": "subprocess call - check for execution of untrusted input."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            r2 = subprocess.run(\n"
+                  },
+                  "endColumn": 48,
+                  "endLine": 39,
+                  "startColumn": 18,
+                  "startLine": 38
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/test_e2e.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "            # 3. synthesize\n            r2 = subprocess.run(\n                [sys.executable, os.path.join(SCRIPTS, \"synthesize.py\"),\n                 \"--target\", \"src\", \"--groups\", gj, \"--out\", out, fp],\n                capture_output=True, text=True)\n            self.assertEqual(r2.returncode, 0, r2.stderr)\n"
+                  },
+                  "endLine": 42,
+                  "startLine": 37
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B603",
+          "ruleIndex": 4
+        },
+        {
+          "message": {
+            "text": "subprocess call - check for execution of untrusted input."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            r3 = subprocess.run(\n"
+                  },
+                  "endColumn": 48,
+                  "endLine": 52,
+                  "startColumn": 18,
+                  "startLine": 51
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/test_e2e.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "            # opting unverified findings into the gate restores the old behavior\n            r3 = subprocess.run(\n                [sys.executable, os.path.join(SCRIPTS, \"synthesize.py\"),\n                 \"--target\", \"src\", \"--groups\", gj, \"--gate-unverified\",\n                 \"--out\", out, fp],\n                capture_output=True, text=True)\n            self.assertEqual(r3.returncode, 0, r3.stderr)\n"
+                  },
+                  "endLine": 56,
+                  "startLine": 50
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B603",
+          "ruleIndex": 4
+        },
+        {
+          "message": {
+            "text": "Consider possible security implications associated with the subprocess module."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "import subprocess\n"
+                  },
+                  "endColumn": 18,
+                  "endLine": 3,
+                  "startColumn": 1,
+                  "startLine": 3
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/test_orchestrator.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "import os\nimport subprocess\nimport sys\n"
+                  },
+                  "endLine": 4,
+                  "startLine": 2
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B404",
+          "ruleIndex": 2
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "        res = orch.build_result(\"/tmp\", \"files\", \"changeset\", None, files, [], max_per_group=2)\n"
+                  },
+                  "endColumn": 39,
+                  "endLine": 236,
+                  "startColumn": 33,
+                  "startLine": 236
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/test_orchestrator.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "        files = [\"pkg/f%02d.py\" % i for i in range(5)]\n        res = orch.build_result(\"/tmp\", \"files\", \"changeset\", None, files, [], max_per_group=2)\n        self.assertTrue(all(len(g[\"files\"]) <= 2 for g in res[\"groups\"]))\n"
+                  },
+                  "endLine": 237,
+                  "startLine": 235
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "        res = orch.build_result(\"/tmp\", \"repo\", \".\", None, [], [],\n"
+                  },
+                  "endColumn": 39,
+                  "endLine": 242,
+                  "startColumn": 33,
+                  "startLine": 241
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/test_orchestrator.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "    def test_build_result_includes_security_mode(self):\n        res = orch.build_result(\"/tmp\", \"repo\", \".\", None, [], [],\n                                security_mode=\"redteam\")\n        self.assertEqual(res[\"security_mode\"], \"redteam\")\n"
+                  },
+                  "endLine": 243,
+                  "startLine": 240
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Starting a process with a partial executable path"
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            subprocess.run([\"git\", \"init\", \"-q\", d], check=True)\n"
+                  },
+                  "endColumn": 65,
+                  "endLine": 285,
+                  "startColumn": 13,
+                  "startLine": 285
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/test_orchestrator.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "            self._touch(d, \"src/b.py\")\n            subprocess.run([\"git\", \"init\", \"-q\", d], check=True)\n            subprocess.run([\"git\", \"-C\", d, \"config\", \"user.email\", \"t@e.com\"], check=True)\n"
+                  },
+                  "endLine": 286,
+                  "startLine": 284
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B607",
+          "ruleIndex": 3
+        },
+        {
+          "message": {
+            "text": "subprocess call - check for execution of untrusted input."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            subprocess.run([\"git\", \"init\", \"-q\", d], check=True)\n"
+                  },
+                  "endColumn": 65,
+                  "endLine": 285,
+                  "startColumn": 13,
+                  "startLine": 285
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/test_orchestrator.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "            self._touch(d, \"src/b.py\")\n            subprocess.run([\"git\", \"init\", \"-q\", d], check=True)\n            subprocess.run([\"git\", \"-C\", d, \"config\", \"user.email\", \"t@e.com\"], check=True)\n"
+                  },
+                  "endLine": 286,
+                  "startLine": 284
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B603",
+          "ruleIndex": 4
+        },
+        {
+          "message": {
+            "text": "Starting a process with a partial executable path"
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            subprocess.run([\"git\", \"-C\", d, \"config\", \"user.email\", \"t@e.com\"], check=True)\n"
+                  },
+                  "endColumn": 92,
+                  "endLine": 286,
+                  "startColumn": 13,
+                  "startLine": 286
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/test_orchestrator.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "            subprocess.run([\"git\", \"init\", \"-q\", d], check=True)\n            subprocess.run([\"git\", \"-C\", d, \"config\", \"user.email\", \"t@e.com\"], check=True)\n            subprocess.run([\"git\", \"-C\", d, \"config\", \"user.name\", \"Test\"], check=True)\n"
+                  },
+                  "endLine": 287,
+                  "startLine": 285
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B607",
+          "ruleIndex": 3
+        },
+        {
+          "message": {
+            "text": "subprocess call - check for execution of untrusted input."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            subprocess.run([\"git\", \"-C\", d, \"config\", \"user.email\", \"t@e.com\"], check=True)\n"
+                  },
+                  "endColumn": 92,
+                  "endLine": 286,
+                  "startColumn": 13,
+                  "startLine": 286
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/test_orchestrator.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "            subprocess.run([\"git\", \"init\", \"-q\", d], check=True)\n            subprocess.run([\"git\", \"-C\", d, \"config\", \"user.email\", \"t@e.com\"], check=True)\n            subprocess.run([\"git\", \"-C\", d, \"config\", \"user.name\", \"Test\"], check=True)\n"
+                  },
+                  "endLine": 287,
+                  "startLine": 285
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B603",
+          "ruleIndex": 4
+        },
+        {
+          "message": {
+            "text": "Starting a process with a partial executable path"
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            subprocess.run([\"git\", \"-C\", d, \"config\", \"user.name\", \"Test\"], check=True)\n"
+                  },
+                  "endColumn": 88,
+                  "endLine": 287,
+                  "startColumn": 13,
+                  "startLine": 287
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/test_orchestrator.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "            subprocess.run([\"git\", \"-C\", d, \"config\", \"user.email\", \"t@e.com\"], check=True)\n            subprocess.run([\"git\", \"-C\", d, \"config\", \"user.name\", \"Test\"], check=True)\n            subprocess.run([\"git\", \"-C\", d, \"add\", \".\"], check=True)\n"
+                  },
+                  "endLine": 288,
+                  "startLine": 286
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B607",
+          "ruleIndex": 3
+        },
+        {
+          "message": {
+            "text": "subprocess call - check for execution of untrusted input."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            subprocess.run([\"git\", \"-C\", d, \"config\", \"user.name\", \"Test\"], check=True)\n"
+                  },
+                  "endColumn": 88,
+                  "endLine": 287,
+                  "startColumn": 13,
+                  "startLine": 287
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/test_orchestrator.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "            subprocess.run([\"git\", \"-C\", d, \"config\", \"user.email\", \"t@e.com\"], check=True)\n            subprocess.run([\"git\", \"-C\", d, \"config\", \"user.name\", \"Test\"], check=True)\n            subprocess.run([\"git\", \"-C\", d, \"add\", \".\"], check=True)\n"
+                  },
+                  "endLine": 288,
+                  "startLine": 286
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B603",
+          "ruleIndex": 4
+        },
+        {
+          "message": {
+            "text": "Starting a process with a partial executable path"
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            subprocess.run([\"git\", \"-C\", d, \"add\", \".\"], check=True)\n"
+                  },
+                  "endColumn": 69,
+                  "endLine": 288,
+                  "startColumn": 13,
+                  "startLine": 288
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/test_orchestrator.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "            subprocess.run([\"git\", \"-C\", d, \"config\", \"user.name\", \"Test\"], check=True)\n            subprocess.run([\"git\", \"-C\", d, \"add\", \".\"], check=True)\n            subprocess.run([\"git\", \"-C\", d, \"commit\", \"-q\", \"-m\", \"init\"], check=True)\n"
+                  },
+                  "endLine": 289,
+                  "startLine": 287
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B607",
+          "ruleIndex": 3
+        },
+        {
+          "message": {
+            "text": "subprocess call - check for execution of untrusted input."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            subprocess.run([\"git\", \"-C\", d, \"add\", \".\"], check=True)\n"
+                  },
+                  "endColumn": 69,
+                  "endLine": 288,
+                  "startColumn": 13,
+                  "startLine": 288
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/test_orchestrator.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "            subprocess.run([\"git\", \"-C\", d, \"config\", \"user.name\", \"Test\"], check=True)\n            subprocess.run([\"git\", \"-C\", d, \"add\", \".\"], check=True)\n            subprocess.run([\"git\", \"-C\", d, \"commit\", \"-q\", \"-m\", \"init\"], check=True)\n"
+                  },
+                  "endLine": 289,
+                  "startLine": 287
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B603",
+          "ruleIndex": 4
+        },
+        {
+          "message": {
+            "text": "Starting a process with a partial executable path"
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            subprocess.run([\"git\", \"-C\", d, \"commit\", \"-q\", \"-m\", \"init\"], check=True)\n"
+                  },
+                  "endColumn": 87,
+                  "endLine": 289,
+                  "startColumn": 13,
+                  "startLine": 289
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/test_orchestrator.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "            subprocess.run([\"git\", \"-C\", d, \"add\", \".\"], check=True)\n            subprocess.run([\"git\", \"-C\", d, \"commit\", \"-q\", \"-m\", \"init\"], check=True)\n            # modify a.py and add c.py on a feature branch\n"
+                  },
+                  "endLine": 290,
+                  "startLine": 288
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B607",
+          "ruleIndex": 3
+        },
+        {
+          "message": {
+            "text": "subprocess call - check for execution of untrusted input."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            subprocess.run([\"git\", \"-C\", d, \"commit\", \"-q\", \"-m\", \"init\"], check=True)\n"
+                  },
+                  "endColumn": 87,
+                  "endLine": 289,
+                  "startColumn": 13,
+                  "startLine": 289
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/test_orchestrator.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "            subprocess.run([\"git\", \"-C\", d, \"add\", \".\"], check=True)\n            subprocess.run([\"git\", \"-C\", d, \"commit\", \"-q\", \"-m\", \"init\"], check=True)\n            # modify a.py and add c.py on a feature branch\n"
+                  },
+                  "endLine": 290,
+                  "startLine": 288
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B603",
+          "ruleIndex": 4
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "        res = orch.build_result(\"/tmp\", \"repo\", \".\", None, impl, [],\n"
+                  },
+                  "endColumn": 39,
+                  "endLine": 314,
+                  "startColumn": 33,
+                  "startLine": 313
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/test_orchestrator.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "        impl = [\"Dockerfile\", \"src/models.py\", \"migrations/001.sql\"]\n        res = orch.build_result(\"/tmp\", \"repo\", \".\", None, impl, [],\n                                security_mode=\"standard\")\n        g = res[\"groups\"][0]\n"
+                  },
+                  "endLine": 315,
+                  "startLine": 312
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "        res = orch.build_result(\"/tmp\", \"repo\", \".\", None, impl, [],\n"
+                  },
+                  "endColumn": 39,
+                  "endLine": 325,
+                  "startColumn": 33,
+                  "startLine": 324
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/test_orchestrator.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "        impl = [\"src/web.py\"]\n        res = orch.build_result(\"/tmp\", \"repo\", \".\", None, impl, [],\n                                security_mode=\"redteam\")\n        g = res[\"groups\"][0]\n"
+                  },
+                  "endLine": 326,
+                  "startLine": 323
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Consider possible security implications associated with the subprocess module."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "        import subprocess as sp\n"
+                  },
+                  "endColumn": 32,
+                  "endLine": 36,
+                  "startColumn": 9,
+                  "startLine": 36
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/test_run_tools.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "    def test_run_tools_passes_exact_timeout_and_survives_timeout(self):\n        import subprocess as sp\n        seen = {}\n"
+                  },
+                  "endLine": 37,
+                  "startLine": 35
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B404",
+          "ruleIndex": 2
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "                rc = ra.main([\"_run_adapter.py\", \"fake\", \"/tmp/target\"])\n"
+                  },
+                  "endColumn": 71,
+                  "endLine": 186,
+                  "startColumn": 58,
+                  "startLine": 186
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/test_run_tools.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "            try:\n                rc = ra.main([\"_run_adapter.py\", \"fake\", \"/tmp/target\"])\n            finally:\n"
+                  },
+                  "endLine": 187,
+                  "startLine": 185
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "        rc = ra.main([\"_run_adapter.py\", \"not-a-real-adapter\", \"/tmp/target\"])\n"
+                  },
+                  "endColumn": 77,
+                  "endLine": 195,
+                  "startColumn": 64,
+                  "startLine": 195
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/test_run_tools.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "    def test_main_skips_unregistered_adapter(self):\n        rc = ra.main([\"_run_adapter.py\", \"not-a-real-adapter\", \"/tmp/target\"])\n        self.assertEqual(rc, 0)\n"
+                  },
+                  "endLine": 196,
+                  "startLine": 194
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            rc = ra.main([\"_run_adapter.py\", \"crash\", \"/tmp/target\"])\n"
+                  },
+                  "endColumn": 68,
+                  "endLine": 206,
+                  "startColumn": 55,
+                  "startLine": 206
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/test_run_tools.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "        try:\n            rc = ra.main([\"_run_adapter.py\", \"crash\", \"/tmp/target\"])\n            self.assertEqual(rc, 0)\n"
+                  },
+                  "endLine": 207,
+                  "startLine": 205
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "    assert \"depth\" in scope[\"properties\"]\n"
+                  },
+                  "endColumn": 42,
+                  "endLine": 260,
+                  "startColumn": 5,
+                  "startLine": 260
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/test_schemas.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "        scope = json.load(fh)\n    assert \"depth\" in scope[\"properties\"]\n    assert \"files\" in scope[\"properties\"]\n"
+                  },
+                  "endLine": 261,
+                  "startLine": 259
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B101",
+          "ruleIndex": 9
+        },
+        {
+          "message": {
+            "text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "    assert \"files\" in scope[\"properties\"]\n"
+                  },
+                  "endColumn": 42,
+                  "endLine": 261,
+                  "startColumn": 5,
+                  "startLine": 261
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/test_schemas.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "    assert \"depth\" in scope[\"properties\"]\n    assert \"files\" in scope[\"properties\"]\n    lens_items = scope[\"properties\"][\"lenses\"][\"additionalProperties\"][\"items\"]\n"
+                  },
+                  "endLine": 262,
+                  "startLine": 260
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B101",
+          "ruleIndex": 9
+        },
+        {
+          "message": {
+            "text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "    assert \"priority\" in lens_items[\"properties\"]\n"
+                  },
+                  "endColumn": 50,
+                  "endLine": 263,
+                  "startColumn": 5,
+                  "startLine": 263
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/test_schemas.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "    lens_items = scope[\"properties\"][\"lenses\"][\"additionalProperties\"][\"items\"]\n    assert \"priority\" in lens_items[\"properties\"]\n    assert \"depth_threshold\" in lens_items[\"properties\"]\n"
+                  },
+                  "endLine": 264,
+                  "startLine": 262
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B101",
+          "ruleIndex": 9
+        },
+        {
+          "message": {
+            "text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "    assert \"depth_threshold\" in lens_items[\"properties\"]\n"
+                  },
+                  "endColumn": 57,
+                  "endLine": 264,
+                  "startColumn": 5,
+                  "startLine": 264
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/test_schemas.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "    assert \"priority\" in lens_items[\"properties\"]\n    assert \"depth_threshold\" in lens_items[\"properties\"]\n\n"
+                  },
+                  "endLine": 265,
+                  "startLine": 263
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B101",
+          "ruleIndex": 9
+        },
+        {
+          "message": {
+            "text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "    assert \"source_role\" in finding_props\n"
+                  },
+                  "endColumn": 42,
+                  "endLine": 269,
+                  "startColumn": 5,
+                  "startLine": 269
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/test_schemas.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "    finding_props = report[\"properties\"][\"findings\"][\"items\"][\"properties\"]\n    assert \"source_role\" in finding_props\n    assert \"evidence\" in finding_props\n"
+                  },
+                  "endLine": 270,
+                  "startLine": 268
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B101",
+          "ruleIndex": 9
+        },
+        {
+          "message": {
+            "text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "    assert \"evidence\" in finding_props\n"
+                  },
+                  "endColumn": 39,
+                  "endLine": 270,
+                  "startColumn": 5,
+                  "startLine": 270
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/test_schemas.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "    assert \"source_role\" in finding_props\n    assert \"evidence\" in finding_props\n    assert \"depth\" in finding_props\n"
+                  },
+                  "endLine": 271,
+                  "startLine": 269
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B101",
+          "ruleIndex": 9
+        },
+        {
+          "message": {
+            "text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "    assert \"depth\" in finding_props\n"
+                  },
+                  "endColumn": 36,
+                  "endLine": 271,
+                  "startColumn": 5,
+                  "startLine": 271
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/test_schemas.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "    assert \"evidence\" in finding_props\n    assert \"depth\" in finding_props\n\n"
+                  },
+                  "endLine": 272,
+                  "startLine": 270
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B101",
+          "ruleIndex": 9
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            self.assertTrue(br.BrakemanAdapter().is_applicable(\"/tmp/fake\"))\n"
+                  },
+                  "endColumn": 75,
+                  "endLine": 39,
+                  "startColumn": 64,
+                  "startLine": 39
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/tools/test_brakeman.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "        with mock.patch(\"os.path.exists\", side_effect=lambda p: p.endswith(\"Gemfile\")):\n            self.assertTrue(br.BrakemanAdapter().is_applicable(\"/tmp/fake\"))\n\n"
+                  },
+                  "endLine": 40,
+                  "startLine": 38
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "                self.assertFalse(br.BrakemanAdapter().is_applicable(\"/tmp/fake\"))\n"
+                  },
+                  "endColumn": 80,
+                  "endLine": 44,
+                  "startColumn": 69,
+                  "startLine": 44
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/tools/test_brakeman.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "            with mock.patch(\"os.path.isdir\", return_value=False):\n                self.assertFalse(br.BrakemanAdapter().is_applicable(\"/tmp/fake\"))\n\n"
+                  },
+                  "endLine": 45,
+                  "startLine": 43
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            stdout, rc = adapter.invoke(\"/tmp/fake\")\n"
+                  },
+                  "endColumn": 52,
+                  "endLine": 56,
+                  "startColumn": 41,
+                  "startLine": 56
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/tools/test_brakeman.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "        with mock.patch(\"scripts.tools.base.subprocess.run\", fake_run):\n            stdout, rc = adapter.invoke(\"/tmp/fake\")\n        self.assertEqual(rc, 0)\n"
+                  },
+                  "endLine": 57,
+                  "startLine": 55
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            [\"brakeman\", \"--format\", \"json\", \"--quiet\", \"--run-all-checks\", \"/tmp/fake\"],\n"
+                  },
+                  "endColumn": 88,
+                  "endLine": 59,
+                  "startColumn": 77,
+                  "startLine": 59
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/tools/test_brakeman.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "        fake_run.assert_called_once_with(\n            [\"brakeman\", \"--format\", \"json\", \"--quiet\", \"--run-all-checks\", \"/tmp/fake\"],\n            capture_output=True, timeout=300,\n"
+                  },
+                  "endLine": 60,
+                  "startLine": 58
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            self.assertTrue(ba.BundlerAuditAdapter().is_applicable(\"/tmp/fake\"))\n"
+                  },
+                  "endColumn": 79,
+                  "endLine": 39,
+                  "startColumn": 68,
+                  "startLine": 39
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/tools/test_bundler_audit.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "        with mock.patch(\"os.path.exists\", side_effect=lambda p: p.endswith(\"Gemfile.lock\")):\n            self.assertTrue(ba.BundlerAuditAdapter().is_applicable(\"/tmp/fake\"))\n\n"
+                  },
+                  "endLine": 40,
+                  "startLine": 38
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            stdout, rc = ba.BundlerAuditAdapter().invoke(\"/tmp/fake\")\n"
+                  },
+                  "endColumn": 69,
+                  "endLine": 50,
+                  "startColumn": 58,
+                  "startLine": 50
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/tools/test_bundler_audit.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "        with mock.patch(\"scripts.tools.base.subprocess.run\", fake_run):\n            stdout, rc = ba.BundlerAuditAdapter().invoke(\"/tmp/fake\")\n        self.assertEqual(rc, 0)\n"
+                  },
+                  "endLine": 51,
+                  "startLine": 49
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            capture_output=True, timeout=300, cwd=\"/tmp/fake\",\n"
+                  },
+                  "endColumn": 62,
+                  "endLine": 54,
+                  "startColumn": 51,
+                  "startLine": 54
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/tools/test_bundler_audit.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "            [\"bundle-audit\", \"check\"],\n            capture_output=True, timeout=300, cwd=\"/tmp/fake\",\n        )\n"
+                  },
+                  "endLine": 55,
+                  "startLine": 53
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            self.assertTrue(ca.CargoAuditAdapter().is_applicable(\"/tmp/fake\"))\n"
+                  },
+                  "endColumn": 77,
+                  "endLine": 38,
+                  "startColumn": 66,
+                  "startLine": 38
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/tools/test_cargo_audit.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "        with mock.patch(\"os.path.exists\", side_effect=lambda p: p.endswith(\"Cargo.toml\")):\n            self.assertTrue(ca.CargoAuditAdapter().is_applicable(\"/tmp/fake\"))\n\n"
+                  },
+                  "endLine": 39,
+                  "startLine": 37
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            stdout, rc = ca.CargoAuditAdapter().invoke(\"/tmp/fake\")\n"
+                  },
+                  "endColumn": 67,
+                  "endLine": 49,
+                  "startColumn": 56,
+                  "startLine": 49
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/tools/test_cargo_audit.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "        with mock.patch(\"scripts.tools.base.subprocess.run\", fake_run):\n            stdout, rc = ca.CargoAuditAdapter().invoke(\"/tmp/fake\")\n        self.assertEqual(rc, 0)\n"
+                  },
+                  "endLine": 50,
+                  "startLine": 48
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            capture_output=True, timeout=300, cwd=\"/tmp/fake\",\n"
+                  },
+                  "endColumn": 62,
+                  "endLine": 53,
+                  "startColumn": 51,
+                  "startLine": 53
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/tools/test_cargo_audit.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "            [\"cargo\", \"audit\", \"--format\", \"json\"],\n            capture_output=True, timeout=300, cwd=\"/tmp/fake\",\n        )\n"
+                  },
+                  "endLine": 54,
+                  "startLine": 52
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            stdout, rc = adapter.invoke(\"/tmp/fake\")\n"
+                  },
+                  "endColumn": 52,
+                  "endLine": 139,
+                  "startColumn": 41,
+                  "startLine": 139
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/tools/test_eslint_security.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "        with mock.patch(\"scripts.tools.base.subprocess.run\", fake_run):\n            stdout, rc = adapter.invoke(\"/tmp/fake\")\n        self.assertEqual(stdout, b\"[]\")\n"
+                  },
+                  "endLine": 140,
+                  "startLine": 138
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            adapter.invoke(\"/tmp/fake\")\n"
+                  },
+                  "endColumn": 39,
+                  "endLine": 155,
+                  "startColumn": 28,
+                  "startLine": 155
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/tools/test_eslint_security.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "        with mock.patch(\"scripts.tools.base.subprocess.run\", fake_run):\n            adapter.invoke(\"/tmp/fake\")\n        args, _ = fake_run.call_args\n"
+                  },
+                  "endLine": 156,
+                  "startLine": 154
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Consider possible security implications associated with the subprocess module."
+          },
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "import subprocess\n"
+                  },
+                  "endColumn": 18,
+                  "endLine": 3,
+                  "startColumn": 1,
+                  "startLine": 3
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/tools/test_legacy_sarif.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "import os\nimport subprocess\nimport sys\n"
+                  },
+                  "endLine": 4,
+                  "startLine": 2
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "HIGH",
+            "issue_severity": "LOW"
+          },
+          "ruleId": "B404",
+          "ruleIndex": 2
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            self.assertTrue(na.NpmAuditAdapter().is_applicable(\"/tmp/fake\"))\n"
+                  },
+                  "endColumn": 75,
+                  "endLine": 76,
+                  "startColumn": 64,
+                  "startLine": 76
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/tools/test_npm_audit.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "        with mock.patch(\"os.path.isfile\", side_effect=lambda p: p.endswith(\"package-lock.json\")):\n            self.assertTrue(na.NpmAuditAdapter().is_applicable(\"/tmp/fake\"))\n\n"
+                  },
+                  "endLine": 77,
+                  "startLine": 75
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            self.assertTrue(na.NpmAuditAdapter().is_applicable(\"/tmp/fake\"))\n"
+                  },
+                  "endColumn": 75,
+                  "endLine": 80,
+                  "startColumn": 64,
+                  "startLine": 80
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/tools/test_npm_audit.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "        with mock.patch(\"os.path.isfile\", side_effect=lambda p: p.endswith(\"npm-shrinkwrap.json\")):\n            self.assertTrue(na.NpmAuditAdapter().is_applicable(\"/tmp/fake\"))\n\n"
+                  },
+                  "endLine": 81,
+                  "startLine": 79
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            self.assertFalse(na.NpmAuditAdapter().is_applicable(\"/tmp/fake\"))\n"
+                  },
+                  "endColumn": 76,
+                  "endLine": 84,
+                  "startColumn": 65,
+                  "startLine": 84
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/tools/test_npm_audit.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "        with mock.patch(\"os.path.isfile\", return_value=False):\n            self.assertFalse(na.NpmAuditAdapter().is_applicable(\"/tmp/fake\"))\n\n"
+                  },
+                  "endLine": 85,
+                  "startLine": 83
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            stdout, rc = adapter.invoke(\"/tmp/fake\")\n"
+                  },
+                  "endColumn": 52,
+                  "endLine": 96,
+                  "startColumn": 41,
+                  "startLine": 96
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/tools/test_npm_audit.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "        with mock.patch(\"scripts.tools.base.subprocess.run\", fake_run):\n            stdout, rc = adapter.invoke(\"/tmp/fake\")\n        self.assertEqual(stdout, b\"{}\")\n"
+                  },
+                  "endLine": 97,
+                  "startLine": 95
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            [\"npm\", \"audit\", \"--json\", \"--prefix\", \"/tmp/fake\"],\n"
+                  },
+                  "endColumn": 63,
+                  "endLine": 100,
+                  "startColumn": 52,
+                  "startLine": 100
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/tools/test_npm_audit.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "        fake_run.assert_called_once_with(\n            [\"npm\", \"audit\", \"--json\", \"--prefix\", \"/tmp/fake\"],\n            capture_output=True,\n"
+                  },
+                  "endLine": 101,
+                  "startLine": 99
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            stdout, rc = adapter.invoke(\"/tmp/fake\")\n"
+                  },
+                  "endColumn": 52,
+                  "endLine": 124,
+                  "startColumn": 41,
+                  "startLine": 124
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/tools/test_osv_scanner.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "        with mock.patch(\"scripts.tools.base.subprocess.run\", fake_run):\n            stdout, rc = adapter.invoke(\"/tmp/fake\")\n        self.assertEqual(stdout, b\"{}\")\n"
+                  },
+                  "endLine": 125,
+                  "startLine": 123
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            [\"osv-scanner\", \"--format\", \"json\", \"--recursive\", \"/tmp/fake\"],\n"
+                  },
+                  "endColumn": 75,
+                  "endLine": 128,
+                  "startColumn": 64,
+                  "startLine": 128
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/tools/test_osv_scanner.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "        fake_run.assert_called_once_with(\n            [\"osv-scanner\", \"--format\", \"json\", \"--recursive\", \"/tmp/fake\"],\n            capture_output=True,\n"
+                  },
+                  "endLine": 129,
+                  "startLine": 127
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "        adapter._manifest_path = \"/tmp/fake/pyproject.toml\"\n"
+                  },
+                  "endColumn": 60,
+                  "endLine": 42,
+                  "startColumn": 34,
+                  "startLine": 42
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/tools/test_pip_audit.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "        adapter = pa.PipAuditAdapter()\n        adapter._manifest_path = \"/tmp/fake/pyproject.toml\"\n        findings = adapter.parse(PIP_AUDIT_SAMPLE, \"g1\")\n"
+                  },
+                  "endLine": 43,
+                  "startLine": 41
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "        self.assertEqual(findings[0][\"location\"][\"file\"], \"/tmp/fake/pyproject.toml\")\n"
+                  },
+                  "endColumn": 85,
+                  "endLine": 44,
+                  "startColumn": 59,
+                  "startLine": 44
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/tools/test_pip_audit.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "        findings = adapter.parse(PIP_AUDIT_SAMPLE, \"g1\")\n        self.assertEqual(findings[0][\"location\"][\"file\"], \"/tmp/fake/pyproject.toml\")\n\n"
+                  },
+                  "endLine": 45,
+                  "startLine": 43
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            self.assertTrue(pa.PipAuditAdapter().is_applicable(\"/tmp/fake\"))\n"
+                  },
+                  "endColumn": 75,
+                  "endLine": 74,
+                  "startColumn": 64,
+                  "startLine": 74
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/tools/test_pip_audit.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "        with mock.patch(\"os.path.exists\", side_effect=lambda p: p.endswith(\"requirements.txt\")):\n            self.assertTrue(pa.PipAuditAdapter().is_applicable(\"/tmp/fake\"))\n\n"
+                  },
+                  "endLine": 75,
+                  "startLine": 73
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "        with mock.patch(\"scripts.tools.pip_audit.glob.glob\", return_value=[\"/tmp/fake/requirements-dev.txt\"]):\n"
+                  },
+                  "endColumn": 108,
+                  "endLine": 77,
+                  "startColumn": 76,
+                  "startLine": 77
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/tools/test_pip_audit.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "    def test_is_applicable_when_requirements_dev_present(self):\n        with mock.patch(\"scripts.tools.pip_audit.glob.glob\", return_value=[\"/tmp/fake/requirements-dev.txt\"]):\n            with mock.patch(\"os.path.exists\", return_value=False):\n"
+                  },
+                  "endLine": 78,
+                  "startLine": 76
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "                self.assertTrue(pa.PipAuditAdapter().is_applicable(\"/tmp/fake\"))\n"
+                  },
+                  "endColumn": 79,
+                  "endLine": 79,
+                  "startColumn": 68,
+                  "startLine": 79
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/tools/test_pip_audit.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "            with mock.patch(\"os.path.exists\", return_value=False):\n                self.assertTrue(pa.PipAuditAdapter().is_applicable(\"/tmp/fake\"))\n\n"
+                  },
+                  "endLine": 80,
+                  "startLine": 78
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "                self.assertTrue(pa.PipAuditAdapter().is_applicable(\"/tmp/fake\"))\n"
+                  },
+                  "endColumn": 79,
+                  "endLine": 84,
+                  "startColumn": 68,
+                  "startLine": 84
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/tools/test_pip_audit.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "            with mock.patch(\"scripts.tools.pip_audit.glob.glob\", return_value=[]):\n                self.assertTrue(pa.PipAuditAdapter().is_applicable(\"/tmp/fake\"))\n\n"
+                  },
+                  "endLine": 85,
+                  "startLine": 83
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "                self.assertFalse(pa.PipAuditAdapter().is_applicable(\"/tmp/fake\"))\n"
+                  },
+                  "endColumn": 80,
+                  "endLine": 89,
+                  "startColumn": 69,
+                  "startLine": 89
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/tools/test_pip_audit.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "            with mock.patch(\"scripts.tools.pip_audit.glob.glob\", return_value=[]):\n                self.assertFalse(pa.PipAuditAdapter().is_applicable(\"/tmp/fake\"))\n\n"
+                  },
+                  "endLine": 90,
+                  "startLine": 88
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "                self.assertFalse(pa.PipAuditAdapter().is_applicable(\"/tmp/fake\"))\n"
+                  },
+                  "endColumn": 80,
+                  "endLine": 94,
+                  "startColumn": 69,
+                  "startLine": 94
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/tools/test_pip_audit.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "            with mock.patch(\"scripts.tools.pip_audit.glob.glob\", return_value=[]):\n                self.assertFalse(pa.PipAuditAdapter().is_applicable(\"/tmp/fake\"))\n\n"
+                  },
+                  "endLine": 95,
+                  "startLine": 93
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "                self.assertFalse(pa.PipAuditAdapter().is_applicable(\"/tmp/fake\"))\n"
+                  },
+                  "endColumn": 80,
+                  "endLine": 99,
+                  "startColumn": 69,
+                  "startLine": 99
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/tools/test_pip_audit.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "            with mock.patch(\"scripts.tools.pip_audit.glob.glob\", return_value=[]):\n                self.assertFalse(pa.PipAuditAdapter().is_applicable(\"/tmp/fake\"))\n\n"
+                  },
+                  "endLine": 100,
+                  "startLine": 98
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            with mock.patch(\"scripts.tools.pip_audit.glob.glob\", return_value=[\"/tmp/fake/requirements.txt\"]):\n"
+                  },
+                  "endColumn": 108,
+                  "endLine": 111,
+                  "startColumn": 80,
+                  "startLine": 111
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/tools/test_pip_audit.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "        with mock.patch(\"scripts.tools.base.subprocess.run\", fake_run):\n            with mock.patch(\"scripts.tools.pip_audit.glob.glob\", return_value=[\"/tmp/fake/requirements.txt\"]):\n                stdout, rc = adapter.invoke(\"/tmp/fake\")\n"
+                  },
+                  "endLine": 112,
+                  "startLine": 110
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "                stdout, rc = adapter.invoke(\"/tmp/fake\")\n"
+                  },
+                  "endColumn": 56,
+                  "endLine": 112,
+                  "startColumn": 45,
+                  "startLine": 112
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/tools/test_pip_audit.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "            with mock.patch(\"scripts.tools.pip_audit.glob.glob\", return_value=[\"/tmp/fake/requirements.txt\"]):\n                stdout, rc = adapter.invoke(\"/tmp/fake\")\n        self.assertEqual(stdout, b\"[]\")\n"
+                  },
+                  "endLine": 113,
+                  "startLine": 111
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            [\"pip-audit\", \"--format=json\", \"--desc=on\", \"--requirement\", \"/tmp/fake/requirements.txt\"],\n"
+                  },
+                  "endColumn": 102,
+                  "endLine": 116,
+                  "startColumn": 74,
+                  "startLine": 116
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/tools/test_pip_audit.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "        fake_run.assert_called_once_with(\n            [\"pip-audit\", \"--format=json\", \"--desc=on\", \"--requirement\", \"/tmp/fake/requirements.txt\"],\n            capture_output=True,\n"
+                  },
+                  "endLine": 117,
+                  "startLine": 115
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "                stdout, rc = adapter.invoke(\"/tmp/fake\")\n"
+                  },
+                  "endColumn": 56,
+                  "endLine": 126,
+                  "startColumn": 45,
+                  "startLine": 126
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/tools/test_pip_audit.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "            with mock.patch(\"scripts.tools.pip_audit.glob.glob\", return_value=[]):\n                stdout, rc = adapter.invoke(\"/tmp/fake\")\n        self.assertEqual(stdout, b\"[]\")\n"
+                  },
+                  "endLine": 127,
+                  "startLine": 125
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            [\"pip-audit\", \"--format=json\", \"--desc=on\", \"/tmp/fake\"],\n"
+                  },
+                  "endColumn": 68,
+                  "endLine": 130,
+                  "startColumn": 57,
+                  "startLine": 130
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/tools/test_pip_audit.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "        fake_run.assert_called_once_with(\n            [\"pip-audit\", \"--format=json\", \"--desc=on\", \"/tmp/fake\"],\n            capture_output=True,\n"
+                  },
+                  "endLine": 131,
+                  "startLine": 129
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "        self.assertEqual(findings[0][\"location\"][\"file\"], \"/tmp/Apps/Controllers/HomeController.cs\")\n"
+                  },
+                  "endColumn": 100,
+                  "endLine": 72,
+                  "startColumn": 59,
+                  "startLine": 72
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/tools/test_roslyn_secguard.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "        self.assertEqual(len(findings), 1)\n        self.assertEqual(findings[0][\"location\"][\"file\"], \"/tmp/Apps/Controllers/HomeController.cs\")\n        self.assertEqual(findings[0][\"location\"][\"line_start\"], 42)\n"
+                  },
+                  "endLine": 73,
+                  "startLine": 71
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        },
+        {
+          "message": {
+            "text": "Probable insecure usage of temp file/directory."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "region": {
+                  "snippet": {
+                    "text": "            self.assertTrue(sb.SpotBugsAdapter().is_applicable(\"/tmp/fake\"))\n"
+                  },
+                  "endColumn": 75,
+                  "endLine": 33,
+                  "startColumn": 64,
+                  "startLine": 33
+                },
+                "artifactLocation": {
+                  "uri": "file:///src/tests/tools/test_spotbugs.py"
+                },
+                "contextRegion": {
+                  "snippet": {
+                    "text": "        with mock.patch(\"os.path.exists\", side_effect=lambda p: p.endswith(\"pom.xml\")):\n            self.assertTrue(sb.SpotBugsAdapter().is_applicable(\"/tmp/fake\"))\n\n"
+                  },
+                  "endLine": 34,
+                  "startLine": 32
+                }
+              }
+            }
+          ],
+          "properties": {
+            "issue_confidence": "MEDIUM",
+            "issue_severity": "MEDIUM"
+          },
+          "ruleId": "B108",
+          "ruleIndex": 8
+        }
+      ]
+    }
+  ],
+  "version": "2.1.0",
+  "$schema": "https://json.schemastore.org/sarif-2.1.0.json"
+}

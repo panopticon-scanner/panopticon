@@ -1634,6 +1634,35 @@ class TestToolFindingAggregation(unittest.TestCase):
         b = dict(a, id="AG-002", location={"file": "a.py", "line_start": 2})
         self.assertEqual(len(syn.aggregate_tool_findings([a, b])), 2)
 
+    def _sarif_hit(self, fid, line, rule="B607", title="Starting a process with a partial executable path"):
+        """A SARIF-adapter finding: rule id lands in provenance, NOT tool_evidence."""
+        return {"id": fid, "title": title, "severity": "LOW", "confidence": "CERTAIN",
+                "panel": "security", "category": rule, "source": "tool:bandit",
+                "location": {"file": "skill/scripts/orchestrator.py", "line_start": line},
+                "provenance": {"discovered_by": "tool:bandit", "confirmed_by": "tool:bandit",
+                               "confirmation_status": "TOOL", "confirmation_reasoning": rule}}
+
+    def test_sarif_adapter_findings_aggregate_by_rule(self):
+        # bandit/semgrep go through the SARIF path and emit no tool_evidence at
+        # all; the rule id is in provenance.confirmation_reasoning. Keying only
+        # on tool_evidence.rule_id silently skipped every SARIF finding, so one
+        # rule firing 4x in one file stayed 4 issues instead of 1 with 4 loci.
+        out = syn.aggregate_tool_findings([self._sarif_hit("BN-1", 129),
+                                           self._sarif_hit("BN-2", 140),
+                                           self._sarif_hit("BN-3", 149),
+                                           self._sarif_hit("BN-4", 161)])
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["occurrences"], 4)
+        self.assertEqual(out[0]["location"]["line_start"], 129)
+        self.assertEqual(len(out[0]["additional_loci"]), 3)
+
+    def test_sarif_fingerprint_survives_a_tool_message_rewording(self):
+        # Identity must key on the rule, not the scanner's prose — otherwise a
+        # tool upgrade that rewords its message orphans every existing issue.
+        a = syn.finding_fingerprint(self._sarif_hit("BN-1", 129))
+        b = syn.finding_fingerprint(self._sarif_hit("BN-1", 129, title="Partial executable path used"))
+        self.assertEqual(a, b)
+
     def test_aggregation_preserves_a_tool_plus_agent_reinforcement(self):
         # Aggregation runs before dedupe, and dedupe reinforces on an EXACT
         # (file, line) match. Collapsing a multi-hit rule to its lowest line
