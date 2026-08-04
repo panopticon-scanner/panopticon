@@ -1,0 +1,85 @@
+# Panopticon issue label catalog.
+#
+# The taxonomy mirrors the report artifact so an issue and its finding carry the
+# same axes. Apply with: bash .github/apply-labels.sh
+#
+# Axis 1 — severity: impact if the claim is true. Never rewritten by triage;
+#   if triage disagrees with the severity, that is a finding about the fleet.
+# Axis 2 — evidence: how hard the claim was verified (report evidence.status).
+#   These two are independent — a HIGH/unverified issue is a real state.
+# Axis 3 — panel: which reviewer surface produced it.
+# Plus process labels for the issue lifecycle.
+
+severity:
+  - name: "severity:critical"
+    color: "b60205"
+    description: "Impact if true: critical"
+  - name: "severity:high"
+    color: "d93f0b"
+    description: "Impact if true: high"
+  - name: "severity:medium"
+    color: "fbca04"
+    description: "Impact if true: medium"
+  - name: "severity:low"
+    color: "0e8a16"
+    description: "Impact if true: low"
+  - name: "severity:info"
+    color: "c5def5"
+    description: "Impact if true: informational"
+
+evidence:
+  - name: "evidence:tool-confirmed"
+    color: "1d76db"
+    description: "Reported by a static-analysis tool (or tool+agent reinforced)"
+  - name: "evidence:advisor-confirmed"
+    color: "0052cc"
+    description: "An independent advisor verified the claim against the code"
+  - name: "evidence:corroborated"
+    color: "5319e7"
+    description: "Multiple panels flagged a nearby locus; correlated witnesses"
+  - name: "evidence:needs-more-info"
+    color: "d4c5f9"
+    description: "An advisor looked and could not determine from the repo alone"
+  - name: "evidence:unverified"
+    color: "e1e4e8"
+    description: "No verification attempted (e.g. cut by --max-verify)"
+  - name: "evidence:rejected"
+    color: "6a737d"
+    description: "An advisor refuted the claim; kept for the audit trail"
+
+panel:
+  - name: "panel:code"
+    color: "bfd4f2"
+    description: "Code panel (structure, correctness, style)"
+  - name: "panel:test"
+    color: "bfd4f2"
+    description: "Test panel (coverage, test quality, test design)"
+  - name: "panel:security"
+    color: "f9d0c4"
+    description: "Security panel (known vulns, injection, novel)"
+  - name: "panel:architecture"
+    color: "bfd4f2"
+    description: "Architecture panel (repo layout, CI/CD, containers)"
+  - name: "panel:database"
+    color: "bfd4f2"
+    description: "Database panel (queries, migrations, schema)"
+  - name: "panel:redteam"
+    color: "f9d0c4"
+    description: "Red-team panel (adversarial chains)"
+
+process:
+  - name: "self-scan"
+    color: "fef2c0"
+    description: "Filed by panopticon reviewing its own codebase"
+  - name: "wont-fix"
+    color: "ffffff"
+    description: "Accepted as-is; the reasoning lives in the issue, not in silence"
+  - name: "adjudication-needed"
+    color: "e99695"
+    description: "Advisors disagreed, or triage disputes the finding's severity"
+  - name: "cosmetic"
+    color: "f1f8ff"
+    description: "Style/consistency only; filed for completeness, low priority"
+  - name: "false-positive"
+    color: "cfd3d7"
+    description: "Confirmed not a real issue; kept so the fleet can be measured against it"
