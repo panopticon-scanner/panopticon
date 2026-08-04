@@ -147,3 +147,78 @@ rejected issues — **all stand, 0 overturns.**
 Consistency note: the advisors confirmed #253 (silent clean-looking scan) while
 rejecting #394/#398/#401 (announced stderr-skip = documented design) — the
 degradation-semantics line held across five independent advisor runs.
+
+## Closing summary (2026-08-04)
+
+**68 issues dispositioned, 0 stale, 0 apply failures.**
+
+| Batch | fix | duplicate | reject | defer | spot-checks |
+|---|---|---|---|---|---|
+| B1 FIXMEs | 14 | 1 | 0 | 1 | 1 run / 1 issue |
+| B2 CRITICALs | 1 | 1 | 3 | 0 | 2 runs / 3 issues |
+| B3a adapter execution | 7 | 3 | 0 | 1 | 0 |
+| B3b supply chain | 3 | 1 | 7 | 0 | 1 run / 7 issues |
+| B3c orchestration/docs | 7 | 1 | 2 | 0 | 1 run / 2 issues |
+| B3d tests/robustness | 5 | 0 | 10 | 0 | 1 run / 10 issues |
+| **Total** | **37** | **7** | **22** | **2** | **6 runs / 23 issues** |
+
+**Calibration numbers.** Advisor-rejection overturn rate: **0 of 22** — every
+run-2 rejection re-verified against the current tree survived its spot-check.
+The one overturn ran the other direction: the operator's `already-fixed`
+hypothesis for #446 (FIXME-15) was refuted by its spot-check (PR #447 shipped
+documentation, not code). Advisors also held a consistent degradation-semantics
+line (silent failure confirmed, announced failure rejected) across independent
+runs. Net: the run-2 evidence axis emerges from triage strengthened on both
+sides — its confirmations ranked cleanly, and its rejections closed noise.
+
+**Issue-state effect:** 29 closed (7 duplicates, 22 rejects), 39 remain open
+(37 in milestone Remediation 1, 2 parked with `triage:deferred`). Every open
+CRITICAL/HIGH now carries exactly one `triage:*` label.
+
+**The Remediation 1 queue, global order** (severity first, then package
+cohesion — within-batch provisional ranks were adjusted where subsystem
+clustering demanded it):
+
+| # | Issue | Package |
+|---|---|---|
+| 1 | #229 dotnet-build execution | P1 adapter-execution security |
+| 2 | #86 symlink dereference | P1 |
+| 3 | #218 pip-audit PEP 517 question | P1 |
+| 4 | #62 egress posture | P1 |
+| 5 | #443 verify-queue identity (FIXME-13) | P2 run integrity |
+| 6 | #446 tool-axis verification (FIXME-15) | P2 |
+| 7 | #438 deterministic tie-break (FIXME-8) | P2 |
+| 8 | #435 group_runner role (FIXME-5) | P3 fan-out architecture |
+| 9 | #442 fan-out resume (FIXME-12) | P3 |
+| 10 | #440 panel-priority dispatch (FIXME-10) | P3 |
+| 11 | #436 scoped write surface (FIXME-6) | P3 |
+| 12 | #444 group_runner contract (FIXME-14) | P3 |
+| 13 | #146 plan-vs-artifact reconciliation | P3 |
+| 14 | #275 loud enforcement degradation | P3 |
+| 15 | #431 scout schema inline (FIXME-1) | P4 scout/reviewer contract |
+| 16 | #432 scout compliance measurement (FIXME-2) | P4 |
+| 17 | #171 secrets_config routing | P4 |
+| 18 | #166 redteam cheat sheet | P4 |
+| 19 | #434 fixture exclusion (FIXME-4) | P4 |
+| 20 | #441 reviewer scope fence (FIXME-11) | P4 |
+| 21 | #268 pin/verify tools image | P5 supply chain |
+| 22 | #303 fixtures image | P5 |
+| 23 | #83 eslint plugin resolution | P6 adapter fidelity |
+| 24 | #210 roslyn severity mapping | P6 |
+| 25 | #222 spotbugs axis swap | P6 |
+| 26 | #253 locations[] guard | P6 |
+| 27 | #117 _cvss_v3_score tests | P6 |
+| 28 | #79 dependency_check tests | P8 test hygiene |
+| 29 | #155 phantom explore mode | P7 docs alignment |
+| 30 | #49 README flags | P7 |
+| 31 | #154 stale spec supersession | P7 |
+| 32 | #437 group naming (FIXME-7) | P7 |
+| 33 | #439 version single-sourcing (FIXME-9) | P7 |
+| 34 | #114 tautology test | P8 |
+| 35 | #65 __main__ guard | P8 |
+| 36 | #106 mock.patch swap | P8 |
+| 37 | #193 shlex.quote hardening | P8 |
+
+Deferred, outside the queue: #433 (retest after P4 lands), #199 (revisit if
+run_fixture_tests enters CI). The fix arc consumes packages P1→P8 in order;
+each package is roughly one PR.
