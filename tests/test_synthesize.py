@@ -1928,6 +1928,16 @@ class TestToolAxisMeta(unittest.TestCase):
         # diluted by claims that were never actually resolved either way.
         self.assertIsNone(axis["rejection_rate"])
 
+    def test_tool_axis_counts_reinforced_non_tool_sourced_finding(self):
+        # A reinforced (tool+agent same-locus merge) survivor can carry a
+        # non-"tool:"-prefixed source, yet build_report's tool_like filter is
+        # is_tool_sourced(f) OR f.get("reinforced") -- not is_tool_sourced
+        # alone -- so it must still land in the tool axis.
+        f = _agentic(reinforced=True)
+        r = syn.build_report([f], [], "t", None, "2026-08-05T00:00:00Z")
+        axis = r["meta"]["tool_axis"]
+        self.assertEqual(axis["queued"], 1)
+
     def test_build_executing_tools_reports_a_run_with_zero_findings(self):
         r = syn.build_report([], [], "t", None, "2026-08-05T00:00:00Z",
                              tools_ran={"roslyn-secguard", "bandit"})
