@@ -125,7 +125,7 @@ class TestOsvScannerAdapter(unittest.TestCase):
         self.assertEqual(stdout, b"{}")
         self.assertEqual(rc, 0)
         fake_run.assert_called_once_with(
-            ["osv-scanner", "--format", "json", "--offline", "--recursive", "/tmp/fake"],
+            ["osv-scanner", "--format", "json", "--experimental-offline", "--recursive", "/tmp/fake"],
             capture_output=True,
             timeout=300,
         )
