@@ -380,6 +380,19 @@ class TestQueueIdResiduals(unittest.TestCase):
                 dispatch.render_advisor_prompts(qpath, os.path.join(tmp, "o"))
 
 
+class TestKimiDefaultAgentsDir(unittest.TestCase):
+    def test_kimi_registration_dir_defaults_to_user_agents(self):
+        expected = os.path.join(os.path.expanduser("~"), ".kimi-code", "agents")
+        self.assertEqual(dispatch._registration_dir("kimi", None), expected)
+
+    def test_claude_registration_dir_unchanged(self):
+        expected = os.path.join(os.path.expanduser("~"), ".claude", "agents")
+        self.assertEqual(dispatch._registration_dir("claude", None), expected)
+
+    def test_explicit_agents_dir_overrides_kimi_default(self):
+        self.assertEqual(dispatch._registration_dir("kimi", "/custom"), "/custom")
+
+
 class TestEnforcedPlanEntries(unittest.TestCase):
     def _profile(self):
         return {"group": "g1", "files": ["a.py"], "depth": "standard",
@@ -469,9 +482,12 @@ class TestEmitHostAgents(unittest.TestCase):
         with self.assertRaises(ValueError):
             dispatch.emit_host_agents("generic", "/tmp/x")
 
-    def test_cli_kimi_requires_out(self):
-        rc = dispatch.main(["--emit-host-agents", "kimi"])
-        self.assertEqual(rc, 2)
+    def test_cli_kimi_defaults_to_kimi_agents_dir(self):
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(dispatch, "KIMI_AGENTS_DIR", d):
+            rc = dispatch.main(["--emit-host-agents", "kimi"])
+            self.assertEqual(rc, 0)
+            self.assertTrue(os.path.isfile(os.path.join(d, "panopticon-scout.md")))
 
     def test_cli_writes_to_out(self):
         with tempfile.TemporaryDirectory() as d:

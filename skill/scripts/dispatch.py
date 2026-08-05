@@ -81,6 +81,7 @@ PLACEHOLDER_RE = re.compile(r"\{([a-z_]+)\}")
 ROLE_FILES = {"scout": "scout.md", "panel_review": "panel-review.md",
               "lens_sweep": "lens-sweep.md", "advisor": "advisor.md"}
 CLAUDE_AGENTS_DIR = os.path.join(os.path.expanduser("~"), ".claude", "agents")
+KIMI_AGENTS_DIR = os.path.join(os.path.expanduser("~"), ".kimi-code", "agents")
 
 # Emission is deterministic policy — ambient PANOPTICON_MODEL_* overrides apply
 # to per-run dispatch plans, never to persisted registrations.
@@ -199,11 +200,14 @@ AGENT_NAME = {
 
 
 def _registration_dir(host, agents_dir):
-    """Explicit dir wins; claude defaults to the user-level agents dir; any
-    other host has no default (never enforced without --agents-dir)."""
+    """Explicit dir wins; otherwise fall back to the host's default agents dir."""
     if agents_dir:
         return agents_dir
-    return CLAUDE_AGENTS_DIR if host == "claude" else None
+    if host == "claude":
+        return CLAUDE_AGENTS_DIR
+    if host == "kimi":
+        return KIMI_AGENTS_DIR
+    return None
 
 
 def _is_registered(reg_dir, role_file):
@@ -368,10 +372,8 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     if args.emit_host_agents:
-        out_dir = args.out or (CLAUDE_AGENTS_DIR if args.emit_host_agents == "claude" else None)
-        if not out_dir:
-            print("dispatch: --emit-host-agents kimi requires --out DIR", file=sys.stderr)
-            return 2
+        out_dir = args.out or (CLAUDE_AGENTS_DIR if args.emit_host_agents == "claude"
+                               else KIMI_AGENTS_DIR)
         try:
             written = emit_host_agents(args.emit_host_agents, out_dir)
         except ValueError as e:
