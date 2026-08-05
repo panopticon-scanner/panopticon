@@ -32,6 +32,7 @@ def _minimal_report():
             "gate": "OFF",
             "gate_policy": "confirmed_only",
             "evidence_stats": {
+                "tool_reported": 0,
                 "tool_confirmed": 0,
                 "advisor_confirmed": 0,
                 "corroborated": 0,

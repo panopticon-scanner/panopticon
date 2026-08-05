@@ -133,6 +133,24 @@ class TestToolReported(unittest.TestCase):
         self.assertEqual(ev_obj["status"], "tool_reported")
         self.assertEqual(ev_obj["verified_by"], "tool+agent")
 
+    def test_reinforced_confirmed_verdict_promotes_to_tool_confirmed(self):
+        # A reinforced (tool+agent same-locus merge) finding is tool-like, so
+        # a CONFIRMED verdict promotes it exactly like a plain tool finding --
+        # and verified_by carries both the merge origin and the advisor.
+        f = {"id": "R-2", "reinforced": True, "severity": "HIGH",
+             "panel": "code", "category": "logic"}
+        ev_obj = ev.derive_evidence(f, {"verdict": "CONFIRMED", "reasoning": "real"})
+        self.assertEqual(ev_obj["status"], "tool_confirmed")
+        self.assertEqual(ev_obj["verified_by"], ["tool+agent", "agent:advisor"])
+
+    def test_reinforced_rejected_verdict_rejects(self):
+        # Same as the plain-tool case: an advisor can refute a reinforced
+        # (tool+agent) finding too, not just a lone tool one.
+        f = {"id": "R-3", "reinforced": True, "severity": "HIGH",
+             "panel": "code", "category": "logic"}
+        ev_obj = ev.derive_evidence(f, {"verdict": "REJECTED", "reasoning": "false positive"})
+        self.assertEqual(ev_obj["status"], "rejected")
+
     def test_agent_finding_unaffected(self):
         f = {"id": "A-1", "severity": "HIGH", "panel": "code",
              "category": "logic"}
