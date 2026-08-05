@@ -199,8 +199,20 @@ def build_verify_queue(findings, max_verify=None):
         seen[fp] = n + 1
         qid = fp if n == 0 else "%s-%d" % (fp, n)
         if n:
-            # Two findings with one identity usually means dedupe should have
-            # merged them; keep them distinct and say so rather than collide.
+            # NOT evidence of a dedupe miss. finding_fingerprint deliberately
+            # excludes line numbers, so two findings sharing
+            # panel+category+file+discriminator at DIFFERENT lines collide by
+            # construction, benignly and routinely (dedupe reinforces only on
+            # an exact (file, line) match). The suffix keeps them separately
+            # addressable by an advisor verdict; the log records that one
+            # identity is now carrying more than one claim.
+            #
+            # KNOWN DIVERGENCE (unchanged behavior, recorded): the -<n> suffix
+            # lives only in the queue. synthesize.build_report exports
+            # `fingerprint` straight from finding_fingerprint, so BOTH members
+            # of a colliding pair export the bare `fp` -- a
+            # fingerprint -> queue_id lookup is ambiguous for them, and `fp-1`
+            # never appears as an exported identity at all.
             print("evidence: fingerprint collision %s (finding %r) -> %s"
                   % (fp, f.get("id"), qid), file=sys.stderr)
         entries.append({"queue_id": qid, "priority": triage_priority(f),

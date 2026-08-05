@@ -1390,12 +1390,12 @@ class TestTwoPassCli(unittest.TestCase):
             self.assertEqual(rc, 1)
 
     def test_pass1_empty_queue_removes_stale_queue_file(self):
-        # A queue file left by a PREVIOUS run (with agentic findings) must not
-        # survive a run whose queue is empty this time -> SKILL.md step 7
-        # branches on the file's existence, and a stale file would mislead a
-        # re-run into the verify phase.
-        # Post-SEC-102 an agent-authored finding always queues, so "empty
-        # queue this time" means no agentic findings at all.
+        # A queue file left by a PREVIOUS run must not survive a run whose
+        # queue is empty this time -> SKILL.md step 7 branches on the file's
+        # existence, and a stale file would mislead a re-run into the verify
+        # phase.
+        # Post-P2 EVERY finding queues -- tool findings included -- so "empty
+        # queue this time" means the run produced no findings at all.
         with tempfile.TemporaryDirectory() as d, _chdir(d):
             fp = self._write_findings(d, [])
             qpath = os.path.join(d, ".panopticon", "verify-queue.json")

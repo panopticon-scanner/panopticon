@@ -88,10 +88,26 @@ def normalize_finding(f):
 
 
 # Fields that confer trust and must NEVER come from an agent-authored payload
-# (SEC-102, found by our own self-scan): `source` drives is_tool_sourced() ->
-# tool_confirmed evidence + verify-queue exclusion + gate eligibility, and
-# `reinforced` short-circuits verification the same way. Only ingest_tools
-# (tool output) and dedupe's real merge branches may set them.
+# (SEC-102, found by our own self-scan). P2 did NOT weaken this guard; it
+# sharpened it. The original rationale is obsolete in all three clauses --
+# `source` no longer confers tool_confirmed evidence (that needs an advisor
+# verdict now), there is no verify-queue exclusion left to buy, and it no
+# longer confers gate eligibility -- but what replaced them is worse:
+#
+#   `source`: finding_fingerprint keys a TOOL-sourced finding on
+#     tool_rule_id(), which falls back to provenance.confirmation_reasoning --
+#     free text from the same payload. So a forged `source: "tool:*"` lets the
+#     author choose the finding's fingerprint, and with it its queue_id, which
+#     advisor verdict it answers to, and the cross-run identity every filed
+#     issue is keyed on. That is identity manipulation, not merely a status
+#     claim, and it is the one thing a content-addressed pipeline cannot
+#     tolerate.
+#   `reinforced`: triage_priority ranks a reinforced CRITICAL/HIGH at 0, ahead
+#     of every uncorroborated one, so a forged flag jumps the --max-verify cut
+#     and starves genuine claims of the advisor budget. It also flips
+#     derive_evidence's tool_like branch.
+#
+# Only ingest_tools (tool output) and dedupe's real merge branches may set them.
 AGENT_FORBIDDEN_FIELDS = ("source", "reinforced")
 
 
@@ -535,7 +551,11 @@ def aggregate_tool_findings(findings):
     — except where an agent independently flagged one of the other lines, in
     which case that locus wins. This runs before dedupe, which reinforces on an
     EXACT (file, line) match: moving the tool witness off a line an agent also
-    flagged would silently cost that finding its tool_confirmed evidence.
+    flagged would silently cost that finding its `reinforced` status — the
+    tool+agent corroboration in `verified_by`, and the triage_priority 0 that
+    puts it at the head of the verify queue. (Pre-P2 it also cost the finding
+    automatic `tool_confirmed` evidence; unverified tool claims are
+    `tool_reported` now, and only an advisor verdict promotes them.)
     """
     agent_loci = {
         (str(((f.get("location") or {}).get("file")) or ""),
@@ -642,6 +662,11 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
     citations.enrich_citations(findings, catalog, epss_enabled=False)
     for f in findings:
         f["evidence"] = evidence_mod.derive_evidence(f, matched.get(id(f)))
+        # KNOWN DIVERGENCE from queue_id (unchanged behavior, recorded): on a
+        # fingerprint collision the queue assigns `fp` and `fp-1`, but both
+        # findings export the bare `fp` here -- so a colliding pair does not
+        # round-trip from exported identity back to its queue entry. See the
+        # matching note in evidence.build_verify_queue.
         f["fingerprint"] = pre_verdict_fps[id(f)]
         f.pop("citation_quality", None)
 
@@ -993,10 +1018,12 @@ def main(argv=None):
             print("verify queue: %d entries (%d cut by --max-verify) -> %s"
                   % (len(queue), cut, qpath))
             return 0
-        # Nothing to verify this run: a queue file left by a PREVIOUS run
-        # (with agentic findings) would otherwise mislead step 7's re-run --
-        # the orchestrator branches on the file's existence, so a stale one
-        # would send it to the verify phase with stale/absent entries.
+        # Nothing to verify this run. Post-P2 EVERY finding queues -- tool
+        # findings included -- so an empty queue means this run produced no
+        # findings at all, not "only findings that never queued". A queue file
+        # left by a PREVIOUS run would otherwise mislead step 7's re-run: the
+        # orchestrator branches on the file's existence, so a stale one would
+        # send it to the verify phase with stale/absent entries.
         if os.path.isfile(qpath):
             try:
                 os.remove(qpath)

@@ -61,6 +61,10 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
    Then run
    `python3 scripts/synthesize.py --verdicts-dir .panopticon/verdicts [same flags] .panopticon/findings-*.json`
    to produce the final report.
+   `[same flags]` is a requirement, not a convenience: `--severity` filtering and
+   `--tools-dir` ingestion both run before the verify queue is built, so a flag that
+   differs between the two passes feeds them different finding sets — and the verdicts
+   pass 1 asked for then name findings pass 2 has no queue entry for.
 9. **Validate** — `verification-before-completion`: compare `git status --porcelain`
    against `.panopticon/tree-baseline.txt`; any NEW modification outside `.panopticon/`
    means a reviewer had side effects — treat the run as compromised: discard the
@@ -129,6 +133,12 @@ and **evidence.status** (how hard the claim was verified):
 Grades and the CI gate count `tool_confirmed`/`advisor_confirmed` findings
 only — i.e. only claims an advisor verified, whatever their source. Run a
 verify phase (or pass `--gate-unverified`) or the gate has nothing to fail on.
+
+Every finding queues for verification, tool claims included, so `--max-verify N`
+now caps a queue holding the whole finding set: each tool finding costs one
+advisor dispatch, and an unverified tool HIGH competes with an agent HIGH for the
+same capped budget. Size N with that in mind — anything cut stays `unverified` or
+`tool_reported` and cannot gate.
 Citations (CWE/OWASP/CVE/EPSS) are audit metadata — they annotate findings but
 never decide truth.
 
