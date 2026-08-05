@@ -15,7 +15,7 @@ def _deps_from_pyproject(target: str) -> list[str] | None:
     try:
         with open(path, "rb") as fh:
             data = tomllib.load(fh)
-    except (OSError, tomllib.TOMLDecodeError):
+    except (OSError, ValueError):
         return None
     project = data.get("project")
     if not isinstance(project, dict):

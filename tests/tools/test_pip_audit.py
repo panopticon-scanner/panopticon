@@ -189,6 +189,11 @@ class TestStaticPyproject(unittest.TestCase):
         self.assertEqual((json.loads(raw), rc),
                          ({"dependencies": [], "fixes": []}, 0))
 
+    def test_non_utf8_pyproject_returns_none(self):
+        deps = pa._deps_from_pyproject(
+            self._target(b'\xff\xfe[project]\nname = "x"\n'))
+        self.assertIsNone(deps)
+
 
 if __name__ == "__main__":
     unittest.main()
