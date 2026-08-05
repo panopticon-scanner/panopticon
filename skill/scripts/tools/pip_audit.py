@@ -3,7 +3,29 @@ from __future__ import annotations
 import glob
 import json
 import os
+import sys
+import tempfile
+import tomllib
 from .base import attach_tool_provenance, normalize_severity, new_finding_id, omit_none, run_tool
+
+
+def _deps_from_pyproject(target: str) -> list[str] | None:
+    """Static PEP 621 read — never invokes a build backend (#218)."""
+    path = os.path.join(target, "pyproject.toml")
+    try:
+        with open(path, "rb") as fh:
+            data = tomllib.load(fh)
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    project = data.get("project")
+    if not isinstance(project, dict):
+        return None
+    if "dependencies" in (project.get("dynamic") or []):
+        return None
+    deps = list(project.get("dependencies") or [])
+    for extra in (project.get("optional-dependencies") or {}).values():
+        deps.extend(extra)
+    return deps
 
 
 class PipAuditAdapter:
@@ -34,11 +56,24 @@ class PipAuditAdapter:
             self._manifest_path = req
             cmd.extend(["--requirement", req])
         else:
-            # pip-audit accepts a project directory as a positional argument or
-            # via --path. Use the positional form so pyproject.toml projects are
-            # audited without the invalid --requirement flag.
+            # Never pass the project directory positionally: resolving a
+            # source tree can invoke its PEP 517 build backend (#218).
+            deps = _deps_from_pyproject(target)
+            if not deps:
+                print("pip-audit: no static [project.dependencies] in %s; "
+                      "skipping (osv-scanner covers this target)" % target,
+                      file=sys.stderr)
+                return b'{"dependencies": [], "fixes": []}', 0
             self._manifest_path = os.path.join(target, "pyproject.toml")
-            cmd.append(target)
+            tmp = tempfile.NamedTemporaryFile(
+                "w", suffix=".txt", delete=False)
+            try:
+                tmp.write("\n".join(deps) + "\n")
+                tmp.close()
+                cmd.extend(["--requirement", tmp.name])
+                return run_tool(cmd, timeout=300)
+            finally:
+                os.unlink(tmp.name)
         return run_tool(cmd, timeout=300)
 
     def _find_requirement(self, target: str) -> str | None:

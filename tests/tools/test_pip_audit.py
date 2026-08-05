@@ -1,6 +1,8 @@
 import json
 import os
+import shutil
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -123,14 +125,69 @@ class TestPipAuditAdapter(unittest.TestCase):
         fake_run = mock.Mock(return_value=mock.Mock(stdout=b"[]", returncode=0))
         with mock.patch("scripts.tools.base.subprocess.run", fake_run):
             with mock.patch("scripts.tools.pip_audit.glob.glob", return_value=[]):
-                stdout, rc = adapter.invoke("/tmp/fake")
+                with mock.patch("scripts.tools.pip_audit._deps_from_pyproject",
+                               return_value=["requests==2.25.1"]):
+                    stdout, rc = adapter.invoke("/tmp/fake")
         self.assertEqual(stdout, b"[]")
         self.assertEqual(rc, 0)
-        fake_run.assert_called_once_with(
-            ["pip-audit", "--format=json", "--desc=on", "/tmp/fake"],
-            capture_output=True,
-            timeout=300,
-        )
+        # Verify that --requirement is used with a temp file, not a positional arg
+        call_args = fake_run.call_args[0][0]
+        self.assertIn("--requirement", call_args)
+        self.assertNotIn("/tmp/fake", call_args)
+
+
+PYPROJECT_STATIC = b"""
+[project]
+name = "x"
+dependencies = ["requests==2.25.1", "urllib3>=1.26"]
+[project.optional-dependencies]
+dev = ["pytest"]
+"""
+
+PYPROJECT_DYNAMIC = b"""
+[project]
+name = "x"
+dynamic = ["dependencies"]
+"""
+
+
+class TestStaticPyproject(unittest.TestCase):
+    def _target(self, content):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        with open(os.path.join(d, "pyproject.toml"), "wb") as fh:
+            fh.write(content)
+        return d
+
+    def test_static_deps_extracted(self):
+        deps = pa._deps_from_pyproject(self._target(PYPROJECT_STATIC))
+        self.assertEqual(deps,
+                         ["requests==2.25.1", "urllib3>=1.26", "pytest"])
+
+    def test_dynamic_deps_return_none(self):
+        self.assertIsNone(
+            pa._deps_from_pyproject(self._target(PYPROJECT_DYNAMIC)))
+
+    def test_invoke_uses_requirement_file_not_positional(self):
+        target = self._target(PYPROJECT_STATIC)
+        captured = {}
+        def fake_run_tool(cmd, timeout=0):
+            captured["cmd"] = list(cmd)
+            with open(cmd[cmd.index("--requirement") + 1]) as fh:
+                captured["reqs"] = fh.read()
+            return b"{}", 0
+        with mock.patch.object(pa, "run_tool", fake_run_tool):
+            pa.PipAuditAdapter().invoke(target)
+        self.assertNotIn(target, captured["cmd"])
+        self.assertIn("requests==2.25.1", captured["reqs"])
+
+    def test_invoke_dynamic_pyproject_returns_empty_without_running(self):
+        target = self._target(PYPROJECT_DYNAMIC)
+        with mock.patch.object(pa, "run_tool") as rt_mock:
+            raw, rc = pa.PipAuditAdapter().invoke(target)
+        rt_mock.assert_not_called()
+        self.assertEqual((json.loads(raw), rc),
+                         ({"dependencies": [], "fixes": []}, 0))
 
 
 if __name__ == "__main__":
