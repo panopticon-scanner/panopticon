@@ -783,8 +783,10 @@ class TestSummaryCitations(unittest.TestCase):
         text = syn.render_summary(report)
         self.assertIn("CWE-89", text)
         self.assertIn("Act", text)
-        # the provenance chip now shows the evidence status, not "reinforced"
-        self.assertIn("tool_confirmed", text)
+        # the provenance chip shows the evidence status, not "reinforced". No
+        # verdict is supplied here, so P2/#446 means this is tool_reported,
+        # not tool_confirmed -- reinforcement alone no longer gates.
+        self.assertIn("tool_reported", text)
 
     def test_summary_shows_panel_label(self):
         report = syn.build_report(
@@ -1162,7 +1164,10 @@ class TestEvidenceReport(unittest.TestCase):
         self.assertEqual(f["severity"], "HIGH")
         self.assertEqual(report["summary"]["gate"], "PASS")
 
-    def test_tool_finding_gates_without_verdict(self):
+    def test_tool_finding_without_verdict_is_reported_not_gated(self):
+        # P2/#446: this is the load-bearing regression test for the Bandit
+        # B105 self-scan incident -- an unverified tool claim must NOT gate a
+        # build on its own. It is tool_reported until an advisor confirms it.
         tool = {"id": "TL-001", "title": "sqli", "severity": "HIGH",
                 "confidence": "CERTAIN", "panel": "security",
                 "category": "injection", "source": "tool:semgrep",
@@ -1171,8 +1176,8 @@ class TestEvidenceReport(unittest.TestCase):
                                "confirmation_status": "TOOL"}}
         report = self._report([syn.normalize_finding(tool)])
         self.assertEqual(report["findings"][0]["evidence"]["status"],
-                         "tool_confirmed")
-        self.assertEqual(report["summary"]["gate"], "FAIL")
+                         "tool_reported")
+        self.assertEqual(report["summary"]["gate"], "PASS")
 
     def test_evidence_stats_counts_everything(self):
         verdicts = {"000-AG-001": {"finding_id": "AG-001", "verdict": "REJECTED",
@@ -1200,12 +1205,12 @@ class TestEvidenceReport(unittest.TestCase):
         self.assertIn(f["evidence"]["citation_quality"],
                       ("full", "partial", "minimal", "none"))
 
-    def test_reinforced_tool_agent_merge_gates_as_tool_confirmed(self):
-        # Regression (amended spec): a tool HIGH + agent CRITICAL at the same
-        # locus reinforce to a single survivor. Previously the survivor derived
-        # `corroborated` (not gate-eligible), which let agent agreement strip a
-        # scanner finding's gate influence. It must now derive tool_confirmed
-        # and gate FAIL under --fail-on high.
+    def test_reinforced_tool_agent_merge_without_verdict_does_not_gate(self):
+        # P2/#446: a tool HIGH + agent CRITICAL at the same locus reinforce to
+        # a single survivor, which is tool-reported by construction (never
+        # demoted to mere `corroborated`) -- but reinforcement alone is no
+        # longer gate-eligible without an advisor CONFIRMED verdict, same as
+        # any other tool claim. Gate stays PASS under --fail-on high.
         tool = {"id": "TL-002", "title": "sqli", "severity": "HIGH",
                 "confidence": "CERTAIN", "panel": "security", "category": "injection",
                 "source": "tool:semgrep",
@@ -1217,8 +1222,8 @@ class TestEvidenceReport(unittest.TestCase):
         self.assertEqual(len(report["findings"]), 1)
         f = report["findings"][0]
         self.assertTrue(f.get("reinforced"))
-        self.assertEqual(f["evidence"]["status"], "tool_confirmed")
-        self.assertEqual(report["summary"]["gate"], "FAIL")
+        self.assertEqual(f["evidence"]["status"], "tool_reported")
+        self.assertEqual(report["summary"]["gate"], "PASS")
 
     def test_unknown_queue_id_verdict_ignored(self):
         # A verdict file whose stem doesn't match any current queue_id (e.g.

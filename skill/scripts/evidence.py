@@ -13,8 +13,9 @@ import re
 import sys
 
 SEV_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
-EVIDENCE_STATUSES = ("tool_confirmed", "advisor_confirmed", "corroborated",
-                     "needs_more_info", "unverified", "rejected")
+EVIDENCE_STATUSES = ("tool_reported", "tool_confirmed", "advisor_confirmed",
+                     "corroborated", "needs_more_info", "unverified",
+                     "rejected")
 GATE_ELIGIBLE_DEFAULT = frozenset({"tool_confirmed", "advisor_confirmed"})
 VERDICT_VALUES = {"CONFIRMED", "REJECTED", "NEEDS_MORE_INFO"}
 
@@ -77,33 +78,42 @@ def sev_rank(finding):
 def derive_evidence(finding, verdict=None):
     """Return the evidence dict for a finding.
 
-    Precedence: tool_confirmed (incl. reinforced tool+agent merges) > advisor
-    verdicts (CONFIRMED/REJECTED/NEEDS_MORE_INFO) > corroborated > unverified.
-    Never mutates the finding. Self-asserted provenance.confirmation_status is
-    deliberately ignored — a reviewer cannot confirm its own finding.
+    Precedence (P2, #446): an advisor VERDICT decides first, whatever the
+    source — previously tool-sourcing short-circuited ahead of verdicts, so an
+    advisor could never refute a scanner. Without a verdict, a tool-sourced or
+    reinforced finding is `tool_reported`: reported, not verified, and NOT
+    gate-eligible. Never mutates the finding. Self-asserted
+    provenance.confirmation_status is deliberately ignored — a reviewer cannot
+    confirm its own finding.
     """
     quality = finding.get("citation_quality") or "none"
     prov = finding.get("provenance") or {}
-    if is_tool_sourced(finding):
-        return {"status": "tool_confirmed",
-                "verified_by": finding.get("source"),
-                "reasoning": prov.get("confirmation_reasoning")
-                or "Reported by static-analysis tool",
-                "citation_quality": quality}
-    if finding.get("reinforced"):
-        # A tool+agent same-locus merge is tool-reported by construction, even
-        # when the surviving finding's own `source` isn't `tool:*` -> gates the
-        # same as a plain tool finding, never demoted to mere `corroborated`.
-        return {"status": "tool_confirmed", "verified_by": "tool+agent",
-                "reasoning": "Same locus reported independently by a tool and an agent",
-                "citation_quality": quality}
+    reinforced = bool(finding.get("reinforced"))
+    tool_like = is_tool_sourced(finding) or reinforced
+    origin = "tool+agent" if reinforced else finding.get("source")
+
     v = str((verdict or {}).get("verdict", "")).upper()
     if v in VERDICT_VALUES:
-        status = {"CONFIRMED": "advisor_confirmed",
-                  "REJECTED": "rejected"}.get(v, "needs_more_info")
-        return {"status": status, "verified_by": "agent:advisor",
+        if v == "REJECTED":
+            status = "rejected"
+        elif v == "NEEDS_MORE_INFO":
+            status = "needs_more_info"
+        else:
+            status = "tool_confirmed" if tool_like else "advisor_confirmed"
+        return {"status": status,
+                "verified_by": ([origin, "agent:advisor"] if tool_like
+                                else "agent:advisor"),
                 "reasoning": (verdict or {}).get("reasoning"),
                 "citation_quality": quality}
+
+    if tool_like:
+        return {"status": "tool_reported", "verified_by": origin,
+                "reasoning": ("Same locus reported independently by a tool and "
+                              "an agent" if reinforced
+                              else prov.get("confirmation_reasoning")
+                              or "Reported by static-analysis tool"),
+                "citation_quality": quality}
+
     if finding.get("corroborated"):
         panels = list(finding.get("corroborated_by") or [])
         return {"status": "corroborated", "verified_by": panels,

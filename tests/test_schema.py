@@ -110,8 +110,8 @@ class TestReportSchema(unittest.TestCase):
         self.assertIn("evidence", finding_props["required"])
         statuses = finding_props["properties"]["evidence"]["properties"]["status"]["enum"]
         self.assertEqual(set(statuses),
-                         {"tool_confirmed", "advisor_confirmed", "corroborated",
-                          "needs_more_info", "unverified", "rejected"})
+                         {"tool_reported", "tool_confirmed", "advisor_confirmed",
+                          "corroborated", "needs_more_info", "unverified", "rejected"})
 
     @unittest.skipIf(jsonschema is None, "jsonschema not installed")
     def test_actual_build_report_output_validates_against_schema(self):

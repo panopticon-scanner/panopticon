@@ -41,6 +41,7 @@
         "evidence_stats": {
           "type": "object",
           "properties": {
+            "tool_reported": {"type": "integer"},
             "tool_confirmed": {"type": "integer"},
             "advisor_confirmed": {"type": "integer"},
             "corroborated": {"type": "integer"},
@@ -110,7 +111,7 @@
             "properties": {
               "status": {
                 "type": "string",
-                "enum": ["tool_confirmed", "advisor_confirmed", "corroborated", "needs_more_info", "unverified", "rejected"]
+                "enum": ["tool_reported", "tool_confirmed", "advisor_confirmed", "corroborated", "needs_more_info", "unverified", "rejected"]
               },
               "verified_by": {},
               "reasoning": {"type": ["string", "null"]},
