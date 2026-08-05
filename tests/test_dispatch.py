@@ -174,11 +174,173 @@ class TestDispatchPlan(unittest.TestCase):
         finally:
             os.unlink(profile_path)
 
+    def test_emit_kimi_swarm_groups_entries_by_subagent_type(self):
+        plan = [
+            {
+                "role": "panel_review",
+                "agent": "panopticon-panel-review",
+                "enforced": True,
+                "model": {"model": "secondary"},
+                "prompt": "panel prompt 1",
+                "out_file": ".panopticon/findings-g-security-panel_review.json",
+            },
+            {
+                "role": "panel_review",
+                "agent": "panopticon-panel-review",
+                "enforced": True,
+                "model": {"model": "secondary"},
+                "prompt": "panel prompt 2",
+                "out_file": ".panopticon/findings-g-code-panel_review.json",
+            },
+            {
+                "role": "lens_sweep",
+                "agent": "lens-sweep",
+                "enforced": False,
+                "model": {"model": "primary"},
+                "prompt": "lens prompt",
+                "out_file": ".panopticon/findings-g-security-lens_sweep-injection.json",
+            },
+        ]
+        swarm = dispatch.emit_kimi_swarm(plan)
+        batches = swarm["batches"]
+        self.assertEqual(len(batches), 2)
+
+        swarm_batches = [b for b in batches if b.get("tool") == "AgentSwarm"]
+        agent_batches = [b for b in batches if b.get("tool") == "Agent"]
+        self.assertEqual(len(swarm_batches), 1)
+        self.assertEqual(len(agent_batches), 1)
+
+        panel_batch = swarm_batches[0]
+        self.assertEqual(panel_batch["subagent_type"], "panopticon-panel-review")
+        self.assertEqual(panel_batch["model"], "secondary")
+        self.assertEqual(panel_batch["prompt_template"], "{{item}}")
+        self.assertEqual(len(panel_batch["items"]), 2)
+        self.assertEqual(panel_batch["items"][0], "panel prompt 1")
+
+        lens_batch = agent_batches[0]
+        self.assertEqual(lens_batch["subagent_type"], "explore")
+        self.assertEqual(lens_batch["model"], "primary")
+        self.assertEqual(lens_batch["prompt"], "lens prompt")
+
+    def test_emit_kimi_swarm_carries_out_file_routing_per_item(self):
+        # A batch merges entries from different groups, so item order is the
+        # only other link back to out_file — and order is not a contract.
+        plan = [
+            {"role": "panel_review", "agent": "panopticon-panel-review",
+             "enforced": True, "model": {"model": "secondary"},
+             "prompt": "p1", "panel": "security", "group": "g-security",
+             "out_file": ".panopticon/findings-g-security-panel_review.json"},
+            {"role": "panel_review", "agent": "panopticon-panel-review",
+             "enforced": True, "model": {"model": "secondary"},
+             "prompt": "p2", "panel": "code", "group": "g-code",
+             "out_file": ".panopticon/findings-g-code-panel_review.json"},
+            {"role": "lens_sweep", "agent": "lens-sweep", "enforced": False,
+             "model": {"model": "primary"}, "prompt": "l1", "panel": "security",
+             "lens": "injection", "group": "g-security",
+             "out_file": ".panopticon/findings-g-security-lens-injection.json"},
+        ]
+        swarm = dispatch.emit_kimi_swarm(plan)
+        batch = [b for b in swarm["batches"] if b["tool"] == "AgentSwarm"][0]
+        single = [b for b in swarm["batches"] if b["tool"] == "Agent"][0]
+
+        self.assertEqual(len(batch["routing"]), len(batch["items"]))
+        self.assertEqual(
+            [r["out_file"] for r in batch["routing"]],
+            [".panopticon/findings-g-security-panel_review.json",
+             ".panopticon/findings-g-code-panel_review.json"])
+        self.assertEqual([r["group"] for r in batch["routing"]],
+                         ["g-security", "g-code"])
+        # Agent (singleton) batches carry a single routing object.
+        self.assertEqual(single["routing"]["out_file"],
+                         ".panopticon/findings-g-security-lens-injection.json")
+        self.assertEqual(single["routing"]["lens"], "injection")
+
+    def test_emit_kimi_swarm_maps_unenforced_scout_and_advisor(self):
+        plan = [
+            {"role": "scout", "agent": "scout", "enforced": False,
+             "model": {"model": "primary"}, "prompt": "s"},
+            {"role": "advisor", "agent": "advisor", "enforced": False,
+             "model": {"model": "secondary"}, "prompt": "a"},
+        ]
+        by_role = {b["routing"]["role"]: b["subagent_type"]
+                   for b in dispatch.emit_kimi_swarm(plan)["batches"]}
+        self.assertEqual(by_role["scout"], "explore")
+        self.assertEqual(by_role["advisor"], "plan")
+
+    def test_emit_kimi_swarm_downgrades_a_stale_enforced_entry(self):
+        # `enforced` is a snapshot from plan-build time; registration can be
+        # gone by the time the persisted plan is turned into a manifest.
+        plan = [{"role": "panel_review", "agent": "panopticon-panel-review",
+                 "enforced": True, "model": {"model": "secondary"},
+                 "prompt": "p"}]
+        with tempfile.TemporaryDirectory() as empty_dir:
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                swarm = dispatch.emit_kimi_swarm(
+                    plan, agents_dir=empty_dir, verify_registration=True)
+        self.assertEqual(swarm["batches"][0]["subagent_type"], "coder")
+        self.assertIn("no longer registered", err.getvalue())
+
+    def test_emit_kimi_swarm_rejects_a_malformed_plan(self):
+        with self.assertRaises(ValueError):
+            dispatch.emit_kimi_swarm({"not": "a list"})
+        with self.assertRaises(ValueError):
+            dispatch.emit_kimi_swarm(["not an object"])
+
+    def test_cli_emit_kimi_swarm_writes_manifest_and_requires_out(self):
+        plan = [{"role": "panel_review", "agent": "panopticon-panel-review",
+                 "enforced": False, "model": {"model": "secondary"},
+                 "prompt": "p", "out_file": ".panopticon/f.json"}]
+        with tempfile.TemporaryDirectory() as d:
+            plan_path = os.path.join(d, "dispatch-plan.json")
+            out_path = os.path.join(d, "kimi-swarm.json")
+            with open(plan_path, "w", encoding="utf-8") as fh:
+                json.dump(plan, fh)
+
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(dispatch.main(["--emit-kimi-swarm", plan_path]), 2)
+            self.assertIn("requires --out", err.getvalue())
+
+            rc = dispatch.main(["--emit-kimi-swarm", plan_path, "--out", out_path,
+                                "--agents-dir", d])
+            self.assertEqual(rc, 0)
+            with open(out_path, encoding="utf-8") as fh:
+                written = json.load(fh)
+            self.assertEqual(written["batches"][0]["routing"]["out_file"],
+                             ".panopticon/f.json")
+
+            bad_path = os.path.join(d, "bad.json")
+            with open(bad_path, "w", encoding="utf-8") as fh:
+                fh.write("{not json")
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(
+                    dispatch.main(["--emit-kimi-swarm", bad_path, "--out", out_path]), 1)
+            self.assertIn("cannot read plan", err.getvalue())
+
 
 class TestDetectHost(unittest.TestCase):
     def _detect(self, env):
         with mock.patch.dict(os.environ, env, clear=True):
             return dispatch._detect_host()
+
+    def _detect_with_stderr(self, env):
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            with mock.patch.dict(os.environ, env, clear=True):
+                host = dispatch._detect_host()
+        return host, err.getvalue()
+
+    def test_warns_when_inferred_from_kimi_env(self):
+        host, err = self._detect_with_stderr({"KIMI_CODE_VERSION": "1.0"})
+        self.assertEqual(host, "kimi")
+        self.assertIn("WARNING", err)
+        self.assertIn("--host", err)
+
+    def test_warns_when_inferred_from_claude_env(self):
+        # clear=True matters: _detect_host checks Kimi first, so an ambient
+        # KIMI_* var on the runner would otherwise decide this test.
+        host, err = self._detect_with_stderr({"CLAUDECODE": "1"})
+        self.assertEqual(host, "claude")
+        self.assertIn("WARNING", err)
+        self.assertIn("--host", err)
 
     def test_kimi_env(self):
         self.assertEqual(self._detect({"KIMI_CODE_VERSION": "1"}), "kimi")
@@ -456,6 +618,19 @@ class TestQueueIdContractWithEvidence(unittest.TestCase):
         self.assertEqual(len(written), 2)
 
 
+class TestKimiDefaultAgentsDir(unittest.TestCase):
+    def test_kimi_registration_dir_defaults_to_user_agents(self):
+        expected = os.path.join(os.path.expanduser("~"), ".kimi-code", "agents")
+        self.assertEqual(dispatch._registration_dir("kimi", None), expected)
+
+    def test_claude_registration_dir_unchanged(self):
+        expected = os.path.join(os.path.expanduser("~"), ".claude", "agents")
+        self.assertEqual(dispatch._registration_dir("claude", None), expected)
+
+    def test_explicit_agents_dir_overrides_kimi_default(self):
+        self.assertEqual(dispatch._registration_dir("kimi", "/custom"), "/custom")
+
+
 class TestEnforcedPlanEntries(unittest.TestCase):
     def _profile(self):
         return {"group": "g1", "files": ["a.py"], "depth": "standard",
@@ -533,6 +708,31 @@ class TestEmitHostAgents(unittest.TestCase):
             self.assertIn("disallowedTools:", text)
             self.assertIn("- Bash", text)
 
+    def test_kimi_agent_file_includes_model_preference_and_when_to_use(self):
+        with tempfile.TemporaryDirectory() as d:
+            paths = dispatch.emit_host_agents("kimi", d)
+            self.assertEqual(len(paths), 4)
+            for p in paths:
+                with open(p, encoding="utf-8") as fh:
+                    content = fh.read()
+                self.assertIn("whenToUse:", content)
+                self.assertIn("override: false", content)
+                self.assertIn("model_preference:", content)
+
+            # role-specific preferences
+            scout = os.path.join(d, "panopticon-scout.md")
+            lens_sweep = os.path.join(d, "panopticon-lens-sweep.md")
+            panel_review = os.path.join(d, "panopticon-panel-review.md")
+            advisor = os.path.join(d, "panopticon-advisor.md")
+            with open(scout, encoding="utf-8") as fh:
+                self.assertIn("model_preference: primary", fh.read())
+            with open(lens_sweep, encoding="utf-8") as fh:
+                self.assertIn("model_preference: primary", fh.read())
+            with open(panel_review, encoding="utf-8") as fh:
+                self.assertIn("model_preference: secondary", fh.read())
+            with open(advisor, encoding="utf-8") as fh:
+                self.assertIn("model_preference: secondary", fh.read())
+
     def test_idempotent(self):
         with tempfile.TemporaryDirectory() as d:
             dispatch.emit_host_agents("claude", d)
@@ -545,9 +745,21 @@ class TestEmitHostAgents(unittest.TestCase):
         with self.assertRaises(ValueError):
             dispatch.emit_host_agents("generic", "/tmp/x")
 
-    def test_cli_kimi_requires_out(self):
-        rc = dispatch.main(["--emit-host-agents", "kimi"])
-        self.assertEqual(rc, 2)
+    def test_cli_kimi_defaults_to_kimi_agents_dir(self):
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(dispatch, "KIMI_AGENTS_DIR", d):
+            rc = dispatch.main(["--emit-host-agents", "kimi"])
+            self.assertEqual(rc, 0)
+            for fname in (
+                "panopticon-scout.md",
+                "panopticon-panel-review.md",
+                "panopticon-lens-sweep.md",
+                "panopticon-advisor.md",
+            ):
+                self.assertTrue(
+                    os.path.isfile(os.path.join(d, fname)),
+                    f"missing {fname}",
+                )
 
     def test_cli_writes_to_out(self):
         with tempfile.TemporaryDirectory() as d:

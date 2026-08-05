@@ -43,10 +43,14 @@ def _profiles():
 
 
 _KIMI_FALLBACK = {
-    "scout": {"model": "kimi-for-coding", "max_context_size": 131072, "max_output_size": 16384},
-    "lens_sweep": {"model": "kimi-for-coding", "max_context_size": 131072, "max_output_size": 8192},
-    "panel_review": {"model": "kimi-for-coding", "max_context_size": 131072, "max_output_size": 16384},
-    "advisor": {"model": "k3", "max_context_size": 524288, "max_output_size": 32768},
+    "scout": {"model": "primary", "alias": "kimi-for-coding",
+              "max_context_size": 131072, "max_output_size": 16384},
+    "lens_sweep": {"model": "primary", "alias": "kimi-for-coding",
+                   "max_context_size": 131072, "max_output_size": 8192},
+    "panel_review": {"model": "secondary", "alias": "k3",
+                     "max_context_size": 131072, "max_output_size": 16384},
+    "advisor": {"model": "secondary", "alias": "k3",
+                "max_context_size": 524288, "max_output_size": 32768},
 }
 _CLAUDE_FALLBACK = {
     "scout": {"model": "haiku"},
@@ -63,7 +67,7 @@ def _hardcoded_fallback(host, role):
     model" — never silently assume kimi.
     """
     if host == "kimi":
-        return _KIMI_FALLBACK.get(role, {"model": "kimi-for-coding",
+        return _KIMI_FALLBACK.get(role, {"model": "primary", "alias": "kimi-for-coding",
                                          "max_context_size": 131072,
                                          "max_output_size": 8192})
     if host == "claude":
@@ -92,6 +96,51 @@ def _env_override(role):
     return {"model": env_value}
 
 
+_KIMI_TIERS = ("primary", "secondary")
+# Concrete Kimi aliases predate the primary/secondary contract and are still
+# valid in an agent file's model_preference — just not as a dispatch value.
+_KIMI_ALIAS_TIER = {"kimi-for-coding": "primary", "k3": "secondary"}
+
+
+def registration_model(host, role):
+    """Role -> model tier for PERSISTED registration files.
+
+    Deliberately override-free: it consults reference/model-profiles.yml and
+    the hardcoded fallback only, never PANOPTICON_MODEL_* or CLI overrides.
+    Emission is deterministic policy — an ambient override must shape a single
+    run's dispatch plan, never a file left on disk for every future run.
+    """
+    profiles = _profiles()
+    cfg = ((profiles.get("hosts") or {}).get(host) or {}).get(role)
+    if not isinstance(cfg, dict):
+        cfg = _hardcoded_fallback(host, role)
+    return cfg.get("model")
+
+
+def _normalize_kimi_model(cfg, role):
+    """Force a Kimi dispatch value into the primary/secondary contract.
+
+    Kimi's Agent/AgentSwarm `model` parameter accepts only those two tiers, so
+    an override naming a concrete alias (`k3` was this very role's alias
+    before the tiers existed) would otherwise reach the manifest and fail at
+    dispatch time.
+    """
+    model = cfg.get("model")
+    if model in _KIMI_TIERS:
+        return cfg
+    mapped = _KIMI_ALIAS_TIER.get(model)
+    out = dict(cfg)
+    if mapped:
+        out["model"] = mapped
+        out.setdefault("alias", model)
+        return out
+    fallback = _KIMI_FALLBACK.get(role, {}).get("model", "primary")
+    print("model_resolver: %r is not a Kimi dispatch tier (primary|secondary); "
+          "using %r for role %s" % (model, fallback, role), file=sys.stderr)
+    out["model"] = fallback
+    return out
+
+
 def resolve_model(host, role, cli_overrides=None):
     """Resolve a host + role to a model config dict.
 
@@ -102,7 +151,19 @@ def resolve_model(host, role, cli_overrides=None):
     4. hardcoded fallback
 
     Returns dict with at least {"model": ..., "max_context_size": ..., "max_output_size": ...}
+
+    On Kimi the result is normalized to the primary/secondary dispatch
+    contract, since every override path above can otherwise supply a value
+    Kimi's Agent/AgentSwarm tool will reject.
     """
+    cfg = _resolve_raw(host, role, cli_overrides)
+    if host == "kimi":
+        return _normalize_kimi_model(cfg, role)
+    return cfg
+
+
+def _resolve_raw(host, role, cli_overrides=None):
+    """resolve_model's precedence chain, before host-specific normalization."""
     if cli_overrides and role in cli_overrides:
         override = cli_overrides[role]
         if isinstance(override, dict):

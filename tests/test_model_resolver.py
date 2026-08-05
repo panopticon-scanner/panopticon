@@ -13,9 +13,51 @@ import model_resolver as mr
 class TestModelResolver(unittest.TestCase):
     def test_kimi_defaults(self):
         cfg = mr.resolve_model("kimi", "lens_sweep")
-        self.assertEqual(cfg["model"], "kimi-for-coding")
+        self.assertEqual(cfg["model"], "primary")
+        self.assertEqual(cfg["alias"], "kimi-for-coding")
         self.assertEqual(cfg["max_output_size"], 8192)
-        self.assertEqual(mr.resolve_model("kimi", "advisor")["model"], "k3")
+        advisor = mr.resolve_model("kimi", "advisor")
+        self.assertEqual(advisor["model"], "secondary")
+        self.assertEqual(advisor["alias"], "k3")
+
+    def test_kimi_roles_resolve_to_primary_secondary(self):
+        self.assertEqual(mr.resolve_model("kimi", "scout")["model"], "primary")
+        self.assertEqual(mr.resolve_model("kimi", "lens_sweep")["model"], "primary")
+        self.assertEqual(mr.resolve_model("kimi", "panel_review")["model"], "secondary")
+        self.assertEqual(mr.resolve_model("kimi", "advisor")["model"], "secondary")
+
+    def test_claude_defaults_preserved(self):
+        """Regression guard for the Kimi work: Claude must be untouched.
+
+        Deliberately covers what test_claude_defaults does not — that the
+        Kimi-only primary/secondary normalization never runs for Claude, so
+        concrete model ids survive every override path.
+        """
+        self.assertEqual(
+            mr.resolve_model("claude", "panel_review", {"panel_review": "opus"})["model"],
+            "opus")
+        with patch.dict(os.environ, {"PANOPTICON_MODEL_ADVISOR": "sonnet"},
+                        clear=False):
+            self.assertEqual(mr.resolve_model("claude", "advisor")["model"], "sonnet")
+        self.assertEqual(mr.registration_model("claude", "panel_review"), "sonnet")
+
+    def test_kimi_override_is_normalized_to_a_dispatch_tier(self):
+        # k3 was panel_review's concrete alias before the tiers existed, so
+        # passing it as a --model override is the likely operator mistake.
+        cfg = mr.resolve_model("kimi", "panel_review", {"panel_review": "k3"})
+        self.assertEqual(cfg["model"], "secondary")
+        self.assertEqual(cfg["alias"], "k3")
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            unknown = mr.resolve_model("kimi", "scout", {"scout": "nonsense"})
+        self.assertEqual(unknown["model"], "primary")
+        self.assertIn("not a Kimi dispatch tier", err.getvalue())
+
+    def test_registration_model_ignores_ambient_overrides(self):
+        # Persisted registration files must not inherit a one-run override.
+        with patch.dict(os.environ, {"PANOPTICON_MODEL_SCOUT": "secondary"},
+                        clear=False):
+            self.assertEqual(mr.resolve_model("kimi", "scout")["model"], "secondary")
+            self.assertEqual(mr.registration_model("kimi", "scout"), "primary")
 
     def test_claude_defaults(self):
         self.assertEqual(mr.resolve_model("claude", "scout")["model"], "haiku")
@@ -27,14 +69,19 @@ class TestModelResolver(unittest.TestCase):
         self.assertIsNone(mr.resolve_model("generic", "panel_review")["model"])
         self.assertIsNone(mr.resolve_model("someday-host", "scout")["model"])
 
+    # Override precedence is host-agnostic, but only Kimi constrains the
+    # resulting value (primary|secondary), so these exercise it on claude,
+    # where a concrete model id IS the contract. Kimi's normalization of an
+    # out-of-contract override is covered by
+    # test_kimi_override_is_normalized_to_a_dispatch_tier.
     def test_cli_override(self):
         overrides = {"advisor": {"model": "custom-model"}}
-        self.assertEqual(mr.resolve_model("kimi", "advisor", overrides)["model"], "custom-model")
+        self.assertEqual(mr.resolve_model("claude", "advisor", overrides)["model"], "custom-model")
 
     def test_env_override(self):
         os.environ["PANOPTICON_MODEL_ADVISOR"] = "env-advisor"
         try:
-            self.assertEqual(mr.resolve_model("kimi", "advisor")["model"], "env-advisor")
+            self.assertEqual(mr.resolve_model("claude", "advisor")["model"], "env-advisor")
         finally:
             del os.environ["PANOPTICON_MODEL_ADVISOR"]
 
@@ -42,9 +89,19 @@ class TestModelResolver(unittest.TestCase):
         os.environ["PANOPTICON_MODEL_ADVISOR"] = "env-advisor"
         try:
             self.assertEqual(
-                mr.resolve_model("kimi", "advisor", {"advisor": {"model": "cli-advisor"}})["model"],
+                mr.resolve_model("claude", "advisor", {"advisor": {"model": "cli-advisor"}})["model"],
                 "cli-advisor"
             )
+        finally:
+            del os.environ["PANOPTICON_MODEL_ADVISOR"]
+
+    def test_kimi_override_precedence_still_applies_within_the_contract(self):
+        os.environ["PANOPTICON_MODEL_ADVISOR"] = "primary"
+        try:
+            self.assertEqual(mr.resolve_model("kimi", "advisor")["model"], "primary")
+            self.assertEqual(
+                mr.resolve_model("kimi", "advisor", {"advisor": {"model": "secondary"}})["model"],
+                "secondary")
         finally:
             del os.environ["PANOPTICON_MODEL_ADVISOR"]
 
@@ -63,7 +120,7 @@ class TestModelResolver(unittest.TestCase):
         self.assertEqual(profiles, {})
         self.assertIn("PyYAML not installed", stderr.getvalue())
         # Fallback still resolves a model.
-        self.assertEqual(mr.resolve_model("kimi", "lens_sweep")["model"], "kimi-for-coding")
+        self.assertEqual(mr.resolve_model("kimi", "lens_sweep")["model"], "primary")
 
     def test_unreadable_profiles_warns_and_falls_back(self):
         stderr = io.StringIO()
@@ -72,12 +129,12 @@ class TestModelResolver(unittest.TestCase):
                 profiles = mr._load_profiles()
         self.assertEqual(profiles, {})
         self.assertIn("cannot read model profiles", stderr.getvalue())
-        self.assertEqual(mr.resolve_model("kimi", "lens_sweep")["model"], "kimi-for-coding")
+        self.assertEqual(mr.resolve_model("kimi", "lens_sweep")["model"], "primary")
 
     def test_kimi_fallback_still_kimi_flavored(self):
         # With profiles unavailable, kimi host keeps its hardcoded models.
         with patch.object(mr, "_PROFILES", {}):
-            self.assertEqual(mr.resolve_model("kimi", "advisor")["model"], "k3")
+            self.assertEqual(mr.resolve_model("kimi", "advisor")["model"], "secondary")
 
     def test_claude_fallback_matches_policy_without_yaml(self):
         with patch.object(mr, "_PROFILES", {}):

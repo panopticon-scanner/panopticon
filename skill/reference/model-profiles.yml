@@ -1,19 +1,23 @@
 hosts:
   kimi:
     scout:
-      model: kimi-for-coding
+      model: primary
+      alias: kimi-for-coding
       max_context_size: 131072
       max_output_size: 16384
     lens_sweep:
-      model: kimi-for-coding
+      model: primary
+      alias: kimi-for-coding
       max_context_size: 131072
       max_output_size: 8192
     panel_review:
-      model: kimi-for-coding
+      model: secondary
+      alias: k3
       max_context_size: 131072
       max_output_size: 16384
     advisor:
-      model: k3
+      model: secondary
+      alias: k3
       max_context_size: 524288
       max_output_size: 32768
   claude:

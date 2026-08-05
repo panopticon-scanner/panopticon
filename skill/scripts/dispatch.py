@@ -81,6 +81,7 @@ PLACEHOLDER_RE = re.compile(r"\{([a-z_]+)\}")
 ROLE_FILES = {"scout": "scout.md", "panel_review": "panel-review.md",
               "lens_sweep": "lens-sweep.md", "advisor": "advisor.md"}
 CLAUDE_AGENTS_DIR = os.path.join(os.path.expanduser("~"), ".claude", "agents")
+KIMI_AGENTS_DIR = os.path.join(os.path.expanduser("~"), ".kimi-code", "agents")
 
 # Emission is deterministic policy — ambient PANOPTICON_MODEL_* overrides apply
 # to per-run dispatch plans, never to persisted registrations.
@@ -128,8 +129,16 @@ def emit_host_agents(host, out_dir):
                 fm.append("model: %s" % model)
             fm.append("---")
         else:
+            # Override-free by design (see EMIT_MODEL_POLICY above): the tier
+            # comes from model-profiles.yml so it cannot drift from what
+            # resolve_model returns at dispatch time.
+            preference = model_resolver.registration_model("kimi", role) or "primary"
             fm = (["---", "name: %s" % agent,
-                   "description: %s" % meta["description"], "tools:"]
+                   "description: %s" % meta["description"],
+                   "whenToUse: %s" % meta["description"],
+                   "override: false",
+                   "model_preference: %s" % preference,
+                   "tools:"]
                   + ["  - %s" % t for t in tp["allowed"]]
                   + ["disallowedTools:"]
                   + ["  - %s" % t for t in tp["forbidden"]]
@@ -179,13 +188,15 @@ def render_prompt(role_file, mapping):
 def _detect_host():
     """Best-effort host detection from environment.
 
-    Fallback only — the orchestrating agent should pass --host explicitly
-    (it knows what it is; these env vars are not all documented contracts).
+    Fallback only — the orchestrating agent should pass --host explicitly.
     """
+    warning = "WARNING: host detected from environment; pass --host explicitly for stable behavior"
     if os.environ.get("KIMI_CODE_VERSION") or os.environ.get("KIMI_SESSION_ID"):
+        print(warning, file=sys.stderr)
         return "kimi"
     if os.environ.get("CLAUDECODE") or any(
             k.startswith("CLAUDE_CODE_") for k in os.environ):
+        print(warning, file=sys.stderr)
         return "claude"
     return "generic"
 
@@ -199,11 +210,17 @@ AGENT_NAME = {
 
 
 def _registration_dir(host, agents_dir):
-    """Explicit dir wins; claude defaults to the user-level agents dir; any
-    other host has no default (never enforced without --agents-dir)."""
+    """Explicit dir wins; otherwise fall back to the host's default agents dir.
+
+    Unknown hosts return ``None``.
+    """
     if agents_dir:
         return agents_dir
-    return CLAUDE_AGENTS_DIR if host == "claude" else None
+    if host == "claude":
+        return CLAUDE_AGENTS_DIR
+    if host == "kimi":
+        return KIMI_AGENTS_DIR
+    return None
 
 
 def _is_registered(reg_dir, role_file):
@@ -357,6 +374,117 @@ def render_advisor_prompts(queue_path, out_dir):
     return written
 
 
+_KIMI_UNENFORCED_PROFILE = {
+    "panel_review": "coder",
+    "lens_sweep": "explore",
+    "scout": "explore",
+    "advisor": "plan",
+}
+
+
+def _kimi_subagent_type(entry, reg_dir=None, verify=False):
+    """Map a plan entry to a Kimi subagent_type.
+
+    Registered/enforced entries use the panopticon-* shell. Unenforced entries
+    fall back to a built-in Kimi profile so the dispatch is always valid.
+
+    `enforced` is a snapshot taken by build_plan when the plan was written, and
+    a plan is a persisted artifact re-read by a later invocation — registration
+    can be removed in between. With `verify=True` the flag is re-checked
+    against `reg_dir` at emit time, because a stale `enforced: true` would
+    claim host-enforced tool restrictions that no longer exist.
+    """
+    if entry.get("enforced"):
+        if verify and not _is_registered(reg_dir, ROLE_FILES.get(entry.get("role"), "")):
+            print("dispatch: %s no longer registered in %s; "
+                  "downgrading to an unenforced profile"
+                  % (entry.get("agent"), reg_dir), file=sys.stderr)
+        else:
+            return entry.get("agent")
+    return _KIMI_UNENFORCED_PROFILE.get(entry.get("role"), "coder")
+
+
+def _swarm_routing(entry):
+    """Where this entry's result must be written, and what produced it.
+
+    AgentSwarm's items[] carries prompts only, so the orchestrator would
+    otherwise have to re-derive the grouping and trust item order to know which
+    out_file each result belongs to. This block is index-aligned with items[]
+    and makes that mapping explicit.
+    """
+    return {"out_file": entry.get("out_file"), "role": entry.get("role"),
+            "panel": entry.get("panel"), "lens": entry.get("lens"),
+            "group": entry.get("group")}
+
+
+def _swarm_description(entry):
+    parts = [entry.get("role", "review")]
+    panel = entry.get("panel")
+    lens = entry.get("lens")
+    group = entry.get("group", "unknown")
+    if panel:
+        parts.append(panel)
+    if lens:
+        parts.append(lens)
+    parts.append("for group %s" % group)
+    return " ".join(parts)
+
+
+def emit_kimi_swarm(plan, agents_dir=None, verify_registration=False):
+    """Convert a DispatchPlan into Kimi Agent/AgentSwarm batches.
+
+    Entries with the same (subagent_type, model) are batched via AgentSwarm;
+    singletons become Agent calls. Each entry's fully rendered prompt is
+    passed as the task string, using AgentSwarm's {{item}} placeholder.
+
+    Every batch carries `routing`, index-aligned with `items` (or a single
+    dict for an Agent call): the orchestrator writes each returned result to
+    its entry's `out_file`, and the prompts alone cannot say which is which.
+
+    Pass `verify_registration=True` to re-check each enforced entry against
+    the live registration directory instead of trusting the plan's snapshot.
+    """
+    if not isinstance(plan, list):
+        raise ValueError("dispatch plan must be a list of entries, got %s"
+                         % type(plan).__name__)
+    reg_dir = _registration_dir("kimi", agents_dir) if verify_registration else None
+    grouped = {}
+    for entry in plan:
+        if not isinstance(entry, dict):
+            raise ValueError("dispatch plan entry must be an object, got %r" % (entry,))
+        model_cfg = entry.get("model")
+        if model_cfg is not None and not isinstance(model_cfg, dict):
+            raise ValueError("dispatch plan entry %r: model must be an object"
+                             % entry.get("role"))
+        agent = _kimi_subagent_type(entry, reg_dir, verify_registration)
+        model = (model_cfg or {}).get("model")
+        grouped.setdefault((agent, model), []).append(entry)
+
+    batches = []
+    for (agent, model), entries in grouped.items():
+        if len(entries) == 1:
+            entry = entries[0]
+            batches.append({
+                "tool": "Agent",
+                "subagent_type": agent,
+                "model": model,
+                "description": _swarm_description(entry),
+                "prompt": entry.get("prompt", ""),
+                "routing": _swarm_routing(entry),
+            })
+        else:
+            batches.append({
+                "tool": "AgentSwarm",
+                "subagent_type": agent,
+                "model": model,
+                "description": _swarm_description(entries[0]) + " (batch)",
+                "prompt_template": "{{item}}",
+                "items": [e.get("prompt", "") for e in entries],
+                "routing": [_swarm_routing(e) for e in entries],
+            })
+    return {"batches": batches}
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="panopticon dispatch planner")
     ap.add_argument("profile", nargs="?", default=None, help="Path to ScopeProfile JSON")
@@ -365,6 +493,8 @@ def main(argv=None):
     ap.add_argument("--out", default=None, help="Write DispatchPlan JSON to this file")
     ap.add_argument("--render-advisor", metavar="QUEUE", default=None,
                     help="Render advisor prompts from a verify-queue JSON into --out DIR")
+    ap.add_argument("--emit-kimi-swarm", metavar="PLAN", default=None,
+                    help="Read a DispatchPlan JSON and emit a Kimi Agent/AgentSwarm manifest to --out")
     ap.add_argument("--emit-host-agents", metavar="HOST", choices=["claude", "kimi"], default=None)
     ap.add_argument("--agents-dir", default=None,
                     help="Directory containing registered agent .md files")
@@ -374,10 +504,8 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     if args.emit_host_agents:
-        out_dir = args.out or (CLAUDE_AGENTS_DIR if args.emit_host_agents == "claude" else None)
-        if not out_dir:
-            print("dispatch: --emit-host-agents kimi requires --out DIR", file=sys.stderr)
-            return 2
+        out_dir = args.out or (CLAUDE_AGENTS_DIR if args.emit_host_agents == "claude"
+                               else KIMI_AGENTS_DIR)
         try:
             written = emit_host_agents(args.emit_host_agents, out_dir)
         except ValueError as e:
@@ -398,8 +526,32 @@ def main(argv=None):
             return 1
         print("rendered %d advisor prompt(s) -> %s" % (len(written), args.out))
         return 0
+    if args.emit_kimi_swarm:
+        if not args.out:
+            print("dispatch: --emit-kimi-swarm requires --out", file=sys.stderr)
+            return 2
+        try:
+            with open(args.emit_kimi_swarm, encoding="utf-8") as fh:
+                plan = json.load(fh)
+        except (OSError, ValueError) as e:
+            print("dispatch: cannot read plan %s: %s" % (args.emit_kimi_swarm, e), file=sys.stderr)
+            return 1
+        try:
+            swarm = emit_kimi_swarm(plan, agents_dir=args.agents_dir,
+                                    verify_registration=True)
+        except ValueError as e:
+            print("dispatch: %s" % e, file=sys.stderr)
+            return 1
+        with open(args.out, "w", encoding="utf-8") as fh:
+            json.dump(swarm, fh, indent=2)
+            fh.write("\n")
+        print("wrote Kimi swarm manifest (%d batch(es)) -> %s" % (len(swarm["batches"]), args.out))
+        return 0
     if not args.profile:
-        ap.error("profile is required unless --render-advisor is given")
+        ap.error(
+            "profile is required unless --render-advisor, --emit-host-agents, "
+            "or --emit-kimi-swarm is given"
+        )
 
     try:
         with open(args.profile, encoding="utf-8") as fh:

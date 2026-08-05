@@ -82,11 +82,46 @@ One plan, one prompt per reviewer; each host dispatches with its own mechanism:
   `entry.prompt` as the task. If false, dispatch general-purpose with
   `entry.prompt` and the model named by `entry.model.model` (omit when null).
   Register once with `python3 scripts/dispatch.py --emit-host-agents claude`.
-- **Kimi Code** — AgentSwarm raw-prompt dispatch (`prompt_template`/`items`);
-  select an appropriate profile via `subagent_type`; model overrides are
-  experimental-flag-gated. When `entry.enforced` is true, dispatch via the
-  registered `panopticon-*` profile (`subagent_type`) instead of raw-prompt —
-  raw-prompt dispatch does not honor the shell.
+- **Kimi Code** — AgentSwarm raw-prompt dispatch (`prompt_template`/`items`)
+  or per-entry `Agent` dispatch. Model selection is driven by the registered
+  agent file's `model_preference` (`primary` for `scout`/`lens_sweep`,
+  `secondary` for `panel_review`/`advisor`); per-dispatch `model` overrides
+  require `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` or
+  `KIMI_CODE_EXPERIMENTAL_FLAG=1`.
+
+  1. Register the enforcement shells once (fresh session required after):
+     ```bash
+     python3 scripts/dispatch.py --emit-host-agents kimi
+     # or explicit:
+     python3 scripts/dispatch.py --emit-host-agents kimi --out ~/.kimi-code/agents
+     ```
+  2. Build the dispatch plan with `--host kimi`.
+  3. Fan out. Which `subagent_type` to use depends on `entry.enforced`, the
+     same way it does for Claude — and until step 1 has run, every entry is
+     unenforced:
+     - `entry.enforced` true → `subagent_type: entry.agent` (the registered
+       `panopticon-*` profile, so tool restrictions are host-enforced).
+     - `entry.enforced` false → a built-in Kimi profile: `coder` for
+       `panel_review`, `explore` for `lens_sweep`/`scout`, `plan` for
+       `advisor`. `entry.agent` is a host-neutral placeholder in this case
+       (`panel-review`, `lens-sweep`) and is NOT a valid `subagent_type`.
+
+     Prefer the swarm manifest, which applies that mapping for you and
+     re-checks registration against the live agents dir:
+     ```bash
+     python3 scripts/dispatch.py --emit-kimi-swarm .panopticon/dispatch-plan.json --out .panopticon/kimi-swarm.json
+     ```
+     Then invoke each batch. Raw-prompt dispatch does not honor the shell, so
+     an enforced entry must go through its registered profile.
+
+     **Routing results back:** each batch carries `routing` — a single object
+     for an `Agent` call, or a list index-aligned with `items` for an
+     `AgentSwarm` batch. Write each returned result to its
+     `routing[i].out_file`. A batch may merge entries from different panels
+     and groups, so item order is the only other link and it is not a
+     contract.
+  4. Verification phase: render advisors with `--render-advisor` and dispatch
+     them the same way as panels/lenses.
 - **Other hosts** — run the entries sequentially in-session with the same
   prompts; expect no parallelism.
 
