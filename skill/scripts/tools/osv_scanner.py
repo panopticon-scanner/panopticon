@@ -32,7 +32,7 @@ class OsvScannerAdapter:
         return any(os.path.isfile(os.path.join(target, m)) for m in markers)
 
     def invoke(self, target: str) -> tuple[bytes, int]:
-        cmd = ["osv-scanner", "--format", "json", "--recursive", target]
+        cmd = ["osv-scanner", "--format", "json", "--offline", "--recursive", target]
         return run_tool(cmd, timeout=300)
 
     def parse(self, raw: bytes, group: str) -> list[dict]:

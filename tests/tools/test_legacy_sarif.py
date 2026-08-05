@@ -87,6 +87,16 @@ class TestLegacySarifAdapter(unittest.TestCase):
             self.assertIsInstance(ADAPTERS[name], legacy.LegacySarifAdapter)
             self.assertEqual(ADAPTERS[name].name, name)
 
+    def test_semgrep_argv_has_offline_flags(self):
+        expected = ["semgrep", "scan", "--config", "/opt/semgrep-rules",
+                    "--metrics=off", "--sarif", "--quiet", "/src"]
+        self.assertEqual(legacy.TOOL_CMD["semgrep"], expected)
+
+    def test_trivy_argv_has_offline_flags(self):
+        expected = ["trivy", "fs", "--skip-db-update", "--offline-scan",
+                    "--format", "sarif", "/src"]
+        self.assertEqual(legacy.TOOL_CMD["trivy"], expected)
+
 
 if __name__ == "__main__":
     unittest.main()

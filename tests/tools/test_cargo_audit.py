@@ -49,6 +49,6 @@ class TestCargoAuditAdapter(unittest.TestCase):
             stdout, rc = ca.CargoAuditAdapter().invoke("/tmp/fake")
         self.assertEqual(rc, 0)
         fake_run.assert_called_once_with(
-            ["cargo", "audit", "--format", "json"],
+            ["cargo", "audit", "--no-fetch", "--format", "json"],
             capture_output=True, timeout=300, cwd="/tmp/fake",
         )

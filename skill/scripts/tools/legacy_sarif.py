@@ -15,10 +15,11 @@ LEGACY_SARIF_TOOLS = {"semgrep", "bandit", "trivy", "gitleaks", "gosec"}
 # Per-tool argv producing SARIF on stdout. /src is substituted with the actual
 # target path at invocation time.
 TOOL_CMD = {
-    "semgrep": ["semgrep", "scan", "--config", "auto", "--sarif", "--quiet", "/src"],
+    "semgrep": ["semgrep", "scan", "--config", "/opt/semgrep-rules", "--metrics=off",
+                "--sarif", "--quiet", "/src"],
     "gitleaks": ["gitleaks", "detect", "--no-git", "--source", "/src", "--report-format", "sarif",
                  "--report-path", "/dev/stdout", "--no-banner"],
-    "trivy": ["trivy", "fs", "--format", "sarif", "/src"],
+    "trivy": ["trivy", "fs", "--skip-db-update", "--offline-scan", "--format", "sarif", "/src"],
     "bandit": ["bandit", "-q", "-r", "/src", "-f", "sarif"],
     "gosec": ["gosec", "-fmt=sarif", "./..."],
 }
