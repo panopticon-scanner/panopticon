@@ -89,8 +89,17 @@ class TestLegacySarifAdapter(unittest.TestCase):
 
     def test_semgrep_argv_has_offline_flags(self):
         expected = ["semgrep", "scan", "--config", "/opt/semgrep-rules",
-                    "--metrics=off", "--sarif", "--quiet", "/src"]
+                    "--metrics=off", "--disable-version-check",
+                    "--sarif", "--quiet", "/src"]
         self.assertEqual(legacy.TOOL_CMD["semgrep"], expected)
+
+    def test_semgrep_argv_suppresses_both_call_home_paths(self):
+        # They are separate calls: --metrics=off does not stop the version
+        # check, and in a --network none container that check blocks until it
+        # times out (measured 2m10s -> 35s on one trivial file).
+        argv = legacy.TOOL_CMD["semgrep"]
+        self.assertIn("--metrics=off", argv)
+        self.assertIn("--disable-version-check", argv)
 
     def test_trivy_argv_has_offline_flags(self):
         expected = ["trivy", "fs", "--skip-db-update", "--offline-scan",
