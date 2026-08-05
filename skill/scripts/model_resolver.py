@@ -43,10 +43,14 @@ def _profiles():
 
 
 _KIMI_FALLBACK = {
-    "scout": {"model": "kimi-for-coding", "max_context_size": 131072, "max_output_size": 16384},
-    "lens_sweep": {"model": "kimi-for-coding", "max_context_size": 131072, "max_output_size": 8192},
-    "panel_review": {"model": "kimi-for-coding", "max_context_size": 131072, "max_output_size": 16384},
-    "advisor": {"model": "k3", "max_context_size": 524288, "max_output_size": 32768},
+    "scout": {"model": "primary", "alias": "kimi-for-coding",
+              "max_context_size": 131072, "max_output_size": 16384},
+    "lens_sweep": {"model": "primary", "alias": "kimi-for-coding",
+                   "max_context_size": 131072, "max_output_size": 8192},
+    "panel_review": {"model": "secondary", "alias": "k3",
+                     "max_context_size": 131072, "max_output_size": 16384},
+    "advisor": {"model": "secondary", "alias": "k3",
+                "max_context_size": 524288, "max_output_size": 32768},
 }
 _CLAUDE_FALLBACK = {
     "scout": {"model": "haiku"},
@@ -63,7 +67,7 @@ def _hardcoded_fallback(host, role):
     model" — never silently assume kimi.
     """
     if host == "kimi":
-        return _KIMI_FALLBACK.get(role, {"model": "kimi-for-coding",
+        return _KIMI_FALLBACK.get(role, {"model": "primary", "alias": "kimi-for-coding",
                                          "max_context_size": 131072,
                                          "max_output_size": 8192})
     if host == "claude":
