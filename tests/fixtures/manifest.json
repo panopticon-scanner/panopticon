@@ -27,6 +27,13 @@
       "source": "local",
       "path": "/opt/panopticon-fixtures/vulnerable-rust",
       "adapters": ["cargo-audit"]
+    },
+    {
+      "name": "hostile-csproj",
+      "language": "csharp",
+      "source": "local",
+      "path": "tests/fixtures/hostile-csproj",
+      "adapters": ["roslyn-secguard"]
     }
   ]
 }

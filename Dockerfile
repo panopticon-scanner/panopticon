@@ -197,11 +197,18 @@ RUN printf '%s\n' \
     && chmod a+r /nuget.config
 
 RUN useradd -m -u 1000 scanner \
+    && chown scanner:scanner /home/scanner \
     && mkdir -p /home/scanner/.cargo \
     && chown scanner:scanner /home/scanner/.cargo \
     && mkdir -p /home/scanner/.local/share \
     && cp -r /root/.local/share/ruby-advisory-db /home/scanner/.local/share/ \
     && chown -R scanner:scanner /home/scanner/.local/share/ruby-advisory-db
+# /home/scanner is chowned explicitly: earlier layers (RustSec advisory-db
+# clone) pre-create it as root, so useradd -m's own home-dir ownership is a
+# no-op ("tolerates the home directory already existing" — it does not fix
+# it). Without this, tools that lazily write their own dotfiles under $HOME
+# at scan time (semgrep's ~/.semgrep, dotnet's ~/.dotnet first-run sentinel)
+# fail with PermissionError even though every baked asset is present.
 ENV CARGO_HOME=/home/scanner/.cargo
 USER scanner
 WORKDIR /src

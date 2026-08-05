@@ -52,8 +52,12 @@ summary + JSON artifact) with standards citations and CI gating.
   `synthesize` validates/enriches. Never emit a guessed citation (no CVE → no EPSS; unlisted
   CWE → kept but `verified:false`; missing SSVC inputs → omitted).
 - **Tool container is optional** and auto-detected; absent → clean fleet-only behavior.
-- **Scan-time network is allowed** (dropped `--network none`): SAST/SCA only parse code, never
-  execute it, and semgrep/trivy need to fetch rules/DB. Mount stays read-only + non-root.
+- **Scan-time network is disabled** (`--network none` on every tool run):
+  advisory/rules data is baked into the tools image (weekly rebuild).
+  Parse-only adapters never execute target code. roslyn-secguard executes
+  target build logic inside the no-egress, no-secret, read-only-mount
+  container — the report records it in `meta.build_executing_tools`.
+  pip-audit/npm-audit run only under `run_tools.py --online`.
 - **Tolerant by design**: `load_findings` and `enrich_citations` skip/log malformed input,
   never abort the run (a bad finding must not lose a real CRITICAL or skip the CI gate).
 
