@@ -213,7 +213,13 @@ RUN useradd -m -u 1000 scanner \
     && chown scanner:scanner /home/scanner/.cargo \
     && mkdir -p /home/scanner/.local/share \
     && cp -r /root/.local/share/ruby-advisory-db /home/scanner/.local/share/ \
-    && chown -R scanner:scanner /home/scanner/.local/share/ruby-advisory-db
+    && chown -R scanner:scanner /home/scanner/.local/share/ruby-advisory-db \
+    && chown -R scanner:scanner /opt/odc-data
+# /opt/odc-data is chowned, not just a+rX: dependency-check opens its H2
+# database (odc.mv.db) read-write even under --noupdate, and when the lock
+# cannot be taken H2 BLOCKS rather than failing, so the adapter burns its full
+# 900s timeout and returns nothing. Chowning here rather than in the NVD layer
+# keeps that expensive download cached.
 # /home/scanner is chowned explicitly: earlier layers (RustSec advisory-db
 # clone) pre-create it as root, so useradd -m's own home-dir ownership is a
 # no-op ("tolerates the home directory already existing" — it does not fix
