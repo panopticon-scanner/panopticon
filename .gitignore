@@ -8,6 +8,13 @@ __pycache__/
 .superpowers/
 .worktrees/
 
+# Local secrets (NVD_API_KEY for dependency-check's BuildKit secret).
+# Never commit: the key is a credential, and `docker build --secret`
+# reads it from the environment, not from the repo.
+.env
+.env.*
+!.env.example
+
 # OS / editor noise
 .DS_Store
 *.swp
