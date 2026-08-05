@@ -48,6 +48,19 @@ summary + JSON artifact) with standards citations and CI gating.
   by `compute_group_panels`; lenses are spawned only when the scout flags a surface.
 - **Grade = worst-severity A–F rollup** (F if any CRITICAL … A if none). Deliberate for a
   gate; do NOT replace it. Severity + CVSS follow industry scales; the letter grade is ours.
+- **The gate keys on evidence, not just severity.** `evidence.status`
+  (`tool_reported`/`tool_confirmed`/`advisor_confirmed`/`corroborated`/
+  `needs_more_info`/`unverified`/`rejected`) is derived by checking any advisor
+  verdict FIRST, whatever the finding's source (P2, #446). A tool-sourced or
+  reinforced (tool+agent) finding with no verdict is `tool_reported` — reported,
+  not verified — and is NOT gate-eligible by default; only `tool_confirmed`/
+  `advisor_confirmed` are (`evidence.GATE_ELIGIBLE_DEFAULT`).
+  `meta.tool_axis.rejection_rate` reports how often advisors refute scanners
+  among DECIDED tool claims (`None` until something is decided, never a
+  misleading `0%`). `--gate-unverified` is the escape hatch for pipelines
+  that want every non-rejected finding — verified or not — to gate,
+  restoring the old all-claims-gate behavior. Severity itself is never
+  mutated by any of this.
 - **Citations are hybrid**: tools emit CWE/OWASP/CVE natively (authoritative); agents assert;
   `synthesize` validates/enriches. Never emit a guessed citation (no CVE → no EPSS; unlisted
   CWE → kept but `verified:false`; missing SSVC inputs → omitted).
@@ -129,6 +142,15 @@ History:
   confirmed evidence (default) with `--gate-unverified` opt-in. GROUP_RE fixed for
   3.0 filenames; effort_to_remediate/recommendations schema theater removed.
   Reinforced (tool+agent) findings gate as tool_confirmed; the legacy dedupe/corroboration confidence bumps are removed (confidence is never pipeline-mutated).
+
+  **Update (P2, #446):** the line above no longer holds unmodified. A tool-sourced
+  or reinforced finding with no advisor verdict is now `tool_reported`, not
+  `tool_confirmed` — it takes an actual advisor CONFIRMED verdict to promote it.
+  This closed the gap where an unverified tool HIGH (e.g. a Bandit B105 flagging
+  a `gate-pass` CSS-class string as a "hardcoded password") could fail a build
+  under `--fail-on low` on tool say-so alone. See "Key design decisions" above
+  for the current posture; `--gate-unverified` is unchanged as the opt-in that
+  restores every-non-rejected-finding-gates behavior.
 - **2.3.0** — cross-dogfood round from a 61-panel run against a real 3-repo estate. Four
   fixes: (1) **cross-panel corroboration** — `synthesize` now runs a distinct agent-vs-agent pass
   (`cross_panel_corroboration`, keyed on file + line-proximity across DISTINCT panels, not category)

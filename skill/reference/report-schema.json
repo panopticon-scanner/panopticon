@@ -25,8 +25,29 @@
             }
           }
         },
-        "build_executing_tools": {"type": "array", "items": {"type": "string"}, "description": "Names of adapters from EXECUTES_TARGET_BUILD that contributed findings to this report."},
-        "tool_policy_mode": {"type": "string", "enum": ["enforced", "advisory", "mixed"], "description": "Posture of the fan-out reviewer entries (panel_review/lens_sweep) derived from dispatch plans; scout/advisor posture is not recorded."}
+        "build_executing_tools": {"type": "array", "items": {"type": "string"}, "description": "Names of adapters from EXECUTES_TARGET_BUILD that ran this run (produced an output file), whether or not they emitted findings."},
+        "tool_policy_mode": {"type": "string", "enum": ["enforced", "advisory", "mixed"], "description": "Posture of the fan-out reviewer entries (panel_review/lens_sweep) derived from dispatch plans; scout/advisor posture is not recorded."},
+        "tool_axis": {
+          "type": "object",
+          "properties": {
+            "queued": {"type": "integer"},
+            "confirmed": {"type": "integer"},
+            "rejected": {"type": "integer"},
+            "needs_more_info": {"type": "integer"},
+            "unanswered": {"type": "integer"},
+            "rejection_rate": {"type": ["number", "null"]}
+          }
+        },
+        "verdicts": {
+          "type": "object",
+          "description": "Verify-phase accounting: verdicts that were dropped are otherwise stderr-only, and under strict gating a run whose verdicts all failed to match looks like a clean pass.",
+          "properties": {
+            "supplied": {"type": "integer"},
+            "matched": {"type": "integer"},
+            "unknown": {"type": "integer"},
+            "unanswered": {"type": ["integer", "null"], "description": "Queued findings left without a verdict; null when no --verdicts-dir was supplied, i.e. not measured."}
+          }
+        }
       }
     },
     "summary": {
@@ -41,6 +62,7 @@
         "evidence_stats": {
           "type": "object",
           "properties": {
+            "tool_reported": {"type": "integer"},
             "tool_confirmed": {"type": "integer"},
             "advisor_confirmed": {"type": "integer"},
             "corroborated": {"type": "integer"},
@@ -110,7 +132,7 @@
             "properties": {
               "status": {
                 "type": "string",
-                "enum": ["tool_confirmed", "advisor_confirmed", "corroborated", "needs_more_info", "unverified", "rejected"]
+                "enum": ["tool_reported", "tool_confirmed", "advisor_confirmed", "corroborated", "needs_more_info", "unverified", "rejected"]
               },
               "verified_by": {},
               "reasoning": {"type": ["string", "null"]},

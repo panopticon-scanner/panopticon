@@ -783,8 +783,10 @@ class TestSummaryCitations(unittest.TestCase):
         text = syn.render_summary(report)
         self.assertIn("CWE-89", text)
         self.assertIn("Act", text)
-        # the provenance chip now shows the evidence status, not "reinforced"
-        self.assertIn("tool_confirmed", text)
+        # the provenance chip shows the evidence status, not "reinforced". No
+        # verdict is supplied here, so P2/#446 means this is tool_reported,
+        # not tool_confirmed -- reinforcement alone no longer gates.
+        self.assertIn("tool_reported", text)
 
     def test_summary_shows_panel_label(self):
         report = syn.build_report(
@@ -1061,7 +1063,14 @@ class TestHtmlOut(unittest.TestCase):
 
 class TestInternalFieldCleanup(unittest.TestCase):
     def test_build_report_does_not_leak_internal_fields(self):
-        f = {
+        # Two findings, not one: f1's REJECTED verdict moves it OUT of
+        # report["findings"] and into report["discarded_claims"], so a
+        # single-finding fixture leaves exactly one of the two leak-check
+        # loops below vacuous no matter which list the finding lands in.
+        # f2 carries no verdict and stays in report["findings"], so both
+        # lists are guaranteed non-empty and both loops actually run over
+        # real data.
+        f1 = {
             "id": "SEC-001", "title": "SQLi", "severity": "HIGH", "confidence": "LIKELY",
             "panel": "security", "category": "injection",
             "provenance": {"discovered_by": "agent:lens_sweep"},
@@ -1069,10 +1078,21 @@ class TestInternalFieldCleanup(unittest.TestCase):
             "_group": "backend",
             "_repo_root": "/some/path",
         }
-        verdicts = {"000-SEC-001": {"finding_id": "SEC-001", "verdict": "REJECTED",
-                                    "reasoning": "False positive."}}
+        f2 = {
+            "id": "SEC-002", "title": "XSS", "severity": "MEDIUM", "confidence": "LIKELY",
+            "panel": "security", "category": "xss",
+            "provenance": {"discovered_by": "agent:lens_sweep"},
+            "location": {"file": "app.py", "line_start": 55},
+            "_group": "backend",
+            "_repo_root": "/some/path",
+        }
+        verdicts = {syn.finding_fingerprint(f1):
+                    {"finding_id": "SEC-001", "verdict": "REJECTED",
+                     "reasoning": "False positive."}}
         report = syn.build_report(
-            [f], [], "src", None, "2026-07-23T00:00:00Z", verdicts=verdicts)
+            [f1, f2], [], "src", None, "2026-07-23T00:00:00Z", verdicts=verdicts)
+        self.assertEqual(len(report["findings"]), 1)
+        self.assertEqual(len(report.get("discarded_claims", [])), 1)
         for finding in report["findings"]:
             self.assertNotIn("_group", finding)
             self.assertNotIn("_repo_root", finding)
@@ -1133,18 +1153,22 @@ class TestEvidenceReport(unittest.TestCase):
         self.assertEqual(report["summary"]["gate_policy"], "include_unverified")
 
     def test_confirmed_verdict_gates(self):
-        verdicts = {"000-AG-001": {"finding_id": "AG-001", "verdict": "CONFIRMED",
-                                   "reasoning": "verified"}}
-        report = self._report([_agentic()], verdicts=verdicts)
+        finding = _agentic()
+        verdicts = {syn.finding_fingerprint(finding):
+                    {"finding_id": "AG-001", "verdict": "CONFIRMED",
+                     "reasoning": "verified"}}
+        report = self._report([finding], verdicts=verdicts)
         f = report["findings"][0]
         self.assertEqual(f["evidence"]["status"], "advisor_confirmed")
         self.assertEqual(report["summary"]["gate"], "FAIL")
         self.assertEqual(report["summary"]["overall_grade"], "D")
 
     def test_rejected_moves_to_discarded_with_severity_intact(self):
-        verdicts = {"000-AG-001": {"finding_id": "AG-001", "verdict": "REJECTED",
-                                   "reasoning": "not exploitable"}}
-        report = self._report([_agentic()], verdicts=verdicts)
+        finding = _agentic()
+        verdicts = {syn.finding_fingerprint(finding):
+                    {"finding_id": "AG-001", "verdict": "REJECTED",
+                     "reasoning": "not exploitable"}}
+        report = self._report([finding], verdicts=verdicts)
         self.assertEqual(report["findings"], [])
         d = report["discarded_claims"][0]
         self.assertEqual(d["severity"], "HIGH")
@@ -1153,16 +1177,21 @@ class TestEvidenceReport(unittest.TestCase):
         self.assertEqual(report["summary"]["gate"], "PASS")
 
     def test_needs_more_info_stays_visible_not_gating(self):
-        verdicts = {"000-AG-001": {"finding_id": "AG-001",
-                                   "verdict": "NEEDS_MORE_INFO",
-                                   "reasoning": "need deploy config"}}
-        report = self._report([_agentic()], verdicts=verdicts)
+        finding = _agentic()
+        verdicts = {syn.finding_fingerprint(finding):
+                    {"finding_id": "AG-001",
+                     "verdict": "NEEDS_MORE_INFO",
+                     "reasoning": "need deploy config"}}
+        report = self._report([finding], verdicts=verdicts)
         f = report["findings"][0]
         self.assertEqual(f["evidence"]["status"], "needs_more_info")
         self.assertEqual(f["severity"], "HIGH")
         self.assertEqual(report["summary"]["gate"], "PASS")
 
-    def test_tool_finding_gates_without_verdict(self):
+    def test_tool_finding_without_verdict_is_reported_not_gated(self):
+        # P2/#446: this is the load-bearing regression test for the Bandit
+        # B105 self-scan incident -- an unverified tool claim must NOT gate a
+        # build on its own. It is tool_reported until an advisor confirms it.
         tool = {"id": "TL-001", "title": "sqli", "severity": "HIGH",
                 "confidence": "CERTAIN", "panel": "security",
                 "category": "injection", "source": "tool:semgrep",
@@ -1171,18 +1200,19 @@ class TestEvidenceReport(unittest.TestCase):
                                "confirmation_status": "TOOL"}}
         report = self._report([syn.normalize_finding(tool)])
         self.assertEqual(report["findings"][0]["evidence"]["status"],
-                         "tool_confirmed")
-        self.assertEqual(report["summary"]["gate"], "FAIL")
+                         "tool_reported")
+        self.assertEqual(report["summary"]["gate"], "PASS")
 
     def test_evidence_stats_counts_everything(self):
-        verdicts = {"000-AG-001": {"finding_id": "AG-001", "verdict": "REJECTED",
-                                   "reasoning": "r"}}
+        f1 = _agentic()
         # distinct locus for AG-002 so dedupe doesn't collapse it into AG-001
         # (same file/line/category would otherwise keep only the more severe one).
-        report = self._report(
-            [_agentic(), _agentic(fid="AG-002", sev="LOW",
-                                  location={"file": "app.py", "line_start": 99})],
-            verdicts=verdicts)
+        f2 = _agentic(fid="AG-002", sev="LOW",
+                      location={"file": "app.py", "line_start": 99})
+        verdicts = {syn.finding_fingerprint(f1):
+                    {"finding_id": "AG-001", "verdict": "REJECTED",
+                     "reasoning": "r"}}
+        report = self._report([f1, f2], verdicts=verdicts)
         stats = report["summary"]["evidence_stats"]
         self.assertEqual(stats["rejected"], 1)
         self.assertEqual(stats["unverified"], 1)
@@ -1200,12 +1230,12 @@ class TestEvidenceReport(unittest.TestCase):
         self.assertIn(f["evidence"]["citation_quality"],
                       ("full", "partial", "minimal", "none"))
 
-    def test_reinforced_tool_agent_merge_gates_as_tool_confirmed(self):
-        # Regression (amended spec): a tool HIGH + agent CRITICAL at the same
-        # locus reinforce to a single survivor. Previously the survivor derived
-        # `corroborated` (not gate-eligible), which let agent agreement strip a
-        # scanner finding's gate influence. It must now derive tool_confirmed
-        # and gate FAIL under --fail-on high.
+    def test_reinforced_tool_agent_merge_without_verdict_does_not_gate(self):
+        # P2/#446: a tool HIGH + agent CRITICAL at the same locus reinforce to
+        # a single survivor, which is tool-reported by construction (never
+        # demoted to mere `corroborated`) -- but reinforcement alone is no
+        # longer gate-eligible without an advisor CONFIRMED verdict, same as
+        # any other tool claim. Gate stays PASS under --fail-on high.
         tool = {"id": "TL-002", "title": "sqli", "severity": "HIGH",
                 "confidence": "CERTAIN", "panel": "security", "category": "injection",
                 "source": "tool:semgrep",
@@ -1217,8 +1247,8 @@ class TestEvidenceReport(unittest.TestCase):
         self.assertEqual(len(report["findings"]), 1)
         f = report["findings"][0]
         self.assertTrue(f.get("reinforced"))
-        self.assertEqual(f["evidence"]["status"], "tool_confirmed")
-        self.assertEqual(report["summary"]["gate"], "FAIL")
+        self.assertEqual(f["evidence"]["status"], "tool_reported")
+        self.assertEqual(report["summary"]["gate"], "PASS")
 
     def test_unknown_queue_id_verdict_ignored(self):
         # A verdict file whose stem doesn't match any current queue_id (e.g.
@@ -1234,6 +1264,16 @@ class TestEvidenceReport(unittest.TestCase):
         self.assertIn("999-UNKNOWN", err.getvalue())
 
 
+# Expected evidence.status once a verdict genuinely reaches apply_verdict,
+# for an _agentic() (non-tool, non-reinforced) finding. Used by
+# TestSeverityImmutability to prove its verdicts actually applied -- without
+# this, a future queue_id-key regression (like the one fixed by #443) would
+# make "severity/confidence unchanged" trivially true again, because nothing
+# would have been applied at all.
+_VERDICT_STATUS = {"REJECTED": "rejected", "NEEDS_MORE_INFO": "needs_more_info",
+                   "CONFIRMED": "advisor_confirmed"}
+
+
 class TestSeverityImmutability(unittest.TestCase):
     def test_no_path_mutates_severity(self):
         cases = []
@@ -1246,7 +1286,7 @@ class TestSeverityImmutability(unittest.TestCase):
                                                "reasoning": "r"}))
         for finding, verdict in cases:
             original = finding["severity"]
-            verdicts = ({"000-%s" % finding["id"]:
+            verdicts = ({syn.finding_fingerprint(finding):
                          dict(verdict, finding_id=finding["id"])}
                         if verdict else None)
             report = syn.build_report([finding], [], "t", "high",
@@ -1254,6 +1294,11 @@ class TestSeverityImmutability(unittest.TestCase):
             everywhere = report["findings"] + report["discarded_claims"]
             self.assertEqual(everywhere[0]["severity"], original,
                              "severity mutated for verdict=%r" % verdict)
+            if verdict:
+                self.assertEqual(
+                    everywhere[0]["evidence"]["status"],
+                    _VERDICT_STATUS[verdict["verdict"]],
+                    "verdict %r did not actually reach apply_verdict" % verdict)
 
     def test_no_path_mutates_confidence(self):
         # Amended spec: confidence, like severity, is never mutated by the
@@ -1269,7 +1314,7 @@ class TestSeverityImmutability(unittest.TestCase):
                                                "reasoning": "r"}))
         for finding, verdict in cases:
             original = finding["confidence"]
-            verdicts = ({"000-%s" % finding["id"]:
+            verdicts = ({syn.finding_fingerprint(finding):
                          dict(verdict, finding_id=finding["id"])}
                         if verdict else None)
             report = syn.build_report([finding], [], "t", "high",
@@ -1277,6 +1322,11 @@ class TestSeverityImmutability(unittest.TestCase):
             everywhere = report["findings"] + report["discarded_claims"]
             self.assertEqual(everywhere[0]["confidence"], original,
                              "confidence mutated for verdict=%r" % verdict)
+            if verdict:
+                self.assertEqual(
+                    everywhere[0]["evidence"]["status"],
+                    _VERDICT_STATUS[verdict["verdict"]],
+                    "verdict %r did not actually reach apply_verdict" % verdict)
 
 
 class TestTwoPassCli(unittest.TestCase):
@@ -1296,7 +1346,10 @@ class TestTwoPassCli(unittest.TestCase):
             self.assertFalse(os.path.exists(out))
             with open(os.path.join(d, ".panopticon", "verify-queue.json")) as fh:
                 queue = json.load(fh)
-            self.assertEqual(queue["entries"][0]["queue_id"], "000-AG-001")
+            # queue_id is the finding's content fingerprint (#443), not a
+            # position-based "NNN-id".
+            self.assertEqual(queue["entries"][0]["queue_id"],
+                             syn.finding_fingerprint(queue["entries"][0]["finding"]))
 
     def test_pass1_empty_queue_falls_through_to_report(self):
         # Post-SEC-102 an agent-authored finding always queues; an empty queue
@@ -1310,10 +1363,12 @@ class TestTwoPassCli(unittest.TestCase):
 
     def test_pass2_applies_verdicts(self):
         with tempfile.TemporaryDirectory() as d, _chdir(d):
-            fp = self._write_findings(d, [_agentic()])
+            finding = _agentic()
+            fp = self._write_findings(d, [finding])
             vd = os.path.join(d, ".panopticon", "verdicts")
             os.makedirs(vd)
-            with open(os.path.join(vd, "000-AG-001.json"), "w") as fh:
+            qid = syn.finding_fingerprint(finding)
+            with open(os.path.join(vd, "%s.json" % qid), "w") as fh:
                 json.dump({"finding_id": "AG-001", "verdict": "CONFIRMED",
                            "reasoning": "verified"}, fh)
             out = os.path.join(d, "report.json")
@@ -1335,12 +1390,12 @@ class TestTwoPassCli(unittest.TestCase):
             self.assertEqual(rc, 1)
 
     def test_pass1_empty_queue_removes_stale_queue_file(self):
-        # A queue file left by a PREVIOUS run (with agentic findings) must not
-        # survive a run whose queue is empty this time -> SKILL.md step 7
-        # branches on the file's existence, and a stale file would mislead a
-        # re-run into the verify phase.
-        # Post-SEC-102 an agent-authored finding always queues, so "empty
-        # queue this time" means no agentic findings at all.
+        # A queue file left by a PREVIOUS run must not survive a run whose
+        # queue is empty this time -> SKILL.md step 7 branches on the file's
+        # existence, and a stale file would mislead a re-run into the verify
+        # phase.
+        # Post-P2 EVERY finding queues -- tool findings included -- so "empty
+        # queue this time" means the run produced no findings at all.
         with tempfile.TemporaryDirectory() as d, _chdir(d):
             fp = self._write_findings(d, [])
             qpath = os.path.join(d, ".panopticon", "verify-queue.json")
@@ -1369,6 +1424,105 @@ class TestTwoPassCli(unittest.TestCase):
                 rc = syn.main(["--verdicts-dir", vd, "--out", out, fp])
             self.assertEqual(rc, 0)
             self.assertIn("no verdict", err.getvalue())
+
+    def test_pass1_cli_and_pass2_build_report_agree_on_fingerprints(self):
+        # #443: pass 1 (--emit-verify-queue) fed build_verify_queue a bare
+        # prepare_findings() list while pass 2 (build_report) aggregated
+        # first -- so a tool rule firing twice in one file produced two ids
+        # in the queue file but one finding (one fingerprint) in the final
+        # report, and an advisor verdict keyed on one of those two ids landed
+        # nowhere pass 2 recognized. TestBothPassesAgree (test_verify_queue.py)
+        # proves prepare_for_queue is deterministic across two calls on the
+        # same input, which would NOT catch a caller left on the old
+        # prepare_findings-only path -- so this drives the two REAL CLI passes
+        # (main() with and without --emit-verify-queue) over one fixture,
+        # ingesting a real SARIF tool file through --tools-dir (load_findings
+        # strips a self-asserted 'source' from agent-authored JSON, so a
+        # bare findings-*.json fixture can't stand in for a genuine tool
+        # hit -- only the ingest_tools path sets it), and compares the
+        # resulting id sets directly.
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            agent = os.path.join(d, "findings-g1-code.json")
+            with open(agent, "w") as fh:
+                json.dump({"findings": [
+                    {"id": "A-1", "title": "tangled branch", "severity": "MEDIUM",
+                     "confidence": "POSSIBLE", "panel": "code", "category": "logic",
+                     "location": {"file": "svc.py", "line_start": 7}}]}, fh)
+            td = os.path.join(d, "tools")
+            os.makedirs(td)
+            with open(os.path.join(td, "bandit.sarif"), "w") as fh:
+                json.dump({"runs": [{"tool": {"driver": {"name": "bandit", "rules": [
+                    {"id": "B105"}]}},
+                    "results": [
+                        {"ruleId": "B105", "level": "error",
+                         "message": {"text": "hardcoded password"},
+                         "locations": [{"physicalLocation": {
+                             "artifactLocation": {"uri": "app.py"},
+                             "region": {"startLine": 10}}}]},
+                        {"ruleId": "B105", "level": "error",
+                         "message": {"text": "hardcoded password"},
+                         "locations": [{"physicalLocation": {
+                             "artifactLocation": {"uri": "app.py"},
+                             "region": {"startLine": 20}}}]},
+                    ]}]}, fh)
+
+            queue_out = os.path.join(d, "unused-report.json")
+            rc1 = syn.main(["--emit-verify-queue", "--tools-dir", td,
+                            "--out", queue_out, agent])
+            self.assertEqual(rc1, 0)
+            with open(os.path.join(d, ".panopticon", "verify-queue.json")) as fh:
+                queue = json.load(fh)
+            # queue_id, not a recomputed fingerprint: recomputing from
+            # entry["finding"] would strip the -1 collision suffix and make
+            # an unaggregated duplicate pair indistinguishable from one
+            # aggregated survivor, hiding exactly the bug this guards.
+            pass1_qids = {e["queue_id"] for e in queue["entries"]}
+
+            # Verdict the TOOL entry -- the normal pass-2 path now that every
+            # finding queues, and the one that used to rot the exported
+            # identity. apply_verdict overwrites provenance.
+            # confirmation_reasoning, which is exactly where the SARIF
+            # adapters park the rule id that finding_fingerprint reads back
+            # for a tool finding (evidence.tool_rule_id's fallback). Assigning
+            # f["fingerprint"] from a fingerprint recomputed AFTER the verdict
+            # loop therefore hashed the advisor's prose: a fresh "stable
+            # cross-run identity" every time an advisor re-worded itself.
+            tool_entries = [e for e in queue["entries"]
+                            if str(e["finding"].get("source", "")).startswith("tool:")]
+            self.assertEqual(len(tool_entries), 1)
+            tool_qid = tool_entries[0]["queue_id"]
+            vd = os.path.join(d, "verdicts")
+            os.makedirs(vd)
+            with open(os.path.join(vd, "%s.json" % tool_qid), "w") as fh:
+                json.dump({"finding_id": tool_entries[0]["finding"].get("id"),
+                           "verdict": "CONFIRMED",
+                           "reasoning": "Advisor prose, deliberately nothing "
+                                        "like the rule id B105."}, fh)
+
+            report_out = os.path.join(d, "report.json")
+            rc2 = syn.main(["--tools-dir", td, "--verdicts-dir", vd,
+                            "--out", report_out, agent])
+            self.assertEqual(rc2, 0)
+            with open(report_out) as fh:
+                report = json.load(fh)
+            emitted = report["findings"] + report["discarded_claims"]
+            tool_out = [f for f in emitted
+                        if str(f.get("source", "")).startswith("tool:")]
+            self.assertEqual(len(tool_out), 1)
+            self.assertEqual(tool_out[0]["evidence"]["status"], "tool_confirmed")
+            # Applying a verdict must not move the exported identity off the
+            # queue id the run already committed to (and that scripts/
+            # file_issues.py keys its resume ledger and issue bodies on).
+            self.assertEqual(tool_out[0]["fingerprint"], tool_qid)
+
+            pass2_fps = {f["fingerprint"] for f in emitted}
+            self.assertTrue(pass1_qids)
+            # Exact only because nothing in this fixture collides. Adding a
+            # COLLIDING pair would break this for a reason unrelated to #443:
+            # the queue ids would be {fp, fp-1} while both findings export
+            # fingerprint fp (see the divergence comments in
+            # evidence.build_verify_queue and synthesize.build_report).
+            self.assertEqual(pass1_qids, pass2_fps)
 
 
 class TestDedupeRuleIdDiscrimination(unittest.TestCase):
@@ -1753,3 +1907,149 @@ class TestToolsDirSilentSkipGuard(unittest.TestCase):
                 syn.main(["--target", ".", "--tools-dir", tools,
                           "--out", os.path.join(d, "r.json"), fp])
         self.assertNotIn("appears un-ingested", err.getvalue())
+
+
+class TestToolAxisMeta(unittest.TestCase):
+    def _tool(self, fid="T-1", **over):
+        f = {"id": fid, "source": "tool:bandit", "severity": "HIGH",
+             "panel": "security", "category": "secrets",
+             "title": "hardcoded password", "confidence": "LIKELY",
+             "description": "d", "location": {"file": "a.py", "line_start": 1},
+             "provenance": {"confirmation_reasoning": "B105"}}
+        f.update(over)
+        return f
+
+    def test_tool_axis_counts_unverified_as_unanswered(self):
+        r = syn.build_report([self._tool()], [], "t", None,
+                             "2026-08-05T00:00:00Z")
+        axis = r["meta"]["tool_axis"]
+        self.assertEqual(axis["queued"], 1)
+        self.assertEqual(axis["unanswered"], 1)
+        self.assertEqual(axis["confirmed"], 0)
+        self.assertIsNone(axis["rejection_rate"])
+
+    def test_tool_axis_rejection_rate_when_verdicts_exist(self):
+        a, b = self._tool("T-1"), self._tool("T-2",
+                                             location={"file": "b.py",
+                                                       "line_start": 2})
+        prepared, _ = syn.prepare_for_queue([a, b])
+        queue, _c = syn.evidence_mod.build_verify_queue(prepared)
+        verdicts = {}
+        for i, e in enumerate(queue):
+            verdicts[e["queue_id"]] = {
+                "verdict": "REJECTED" if i == 0 else "CONFIRMED",
+                "finding_id": e["finding"]["id"], "reasoning": "r"}
+        r = syn.build_report([a, b], [], "t", None, "2026-08-05T00:00:00Z",
+                             verdicts=verdicts, verdicts_supplied=True)
+        axis = r["meta"]["tool_axis"]
+        self.assertEqual((axis["confirmed"], axis["rejected"]), (1, 1))
+        self.assertEqual(axis["rejection_rate"], 0.5)
+
+    def test_tool_axis_counts_needs_more_info_and_excludes_it_from_decided(self):
+        a, b = self._tool("T-1"), self._tool("T-2",
+                                             location={"file": "b.py",
+                                                       "line_start": 2})
+        prepared, _ = syn.prepare_for_queue([a, b])
+        queue, _c = syn.evidence_mod.build_verify_queue(prepared)
+        verdicts = {queue[0]["queue_id"]: {
+            "verdict": "NEEDS_MORE_INFO",
+            "finding_id": queue[0]["finding"]["id"], "reasoning": "r"}}
+        r = syn.build_report([a, b], [], "t", None, "2026-08-05T00:00:00Z",
+                             verdicts=verdicts, verdicts_supplied=True)
+        axis = r["meta"]["tool_axis"]
+        self.assertEqual(axis["needs_more_info"], 1)
+        self.assertEqual(axis["unanswered"], 1)
+        # needs_more_info is neither confirmed nor rejected, so it must not
+        # count toward "decided" -- otherwise the rejection rate would be
+        # diluted by claims that were never actually resolved either way.
+        self.assertIsNone(axis["rejection_rate"])
+
+    def test_tool_axis_counts_reinforced_non_tool_sourced_finding(self):
+        # A reinforced (tool+agent same-locus merge) survivor can carry a
+        # non-"tool:"-prefixed source, yet build_report's tool_like filter is
+        # is_tool_sourced(f) OR f.get("reinforced") -- not is_tool_sourced
+        # alone -- so it must still land in the tool axis.
+        f = _agentic(reinforced=True)
+        r = syn.build_report([f], [], "t", None, "2026-08-05T00:00:00Z")
+        axis = r["meta"]["tool_axis"]
+        self.assertEqual(axis["queued"], 1)
+
+    def test_build_executing_tools_reports_a_run_with_zero_findings(self):
+        r = syn.build_report([], [], "t", None, "2026-08-05T00:00:00Z",
+                             tools_ran={"roslyn-secguard", "bandit"})
+        self.assertEqual(r["meta"]["build_executing_tools"],
+                         ["roslyn-secguard"])
+
+    def test_build_executing_tools_falls_back_without_tools_ran(self):
+        r = syn.build_report([self._tool(source="tool:roslyn-secguard")], [],
+                             "t", None, "2026-08-05T00:00:00Z")
+        self.assertEqual(r["meta"]["build_executing_tools"],
+                         ["roslyn-secguard"])
+
+
+class TestVerdictAccountingMeta(unittest.TestCase):
+    """#443's own failure surface, made visible in the artifact.
+
+    A run whose verdicts all fail to match used to still gate on tool findings,
+    so the breakage was loud. Under strict gating (P2) that same run yields gate
+    PASS, grade A, risk LOW -- the safest-looking output there is -- and CI reads
+    the JSON, not stderr. meta.verdicts is the detection.
+    """
+
+    def _f(self, fid, title, fname):
+        return {"id": fid, "title": title, "severity": "HIGH",
+                "confidence": "POSSIBLE", "panel": "code", "category": "logic",
+                "description": "d",
+                "location": {"file": fname, "line_start": 1}}
+
+    def _queue(self, findings):
+        prepared, _ = syn.prepare_for_queue(findings)
+        return syn.evidence_mod.build_verify_queue(prepared)[0]
+
+    def test_counts_matched_unknown_and_unanswered(self):
+        a = self._f("A-1", "first claim", "a.py")
+        b = self._f("A-2", "second claim", "b.py")
+        queue = self._queue([a, b])
+        self.assertEqual(len(queue), 2)
+        answered = queue[0]
+        verdicts = {
+            answered["queue_id"]: {"verdict": "CONFIRMED", "reasoning": "r",
+                                   "finding_id": answered["finding"]["id"]},
+            # A stale verdict from a previous run: well-formed, but its id is
+            # in no queue this run.
+            "deadbeefdeadbeef": {"verdict": "CONFIRMED", "reasoning": "stale",
+                                 "finding_id": "GONE-1"},
+        }
+        r = syn.build_report([a, b], [], "t", None, "2026-08-05T00:00:00Z",
+                             verdicts=verdicts, verdicts_supplied=True)
+        self.assertEqual(r["meta"]["verdicts"],
+                         {"supplied": 2, "matched": 1, "unknown": 1,
+                          "unanswered": 1})
+
+    def test_echo_mismatch_is_dropped_and_counted_as_unanswered(self):
+        # match_verdict refuses a verdict that echoes a different finding_id.
+        # It is neither matched nor unknown, so supplied - matched - unknown
+        # is exactly the echo-rejected count.
+        a = self._f("A-1", "first claim", "a.py")
+        queue = self._queue([a])
+        verdicts = {queue[0]["queue_id"]: {"verdict": "CONFIRMED",
+                                           "reasoning": "r",
+                                           "finding_id": "SOMEONE-ELSE"}}
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            r = syn.build_report([a], [], "t", None, "2026-08-05T00:00:00Z",
+                                 verdicts=verdicts, verdicts_supplied=True)
+        self.assertEqual(r["meta"]["verdicts"],
+                         {"supplied": 1, "matched": 0, "unknown": 0,
+                          "unanswered": 1})
+        self.assertEqual(r["summary"]["gate"], "OFF")  # ...and it looks clean
+
+    def test_unanswered_is_null_when_no_verdicts_were_supplied(self):
+        # 0 would read as "nothing went unanswered" for a run that never ran a
+        # verify phase; null says "not measured" (as tool_axis.rejection_rate
+        # already does).
+        r = syn.build_report([self._f("A-1", "first claim", "a.py")], [], "t",
+                             None, "2026-08-05T00:00:00Z")
+        self.assertEqual(r["meta"]["verdicts"],
+                         {"supplied": 0, "matched": 0, "unknown": 0,
+                          "unanswered": None})

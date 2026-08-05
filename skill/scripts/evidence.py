@@ -6,14 +6,16 @@ Two-axis model: severity means "impact if true" and is never mutated here;
 evidence.status records how hard the claim has been verified.
 """
 
+import hashlib
 import json
 import os
 import re
 import sys
 
 SEV_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
-EVIDENCE_STATUSES = ("tool_confirmed", "advisor_confirmed", "corroborated",
-                     "needs_more_info", "unverified", "rejected")
+EVIDENCE_STATUSES = ("tool_reported", "tool_confirmed", "advisor_confirmed",
+                     "corroborated", "needs_more_info", "unverified",
+                     "rejected")
 GATE_ELIGIBLE_DEFAULT = frozenset({"tool_confirmed", "advisor_confirmed"})
 VERDICT_VALUES = {"CONFIRMED", "REJECTED", "NEEDS_MORE_INFO"}
 
@@ -21,6 +23,48 @@ VERDICT_VALUES = {"CONFIRMED", "REJECTED", "NEEDS_MORE_INFO"}
 def is_tool_sourced(finding):
     """Tool-emitted findings carry source='tool:<name>'; everything else is agentic."""
     return str(finding.get("source", "")).startswith("tool:")
+
+
+def tool_rule_id(finding):
+    """The scanner rule a tool finding came from, wherever its adapter put it.
+
+    Two adapter families disagree: the dependency scanners (pip_audit,
+    bundler_audit, dependency_check, eslint_security) set
+    `tool_evidence.rule_id`, while everything on the SARIF path (bandit,
+    semgrep, trivy, ...) sets no tool_evidence at all and carries the rule id
+    in `provenance.confirmation_reasoning` via attach_tool_provenance. Reading
+    only the first form made every SARIF finding look rule-less, which silently
+    disabled both aggregation and rule-based fingerprint identity for them.
+    """
+    rule = (finding.get("tool_evidence") or {}).get("rule_id")
+    if rule:
+        return rule
+    return (finding.get("provenance") or {}).get("confirmation_reasoning") or None
+
+
+def finding_fingerprint(finding):
+    """Stable cross-run identity for a finding.
+
+    Keys on panel + category + normalized file + the discriminator that is
+    actually stable for that source: a tool's rule_id, or an agent finding's
+    title. Deliberately EXCLUDES line numbers (issues survive code moves) and
+    free-text description (agent prose is re-worded every run). Also the
+    verify-queue's queue_id (P2) — the same identity both passes compute.
+    """
+    loc = finding.get("location") or {}
+    fpath = str(loc.get("file") or "").replace("\\", "/")
+    # Strip only a `./` prefix. `lstrip("./")` would eat the leading dot of
+    # every dotfile path, collapsing `.github/x` onto `github/x`.
+    while fpath.startswith("./"):
+        fpath = fpath[2:]
+    # Gate on tool-sourcing: on an AGENT finding, confirmation_reasoning holds
+    # advisor prose, which would be a disastrous identity discriminator.
+    rule = tool_rule_id(finding) if is_tool_sourced(finding) else None
+    discriminator = str(rule) if rule else str(finding.get("title") or "")
+    payload = "|".join([str(finding.get("panel") or ""),
+                        str(finding.get("category") or ""),
+                        fpath, discriminator]).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()[:16]
 
 
 def sev_rank(finding):
@@ -34,33 +78,42 @@ def sev_rank(finding):
 def derive_evidence(finding, verdict=None):
     """Return the evidence dict for a finding.
 
-    Precedence: tool_confirmed (incl. reinforced tool+agent merges) > advisor
-    verdicts (CONFIRMED/REJECTED/NEEDS_MORE_INFO) > corroborated > unverified.
-    Never mutates the finding. Self-asserted provenance.confirmation_status is
-    deliberately ignored — a reviewer cannot confirm its own finding.
+    Precedence (P2, #446): an advisor VERDICT decides first, whatever the
+    source — previously tool-sourcing short-circuited ahead of verdicts, so an
+    advisor could never refute a scanner. Without a verdict, a tool-sourced or
+    reinforced finding is `tool_reported`: reported, not verified, and NOT
+    gate-eligible. Never mutates the finding. Self-asserted
+    provenance.confirmation_status is deliberately ignored — a reviewer cannot
+    confirm its own finding.
     """
     quality = finding.get("citation_quality") or "none"
     prov = finding.get("provenance") or {}
-    if is_tool_sourced(finding):
-        return {"status": "tool_confirmed",
-                "verified_by": finding.get("source"),
-                "reasoning": prov.get("confirmation_reasoning")
-                or "Reported by static-analysis tool",
-                "citation_quality": quality}
-    if finding.get("reinforced"):
-        # A tool+agent same-locus merge is tool-reported by construction, even
-        # when the surviving finding's own `source` isn't `tool:*` -> gates the
-        # same as a plain tool finding, never demoted to mere `corroborated`.
-        return {"status": "tool_confirmed", "verified_by": "tool+agent",
-                "reasoning": "Same locus reported independently by a tool and an agent",
-                "citation_quality": quality}
+    reinforced = bool(finding.get("reinforced"))
+    tool_like = is_tool_sourced(finding) or reinforced
+    origin = "tool+agent" if reinforced else finding.get("source")
+
     v = str((verdict or {}).get("verdict", "")).upper()
     if v in VERDICT_VALUES:
-        status = {"CONFIRMED": "advisor_confirmed",
-                  "REJECTED": "rejected"}.get(v, "needs_more_info")
-        return {"status": status, "verified_by": "agent:advisor",
+        if v == "REJECTED":
+            status = "rejected"
+        elif v == "NEEDS_MORE_INFO":
+            status = "needs_more_info"
+        else:
+            status = "tool_confirmed" if tool_like else "advisor_confirmed"
+        return {"status": status,
+                "verified_by": ([origin, "agent:advisor"] if tool_like
+                                else "agent:advisor"),
                 "reasoning": (verdict or {}).get("reasoning"),
                 "citation_quality": quality}
+
+    if tool_like:
+        return {"status": "tool_reported", "verified_by": origin,
+                "reasoning": ("Same locus reported independently by a tool and "
+                              "an agent" if reinforced
+                              else prov.get("confirmation_reasoning")
+                              or "Reported by static-analysis tool"),
+                "citation_quality": quality}
+
     if finding.get("corroborated"):
         panels = list(finding.get("corroborated_by") or [])
         return {"status": "corroborated", "verified_by": panels,
@@ -89,33 +142,80 @@ def triage_priority(finding):
         return 3 + len(SEV_ORDER)
 
 
+def _queue_tiebreak(f):
+    """Last-resort content discriminator for build_verify_queue's sort key.
+
+    finding_fingerprint deliberately excludes line numbers, so two findings
+    at different lines in the same file can share one fingerprint; if they
+    also share (or both lack) an `id` -- normalize_finding never assigns a
+    missing one -- the sort key up to this point ties completely. `sorted`
+    is stable, so a total tie falls back to INPUT ORDER: exactly the
+    invariant this module exists to remove, and it would decide which
+    finding gets the bare fingerprint vs. the `-1` suffix, so a shuffled
+    input could hand each finding the other's advisor verdict.
+
+    Deliberately limited to fields BOTH synthesize passes see identically on
+    the same finding object: location/severity/source/id survive unchanged
+    from the --emit-verify-queue pass to the report-build pass. `_group` is
+    NOT safe -- synthesize.build_report strips it (`f.pop("_group", None)`)
+    before the second pass would ever see it -- and hashing the whole
+    finding dict is NOT safe either, since later pipeline stages add keys
+    (`evidence`, `fingerprint`) the emit pass never sees. Either would
+    reintroduce pass divergence in a subtler form than the bug this fixes.
+    A residual tie after this means the two findings are identical in every
+    field that could distinguish them: genuinely fungible claims.
+    """
+    loc = f.get("location") or {}
+    return (str(loc.get("file") or ""), str(loc.get("line_start") or ""),
+           str(f.get("severity") or ""), str(f.get("source") or ""))
+
+
 def build_verify_queue(findings, max_verify=None):
-    """Return (entries, cut_count) for ALL agentic findings, priority-sorted.
+    """Return (entries, cut) for ALL findings, priority-sorted.
 
     Entries hold REFERENCES to the original finding dicts (verdict application
-    must mutate the real objects). Self-asserted provenance confirmation is
-    ignored — everything non-tool queues, except reinforced (tool+agent
-    same-locus merge) findings: they are tool-reported by construction and
-    already derive tool_confirmed, so queuing them for advisor verification
-    would be pointless and would make tool/verdict collisions possible.
-    Stable order: (priority, input index), so recomputation in pass 2
-    reproduces pass 1's queue_ids exactly.
+    must mutate the real objects).
 
-    queue_id's id component is sanitized to [A-Za-z0-9_-] — findings are
-    external input and their ids feed filenames.
+    P2 (#446): tool-sourced and reinforced findings queue too — they are claims
+    like any other, and `tool_confirmed` now requires an advisor verdict.
+    P2 (#443/#438): the sort key and queue_id are pure functions of finding
+    CONTENT — no input index anywhere, including in the collision-suffix
+    assignment (see `_queue_tiebreak`) — so both passes of a run compute the
+    same ids and a --max-verify cut cannot depend on filename order.
     """
-    agentic = [(i, f) for i, f in enumerate(findings)
-              if not is_tool_sourced(f) and not f.get("reinforced")]
-    agentic.sort(key=lambda t: (triage_priority(t[1]), t[0]))
+    ordered = sorted(findings, key=lambda f: (triage_priority(f), sev_rank(f),
+                                              finding_fingerprint(f),
+                                              str(f.get("id") or ""),
+                                              _queue_tiebreak(f)))
     cut = 0
-    if max_verify is not None and max_verify >= 0 and len(agentic) > max_verify:
-        cut = len(agentic) - max_verify
-        agentic = agentic[:max_verify]
+    if max_verify is not None and max_verify >= 0 and len(ordered) > max_verify:
+        cut = len(ordered) - max_verify
+        ordered = ordered[:max_verify]
     entries = []
-    for qi, (_, f) in enumerate(agentic):
-        fid = re.sub(r"[^A-Za-z0-9_-]", "_", str(f.get("id", "UNKNOWN")))
-        entries.append({"queue_id": "%03d-%s" % (qi, fid),
-                        "priority": triage_priority(f),
+    seen = {}
+    for f in ordered:
+        fp = finding_fingerprint(f)
+        n = seen.get(fp, 0)
+        seen[fp] = n + 1
+        qid = fp if n == 0 else "%s-%d" % (fp, n)
+        if n:
+            # NOT evidence of a dedupe miss. finding_fingerprint deliberately
+            # excludes line numbers, so two findings sharing
+            # panel+category+file+discriminator at DIFFERENT lines collide by
+            # construction, benignly and routinely (dedupe reinforces only on
+            # an exact (file, line) match). The suffix keeps them separately
+            # addressable by an advisor verdict; the log records that one
+            # identity is now carrying more than one claim.
+            #
+            # KNOWN DIVERGENCE (unchanged behavior, recorded): the -<n> suffix
+            # lives only in the queue. synthesize.build_report exports
+            # `fingerprint` straight from finding_fingerprint, so BOTH members
+            # of a colliding pair export the bare `fp` -- a
+            # fingerprint -> queue_id lookup is ambiguous for them, and `fp-1`
+            # never appears as an exported identity at all.
+            print("evidence: fingerprint collision %s (finding %r) -> %s"
+                  % (fp, f.get("id"), qid), file=sys.stderr)
+        entries.append({"queue_id": qid, "priority": triage_priority(f),
                         "finding": f})
     return entries, cut
 

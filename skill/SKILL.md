@@ -61,6 +61,10 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
    Then run
    `python3 scripts/synthesize.py --verdicts-dir .panopticon/verdicts [same flags] .panopticon/findings-*.json`
    to produce the final report.
+   `[same flags]` is a requirement, not a convenience: `--severity` filtering and
+   `--tools-dir` ingestion both run before the verify queue is built, so a flag that
+   differs between the two passes feeds them different finding sets — and the verdicts
+   pass 1 asked for will name findings that pass 2 has no queue entry for.
 9. **Validate** — `verification-before-completion`: compare `git status --porcelain`
    against `.panopticon/tree-baseline.txt`; any NEW modification outside `.panopticon/`
    means a reviewer had side effects — treat the run as compromised: discard the
@@ -117,15 +121,26 @@ This is optional and not part of CI. Rebuild the image periodically to pull upda
 Findings carry two independent axes: **severity** (impact if true — never rewritten)
 and **evidence.status** (how hard the claim was verified):
 
-- `tool_confirmed` — emitted by a static-analysis tool, or a tool+agent same-locus merge (reinforced).
+- `tool_reported` — a static-analysis tool emitted it (or a tool+agent
+  same-locus merge did); no advisor has checked it. NOT gate-eligible.
+- `tool_confirmed` — a tool reported it AND an advisor independently confirmed
+  it. Gate-eligible.
 - `advisor_confirmed` / `rejected` / `needs_more_info` — advisor verdicts from the
   verify phase. Rejected claims keep their severity and move to `discarded_claims`.
 - `corroborated` — multi-panel agreement (correlated witnesses: prioritized for verification, not gate-eligible by default).
 - `unverified` — no verification attempted.
 
-Grades and the CI gate count `tool_confirmed`/`advisor_confirmed` findings only;
-`--gate-unverified` opts in everything non-rejected. Citations (CWE/OWASP/CVE/EPSS)
-are audit metadata — they annotate findings but never decide truth.
+Grades and the CI gate count `tool_confirmed`/`advisor_confirmed` findings
+only — i.e. only claims an advisor verified, whatever their source. Run a
+verify phase (or pass `--gate-unverified`) or the gate has nothing to fail on.
+
+Every finding queues for verification, tool claims included, so `--max-verify N`
+now caps a queue holding the whole finding set: each tool finding costs one
+advisor dispatch, and an unverified tool HIGH competes with an agent HIGH for the
+same capped budget. Size N with that in mind — anything cut stays `unverified` or
+`tool_reported` and cannot gate.
+Citations (CWE/OWASP/CVE/EPSS) are audit metadata — they annotate findings but
+never decide truth.
 
 ## Notes
 Reviewers are read-only: no repo/GitHub writes, no claiming unperformed actions, no materializing discovered secrets.

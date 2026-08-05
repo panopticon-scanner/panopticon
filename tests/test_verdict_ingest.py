@@ -8,7 +8,18 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill"))
 import scripts.evidence as evidence
 
 
-def _entry(fid="SEC-001", queue_id="000-SEC-001", **kw):
+# queue_ids are content fingerprints since P2 (#443): 16 hex chars, optionally
+# with a `-<n>` collision suffix. The old positional NNN-FINDING-ID shape the
+# fixtures used is one the system can no longer produce. load_verdicts and
+# match_verdict stay format-agnostic on purpose -- they key on the filename
+# stem -- so these tests pass either way; the fixtures use the real shape so
+# they cannot outlive the contract they document.
+QID_1 = "4f2a9c1e7b30d85a"
+QID_2 = "9c0b1d2e3f4a5b6c"
+QID_3 = "1a2b3c4d5e6f7081"
+
+
+def _entry(fid="SEC-001", queue_id=QID_1, **kw):
     f = {"id": fid, "title": "t", "severity": "HIGH", "confidence": "POSSIBLE",
          "panel": "security", "category": "injection",
          "location": {"file": "app.py", "line_start": 10},
@@ -30,13 +41,13 @@ def _write(d, name, obj):
 class TestLoadVerdicts(unittest.TestCase):
     def test_loads_valid_skips_malformed(self):
         with tempfile.TemporaryDirectory() as d:
-            _write(d, "000-SEC-001.json",
+            _write(d, QID_1 + ".json",
                    {"finding_id": "SEC-001", "verdict": "CONFIRMED", "reasoning": "r"})
-            _write(d, "001-SEC-002.json", "{not json")
-            _write(d, "002-SEC-003.json", {"reasoning": "no verdict key"})
+            _write(d, QID_2 + ".json", "{not json")
+            _write(d, QID_3 + ".json", {"reasoning": "no verdict key"})
             _write(d, "notes.txt", "ignored")
             out = evidence.load_verdicts(d)
-        self.assertEqual(set(out), {"000-SEC-001"})
+        self.assertEqual(set(out), {QID_1})
 
     def test_missing_dir_returns_empty(self):
         self.assertEqual(evidence.load_verdicts("/nonexistent/dir"), {})
@@ -47,37 +58,37 @@ class TestLoadVerdicts(unittest.TestCase):
         # agents/advisor.md's own output example) -> must not be treated as
         # malformed, or a CONFIRMED verdict silently degrades to unverified.
         with tempfile.TemporaryDirectory() as d:
-            _write(d, "000-SEC-001.json",
+            _write(d, QID_1 + ".json",
                    "```json\n"
                    '{"finding_id": "SEC-001", "verdict": "CONFIRMED", "reasoning": "r"}\n'
                    "```")
             out = evidence.load_verdicts(d)
-        self.assertEqual(set(out), {"000-SEC-001"})
-        self.assertEqual(out["000-SEC-001"]["verdict"], "CONFIRMED")
+        self.assertEqual(set(out), {QID_1})
+        self.assertEqual(out[QID_1]["verdict"], "CONFIRMED")
 
     def test_loads_verdict_wrapped_in_prose(self):
         with tempfile.TemporaryDirectory() as d:
-            _write(d, "000-SEC-001.json",
+            _write(d, QID_1 + ".json",
                    "Here is my verdict: "
                    '{"finding_id": "SEC-001", "verdict": "CONFIRMED", "reasoning": "r"} '
                    "Let me know if you need anything else.")
             out = evidence.load_verdicts(d)
-        self.assertEqual(set(out), {"000-SEC-001"})
-        self.assertEqual(out["000-SEC-001"]["verdict"], "CONFIRMED")
+        self.assertEqual(set(out), {QID_1})
+        self.assertEqual(out[QID_1]["verdict"], "CONFIRMED")
 
 
 class TestMatchVerdict(unittest.TestCase):
     def test_match_with_echo(self):
         v = {"finding_id": "SEC-001", "verdict": "CONFIRMED"}
-        self.assertIs(evidence.match_verdict(_entry(), {"000-SEC-001": v}), v)
+        self.assertIs(evidence.match_verdict(_entry(), {QID_1: v}), v)
 
     def test_echo_mismatch_rejected(self):
         v = {"finding_id": "SEC-999", "verdict": "CONFIRMED"}
-        self.assertIsNone(evidence.match_verdict(_entry(), {"000-SEC-001": v}))
+        self.assertIsNone(evidence.match_verdict(_entry(), {QID_1: v}))
 
     def test_missing_echo_accepted_with_warning(self):
         v = {"verdict": "CONFIRMED"}
-        self.assertIs(evidence.match_verdict(_entry(), {"000-SEC-001": v}), v)
+        self.assertIs(evidence.match_verdict(_entry(), {QID_1: v}), v)
 
     def test_no_verdict_returns_none(self):
         self.assertIsNone(evidence.match_verdict(_entry(), {}))

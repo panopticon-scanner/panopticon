@@ -338,8 +338,14 @@ def render_advisor_prompts(queue_path, out_dir):
         if not isinstance(queue_id, str):
             raise ValueError("verify queue %s: non-string queue_id %r"
                              % (queue_path, queue_id))
-        # {3,}: %03d is minimum-width, so 1000+ entries yield 4+ digits.
-        if not re.match(r"^[0-9]{3,}-[A-Za-z0-9_-]+$", queue_id):
+        # queue_id is a finding_fingerprint (16 hex chars; #443) plus an
+        # optional -<n> collision suffix from evidence.build_verify_queue.
+        # No separators, no dots, no traversal -- strictly tighter than the
+        # old positional NNN-ID pattern it replaces.
+        # \A...\Z, not ^...$: in Python `$` also matches just BEFORE a trailing
+        # newline, so "<16 hex>\n" would clear the guard and then be
+        # interpolated straight into a filename below.
+        if not re.match(r"\A[0-9a-f]{16}(-[0-9]+)?\Z", queue_id):
             raise ValueError("verify queue %s: unsafe queue_id %r"
                              % (queue_path, queue_id))
         claim = json.dumps(finding, indent=2, ensure_ascii=False)
