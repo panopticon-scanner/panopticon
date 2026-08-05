@@ -3,8 +3,42 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 import tempfile
 from .base import attach_tool_provenance, normalize_severity, new_finding_id, omit_none, run_tool
+
+
+def _safe_copytree(src, dst):
+    """Copy src into dst without dereferencing symlinks.
+
+    Out-of-tree symlinks (resolved target escapes src, including dangling
+    links) are skipped and counted — a scanned repo must not be able to pull
+    /etc/passwd or the mounted scripts dir into the build tree (#86).
+    In-tree links are preserved as links. Never follows links while walking,
+    so link loops cannot recurse.
+    """
+    root = os.path.realpath(src)
+    skipped = 0
+    os.makedirs(dst, exist_ok=True)
+    for cur, dirs, files in os.walk(src, followlinks=False):
+        rel = os.path.relpath(cur, src)
+        out_dir = dst if rel == "." else os.path.join(dst, rel)
+        os.makedirs(out_dir, exist_ok=True)
+        for name in list(dirs) + files:
+            s = os.path.join(cur, name)
+            d = os.path.join(out_dir, name)
+            if os.path.islink(s):
+                real = os.path.realpath(s)
+                if real == root or real.startswith(root + os.sep):
+                    os.symlink(os.readlink(s), d)
+                else:
+                    skipped += 1
+                if name in dirs:
+                    dirs.remove(name)   # never walk through a link
+            elif name in files:
+                shutil.copy2(s, d)
+    return skipped
+
 
 _ROSLYN_CWE = {
     "SCS0001": "CWE-78",
@@ -55,7 +89,9 @@ class RoslynSecGuardAdapter:
             build_target = self._build_target(target)
             rel_target = os.path.relpath(build_target, target)
             tmp_target = os.path.join(tmp, rel_target)
-            shutil.copytree(target, tmp, dirs_exist_ok=True)
+            skipped = _safe_copytree(target, tmp)
+            if skipped:
+                print("roslyn-secguard: skipped %d out-of-tree symlink(s)" % skipped, file=sys.stderr)
 
             sarif = os.path.join(tmp, "out.sarif")
             cmd = [
