@@ -23,18 +23,22 @@ command -v gh >/dev/null || { echo "gh CLI not found" >&2; exit 1; }
 # This project routinely switches gh identities, so check once and say which
 # account is actually in use.
 if [[ "$DRY_RUN" == "0" ]]; then
-  who="$(gh api user --jq .login 2>/dev/null || true)"
-  if [[ -z "$who" ]]; then
-    echo "apply-labels: gh is not authenticated (gh auth status)." >&2
+  if ! who="$(gh api user --jq .login 2>&1)"; then
+    echo "apply-labels: unable to determine authenticated user: $who" >&2
     echo "  For this project: export GH_CONFIG_DIR=\"\$HOME/.config/gh-psyberone\"" >&2
     exit 1
   fi
-  slug="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)"
-  if [[ -z "$slug" ]]; then
-    echo "apply-labels: cannot resolve the repository from this directory." >&2
+
+  if ! slug="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>&1)"; then
+    echo "apply-labels: cannot resolve the repository from this directory: $slug" >&2
     exit 1
   fi
-  if [[ "$(gh api "repos/$slug" --jq '.permissions.push' 2>/dev/null || echo false)" != "true" ]]; then
+
+  if ! can_push="$(gh api \"repos/$slug\" --jq '.permissions.push' 2>&1)"; then
+    echo "apply-labels: cannot check push permissions for $slug: $can_push" >&2
+    exit 1
+  fi
+  if [[ "$can_push" != "true" ]]; then
     echo "apply-labels: authenticated as '$who', which cannot push to $slug." >&2
     echo "  Label writes would fail as a misleading HTTP 404." >&2
     echo "  Fix: export GH_CONFIG_DIR=\"\$HOME/.config/gh-psyberone\"" >&2
