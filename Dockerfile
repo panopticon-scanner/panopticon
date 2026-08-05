@@ -229,5 +229,13 @@ RUN useradd -m -u 1000 scanner \
 ENV CARGO_HOME=/home/scanner/.cargo
 USER scanner
 WORKDIR /src
+
+# Gate the build on every tool actually running AS THE SCANNER USER. Building
+# and pushing proves only that the layers assembled: both the semgrep $HOME
+# regression (#455) and the dependency-check /opt/odc-data hang (#451) shipped
+# green because nothing ever executed the image. ~3s, and it runs in CI for
+# free since CI builds this same Dockerfile.
+RUN python3 /opt/panopticon/scripts/smoke_adapters.py
+
 ENTRYPOINT []
 CMD ["semgrep", "--version"]
