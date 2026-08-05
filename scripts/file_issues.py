@@ -163,7 +163,6 @@ def create(title, body, labels, dry, throttle=0.0):
         print("-" * 78)
         print(body[:900])
         return None
-    delay = throttle
     for attempt in range(1, 6):
         r = subprocess.run(["gh", "issue", "create", "--title", title,
                             "--body", body, "--label", ",".join(labels)],

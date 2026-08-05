@@ -100,6 +100,102 @@ RUN printf '%s\n' \
     '  </ItemGroup>' \
     '</Project>' > /Directory.Build.props
 
+# ---- Offline scan assets (P1: zero scan-time egress; spec 2026-08-04) ----
+# Cache boundary: everything ABOVE this ARG stays layer-cached across daily
+# builds; every asset fetch BELOW rebuilds when the workflow passes a new
+# run date. Each RUN embeds $ASSET_REFRESH so its own layer's cache key
+# changes with the date; once one layer misses, every layer after it does
+# too (Docker's cache is a chain). Secretless local builds keep the stable
+# default (cached, "local").
+ARG ASSET_REFRESH=local
+
+# Trivy vulnerability DB
+RUN : "asset-refresh ${ASSET_REFRESH}" \
+    && mkdir -p /opt/trivy-cache \
+    && TRIVY_CACHE_DIR=/opt/trivy-cache trivy --cache-dir /opt/trivy-cache \
+       image --download-db-only \
+    && chmod -R a+rX /opt/trivy-cache
+ENV TRIVY_CACHE_DIR=/opt/trivy-cache
+
+# Semgrep rules: vendor the public semgrep-rules registry source (closest
+# offline equivalent of --config auto / p/default — P1 decision: no
+# additional packs). The registry's resolved-config cache isn't a flat rule
+# tree on disk, so vendor the source repo instead and strip anything that
+# isn't a standalone rule config (test fixtures, metadata, project
+# dotfiles) — semgrep refuses to load a directory containing an invalid one.
+RUN : "asset-refresh ${ASSET_REFRESH}" \
+    && git clone --depth 1 https://github.com/semgrep/semgrep-rules /opt/semgrep-rules \
+    && rm -rf /opt/semgrep-rules/.git \
+    && grep -rLE '^rules:' --include='*.yml' --include='*.yaml' /opt/semgrep-rules \
+       | xargs -r rm -f \
+    && chmod -R a+rX /opt/semgrep-rules
+
+# RustSec advisory DB for cargo-audit --no-fetch. Path matches the
+# CARGO_HOME the scanner user gets below (/home/scanner/.cargo); useradd -m
+# tolerates the home directory already existing.
+RUN : "asset-refresh ${ASSET_REFRESH}" \
+    && git clone --depth 1 https://github.com/rustsec/advisory-db \
+       /home/scanner/.cargo/advisory-db \
+    && rm -rf /home/scanner/.cargo/advisory-db/.git \
+    && chmod -R a+rX /home/scanner/.cargo
+
+# OSV offline databases: npm + PyPI, the ecosystems covered by the fixture
+# corpus and the substitute path for the online-only pip-audit/npm-audit
+# adapters (see ONLINE_ONLY in tools/__init__.py). Warm with throwaway
+# lockfiles so --download-offline-databases has an ecosystem to detect,
+# then discard them. This pinned osv-scanner release only recognizes the
+# experimental-prefixed flags; the plain spellings are kept as a fallback
+# for whenever OSV_SCANNER_VERSION next gets bumped past them.
+ENV OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY=/opt/osv-db
+RUN : "asset-refresh ${ASSET_REFRESH}" \
+    && mkdir -p /opt/osv-db /tmp/osv-warm \
+    && printf '%s\n' \
+       '{"name":"warm","version":"1.0.0","lockfileVersion":3,"requires":true,' \
+       ' "packages":{"":{"name":"warm","version":"1.0.0"},' \
+       ' "node_modules/lodash":{"version":"4.17.15"}},' \
+       ' "dependencies":{"lodash":{"version":"4.17.15"}}}' \
+       > /tmp/osv-warm/package-lock.json \
+    && printf 'requests==2.31.0\n' > /tmp/osv-warm/requirements.txt \
+    && ( osv-scanner --experimental-offline --experimental-download-offline-databases \
+           --format json --recursive /tmp/osv-warm >/dev/null 2>&1 || true ) \
+    && if [ ! -s /opt/osv-db/osv-scanner/npm/all.zip ] || [ ! -s /opt/osv-db/osv-scanner/PyPI/all.zip ]; then \
+         osv-scanner scan source --offline --download-offline-databases \
+           --format json --recursive /tmp/osv-warm >/dev/null 2>&1 || true; \
+       fi \
+    && rm -rf /tmp/osv-warm \
+    && chmod -R a+rX /opt/osv-db
+
+# dependency-check NVD data (BuildKit secret; build works without it, just
+# slower — the NVD API rate-limits unauthenticated callers hard enough that
+# a full sync can take the better part of an hour, so the update is bounded
+# and allowed to fail or partial-fill rather than hang a scheduled build).
+RUN --mount=type=secret,id=nvd_api_key \
+    : "asset-refresh ${ASSET_REFRESH}" \
+    && mkdir -p /opt/odc-data \
+    && KEY="$(cat /run/secrets/nvd_api_key 2>/dev/null || true)" \
+    && ( timeout 600 /opt/dependency-check/bin/dependency-check.sh --updateonly \
+           --data /opt/odc-data ${KEY:+--nvdApiKey "$KEY"} || true ) \
+    && chmod -R a+rX /opt/odc-data
+
+# SecurityCodeScan offline NuGet feed: warm a package folder via a throwaway
+# project (the root /Directory.Build.props injects the analyzer reference),
+# then pin restore to it via fallbackPackageFolders.
+RUN : "asset-refresh ${ASSET_REFRESH}" \
+    && mkdir -p /tmp/warm && cd /tmp/warm \
+    && dotnet new classlib -o warmproj --no-restore \
+    && dotnet restore warmproj --packages /opt/nuget-packages \
+    && cd / && rm -rf /tmp/warm \
+    && chmod -R a+rX /opt/nuget-packages
+RUN printf '%s\n' \
+    '<?xml version="1.0" encoding="utf-8"?>' \
+    '<configuration>' \
+    '  <packageSources><clear /></packageSources>' \
+    '  <fallbackPackageFolders>' \
+    '    <add key="baked" value="/opt/nuget-packages" />' \
+    '  </fallbackPackageFolders>' \
+    '</configuration>' > /nuget.config \
+    && chmod a+r /nuget.config
+
 RUN useradd -m -u 1000 scanner \
     && mkdir -p /home/scanner/.cargo \
     && chown scanner:scanner /home/scanner/.cargo \

@@ -10,7 +10,14 @@ on:
       - skill/scripts/_run_adapter.py
       - skill/scripts/ingest_tools.py
       - skill/scripts/run_tools.py
+  schedule:
+    - cron: "0 6 * * *"   # daily asset refresh (06:00 UTC)
   workflow_dispatch:
+    inputs:
+      promote_weekly:
+        description: "Also move the :weekly tag"
+        type: boolean
+        default: false
 
 env:
   REGISTRY: ghcr.io
@@ -39,6 +46,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Compute cadence
+        id: cadence
+        run: |
+          echo "weekly=$([ "$(date -u +%u)" = "1" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -46,6 +59,8 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=daily,enable={{is_default_branch}}
+            type=raw,value=weekly,enable=${{ (github.event_name == 'schedule' && steps.cadence.outputs.weekly == 'true') || inputs.promote_weekly == true }}
             type=sha,prefix=,suffix=,format=short
 
       - name: Build and push image
@@ -58,6 +73,10 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            ASSET_REFRESH=${{ steps.cadence.outputs.date }}
+          secrets: |
+            nvd_api_key=${{ secrets.NVD_API_KEY }}
 
       - name: Generate artifact attestation
         uses: actions/attest-build-provenance@v1
