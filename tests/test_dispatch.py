@@ -181,6 +181,14 @@ class TestDispatchPlan(unittest.TestCase):
         self.assertIn("WARNING", err.getvalue())
         self.assertIn("--host", err.getvalue())
 
+    def test_detect_host_warns_when_inferred_from_claude_env(self):
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            with mock.patch.dict(os.environ, {"CLAUDECODE": "1"}, clear=False):
+                host = dispatch._detect_host()
+        self.assertEqual(host, "claude")
+        self.assertIn("WARNING", err.getvalue())
+        self.assertIn("--host", err.getvalue())
+
     def test_emit_kimi_swarm_groups_entries_by_subagent_type(self):
         plan = [
             {
@@ -539,9 +547,15 @@ class TestEmitHostAgents(unittest.TestCase):
 
             # role-specific preferences
             scout = os.path.join(d, "panopticon-scout.md")
+            lens_sweep = os.path.join(d, "panopticon-lens-sweep.md")
+            panel_review = os.path.join(d, "panopticon-panel-review.md")
             advisor = os.path.join(d, "panopticon-advisor.md")
             with open(scout, encoding="utf-8") as fh:
                 self.assertIn("model_preference: primary", fh.read())
+            with open(lens_sweep, encoding="utf-8") as fh:
+                self.assertIn("model_preference: primary", fh.read())
+            with open(panel_review, encoding="utf-8") as fh:
+                self.assertIn("model_preference: secondary", fh.read())
             with open(advisor, encoding="utf-8") as fh:
                 self.assertIn("model_preference: secondary", fh.read())
 
@@ -562,7 +576,16 @@ class TestEmitHostAgents(unittest.TestCase):
              mock.patch.object(dispatch, "KIMI_AGENTS_DIR", d):
             rc = dispatch.main(["--emit-host-agents", "kimi"])
             self.assertEqual(rc, 0)
-            self.assertTrue(os.path.isfile(os.path.join(d, "panopticon-scout.md")))
+            for fname in (
+                "panopticon-scout.md",
+                "panopticon-panel-review.md",
+                "panopticon-lens-sweep.md",
+                "panopticon-advisor.md",
+            ):
+                self.assertTrue(
+                    os.path.isfile(os.path.join(d, fname)),
+                    f"missing {fname}",
+                )
 
     def test_cli_writes_to_out(self):
         with tempfile.TemporaryDirectory() as d:

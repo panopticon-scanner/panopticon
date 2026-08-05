@@ -28,6 +28,7 @@ class TestModelResolver(unittest.TestCase):
 
     def test_claude_roles_preserve_concrete_models(self):
         self.assertEqual(mr.resolve_model("claude", "scout")["model"], "haiku")
+        self.assertEqual(mr.resolve_model("claude", "lens_sweep")["model"], "haiku")
         self.assertEqual(mr.resolve_model("claude", "panel_review")["model"], "sonnet")
         self.assertEqual(mr.resolve_model("claude", "advisor")["model"], "opus")
 

@@ -207,7 +207,10 @@ AGENT_NAME = {
 
 
 def _registration_dir(host, agents_dir):
-    """Explicit dir wins; otherwise fall back to the host's default agents dir."""
+    """Explicit dir wins; otherwise fall back to the host's default agents dir.
+
+    Unknown hosts return ``None``.
+    """
     if agents_dir:
         return agents_dir
     if host == "claude":
@@ -488,7 +491,10 @@ def main(argv=None):
         print("wrote Kimi swarm manifest (%d batch(es)) -> %s" % (len(swarm["batches"]), args.out))
         return 0
     if not args.profile:
-        ap.error("profile is required unless --render-advisor is given")
+        ap.error(
+            "profile is required unless --render-advisor, --emit-host-agents, "
+            "or --emit-kimi-swarm is given"
+        )
 
     try:
         with open(args.profile, encoding="utf-8") as fh:
