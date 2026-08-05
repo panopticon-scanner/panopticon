@@ -827,3 +827,43 @@ No placeholders found. Every step contains exact file paths, exact commands, and
 - `emit_kimi_swarm(plan)` consumes the dispatch-plan list shape produced by `build_plan()` and returns `{"batches": [...]}` — consistent with Task 5 test assertions.
 - `_kimi_subagent_type(entry)` maps enforced entries to `entry["agent"]` and unenforced entries to valid Kimi built-in profiles — consistent with the spec's fallback mapping.
 - `KIMI_AGENTS_DIR` is used both as a module constant and patched in tests — consistent.
+
+---
+
+## Implementation notes (post-review, 2026-08-05)
+
+Recorded after a panopticon review of the shipped branch, so this plan stays
+usable as an audit trail rather than describing code that does not exist.
+
+**Test names and classes diverged from the plan.** The pytest node ids in
+Tasks 1 and 2 name `TestDispatchPlan`; the tests actually landed in
+`TestEmitHostAgents` and the new `TestKimiDefaultAgentsDir`, and two of the
+prescribed names were never used. Run the suite by file, not by the node ids
+below, or see the design spec's Section 8, which now indexes the tests as
+shipped.
+
+**Changes made after review, not present in the task list above:**
+
+1. `emit_kimi_swarm()` now emits `routing` per item (`out_file`, `role`,
+   `panel`, `lens`, `group`). Batches group by `(subagent_type, model)` and can
+   span panels and groups, so `items[]` alone could not tell the orchestrator
+   which result belonged to which `out_file` — the pipeline's core contract.
+2. `emit_kimi_swarm()` re-verifies `enforced` against the live registration
+   directory (`--agents-dir`), instead of trusting the snapshot in a persisted
+   plan file that a later invocation re-reads.
+3. `resolve_model()` normalizes Kimi results to the `primary`/`secondary`
+   dispatch contract. Every override path could previously inject a concrete
+   alias — and `k3` was `panel_review`'s own alias before this change, making
+   it the likely operator mistake. Known aliases map back to their tier; an
+   unknown value warns and falls back.
+4. `emit_host_agents()` reads the Kimi `model_preference` from
+   `model_resolver.registration_model()` instead of an inline conditional, so
+   the role→tier policy has one source. `registration_model()` is deliberately
+   override-free: persisted registration files must never inherit a one-run
+   `PANOPTICON_MODEL_*` override.
+5. `--emit-kimi-swarm` validates the loaded plan's shape and fails with the
+   module's standard `dispatch: <message>` convention rather than a traceback.
+6. SKILL.md documents the unenforced-entry `subagent_type` fallback (the
+   default state until registration has run), names
+   `KIMI_CODE_EXPERIMENTAL_FLAG=1`, and uses the file's `scripts/...` path
+   convention.

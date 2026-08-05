@@ -26,11 +26,38 @@ class TestModelResolver(unittest.TestCase):
         self.assertEqual(mr.resolve_model("kimi", "panel_review")["model"], "secondary")
         self.assertEqual(mr.resolve_model("kimi", "advisor")["model"], "secondary")
 
-    def test_claude_roles_preserve_concrete_models(self):
-        self.assertEqual(mr.resolve_model("claude", "scout")["model"], "haiku")
-        self.assertEqual(mr.resolve_model("claude", "lens_sweep")["model"], "haiku")
-        self.assertEqual(mr.resolve_model("claude", "panel_review")["model"], "sonnet")
-        self.assertEqual(mr.resolve_model("claude", "advisor")["model"], "opus")
+    def test_claude_defaults_preserved(self):
+        """Regression guard for the Kimi work: Claude must be untouched.
+
+        Deliberately covers what test_claude_defaults does not — that the
+        Kimi-only primary/secondary normalization never runs for Claude, so
+        concrete model ids survive every override path.
+        """
+        self.assertEqual(
+            mr.resolve_model("claude", "panel_review", {"panel_review": "opus"})["model"],
+            "opus")
+        with patch.dict(os.environ, {"PANOPTICON_MODEL_ADVISOR": "sonnet"},
+                        clear=False):
+            self.assertEqual(mr.resolve_model("claude", "advisor")["model"], "sonnet")
+        self.assertEqual(mr.registration_model("claude", "panel_review"), "sonnet")
+
+    def test_kimi_override_is_normalized_to_a_dispatch_tier(self):
+        # k3 was panel_review's concrete alias before the tiers existed, so
+        # passing it as a --model override is the likely operator mistake.
+        cfg = mr.resolve_model("kimi", "panel_review", {"panel_review": "k3"})
+        self.assertEqual(cfg["model"], "secondary")
+        self.assertEqual(cfg["alias"], "k3")
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            unknown = mr.resolve_model("kimi", "scout", {"scout": "nonsense"})
+        self.assertEqual(unknown["model"], "primary")
+        self.assertIn("not a Kimi dispatch tier", err.getvalue())
+
+    def test_registration_model_ignores_ambient_overrides(self):
+        # Persisted registration files must not inherit a one-run override.
+        with patch.dict(os.environ, {"PANOPTICON_MODEL_SCOUT": "secondary"},
+                        clear=False):
+            self.assertEqual(mr.resolve_model("kimi", "scout")["model"], "secondary")
+            self.assertEqual(mr.registration_model("kimi", "scout"), "primary")
 
     def test_claude_defaults(self):
         self.assertEqual(mr.resolve_model("claude", "scout")["model"], "haiku")
@@ -42,14 +69,19 @@ class TestModelResolver(unittest.TestCase):
         self.assertIsNone(mr.resolve_model("generic", "panel_review")["model"])
         self.assertIsNone(mr.resolve_model("someday-host", "scout")["model"])
 
+    # Override precedence is host-agnostic, but only Kimi constrains the
+    # resulting value (primary|secondary), so these exercise it on claude,
+    # where a concrete model id IS the contract. Kimi's normalization of an
+    # out-of-contract override is covered by
+    # test_kimi_override_is_normalized_to_a_dispatch_tier.
     def test_cli_override(self):
         overrides = {"advisor": {"model": "custom-model"}}
-        self.assertEqual(mr.resolve_model("kimi", "advisor", overrides)["model"], "custom-model")
+        self.assertEqual(mr.resolve_model("claude", "advisor", overrides)["model"], "custom-model")
 
     def test_env_override(self):
         os.environ["PANOPTICON_MODEL_ADVISOR"] = "env-advisor"
         try:
-            self.assertEqual(mr.resolve_model("kimi", "advisor")["model"], "env-advisor")
+            self.assertEqual(mr.resolve_model("claude", "advisor")["model"], "env-advisor")
         finally:
             del os.environ["PANOPTICON_MODEL_ADVISOR"]
 
@@ -57,9 +89,19 @@ class TestModelResolver(unittest.TestCase):
         os.environ["PANOPTICON_MODEL_ADVISOR"] = "env-advisor"
         try:
             self.assertEqual(
-                mr.resolve_model("kimi", "advisor", {"advisor": {"model": "cli-advisor"}})["model"],
+                mr.resolve_model("claude", "advisor", {"advisor": {"model": "cli-advisor"}})["model"],
                 "cli-advisor"
             )
+        finally:
+            del os.environ["PANOPTICON_MODEL_ADVISOR"]
+
+    def test_kimi_override_precedence_still_applies_within_the_contract(self):
+        os.environ["PANOPTICON_MODEL_ADVISOR"] = "primary"
+        try:
+            self.assertEqual(mr.resolve_model("kimi", "advisor")["model"], "primary")
+            self.assertEqual(
+                mr.resolve_model("kimi", "advisor", {"advisor": {"model": "secondary"}})["model"],
+                "secondary")
         finally:
             del os.environ["PANOPTICON_MODEL_ADVISOR"]
 

@@ -56,7 +56,7 @@ Example generated file (`panopticon-scout.md`):
 ---
 name: panopticon-scout
 description: Profiles files and selects depth/lenses for a review group
-whenToUse: Use when panopticon needs a scout profile for a file group
+whenToUse: Profiles files and selects depth/lenses for a review group
 override: false
 model_preference: primary
 tools:
@@ -100,6 +100,12 @@ For each plan entry:
 - `prompt` is the entry's rendered `prompt`.
 - `model` is `entry.model.model` (`primary` / `secondary`).
 - `description` is derived from `role`, `panel`, `lens`, and `group`.
+- `routing` carries `out_file` (plus `role`/`panel`/`lens`/`group`) per item,
+  index-aligned with `items`. Without it a batch's results cannot be mapped
+  back to the files the orchestrator must write, since a batch groups by
+  `(subagent_type, model)` and can therefore span panels and groups.
+- `enforced` is re-verified against the live registration dir at emit time;
+  the plan's flag is a snapshot and registration may have been removed since.
 
 The helper groups entries by `(subagent_type, model)` and emits one `AgentSwarm` batch per group, plus singleton `Agent` entries for groups with only one item (to satisfy AgentSwarm's `min 2 items` rule).
 
@@ -112,8 +118,13 @@ Output shape:
       "tool": "AgentSwarm",
       "subagent_type": "panopticon-panel-review",
       "model": "secondary",
-      "prompt_template": "...",
-      "items": [...]
+      "description": "panel_review security for group g-security (batch)",
+      "prompt_template": "{{item}}",
+      "items": [...],
+      "routing": [
+        {"out_file": "...", "role": "panel_review", "panel": "security",
+         "lens": null, "group": "g-security"}
+      ]
     },
     ...
   ]
@@ -185,15 +196,33 @@ A concise user-facing reference covering:
 
 **Files:** `tests/test_dispatch.py`, `tests/test_model_resolver.py`
 
-Add the following tests:
+Tests as shipped (this list is the traceability index — keep it matching the
+suite, not the other way round):
 
-1. `test_emit_host_agents_kimi_defaults_to_kimi_code_agents_dir`
-2. `test_kimi_agent_file_includes_model_preference_and_when_to_use`
-3. `test_kimi_model_resolves_to_primary_secondary`
-4. `test_emit_kimi_swarm_groups_entries_by_subagent_type`
-5. `test_claude_defaults_preserved` (regression guard)
+`tests/test_dispatch.py`
+1. `TestKimiDefaultAgentsDir` + `TestEmitHostAgents::test_cli_kimi_defaults_to_kimi_agents_dir` — §1
+2. `TestEmitHostAgents::test_kimi_agent_file_includes_model_preference_and_when_to_use` — §2
+3. `test_emit_kimi_swarm_groups_entries_by_subagent_type` — §4
+4. `test_emit_kimi_swarm_carries_out_file_routing_per_item` — §4 routing
+5. `test_emit_kimi_swarm_maps_unenforced_scout_and_advisor` — §4 fallback profiles
+6. `test_emit_kimi_swarm_downgrades_a_stale_enforced_entry` — §4 registration re-check
+7. `test_emit_kimi_swarm_rejects_a_malformed_plan` — §4 input validation
+8. `test_cli_emit_kimi_swarm_writes_manifest_and_requires_out` — §4 CLI path
+9. `TestDetectHost::test_warns_when_inferred_from_{kimi,claude}_env` — §5
 
-**Claude guard:** existing tests are not modified except to reuse shared assertion helpers where appropriate.
+`tests/test_model_resolver.py`
+10. `test_kimi_roles_resolve_to_primary_secondary` — §3
+11. `test_kimi_override_is_normalized_to_a_dispatch_tier` — §3 invariant enforcement
+12. `test_registration_model_ignores_ambient_overrides` — §2 override-free emission
+13. `test_kimi_override_precedence_still_applies_within_the_contract` — §3
+14. `test_claude_defaults_preserved` (regression guard) — asserts the Kimi
+    normalization never runs for Claude, under both override paths
+
+**Claude guard:** `test_cli_override` / `test_env_override` / `test_cli_beats_env`
+were retargeted from `kimi` to `claude`. They assert override *precedence*,
+which is host-agnostic; they previously demonstrated arbitrary strings passing
+through for Kimi, which §3 now forbids. Precedence within the Kimi contract is
+covered by test 13.
 
 ## Section 9: Migration / rollout
 

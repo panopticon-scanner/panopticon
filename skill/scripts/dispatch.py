@@ -129,7 +129,10 @@ def emit_host_agents(host, out_dir):
                 fm.append("model: %s" % model)
             fm.append("---")
         else:
-            preference = "secondary" if role in ("panel_review", "advisor") else "primary"
+            # Override-free by design (see EMIT_MODEL_POLICY above): the tier
+            # comes from model-profiles.yml so it cannot drift from what
+            # resolve_model returns at dispatch time.
+            preference = model_resolver.registration_model("kimi", role) or "primary"
             fm = (["---", "name: %s" % agent,
                    "description: %s" % meta["description"],
                    "whenToUse: %s" % meta["description"],
@@ -373,15 +376,39 @@ _KIMI_UNENFORCED_PROFILE = {
 }
 
 
-def _kimi_subagent_type(entry):
+def _kimi_subagent_type(entry, reg_dir=None, verify=False):
     """Map a plan entry to a Kimi subagent_type.
 
     Registered/enforced entries use the panopticon-* shell. Unenforced entries
     fall back to a built-in Kimi profile so the dispatch is always valid.
+
+    `enforced` is a snapshot taken by build_plan when the plan was written, and
+    a plan is a persisted artifact re-read by a later invocation — registration
+    can be removed in between. With `verify=True` the flag is re-checked
+    against `reg_dir` at emit time, because a stale `enforced: true` would
+    claim host-enforced tool restrictions that no longer exist.
     """
     if entry.get("enforced"):
-        return entry.get("agent")
+        if verify and not _is_registered(reg_dir, ROLE_FILES.get(entry.get("role"), "")):
+            print("dispatch: %s no longer registered in %s; "
+                  "downgrading to an unenforced profile"
+                  % (entry.get("agent"), reg_dir), file=sys.stderr)
+        else:
+            return entry.get("agent")
     return _KIMI_UNENFORCED_PROFILE.get(entry.get("role"), "coder")
+
+
+def _swarm_routing(entry):
+    """Where this entry's result must be written, and what produced it.
+
+    AgentSwarm's items[] carries prompts only, so the orchestrator would
+    otherwise have to re-derive the grouping and trust item order to know which
+    out_file each result belongs to. This block is index-aligned with items[]
+    and makes that mapping explicit.
+    """
+    return {"out_file": entry.get("out_file"), "role": entry.get("role"),
+            "panel": entry.get("panel"), "lens": entry.get("lens"),
+            "group": entry.get("group")}
 
 
 def _swarm_description(entry):
@@ -397,17 +424,34 @@ def _swarm_description(entry):
     return " ".join(parts)
 
 
-def emit_kimi_swarm(plan):
+def emit_kimi_swarm(plan, agents_dir=None, verify_registration=False):
     """Convert a DispatchPlan into Kimi Agent/AgentSwarm batches.
 
     Entries with the same (subagent_type, model) are batched via AgentSwarm;
     singletons become Agent calls. Each entry's fully rendered prompt is
     passed as the task string, using AgentSwarm's {{item}} placeholder.
+
+    Every batch carries `routing`, index-aligned with `items` (or a single
+    dict for an Agent call): the orchestrator writes each returned result to
+    its entry's `out_file`, and the prompts alone cannot say which is which.
+
+    Pass `verify_registration=True` to re-check each enforced entry against
+    the live registration directory instead of trusting the plan's snapshot.
     """
+    if not isinstance(plan, list):
+        raise ValueError("dispatch plan must be a list of entries, got %s"
+                         % type(plan).__name__)
+    reg_dir = _registration_dir("kimi", agents_dir) if verify_registration else None
     grouped = {}
     for entry in plan:
-        agent = _kimi_subagent_type(entry)
-        model = (entry.get("model") or {}).get("model")
+        if not isinstance(entry, dict):
+            raise ValueError("dispatch plan entry must be an object, got %r" % (entry,))
+        model_cfg = entry.get("model")
+        if model_cfg is not None and not isinstance(model_cfg, dict):
+            raise ValueError("dispatch plan entry %r: model must be an object"
+                             % entry.get("role"))
+        agent = _kimi_subagent_type(entry, reg_dir, verify_registration)
+        model = (model_cfg or {}).get("model")
         grouped.setdefault((agent, model), []).append(entry)
 
     batches = []
@@ -420,6 +464,7 @@ def emit_kimi_swarm(plan):
                 "model": model,
                 "description": _swarm_description(entry),
                 "prompt": entry.get("prompt", ""),
+                "routing": _swarm_routing(entry),
             })
         else:
             batches.append({
@@ -429,6 +474,7 @@ def emit_kimi_swarm(plan):
                 "description": _swarm_description(entries[0]) + " (batch)",
                 "prompt_template": "{{item}}",
                 "items": [e.get("prompt", "") for e in entries],
+                "routing": [_swarm_routing(e) for e in entries],
             })
     return {"batches": batches}
 
@@ -484,7 +530,12 @@ def main(argv=None):
         except (OSError, ValueError) as e:
             print("dispatch: cannot read plan %s: %s" % (args.emit_kimi_swarm, e), file=sys.stderr)
             return 1
-        swarm = emit_kimi_swarm(plan)
+        try:
+            swarm = emit_kimi_swarm(plan, agents_dir=args.agents_dir,
+                                    verify_registration=True)
+        except ValueError as e:
+            print("dispatch: %s" % e, file=sys.stderr)
+            return 1
         with open(args.out, "w", encoding="utf-8") as fh:
             json.dump(swarm, fh, indent=2)
             fh.write("\n")
