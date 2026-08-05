@@ -572,13 +572,20 @@ class TestOfflineAssets(unittest.TestCase):
         self.assertIn("--mount=type=secret,id=nvd_api_key", self.text)
         self.assertNotIn("ENV NVD_API_KEY", self.text)
 
-    def test_weekly_publish_schedule(self):
+    def test_publish_cadence_and_tags(self):
         with open(os.path.join(os.path.dirname(__file__), os.pardir,
                                ".github", "workflows",
                                "docker-publish.yml")) as fh:
             wf = fh.read()
-        self.assertIn('cron: "0 6 * * 1"', wf)
+        self.assertIn('cron: "0 6 * * *"', wf)      # daily asset refresh
         self.assertIn("workflow_dispatch", wf)
+        self.assertIn("promote_weekly", wf)          # emergency weekly bump
+        self.assertIn("value=daily", wf)
+        self.assertIn("value=weekly", wf)
+        self.assertIn("ASSET_REFRESH", wf)           # cache-bust build-arg
+
+    def test_dockerfile_has_asset_refresh_arg(self):
+        self.assertIn("ARG ASSET_REFRESH", self.text)
 ```
 
 - [ ] **Step 2: Run to verify failure** — `python3 -m pytest tests/test_dockerfile.py -q`.
@@ -587,6 +594,10 @@ class TestOfflineAssets(unittest.TestCase):
 
 ```dockerfile
 # ---- Offline scan assets (P1: zero scan-time egress; spec 2026-08-04) ----
+# Cache boundary: everything ABOVE this ARG stays layer-cached across daily
+# builds; every asset fetch BELOW rebuilds when the workflow passes a new
+# run date. Secretless local builds keep the stable default (cached).
+ARG ASSET_REFRESH=local
 # Trivy vulnerability DB
 RUN TRIVY_CACHE_DIR=/opt/trivy-cache trivy --cache-dir /opt/trivy-cache \
     image --download-db-only && chmod -R a+r /opt/trivy-cache
@@ -645,21 +656,52 @@ are the stable contract, chosen to survive spelling fixes. The `|| true`
 fallbacks exist only where a tool's CLI differs across versions; the Section
 6 offline fixture check (Task 8) is what proves the assets actually work.
 
-- [ ] **Step 4: Implement the workflow change** — in `docker-publish.yml` `on:` block add:
+- [ ] **Step 4: Implement the workflow change** — in `docker-publish.yml`:
+
+In the `on:` block, add the daily schedule and extend `workflow_dispatch`
+(it already exists — it is the emergency manual push):
 
 ```yaml
   schedule:
-    - cron: "0 6 * * 1"   # weekly asset refresh (Mon 06:00 UTC)
+    - cron: "0 6 * * *"   # daily asset refresh (06:00 UTC)
+  workflow_dispatch:
+    inputs:
+      promote_weekly:
+        description: "Also move the :weekly tag"
+        type: boolean
+        default: false
 ```
 
-and in the build step add the BuildKit secret:
+Add a cadence step BEFORE the metadata step:
 
 ```yaml
+      - name: Compute cadence
+        id: cadence
+        run: |
+          echo "weekly=$([ "$(date -u +%u)" = "1" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+```
+
+Replace the metadata-action `tags:` list (consumers choose cadence by tag;
+`:latest` stays as the back-compat alias of daily — `security.yml` is
+unchanged):
+
+```yaml
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=daily,enable={{is_default_branch}}
+            type=raw,value=weekly,enable=${{ (github.event_name == 'schedule' && steps.cadence.outputs.weekly == 'true') || inputs.promote_weekly == true }}
+            type=sha,prefix=,suffix=,format=short
+```
+
+In the build step add the BuildKit secret and the cache-bust build-arg:
+
+```yaml
+          build-args: |
+            ASSET_REFRESH=${{ steps.cadence.outputs.date }}
           secrets: |
             nvd_api_key=${{ secrets.NVD_API_KEY }}
 ```
-
-(`workflow_dispatch` already exists — it is the emergency manual push.)
 
 - [ ] **Step 5: Run** — `python3 -m pytest tests/test_dockerfile.py -q` → pass. Then, if Docker is available locally: `docker build -t panopticon-tools . 2>&1 | tail -5` (secretless build must succeed; report SKIPPED with the reason if Docker is unavailable in the execution environment — do not fake it).
 

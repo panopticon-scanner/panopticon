@@ -72,12 +72,22 @@ fixture suite. If an ecosystem's osv offline DB is impractically large, the
 implementation may restrict `--download-offline-databases` to the ecosystems
 the fixture corpus exercises and document the subset in the Dockerfile.
 
-`docker-publish.yml` adds `schedule` (`cron: "0 6 * * 1"`, Mondays 06:00 UTC)
-and `workflow_dispatch` (emergency manual pushes) triggers; the NVD BuildKit
-secret comes from the repo's Actions secrets. Semgrep's vendored packs start
-from `p/default` (the closest offline equivalent of today's `--config auto`);
-any additional packs are an implementation-time choice recorded as a comment
-in the Dockerfile. A
+`docker-publish.yml` adds a **daily** `schedule` (`cron: "0 6 * * *"`); the
+existing `workflow_dispatch` is the emergency manual push and gains a
+`promote_weekly` boolean input. **Consumers choose their update cadence by
+tag:** `:daily` moves on every default-branch build; `:weekly` is promoted
+only by Monday scheduled runs (or an emergency dispatch with
+`promote_weekly: true`); `:latest` remains as a back-compat alias of the
+daily image (`security.yml` keeps pulling it, unchanged); short-SHA tags
+remain for pinning and rollback. Because Buildx layer caching would otherwise
+serve stale DBs from cache, the Dockerfile takes an `ARG ASSET_REFRESH`
+declared immediately before the asset block and the workflow passes the run
+date as its value — asset layers rebuild daily, toolchain layers stay cached
+(and secretless local builds keep a stable default). The NVD BuildKit secret
+comes from the repo's Actions secrets. Semgrep's vendored packs start from
+`p/default` (the closest offline equivalent of today's `--config auto`); any
+additional packs are an implementation-time choice recorded as a comment in
+the Dockerfile. A
 build without the secret still succeeds (dependency-check warms unkeyed,
 slower) so local `docker build` keeps working.
 
