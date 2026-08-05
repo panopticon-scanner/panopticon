@@ -45,3 +45,21 @@ class TestDependencyCheckAdapter(unittest.TestCase):
         self.assertEqual(adapter._normalize_cwe("CWE-94"), "CWE-94")
         self.assertEqual(adapter._normalize_cwe("94"), "CWE-94")
         self.assertIsNone(adapter._normalize_cwe("invalid"))
+
+    def test_invoke_uses_noupdate_and_odc_data(self):
+        from unittest import mock
+        adapter = dc.DependencyCheckAdapter()
+        fake_run = mock.Mock(return_value=(b"{}", 0))
+        def mock_exists(path):
+            return path.endswith("dependency-check-report.json")
+        with mock.patch("scripts.tools.dependency_check.run_tool", fake_run):
+            with mock.patch("scripts.tools.dependency_check.os.path.exists", side_effect=mock_exists):
+                with mock.patch("builtins.open", mock.mock_open(read_data=b"{}")):
+                    with mock.patch("shutil.rmtree"):
+                        stdout, rc = adapter.invoke("/tmp/fake")
+        # Verify the command includes --noupdate and --data /opt/odc-data
+        called_cmd = fake_run.call_args[0][0]
+        self.assertIn("--noupdate", called_cmd)
+        self.assertIn("--data", called_cmd)
+        data_idx = called_cmd.index("--data")
+        self.assertEqual(called_cmd[data_idx + 1], "/opt/odc-data")

@@ -48,7 +48,7 @@ class CargoAuditAdapter:
         return os.path.exists(os.path.join(target, "Cargo.toml"))
 
     def invoke(self, target: str) -> tuple[bytes, int]:
-        cmd = ["cargo", "audit", "--format", "json"]
+        cmd = ["cargo", "audit", "--no-fetch", "--format", "json"]
         return run_tool(cmd, timeout=300, cwd=target)
 
     def parse(self, raw: bytes, group: str) -> list[dict]:

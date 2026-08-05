@@ -16,6 +16,7 @@ from scripts.citations import load_cwe_catalog
 import scripts.evidence as evidence_mod
 import scripts.html_report as html_report
 import scripts.ingest_tools as ingest_tools
+from scripts.tools import EXECUTES_TARGET_BUILD
 
 # Moved to evidence.py (also used by evidence.load_verdicts for advisor
 # verdict files, which are just as likely to be fence-wrapped or prose-
@@ -674,6 +675,8 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
     for f in findings:
         f.pop("_group", None)
         f.pop("_repo_root", None)
+    tool_names = {str(f.get("source", ""))[5:] for f in findings
+                  if str(f.get("source", "")).startswith("tool:")}
     return {
         "meta": {
             "target": target,
@@ -682,6 +685,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
             "version": "4.2.0",
             "security_mode": security_mode,
             "models_used": _collect_models_used(findings),
+            "build_executing_tools": sorted(tool_names & EXECUTES_TARGET_BUILD),
             **({"tool_policy_mode": tool_policy_mode} if tool_policy_mode else {}),
         },
         "summary": {

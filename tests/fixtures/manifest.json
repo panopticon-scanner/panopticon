@@ -27,6 +27,15 @@
       "source": "local",
       "path": "/opt/panopticon-fixtures/vulnerable-rust",
       "adapters": ["cargo-audit"]
+    },
+    {
+      "name": "hostile-csproj",
+      "language": "csharp",
+      "source": "local",
+      "path": "tests/fixtures/hostile-csproj",
+      "adapters": ["roslyn-secguard"],
+      "baked": false,
+      "note": "committed in-repo (tests/fixtures/hostile-csproj), not copied into the panopticon-fixtures image; 'path' is repo-relative, checked on the host checkout rather than inside the built image."
     }
   ]
 }

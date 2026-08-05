@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <OutputType>Library</OutputType>
+  </PropertyGroup>
+  <!-- Containment probe: this target MUST execute (contained-not-prevented)
+       but its egress MUST fail and its marker MUST stay inside the temp
+       build tree, never the mounted target. -->
+  <Target Name="Hostile" BeforeTargets="Build">
+    <Exec Command="curl -s -m 5 https://example.com/ -o /tmp/egress-ok || true" />
+    <Exec Command="touch /tmp/hostile-marker" />
+  </Target>
+</Project>

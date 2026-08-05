@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """Detect the panopticon-tools Docker image and run selected scanners against a
-read-only mount of the target. Network is allowed (tools only parse source,
-never execute it). Degrades gracefully when Docker is absent.
-Stdlib-only.
+read-only mount of the target. Scan-time network is DISABLED for all tools
+(assets are baked into the image); parse-only adapters never execute target
+code; roslyn-secguard executes target build logic inside a no-egress,
+no-secret container (recorded in report meta); pip-audit/npm-audit run only
+under --online. Degrades gracefully when Docker is absent. Stdlib-only.
 """
 import os
 import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from scripts.tools import ADAPTERS
+from scripts.tools import ADAPTERS, EXECUTES_TARGET_BUILD, ONLINE_ONLY  # noqa: F401
 from scripts.tools.legacy_sarif import LEGACY_SARIF_TOOLS, TOOL_CMD
 
 # JS/TS SAST runs via the eslint-security ADAPTER (bundled flat config);
@@ -91,6 +93,19 @@ def select_adapters(target: str, adapters: dict | None = None) -> dict:
     return {name: adapter for name, adapter in adapters.items() if adapter.is_applicable(target)}
 
 
+def filter_online(chosen, online):
+    """Drop ONLINE_ONLY adapters unless --online was given, with a notice."""
+    if online:
+        return list(chosen)
+    kept = [t for t in chosen if t not in ONLINE_ONLY]
+    for t in chosen:
+        if t in ONLINE_ONLY:
+            print("adapter %s needs network; skipped (offline substitute: "
+                  "osv-scanner). Re-run with --online to include it." % t,
+                  file=sys.stderr)
+    return kept
+
+
 def run_adapters(adapters: dict, target: str, out_dir: str, runner=None) -> list[str]:
     """Run each adapter and write raw output to out_dir."""
     runner = runner or subprocess.run
@@ -112,7 +127,7 @@ def run_adapters(adapters: dict, target: str, out_dir: str, runner=None) -> list
     return written
 
 
-def run_tools(target, tools, out_dir, image="panopticon-tools", runner=None):
+def run_tools(target, tools, out_dir, image="panopticon-tools", runner=None, online=False):
     """Run selected security tools and adapters in Docker against target.
 
     Legacy SARIF tools use their hard-coded ``TOOL_CMD`` invocation. New Phase 1
@@ -121,13 +136,14 @@ def run_tools(target, tools, out_dir, image="panopticon-tools", runner=None):
     """
     runner = runner or subprocess.run
     os.makedirs(out_dir, exist_ok=True)
+    tools = filter_online(tools, online)
     written = []
     for tool in tools:
         # Legacy SARIF path (kept for backward compatibility).
         cmd = TOOL_CMD.get(tool)
         if cmd:
             out_path = os.path.join(out_dir, "%s.sarif" % tool)
-            docker = ["docker", "run", "--rm",
+            docker = ["docker", "run", "--rm", "--network", "none",
                       "-v", "%s:/src:ro" % os.path.abspath(target), image] + cmd
             try:
                 res = runner(docker, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -154,8 +170,8 @@ def run_tools(target, tools, out_dir, image="panopticon-tools", runner=None):
             ext = "sarif" if tool in LEGACY_SARIF_TOOLS else "json"
             out_path = os.path.join(out_dir, "%s.%s" % (tool, ext))
             docker = ["docker", "run", "--rm"]
-            if os.environ.get("NVD_API_KEY"):
-                docker.extend(["-e", "NVD_API_KEY"])
+            if tool not in ONLINE_ONLY:
+                docker.extend(["--network", "none"])
             # Mount the checkout's adapter code over the image's baked-in copy
             # so local adapter fixes take effect without an image rebuild
             # (calibration 2026-08-03: fixed adapters silently kept failing
@@ -189,6 +205,7 @@ if __name__ == "__main__":
     ap.add_argument("--tools", nargs="*", default=None)
     ap.add_argument("--languages", nargs="*", default=[])
     ap.add_argument("--deps", action="store_true")
+    ap.add_argument("--online", action="store_true", help="allow pip-audit/npm-audit to reach their advisory APIs")
     a = ap.parse_args()
     if not docker_available():
         print("panopticon-tools image not available; skipping tool scan", file=sys.stderr)
@@ -201,5 +218,5 @@ if __name__ == "__main__":
         phase2 = [name for name in selected_adapters if name in PHASE2_ADAPTERS]
         languages = a.languages or detect_languages(a.target)
         chosen = select_tools(languages, a.deps) + phase1 + phase2
-    paths = run_tools(a.target, chosen, a.out)
+    paths = run_tools(a.target, chosen, a.out, online=a.online)
     print("\n".join(paths))

@@ -56,6 +56,21 @@ ROSLYN_SAMPLE_STRING_MESSAGE = json.dumps({
     }]
 }).encode()
 
+MIXED_SARIF = json.dumps({
+    "runs": [{"results": [
+        {"ruleId": "SCS0002",
+         "message": {"text": "SQL injection"},
+         "locations": [{"physicalLocation": {
+             "artifactLocation": {"uri": "a.cs"},
+             "region": {"startLine": 3}}}]},
+        {"ruleId": "CS0246",
+         "message": {"text": "type not found: leaked /etc/passwd content"},
+         "locations": [{"physicalLocation": {
+             "artifactLocation": {"uri": "b.cs"},
+             "region": {"startLine": 1}}}]},
+    ]}]
+}).encode()
+
 
 class TestRoslynSecGuardAdapter(unittest.TestCase):
     def test_parse_produces_finding(self):
@@ -109,18 +124,19 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
 
         import scripts.tools.base as tools_base
         old_run = tools_base.subprocess.run
-        old_copytree = rs.shutil.copytree
+        old_safe_copytree = rs._safe_copytree
         try:
-            def fake_copytree(src, dst, dirs_exist_ok=False):
+            def fake_safe_copytree(src, dst):
                 copied_src.append(src)
                 copied_dst.append(dst)
                 open(os.path.join(dst, "x.csproj"), "w").close()
+                return 0
 
             def fake_run(cmd, **kwargs):
                 calls.append((cmd, kwargs))
                 return Result()
 
-            rs.shutil.copytree = fake_copytree
+            rs._safe_copytree = fake_safe_copytree
             tools_base.subprocess.run = fake_run
             with tempfile.TemporaryDirectory() as d:
                 open(os.path.join(d, "x.csproj"), "w").close()
@@ -130,10 +146,77 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
                 self.assertEqual(copied_src, [d])
         finally:
             tools_base.subprocess.run = old_run
-            rs.shutil.copytree = old_copytree
+            rs._safe_copytree = old_safe_copytree
 
         cmd = calls[0][0]
         self.assertEqual(cmd[0], "dotnet")
         self.assertEqual(cmd[1], "build")
         self.assertTrue(cmd[2].startswith(copied_dst[0]))
         self.assertTrue(any(arg.startswith("-p:ErrorLog=") for arg in cmd))
+
+
+class TestSafeCopytree(unittest.TestCase):
+    def _tree(self, d):
+        os.makedirs(os.path.join(d, "src", "sub"))
+        with open(os.path.join(d, "src", "app.csproj"), "w") as fh:
+            fh.write("<Project/>")
+        with open(os.path.join(d, "outside.txt"), "w") as fh:
+            fh.write("SECRET")
+        return os.path.join(d, "src")
+
+    def test_out_of_tree_symlink_is_skipped_and_counted(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = self._tree(d)
+            os.symlink(os.path.join(d, "outside.txt"),
+                       os.path.join(src, "leak.cs"))
+            dst = os.path.join(d, "dst")
+            skipped = rs._safe_copytree(src, dst)
+            self.assertEqual(skipped, 1)
+            self.assertFalse(os.path.lexists(os.path.join(dst, "leak.cs")))
+            self.assertTrue(os.path.exists(os.path.join(dst, "app.csproj")))
+
+    def test_in_tree_symlink_copied_as_link(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = self._tree(d)
+            os.symlink("app.csproj", os.path.join(src, "alias.csproj"))
+            dst = os.path.join(d, "dst")
+            self.assertEqual(rs._safe_copytree(src, dst), 0)
+            self.assertTrue(os.path.islink(os.path.join(dst, "alias.csproj")))
+
+    def test_dangling_symlink_does_not_abort(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = self._tree(d)
+            os.symlink(os.path.join(d, "gone.txt"),
+                       os.path.join(src, "dangling.cs"))
+            dst = os.path.join(d, "dst")
+            skipped = rs._safe_copytree(src, dst)   # must not raise
+            self.assertEqual(skipped, 1)
+
+    def test_symlink_loop_terminates(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = self._tree(d)
+            os.symlink(src, os.path.join(src, "sub", "loop"))
+            dst = os.path.join(d, "dst")
+            rs._safe_copytree(src, dst)             # must return, not recurse
+            self.assertTrue(os.path.exists(os.path.join(dst, "sub")))
+
+    def test_sibling_prefix_dir_is_out_of_tree(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = self._tree(d)                      # <d>/src
+            evil = os.path.join(d, "src-evil")
+            os.makedirs(evil)
+            with open(os.path.join(evil, "secret.txt"), "w") as fh:
+                fh.write("SECRET")
+            os.symlink(os.path.join(evil, "secret.txt"),
+                       os.path.join(src, "leak.cs"))
+            dst = os.path.join(d, "dst")
+            skipped = rs._safe_copytree(src, dst)
+            self.assertEqual(skipped, 1)
+            self.assertFalse(os.path.lexists(os.path.join(dst, "leak.cs")))
+
+
+class TestScsOnlyFilter(unittest.TestCase):
+    def test_non_scs_results_are_dropped(self):
+        found = rs.RoslynSecGuardAdapter().parse(MIXED_SARIF, "g")
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["tool_evidence"]["rule_id"], "SCS0002")

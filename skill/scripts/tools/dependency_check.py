@@ -19,19 +19,15 @@ class DependencyCheckAdapter:
         out_dir = tempfile.mkdtemp(prefix="dc-")
         try:
             dc_home = os.environ.get("DEPENDENCY_CHECK_HOME", "/opt/dependency-check")
-            # Dependency-Check 10.x requires an NVD API key to download the
-            # vulnerability database. Without a key we keep --noupdate; findings
-            # then depend on a pre-seeded DB inside the image or on the host.
-            has_nvd_key = bool(os.environ.get("NVD_API_KEY"))
             cmd = [
                 os.path.join(dc_home, "bin", "dependency-check.sh"),
                 "--project", "panopticon",
                 "--scan", target,
                 "--format", "JSON",
                 "--out", out_dir,
+                "--noupdate",
+                "--data", "/opt/odc-data",
             ]
-            if not has_nvd_key:
-                cmd.append("--noupdate")
             _stdout, rc = run_tool(cmd, timeout=900)
             out_path = os.path.join(out_dir, "dependency-check-report.json")
             if os.path.exists(out_path):

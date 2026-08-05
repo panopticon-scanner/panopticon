@@ -25,6 +25,7 @@
             }
           }
         },
+        "build_executing_tools": {"type": "array", "items": {"type": "string"}, "description": "Names of adapters from EXECUTES_TARGET_BUILD that contributed findings to this report."},
         "tool_policy_mode": {"type": "string", "enum": ["enforced", "advisory", "mixed"], "description": "Posture of the fan-out reviewer entries (panel_review/lens_sweep) derived from dispatch plans; scout/advisor posture is not recorded."}
       }
     },

@@ -61,7 +61,7 @@ class TestRunTools(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             out_dir = os.path.join(d, "out")
             rt.run_tools(d, ["semgrep"], out_dir, image="panopticon-tools", runner=runner)
-            expected = ["docker", "run", "--rm",
+            expected = ["docker", "run", "--rm", "--network", "none",
                         "-v", "%s:/src:ro" % os.path.abspath(d),
                         "panopticon-tools"] + rt.TOOL_CMD["semgrep"]
             self.assertEqual(calls[0], expected)   # exact argv: flags, :ro mount, image, per-tool cmd
@@ -138,25 +138,6 @@ class TestAdapterDispatch(unittest.TestCase):
                 "%s:/src:ro" % os.path.abspath(d),
             ])
 
-    def test_run_tools_propagates_nvd_api_key_when_set(self):
-        calls = []
-        class R: returncode = 0; stdout = b'{"runs":[]}'; stderr = b''
-        def runner(cmd, **kw):
-            calls.append(cmd); return R()
-
-        old_key = os.environ.get("NVD_API_KEY")
-        os.environ["NVD_API_KEY"] = "secret-key"
-        try:
-            with tempfile.TemporaryDirectory() as d:
-                out_dir = os.path.join(d, "out")
-                rt.run_tools(d, ["dependency-check"], out_dir, image="panopticon-tools", runner=runner)
-                self.assertIn("-e", calls[0])
-                self.assertIn("NVD_API_KEY", calls[0])
-        finally:
-            if old_key is None:
-                os.environ.pop("NVD_API_KEY", None)
-            else:
-                os.environ["NVD_API_KEY"] = old_key
 
     def test_default_selection_includes_phase1_adapters(self):
         with tempfile.TemporaryDirectory() as d:
@@ -207,6 +188,56 @@ class TestRunAdapterHelper(unittest.TestCase):
             self.assertEqual(rc, 0)
         finally:
             ra.ADAPTERS.pop("crash", None)
+
+
+class TestContainment(unittest.TestCase):
+    def _calls(self, tools, online=False, env=None):
+        calls = []
+        class R: returncode = 0; stdout = b'{"runs":[]}'; stderr = b''
+        def runner(cmd, **kw):
+            calls.append(cmd); return R()
+        old = dict(os.environ)
+        os.environ.update(env or {})
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                rt.run_tools(d, tools, os.path.join(d, "out"),
+                             runner=runner, online=online)
+        finally:
+            os.environ.clear(); os.environ.update(old)
+        return calls
+
+    def test_every_dispatch_has_network_none(self):
+        for cmd in self._calls(["semgrep", "cargo-audit"]):
+            i = cmd.index("--network")
+            self.assertEqual(cmd[i + 1], "none")
+
+    def test_nvd_api_key_never_forwarded(self):
+        for cmd in self._calls(["dependency-check"],
+                               env={"NVD_API_KEY": "sekrit"}):
+            self.assertNotIn("-e", cmd)
+            self.assertNotIn("NVD_API_KEY", cmd)
+
+    def test_online_only_adapters_skipped_offline(self):
+        calls = self._calls(["pip-audit", "npm-audit", "cargo-audit"])
+        joined = [" ".join(c) for c in calls]
+        self.assertEqual(len(calls), 1)
+        self.assertIn("cargo-audit", joined[0])
+
+    def test_online_flag_dispatches_online_only_with_network(self):
+        calls = self._calls(["pip-audit"], online=True)
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("--network", calls[0])
+
+    def test_roslyn_never_gets_network_even_online(self):
+        calls = self._calls(["roslyn-secguard"], online=True)
+        i = calls[0].index("--network")
+        self.assertEqual(calls[0][i + 1], "none")
+
+    def test_filter_online_helper(self):
+        chosen = ["semgrep", "pip-audit", "npm-audit", "gosec"]
+        self.assertEqual(rt.filter_online(chosen, online=False),
+                         ["semgrep", "gosec"])
+        self.assertEqual(rt.filter_online(chosen, online=True), chosen)
 
 
 class TestDetectLanguages(unittest.TestCase):
