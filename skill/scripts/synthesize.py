@@ -3,7 +3,6 @@
 grades and a CI gate verdict. Stdlib-only.
 """
 import argparse
-import hashlib
 import glob
 import json
 import os
@@ -23,6 +22,8 @@ from scripts.tools import EXECUTES_TARGET_BUILD
 # wrapped as panel/lens findings files). Delegation keeps this name importable
 # as scripts.synthesize.load_json_tolerant for existing callers/tests.
 load_json_tolerant = evidence_mod.load_json_tolerant
+tool_rule_id = evidence_mod.tool_rule_id
+finding_fingerprint = evidence_mod.finding_fingerprint
 
 SEVERITIES = {"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"}
 SEV_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
@@ -87,10 +88,26 @@ def normalize_finding(f):
 
 
 # Fields that confer trust and must NEVER come from an agent-authored payload
-# (SEC-102, found by our own self-scan): `source` drives is_tool_sourced() ->
-# tool_confirmed evidence + verify-queue exclusion + gate eligibility, and
-# `reinforced` short-circuits verification the same way. Only ingest_tools
-# (tool output) and dedupe's real merge branches may set them.
+# (SEC-102, found by our own self-scan). P2 did NOT weaken this guard; it
+# sharpened it. The original rationale is obsolete in all three clauses --
+# `source` no longer confers tool_confirmed evidence (that needs an advisor
+# verdict now), there is no verify-queue exclusion left to buy, and it no
+# longer confers gate eligibility -- but what replaced them is worse:
+#
+#   `source`: finding_fingerprint keys a TOOL-sourced finding on
+#     tool_rule_id(), which falls back to provenance.confirmation_reasoning --
+#     free text from the same payload. So a forged `source: "tool:*"` lets the
+#     author choose the finding's fingerprint, and with it its queue_id, which
+#     advisor verdict it answers to, and the cross-run identity every filed
+#     issue is keyed on. That is identity manipulation, not merely a status
+#     claim, and it is the one thing a content-addressed pipeline cannot
+#     tolerate.
+#   `reinforced`: triage_priority ranks a reinforced CRITICAL/HIGH at 0, ahead
+#     of every uncorroborated one, so a forged flag jumps the --max-verify cut
+#     and starves genuine claims of the advisor budget. It also flips
+#     derive_evidence's tool_like branch.
+#
+# Only ingest_tools (tool output) and dedupe's real merge branches may set them.
 AGENT_FORBIDDEN_FIELDS = ("source", "reinforced")
 
 
@@ -472,6 +489,18 @@ def prepare_findings(findings):
     return findings, integration
 
 
+def prepare_for_queue(findings):
+    """Aggregate, then prepare — the ONE pipeline both passes must share.
+
+    #443: pass 1 (--emit-verify-queue) used to call prepare_findings alone
+    while build_report aggregated first, so the two passes fed
+    build_verify_queue different lists and every queue position after the
+    first tool merge shifted. Both passes call this now; identity is
+    content-addressed on top of it (evidence.build_verify_queue).
+    """
+    return prepare_findings(aggregate_tool_findings(findings))
+
+
 def evidence_stats(findings):
     """Count findings by evidence status."""
     stats = {s: 0 for s in evidence_mod.EVIDENCE_STATUSES}
@@ -512,47 +541,6 @@ def derive_tool_policy_mode(panopticon_dir=".panopticon"):
     return "advisory"
 
 
-def tool_rule_id(finding):
-    """The scanner rule a tool finding came from, wherever its adapter put it.
-
-    Two adapter families disagree: the dependency scanners (pip_audit,
-    bundler_audit, dependency_check, eslint_security) set
-    `tool_evidence.rule_id`, while everything on the SARIF path (bandit,
-    semgrep, trivy, ...) sets no tool_evidence at all and carries the rule id
-    in `provenance.confirmation_reasoning` via attach_tool_provenance. Reading
-    only the first form made every SARIF finding look rule-less, which silently
-    disabled both aggregation and rule-based fingerprint identity for them.
-    """
-    rule = (finding.get("tool_evidence") or {}).get("rule_id")
-    if rule:
-        return rule
-    return (finding.get("provenance") or {}).get("confirmation_reasoning") or None
-
-
-def finding_fingerprint(finding):
-    """Stable cross-run identity for a finding, for issue round-tripping.
-
-    Keys on panel + category + normalized file + the discriminator that is
-    actually stable for that source: a tool's rule_id, or an agent finding's
-    title. Deliberately EXCLUDES line numbers (issues survive code moves) and
-    free-text description (agent prose is re-worded every run).
-    """
-    loc = finding.get("location") or {}
-    fpath = str(loc.get("file") or "").replace("\\", "/")
-    # Strip only a `./` prefix. `lstrip("./")` would eat the leading dot of
-    # every dotfile path, collapsing `.github/x` onto `github/x`.
-    while fpath.startswith("./"):
-        fpath = fpath[2:]
-    # Gate on tool-sourcing: on an AGENT finding, confirmation_reasoning holds
-    # advisor prose, which would be a disastrous identity discriminator.
-    rule = tool_rule_id(finding) if _is_tool_sourced(finding) else None
-    discriminator = str(rule) if rule else str(finding.get("title") or "")
-    payload = "|".join([str(finding.get("panel") or ""),
-                        str(finding.get("category") or ""),
-                        fpath, discriminator]).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()[:16]
-
-
 def aggregate_tool_findings(findings):
     """Collapse repeated tool hits of one rule in one file into a single finding.
 
@@ -563,7 +551,11 @@ def aggregate_tool_findings(findings):
     — except where an agent independently flagged one of the other lines, in
     which case that locus wins. This runs before dedupe, which reinforces on an
     EXACT (file, line) match: moving the tool witness off a line an agent also
-    flagged would silently cost that finding its tool_confirmed evidence.
+    flagged would silently cost that finding its `reinforced` status — the
+    tool+agent corroboration in `verified_by`, and the triage_priority 0 that
+    puts it at the head of the verify queue. (Pre-P2 it also cost the finding
+    automatic `tool_confirmed` evidence; unverified tool claims are
+    `tool_reported` now, and only an advisor verdict promotes them.)
     """
     agent_loci = {
         (str(((f.get("location") or {}).get("file")) or ""),
@@ -604,7 +596,8 @@ def aggregate_tool_findings(findings):
 
 def build_report(findings, groups_meta, target, fail_on, timestamp, review_type="repo",
                  security_mode="standard", verdicts=None, gate_unverified=False,
-                 max_verify=None, verdicts_supplied=False, tool_policy_mode=None):
+                 max_verify=None, verdicts_supplied=False, tool_policy_mode=None,
+                 tools_ran=None):
     """Build a CodeReviewReport under the two-axis severity x evidence model.
 
     Severity is never mutated here. Verdicts (from evidence.load_verdicts) are
@@ -613,18 +606,33 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
     when gate_unverified is set). `verdicts_supplied` records whether --verdicts-dir
     was passed at all (distinct from whether it yielded any verdicts) so the
     aggregate "no verdict" note still fires for an existing-but-empty dir.
+    `tools_ran` is the set of adapter names that produced output this run;
+    when omitted, `build_executing_tools` falls back to inferring from findings.
     """
-    findings = aggregate_tool_findings(findings)
-    findings, integration_findings = prepare_findings(findings)
+    findings, integration_findings = prepare_for_queue(findings)
     catalog = load_cwe_catalog()
     queue, _cut = evidence_mod.build_verify_queue(findings, max_verify)
+    # Identity must be read BEFORE any verdict is applied. For a SARIF-sourced
+    # tool finding the adapters park the rule id in
+    # provenance.confirmation_reasoning (tools/sarif_utils.tool_provenance sets
+    # no tool_evidence), evidence.tool_rule_id falls back to it, and
+    # finding_fingerprint uses it as the identity discriminator -- while
+    # evidence.apply_verdict overwrites that same field with the advisor's
+    # prose. Recomputing afterwards would export a hash of the reasoning text,
+    # so the "stable cross-run identity" would change whenever an advisor
+    # re-worded itself. Harmless for findings that are never verdicted
+    # (including those cut by --max-verify): nothing between here and the
+    # assignment site mutates an identity field on them.
+    pre_verdict_fps = {id(f): finding_fingerprint(f) for f in findings}
     verdicts = verdicts or {}
     matched = {}
+    matched_n = 0
     unanswered = 0
     for entry in queue:
         v = evidence_mod.match_verdict(entry, verdicts)
         if v is not None:
             evidence_mod.apply_verdict(entry["finding"], v)
+            matched_n += 1
         elif verdicts_supplied:
             unanswered += 1
         matched[id(entry["finding"])] = v
@@ -635,12 +643,53 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
     if unknown:
         print("synthesize: verdict file(s) for unknown queue_id(s): %s"
               % ", ".join(sorted(unknown)), file=sys.stderr)
+    # A run whose verdicts all failed to match now produces gate PASS / grade A
+    # / risk LOW -- the safest-looking output there is -- because only verified
+    # findings gate. Stderr is not what CI consumes, so the drop counts belong
+    # in the artifact: supplied - matched - unknown is the number of verdicts
+    # that named a queued finding but failed match_verdict's finding_id echo.
+    verdict_stats = {
+        "supplied": len(verdicts),
+        "matched": matched_n,
+        "unknown": len(unknown),
+        # Measured only when --verdicts-dir was passed at all. Emitting 0 for a
+        # run with no verify phase would read as "nothing went unanswered",
+        # which is the opposite of the truth; null means "not measured", the
+        # same convention as tool_axis.rejection_rate.
+        "unanswered": unanswered if verdicts_supplied else None,
+    }
     # Re-validate citations after advisor merges (idempotent; preserves epss).
     citations.enrich_citations(findings, catalog, epss_enabled=False)
     for f in findings:
         f["evidence"] = evidence_mod.derive_evidence(f, matched.get(id(f)))
-        f["fingerprint"] = finding_fingerprint(f)
+        # KNOWN DIVERGENCE from queue_id (unchanged behavior, recorded): on a
+        # fingerprint collision the queue assigns `fp` and `fp-1`, but both
+        # findings export the bare `fp` here -- so a colliding pair does not
+        # round-trip from exported identity back to its queue entry. See the
+        # matching note in evidence.build_verify_queue.
+        f["fingerprint"] = pre_verdict_fps[id(f)]
         f.pop("citation_quality", None)
+
+    tool_like = [f for f in findings
+                 if evidence_mod.is_tool_sourced(f) or f.get("reinforced")]
+
+    def _tool_count(status):
+        return sum(1 for f in tool_like if f["evidence"]["status"] == status)
+
+    confirmed = _tool_count("tool_confirmed")
+    rejected_n = _tool_count("rejected")
+    decided = confirmed + rejected_n
+    tool_axis = {
+        "queued": len(tool_like),
+        "confirmed": confirmed,
+        "rejected": rejected_n,
+        "needs_more_info": _tool_count("needs_more_info"),
+        "unanswered": _tool_count("tool_reported"),
+        # Share of DECIDED tool claims an advisor refuted — the tool-side
+        # mirror of the 27% agentic rejection rate. None when nothing was
+        # decided, so an unverified run reports "unmeasured", not "0%".
+        "rejection_rate": round(rejected_n / decided, 3) if decided else None,
+    }
 
     rejected = [f for f in findings if f["evidence"]["status"] == "rejected"]
     active = [f for f in findings if f["evidence"]["status"] != "rejected"]
@@ -685,7 +734,11 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
             "version": "4.2.0",
             "security_mode": security_mode,
             "models_used": _collect_models_used(findings),
-            "build_executing_tools": sorted(tool_names & EXECUTES_TARGET_BUILD),
+            "build_executing_tools": sorted(
+                (set(tools_ran) if tools_ran is not None else tool_names)
+                & EXECUTES_TARGET_BUILD),
+            "tool_axis": tool_axis,
+            "verdicts": verdict_stats,
             **({"tool_policy_mode": tool_policy_mode} if tool_policy_mode else {}),
         },
         "summary": {
@@ -942,6 +995,17 @@ def main(argv=None):
         for tf in ingest_tools.ingest_dir(args.tools_dir, None,
                                           exclude_globs=args.tools_exclude):
             findings.append(normalize_finding(tf))
+    # None when --tools-dir wasn't supplied (or couldn't be read): build_report
+    # documents tools_ran=None as "not supplied -> infer from findings". An
+    # empty set instead ASSERTS "no build-executing tool ran" from an absence
+    # of evidence, which is exactly the inversion #450 was about.
+    tools_ran = None
+    if args.tools_dir and os.path.isdir(args.tools_dir):
+        tools_ran = set()
+        for name in os.listdir(args.tools_dir):
+            base, ext = os.path.splitext(name)
+            if ext in (".json", ".sarif"):
+                tools_ran.add(base)
     catalog = citations.load_cwe_catalog()
     citations.enrich_citations(findings, catalog, epss_enabled=args.epss,
                                cache_path=os.path.join(".panopticon", "epss-cache.json"))
@@ -951,7 +1015,7 @@ def main(argv=None):
 
     if args.emit_verify_queue:
         import copy
-        prepared, _ = prepare_findings(copy.deepcopy(findings))
+        prepared, _ = prepare_for_queue(copy.deepcopy(findings))
         queue, cut = evidence_mod.build_verify_queue(prepared, args.max_verify)
         qpath = os.path.join(".panopticon", "verify-queue.json")
         if queue:
@@ -959,10 +1023,12 @@ def main(argv=None):
             print("verify queue: %d entries (%d cut by --max-verify) -> %s"
                   % (len(queue), cut, qpath))
             return 0
-        # Nothing to verify this run: a queue file left by a PREVIOUS run
-        # (with agentic findings) would otherwise mislead step 7's re-run --
-        # the orchestrator branches on the file's existence, so a stale one
-        # would send it to the verify phase with stale/absent entries.
+        # Nothing to verify this run. Post-P2 EVERY finding queues -- tool
+        # findings included -- so an empty queue means this run produced no
+        # findings at all, not "only findings that never queued". A queue file
+        # left by a PREVIOUS run would otherwise mislead step 7's re-run: the
+        # orchestrator branches on the file's existence, so a stale one would
+        # send it to the verify phase with stale/absent entries.
         if os.path.isfile(qpath):
             try:
                 os.remove(qpath)
@@ -978,7 +1044,8 @@ def main(argv=None):
                           gate_unverified=args.gate_unverified,
                           max_verify=args.max_verify,
                           verdicts_supplied=args.verdicts_dir is not None,
-                          tool_policy_mode=tool_policy_mode)
+                          tool_policy_mode=tool_policy_mode,
+                          tools_ran=tools_ran)
     errors, warnings = validate_report(report)
     attach_schema_status(report, errors)
     for w in warnings:

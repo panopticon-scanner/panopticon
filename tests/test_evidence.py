@@ -4,6 +4,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill"))
 import scripts.evidence as evidence
+import scripts.evidence as ev
 
 
 def _finding(**kw):
@@ -16,11 +17,12 @@ def _finding(**kw):
 
 
 class TestDeriveEvidence(unittest.TestCase):
-    def test_tool_sourced_is_tool_confirmed(self):
+    def test_tool_sourced_is_tool_reported(self):
+        # P2/#446: no verdict means the tool's claim is reported, not verified.
         f = _finding(source="tool:semgrep",
                      provenance={"confirmation_reasoning": "Reported by semgrep"})
         ev = evidence.derive_evidence(f)
-        self.assertEqual(ev["status"], "tool_confirmed")
+        self.assertEqual(ev["status"], "tool_reported")
         self.assertEqual(ev["verified_by"], "tool:semgrep")
         self.assertEqual(ev["reasoning"], "Reported by semgrep")
         self.assertEqual(ev["citation_quality"], "partial")
@@ -49,12 +51,14 @@ class TestDeriveEvidence(unittest.TestCase):
             {"verdict": "REJECTED", "reasoning": "r"})
         self.assertEqual(ev["status"], "rejected")
 
-    def test_tool_beats_verdict(self):
-        # Tool findings never enter the queue; if a verdict is passed anyway,
-        # tool_confirmed still wins (precedence rule 1).
+    def test_verdict_beats_tool_source(self):
+        # P2/#446: precedence inverted. An advisor verdict now outranks
+        # tool-sourcing -- the whole point being that an advisor CAN refute a
+        # scanner (e.g. Bandit B105 flagging a CSS-class-name string as a
+        # "hardcoded password").
         ev = evidence.derive_evidence(
             _finding(source="tool:bandit"), {"verdict": "REJECTED"})
-        self.assertEqual(ev["status"], "tool_confirmed")
+        self.assertEqual(ev["status"], "rejected")
 
     def test_cross_panel_corroborated(self):
         ev = evidence.derive_evidence(
@@ -62,12 +66,13 @@ class TestDeriveEvidence(unittest.TestCase):
         self.assertEqual(ev["status"], "corroborated")
         self.assertEqual(ev["verified_by"], ["security", "database"])
 
-    def test_reinforced_is_tool_confirmed(self):
-        # A tool+agent same-locus merge is tool-reported by construction, so it
-        # gates the same as a plain tool finding (amended spec) rather than
-        # being demoted to mere `corroborated`.
+    def test_reinforced_is_tool_reported(self):
+        # A tool+agent same-locus merge is tool-reported by construction
+        # (never demoted to mere `corroborated`), but P2/#446 means that alone
+        # no longer gates -- it still needs an advisor CONFIRMED verdict to
+        # reach tool_confirmed.
         ev = evidence.derive_evidence(_finding(reinforced=True))
-        self.assertEqual(ev["status"], "tool_confirmed")
+        self.assertEqual(ev["status"], "tool_reported")
         self.assertEqual(ev["verified_by"], "tool+agent")
 
     def test_default_is_unverified(self):
@@ -88,6 +93,111 @@ class TestDeriveEvidence(unittest.TestCase):
         f = _finding()
         del f["citation_quality"]
         self.assertEqual(evidence.derive_evidence(f)["citation_quality"], "none")
+
+
+class TestToolReported(unittest.TestCase):
+    def _tool(self, **over):
+        f = {"id": "T-1", "source": "tool:bandit", "severity": "HIGH",
+             "panel": "security", "category": "secrets",
+             "provenance": {"confirmation_reasoning": "B105"}}
+        f.update(over)
+        return f
+
+    def test_unverified_tool_finding_is_tool_reported(self):
+        ev_obj = ev.derive_evidence(self._tool())
+        self.assertEqual(ev_obj["status"], "tool_reported")
+
+    def test_tool_reported_is_not_gate_eligible(self):
+        self.assertNotIn("tool_reported", ev.GATE_ELIGIBLE_DEFAULT)
+
+    def test_confirmed_verdict_promotes_tool_finding(self):
+        ev_obj = ev.derive_evidence(self._tool(),
+                                    {"verdict": "CONFIRMED", "reasoning": "real"})
+        self.assertEqual(ev_obj["status"], "tool_confirmed")
+        self.assertIn("tool_confirmed", ev.GATE_ELIGIBLE_DEFAULT)
+
+    def test_rejected_verdict_rejects_tool_finding(self):
+        # The whole point of #446: an advisor CAN now refute a scanner.
+        ev_obj = ev.derive_evidence(self._tool(),
+                                    {"verdict": "REJECTED", "reasoning": "CSS class"})
+        self.assertEqual(ev_obj["status"], "rejected")
+
+    def test_needs_more_info_verdict_on_tool_finding(self):
+        ev_obj = ev.derive_evidence(self._tool(), {"verdict": "NEEDS_MORE_INFO"})
+        self.assertEqual(ev_obj["status"], "needs_more_info")
+
+    def test_reinforced_unverified_is_tool_reported_keeping_corroboration(self):
+        f = {"id": "R-1", "reinforced": True, "severity": "HIGH",
+             "panel": "code", "category": "logic"}
+        ev_obj = ev.derive_evidence(f)
+        self.assertEqual(ev_obj["status"], "tool_reported")
+        self.assertEqual(ev_obj["verified_by"], "tool+agent")
+
+    def test_reinforced_confirmed_verdict_promotes_to_tool_confirmed(self):
+        # A reinforced (tool+agent same-locus merge) finding is tool-like, so
+        # a CONFIRMED verdict promotes it exactly like a plain tool finding --
+        # and verified_by carries both the merge origin and the advisor.
+        f = {"id": "R-2", "reinforced": True, "severity": "HIGH",
+             "panel": "code", "category": "logic"}
+        ev_obj = ev.derive_evidence(f, {"verdict": "CONFIRMED", "reasoning": "real"})
+        self.assertEqual(ev_obj["status"], "tool_confirmed")
+        self.assertEqual(ev_obj["verified_by"], ["tool+agent", "agent:advisor"])
+
+    def test_reinforced_rejected_verdict_rejects(self):
+        # Same as the plain-tool case: an advisor can refute a reinforced
+        # (tool+agent) finding too, not just a lone tool one.
+        f = {"id": "R-3", "reinforced": True, "severity": "HIGH",
+             "panel": "code", "category": "logic"}
+        ev_obj = ev.derive_evidence(f, {"verdict": "REJECTED", "reasoning": "false positive"})
+        self.assertEqual(ev_obj["status"], "rejected")
+
+    def test_agent_finding_unaffected(self):
+        f = {"id": "A-1", "severity": "HIGH", "panel": "code",
+             "category": "logic"}
+        self.assertEqual(ev.derive_evidence(f)["status"], "unverified")
+        self.assertEqual(
+            ev.derive_evidence(f, {"verdict": "CONFIRMED"})["status"],
+            "advisor_confirmed")
+
+    def test_status_is_in_schema_enum(self):
+        import json as _json
+        with open("skill/reference/report-schema.json", encoding="utf-8") as fh:
+            schema = _json.load(fh)
+        text = _json.dumps(schema)
+        self.assertIn("tool_reported", text)
+
+
+class TestFingerprintMoved(unittest.TestCase):
+    def _f(self, **over):
+        f = {"id": "SEC-1", "panel": "security", "category": "injection",
+             "title": "SQL injection", "location": {"file": "a.py",
+                                                    "line_start": 3}}
+        f.update(over)
+        return f
+
+    def test_fingerprint_is_stable_hex(self):
+        fp = evidence.finding_fingerprint(self._f())
+        self.assertEqual(len(fp), 16)
+        self.assertTrue(all(c in "0123456789abcdef" for c in fp))
+
+    def test_fingerprint_ignores_line_number(self):
+        a = evidence.finding_fingerprint(self._f())
+        b = evidence.finding_fingerprint(
+            self._f(location={"file": "a.py", "line_start": 99}))
+        self.assertEqual(a, b)
+
+    def test_tool_rule_id_reads_both_adapter_families(self):
+        self.assertEqual(
+            evidence.tool_rule_id({"tool_evidence": {"rule_id": "B105"}}), "B105")
+        self.assertEqual(
+            evidence.tool_rule_id({"provenance": {"confirmation_reasoning": "SCS0005"}}),
+            "SCS0005")
+        self.assertIsNone(evidence.tool_rule_id({}))
+
+    def test_synthesize_aliases_still_resolve(self):
+        import scripts.synthesize as syn
+        self.assertIs(syn.finding_fingerprint, evidence.finding_fingerprint)
+        self.assertIs(syn.tool_rule_id, evidence.tool_rule_id)
 
 
 if __name__ == "__main__":

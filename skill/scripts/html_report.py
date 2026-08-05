@@ -608,7 +608,7 @@ def _render_heatmap(findings):
 
 
 def _render_findings(findings):
-    unverified_statuses = ("needs_more_info", "unverified")
+    unverified_statuses = ("tool_reported", "needs_more_info", "unverified")
     verified = [f for f in findings
                 if (f.get("evidence") or {}).get("status") not in unverified_statuses]
     unverified = [f for f in findings

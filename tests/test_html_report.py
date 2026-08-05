@@ -391,6 +391,30 @@ class TestHtmlReport(unittest.TestCase):
         self.assertIn("Unverified findings", out)
         self.assertIn("agent:lens_sweep", out)
 
+    def test_tool_reported_renders_as_unverified_not_in_main_findings(self):
+        # P2/#446 regression: an unverified tool claim (e.g. the Bandit B105
+        # false positive) must land in the collapsed "Unverified findings"
+        # section, not the primary tabbed Findings section that reads as
+        # reviewed/trustworthy.
+        finding = {
+            "id": "SEC-003", "title": "possible hardcoded password", "severity": "HIGH",
+            "confidence": "CERTAIN", "panel": "security", "category": "secrets",
+            "location": {"file": "app.py", "line_start": 12},
+            "description": "x", "impact": "", "remediation": "", "references": [],
+            "provenance": {
+                "discovered_by": "tool:bandit", "confirmation_status": "TOOL",
+                "model": None, "model_version": None,
+            },
+            "evidence": {
+                "status": "tool_reported", "verified_by": "tool:bandit",
+                "reasoning": "Reported by static-analysis tool", "citation_quality": "none"
+            }
+        }
+        report = _minimal_report(findings=[finding])
+        out = hr.render(report)
+        self.assertIn("Unverified findings <span class='count'>(1)</span>", out)
+        self.assertIn("ALL <span class='count'>0</span>", out)
+
     def test_provenance_needs_more_info_class_is_hyphenated(self):
         finding = {
             "id": "SEC-002", "title": "Unverified", "severity": "INFO", "confidence": "NOTE",

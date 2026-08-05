@@ -23,7 +23,8 @@ REPORT_URL = ("https://github.com/psyberone/panopticon/blob/main/"
 SEV_LABEL = {"CRITICAL": "severity:critical", "HIGH": "severity:high",
              "MEDIUM": "severity:medium", "LOW": "severity:low",
              "INFO": "severity:info"}
-EV_LABEL = {"tool_confirmed": "evidence:tool-confirmed",
+EV_LABEL = {"tool_reported": "evidence:tool-reported",
+            "tool_confirmed": "evidence:tool-confirmed",
             "advisor_confirmed": "evidence:advisor-confirmed",
             "corroborated": "evidence:corroborated",
             "needs_more_info": "evidence:needs-more-info",

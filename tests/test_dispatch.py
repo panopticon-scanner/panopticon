@@ -9,6 +9,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill", "scripts"))
 import dispatch
+import evidence
 
 
 class TestDispatchPlan(unittest.TestCase):
@@ -436,14 +437,21 @@ class TestRenderGoldens(unittest.TestCase):
 
 
 class TestRenderAdvisor(unittest.TestCase):
+    # 16 hex chars: shape of evidence.finding_fingerprint's output (#443).
+    # Hand-picked here (rather than computed) because this class tests
+    # dispatch's rendering behavior in isolation from evidence -- the
+    # TestQueueIdContractWithEvidence class below wires the two together.
+    QID_1 = "a1b2c3d4e5f60001"
+    QID_2 = "a1b2c3d4e5f60002"
+
     def _queue(self, tmp):
-        queue = {"version": "4.0.0", "cut_by_max_verify": 0, "entries": [
-            {"queue_id": "000-SEC-001", "priority": 1,
+        queue = {"version": "4.2.0", "cut_by_max_verify": 0, "entries": [
+            {"queue_id": self.QID_1, "priority": 1,
              "finding": {"id": "SEC-001", "title": "sqli", "severity": "HIGH",
                           "panel": "security", "category": "injection",
                           "location": {"file": "app.py", "line_start": 10},
                           "description": "raw query with {code_context} text"}},
-            {"queue_id": "001-CD-002", "priority": 3,
+            {"queue_id": self.QID_2, "priority": 3,
              "finding": {"id": "CD-002", "title": "leak", "severity": "LOW",
                           "panel": "code", "category": "correctness",
                           "location": {"file": "b.py", "line_start": 4}}},
@@ -459,7 +467,7 @@ class TestRenderAdvisor(unittest.TestCase):
             outdir = os.path.join(tmp, "advisor-prompts")
             written = dispatch.render_advisor_prompts(qpath, outdir)
             self.assertEqual([os.path.basename(p) for p in written],
-                             ["000-SEC-001.md", "001-CD-002.md"])
+                             [self.QID_1 + ".md", self.QID_2 + ".md"])
             text = open(written[0], encoding="utf-8").read()
             self.assertIn('"id": "SEC-001"', text)        # claim embedded
             self.assertIn("{code_context}", text)          # brace-safe: survives
@@ -479,7 +487,8 @@ class TestRenderAdvisor(unittest.TestCase):
             outdir = os.path.join(tmp, "out")
             rc = dispatch.main(["--render-advisor", qpath, "--out", outdir])
             self.assertEqual(rc, 0)
-            self.assertTrue(os.path.isfile(os.path.join(outdir, "000-SEC-001.md")))
+            self.assertTrue(os.path.isfile(
+                os.path.join(outdir, self.QID_1 + ".md")))
 
     def test_non_dict_queue_fails_fast(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -501,10 +510,13 @@ class TestRenderAdvisor(unittest.TestCase):
     def test_unsafe_queue_id_fails_fast(self):
         # queue_id is OUR artifact (built by evidence.build_verify_queue), but
         # render_advisor_prompts validates it anyway: a corrupt/tampered queue
-        # file with a path-shaped queue_id must not reach os.path.join.
+        # file with a path-shaped queue_id must not reach os.path.join. The
+        # fingerprint contract (#443) makes the check strictly tighter than
+        # before -- no separators or dots survive it at all, not just the
+        # traversal-shaped ones.
         with tempfile.TemporaryDirectory() as tmp:
-            queue = {"version": "4.0.0", "cut_by_max_verify": 0, "entries": [
-                {"queue_id": "000-../evil", "priority": 1,
+            queue = {"version": "4.2.0", "cut_by_max_verify": 0, "entries": [
+                {"queue_id": "../escape", "priority": 1,
                  "finding": {"id": "SEC-001", "title": "x", "severity": "HIGH",
                               "panel": "security", "category": "injection",
                               "location": {"file": "app.py", "line_start": 1}}},
@@ -518,21 +530,27 @@ class TestRenderAdvisor(unittest.TestCase):
 
 
 class TestQueueIdResiduals(unittest.TestCase):
-    """Round-2 parked residuals: >=1000-entry queue ids and non-string ids."""
+    """Round-2 parked residuals, updated for the fingerprint contract (#443).
+    The old positional id's only unbounded-width component was the zero-padded
+    position (`%03d` grows past 3 digits at 1000+ entries); under the new
+    contract the only unbounded-width component is the collision suffix
+    (evidence.build_verify_queue's `-<n>`), which can also grow past one
+    digit. Non-string ids must still fail fast either way."""
 
     def _queue(self, tmp, entries):
         qpath = os.path.join(tmp, "q.json")
         with open(qpath, "w") as fh:
-            json.dump({"version": "4.1.0", "cut_by_max_verify": 0,
+            json.dump({"version": "4.2.0", "cut_by_max_verify": 0,
                        "entries": entries}, fh)
         return qpath
 
-    def test_four_digit_queue_index_accepted(self):
+    def test_multi_digit_collision_suffix_accepted(self):
+        qid = "a1b2c3d4e5f60001-10"
         with tempfile.TemporaryDirectory() as tmp:
-            qpath = self._queue(tmp, [{"queue_id": "1000-AB-001", "priority": 1,
+            qpath = self._queue(tmp, [{"queue_id": qid, "priority": 1,
                                        "finding": {"id": "AB-001", "title": "t"}}])
             written = dispatch.render_advisor_prompts(qpath, os.path.join(tmp, "o"))
-        self.assertEqual(os.path.basename(written[0]), "1000-AB-001.md")
+        self.assertEqual(os.path.basename(written[0]), qid + ".md")
 
     def test_non_string_queue_id_raises_valueerror(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -540,6 +558,64 @@ class TestQueueIdResiduals(unittest.TestCase):
                                        "finding": {"id": "AB-001"}}])
             with self.assertRaises(ValueError):
                 dispatch.render_advisor_prompts(qpath, os.path.join(tmp, "o"))
+
+    def test_trailing_newline_queue_id_rejected(self):
+        # Python's `$` matches before a trailing newline as well as at end of
+        # string, so an otherwise-valid id with a "\n" glued on cleared a
+        # `^...$` guard and reached the "%s.md" filename interpolation. \A/\Z
+        # is the anchor pair that means what this check intends.
+        for qid in ("a1b2c3d4e5f60001\n", "a1b2c3d4e5f60001-10\n"):
+            with tempfile.TemporaryDirectory() as tmp:
+                qpath = self._queue(tmp, [{"queue_id": qid, "priority": 1,
+                                           "finding": {"id": "AB-001",
+                                                       "title": "t"}}])
+                with self.assertRaises(ValueError) as ctx:
+                    dispatch.render_advisor_prompts(qpath, os.path.join(tmp, "o"))
+                self.assertIn("unsafe queue_id", str(ctx.exception))
+
+
+class TestQueueIdContractWithEvidence(unittest.TestCase):
+    """Wires the two ends of the queue_id contract together. #443 broke this
+    silently once: evidence.build_verify_queue's id format changed (positional
+    -> fingerprint) but dispatch.render_advisor_prompts's validation regex
+    still expected the old shape, and no test caught it because both sides
+    were only exercised against hand-written fixtures matching each module's
+    own assumptions. Building the queue for real and feeding it straight into
+    the render path means the two modules can't silently diverge again."""
+
+    def _finding(self, fid, **over):
+        f = {"id": fid, "severity": "HIGH", "panel": "security",
+             "category": "injection", "title": "t-" + fid,
+             "location": {"file": fid + ".py", "line_start": 1}}
+        f.update(over)
+        return f
+
+    def test_real_build_verify_queue_output_renders(self):
+        findings = [self._finding("A"), self._finding("B", severity="LOW")]
+        entries, cut = evidence.build_verify_queue(findings)
+        with tempfile.TemporaryDirectory() as tmp:
+            qpath = os.path.join(tmp, "verify-queue.json")
+            evidence.write_verify_queue(entries, cut, qpath)
+            written = dispatch.render_advisor_prompts(qpath, os.path.join(tmp, "o"))
+        self.assertEqual(len(written), 2)
+        self.assertEqual(sorted(os.path.basename(p) for p in written),
+                         sorted("%s.md" % e["queue_id"] for e in entries))
+
+    def test_real_collision_suffix_renders(self):
+        # Two findings that collide in fingerprint (same panel/category/file/
+        # title) still produce a queue dispatch.render_advisor_prompts accepts
+        # end to end, filenames and all.
+        a = self._finding("X")
+        b = self._finding("Y", title=a["title"], location=dict(a["location"]))
+        entries, cut = evidence.build_verify_queue([a, b])
+        fp = evidence.finding_fingerprint(a)
+        self.assertEqual(sorted(e["queue_id"] for e in entries),
+                         sorted([fp, fp + "-1"]))                    # collision fired
+        with tempfile.TemporaryDirectory() as tmp:
+            qpath = os.path.join(tmp, "verify-queue.json")
+            evidence.write_verify_queue(entries, cut, qpath)
+            written = dispatch.render_advisor_prompts(qpath, os.path.join(tmp, "o"))
+        self.assertEqual(len(written), 2)
 
 
 class TestKimiDefaultAgentsDir(unittest.TestCase):
