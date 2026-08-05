@@ -139,11 +139,20 @@ Delete the positional-project fallback. When no `requirements*.txt` exists:
 parse `[project.dependencies]` (and `[project.optional-dependencies]`) from
 `pyproject.toml` with stdlib `tomllib`, write the PEP 508 strings to a temp
 requirements file, and pass `--requirement <tmp>`. If the table is absent or
-declared `dynamic`, the adapter reports not-applicable with a stderr note. No
-pip-audit code path can reach a PEP 517 build backend on any version — the
-empirical probe #218 asked for becomes unnecessary. This applies in `--online`
-mode too (the flag controls dispatch, not adapter internals). The temp file is
-removed in a `finally`.
+declared `dynamic`, the adapter reports not-applicable with a stderr note. The
+temp file is removed in a `finally`.
+
+The static parse removes the positional-project path, so in the OFFLINE
+default nothing executes: pip-audit is not dispatched at all without
+`--online` (`ONLINE_ONLY`, Section 3). It does not make the empirical probe
+#218 asked for unnecessary in general. Under explicit `--online`,
+`--requirement` mode still performs dependency resolution, and a hostile
+`pyproject.toml` can supply direct-reference/URL or sdist-only specifiers
+whose metadata preparation executes code — this was already true of the
+pre-existing `requirements*.txt` branch, so `--online` is not a regression,
+but it is not a guarantee of no execution either. That residual is an
+accepted risk under `--online`, bounded by the container: no secrets,
+read-only mounts, uid 1000.
 
 ## Section 6: Verification
 

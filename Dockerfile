@@ -139,6 +139,17 @@ RUN : "asset-refresh ${ASSET_REFRESH}" \
     && rm -rf /home/scanner/.cargo/advisory-db/.git \
     && chmod -R a+rX /home/scanner/.cargo
 
+# Ruby advisory DB for bundler-audit --no-update. The initial `gem install
+# ... && bundle-audit update` (toolchain region, above the cache boundary)
+# only ever runs once and then stays frozen by layer caching, so re-run the
+# update here so ruby-advisory-db tracks $ASSET_REFRESH like every other
+# baked asset. Must land before the useradd block below copies it to
+# /home/scanner, so the scanner user gets the refreshed DB, not the stale
+# toolchain-layer snapshot.
+RUN : "asset-refresh ${ASSET_REFRESH}" \
+    && bundle-audit update \
+    && chmod -R a+rX /root/.local/share/ruby-advisory-db
+
 # OSV offline databases: npm + PyPI, the ecosystems covered by the fixture
 # corpus and the substitute path for the online-only pip-audit/npm-audit
 # adapters (see ONLINE_ONLY in tools/__init__.py). Warm with throwaway

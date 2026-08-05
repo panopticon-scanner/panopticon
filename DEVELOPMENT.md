@@ -232,4 +232,3 @@ Test coverage (the non-determinism challenge — this is the headline):
   OWASP Risk Rating scoring.
 - SARIF `taxa`/relationships CWE extraction (for CodeQL-style tools).
 - On-load usage hint / `argument-hint` (surface flags/modes when the skill loads).
-- Optional bake-at-build offline mode (trivy DB + semgrep rules) to restore `--network none`.
