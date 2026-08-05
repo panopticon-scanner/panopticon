@@ -15,8 +15,12 @@ LEGACY_SARIF_TOOLS = {"semgrep", "bandit", "trivy", "gitleaks", "gosec"}
 # Per-tool argv producing SARIF on stdout. /src is substituted with the actual
 # target path at invocation time.
 TOOL_CMD = {
+    # --disable-version-check is NOT covered by --metrics=off: they are two
+    # separate calls home, and in a --network none container the version check
+    # blocks until it times out. Measured on one trivial file: 2m10s with it,
+    # 35s without.
     "semgrep": ["semgrep", "scan", "--config", "/opt/semgrep-rules", "--metrics=off",
-                "--sarif", "--quiet", "/src"],
+                "--disable-version-check", "--sarif", "--quiet", "/src"],
     "gitleaks": ["gitleaks", "detect", "--no-git", "--source", "/src", "--report-format", "sarif",
                  "--report-path", "/dev/stdout", "--no-banner"],
     "trivy": ["trivy", "fs", "--skip-db-update", "--offline-scan", "--format", "sarif", "/src"],
