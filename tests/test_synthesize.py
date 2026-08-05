@@ -1479,6 +1479,26 @@ class TestToolPolicyMode(unittest.TestCase):
         self.assertEqual(report["meta"]["version"], "4.2.0")
 
 
+class TestBuildExecutingTools(unittest.TestCase):
+    def _finding(self, **kw):
+        base = {"id": "CD-001", "title": "t", "severity": "LOW", "confidence": "POSSIBLE",
+                "panel": "code", "category": "structure",
+                "location": {"file": "a.py", "line_start": 3}}
+        base.update(kw)
+        return base
+
+    def test_meta_records_build_executing_tool(self):
+        f = self._finding(source="tool:roslyn-secguard")
+        report = syn.build_report([f], [], "t", None, "2026-08-03T00:00:00Z")
+        self.assertEqual(report["meta"]["build_executing_tools"],
+                         ["roslyn-secguard"])
+
+    def test_meta_empty_without_executing_tools(self):
+        f = self._finding(source="tool:bandit")
+        report = syn.build_report([f], [], "t", None, "2026-08-03T00:00:00Z")
+        self.assertEqual(report["meta"]["build_executing_tools"], [])
+
+
 import scripts.evidence as evidence_mod  # noqa: E402
 
 
