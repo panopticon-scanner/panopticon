@@ -129,8 +129,13 @@ def emit_host_agents(host, out_dir):
                 fm.append("model: %s" % model)
             fm.append("---")
         else:
+            preference = "secondary" if role in ("panel_review", "advisor") else "primary"
             fm = (["---", "name: %s" % agent,
-                   "description: %s" % meta["description"], "tools:"]
+                   "description: %s" % meta["description"],
+                   "whenToUse: %s" % meta["description"],
+                   "override: false",
+                   "model_preference: %s" % preference,
+                   "tools:"]
                   + ["  - %s" % t for t in tp["allowed"]]
                   + ["disallowedTools:"]
                   + ["  - %s" % t for t in tp["forbidden"]]

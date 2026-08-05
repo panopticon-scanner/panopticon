@@ -470,6 +470,25 @@ class TestEmitHostAgents(unittest.TestCase):
             self.assertIn("disallowedTools:", text)
             self.assertIn("- Bash", text)
 
+    def test_kimi_agent_file_includes_model_preference_and_when_to_use(self):
+        with tempfile.TemporaryDirectory() as d:
+            paths = dispatch.emit_host_agents("kimi", d)
+            self.assertEqual(len(paths), 4)
+            for p in paths:
+                with open(p, encoding="utf-8") as fh:
+                    content = fh.read()
+                self.assertIn("whenToUse:", content)
+                self.assertIn("override: false", content)
+                self.assertIn("model_preference:", content)
+
+            # role-specific preferences
+            scout = os.path.join(d, "panopticon-scout.md")
+            advisor = os.path.join(d, "panopticon-advisor.md")
+            with open(scout, encoding="utf-8") as fh:
+                self.assertIn("model_preference: primary", fh.read())
+            with open(advisor, encoding="utf-8") as fh:
+                self.assertIn("model_preference: secondary", fh.read())
+
     def test_idempotent(self):
         with tempfile.TemporaryDirectory() as d:
             dispatch.emit_host_agents("claude", d)
