@@ -64,7 +64,7 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
    `[same flags]` is a requirement, not a convenience: `--severity` filtering and
    `--tools-dir` ingestion both run before the verify queue is built, so a flag that
    differs between the two passes feeds them different finding sets — and the verdicts
-   pass 1 asked for then name findings pass 2 has no queue entry for.
+   pass 1 asked for will name findings that pass 2 has no queue entry for.
 9. **Validate** — `verification-before-completion`: compare `git status --porcelain`
    against `.panopticon/tree-baseline.txt`; any NEW modification outside `.panopticon/`
    means a reviewer had side effects — treat the run as compromised: discard the
