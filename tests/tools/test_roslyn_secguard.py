@@ -200,6 +200,20 @@ class TestSafeCopytree(unittest.TestCase):
             rs._safe_copytree(src, dst)             # must return, not recurse
             self.assertTrue(os.path.exists(os.path.join(dst, "sub")))
 
+    def test_sibling_prefix_dir_is_out_of_tree(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = self._tree(d)                      # <d>/src
+            evil = os.path.join(d, "src-evil")
+            os.makedirs(evil)
+            with open(os.path.join(evil, "secret.txt"), "w") as fh:
+                fh.write("SECRET")
+            os.symlink(os.path.join(evil, "secret.txt"),
+                       os.path.join(src, "leak.cs"))
+            dst = os.path.join(d, "dst")
+            skipped = rs._safe_copytree(src, dst)
+            self.assertEqual(skipped, 1)
+            self.assertFalse(os.path.lexists(os.path.join(dst, "leak.cs")))
+
 
 class TestScsOnlyFilter(unittest.TestCase):
     def test_non_scs_results_are_dropped(self):
