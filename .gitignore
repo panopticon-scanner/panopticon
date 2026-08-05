@@ -1,7 +1,10 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
-.panopticon/
+# Run artifacts. The glob matters: a preserved run gets renamed (e.g.
+# .panopticon.prev-20260803), and a bare `.panopticon/` would stop matching it
+# — which is how 3.1MB of run-1 scratch was once committed by accident.
+.panopticon*/
 .superpowers/
 .worktrees/
 

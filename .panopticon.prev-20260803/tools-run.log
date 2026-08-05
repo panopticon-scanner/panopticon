@@ -1,7 +1,0 @@
-.panopticon/tools/semgrep.sarif
-.panopticon/tools/gitleaks.sarif
-.panopticon/tools/trivy.sarif
-.panopticon/tools/bandit.sarif
-.panopticon/tools/pip-audit.json
-.panopticon/tools/osv-scanner.json
-.panopticon/tools/eslint-security.json
