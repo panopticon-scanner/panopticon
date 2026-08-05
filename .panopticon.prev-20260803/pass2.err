@@ -1,3 +1,0 @@
-ingest: excluded 35 finding(s) matching tests/fixtures/*
-SCHEMA: finding[21] security HIGH missing cvss
-SCHEMA: finding[21] security HIGH missing exploit_scenario
