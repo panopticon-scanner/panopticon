@@ -45,10 +45,33 @@ def build_image(tag: str) -> None:
 
 
 def check_fixtures(tag: str, fixtures: list[dict]) -> tuple[list[str], list[str]]:
-    """Return (present, missing) fixture names by checking paths inside the image."""
-    paths = [f["path"] for f in fixtures if f.get("path")]
+    """Return (present, missing) fixture names.
+
+    Most fixtures are baked into the fixtures image (Dockerfile.fixtures COPYs
+    them under an absolute /opt/panopticon-fixtures/... path); those are
+    checked by asking the built image whether the path exists inside it.
+
+    Fixtures marked "baked": false (e.g. hostile-csproj) are committed to the
+    repo instead and never copied into the image, by design (see the manifest
+    entry's "note") — checking them inside the image would always report
+    MISSING regardless of whether the fixture is actually present. Those are
+    checked directly against the host checkout (REPO_ROOT / path) instead.
+    """
+    baked = [f for f in fixtures if f.get("baked", True) and f.get("path")]
+    local = [f for f in fixtures if not f.get("baked", True) and f.get("path")]
+
+    present = []
+    missing = []
+
+    for f in local:
+        if (REPO_ROOT / f["path"]).is_dir():
+            present.append(f["name"])
+        else:
+            missing.append(f["name"])
+
+    paths = [f["path"] for f in baked]
     if not paths:
-        return [f["name"] for f in fixtures], []
+        return present, missing
     cmd = ["docker", "run", "--rm", tag, "sh", "-c"]
     test_script = "; ".join(
         f'if [ -d "{p}" ]; then echo "PRESENT:{p}"; else echo "MISSING:{p}"; fi'
@@ -56,17 +79,17 @@ def check_fixtures(tag: str, fixtures: list[dict]) -> tuple[list[str], list[str]
     )
     cmd.append(test_script)
     result = subprocess.run(cmd, capture_output=True, text=True)
-    present = []
+    present_paths = []
     missing_paths = set()
     for line in result.stdout.splitlines():
         if line.startswith("PRESENT:"):
-            present.append(line.split(":", 1)[1])
+            present_paths.append(line.split(":", 1)[1])
         elif line.startswith("MISSING:"):
             missing_paths.add(line.split(":", 1)[1])
-    path_to_name = {f.get("path"): f["name"] for f in fixtures if f.get("path")}
-    present_names = [path_to_name[p] for p in present if p in path_to_name]
-    missing_names = [path_to_name[p] for p in missing_paths if p in path_to_name]
-    return present_names, missing_names
+    path_to_name = {f["path"]: f["name"] for f in baked}
+    present += [path_to_name[p] for p in present_paths if p in path_to_name]
+    missing += [path_to_name[p] for p in missing_paths if p in path_to_name]
+    return present, missing
 
 
 def run_tests(tag: str, test: str | None = None) -> int:

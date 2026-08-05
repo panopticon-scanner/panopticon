@@ -1,8 +1,16 @@
 # tests/tools/test_hostile_csproj.py
 """Containment probe (P1): the hostile fixture's Exec targets run inside the
-no-egress container; egress must fail and findings must still parse. Runs
-only where the fixture and the roslyn adapter are usable (dev-local, like
-test_csharp_integration.py)."""
+no-egress container; egress must fail and findings must still parse.
+
+Opt-in only: set PANOPTICON_CONTAINMENT_PROBE=1 to run it. This test
+actually executes evil.csproj's hostile MSBuild target (a live curl attempt
+and a marker-file write) via `dotnet build`, invoked through plain
+subprocess with no sandboxing of its own. It must only be run inside the
+no-egress panopticon-tools container, never on a bare host or CI runner —
+bare hosts/runners (e.g. ubuntu-latest, which ships the .NET SDK
+preinstalled) have no `--network none` to contain the egress attempt, so
+running this test there would perform the real curl. On bare hosts this
+test always skips unless the env var is set explicitly."""
 import os
 import sys
 import unittest
@@ -17,6 +25,11 @@ FIXTURE = os.path.join(os.path.dirname(__file__), os.pardir,
 
 class TestHostileCsproj(unittest.TestCase):
     def test_contained_build_still_yields_scs_findings(self):
+        if os.environ.get("PANOPTICON_CONTAINMENT_PROBE") != "1":
+            self.skipTest(
+                "containment probe is opt-in: it executes hostile build logic and "
+                "must only run inside the no-egress panopticon-tools container "
+                "(set PANOPTICON_CONTAINMENT_PROBE=1)")
         adapter = ADAPTERS["roslyn-secguard"]
         if not os.path.isdir(FIXTURE):
             self.skipTest("hostile-csproj fixture missing")
