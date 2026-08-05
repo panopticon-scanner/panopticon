@@ -1071,8 +1071,9 @@ class TestInternalFieldCleanup(unittest.TestCase):
             "_group": "backend",
             "_repo_root": "/some/path",
         }
-        verdicts = {"000-SEC-001": {"finding_id": "SEC-001", "verdict": "REJECTED",
-                                    "reasoning": "False positive."}}
+        verdicts = {syn.finding_fingerprint(f):
+                    {"finding_id": "SEC-001", "verdict": "REJECTED",
+                     "reasoning": "False positive."}}
         report = syn.build_report(
             [f], [], "src", None, "2026-07-23T00:00:00Z", verdicts=verdicts)
         for finding in report["findings"]:
@@ -1135,18 +1136,22 @@ class TestEvidenceReport(unittest.TestCase):
         self.assertEqual(report["summary"]["gate_policy"], "include_unverified")
 
     def test_confirmed_verdict_gates(self):
-        verdicts = {"000-AG-001": {"finding_id": "AG-001", "verdict": "CONFIRMED",
-                                   "reasoning": "verified"}}
-        report = self._report([_agentic()], verdicts=verdicts)
+        finding = _agentic()
+        verdicts = {syn.finding_fingerprint(finding):
+                    {"finding_id": "AG-001", "verdict": "CONFIRMED",
+                     "reasoning": "verified"}}
+        report = self._report([finding], verdicts=verdicts)
         f = report["findings"][0]
         self.assertEqual(f["evidence"]["status"], "advisor_confirmed")
         self.assertEqual(report["summary"]["gate"], "FAIL")
         self.assertEqual(report["summary"]["overall_grade"], "D")
 
     def test_rejected_moves_to_discarded_with_severity_intact(self):
-        verdicts = {"000-AG-001": {"finding_id": "AG-001", "verdict": "REJECTED",
-                                   "reasoning": "not exploitable"}}
-        report = self._report([_agentic()], verdicts=verdicts)
+        finding = _agentic()
+        verdicts = {syn.finding_fingerprint(finding):
+                    {"finding_id": "AG-001", "verdict": "REJECTED",
+                     "reasoning": "not exploitable"}}
+        report = self._report([finding], verdicts=verdicts)
         self.assertEqual(report["findings"], [])
         d = report["discarded_claims"][0]
         self.assertEqual(d["severity"], "HIGH")
@@ -1155,10 +1160,12 @@ class TestEvidenceReport(unittest.TestCase):
         self.assertEqual(report["summary"]["gate"], "PASS")
 
     def test_needs_more_info_stays_visible_not_gating(self):
-        verdicts = {"000-AG-001": {"finding_id": "AG-001",
-                                   "verdict": "NEEDS_MORE_INFO",
-                                   "reasoning": "need deploy config"}}
-        report = self._report([_agentic()], verdicts=verdicts)
+        finding = _agentic()
+        verdicts = {syn.finding_fingerprint(finding):
+                    {"finding_id": "AG-001",
+                     "verdict": "NEEDS_MORE_INFO",
+                     "reasoning": "need deploy config"}}
+        report = self._report([finding], verdicts=verdicts)
         f = report["findings"][0]
         self.assertEqual(f["evidence"]["status"], "needs_more_info")
         self.assertEqual(f["severity"], "HIGH")
@@ -1180,14 +1187,15 @@ class TestEvidenceReport(unittest.TestCase):
         self.assertEqual(report["summary"]["gate"], "PASS")
 
     def test_evidence_stats_counts_everything(self):
-        verdicts = {"000-AG-001": {"finding_id": "AG-001", "verdict": "REJECTED",
-                                   "reasoning": "r"}}
+        f1 = _agentic()
         # distinct locus for AG-002 so dedupe doesn't collapse it into AG-001
         # (same file/line/category would otherwise keep only the more severe one).
-        report = self._report(
-            [_agentic(), _agentic(fid="AG-002", sev="LOW",
-                                  location={"file": "app.py", "line_start": 99})],
-            verdicts=verdicts)
+        f2 = _agentic(fid="AG-002", sev="LOW",
+                      location={"file": "app.py", "line_start": 99})
+        verdicts = {syn.finding_fingerprint(f1):
+                    {"finding_id": "AG-001", "verdict": "REJECTED",
+                     "reasoning": "r"}}
+        report = self._report([f1, f2], verdicts=verdicts)
         stats = report["summary"]["evidence_stats"]
         self.assertEqual(stats["rejected"], 1)
         self.assertEqual(stats["unverified"], 1)
@@ -1251,7 +1259,7 @@ class TestSeverityImmutability(unittest.TestCase):
                                                "reasoning": "r"}))
         for finding, verdict in cases:
             original = finding["severity"]
-            verdicts = ({"000-%s" % finding["id"]:
+            verdicts = ({syn.finding_fingerprint(finding):
                          dict(verdict, finding_id=finding["id"])}
                         if verdict else None)
             report = syn.build_report([finding], [], "t", "high",
@@ -1274,7 +1282,7 @@ class TestSeverityImmutability(unittest.TestCase):
                                                "reasoning": "r"}))
         for finding, verdict in cases:
             original = finding["confidence"]
-            verdicts = ({"000-%s" % finding["id"]:
+            verdicts = ({syn.finding_fingerprint(finding):
                          dict(verdict, finding_id=finding["id"])}
                         if verdict else None)
             report = syn.build_report([finding], [], "t", "high",
@@ -1301,7 +1309,10 @@ class TestTwoPassCli(unittest.TestCase):
             self.assertFalse(os.path.exists(out))
             with open(os.path.join(d, ".panopticon", "verify-queue.json")) as fh:
                 queue = json.load(fh)
-            self.assertEqual(queue["entries"][0]["queue_id"], "000-AG-001")
+            # queue_id is the finding's content fingerprint (#443), not a
+            # position-based "NNN-id".
+            self.assertEqual(queue["entries"][0]["queue_id"],
+                             syn.finding_fingerprint(queue["entries"][0]["finding"]))
 
     def test_pass1_empty_queue_falls_through_to_report(self):
         # Post-SEC-102 an agent-authored finding always queues; an empty queue
@@ -1315,10 +1326,12 @@ class TestTwoPassCli(unittest.TestCase):
 
     def test_pass2_applies_verdicts(self):
         with tempfile.TemporaryDirectory() as d, _chdir(d):
-            fp = self._write_findings(d, [_agentic()])
+            finding = _agentic()
+            fp = self._write_findings(d, [finding])
             vd = os.path.join(d, ".panopticon", "verdicts")
             os.makedirs(vd)
-            with open(os.path.join(vd, "000-AG-001.json"), "w") as fh:
+            qid = syn.finding_fingerprint(finding)
+            with open(os.path.join(vd, "%s.json" % qid), "w") as fh:
                 json.dump({"finding_id": "AG-001", "verdict": "CONFIRMED",
                            "reasoning": "verified"}, fh)
             out = os.path.join(d, "report.json")

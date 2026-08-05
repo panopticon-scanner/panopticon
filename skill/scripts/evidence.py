@@ -143,32 +143,37 @@ def triage_priority(finding):
 
 
 def build_verify_queue(findings, max_verify=None):
-    """Return (entries, cut_count) for ALL agentic findings, priority-sorted.
+    """Return (entries, cut) for ALL findings, priority-sorted.
 
     Entries hold REFERENCES to the original finding dicts (verdict application
-    must mutate the real objects). Self-asserted provenance confirmation is
-    ignored — everything non-tool queues, except reinforced (tool+agent
-    same-locus merge) findings: they are tool-reported by construction and
-    already derive tool_confirmed, so queuing them for advisor verification
-    would be pointless and would make tool/verdict collisions possible.
-    Stable order: (priority, input index), so recomputation in pass 2
-    reproduces pass 1's queue_ids exactly.
+    must mutate the real objects).
 
-    queue_id's id component is sanitized to [A-Za-z0-9_-] — findings are
-    external input and their ids feed filenames.
+    P2 (#446): tool-sourced and reinforced findings queue too — they are claims
+    like any other, and `tool_confirmed` now requires an advisor verdict.
+    P2 (#443/#438): the sort key and queue_id are pure functions of finding
+    CONTENT — no input index anywhere — so both passes of a run compute the
+    same ids and a --max-verify cut cannot depend on filename order.
     """
-    agentic = [(i, f) for i, f in enumerate(findings)
-              if not is_tool_sourced(f) and not f.get("reinforced")]
-    agentic.sort(key=lambda t: (triage_priority(t[1]), t[0]))
+    ordered = sorted(findings, key=lambda f: (triage_priority(f), sev_rank(f),
+                                              finding_fingerprint(f),
+                                              str(f.get("id") or "")))
     cut = 0
-    if max_verify is not None and max_verify >= 0 and len(agentic) > max_verify:
-        cut = len(agentic) - max_verify
-        agentic = agentic[:max_verify]
+    if max_verify is not None and max_verify >= 0 and len(ordered) > max_verify:
+        cut = len(ordered) - max_verify
+        ordered = ordered[:max_verify]
     entries = []
-    for qi, (_, f) in enumerate(agentic):
-        fid = re.sub(r"[^A-Za-z0-9_-]", "_", str(f.get("id", "UNKNOWN")))
-        entries.append({"queue_id": "%03d-%s" % (qi, fid),
-                        "priority": triage_priority(f),
+    seen = {}
+    for f in ordered:
+        fp = finding_fingerprint(f)
+        n = seen.get(fp, 0)
+        seen[fp] = n + 1
+        qid = fp if n == 0 else "%s-%d" % (fp, n)
+        if n:
+            # Two findings with one identity usually means dedupe should have
+            # merged them; keep them distinct and say so rather than collide.
+            print("evidence: fingerprint collision %s (finding %r) -> %s"
+                  % (fp, f.get("id"), qid), file=sys.stderr)
+        entries.append({"queue_id": qid, "priority": triage_priority(f),
                         "finding": f})
     return entries, cut
 

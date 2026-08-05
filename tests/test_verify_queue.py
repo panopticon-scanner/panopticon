@@ -33,12 +33,15 @@ class TestTriagePriority(unittest.TestCase):
 
 
 class TestBuildVerifyQueue(unittest.TestCase):
-    def test_tools_excluded_agentic_included(self):
+    def test_tool_and_agentic_findings_both_queued(self):
+        # P2 (#446): tool-sourced findings are claims like any other now --
+        # they queue for advisor verification instead of being excluded.
         fs = [_finding("T-001", "HIGH", source="tool:semgrep"),
               _finding("AG-001", "LOW")]
         entries, cut = evidence.build_verify_queue(fs)
         self.assertEqual(cut, 0)
-        self.assertEqual([e["finding"]["id"] for e in entries], ["AG-001"])
+        self.assertEqual({e["finding"]["id"] for e in entries},
+                         {"T-001", "AG-001"})
 
     def test_self_asserted_confirmed_still_queued(self):
         f = _finding("AG-002", "HIGH",
@@ -54,8 +57,13 @@ class TestBuildVerifyQueue(unittest.TestCase):
         entries, _ = evidence.build_verify_queue(fs)
         self.assertEqual([e["finding"]["id"] for e in entries],
                          ["AG-011", "AG-012", "AG-010"])
-        self.assertEqual(entries[0]["queue_id"], "000-AG-011")
-        self.assertEqual(entries[1]["queue_id"], "001-AG-012")
+        # queue_id is the finding's content fingerprint (#443), not a
+        # position-based "NNN-id" -- all three share one fingerprint here
+        # (same panel/category/file/title), so a stable -<n> collision
+        # suffix distinguishes them (asserted by TestQueueIdentity below).
+        base = evidence.finding_fingerprint(fs[1])
+        self.assertEqual(entries[0]["queue_id"], base)
+        self.assertEqual(entries[1]["queue_id"], base + "-1")
 
     def test_entries_reference_original_dicts(self):
         f = _finding("AG-020", "HIGH")
@@ -76,31 +84,33 @@ class TestBuildVerifyQueue(unittest.TestCase):
         self.assertEqual([e["finding"]["id"] for e in entries],
                          ["AG-040", "AG-041"])
 
-    def test_queue_id_sanitized_for_filenames(self):
-        # Finding ids are external LLM output; real agents have emitted
-        # nonconforming ids (observed: 6-letter prefixes). The id component
-        # of queue_id feeds a filename downstream (advisor prompt / verdict
-        # paths), so it must be sanitized rather than strictly validated.
+    def test_queue_id_never_embeds_the_raw_finding_id(self):
+        # Historically the id component of queue_id embedded the raw finding
+        # id verbatim (sanitized) and fed a filename downstream. Now queue_id
+        # is a content fingerprint (#443) that never reads finding["id"] at
+        # all, so a hostile/nonconforming id (external LLM output; real
+        # agents have emitted path-shaped ids) can't leak into a filename via
+        # queue_id in the first place.
         f = _finding("../../evil", "HIGH")
         entries, cut = evidence.build_verify_queue([f])
         self.assertEqual(cut, 0)
         queue_id = entries[0]["queue_id"]
-        self.assertTrue(queue_id.startswith("000-"))
-        id_component = queue_id[len("000-"):]
-        self.assertNotIn("/", id_component)
-        self.assertNotIn(".", id_component)
-        self.assertEqual(id_component, "______evil")
+        self.assertEqual(queue_id, evidence.finding_fingerprint(f))
+        self.assertNotIn("/", queue_id)
+        self.assertNotIn(".", queue_id)
 
-    def test_reinforced_agentic_finding_excluded(self):
-        # A reinforced (tool+agent same-locus merge) finding already derives
-        # tool_confirmed -> it's tool-reported by construction and never needs
-        # advisor verification, so it must not enter the queue even though its
-        # own `source` isn't `tool:*`.
+    def test_reinforced_finding_is_queued(self):
+        # P2 (#446): reinforced (tool+agent same-locus merge) findings are
+        # claims like any other now -- they queue for advisor verification
+        # too. A CONFIRMED verdict is what promotes them to tool_confirmed
+        # (see evidence.derive_evidence); reinforcement alone no longer
+        # excludes them from the queue.
         fs = [_finding("AG-050", "HIGH", reinforced=True),
               _finding("AG-051", "HIGH")]
         entries, cut = evidence.build_verify_queue(fs)
         self.assertEqual(cut, 0)
-        self.assertEqual([e["finding"]["id"] for e in entries], ["AG-051"])
+        self.assertEqual({e["finding"]["id"] for e in entries},
+                         {"AG-050", "AG-051"})
 
 
 class TestWriteVerifyQueue(unittest.TestCase):
@@ -114,9 +124,62 @@ class TestWriteVerifyQueue(unittest.TestCase):
                 payload = json.load(fh)
         self.assertEqual(payload["version"], "4.2.0")
         self.assertEqual(payload["cut_by_max_verify"], 0)
-        self.assertEqual(payload["entries"][0]["queue_id"], "000-AG-050")
+        self.assertEqual(payload["entries"][0]["queue_id"],
+                         evidence.finding_fingerprint(f))
         self.assertNotIn("_group", payload["entries"][0]["finding"])
         self.assertNotIn("_repo_root", payload["entries"][0]["finding"])
+
+
+class TestQueueIdentity(unittest.TestCase):
+    def _f(self, fid, **over):
+        f = {"id": fid, "severity": "HIGH", "panel": "code",
+             "category": "logic", "title": "t-" + fid,
+             "location": {"file": fid + ".py", "line_start": 1}}
+        f.update(over)
+        return f
+
+    def test_queue_id_is_the_fingerprint(self):
+        f = self._f("A")
+        entries, _ = evidence.build_verify_queue([f])
+        self.assertEqual(entries[0]["queue_id"], evidence.finding_fingerprint(f))
+
+    def test_tool_findings_are_queued(self):
+        tool = self._f("T", source="tool:bandit",
+                       provenance={"confirmation_reasoning": "B105"})
+        entries, _ = evidence.build_verify_queue([tool])
+        self.assertEqual(len(entries), 1)
+
+    def test_reinforced_findings_are_queued(self):
+        entries, _ = evidence.build_verify_queue([self._f("R", reinforced=True)])
+        self.assertEqual(len(entries), 1)
+
+    def test_input_order_does_not_change_ids_or_survivors(self):
+        findings = [self._f("A"), self._f("B", severity="CRITICAL"),
+                    self._f("C", severity="LOW")]
+        ids1 = [e["queue_id"] for e in evidence.build_verify_queue(findings)[0]]
+        ids2 = [e["queue_id"] for e in
+                evidence.build_verify_queue(list(reversed(findings)))[0]]
+        self.assertEqual(ids1, ids2)
+        cut1 = [e["queue_id"] for e in
+                evidence.build_verify_queue(findings, max_verify=2)[0]]
+        cut2 = [e["queue_id"] for e in
+                evidence.build_verify_queue(list(reversed(findings)), max_verify=2)[0]]
+        self.assertEqual(cut1, cut2)          # #438: no filename-order luck
+
+    def test_fingerprint_collision_gets_stable_suffix(self):
+        # Same panel+category+file+title => same fingerprint, different ids.
+        a = self._f("X")
+        b = self._f("Y", title=a["title"],
+                    location=dict(a["location"]))
+        b["category"] = a["category"]
+        entries, _ = evidence.build_verify_queue([a, b])
+        ids = sorted(e["queue_id"] for e in entries)
+        self.assertEqual(len(set(ids)), 2)
+        base = evidence.finding_fingerprint(a)
+        self.assertEqual(ids, sorted([base, base + "-1"]))
+        again = sorted(e["queue_id"] for e in
+                       evidence.build_verify_queue([a, b])[0])
+        self.assertEqual(ids, again)          # stable across rebuilds
 
 
 if __name__ == "__main__":
