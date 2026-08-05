@@ -93,7 +93,7 @@ class TestLegacySarifAdapter(unittest.TestCase):
                     "--sarif", "--quiet", "/src"]
         self.assertEqual(legacy.TOOL_CMD["semgrep"], expected)
 
-    def test_semgrep_suppresses_both_call_home_paths(self):
+    def test_semgrep_argv_suppresses_both_call_home_paths(self):
         # They are separate calls: --metrics=off does not stop the version
         # check, and in a --network none container that check blocks until it
         # times out (measured 2m10s -> 35s on one trivial file).
