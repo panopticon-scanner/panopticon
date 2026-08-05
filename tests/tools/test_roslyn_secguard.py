@@ -56,6 +56,21 @@ ROSLYN_SAMPLE_STRING_MESSAGE = json.dumps({
     }]
 }).encode()
 
+MIXED_SARIF = json.dumps({
+    "runs": [{"results": [
+        {"ruleId": "SCS0002",
+         "message": {"text": "SQL injection"},
+         "locations": [{"physicalLocation": {
+             "artifactLocation": {"uri": "a.cs"},
+             "region": {"startLine": 3}}}]},
+        {"ruleId": "CS0246",
+         "message": {"text": "type not found: leaked /etc/passwd content"},
+         "locations": [{"physicalLocation": {
+             "artifactLocation": {"uri": "b.cs"},
+             "region": {"startLine": 1}}}]},
+    ]}]
+}).encode()
+
 
 class TestRoslynSecGuardAdapter(unittest.TestCase):
     def test_parse_produces_finding(self):
@@ -137,3 +152,10 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
         self.assertEqual(cmd[1], "build")
         self.assertTrue(cmd[2].startswith(copied_dst[0]))
         self.assertTrue(any(arg.startswith("-p:ErrorLog=") for arg in cmd))
+
+
+class TestScsOnlyFilter(unittest.TestCase):
+    def test_non_scs_results_are_dropped(self):
+        found = rs.RoslynSecGuardAdapter().parse(MIXED_SARIF, "g")
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["tool_evidence"]["rule_id"], "SCS0002")

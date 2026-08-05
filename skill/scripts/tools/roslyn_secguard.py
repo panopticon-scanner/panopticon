@@ -113,6 +113,12 @@ class RoslynSecGuardAdapter:
         for run in data.get("runs", []):
             for result in run.get("results", []):
                 rule_id = result.get("ruleId", "")
+                # Only SecurityCodeScan rules are findings. Compiler/restore
+                # diagnostics (CS####, NU####, MSB####) are dropped: they are
+                # noise from offline builds and can quote file content into
+                # the report (the #86 exfiltration channel).
+                if not rule_id.startswith("SCS"):
+                    continue
                 loc = result.get("locations", [{}])[0]
                 location = self._location(loc)
                 cwe = _ROSLYN_CWE.get(rule_id)
