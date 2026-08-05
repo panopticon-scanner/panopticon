@@ -34,7 +34,10 @@ if [[ "$DRY_RUN" == "0" ]]; then
     exit 1
   fi
 
-  if ! can_push="$(gh api \"repos/$slug\" --jq '.permissions.push' 2>&1)"; then
+  # No backslashes: inside $(...) already in double quotes, \" would pass a
+  # literal quote character to gh, making the path "repos/owner/name" — which
+  # 404s for every account, including one with admin.
+  if ! can_push="$(gh api "repos/$slug" --jq '.permissions.push' 2>&1)"; then
     echo "apply-labels: cannot check push permissions for $slug: $can_push" >&2
     exit 1
   fi
