@@ -28,9 +28,12 @@ severity:
     description: "Impact if true: informational"
 
 evidence:
+  - name: "evidence:tool-reported"
+    color: "79b8ff"
+    description: "A tool reported it (or tool+agent reinforced); no advisor checked it. Not gate-eligible"
   - name: "evidence:tool-confirmed"
     color: "1d76db"
-    description: "Reported by a static-analysis tool (or tool+agent reinforced)"
+    description: "A tool reported it AND an advisor independently confirmed it"
   - name: "evidence:advisor-confirmed"
     color: "0052cc"
     description: "An independent advisor verified the claim against the code"
