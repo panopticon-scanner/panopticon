@@ -606,11 +606,13 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
     pre_verdict_fps = {id(f): finding_fingerprint(f) for f in findings}
     verdicts = verdicts or {}
     matched = {}
+    matched_n = 0
     unanswered = 0
     for entry in queue:
         v = evidence_mod.match_verdict(entry, verdicts)
         if v is not None:
             evidence_mod.apply_verdict(entry["finding"], v)
+            matched_n += 1
         elif verdicts_supplied:
             unanswered += 1
         matched[id(entry["finding"])] = v
@@ -621,6 +623,21 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
     if unknown:
         print("synthesize: verdict file(s) for unknown queue_id(s): %s"
               % ", ".join(sorted(unknown)), file=sys.stderr)
+    # A run whose verdicts all failed to match now produces gate PASS / grade A
+    # / risk LOW -- the safest-looking output there is -- because only verified
+    # findings gate. Stderr is not what CI consumes, so the drop counts belong
+    # in the artifact: supplied - matched - unknown is the number of verdicts
+    # that named a queued finding but failed match_verdict's finding_id echo.
+    verdict_stats = {
+        "supplied": len(verdicts),
+        "matched": matched_n,
+        "unknown": len(unknown),
+        # Measured only when --verdicts-dir was passed at all. Emitting 0 for a
+        # run with no verify phase would read as "nothing went unanswered",
+        # which is the opposite of the truth; null means "not measured", the
+        # same convention as tool_axis.rejection_rate.
+        "unanswered": unanswered if verdicts_supplied else None,
+    }
     # Re-validate citations after advisor merges (idempotent; preserves epss).
     citations.enrich_citations(findings, catalog, epss_enabled=False)
     for f in findings:
@@ -696,6 +713,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                 (set(tools_ran) if tools_ran is not None else tool_names)
                 & EXECUTES_TARGET_BUILD),
             "tool_axis": tool_axis,
+            "verdicts": verdict_stats,
             **({"tool_policy_mode": tool_policy_mode} if tool_policy_mode else {}),
         },
         "summary": {

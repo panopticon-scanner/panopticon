@@ -1985,3 +1985,71 @@ class TestToolAxisMeta(unittest.TestCase):
                              "t", None, "2026-08-05T00:00:00Z")
         self.assertEqual(r["meta"]["build_executing_tools"],
                          ["roslyn-secguard"])
+
+
+class TestVerdictAccountingMeta(unittest.TestCase):
+    """#443's own failure surface, made visible in the artifact.
+
+    A run whose verdicts all fail to match used to still gate on tool findings,
+    so the breakage was loud. Under strict gating (P2) that same run yields gate
+    PASS, grade A, risk LOW -- the safest-looking output there is -- and CI reads
+    the JSON, not stderr. meta.verdicts is the detection.
+    """
+
+    def _f(self, fid, title, fname):
+        return {"id": fid, "title": title, "severity": "HIGH",
+                "confidence": "POSSIBLE", "panel": "code", "category": "logic",
+                "description": "d",
+                "location": {"file": fname, "line_start": 1}}
+
+    def _queue(self, findings):
+        prepared, _ = syn.prepare_for_queue(findings)
+        return syn.evidence_mod.build_verify_queue(prepared)[0]
+
+    def test_counts_matched_unknown_and_unanswered(self):
+        a = self._f("A-1", "first claim", "a.py")
+        b = self._f("A-2", "second claim", "b.py")
+        queue = self._queue([a, b])
+        self.assertEqual(len(queue), 2)
+        answered = queue[0]
+        verdicts = {
+            answered["queue_id"]: {"verdict": "CONFIRMED", "reasoning": "r",
+                                   "finding_id": answered["finding"]["id"]},
+            # A stale verdict from a previous run: well-formed, but its id is
+            # in no queue this run.
+            "deadbeefdeadbeef": {"verdict": "CONFIRMED", "reasoning": "stale",
+                                 "finding_id": "GONE-1"},
+        }
+        r = syn.build_report([a, b], [], "t", None, "2026-08-05T00:00:00Z",
+                             verdicts=verdicts, verdicts_supplied=True)
+        self.assertEqual(r["meta"]["verdicts"],
+                         {"supplied": 2, "matched": 1, "unknown": 1,
+                          "unanswered": 1})
+
+    def test_echo_mismatch_is_dropped_and_counted_as_unanswered(self):
+        # match_verdict refuses a verdict that echoes a different finding_id.
+        # It is neither matched nor unknown, so supplied - matched - unknown
+        # is exactly the echo-rejected count.
+        a = self._f("A-1", "first claim", "a.py")
+        queue = self._queue([a])
+        verdicts = {queue[0]["queue_id"]: {"verdict": "CONFIRMED",
+                                           "reasoning": "r",
+                                           "finding_id": "SOMEONE-ELSE"}}
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            r = syn.build_report([a], [], "t", None, "2026-08-05T00:00:00Z",
+                                 verdicts=verdicts, verdicts_supplied=True)
+        self.assertEqual(r["meta"]["verdicts"],
+                         {"supplied": 1, "matched": 0, "unknown": 0,
+                          "unanswered": 1})
+        self.assertEqual(r["summary"]["gate"], "OFF")  # ...and it looks clean
+
+    def test_unanswered_is_null_when_no_verdicts_were_supplied(self):
+        # 0 would read as "nothing went unanswered" for a run that never ran a
+        # verify phase; null says "not measured" (as tool_axis.rejection_rate
+        # already does).
+        r = syn.build_report([self._f("A-1", "first claim", "a.py")], [], "t",
+                             None, "2026-08-05T00:00:00Z")
+        self.assertEqual(r["meta"]["verdicts"],
+                         {"supplied": 0, "matched": 0, "unknown": 0,
+                          "unanswered": None})
