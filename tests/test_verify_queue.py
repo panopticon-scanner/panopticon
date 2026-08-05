@@ -181,6 +181,52 @@ class TestQueueIdentity(unittest.TestCase):
                        evidence.build_verify_queue([a, b])[0])
         self.assertEqual(ids, again)          # stable across rebuilds
 
+    def test_collision_suffix_assignment_is_order_independent_by_line(self):
+        # Reachable, not theoretical: finding_fingerprint deliberately
+        # excludes line numbers, so two findings sharing panel/category/
+        # file/title collide by design; if they ALSO share an id (here: both
+        # set to "X"), the sort key up to `str(id)` ties completely too.
+        # Without a further content tiebreak, `sorted`'s stability means
+        # INPUT ORDER alone would decide which finding gets the bare
+        # fingerprint vs. `-1` -- so a shuffled input hands each finding the
+        # OTHER's advisor verdict. The two findings still differ by line, so
+        # a correct fix resolves this deterministically without touching
+        # input order at all.
+        a = self._f("X")
+        b = self._f("Y", title=a["title"], location=dict(a["location"]))
+        b["category"] = a["category"]
+        b["id"] = a["id"]                    # tie the id too
+        b["location"]["line_start"] = 99      # ...but a real line apart
+        fp = evidence.finding_fingerprint(a)
+        expected = {fp: 1, fp + "-1": 99}
+
+        def _mapping(order):
+            return {e["queue_id"]: e["finding"]["location"]["line_start"]
+                    for e in evidence.build_verify_queue(order)[0]}
+
+        self.assertEqual(_mapping([a, b]), expected)
+        self.assertEqual(_mapping([b, a]), expected)
+
+    def test_collision_suffix_assignment_is_order_independent_no_id(self):
+        # Same reachable scenario, but via the OTHER way two findings share
+        # the id component of the sort key: normalize_finding never assigns
+        # a missing id, so two id-less findings tie there too.
+        a = self._f("X")
+        del a["id"]
+        b = self._f("Y", title=a["title"], location=dict(a["location"]))
+        b["category"] = a["category"]
+        del b["id"]
+        b["location"]["line_start"] = 99
+        fp = evidence.finding_fingerprint(a)
+        expected = {fp: 1, fp + "-1": 99}
+
+        def _mapping(order):
+            return {e["queue_id"]: e["finding"]["location"]["line_start"]
+                    for e in evidence.build_verify_queue(order)[0]}
+
+        self.assertEqual(_mapping([a, b]), expected)
+        self.assertEqual(_mapping([b, a]), expected)
+
 
 if __name__ == "__main__":
     unittest.main()

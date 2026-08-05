@@ -432,7 +432,9 @@ class TestQueueIdContractWithEvidence(unittest.TestCase):
         a = self._finding("X")
         b = self._finding("Y", title=a["title"], location=dict(a["location"]))
         entries, cut = evidence.build_verify_queue([a, b])
-        self.assertTrue(any("-" in e["queue_id"] for e in entries))  # collision fired
+        fp = evidence.finding_fingerprint(a)
+        self.assertEqual(sorted(e["queue_id"] for e in entries),
+                         sorted([fp, fp + "-1"]))                    # collision fired
         with tempfile.TemporaryDirectory() as tmp:
             qpath = os.path.join(tmp, "verify-queue.json")
             evidence.write_verify_queue(entries, cut, qpath)

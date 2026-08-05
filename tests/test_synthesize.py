@@ -1063,7 +1063,14 @@ class TestHtmlOut(unittest.TestCase):
 
 class TestInternalFieldCleanup(unittest.TestCase):
     def test_build_report_does_not_leak_internal_fields(self):
-        f = {
+        # Two findings, not one: f1's REJECTED verdict moves it OUT of
+        # report["findings"] and into report["discarded_claims"], so a
+        # single-finding fixture leaves exactly one of the two leak-check
+        # loops below vacuous no matter which list the finding lands in.
+        # f2 carries no verdict and stays in report["findings"], so both
+        # lists are guaranteed non-empty and both loops actually run over
+        # real data.
+        f1 = {
             "id": "SEC-001", "title": "SQLi", "severity": "HIGH", "confidence": "LIKELY",
             "panel": "security", "category": "injection",
             "provenance": {"discovered_by": "agent:lens_sweep"},
@@ -1071,11 +1078,21 @@ class TestInternalFieldCleanup(unittest.TestCase):
             "_group": "backend",
             "_repo_root": "/some/path",
         }
-        verdicts = {syn.finding_fingerprint(f):
+        f2 = {
+            "id": "SEC-002", "title": "XSS", "severity": "MEDIUM", "confidence": "LIKELY",
+            "panel": "security", "category": "xss",
+            "provenance": {"discovered_by": "agent:lens_sweep"},
+            "location": {"file": "app.py", "line_start": 55},
+            "_group": "backend",
+            "_repo_root": "/some/path",
+        }
+        verdicts = {syn.finding_fingerprint(f1):
                     {"finding_id": "SEC-001", "verdict": "REJECTED",
                      "reasoning": "False positive."}}
         report = syn.build_report(
-            [f], [], "src", None, "2026-07-23T00:00:00Z", verdicts=verdicts)
+            [f1, f2], [], "src", None, "2026-07-23T00:00:00Z", verdicts=verdicts)
+        self.assertEqual(len(report["findings"]), 1)
+        self.assertEqual(len(report.get("discarded_claims", [])), 1)
         for finding in report["findings"]:
             self.assertNotIn("_group", finding)
             self.assertNotIn("_repo_root", finding)
@@ -1247,6 +1264,16 @@ class TestEvidenceReport(unittest.TestCase):
         self.assertIn("999-UNKNOWN", err.getvalue())
 
 
+# Expected evidence.status once a verdict genuinely reaches apply_verdict,
+# for an _agentic() (non-tool, non-reinforced) finding. Used by
+# TestSeverityImmutability to prove its verdicts actually applied -- without
+# this, a future queue_id-key regression (like the one fixed by #443) would
+# make "severity/confidence unchanged" trivially true again, because nothing
+# would have been applied at all.
+_VERDICT_STATUS = {"REJECTED": "rejected", "NEEDS_MORE_INFO": "needs_more_info",
+                   "CONFIRMED": "advisor_confirmed"}
+
+
 class TestSeverityImmutability(unittest.TestCase):
     def test_no_path_mutates_severity(self):
         cases = []
@@ -1267,6 +1294,11 @@ class TestSeverityImmutability(unittest.TestCase):
             everywhere = report["findings"] + report["discarded_claims"]
             self.assertEqual(everywhere[0]["severity"], original,
                              "severity mutated for verdict=%r" % verdict)
+            if verdict:
+                self.assertEqual(
+                    everywhere[0]["evidence"]["status"],
+                    _VERDICT_STATUS[verdict["verdict"]],
+                    "verdict %r did not actually reach apply_verdict" % verdict)
 
     def test_no_path_mutates_confidence(self):
         # Amended spec: confidence, like severity, is never mutated by the
@@ -1290,6 +1322,11 @@ class TestSeverityImmutability(unittest.TestCase):
             everywhere = report["findings"] + report["discarded_claims"]
             self.assertEqual(everywhere[0]["confidence"], original,
                              "confidence mutated for verdict=%r" % verdict)
+            if verdict:
+                self.assertEqual(
+                    everywhere[0]["evidence"]["status"],
+                    _VERDICT_STATUS[verdict["verdict"]],
+                    "verdict %r did not actually reach apply_verdict" % verdict)
 
 
 class TestTwoPassCli(unittest.TestCase):

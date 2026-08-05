@@ -142,6 +142,34 @@ def triage_priority(finding):
         return 3 + len(SEV_ORDER)
 
 
+def _queue_tiebreak(f):
+    """Last-resort content discriminator for build_verify_queue's sort key.
+
+    finding_fingerprint deliberately excludes line numbers, so two findings
+    at different lines in the same file can share one fingerprint; if they
+    also share (or both lack) an `id` -- normalize_finding never assigns a
+    missing one -- the sort key up to this point ties completely. `sorted`
+    is stable, so a total tie falls back to INPUT ORDER: exactly the
+    invariant this module exists to remove, and it would decide which
+    finding gets the bare fingerprint vs. the `-1` suffix, so a shuffled
+    input could hand each finding the other's advisor verdict.
+
+    Deliberately limited to fields BOTH synthesize passes see identically on
+    the same finding object: location/severity/source/id survive unchanged
+    from the --emit-verify-queue pass to the report-build pass. `_group` is
+    NOT safe -- synthesize.build_report strips it (`f.pop("_group", None)`)
+    before the second pass would ever see it -- and hashing the whole
+    finding dict is NOT safe either, since later pipeline stages add keys
+    (`evidence`, `fingerprint`) the emit pass never sees. Either would
+    reintroduce pass divergence in a subtler form than the bug this fixes.
+    A residual tie after this means the two findings are identical in every
+    field that could distinguish them: genuinely fungible claims.
+    """
+    loc = f.get("location") or {}
+    return (str(loc.get("file") or ""), str(loc.get("line_start") or ""),
+           str(f.get("severity") or ""), str(f.get("source") or ""))
+
+
 def build_verify_queue(findings, max_verify=None):
     """Return (entries, cut) for ALL findings, priority-sorted.
 
@@ -151,12 +179,14 @@ def build_verify_queue(findings, max_verify=None):
     P2 (#446): tool-sourced and reinforced findings queue too — they are claims
     like any other, and `tool_confirmed` now requires an advisor verdict.
     P2 (#443/#438): the sort key and queue_id are pure functions of finding
-    CONTENT — no input index anywhere — so both passes of a run compute the
+    CONTENT — no input index anywhere, including in the collision-suffix
+    assignment (see `_queue_tiebreak`) — so both passes of a run compute the
     same ids and a --max-verify cut cannot depend on filename order.
     """
     ordered = sorted(findings, key=lambda f: (triage_priority(f), sev_rank(f),
                                               finding_fingerprint(f),
-                                              str(f.get("id") or "")))
+                                              str(f.get("id") or ""),
+                                              _queue_tiebreak(f)))
     cut = 0
     if max_verify is not None and max_verify >= 0 and len(ordered) > max_verify:
         cut = len(ordered) - max_verify
