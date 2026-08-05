@@ -342,7 +342,10 @@ def render_advisor_prompts(queue_path, out_dir):
         # optional -<n> collision suffix from evidence.build_verify_queue.
         # No separators, no dots, no traversal -- strictly tighter than the
         # old positional NNN-ID pattern it replaces.
-        if not re.match(r"^[0-9a-f]{16}(-[0-9]+)?$", queue_id):
+        # \A...\Z, not ^...$: in Python `$` also matches just BEFORE a trailing
+        # newline, so "<16 hex>\n" would clear the guard and then be
+        # interpolated straight into a filename below.
+        if not re.match(r"\A[0-9a-f]{16}(-[0-9]+)?\Z", queue_id):
             raise ValueError("verify queue %s: unsafe queue_id %r"
                              % (queue_path, queue_id))
         claim = json.dumps(finding, indent=2, ensure_ascii=False)

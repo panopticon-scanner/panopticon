@@ -397,6 +397,20 @@ class TestQueueIdResiduals(unittest.TestCase):
             with self.assertRaises(ValueError):
                 dispatch.render_advisor_prompts(qpath, os.path.join(tmp, "o"))
 
+    def test_trailing_newline_queue_id_rejected(self):
+        # Python's `$` matches before a trailing newline as well as at end of
+        # string, so an otherwise-valid id with a "\n" glued on cleared a
+        # `^...$` guard and reached the "%s.md" filename interpolation. \A/\Z
+        # is the anchor pair that means what this check intends.
+        for qid in ("a1b2c3d4e5f60001\n", "a1b2c3d4e5f60001-10\n"):
+            with tempfile.TemporaryDirectory() as tmp:
+                qpath = self._queue(tmp, [{"queue_id": qid, "priority": 1,
+                                           "finding": {"id": "AB-001",
+                                                       "title": "t"}}])
+                with self.assertRaises(ValueError) as ctx:
+                    dispatch.render_advisor_prompts(qpath, os.path.join(tmp, "o"))
+                self.assertIn("unsafe queue_id", str(ctx.exception))
+
 
 class TestQueueIdContractWithEvidence(unittest.TestCase):
     """Wires the two ends of the queue_id contract together. #443 broke this

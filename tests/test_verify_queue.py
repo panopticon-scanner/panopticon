@@ -40,8 +40,12 @@ class TestBuildVerifyQueue(unittest.TestCase):
               _finding("AG-001", "LOW")]
         entries, cut = evidence.build_verify_queue(fs)
         self.assertEqual(cut, 0)
-        self.assertEqual({e["finding"]["id"] for e in entries},
-                         {"T-001", "AG-001"})
+        # List, not set: order is fully determined by triage_priority
+        # (HIGH=1 before LOW=6), and deterministic ordering is this module's
+        # entire thesis -- a set comparison would pass on a queue that had
+        # gone back to depending on input order.
+        self.assertEqual([e["finding"]["id"] for e in entries],
+                         ["T-001", "AG-001"])
 
     def test_self_asserted_confirmed_still_queued(self):
         f = _finding("AG-002", "HIGH",
@@ -109,8 +113,11 @@ class TestBuildVerifyQueue(unittest.TestCase):
               _finding("AG-051", "HIGH")]
         entries, cut = evidence.build_verify_queue(fs)
         self.assertEqual(cut, 0)
-        self.assertEqual({e["finding"]["id"] for e in entries},
-                         {"AG-050", "AG-051"})
+        # List, not set: reinforced HIGH is triage_priority 0, plain HIGH is 1,
+        # so the order is determined -- and it is the order --max-verify cuts
+        # against.
+        self.assertEqual([e["finding"]["id"] for e in entries],
+                         ["AG-050", "AG-051"])
 
 
 class TestWriteVerifyQueue(unittest.TestCase):

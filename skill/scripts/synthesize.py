@@ -995,7 +995,12 @@ def main(argv=None):
         for tf in ingest_tools.ingest_dir(args.tools_dir, None,
                                           exclude_globs=args.tools_exclude):
             findings.append(normalize_finding(tf))
-    tools_ran = set()
+    # None, not an empty set, when no --tools-dir was given: build_report
+    # documents tools_ran=None as "not supplied -> infer from findings". An
+    # empty set instead ASSERTS "no build-executing tool ran" from an absence
+    # of evidence, which is exactly the inversion #450 was about. Behaviorally
+    # identical today; the point is which claim the code is making.
+    tools_ran = set() if args.tools_dir else None
     if args.tools_dir and os.path.isdir(args.tools_dir):
         for name in os.listdir(args.tools_dir):
             base, ext = os.path.splitext(name)
