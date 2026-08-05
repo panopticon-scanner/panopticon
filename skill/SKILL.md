@@ -78,11 +78,31 @@ One plan, one prompt per reviewer; each host dispatches with its own mechanism:
   `entry.prompt` as the task. If false, dispatch general-purpose with
   `entry.prompt` and the model named by `entry.model.model` (omit when null).
   Register once with `python3 scripts/dispatch.py --emit-host-agents claude`.
-- **Kimi Code** — AgentSwarm raw-prompt dispatch (`prompt_template`/`items`);
-  select an appropriate profile via `subagent_type`; model overrides are
-  experimental-flag-gated. When `entry.enforced` is true, dispatch via the
-  registered `panopticon-*` profile (`subagent_type`) instead of raw-prompt —
-  raw-prompt dispatch does not honor the shell.
+- **Kimi Code** — AgentSwarm raw-prompt dispatch (`prompt_template`/`items`)
+  or per-entry `Agent` dispatch. Model selection is driven by the registered
+  agent file's `model_preference` (`primary` for `scout`/`lens_sweep`,
+  `secondary` for `panel_review`/`advisor`); per-dispatch `model` overrides
+  require `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` or the master
+  experimental flag.
+
+  1. Register the enforcement shells once (fresh session required after):
+     ```bash
+     python3 skill/scripts/dispatch.py --emit-host-agents kimi
+     # or explicit:
+     python3 skill/scripts/dispatch.py --emit-host-agents kimi --out ~/.kimi-code/agents
+     ```
+  2. Build the dispatch plan with `--host kimi`.
+  3. Fan out: for each plan entry, dispatch via the `Agent` tool with
+     `subagent_type: entry.agent` and `prompt: entry.prompt`. To batch,
+     generate a Kimi swarm manifest:
+     ```bash
+     python3 skill/scripts/dispatch.py --emit-kimi-swarm .panopticon/dispatch-plan.json --out .panopticon/kimi-swarm.json
+     ```
+     Then invoke each batch in the manifest. When `entry.enforced` is true,
+     dispatch via the registered `panopticon-*` profile so tool restrictions
+     are host-enforced; raw-prompt dispatch does not honor the shell.
+  4. Verification phase: render advisors with `--render-advisor` and dispatch
+     them the same way as panels/lenses.
 - **Other hosts** — run the entries sequentially in-session with the same
   prompts; expect no parallelism.
 
