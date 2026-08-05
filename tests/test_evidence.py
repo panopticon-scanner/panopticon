@@ -90,5 +90,38 @@ class TestDeriveEvidence(unittest.TestCase):
         self.assertEqual(evidence.derive_evidence(f)["citation_quality"], "none")
 
 
+class TestFingerprintMoved(unittest.TestCase):
+    def _f(self, **over):
+        f = {"id": "SEC-1", "panel": "security", "category": "injection",
+             "title": "SQL injection", "location": {"file": "a.py",
+                                                    "line_start": 3}}
+        f.update(over)
+        return f
+
+    def test_fingerprint_is_stable_hex(self):
+        fp = evidence.finding_fingerprint(self._f())
+        self.assertEqual(len(fp), 16)
+        self.assertTrue(all(c in "0123456789abcdef" for c in fp))
+
+    def test_fingerprint_ignores_line_number(self):
+        a = evidence.finding_fingerprint(self._f())
+        b = evidence.finding_fingerprint(
+            self._f(location={"file": "a.py", "line_start": 99}))
+        self.assertEqual(a, b)
+
+    def test_tool_rule_id_reads_both_adapter_families(self):
+        self.assertEqual(
+            evidence.tool_rule_id({"tool_evidence": {"rule_id": "B105"}}), "B105")
+        self.assertEqual(
+            evidence.tool_rule_id({"provenance": {"confirmation_reasoning": "SCS0005"}}),
+            "SCS0005")
+        self.assertIsNone(evidence.tool_rule_id({}))
+
+    def test_synthesize_aliases_still_resolve(self):
+        import scripts.synthesize as syn
+        self.assertIs(syn.finding_fingerprint, evidence.finding_fingerprint)
+        self.assertIs(syn.tool_rule_id, evidence.tool_rule_id)
+
+
 if __name__ == "__main__":
     unittest.main()

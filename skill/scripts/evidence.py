@@ -6,6 +6,7 @@ Two-axis model: severity means "impact if true" and is never mutated here;
 evidence.status records how hard the claim has been verified.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -21,6 +22,48 @@ VERDICT_VALUES = {"CONFIRMED", "REJECTED", "NEEDS_MORE_INFO"}
 def is_tool_sourced(finding):
     """Tool-emitted findings carry source='tool:<name>'; everything else is agentic."""
     return str(finding.get("source", "")).startswith("tool:")
+
+
+def tool_rule_id(finding):
+    """The scanner rule a tool finding came from, wherever its adapter put it.
+
+    Two adapter families disagree: the dependency scanners (pip_audit,
+    bundler_audit, dependency_check, eslint_security) set
+    `tool_evidence.rule_id`, while everything on the SARIF path (bandit,
+    semgrep, trivy, ...) sets no tool_evidence at all and carries the rule id
+    in `provenance.confirmation_reasoning` via attach_tool_provenance. Reading
+    only the first form made every SARIF finding look rule-less, which silently
+    disabled both aggregation and rule-based fingerprint identity for them.
+    """
+    rule = (finding.get("tool_evidence") or {}).get("rule_id")
+    if rule:
+        return rule
+    return (finding.get("provenance") or {}).get("confirmation_reasoning") or None
+
+
+def finding_fingerprint(finding):
+    """Stable cross-run identity for a finding.
+
+    Keys on panel + category + normalized file + the discriminator that is
+    actually stable for that source: a tool's rule_id, or an agent finding's
+    title. Deliberately EXCLUDES line numbers (issues survive code moves) and
+    free-text description (agent prose is re-worded every run). Also the
+    verify-queue's queue_id (P2) — the same identity both passes compute.
+    """
+    loc = finding.get("location") or {}
+    fpath = str(loc.get("file") or "").replace("\\", "/")
+    # Strip only a `./` prefix. `lstrip("./")` would eat the leading dot of
+    # every dotfile path, collapsing `.github/x` onto `github/x`.
+    while fpath.startswith("./"):
+        fpath = fpath[2:]
+    # Gate on tool-sourcing: on an AGENT finding, confirmation_reasoning holds
+    # advisor prose, which would be a disastrous identity discriminator.
+    rule = tool_rule_id(finding) if is_tool_sourced(finding) else None
+    discriminator = str(rule) if rule else str(finding.get("title") or "")
+    payload = "|".join([str(finding.get("panel") or ""),
+                        str(finding.get("category") or ""),
+                        fpath, discriminator]).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()[:16]
 
 
 def sev_rank(finding):
