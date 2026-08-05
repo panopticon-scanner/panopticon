@@ -181,6 +181,54 @@ class TestDispatchPlan(unittest.TestCase):
         self.assertIn("WARNING", err.getvalue())
         self.assertIn("--host", err.getvalue())
 
+    def test_emit_kimi_swarm_groups_entries_by_subagent_type(self):
+        plan = [
+            {
+                "role": "panel_review",
+                "agent": "panopticon-panel-review",
+                "enforced": True,
+                "model": {"model": "secondary"},
+                "prompt": "panel prompt 1",
+                "out_file": ".panopticon/findings-g-security-panel_review.json",
+            },
+            {
+                "role": "panel_review",
+                "agent": "panopticon-panel-review",
+                "enforced": True,
+                "model": {"model": "secondary"},
+                "prompt": "panel prompt 2",
+                "out_file": ".panopticon/findings-g-code-panel_review.json",
+            },
+            {
+                "role": "lens_sweep",
+                "agent": "lens-sweep",
+                "enforced": False,
+                "model": {"model": "primary"},
+                "prompt": "lens prompt",
+                "out_file": ".panopticon/findings-g-security-lens_sweep-injection.json",
+            },
+        ]
+        swarm = dispatch.emit_kimi_swarm(plan)
+        batches = swarm["batches"]
+        self.assertEqual(len(batches), 2)
+
+        swarm_batches = [b for b in batches if b.get("tool") == "AgentSwarm"]
+        agent_batches = [b for b in batches if b.get("tool") == "Agent"]
+        self.assertEqual(len(swarm_batches), 1)
+        self.assertEqual(len(agent_batches), 1)
+
+        panel_batch = swarm_batches[0]
+        self.assertEqual(panel_batch["subagent_type"], "panopticon-panel-review")
+        self.assertEqual(panel_batch["model"], "secondary")
+        self.assertEqual(panel_batch["prompt_template"], "{{item}}")
+        self.assertEqual(len(panel_batch["items"]), 2)
+        self.assertEqual(panel_batch["items"][0], "panel prompt 1")
+
+        lens_batch = agent_batches[0]
+        self.assertEqual(lens_batch["subagent_type"], "explore")
+        self.assertEqual(lens_batch["model"], "primary")
+        self.assertEqual(lens_batch["prompt"], "lens prompt")
+
 
 class TestDetectHost(unittest.TestCase):
     def _detect(self, env):

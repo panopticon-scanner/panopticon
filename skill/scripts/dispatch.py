@@ -362,6 +362,74 @@ def render_advisor_prompts(queue_path, out_dir):
     return written
 
 
+_KIMI_UNENFORCED_PROFILE = {
+    "panel_review": "coder",
+    "lens_sweep": "explore",
+    "scout": "explore",
+    "advisor": "plan",
+}
+
+
+def _kimi_subagent_type(entry):
+    """Map a plan entry to a Kimi subagent_type.
+
+    Registered/enforced entries use the panopticon-* shell. Unenforced entries
+    fall back to a built-in Kimi profile so the dispatch is always valid.
+    """
+    if entry.get("enforced"):
+        return entry.get("agent")
+    return _KIMI_UNENFORCED_PROFILE.get(entry.get("role"), "coder")
+
+
+def _swarm_description(entry):
+    parts = [entry.get("role", "review")]
+    panel = entry.get("panel")
+    lens = entry.get("lens")
+    group = entry.get("group", "unknown")
+    if panel:
+        parts.append(panel)
+    if lens:
+        parts.append(lens)
+    parts.append("for group %s" % group)
+    return " ".join(parts)
+
+
+def emit_kimi_swarm(plan):
+    """Convert a DispatchPlan into Kimi Agent/AgentSwarm batches.
+
+    Entries with the same (subagent_type, model) are batched via AgentSwarm;
+    singletons become Agent calls. Each entry's fully rendered prompt is
+    passed as the task string, using AgentSwarm's {{item}} placeholder.
+    """
+    grouped = {}
+    for entry in plan:
+        agent = _kimi_subagent_type(entry)
+        model = (entry.get("model") or {}).get("model")
+        grouped.setdefault((agent, model), []).append(entry)
+
+    batches = []
+    for (agent, model), entries in grouped.items():
+        if len(entries) == 1:
+            entry = entries[0]
+            batches.append({
+                "tool": "Agent",
+                "subagent_type": agent,
+                "model": model,
+                "description": _swarm_description(entry),
+                "prompt": entry.get("prompt", ""),
+            })
+        else:
+            batches.append({
+                "tool": "AgentSwarm",
+                "subagent_type": agent,
+                "model": model,
+                "description": _swarm_description(entries[0]) + " (batch)",
+                "prompt_template": "{{item}}",
+                "items": [e.get("prompt", "") for e in entries],
+            })
+    return {"batches": batches}
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="panopticon dispatch planner")
     ap.add_argument("profile", nargs="?", default=None, help="Path to ScopeProfile JSON")
@@ -370,6 +438,8 @@ def main(argv=None):
     ap.add_argument("--out", default=None, help="Write DispatchPlan JSON to this file")
     ap.add_argument("--render-advisor", metavar="QUEUE", default=None,
                     help="Render advisor prompts from a verify-queue JSON into --out DIR")
+    ap.add_argument("--emit-kimi-swarm", metavar="PLAN", default=None,
+                    help="Read a DispatchPlan JSON and emit a Kimi Agent/AgentSwarm manifest to --out")
     ap.add_argument("--emit-host-agents", metavar="HOST", choices=["claude", "kimi"], default=None)
     ap.add_argument("--agents-dir", default=None,
                     help="Directory containing registered agent .md files")
@@ -400,6 +470,22 @@ def main(argv=None):
             print("dispatch: %s" % e, file=sys.stderr)
             return 1
         print("rendered %d advisor prompt(s) -> %s" % (len(written), args.out))
+        return 0
+    if args.emit_kimi_swarm:
+        if not args.out:
+            print("dispatch: --emit-kimi-swarm requires --out", file=sys.stderr)
+            return 2
+        try:
+            with open(args.emit_kimi_swarm, encoding="utf-8") as fh:
+                plan = json.load(fh)
+        except (OSError, ValueError) as e:
+            print("dispatch: cannot read plan %s: %s" % (args.emit_kimi_swarm, e), file=sys.stderr)
+            return 1
+        swarm = emit_kimi_swarm(plan)
+        with open(args.out, "w", encoding="utf-8") as fh:
+            json.dump(swarm, fh, indent=2)
+            fh.write("\n")
+        print("wrote Kimi swarm manifest (%d batch(es)) -> %s" % (len(swarm["batches"]), args.out))
         return 0
     if not args.profile:
         ap.error("profile is required unless --render-advisor is given")
