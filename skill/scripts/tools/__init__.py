@@ -29,3 +29,11 @@ ADAPTERS = {
     "cargo-audit": CargoAuditAdapter(),
     "roslyn-secguard": RoslynSecGuardAdapter(),
 }
+
+# Adapters that execute target build logic (contained: no network, no
+# secrets, read-only mounts). Recorded in report meta by synthesize.
+EXECUTES_TARGET_BUILD = frozenset({"roslyn-secguard"})
+
+# Adapters with no offline mode (live advisory-API clients); dispatched only
+# under run_tools --online. Offline substitute: osv-scanner's baked DBs.
+ONLINE_ONLY = frozenset({"pip-audit", "npm-audit"})
