@@ -473,6 +473,18 @@ def prepare_findings(findings):
     return findings, integration
 
 
+def prepare_for_queue(findings):
+    """Aggregate, then prepare — the ONE pipeline both passes must share.
+
+    #443: pass 1 (--emit-verify-queue) used to call prepare_findings alone
+    while build_report aggregated first, so the two passes fed
+    build_verify_queue different lists and every queue position after the
+    first tool merge shifted. Both passes call this now; identity is
+    content-addressed on top of it (evidence.build_verify_queue).
+    """
+    return prepare_findings(aggregate_tool_findings(findings))
+
+
 def evidence_stats(findings):
     """Count findings by evidence status."""
     stats = {s: 0 for s in evidence_mod.EVIDENCE_STATUSES}
@@ -574,8 +586,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
     was passed at all (distinct from whether it yielded any verdicts) so the
     aggregate "no verdict" note still fires for an existing-but-empty dir.
     """
-    findings = aggregate_tool_findings(findings)
-    findings, integration_findings = prepare_findings(findings)
+    findings, integration_findings = prepare_for_queue(findings)
     catalog = load_cwe_catalog()
     queue, _cut = evidence_mod.build_verify_queue(findings, max_verify)
     verdicts = verdicts or {}
@@ -911,7 +922,7 @@ def main(argv=None):
 
     if args.emit_verify_queue:
         import copy
-        prepared, _ = prepare_findings(copy.deepcopy(findings))
+        prepared, _ = prepare_for_queue(copy.deepcopy(findings))
         queue, cut = evidence_mod.build_verify_queue(prepared, args.max_verify)
         qpath = os.path.join(".panopticon", "verify-queue.json")
         if queue:

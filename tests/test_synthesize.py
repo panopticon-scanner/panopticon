@@ -1425,6 +1425,69 @@ class TestTwoPassCli(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertIn("no verdict", err.getvalue())
 
+    def test_pass1_cli_and_pass2_build_report_agree_on_fingerprints(self):
+        # #443: pass 1 (--emit-verify-queue) fed build_verify_queue a bare
+        # prepare_findings() list while pass 2 (build_report) aggregated
+        # first -- so a tool rule firing twice in one file produced two ids
+        # in the queue file but one finding (one fingerprint) in the final
+        # report, and an advisor verdict keyed on one of those two ids landed
+        # nowhere pass 2 recognized. TestBothPassesAgree (test_verify_queue.py)
+        # proves prepare_for_queue is deterministic across two calls on the
+        # same input, which would NOT catch a caller left on the old
+        # prepare_findings-only path -- so this drives the two REAL CLI passes
+        # (main() with and without --emit-verify-queue) over one fixture,
+        # ingesting a real SARIF tool file through --tools-dir (load_findings
+        # strips a self-asserted 'source' from agent-authored JSON, so a
+        # bare findings-*.json fixture can't stand in for a genuine tool
+        # hit -- only the ingest_tools path sets it), and compares the
+        # resulting id sets directly.
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            agent = os.path.join(d, "findings-g1-code.json")
+            with open(agent, "w") as fh:
+                json.dump({"findings": [
+                    {"id": "A-1", "title": "tangled branch", "severity": "MEDIUM",
+                     "confidence": "POSSIBLE", "panel": "code", "category": "logic",
+                     "location": {"file": "svc.py", "line_start": 7}}]}, fh)
+            td = os.path.join(d, "tools")
+            os.makedirs(td)
+            with open(os.path.join(td, "bandit.sarif"), "w") as fh:
+                json.dump({"runs": [{"tool": {"driver": {"name": "bandit", "rules": [
+                    {"id": "B105"}]}},
+                    "results": [
+                        {"ruleId": "B105", "level": "error",
+                         "message": {"text": "hardcoded password"},
+                         "locations": [{"physicalLocation": {
+                             "artifactLocation": {"uri": "app.py"},
+                             "region": {"startLine": 10}}}]},
+                        {"ruleId": "B105", "level": "error",
+                         "message": {"text": "hardcoded password"},
+                         "locations": [{"physicalLocation": {
+                             "artifactLocation": {"uri": "app.py"},
+                             "region": {"startLine": 20}}}]},
+                    ]}]}, fh)
+
+            queue_out = os.path.join(d, "unused-report.json")
+            rc1 = syn.main(["--emit-verify-queue", "--tools-dir", td,
+                            "--out", queue_out, agent])
+            self.assertEqual(rc1, 0)
+            with open(os.path.join(d, ".panopticon", "verify-queue.json")) as fh:
+                queue = json.load(fh)
+            # queue_id, not a recomputed fingerprint: recomputing from
+            # entry["finding"] would strip the -1 collision suffix and make
+            # an unaggregated duplicate pair indistinguishable from one
+            # aggregated survivor, hiding exactly the bug this guards.
+            pass1_qids = {e["queue_id"] for e in queue["entries"]}
+
+            report_out = os.path.join(d, "report.json")
+            syn.main(["--tools-dir", td, "--out", report_out, agent])
+            with open(report_out) as fh:
+                report = json.load(fh)
+            pass2_fps = {f["fingerprint"] for f in
+                        report["findings"] + report["discarded_claims"]}
+
+            self.assertTrue(pass1_qids)
+            self.assertEqual(pass1_qids, pass2_fps)
+
 
 class TestDedupeRuleIdDiscrimination(unittest.TestCase):
     """Calibration 2026-08-03: distinct advisories at the same manifest locus
