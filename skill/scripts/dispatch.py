@@ -185,13 +185,15 @@ def render_prompt(role_file, mapping):
 def _detect_host():
     """Best-effort host detection from environment.
 
-    Fallback only — the orchestrating agent should pass --host explicitly
-    (it knows what it is; these env vars are not all documented contracts).
+    Fallback only — the orchestrating agent should pass --host explicitly.
     """
+    warning = "WARNING: host detected from environment; pass --host explicitly for stable behavior"
     if os.environ.get("KIMI_CODE_VERSION") or os.environ.get("KIMI_SESSION_ID"):
+        print(warning, file=sys.stderr)
         return "kimi"
     if os.environ.get("CLAUDECODE") or any(
             k.startswith("CLAUDE_CODE_") for k in os.environ):
+        print(warning, file=sys.stderr)
         return "claude"
     return "generic"
 

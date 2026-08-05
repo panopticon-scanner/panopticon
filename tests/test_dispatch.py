@@ -173,6 +173,14 @@ class TestDispatchPlan(unittest.TestCase):
         finally:
             os.unlink(profile_path)
 
+    def test_detect_host_warns_when_inferred_from_env(self):
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            with mock.patch.dict(os.environ, {"KIMI_CODE_VERSION": "1.0"}, clear=False):
+                host = dispatch._detect_host()
+        self.assertEqual(host, "kimi")
+        self.assertIn("WARNING", err.getvalue())
+        self.assertIn("--host", err.getvalue())
+
 
 class TestDetectHost(unittest.TestCase):
     def _detect(self, env):
