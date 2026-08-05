@@ -1871,3 +1871,71 @@ class TestToolsDirSilentSkipGuard(unittest.TestCase):
                 syn.main(["--target", ".", "--tools-dir", tools,
                           "--out", os.path.join(d, "r.json"), fp])
         self.assertNotIn("appears un-ingested", err.getvalue())
+
+
+class TestToolAxisMeta(unittest.TestCase):
+    def _tool(self, fid="T-1", **over):
+        f = {"id": fid, "source": "tool:bandit", "severity": "HIGH",
+             "panel": "security", "category": "secrets",
+             "title": "hardcoded password", "confidence": "LIKELY",
+             "description": "d", "location": {"file": "a.py", "line_start": 1},
+             "provenance": {"confirmation_reasoning": "B105"}}
+        f.update(over)
+        return f
+
+    def test_tool_axis_counts_unverified_as_unanswered(self):
+        r = syn.build_report([self._tool()], [], "t", None,
+                             "2026-08-05T00:00:00Z")
+        axis = r["meta"]["tool_axis"]
+        self.assertEqual(axis["queued"], 1)
+        self.assertEqual(axis["unanswered"], 1)
+        self.assertEqual(axis["confirmed"], 0)
+        self.assertIsNone(axis["rejection_rate"])
+
+    def test_tool_axis_rejection_rate_when_verdicts_exist(self):
+        a, b = self._tool("T-1"), self._tool("T-2",
+                                             location={"file": "b.py",
+                                                       "line_start": 2})
+        prepared, _ = syn.prepare_for_queue([a, b])
+        queue, _c = syn.evidence_mod.build_verify_queue(prepared)
+        verdicts = {}
+        for i, e in enumerate(queue):
+            verdicts[e["queue_id"]] = {
+                "verdict": "REJECTED" if i == 0 else "CONFIRMED",
+                "finding_id": e["finding"]["id"], "reasoning": "r"}
+        r = syn.build_report([a, b], [], "t", None, "2026-08-05T00:00:00Z",
+                             verdicts=verdicts, verdicts_supplied=True)
+        axis = r["meta"]["tool_axis"]
+        self.assertEqual((axis["confirmed"], axis["rejected"]), (1, 1))
+        self.assertEqual(axis["rejection_rate"], 0.5)
+
+    def test_tool_axis_counts_needs_more_info_and_excludes_it_from_decided(self):
+        a, b = self._tool("T-1"), self._tool("T-2",
+                                             location={"file": "b.py",
+                                                       "line_start": 2})
+        prepared, _ = syn.prepare_for_queue([a, b])
+        queue, _c = syn.evidence_mod.build_verify_queue(prepared)
+        verdicts = {queue[0]["queue_id"]: {
+            "verdict": "NEEDS_MORE_INFO",
+            "finding_id": queue[0]["finding"]["id"], "reasoning": "r"}}
+        r = syn.build_report([a, b], [], "t", None, "2026-08-05T00:00:00Z",
+                             verdicts=verdicts, verdicts_supplied=True)
+        axis = r["meta"]["tool_axis"]
+        self.assertEqual(axis["needs_more_info"], 1)
+        self.assertEqual(axis["unanswered"], 1)
+        # needs_more_info is neither confirmed nor rejected, so it must not
+        # count toward "decided" -- otherwise the rejection rate would be
+        # diluted by claims that were never actually resolved either way.
+        self.assertIsNone(axis["rejection_rate"])
+
+    def test_build_executing_tools_reports_a_run_with_zero_findings(self):
+        r = syn.build_report([], [], "t", None, "2026-08-05T00:00:00Z",
+                             tools_ran={"roslyn-secguard", "bandit"})
+        self.assertEqual(r["meta"]["build_executing_tools"],
+                         ["roslyn-secguard"])
+
+    def test_build_executing_tools_falls_back_without_tools_ran(self):
+        r = syn.build_report([self._tool(source="tool:roslyn-secguard")], [],
+                             "t", None, "2026-08-05T00:00:00Z")
+        self.assertEqual(r["meta"]["build_executing_tools"],
+                         ["roslyn-secguard"])

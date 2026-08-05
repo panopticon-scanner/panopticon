@@ -576,7 +576,8 @@ def aggregate_tool_findings(findings):
 
 def build_report(findings, groups_meta, target, fail_on, timestamp, review_type="repo",
                  security_mode="standard", verdicts=None, gate_unverified=False,
-                 max_verify=None, verdicts_supplied=False, tool_policy_mode=None):
+                 max_verify=None, verdicts_supplied=False, tool_policy_mode=None,
+                 tools_ran=None):
     """Build a CodeReviewReport under the two-axis severity x evidence model.
 
     Severity is never mutated here. Verdicts (from evidence.load_verdicts) are
@@ -585,6 +586,8 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
     when gate_unverified is set). `verdicts_supplied` records whether --verdicts-dir
     was passed at all (distinct from whether it yielded any verdicts) so the
     aggregate "no verdict" note still fires for an existing-but-empty dir.
+    `tools_ran` is the set of adapter names that produced output this run;
+    when omitted, `build_executing_tools` falls back to inferring from findings.
     """
     findings, integration_findings = prepare_for_queue(findings)
     catalog = load_cwe_catalog()
@@ -612,6 +615,27 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
         f["evidence"] = evidence_mod.derive_evidence(f, matched.get(id(f)))
         f["fingerprint"] = finding_fingerprint(f)
         f.pop("citation_quality", None)
+
+    tool_like = [f for f in findings
+                 if evidence_mod.is_tool_sourced(f) or f.get("reinforced")]
+
+    def _tool_count(status):
+        return sum(1 for f in tool_like if f["evidence"]["status"] == status)
+
+    confirmed = _tool_count("tool_confirmed")
+    rejected_n = _tool_count("rejected")
+    decided = confirmed + rejected_n
+    tool_axis = {
+        "queued": len(tool_like),
+        "confirmed": confirmed,
+        "rejected": rejected_n,
+        "needs_more_info": _tool_count("needs_more_info"),
+        "unanswered": _tool_count("tool_reported"),
+        # Share of DECIDED tool claims an advisor refuted — the tool-side
+        # mirror of the 27% agentic rejection rate. None when nothing was
+        # decided, so an unverified run reports "unmeasured", not "0%".
+        "rejection_rate": round(rejected_n / decided, 3) if decided else None,
+    }
 
     rejected = [f for f in findings if f["evidence"]["status"] == "rejected"]
     active = [f for f in findings if f["evidence"]["status"] != "rejected"]
@@ -656,7 +680,10 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
             "version": "4.2.0",
             "security_mode": security_mode,
             "models_used": _collect_models_used(findings),
-            "build_executing_tools": sorted(tool_names & EXECUTES_TARGET_BUILD),
+            "build_executing_tools": sorted(
+                (set(tools_ran) if tools_ran is not None else tool_names)
+                & EXECUTES_TARGET_BUILD),
+            "tool_axis": tool_axis,
             **({"tool_policy_mode": tool_policy_mode} if tool_policy_mode else {}),
         },
         "summary": {
@@ -913,6 +940,12 @@ def main(argv=None):
         for tf in ingest_tools.ingest_dir(args.tools_dir, None,
                                           exclude_globs=args.tools_exclude):
             findings.append(normalize_finding(tf))
+    tools_ran = set()
+    if args.tools_dir and os.path.isdir(args.tools_dir):
+        for name in os.listdir(args.tools_dir):
+            base, ext = os.path.splitext(name)
+            if ext in (".json", ".sarif"):
+                tools_ran.add(base)
     catalog = citations.load_cwe_catalog()
     citations.enrich_citations(findings, catalog, epss_enabled=args.epss,
                                cache_path=os.path.join(".panopticon", "epss-cache.json"))
@@ -949,7 +982,8 @@ def main(argv=None):
                           gate_unverified=args.gate_unverified,
                           max_verify=args.max_verify,
                           verdicts_supplied=args.verdicts_dir is not None,
-                          tool_policy_mode=tool_policy_mode)
+                          tool_policy_mode=tool_policy_mode,
+                          tools_ran=tools_ran)
     errors, warnings = validate_report(report)
     attach_schema_status(report, errors)
     for w in warnings:

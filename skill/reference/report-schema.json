@@ -25,8 +25,19 @@
             }
           }
         },
-        "build_executing_tools": {"type": "array", "items": {"type": "string"}, "description": "Names of adapters from EXECUTES_TARGET_BUILD that contributed findings to this report."},
-        "tool_policy_mode": {"type": "string", "enum": ["enforced", "advisory", "mixed"], "description": "Posture of the fan-out reviewer entries (panel_review/lens_sweep) derived from dispatch plans; scout/advisor posture is not recorded."}
+        "build_executing_tools": {"type": "array", "items": {"type": "string"}, "description": "Names of adapters from EXECUTES_TARGET_BUILD that ran this run (produced an output file), whether or not they emitted findings."},
+        "tool_policy_mode": {"type": "string", "enum": ["enforced", "advisory", "mixed"], "description": "Posture of the fan-out reviewer entries (panel_review/lens_sweep) derived from dispatch plans; scout/advisor posture is not recorded."},
+        "tool_axis": {
+          "type": "object",
+          "properties": {
+            "queued": {"type": "integer"},
+            "confirmed": {"type": "integer"},
+            "rejected": {"type": "integer"},
+            "needs_more_info": {"type": "integer"},
+            "unanswered": {"type": "integer"},
+            "rejection_rate": {"type": ["number", "null"]}
+          }
+        }
       }
     },
     "summary": {
