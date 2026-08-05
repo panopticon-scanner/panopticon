@@ -592,6 +592,18 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
     findings, integration_findings = prepare_for_queue(findings)
     catalog = load_cwe_catalog()
     queue, _cut = evidence_mod.build_verify_queue(findings, max_verify)
+    # Identity must be read BEFORE any verdict is applied. For a SARIF-sourced
+    # tool finding the adapters park the rule id in
+    # provenance.confirmation_reasoning (tools/sarif_utils.tool_provenance sets
+    # no tool_evidence), evidence.tool_rule_id falls back to it, and
+    # finding_fingerprint uses it as the identity discriminator -- while
+    # evidence.apply_verdict overwrites that same field with the advisor's
+    # prose. Recomputing afterwards would export a hash of the reasoning text,
+    # so the "stable cross-run identity" would change whenever an advisor
+    # re-worded itself. Harmless for findings that are never verdicted
+    # (including those cut by --max-verify): nothing between here and the
+    # assignment site mutates an identity field on them.
+    pre_verdict_fps = {id(f): finding_fingerprint(f) for f in findings}
     verdicts = verdicts or {}
     matched = {}
     unanswered = 0
@@ -613,7 +625,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
     citations.enrich_citations(findings, catalog, epss_enabled=False)
     for f in findings:
         f["evidence"] = evidence_mod.derive_evidence(f, matched.get(id(f)))
-        f["fingerprint"] = finding_fingerprint(f)
+        f["fingerprint"] = pre_verdict_fps[id(f)]
         f.pop("citation_quality", None)
 
     tool_like = [f for f in findings

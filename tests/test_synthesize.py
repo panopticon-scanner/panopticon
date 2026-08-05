@@ -1478,14 +1478,50 @@ class TestTwoPassCli(unittest.TestCase):
             # aggregated survivor, hiding exactly the bug this guards.
             pass1_qids = {e["queue_id"] for e in queue["entries"]}
 
+            # Verdict the TOOL entry -- the normal pass-2 path now that every
+            # finding queues, and the one that used to rot the exported
+            # identity. apply_verdict overwrites provenance.
+            # confirmation_reasoning, which is exactly where the SARIF
+            # adapters park the rule id that finding_fingerprint reads back
+            # for a tool finding (evidence.tool_rule_id's fallback). Assigning
+            # f["fingerprint"] from a fingerprint recomputed AFTER the verdict
+            # loop therefore hashed the advisor's prose: a fresh "stable
+            # cross-run identity" every time an advisor re-worded itself.
+            tool_entries = [e for e in queue["entries"]
+                            if str(e["finding"].get("source", "")).startswith("tool:")]
+            self.assertEqual(len(tool_entries), 1)
+            tool_qid = tool_entries[0]["queue_id"]
+            vd = os.path.join(d, "verdicts")
+            os.makedirs(vd)
+            with open(os.path.join(vd, "%s.json" % tool_qid), "w") as fh:
+                json.dump({"finding_id": tool_entries[0]["finding"].get("id"),
+                           "verdict": "CONFIRMED",
+                           "reasoning": "Advisor prose, deliberately nothing "
+                                        "like the rule id B105."}, fh)
+
             report_out = os.path.join(d, "report.json")
-            syn.main(["--tools-dir", td, "--out", report_out, agent])
+            rc2 = syn.main(["--tools-dir", td, "--verdicts-dir", vd,
+                            "--out", report_out, agent])
+            self.assertEqual(rc2, 0)
             with open(report_out) as fh:
                 report = json.load(fh)
-            pass2_fps = {f["fingerprint"] for f in
-                        report["findings"] + report["discarded_claims"]}
+            emitted = report["findings"] + report["discarded_claims"]
+            tool_out = [f for f in emitted
+                        if str(f.get("source", "")).startswith("tool:")]
+            self.assertEqual(len(tool_out), 1)
+            self.assertEqual(tool_out[0]["evidence"]["status"], "tool_confirmed")
+            # Applying a verdict must not move the exported identity off the
+            # queue id the run already committed to (and that scripts/
+            # file_issues.py keys its resume ledger and issue bodies on).
+            self.assertEqual(tool_out[0]["fingerprint"], tool_qid)
 
+            pass2_fps = {f["fingerprint"] for f in emitted}
             self.assertTrue(pass1_qids)
+            # Exact only because nothing in this fixture collides. Adding a
+            # COLLIDING pair would break this for a reason unrelated to #443:
+            # the queue ids would be {fp, fp-1} while both findings export
+            # fingerprint fp (see the divergence comments in
+            # evidence.build_verify_queue and synthesize.build_report).
             self.assertEqual(pass1_qids, pass2_fps)
 
 
