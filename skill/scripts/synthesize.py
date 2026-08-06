@@ -617,7 +617,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
     """
     findings, integration_findings = prepare_for_queue(findings)
     catalog = load_cwe_catalog()
-    queue, _cut = evidence_mod.build_verify_queue(findings, max_verify)
+    queue, cut = evidence_mod.build_verify_queue(findings, max_verify)
     # Identity must be read BEFORE any verdict is applied. For a SARIF-sourced
     # tool finding the adapters park the rule id in
     # provenance.confirmation_reasoning (tools/sarif_utils.tool_provenance sets
@@ -655,6 +655,8 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
     # in the artifact: supplied - matched - unknown is the number of verdicts
     # that named a queued finding but failed match_verdict's finding_id echo.
     verdict_stats = {
+        "queued": len(queue),
+        "cut": cut,
         "supplied": len(verdicts),
         "matched": matched_n,
         "unknown": len(unknown),

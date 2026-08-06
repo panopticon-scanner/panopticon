@@ -2023,8 +2023,8 @@ class TestVerdictAccountingMeta(unittest.TestCase):
         r = syn.build_report([a, b], [], "t", None, "2026-08-05T00:00:00Z",
                              verdicts=verdicts, verdicts_supplied=True)
         self.assertEqual(r["meta"]["verdicts"],
-                         {"supplied": 2, "matched": 1, "unknown": 1,
-                          "unanswered": 1})
+                         {"queued": 2, "cut": 0, "supplied": 2, "matched": 1,
+                          "unknown": 1, "unanswered": 1})
 
     def test_echo_mismatch_is_dropped_and_counted_as_unanswered(self):
         # match_verdict refuses a verdict that echoes a different finding_id.
@@ -2040,8 +2040,8 @@ class TestVerdictAccountingMeta(unittest.TestCase):
             r = syn.build_report([a], [], "t", None, "2026-08-05T00:00:00Z",
                                  verdicts=verdicts, verdicts_supplied=True)
         self.assertEqual(r["meta"]["verdicts"],
-                         {"supplied": 1, "matched": 0, "unknown": 0,
-                          "unanswered": 1})
+                         {"queued": 1, "cut": 0, "supplied": 1, "matched": 0,
+                          "unknown": 0, "unanswered": 1})
         self.assertEqual(r["summary"]["gate"], "OFF")  # ...and it looks clean
 
     def test_unanswered_is_null_when_no_verdicts_were_supplied(self):
@@ -2051,8 +2051,31 @@ class TestVerdictAccountingMeta(unittest.TestCase):
         r = syn.build_report([self._f("A-1", "first claim", "a.py")], [], "t",
                              None, "2026-08-05T00:00:00Z")
         self.assertEqual(r["meta"]["verdicts"],
-                         {"supplied": 0, "matched": 0, "unknown": 0,
-                          "unanswered": None})
+                         {"queued": 1, "cut": 0, "supplied": 0, "matched": 0,
+                          "unknown": 0, "unanswered": None})
+
+
+class TestVerdictCutAccounting(unittest.TestCase):
+    def _f(self, fid, sev="MEDIUM"):
+        return {"id": fid, "severity": sev, "panel": "code",
+                "category": "logic", "title": "t-" + fid, "confidence": "POSSIBLE",
+                "description": "d", "location": {"file": fid + ".py", "line_start": 1}}
+
+    def test_uncapped_run_reports_cut_zero(self):
+        r = syn.build_report([self._f("A"), self._f("B")], [], "t", None,
+                             "2026-08-05T00:00:00Z")
+        v = r["meta"]["verdicts"]
+        self.assertEqual(v["cut"], 0)
+        self.assertEqual(v["queued"], 2)
+
+    def test_capped_run_reports_the_cut(self):
+        findings = [self._f("A", "CRITICAL"), self._f("B", "HIGH"),
+                    self._f("C", "LOW")]
+        r = syn.build_report(findings, [], "t", None, "2026-08-05T00:00:00Z",
+                             max_verify=1)
+        v = r["meta"]["verdicts"]
+        self.assertEqual(v["queued"], 1)
+        self.assertEqual(v["cut"], 2)
 
 
 class TestToolPolicyModeUnknown(unittest.TestCase):
