@@ -5,7 +5,8 @@ import os
 import shutil
 import sys
 import tempfile
-from .base import attach_tool_provenance, normalize_severity, new_finding_id, omit_none, run_tool
+from .base import attach_tool_provenance, new_finding_id, omit_none, run_tool
+from .sarif_utils import LEVEL_TO_SEV
 
 
 def _safe_copytree(src, dst):
@@ -159,10 +160,12 @@ class RoslynSecGuardAdapter:
                 location = self._location(loc)
                 cwe = _ROSLYN_CWE.get(rule_id)
                 message = self._message_text(result, rule_id)
+                level = str(result.get("level", "warning")).lower()
+                severity = LEVEL_TO_SEV.get(level, "INFO")
                 finding = {
                     "id": new_finding_id(self.prefix, n),
                     "title": message,
-                    "severity": normalize_severity("HIGH"),
+                    "severity": severity,
                     "confidence": "LIKELY",
                     "panel": "security",
                     "category": "csharp_security",

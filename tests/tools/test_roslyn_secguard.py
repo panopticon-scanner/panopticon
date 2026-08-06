@@ -56,6 +56,22 @@ ROSLYN_SAMPLE_STRING_MESSAGE = json.dumps({
     }]
 }).encode()
 
+ROSLYN_SAMPLE_LEVELS = json.dumps({
+    "runs": [{
+        "results": [
+            {"ruleId": "SCS0002", "level": "error", "message": {"text": "SQL injection"},
+             "locations": [{"physicalLocation": {
+                 "artifactLocation": {"uri": "a.cs"}, "region": {"startLine": 3}}}]},
+            {"ruleId": "SCS0026", "level": "warning", "message": {"text": "XSS"},
+             "locations": [{"physicalLocation": {
+                 "artifactLocation": {"uri": "b.cs"}, "region": {"startLine": 5}}}]},
+            {"ruleId": "SCS0018", "level": "note", "message": {"text": "Path traversal"},
+             "locations": [{"physicalLocation": {
+                 "artifactLocation": {"uri": "c.cs"}, "region": {"startLine": 7}}}]},
+        ]
+    }]
+}).encode()
+
 MIXED_SARIF = json.dumps({
     "runs": [{"results": [
         {"ruleId": "SCS0002",
@@ -87,6 +103,21 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
         self.assertEqual(findings[0]["location"]["file"], "/tmp/Apps/Controllers/HomeController.cs")
         self.assertEqual(findings[0]["location"]["line_start"], 42)
         self.assertIn("CWE-78", findings[0]["citations"]["cwe"])
+        self.assertEqual(findings[0]["severity"], "MEDIUM")  # ROSLYN_SAMPLE_V1 carries level="warning"
+
+    def test_parse_maps_sarif_level_to_severity(self):
+        findings = rs.RoslynSecGuardAdapter().parse(ROSLYN_SAMPLE_LEVELS, "g1")
+        self.assertEqual(len(findings), 3)
+        by_rule = {f["tool_evidence"]["rule_id"]: f["severity"] for f in findings}
+        self.assertEqual(by_rule["SCS0002"], "HIGH")
+        self.assertEqual(by_rule["SCS0026"], "MEDIUM")
+        self.assertEqual(by_rule["SCS0018"], "LOW")
+
+    def test_parse_defaults_missing_level_to_warning_severity(self):
+        # ROSLYN_SAMPLE has no "level" key at all; SARIF's own default for an
+        # unspecified level is "warning".
+        findings = rs.RoslynSecGuardAdapter().parse(ROSLYN_SAMPLE, "g1")
+        self.assertEqual(findings[0]["severity"], "MEDIUM")
 
     def test_parse_string_message(self):
         findings = rs.RoslynSecGuardAdapter().parse(ROSLYN_SAMPLE_STRING_MESSAGE, "g1")
