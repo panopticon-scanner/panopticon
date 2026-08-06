@@ -121,6 +121,8 @@ def run_adapters(adapters: dict, target: str, out_dir: str, runner=None) -> list
                 continue
             with open(out_path, "wb") as fh:
                 fh.write(stdout)
+            if not (stdout or b"").strip():
+                print("adapter %s produced no output" % name, file=sys.stderr)
             written.append(out_path)
         except Exception as e:
             print(f"adapter {name} failed: {e}; skipping", file=sys.stderr)
@@ -157,6 +159,8 @@ def run_tools(target, tools, out_dir, image="panopticon-tools", runner=None, onl
                     continue
                 with open(out_path, "wb") as fh:
                     fh.write(res.stdout or b"")
+                if not (res.stdout or b"").strip():
+                    print("tool %s produced no output" % tool, file=sys.stderr)
                 written.append(out_path)
             except subprocess.TimeoutExpired:
                 print("tool %s timed out after %ss; skipping" % (tool, TOOL_TIMEOUT), file=sys.stderr)
@@ -189,6 +193,8 @@ def run_tools(target, tools, out_dir, image="panopticon-tools", runner=None, onl
                     continue
                 with open(out_path, "wb") as fh:
                     fh.write(res.stdout or b"")
+                if not (res.stdout or b"").strip():
+                    print("adapter %s produced no output" % tool, file=sys.stderr)
                 written.append(out_path)
             except subprocess.TimeoutExpired:
                 print("adapter %s timed out after %ss; skipping" % (tool, TOOL_TIMEOUT), file=sys.stderr)

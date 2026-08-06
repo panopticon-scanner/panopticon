@@ -122,6 +122,19 @@ class TestAdapterDispatch(unittest.TestCase):
             with open(os.path.join(out_dir, "fake.json"), "rb") as fh:
                 self.assertEqual(fh.read(), R.stdout)
 
+    def test_empty_adapter_output_warns_on_stderr(self):
+        # An adapter that returns rc 0 with empty stdout still writes a file (so
+        # synthesis can classify it) but must announce it produced nothing.
+        import contextlib, io
+        class _EmptyAdapter:
+            def invoke(self, target):
+                return b"", 0
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "out")
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                rt.run_adapters({"bandit": _EmptyAdapter()}, d, out)
+            self.assertIn("produced no output", err.getvalue())
+
     def test_run_tools_uses_readonly_src_mount_for_phase2_build_adapters(self):
         calls = []
         class R: returncode = 0; stdout = b'{"runs":[]}'; stderr = b''
