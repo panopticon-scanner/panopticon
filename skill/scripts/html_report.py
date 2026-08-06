@@ -519,19 +519,6 @@ def _render_dashboard(report):
         for sev in _SEV_ORDER
     )
 
-    rows = []
-    for g in report.get("groups", []):
-        grades = g.get("panel_grades", {})
-        cells = " ".join(
-            f"<td>{_escape(grades.get(p, '-'))}</td>" for p in _PANEL_ORDER
-        )
-        rows.append(f"<tr><th>{_escape(g.get('name', ''))}</th>{cells}</tr>")
-    header = " ".join(f"<th>{p}</th>" for p in _PANEL_ORDER)
-    grades_table = (
-        f"<table class='grades'><thead><tr><th>Group</th>{header}</tr></thead>"
-        f"<tbody>{''.join(rows)}</tbody></table>"
-    )
-
     top = summary.get("top_issues", [])[:3]
     top_list = "\n".join(f"<li>{_escape(t)}</li>" for t in top) or "<li>None</li>"
 
@@ -552,7 +539,6 @@ def _render_dashboard(report):
 <div class="stats">{stat_cards}</div>
 {charts}
 {_render_heatmap(report)}
-{grades_table}
 <h3>Top issues</h3>
 <ul class="top-issues">{top_list}</ul>
 </section>
