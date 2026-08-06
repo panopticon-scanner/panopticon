@@ -77,7 +77,7 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None):
             print("ingest skip %s: %s" % (path, e), file=sys.stderr)
             dispositions[tool] = {"status": "failed", "findings": 0,
                                   "reason": "unparseable: %s"
-                                  % str(e).splitlines()[0]}
+                                  % (str(e).splitlines() or [""])[0]}
             continue
         if not raw.strip():
             print("ingest skip %s: empty output file" % path, file=sys.stderr)
@@ -100,7 +100,7 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None):
             print("ingest error %s: %s" % (path, e), file=sys.stderr)
             dispositions[tool] = {"status": "failed", "findings": 0,
                                   "reason": "unparseable: %s"
-                                  % str(e).splitlines()[0]}
+                                  % (str(e).splitlines() or [""])[0]}
             continue
         raw_count = len(parsed)
         if exclude_globs:

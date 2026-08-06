@@ -275,6 +275,31 @@ class TestIngestDispositions(unittest.TestCase):
         self.assertEqual(disp["notatool"]["status"], "failed")
         self.assertIn("no registered adapter", disp["notatool"]["reason"])
 
+    def test_empty_message_exception_does_not_crash_disposition_reason(self):
+        # An adapter that raises with an EMPTY str(e) (e.g. a bare
+        # ValueError("")) must still be tolerated: "".splitlines() == [],
+        # so a naive str(e).splitlines()[0] raises IndexError from inside
+        # the except handler itself, turning a supposed-to-be-tolerant skip
+        # into a hard crash. Registers a real (if fake) adapter into
+        # scripts.tools.ADAPTERS rather than mocking ingest_dir_detailed
+        # itself, so the real except-handler code under test still runs.
+        from unittest.mock import patch
+        import scripts.tools as tools_mod
+
+        class _EmptyMessageAdapter:
+            def parse(self, raw, group):
+                raise ValueError("")
+
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, "emptymsgtool.sarif", b'{"x": 1}')
+            with patch.dict(tools_mod.ADAPTERS,
+                             {"emptymsgtool": _EmptyMessageAdapter()}):
+                findings, disp = it.ingest_dir_detailed(d, "g1")  # must not raise
+
+        self.assertEqual(findings, [])
+        self.assertEqual(disp["emptymsgtool"]["status"], "failed")
+        self.assertTrue(disp["emptymsgtool"]["reason"].startswith("unparseable:"))
+
     def test_ingest_dir_wrapper_returns_only_findings(self):
         with tempfile.TemporaryDirectory() as d:
             out = it.ingest_dir(d, "g1")
