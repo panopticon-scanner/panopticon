@@ -26,3 +26,7 @@ __pycache__/
 groups.json
 CodeReviewReport_*.json
 
+
+# Internal process docs live in the private panopticon-docs repo; docs/superpowers
+# is a local symlink into it. See panopticon-scanner/panopticon-docs.
+docs/superpowers/
