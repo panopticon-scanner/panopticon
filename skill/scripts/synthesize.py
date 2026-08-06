@@ -521,11 +521,14 @@ def _issue_sort(f):
 def derive_tool_policy_mode(panopticon_dir=".panopticon"):
     """Derive the run's tool-policy posture from dispatch plan files.
 
-    enforced: every entry across every plan file is enforced; advisory: none
-    are (or no plan files exist — nothing was enforced); mixed: some are.
-    Tolerant: unreadable/malformed plan files are ignored.
+    unknown: no usable plan file was found — posture undetermined (distinct
+    from advisory, which is a plan we DID read that enforced nothing).
+    enforced: every entry across every plan is enforced; mixed: some are;
+    advisory: a plan exists but none are. Tolerant: unreadable/malformed plan
+    files are ignored.
     """
     flags = []
+    plans_seen = 0
     for path in sorted(glob.glob(os.path.join(panopticon_dir, "dispatch-plan*.json"))):
         try:
             with open(path, encoding="utf-8") as fh:
@@ -533,7 +536,10 @@ def derive_tool_policy_mode(panopticon_dir=".panopticon"):
         except (OSError, ValueError):
             continue
         if isinstance(plan, list):
+            plans_seen += 1
             flags.extend(bool(e.get("enforced")) for e in plan if isinstance(e, dict))
+    if plans_seen == 0:
+        return "unknown"
     if flags and all(flags):
         return "enforced"
     if any(flags):

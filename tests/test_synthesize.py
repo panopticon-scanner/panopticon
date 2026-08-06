@@ -1621,9 +1621,9 @@ class TestToolPolicyMode(unittest.TestCase):
                 syn.derive_tool_policy_mode(os.path.join(d, ".panopticon")),
                 "mixed")
 
-    def test_no_plan_files_is_advisory(self):
+    def test_no_plan_files_is_unknown(self):
         with tempfile.TemporaryDirectory() as d:
-            self.assertEqual(syn.derive_tool_policy_mode(d), "advisory")
+            self.assertEqual(syn.derive_tool_policy_mode(d), "unknown")
 
     def test_report_meta_carries_mode_and_new_version(self):
         f = _agentic()
@@ -2053,3 +2053,29 @@ class TestVerdictAccountingMeta(unittest.TestCase):
         self.assertEqual(r["meta"]["verdicts"],
                          {"supplied": 0, "matched": 0, "unknown": 0,
                           "unanswered": None})
+
+
+class TestToolPolicyModeUnknown(unittest.TestCase):
+    def _plan(self, d, entries):
+        import json as _json
+        with open(os.path.join(d, "dispatch-plan.json"), "w") as fh:
+            _json.dump(entries, fh)
+
+    def test_no_plan_is_unknown(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(syn.derive_tool_policy_mode(d), "unknown")
+
+    def test_plan_with_no_enforced_entries_is_advisory(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._plan(d, [{"role": "panel_review", "enforced": False}])
+            self.assertEqual(syn.derive_tool_policy_mode(d), "advisory")
+
+    def test_all_enforced_is_enforced(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._plan(d, [{"enforced": True}, {"enforced": True}])
+            self.assertEqual(syn.derive_tool_policy_mode(d), "enforced")
+
+    def test_some_enforced_is_mixed(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._plan(d, [{"enforced": True}, {"enforced": False}])
+            self.assertEqual(syn.derive_tool_policy_mode(d), "mixed")
