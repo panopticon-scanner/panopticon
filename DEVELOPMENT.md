@@ -61,6 +61,20 @@ summary + JSON artifact) with standards citations and CI gating.
   that want every non-rejected finding — verified or not — to gate,
   restoring the old all-claims-gate behavior. Severity itself is never
   mutated by any of this.
+- **`meta.coverage` is the single home for what a run actually observed**:
+  `adapters` (per-file disposition — `ok`/`empty`/`failed`, a findings count,
+  and a `reason` when failed), `tools_ran`, `build_executing_tools`,
+  `tool_policy_mode`, `tool_axis`, and `verdicts` all live under it. An
+  adapter classified `failed` (0-byte output, unparseable, or no registered
+  adapter) is excluded from `tools_ran`/`build_executing_tools` — it is no
+  longer counted as having run. `verdicts.cut` records how many findings
+  `--max-verify` dropped from the verify queue. `tool_policy_mode` reads
+  `unknown` when no dispatch plan was found (distinct from `advisory`, a
+  plan that enforced nothing). The terminal HTML report's header renders a
+  coverage line (verified/unverified/tool-reported/cut counts plus gate
+  policy) next to the grade badge, so a PASS can't hide low verification.
+  `summary.gate_policy` (`confirmed_only`/`include_unverified`) is unchanged
+  by this consolidation and stays under `summary`, not `coverage`.
 - **Citations are hybrid**: tools emit CWE/OWASP/CVE natively (authoritative); agents assert;
   `synthesize` validates/enriches. Never emit a guessed citation (no CVE → no EPSS; unlisted
   CWE → kept but `verified:false`; missing SSVC inputs → omitted).

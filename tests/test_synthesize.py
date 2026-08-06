@@ -2142,3 +2142,29 @@ class TestMetaCoverage(unittest.TestCase):
         self.assertIn("coverage", r["meta"])
         self.assertEqual(r["meta"]["coverage"]["tool_policy_mode"], "unknown")
         self.assertEqual(r["meta"]["coverage"]["adapters"], {})
+
+
+class TestCoverageEndToEnd(unittest.TestCase):
+    def test_full_coverage_block_is_honest(self):
+        tool = {"id": "T-1", "source": "tool:bandit", "severity": "HIGH",
+                "panel": "security", "category": "secrets", "title": "x",
+                "confidence": "LIKELY", "description": "d",
+                "location": {"file": "a.py", "line_start": 1},
+                "provenance": {"confirmation_reasoning": "B105"}}
+        agent = {"id": "A-1", "severity": "LOW", "panel": "code",
+                 "category": "logic", "title": "t", "confidence": "POSSIBLE",
+                 "description": "d", "location": {"file": "b.py", "line_start": 2}}
+        disp = {"bandit": {"status": "ok", "findings": 1},
+                "semgrep": {"status": "failed", "findings": 0,
+                            "reason": "empty output file"}}
+        r = syn.build_report([tool, agent], [], "t", "high",
+                             "2026-08-05T00:00:00Z", max_verify=1,
+                             tools_ran={"bandit"}, tool_policy_mode="enforced",
+                             tool_dispositions=disp)
+        cov = r["meta"]["coverage"]
+        # semgrep failed -> not in tools_ran / build_executing_tools
+        self.assertNotIn("semgrep", cov["tools_ran"])
+        self.assertEqual(cov["adapters"]["semgrep"]["status"], "failed")
+        # the cut is disclosed
+        self.assertEqual(cov["verdicts"]["cut"], 1)
+        self.assertEqual(cov["tool_policy_mode"], "enforced")

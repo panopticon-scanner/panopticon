@@ -126,7 +126,7 @@ One plan, one prompt per reviewer; each host dispatches with its own mechanism:
   prompts; expect no parallelism.
 
 Tool policy is host-ENFORCED for entries with `enforced: true` (registered
-shells) and prompt-advisory otherwise. The report's `meta.tool_policy_mode`
+shells) and prompt-advisory otherwise. The report's `meta.coverage.tool_policy_mode`
 records which posture a run actually had. When any entry is unenforced, tell
 the user in one line before fan-out. `tool_policy_mode` is derived from the
 fan-out plan entries (panel_review/lens_sweep); scout and advisor shell
@@ -182,4 +182,4 @@ Reviewers are read-only: no repo/GitHub writes, no claiming unperformed actions,
 
 Hostile-content review (redteam mode, deliberately vulnerable corpora, repos that may
 contain planted injection payloads) should run with enforcement registered via
-`--emit-host-agents` so `meta.tool_policy_mode` reads `enforced`.
+`--emit-host-agents` so `meta.coverage.tool_policy_mode` reads `enforced`.
