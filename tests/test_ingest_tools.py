@@ -227,3 +227,55 @@ class TestExcludeGlobs(unittest.TestCase):
                 json.dump(self._sarif("skill/scripts/dispatch.py"), fh)
             out = it.ingest_dir(d, "g1", exclude_globs=["tests/fixtures/*"])
         self.assertEqual(len(out), 1)
+
+
+class TestIngestDispositions(unittest.TestCase):
+    def _write(self, d, name, content):
+        p = os.path.join(d, name)
+        with open(p, "wb") as fh:
+            fh.write(content if isinstance(content, bytes)
+                     else content.encode("utf-8"))
+        return p
+
+    def test_ok_empty_and_failed_are_distinguished(self):
+        import json as _json
+        with tempfile.TemporaryDirectory() as d:
+            # bandit SARIF with one result -> ok
+            sarif = {"runs": [{"tool": {"driver": {"name": "bandit",
+                     "rules": [{"id": "B105"}]}},
+                     "results": [{"ruleId": "B105", "level": "error",
+                     "message": {"text": "x"}, "locations": [{"physicalLocation":
+                     {"artifactLocation": {"uri": "a.py"},
+                      "region": {"startLine": 1}}}]}]}]}
+            self._write(d, "bandit.sarif", _json.dumps(sarif))
+            # valid SARIF, zero results -> empty
+            self._write(d, "gitleaks.sarif", _json.dumps(
+                {"runs": [{"tool": {"driver": {"name": "gitleaks"}},
+                           "results": []}]}))
+            # 0-byte file -> failed
+            self._write(d, "semgrep.sarif", b"")
+            # unparseable -> failed
+            self._write(d, "trivy.sarif", b"{not json")
+
+            findings, disp = it.ingest_dir_detailed(d, "g1")
+
+        self.assertEqual(disp["bandit"]["status"], "ok")
+        self.assertGreaterEqual(disp["bandit"]["findings"], 1)
+        self.assertEqual(disp["gitleaks"]["status"], "empty")
+        self.assertEqual(disp["gitleaks"]["findings"], 0)
+        self.assertEqual(disp["semgrep"]["status"], "failed")
+        self.assertIn("empty output file", disp["semgrep"]["reason"])
+        self.assertEqual(disp["trivy"]["status"], "failed")
+        self.assertIn("unparseable", disp["trivy"]["reason"])
+
+    def test_no_registered_adapter_is_failed(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, "notatool.json", b"{}")
+            _findings, disp = it.ingest_dir_detailed(d, "g1")
+        self.assertEqual(disp["notatool"]["status"], "failed")
+        self.assertIn("no registered adapter", disp["notatool"]["reason"])
+
+    def test_ingest_dir_wrapper_returns_only_findings(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = it.ingest_dir(d, "g1")
+        self.assertEqual(out, [])  # unchanged contract: a bare list
