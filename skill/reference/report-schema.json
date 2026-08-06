@@ -6,7 +6,7 @@
   "properties": {
     "meta": {
       "type": "object",
-      "required": ["target", "review_type", "timestamp", "version", "security_mode"],
+      "required": ["target", "review_type", "timestamp", "version", "security_mode", "coverage"],
       "properties": {
         "target": {"type": "string"},
         "review_type": {"type": "string", "enum": ["repo", "file", "directory", "group", "changes", "pr"]},
