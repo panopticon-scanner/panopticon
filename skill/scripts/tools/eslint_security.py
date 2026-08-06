@@ -40,16 +40,22 @@ class EslintSecurityAdapter:
         ]
         for rule in RULE_CWE:
             cmd.extend(["--rule", f"{rule}: error"])
-        cmd.extend(["--format", "json", target])
+        cmd.extend(["--format", "json", os.path.abspath(target)])
         env = os.environ.copy()
-        # eslint v10 resolves plugins relative to the project root; ensure the
-        # globally installed plugin is discoverable inside the container.
+        # eslint v10 resolves plugins relative to the *child process's cwd*,
+        # not the linted path on argv - if cwd stayed inside the scanned
+        # target, a hostile target-controlled node_modules/eslint-plugin-security
+        # would load and execute ahead of the trusted global plugin (#83).
+        # Pin cwd to this adapter's own directory (never contains
+        # node_modules) so plugin resolution always finds the trusted copy
+        # via the NODE_PATH fallback below.
         for global_node in ["/usr/local/lib/node_modules", "/usr/lib/node_modules"]:
             if os.path.isdir(global_node):
                 existing = env.get("NODE_PATH", "")
                 env["NODE_PATH"] = f"{existing}:{global_node}" if existing else global_node
                 break
-        return run_tool(cmd, timeout=300, env=env)
+        trusted_cwd = os.path.dirname(os.path.abspath(__file__))
+        return run_tool(cmd, timeout=300, env=env, cwd=trusted_cwd)
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
         data = json.loads(raw.decode("utf-8", errors="replace"))

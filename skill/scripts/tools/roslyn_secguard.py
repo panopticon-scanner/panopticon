@@ -5,7 +5,8 @@ import os
 import shutil
 import sys
 import tempfile
-from .base import attach_tool_provenance, normalize_severity, new_finding_id, omit_none, run_tool
+from .base import attach_tool_provenance, new_finding_id, omit_none, run_tool
+from .sarif_utils import LEVEL_TO_SEV
 
 
 def _safe_copytree(src, dst):
@@ -146,39 +147,61 @@ class RoslynSecGuardAdapter:
         data = json.loads(raw.decode("utf-8", errors="replace"))
         out = []
         n = 1
-        for run in data.get("runs", []):
-            for result in run.get("results", []):
-                rule_id = result.get("ruleId", "")
-                # Only SecurityCodeScan rules are findings. Compiler/restore
-                # diagnostics (CS####, NU####, MSB####) are dropped: they are
-                # noise from offline builds and can quote file content into
-                # the report (the #86 exfiltration channel).
-                if not rule_id.startswith("SCS"):
+        runs = data.get("runs") or []
+        if not isinstance(runs, list):
+            return []
+        for run in runs:
+            if not isinstance(run, dict):
+                continue
+            results = run.get("results") or []
+            if not isinstance(results, list):
+                continue
+            for result in results:
+                try:
+                    rule_id = result.get("ruleId", "")
+                    # Only SecurityCodeScan rules are findings. Compiler/restore
+                    # diagnostics (CS####, NU####, MSB####) are dropped: they are
+                    # noise from offline builds and can quote file content into
+                    # the report (the #86 exfiltration channel).
+                    if not rule_id.startswith("SCS"):
+                        continue
+                    if "locations" in result:
+                        # Key present but empty/null (a location-less
+                        # diagnostic) carries no useful location - drop it
+                        # rather than emit a placeholder-location finding.
+                        locs = result.get("locations") or []
+                        if not locs:
+                            continue
+                        loc = locs[0]
+                    else:
+                        loc = {}
+                    location = self._location(loc)
+                    cwe = _ROSLYN_CWE.get(rule_id)
+                    message = self._message_text(result, rule_id)
+                    level = str(result.get("level", "warning")).lower()
+                    severity = LEVEL_TO_SEV.get(level, "INFO")
+                    finding = {
+                        "id": new_finding_id(self.prefix, n),
+                        "title": message,
+                        "severity": severity,
+                        "confidence": "LIKELY",
+                        "panel": "security",
+                        "category": "csharp_security",
+                        "source": f"tool:{self.name}",
+                        "location": location,
+                        "description": message or "No description provided.",
+                        "impact": "Potential security issue in C# code.",
+                        "remediation": "Review the SecurityCodeScan rule and refactor.",
+                        "references": [],
+                        "citations": {"cwe": [cwe]} if cwe else None,
+                        "tool_evidence": omit_none({"rule_id": rule_id}),
+                        "_group": group,
+                    }
+                    if not finding["citations"]:
+                        finding.pop("citations", None)
+                    attach_tool_provenance(finding, self.name, reasoning=finding["tool_evidence"].get("rule_id"))
+                except Exception:  # noqa: BLE001 - tolerant by design: skip only this result
                     continue
-                loc = result.get("locations", [{}])[0]
-                location = self._location(loc)
-                cwe = _ROSLYN_CWE.get(rule_id)
-                message = self._message_text(result, rule_id)
-                finding = {
-                    "id": new_finding_id(self.prefix, n),
-                    "title": message,
-                    "severity": normalize_severity("HIGH"),
-                    "confidence": "LIKELY",
-                    "panel": "security",
-                    "category": "csharp_security",
-                    "source": f"tool:{self.name}",
-                    "location": location,
-                    "description": message or "No description provided.",
-                    "impact": "Potential security issue in C# code.",
-                    "remediation": "Review the SecurityCodeScan rule and refactor.",
-                    "references": [],
-                    "citations": {"cwe": [cwe]} if cwe else None,
-                    "tool_evidence": omit_none({"rule_id": rule_id}),
-                    "_group": group,
-                }
-                if not finding["citations"]:
-                    finding.pop("citations", None)
-                attach_tool_provenance(finding, self.name, reasoning=finding["tool_evidence"].get("rule_id"))
                 out.append(finding)
                 n += 1
         return out
