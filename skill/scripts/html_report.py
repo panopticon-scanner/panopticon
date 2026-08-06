@@ -484,16 +484,19 @@ def _render_compare_findings(matches):
 
 
 def _render_bar_chart(rows, color_class_fn, title):
-    """Render a horizontal bar chart from (label, count) rows."""
+    """Render a horizontal bar chart from (label, count) rows.
+
+    Bar width is the category's share of the total (0-100%), not max-normalized,
+    so a bar's length reads as an absolute percentage of all findings rather than
+    relative to the largest category. The exact share is on the row's tooltip.
+    """
     row_html = []
     if rows:
-        max_count = max(count for _, count in rows)
-        if max_count == 0:
-            max_count = 1
+        total = sum(count for _, count in rows) or 1
         for label, count in rows:
-            pct = (count / max_count) * 100
+            pct = (count / total) * 100
             row_html.append(
-                f"<div class='chart-row'>"
+                f"<div class='chart-row' title='{pct:.1f}% of {total}'>"
                 f"<span class='chart-label'>{_escape(label)}</span>"
                 f"<div class='chart-bar-wrap'>"
                 f"<div class='chart-bar {color_class_fn(label)}' style='width: {pct:.1f}%'></div>"
