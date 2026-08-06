@@ -11,9 +11,11 @@ _CSS = """
   --border: #262a32; --border2: #3a404b;
   --ink: #e9eaec; --ink2: #c6c9cf; --muted: #9aa1ac; --faint: #878f9c;
   --accent: #d3d7dd; --accent-border: #6e7683; --link: #9db1c4;
-  /* severity text/tint colors (theme-dependent) */
+  /* severity text/tint colors (theme-dependent); tint = text at low alpha */
   --sev-critical: #e5786b; --sev-high: #e59a8c; --sev-medium: #e8c05a;
   --sev-low: #86b1e0; --sev-info: #a9bcc9;
+  --sev-critical-tint: #e5786b22; --sev-high-tint: #e59a8c22; --sev-medium-tint: #e8c05a22;
+  --sev-low-tint: #86b1e022; --sev-info-tint: #a9bcc922;
   /* panel bar colors (theme-dependent) */
   --panel-code: #6892c4; --panel-test: #4aac7a; --panel-security: #e59a8c;
   --panel-architecture: #8da0af; --panel-database: #e8c05a; --panel-redteam: #e5786b;
@@ -28,6 +30,8 @@ _CSS = """
   --accent: #3c4650; --accent-border: #9aa1ac; --link: #46617a;
   --sev-critical: #7d2f2a; --sev-high: #a04b42; --sev-medium: #7e5c18;
   --sev-low: #35619b; --sev-info: #4e6375;
+  --sev-critical-tint: #7d2f2a1d; --sev-high-tint: #a04b421d; --sev-medium-tint: #7e5c181d;
+  --sev-low-tint: #35619b1d; --sev-info-tint: #4e63751d;
   --panel-code: #265089; --panel-test: #1f6f48; --panel-security: #a04b42;
   --panel-architecture: #4e6375; --panel-database: #7e5c18; --panel-redteam: #7d2f2a;
   --panel-unknown: #4e6375;
@@ -86,6 +90,13 @@ button, .tab { font-family: var(--ui); }
 .tabs { display: flex; gap: .3rem; margin-bottom: .75rem; flex-wrap: wrap; }
 .tab { font-family: var(--mono); font-size: 11px; }
 .tab[aria-selected="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); font-weight: 700; }
+.fgroup { margin-bottom: .5rem; }
+.fgroup > summary { font-family: var(--mono); font-size: 12px; font-weight: 700; color: var(--ink2); cursor: pointer; padding: .5rem 0 .35rem; list-style: none; display: flex; align-items: center; gap: .5rem; border-bottom: 1px solid var(--border); }
+.fgroup > summary::-webkit-details-marker { display: none; }
+.fgroup > summary::before { content: "\\25B8"; color: var(--faint); font-size: 10px; }
+.fgroup[open] > summary::before { content: "\\25BE"; }
+.fgroup > summary .count { color: var(--faint); font-weight: 400; }
+.fgroup > details.finding-card:first-of-type { margin-top: .5rem; }
 .finding-card { background: var(--card); border: 1px solid var(--border); border-radius: 4px; margin-bottom: .5rem; }
 .finding-card summary { padding: 11px 16px; cursor: pointer; display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
 .finding-card summary::-webkit-details-marker { display: none; }
@@ -111,9 +122,14 @@ button, .tab { font-family: var(--ui); }
 .unverified-findings { margin-top: 1rem; }
 .unverified-findings > details { background: var(--panel); border: 1px solid var(--border); border-radius: 4px; padding: 1rem; }
 .unverified-findings summary { cursor: pointer; font-weight: 600; }
-.heatmap-grid { display: flex; flex-wrap: wrap; gap: 2px; margin-bottom: 1rem; }
-.heatmap-cell { padding: .25rem .5rem; border-radius: 2px; font-family: var(--mono); font-size: 11px; background: var(--chip); }
-.heatmap-cell .count { margin-left: .25rem; font-weight: 700; }
+.heatmap { margin: 1.2rem 0; overflow-x: auto; }
+.heatmap-grid { display: grid; gap: 2px; font-family: var(--mono); font-size: 11px; min-width: max-content; }
+.heat-head { color: var(--faint); font-size: 9px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; text-align: center; padding: 2px 4px; align-self: end; }
+.heat-head.heat-label-head { text-align: left; }
+.heat-label { color: var(--ink2); padding: 3px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.heat-cell { text-align: center; font-weight: 700; padding: 3px 0; border-radius: 2px; }
+.heat-cell.empty { background: transparent; }
+.heat-total { text-align: center; font-weight: 700; padding: 3px 0; border-radius: 2px; background: var(--chip); color: var(--ink); }
 .heatmap-more { padding: .25rem .5rem; color: var(--faint); font-family: var(--mono); font-size: 11px; }
 .compare-dashboard { display: flex; gap: .5rem; flex-wrap: wrap; }
 .compare-panel { flex: 1; min-width: 250px; background: var(--card); border: 1px solid var(--border); border-radius: 4px; padding: 1rem; }
@@ -535,7 +551,7 @@ def _render_dashboard(report):
 <h2>Dashboard</h2>
 <div class="stats">{stat_cards}</div>
 {charts}
-{_render_heatmap(findings)}
+{_render_heatmap(report)}
 {grades_table}
 <h3>Top issues</h3>
 <ul class="top-issues">{top_list}</ul>
@@ -645,27 +661,151 @@ def _heatmap_data(findings):
     )
 
 
-def _render_heatmap(findings):
-    data = _heatmap_data(findings)
-    cells = []
-    for path, info in data[:50]:
-        total = sum(info["counts"].values())
-        tooltip = f"{total} finding(s) in {path}"
+def _file_to_group(report):
+    """Map each file (normalized, leading ./ stripped) to its group name."""
+    mapping = {}
+    for g in report.get("groups") or []:
+        name = g.get("name", "")
+        for path in g.get("files") or []:
+            mapping[re.sub(r"^\./", "", str(path))] = name
+    return mapping
+
+
+def _common_dir(files):
+    """Longest common directory prefix of a set of file paths (segment-wise)."""
+    dirs = []
+    for p in files or []:
+        segs = re.sub(r"^\./", "", str(p)).split("/")[:-1]
+        if segs:
+            dirs.append(segs)
+    if not dirs:
+        return ""
+    common = dirs[0]
+    for segs in dirs[1:]:
+        i = 0
+        while i < len(common) and i < len(segs) and common[i] == segs[i]:
+            i += 1
+        common = common[:i]
+        if not common:
+            break
+    return "/".join(common)
+
+
+def _group_display_labels(report):
+    """Friendlier labels for generic discovery group names.
+
+    Discovery sometimes emits letterless names like '._1'; derive a directory
+    label from the group's files so the heatmap and findings read usefully.
+    A real, letter-bearing name is kept as-is. (The upstream fix is in
+    orchestrator group naming; this is a defensive display fallback.)
+    """
+    labels = {}
+    for g in report.get("groups") or []:
+        name = g.get("name", "")
+        if name and not re.search(r"[A-Za-z]", name):
+            labels[name] = _common_dir(g.get("files") or []) or name
+    return labels
+
+
+def _group_of(path, file_to_group, has_profile_groups):
+    """Resolve a file's group name (mirrors report-common.js groupOf).
+
+    With scope-profile groups, use them; otherwise fall back to the first two
+    path segments as a synthetic module name.
+    """
+    p = re.sub(r"^\./", "", str(path or ""))
+    if has_profile_groups:
+        return file_to_group.get(p, "Ungrouped")
+    seg = p.split("/")
+    if len(seg) > 2:
+        return "/".join(seg[:2])
+    if len(seg) == 2:
+        return seg[0]
+    return "(root)"
+
+
+def _heatmap_grid(report):
+    """Build the group x panel heatmap: (active_panels, [(group, row), ...]).
+
+    Each row is {"total": int, "cells": {panel: {"count", "worst"}}}. Rows cover
+    every defined group (so a clean group still shows, all cells empty) plus any
+    module fallback groups discovered from finding locations. Panels are the
+    canonical-order subset that carries at least one finding.
+    """
+    findings = report.get("findings", [])
+    file_to_group = _file_to_group(report)
+    has_profile = len(file_to_group) > 0
+
+    panel_seen = set()
+    for f in findings:
+        panel_seen.add(f.get("panel") if f.get("panel") in _PANEL_ORDER else "code")
+    active_panels = [p for p in _PANEL_ORDER if p in panel_seen]
+
+    grid = {}
+    order = []
+    for g in report.get("groups") or []:
+        name = g.get("name", "")
+        if name not in grid:
+            grid[name] = {"total": 0, "cells": {}}
+            order.append(name)
+    for f in findings:
+        path = (f.get("location") or {}).get("file")
+        if not path:
+            continue
+        name = _group_of(path, file_to_group, has_profile)
+        if name not in grid:
+            grid[name] = {"total": 0, "cells": {}}
+            order.append(name)
+        panel = f.get("panel") if f.get("panel") in _PANEL_ORDER else "code"
+        row = grid[name]
+        row["total"] += 1
+        cell = row["cells"].setdefault(panel, {"count": 0, "worst": "INFO"})
+        cell["count"] += 1
+        sev = f.get("severity", "INFO")
+        if _SEV_RANK.get(sev, 99) < _SEV_RANK.get(cell["worst"], 99):
+            cell["worst"] = sev
+    rows = sorted(((name, grid[name]) for name in order),
+                  key=lambda kv: (-kv[1]["total"], kv[0]))
+    return active_panels, rows
+
+
+def _render_heatmap(report):
+    active_panels, rows = _heatmap_grid(report)
+    if not rows or not active_panels:
+        return ""
+    labels = _group_display_labels(report)
+    cols = "minmax(160px,1fr) %s 56px" % " ".join(["64px"] * len(active_panels))
+    cells = ["<div class='heat-head heat-label-head'>Group</div>"]
+    for p in active_panels:
+        cells.append(f"<div class='heat-head'>{_escape(p)}</div>")
+    cells.append("<div class='heat-head'>Total</div>")
+    for name, row in rows:
+        label = labels.get(name, name)
         cells.append(
-            f"<div class='heatmap-cell {_severity_class(info['worst'])}' "
-            f"title='{_escape(tooltip)}'>"
-            f"{_escape(path)} <span class='count'>{total}</span></div>"
-        )
-    more = "<div class='heatmap-more'>...</div>" if len(data) > 50 else ""
+            f"<div class='heat-label' title='{_escape(label)}'>{_escape(label)}</div>")
+        for p in active_panels:
+            c = row["cells"].get(p)
+            if c:
+                sev = c["worst"].lower()
+                cells.append(
+                    f"<div class='heat-cell' style='color:var(--sev-{sev});"
+                    f"background:var(--sev-{sev}-tint)'>{c['count']}</div>")
+            else:
+                cells.append("<div class='heat-cell empty'></div>")
+        cells.append(f"<div class='heat-total'>{row['total']}</div>")
     return f"""
 <section class="heatmap">
-<h3>File heatmap</h3>
-<div class="heatmap-grid">{''.join(cells)}{more}</div>
+<h3>Group heatmap</h3>
+<div class="heatmap-grid" style="grid-template-columns:{cols}">{''.join(cells)}</div>
 </section>
 """
 
 
-def _render_findings(findings):
+def _render_findings(report):
+    findings = report.get("findings", [])
+    file_to_group = _file_to_group(report)
+    has_profile = len(file_to_group) > 0
+    labels = _group_display_labels(report)
     unverified_statuses = ("tool_reported", "needs_more_info", "unverified")
     verified = [f for f in findings
                 if (f.get("evidence") or {}).get("status") not in unverified_statuses]
@@ -680,6 +820,27 @@ def _render_findings(findings):
         if sev in by_sev:
             by_sev[sev].append(f)
 
+    def _grouped_cards(flist):
+        buckets = {}
+        order = []
+        for f in flist:
+            name = _group_of((f.get("location") or {}).get("file"),
+                             file_to_group, has_profile)
+            if name not in buckets:
+                buckets[name] = []
+                order.append(name)
+            buckets[name].append(f)
+        order.sort(key=lambda n: (-len(buckets[n]), n))
+        out = []
+        for name in order:
+            cards = "\n".join(_render_card(f) for f in buckets[name])
+            label = labels.get(name, name)
+            out.append(
+                f"<details class='fgroup' open><summary>{_escape(label)} "
+                f"<span class='count'>({len(buckets[name])})</span></summary>\n"
+                f"{cards}</details>")
+        return "\n".join(out)
+
     tabs = []
     panels = []
     for sev in ["ALL"] + _SEV_ORDER:
@@ -688,9 +849,9 @@ def _render_findings(findings):
             f'<button class="tab" data-tab="{sev}" aria-selected="{str(sev == "ALL").lower()}">'
             f"{sev} <span class='count'>{count}</span></button>"
         )
-        cards = "\n".join(_render_card(f) for f in by_sev[sev])
         hidden = "" if sev == "ALL" else "hidden"
-        panels.append(f'<div class="tab-panel" data-panel="{sev}" {hidden}>{cards}</div>')
+        panels.append(f'<div class="tab-panel" data-panel="{sev}" {hidden}>'
+                      f'{_grouped_cards(by_sev[sev])}</div>')
 
     unverified_section = ""
     if unverified:
@@ -753,7 +914,7 @@ def render(report, compare_report=None):
         body = (
             _render_header(report)
             + _render_dashboard(report)
-            + _render_findings(report.get("findings", []))
+            + _render_findings(report)
             + _render_discarded_claims(report.get("discarded_claims", []))
         )
         title = f"Panopticon — {report.get('meta', {}).get('target', 'report')}"
