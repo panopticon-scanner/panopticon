@@ -60,16 +60,18 @@ PROBE_TIMEOUT = 180
 
 def check_writable(path, why):
     """True if the current user can create a file in path."""
-    probe = os.path.join(path, ".panopticon-write-probe")
+    probe = os.path.join(
+        path,
+        ".panopticon-write-probe-%d-%s" % (os.getpid(), os.urandom(6).hex()),
+    )
     try:
-        with open(probe, "w"):
-            pass
+        fd = os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.close(fd)
         os.unlink(probe)
         return True, ""
     except OSError as e:
         return False, "%s not writable by uid %d (%s) — %s" % (
             path, os.getuid(), e.strerror, why)
-
 
 def run_probe(name, argv):
     try:
