@@ -164,6 +164,12 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0]["location"], {"file": "", "line_start": 1})
 
+    def test_parse_survives_non_dict_run_entry(self):
+        # A non-dict entry in the SARIF "runs" array must not crash the whole
+        # parse — mirror sarif_to_findings' run-level isinstance guard (#253).
+        for bad in (b'{"runs": ["not-a-dict"]}', b'{"runs": [null]}'):
+            self.assertEqual(rs.RoslynSecGuardAdapter().parse(bad, "g1"), [])
+
     def test_parse_string_message(self):
         findings = rs.RoslynSecGuardAdapter().parse(ROSLYN_SAMPLE_STRING_MESSAGE, "g1")
         self.assertEqual(len(findings), 1)

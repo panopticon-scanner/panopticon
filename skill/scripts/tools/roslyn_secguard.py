@@ -148,6 +148,8 @@ class RoslynSecGuardAdapter:
         out = []
         n = 1
         for run in data.get("runs", []):
+            if not isinstance(run, dict):
+                continue
             for result in run.get("results", []):
                 try:
                     rule_id = result.get("ruleId", "")
