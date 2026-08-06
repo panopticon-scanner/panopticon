@@ -755,7 +755,8 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
             "models_used": _collect_models_used(findings),
             "coverage": {
                 "adapters": tool_dispositions or {},
-                "tools_ran": sorted(tools_ran) if tools_ran is not None else [],
+                "tools_ran": (sorted(tools_ran) if tools_ran is not None
+                              else sorted(tool_names)),
                 "build_executing_tools": sorted(
                     (set(tools_ran) if tools_ran is not None else tool_names)
                     & EXECUTES_TARGET_BUILD),
