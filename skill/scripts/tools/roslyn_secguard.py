@@ -147,10 +147,16 @@ class RoslynSecGuardAdapter:
         data = json.loads(raw.decode("utf-8", errors="replace"))
         out = []
         n = 1
-        for run in data.get("runs", []):
+        runs = data.get("runs") or []
+        if not isinstance(runs, list):
+            return []
+        for run in runs:
             if not isinstance(run, dict):
                 continue
-            for result in run.get("results", []):
+            results = run.get("results") or []
+            if not isinstance(results, list):
+                continue
+            for result in results:
                 try:
                     rule_id = result.get("ruleId", "")
                     # Only SecurityCodeScan rules are findings. Compiler/restore
