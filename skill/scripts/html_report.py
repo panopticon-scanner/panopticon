@@ -7,38 +7,52 @@ import re
 
 _CSS = """
 :root {
-  --bg: #f8f9fa;
-  --fg: #212529;
-  --muted: #6c757d;
-  --card: #ffffff;
-  --border: #dee2e6;
-  --critical: #dc3545;
-  --high: #fd7e14;
-  --medium: #ffc107;
-  --low: #0dcaf0;
-  --info: #6c757d;
-  --pass: #198754;
-  --fail: #dc3545;
-  --panel-code: #0d6efd;
-  --panel-test: #20c997;
-  --panel-security: #dc3545;
-  --panel-architecture: #6f42c1;
-  --panel-database: #fd7e14;
-  --panel-redteam: #d63384;
-  --panel-unknown: #6c757d;
+  --bg: #131418; --card: #1b1d22; --panel: #17181d; --chip: #23262d;
+  --border: #262a32; --border2: #3a404b;
+  --ink: #e9eaec; --ink2: #c6c9cf; --muted: #9aa1ac; --faint: #878f9c;
+  --accent: #d3d7dd; --accent-border: #6e7683; --link: #9db1c4;
+  /* severity text/tint colors (theme-dependent); tint = text at low alpha */
+  --sev-critical: #e5786b; --sev-high: #e59a8c; --sev-medium: #e8c05a;
+  --sev-low: #86b1e0; --sev-info: #a9bcc9;
+  --sev-critical-tint: #e5786b22; --sev-high-tint: #e59a8c22; --sev-medium-tint: #e8c05a22;
+  --sev-low-tint: #86b1e022; --sev-info-tint: #a9bcc922;
+  /* panel bar colors (theme-dependent) */
+  --panel-code: #6892c4; --panel-test: #4aac7a; --panel-security: #e59a8c;
+  --panel-architecture: #8da0af; --panel-database: #e8c05a; --panel-redteam: #e5786b;
+  --panel-unknown: #8da0af;
+  --ui: 'Space Grotesk', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --mono: 'Space Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
 }
-body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--fg); margin: 0; padding: 1rem; line-height: 1.5; }
-.container { max-width: 1200px; margin: 0 auto; }
-.badge { display: inline-block; padding: .25rem .5rem; border-radius: .25rem; font-weight: 600; text-transform: uppercase; font-size: .8rem; }
-.sev-critical { background: var(--critical); color: #fff; }
-.sev-high { background: var(--high); color: #fff; }
-.sev-medium { background: var(--medium); color: #000; }
-.sev-low { background: var(--low); color: #000; }
-.sev-info { background: var(--info); color: #fff; }
-.badge.grade { background: #0d6efd; color: #fff; }
-.badge.gate-pass { background: var(--pass); color: #fff; }
-.badge.gate-fail { background: var(--fail); color: #fff; }
-.badge.gate-off { background: var(--info); color: #fff; }
+[data-theme="light"] {
+  --bg: #f7f7f5; --card: #fbfbf9; --panel: #f1f1ee; --chip: #eaeae6;
+  --border: #e2e2dd; --border2: #c9c9c2;
+  --ink: #1b1d22; --ink2: #33363c; --muted: #5c636d; --faint: #666d78;
+  --accent: #3c4650; --accent-border: #9aa1ac; --link: #46617a;
+  --sev-critical: #7d2f2a; --sev-high: #a04b42; --sev-medium: #7e5c18;
+  --sev-low: #35619b; --sev-info: #4e6375;
+  --sev-critical-tint: #7d2f2a1d; --sev-high-tint: #a04b421d; --sev-medium-tint: #7e5c181d;
+  --sev-low-tint: #35619b1d; --sev-info-tint: #4e63751d;
+  --panel-code: #265089; --panel-test: #1f6f48; --panel-security: #a04b42;
+  --panel-architecture: #4e6375; --panel-database: #7e5c18; --panel-redteam: #7d2f2a;
+  --panel-unknown: #4e6375;
+}
+* { box-sizing: border-box; }
+body { font-family: var(--ui); background: var(--bg); color: var(--ink); margin: 0; padding: 0; line-height: 1.5; transition: background .25s; }
+.container { max-width: 900px; margin: 0 auto; padding: 32px; position: relative; }
+a { color: var(--link); }
+h1 { font-size: 32px; font-weight: 600; letter-spacing: -.015em; margin: .2rem 0 .4rem; }
+h2 { font-size: 18px; font-weight: 600; }
+/* Solid severity badges are theme-independent (AA-audited). */
+.badge { display: inline-block; padding: .2rem .5rem; border-radius: 3px; font-weight: 700; text-transform: uppercase; font-size: .68rem; letter-spacing: .07em; font-family: var(--mono); }
+.sev-critical { background: #7d2f2a; color: #faf8f2; }
+.sev-high { background: #a04b42; color: #faf8f2; }
+.sev-medium { background: #b98d28; color: #131418; }
+.sev-low { background: #3d6da8; color: #faf8f2; }
+.sev-info { background: #4e6375; color: #faf8f2; }
+.badge.grade { background: transparent; color: var(--accent); border: 1px solid var(--accent-border); }
+.badge.gate-pass { background: #1f6f48; color: #faf8f2; }
+.badge.gate-fail { background: #7d2f2a; color: #faf8f2; }
+.badge.gate-off { background: #4e6375; color: #faf8f2; }
 .panel-code { background: var(--panel-code); }
 .panel-test { background: var(--panel-test); }
 .panel-security { background: var(--panel-security); }
@@ -46,84 +60,125 @@ body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Ro
 .panel-database { background: var(--panel-database); }
 .panel-redteam { background: var(--panel-redteam); }
 .panel-unknown { background: var(--panel-unknown); }
-.chart { background: var(--card); border: 1px solid var(--border); border-radius: .5rem; padding: 1rem; margin: 1rem 0; }
-.chart h3 { margin-top: 0; margin-bottom: .75rem; }
-.chart-rows { display: flex; flex-direction: column; gap: .5rem; }
+.chart { background: var(--panel); border: 1px solid var(--border); border-radius: 4px; padding: 1rem; margin: 1rem 0; }
+.chart h3 { margin-top: 0; margin-bottom: .75rem; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.chart-rows { display: flex; flex-direction: column; gap: .4rem; }
 .chart-row { display: flex; align-items: center; gap: .5rem; }
-.chart-label { min-width: 6.5rem; font-weight: 600; text-align: right; }
-.chart-bar-wrap { flex: 1; background: #e9ecef; border-radius: .25rem; height: 1.25rem; overflow: hidden; }
-.chart-bar { height: 100%; border-radius: .25rem; transition: width .3s ease; min-width: 0; }
-.chart-value { min-width: 2rem; text-align: right; font-weight: 600; }
-.meta { color: var(--muted); margin-bottom: .5rem; }
+.chart-label { min-width: 6.5rem; font-family: var(--mono); font-size: 10px; color: var(--faint); text-align: right; }
+.chart-bar-wrap { flex: 1; background: var(--border); border-radius: 2px; height: 12px; overflow: hidden; }
+.chart-bar { height: 100%; border-radius: 2px; transition: width .3s ease; min-width: 0; }
+.chart-value { min-width: 2rem; text-align: right; font-family: var(--mono); font-weight: 700; font-size: 11px; }
+.meta { color: var(--faint); font-family: var(--mono); font-size: 11px; margin-bottom: .5rem; }
 .meta span { margin-right: 1rem; }
-.badges { margin: 1rem 0; }
-.coverage { color: var(--muted); margin: -.5rem 0 1rem; }
-.dashboard { background: var(--card); border: 1px solid var(--border); border-radius: .5rem; padding: 1rem; margin: 1rem 0; }
-.stats { display: flex; gap: .5rem; margin-bottom: 1rem; }
-.stat-card { flex: 1; padding: .75rem; border-radius: .25rem; text-align: center; }
-.stat-label { font-size: .75rem; font-weight: 700; text-transform: uppercase; }
-.stat-value { font-size: 1.5rem; font-weight: 700; }
-.grades { width: 100%; border-collapse: collapse; margin-top: 1rem; }
-.grades th, .grades td { border: 1px solid var(--border); padding: .5rem; text-align: center; }
+.badges { margin: 1rem 0; display: flex; gap: .4rem; flex-wrap: wrap; }
+.coverage { color: var(--faint); font-family: var(--mono); font-size: 11px; margin: -.4rem 0 1.4rem; }
+.dashboard { background: var(--panel); border: 1px solid var(--border); border-radius: 4px; padding: 1rem; margin: 1rem 0; }
+.stats { display: flex; gap: 1px; margin-bottom: 1rem; background: var(--border); border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
+.stat-card { flex: 1; padding: .6rem; text-align: center; background: var(--panel); }
+.stat-label { font-family: var(--mono); font-size: 9px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--faint); }
+.stat-value { font-family: var(--mono); font-size: 22px; font-weight: 700; }
+.grades { width: 100%; border-collapse: collapse; margin-top: 1rem; font-size: 13px; }
+.grades th, .grades td { border: 1px solid var(--border); padding: .4rem .5rem; text-align: center; }
+.grades th { color: var(--muted); font-weight: 600; }
 .grades th:first-child { text-align: left; }
-.top-issues { margin: 0; padding-left: 1.25rem; }
-.findings { margin-top: 1rem; }
-.findings-controls { margin-bottom: .5rem; }
-.findings-controls button { margin-right: .25rem; }
-.tabs { display: flex; gap: .25rem; border-bottom: 1px solid var(--border); margin-bottom: .5rem; }
-.tab { background: var(--card); border: 1px solid var(--border); border-bottom: none; padding: .5rem 1rem; cursor: pointer; border-radius: .25rem .25rem 0 0; }
-.tab[aria-selected="true"] { background: var(--bg); font-weight: 700; }
-.finding-card { background: var(--card); border: 1px solid var(--border); border-radius: .25rem; margin-bottom: .5rem; }
-.finding-card summary { padding: .75rem; cursor: pointer; display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
-.finding-card .title { flex: 1; font-weight: 600; }
-.finding-card .where { color: var(--muted); font-family: monospace; }
-.finding-card .meta { color: var(--muted); font-size: .85rem; }
-.finding-body { padding: .75rem; border-top: 1px solid var(--border); }
-.finding-body dl { margin: 0; }
-.finding-body dt { font-weight: 700; margin-top: .75rem; }
-.finding-body dd { margin-left: 0; }
-.chip { display: inline-block; background: #e9ecef; border-radius: .25rem; padding: .1rem .4rem; font-size: .8rem; margin-right: .25rem; }
-.prov-status, .prov-source, .prov-model, .cit-quality { display: inline-block; border-radius: .25rem; padding: .1rem .4rem; font-size: .75rem; margin-right: .25rem; font-weight: 600; text-transform: uppercase; }
-.prov-status { background: var(--pass); color: #fff; }
-.prov-status.prov-needs-more-info { background: var(--medium); color: #000; }
-.prov-status.prov-unverified { background: var(--muted); color: #fff; }
-.prov-status.prov-rejected { background: var(--fail); color: #fff; }
-.prov-source, .prov-model { background: #e9ecef; color: var(--fg); }
-.cit-quality { background: #f8f9fa; border: 1px solid var(--border); color: var(--fg); }
-.cit-full { background: var(--pass); color: #fff; }
-.cit-partial { background: var(--medium); color: #000; }
-.cit-minimal { background: var(--low); color: #000; }
-.cit-none { background: var(--muted); color: #fff; }
+.top-issues { margin: 0; padding-left: 1.25rem; color: var(--ink2); }
+.findings { margin-top: 1.6rem; }
+.findings-controls { margin-bottom: .5rem; display: flex; gap: .4rem; justify-content: flex-end; }
+button, .tab { font-family: var(--ui); }
+.findings-controls button, .tab { background: transparent; color: var(--muted); border: 1px solid var(--border2); border-radius: 4px; padding: .3rem .7rem; font-size: 12px; cursor: pointer; }
+.findings-controls button:hover, .tab:hover, summary:hover { border-color: var(--accent-border); color: var(--accent); }
+.tabs { display: flex; gap: .3rem; margin-bottom: .75rem; flex-wrap: wrap; }
+.tab { font-family: var(--mono); font-size: 11px; }
+.tab[aria-selected="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); font-weight: 700; }
+.fgroup { margin-bottom: .5rem; }
+.fgroup > summary { font-family: var(--mono); font-size: 12px; font-weight: 700; color: var(--ink2); cursor: pointer; padding: .5rem 0 .35rem; list-style: none; display: flex; align-items: center; gap: .5rem; border-bottom: 1px solid var(--border); }
+.fgroup > summary::-webkit-details-marker { display: none; }
+.fgroup > summary::before { content: "\\25B8"; color: var(--faint); font-size: 10px; }
+.fgroup[open] > summary::before { content: "\\25BE"; }
+.fgroup > summary .count { color: var(--faint); font-weight: 400; }
+.fgroup > details.finding-card:first-of-type { margin-top: .5rem; }
+.finding-card { background: var(--card); border: 1px solid var(--border); border-radius: 4px; margin-bottom: .5rem; }
+.finding-card summary { padding: 11px 16px; cursor: pointer; display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.finding-card summary::-webkit-details-marker { display: none; }
+.finding-card .title { flex: 1; font-weight: 600; font-size: 14px; color: var(--ink); }
+.finding-card .where { color: var(--muted); font-family: var(--mono); font-size: 11px; }
+.finding-card .meta { color: var(--faint); font-size: 11px; }
+.finding-body { padding: 16px; border-top: 1px solid var(--border); }
+.finding-body dl { margin: 0; max-width: 78ch; }
+.finding-body dt { font-size: 10px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; color: var(--muted); margin-top: .9rem; }
+.finding-body dd { margin-left: 0; color: var(--ink2); line-height: 1.6; }
+.chip { display: inline-block; background: var(--chip); color: var(--ink2); border-radius: 3px; padding: .12rem .45rem; font-family: var(--mono); font-size: 11px; margin-right: .3rem; }
+.prov-status, .prov-source, .prov-model, .cit-quality { display: inline-block; border-radius: 3px; padding: .12rem .45rem; font-family: var(--mono); font-size: 10px; margin-right: .3rem; font-weight: 700; text-transform: uppercase; }
+.prov-status { background: #1f6f48; color: #faf8f2; }
+.prov-status.prov-needs-more-info { background: #b98d28; color: #131418; }
+.prov-status.prov-unverified { background: #4e6375; color: #faf8f2; }
+.prov-status.prov-rejected { background: #7d2f2a; color: #faf8f2; }
+.prov-source, .prov-model { background: var(--chip); color: var(--ink2); }
+.cit-quality { background: transparent; border: 1px solid var(--border2); color: var(--muted); }
+.cit-full { background: #1f6f48; color: #faf8f2; border-color: transparent; }
+.cit-partial { background: #b98d28; color: #131418; border-color: transparent; }
+.cit-minimal { background: #3d6da8; color: #faf8f2; border-color: transparent; }
+.cit-none { background: #4e6375; color: #faf8f2; border-color: transparent; }
 .unverified-findings { margin-top: 1rem; }
-.unverified-findings > details { background: var(--card); border: 1px solid var(--border); border-radius: .5rem; padding: 1rem; }
-.unverified-findings summary { cursor: pointer; font-weight: 700; }
-.heatmap-grid { display: flex; flex-wrap: wrap; gap: .25rem; margin-bottom: 1rem; }
-.heatmap-cell { padding: .25rem .5rem; border-radius: .25rem; font-size: .85rem; font-family: monospace; }
-.heatmap-cell .count { margin-left: .25rem; font-weight: 700; }
-.heatmap-more { padding: .25rem .5rem; color: var(--muted); }
+.unverified-findings > details { background: var(--panel); border: 1px solid var(--border); border-radius: 4px; padding: 1rem; }
+.unverified-findings summary { cursor: pointer; font-weight: 600; }
+.heatmap { margin: 1.2rem 0; overflow-x: auto; }
+.heatmap-grid { display: grid; gap: 2px; font-family: var(--mono); font-size: 11px; min-width: max-content; }
+.heat-head { color: var(--faint); font-size: 9px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; text-align: center; padding: 2px 4px; align-self: end; }
+.heat-head.heat-label-head { text-align: left; }
+.heat-label { color: var(--ink2); padding: 3px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.heat-cell { text-align: center; font-weight: 700; padding: 3px 0; border-radius: 2px; }
+.heat-cell.empty { background: transparent; }
+.heat-total { text-align: center; font-weight: 700; padding: 3px 0; border-radius: 2px; background: var(--chip); color: var(--ink); }
+.heatmap-more { padding: .25rem .5rem; color: var(--faint); font-family: var(--mono); font-size: 11px; }
 .compare-dashboard { display: flex; gap: .5rem; flex-wrap: wrap; }
-.compare-panel { flex: 1; min-width: 250px; background: var(--card); border: 1px solid var(--border); border-radius: .5rem; padding: 1rem; }
+.compare-panel { flex: 1; min-width: 250px; background: var(--card); border: 1px solid var(--border); border-radius: 4px; padding: 1rem; }
 .stat-minis { margin-top: .5rem; }
-.stat-mini { display: inline-block; padding: .1rem .4rem; border-radius: .25rem; font-size: .75rem; margin-right: .25rem; }
-.delta-card { flex: 1; min-width: 120px; background: var(--card); border: 1px solid var(--border); border-radius: .25rem; padding: .75rem; text-align: center; }
-.delta-label { font-size: .75rem; text-transform: uppercase; }
-.delta-value { font-size: 1.25rem; font-weight: 700; }
-.delta-new { border-left: 4px solid var(--high); }
-.delta-resolved { border-left: 4px solid var(--pass); }
-.delta-unchanged { border-left: 4px solid var(--info); }
-.delta-severity-changed { border-left: 4px solid var(--medium); }
+.stat-mini { display: inline-block; padding: .12rem .45rem; border-radius: 3px; font-family: var(--mono); font-size: 10px; font-weight: 700; margin-right: .3rem; }
+.delta-card { flex: 1; min-width: 120px; background: var(--card); border: 1px solid var(--border); border-radius: 4px; padding: .75rem; text-align: center; }
+.delta-label { font-family: var(--mono); font-size: 10px; text-transform: uppercase; color: var(--faint); letter-spacing: .08em; }
+.delta-value { font-family: var(--mono); font-size: 26px; font-weight: 700; }
+.delta-new { border-top: 3px solid #a04b42; }
+.delta-resolved { border-top: 3px solid #1f6f48; }
+.delta-unchanged { border-top: 3px solid var(--border2); }
+.delta-severity-changed { border-top: 3px solid #b98d28; }
 .compare-columns { display: flex; gap: 1rem; }
 .compare-col { flex: 1; min-width: 0; }
-.delta-new-badge { background: var(--high); color: #fff; }
-.delta-resolved-badge { background: var(--pass); color: #fff; }
-.delta-unchanged-badge { background: var(--info); color: #fff; }
-.delta-severity-changed-badge { background: var(--medium); color: #000; }
+.delta-new-badge { background: #a04b42; color: #faf8f2; }
+.delta-resolved-badge { background: #1f6f48; color: #faf8f2; }
+.delta-unchanged-badge { background: transparent; color: var(--muted); border: 1px solid var(--border2); }
+.delta-severity-changed-badge { background: #b98d28; color: #131418; }
+.theme-toggle { position: absolute; top: 32px; right: 32px; font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; background: transparent; color: var(--muted); border: 1px solid var(--border2); border-radius: 4px; padding: .3rem .6rem; cursor: pointer; }
+.theme-toggle:hover { border-color: var(--accent-border); color: var(--accent); }
+button:focus-visible, summary:focus-visible, a:focus-visible { outline: 2px solid var(--accent-border); outline-offset: 2px; }
 """
 
 _JS = """
 (function () {
   'use strict';
+  var THEME_KEY = 'panopticon-theme';
+  function applyTheme(t) {
+    if (t === 'light') { document.documentElement.setAttribute('data-theme', 'light'); }
+    else { document.documentElement.removeAttribute('data-theme'); }
+  }
+  try { applyTheme(localStorage.getItem(THEME_KEY)); } catch (e) {}
   window.addEventListener('DOMContentLoaded', function () {
+    var themeToggle = document.querySelector('[data-theme-toggle]');
+    if (themeToggle) {
+      var syncLabel = function () {
+        var light = document.documentElement.getAttribute('data-theme') === 'light';
+        themeToggle.textContent = light ? 'Dark mode' : 'Light mode';
+      };
+      syncLabel();
+      themeToggle.addEventListener('click', function () {
+        var light = document.documentElement.getAttribute('data-theme') === 'light';
+        var next = light ? 'dark' : 'light';
+        applyTheme(next);
+        try { localStorage.setItem(THEME_KEY, next); } catch (e) {}
+        syncLabel();
+      });
+    }
+
     document.querySelectorAll('[data-tab]').forEach(function (tab) {
       tab.addEventListener('click', function () {
         var group = tab.closest('[data-tab-group]');
@@ -183,10 +238,14 @@ def _html_doc(title, body):
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{_escape(title)}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
 <style>{_CSS}</style>
 </head>
 <body>
 <div class="container">
+<button class="theme-toggle" type="button" data-theme-toggle>Light mode</button>
 {body}
 </div>
 <script>{_JS}</script>
@@ -425,16 +484,19 @@ def _render_compare_findings(matches):
 
 
 def _render_bar_chart(rows, color_class_fn, title):
-    """Render a horizontal bar chart from (label, count) rows."""
+    """Render a horizontal bar chart from (label, count) rows.
+
+    Bar width is the category's share of the total (0-100%), not max-normalized,
+    so a bar's length reads as an absolute percentage of all findings rather than
+    relative to the largest category. The exact share is on the row's tooltip.
+    """
     row_html = []
     if rows:
-        max_count = max(count for _, count in rows)
-        if max_count == 0:
-            max_count = 1
+        total = sum(count for _, count in rows) or 1
         for label, count in rows:
-            pct = (count / max_count) * 100
+            pct = (count / total) * 100
             row_html.append(
-                f"<div class='chart-row'>"
+                f"<div class='chart-row' title='{pct:.1f}% of {total}'>"
                 f"<span class='chart-label'>{_escape(label)}</span>"
                 f"<div class='chart-bar-wrap'>"
                 f"<div class='chart-bar {color_class_fn(label)}' style='width: {pct:.1f}%'></div>"
@@ -460,19 +522,6 @@ def _render_dashboard(report):
         for sev in _SEV_ORDER
     )
 
-    rows = []
-    for g in report.get("groups", []):
-        grades = g.get("panel_grades", {})
-        cells = " ".join(
-            f"<td>{_escape(grades.get(p, '-'))}</td>" for p in _PANEL_ORDER
-        )
-        rows.append(f"<tr><th>{_escape(g.get('name', ''))}</th>{cells}</tr>")
-    header = " ".join(f"<th>{p}</th>" for p in _PANEL_ORDER)
-    grades_table = (
-        f"<table class='grades'><thead><tr><th>Group</th>{header}</tr></thead>"
-        f"<tbody>{''.join(rows)}</tbody></table>"
-    )
-
     top = summary.get("top_issues", [])[:3]
     top_list = "\n".join(f"<li>{_escape(t)}</li>" for t in top) or "<li>None</li>"
 
@@ -492,8 +541,7 @@ def _render_dashboard(report):
 <h2>Dashboard</h2>
 <div class="stats">{stat_cards}</div>
 {charts}
-{_render_heatmap(findings)}
-{grades_table}
+{_render_heatmap(report)}
 <h3>Top issues</h3>
 <ul class="top-issues">{top_list}</ul>
 </section>
@@ -602,27 +650,151 @@ def _heatmap_data(findings):
     )
 
 
-def _render_heatmap(findings):
-    data = _heatmap_data(findings)
-    cells = []
-    for path, info in data[:50]:
-        total = sum(info["counts"].values())
-        tooltip = f"{total} finding(s) in {path}"
+def _file_to_group(report):
+    """Map each file (normalized, leading ./ stripped) to its group name."""
+    mapping = {}
+    for g in report.get("groups") or []:
+        name = g.get("name", "")
+        for path in g.get("files") or []:
+            mapping[re.sub(r"^\./", "", str(path))] = name
+    return mapping
+
+
+def _common_dir(files):
+    """Longest common directory prefix of a set of file paths (segment-wise)."""
+    dirs = []
+    for p in files or []:
+        segs = re.sub(r"^\./", "", str(p)).split("/")[:-1]
+        if segs:
+            dirs.append(segs)
+    if not dirs:
+        return ""
+    common = dirs[0]
+    for segs in dirs[1:]:
+        i = 0
+        while i < len(common) and i < len(segs) and common[i] == segs[i]:
+            i += 1
+        common = common[:i]
+        if not common:
+            break
+    return "/".join(common)
+
+
+def _group_display_labels(report):
+    """Friendlier labels for generic discovery group names.
+
+    Discovery sometimes emits letterless names like '._1'; derive a directory
+    label from the group's files so the heatmap and findings read usefully.
+    A real, letter-bearing name is kept as-is. (The upstream fix is in
+    orchestrator group naming; this is a defensive display fallback.)
+    """
+    labels = {}
+    for g in report.get("groups") or []:
+        name = g.get("name", "")
+        if name and not re.search(r"[A-Za-z]", name):
+            labels[name] = _common_dir(g.get("files") or []) or name
+    return labels
+
+
+def _group_of(path, file_to_group, has_profile_groups):
+    """Resolve a file's group name (mirrors report-common.js groupOf).
+
+    With scope-profile groups, use them; otherwise fall back to the first two
+    path segments as a synthetic module name.
+    """
+    p = re.sub(r"^\./", "", str(path or ""))
+    if has_profile_groups:
+        return file_to_group.get(p, "Ungrouped")
+    seg = p.split("/")
+    if len(seg) > 2:
+        return "/".join(seg[:2])
+    if len(seg) == 2:
+        return seg[0]
+    return "(root)"
+
+
+def _heatmap_grid(report):
+    """Build the group x panel heatmap: (active_panels, [(group, row), ...]).
+
+    Each row is {"total": int, "cells": {panel: {"count", "worst"}}}. Rows cover
+    every defined group (so a clean group still shows, all cells empty) plus any
+    module fallback groups discovered from finding locations. Panels are the
+    canonical-order subset that carries at least one finding.
+    """
+    findings = report.get("findings", [])
+    file_to_group = _file_to_group(report)
+    has_profile = len(file_to_group) > 0
+
+    panel_seen = set()
+    for f in findings:
+        panel_seen.add(f.get("panel") if f.get("panel") in _PANEL_ORDER else "code")
+    active_panels = [p for p in _PANEL_ORDER if p in panel_seen]
+
+    grid = {}
+    order = []
+    for g in report.get("groups") or []:
+        name = g.get("name", "")
+        if name not in grid:
+            grid[name] = {"total": 0, "cells": {}}
+            order.append(name)
+    for f in findings:
+        path = (f.get("location") or {}).get("file")
+        if not path:
+            continue
+        name = _group_of(path, file_to_group, has_profile)
+        if name not in grid:
+            grid[name] = {"total": 0, "cells": {}}
+            order.append(name)
+        panel = f.get("panel") if f.get("panel") in _PANEL_ORDER else "code"
+        row = grid[name]
+        row["total"] += 1
+        cell = row["cells"].setdefault(panel, {"count": 0, "worst": "INFO"})
+        cell["count"] += 1
+        sev = f.get("severity", "INFO")
+        if _SEV_RANK.get(sev, 99) < _SEV_RANK.get(cell["worst"], 99):
+            cell["worst"] = sev
+    rows = sorted(((name, grid[name]) for name in order),
+                  key=lambda kv: (-kv[1]["total"], kv[0]))
+    return active_panels, rows
+
+
+def _render_heatmap(report):
+    active_panels, rows = _heatmap_grid(report)
+    if not rows or not active_panels:
+        return ""
+    labels = _group_display_labels(report)
+    cols = "minmax(160px,1fr) %s 56px" % " ".join(["64px"] * len(active_panels))
+    cells = ["<div class='heat-head heat-label-head'>Group</div>"]
+    for p in active_panels:
+        cells.append(f"<div class='heat-head'>{_escape(p)}</div>")
+    cells.append("<div class='heat-head'>Total</div>")
+    for name, row in rows:
+        label = labels.get(name, name)
         cells.append(
-            f"<div class='heatmap-cell {_severity_class(info['worst'])}' "
-            f"title='{_escape(tooltip)}'>"
-            f"{_escape(path)} <span class='count'>{total}</span></div>"
-        )
-    more = "<div class='heatmap-more'>...</div>" if len(data) > 50 else ""
+            f"<div class='heat-label' title='{_escape(label)}'>{_escape(label)}</div>")
+        for p in active_panels:
+            c = row["cells"].get(p)
+            if c:
+                sev = c["worst"].lower()
+                cells.append(
+                    f"<div class='heat-cell' style='color:var(--sev-{sev});"
+                    f"background:var(--sev-{sev}-tint)'>{c['count']}</div>")
+            else:
+                cells.append("<div class='heat-cell empty'></div>")
+        cells.append(f"<div class='heat-total'>{row['total']}</div>")
     return f"""
 <section class="heatmap">
-<h3>File heatmap</h3>
-<div class="heatmap-grid">{''.join(cells)}{more}</div>
+<h3>Group heatmap</h3>
+<div class="heatmap-grid" style="grid-template-columns:{cols}">{''.join(cells)}</div>
 </section>
 """
 
 
-def _render_findings(findings):
+def _render_findings(report):
+    findings = report.get("findings", [])
+    file_to_group = _file_to_group(report)
+    has_profile = len(file_to_group) > 0
+    labels = _group_display_labels(report)
     unverified_statuses = ("tool_reported", "needs_more_info", "unverified")
     verified = [f for f in findings
                 if (f.get("evidence") or {}).get("status") not in unverified_statuses]
@@ -637,6 +809,27 @@ def _render_findings(findings):
         if sev in by_sev:
             by_sev[sev].append(f)
 
+    def _grouped_cards(flist):
+        buckets = {}
+        order = []
+        for f in flist:
+            name = _group_of((f.get("location") or {}).get("file"),
+                             file_to_group, has_profile)
+            if name not in buckets:
+                buckets[name] = []
+                order.append(name)
+            buckets[name].append(f)
+        order.sort(key=lambda n: (-len(buckets[n]), n))
+        out = []
+        for name in order:
+            cards = "\n".join(_render_card(f) for f in buckets[name])
+            label = labels.get(name, name)
+            out.append(
+                f"<details class='fgroup' open><summary>{_escape(label)} "
+                f"<span class='count'>({len(buckets[name])})</span></summary>\n"
+                f"{cards}</details>")
+        return "\n".join(out)
+
     tabs = []
     panels = []
     for sev in ["ALL"] + _SEV_ORDER:
@@ -645,9 +838,9 @@ def _render_findings(findings):
             f'<button class="tab" data-tab="{sev}" aria-selected="{str(sev == "ALL").lower()}">'
             f"{sev} <span class='count'>{count}</span></button>"
         )
-        cards = "\n".join(_render_card(f) for f in by_sev[sev])
         hidden = "" if sev == "ALL" else "hidden"
-        panels.append(f'<div class="tab-panel" data-panel="{sev}" {hidden}>{cards}</div>')
+        panels.append(f'<div class="tab-panel" data-panel="{sev}" {hidden}>'
+                      f'{_grouped_cards(by_sev[sev])}</div>')
 
     unverified_section = ""
     if unverified:
@@ -710,7 +903,7 @@ def render(report, compare_report=None):
         body = (
             _render_header(report)
             + _render_dashboard(report)
-            + _render_findings(report.get("findings", []))
+            + _render_findings(report)
             + _render_discarded_claims(report.get("discarded_claims", []))
         )
         title = f"Panopticon — {report.get('meta', {}).get('target', 'report')}"

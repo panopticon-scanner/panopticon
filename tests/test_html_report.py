@@ -155,11 +155,24 @@ class TestHtmlReport(unittest.TestCase):
         self.assertIn("CVE-2023-1234", out)
         self.assertIn("EPSS:0.57", out)
 
-    def test_heatmap_renders_files(self):
+    def test_heatmap_renders_group_grid(self):
         report = _minimal_report()
         out = hr.render(report)
-        self.assertIn("File heatmap", out)
-        self.assertIn("app.py", out)
+        self.assertIn("Group heatmap", out)
+        self.assertIn("App", out)          # the group name is the row label
+        self.assertIn("heat-cell", out)    # a group x panel cell rendered
+        self.assertIn("heat-total", out)
+
+    def test_heatmap_grid_buckets_by_group_and_panel(self):
+        report = _minimal_report()  # one HIGH security finding on app.py, group "App"
+        panels, rows = hr._heatmap_grid(report)
+        self.assertIn("security", panels)
+        names = [n for n, _ in rows]
+        self.assertIn("App", names)
+        app = dict(rows)["App"]
+        self.assertEqual(app["total"], 1)
+        self.assertEqual(app["cells"]["security"]["count"], 1)
+        self.assertEqual(app["cells"]["security"]["worst"], "HIGH")
 
     def test_heatmap_ordered_by_count_and_severity(self):
         findings = [
