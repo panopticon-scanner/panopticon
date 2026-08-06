@@ -547,6 +547,17 @@ def derive_tool_policy_mode(panopticon_dir=".panopticon"):
     return "advisory"
 
 
+def tools_ran_from_dispositions(dispositions):
+    """Adapters that produced a parseable document (status ok or empty).
+
+    A 'failed' adapter (0-byte / unparseable / no registered adapter) is
+    excluded, so build_executing_tools can never name an adapter that ran
+    empty. This is the repair of #450's residual weakness and the core of #456.
+    """
+    return {name for name, d in dispositions.items()
+            if d.get("status") in ("ok", "empty")}
+
+
 def aggregate_tool_findings(findings):
     """Collapse repeated tool hits of one rule in one file into a single finding.
 
@@ -1016,8 +1027,7 @@ def main(argv=None):
             findings.append(normalize_finding(tf))
         # A "failed" disposition (empty / unparseable / no-adapter) is excluded,
         # so build_executing_tools can no longer name an adapter that ran empty.
-        tools_ran = {name for name, d in tool_dispositions.items()
-                     if d["status"] in ("ok", "empty")}
+        tools_ran = tools_ran_from_dispositions(tool_dispositions)
     catalog = citations.load_cwe_catalog()
     citations.enrich_citations(findings, catalog, epss_enabled=args.epss,
                                cache_path=os.path.join(".panopticon", "epss-cache.json"))

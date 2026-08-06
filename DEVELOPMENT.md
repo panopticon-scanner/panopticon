@@ -124,7 +124,7 @@ History:
   role contracts; `--emit-host-agents` generates registered enforcement shells
   (claude/kimi dialects) from the host-neutral templates; per-role `enforced`
   plan entries dispatched via `subagent_type`; `meta.coverage.tool_policy_mode`
-  (enforced/advisory/mixed) in the audit artifact; clean-tree check in the
+  (enforced/advisory/mixed/unknown) in the audit artifact; clean-tree check in the
   validate step. SEC-101 remediation.
 - **4.1.0** — Claude Code port: all reviewer dispatch moves to
   deterministic rendered prompts (dispatch plan entries carry `prompt`;

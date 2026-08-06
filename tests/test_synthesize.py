@@ -1633,6 +1633,21 @@ class TestToolPolicyMode(unittest.TestCase):
         self.assertEqual(report["meta"]["version"], "4.2.0")
 
 
+class TestToolsRanFromDispositions(unittest.TestCase):
+    def test_failed_excluded_ok_and_empty_included(self):
+        dispositions = {
+            "bandit": {"status": "ok", "findings": 3},
+            "gitleaks": {"status": "empty", "findings": 0},
+            "semgrep": {"status": "failed", "findings": 0,
+                        "reason": "empty output file"},
+        }
+        self.assertEqual(syn.tools_ran_from_dispositions(dispositions),
+                         {"bandit", "gitleaks"})
+
+    def test_empty_dispositions_yields_empty_set(self):
+        self.assertEqual(syn.tools_ran_from_dispositions({}), set())
+
+
 class TestBuildExecutingTools(unittest.TestCase):
     def _finding(self, **kw):
         base = {"id": "CD-001", "title": "t", "severity": "LOW", "confidence": "POSSIBLE",
