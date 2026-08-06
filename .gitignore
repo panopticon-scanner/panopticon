@@ -29,4 +29,6 @@ CodeReviewReport_*.json
 
 # Internal process docs live in the private panopticon-docs repo; docs/superpowers
 # is a local symlink into it. See panopticon-scanner/panopticon-docs.
-docs/superpowers/
+# No trailing slash: git's dir-only match ("docs/superpowers/") would not ignore
+# the symlink itself, so a fresh checkout would show it untracked.
+docs/superpowers

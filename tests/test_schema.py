@@ -24,6 +24,28 @@ def _minimal_report():
             "version": "4.0.0",
             "security_mode": "standard",
             "models_used": [{"model": "test-model", "role": "lens_sweep"}],
+            "coverage": {
+                "adapters": {},
+                "tools_ran": [],
+                "build_executing_tools": [],
+                "tool_policy_mode": "unknown",
+                "tool_axis": {
+                    "queued": 0,
+                    "confirmed": 0,
+                    "rejected": 0,
+                    "needs_more_info": 0,
+                    "unanswered": 0,
+                    "rejection_rate": None,
+                },
+                "verdicts": {
+                    "queued": 0,
+                    "cut": 0,
+                    "supplied": 0,
+                    "matched": 0,
+                    "unknown": 0,
+                    "unanswered": None,
+                },
+            },
         },
         "summary": {
             "overall_grade": "A",

@@ -159,6 +159,34 @@ class TestEslintSecurityAdapter(unittest.TestCase):
             self.assertIn("--rule", cmd)
             self.assertIn(f"{rule}: error", cmd)
 
+    def test_invoke_pins_cwd_away_from_scanned_target(self):
+        # eslint resolves plugins relative to the child process's cwd, not
+        # the linted path on argv. If cwd stays inside the scanned target, a
+        # hostile node_modules/eslint-plugin-security shipped by that target
+        # would be loaded and executed ahead of the trusted global plugin
+        # (#83). cwd must be pinned to a directory that can never contain a
+        # scanned target's own node_modules.
+        adapter = es.EslintSecurityAdapter()
+        fake_run = mock.Mock(return_value=mock.Mock(stdout=b"[]", returncode=0))
+        with mock.patch("scripts.tools.base.subprocess.run", fake_run):
+            adapter.invoke("/tmp/fake-target")
+        _args, kwargs = fake_run.call_args
+        expected_cwd = os.path.dirname(os.path.abspath(es.__file__))
+        self.assertEqual(kwargs.get("cwd"), expected_cwd)
+        self.assertNotEqual(kwargs.get("cwd"), "/tmp/fake-target")
+
+    def test_invoke_passes_absolute_target_path(self):
+        # Once cwd is pinned away from the target, the linted path on argv
+        # must be absolute so linting still resolves the right directory
+        # regardless of the pinned cwd.
+        adapter = es.EslintSecurityAdapter()
+        fake_run = mock.Mock(return_value=mock.Mock(stdout=b"[]", returncode=0))
+        with mock.patch("scripts.tools.base.subprocess.run", fake_run):
+            adapter.invoke("relative/target")
+        args, _kwargs = fake_run.call_args
+        cmd = args[0]
+        self.assertEqual(cmd[-1], os.path.abspath("relative/target"))
+
     def test_parse_includes_provenance(self):
         findings = es.EslintSecurityAdapter().parse(ESLINT_SAMPLE, "g1")
         self.assertTrue(findings)

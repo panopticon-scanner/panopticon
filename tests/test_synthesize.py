@@ -381,6 +381,58 @@ class TestReport(unittest.TestCase):
                 report = json.load(_fh)
             self.assertEqual(report["meta"]["review_type"], "directory")
 
+    def test_main_auto_discovers_panopticon_groups(self):
+        # With no --groups flag, synthesize should default to
+        # .panopticon/groups.json so the report carries group definitions
+        # (groups[].files drives the HTML heatmap and grouped findings).
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, ".panopticon"))
+            with open(os.path.join(d, ".panopticon", "groups.json"), "w") as fh:
+                json.dump({"mode": "repo", "security_mode": "standard",
+                           "groups": [{"name": "core", "files": ["a.py", "b.py"]}]}, fh)
+            fpath = os.path.join(d, "findings-core-code.json")
+            with open(fpath, "w") as fh:
+                json.dump({"findings": [{"id": "CD-001", "title": "x", "severity": "LOW",
+                    "confidence": "POSSIBLE", "panel": "code", "category": "structure",
+                    "location": {"file": "a.py", "line_start": 1}}]}, fh)
+            out = os.path.join(d, "report.json")
+            import io, contextlib
+            buf = io.StringIO()
+            with _chdir(d), contextlib.redirect_stdout(buf):
+                # relative paths so auto-discovery resolves against the cwd
+                syn.main(["--target", "src", "--out", "report.json",
+                          "findings-core-code.json"])
+            with open(out) as _fh:
+                report = json.load(_fh)
+        names = [g["name"] for g in report["groups"]]
+        self.assertIn("core", names)
+        core = next(g for g in report["groups"] if g["name"] == "core")
+        self.assertEqual(core["files"], ["a.py", "b.py"])
+
+    def test_main_explicit_groups_overrides_auto_discovery(self):
+        # An explicit --groups still wins over the .panopticon/groups.json default.
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, ".panopticon"))
+            with open(os.path.join(d, ".panopticon", "groups.json"), "w") as fh:
+                json.dump({"groups": [{"name": "auto", "files": ["a.py"]}]}, fh)
+            explicit = os.path.join(d, "explicit.json")
+            with open(explicit, "w") as fh:
+                json.dump({"groups": [{"name": "explicit", "files": ["a.py"]}]}, fh)
+            fpath = os.path.join(d, "findings-x-code.json")
+            with open(fpath, "w") as fh:
+                json.dump({"findings": [{"id": "CD-001", "title": "x", "severity": "LOW",
+                    "confidence": "POSSIBLE", "panel": "code", "category": "structure",
+                    "location": {"file": "a.py", "line_start": 1}}]}, fh)
+            out = os.path.join(d, "report.json")
+            import io, contextlib
+            buf = io.StringIO()
+            with _chdir(d), contextlib.redirect_stdout(buf):
+                syn.main(["--target", "src", "--groups", "explicit.json",
+                          "--out", "report.json", "findings-x-code.json"])
+            with open(out) as _fh:
+                report = json.load(_fh)
+        self.assertEqual([g["name"] for g in report["groups"]], ["explicit"])
+
     def test_main_rejects_invalid_fail_on(self):
         with self.assertRaises(SystemExit):
             syn.main(["--target", "src", "--fail-on", "bogus", "x.json"])
