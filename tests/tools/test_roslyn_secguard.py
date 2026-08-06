@@ -167,7 +167,12 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
     def test_parse_survives_non_dict_run_entry(self):
         # A non-dict entry in the SARIF "runs" array must not crash the whole
         # parse — mirror sarif_to_findings' run-level isinstance guard (#253).
-        for bad in (b'{"runs": ["not-a-dict"]}', b'{"runs": [null]}'):
+        for bad in (
+            b'{"runs": ["not-a-dict"]}',
+            b'{"runs": [null]}',
+            b'{"runs": null}',
+            b'{"runs": [{"results": null}]}',
+        ):
             self.assertEqual(rs.RoslynSecGuardAdapter().parse(bad, "g1"), [])
 
     def test_parse_string_message(self):
