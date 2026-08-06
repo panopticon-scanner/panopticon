@@ -443,6 +443,20 @@ class TestHtmlReport(unittest.TestCase):
         self.assertIn("badge sev-critical", out)
         self.assertNotIn("badge gate-pass", out)
 
+    def test_header_shows_coverage_line(self):
+        report = _minimal_report()
+        report["summary"]["evidence_stats"] = {
+            "advisor_confirmed": 2, "tool_confirmed": 1, "unverified": 5,
+            "tool_reported": 3}
+        report["summary"]["gate_policy"] = "confirmed_only"
+        report["meta"]["coverage"] = {"verdicts": {"queued": 3, "cut": 4}}
+        html = hr.render(report)
+        self.assertIn("Coverage:", html)
+        self.assertIn("3 verified", html)  # advisor_confirmed + tool_confirmed
+        self.assertIn("5 unverified", html)
+        self.assertIn("4 cut", html)
+        self.assertIn("gate: strict", html)  # confirmed_only -> "strict"
+
     def test_severity_class_sanitizes_input(self):
         self.assertEqual(hr._severity_class("HIGH"), "sev-high")
         self.assertEqual(hr._severity_class("HIGH extra"), "sev-highextra")

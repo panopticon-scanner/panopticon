@@ -33,14 +33,22 @@ __all__ = [
     "_norm_uri",
     "_rules_index",
     "ingest_dir",
+    "ingest_dir_detailed",
     "sarif_to_findings",
 ]
 
 
-def ingest_dir(tools_dir, group, exclude_globs=None):
-    """Ingest raw tool-output files from a directory and route them to the
-    registered adapter for parsing. Files without a registered adapter or that
-    fail to parse are skipped with a stderr diagnostic.
+def ingest_dir_detailed(tools_dir, group, exclude_globs=None):
+    """Ingest raw tool-output files and report each adapter's disposition.
+
+    Returns (findings, dispositions). dispositions maps each output file's
+    adapter name (its filename stem) to {"status": ok|empty|failed,
+    "findings": int} plus a "reason" when failed. This is the single
+    authoritative walk — a file's disposition reflects exactly what parsing
+    saw, so nothing downstream can classify it differently. `findings` is the
+    adapter's raw yield BEFORE fixture exclusion, so an adapter whose findings
+    were all fixture-noise still reads as having run (status/findings from the
+    raw parse; only `out` is filtered).
 
     exclude_globs (F-CAL-2): fnmatch patterns matched against each finding's
     location.file; matches are dropped with a single aggregate stderr note.
@@ -51,6 +59,7 @@ def ingest_dir(tools_dir, group, exclude_globs=None):
     import fnmatch
     from scripts.tools import ADAPTERS
     out = []
+    dispositions = {}
     excluded = 0
     for path in sorted(glob.glob(os.path.join(tools_dir, "*.sarif"))
                        + glob.glob(os.path.join(tools_dir, "*.json"))):
@@ -58,12 +67,22 @@ def ingest_dir(tools_dir, group, exclude_globs=None):
         adapter = ADAPTERS.get(tool)
         if adapter is None:
             print("ingest skip %s: no adapter registered" % path, file=sys.stderr)
+            dispositions[tool] = {"status": "failed", "findings": 0,
+                                  "reason": "no registered adapter"}
             continue
         try:
             with open(path, "rb") as fh:
                 raw = fh.read()
         except OSError as e:
             print("ingest skip %s: %s" % (path, e), file=sys.stderr)
+            dispositions[tool] = {"status": "failed", "findings": 0,
+                                  "reason": "unparseable: %s"
+                                  % (str(e).splitlines() or [""])[0]}
+            continue
+        if not raw.strip():
+            print("ingest skip %s: empty output file" % path, file=sys.stderr)
+            dispositions[tool] = {"status": "failed", "findings": 0,
+                                  "reason": "empty output file"}
             continue
         # Some tools decorate stdout before the JSON payload (calibration
         # 2026-08-03: bandit's progress bar corrupted its SARIF). Trim to the
@@ -79,7 +98,11 @@ def ingest_dir(tools_dir, group, exclude_globs=None):
             parsed = adapter.parse(raw, group)
         except Exception as e:  # noqa: BLE001 - tolerant by design
             print("ingest error %s: %s" % (path, e), file=sys.stderr)
+            dispositions[tool] = {"status": "failed", "findings": 0,
+                                  "reason": "unparseable: %s"
+                                  % (str(e).splitlines() or [""])[0]}
             continue
+        raw_count = len(parsed)
         if exclude_globs:
             kept = []
             for f in parsed:
@@ -90,7 +113,20 @@ def ingest_dir(tools_dir, group, exclude_globs=None):
                     kept.append(f)
             parsed = kept
         out.extend(parsed)
+        dispositions[tool] = {"status": "ok" if raw_count else "empty",
+                              "findings": raw_count}
     if excluded:
         print("ingest: excluded %d finding(s) matching %s"
               % (excluded, ", ".join(exclude_globs)), file=sys.stderr)
-    return out
+    return out, dispositions
+
+
+def ingest_dir(tools_dir, group, exclude_globs=None):
+    """Ingest raw tool-output files from a directory and route them to the
+    registered adapter for parsing. Files without a registered adapter or that
+    fail to parse are skipped with a stderr diagnostic.
+
+    Findings-only wrapper over ingest_dir_detailed (unchanged contract).
+    """
+    findings, _dispositions = ingest_dir_detailed(tools_dir, group, exclude_globs)
+    return findings

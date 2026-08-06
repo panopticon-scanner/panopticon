@@ -227,3 +227,80 @@ class TestExcludeGlobs(unittest.TestCase):
                 json.dump(self._sarif("skill/scripts/dispatch.py"), fh)
             out = it.ingest_dir(d, "g1", exclude_globs=["tests/fixtures/*"])
         self.assertEqual(len(out), 1)
+
+
+class TestIngestDispositions(unittest.TestCase):
+    def _write(self, d, name, content):
+        p = os.path.join(d, name)
+        with open(p, "wb") as fh:
+            fh.write(content if isinstance(content, bytes)
+                     else content.encode("utf-8"))
+        return p
+
+    def test_ok_empty_and_failed_are_distinguished(self):
+        import json as _json
+        with tempfile.TemporaryDirectory() as d:
+            # bandit SARIF with one result -> ok
+            sarif = {"runs": [{"tool": {"driver": {"name": "bandit",
+                     "rules": [{"id": "B105"}]}},
+                     "results": [{"ruleId": "B105", "level": "error",
+                     "message": {"text": "x"}, "locations": [{"physicalLocation":
+                     {"artifactLocation": {"uri": "a.py"},
+                      "region": {"startLine": 1}}}]}]}]}
+            self._write(d, "bandit.sarif", _json.dumps(sarif))
+            # valid SARIF, zero results -> empty
+            self._write(d, "gitleaks.sarif", _json.dumps(
+                {"runs": [{"tool": {"driver": {"name": "gitleaks"}},
+                           "results": []}]}))
+            # 0-byte file -> failed
+            self._write(d, "semgrep.sarif", b"")
+            # unparseable -> failed
+            self._write(d, "trivy.sarif", b"{not json")
+
+            findings, disp = it.ingest_dir_detailed(d, "g1")
+
+        self.assertEqual(disp["bandit"]["status"], "ok")
+        self.assertGreaterEqual(disp["bandit"]["findings"], 1)
+        self.assertEqual(disp["gitleaks"]["status"], "empty")
+        self.assertEqual(disp["gitleaks"]["findings"], 0)
+        self.assertEqual(disp["semgrep"]["status"], "failed")
+        self.assertIn("empty output file", disp["semgrep"]["reason"])
+        self.assertEqual(disp["trivy"]["status"], "failed")
+        self.assertIn("unparseable", disp["trivy"]["reason"])
+
+    def test_no_registered_adapter_is_failed(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, "notatool.json", b"{}")
+            _findings, disp = it.ingest_dir_detailed(d, "g1")
+        self.assertEqual(disp["notatool"]["status"], "failed")
+        self.assertIn("no registered adapter", disp["notatool"]["reason"])
+
+    def test_empty_message_exception_does_not_crash_disposition_reason(self):
+        # An adapter that raises with an EMPTY str(e) (e.g. a bare
+        # ValueError("")) must still be tolerated: "".splitlines() == [],
+        # so a naive str(e).splitlines()[0] raises IndexError from inside
+        # the except handler itself, turning a supposed-to-be-tolerant skip
+        # into a hard crash. Registers a real (if fake) adapter into
+        # scripts.tools.ADAPTERS rather than mocking ingest_dir_detailed
+        # itself, so the real except-handler code under test still runs.
+        from unittest.mock import patch
+        import scripts.tools as tools_mod
+
+        class _EmptyMessageAdapter:
+            def parse(self, raw, group):
+                raise ValueError("")
+
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, "emptymsgtool.sarif", b'{"x": 1}')
+            with patch.dict(tools_mod.ADAPTERS,
+                             {"emptymsgtool": _EmptyMessageAdapter()}):
+                findings, disp = it.ingest_dir_detailed(d, "g1")  # must not raise
+
+        self.assertEqual(findings, [])
+        self.assertEqual(disp["emptymsgtool"]["status"], "failed")
+        self.assertTrue(disp["emptymsgtool"]["reason"].startswith("unparseable:"))
+
+    def test_ingest_dir_wrapper_returns_only_findings(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = it.ingest_dir(d, "g1")
+        self.assertEqual(out, [])  # unchanged contract: a bare list

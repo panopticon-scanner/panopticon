@@ -25,27 +25,37 @@
             }
           }
         },
-        "build_executing_tools": {"type": "array", "items": {"type": "string"}, "description": "Names of adapters from EXECUTES_TARGET_BUILD that ran this run (produced an output file), whether or not they emitted findings."},
-        "tool_policy_mode": {"type": "string", "enum": ["enforced", "advisory", "mixed"], "description": "Posture of the fan-out reviewer entries (panel_review/lens_sweep) derived from dispatch plans; scout/advisor posture is not recorded."},
-        "tool_axis": {
+        "coverage": {
           "type": "object",
+          "description": "What this run actually did: which adapters produced usable output, which tools ran, verify-phase accounting, and the tool-policy posture.",
           "properties": {
-            "queued": {"type": "integer"},
-            "confirmed": {"type": "integer"},
-            "rejected": {"type": "integer"},
-            "needs_more_info": {"type": "integer"},
-            "unanswered": {"type": "integer"},
-            "rejection_rate": {"type": ["number", "null"]}
-          }
-        },
-        "verdicts": {
-          "type": "object",
-          "description": "Verify-phase accounting: verdicts that were dropped are otherwise stderr-only, and under strict gating a run whose verdicts all failed to match looks like a clean pass.",
-          "properties": {
-            "supplied": {"type": "integer"},
-            "matched": {"type": "integer"},
-            "unknown": {"type": "integer"},
-            "unanswered": {"type": ["integer", "null"], "description": "Queued findings left without a verdict; null when no --verdicts-dir was supplied, i.e. not measured."}
+            "adapters": {"type": "object", "description": "Per output file: {status: ok|empty|failed, findings: int, reason?: str}. A failed file (0-byte, unparseable, or no registered adapter) is not counted as having run."},
+            "tools_ran": {"type": "array", "items": {"type": "string"}, "description": "Adapters that produced a parseable document (status ok or empty)."},
+            "build_executing_tools": {"type": "array", "items": {"type": "string"}, "description": "Names of adapters from EXECUTES_TARGET_BUILD that ran this run (produced an output file), whether or not they emitted findings."},
+            "tool_policy_mode": {"type": "string", "enum": ["enforced", "advisory", "mixed", "unknown"], "description": "Posture of the fan-out reviewer entries (panel_review/lens_sweep) derived from dispatch plans; scout/advisor posture is not recorded. \"unknown\" means no dispatch plan was found."},
+            "tool_axis": {
+              "type": "object",
+              "properties": {
+                "queued": {"type": "integer"},
+                "confirmed": {"type": "integer"},
+                "rejected": {"type": "integer"},
+                "needs_more_info": {"type": "integer"},
+                "unanswered": {"type": "integer"},
+                "rejection_rate": {"type": ["number", "null"]}
+              }
+            },
+            "verdicts": {
+              "type": "object",
+              "description": "Verify-phase accounting: verdicts that were dropped are otherwise stderr-only, and under strict gating a run whose verdicts all failed to match looks like a clean pass.",
+              "properties": {
+                "queued": {"type": "integer"},
+                "cut": {"type": "integer"},
+                "supplied": {"type": "integer"},
+                "matched": {"type": "integer"},
+                "unknown": {"type": "integer"},
+                "unanswered": {"type": ["integer", "null"], "description": "Queued findings left without a verdict; null when no --verdicts-dir was supplied, i.e. not measured."}
+              }
+            }
           }
         }
       }

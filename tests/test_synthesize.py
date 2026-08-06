@@ -1621,16 +1621,31 @@ class TestToolPolicyMode(unittest.TestCase):
                 syn.derive_tool_policy_mode(os.path.join(d, ".panopticon")),
                 "mixed")
 
-    def test_no_plan_files_is_advisory(self):
+    def test_no_plan_files_is_unknown(self):
         with tempfile.TemporaryDirectory() as d:
-            self.assertEqual(syn.derive_tool_policy_mode(d), "advisory")
+            self.assertEqual(syn.derive_tool_policy_mode(d), "unknown")
 
     def test_report_meta_carries_mode_and_new_version(self):
         f = _agentic()
         report = syn.build_report([f], [], "t", None, "2026-08-03T00:00:00Z",
                                   tool_policy_mode="mixed")
-        self.assertEqual(report["meta"]["tool_policy_mode"], "mixed")
+        self.assertEqual(report["meta"]["coverage"]["tool_policy_mode"], "mixed")
         self.assertEqual(report["meta"]["version"], "4.2.0")
+
+
+class TestToolsRanFromDispositions(unittest.TestCase):
+    def test_failed_excluded_ok_and_empty_included(self):
+        dispositions = {
+            "bandit": {"status": "ok", "findings": 3},
+            "gitleaks": {"status": "empty", "findings": 0},
+            "semgrep": {"status": "failed", "findings": 0,
+                        "reason": "empty output file"},
+        }
+        self.assertEqual(syn.tools_ran_from_dispositions(dispositions),
+                         {"bandit", "gitleaks"})
+
+    def test_empty_dispositions_yields_empty_set(self):
+        self.assertEqual(syn.tools_ran_from_dispositions({}), set())
 
 
 class TestBuildExecutingTools(unittest.TestCase):
@@ -1644,13 +1659,13 @@ class TestBuildExecutingTools(unittest.TestCase):
     def test_meta_records_build_executing_tool(self):
         f = self._finding(source="tool:roslyn-secguard")
         report = syn.build_report([f], [], "t", None, "2026-08-03T00:00:00Z")
-        self.assertEqual(report["meta"]["build_executing_tools"],
+        self.assertEqual(report["meta"]["coverage"]["build_executing_tools"],
                          ["roslyn-secguard"])
 
     def test_meta_empty_without_executing_tools(self):
         f = self._finding(source="tool:bandit")
         report = syn.build_report([f], [], "t", None, "2026-08-03T00:00:00Z")
-        self.assertEqual(report["meta"]["build_executing_tools"], [])
+        self.assertEqual(report["meta"]["coverage"]["build_executing_tools"], [])
 
 
 import scripts.evidence as evidence_mod  # noqa: E402
@@ -1922,7 +1937,7 @@ class TestToolAxisMeta(unittest.TestCase):
     def test_tool_axis_counts_unverified_as_unanswered(self):
         r = syn.build_report([self._tool()], [], "t", None,
                              "2026-08-05T00:00:00Z")
-        axis = r["meta"]["tool_axis"]
+        axis = r["meta"]["coverage"]["tool_axis"]
         self.assertEqual(axis["queued"], 1)
         self.assertEqual(axis["unanswered"], 1)
         self.assertEqual(axis["confirmed"], 0)
@@ -1941,7 +1956,7 @@ class TestToolAxisMeta(unittest.TestCase):
                 "finding_id": e["finding"]["id"], "reasoning": "r"}
         r = syn.build_report([a, b], [], "t", None, "2026-08-05T00:00:00Z",
                              verdicts=verdicts, verdicts_supplied=True)
-        axis = r["meta"]["tool_axis"]
+        axis = r["meta"]["coverage"]["tool_axis"]
         self.assertEqual((axis["confirmed"], axis["rejected"]), (1, 1))
         self.assertEqual(axis["rejection_rate"], 0.5)
 
@@ -1956,7 +1971,7 @@ class TestToolAxisMeta(unittest.TestCase):
             "finding_id": queue[0]["finding"]["id"], "reasoning": "r"}}
         r = syn.build_report([a, b], [], "t", None, "2026-08-05T00:00:00Z",
                              verdicts=verdicts, verdicts_supplied=True)
-        axis = r["meta"]["tool_axis"]
+        axis = r["meta"]["coverage"]["tool_axis"]
         self.assertEqual(axis["needs_more_info"], 1)
         self.assertEqual(axis["unanswered"], 1)
         # needs_more_info is neither confirmed nor rejected, so it must not
@@ -1971,19 +1986,19 @@ class TestToolAxisMeta(unittest.TestCase):
         # alone -- so it must still land in the tool axis.
         f = _agentic(reinforced=True)
         r = syn.build_report([f], [], "t", None, "2026-08-05T00:00:00Z")
-        axis = r["meta"]["tool_axis"]
+        axis = r["meta"]["coverage"]["tool_axis"]
         self.assertEqual(axis["queued"], 1)
 
     def test_build_executing_tools_reports_a_run_with_zero_findings(self):
         r = syn.build_report([], [], "t", None, "2026-08-05T00:00:00Z",
                              tools_ran={"roslyn-secguard", "bandit"})
-        self.assertEqual(r["meta"]["build_executing_tools"],
+        self.assertEqual(r["meta"]["coverage"]["build_executing_tools"],
                          ["roslyn-secguard"])
 
     def test_build_executing_tools_falls_back_without_tools_ran(self):
         r = syn.build_report([self._tool(source="tool:roslyn-secguard")], [],
                              "t", None, "2026-08-05T00:00:00Z")
-        self.assertEqual(r["meta"]["build_executing_tools"],
+        self.assertEqual(r["meta"]["coverage"]["build_executing_tools"],
                          ["roslyn-secguard"])
 
 
@@ -2022,9 +2037,9 @@ class TestVerdictAccountingMeta(unittest.TestCase):
         }
         r = syn.build_report([a, b], [], "t", None, "2026-08-05T00:00:00Z",
                              verdicts=verdicts, verdicts_supplied=True)
-        self.assertEqual(r["meta"]["verdicts"],
-                         {"supplied": 2, "matched": 1, "unknown": 1,
-                          "unanswered": 1})
+        self.assertEqual(r["meta"]["coverage"]["verdicts"],
+                         {"queued": 2, "cut": 0, "supplied": 2, "matched": 1,
+                          "unknown": 1, "unanswered": 1})
 
     def test_echo_mismatch_is_dropped_and_counted_as_unanswered(self):
         # match_verdict refuses a verdict that echoes a different finding_id.
@@ -2039,9 +2054,9 @@ class TestVerdictAccountingMeta(unittest.TestCase):
         with contextlib.redirect_stderr(err):
             r = syn.build_report([a], [], "t", None, "2026-08-05T00:00:00Z",
                                  verdicts=verdicts, verdicts_supplied=True)
-        self.assertEqual(r["meta"]["verdicts"],
-                         {"supplied": 1, "matched": 0, "unknown": 0,
-                          "unanswered": 1})
+        self.assertEqual(r["meta"]["coverage"]["verdicts"],
+                         {"queued": 1, "cut": 0, "supplied": 1, "matched": 0,
+                          "unknown": 0, "unanswered": 1})
         self.assertEqual(r["summary"]["gate"], "OFF")  # ...and it looks clean
 
     def test_unanswered_is_null_when_no_verdicts_were_supplied(self):
@@ -2050,6 +2065,121 @@ class TestVerdictAccountingMeta(unittest.TestCase):
         # already does).
         r = syn.build_report([self._f("A-1", "first claim", "a.py")], [], "t",
                              None, "2026-08-05T00:00:00Z")
-        self.assertEqual(r["meta"]["verdicts"],
-                         {"supplied": 0, "matched": 0, "unknown": 0,
-                          "unanswered": None})
+        self.assertEqual(r["meta"]["coverage"]["verdicts"],
+                         {"queued": 1, "cut": 0, "supplied": 0, "matched": 0,
+                          "unknown": 0, "unanswered": None})
+
+
+class TestVerdictCutAccounting(unittest.TestCase):
+    def _f(self, fid, sev="MEDIUM"):
+        return {"id": fid, "severity": sev, "panel": "code",
+                "category": "logic", "title": "t-" + fid, "confidence": "POSSIBLE",
+                "description": "d", "location": {"file": fid + ".py", "line_start": 1}}
+
+    def test_uncapped_run_reports_cut_zero(self):
+        r = syn.build_report([self._f("A"), self._f("B")], [], "t", None,
+                             "2026-08-05T00:00:00Z")
+        v = r["meta"]["coverage"]["verdicts"]
+        self.assertEqual(v["cut"], 0)
+        self.assertEqual(v["queued"], 2)
+
+    def test_capped_run_reports_the_cut(self):
+        findings = [self._f("A", "CRITICAL"), self._f("B", "HIGH"),
+                    self._f("C", "LOW")]
+        r = syn.build_report(findings, [], "t", None, "2026-08-05T00:00:00Z",
+                             max_verify=1)
+        v = r["meta"]["coverage"]["verdicts"]
+        self.assertEqual(v["queued"], 1)
+        self.assertEqual(v["cut"], 2)
+
+
+class TestToolPolicyModeUnknown(unittest.TestCase):
+    def _plan(self, d, entries):
+        import json as _json
+        with open(os.path.join(d, "dispatch-plan.json"), "w") as fh:
+            _json.dump(entries, fh)
+
+    def test_no_plan_is_unknown(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(syn.derive_tool_policy_mode(d), "unknown")
+
+    def test_plan_with_no_enforced_entries_is_advisory(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._plan(d, [{"role": "panel_review", "enforced": False}])
+            self.assertEqual(syn.derive_tool_policy_mode(d), "advisory")
+
+    def test_all_enforced_is_enforced(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._plan(d, [{"enforced": True}, {"enforced": True}])
+            self.assertEqual(syn.derive_tool_policy_mode(d), "enforced")
+
+    def test_some_enforced_is_mixed(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._plan(d, [{"enforced": True}, {"enforced": False}])
+            self.assertEqual(syn.derive_tool_policy_mode(d), "mixed")
+
+
+class TestMetaCoverage(unittest.TestCase):
+    def _tool(self, fid="T-1"):
+        return {"id": fid, "source": "tool:bandit", "severity": "HIGH",
+                "panel": "security", "category": "secrets", "title": "x",
+                "confidence": "LIKELY", "description": "d",
+                "location": {"file": "a.py", "line_start": 1},
+                "provenance": {"confirmation_reasoning": "B105"}}
+
+    def test_coverage_block_holds_the_moved_fields(self):
+        r = syn.build_report([self._tool()], [], "t", None,
+                             "2026-08-05T00:00:00Z",
+                             tools_ran={"bandit"}, tool_policy_mode="enforced",
+                             tool_dispositions={"bandit": {"status": "ok",
+                                                           "findings": 1}})
+        cov = r["meta"]["coverage"]
+        self.assertEqual(cov["adapters"]["bandit"]["status"], "ok")
+        self.assertEqual(cov["tools_ran"], ["bandit"])
+        self.assertEqual(cov["tool_policy_mode"], "enforced")
+        self.assertIn("tool_axis", cov)
+        self.assertIn("verdicts", cov)
+
+    def test_moved_fields_are_gone_from_top_level_meta(self):
+        r = syn.build_report([self._tool()], [], "t", None,
+                             "2026-08-05T00:00:00Z")
+        m = r["meta"]
+        for k in ("tool_axis", "verdicts", "tool_policy_mode",
+                  "build_executing_tools"):
+            self.assertNotIn(k, m)
+
+    def test_coverage_present_on_a_findings_only_run(self):
+        r = syn.build_report([{"id": "A", "severity": "LOW", "panel": "code",
+                               "category": "logic", "title": "t",
+                               "confidence": "POSSIBLE", "description": "d",
+                               "location": {"file": "a.py", "line_start": 1}}],
+                             [], "t", None, "2026-08-05T00:00:00Z")
+        self.assertIn("coverage", r["meta"])
+        self.assertEqual(r["meta"]["coverage"]["tool_policy_mode"], "unknown")
+        self.assertEqual(r["meta"]["coverage"]["adapters"], {})
+
+
+class TestCoverageEndToEnd(unittest.TestCase):
+    def test_full_coverage_block_is_honest(self):
+        tool = {"id": "T-1", "source": "tool:bandit", "severity": "HIGH",
+                "panel": "security", "category": "secrets", "title": "x",
+                "confidence": "LIKELY", "description": "d",
+                "location": {"file": "a.py", "line_start": 1},
+                "provenance": {"confirmation_reasoning": "B105"}}
+        agent = {"id": "A-1", "severity": "LOW", "panel": "code",
+                 "category": "logic", "title": "t", "confidence": "POSSIBLE",
+                 "description": "d", "location": {"file": "b.py", "line_start": 2}}
+        disp = {"bandit": {"status": "ok", "findings": 1},
+                "semgrep": {"status": "failed", "findings": 0,
+                            "reason": "empty output file"}}
+        r = syn.build_report([tool, agent], [], "t", "high",
+                             "2026-08-05T00:00:00Z", max_verify=1,
+                             tools_ran={"bandit"}, tool_policy_mode="enforced",
+                             tool_dispositions=disp)
+        cov = r["meta"]["coverage"]
+        # semgrep failed -> not in tools_ran / build_executing_tools
+        self.assertNotIn("semgrep", cov["tools_ran"])
+        self.assertEqual(cov["adapters"]["semgrep"]["status"], "failed")
+        # the cut is disclosed
+        self.assertEqual(cov["verdicts"]["cut"], 1)
+        self.assertEqual(cov["tool_policy_mode"], "enforced")

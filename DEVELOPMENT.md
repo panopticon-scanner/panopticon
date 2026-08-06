@@ -55,12 +55,26 @@ summary + JSON artifact) with standards citations and CI gating.
   reinforced (tool+agent) finding with no verdict is `tool_reported` — reported,
   not verified — and is NOT gate-eligible by default; only `tool_confirmed`/
   `advisor_confirmed` are (`evidence.GATE_ELIGIBLE_DEFAULT`).
-  `meta.tool_axis.rejection_rate` reports how often advisors refute scanners
+  `meta.coverage.tool_axis.rejection_rate` reports how often advisors refute scanners
   among DECIDED tool claims (`None` until something is decided, never a
   misleading `0%`). `--gate-unverified` is the escape hatch for pipelines
   that want every non-rejected finding — verified or not — to gate,
   restoring the old all-claims-gate behavior. Severity itself is never
   mutated by any of this.
+- **`meta.coverage` is the single home for what a run actually observed**:
+  `adapters` (per-file disposition — `ok`/`empty`/`failed`, a findings count,
+  and a `reason` when failed), `tools_ran`, `build_executing_tools`,
+  `tool_policy_mode`, `tool_axis`, and `verdicts` all live under it. An
+  adapter classified `failed` (0-byte output, unparseable, or no registered
+  adapter) is excluded from `tools_ran`/`build_executing_tools` — it is no
+  longer counted as having run. `verdicts.cut` records how many findings
+  `--max-verify` dropped from the verify queue. `tool_policy_mode` reads
+  `unknown` when no dispatch plan was found (distinct from `advisory`, a
+  plan that enforced nothing). The terminal HTML report's header renders a
+  coverage line (verified/unverified/tool-reported/cut counts plus gate
+  policy) next to the grade badge, so a PASS can't hide low verification.
+  `summary.gate_policy` (`confirmed_only`/`include_unverified`) is unchanged
+  by this consolidation and stays under `summary`, not `coverage`.
 - **Citations are hybrid**: tools emit CWE/OWASP/CVE natively (authoritative); agents assert;
   `synthesize` validates/enriches. Never emit a guessed citation (no CVE → no EPSS; unlisted
   CWE → kept but `verified:false`; missing SSVC inputs → omitted).
@@ -69,7 +83,7 @@ summary + JSON artifact) with standards citations and CI gating.
   advisory/rules data is baked into the tools image (weekly rebuild).
   Parse-only adapters never execute target code. roslyn-secguard executes
   target build logic inside the no-egress, no-secret, read-only-mount
-  container — the report records it in `meta.build_executing_tools`.
+  container — the report records it in `meta.coverage.build_executing_tools`.
   pip-audit/npm-audit run only under `run_tools.py --online`.
 - **Tolerant by design**: `load_findings` and `enrich_citations` skip/log malformed input,
   never abort the run (a bad finding must not lose a real CRITICAL or skip the CI gate).
@@ -109,8 +123,8 @@ History:
 - **4.2.0** (current) — tool-policy enforcement: uniform read-only/return-JSON
   role contracts; `--emit-host-agents` generates registered enforcement shells
   (claude/kimi dialects) from the host-neutral templates; per-role `enforced`
-  plan entries dispatched via `subagent_type`; `meta.tool_policy_mode`
-  (enforced/advisory/mixed) in the audit artifact; clean-tree check in the
+  plan entries dispatched via `subagent_type`; `meta.coverage.tool_policy_mode`
+  (enforced/advisory/mixed/unknown) in the audit artifact; clean-tree check in the
   validate step. SEC-101 remediation.
 - **4.1.0** — Claude Code port: all reviewer dispatch moves to
   deterministic rendered prompts (dispatch plan entries carry `prompt`;

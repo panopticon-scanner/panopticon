@@ -57,6 +57,7 @@ body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Ro
 .meta { color: var(--muted); margin-bottom: .5rem; }
 .meta span { margin-right: 1rem; }
 .badges { margin: 1rem 0; }
+.coverage { color: var(--muted); margin: -.5rem 0 1rem; }
 .dashboard { background: var(--card); border: 1px solid var(--border); border-radius: .5rem; padding: 1rem; margin: 1rem 0; }
 .stats { display: flex; gap: .5rem; margin-bottom: 1rem; }
 .stat-card { flex: 1; padding: .75rem; border-radius: .25rem; text-align: center; }
@@ -345,6 +346,20 @@ def _render_header(report):
         f"Gate: {_escape(summary.get('gate', 'OFF'))}</span>",
         "</div>",
     ]
+    ev = summary.get("evidence_stats") or {}
+    verified = int(ev.get("advisor_confirmed", 0)) + int(ev.get("tool_confirmed", 0))
+    unverified = int(ev.get("unverified", 0))
+    tool_reported = int(ev.get("tool_reported", 0))
+    cut = int(((meta.get("coverage") or {}).get("verdicts") or {}).get("cut", 0))
+    policy = "unverified" if summary.get("gate_policy") == "include_unverified" else "strict"
+    coverage_parts = ["%d verified" % verified, "%d unverified" % unverified,
+                       "%d tool-reported" % tool_reported]
+    if cut:
+        coverage_parts.append("%d cut" % cut)
+    parts.append(
+        "<div class='coverage'>Coverage: %s &mdash; gate: %s</div>"
+        % (" &middot; ".join(coverage_parts), policy)
+    )
     return "\n".join(parts)
 
 
