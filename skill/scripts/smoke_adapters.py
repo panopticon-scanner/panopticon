@@ -75,13 +75,20 @@ def check_writable(path, why):
 
 def run_probe(name, argv):
     try:
-        res = subprocess.run(argv, stdout=subprocess.PIPE,
-                             stderr=subprocess.STDOUT, timeout=PROBE_TIMEOUT)
+        res = subprocess.run(
+            argv,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=PROBE_TIMEOUT,
+        )
     except FileNotFoundError:
         return False, "%s: binary not found (%s)" % (name, argv[0])
     except subprocess.TimeoutExpired:
         return False, "%s: no response in %ds — a blocked call home or a lock wait" % (
             name, PROBE_TIMEOUT)
+    except OSError as e:
+        return False, "%s: failed to exec %s (%s)" % (
+            name, argv[0], e.strerror or repr(e))
     if res.returncode != 0:
         tail = (res.stdout or b"").decode("utf-8", "replace").strip().splitlines()
         return False, "%s: exited %d%s" % (
