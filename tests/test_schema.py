@@ -175,9 +175,9 @@ class TestReportSchema(unittest.TestCase):
     def test_schema_declares_tool_policy_mode(self):
         with open(SCHEMA_PATH, encoding="utf-8") as fh:
             schema = json.load(fh)
-        meta_props = schema["properties"]["meta"]["properties"]
-        self.assertEqual(meta_props["tool_policy_mode"]["enum"],
-                         ["enforced", "advisory", "mixed"])
+        coverage_props = schema["properties"]["meta"]["properties"]["coverage"]["properties"]
+        self.assertEqual(coverage_props["tool_policy_mode"]["enum"],
+                         ["enforced", "advisory", "mixed", "unknown"])
 
 
 if __name__ == "__main__":

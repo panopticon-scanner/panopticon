@@ -603,7 +603,7 @@ def aggregate_tool_findings(findings):
 def build_report(findings, groups_meta, target, fail_on, timestamp, review_type="repo",
                  security_mode="standard", verdicts=None, gate_unverified=False,
                  max_verify=None, verdicts_supplied=False, tool_policy_mode=None,
-                 tools_ran=None):
+                 tools_ran=None, tool_dispositions=None):
     """Build a CodeReviewReport under the two-axis severity x evidence model.
 
     Severity is never mutated here. Verdicts (from evidence.load_verdicts) are
@@ -742,12 +742,16 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
             "version": "4.2.0",
             "security_mode": security_mode,
             "models_used": _collect_models_used(findings),
-            "build_executing_tools": sorted(
-                (set(tools_ran) if tools_ran is not None else tool_names)
-                & EXECUTES_TARGET_BUILD),
-            "tool_axis": tool_axis,
-            "verdicts": verdict_stats,
-            **({"tool_policy_mode": tool_policy_mode} if tool_policy_mode else {}),
+            "coverage": {
+                "adapters": tool_dispositions or {},
+                "tools_ran": sorted(tools_ran) if tools_ran is not None else [],
+                "build_executing_tools": sorted(
+                    (set(tools_ran) if tools_ran is not None else tool_names)
+                    & EXECUTES_TARGET_BUILD),
+                "tool_policy_mode": tool_policy_mode or "unknown",
+                "tool_axis": tool_axis,
+                "verdicts": verdict_stats,
+            },
         },
         "summary": {
             "overall_grade": overall,
@@ -999,21 +1003,21 @@ def main(argv=None):
                   "include tool findings in this report"
                   % (default_tools, default_tools), file=sys.stderr)
     findings = load_findings(args.files)
-    if args.tools_dir and os.path.isdir(args.tools_dir):
-        for tf in ingest_tools.ingest_dir(args.tools_dir, None,
-                                          exclude_globs=args.tools_exclude):
-            findings.append(normalize_finding(tf))
-    # None when --tools-dir wasn't supplied (or couldn't be read): build_report
-    # documents tools_ran=None as "not supplied -> infer from findings". An
-    # empty set instead ASSERTS "no build-executing tool ran" from an absence
-    # of evidence, which is exactly the inversion #450 was about.
+    tool_dispositions = {}
+    # None when --tools-dir wasn't supplied: build_report treats None as
+    # "not measured -> infer build_executing_tools from findings"; an empty set
+    # would ASSERT "no build-executing tool ran" from an absence of evidence
+    # (the inversion #450 was about).
     tools_ran = None
     if args.tools_dir and os.path.isdir(args.tools_dir):
-        tools_ran = set()
-        for name in os.listdir(args.tools_dir):
-            base, ext = os.path.splitext(name)
-            if ext in (".json", ".sarif"):
-                tools_ran.add(base)
+        tool_findings, tool_dispositions = ingest_tools.ingest_dir_detailed(
+            args.tools_dir, None, exclude_globs=args.tools_exclude)
+        for tf in tool_findings:
+            findings.append(normalize_finding(tf))
+        # A "failed" disposition (empty / unparseable / no-adapter) is excluded,
+        # so build_executing_tools can no longer name an adapter that ran empty.
+        tools_ran = {name for name, d in tool_dispositions.items()
+                     if d["status"] in ("ok", "empty")}
     catalog = citations.load_cwe_catalog()
     citations.enrich_citations(findings, catalog, epss_enabled=args.epss,
                                cache_path=os.path.join(".panopticon", "epss-cache.json"))
@@ -1053,7 +1057,8 @@ def main(argv=None):
                           max_verify=args.max_verify,
                           verdicts_supplied=args.verdicts_dir is not None,
                           tool_policy_mode=tool_policy_mode,
-                          tools_ran=tools_ran)
+                          tools_ran=tools_ran,
+                          tool_dispositions=tool_dispositions)
     errors, warnings = validate_report(report)
     attach_schema_status(report, errors)
     for w in warnings:
