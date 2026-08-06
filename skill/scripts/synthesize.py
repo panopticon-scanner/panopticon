@@ -988,19 +988,34 @@ def main(argv=None):
     groups_meta = []
     review_type = "changes" if args.changes else "repo"
     security_mode = args.security
-    if args.groups and os.path.isfile(args.groups):
+    # Default to the discovery output so the report carries group definitions:
+    # groups[].files drives the HTML heatmap and grouped findings, and an empty
+    # groups[] is why those fell back to path segments. An explicit --groups
+    # still wins; auto-discovery only fills the common case where the
+    # orchestrator's synthesize call omitted the flag.
+    groups_path = args.groups
+    if groups_path is None:
+        default_groups = os.path.join(".panopticon", "groups.json")
+        if os.path.isfile(default_groups):
+            groups_path = default_groups
+    if groups_path and os.path.isfile(groups_path):
         try:
-            with open(args.groups, encoding="utf-8") as fh:
+            with open(groups_path, encoding="utf-8") as fh:
                 gj = json.load(fh)
             if isinstance(gj, dict):
                 groups_meta = gj.get("groups", [])
-                review_type = MODE_TO_REVIEW_TYPE.get(gj.get("mode"), review_type)
+                # An explicit --changes wins: a discovered groups.json mode must
+                # not flip an explicitly-requested changes review back to repo.
+                if not args.changes:
+                    review_type = MODE_TO_REVIEW_TYPE.get(gj.get("mode"), review_type)
                 if security_mode is None:
                     security_mode = gj.get("security_mode", "standard")
             else:
-                print("synthesize: --groups is not a JSON object; ignoring", file=sys.stderr)
+                print("synthesize: %s is not a JSON object; ignoring" % groups_path,
+                      file=sys.stderr)
         except (OSError, ValueError) as e:  # tolerant by design: never abort a run
-            print("synthesize: could not read --groups (%s); ignoring" % e, file=sys.stderr)
+            print("synthesize: could not read %s (%s); ignoring" % (groups_path, e),
+                  file=sys.stderr)
     if security_mode is None:
         security_mode = "standard"
 
