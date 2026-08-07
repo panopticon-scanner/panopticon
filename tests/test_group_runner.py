@@ -46,3 +46,27 @@ class TestPendingEntries(unittest.TestCase):
             pending = gr.pending_entries(plan)
             self.assertEqual([e["out_file"] for e in pending],
                              [os.path.join(d, "todo.json")])
+
+
+class TestFanOutCoverage(unittest.TestCase):
+    def _plan_entry(self, d, group, panel, done):
+        out = os.path.join(d, "findings-%s-%s-panel_review.json" % (group, panel))
+        if done:
+            with open(out, "w") as fh:
+                json.dump({"findings": []}, fh)
+        return {"role": "panel_review", "out_file": out,
+                "group": group, "panel": panel}
+
+    def test_planned_vs_executed_and_group_status(self):
+        with tempfile.TemporaryDirectory() as d:
+            plan = [
+                self._plan_entry(d, "g1", "code", True),
+                self._plan_entry(d, "g1", "security", True),
+                self._plan_entry(d, "g2", "code", True),
+                self._plan_entry(d, "g2", "security", False),  # not run
+            ]
+            cov = gr.fan_out_coverage(plan)
+            self.assertEqual(cov["planned"], {"code": 2, "security": 2})
+            self.assertEqual(cov["executed"], {"code": 2, "security": 1})
+            self.assertEqual(cov["groups_complete"], ["g1"])
+            self.assertEqual(cov["groups_partial"], ["g2"])
