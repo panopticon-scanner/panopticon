@@ -90,15 +90,27 @@ def _group_by_fingerprint(records):
     return grouped
 
 
+def _by_id(recs):
+    """Records sorted by id — the tool's output must be byte-stable and
+    diffable regardless of the order findings arrived in."""
+    return sorted(recs, key=lambda r: r["id"] or "")
+
+
 def _degenerate(grouped, run_label):
-    return [{"fingerprint": fp, "run": run_label, "ids": [r["id"] for r in recs]}
-            for fp, recs in grouped.items() if len(recs) > 1]
+    return sorted(
+        ({"fingerprint": fp, "run": run_label,
+          "ids": sorted(r["id"] or "" for r in recs)}
+         for fp, recs in grouped.items() if len(recs) > 1),
+        key=lambda d: (d["fingerprint"], d["run"]))
 
 
 def build_diff(run2_records, run3_records, run2_path, run3_path):
     """Partition recomputed-fingerprint identities into recurring /
     fixed_or_gone / new cohorts, and surface (never silently merge)
     same-side fingerprint collisions plus finding<->rejected kind flips.
+
+    Every cohort and its record lists are sorted, so re-running the tool on the
+    same inputs yields a byte-identical diff.
     """
     g2 = _group_by_fingerprint(run2_records)
     g3 = _group_by_fingerprint(run3_records)
@@ -108,14 +120,16 @@ def build_diff(run2_records, run3_records, run2_path, run3_path):
     for fp in sorted(fps2 & fps3):
         kinds2 = {r["kind"] for r in g2[fp]}
         kinds3 = {r["kind"] for r in g3[fp]}
-        recurring.append({"fingerprint": fp, "run2": g2[fp], "run3": g3[fp],
+        recurring.append({"fingerprint": fp, "run2": _by_id(g2[fp]),
+                          "run3": _by_id(g3[fp]),
                           "kind_changed": kinds2 != kinds3})
-    fixed_or_gone = [{"fingerprint": fp, "run2": g2[fp]}
+    fixed_or_gone = [{"fingerprint": fp, "run2": _by_id(g2[fp])}
                      for fp in sorted(fps2 - fps3)]
-    new = [{"fingerprint": fp, "run3": g3[fp]}
+    new = [{"fingerprint": fp, "run3": _by_id(g3[fp])}
           for fp in sorted(fps3 - fps2)]
 
-    degenerate = _degenerate(g2, "run2") + _degenerate(g3, "run3")
+    degenerate = sorted(_degenerate(g2, "run2") + _degenerate(g3, "run3"),
+                        key=lambda d: (d["fingerprint"], d["run"]))
     return {"meta": {"run2_report": run2_path, "run3_report": run3_path,
                      "run2_count": len(run2_records),
                      "run3_count": len(run3_records),

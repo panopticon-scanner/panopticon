@@ -106,6 +106,17 @@ class TestBuildDiff(unittest.TestCase):
                     for rec in e["run2"] if rec["id"] == "F-TOOL-1")
         self.assertFalse(entry["kind_changed"])
 
+    def test_kind_changed_true_when_finding_becomes_rejected(self):
+        # A fingerprint that was a live finding in run2 but a rejected claim in
+        # run3 (or vice-versa) must set kind_changed — the signal a triager
+        # uses to notice a finding's status flipped across runs.
+        fp = "a" * 16
+        r2 = [{"id": "X-1", "kind": "finding", "fingerprint": fp}]
+        r3 = [{"id": "X-1", "kind": "rejected", "fingerprint": fp}]
+        diff = reconcile.build_diff(r2, r3, "run2.json", "run3.json")
+        entry = next(e for e in diff["recurring"] if e["fingerprint"] == fp)
+        self.assertTrue(entry["kind_changed"])
+
     def test_meta_counts(self):
         r2 = self._records("run2.json")
         r3 = self._records("run3.json")
