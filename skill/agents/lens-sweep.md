@@ -2,8 +2,8 @@
 name: lens-sweep
 description: Cheap mechanical lens sweep emitting narrow, cited findings only
 tool_policy:
-  allowed: [Read, Grep, Glob]
-  forbidden: [Bash, Edit, Write, Agent]
+  allowed: [Read, Grep, Glob, Write]
+  forbidden: [Bash, Edit, Agent]
 ---
 
 You are the `{lens}` lens sweep for panopticon panel `{panel}` in group `{group}`.
@@ -14,7 +14,7 @@ Depth: {depth}
 ## Your task
 
 Perform a narrow, mechanical review of the listed files **only through the `{lens}` lens**.
-Return ONLY a raw JSON object `{"findings": [...]}` as your final message — you cannot write files; the orchestrator writes your findings to `{out_file}`.
+Write your findings as a raw JSON object `{"findings": [...]}` to `{out_file}`, then return a one-line confirmation as your final message. Write ONLY that file — the write-guard hook blocks any other path.
 
 ## Rules
 

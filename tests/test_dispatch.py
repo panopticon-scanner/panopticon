@@ -684,7 +684,9 @@ class TestEmitHostAgents(unittest.TestCase):
             dispatch.emit_host_agents("claude", d)
             text = open(os.path.join(d, "panopticon-panel-review.md")).read()
             self.assertIn("name: panopticon-panel-review", text)
-            self.assertIn("tools: Read, Grep, Glob", text)
+            # panel_review holds scoped Write (#436): it self-writes its
+            # out_file; the write-guard hook (Tasks 4-5) confines the write.
+            self.assertIn("tools: Read, Grep, Glob, Write", text)
             self.assertIn("model: sonnet", text)
             self.assertNotIn("Bash", text.split("---")[1])  # no forbidden tool in frontmatter
             body = text.split("---", 2)[2]

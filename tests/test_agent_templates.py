@@ -27,15 +27,27 @@ class TestTemplateFrontmatter(unittest.TestCase):
             self.assertNotIn("model_preference", raw, role_file)
             self.assertNotIn("disallowedTools", raw, role_file)
 
-    def test_tool_policy_uniform_least_privilege(self):
-        # Round 3a: every role is read-only; reviewers return JSON and the
-        # orchestrator writes all artifacts.
-        for role_file in ROLES:
+    def test_tool_policy_least_privilege(self):
+        # scout/advisor are not fan-out roles and stay read-only. panel_review
+        # and lens_sweep (#436, spec Decision 3) hold scoped Write so they can
+        # self-write their out_file; the write-guard hook (Tasks 4-5) confines
+        # that Write to the plan's out_file set. Edit/Bash/Agent stay forbidden
+        # for every role.
+        read_only = {"scout.md", "advisor.md"}
+        scoped_write = {"panel-review.md", "lens-sweep.md"}
+        self.assertEqual(read_only | scoped_write, set(ROLES))
+        for role_file in read_only:
             meta, _ = dispatch.load_template(role_file)
             self.assertEqual(meta["tool_policy"]["allowed"],
                              ["Read", "Grep", "Glob"], role_file)
             self.assertEqual(meta["tool_policy"]["forbidden"],
                              ["Bash", "Edit", "Write", "Agent"], role_file)
+        for role_file in scoped_write:
+            meta, _ = dispatch.load_template(role_file)
+            self.assertEqual(meta["tool_policy"]["allowed"],
+                             ["Read", "Grep", "Glob", "Write"], role_file)
+            self.assertEqual(meta["tool_policy"]["forbidden"],
+                             ["Bash", "Edit", "Agent"], role_file)
 
     def test_malformed_frontmatter_fails_fast(self):
         with self.assertRaises(ValueError) as ctx:
