@@ -30,3 +30,43 @@ class TestLedger(unittest.TestCase):
         record = {"stored_fingerprint": None, "id": "F-1",
                  "location_file": "x.py", "kind": "rejected"}
         self.assertEqual(reconcile_apply.ledger_key(record), "|F-1|x.py|rejected")
+
+
+class FakeCompleted:
+    def __init__(self, stdout, returncode=0):
+        self.stdout = stdout
+        self.stderr = ""
+        self.returncode = returncode
+
+
+class TestRecoverLinkage(unittest.TestCase):
+    def test_parses_fingerprint_id_location_kind_from_issue_bodies(self):
+        issues = [
+            {"number": 305, "labels": [{"name": "self-scan"}],
+             "body": "**Location:** `tests/test_verdict_ingest.py:12`\n\n"
+                     "---\n\n**Fingerprint:** `008bafabf583e494` — stable.\n"
+                     "**Finding id in report:** `NOV-003`\n"},
+            {"number": 399, "labels": [{"name": "self-scan"}, {"name": "false-positive"}],
+             "body": "**Location:** `skill/scripts/tools/npm_audit.py`\n\n"
+                     "---\n\n**Fingerprint:** `029bc5414dc2a077` — stable.\n"
+                     "**Finding id in report:** `NOV-008`\n"},
+        ]
+
+        def runner(argv, capture_output, text):
+            return FakeCompleted(json.dumps(issues))
+
+        linkage = reconcile_apply.recover_linkage_from_github(runner=runner)
+        self.assertEqual(
+            linkage["008bafabf583e494|NOV-003|tests/test_verdict_ingest.py|finding"],
+            "https://github.com/panopticon-scanner/panopticon/issues/305")
+        self.assertEqual(
+            linkage["029bc5414dc2a077|NOV-008|skill/scripts/tools/npm_audit.py|rejected"],
+            "https://github.com/panopticon-scanner/panopticon/issues/399")
+
+    def test_skips_issues_missing_the_expected_footer(self):
+        issues = [{"number": 1, "labels": [], "body": "no footer here"}]
+
+        def runner(argv, capture_output, text):
+            return FakeCompleted(json.dumps(issues))
+
+        self.assertEqual(reconcile_apply.recover_linkage_from_github(runner=runner), {})
