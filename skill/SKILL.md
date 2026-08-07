@@ -42,8 +42,8 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
 2. **Discovery** — run `python3 scripts/orchestrator.py` to produce `groups.json`.
 3. **Scout** — dispatch the `scout` role (`agents/scout.md`) per group — its template has no placeholders; dispatch its body plus tool-policy line as the prompt — via `subagent_type: panopticon-scout` when that registered shell exists (fresh session after registration), else a general-purpose agent; the scout RETURNS the ScopeProfile JSON; the orchestrator writes it to `.panopticon/scout-{group}.json`.
    Append the group's name, its file list from `groups.json`, and the `security_mode` to the prompt body — the scout template itself carries no assignment.
-4. **Tool scan** — optional Docker container; SARIF ingested by `scripts/ingest_tools.py`.
-5. **Plan dispatch** — run `python3 scripts/dispatch.py <scope-profile.json> --host <your host: claude|kimi|generic> --out .panopticon/dispatch-plan.json` to produce a `DispatchPlan` of role-based agents.
+4. **Tool scan** — optional Docker container; SARIF ingested by `skill/scripts/ingest_tools.py`.
+5. **Plan dispatch** — run `python3 skill/scripts/dispatch.py <scope-profile.json> --host <your host: claude|kimi|generic> --out .panopticon/dispatch-plan.json` to produce a `DispatchPlan` of role-based agents.
    Pass your host explicitly — env detection is fallback only. Add --agents-dir DIR when your registered agents live somewhere non-default.
 6. **Fan-out** — run the `group_runner` contract (`scripts/group_runner.py`,
    `scripts/write_guard_hook.py`): every reviewer writes its own findings file
