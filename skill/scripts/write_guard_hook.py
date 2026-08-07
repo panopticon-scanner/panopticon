@@ -54,5 +54,51 @@ def main():
     return 0
 
 
+_HOOK_CMD = "python3 skill/scripts/write_guard_hook.py"
+_HOOK_ENTRY = {"matcher": "Write|Edit|NotebookEdit",
+               "hooks": [{"type": "command", "command": _HOOK_CMD}]}
+
+
+def _load(settings_path):
+    try:
+        with open(settings_path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
+
+
+def install(plan, settings_path=".claude/settings.local.json",
+            allowlist_path=".panopticon/write-allowlist.json"):
+    os.makedirs(os.path.dirname(allowlist_path) or ".", exist_ok=True)
+    with open(allowlist_path, "w", encoding="utf-8") as fh:
+        json.dump(sorted(allowlist_from_plan(plan)), fh)
+    settings = _load(settings_path)
+    hooks = settings.setdefault("hooks", {})
+    pre = [h for h in hooks.get("PreToolUse", []) if h != _HOOK_ENTRY]
+    pre.append(_HOOK_ENTRY)
+    hooks["PreToolUse"] = pre
+    os.makedirs(os.path.dirname(settings_path) or ".", exist_ok=True)
+    with open(settings_path, "w", encoding="utf-8") as fh:
+        json.dump(settings, fh, indent=2)
+
+
+def uninstall(settings_path=".claude/settings.local.json",
+              allowlist_path=".panopticon/write-allowlist.json"):
+    settings = _load(settings_path)
+    hooks = settings.get("hooks", {})
+    if "PreToolUse" in hooks:
+        hooks["PreToolUse"] = [h for h in hooks["PreToolUse"] if h != _HOOK_ENTRY]
+        if not hooks["PreToolUse"]:
+            del hooks["PreToolUse"]
+        if not hooks:
+            settings.pop("hooks", None)
+        with open(settings_path, "w", encoding="utf-8") as fh:
+            json.dump(settings, fh, indent=2)
+    try:
+        os.remove(allowlist_path)
+    except OSError:
+        pass
+
+
 if __name__ == "__main__":
     sys.exit(main())
