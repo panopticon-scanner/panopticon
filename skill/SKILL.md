@@ -204,7 +204,13 @@ Terminal markdown summary + JSON artifact at `--out`. CI gate key: `summary.gate
 coverage did not complete (a high-value panel ran partial, or a scout-requested
 tool produced no output) — treat it as NOT certified, distinct from a real
 `FAIL`. `summary.coverage_certified` and `meta.coverage.divergence` carry the
-detail; `main` exits `1` on FAIL, `2` on INCONCLUSIVE, `0` otherwise.
+detail; `main` exits `1` on FAIL, `2` on INCONCLUSIVE, `0` otherwise. Exit `2`
+is also argparse's usage-error code; a genuine INCONCLUSIVE run still writes a
+full report artifact, whereas a usage error does not, so disambiguate the two
+by checking whether the report exists. Consumers should key certification on
+`summary.gate` and `summary.coverage_certified`, not on `overall_grade` alone
+— a tool-only coverage gap yields `INCONCLUSIVE` with a real grade still
+attached.
 
 ## Testing scanner fixtures (optional)
 Panopticon includes a local Docker-based fixture suite for validating scanner adapters against intentionally vulnerable applications.

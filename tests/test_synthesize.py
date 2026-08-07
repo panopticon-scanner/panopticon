@@ -2360,6 +2360,39 @@ class TestMainExitAndScout(unittest.TestCase):
             self.assertEqual(rep["meta"]["coverage"]["divergence"]["tools"],
                              {"semgrep": "requested_absent"})
 
+    def test_malformed_scout_tools_are_tolerated(self):
+        """Scout files are agent-authored/untrusted. A non-list `tools` (or a
+        list with non-string items) must never abort the run -- see the
+        scout-discovery loop's type guard in main()."""
+        with tempfile.TemporaryDirectory() as d:
+            pan = os.path.join(d, ".panopticon")
+            os.makedirs(pan, exist_ok=True)
+            with open(os.path.join(pan, "scout-a.json"), "w", encoding="utf-8") as fh:
+                json.dump({"group": "a", "tools": 5}, fh)
+            with open(os.path.join(pan, "scout-b.json"), "w", encoding="utf-8") as fh:
+                json.dump({"group": "b", "tools": "semgrep"}, fh)
+            with open(os.path.join(pan, "scout-c.json"), "w", encoding="utf-8") as fh:
+                json.dump({"group": "c", "tools": ["trivy", None]}, fh)
+            with open(os.path.join(pan, "groups.json"), "w", encoding="utf-8") as fh:
+                json.dump({"groups": [{"name": "a", "files": ["x.py"]}]}, fh)
+            findings = os.path.join(pan, "findings-a-code-panel_review.json")
+            with open(findings, "w", encoding="utf-8") as fh:
+                json.dump({"findings": []}, fh)
+            out_path = os.path.join(pan, "report.json")
+            with _chdir(d):
+                rc = syn.main(["--target", "t", "--out", out_path, findings])
+            # (a) run completed: no exception, an artifact was written.
+            self.assertIsInstance(rc, int)
+            self.assertTrue(os.path.isfile(out_path))
+            with open(out_path, encoding="utf-8") as fh:
+                report = json.load(fh)
+            tools_div = report["meta"]["coverage"]["divergence"]["tools"]
+            # (b) the one valid list-string requested tool is disclosed absent.
+            self.assertIn("trivy", tools_div)
+            # (c) the bare-string "semgrep" must never explode per-character.
+            self.assertNotIn("s", tools_div)
+            self.assertNotIn("e", tools_div)
+
 
 class TestRenderSummaryCoverage(unittest.TestCase):
     def test_inconclusive_summary_names_divergence(self):

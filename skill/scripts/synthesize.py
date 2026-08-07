@@ -488,7 +488,7 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
     note = None
     if any_incomplete and not gate_relevant_gap:
         tail = sorted(p for p in panels_incomplete if p not in HIGH_VALUE_PANELS)
-        note = ("coverage incomplete in low-value panel(s): %s; gate still certified"
+        note = ("gate certified; grade provisional — low-value panel(s) incomplete: %s"
                 % ", ".join(tail))
 
     return {"gate": gate, "overall_grade": cert_grade,
@@ -1159,10 +1159,13 @@ def main(argv=None):
         try:
             with open(sp, encoding="utf-8") as fh:
                 sd = json.load(fh)
-            if isinstance(sd, dict):
-                scout_requested.update(sd.get("tools") or [])
         except (OSError, ValueError):  # tolerant by design: never abort a run
             continue
+        if not isinstance(sd, dict):
+            continue
+        tools = sd.get("tools")
+        if isinstance(tools, list):
+            scout_requested.update(t for t in tools if isinstance(t, str))
 
     report = build_report(findings, groups_meta, args.target, args.fail_on, ts,
                           review_type, security_mode, verdicts=verdicts,
