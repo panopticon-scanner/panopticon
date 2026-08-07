@@ -25,10 +25,9 @@ import scripts.evidence as evidence
 
 def _resolve_part_path(base_dir, part):
     part = str(part)
-    ppath = os.path.normpath(os.path.join(base_dir, part))
-    base_dir_norm = os.path.normpath(base_dir)
-    if os.path.isabs(part) or not (ppath == base_dir_norm
-                                   or ppath.startswith(base_dir_norm + os.sep)):
+    base_real = os.path.realpath(base_dir)
+    ppath = os.path.realpath(os.path.join(base_real, part))
+    if os.path.isabs(part) or not (ppath == base_real or ppath.startswith(base_real + os.sep)):
         raise ValueError("invalid meta.parts entry: %r" % part)
     return ppath
 
