@@ -13,6 +13,15 @@ import sys
 
 DEFAULT_MAX_PER_GROUP = 15
 
+PANEL_PRIORITY = ["security", "redteam", "architecture", "database", "code", "test"]
+
+
+def panels_in_priority_order(panels):
+    """Sort panel names by PANEL_PRIORITY; unknown panels sort last (stable)."""
+    return sorted(panels, key=lambda p: PANEL_PRIORITY.index(p)
+                  if p in PANEL_PRIORITY else len(PANEL_PRIORITY))
+
+
 # Directory NAMES pruned from --repo-scan discovery walking. These are build
 # artifacts, dependency trees, caches, VCS internals, and scratch/audit copies
 # that otherwise dominate the discovered group set (real runs: ~90% of files
@@ -113,7 +122,7 @@ def compute_group_panels(files, security_mode="standard"):
         panels.append("architecture")
     if any(is_database_file(f) for f in files):
         panels.append("database")
-    return panels
+    return panels_in_priority_order(panels)
 
 
 def collect_changed_files(repo):

@@ -432,5 +432,25 @@ class TestRepoScanDiscovery(unittest.TestCase):
                 self.assertNotIn(hidden, grouped, hidden)
 
 
+class TestPanelPriority(unittest.TestCase):
+    def test_compute_group_panels_emits_priority_order(self):
+        # Whatever panels are present, they must appear in PANEL_PRIORITY order.
+        files = ["app.py", "models.py", "schema.sql", "infra/main.tf", "tests/test_app.py"]
+        panels = orch.compute_group_panels(files, "standard")
+        assert panels == [p for p in orch.PANEL_PRIORITY if p in panels]
+        # security must precede code; code must precede test
+        assert panels.index("security") < panels.index("code")
+        assert panels.index("code") < panels.index("test")
+
+    def test_compute_group_panels_redteam_mode_ordered(self):
+        panels = orch.compute_group_panels(["app.py", "tests/test_app.py"], "redteam")
+        assert "redteam" in panels and "security" not in panels
+        assert panels == [p for p in orch.PANEL_PRIORITY if p in panels]
+
+    def test_panels_in_priority_order_puts_unknown_last(self):
+        assert orch.panels_in_priority_order(
+            ["test", "zzz", "security"]) == ["security", "test", "zzz"]
+
+
 if __name__ == "__main__":
     unittest.main()
