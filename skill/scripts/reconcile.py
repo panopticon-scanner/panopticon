@@ -15,6 +15,7 @@ Usage: python3 skill/scripts/reconcile.py diff RUN2.json RUN3.json --out diff.js
 import json
 import os
 import sys
+from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -80,3 +81,43 @@ def iter_records(report):
                 "fingerprint": evidence.finding_fingerprint(f),
             })
     return out
+
+
+def _group_by_fingerprint(records):
+    grouped = defaultdict(list)
+    for r in records:
+        grouped[r["fingerprint"]].append(r)
+    return grouped
+
+
+def _degenerate(grouped, run_label):
+    return [{"fingerprint": fp, "run": run_label, "ids": [r["id"] for r in recs]}
+            for fp, recs in grouped.items() if len(recs) > 1]
+
+
+def build_diff(run2_records, run3_records, run2_path, run3_path):
+    """Partition recomputed-fingerprint identities into recurring /
+    fixed_or_gone / new cohorts, and surface (never silently merge)
+    same-side fingerprint collisions plus finding<->rejected kind flips.
+    """
+    g2 = _group_by_fingerprint(run2_records)
+    g3 = _group_by_fingerprint(run3_records)
+    fps2, fps3 = set(g2), set(g3)
+
+    recurring = []
+    for fp in sorted(fps2 & fps3):
+        kinds2 = {r["kind"] for r in g2[fp]}
+        kinds3 = {r["kind"] for r in g3[fp]}
+        recurring.append({"fingerprint": fp, "run2": g2[fp], "run3": g3[fp],
+                          "kind_changed": kinds2 != kinds3})
+    fixed_or_gone = [{"fingerprint": fp, "run2": g2[fp]}
+                     for fp in sorted(fps2 - fps3)]
+    new = [{"fingerprint": fp, "run3": g3[fp]}
+          for fp in sorted(fps3 - fps2)]
+
+    degenerate = _degenerate(g2, "run2") + _degenerate(g3, "run3")
+    return {"meta": {"run2_report": run2_path, "run3_report": run3_path,
+                     "run2_count": len(run2_records),
+                     "run3_count": len(run3_records),
+                     "degenerate_fingerprints": degenerate},
+           "recurring": recurring, "fixed_or_gone": fixed_or_gone, "new": new}

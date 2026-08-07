@@ -68,3 +68,48 @@ class TestIterRecords(unittest.TestCase):
         report = {"findings": [{"id": "X", "panel": "p"}], "discarded_claims": []}
         records = reconcile.iter_records(report)
         self.assertEqual(records[0]["location_file"], "")
+
+
+class TestBuildDiff(unittest.TestCase):
+    def _records(self, name):
+        report = reconcile.load_report(os.path.join(FIXTURES, name))
+        return reconcile.iter_records(report)
+
+    def test_cohorts_by_recomputed_fingerprint(self):
+        r2 = self._records("run2.json")
+        r3 = self._records("run3.json")
+        diff = reconcile.build_diff(r2, r3, "run2.json", "run3.json")
+        recurring_ids = {rec["id"] for entry in diff["recurring"]
+                         for rec in entry["run2"]}
+        self.assertEqual(recurring_ids, {"F-TOOL-1", "F-AGENT-1", "R-REJ-1"})
+        gone_ids = {rec["id"] for entry in diff["fixed_or_gone"]
+                   for rec in entry["run2"]}
+        self.assertEqual(gone_ids,
+                         {"F-GONE-1", "F-GONE-2", "F-DUP-1", "F-DUP-2"})
+        new_ids = {rec["id"] for entry in diff["new"] for rec in entry["run3"]}
+        self.assertEqual(new_ids, {"F-NEW-1"})
+
+    def test_flags_degenerate_collision_within_one_side(self):
+        r2 = self._records("run2.json")
+        r3 = self._records("run3.json")
+        diff = reconcile.build_diff(r2, r3, "run2.json", "run3.json")
+        collided = [d for d in diff["meta"]["degenerate_fingerprints"]
+                   if d["run"] == "run2"]
+        self.assertEqual(len(collided), 1)
+        self.assertEqual(sorted(collided[0]["ids"]), ["F-DUP-1", "F-DUP-2"])
+
+    def test_no_kind_change_when_both_sides_are_findings(self):
+        r2 = self._records("run2.json")
+        r3 = self._records("run3.json")
+        diff = reconcile.build_diff(r2, r3, "run2.json", "run3.json")
+        entry = next(e for e in diff["recurring"]
+                    for rec in e["run2"] if rec["id"] == "F-TOOL-1")
+        self.assertFalse(entry["kind_changed"])
+
+    def test_meta_counts(self):
+        r2 = self._records("run2.json")
+        r3 = self._records("run3.json")
+        diff = reconcile.build_diff(r2, r3, "run2.json", "run3.json")
+        self.assertEqual(diff["meta"]["run2_count"], len(r2))
+        self.assertEqual(diff["meta"]["run3_count"], len(r3))
+        self.assertEqual(diff["meta"]["run2_report"], "run2.json")
