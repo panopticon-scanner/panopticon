@@ -2359,3 +2359,16 @@ class TestMainExitAndScout(unittest.TestCase):
                 rep = _json.load(fh)
             self.assertEqual(rep["meta"]["coverage"]["divergence"]["tools"],
                              {"semgrep": "requested_absent"})
+
+
+class TestRenderSummaryCoverage(unittest.TestCase):
+    def test_inconclusive_summary_names_divergence(self):
+        fan_out = {"planned": {"security": 21}, "executed": {"security": 3},
+                   "groups_complete": [], "groups_partial": ["g1"]}
+        r = syn.build_report([], [{"name": "g1", "files": ["a.py"]}],
+                             "t", "high", "2026-01-01T00:00:00Z", fan_out=fan_out)
+        text = syn.render_summary(r)
+        self.assertIn("INCONCLUSIVE", text)
+        self.assertIn("NOT CERTIFIED", text)
+        self.assertIn("security", text)
+        self.assertIn("provisional", text.lower())

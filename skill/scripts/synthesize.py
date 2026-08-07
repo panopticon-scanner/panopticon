@@ -897,7 +897,8 @@ def render_summary(report):
         "# panopticon — %s" % report["meta"]["target"],
         "",
         "**Grade:** %s  **Risk:** %s  **Gate:** %s" % (
-            s["overall_grade"], s["risk_level"], s["gate"]),
+            (s["overall_grade"] or ("%s (provisional)" % s.get("provisional_grade"))),
+            s["risk_level"], s["gate"]),
         "",
         "**Findings:** %s" % ", ".join(
             "%s %d" % (k.upper(), v) for k, v in s["stats"].items() if v),
@@ -907,6 +908,18 @@ def render_summary(report):
         "",
         "## Groups",
     ]
+    if not s.get("coverage_certified", True):
+        div = (report["meta"].get("coverage") or {}).get("divergence") or {}
+        parts = []
+        panels = div.get("panels") or {}
+        if panels:
+            parts.append("panels " + ", ".join(
+                "%s %d/%d" % (p, v.get("executed", 0), v.get("planned", 0))
+                for p, v in sorted(panels.items())))
+        tools = div.get("tools") or {}
+        if tools:
+            parts.append("tools " + ", ".join(sorted(tools)))
+        lines.insert(3, "**Coverage:** NOT CERTIFIED — %s" % ("; ".join(parts) or "incomplete"))
     for g in report["groups"]:
         pg = g["panel_grades"]
         grades = " / ".join("%s %s" % (p, pg[p]) for p in PANEL_ORDER)
