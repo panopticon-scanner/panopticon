@@ -5,6 +5,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "scripts"))
+import file_issues
 import reconcile_apply
 
 
@@ -33,9 +34,9 @@ class TestLedger(unittest.TestCase):
 
 
 class FakeCompleted:
-    def __init__(self, stdout, returncode=0):
+    def __init__(self, stdout, returncode=0, stderr=""):
         self.stdout = stdout
-        self.stderr = ""
+        self.stderr = stderr
         self.returncode = returncode
 
 
@@ -70,3 +71,31 @@ class TestRecoverLinkage(unittest.TestCase):
             return FakeCompleted(json.dumps(issues))
 
         self.assertEqual(reconcile_apply.recover_linkage_from_github(runner=runner), {})
+
+    def test_recovers_empty_location_for_no_file_sentinel(self):
+        # file_issues.body_for() writes the "(no file)" sentinel when
+        # location.file is absent, but file_issues.key_for() keys on an
+        # EMPTY location component for that same finding. The recovered key
+        # must match key_for() byte-for-byte, not the body's sentinel text.
+        f = {"fingerprint": "abc123", "id": "F-42", "location": {}}
+        body = file_issues.body_for(f)
+        issues = [{"number": 7, "labels": [{"name": "self-scan"}], "body": body}]
+
+        def runner(argv, capture_output, text):
+            return FakeCompleted(json.dumps(issues))
+
+        linkage = reconcile_apply.recover_linkage_from_github(runner=runner)
+        expected_key = file_issues.key_for(f, rejected=False)
+        self.assertEqual(expected_key, "abc123|F-42||finding")
+        self.assertIn(expected_key, linkage)
+        self.assertEqual(linkage[expected_key],
+                         "https://github.com/panopticon-scanner/panopticon/issues/7")
+
+    def test_raises_runtime_error_when_gh_call_fails(self):
+        def runner(argv, capture_output, text):
+            return FakeCompleted(stdout="", returncode=1,
+                                 stderr="API rate limit exceeded")
+
+        with self.assertRaises(RuntimeError) as ctx:
+            reconcile_apply.recover_linkage_from_github(runner=runner)
+        self.assertIn("API rate limit exceeded", str(ctx.exception))

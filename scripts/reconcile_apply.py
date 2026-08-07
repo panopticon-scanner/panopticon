@@ -49,6 +49,9 @@ def recover_linkage_from_github(label="self-scan", runner=subprocess.run):
     r = runner(["gh", "issue", "list", "--label", label, "--state", "all",
                "--json", "number,body,labels", "--limit", "1000"],
               capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError("gh issue list failed (exit %d): %s" % (
+            r.returncode, (r.stderr or "").strip()))
     issues = json.loads(r.stdout)
     linkage = {}
     for issue in issues:
@@ -58,7 +61,13 @@ def recover_linkage_from_github(label="self-scan", runner=subprocess.run):
             continue
         labels = {lbl.get("name") for lbl in issue.get("labels") or []}
         kind = "rejected" if "false-positive" in labels else "finding"
-        key = "%s|%s|%s|%s" % (fp_m.group(1), id_m.group(1), loc_m.group(1), kind)
+        # body_for() writes the "(no file)" sentinel when location.file is
+        # absent, but key_for() keys on an EMPTY location component for that
+        # same case — map the sentinel back to "" so the recovered key is
+        # byte-identical to the one file_issues.py originally filed under.
+        loc = loc_m.group(1)
+        loc = "" if loc == "(no file)" else loc
+        key = "%s|%s|%s|%s" % (fp_m.group(1), id_m.group(1), loc, kind)
         linkage[key] = ISSUE_REPO_URL % issue["number"]
     return linkage
 
