@@ -18,6 +18,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import scripts.evidence as evidence
+
 
 def _resolve_part_path(base_dir, part):
     part = str(part)
@@ -54,3 +56,27 @@ def load_report(path):
         findings.extend(pdata.get("findings") or [])
         discarded.extend(pdata.get("discarded_claims") or [])
     return {"findings": findings, "discarded_claims": discarded}
+
+
+def iter_records(report):
+    """Normalize findings and discarded_claims into one flat identity list.
+
+    fingerprint is recomputed via evidence.finding_fingerprint (today's
+    algorithm); stored_fingerprint is the report's own (possibly pre-P2,
+    possibly corrupted) value, kept only so stage 2 can reconstruct the
+    filing-time ledger key.
+    """
+    out = []
+    for kind, key in (("finding", "findings"), ("rejected", "discarded_claims")):
+        for f in report.get(key) or []:
+            loc = f.get("location") or {}
+            out.append({
+                "id": f.get("id"),
+                "kind": kind,
+                "severity": f.get("severity"),
+                "panel": f.get("panel"),
+                "location_file": loc.get("file") or "",
+                "stored_fingerprint": f.get("fingerprint"),
+                "fingerprint": evidence.finding_fingerprint(f),
+            })
+    return out
