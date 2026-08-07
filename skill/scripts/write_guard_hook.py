@@ -12,7 +12,7 @@ _WRITE_TOOLS = {"Write", "Edit", "NotebookEdit"}
 def allowlist_from_plan(plan):
     """Absolute-normalized set of every out_file the plan declares."""
     return {os.path.abspath(e["out_file"]) for e in plan
-            if isinstance(e, dict) and e.get("out_file")}
+            if isinstance(e, dict) and isinstance(e.get("out_file"), str) and e.get("out_file")}
 
 
 def decide(tool_name, file_path, allowlist):
@@ -31,13 +31,19 @@ def main():
         payload = json.load(sys.stdin)
     except ValueError:
         return 0  # tolerant: a malformed hook payload never blocks legitimate work
+    if not isinstance(payload, dict):
+        return 0  # tolerant: a well-formed-but-unexpected-shape payload never blocks
     tool_name = payload.get("tool_name", "")
-    file_path = (payload.get("tool_input") or {}).get("file_path", "")
+    tool_input = payload.get("tool_input")
+    file_path = tool_input.get("file_path", "") if isinstance(tool_input, dict) else ""
     try:
         with open(".panopticon/write-allowlist.json", encoding="utf-8") as fh:
-            allowlist = set(json.load(fh))
+            loaded = json.load(fh)
     except (OSError, ValueError):
         return 0  # no allowlist installed -> guard inactive, do not block
+    if not isinstance(loaded, list):
+        return 0  # tolerant: a malformed allowlist file never blocks legitimate work
+    allowlist = set(loaded)
     allow, reason = decide(tool_name, file_path, allowlist)
     if allow:
         return 0

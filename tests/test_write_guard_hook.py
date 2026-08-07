@@ -1,4 +1,5 @@
-import os, unittest, sys
+import contextlib, io, json, os, tempfile, unittest, sys
+from unittest import mock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill"))
 import scripts.write_guard_hook as wg
 
@@ -33,3 +34,84 @@ class TestAllowlistFromPlan(unittest.TestCase):
         al = wg.allowlist_from_plan(plan)
         self.assertEqual(al, {os.path.abspath(".panopticon/a.json"),
                               os.path.abspath(".panopticon/b.json")})
+
+    def test_skips_non_string_out_file(self):
+        plan = [{"out_file": ".panopticon/a.json"}, {"out_file": 123}, {"out_file": None}]
+        al = wg.allowlist_from_plan(plan)
+        self.assertEqual(al, {os.path.abspath(".panopticon/a.json")})
+
+
+class TestMain(unittest.TestCase):
+    """main() plumbing: stdin -> decide -> stdout, and the tolerant fallbacks."""
+
+    def _run_main(self, payload_str, allowlist_paths=None):
+        """Run wg.main() with `payload_str` on stdin inside a fresh temp cwd.
+
+        `allowlist_paths`, if a list, is resolved to absolute paths via
+        os.path.abspath *after* chdir-ing into the temp dir -- matching what
+        main() itself will compute -- then JSON-dumped to
+        .panopticon/write-allowlist.json. If it's a str instead, it is written
+        verbatim (for malformed/wrong-type allowlist fixtures). If None, no
+        allowlist file is created (simulates "not installed"). Returns
+        (return_code, captured_stdout).
+        """
+        old_cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as d:
+            try:
+                os.chdir(d)
+                if allowlist_paths is not None:
+                    os.makedirs(".panopticon", exist_ok=True)
+                    if isinstance(allowlist_paths, str):
+                        content = allowlist_paths
+                    else:
+                        content = json.dumps([os.path.abspath(p) for p in allowlist_paths])
+                    with open(".panopticon/write-allowlist.json", "w",
+                              encoding="utf-8") as fh:
+                        fh.write(content)
+                buf = io.StringIO()
+                with mock.patch("sys.stdin", io.StringIO(payload_str)):
+                    with contextlib.redirect_stdout(buf):
+                        rc = wg.main()
+                return rc, buf.getvalue()
+            finally:
+                os.chdir(old_cwd)
+
+    def test_write_outside_allowlist_emits_deny(self):
+        payload = json.dumps({"tool_name": "Write",
+                               "tool_input": {"file_path": "skill/scripts/synthesize.py"}})
+        rc, out = self._run_main(payload, allowlist_paths=[".panopticon/findings-g1-x.json"])
+        self.assertEqual(rc, 0)
+        data = json.loads(out)
+        self.assertEqual(data["hookSpecificOutput"]["hookEventName"], "PreToolUse")
+        self.assertEqual(data["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_write_in_allowlist_emits_no_deny(self):
+        payload = json.dumps({"tool_name": "Write",
+                               "tool_input": {"file_path": ".panopticon/findings-g1-x.json"}})
+        rc, out = self._run_main(payload, allowlist_paths=[".panopticon/findings-g1-x.json"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(out, "")
+
+    def test_malformed_syntax_stdin_is_tolerated(self):
+        rc, out = self._run_main("{ not json", allowlist_paths="[]")
+        self.assertEqual(rc, 0)
+        self.assertEqual(out, "")
+
+    def test_non_dict_stdin_is_tolerated(self):
+        rc, out = self._run_main("[1,2,3]", allowlist_paths="[]")
+        self.assertEqual(rc, 0)
+        self.assertEqual(out, "")
+
+    def test_missing_allowlist_file_is_tolerated(self):
+        payload = json.dumps({"tool_name": "Write",
+                               "tool_input": {"file_path": "anything.py"}})
+        rc, out = self._run_main(payload, allowlist_paths=None)
+        self.assertEqual(rc, 0)
+        self.assertEqual(out, "")
+
+    def test_non_list_allowlist_content_is_tolerated(self):
+        payload = json.dumps({"tool_name": "Write",
+                               "tool_input": {"file_path": "anything.py"}})
+        rc, out = self._run_main(payload, allowlist_paths="null")
+        self.assertEqual(rc, 0)
+        self.assertEqual(out, "")
