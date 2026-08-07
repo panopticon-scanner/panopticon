@@ -1,3 +1,10 @@
+# NOTE: this exercises the guard's DECISION function (`decide`) in-process. The
+# LIVE hook wall — the harness actually denying an out-of-scope reviewer Write —
+# cannot be asserted deterministically here (it needs a real dispatch + hook
+# install). It was verified manually during SP-A: with the guard installed from a
+# real plan, a dispatched reviewer's in-allowlist write succeeded and its
+# out-of-scope write was denied by the harness. Re-run that live smoke test if
+# the hook plumbing or its paths change.
 import json, os, tempfile, unittest, sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill"))
 import scripts.group_runner as gr

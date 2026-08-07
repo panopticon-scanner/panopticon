@@ -82,6 +82,16 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
    - **Coverage** — do not hand-assemble a tally for the artifact:
      `synthesize` derives `meta.coverage.fan_out` from the dispatch plan plus
      the findings files actually on disk (`fan_out_coverage`, step 7).
+   - **Working directory** — run the install/uninstall (and the whole pipeline)
+     from the repo root, where `.panopticon/` lives: `install` writes the
+     allowlist to `.panopticon/write-allowlist.json` and registers the hook in
+     `.claude/settings.local.json`, and the hook resolves both relative to the
+     session's working directory — they must be the same root or the guard is
+     inert. Verified live: from the repo root, an in-allowlist write succeeds and
+     an out-of-scope write is denied by the harness.
+   - **Lifecycle** — an aborted run leaves the guard installed; the next run's
+     `install` is idempotent, or clear it with `wg.uninstall()`. The hook's
+     settings file is git-ignored so a leftover never trips the clean-tree check.
    See Host dispatch below for the full per-host mechanism.
 7. **Synthesize (pass 1)** — `python3 scripts/synthesize.py --emit-verify-queue [flags] .panopticon/findings-*.json`.
    If it prints a "verify queue: N entries" line, proceed to step 8; if it printed a report, skip to step 9.

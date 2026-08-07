@@ -94,3 +94,14 @@ class TestFanOutCoverage(unittest.TestCase):
         self.assertEqual(cov["executed"], {})
         self.assertEqual(cov["groups_complete"], [])
         self.assertEqual(cov["groups_partial"], [])
+
+    def test_non_dict_plan_entry_is_tolerated(self):
+        # A shape-valid JSON list can contain a non-dict element (corrupt plan);
+        # neither fan_out_coverage nor pending_entries may raise — tolerant by
+        # design, so a malformed plan never aborts synthesis after fan-out ran.
+        plan = [{"role": "panel_review", "group": "g1", "panel": "code",
+                 "out_file": "x.json"}, "not-a-dict", 42, None]
+        cov = gr.fan_out_coverage(plan)  # must not raise
+        self.assertEqual(cov["planned"], {"code": 1})
+        self.assertEqual(gr.pending_entries(plan),
+                         [plan[0]])  # only the real (not-done) entry, junk skipped

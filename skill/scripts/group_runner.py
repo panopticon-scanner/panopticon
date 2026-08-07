@@ -30,8 +30,13 @@ def entry_is_done(out_file):
 
 
 def pending_entries(plan):
-    """The plan entries whose out_file is not yet done (the resume set)."""
-    return [e for e in plan if not entry_is_done(e.get("out_file"))]
+    """The plan entries whose out_file is not yet done (the resume set).
+
+    Non-dict entries in a corrupt plan are skipped, not fatal — tolerant by
+    design: a malformed dispatch plan must never abort a run.
+    """
+    return [e for e in plan
+            if isinstance(e, dict) and not entry_is_done(e.get("out_file"))]
 
 
 _OUTFILE_RE = re.compile(
@@ -39,6 +44,8 @@ _OUTFILE_RE = re.compile(
 
 
 def _group_panel(entry):
+    if not isinstance(entry, dict):
+        return None, None
     group, panel = entry.get("group"), entry.get("panel")
     if group and panel:
         return group, panel

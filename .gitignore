@@ -15,6 +15,11 @@ __pycache__/
 .env.*
 !.env.example
 
+# Local Claude Code settings — also the write-guard hook's install target.
+# install->uninstall is not a byte-clean round-trip, so keep it out of the tree
+# so the clean-tree compromise check never false-flags a run (#436).
+.claude/settings.local.json
+
 # OS / editor noise
 .DS_Store
 *.swp
