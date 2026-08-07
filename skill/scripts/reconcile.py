@@ -12,13 +12,11 @@ against it.
 
 Usage: python3 skill/scripts/reconcile.py diff RUN2.json RUN3.json --out diff.json [--summary summary.md]
 """
-import argparse
 import json
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import scripts.evidence as evidence
 
 
 def _resolve_part_path(base_dir, part):
