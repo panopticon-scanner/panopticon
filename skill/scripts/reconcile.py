@@ -12,6 +12,7 @@ against it.
 
 Usage: python3 skill/scripts/reconcile.py diff RUN2.json RUN3.json --out diff.json [--summary summary.md]
 """
+import argparse
 import json
 import os
 import sys
@@ -183,3 +184,33 @@ def render_summary(diff):
             lines.append("- [%s] %s: %s" % (d["run"], d["fingerprint"],
                                             ", ".join(d["ids"])))
     return "\n".join(lines) + "\n"
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    p_diff = sub.add_parser("diff")
+    p_diff.add_argument("run2_report")
+    p_diff.add_argument("run3_report")
+    p_diff.add_argument("--out", required=True)
+    p_diff.add_argument("--summary")
+    a = ap.parse_args(argv)
+
+    if a.cmd == "diff":
+        r2 = iter_records(load_report(a.run2_report))
+        r3 = iter_records(load_report(a.run3_report))
+        diff = build_diff(r2, r3, a.run2_report, a.run3_report)
+        with open(a.out, "w", encoding="utf-8") as fh:
+            json.dump(diff, fh, indent=2, sort_keys=True)
+        print("wrote %s (recurring=%d fixed_or_gone=%d new=%d)"
+             % (a.out, len(diff["recurring"]), len(diff["fixed_or_gone"]),
+                len(diff["new"])))
+        if a.summary:
+            with open(a.summary, "w", encoding="utf-8") as fh:
+                fh.write(render_summary(diff))
+            print("wrote %s" % a.summary)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

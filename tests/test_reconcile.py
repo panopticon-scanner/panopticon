@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import sys
@@ -137,3 +138,21 @@ class TestRenderSummary(unittest.TestCase):
         self.assertIn("new: 1", text)
         self.assertIn("degenerate fingerprint", text.lower())
         self.assertIn("F-DUP-1", text)
+
+
+class TestCli(unittest.TestCase):
+    def test_diff_subcommand_writes_json_and_summary(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "diff.json")
+            summary = os.path.join(d, "summary.md")
+            rc = reconcile.main(["diff",
+                                 os.path.join(FIXTURES, "run2.json"),
+                                 os.path.join(FIXTURES, "run3.json"),
+                                 "--out", out, "--summary", summary])
+            self.assertEqual(rc, 0)
+            with open(out) as fh:
+                diff = json.load(fh)
+            self.assertEqual(len(diff["recurring"]), 3)
+            self.assertTrue(os.path.exists(summary))
+            with open(summary) as fh:
+                self.assertIn("recurring: 3", fh.read())
