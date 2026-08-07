@@ -135,3 +135,51 @@ def build_diff(run2_records, run3_records, run2_path, run3_path):
                      "run3_count": len(run3_records),
                      "degenerate_fingerprints": degenerate},
            "recurring": recurring, "fixed_or_gone": fixed_or_gone, "new": new}
+
+
+def _record_count(entries, side):
+    return sum(len(e[side]) for e in entries)
+
+
+def render_summary(diff):
+    m = diff["meta"]
+    recurring_n = _record_count(diff["recurring"], "run2")
+    gone_n = _record_count(diff["fixed_or_gone"], "run2")
+    new_n = _record_count(diff["new"], "run3")
+    lines = ["# Run-3 reconciliation summary", "",
+            "run2: %s (%d records)" % (m["run2_report"], m["run2_count"]),
+            "run3: %s (%d records)" % (m["run3_report"], m["run3_count"]),
+            "", "## Cohorts (record counts, not fingerprint-group counts — "
+                "a degenerate collision can put >1 record under one fingerprint)",
+            "- recurring: %d" % recurring_n,
+            "- fixed_or_gone: %d" % gone_n,
+            "- new: %d" % new_n, ""]
+
+    sev_counts = defaultdict(int)
+    for entry in diff["fixed_or_gone"]:
+        for rec in entry["run2"]:
+            sev_counts[rec.get("severity") or "UNKNOWN"] += 1
+    lines.append("## fixed_or_gone by severity")
+    for sev in sorted(sev_counts):
+        lines.append("- %s: %d" % (sev, sev_counts[sev]))
+
+    kc = [e for e in diff["recurring"] if e["kind_changed"]]
+    if kc:
+        lines.append("")
+        lines.append("## kind changed (rejected <-> finding) on %d recurring fingerprint(s)"
+                     % len(kc))
+        for e in kc:
+            ids = [r["id"] for r in e["run2"]] + [r["id"] for r in e["run3"]]
+            lines.append("- %s: %s" % (e["fingerprint"], ", ".join(ids)))
+
+    degen = m["degenerate_fingerprints"]
+    if degen:
+        lines.append("")
+        lines.append("## WARNING: degenerate fingerprint collisions (%d)" % len(degen))
+        lines.append("These findings likely have missing panel/category/title/location "
+                     "fields; the fingerprint alone cannot distinguish them. Inspect "
+                     "before treating as a single cohort member.")
+        for d in degen:
+            lines.append("- [%s] %s: %s" % (d["run"], d["fingerprint"],
+                                            ", ".join(d["ids"])))
+    return "\n".join(lines) + "\n"

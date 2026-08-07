@@ -124,3 +124,16 @@ class TestBuildDiff(unittest.TestCase):
         self.assertEqual(diff["meta"]["run2_count"], len(r2))
         self.assertEqual(diff["meta"]["run3_count"], len(r3))
         self.assertEqual(diff["meta"]["run2_report"], "run2.json")
+
+
+class TestRenderSummary(unittest.TestCase):
+    def test_summary_reports_cohort_counts_and_warns_on_collisions(self):
+        r2 = reconcile.iter_records(reconcile.load_report(os.path.join(FIXTURES, "run2.json")))
+        r3 = reconcile.iter_records(reconcile.load_report(os.path.join(FIXTURES, "run3.json")))
+        diff = reconcile.build_diff(r2, r3, "run2.json", "run3.json")
+        text = reconcile.render_summary(diff)
+        self.assertIn("recurring: 3", text)
+        self.assertIn("fixed_or_gone: 4", text)
+        self.assertIn("new: 1", text)
+        self.assertIn("degenerate fingerprint", text.lower())
+        self.assertIn("F-DUP-1", text)
