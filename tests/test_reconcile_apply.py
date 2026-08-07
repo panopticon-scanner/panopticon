@@ -99,3 +99,45 @@ class TestRecoverLinkage(unittest.TestCase):
         with self.assertRaises(RuntimeError) as ctx:
             reconcile_apply.recover_linkage_from_github(runner=runner)
         self.assertIn("API rate limit exceeded", str(ctx.exception))
+
+
+class TestPlanActions(unittest.TestCase):
+    def _diff(self):
+        return {
+            "recurring": [{"fingerprint": "fp1",
+                          "run2": [{"id": "F-1", "stored_fingerprint": "old1",
+                                   "location_file": "a.py", "kind": "finding"}],
+                          "run3": [{"id": "F-1-R3"}], "kind_changed": False}],
+            "fixed_or_gone": [{"fingerprint": "fp2",
+                              "run2": [{"id": "F-2", "stored_fingerprint": "old2",
+                                       "location_file": "b.py", "kind": "finding"}]}],
+            "new": [{"fingerprint": "fp3", "run3": [{"id": "F-3"}]}],
+        }
+
+    def test_resolves_via_ledger(self):
+        ledger = {"old1|F-1|a.py|finding": "https://github.com/o/r/issues/1"}
+        record = {"stored_fingerprint": "old1", "id": "F-1",
+                 "location_file": "a.py", "kind": "finding"}
+        self.assertEqual(reconcile_apply.resolve_issue(record, ledger),
+                         "https://github.com/o/r/issues/1")
+
+    def test_unresolvable_record_returns_none(self):
+        self.assertEqual(reconcile_apply.resolve_issue(
+            {"stored_fingerprint": "nope", "id": "X", "location_file": "y.py",
+             "kind": "finding"}, {}), None)
+
+    def test_plan_covers_recurring_and_fixed_or_gone_not_new(self):
+        ledger = {"old1|F-1|a.py|finding": "https://github.com/o/r/issues/1",
+                 "old2|F-2|b.py|finding": "https://github.com/o/r/issues/2"}
+        actions = reconcile_apply.plan_actions(self._diff(), ledger)
+        cohorts = {a["cohort"] for a in actions}
+        self.assertEqual(cohorts, {"recurring", "fixed_or_gone"})
+        self.assertEqual(len(actions), 2)
+        recur = next(a for a in actions if a["cohort"] == "recurring")
+        self.assertFalse(recur["close"])
+        gone = next(a for a in actions if a["cohort"] == "fixed_or_gone")
+        self.assertTrue(gone["close"])
+
+    def test_unresolvable_recurring_finding_is_omitted_not_guessed(self):
+        actions = reconcile_apply.plan_actions(self._diff(), {})
+        self.assertEqual(actions, [])

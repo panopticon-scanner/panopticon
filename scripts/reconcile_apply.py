@@ -78,3 +78,37 @@ def save_recovered_ledger(linkage, path=LEDGER):
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(linkage, fh, indent=1, sort_keys=True)
     os.replace(tmp, path)
+
+
+def resolve_issue(record, ledger):
+    return ledger.get(ledger_key(record))
+
+
+RECUR_COMMENT = ("**Run-3 reconciliation: re-affirmed.** This finding's fingerprint "
+                 "(`%s`) recurred in the run-3 self-scan — the underlying content "
+                 "identity (panel, category, file, rule/title) matched. Left open.")
+GONE_COMMENT = ("**Run-3 reconciliation: not seen in run 3.** This finding's run-2 "
+               "fingerprint (`%s`) did not recur in the run-3 self-scan against the "
+               "fixed pipeline. Not independently reverified — this states only that "
+               "the fingerprint did not reappear, not why.")
+
+
+def plan_actions(diff, ledger):
+    actions = []
+    for entry in diff.get("recurring") or []:
+        for record in entry["run2"]:
+            issue = resolve_issue(record, ledger)
+            if issue is None:
+                continue
+            actions.append({"cohort": "recurring", "fingerprint": entry["fingerprint"],
+                           "issue": issue, "comment": RECUR_COMMENT % entry["fingerprint"],
+                           "close": False})
+    for entry in diff.get("fixed_or_gone") or []:
+        for record in entry["run2"]:
+            issue = resolve_issue(record, ledger)
+            if issue is None:
+                continue
+            actions.append({"cohort": "fixed_or_gone", "fingerprint": entry["fingerprint"],
+                           "issue": issue, "comment": GONE_COMMENT % entry["fingerprint"],
+                           "close": True})
+    return actions
