@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import scripts.citations as citations
 from scripts.citations import load_cwe_catalog
 import scripts.evidence as evidence_mod
+import scripts.group_runner as group_runner
 import scripts.html_report as html_report
 import scripts.ingest_tools as ingest_tools
 from scripts.tools import EXECUTES_TARGET_BUILD
@@ -614,7 +615,7 @@ def aggregate_tool_findings(findings):
 def build_report(findings, groups_meta, target, fail_on, timestamp, review_type="repo",
                  security_mode="standard", verdicts=None, gate_unverified=False,
                  max_verify=None, verdicts_supplied=False, tool_policy_mode=None,
-                 tools_ran=None, tool_dispositions=None):
+                 tools_ran=None, tool_dispositions=None, fan_out=None):
     """Build a CodeReviewReport under the two-axis severity x evidence model.
 
     Severity is never mutated here. Verdicts (from evidence.load_verdicts) are
@@ -763,6 +764,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                 "tool_policy_mode": tool_policy_mode or "unknown",
                 "tool_axis": tool_axis,
                 "verdicts": verdict_stats,
+                "fan_out": fan_out,
             },
         },
         "summary": {
@@ -1077,6 +1079,16 @@ def main(argv=None):
 
     verdicts = evidence_mod.load_verdicts(args.verdicts_dir)
     tool_policy_mode = derive_tool_policy_mode()
+    fan_out = None
+    plan_path = os.path.join(".panopticon", "dispatch-plan.json")
+    if os.path.isfile(plan_path):
+        try:
+            with open(plan_path, encoding="utf-8") as fh:
+                _plan = json.load(fh)
+            if isinstance(_plan, list):
+                fan_out = group_runner.fan_out_coverage(_plan)
+        except (OSError, ValueError):
+            pass
     report = build_report(findings, groups_meta, args.target, args.fail_on, ts,
                           review_type, security_mode, verdicts=verdicts,
                           gate_unverified=args.gate_unverified,
@@ -1084,7 +1096,8 @@ def main(argv=None):
                           verdicts_supplied=args.verdicts_dir is not None,
                           tool_policy_mode=tool_policy_mode,
                           tools_ran=tools_ran,
-                          tool_dispositions=tool_dispositions)
+                          tool_dispositions=tool_dispositions,
+                          fan_out=fan_out)
     errors, warnings = validate_report(report)
     attach_schema_status(report, errors)
     for w in warnings:

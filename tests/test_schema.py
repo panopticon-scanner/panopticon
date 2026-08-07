@@ -45,6 +45,7 @@ def _minimal_report():
                     "unknown": 0,
                     "unanswered": None,
                 },
+                "fan_out": None,
             },
         },
         "summary": {
@@ -200,6 +201,12 @@ class TestReportSchema(unittest.TestCase):
         coverage_props = schema["properties"]["meta"]["properties"]["coverage"]["properties"]
         self.assertEqual(coverage_props["tool_policy_mode"]["enum"],
                          ["enforced", "advisory", "mixed", "unknown"])
+
+    def test_schema_declares_fan_out(self):
+        with open(SCHEMA_PATH, encoding="utf-8") as fh:
+            schema = json.load(fh)
+        cov = schema["properties"]["meta"]["properties"]["coverage"]["properties"]
+        self.assertIn("fan_out", cov)
 
 
 if __name__ == "__main__":
