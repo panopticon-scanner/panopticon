@@ -283,6 +283,48 @@ class TestGrading(unittest.TestCase):
         self.assertEqual(stats["critical"], 0)
 
 
+class TestCertify(unittest.TestCase):
+    def _crit(self):
+        return [{"severity": "CRITICAL", "evidence": {"status": "advisor_confirmed"}}]
+
+    def test_clean_complete_pass_real_grade(self):
+        r = syn.certify("A", [], "high", set(), [])
+        self.assertEqual(r["gate"], "PASS")
+        self.assertEqual(r["overall_grade"], "A")
+        self.assertIsNone(r["provisional_grade"])
+        self.assertTrue(r["coverage_certified"])
+        self.assertIsNone(r["coverage_note"])
+
+    def test_clean_high_value_incomplete_inconclusive(self):
+        r = syn.certify("B", [], "high", {"security"}, [])
+        self.assertEqual(r["gate"], "INCONCLUSIVE")
+        self.assertIsNone(r["overall_grade"])
+        self.assertEqual(r["provisional_grade"], "B")
+        self.assertFalse(r["coverage_certified"])
+
+    def test_clean_low_value_tail_pass_with_note(self):
+        r = syn.certify("B", [], "high", {"test"}, [])
+        self.assertEqual(r["gate"], "PASS")
+        self.assertIsNone(r["overall_grade"])
+        self.assertEqual(r["provisional_grade"], "B")
+        self.assertFalse(r["coverage_certified"])
+        self.assertIn("test", r["coverage_note"])
+
+    def test_confirmed_fail_beats_inconclusive(self):
+        r = syn.certify("F", self._crit(), "high", {"security"}, [])
+        self.assertEqual(r["gate"], "FAIL")
+
+    def test_off_preserved_with_gap(self):
+        r = syn.certify("B", [], None, {"security"}, [])
+        self.assertEqual(r["gate"], "OFF")
+        self.assertFalse(r["coverage_certified"])
+
+    def test_requested_absent_tool_inconclusive(self):
+        r = syn.certify("A", [], "high", set(), ["semgrep"])
+        self.assertEqual(r["gate"], "INCONCLUSIVE")
+        self.assertFalse(r["coverage_certified"])
+
+
 class TestReport(unittest.TestCase):
     def _finding(self, **kw):
         base = {"id": "CD-001", "title": "t", "severity": "LOW", "confidence": "POSSIBLE",

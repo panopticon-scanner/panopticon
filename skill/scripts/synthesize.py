@@ -460,6 +460,42 @@ def gate_verdict(findings, fail_on):
     return "PASS"
 
 
+HIGH_VALUE_PANELS = {"security", "redteam", "architecture", "database"}
+
+
+def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_absent):
+    """Coverage-aware certification. Gate keys on high-value-panel completeness
+    (+ requested-absent tools); grade is holistic (provisional on ANY gap).
+    Precedence FAIL > INCONCLUSIVE > PASS; OFF preserved. Tolerant: pure, never raises.
+    """
+    base_gate = gate_verdict(gate_eligible, fail_on)          # PASS / FAIL / OFF
+    high_value_incomplete = set(panels_incomplete) & HIGH_VALUE_PANELS
+    gate_relevant_gap = bool(high_value_incomplete) or bool(tools_absent)
+    any_incomplete = bool(panels_incomplete)
+
+    if base_gate == "PASS" and gate_relevant_gap:
+        gate = "INCONCLUSIVE"
+    else:
+        gate = base_gate                                      # FAIL/OFF/PASS unchanged
+
+    if any_incomplete:
+        cert_grade, provisional = None, overall_grade
+    else:
+        cert_grade, provisional = overall_grade, None
+
+    coverage_certified = not (gate_relevant_gap or any_incomplete)
+
+    note = None
+    if any_incomplete and not gate_relevant_gap:
+        tail = sorted(p for p in panels_incomplete if p not in HIGH_VALUE_PANELS)
+        note = ("coverage incomplete in low-value panel(s): %s; gate still certified"
+                % ", ".join(tail))
+
+    return {"gate": gate, "overall_grade": cert_grade,
+            "provisional_grade": provisional,
+            "coverage_certified": coverage_certified, "coverage_note": note}
+
+
 def severity_stats(findings):
     """Count findings by severity level."""
     stats = {s.lower(): 0 for s in SEV_ORDER}
