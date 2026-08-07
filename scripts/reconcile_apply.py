@@ -15,6 +15,9 @@ import json
 import os
 import re
 import subprocess
+import time
+
+import triage
 
 LEDGER = ".panopticon/filed-issues.json"
 
@@ -112,3 +115,71 @@ def plan_actions(diff, ledger):
                            "issue": issue, "comment": GONE_COMMENT % entry["fingerprint"],
                            "close": True})
     return actions
+
+
+_ISSUE_URL_RE = re.compile(r"https?://github\.com/([^/]+)/([^/]+)/issues/")
+
+
+def _issue_number(url):
+    return url.rstrip("/").rsplit("/", 1)[-1]
+
+
+def _owner_repo(url):
+    m = _ISSUE_URL_RE.match(url or "")
+    return (m.group(1), m.group(2)) if m else (None, None)
+
+
+def preflight_authorized(owner, repo, runner=subprocess.run):
+    """Owner/admin gate for the mutating apply. Uses the AUTHENTICATED gh token
+    (`gh api repos/{o}/{r} --jq .permissions`), so it reflects whichever
+    GH_CONFIG_DIR/account is active — the loud catch for a wrong-account run.
+    (True, "") iff .permissions.admin is truthy; (False, reason) on non-zero exit,
+    404, or absent/unparseable permissions. Never infers admin:false from missing
+    data, never crashes on it.
+    """
+    r = runner(["gh", "api", "repos/%s/%s" % (owner, repo), "--jq", ".permissions"],
+               capture_output=True, text=True)
+    if r.returncode != 0:
+        return (False, "gh api repos/%s/%s failed: %s"
+                % (owner, repo, (r.stderr or "").strip()))
+    body = (r.stdout or "").strip()
+    if not body or body == "null":
+        return (False, "no .permissions for %s/%s (repo not visible to this token?)"
+                % (owner, repo))
+    try:
+        perms = json.loads(body)
+    except ValueError:
+        return (False, "unparseable permissions payload for %s/%s" % (owner, repo))
+    if isinstance(perms, dict) and perms.get("admin"):
+        return (True, "")
+    return (False, "authenticated gh user is not an admin of %s/%s" % (owner, repo))
+
+
+def apply(actions, dry=True, confirm_close=False, throttle=1.5,
+         runner=subprocess.run, sleep=time.sleep):
+    commented = closed = 0
+    if not dry and actions:
+        owner, repo = _owner_repo(actions[0]["issue"])
+        ok, reason = preflight_authorized(owner, repo, runner=runner)
+        if not ok:
+            print("refusing: authenticated gh user is not an owner/admin of %s/%s — %s"
+                  % (owner, repo, reason))
+            return (0, 0)
+    for a in actions:
+        n = _issue_number(a["issue"])
+        if dry:
+            print("DRY comment #%s (%s): %s" % (n, a["cohort"], a["comment"][:60]))
+            if a["close"] and confirm_close:
+                print("DRY close   #%s" % n)
+            commented += 1
+            continue
+        triage.gh(["gh", "issue", "comment", n, "--body", a["comment"]],
+                  runner=runner, sleep=sleep)
+        sleep(throttle)
+        commented += 1
+        if a["close"] and confirm_close:
+            triage.gh(["gh", "issue", "close", n, "--reason", "not planned"],
+                      runner=runner, sleep=sleep)
+            sleep(throttle)
+            closed += 1
+    return commented, closed

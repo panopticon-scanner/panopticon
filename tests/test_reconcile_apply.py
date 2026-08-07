@@ -141,3 +141,101 @@ class TestPlanActions(unittest.TestCase):
     def test_unresolvable_recurring_finding_is_omitted_not_guessed(self):
         actions = reconcile_apply.plan_actions(self._diff(), {})
         self.assertEqual(actions, [])
+
+
+class TestPreflightAuthorized(unittest.TestCase):
+    def test_admin_true_authorizes(self):
+        def runner(argv, capture_output, text):
+            return FakeCompleted(json.dumps({"admin": True, "push": True}))
+        ok, reason = reconcile_apply.preflight_authorized("o", "r", runner=runner)
+        self.assertTrue(ok)
+        self.assertEqual(reason, "")
+
+    def test_admin_false_refuses(self):
+        def runner(argv, capture_output, text):
+            return FakeCompleted(json.dumps({"admin": False, "push": True}))
+        ok, reason = reconcile_apply.preflight_authorized("o", "r", runner=runner)
+        self.assertFalse(ok)
+        self.assertTrue(reason)
+
+    def test_nonzero_exit_or_404_refuses_without_crashing(self):
+        def runner(argv, capture_output, text):
+            return FakeCompleted("", returncode=1, stderr="gh: Not Found (HTTP 404)")
+        ok, reason = reconcile_apply.preflight_authorized("o", "r", runner=runner)
+        self.assertFalse(ok)
+        self.assertIn("404", reason)
+
+    def test_absent_permissions_payload_refuses(self):
+        def runner(argv, capture_output, text):
+            return FakeCompleted("")   # empty stdout, exit 0 — no .permissions
+        ok, reason = reconcile_apply.preflight_authorized("o", "r", runner=runner)
+        self.assertFalse(ok)
+
+
+class TestApply(unittest.TestCase):
+    def _actions(self):
+        return [{"cohort": "recurring", "fingerprint": "fp1",
+                "issue": "https://github.com/o/r/issues/1", "comment": "c1", "close": False},
+               {"cohort": "fixed_or_gone", "fingerprint": "fp2",
+                "issue": "https://github.com/o/r/issues/2", "comment": "c2", "close": True}]
+
+    def _admin_runner(self, calls):
+        # authorizes the preflight (gh api), records everything
+        def runner(argv, capture_output, text):
+            calls.append(argv)
+            if argv[:2] == ["gh", "api"]:
+                return FakeCompleted(json.dumps({"admin": True}))
+            return FakeCompleted("")
+        return runner
+
+    def test_dry_run_makes_no_gh_calls(self):
+        calls = []
+
+        def runner(argv, capture_output, text):
+            calls.append(argv)
+            return FakeCompleted("")
+
+        commented, closed = reconcile_apply.apply(self._actions(), dry=True,
+                                                   runner=runner, sleep=lambda s: None)
+        self.assertEqual(calls, [])            # dry: not even the preflight runs
+        self.assertEqual((commented, closed), (2, 0))
+
+    def test_live_run_comments_every_action_but_closes_only_with_confirm(self):
+        calls = []
+        commented, closed = reconcile_apply.apply(self._actions(), dry=False,
+                                                   confirm_close=False,
+                                                   runner=self._admin_runner(calls),
+                                                   sleep=lambda s: None)
+        self.assertEqual(commented, 2)
+        self.assertEqual(closed, 0)
+        issue_calls = [c for c in calls if c[:2] == ["gh", "issue"]]
+        self.assertEqual(len(issue_calls), 2)
+        self.assertTrue(all(c[2] == "comment" for c in issue_calls))
+        self.assertEqual(calls[0][:2], ["gh", "api"])   # preflight ran first
+
+    def test_live_run_closes_when_confirmed(self):
+        calls = []
+        commented, closed = reconcile_apply.apply(self._actions(), dry=False,
+                                                   confirm_close=True,
+                                                   runner=self._admin_runner(calls),
+                                                   sleep=lambda s: None)
+        self.assertEqual(closed, 1)
+        close_calls = [c for c in calls if "close" in c]
+        self.assertEqual(len(close_calls), 1)
+        self.assertIn("2", close_calls[0])
+
+    def test_live_run_refuses_and_makes_zero_writes_when_unauthorized(self):
+        calls = []
+
+        def runner(argv, capture_output, text):
+            calls.append(argv)
+            if argv[:2] == ["gh", "api"]:
+                return FakeCompleted(json.dumps({"admin": False}))
+            return FakeCompleted("")
+
+        commented, closed = reconcile_apply.apply(self._actions(), dry=False,
+                                                   confirm_close=True, runner=runner,
+                                                   sleep=lambda s: None)
+        self.assertEqual((commented, closed), (0, 0))
+        writes = [c for c in calls if c[:2] == ["gh", "issue"]]
+        self.assertEqual(writes, [])           # zero comment/close calls
