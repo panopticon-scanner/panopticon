@@ -144,3 +144,38 @@ class TestInstallUninstall(unittest.TestCase):
             self.assertEqual(saved.get("env"), {"X": "1"})
             self.assertNotIn("PreToolUse", saved.get("hooks", {}))
             self.assertFalse(os.path.exists(al))
+
+    def test_install_is_idempotent(self):
+        # Re-installing must not duplicate our hook entry.
+        with tempfile.TemporaryDirectory() as d:
+            settings = os.path.join(d, "settings.local.json")
+            al = os.path.join(d, "allow.json")
+            plan = [{"out_file": ".panopticon/f.json"}]
+            wg.install(plan, settings, al)
+            wg.install(plan, settings, al)
+            wg.install(plan, settings, al)
+            saved = json.load(open(settings))
+            self.assertEqual(len(saved["hooks"]["PreToolUse"]), 1)
+
+    def test_install_uninstall_preserve_a_coexisting_hook(self):
+        # An unrelated PreToolUse hook must survive both install and uninstall.
+        with tempfile.TemporaryDirectory() as d:
+            settings = os.path.join(d, "settings.local.json")
+            other = {"matcher": "Bash", "hooks": [{"type": "command",
+                                                   "command": "echo other"}]}
+            with open(settings, "w") as fh:
+                json.dump({"hooks": {"PreToolUse": [other]}}, fh)
+            al = os.path.join(d, "allow.json")
+            wg.install([{"out_file": ".panopticon/f.json"}], settings, al)
+            saved = json.load(open(settings))
+            self.assertIn(other, saved["hooks"]["PreToolUse"])   # survived install
+            self.assertEqual(len(saved["hooks"]["PreToolUse"]), 2)
+            wg.uninstall(settings, al)
+            saved = json.load(open(settings))
+            self.assertEqual(saved["hooks"]["PreToolUse"], [other])  # only ours removed
+
+    def test_uninstall_tolerates_absent_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            # neither settings nor allowlist exist -> must not raise
+            wg.uninstall(os.path.join(d, "nope.json"),
+                         os.path.join(d, "gone.json"))
