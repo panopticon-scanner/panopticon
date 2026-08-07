@@ -1,0 +1,24 @@
+{
+  "findings": [
+    {"id": "F-TOOL-1-R3", "severity": "MEDIUM", "panel": "security",
+     "category": "hardcoded-secret", "source": "tool:semgrep",
+     "tool_evidence": {"rule_id": "python.lang.security.hardcoded-token"},
+     "location": {"file": "app/config.py", "line_start": 11},
+     "title": "Hardcoded token (still present)", "fingerprint": "ffffffffffffffff"},
+    {"id": "F-AGENT-1-R3", "severity": "LOW", "panel": "architecture",
+     "category": "coupling",
+     "location": {"file": "app/registry.py", "line_start": 3},
+     "title": "Tight coupling in registry", "fingerprint": "eeeeeeeeeeeeeeee"},
+    {"id": "F-NEW-1", "severity": "HIGH", "panel": "security",
+     "category": "vuln-dependency", "source": "tool:trivy",
+     "tool_evidence": {"rule_id": "CVE-2026-00000"},
+     "location": {"file": "requirements.txt", "line_start": 1},
+     "title": "Known-vulnerable dependency", "fingerprint": "9999999999999999"}
+  ],
+  "discarded_claims": [
+    {"id": "R-REJ-1-R3", "severity": "HIGH", "panel": "security",
+     "category": "injection",
+     "location": {"file": "app/query.py", "line_start": 44},
+     "title": "Possible SQL injection", "fingerprint": "3333333333333333"}
+  ]
+}
