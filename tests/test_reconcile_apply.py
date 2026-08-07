@@ -1,8 +1,11 @@
+import contextlib
+import io
 import json
 import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "scripts"))
 import file_issues
@@ -292,6 +295,16 @@ class TestCliWiring(unittest.TestCase):
             actions = json.load(open(actions_path))
             self.assertEqual(len(actions), 1)
 
-            # apply defaults to dry-run; must not require network/gh
-            rc = reconcile_apply.main(["apply", actions_path])
+            # apply defaults to dry-run: must print the DRY summary AND make
+            # zero real subprocess/gh calls (a live-by-default regression is the
+            # single worst outcome this CLI could have).
+            def _boom(*a, **k):
+                raise AssertionError("dry-run apply must not call subprocess.run")
+
+            buf = io.StringIO()
+            with mock.patch("reconcile_apply.subprocess.run", _boom), \
+                 mock.patch("triage.subprocess.run", _boom), \
+                 contextlib.redirect_stdout(buf):
+                rc = reconcile_apply.main(["apply", actions_path])
             self.assertEqual(rc, 0)
+            self.assertIn("DRY RUN", buf.getvalue())
