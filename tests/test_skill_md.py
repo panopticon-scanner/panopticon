@@ -47,8 +47,14 @@ class TestSkillMd(unittest.TestCase):
                       "--host", "--verdicts-dir"]:
             self.assertIn(token, self.text, token)
 
-    def test_uniform_return_json_contract(self):
-        self.assertIn("every reviewer RETURNS its JSON", self.text)
+    def test_return_contract_by_role(self):
+        # P2 SP-A flips fan-out (panel_review/lens_sweep) to self-write +
+        # confirmation-only return; scout and advisor are unchanged (they
+        # still RETURN their JSON and the orchestrator persists it).
+        self.assertIn("writes its own `entry.out_file`", self.text)
+        self.assertIn("short confirmation only", self.text)
+        self.assertIn("the scout RETURNS the ScopeProfile JSON", self.text)
+        self.assertIn("The advisor RETURNS a", self.text)
         self.assertNotIn("their tool policy allows Bash", self.text)
 
     def test_host_dispatch_is_enforcement_conditional(self):

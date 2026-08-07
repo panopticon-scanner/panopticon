@@ -35,6 +35,12 @@ summary + JSON artifact) with standards citations and CI gating.
   against a read-only mount, collect SARIF. Degrades gracefully if Docker/image absent.
 - `skill/scripts/ingest_tools.py` — SARIF → normalized findings (source `tool:<name>`, CWE/CVE citations).
 - `skill/scripts/evidence.py` — evidence axis: status derivation, verify-queue triage, verdict ingestion.
+- `skill/scripts/group_runner.py` — fan-out resume + coverage primitives: `entry_is_done`/
+  `pending_entries` (the done-predicate and resume set) and `fan_out_coverage` (planned-vs-executed,
+  derived from the dispatch plan + the findings files on disk).
+- `skill/scripts/write_guard_hook.py` — the `PreToolUse` write-guard: `allowlist_from_plan`/`decide`
+  (the allow/block decision) and `install`/`uninstall` (register/remove the hook + allowlist for the
+  fan-out phase, merge-preserving of unrelated settings).
 - `Dockerfile` — `panopticon-tools` image: semgrep, gitleaks, trivy, bandit, brakeman, gosec,
   eslint. Build once: `docker build -t panopticon-tools <this dir>`.
 - `skill/reference/` — `report-schema.json`, `scope-profile-schema.json`, `cwe-catalog.json`
@@ -87,6 +93,41 @@ summary + JSON artifact) with standards citations and CI gating.
   pip-audit/npm-audit run only under `run_tools.py --online`.
 - **Tolerant by design**: `load_findings` and `enrich_citations` skip/log malformed input,
   never abort the run (a bad finding must not lose a real CRITICAL or skip the CI gate).
+- **Fan-out coverage is capacity-bound, not orchestrator-context-bound (P2 SP-A, #435,
+  #444, #436).** Every finding used to transit the orchestrator's context twice — inbound as a
+  reviewer's returned JSON, outbound as the orchestrator's re-emitted `Write` — so a large plan
+  truncated fan-out at whatever entry the context filled up on (measured: one run covered 1 of
+  ~10 groups, invisibly). SP-A flips the contract: each fan-out reviewer (`panel_review`,
+  `lens_sweep`) now holds scoped `Write` and **writes its own `out_file` directly**, returning
+  only a short confirmation — findings never re-transit the parent's context, so coverage is
+  bounded by how many agents the platform can run, not by context capacity. This is the
+  `group_runner` role, defined by a contract (every pending entry's `out_file` written, plus a
+  tally) with two realizations: on Claude Code it runs **mechanically** as a deterministic
+  Workflow — one agent per pending entry, the harness bounds concurrency and journals progress,
+  and re-runs a stalled or failed entry itself; on other hosts it is a **portable** nested
+  sub-orchestrator subagent per group (the run-2 verify pattern), holding scoped `Write` and
+  prose-contracted to never end a turn with an entry unresolved. Both return only a tally to the
+  parent, never findings.
+- **Reviewer self-write is enforced by a harness hook, not just convention.** A `PreToolUse`
+  write-guard (`write_guard_hook.install`/`.uninstall`, `skill/scripts/write_guard_hook.py`) is
+  installed before fan-out and torn down after; it blocks any `Write`/`Edit` whose target isn't
+  in the dispatch plan's declared `out_file` set, so a reviewer holding `Write` cannot touch the
+  repo, materialize a secret, or clobber a sibling's findings file. (The hook enforces the plan's
+  out_file *set*, not a per-agent-singular allowlist — a harness spike confirmed a session-wide
+  hook cannot distinguish which subagent fired it, so per-agent tightening is a blocked follow-up,
+  not shipped here.) A blocked write is disclosed in the tally, never fatal.
+- **Resume is a done-predicate, never a re-run-everything.** An entry is done iff its `out_file`
+  exists AND parses as findings JSON (`group_runner.entry_is_done`) — missing, truncated, or
+  corrupt is NOT done and is re-dispatched. `group_runner.pending_entries` is the exact resume set
+  fan-out (re-)dispatches; status always comes from disk, never from what an agent claims to have
+  done.
+- **`meta.coverage.fan_out` is derived at synthesis, never trusted from a runner's return.**
+  `synthesize` computes `{planned, executed, groups_complete, groups_partial}`
+  (`group_runner.fan_out_coverage`) from the dispatch plan plus the findings files actually on
+  disk, the same "classify/derive at synthesis" precedent as the rest of `meta.coverage`. This is
+  the disclosure axis that makes a truncated run visible in the artifact instead of silently
+  biased toward "no findings"; it only *produces* the signal — refuse-to-grade-on-divergence and
+  panel reorder are SP-B policy, not SP-A.
 
 ## Running
 Fresh session → `/panopticon` (`-f file`, `-d dir`, `-g "Group[Facet]"`, `-c` changes,
