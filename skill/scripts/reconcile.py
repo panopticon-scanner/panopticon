@@ -39,7 +39,14 @@ def load_report(path):
         report = json.load(fh)
     findings = list(report.get("findings") or [])
     discarded = list(report.get("discarded_claims") or [])
-    base_dir = os.path.dirname(path)
+    # Anchor to an absolute path before resolving parts: os.path.dirname on a
+    # bare filename (e.g. "run2.json", the common case from the CLI run in
+    # its own directory) returns "", and joining/normpath'ing a relative
+    # part against "" yields a relative path that never equals "" nor starts
+    # with the separator — the confinement check below would then reject a
+    # legitimate same-directory part. Absolute-anchoring keeps the check
+    # correct in both cases.
+    base_dir = os.path.dirname(os.path.abspath(path))
     for part in (report.get("meta") or {}).get("parts") or []:
         ppath = _resolve_part_path(base_dir, part)
         with open(ppath, encoding="utf-8") as fh:
