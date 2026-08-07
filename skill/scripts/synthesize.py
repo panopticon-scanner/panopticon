@@ -651,7 +651,8 @@ def aggregate_tool_findings(findings):
 def build_report(findings, groups_meta, target, fail_on, timestamp, review_type="repo",
                  security_mode="standard", verdicts=None, gate_unverified=False,
                  max_verify=None, verdicts_supplied=False, tool_policy_mode=None,
-                 tools_ran=None, tool_dispositions=None, fan_out=None):
+                 tools_ran=None, tool_dispositions=None, fan_out=None,
+                 scout_requested=None):
     """Build a CodeReviewReport under the two-axis severity x evidence model.
 
     Severity is never mutated here. Verdicts (from evidence.load_verdicts) are
@@ -782,6 +783,17 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
         f.pop("_repo_root", None)
     tool_names = {str(f.get("source", ""))[5:] for f in findings
                   if str(f.get("source", "")).startswith("tool:")}
+    planned = (fan_out or {}).get("planned") or {} if isinstance(fan_out, dict) else {}
+    executed = (fan_out or {}).get("executed") or {} if isinstance(fan_out, dict) else {}
+    panels_incomplete = {p for p, n in planned.items() if executed.get(p, 0) < n}
+    produced = set(tools_ran if tools_ran is not None else tool_names)
+    tools_absent = sorted(set(scout_requested or []) - produced)
+    divergence = {
+        "panels": {p: {"planned": planned[p], "executed": executed.get(p, 0)}
+                   for p in sorted(panels_incomplete)},
+        "tools": {t: "requested_absent" for t in tools_absent},
+    }
+    cert = certify(overall, gate_eligible, fail_on, panels_incomplete, tools_absent)
     return {
         "meta": {
             "target": target,
@@ -801,14 +813,18 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                 "tool_axis": tool_axis,
                 "verdicts": verdict_stats,
                 "fan_out": fan_out,
+                "divergence": divergence,
             },
         },
         "summary": {
-            "overall_grade": overall,
+            "overall_grade": cert["overall_grade"],
+            "provisional_grade": cert["provisional_grade"],
+            "coverage_certified": cert["coverage_certified"],
+            "coverage_note": cert["coverage_note"],
             "risk_level": risk_level(gate_eligible),
             "top_issues": [f.get("title", "") for f in
                            sorted(active, key=_issue_sort)[:3]],
-            "gate": gate_verdict(gate_eligible, fail_on),
+            "gate": cert["gate"],
             "gate_policy": ("include_unverified" if gate_unverified
                             else "confirmed_only"),
             "stats": severity_stats(active),

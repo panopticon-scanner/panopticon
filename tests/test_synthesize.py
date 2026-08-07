@@ -2295,3 +2295,35 @@ class TestFanOutCoverageMeta(unittest.TestCase):
     def test_fan_out_null_when_absent(self):
         r = syn.build_report([self._f()], [], "t", None, "2026-08-07T00:00:00Z")
         self.assertIsNone(r["meta"]["coverage"]["fan_out"])
+
+
+class TestCoverageDivergence(unittest.TestCase):
+    GROUPS = [{"name": "g1", "files": ["a.py"]}]
+    TS = "2026-01-01T00:00:00Z"
+
+    def test_inconclusive_on_incomplete_high_value_panel(self):
+        fan_out = {"planned": {"security": 21, "code": 10},
+                   "executed": {"security": 3, "code": 10},
+                   "groups_complete": [], "groups_partial": ["g1"]}
+        r = syn.build_report([], self.GROUPS, "t", "high", self.TS, fan_out=fan_out)
+        self.assertEqual(r["summary"]["gate"], "INCONCLUSIVE")
+        self.assertIsNone(r["summary"]["overall_grade"])
+        self.assertEqual(r["summary"]["provisional_grade"], "A")
+        self.assertEqual(r["meta"]["coverage"]["divergence"]["panels"]["security"],
+                         {"planned": 21, "executed": 3})
+        self.assertNotIn("code", r["meta"]["coverage"]["divergence"]["panels"])
+
+    def test_tool_requested_absent_is_disclosed_and_inconclusive(self):
+        r = syn.build_report([], self.GROUPS, "t", "high", self.TS,
+                             tools_ran=["trivy"], scout_requested=["trivy", "semgrep"])
+        self.assertEqual(r["meta"]["coverage"]["divergence"]["tools"],
+                         {"semgrep": "requested_absent"})
+        self.assertEqual(r["summary"]["gate"], "INCONCLUSIVE")
+
+    def test_backward_compat_no_fanout_no_scout(self):
+        r = syn.build_report([], self.GROUPS, "t", "high", self.TS)
+        self.assertEqual(r["summary"]["overall_grade"], "A")
+        self.assertEqual(r["summary"]["gate"], "PASS")
+        self.assertTrue(r["summary"]["coverage_certified"])
+        self.assertIsNone(r["summary"]["provisional_grade"])
+        self.assertEqual(r["meta"]["coverage"]["divergence"], {"panels": {}, "tools": {}})
