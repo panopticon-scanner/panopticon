@@ -20,11 +20,12 @@ def decide(tool_name, file_path, allowlist):
     if tool_name not in _WRITE_TOOLS:
         return True, ""
     target = os.path.abspath(file_path or "")
+    if os.path.islink(target):
+        return False, ("write to %s is denied: findings targets must not be symlinks" % file_path)
     if target in allowlist:
         return True, ""
     return False, ("write to %s is outside the fan-out allowlist; reviewers may "
-                   "write only their declared findings file" % file_path)
-
+                   "write only to plan-declared findings files" % file_path)
 
 def main():
     try:
