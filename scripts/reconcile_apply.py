@@ -50,6 +50,21 @@ def recover_linkage_from_github(label="self-scan", runner=subprocess.run):
     """Rebuild the filed-issues ledger from issue bodies when
     .panopticon/filed-issues.json is unavailable. Every field this needs was
     deliberately embedded in the issue body by scripts/file_issues.py.
+
+    Known limitation (not fixed here): scripts/file_issues.py posts issue
+    bodies through scrub() (see its line ~239:
+    `create(scrub(title_for(f)), scrub(body_for(f, rej)), ...)`), which
+    strips the absolute repo-root prefix from paths. So a finding whose
+    original location.file was an ABSOLUTE path under the repo root appears
+    in the issue body as a repo-RELATIVE path. But the ledger key
+    (file_issues.key_for, mirrored by ledger_key) is built from the RAW,
+    unscrubbed location.file. Therefore, for such findings, the key
+    reconstructed here from the scrubbed body will NOT match the ledger
+    key, and those issues are silently unrecoverable via this fallback
+    (they resolve fine on the primary path where the real ledger is
+    present). This is fail-safe — an unmatched issue is simply left open,
+    never mis-acted-on — but lossy. .panopticon/filed-issues.json is the
+    source of truth; preserve it rather than relying on this recovery.
     """
     r = runner(["gh", "issue", "list", "--label", label, "--state", "all",
                "--json", "number,body,labels", "--limit", "1000"],

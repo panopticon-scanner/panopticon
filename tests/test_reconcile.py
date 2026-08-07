@@ -140,6 +140,19 @@ class TestRenderSummary(unittest.TestCase):
         self.assertIn("F-DUP-1", text)
 
 
+class TestDeterminism(unittest.TestCase):
+    def test_build_diff_is_order_independent_and_byte_stable(self):
+        # Stage 1's output must be byte-identical regardless of the order
+        # findings arrived in — a stated invariant (the sort discipline in
+        # build_diff). Reversing both inputs must not change the serialized diff.
+        r2 = reconcile.iter_records(reconcile.load_report(os.path.join(FIXTURES, "run2.json")))
+        r3 = reconcile.iter_records(reconcile.load_report(os.path.join(FIXTURES, "run3.json")))
+        d1 = reconcile.build_diff(r2, r3, "run2.json", "run3.json")
+        d2 = reconcile.build_diff(list(reversed(r2)), list(reversed(r3)),
+                                  "run2.json", "run3.json")
+        self.assertEqual(json.dumps(d1, sort_keys=True), json.dumps(d2, sort_keys=True))
+
+
 class TestCli(unittest.TestCase):
     def test_diff_subcommand_writes_json_and_summary(self):
         with tempfile.TemporaryDirectory() as d:

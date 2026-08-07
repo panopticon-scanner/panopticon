@@ -146,6 +146,32 @@ class TestPlanActions(unittest.TestCase):
         self.assertEqual(actions, [])
 
 
+class TestLedgerKeyMatchesKeyFor(unittest.TestCase):
+    """The load-bearing invariant: reconcile_apply.ledger_key(record) must be
+    byte-identical to file_issues.key_for(finding, rejected) for the same
+    finding, so an issue filed by file_issues is found by reconciliation.
+    Cross-checked against the real key_for (not a hardcoded mirror)."""
+
+    def _record(self, f, kind):
+        loc = f.get("location") or {}
+        return {"stored_fingerprint": f.get("fingerprint"), "id": f.get("id"),
+                "location_file": loc.get("file") or "", "kind": kind}
+
+    def test_matches_across_relative_absolute_rejected_and_no_location(self):
+        cases = [
+            ({"fingerprint": "abc123", "id": "F-1", "location": {"file": "app.py"}}, False),
+            ({"fingerprint": "def456", "id": "F-2", "location": {"file":
+              "/Volumes/Mini Vault/untitled_folder/projects/panopticon/skill/scripts/tools/npm_audit.py"}}, False),
+            ({"fingerprint": "aaa111", "id": "R-1", "location": {"file": "x.py"}}, True),
+            ({"fingerprint": "bbb222", "id": "F-3"}, False),  # no location at all
+        ]
+        for f, rejected in cases:
+            kind = "rejected" if rejected else "finding"
+            rec = self._record(f, kind)
+            self.assertEqual(reconcile_apply.ledger_key(rec),
+                             file_issues.key_for(f, rejected))
+
+
 class TestPreflightAuthorized(unittest.TestCase):
     def test_admin_true_authorizes(self):
         def runner(argv, capture_output, text):
