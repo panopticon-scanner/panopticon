@@ -11,10 +11,12 @@ Usage:
   python3 scripts/reconcile_apply.py plan diff.json --ledger linkage.json --out actions.json
   python3 scripts/reconcile_apply.py apply actions.json [--dry-run] [--confirm-close] [--throttle S]
 """
+import argparse
 import json
 import os
 import re
 import subprocess
+import sys
 import time
 
 import triage
@@ -189,3 +191,58 @@ def apply(actions, dry=True, confirm_close=False, throttle=1.5,
             sleep(throttle)
             closed += 1
     return commented, closed
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p_rec = sub.add_parser("recover-linkage")
+    p_rec.add_argument("--out", required=True)
+    p_rec.add_argument("--label", default="self-scan")
+
+    p_plan = sub.add_parser("plan")
+    p_plan.add_argument("diff_json")
+    p_plan.add_argument("--ledger", default=LEDGER)
+    p_plan.add_argument("--out", required=True)
+
+    p_apply = sub.add_parser("apply")
+    p_apply.add_argument("actions_json")
+    p_apply.add_argument("--dry-run", dest="dry_run", action="store_true", default=True)
+    p_apply.add_argument("--no-dry-run", dest="dry_run", action="store_false")
+    p_apply.add_argument("--confirm-close", action="store_true")
+    p_apply.add_argument("--throttle", type=float, default=1.5)
+
+    a = ap.parse_args(argv)
+
+    if a.cmd == "recover-linkage":
+        linkage = recover_linkage_from_github(label=a.label)
+        save_recovered_ledger(linkage, path=a.out)
+        print("recovered %d linkage entries -> %s" % (len(linkage), a.out))
+        return 0
+
+    if a.cmd == "plan":
+        diff = json.load(open(a.diff_json, encoding="utf-8"))
+        ledger = load_ledger(path=a.ledger)
+        actions = plan_actions(diff, ledger)
+        with open(a.out, "w", encoding="utf-8") as fh:
+            json.dump(actions, fh, indent=2, sort_keys=True)
+        unresolved = (sum(len(e["run2"]) for e in diff.get("recurring") or [])
+                     + sum(len(e["run2"]) for e in diff.get("fixed_or_gone") or [])
+                     - len(actions))
+        print("wrote %d action(s) -> %s (%d record(s) unresolved against the ledger)"
+             % (len(actions), a.out, unresolved))
+        return 0
+
+    if a.cmd == "apply":
+        actions = json.load(open(a.actions_json, encoding="utf-8"))
+        commented, closed = apply(actions, dry=a.dry_run, confirm_close=a.confirm_close,
+                                  throttle=a.throttle)
+        print("%s: commented %d, closed %d"
+             % ("DRY RUN" if a.dry_run else "LIVE", commented, closed))
+        return 0
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

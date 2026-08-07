@@ -270,3 +270,28 @@ class TestApply(unittest.TestCase):
                                                    runner=runner, sleep=lambda s: None)
         self.assertEqual((commented, closed), (0, 0))
         self.assertEqual(calls, [])            # not dry and actions guard is falsy on []
+
+
+class TestCliWiring(unittest.TestCase):
+    def test_plan_then_dry_apply_end_to_end(self):
+        with tempfile.TemporaryDirectory() as d:
+            diff = {"recurring": [{"fingerprint": "fp1",
+                                  "run2": [{"id": "F-1", "stored_fingerprint": "old1",
+                                           "location_file": "a.py", "kind": "finding"}]}],
+                   "fixed_or_gone": [], "new": []}
+            ledger = {"old1|F-1|a.py|finding": "https://github.com/o/r/issues/1"}
+            diff_path = os.path.join(d, "diff.json")
+            ledger_path = os.path.join(d, "ledger.json")
+            actions_path = os.path.join(d, "actions.json")
+            json.dump(diff, open(diff_path, "w"))
+            json.dump(ledger, open(ledger_path, "w"))
+
+            rc = reconcile_apply.main(["plan", diff_path, "--ledger", ledger_path,
+                                       "--out", actions_path])
+            self.assertEqual(rc, 0)
+            actions = json.load(open(actions_path))
+            self.assertEqual(len(actions), 1)
+
+            # apply defaults to dry-run; must not require network/gh
+            rc = reconcile_apply.main(["apply", actions_path])
+            self.assertEqual(rc, 0)
