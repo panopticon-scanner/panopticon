@@ -1141,6 +1141,16 @@ def main(argv=None):
                 fan_out = group_runner.fan_out_coverage(_plan)
         except (OSError, ValueError):
             pass
+    scout_requested = set()
+    for sp in glob.glob(os.path.join(".panopticon", "scout-*.json")):
+        try:
+            with open(sp, encoding="utf-8") as fh:
+                sd = json.load(fh)
+            if isinstance(sd, dict):
+                scout_requested.update(sd.get("tools") or [])
+        except (OSError, ValueError):  # tolerant by design: never abort a run
+            continue
+
     report = build_report(findings, groups_meta, args.target, args.fail_on, ts,
                           review_type, security_mode, verdicts=verdicts,
                           gate_unverified=args.gate_unverified,
@@ -1149,7 +1159,8 @@ def main(argv=None):
                           tool_policy_mode=tool_policy_mode,
                           tools_ran=tools_ran,
                           tool_dispositions=tool_dispositions,
-                          fan_out=fan_out)
+                          fan_out=fan_out,
+                          scout_requested=sorted(scout_requested))
     errors, warnings = validate_report(report)
     attach_schema_status(report, errors)
     for w in warnings:
@@ -1166,7 +1177,8 @@ def main(argv=None):
         print("HTML artifact: %s" % html_out)
     print(render_summary(report))
     print("\nJSON artifact: %s" % ", ".join(paths))
-    return 1 if report["summary"]["gate"] == "FAIL" else 0
+    gate = report["summary"]["gate"]
+    return 1 if gate == "FAIL" else 2 if gate == "INCONCLUSIVE" else 0
 
 
 if __name__ == "__main__":

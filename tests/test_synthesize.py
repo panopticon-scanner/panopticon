@@ -653,7 +653,11 @@ class TestReconciliation(unittest.TestCase):
             out = os.path.join(d, "report.json")
             import io, contextlib
             buf = io.StringIO()
-            with contextlib.redirect_stdout(buf):
+            # Isolate cwd: main() discovers .panopticon/scout-*.json relative
+            # to cwd, and the repo root's own .panopticon carries self-scan
+            # leftovers that would otherwise leak "requested_absent" tools
+            # into this fixture's tiny finding set.
+            with _chdir(d), contextlib.redirect_stdout(buf):
                 rc = syn.main(["--target","t","--fail-on","high","--out",out, p])
             self.assertTrue(os.path.isfile(out))          # report written despite malformed citation
             # Both findings are agentic and carry no verdict -> unverified,
@@ -2327,3 +2331,31 @@ class TestCoverageDivergence(unittest.TestCase):
         self.assertTrue(r["summary"]["coverage_certified"])
         self.assertIsNone(r["summary"]["provisional_grade"])
         self.assertEqual(r["meta"]["coverage"]["divergence"], {"panels": {}, "tools": {}})
+
+
+class TestMainExitAndScout(unittest.TestCase):
+    def test_inconclusive_from_scout_requested_tool_absent_exits_2(self):
+        import tempfile, json as _json
+        with tempfile.TemporaryDirectory() as d:
+            pan = os.path.join(d, ".panopticon")
+            os.makedirs(os.path.join(pan, "tools"), exist_ok=True)
+            # a scout requested semgrep; no tool output will exist for it
+            with open(os.path.join(pan, "scout-g1.json"), "w") as fh:
+                _json.dump({"group": "g1", "tools": ["semgrep"], "files": ["a.py"]}, fh)
+            with open(os.path.join(pan, "groups.json"), "w") as fh:
+                _json.dump({"groups": [{"name": "g1", "files": ["a.py"]}]}, fh)
+            findings = os.path.join(pan, "findings-g1-code-panel_review.json")
+            with open(findings, "w") as fh:
+                _json.dump({"findings": []}, fh)
+            cwd = os.getcwd()
+            try:
+                os.chdir(d)
+                rc = syn.main(["--target", "t", "--fail-on", "high",
+                              "--out", os.path.join(pan, "report.json"), findings])
+            finally:
+                os.chdir(cwd)
+            self.assertEqual(rc, 2)  # INCONCLUSIVE -> exit 2
+            with open(os.path.join(pan, "report.json")) as fh:
+                rep = _json.load(fh)
+            self.assertEqual(rep["meta"]["coverage"]["divergence"]["tools"],
+                             {"semgrep": "requested_absent"})
