@@ -212,6 +212,9 @@ class TestApply(unittest.TestCase):
         self.assertEqual(len(issue_calls), 2)
         self.assertTrue(all(c[2] == "comment" for c in issue_calls))
         self.assertEqual(calls[0][:2], ["gh", "api"])   # preflight ran first
+        for c in issue_calls:
+            self.assertIn("--repo", c)
+            self.assertEqual(c[c.index("--repo") + 1], "o/r")
 
     def test_live_run_closes_when_confirmed(self):
         calls = []
@@ -223,6 +226,8 @@ class TestApply(unittest.TestCase):
         close_calls = [c for c in calls if "close" in c]
         self.assertEqual(len(close_calls), 1)
         self.assertIn("2", close_calls[0])
+        self.assertIn("--repo", close_calls[0])
+        self.assertEqual(close_calls[0][close_calls[0].index("--repo") + 1], "o/r")
 
     def test_live_run_refuses_and_makes_zero_writes_when_unauthorized(self):
         calls = []
@@ -239,3 +244,29 @@ class TestApply(unittest.TestCase):
         self.assertEqual((commented, closed), (0, 0))
         writes = [c for c in calls if c[:2] == ["gh", "issue"]]
         self.assertEqual(writes, [])           # zero comment/close calls
+
+    def test_live_run_refuses_batch_spanning_multiple_repos(self):
+        calls = []
+        actions = [{"cohort": "recurring", "fingerprint": "fp1",
+                   "issue": "https://github.com/o/r/issues/1", "comment": "c1", "close": False},
+                  {"cohort": "fixed_or_gone", "fingerprint": "fp2",
+                   "issue": "https://github.com/o/other/issues/2", "comment": "c2", "close": True}]
+        commented, closed = reconcile_apply.apply(actions, dry=False, confirm_close=True,
+                                                   runner=self._admin_runner(calls),
+                                                   sleep=lambda s: None)
+        self.assertEqual((commented, closed), (0, 0))
+        issue_calls = [c for c in calls if c[:2] == ["gh", "issue"]]
+        self.assertEqual(issue_calls, [])      # multi-repo guard fires before any writes
+        self.assertEqual(calls, [])            # and before the preflight gh api call too
+
+    def test_empty_actions_live_makes_no_calls(self):
+        calls = []
+
+        def runner(argv, capture_output, text):
+            calls.append(argv)
+            return FakeCompleted("")
+
+        commented, closed = reconcile_apply.apply([], dry=False, confirm_close=True,
+                                                   runner=runner, sleep=lambda s: None)
+        self.assertEqual((commented, closed), (0, 0))
+        self.assertEqual(calls, [])            # not dry and actions guard is falsy on []

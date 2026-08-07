@@ -158,13 +158,19 @@ def preflight_authorized(owner, repo, runner=subprocess.run):
 def apply(actions, dry=True, confirm_close=False, throttle=1.5,
          runner=subprocess.run, sleep=time.sleep):
     commented = closed = 0
+    repo_slug = None
     if not dry and actions:
         owner, repo = _owner_repo(actions[0]["issue"])
+        if any(_owner_repo(a["issue"]) != (owner, repo) for a in actions):
+            print("refusing: actions span multiple repos; expected all in %s/%s"
+                  % (owner, repo))
+            return (0, 0)
         ok, reason = preflight_authorized(owner, repo, runner=runner)
         if not ok:
             print("refusing: authenticated gh user is not an owner/admin of %s/%s — %s"
                   % (owner, repo, reason))
             return (0, 0)
+        repo_slug = "%s/%s" % (owner, repo)
     for a in actions:
         n = _issue_number(a["issue"])
         if dry:
@@ -173,12 +179,12 @@ def apply(actions, dry=True, confirm_close=False, throttle=1.5,
                 print("DRY close   #%s" % n)
             commented += 1
             continue
-        triage.gh(["gh", "issue", "comment", n, "--body", a["comment"]],
+        triage.gh(["gh", "issue", "comment", n, "--repo", repo_slug, "--body", a["comment"]],
                   runner=runner, sleep=sleep)
         sleep(throttle)
         commented += 1
         if a["close"] and confirm_close:
-            triage.gh(["gh", "issue", "close", n, "--reason", "not planned"],
+            triage.gh(["gh", "issue", "close", n, "--repo", repo_slug, "--reason", "not planned"],
                       runner=runner, sleep=sleep)
             sleep(throttle)
             closed += 1
