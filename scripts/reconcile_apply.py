@@ -237,7 +237,8 @@ def main(argv=None):
         return 0
 
     if a.cmd == "plan":
-        diff = json.load(open(a.diff_json, encoding="utf-8"))
+        with open(a.diff_json, encoding="utf-8") as fh:
+            diff = json.load(fh)
         ledger = load_ledger(path=a.ledger)
         actions = plan_actions(diff, ledger)
         with open(a.out, "w", encoding="utf-8") as fh:
