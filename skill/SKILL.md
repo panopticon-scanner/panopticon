@@ -42,15 +42,57 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
 2. **Discovery** — run `python3 scripts/orchestrator.py` to produce `groups.json`.
 3. **Scout** — dispatch the `scout` role (`agents/scout.md`) per group — its template has no placeholders; dispatch its body plus tool-policy line as the prompt — via `subagent_type: panopticon-scout` when that registered shell exists (fresh session after registration), else a general-purpose agent; the scout RETURNS the ScopeProfile JSON; the orchestrator writes it to `.panopticon/scout-{group}.json`.
    Append the group's name, its file list from `groups.json`, and the `security_mode` to the prompt body — the scout template itself carries no assignment.
-4. **Tool scan** — optional Docker container; SARIF ingested by `scripts/ingest_tools.py`.
-5. **Plan dispatch** — run `python3 scripts/dispatch.py <scope-profile.json> --host <your host: claude|kimi|generic> --out .panopticon/dispatch-plan.json` to produce a `DispatchPlan` of role-based agents.
+4. **Tool scan** — optional Docker container; SARIF ingested by `skill/scripts/ingest_tools.py`.
+5. **Plan dispatch** — run `python3 skill/scripts/dispatch.py <scope-profile.json> --host <your host: claude|kimi|generic> --out .panopticon/dispatch-plan.json` to produce a `DispatchPlan` of role-based agents.
    Pass your host explicitly — env detection is fallback only. Add --agents-dir DIR when your registered agents live somewhere non-default.
-6. **Fan-out** — for each entry in `.panopticon/dispatch-plan.json`, dispatch
-   `entry.prompt` with the model named by `entry.model.model` via your host's agent mechanism (see Host
-   dispatch below). Every reviewer role is read-only: every reviewer RETURNS its JSON as the
-   final message and the orchestrator writes it to the entry's `out_file`.
+6. **Fan-out** — run the `group_runner` contract (`scripts/group_runner.py`,
+   `scripts/write_guard_hook.py`): every reviewer writes its own findings file
+   directly, so fan-out is bounded by agent capacity, not by how much of a
+   truncated report the orchestrator's context can still hold.
    `panel_review` filenames omit `{lens}`.
-   Before dispatching, if the target is a git repository, capture a baseline: `git status --porcelain > .panopticon/tree-baseline.txt`.
+   - **Before fan-out** — if the target is a git repository, capture a
+     baseline: `git status --porcelain > .panopticon/tree-baseline.txt`. Then
+     install the write-guard from the plan:
+     `python3 -c "import sys; sys.path.insert(0,'skill'); import scripts.write_guard_hook as wg, json; wg.install(json.load(open('.panopticon/dispatch-plan.json')))"`.
+   - **Resume** — dispatch only `pending_entries(plan)`: an entry whose
+     `out_file` already exists and parses as findings JSON is done; never
+     re-dispatch it.
+   - **The role contract** — every reviewer holds scoped `Write` (the guard
+     blocks any target outside the plan's declared `out_file` set) and
+     **writes its own `entry.out_file` directly**. Its final message is a
+     short confirmation only, NOT its findings — findings never re-transit the
+     orchestrator's context. This is the change that makes coverage
+     capacity-bound rather than context-bound.
+   - **Claude host (mechanical)** — run fan-out as a deterministic Workflow:
+     one agent per pending entry, dispatched with `entry.prompt` and
+     `entry.model.model` (or `subagent_type: entry.agent` when
+     `entry.enforced`), each writing its own `entry.out_file`. The Workflow
+     bounds concurrency and journals progress, so a stalled or failed entry is
+     re-run by the loop itself — never lost, never a manual re-dispatch. The
+     parent session receives only the Workflow's final tally, never per-entry
+     findings.
+   - **Other hosts (portable)** — dispatch one nested sub-orchestrator per
+     group (the run-2 verify pattern): it holds scoped `Write`, runs its
+     group's `pending_entries`, and returns a per-group tally. Prose contract:
+     never end a turn with an entry unresolved; resume via the done-predicate
+     (`pending_entries`), not a fixed dispatch list; status comes from disk,
+     not recollection.
+   - **After fan-out** — uninstall the guard:
+     `python3 -c "import sys; sys.path.insert(0,'skill'); import scripts.write_guard_hook as wg; wg.uninstall()"`.
+   - **Coverage** — do not hand-assemble a tally for the artifact:
+     `synthesize` derives `meta.coverage.fan_out` from the dispatch plan plus
+     the findings files actually on disk (`fan_out_coverage`, step 7).
+   - **Working directory** — run the install/uninstall (and the whole pipeline)
+     from the repo root, where `.panopticon/` lives: `install` writes the
+     allowlist to `.panopticon/write-allowlist.json` and registers the hook in
+     `.claude/settings.local.json`, and the hook resolves both relative to the
+     session's working directory — they must be the same root or the guard is
+     inert. Verified live: from the repo root, an in-allowlist write succeeds and
+     an out-of-scope write is denied by the harness.
+   - **Lifecycle** — an aborted run leaves the guard installed; the next run's
+     `install` is idempotent, or clear it with `wg.uninstall()`. The hook's
+     settings file is git-ignored so a leftover never trips the clean-tree check.
+   See Host dispatch below for the full per-host mechanism.
 7. **Synthesize (pass 1)** — `python3 scripts/synthesize.py --emit-verify-queue [flags] .panopticon/findings-*.json`.
    If it prints a "verify queue: N entries" line, proceed to step 8; if it printed a report, skip to step 9.
 8. **Verify** — Run `python3 scripts/dispatch.py --render-advisor .panopticon/verify-queue.json --out .panopticon/advisor-prompts`,
@@ -74,15 +116,26 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
 
 ## Host dispatch
 
-One plan, one prompt per reviewer; each host dispatches with its own mechanism:
+One plan, one prompt per reviewer; each host realizes the same `group_runner`
+contract — pending-only dispatch, reviewer self-write, tally-only return — with
+its own mechanism:
 
-- **Claude Code** — in parallel via the Agent tool. If `entry.enforced` is
+- **Claude Code (mechanical)** — fan-out runs as a deterministic Workflow: one
+  agent per entry in `pending_entries(plan)`. If `entry.enforced` is
   true, dispatch with `subagent_type: entry.agent` (a registered
   `panopticon-*` enforcement shell — tools and model are host-enforced) and
   `entry.prompt` as the task. If false, dispatch general-purpose with
   `entry.prompt` and the model named by `entry.model.model` (omit when null).
+  Each reviewer holds scoped `Write` (guarded — see Fan-out above) and writes
+  its own `entry.out_file` directly; the Workflow bounds concurrency, journals
+  progress, and re-runs a stalled or failed entry itself. The parent session
+  receives only the Workflow's final tally, never per-entry findings.
   Register once with `python3 scripts/dispatch.py --emit-host-agents claude`.
-- **Kimi Code** — AgentSwarm raw-prompt dispatch (`prompt_template`/`items`)
+- **Kimi Code (portable)** — the `group_runner` role is a nested
+  sub-orchestrator per group (the run-2 verify pattern): it holds scoped
+  `Write`, dispatches only its group's `pending_entries`, and returns a
+  per-group tally to the parent — never the findings themselves. Within a
+  group, dispatch is AgentSwarm raw-prompt dispatch (`prompt_template`/`items`)
   or per-entry `Agent` dispatch. Model selection is driven by the registered
   agent file's `model_preference` (`primary` for `scout`/`lens_sweep`,
   `secondary` for `panel_review`/`advisor`); per-dispatch `model` overrides
@@ -116,21 +169,34 @@ One plan, one prompt per reviewer; each host dispatches with its own mechanism:
 
      **Routing results back:** each batch carries `routing` — a single object
      for an `Agent` call, or a list index-aligned with `items` for an
-     `AgentSwarm` batch. Write each returned result to its
-     `routing[i].out_file`. A batch may merge entries from different panels
-     and groups, so item order is the only other link and it is not a
-     contract.
+     `AgentSwarm` batch. Under the `group_runner` contract each reviewer
+     writes its own `routing[i].out_file` directly; the sub-orchestrator
+     confirms completion via the done-predicate (does `out_file` exist and
+     parse?) and rolls the group's results into its tally — it does not
+     re-write findings content itself. A batch may merge entries from
+     different panels and groups, so item order is the only other link and it
+     is not a contract.
   4. Verification phase: render advisors with `--render-advisor` and dispatch
      them the same way as panels/lenses.
-- **Other hosts** — run the entries sequentially in-session with the same
-  prompts; expect no parallelism.
+- **Other hosts (portable, degraded)** — no sub-agent nesting or Workflow
+  primitive available: run `pending_entries(plan)` sequentially in-session
+  with the same prompts, one reviewer at a time; expect no parallelism. Still
+  apply the resume predicate (skip entries already done) and the self-write
+  contract where the host lets a dispatched agent write files; where it
+  doesn't, the in-session orchestrator persists the reviewer's returned
+  findings to `out_file` on its behalf — a disclosed, weaker posture than the
+  guarded self-write hosts get.
 
 Tool policy is host-ENFORCED for entries with `enforced: true` (registered
 shells) and prompt-advisory otherwise. The report's `meta.coverage.tool_policy_mode`
 records which posture a run actually had. When any entry is unenforced, tell
 the user in one line before fan-out. `tool_policy_mode` is derived from the
 fan-out plan entries (panel_review/lens_sweep); scout and advisor shell
-dispatch is instructed in steps 3 and 8 but not recorded in the mode.
+dispatch is instructed in steps 3 and 8 but not recorded in the mode. The
+write-guard is orthogonal to this axis: it governs WHERE a reviewer's Write
+may target, installed for the fan-out phase regardless of `enforced`, and
+does not change how tool restrictions are enforced — `tool_policy_mode` gains
+no new value from it.
 
 ## Output
 Terminal markdown summary + JSON artifact at `--out`. CI gate key: `summary.gate`.
@@ -178,7 +244,12 @@ Citations (CWE/OWASP/CVE/EPSS) are audit metadata — they annotate findings but
 never decide truth.
 
 ## Notes
-Reviewers are read-only: no repo/GitHub writes, no claiming unperformed actions, no materializing discovered secrets.
+Fan-out reviewers (`panel_review`, `lens_sweep`) hold scoped `Write` for their
+own `out_file` only, guarded by the write-guard hook — never anywhere else in
+the repo. Otherwise every reviewer role is read-only: no other repo/GitHub
+writes, no claiming unperformed actions, no materializing discovered secrets.
+Scouts and advisors stay fully read-only; the orchestrator performs their
+writes (steps 3 and 8).
 
 Hostile-content review (redteam mode, deliberately vulnerable corpora, repos that may
 contain planted injection payloads) should run with enforcement registered via

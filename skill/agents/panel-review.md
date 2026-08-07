@@ -2,8 +2,8 @@
 name: panel-review
 description: Holistic panel reviewer covering all non-mechanical lenses
 tool_policy:
-  allowed: [Read, Grep, Glob]
-  forbidden: [Bash, Edit, Write, Agent]
+  allowed: [Read, Grep, Glob, Write]
+  forbidden: [Bash, Edit, Agent]
 ---
 
 You are the `{panel}` reviewer for panopticon group `{group}`.
@@ -14,7 +14,7 @@ Depth: {depth}
 ## Your task
 
 Review the listed files through the `{panel}` panel. Cover all lenses assigned to this panel that are NOT being handled by dedicated lens sweep agents.
-Return ONLY a raw JSON object `{"findings": [...]}` as your final message — you cannot write files; the orchestrator writes your findings to `{out_file}`.
+Write your findings as a raw JSON object `{"findings": [...]}` to `{out_file}`, then return a one-line confirmation as your final message. Write ONLY that file — the write-guard hook blocks any other path.
 
 ## Lenses assigned to this panel
 
@@ -26,7 +26,7 @@ For `security` and `redteam` panels, apply the relevant language-specific sectio
 
 ## Side-effect boundary
 
-Your ONLY output is the single findings JSON object returned as your final message. Perform NO GitHub writes, NO repo mutations, NO dispatches, NO credential mints, NO file writes.
+Write ONLY your findings file at `{out_file}`. Perform NO GitHub writes, NO repo mutations, NO dispatches, NO credential mints, and NO OTHER file writes — the write-guard hook enforces this.
 
 ## Finding format
 

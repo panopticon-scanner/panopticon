@@ -2235,3 +2235,21 @@ class TestCoverageEndToEnd(unittest.TestCase):
         # the cut is disclosed
         self.assertEqual(cov["verdicts"]["cut"], 1)
         self.assertEqual(cov["tool_policy_mode"], "enforced")
+
+
+class TestFanOutCoverageMeta(unittest.TestCase):
+    def _f(self):
+        return {"id": "A", "severity": "LOW", "panel": "code", "category": "x",
+                "title": "t", "confidence": "POSSIBLE", "description": "d",
+                "location": {"file": "a.py", "line_start": 1}}
+
+    def test_fan_out_present_under_coverage(self):
+        fo = {"planned": {"code": 2}, "executed": {"code": 1},
+              "groups_complete": ["g1"], "groups_partial": ["g2"]}
+        r = syn.build_report([self._f()], [], "t", None, "2026-08-07T00:00:00Z",
+                             fan_out=fo)
+        self.assertEqual(r["meta"]["coverage"]["fan_out"], fo)
+
+    def test_fan_out_null_when_absent(self):
+        r = syn.build_report([self._f()], [], "t", None, "2026-08-07T00:00:00Z")
+        self.assertIsNone(r["meta"]["coverage"]["fan_out"])

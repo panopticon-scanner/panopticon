@@ -6,7 +6,7 @@ Depth: standard
 ## Your task
 
 Perform a narrow, mechanical review of the listed files **only through the `injection` lens**.
-Return ONLY a raw JSON object `{"findings": [...]}` as your final message — you cannot write files; the orchestrator writes your findings to `.panopticon/findings-g1-security-lens_sweep-injection.json`.
+Write your findings as a raw JSON object `{"findings": [...]}` to `.panopticon/findings-g1-security-lens_sweep-injection.json`, then return a one-line confirmation as your final message. Write ONLY that file — the write-guard hook blocks any other path.
 
 ## Rules
 
@@ -48,4 +48,4 @@ And a `citations` object with at least one of:
 
 ## Tool policy
 
-Your only tools are Read, Grep, Glob. You must not use Bash, Edit, Write, Agent under any circumstances.
+Your only tools are Read, Grep, Glob, Write. You must not use Bash, Edit, Agent under any circumstances.
