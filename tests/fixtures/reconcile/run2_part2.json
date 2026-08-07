@@ -1,0 +1,13 @@
+{
+  "findings": [
+    {"id": "F-DUP-1", "severity": "INFO", "panel": "", "category": "",
+     "location": {"file": ""}, "title": "", "fingerprint": "aaaaaaaaaaaaaaaa"},
+    {"id": "F-DUP-2", "severity": "INFO", "panel": "", "category": "",
+     "location": {"file": ""}, "title": "", "fingerprint": "bbbbbbbbbbbbbbbb"},
+    {"id": "F-GONE-2", "severity": "MEDIUM", "panel": "security",
+     "category": "hardcoded-password", "source": "tool:bandit",
+     "tool_evidence": {"rule_id": "B105"},
+     "location": {"file": "app/auth.py", "line_start": 8},
+     "title": "Hardcoded password", "fingerprint": "2222222222222222"}
+  ]
+}

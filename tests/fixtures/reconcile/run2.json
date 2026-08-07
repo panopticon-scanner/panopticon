@@ -1,0 +1,24 @@
+{
+  "meta": {"parts": ["run2_part2.json"]},
+  "findings": [
+    {"id": "F-TOOL-1", "severity": "MEDIUM", "panel": "security",
+     "category": "hardcoded-secret", "source": "tool:semgrep",
+     "tool_evidence": {"rule_id": "python.lang.security.hardcoded-token"},
+     "location": {"file": "app/config.py", "line_start": 10},
+     "title": "Hardcoded token", "fingerprint": "deadbeefdeadbeef"},
+    {"id": "F-AGENT-1", "severity": "LOW", "panel": "architecture",
+     "category": "coupling",
+     "location": {"file": "app/registry.py", "line_start": 3},
+     "title": "Tight coupling in registry", "fingerprint": "cafebabecafebabe"},
+    {"id": "F-GONE-1", "severity": "LOW", "panel": "test",
+     "category": "coverage",
+     "location": {"file": "app/legacy.py", "line_start": 1},
+     "title": "Missing test for legacy path", "fingerprint": "0000000000000001"}
+  ],
+  "discarded_claims": [
+    {"id": "R-REJ-1", "severity": "HIGH", "panel": "security",
+     "category": "injection",
+     "location": {"file": "app/query.py", "line_start": 44},
+     "title": "Possible SQL injection", "fingerprint": "1111111111111111"}
+  ]
+}
