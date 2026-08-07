@@ -67,7 +67,7 @@ def recover_linkage_from_github(label="self-scan", runner=subprocess.run):
     source of truth; preserve it rather than relying on this recovery.
     """
     r = runner(["gh", "issue", "list", "--label", label, "--state", "all",
-               "--json", "number,body,labels", "--limit", "1000"],
+               "--json", "number,url,body,labels", "--limit", "1000"],
               capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError("gh issue list failed (exit %d): %s" % (
@@ -88,7 +88,7 @@ def recover_linkage_from_github(label="self-scan", runner=subprocess.run):
         loc = loc_m.group(1)
         loc = "" if loc == "(no file)" else loc
         key = "%s|%s|%s|%s" % (fp_m.group(1), id_m.group(1), loc, kind)
-        linkage[key] = ISSUE_REPO_URL % issue["number"]
+        linkage[key] = issue.get("url") or (ISSUE_REPO_URL % issue["number"])
     return linkage
 
 
