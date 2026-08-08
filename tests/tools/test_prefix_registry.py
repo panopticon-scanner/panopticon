@@ -12,9 +12,9 @@ not of whichever pair someone remembered to check.
 """
 import unittest
 
-from scripts.tools import ADAPTERS  # noqa: E402
-import scripts.tools.legacy_sarif as legacy  # noqa: E402
-import scripts.tools.sarif_utils as su  # noqa: E402
+from scripts.tools import ADAPTERS
+import scripts.tools.legacy_sarif as legacy
+import scripts.tools.sarif_utils as su
 
 
 def prefix_collisions(adapters):
