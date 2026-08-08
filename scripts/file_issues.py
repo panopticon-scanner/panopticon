@@ -128,12 +128,51 @@ def body_for(f, rejected=False, report=REPORT, report_url=REPORT_URL,
     return "\n".join(L)
 
 
-REPO_ROOT = "/Volumes/Mini Vault/untitled_folder/projects/panopticon/"
+_REPO_ROOT_CACHE = None
+
+
+def _detect_repo_root():
+    """Absolute repo root (trailing '/') detected dynamically, not hardcoded.
+
+    A machine-specific absolute path was baked into source (#602); on any other
+    machine scrub() silently no-opped (str.replace found no match), quietly
+    leaking local paths into public, permanent issues rather than crashing.
+    Prefer the git worktree root; fall back to cwd (the pipeline runs from the
+    repo root by contract)."""
+    try:
+        r = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                           capture_output=True, text=True, timeout=10)
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip().rstrip("/") + "/"
+    except Exception:
+        pass
+    return os.getcwd().rstrip("/") + "/"
+
+
+def repo_root():
+    """Cached dynamic repo root (see _detect_repo_root)."""
+    global _REPO_ROOT_CACHE
+    if _REPO_ROOT_CACHE is None:
+        _REPO_ROOT_CACHE = _detect_repo_root()
+    return _REPO_ROOT_CACHE
+
+
+def repo_relative(path):
+    """Strip the repo-root prefix so a location is portable and matches what
+    scrub() writes into issue bodies. The single source of the cross-run key's
+    location component (#607/#488): keying on the raw path meant an absolute
+    location produced a ledger key that the scrubbed (relative) issue body
+    could never reconstruct, so recover_linkage_from_github lost those entries.
+    An already-relative path passes through unchanged."""
+    root = repo_root()
+    p = str(path or "")
+    return p[len(root):] if p.startswith(root) else p
 
 
 def scrub(text):
     """Reviewers cite absolute local paths; issues are public and permanent."""
-    return str(text).replace(REPO_ROOT, "").replace(REPO_ROOT.rstrip("/"), "the repo root")
+    root = repo_root()
+    return str(text).replace(root, "").replace(root.rstrip("/"), "the repo root")
 
 
 LEDGER = ".panopticon/filed-issues.json"
@@ -158,8 +197,13 @@ def record(ledger, key, url):
 
 def key_for(f, rejected):
     loc = f.get("location") or {}
+    # Normalize the location to repo-relative so the ledger key matches the
+    # scrubbed path in the issue body — recover_linkage_from_github can then
+    # reconstruct it losslessly even for findings whose location was absolute
+    # (#607/#488). Relative paths (the common case) are unchanged.
     return "%s|%s|%s|%s" % (f.get("fingerprint") or "", f.get("id") or "",
-                            loc.get("file") or "", "rejected" if rejected else "finding")
+                            repo_relative(loc.get("file") or ""),
+                            "rejected" if rejected else "finding")
 
 
 RATE_HINTS = ("rate limit", "secondary rate", "abuse detection", "was submitted too quickly")

@@ -58,6 +58,53 @@ class TestBodyProvenance(unittest.TestCase):
         self.assertIn("**Location:** `skill/scripts/run_tools.py:42`", body)
 
 
+class TestRepoRootPortability(unittest.TestCase):
+    """#602: REPO_ROOT was a hardcoded machine-specific absolute path; on any
+    other machine scrub() silently no-opped and leaked local paths into public
+    issues. It is now detected dynamically."""
+
+    def test_repo_root_is_dynamic_absolute_with_trailing_sep(self):
+        root = file_issues.repo_root()
+        self.assertTrue(root.endswith("/"))
+        self.assertTrue(os.path.isabs(root))
+        # Detected root is this checkout — file_issues.py lives under it.
+        self.assertTrue(os.path.abspath(__file__).startswith(root))
+
+    def test_scrub_strips_the_detected_root(self):
+        abs_path = file_issues.repo_root() + "skill/scripts/run_tools.py"
+        self.assertEqual(file_issues.scrub("see %s here" % abs_path),
+                         "see skill/scripts/run_tools.py here")
+
+    def test_repo_relative_passes_through_relative_and_foreign_paths(self):
+        self.assertEqual(file_issues.repo_relative("skill/a.py"), "skill/a.py")
+        self.assertEqual(file_issues.repo_relative("/elsewhere/b.py"),
+                         "/elsewhere/b.py")
+        self.assertEqual(
+            file_issues.repo_relative(file_issues.repo_root() + "c.py"), "c.py")
+
+
+class TestKeyForNormalization(unittest.TestCase):
+    """#607/#488: the ledger key's location component must be repo-relative so
+    it matches the scrubbed issue body and recovers losslessly."""
+
+    def test_absolute_location_keys_relative(self):
+        f = {"fingerprint": "fp1", "id": "SEC-1",
+             "location": {"file": file_issues.repo_root() + "skill/x.py"}}
+        self.assertEqual(file_issues.key_for(f, rejected=False),
+                         "fp1|SEC-1|skill/x.py|finding")
+
+    def test_relative_location_unchanged(self):
+        f = {"fingerprint": "fp1", "id": "SEC-1",
+             "location": {"file": "skill/x.py"}}
+        self.assertEqual(file_issues.key_for(f, rejected=False),
+                         "fp1|SEC-1|skill/x.py|finding")
+
+    def test_missing_location_keys_empty(self):
+        self.assertEqual(file_issues.key_for({"fingerprint": "fp1", "id": "X"},
+                                             rejected=True),
+                         "fp1|X||rejected")
+
+
 class TestCreateEmptyStdout(unittest.TestCase):
     """GitHub secondary rate limits make `gh issue create` exit 0 with empty
     stdout. create() must back off and retry, never crash on splitlines()[-1]."""
