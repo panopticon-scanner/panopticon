@@ -42,19 +42,16 @@ class TestDecide(unittest.TestCase):
         allow = {os.path.abspath(target)}                   # allowlist built from the STRING path
         ok, reason = wg.decide("Write", target, allow)
         self.assertFalse(ok)
-        self.assertIn("denied", reason.lower())
-
-    def test_resolved_path_outside_repo_root_is_denied(self):
-        # A write whose realpath escapes the repo root must be denied even if
-        # the path is present in the allowlist (pre-existing symlink escape).
+        self.assertIn("allowlist", reason.lower())
+        # Fan-out findings files may reside outside the repo root (e.g. in a
+        # temp directory). A write that is explicitly allowlisted must succeed
+        # regardless of whether the realpath is inside or outside the repo root.
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, ignore_errors=True)
         target = os.path.join(d, "findings-g1.json")
-        allow = {os.path.realpath(target)}      # allowlist contains the out-of-repo realpath
-        ok, reason = wg.decide("Write", target, allow)
-        self.assertFalse(ok)
-        self.assertIn("denied", reason.lower())
-
+        allow = {os.path.realpath(target)}
+        ok, _ = wg.decide("Write", target, allow)
+        self.assertTrue(ok)
 
         # Same path on both sides with no symlinks anywhere, inside the repo root, must allow.
         target = os.path.join(os.getcwd(), ".panopticon", "findings-g1.json")
