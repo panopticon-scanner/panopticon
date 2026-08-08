@@ -176,12 +176,21 @@ class TestDispatchPlan(unittest.TestCase):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as fh:
             json.dump(profile, fh)
             profile_path = fh.name
+        # Register both reviewer shells in a temp agents-dir so the plan is
+        # fully enforced and the #275 gate is a deterministic no-op here,
+        # regardless of ambient host detection or real registrations on the
+        # machine running the test (a bare CI runner has neither).
+        reg = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, reg, ignore_errors=True)
+        for name in ("panopticon-panel-review.md", "panopticon-lens-sweep.md"):
+            with open(os.path.join(reg, name), "w") as fh:
+                fh.write("---\nname: %s\n---\nbody\n" % name[:-3])
         try:
             # Use a path under /dev/null which cannot be created as a directory.
             out_path = "/dev/null/cannot-create/findings.json"
             stderr = io.StringIO()
             with contextlib.redirect_stderr(stderr):
-                rc = dispatch.main([profile_path, "--out", out_path])
+                rc = dispatch.main([profile_path, "--out", out_path, "--agents-dir", reg])
             self.assertEqual(rc, 1)
             self.assertIn("cannot create output directory", stderr.getvalue())
         finally:
