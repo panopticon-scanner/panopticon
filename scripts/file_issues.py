@@ -16,9 +16,17 @@ import subprocess
 import sys
 import time
 
+# Defaults describe run 2 (the first filed self-scan). Each subsequent scan —
+# the cadence is a fresh self-scan every Saturday — passes its own --report,
+# --report-url, --run-label, --run-date, and --run-state-doc, so no code edit
+# is needed to file a new run. Defaults are kept only for backward-compatibility
+# and to keep body_for() callable with a bare finding in tests.
 REPORT = "docs/superpowers/2026-08-04-self-scan-report.json"
-REPORT_URL = ("https://github.com/psyberone/panopticon/blob/main/"
+REPORT_URL = ("https://github.com/panopticon-scanner/panopticon/blob/main/"
               "docs/superpowers/2026-08-04-self-scan-report.json")
+RUN_LABEL = "run 2"
+RUN_DATE = "2026-08-04"
+RUN_STATE_DOC = "docs/superpowers/2026-08-04-self-scan-run-state.md"
 
 SEV_LABEL = {"CRITICAL": "severity:critical", "HIGH": "severity:high",
              "MEDIUM": "severity:medium", "LOW": "severity:low",
@@ -60,7 +68,8 @@ def title_for(f):
     return t + suffix
 
 
-def body_for(f, rejected=False):
+def body_for(f, rejected=False, report=REPORT, report_url=REPORT_URL,
+             run_label=RUN_LABEL, run_date=RUN_DATE, run_state_doc=RUN_STATE_DOC):
     loc = f.get("location") or {}
     ev = f.get("evidence") or {}
     prov = f.get("provenance") or {}
@@ -111,11 +120,11 @@ def body_for(f, rejected=False):
              "numbers and free-text so this issue survives code moves and "
              "re-wordings." % f.get("fingerprint"))
     L.append("**Finding id in report:** `%s`" % f.get("id"))
-    L.append("**Report artifact:** [%s](%s) (self-scan run 2, 2026-08-04, "
-             "`tool_policy_mode: enforced`)" % (REPORT, REPORT_URL))
+    L.append("**Report artifact:** [%s](%s) (self-scan %s, %s, "
+             "`tool_policy_mode: enforced`)" % (report, report_url,
+                                                run_label, run_date))
     L.append("\n*Filed automatically from a panopticon self-scan. Coverage for "
-             "this run is stated in "
-             "`docs/superpowers/2026-08-04-self-scan-run-state.md`.*")
+             "this run is stated in `%s`.*" % run_state_doc)
     return "\n".join(L)
 
 
@@ -193,15 +202,25 @@ def main():
     ap.add_argument("--only", choices=["findings", "rejected"])
     ap.add_argument("--throttle", type=float, default=1.5,
                     help="seconds between creates; GitHub throttles bursts")
+    ap.add_argument("--report", default=REPORT,
+                    help="path to the self-scan report JSON to file from")
+    ap.add_argument("--report-url", default=REPORT_URL,
+                    help="public URL of the report artifact, embedded in each issue")
+    ap.add_argument("--run-label", default=RUN_LABEL,
+                    help="human label for the run, e.g. 'run 3'")
+    ap.add_argument("--run-date", default=RUN_DATE,
+                    help="date of the run, e.g. '2026-08-08'")
+    ap.add_argument("--run-state-doc", default=RUN_STATE_DOC,
+                    help="path to the run's coverage/run-state doc, linked in each issue")
     a = ap.parse_args()
 
-    report = json.load(open(REPORT, encoding="utf-8"))
+    report = json.load(open(a.report, encoding="utf-8"))
     findings = list(report["findings"])
     # A large report is split; meta.parts names the continuation files, resolved
     # beside the main artifact. Reading only the first part silently under-files.
     for part in (report.get("meta") or {}).get("parts") or []:
         part = str(part)
-        base_dir = os.path.dirname(REPORT)
+        base_dir = os.path.dirname(a.report)
         ppath = os.path.normpath(os.path.join(base_dir, part))
         base_dir_norm = os.path.normpath(base_dir)
         if os.path.isabs(part) or not (ppath == base_dir_norm or ppath.startswith(base_dir_norm + os.sep)):
@@ -236,7 +255,10 @@ def main():
 
     created = 0
     for f, rej in todo:
-        url = create(scrub(title_for(f)), scrub(body_for(f, rej)),
+        body = body_for(f, rej, report=a.report, report_url=a.report_url,
+                        run_label=a.run_label, run_date=a.run_date,
+                        run_state_doc=a.run_state_doc)
+        url = create(scrub(title_for(f)), scrub(body),
                      labels_for(f, rej), a.dry_run, a.throttle)
         if url:
             record(ledger, key_for(f, rej), url)
