@@ -11,7 +11,7 @@ _WRITE_TOOLS = {"Write", "Edit", "NotebookEdit"}
 
 def allowlist_from_plan(plan):
     """Absolute-normalized set of every out_file the plan declares."""
-    return {os.path.abspath(e["out_file"]) for e in plan
+    return {os.path.realpath(e["out_file"]) for e in plan
             if isinstance(e, dict) and isinstance(e.get("out_file"), str) and e.get("out_file")}
 
 
@@ -19,9 +19,10 @@ def decide(tool_name, file_path, allowlist):
     """(allow, reason). Non-write tools always allowed; writes only to allowlist."""
     if tool_name not in _WRITE_TOOLS:
         return True, ""
-    target = os.path.abspath(file_path or "")
-    if os.path.islink(target):
+    raw = os.path.abspath(file_path or "")
+    if os.path.islink(raw):
         return False, ("write to %s is denied: findings targets must not be symlinks" % file_path)
+    target = os.path.realpath(raw)
     if target in allowlist:
         return True, ""
     return False, ("write to %s is outside the fan-out allowlist; reviewers may "

@@ -1,4 +1,4 @@
-import contextlib, io, json, os, tempfile, unittest, sys
+import contextlib, io, json, os, shutil, tempfile, unittest, sys
 from unittest import mock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill"))
 import scripts.write_guard_hook as wg
@@ -25,6 +25,32 @@ class TestDecide(unittest.TestCase):
 
     def test_non_write_tool_is_permitted(self):
         ok, _ = wg.decide("Read", "/etc/passwd", self.allow)
+        self.assertTrue(ok)
+
+    def test_symlinked_parent_dir_is_not_authorized(self):
+        # A write whose PARENT directory is a symlink must not pass by string
+        # match: realpath(target) escapes the allowlisted location even though
+        # abspath(target) equals the allowlisted string and the final component
+        # is not itself a link.
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        real_dir = os.path.join(d, "real-elsewhere")
+        os.makedirs(real_dir)
+        linked_dir = os.path.join(d, "pan")
+        os.symlink(real_dir, linked_dir)                    # pan -> real-elsewhere
+        target = os.path.join(linked_dir, "findings-g1.json")
+        allow = {os.path.abspath(target)}                   # allowlist built from the STRING path
+        ok, reason = wg.decide("Write", target, allow)
+        self.assertFalse(ok)
+        self.assertIn("outside", reason.lower() + " " + reason.lower())
+
+    def test_realpath_allowlist_still_authorizes_legit_write(self):
+        # Same path on both sides with no symlinks anywhere must still allow.
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        target = os.path.join(d, "findings-g1.json")
+        allow = wg.allowlist_from_plan([{"out_file": target}])
+        ok, _ = wg.decide("Write", target, allow)
         self.assertTrue(ok)
 
 
