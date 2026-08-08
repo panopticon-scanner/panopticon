@@ -2,6 +2,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -114,8 +115,23 @@ class TestDispatchPlan(unittest.TestCase):
             profile_path = fh.name
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as fh:
             out_path = fh.name
+        # Register both reviewer shells in a temp agents-dir so the plan is
+        # fully enforced and the #275 gate is a deterministic no-op here --
+        # this test's purpose is main()'s plan-write path, not enforcement
+        # gating (TestUnenforcedGate covers that). Without registration, the
+        # unregistered-host gate would either refuse (rc 1) or, with
+        # --allow-unenforced, write a REAL .panopticon/unenforced-ack.json
+        # relative to the test process's cwd -- the repo root, since this
+        # test does not chdir. Same registration pattern as
+        # test_main_unwritable_out_directory_returns_one.
+        reg = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, reg, ignore_errors=True)
+        for name in ("panopticon-panel-review.md", "panopticon-lens-sweep.md"):
+            with open(os.path.join(reg, name), "w") as fh:
+                fh.write("---\nname: %s\n---\nbody\n" % name[:-3])
         try:
-            rc = dispatch.main([profile_path, "--host", "kimi", "--out", out_path])
+            rc = dispatch.main([profile_path, "--host", "kimi", "--out", out_path,
+                                "--agents-dir", reg])
             self.assertEqual(rc, 0)
             with open(out_path) as fh:
                 plan = json.load(fh)
@@ -170,12 +186,21 @@ class TestDispatchPlan(unittest.TestCase):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as fh:
             json.dump(profile, fh)
             profile_path = fh.name
+        # Register both reviewer shells in a temp agents-dir so the plan is
+        # fully enforced and the #275 gate is a deterministic no-op here,
+        # regardless of ambient host detection or real registrations on the
+        # machine running the test (a bare CI runner has neither).
+        reg = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, reg, ignore_errors=True)
+        for name in ("panopticon-panel-review.md", "panopticon-lens-sweep.md"):
+            with open(os.path.join(reg, name), "w") as fh:
+                fh.write("---\nname: %s\n---\nbody\n" % name[:-3])
         try:
             # Use a path under /dev/null which cannot be created as a directory.
             out_path = "/dev/null/cannot-create/findings.json"
             stderr = io.StringIO()
             with contextlib.redirect_stderr(stderr):
-                rc = dispatch.main([profile_path, "--out", out_path])
+                rc = dispatch.main([profile_path, "--out", out_path, "--agents-dir", reg])
             self.assertEqual(rc, 1)
             self.assertIn("cannot create output directory", stderr.getvalue())
         finally:
@@ -294,6 +319,11 @@ class TestDispatchPlan(unittest.TestCase):
             dispatch.emit_kimi_swarm(["not an object"])
 
     def test_cli_emit_kimi_swarm_writes_manifest_and_requires_out(self):
+        # plan's panel_review entry is unenforced, so this must run with
+        # --allow-unenforced (I3's gate on --emit-kimi-swarm) -- and, since
+        # that path writes .panopticon/unenforced-ack.json relative to cwd,
+        # this must chdir into the temp dir first (I1's hermeticity rule)
+        # rather than drop a real ack into the repo root.
         plan = [{"role": "panel_review", "agent": "panopticon-panel-review",
                  "enforced": False, "model": {"model": "secondary"},
                  "prompt": "p", "out_file": ".panopticon/f.json"}]
@@ -303,12 +333,17 @@ class TestDispatchPlan(unittest.TestCase):
             with open(plan_path, "w", encoding="utf-8") as fh:
                 json.dump(plan, fh)
 
-            with contextlib.redirect_stderr(io.StringIO()) as err:
-                self.assertEqual(dispatch.main(["--emit-kimi-swarm", plan_path]), 2)
-            self.assertIn("requires --out", err.getvalue())
+            cwd = os.getcwd()
+            try:
+                os.chdir(d)
+                with contextlib.redirect_stderr(io.StringIO()) as err:
+                    self.assertEqual(dispatch.main(["--emit-kimi-swarm", plan_path]), 2)
+                self.assertIn("requires --out", err.getvalue())
 
-            rc = dispatch.main(["--emit-kimi-swarm", plan_path, "--out", out_path,
-                                "--agents-dir", d])
+                rc = dispatch.main(["--emit-kimi-swarm", plan_path, "--out", out_path,
+                                    "--agents-dir", d, "--allow-unenforced"])
+            finally:
+                os.chdir(cwd)
             self.assertEqual(rc, 0)
             with open(out_path, encoding="utf-8") as fh:
                 written = json.load(fh)
@@ -676,6 +711,94 @@ class TestEnforcedPlanEntries(unittest.TestCase):
         plan = dispatch.build_plan(self._profile(), host="generic")
         for e in plan:
             self.assertFalse(e["enforced"])
+
+
+class TestUnenforcedGate(unittest.TestCase):
+    PROFILE = {"group": "g", "files": ["a.py"], "depth": "standard", "panels": ["code"]}
+
+    def _run(self, extra_args, agents_dir):
+        # empty agents_dir => unenforced; returns (rc, plan_path, ack_path, cwd used)
+        # NOTE: uses mkdtemp (not a `with TemporaryDirectory()` around the
+        # return) because returning from inside that context manager tears
+        # the directory down before the caller can assert on the returned
+        # paths -- addCleanup keeps it alive until the test finishes.
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        prof = os.path.join(d, "profile.json")
+        with open(prof, "w") as fh:
+            json.dump(self.PROFILE, fh)
+        out = os.path.join(d, "plan.json")
+        cwd = os.getcwd()
+        try:
+            os.chdir(d)
+            rc = dispatch.main([prof, "--host", "claude",
+                                "--agents-dir", agents_dir, "--out", out] + extra_args)
+        finally:
+            os.chdir(cwd)
+        return rc, out, os.path.join(d, ".panopticon", "unenforced-ack.json")
+
+    def test_unenforced_reviewer_hard_fails_without_flag(self):
+        with tempfile.TemporaryDirectory() as empty:
+            rc, out, ack = self._run([], empty)
+        self.assertNotEqual(rc, 0)
+        self.assertFalse(os.path.exists(out))       # no plan written
+        self.assertFalse(os.path.exists(ack))
+
+    def test_allow_unenforced_writes_plan_and_ack(self):
+        with tempfile.TemporaryDirectory() as empty:
+            rc, out, ack = self._run(["--allow-unenforced"], empty)
+        self.assertEqual(rc, 0)
+        self.assertTrue(os.path.exists(out))
+        with open(ack) as fh:
+            data = json.load(fh)
+        self.assertTrue(data["acknowledged"])
+        self.assertIn("panel_review", data["roles"])
+
+    def test_enforced_plan_emits_normally_no_ack(self):
+        with tempfile.TemporaryDirectory() as reg:
+            # register both reviewer shells so the plan is fully enforced
+            for role_file in ("panel-review.md", "lens-sweep.md"):
+                with open(os.path.join(reg, "panopticon-" + role_file), "w") as fh:
+                    fh.write("---\nname: panopticon-%s\n---\nbody\n" % role_file[:-3])
+            rc, out, ack = self._run([], reg)
+        self.assertEqual(rc, 0)
+        self.assertTrue(os.path.exists(out))
+        self.assertFalse(os.path.exists(ack))       # enforced => no ack marker
+
+    def test_emit_kimi_swarm_refuses_unenforced_plan(self):
+        # I3: --emit-kimi-swarm is an emission path too (plan -> dispatchable
+        # manifest) and must carry the same refuse-by-default gate as the
+        # plan-emit path -- it must not be a silent downgrade to unenforced
+        # coder/explore profiles with rc 0.
+        plan = [{"role": "panel_review", "agent": "panopticon-panel-review",
+                 "enforced": False, "model": {"model": "secondary"},
+                 "prompt": "p", "out_file": ".panopticon/f.json"}]
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        plan_path = os.path.join(d, "plan.json")
+        with open(plan_path, "w", encoding="utf-8") as fh:
+            json.dump(plan, fh)
+        out_path = os.path.join(d, "swarm.json")
+        ack_path = os.path.join(d, ".panopticon", "unenforced-ack.json")
+        cwd = os.getcwd()
+        try:
+            os.chdir(d)
+            rc_refused = dispatch.main(["--emit-kimi-swarm", plan_path, "--out", out_path])
+        finally:
+            os.chdir(cwd)
+        self.assertNotEqual(rc_refused, 0)
+        self.assertFalse(os.path.exists(out_path))
+        self.assertFalse(os.path.exists(ack_path))
+
+        try:
+            os.chdir(d)
+            rc_allowed = dispatch.main(["--emit-kimi-swarm", plan_path, "--out", out_path,
+                                        "--allow-unenforced"])
+        finally:
+            os.chdir(cwd)
+        self.assertEqual(rc_allowed, 0)
+        self.assertTrue(os.path.exists(out_path))
+        self.assertTrue(os.path.exists(ack_path))
 
 
 class TestEmitHostAgents(unittest.TestCase):

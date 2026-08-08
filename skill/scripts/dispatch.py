@@ -84,6 +84,12 @@ ROLE_FILES = {"scout": "scout.md", "panel_review": "panel-review.md",
 CLAUDE_AGENTS_DIR = os.path.join(os.path.expanduser("~"), ".claude", "agents")
 KIMI_AGENTS_DIR = os.path.join(os.path.expanduser("~"), ".kimi-code", "agents")
 
+# Roles whose findings gate merge/release decisions (#275). If either lacks a
+# registered enforcement shell, its tool policy is prompt-advisory only --
+# a general-purpose agent reading untrusted repo content would have full
+# Bash/Edit/Write. main() refuses to emit such a plan by default.
+REVIEWER_ROLES = {"panel_review", "lens_sweep"}
+
 # Emission is deterministic policy — ambient PANOPTICON_MODEL_* overrides apply
 # to per-run dispatch plans, never to persisted registrations.
 EMIT_MODEL_POLICY = {"claude": {"scout": "haiku", "lens_sweep": "haiku",
@@ -486,6 +492,49 @@ def emit_kimi_swarm(plan, agents_dir=None, verify_registration=False):
     return {"batches": batches}
 
 
+def _gate_unenforced(plan, allow):
+    """Reviewer roles in `plan` that lack a registered enforcement shell.
+
+    Returns (ok, unenforced): `unenforced` is the sorted set of REVIEWER_ROLES
+    present in `plan` with a falsy `enforced` flag (missing/null reads as
+    unenforced -- fail-safe, same rule as build_plan's own gate); `ok` is True
+    when there is nothing to gate on, or the caller passed `allow`. A non-list
+    `plan` gates on nothing here -- the caller's own JSON/shape validation
+    (e.g. emit_kimi_swarm's ValueError) is responsible for that failure mode.
+
+    Shared by the plan-emit path and --emit-kimi-swarm (#275/I3) so the two
+    cannot drift apart the way disclosure and enforcement did before this.
+    """
+    entries = plan if isinstance(plan, list) else []
+    unenforced = sorted({e["role"] for e in entries
+                         if isinstance(e, dict) and e.get("role") in REVIEWER_ROLES
+                         and not e.get("enforced")})
+    return (not unenforced or allow), unenforced
+
+
+def _unenforced_refusal_message(unenforced, context="plan"):
+    action = "emit swarm manifest" if context == "swarm" else "emit plan"
+    return ("dispatch: refusing to %s — unenforced reviewer role(s): %s.\n"
+            "Tool policy would be prompt-advisory only (full Bash/Edit/Write on a "
+            "general-purpose agent reading untrusted repo content).\n"
+            "Register enforcement shells first:  python3 skill/scripts/dispatch.py "
+            "--emit-host-agents <host>\n"
+            "Or accept the risk explicitly with --allow-unenforced."
+            % (action, ", ".join(unenforced)))
+
+
+def _write_unenforced_ack(unenforced):
+    """Record an --allow-unenforced acceptance in .panopticon/unenforced-ack.json.
+
+    Raises OSError on failure; callers must catch it and fail closed (a
+    write error right before a plan/manifest emission must never surface as
+    a bare traceback -- see the M1 guard)."""
+    os.makedirs(".panopticon", exist_ok=True)
+    with open(os.path.join(".panopticon", "unenforced-ack.json"), "w",
+              encoding="utf-8") as fh:
+        json.dump({"acknowledged": True, "roles": unenforced}, fh, indent=2)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="panopticon dispatch planner")
     ap.add_argument("profile", nargs="?", default=None, help="Path to ScopeProfile JSON")
@@ -499,6 +548,10 @@ def main(argv=None):
     ap.add_argument("--emit-host-agents", metavar="HOST", choices=["claude", "kimi"], default=None)
     ap.add_argument("--agents-dir", default=None,
                     help="Directory containing registered agent .md files")
+    ap.add_argument("--allow-unenforced", action="store_true",
+                    help="Emit the plan even when reviewer roles lack a registered "
+                         "enforcement shell (tool policy becomes prompt-advisory); "
+                         "records the acceptance in .panopticon/unenforced-ack.json")
     ap.add_argument("--model-lens-sweep", default=None)
     ap.add_argument("--model-panel-review", default=None)
     ap.add_argument("--model-advisor", default=None)
@@ -537,15 +590,33 @@ def main(argv=None):
         except (OSError, ValueError) as e:
             print("dispatch: cannot read plan %s: %s" % (args.emit_kimi_swarm, e), file=sys.stderr)
             return 1
+        ok, unenforced = _gate_unenforced(plan, args.allow_unenforced)
+        if unenforced:
+            if not ok:
+                print(_unenforced_refusal_message(unenforced, context="swarm"), file=sys.stderr)
+                return 1
+            print("dispatch: WARNING — emitting swarm manifest with unenforced reviewer role(s): %s "
+                  "(acknowledged via --allow-unenforced)" % ", ".join(unenforced),
+                  file=sys.stderr)
         try:
             swarm = emit_kimi_swarm(plan, agents_dir=args.agents_dir,
                                     verify_registration=True)
         except ValueError as e:
             print("dispatch: %s" % e, file=sys.stderr)
             return 1
-        with open(args.out, "w", encoding="utf-8") as fh:
-            json.dump(swarm, fh, indent=2)
-            fh.write("\n")
+        try:
+            with open(args.out, "w", encoding="utf-8") as fh:
+                json.dump(swarm, fh, indent=2)
+                fh.write("\n")
+        except OSError as e:
+            print("dispatch: cannot write swarm manifest: %s" % e, file=sys.stderr)
+            return 1
+        if unenforced:
+            try:
+                _write_unenforced_ack(unenforced)
+            except OSError as e:
+                print("dispatch: cannot record unenforced ack: %s" % e, file=sys.stderr)
+                return 1
         print("wrote Kimi swarm manifest (%d batch(es)) -> %s" % (len(swarm["batches"]), args.out))
         return 0
     if not args.profile:
@@ -579,6 +650,15 @@ def main(argv=None):
         print("dispatch: %s" % e, file=sys.stderr)
         return 1
 
+    ok, unenforced = _gate_unenforced(plan, args.allow_unenforced)
+    if unenforced:
+        if not ok:
+            print(_unenforced_refusal_message(unenforced), file=sys.stderr)
+            return 1
+        print("dispatch: WARNING — emitting plan with unenforced reviewer role(s): %s "
+              "(acknowledged via --allow-unenforced)" % ", ".join(unenforced),
+              file=sys.stderr)
+
     if args.out:
         out_dir = os.path.dirname(os.path.abspath(args.out))
         try:
@@ -594,6 +674,12 @@ def main(argv=None):
             return 1
     else:
         emit_plan(plan)
+    if unenforced:
+        try:
+            _write_unenforced_ack(unenforced)
+        except OSError as e:
+            print("dispatch: cannot record unenforced ack: %s" % e, file=sys.stderr)
+            return 1
     return 0
 
 

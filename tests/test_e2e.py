@@ -38,10 +38,15 @@ class TestEndToEnd(unittest.TestCase):
                 json.dump(groups, fh)
             out = os.path.join(d, ".panopticon", "report.json")
             # 3. synthesize
+            # cwd=d: synthesize.py globs .panopticon/dispatch-plan*.json
+            # relative to its cwd (#146/C1); without pinning cwd here, a
+            # subprocess launched from the repo root would pick up THIS
+            # repo's own leftover self-scan dispatch-plan-*.json artifacts
+            # and reconcile this test's findings file against them.
             r2 = subprocess.run(
                 [sys.executable, os.path.join(SCRIPTS, "synthesize.py"),
                  "--target", "src", "--groups", gj, "--out", out, fp],
-                capture_output=True, text=True)
+                capture_output=True, text=True, cwd=d)
             self.assertEqual(r2.returncode, 0, r2.stderr)
             self.assertIn("Grade:", r2.stdout)
             with open(out) as _fh:
@@ -55,7 +60,7 @@ class TestEndToEnd(unittest.TestCase):
                 [sys.executable, os.path.join(SCRIPTS, "synthesize.py"),
                  "--target", "src", "--groups", gj, "--gate-unverified",
                  "--out", out, fp],
-                capture_output=True, text=True)
+                capture_output=True, text=True, cwd=d)
             self.assertEqual(r3.returncode, 0, r3.stderr)
             with open(out) as _fh:
                 report = json.load(_fh)
