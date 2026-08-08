@@ -230,6 +230,91 @@ def _split_inline_list(rest):
     return [x.strip().strip("'\"") for x in rest[1:-1].split(",") if x.strip()]
 
 
+def _glob_to_re(pat):
+    """Compile one gitignore-flavored glob to a regex over repo-relative paths.
+
+    Semantics (#499): ``*`` and ``?`` stay within a path segment, ``**``
+    crosses segments, and a pattern containing no ``/`` matches the basename
+    at any depth (gitignore's unanchored form). Patterns with a ``/`` are
+    anchored to the repo root.
+    """
+    anchored = "/" in pat
+    out, i = [], 0
+    while i < len(pat):
+        c = pat[i]
+        if c == "*":
+            if pat[i:i + 3] == "**/":
+                out.append(r"(?:[^/]+/)*")
+                i += 3
+            elif pat[i:i + 2] == "**":
+                out.append(r".*")
+                i += 2
+            else:
+                out.append(r"[^/]*")
+                i += 1
+        elif c == "?":
+            out.append(r"[^/]")
+            i += 1
+        else:
+            out.append(re.escape(c))
+            i += 1
+    body = "".join(out)
+    if not anchored:
+        body = r"(?:.*/)?" + body
+    return re.compile("^" + body + "$")
+
+
+def match_patterns(path, patterns):
+    """gitignore-style decision for one path against an ordered pattern list.
+
+    Later patterns override earlier ones (last match wins); a ``!`` prefix
+    negates, so ``["skill/scripts/**", "!skill/scripts/tools/**"]`` claims
+    the scripts tree except the tools subtree.
+    """
+    matched = False
+    for pat in patterns:
+        negate = pat.startswith("!")
+        if negate:
+            pat = pat[1:]
+        if _glob_to_re(pat).match(path):
+            matched = not negate
+    return matched
+
+
+def assign_by_catalog(files, catalog):
+    """Assign files to catalog groups that declare ``match`` patterns (#499).
+
+    Groups claim files in catalog order, first match wins, each file lands in
+    at most one group. Returns ``(assigned, leftovers)`` where ``assigned``
+    maps group name -> sorted files (empty groups omitted) and ``leftovers``
+    are files no group matched — the coverage gap the caller must disclose.
+    """
+    # Precompile each group's patterns once so regexes are not rebuilt per file.
+    matchable = []
+    for name, g in catalog.items():
+        if g.get("match"):
+            compiled = []
+            for pat in g["match"]:
+                negate = pat.startswith("!")
+                compiled.append((negate, _glob_to_re(pat[1:] if negate else pat)))
+            matchable.append((name, compiled))
+    assigned = {name: [] for name, _ in matchable}
+    leftovers = []
+    for f in files:
+        for name, compiled in matchable:
+            matched = False
+            for negate, rx in compiled:
+                if rx.match(f):
+                    matched = not negate
+            if matched:
+                assigned[name].append(f)
+                break
+        else:
+            leftovers.append(f)
+    return ({n: sorted(fs) for n, fs in assigned.items() if fs},
+            sorted(leftovers))
+
+
 def _parse_catalog_yaml(text):
     """Parse the documented catalog structure (2-space indent):
 
@@ -256,7 +341,7 @@ def _parse_catalog_yaml(text):
             continue
         if indent == 2 and stripped.endswith(":"):
             group = stripped[:-1].strip()
-            groups[group] = {"patterns": [], "facets": {}}
+            groups[group] = {"patterns": [], "facets": {}, "match": []}
             section = None
             facet = None
             continue
@@ -264,11 +349,11 @@ def _parse_catalog_yaml(text):
             key, _, rest = stripped.partition(":")
             key = key.strip()
             rest = rest.strip()
-            if key == "patterns":
-                section = "patterns"
+            if key in ("patterns", "match"):
+                section = key
                 facet = None
                 if rest.startswith("[") and rest.endswith("]"):
-                    groups[group]["patterns"] = _split_inline_list(rest)
+                    groups[group][key] = _split_inline_list(rest)
                     section = None
             elif key == "facets":
                 section = "facets"
@@ -277,8 +362,8 @@ def _parse_catalog_yaml(text):
                 raise ValueError("unexpected key at indent 4: %r" % key)
             continue
         if indent == 6:
-            if section == "patterns" and stripped.startswith("- "):
-                groups[group]["patterns"].append(stripped[2:].strip().strip("'\""))
+            if section in ("patterns", "match") and stripped.startswith("- "):
+                groups[group][section].append(stripped[2:].strip().strip("'\""))
                 continue
             if section == "facets":
                 key, _, rest = stripped.partition(":")
@@ -297,6 +382,15 @@ def _parse_catalog_yaml(text):
     return groups
 
 
+def _to_list(val):
+    """Normalise a YAML scalar, sequence, or None into a list."""
+    if val is None:
+        return []
+    if isinstance(val, str):
+        return [val]
+    return list(val)
+
+
 def load_catalog(repo):
     """Load file group catalog from .panopticon/groups.yml or parse YAML fallback."""
     path = os.path.join(repo, ".panopticon", "groups.yml")
@@ -313,8 +407,9 @@ def load_catalog(repo):
             for name, body in raw.items():
                 body = body or {}
                 out[name] = {
-                    "patterns": list(body.get("patterns") or []),
-                    "facets": {k: list(v or []) for k, v in (body.get("facets") or {}).items()},
+                    "patterns": _to_list(body.get("patterns")),
+                    "match": _to_list(body.get("match")),
+                    "facets": {k: _to_list(v) for k, v in (body.get("facets") or {}).items()},
                 }
             return out
         except ImportError:
@@ -405,20 +500,98 @@ def _is_fixture_dir(rel):
             and parts[-2] in FIXTURE_PARENT_DIRS)
 
 
-def discover_repo_files(repo, include_fixtures=False, pruned_fixtures=None):
-    """Walk repo for reviewable files, returning sorted repo-relative paths.
+def _git_listed_files(repo):
+    """Repo-relative paths git considers reviewable surface, or None.
 
-    Prunes EXCLUDE_DIRS / EXCLUDE_DIR_GLOBS (noise: caches, deps, VCS, scratch)
-    and skips dot-directories, EXCEPT the targeted ALLOWED_DOTDIR_SUBTREES
-    (e.g. .github/workflows) which are pulled back in. Replaces the old
-    glob('**/*') scan, which skipped every dotdir (hiding .github/workflows)
-    and descended into venv/tmp/node_modules/etc.
+    ``git ls-files --cached --others --exclude-standard`` = tracked files plus
+    intentional-but-uncommitted new files, minus everything the TARGET's own
+    .gitignore excludes (#500: a raw walk swept 17,253 files on a repo whose
+    git surface was 528 — 94% gitignored runtime data, including encrypted
+    user blobs). Returns None when repo isn't a git worktree or git fails,
+    so the caller can fall back to walking.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "-C", repo, "ls-files", "--cached", "--others",
+             "--exclude-standard"],
+            capture_output=True, text=True, check=True, timeout=60)
+    except Exception:
+        return None
+    return [p.strip() for p in out.stdout.splitlines() if p.strip()]
+
+
+def _filter_reviewable(paths, include_fixtures, pruned_fixtures, isfile):
+    """Apply the discovery policy to a candidate path list.
+
+    Shared by both discovery methods so the git listing gets the same
+    treatment the walk gives: EXCLUDE_DIRS / EXCLUDE_DIR_GLOBS on every
+    ancestor segment (a repo that TRACKS node_modules still shouldn't review
+    it), the targeted dot-dir policy, the fixture-corpus pruning (#434,
+    recorded in ``pruned_fixtures`` for disclosure), and — git path only in
+    practice — dropping anything with a ``.git`` segment: a gitlink or
+    nested-repo artifact is never a reviewable file (#500 saw
+    ``design-system/.git`` leak into group lists). ``isfile`` is injected so
+    the pure filtering logic stays unit-testable; on the git path it also
+    drops gitlink directory entries and index entries deleted from disk.
+    """
+    out = []
+    for rel in sorted(set(paths)):
+        parts = rel.split("/")
+        if ".git" in parts:
+            continue
+        skip = False
+        for j, seg in enumerate(parts[:-1]):
+            prefix = "/".join(parts[:j + 1])
+            if _is_excluded_dir(seg):
+                skip = True
+                break
+            if seg.startswith(".") and not _on_allowed_dotdir_path(prefix):
+                skip = True
+                break
+            if not include_fixtures and _is_fixture_dir(prefix):
+                if pruned_fixtures is not None and prefix not in pruned_fixtures:
+                    pruned_fixtures.append(prefix)
+                skip = True
+                break
+        if skip:
+            continue
+        # Root-level dotfiles follow the walk's policy: excluded unless inside
+        # an allowlisted subtree.
+        if len(parts) == 1 and parts[0].startswith(".") \
+                and not _on_allowed_dotdir_path(rel):
+            continue
+        if not isfile(rel):
+            continue
+        out.append(rel)
+    return out
+
+
+def discover_repo_files(repo, include_fixtures=False, pruned_fixtures=None,
+                        info=None):
+    """Discover reviewable files, returning sorted repo-relative paths.
+
+    Git targets: the listing comes from ``git ls-files`` so the target's own
+    .gitignore defines the surface (#500); non-git targets fall back to an
+    os.walk that prunes EXCLUDE_DIRS / EXCLUDE_DIR_GLOBS and skips
+    dot-directories EXCEPT the targeted ALLOWED_DOTDIR_SUBTREES
+    (e.g. .github/workflows). Both methods share ``_filter_reviewable``'s
+    policy; ``info`` (a dict, when supplied) records which ``method`` ran so
+    the artifact can disclose it.
 
     Unless ``include_fixtures`` (redteam), test-fixture corpus roots
     (``_is_fixture_dir``) are pruned too; each pruned root is appended to
     ``pruned_fixtures`` when a list is supplied so the caller can disclose
     the exclusion rather than let it pass silently.
     """
+    listed = _git_listed_files(repo)
+    if listed is not None:
+        if info is not None:
+            info["method"] = "git-ls-files"
+        return _filter_reviewable(
+            listed, include_fixtures, pruned_fixtures,
+            isfile=lambda rel: os.path.isfile(os.path.join(repo, rel)))
+    if info is not None:
+        info["method"] = "walk"
     out = []
     for dirpath, dirnames, filenames in os.walk(repo):
         rel_dir = os.path.relpath(dirpath, repo)
@@ -467,6 +640,40 @@ def _compute_depth(files, panels, security_mode):
     return "shallow"
 
 
+def _group_obj(name, files, security_mode):
+    """Build one group entry: panels, surfaces, and depth for a file set."""
+    panels = compute_group_panels(files, security_mode)
+    return {
+        "name": name,
+        "files": files,
+        "surfaces": compute_group_surfaces(files),
+        "panels": panels,
+        "depth": _compute_depth(files, panels, security_mode),
+    }
+
+
+def catalog_groups(files, catalog, max_per_group, security_mode):
+    """Build stable, catalog-named groups for --repo-scan (#499).
+
+    Files are assigned by ``assign_by_catalog``; a matched group larger than
+    ``max_per_group`` splits into ``<name>_<i>`` chunks, and leftover files
+    keep the legacy ``._N`` chunk naming. Returns ``(groups, leftovers)``;
+    callers must surface ``leftovers`` (the coverage gap), never drop it.
+    """
+    named, leftovers = assign_by_catalog(files, catalog)
+    groups = []
+    for name, fs in named.items():
+        chunks = chunk_files(fs, max_per_group)
+        if len(chunks) == 1:
+            groups.append(_group_obj(name, chunks[0], security_mode))
+        else:
+            groups.extend(_group_obj("%s_%d" % (name, i + 1), c, security_mode)
+                          for i, c in enumerate(chunks))
+    groups.extend(_group_obj("._%d" % (i + 1), c, security_mode)
+                  for i, c in enumerate(chunk_files(leftovers, max_per_group)))
+    return groups, leftovers
+
+
 def build_result(repo, mode, target, facet, impl, tests,
                  max_per_group=DEFAULT_MAX_PER_GROUP, group_files=None,
                  security_mode="standard"):
@@ -478,17 +685,8 @@ def build_result(repo, mode, target, facet, impl, tests,
     """
     chunks = chunk_files(impl if group_files is None else group_files, max_per_group)
     base = os.path.basename(target.rstrip("/")) or target or "root"
-    groups = []
-    for i, c in enumerate(chunks):
-        panels = compute_group_panels(c, security_mode)
-        depth = _compute_depth(c, panels, security_mode)
-        groups.append({
-            "name": "%s_%d" % (base, i + 1),
-            "files": c,
-            "surfaces": compute_group_surfaces(c),
-            "panels": panels,
-            "depth": depth,
-        })
+    groups = [_group_obj("%s_%d" % (base, i + 1), c, security_mode)
+              for i, c in enumerate(chunks)]
     return {
         "security_mode": security_mode,
         "mode": mode,
@@ -590,15 +788,34 @@ def main(argv=None):
     else:
         # --repo-scan
         pruned_fixtures = []
+        info = {}
         allf = discover_repo_files(repo,
                                    include_fixtures=(args.security == "redteam"),
-                                   pruned_fixtures=pruned_fixtures)
+                                   pruned_fixtures=pruned_fixtures,
+                                   info=info)
         impl = [f for f in allf if not is_test_file(f)]
         tests = [f for f in allf if is_test_file(f)]
         # Group impl AND real test sources so tests aren't silently dropped (only
         # their __pycache__ artifacts used to reach a group); counts stay impl-only.
         result = build_result(repo, "repo", ".", None, impl, tests, args.max_per_group,
                               group_files=impl + tests, security_mode=args.security)
+        result["discovery"] = {"method": info.get("method")}
+        catalog = load_catalog(repo)
+        if any(g.get("match") for g in catalog.values()):
+            groups, leftovers = catalog_groups(allf, catalog, args.max_per_group,
+                                               args.security)
+            result["groups"] = groups
+            result["counts"]["groups"] = len(groups)
+            result["counts"]["ungrouped"] = len(leftovers)
+            result["ungrouped_files"] = leftovers
+            if leftovers:
+                print("catalog coverage: %d file(s) matched no group's `match` "
+                      "patterns and fell back to ._N chunks — see "
+                      "ungrouped_files; extend .panopticon/groups.yml to cover "
+                      "them: %s"
+                      % (len(leftovers), ", ".join(leftovers[:10])
+                         + (" …" if len(leftovers) > 10 else "")),
+                      file=sys.stderr)
         if pruned_fixtures:
             result["excluded"] = {"fixture_dirs": sorted(pruned_fixtures)}
             print("fixture exclusion (%s mode): pruned %d fixture corpus dir(s): %s "

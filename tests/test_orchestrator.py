@@ -519,6 +519,234 @@ class TestFixtureExclusion(unittest.TestCase):
             self.assertNotIn("fixture exclusion", err)
 
 
+def _git(d, *args):
+    subprocess.run(["git", "-C", d, *args], check=True, capture_output=True)
+
+
+def _init_repo(d):
+    subprocess.run(["git", "init", "-q", d], check=True)
+    _git(d, "config", "user.email", "t@e.com")
+    _git(d, "config", "user.name", "Test")
+
+
+class TestGitAwareDiscovery(unittest.TestCase):
+    """#500: discovery respects the TARGET's own ignore rules. A raw walk swept
+    17,253 files on an ordinary project (94% gitignored runtime data, including
+    encrypted user blobs) vs 528 tracked; git ls-files IS the target's notion
+    of reviewable surface. Non-git targets keep the walk fallback."""
+
+    def _touch(self, root, rel, content=""):
+        full = os.path.join(root, rel)
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "w") as fh:
+            fh.write(content)
+
+    def _run_scan(self, d, *extra):
+        import io
+        import contextlib
+        buf, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
+            rc = orch.main(["--repo", d, "--repo-scan", *extra])
+        self.assertEqual(rc, 0)
+        return json.loads(buf.getvalue()), err.getvalue()
+
+    def _grouped(self, out):
+        return [f for g in out["groups"] for f in g["files"]]
+
+    def test_gitignored_paths_are_excluded(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._touch(d, "src/app.py")
+            self._touch(d, ".gitignore", "storage/\n.env\n")
+            _init_repo(d)
+            _git(d, "add", ".")
+            _git(d, "commit", "-q", "-m", "init")
+            self._touch(d, "storage/data.txt")       # runtime data, ignored
+            self._touch(d, "storage/blob.enc")
+            self._touch(d, ".env", "SECRET=1")       # ignored credential
+            out, _ = self._run_scan(d)
+            grouped = self._grouped(out)
+            self.assertIn("src/app.py", grouped)
+            for noise in ["storage/data.txt", "storage/blob.enc", ".env"]:
+                self.assertNotIn(noise, grouped, noise)
+            self.assertEqual(out["discovery"]["method"], "git-ls-files")
+
+    def test_untracked_non_ignored_files_are_included(self):
+        # New files join the review surface before anyone remembers to commit.
+        with tempfile.TemporaryDirectory() as d:
+            self._touch(d, "src/app.py")
+            _init_repo(d)
+            _git(d, "add", ".")
+            _git(d, "commit", "-q", "-m", "init")
+            self._touch(d, "src/brand_new.py")
+            out, _ = self._run_scan(d)
+            self.assertIn("src/brand_new.py", self._grouped(out))
+
+    def test_tracked_noise_dirs_still_excluded(self):
+        # A repo that TRACKS node_modules still shouldn't review it.
+        with tempfile.TemporaryDirectory() as d:
+            self._touch(d, "src/app.py")
+            self._touch(d, "node_modules/pkg/index.js")
+            _init_repo(d)
+            _git(d, "add", "-f", ".")
+            _git(d, "commit", "-q", "-m", "init")
+            out, _ = self._run_scan(d)
+            self.assertNotIn("node_modules/pkg/index.js", self._grouped(out))
+
+    def test_fixture_corpora_pruned_from_git_listing(self):
+        # tests/fixtures IS tracked in real targets — the #434 exclusion must
+        # hold on the git path too, with the same disclosure and redteam bypass.
+        with tempfile.TemporaryDirectory() as d:
+            self._touch(d, "src/app.py")
+            self._touch(d, "tests/fixtures/vuln/main.rs")
+            _init_repo(d)
+            _git(d, "add", ".")
+            _git(d, "commit", "-q", "-m", "init")
+            out, err = self._run_scan(d)
+            self.assertNotIn("tests/fixtures/vuln/main.rs", self._grouped(out))
+            self.assertEqual(out["excluded"]["fixture_dirs"], ["tests/fixtures"])
+            self.assertIn("fixture exclusion", err)
+            out2, _ = self._run_scan(d, "--security", "redteam")
+            self.assertIn("tests/fixtures/vuln/main.rs", self._grouped(out2))
+
+    def test_nested_git_paths_never_reviewable(self):
+        # A gitlink / nested-repo .git entry is never a reviewable file (#500
+        # observed design-system/.git leaking into group lists on Kimi).
+        filtered = orch._filter_reviewable(
+            ["src/app.py", "design-system/.git", "vendor/lib/.git/config"],
+            include_fixtures=True, pruned_fixtures=None,
+            isfile=lambda rel: True)
+        self.assertEqual(filtered, ["src/app.py"])
+
+    def test_non_git_target_falls_back_to_walk(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._touch(d, "src/app.py")
+            out, _ = self._run_scan(d)
+            self.assertIn("src/app.py", self._grouped(out))
+            self.assertEqual(out["discovery"]["method"], "walk")
+
+
+class TestGlobSemantics(unittest.TestCase):
+    """#499 match patterns are gitignore-flavored: '*' stays inside a path
+    segment, '**' crosses segments, a pattern with no '/' matches the basename
+    at any depth, and '!' re-excludes with last-match-wins."""
+
+    def _m(self, path, patterns):
+        return orch.match_patterns(path, patterns)
+
+    def test_star_does_not_cross_slash(self):
+        self.assertTrue(self._m("skill/scripts/run.py", ["skill/scripts/*.py"]))
+        self.assertFalse(self._m("skill/scripts/tools/x.py", ["skill/scripts/*.py"]))
+
+    def test_double_star_crosses_slash(self):
+        self.assertTrue(self._m("skill/scripts/tools/x.py", ["skill/scripts/**"]))
+        self.assertTrue(self._m("a/b/c/d.py", ["a/**/d.py"]))
+
+    def test_no_slash_matches_basename_at_any_depth(self):
+        self.assertTrue(self._m("README.md", ["*.md"]))
+        self.assertTrue(self._m("docs/deep/notes.md", ["*.md"]))
+        self.assertFalse(self._m("docs/notes.md.bak", ["*.md"]))
+
+    def test_negation_last_match_wins(self):
+        pats = ["skill/scripts/**", "!skill/scripts/tools/**"]
+        self.assertTrue(self._m("skill/scripts/run.py", pats))
+        self.assertFalse(self._m("skill/scripts/tools/x.py", pats))
+        # a later positive can re-include
+        self.assertTrue(self._m(
+            "skill/scripts/tools/base.py",
+            pats + ["skill/scripts/tools/base.py"]))
+
+    def test_question_mark_single_segment_char(self):
+        self.assertTrue(self._m("a/v1.py", ["a/v?.py"]))
+        self.assertFalse(self._m("a/v12.py", ["a/v?.py"]))
+
+
+class TestCatalogMatchGroups(unittest.TestCase):
+    """#499: intensional groups. A groups.yml with match: patterns gives files
+    stable group identities; files matching no group are auto-chunked AND
+    disclosed as ungrouped_files — coverage honesty at the discovery layer."""
+
+    CATALOG = (
+        "groups:\n"
+        "  pipeline:\n"
+        "    match: ['skill/scripts/*.py', '!skill/scripts/tools/**']\n"
+        "  adapters:\n"
+        "    match:\n"
+        "      - 'skill/scripts/tools/**'\n"
+        "  docs:\n"
+        "    match: ['*.md']\n"
+    )
+
+    def _setup(self, d):
+        for rel in ["skill/scripts/run.py", "skill/scripts/tools/pip.py",
+                    "README.md", "docs/notes.md", "orphan/loner.py"]:
+            full = os.path.join(d, rel)
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            open(full, "w").close()
+        os.makedirs(os.path.join(d, ".panopticon"), exist_ok=True)
+        with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
+            fh.write(self.CATALOG)
+
+    def _run_scan(self, d):
+        import io
+        import contextlib
+        buf, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
+            rc = orch.main(["--repo", d, "--repo-scan"])
+        self.assertEqual(rc, 0)
+        return json.loads(buf.getvalue()), err.getvalue()
+
+    def test_files_assigned_to_stable_named_groups(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._setup(d)
+            out, err = self._run_scan(d)
+            by_name = {g["name"]: g["files"] for g in out["groups"]}
+            self.assertEqual(by_name["pipeline"], ["skill/scripts/run.py"])
+            self.assertEqual(by_name["adapters"], ["skill/scripts/tools/pip.py"])
+            self.assertEqual(sorted(by_name["docs"]), ["README.md", "docs/notes.md"])
+            # leftover chunks keep the legacy ._N naming
+            self.assertIn("orphan/loner.py",
+                          [f for n, fs in by_name.items() if n.startswith("._")
+                           for f in fs])
+            self.assertEqual(out["ungrouped_files"], ["orphan/loner.py"])
+            self.assertEqual(out["counts"]["ungrouped"], 1)
+            self.assertIn("ungrouped", err)  # loud, not silent
+
+    def test_first_matching_group_wins(self):
+        # docs also glob-matches nothing else here, but a file matching two
+        # groups must land in the FIRST (catalog order), exactly once.
+        with tempfile.TemporaryDirectory() as d:
+            self._setup(d)
+            out, _ = self._run_scan(d)
+            all_files = [f for g in out["groups"] for f in g["files"]]
+            self.assertEqual(len(all_files), len(set(all_files)))
+
+    def test_oversize_match_group_chunks_with_suffixes(self):
+        with tempfile.TemporaryDirectory() as d:
+            for i in range(20):
+                full = os.path.join(d, "pkg", "m%02d.py" % i)
+                os.makedirs(os.path.dirname(full), exist_ok=True)
+                open(full, "w").close()
+            os.makedirs(os.path.join(d, ".panopticon"))
+            with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
+                fh.write("groups:\n  pkg:\n    match: ['pkg/**']\n")
+            out, _ = self._run_scan(d)
+            names = [g["name"] for g in out["groups"]]
+            self.assertEqual(names, ["pkg_1", "pkg_2"])
+            self.assertEqual(sum(len(g["files"]) for g in out["groups"]), 20)
+
+    def test_catalog_without_match_keys_keeps_legacy_chunking(self):
+        with tempfile.TemporaryDirectory() as d:
+            full = os.path.join(d, "src", "app.py")
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            open(full, "w").close()
+            os.makedirs(os.path.join(d, ".panopticon"))
+            with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
+                fh.write("groups:\n  Products:\n    patterns: ['**/product*']\n")
+            out, _ = self._run_scan(d)
+            self.assertTrue(all(g["name"].startswith("._") for g in out["groups"]))
+            self.assertNotIn("ungrouped_files", out)
+
+
 class TestPanelPriority(unittest.TestCase):
     def test_compute_group_panels_emits_priority_order(self):
         # Whatever panels are present, they must appear in PANEL_PRIORITY order.
