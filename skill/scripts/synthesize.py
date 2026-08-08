@@ -652,7 +652,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                  security_mode="standard", verdicts=None, gate_unverified=False,
                  max_verify=None, verdicts_supplied=False, tool_policy_mode=None,
                  tools_ran=None, tool_dispositions=None, fan_out=None,
-                 scout_requested=None):
+                 scout_requested=None, resume=None):
     """Build a CodeReviewReport under the two-axis severity x evidence model.
 
     Severity is never mutated here. Verdicts (from evidence.load_verdicts) are
@@ -814,6 +814,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                 "verdicts": verdict_stats,
                 "fan_out": fan_out,
                 "divergence": divergence,
+                "resume": resume,
             },
         },
         "summary": {
@@ -1145,15 +1146,28 @@ def main(argv=None):
     verdicts = evidence_mod.load_verdicts(args.verdicts_dir)
     tool_policy_mode = derive_tool_policy_mode()
     fan_out = None
+    _plan = []
     plan_path = os.path.join(".panopticon", "dispatch-plan.json")
     if os.path.isfile(plan_path):
         try:
             with open(plan_path, encoding="utf-8") as fh:
-                _plan = json.load(fh)
-            if isinstance(_plan, list):
+                loaded = json.load(fh)
+            if isinstance(loaded, list):
+                _plan = loaded
                 fan_out = group_runner.fan_out_coverage(_plan)
-        except (OSError, ValueError):
+        except (OSError, ValueError):  # tolerant by design: never abort a run
             pass
+    _queue = None
+    queue_path = os.path.join(".panopticon", "verify-queue.json")
+    if os.path.isfile(queue_path):
+        try:
+            with open(queue_path, encoding="utf-8") as fh:
+                loaded_q = json.load(fh)
+            if isinstance(loaded_q, dict):
+                _queue = loaded_q
+        except (OSError, ValueError):  # tolerant by design
+            pass
+    resume = group_runner.resume_stats(_plan, _queue, args.verdicts_dir)
     scout_requested = set()
     for sp in glob.glob(os.path.join(".panopticon", "scout-*.json")):
         try:
@@ -1176,7 +1190,8 @@ def main(argv=None):
                           tools_ran=tools_ran,
                           tool_dispositions=tool_dispositions,
                           fan_out=fan_out,
-                          scout_requested=sorted(scout_requested))
+                          scout_requested=sorted(scout_requested),
+                          resume=resume)
     errors, warnings = validate_report(report)
     attach_schema_status(report, errors)
     for w in warnings:

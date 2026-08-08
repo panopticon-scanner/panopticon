@@ -2333,6 +2333,22 @@ class TestCoverageDivergence(unittest.TestCase):
         self.assertEqual(r["meta"]["coverage"]["divergence"], {"panels": {}, "tools": {}})
 
 
+class TestResumeDisclosure(unittest.TestCase):
+    G = [{"name": "g1", "files": ["a.py"]}]
+    TS = "2026-01-01T00:00:00Z"
+
+    def test_build_report_emits_resume(self):
+        r = syn.build_report([], self.G, "t", "high", self.TS,
+                             resume={"fan_out": {"total": 74, "done": 33, "pending": 41},
+                                     "verify": {"total": 52, "done": 12, "pending": 40}})
+        self.assertEqual(r["meta"]["coverage"]["resume"]["fan_out"]["done"], 33)
+        self.assertEqual(r["meta"]["coverage"]["resume"]["verify"]["pending"], 40)
+
+    def test_build_report_resume_defaults_none(self):
+        r = syn.build_report([], self.G, "t", "high", self.TS)
+        self.assertIsNone(r["meta"]["coverage"]["resume"])
+
+
 class TestMainExitAndScout(unittest.TestCase):
     def test_inconclusive_from_scout_requested_tool_absent_exits_2(self):
         import tempfile, json as _json
