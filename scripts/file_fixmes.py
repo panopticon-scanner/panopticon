@@ -19,9 +19,15 @@ import subprocess
 import sys
 import time
 
+# Defaults describe run 2's FIXME doc. A later run passes its own --doc,
+# --doc-url, --run-label, and --run-date, so filing a new run's FIXMEs needs no
+# code edit (#606) — same convention as file_issues.py. Kept only for
+# backward-compat and to keep body_for() callable bare in tests.
 DOC = "docs/superpowers/2026-08-04-run2-fixmes.md"
-DOC_URL = ("https://github.com/psyberone/panopticon/blob/main/"
+DOC_URL = ("https://github.com/panopticon-scanner/panopticon/blob/main/"
            "docs/superpowers/2026-08-04-run2-fixmes.md")
+RUN_LABEL = "run-2"
+RUN_DATE = "2026-08-04"
 LEDGER = ".panopticon/filed-fixmes.json"
 
 HEAD_RE = re.compile(r"^## (FIXME-\d+) — (.+)$")
@@ -70,20 +76,20 @@ def parse(path):
     return out
 
 
-def body_for(f):
+def body_for(f, doc=DOC, doc_url=DOC_URL, run_label=RUN_LABEL, run_date=RUN_DATE):
     return "\n".join([
         f["body"],
         "",
         "---",
         "",
         "**Source:** `%s` — %s, an orchestration defect observed while running "
-        "the scan rather than a finding produced by a reviewer panel." % (f["id"], DOC),
+        "the scan rather than a finding produced by a reviewer panel." % (f["id"], doc),
         "",
         "Full context, including the other FIXMEs from this run: [%s](%s)"
-        % (DOC, DOC_URL),
+        % (doc, doc_url),
         "",
-        "*Filed from panopticon's run-2 self-scan (2026-08-04, "
-        "`tool_policy_mode: enforced`).*",
+        "*Filed from panopticon's %s self-scan (%s, "
+        "`tool_policy_mode: enforced`).*" % (run_label, run_date),
     ])
 
 
@@ -138,9 +144,14 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--limit", type=int)
     ap.add_argument("--throttle", type=float, default=8.0)
+    ap.add_argument("--doc", default=DOC, help="path to the run's FIXME doc")
+    ap.add_argument("--doc-url", default=DOC_URL,
+                    help="public URL of the FIXME doc, embedded in each issue")
+    ap.add_argument("--run-label", default=RUN_LABEL, help="e.g. 'run-3'")
+    ap.add_argument("--run-date", default=RUN_DATE, help="e.g. '2026-08-08'")
     a = ap.parse_args()
 
-    fixmes = parse(DOC)
+    fixmes = parse(a.doc)
     ledger = {} if a.dry_run else load_ledger()
     todo = [f for f in fixmes if f["id"] not in ledger]
     if a.limit:
@@ -153,7 +164,9 @@ def main():
     created = 0
     for f in todo:
         title = "%s — %s" % (f["id"], f["title"])
-        url = create(title, body_for(f), f["labels"] or ["self-scan"],
+        body = body_for(f, doc=a.doc, doc_url=a.doc_url,
+                        run_label=a.run_label, run_date=a.run_date)
+        url = create(title, body, f["labels"] or ["self-scan"],
                      a.dry_run, a.throttle)
         if url:
             record(ledger, f["id"], url)
