@@ -138,10 +138,13 @@ it's used automatically when present, `--no-tools` to skip.
 ## Adding a new static-analysis tool
 
 1. Create `skill/scripts/tools/<tool_name>.py` implementing `is_applicable()`, `invoke()`, and `parse()`.
-2. Register it in `skill/scripts/tools/__init__.py` under `ADAPTERS`.
-3. Add unit tests in `tests/tools/test_<tool_name>.py`.
-4. If the tool needs installation, add it to `Dockerfile`.
-5. Run `python3 -m pytest tests/tools/ tests/test_ingest_tools.py tests/test_run_tools.py -v`.
+2. Pick a finding-ID `prefix` no other adapter uses (legacy SARIF tools take
+   theirs from `sarif_utils.PREFIX` — add an explicit entry, never rely on the
+   `TL` fallback). `tests/tools/test_prefix_registry.py` fails on collisions.
+3. Register it in `skill/scripts/tools/__init__.py` under `ADAPTERS`.
+4. Add unit tests in `tests/tools/test_<tool_name>.py`.
+5. If the tool needs installation, add it to `Dockerfile`.
+6. Run `python3 -m pytest tests/tools/ tests/test_ingest_tools.py tests/test_run_tools.py -v`.
 
 ## Local scanner fixture suite
 
