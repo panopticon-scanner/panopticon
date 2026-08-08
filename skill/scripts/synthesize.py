@@ -1252,7 +1252,8 @@ def main(argv=None):
     if _ack:
         # Surface the Bash-coverage disclosure fields written by dispatch so
         # they appear in meta.integrity in the final report (#680).
-        integrity["write_guard_covers_bash"] = _ack.get("write_guard_covers_bash")
+        # Default to False so consumers never see None for this field.
+        integrity["write_guard_covers_bash"] = _ack.get("write_guard_covers_bash", False)
     scout_requested = set()
     for sp in glob.glob(os.path.join(".panopticon", "scout-*.json")):
         try:

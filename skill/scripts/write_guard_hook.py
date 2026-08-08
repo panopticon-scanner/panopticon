@@ -78,12 +78,14 @@ def main():
 
 
 _HOOK_CMD = "python3 skill/scripts/write_guard_hook.py"
-# Derived from _WRITE_TOOLS so the registered matcher and the adjudicated set
-# cannot silently diverge (#680). Ordering is fixed to the original string so
-# install()/uninstall() dict-equality never produces a duplicate or stale entry
-# when upgrading from a settings.local.json written by an earlier version.
-# The drift-lock test compares sets, so ordering here does not affect it.
+# Ordering is fixed to the original string so install()/uninstall() dict-equality
+# never produces a duplicate or stale entry when upgrading from a
+# settings.local.json written by an earlier version.  The assert below is the
+# import-time drift-lock: if _WRITE_TOOLS and _MATCHER diverge, the module fails
+# to load rather than silently registering the wrong set of tools (#680).
 _MATCHER = "Write|Edit|NotebookEdit"
+assert set(_MATCHER.split("|")) == _WRITE_TOOLS, (  # pragma: no cover
+    "_MATCHER and _WRITE_TOOLS have drifted — update _MATCHER to match _WRITE_TOOLS")
 _HOOK_ENTRY = {"matcher": _MATCHER,
                "hooks": [{"type": "command", "command": _HOOK_CMD}]}
 
