@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import scripts.citations as citations
 try:
     from scripts._version import __version__
-except ImportError:  # imported flat, with skill/scripts itself on sys.path
+except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
     from _version import __version__
 from scripts.citations import load_cwe_catalog
 import scripts.evidence as evidence_mod

@@ -11,7 +11,7 @@ import urllib.request
 
 try:
     from scripts._version import __version__
-except ImportError:  # imported flat, with skill/scripts itself on sys.path
+except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
     from _version import __version__
 
 CVE_RE = re.compile(r"^CVE-\d{4}-\d{4,}$", re.IGNORECASE)

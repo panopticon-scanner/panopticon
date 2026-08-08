@@ -14,7 +14,7 @@ import sys
 
 try:
     from scripts._version import __version__
-except ImportError:  # imported flat, with skill/scripts itself on sys.path
+except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
     from _version import __version__
 
 SEV_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
