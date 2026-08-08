@@ -824,9 +824,11 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                    for p in sorted(panels_incomplete)},
         "tools": {t: "requested_absent" for t in tools_absent},
     }
+    integrity = integrity if isinstance(integrity, dict) else None
     integrity = integrity or {"unexpected_findings_files": [],
                               "missing_planned_files": [],
-                              "unenforced_acknowledged": False}
+                              "unenforced_acknowledged": False,
+                              "plans_seen": 0}
     integrity_ok = not integrity.get("unexpected_findings_files")
     cert = certify(overall, gate_eligible, fail_on, panels_incomplete, tools_absent,
                    integrity_ok=integrity_ok)
@@ -1200,18 +1202,26 @@ def main(argv=None):
 
     verdicts = evidence_mod.load_verdicts(args.verdicts_dir)
     tool_policy_mode = derive_tool_policy_mode()
-    fan_out = None
+    # Union of every per-group dispatch-plan-*.json on disk -- same glob as
+    # derive_tool_policy_mode, so the two cannot drift apart again (#146/C1).
+    # The real fan-out workflow writes one plan file PER GROUP
+    # (dispatch-plan-<group>.json); a lone dispatch-plan.json is just the
+    # one-group case of that same naming convention, not a different shape.
+    # plans_seen distinguishes "no plan found -> reconcile skipped" from
+    # "reconciled, nothing wrong" -- an empty unexpected/missing pair means
+    # nothing on its own (see meta.integrity below).
     _plan = []
-    plan_path = os.path.join(".panopticon", "dispatch-plan.json")
-    if os.path.isfile(plan_path):
+    plans_seen = 0
+    for path in sorted(glob.glob(os.path.join(".panopticon", "dispatch-plan*.json"))):
         try:
-            with open(plan_path, encoding="utf-8") as fh:
+            with open(path, encoding="utf-8") as fh:
                 loaded = json.load(fh)
-            if isinstance(loaded, list):
-                _plan = loaded
-                fan_out = group_runner.fan_out_coverage(_plan)
         except (OSError, ValueError):  # tolerant by design: never abort a run
-            pass
+            continue
+        if isinstance(loaded, list):
+            _plan.extend(loaded)
+            plans_seen += 1
+    fan_out = group_runner.fan_out_coverage(_plan) if _plan else None
     _queue = None
     queue_path = os.path.join(".panopticon", "verify-queue.json")
     if os.path.isfile(queue_path):
@@ -1226,7 +1236,8 @@ def main(argv=None):
     unexpected, missing = reconcile_findings_files(_plan, args.files)
     integrity = {"unexpected_findings_files": unexpected,
                  "missing_planned_files": missing,
-                 "unenforced_acknowledged": read_unenforced_ack()}
+                 "unenforced_acknowledged": read_unenforced_ack(),
+                 "plans_seen": plans_seen}
     scout_requested = set()
     for sp in glob.glob(os.path.join(".panopticon", "scout-*.json")):
         try:

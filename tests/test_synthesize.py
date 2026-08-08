@@ -2436,6 +2436,78 @@ class TestMainExitAndScout(unittest.TestCase):
             self.assertNotIn("e", tools_div)
 
 
+class TestMultigroupPlanReconcile(unittest.TestCase):
+    """C1: the real fan-out workflow writes one dispatch-plan-<group>.json
+    PER GROUP, never a single dispatch-plan.json -- main() must glob all of
+    them (same pattern as derive_tool_policy_mode) or reconcile never runs
+    on the shape it was built for. This is the load-bearing regression test:
+    a single-group main() test would still pass with the old single-file
+    load in place."""
+
+    def _setup(self, d, decoy):
+        pan = os.path.join(d, ".panopticon")
+        os.makedirs(pan, exist_ok=True)
+        plan_g1 = [{"role": "panel_review", "agent": "panopticon-panel-review",
+                    "enforced": True, "group": "g1", "panel": "code",
+                    "out_file": ".panopticon/findings-g1-code-panel_review.json"}]
+        plan_g2 = [{"role": "panel_review", "agent": "panopticon-panel-review",
+                    "enforced": True, "group": "g2", "panel": "code",
+                    "out_file": ".panopticon/findings-g2-code-panel_review.json"}]
+        with open(os.path.join(pan, "dispatch-plan-g1.json"), "w", encoding="utf-8") as fh:
+            json.dump(plan_g1, fh)
+        with open(os.path.join(pan, "dispatch-plan-g2.json"), "w", encoding="utf-8") as fh:
+            json.dump(plan_g2, fh)
+        with open(os.path.join(pan, "groups.json"), "w", encoding="utf-8") as fh:
+            json.dump({"groups": [{"name": "g1", "files": ["a.py"]},
+                                  {"name": "g2", "files": ["b.py"]}]}, fh)
+        with open(os.path.join(pan, "findings-g1-code-panel_review.json"),
+                 "w", encoding="utf-8") as fh:
+            json.dump({"findings": []}, fh)
+        with open(os.path.join(pan, "findings-g2-code-panel_review.json"),
+                 "w", encoding="utf-8") as fh:
+            json.dump({"findings": []}, fh)
+        files = [".panopticon/findings-g1-code-panel_review.json",
+                 ".panopticon/findings-g2-code-panel_review.json"]
+        if decoy:
+            with open(os.path.join(pan, "findings-EVIL.json"), "w", encoding="utf-8") as fh:
+                json.dump({"findings": []}, fh)
+            files.append(".panopticon/findings-EVIL.json")
+        return files
+
+    def test_multigroup_plans_decoy_detected_via_main(self):
+        with tempfile.TemporaryDirectory() as d:
+            files = self._setup(d, decoy=True)
+            with _chdir(d):
+                out_path = os.path.join(".panopticon", "report.json")
+                rc = syn.main(["--target", "t", "--fail-on", "high",
+                              "--out", out_path] + files)
+                with open(out_path, encoding="utf-8") as fh:
+                    report = json.load(fh)
+        self.assertEqual(rc, 2)  # INCONCLUSIVE -> exit 2
+        integ = report["meta"]["integrity"]
+        self.assertEqual(integ["unexpected_findings_files"],
+                         [".panopticon/findings-EVIL.json"])
+        self.assertEqual(integ["plans_seen"], 2)
+        self.assertNotIn(".panopticon/findings-g1-code-panel_review.json",
+                         integ["unexpected_findings_files"])
+        self.assertNotIn(".panopticon/findings-g2-code-panel_review.json",
+                         integ["unexpected_findings_files"])
+
+    def test_multigroup_plans_clean_via_main(self):
+        with tempfile.TemporaryDirectory() as d:
+            files = self._setup(d, decoy=False)
+            with _chdir(d):
+                out_path = os.path.join(".panopticon", "report.json")
+                rc = syn.main(["--target", "t", "--fail-on", "high",
+                              "--out", out_path] + files)
+                with open(out_path, encoding="utf-8") as fh:
+                    report = json.load(fh)
+        self.assertEqual(rc, 0)
+        integ = report["meta"]["integrity"]
+        self.assertEqual(integ["unexpected_findings_files"], [])
+        self.assertEqual(integ["plans_seen"], 2)
+
+
 class TestRenderSummaryCoverage(unittest.TestCase):
     def test_inconclusive_summary_names_divergence(self):
         fan_out = {"planned": {"security": 21}, "executed": {"security": 3},
@@ -2487,6 +2559,22 @@ class TestIntegrity(unittest.TestCase):
         self.assertEqual(r["gate"], "PASS")
         self.assertTrue(r["coverage_certified"])
 
+    def test_certify_integrity_not_ok_fail_still_wins(self):
+        # Precedence truth-table (spec requirement): a confirmed CRITICAL
+        # finding must still FAIL the gate when integrity is also broken --
+        # integrity_ok=False must never downgrade a FAIL to INCONCLUSIVE.
+        crit = [{"severity": "CRITICAL", "evidence": {"status": "advisor_confirmed"}}]
+        r = syn.certify("F", crit, "high", set(), [], integrity_ok=False)
+        self.assertEqual(r["gate"], "FAIL")
+        self.assertFalse(r["coverage_certified"])
+
+    def test_certify_integrity_not_ok_off_preserved(self):
+        # No --fail-on -> gate is OFF regardless of coverage; integrity_ok
+        # must not force it to INCONCLUSIVE.
+        r = syn.certify("A", [], None, set(), [], integrity_ok=False)
+        self.assertEqual(r["gate"], "OFF")
+        self.assertFalse(r["coverage_certified"])
+
     def test_reconcile_flags_unexpected_and_missing(self):
         plan = [{"role": "panel_review", "out_file": ".panopticon/findings-g1-code-panel_review.json"},
                 {"role": "lens_sweep", "out_file": ".panopticon/findings-g1-code-lens_sweep-style.json"}]
@@ -2511,7 +2599,16 @@ class TestIntegrity(unittest.TestCase):
         r = syn.build_report([], self.G, "t", "high", self.TS)
         self.assertEqual(r["meta"]["integrity"],
                          {"unexpected_findings_files": [], "missing_planned_files": [],
-                          "unenforced_acknowledged": False})
+                          "unenforced_acknowledged": False, "plans_seen": 0})
+        self.assertEqual(r["summary"]["gate"], "PASS")
+
+    def test_build_report_integrity_non_dict_does_not_raise(self):
+        # M10: a truthy non-dict integrity (e.g. a stray list) must fall back
+        # to the default rather than raise on the .get() calls below it.
+        r = syn.build_report([], self.G, "t", "high", self.TS, integrity=["not", "a", "dict"])
+        self.assertEqual(r["meta"]["integrity"],
+                         {"unexpected_findings_files": [], "missing_planned_files": [],
+                          "unenforced_acknowledged": False, "plans_seen": 0})
         self.assertEqual(r["summary"]["gate"], "PASS")
 
     def test_missing_alone_does_not_force_inconclusive(self):
@@ -2537,3 +2634,35 @@ class TestRenderSummaryIntegrity(unittest.TestCase):
     def test_no_integrity_line_when_clean(self):
         self.assertNotIn("Integrity:",
                          syn.render_summary(syn.build_report([], self.G, "t", "high", self.TS)))
+
+
+class TestReadUnenforcedAck(unittest.TestCase):
+    """M8: read_unenforced_ack had zero direct test coverage -- exactly where
+    I1's real defect lived (a stale/spurious ack silently poisoning every
+    later run's meta.integrity.unenforced_acknowledged)."""
+
+    def test_true_when_acknowledged(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "ack.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"acknowledged": True, "roles": ["panel_review"]}, fh)
+            self.assertTrue(syn.read_unenforced_ack(path))
+
+    def test_false_when_missing(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "does-not-exist.json")
+            self.assertFalse(syn.read_unenforced_ack(path))
+
+    def test_false_when_malformed_json(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "ack.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("{not json")
+            self.assertFalse(syn.read_unenforced_ack(path))
+
+    def test_false_when_non_dict_payload(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "ack.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(["not", "a", "dict"], fh)
+            self.assertFalse(syn.read_unenforced_ack(path))

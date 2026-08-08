@@ -43,8 +43,8 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
 3. **Scout** — dispatch the `scout` role (`agents/scout.md`) per group — its template has no placeholders; dispatch its body plus tool-policy line as the prompt — via `subagent_type: panopticon-scout` when that registered shell exists (fresh session after registration), else a general-purpose agent; the scout RETURNS the ScopeProfile JSON; the orchestrator writes it to `.panopticon/scout-{group}.json`.
    Append the group's name, its file list from `groups.json`, and the `security_mode` to the prompt body — the scout template itself carries no assignment.
 4. **Tool scan** — optional Docker container; SARIF ingested by `skill/scripts/ingest_tools.py`.
-5. **Plan dispatch** — run `python3 skill/scripts/dispatch.py <scope-profile.json> --host <your host: claude|kimi|generic> --out .panopticon/dispatch-plan.json` to produce a `DispatchPlan` of role-based agents.
-   Pass your host explicitly — env detection is fallback only. Add --agents-dir DIR when your registered agents live somewhere non-default.
+5. **Plan dispatch** — run one dispatch per group (matching the per-group scout from step 3): `python3 skill/scripts/dispatch.py <scope-profile.json> --host <your host: claude|kimi|generic> --out .panopticon/dispatch-plan-<group>.json` to produce a `DispatchPlan` of role-based agents. Give each group's plan its own file — `synthesize` globs `dispatch-plan*.json` for coverage/resume/integrity (steps 7/9), so a shared `dispatch-plan.json` repeatedly overwritten by each group is just the one-group case of the same naming convention, not a substitute for it.
+   Pass your host explicitly — env detection is fallback only. Add --agents-dir DIR when your registered agents live somewhere non-default. `dispatch.py` refuses to emit a plan (exit 1, nothing written) when a reviewer role (`panel_review`/`lens_sweep`) lacks a registered enforcement shell — register shells first (`--emit-host-agents`, step below) or pass `--allow-unenforced` to accept prompt-advisory tool policy explicitly; see Host dispatch below.
 6. **Fan-out** — run the `group_runner` contract (`scripts/group_runner.py`,
    `scripts/write_guard_hook.py`): every reviewer writes its own findings file
    directly, so fan-out is bounded by agent capacity, not by how much of a
@@ -118,9 +118,14 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
    findings files, restore or flag the modified paths to the user (never silently
    delete their content), report the violation, and re-run.
    The clean-tree check cannot see inside `.panopticon/`; synthesize covers that
-   blind spot by reconciling the ingested findings files against the plan's
-   declared `out_file` set — an undeclared file appears in
-   `meta.integrity.unexpected_findings_files` and forces `INCONCLUSIVE`.
+   blind spot by reconciling the ingested findings files against the union of
+   every `dispatch-plan*.json` on disk (`meta.integrity.plans_seen` records how
+   many were read, so a deleted/absent plan reads as "not reconciled", not
+   "clean") — an undeclared file appears in
+   `meta.integrity.unexpected_findings_files` and forces `INCONCLUSIVE`. This
+   detects undeclared and dropped files only; content substituted inside a
+   legitimately-declared `out_file` is not detected (byte-identity
+   verification is a tracked follow-up).
    Then check gate, print summary, write JSON.
 
 ## Host dispatch
@@ -157,10 +162,18 @@ its own mechanism:
      # or explicit:
      python3 scripts/dispatch.py --emit-host-agents kimi --out ~/.kimi-code/agents
      ```
-  2. Build the dispatch plan with `--host kimi`.
+  2. Build the dispatch plan with `--host kimi`. **`dispatch.py` refuses to
+     write the plan** (exit 1, nothing written) if a reviewer role
+     (`panel_review`/`lens_sweep`) would be unenforced — i.e. until step 1
+     has registered the shells — unless you pass `--allow-unenforced`
+     (records the acceptance in `.panopticon/unenforced-ack.json`; see Tool
+     policy below).
   3. Fan out. Which `subagent_type` to use depends on `entry.enforced`, the
-     same way it does for Claude — and until step 1 has run, every entry is
-     unenforced:
+     same way it does for Claude. `scout`/`advisor` are never gated by step 2
+     and are commonly unenforced; for `panel_review`/`lens_sweep`, the
+     `enforced: false` branch below is now reachable only via the acked
+     `--allow-unenforced` path from step 2, not the ordinary "haven't
+     registered yet" case:
      - `entry.enforced` true → `subagent_type: entry.agent` (the registered
        `panopticon-*` profile, so tool restrictions are host-enforced).
      - `entry.enforced` false → a built-in Kimi profile: `coder` for
@@ -169,7 +182,14 @@ its own mechanism:
        (`panel-review`, `lens-sweep`) and is NOT a valid `subagent_type`.
 
      Prefer the swarm manifest, which applies that mapping for you and
-     re-checks registration against the live agents dir:
+     re-checks registration against the live agents dir. `--emit-kimi-swarm`
+     carries the same refuse-by-default gate as step 2: it refuses (exit 1,
+     no manifest written) when the PLAN FILE's own `enforced` snapshot has an
+     unenforced `panel_review`/`lens_sweep` entry, unless `--allow-unenforced`
+     is passed here too. (A plan that was `enforced: true` at build time but
+     lost its registration since is a distinct, ungated case — the live
+     re-verification below still downgrades it to `coder`/`explore` with a
+     stderr warning and succeeds; that gap is tracked separately.)
      ```bash
      python3 scripts/dispatch.py --emit-kimi-swarm .panopticon/dispatch-plan.json --out .panopticon/kimi-swarm.json
      ```
@@ -200,7 +220,9 @@ Tool policy is host-ENFORCED for entries with `enforced: true` (registered
 shells) and prompt-advisory otherwise. The report's `meta.coverage.tool_policy_mode`
 records which posture a run actually had. When any entry is unenforced, tell
 the user in one line before fan-out.
-`dispatch.py` refuses to emit a plan containing unenforced reviewer entries;
+`dispatch.py` refuses to emit a plan containing unenforced reviewer entries —
+and `--emit-kimi-swarm` carries the same refusal on the plan it reads, so
+converting an unenforced plan into a dispatchable swarm manifest is gated too;
 register shells via `--emit-host-agents`, or pass `--allow-unenforced` to accept
 prompt-advisory tool policy explicitly (recorded in
 `.panopticon/unenforced-ack.json` and surfaced at `meta.integrity`).
@@ -215,9 +237,9 @@ no new value from it.
 ## Output
 Terminal markdown summary + JSON artifact at `--out`. CI gate key: `summary.gate`
 (`PASS` / `FAIL` / `OFF` / `INCONCLUSIVE`). `INCONCLUSIVE` means gate-relevant
-coverage did not complete (a high-value panel ran partial, or a scout-requested
-tool produced no output) — treat it as NOT certified, distinct from a real
-`FAIL`. `summary.coverage_certified` and `meta.coverage.divergence` carry the
+coverage did not complete (a high-value panel ran partial, a scout-requested
+tool produced no output, or an undeclared findings file appeared (integrity)) —
+treat it as NOT certified, distinct from a real `FAIL`. `summary.coverage_certified` and `meta.coverage.divergence` carry the
 detail; `main` exits `1` on FAIL, `2` on INCONCLUSIVE, `0` otherwise. Exit `2`
 is also argparse's usage-error code; a genuine INCONCLUSIVE run still writes a
 full report artifact, whereas a usage error does not, so disambiguate the two
