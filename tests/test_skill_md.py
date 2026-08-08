@@ -71,3 +71,31 @@ class TestSkillMd(unittest.TestCase):
         for token in ("panopticon-scout", "panopticon-advisor",
                       "tree-baseline.txt"):
             self.assertIn(token, self.text, token)
+
+    def test_all_script_commands_use_repo_root_prefix(self):
+        # `python3 scripts/...` is ambiguous: from the repo root it hits the
+        # WRONG directory (repo-root scripts/ = file_issues/triage, not the
+        # pipeline). Every command must use the repo-root `skill/scripts/` prefix.
+        offenders = [ln for ln in self.text.splitlines() if "python3 scripts/" in ln]
+        self.assertEqual(offenders, [])
+
+    def test_all_file_mentions_use_skill_prefix(self):
+        # File MENTIONS must be repo-root-relative too, not just commands.
+        # Both `agents/` and `scripts/` references must be prefixed with `skill/`.
+        import re
+        bare = [ln for ln in self.text.splitlines()
+                if re.search(r"(?<!l)`(scripts|agents)/", ln)]
+        self.assertEqual(bare, [], "bare scripts/ or agents/ path (run-from-where?): %r" % bare)
+
+    def test_tool_scan_step_is_deterministic_not_optional(self):
+        step4 = self.text.split("4. **Tool scan**")[1].split("5. **")[0]
+        self.assertNotIn("optional", step4.lower())
+        self.assertIn("run_tools.py", step4)
+        self.assertIn("--no-tools", step4)
+        self.assertTrue("LOUD" in step4 or "loudly" in step4.lower())
+
+    def test_tools_dir_is_wired_into_synthesize_passes(self):
+        # F-2: a scan that runs but is never ingested reads as clean. Pin
+        # that the pipeline instructs --tools-dir where synthesize is invoked.
+        pipeline = self.text.split("## Pipeline")[1].split("## Host dispatch")[0]
+        self.assertIn("--tools-dir .panopticon/tools", pipeline)
