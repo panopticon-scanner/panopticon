@@ -78,3 +78,11 @@ class TestSkillMd(unittest.TestCase):
         # pipeline). Every command must use the repo-root `skill/scripts/` prefix.
         offenders = [ln for ln in self.text.splitlines() if "python3 scripts/" in ln]
         self.assertEqual(offenders, [])
+
+    def test_all_file_mentions_use_skill_prefix(self):
+        # File MENTIONS must be repo-root-relative too, not just commands.
+        # Both `agents/` and `scripts/` references must be prefixed with `skill/`.
+        import re
+        bare = [ln for ln in self.text.splitlines()
+                if re.search(r"[^l]`(scripts|agents)/", ln)]
+        self.assertEqual(bare, [], "bare scripts/ or agents/ path (run-from-where?): %r" % bare)

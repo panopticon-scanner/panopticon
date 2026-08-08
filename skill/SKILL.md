@@ -44,13 +44,13 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
    `.panopticon/` artifact paths, and synthesize's plan/scout globs all resolve
    against the current working directory.
 2. **Discovery** — run `python3 skill/scripts/orchestrator.py` to produce `groups.json`.
-3. **Scout** — dispatch the `scout` role (`agents/scout.md`) per group — its template has no placeholders; dispatch its body plus tool-policy line as the prompt — via `subagent_type: panopticon-scout` when that registered shell exists (fresh session after registration), else a general-purpose agent; the scout RETURNS the ScopeProfile JSON; the orchestrator writes it to `.panopticon/scout-{group}.json`.
+3. **Scout** — dispatch the `scout` role (`skill/agents/scout.md`) per group — its template has no placeholders; dispatch its body plus tool-policy line as the prompt — via `subagent_type: panopticon-scout` when that registered shell exists (fresh session after registration), else a general-purpose agent; the scout RETURNS the ScopeProfile JSON; the orchestrator writes it to `.panopticon/scout-{group}.json`.
    Append the group's name, its file list from `groups.json`, and the `security_mode` to the prompt body — the scout template itself carries no assignment.
 4. **Tool scan** — optional Docker container; SARIF ingested by `skill/scripts/ingest_tools.py`.
 5. **Plan dispatch** — run one dispatch per group (matching the per-group scout from step 3): `python3 skill/scripts/dispatch.py <scope-profile.json> --host <your host: claude|kimi|generic> --out .panopticon/dispatch-plan-<group>.json` to produce a `DispatchPlan` of role-based agents. Give each group's plan its own file — `synthesize` globs `dispatch-plan*.json` for coverage/resume/integrity (steps 7/9), so a shared `dispatch-plan.json` repeatedly overwritten by each group is just the one-group case of the same naming convention, not a substitute for it.
    Pass your host explicitly — env detection is fallback only. Add --agents-dir DIR when your registered agents live somewhere non-default. `dispatch.py` refuses to emit a plan (exit 1, nothing written) when a reviewer role (`panel_review`/`lens_sweep`) lacks a registered enforcement shell — register shells first (`--emit-host-agents`, step below) or pass `--allow-unenforced` to accept prompt-advisory tool policy explicitly; see Host dispatch below.
-6. **Fan-out** — run the `group_runner` contract (`scripts/group_runner.py`,
-   `scripts/write_guard_hook.py`): every reviewer writes its own findings file
+6. **Fan-out** — run the `group_runner` contract (`skill/scripts/group_runner.py`,
+   `skill/scripts/write_guard_hook.py`): every reviewer writes its own findings file
    directly, so fan-out is bounded by agent capacity, not by how much of a
    truncated report the orchestrator's context can still hold.
    `panel_review` filenames omit `{lens}`.
@@ -104,7 +104,7 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
    If it prints a "verify queue: N entries" line, proceed to step 8; if it printed a report, skip to step 9.
 8. **Verify** — Run `python3 skill/scripts/dispatch.py --render-advisor .panopticon/verify-queue.json --out .panopticon/advisor-prompts`,
    then dispatch each `.panopticon/advisor-prompts/{queue_id}.md` file's contents
-   as an `advisor` agent (`agents/advisor.md`) in parallel — via `subagent_type: panopticon-advisor` when that registered shell exists, else general-purpose. The advisor RETURNS a
+   as an `advisor` agent (`skill/agents/advisor.md`) in parallel — via `subagent_type: panopticon-advisor` when that registered shell exists, else general-purpose. The advisor RETURNS a
    verdict JSON; write it verbatim to `.panopticon/verdicts/{queue_id}.json`.
    Advisors are read-only; the orchestrator performs the write.
    On resume, dispatch only `group_runner.pending_verdicts(queue, .panopticon/verdicts)` —
