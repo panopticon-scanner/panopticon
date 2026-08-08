@@ -194,6 +194,9 @@ class TestStaticPyproject(unittest.TestCase):
         captured = {}
         def fake_run_tool(cmd, timeout=0):
             captured["cmd"] = list(cmd)
+            # Guard the index so a command-shape change fails with a clear
+            # message, not an opaque ValueError/IndexError (#587).
+            assert "--requirement" in cmd, "invoke() passed no --requirement: %r" % (cmd,)
             with open(cmd[cmd.index("--requirement") + 1]) as fh:
                 captured["reqs"] = fh.read()
             return b"{}", 0

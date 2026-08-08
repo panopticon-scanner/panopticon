@@ -145,6 +145,8 @@ class TestAdapterDispatch(unittest.TestCase):
             out_dir = os.path.join(d, "out")
             for tool in ("spotbugs", "roslyn-secguard"):
                 rt.run_tools(d, [tool], out_dir, image="panopticon-tools", runner=runner)
+            for cmd in calls:
+                self.assertIn("-v", cmd)          # clear failure, not ValueError
             mounts = [cmd[cmd.index("-v") + 1] for cmd in calls]
             self.assertEqual(mounts, [
                 "%s:/src:ro" % os.path.abspath(d),
@@ -221,6 +223,7 @@ class TestContainment(unittest.TestCase):
 
     def test_every_dispatch_has_network_none(self):
         for cmd in self._calls(["semgrep", "cargo-audit"]):
+            self.assertIn("--network", cmd)          # clear failure, not ValueError (#780)
             i = cmd.index("--network")
             self.assertEqual(cmd[i + 1], "none")
 
@@ -243,6 +246,7 @@ class TestContainment(unittest.TestCase):
 
     def test_roslyn_never_gets_network_even_online(self):
         calls = self._calls(["roslyn-secguard"], online=True)
+        self.assertIn("--network", calls[0])          # clear failure, not ValueError (#781)
         i = calls[0].index("--network")
         self.assertEqual(calls[0][i + 1], "none")
 
