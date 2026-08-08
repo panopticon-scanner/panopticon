@@ -26,9 +26,6 @@ def decide(tool_name, file_path, allowlist):
         target = os.path.realpath(raw)
     except (ValueError, OSError):
         return False, ("write to %r is denied: unresolvable path" % file_path)
-    repo_root = os.path.realpath(os.getcwd())
-    if not target.startswith(repo_root + os.sep) and target != repo_root:
-        return False, ("write to %s is denied: resolved path escapes the repo root" % file_path)
     if target in allowlist:
         return True, ""
     return False, ("write to %s is outside the fan-out allowlist; reviewers may "
