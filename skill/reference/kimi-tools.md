@@ -45,13 +45,13 @@ python3 skill/scripts/orchestrator.py --repo-scan --repo . --out .panopticon/gro
 #    Refuses to write the plan (exit 1) if panel_review/lens_sweep would be
 #    unenforced -- register the shells above first, or add
 #    --allow-unenforced to accept prompt-advisory tool policy explicitly.
-python3 skill/scripts/dispatch.py .panopticon/scout-<group>.json --host kimi --out .panopticon/dispatch-plan.json
+python3 skill/scripts/dispatch.py .panopticon/scout-<group>.json --host kimi --out .panopticon/dispatch-plan-<group>.json
 
 # 4. fan out (or generate a Kimi swarm manifest) -- carries the same gate:
 #    refuses (exit 1, no manifest written) on an unenforced panel_review/
 #    lens_sweep entry in the plan unless --allow-unenforced is passed here
 #    too.
-python3 skill/scripts/dispatch.py --emit-kimi-swarm .panopticon/dispatch-plan.json --out .panopticon/kimi-swarm.json
+python3 skill/scripts/dispatch.py --emit-kimi-swarm .panopticon/dispatch-plan-<group>.json --out .panopticon/kimi-swarm-<group>.json
 
 # 5. synthesis
 python3 skill/scripts/synthesize.py --emit-verify-queue .panopticon/findings-*.json

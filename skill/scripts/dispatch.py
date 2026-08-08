@@ -512,14 +512,15 @@ def _gate_unenforced(plan, allow):
     return (not unenforced or allow), unenforced
 
 
-def _unenforced_refusal_message(unenforced):
-    return ("dispatch: refusing to emit plan — unenforced reviewer role(s): %s.\n"
+def _unenforced_refusal_message(unenforced, context="plan"):
+    action = "emit swarm manifest" if context == "swarm" else "emit plan"
+    return ("dispatch: refusing to %s — unenforced reviewer role(s): %s.\n"
             "Tool policy would be prompt-advisory only (full Bash/Edit/Write on a "
             "general-purpose agent reading untrusted repo content).\n"
             "Register enforcement shells first:  python3 skill/scripts/dispatch.py "
             "--emit-host-agents <host>\n"
             "Or accept the risk explicitly with --allow-unenforced."
-            % ", ".join(unenforced))
+            % (action, ", ".join(unenforced)))
 
 
 def _write_unenforced_ack(unenforced):
@@ -592,14 +593,9 @@ def main(argv=None):
         ok, unenforced = _gate_unenforced(plan, args.allow_unenforced)
         if unenforced:
             if not ok:
-                print(_unenforced_refusal_message(unenforced), file=sys.stderr)
+                print(_unenforced_refusal_message(unenforced, context="swarm"), file=sys.stderr)
                 return 1
-            try:
-                _write_unenforced_ack(unenforced)
-            except OSError as e:
-                print("dispatch: cannot record unenforced ack: %s" % e, file=sys.stderr)
-                return 1
-            print("dispatch: WARNING — emitting plan with unenforced reviewer role(s): %s "
+            print("dispatch: WARNING — emitting swarm manifest with unenforced reviewer role(s): %s "
                   "(acknowledged via --allow-unenforced)" % ", ".join(unenforced),
                   file=sys.stderr)
         try:
@@ -608,9 +604,19 @@ def main(argv=None):
         except ValueError as e:
             print("dispatch: %s" % e, file=sys.stderr)
             return 1
-        with open(args.out, "w", encoding="utf-8") as fh:
-            json.dump(swarm, fh, indent=2)
-            fh.write("\n")
+        try:
+            with open(args.out, "w", encoding="utf-8") as fh:
+                json.dump(swarm, fh, indent=2)
+                fh.write("\n")
+        except OSError as e:
+            print("dispatch: cannot write swarm manifest: %s" % e, file=sys.stderr)
+            return 1
+        if unenforced:
+            try:
+                _write_unenforced_ack(unenforced)
+            except OSError as e:
+                print("dispatch: cannot record unenforced ack: %s" % e, file=sys.stderr)
+                return 1
         print("wrote Kimi swarm manifest (%d batch(es)) -> %s" % (len(swarm["batches"]), args.out))
         return 0
     if not args.profile:
@@ -649,11 +655,6 @@ def main(argv=None):
         if not ok:
             print(_unenforced_refusal_message(unenforced), file=sys.stderr)
             return 1
-        try:
-            _write_unenforced_ack(unenforced)
-        except OSError as e:
-            print("dispatch: cannot record unenforced ack: %s" % e, file=sys.stderr)
-            return 1
         print("dispatch: WARNING — emitting plan with unenforced reviewer role(s): %s "
               "(acknowledged via --allow-unenforced)" % ", ".join(unenforced),
               file=sys.stderr)
@@ -673,6 +674,12 @@ def main(argv=None):
             return 1
     else:
         emit_plan(plan)
+    if unenforced:
+        try:
+            _write_unenforced_ack(unenforced)
+        except OSError as e:
+            print("dispatch: cannot record unenforced ack: %s" % e, file=sys.stderr)
+            return 1
     return 0
 
 
