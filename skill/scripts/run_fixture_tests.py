@@ -80,7 +80,7 @@ def check_fixtures(tag: str, fixtures: list[dict]) -> tuple[list[str], list[str]
     # ($0 is set to "sh" so the paths start at $1 and "$@" covers them all.)
     test_script = (
         'for p in "$@"; do '
-        'if [ -d "$p" ]; then echo "PRESENT:$p"; else echo "MISSING:$p"; fi; '
+        'if [ -d "$p" ]; then printf "PRESENT:%s\n" "$p"; else printf "MISSING:%s\n" "$p"; fi; '
         'done'
     )
     cmd = ["docker", "run", "--rm", tag, "sh", "-c", test_script, "sh", *paths]
