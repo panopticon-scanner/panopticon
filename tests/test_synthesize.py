@@ -2421,3 +2421,27 @@ class TestRenderSummaryCoverage(unittest.TestCase):
         self.assertIn("NOT CERTIFIED", text)
         self.assertIn("security", text)
         self.assertIn("provisional", text.lower())
+
+
+class TestRenderSummaryResume(unittest.TestCase):
+    G = [{"name": "g1", "files": ["a.py"]}]
+    TS = "2026-01-01T00:00:00Z"
+
+    def test_resume_line_shown_when_pending(self):
+        r = syn.build_report([], self.G, "t", "high", self.TS,
+                             resume={"fan_out": {"total": 74, "done": 33, "pending": 41},
+                                     "verify": {"total": 52, "done": 12, "pending": 40}})
+        text = syn.render_summary(r)
+        self.assertIn("Resume:", text)
+        self.assertIn("33/74", text)
+        self.assertIn("12/52", text)
+
+    def test_no_resume_line_when_complete(self):
+        r = syn.build_report([], self.G, "t", "high", self.TS,
+                             resume={"fan_out": {"total": 74, "done": 74, "pending": 0},
+                                     "verify": {"total": 52, "done": 52, "pending": 0}})
+        self.assertNotIn("Resume:", syn.render_summary(r))
+
+    def test_no_resume_line_when_resume_absent(self):
+        r = syn.build_report([], self.G, "t", "high", self.TS)  # resume=None
+        self.assertNotIn("Resume:", syn.render_summary(r))

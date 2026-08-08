@@ -100,6 +100,11 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
    as an `advisor` agent (`agents/advisor.md`) in parallel — via `subagent_type: panopticon-advisor` when that registered shell exists, else general-purpose. The advisor RETURNS a
    verdict JSON; write it verbatim to `.panopticon/verdicts/{queue_id}.json`.
    Advisors are read-only; the orchestrator performs the write.
+   On resume, dispatch only `group_runner.pending_verdicts(queue, .panopticon/verdicts)` —
+   never re-dispatch a `queue_id` that already has a valid verdict on disk; status
+   comes from disk, not recollection. The fan-out/verify skip-counts surface in
+   `meta.coverage.resume` and the terminal summary's `Resume:` line, so a resumed
+   run never reads as a fresh full scan.
    Then run
    `python3 scripts/synthesize.py --verdicts-dir .panopticon/verdicts [same flags] .panopticon/findings-*.json`
    to produce the final report.
@@ -210,7 +215,10 @@ full report artifact, whereas a usage error does not, so disambiguate the two
 by checking whether the report exists. Consumers should key certification on
 `summary.gate` and `summary.coverage_certified`, not on `overall_grade` alone
 — a tool-only coverage gap yields `INCONCLUSIVE` with a real grade still
-attached.
+attached. When `meta.coverage.resume` shows pending work in either phase, the
+terminal summary also prints a `**Resume:**` line (fan-out/verify done vs.
+total) directly under the Grade/Gate line; a fully-complete or resume-absent
+run prints no such line, so a resumed run never reads as a fresh full scan.
 
 ## Testing scanner fixtures (optional)
 Panopticon includes a local Docker-based fixture suite for validating scanner adapters against intentionally vulnerable applications.

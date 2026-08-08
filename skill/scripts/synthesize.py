@@ -921,6 +921,14 @@ def render_summary(report):
         if tools:
             parts.append("tools " + ", ".join(sorted(tools)))
         lines.insert(3, "**Coverage:** NOT CERTIFIED — %s" % ("; ".join(parts) or "incomplete"))
+    rz = (report["meta"].get("coverage") or {}).get("resume") or {}
+    _fo = rz.get("fan_out") or {}
+    _vf = rz.get("verify") or {}
+    if (_fo.get("pending") or 0) or (_vf.get("pending") or 0):
+        lines.insert(3, "**Resume:** fan-out %d/%d done, verify %d/%d done (%d+%d pending)" % (
+            _fo.get("done", 0), _fo.get("total", 0),
+            _vf.get("done", 0), _vf.get("total", 0),
+            _fo.get("pending", 0), _vf.get("pending", 0)))
     for g in report["groups"]:
         pg = g["panel_grades"]
         grades = " / ".join("%s %s" % (p, pg[p]) for p in PANEL_ORDER)
