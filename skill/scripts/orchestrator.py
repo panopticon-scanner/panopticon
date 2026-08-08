@@ -382,6 +382,15 @@ def _parse_catalog_yaml(text):
     return groups
 
 
+def _to_list(val):
+    """Normalise a YAML scalar, sequence, or None into a list."""
+    if val is None:
+        return []
+    if isinstance(val, str):
+        return [val]
+    return list(val)
+
+
 def load_catalog(repo):
     """Load file group catalog from .panopticon/groups.yml or parse YAML fallback."""
     path = os.path.join(repo, ".panopticon", "groups.yml")
@@ -397,12 +406,6 @@ def load_catalog(repo):
             out = {}
             for name, body in raw.items():
                 body = body or {}
-                def _to_list(val):
-                    if val is None:
-                        return []
-                    if isinstance(val, str):
-                        return [val]
-                    return list(val)
                 out[name] = {
                     "patterns": _to_list(body.get("patterns")),
                     "match": _to_list(body.get("match")),
