@@ -52,8 +52,11 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
    `panel_review` filenames omit `{lens}`.
    - **Before fan-out** — if the target is a git repository, capture a
      baseline: `git status --porcelain > .panopticon/tree-baseline.txt`. Then
-     install the write-guard from the plan:
-     `python3 -c "import sys; sys.path.insert(0,'skill'); import scripts.write_guard_hook as wg, json; wg.install(json.load(open('.panopticon/dispatch-plan.json')))"`.
+     install the write-guard from the plan — glob-merge every group's plan
+     file (same `dispatch-plan*.json` convention as step 5/`synthesize`;
+     `wg.install` takes a plain list of entries, so a single-group leftover
+     from `dispatch-plan.json` never silently under-allowlists the rest):
+     `python3 -c "import sys, glob, json; sys.path.insert(0,'skill'); import scripts.write_guard_hook as wg; plan=[e for p in sorted(glob.glob('.panopticon/dispatch-plan*.json')) for e in json.load(open(p))]; wg.install(plan)"`.
    - **Resume** — dispatch only `pending_entries(plan)`: an entry whose
      `out_file` already exists and parses as findings JSON is done; never
      re-dispatch it.
