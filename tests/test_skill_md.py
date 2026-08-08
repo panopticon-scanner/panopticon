@@ -99,3 +99,27 @@ class TestSkillMd(unittest.TestCase):
         # that the pipeline instructs --tools-dir where synthesize is invoked.
         pipeline = self.text.split("## Pipeline")[1].split("## Host dispatch")[0]
         self.assertIn("--tools-dir .panopticon/tools", pipeline)
+
+
+class TestReadmeQuickStart(unittest.TestCase):
+    """#512: the README Quick start must show real invocation flags, not the
+    nonexistent --mode/--target selectors a new adopter would copy-paste."""
+
+    def setUp(self):
+        with open(os.path.join(ROOT, os.pardir, "README.md"), encoding="utf-8") as fh:
+            self.text = fh.read()
+
+    def _quick_start(self):
+        # Scoped to the Quick start section: elsewhere `run_tools.py --target .`
+        # is a legitimate internal tool invocation, not skill-invocation syntax.
+        return self.text.split("## Quick start")[1].split("## Repository layout")[0]
+
+    def test_no_nonexistent_mode_or_target_flags(self):
+        qs = self._quick_start()
+        self.assertNotIn("--mode", qs)
+        self.assertNotIn("--target", qs)
+
+    def test_quick_start_uses_documented_flags(self):
+        qs = self._quick_start()
+        for flag in ("-f ", "-d ", "-c", "--pr "):
+            self.assertIn(flag, qs, flag)
