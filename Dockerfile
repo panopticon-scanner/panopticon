@@ -64,9 +64,18 @@ RUN curl -sfL "https://github.com/spotbugs/spotbugs/releases/download/${SPOTBUGS
     && ln -s "/opt/spotbugs-${SPOTBUGS_VERSION}" /opt/spotbugs \
     && chmod +x /opt/spotbugs/bin/spotbugs
 ARG FINDSECBUGS_VERSION=1.13.0
+# Pinned SHA-256 of findsecbugs-plugin-${FINDSECBUGS_VERSION}.jar. This jar is
+# loaded as an unsandboxed SpotBugs analyzer plugin (arbitrary bytecode in the
+# scan JVM), and the image is published publicly and rebuilt daily, so an
+# unverified fetch would propagate a substituted jar to every downstream Java
+# scan (#539). Fetched from the canonical Maven2 GAV path and verified with
+# sha256sum -c; the build FAILS on mismatch. To bump the version, update both
+# ARGs (the new digest is the jar's .sha256, or `sha256sum` of the artifact).
+ARG FINDSECBUGS_SHA256=c239763a8c327b5fb653a34dece6398578bf435b9a32c212bb8e1abe701368a5
 RUN mkdir -p /opt/spotbugs/plugin \
-    && curl -sfL "https://search.maven.org/remotecontent?filepath=com/h3xstream/findsecbugs/findsecbugs-plugin/${FINDSECBUGS_VERSION}/findsecbugs-plugin-${FINDSECBUGS_VERSION}.jar" \
-        -o /opt/spotbugs/plugin/findsecbugs-plugin.jar
+    && curl -sfL "https://repo1.maven.org/maven2/com/h3xstream/findsecbugs/findsecbugs-plugin/${FINDSECBUGS_VERSION}/findsecbugs-plugin-${FINDSECBUGS_VERSION}.jar" \
+        -o /opt/spotbugs/plugin/findsecbugs-plugin.jar \
+    && echo "${FINDSECBUGS_SHA256}  /opt/spotbugs/plugin/findsecbugs-plugin.jar" | sha256sum -c -
 
 # OWASP dependency-check
 ARG DEPENDENCY_CHECK_VERSION=10.0.3

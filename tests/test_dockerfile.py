@@ -22,6 +22,28 @@ class TestDockerfilePhase1(unittest.TestCase):
         self.assertIn("eslint-plugin-security", text)
 
 
+class TestFindSecBugsIntegrity(unittest.TestCase):
+    """#539: the FindSecBugs plugin jar is loaded as unsandboxed analyzer
+    bytecode in the SpotBugs JVM and the image is published + rebuilt daily, so
+    its download must be integrity-verified, not piped straight to disk."""
+
+    def setUp(self):
+        self.text = (Path(ROOT) / "Dockerfile").read_text()
+
+    def test_findsecbugs_digest_is_pinned_and_verified(self):
+        self.assertIn("FINDSECBUGS_SHA256=", self.text)
+        # A 64-hex-char sha256 must be pinned and checked with sha256sum -c.
+        self.assertRegex(self.text, r"FINDSECBUGS_SHA256=[0-9a-f]{64}")
+        self.assertIn("sha256sum -c", self.text)
+
+    def test_findsecbugs_uses_canonical_maven_path_not_scrape_endpoint(self):
+        # The legacy remotecontent?filepath= scrape endpoint ships no checksum
+        # sidecar; the canonical /maven2/ GAV path does.
+        self.assertIn("repo1.maven.org/maven2/com/h3xstream/findsecbugs",
+                      self.text)
+        self.assertNotIn("remotecontent?filepath=", self.text)
+
+
 class TestOfflineAssets(unittest.TestCase):
     def setUp(self):
         with open(os.path.join(os.path.dirname(__file__), os.pardir,
