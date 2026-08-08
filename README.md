@@ -58,15 +58,17 @@ Note: Claude Code loads registered agents at session start — after first regis
 From inside a repo you want to review:
 
 ```bash
-kimi /panopticon --mode repo
+kimi /panopticon
 ```
 
-Or point it at a file, directory, PR, or changeset:
+Or point it at a file, directory, PR, or changeset (see `skill/SKILL.md` → Modes
+for the full flag list):
 
 ```bash
-kimi /panopticon --mode file --target src/auth.py
-kimi /panopticon --mode changes
-kimi /panopticon --mode pr --pr 217
+kimi /panopticon -f src/auth.py     # a single file + its tests and neighbors
+kimi /panopticon -d src/payments    # a directory
+kimi /panopticon -c                 # branch diff vs the merge base
+kimi /panopticon --pr 217           # a pull request
 ```
 
 ## Repository layout
