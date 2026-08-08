@@ -46,8 +46,9 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
 2. **Discovery** — run `python3 skill/scripts/orchestrator.py` to produce `groups.json`.
    Git targets are discovered via `git ls-files` (tracked + untracked
    non-ignored), so the TARGET's own `.gitignore` defines the reviewable
-   surface — runtime data, secrets (`.env`), and build artifacts never reach
-   reviewers; non-git targets fall back to a pruned walk. The method used is
+   surface — runtime data, build artifacts, and files ignored by the repo
+   (e.g. a `.env` listed in `.gitignore`) are typically excluded; non-git
+   targets fall back to a pruned walk. The method used is
    recorded at `groups.json` `discovery.method`. When
    `.panopticon/groups.yml` defines groups with `match:` patterns
    (gitignore-flavored globs, `!` negation, last-match-wins), `--repo-scan`

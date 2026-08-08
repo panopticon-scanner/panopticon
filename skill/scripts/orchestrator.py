@@ -289,13 +289,24 @@ def assign_by_catalog(files, catalog):
     maps group name -> sorted files (empty groups omitted) and ``leftovers``
     are files no group matched — the coverage gap the caller must disclose.
     """
-    matchable = [(name, g["match"]) for name, g in catalog.items()
-                 if g.get("match")]
+    # Precompile each group's patterns once so regexes are not rebuilt per file.
+    matchable = []
+    for name, g in catalog.items():
+        if g.get("match"):
+            compiled = []
+            for pat in g["match"]:
+                negate = pat.startswith("!")
+                compiled.append((negate, _glob_to_re(pat[1:] if negate else pat)))
+            matchable.append((name, compiled))
     assigned = {name: [] for name, _ in matchable}
     leftovers = []
     for f in files:
-        for name, patterns in matchable:
-            if match_patterns(f, patterns):
+        for name, compiled in matchable:
+            matched = False
+            for negate, rx in compiled:
+                if rx.match(f):
+                    matched = not negate
+            if matched:
                 assigned[name].append(f)
                 break
         else:
@@ -386,10 +397,16 @@ def load_catalog(repo):
             out = {}
             for name, body in raw.items():
                 body = body or {}
+                def _to_list(val):
+                    if val is None:
+                        return []
+                    if isinstance(val, str):
+                        return [val]
+                    return list(val)
                 out[name] = {
-                    "patterns": list(body.get("patterns") or []),
-                    "match": list(body.get("match") or []),
-                    "facets": {k: list(v or []) for k, v in (body.get("facets") or {}).items()},
+                    "patterns": _to_list(body.get("patterns")),
+                    "match": _to_list(body.get("match")),
+                    "facets": {k: _to_list(v) for k, v in (body.get("facets") or {}).items()},
                 }
             return out
         except ImportError:
