@@ -84,7 +84,7 @@ class TestSkillMd(unittest.TestCase):
         # Both `agents/` and `scripts/` references must be prefixed with `skill/`.
         import re
         bare = [ln for ln in self.text.splitlines()
-                if re.search(r"[^l]`(scripts|agents)/", ln)]
+                if re.search(r"(?<!l)`(scripts|agents)/", ln)]
         self.assertEqual(bare, [], "bare scripts/ or agents/ path (run-from-where?): %r" % bare)
 
     def test_tool_scan_step_is_deterministic_not_optional(self):
@@ -93,3 +93,9 @@ class TestSkillMd(unittest.TestCase):
         self.assertIn("run_tools.py", step4)
         self.assertIn("--no-tools", step4)
         self.assertTrue("LOUD" in step4 or "loudly" in step4.lower())
+
+    def test_tools_dir_is_wired_into_synthesize_passes(self):
+        # F-2: a scan that runs but is never ingested reads as clean. Pin
+        # that the pipeline instructs --tools-dir where synthesize is invoked.
+        pipeline = self.text.split("## Pipeline")[1].split("## Host dispatch")[0]
+        self.assertIn("--tools-dir .panopticon/tools", pipeline)

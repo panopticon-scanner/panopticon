@@ -19,10 +19,13 @@ def decide(tool_name, file_path, allowlist):
     """(allow, reason). Non-write tools always allowed; writes only to allowlist."""
     if tool_name not in _WRITE_TOOLS:
         return True, ""
-    raw = os.path.abspath(file_path or "")
-    if os.path.islink(raw):
-        return False, ("write to %s is denied: findings targets must not be symlinks" % file_path)
-    target = os.path.realpath(raw)
+    try:
+        raw = os.path.abspath(file_path or "")
+        if os.path.islink(raw):
+            return False, ("write to %s is denied: findings targets must not be symlinks" % file_path)
+        target = os.path.realpath(raw)
+    except (ValueError, OSError):
+        return False, ("write to %r is denied: unresolvable path" % file_path)
     if target in allowlist:
         return True, ""
     return False, ("write to %s is outside the fan-out allowlist; reviewers may "

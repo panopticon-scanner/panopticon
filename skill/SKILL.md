@@ -46,15 +46,32 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
 2. **Discovery** — run `python3 skill/scripts/orchestrator.py` to produce `groups.json`.
 3. **Scout** — dispatch the `scout` role (`skill/agents/scout.md`) per group — its template has no placeholders; dispatch its body plus tool-policy line as the prompt — via `subagent_type: panopticon-scout` when that registered shell exists (fresh session after registration), else a general-purpose agent; the scout RETURNS the ScopeProfile JSON; the orchestrator writes it to `.panopticon/scout-{group}.json`.
    Append the group's name, its file list from `groups.json`, and the `security_mode` to the prompt body — the scout template itself carries no assignment.
-4. **Tool scan** — deterministic, not discretionary. RUN
+4. **Tool scan** — deterministic, not discretionary, total rule: RUN
    `python3 skill/scripts/run_tools.py --target . --out .panopticon/tools --deps` (the same invocation
-   CI uses) whenever ANY of: `--tools` was passed, a scout's ScopeProfile
-   requested scanners in `tools`, or a dependency manifest is present in the
-   target. Skip ONLY when `--no-tools` was passed — and when the scan is
-   skipped or declined for any reason, say so LOUDLY in the terminal before
-   fan-out; `meta.coverage` records `tools_ran` and scout-requested-but-absent
-   tools independently (a silently skipped scan cannot read as clean).
-   SARIF is ingested by `skill/scripts/ingest_tools.py`.
+   CI uses) by default, UNLESS `--no-tools` was passed (`--no-tools` wins over
+   `--tools` if both are given). The scan is REQUIRED — never discretionary —
+   whenever ANY of: `--tools` was passed, a scout's ScopeProfile requested
+   scanners in `tools`, or a dependency manifest is present in the target;
+   treat that list as examples of when the scan may not be declined, not as
+   the only cases where it runs. Only when NONE of those triggers hold and
+   the target genuinely has no scannable surface may the orchestrator skip —
+   and every skip, for any reason including `--no-tools`, must be disclosed
+   LOUDLY in the terminal before fan-out. Scanners run inside the
+   `panopticon-tools` Docker image; `run_tools.py` degrades gracefully when
+   Docker is absent (prints a stderr warning and produces no tool output —
+   that is a skip too, and gets the same loud disclosure).
+   SARIF is ingested by `skill/scripts/ingest_tools.py` — but only when
+   `--tools-dir .panopticon/tools` is passed to synthesize; when the scan
+   ran, BOTH synthesize passes (step 7's command below and the pass-2 line in
+   step 8) MUST include `--tools-dir .panopticon/tools` as part of the
+   `[same flags]` contract, or the SARIF this step produced sits on disk
+   un-ingested and invisible to the report. `meta.coverage` records
+   `tools_ran` and scout-requested-but-absent tools independently: a
+   scout-requested tool that never produced output (`tools_absent =
+   scout_requested − produced`) forces `INCONCLUSIVE` — that guarantee is
+   gate-enforced. A skip on the other triggers (or a Docker-absent
+   degradation) is disclosed via `tools_ran` in `meta.coverage` and the
+   mandated loud terminal notice, but is not itself gate-enforced.
 5. **Plan dispatch** — run one dispatch per group (matching the per-group scout from step 3): `python3 skill/scripts/dispatch.py <scope-profile.json> --host <your host: claude|kimi|generic> --out .panopticon/dispatch-plan-<group>.json` to produce a `DispatchPlan` of role-based agents. Give each group's plan its own file — `synthesize` globs `dispatch-plan*.json` for coverage/resume/integrity (steps 7/9), so a shared `dispatch-plan.json` repeatedly overwritten by each group is just the one-group case of the same naming convention, not a substitute for it.
    Pass your host explicitly — env detection is fallback only. Add --agents-dir DIR when your registered agents live somewhere non-default. `dispatch.py` refuses to emit a plan (exit 1, nothing written) when a reviewer role (`panel_review`/`lens_sweep`) lacks a registered enforcement shell — register shells first (`--emit-host-agents`, step below) or pass `--allow-unenforced` to accept prompt-advisory tool policy explicitly; see Host dispatch below.
 6. **Fan-out** — run the `group_runner` contract (`skill/scripts/group_runner.py`,
@@ -108,7 +125,8 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
      `install` is idempotent, or clear it with `wg.uninstall()`. The hook's
      settings file is git-ignored so a leftover never trips the clean-tree check.
    See Host dispatch below for the full per-host mechanism.
-7. **Synthesize (pass 1)** — `python3 skill/scripts/synthesize.py --emit-verify-queue [flags] .panopticon/findings-*.json`.
+7. **Synthesize (pass 1)** — `python3 skill/scripts/synthesize.py --emit-verify-queue [flags] [--tools-dir .panopticon/tools] .panopticon/findings-*.json`.
+   Include `--tools-dir .panopticon/tools` when step 4's scan ran — see step 4.
    If it prints a "verify queue: N entries" line, proceed to step 8; if it printed a report, skip to step 9.
 8. **Verify** — Run `python3 skill/scripts/dispatch.py --render-advisor .panopticon/verify-queue.json --out .panopticon/advisor-prompts`,
    then dispatch each `.panopticon/advisor-prompts/{queue_id}.md` file's contents
@@ -206,8 +224,10 @@ its own mechanism:
      re-verification below still downgrades it to `coder`/`explore` with a
      stderr warning and succeeds; that gap is tracked separately.)
      ```bash
-     python3 skill/scripts/dispatch.py --emit-kimi-swarm .panopticon/dispatch-plan.json --out .panopticon/kimi-swarm.json
+     python3 skill/scripts/dispatch.py --emit-kimi-swarm .panopticon/dispatch-plan-<group>.json --out .panopticon/kimi-swarm-<group>.json
      ```
+     One manifest per group, matching step 5's per-group plan convention —
+     not one manifest for the whole run.
      Then invoke each batch. Raw-prompt dispatch does not honor the shell, so
      an enforced entry must go through its registered profile.
 

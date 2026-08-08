@@ -6,7 +6,7 @@ import scripts.write_guard_hook as wg
 
 class TestDecide(unittest.TestCase):
     def setUp(self):
-        self.allow = {os.path.abspath(".panopticon/findings-g1-code-panel_review.json")}
+        self.allow = {os.path.realpath(".panopticon/findings-g1-code-panel_review.json")}
 
     def test_write_to_allowed_out_file_is_permitted(self):
         ok, _ = wg.decide("Write",
@@ -42,7 +42,7 @@ class TestDecide(unittest.TestCase):
         allow = {os.path.abspath(target)}                   # allowlist built from the STRING path
         ok, reason = wg.decide("Write", target, allow)
         self.assertFalse(ok)
-        self.assertIn("outside", reason.lower() + " " + reason.lower())
+        self.assertIn("outside", reason.lower())
 
     def test_realpath_allowlist_still_authorizes_legit_write(self):
         # Same path on both sides with no symlinks anywhere must still allow.
@@ -53,18 +53,25 @@ class TestDecide(unittest.TestCase):
         ok, _ = wg.decide("Write", target, allow)
         self.assertTrue(ok)
 
+    def test_nul_byte_path_is_denied_not_raised(self):
+        # os.path.realpath raises ValueError on an embedded NUL byte where
+        # abspath/islink tolerate it; decide() must fail closed, not crash.
+        ok, reason = wg.decide("Write", "bad\x00path.json", self.allow)
+        self.assertFalse(ok)
+        self.assertIn("denied", reason.lower())
+
 
 class TestAllowlistFromPlan(unittest.TestCase):
     def test_collects_out_files_absolute(self):
         plan = [{"out_file": ".panopticon/a.json"}, {"out_file": ".panopticon/b.json"}]
         al = wg.allowlist_from_plan(plan)
-        self.assertEqual(al, {os.path.abspath(".panopticon/a.json"),
-                              os.path.abspath(".panopticon/b.json")})
+        self.assertEqual(al, {os.path.realpath(".panopticon/a.json"),
+                              os.path.realpath(".panopticon/b.json")})
 
     def test_skips_non_string_out_file(self):
         plan = [{"out_file": ".panopticon/a.json"}, {"out_file": 123}, {"out_file": None}]
         al = wg.allowlist_from_plan(plan)
-        self.assertEqual(al, {os.path.abspath(".panopticon/a.json")})
+        self.assertEqual(al, {os.path.realpath(".panopticon/a.json")})
 
 
 class TestMain(unittest.TestCase):
@@ -156,7 +163,7 @@ class TestInstallUninstall(unittest.TestCase):
             self.assertEqual(saved["env"], {"X": "1"})            # preserved
             self.assertIn("PreToolUse", saved["hooks"])           # registered
             self.assertEqual(json.load(open(al)),
-                             [os.path.abspath(".panopticon/f.json")])
+                             [os.path.realpath(".panopticon/f.json")])
 
     def test_uninstall_removes_hook_and_allowlist(self):
         with tempfile.TemporaryDirectory() as d:
