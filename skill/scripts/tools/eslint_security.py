@@ -49,10 +49,16 @@ class EslintSecurityAdapter:
         # Pin cwd to this adapter's own directory (never contains
         # node_modules) so plugin resolution always finds the trusted copy
         # via the NODE_PATH fallback below.
+        # Set NODE_PATH EXCLUSIVELY to the trusted global dir; never prepend an
+        # inherited NODE_PATH (#715). Node searches NODE_PATH left-to-right, so
+        # an inherited entry like /evil/node_modules would shadow the trusted
+        # eslint-plugin-security and execute during the scan. Also drop any
+        # inherited value so a stale entry can't leak in when neither global
+        # dir exists.
+        env.pop("NODE_PATH", None)
         for global_node in ["/usr/local/lib/node_modules", "/usr/lib/node_modules"]:
             if os.path.isdir(global_node):
-                existing = env.get("NODE_PATH", "")
-                env["NODE_PATH"] = f"{existing}:{global_node}" if existing else global_node
+                env["NODE_PATH"] = global_node
                 break
         trusted_cwd = os.path.dirname(os.path.abspath(__file__))
         return run_tool(cmd, timeout=300, env=env, cwd=trusted_cwd)

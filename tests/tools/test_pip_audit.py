@@ -100,6 +100,27 @@ class TestPipAuditAdapter(unittest.TestCase):
             with mock.patch("scripts.tools.pip_audit.glob.glob", return_value=[]):
                 self.assertFalse(pa.PipAuditAdapter().is_applicable("/tmp/fake"))
 
+    def test_find_requirement_prefers_canonical_over_dev_sibling(self):
+        # #707: requirements-dev.txt sorts before requirements.txt ('-' < '.'),
+        # so the old lexicographic-first pick silently audited the dev manifest
+        # and skipped the primary one. The canonical file must always win.
+        with tempfile.TemporaryDirectory() as d:
+            for name in ("requirements.txt", "requirements-dev.txt",
+                         "requirements-test.txt"):
+                open(os.path.join(d, name), "w").close()
+            self.assertEqual(pa.PipAuditAdapter()._find_requirement(d),
+                             os.path.join(d, "requirements.txt"))
+
+    def test_find_requirement_falls_back_to_glob_without_canonical(self):
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, "requirements-dev.txt"), "w").close()
+            self.assertEqual(pa.PipAuditAdapter()._find_requirement(d),
+                             os.path.join(d, "requirements-dev.txt"))
+
+    def test_find_requirement_none_when_absent(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertIsNone(pa.PipAuditAdapter()._find_requirement(d))
+
     def test_parse_includes_provenance(self):
         findings = pa.PipAuditAdapter().parse(PIP_AUDIT_SAMPLE, "g1")
         self.assertTrue(findings)

@@ -175,6 +175,34 @@ class TestEslintSecurityAdapter(unittest.TestCase):
         self.assertEqual(kwargs.get("cwd"), expected_cwd)
         self.assertNotEqual(kwargs.get("cwd"), "/tmp/fake-target")
 
+    def test_invoke_sets_node_path_exclusively_ignoring_inherited(self):
+        # #715: an inherited NODE_PATH must never be prepended. Node searches
+        # NODE_PATH left-to-right, so a hostile inherited /evil/node_modules
+        # would shadow the trusted eslint-plugin-security. The adapter must set
+        # NODE_PATH to the trusted global dir ALONE.
+        adapter = es.EslintSecurityAdapter()
+        fake_run = mock.Mock(return_value=mock.Mock(stdout=b"[]", returncode=0))
+        with mock.patch("scripts.tools.base.subprocess.run", fake_run), \
+             mock.patch.dict(os.environ, {"NODE_PATH": "/evil/node_modules"}), \
+             mock.patch("os.path.isdir",
+                        side_effect=lambda p: p == "/usr/local/lib/node_modules"):
+            adapter.invoke("/tmp/fake-target")
+        _args, kwargs = fake_run.call_args
+        self.assertEqual(kwargs["env"].get("NODE_PATH"), "/usr/local/lib/node_modules")
+        self.assertNotIn("/evil", kwargs["env"].get("NODE_PATH", ""))
+
+    def test_invoke_drops_inherited_node_path_when_no_global_dir(self):
+        # If neither trusted global dir exists, the inherited value must still
+        # be dropped rather than left to leak in.
+        adapter = es.EslintSecurityAdapter()
+        fake_run = mock.Mock(return_value=mock.Mock(stdout=b"[]", returncode=0))
+        with mock.patch("scripts.tools.base.subprocess.run", fake_run), \
+             mock.patch.dict(os.environ, {"NODE_PATH": "/evil/node_modules"}), \
+             mock.patch("os.path.isdir", return_value=False):
+            adapter.invoke("/tmp/fake-target")
+        _args, kwargs = fake_run.call_args
+        self.assertNotIn("NODE_PATH", kwargs["env"])
+
     def test_invoke_passes_absolute_target_path(self):
         # Once cwd is pinned away from the target, the linted path on argv
         # must be absolute so linting still resolves the right directory
