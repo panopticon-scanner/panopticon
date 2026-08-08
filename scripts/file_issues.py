@@ -178,11 +178,28 @@ def create(title, body, labels, dry, throttle=0.0):
                             "--body", body, "--label", ",".join(labels)],
                            capture_output=True, text=True)
         if r.returncode == 0:
-            url = r.stdout.strip().splitlines()[-1]
-            print("%s  %s" % (url, title[:70]), flush=True)
-            if throttle:
-                time.sleep(throttle)
-            return url
+            out = r.stdout.strip().splitlines()
+            if out:
+                url = out[-1]
+                print("%s  %s" % (url, title[:70]), flush=True)
+                if throttle:
+                    time.sleep(throttle)
+                return url
+            # rc==0 but nothing on stdout. Observed under GitHub secondary rate
+            # limits, where `gh issue create` exits 0 without printing the URL
+            # (and, empirically, without creating the issue). Back off and retry
+            # rather than crashing on splitlines()[-1]; if a URL never appears,
+            # return None so this finding is left un-ledgered for a later resume
+            # instead of halting the whole run.
+            if attempt < 5:
+                backoff = 60 * attempt
+                print("empty stdout on rc=0 (attempt %d); backing off %ds"
+                      % (attempt, backoff), file=sys.stderr, flush=True)
+                time.sleep(backoff)
+                continue
+            print("FAILED (rc=0, no url returned): %s" % title,
+                  file=sys.stderr, flush=True)
+            return None
         err = (r.stderr or "").strip()
         if any(h in err.lower() for h in RATE_HINTS) and attempt < 5:
             backoff = 60 * attempt

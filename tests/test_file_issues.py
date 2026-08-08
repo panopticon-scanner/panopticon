@@ -1,9 +1,15 @@
 import os
 import sys
+import types
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "scripts"))
 import file_issues
+
+
+def _completed(returncode=0, stdout="", stderr=""):
+    return types.SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
 
 
 FINDING = {
@@ -50,6 +56,28 @@ class TestBodyProvenance(unittest.TestCase):
         self.assertIn("**Fingerprint:** `deadbeefcafe0001`", body)
         self.assertIn("**Finding id in report:** `SEC-007`", body)
         self.assertIn("**Location:** `skill/scripts/run_tools.py:42`", body)
+
+
+class TestCreateEmptyStdout(unittest.TestCase):
+    """GitHub secondary rate limits make `gh issue create` exit 0 with empty
+    stdout. create() must back off and retry, never crash on splitlines()[-1]."""
+
+    def test_empty_stdout_then_url_retries_and_returns(self):
+        calls = [_completed(0, ""), _completed(0, "https://gh/issues/900")]
+        with mock.patch.object(file_issues.subprocess, "run",
+                               side_effect=calls) as run, \
+             mock.patch.object(file_issues.time, "sleep") as slept:
+            url = file_issues.create("t", "b", ["self-scan"], dry=False)
+        self.assertEqual(url, "https://gh/issues/900")
+        self.assertEqual(run.call_count, 2)
+        slept.assert_called()  # backed off between the empty response and retry
+
+    def test_persistent_empty_stdout_returns_none_without_crashing(self):
+        with mock.patch.object(file_issues.subprocess, "run",
+                               return_value=_completed(0, "")), \
+             mock.patch.object(file_issues.time, "sleep"):
+            url = file_issues.create("t", "b", ["self-scan"], dry=False)
+        self.assertIsNone(url)  # gave up after retries; run continues, no exception
 
 
 if __name__ == "__main__":
