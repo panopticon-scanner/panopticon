@@ -2471,3 +2471,52 @@ class TestRenderSummaryResume(unittest.TestCase):
     def test_no_resume_line_when_resume_absent(self):
         r = syn.build_report([], self.G, "t", "high", self.TS)  # resume=None
         self.assertNotIn("Resume:", syn.render_summary(r))
+
+
+class TestIntegrity(unittest.TestCase):
+    G = [{"name": "g1", "files": ["a.py"]}]
+    TS = "2026-01-01T00:00:00Z"
+
+    def test_certify_integrity_not_ok_is_inconclusive(self):
+        r = syn.certify("A", [], "high", set(), [], integrity_ok=False)
+        self.assertEqual(r["gate"], "INCONCLUSIVE")
+        self.assertFalse(r["coverage_certified"])
+
+    def test_certify_integrity_ok_default_unchanged(self):
+        r = syn.certify("A", [], "high", set(), [])
+        self.assertEqual(r["gate"], "PASS")
+        self.assertTrue(r["coverage_certified"])
+
+    def test_reconcile_flags_unexpected_and_missing(self):
+        plan = [{"role": "panel_review", "out_file": ".panopticon/findings-g1-code-panel_review.json"},
+                {"role": "lens_sweep", "out_file": ".panopticon/findings-g1-code-lens_sweep-style.json"}]
+        ingested = [".panopticon/findings-g1-code-panel_review.json",
+                    ".panopticon/findings-EVIL-decoy.json"]
+        unexpected, missing = syn.reconcile_findings_files(plan, ingested)
+        self.assertEqual(unexpected, [".panopticon/findings-EVIL-decoy.json"])
+        self.assertEqual(missing, [".panopticon/findings-g1-code-lens_sweep-style.json"])
+
+    def test_reconcile_skipped_without_plan(self):
+        self.assertEqual(syn.reconcile_findings_files([], ["whatever.json"]), ([], []))
+        self.assertEqual(syn.reconcile_findings_files(None, ["x.json"]), ([], []))
+
+    def test_build_report_emits_integrity_and_inconclusive_on_unexpected(self):
+        integ = {"unexpected_findings_files": [".panopticon/findings-EVIL.json"],
+                 "missing_planned_files": [], "unenforced_acknowledged": False}
+        r = syn.build_report([], self.G, "t", "high", self.TS, integrity=integ)
+        self.assertEqual(r["meta"]["integrity"], integ)
+        self.assertEqual(r["summary"]["gate"], "INCONCLUSIVE")
+
+    def test_build_report_integrity_defaults_empty(self):
+        r = syn.build_report([], self.G, "t", "high", self.TS)
+        self.assertEqual(r["meta"]["integrity"],
+                         {"unexpected_findings_files": [], "missing_planned_files": [],
+                          "unenforced_acknowledged": False})
+        self.assertEqual(r["summary"]["gate"], "PASS")
+
+    def test_missing_alone_does_not_force_inconclusive(self):
+        integ = {"unexpected_findings_files": [],
+                 "missing_planned_files": [".panopticon/findings-g1-x.json"],
+                 "unenforced_acknowledged": False}
+        r = syn.build_report([], self.G, "t", "high", self.TS, integrity=integ)
+        self.assertEqual(r["summary"]["gate"], "PASS")

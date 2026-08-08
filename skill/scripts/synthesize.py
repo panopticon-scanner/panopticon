@@ -463,14 +463,17 @@ def gate_verdict(findings, fail_on):
 HIGH_VALUE_PANELS = {"security", "redteam", "architecture", "database"}
 
 
-def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_absent):
+def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_absent,
+            integrity_ok=True):
     """Coverage-aware certification. Gate keys on high-value-panel completeness
-    (+ requested-absent tools); grade is holistic (provisional on ANY gap).
-    Precedence FAIL > INCONCLUSIVE > PASS; OFF preserved. Tolerant: pure, never raises.
+    (+ requested-absent tools + artifact integrity); grade is holistic
+    (provisional on ANY gap). Precedence FAIL > INCONCLUSIVE > PASS; OFF
+    preserved. Tolerant: pure, never raises.
     """
     base_gate = gate_verdict(gate_eligible, fail_on)          # PASS / FAIL / OFF
     high_value_incomplete = set(panels_incomplete) & HIGH_VALUE_PANELS
-    gate_relevant_gap = bool(high_value_incomplete) or bool(tools_absent)
+    gate_relevant_gap = (bool(high_value_incomplete) or bool(tools_absent)
+                         or not integrity_ok)
     any_incomplete = bool(panels_incomplete)
 
     if base_gate == "PASS" and gate_relevant_gap:
@@ -584,6 +587,34 @@ def derive_tool_policy_mode(panopticon_dir=".panopticon"):
     return "advisory"
 
 
+def reconcile_findings_files(plan, ingested_paths):
+    """(#146) Reconcile the findings files synthesize ingested against the
+    dispatch plan's declared reviewer out_files. Returns (unexpected, missing)
+    as sorted lists of the ORIGINAL path strings. Skipped (empty, empty) when
+    no plan is present — an ordinary non-fan-out run, not tampering.
+    """
+    if not isinstance(plan, list) or not plan:
+        return [], []
+    planned = {os.path.abspath(e["out_file"]): e["out_file"] for e in plan
+               if isinstance(e, dict) and isinstance(e.get("out_file"), str)
+               and e.get("out_file")}
+    ingested = {os.path.abspath(p): p for p in ingested_paths or []}
+    unexpected = sorted(ingested[a] for a in ingested if a not in planned)
+    missing = sorted(planned[a] for a in planned if a not in ingested)
+    return unexpected, missing
+
+
+def read_unenforced_ack(path=os.path.join(".panopticon", "unenforced-ack.json")):
+    """True iff dispatch recorded an explicit --allow-unenforced acknowledgement.
+    Unreadable/malformed => False (tolerant)."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return False
+    return bool(isinstance(data, dict) and data.get("acknowledged"))
+
+
 def tools_ran_from_dispositions(dispositions):
     """Adapters that produced a parseable document (status ok or empty).
 
@@ -652,7 +683,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                  security_mode="standard", verdicts=None, gate_unverified=False,
                  max_verify=None, verdicts_supplied=False, tool_policy_mode=None,
                  tools_ran=None, tool_dispositions=None, fan_out=None,
-                 scout_requested=None, resume=None):
+                 scout_requested=None, resume=None, integrity=None):
     """Build a CodeReviewReport under the two-axis severity x evidence model.
 
     Severity is never mutated here. Verdicts (from evidence.load_verdicts) are
@@ -793,7 +824,12 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                    for p in sorted(panels_incomplete)},
         "tools": {t: "requested_absent" for t in tools_absent},
     }
-    cert = certify(overall, gate_eligible, fail_on, panels_incomplete, tools_absent)
+    integrity = integrity or {"unexpected_findings_files": [],
+                              "missing_planned_files": [],
+                              "unenforced_acknowledged": False}
+    integrity_ok = not integrity.get("unexpected_findings_files")
+    cert = certify(overall, gate_eligible, fail_on, panels_incomplete, tools_absent,
+                   integrity_ok=integrity_ok)
     return {
         "meta": {
             "target": target,
@@ -816,6 +852,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                 "divergence": divergence,
                 "resume": resume,
             },
+            "integrity": integrity,
         },
         "summary": {
             "overall_grade": cert["overall_grade"],
@@ -1181,6 +1218,10 @@ def main(argv=None):
         except (OSError, ValueError):  # tolerant by design
             pass
     resume = group_runner.resume_stats(_plan, _queue, args.verdicts_dir)
+    unexpected, missing = reconcile_findings_files(_plan, args.files)
+    integrity = {"unexpected_findings_files": unexpected,
+                 "missing_planned_files": missing,
+                 "unenforced_acknowledged": read_unenforced_ack()}
     scout_requested = set()
     for sp in glob.glob(os.path.join(".panopticon", "scout-*.json")):
         try:
@@ -1204,7 +1245,8 @@ def main(argv=None):
                           tool_dispositions=tool_dispositions,
                           fan_out=fan_out,
                           scout_requested=sorted(scout_requested),
-                          resume=resume)
+                          resume=resume,
+                          integrity=integrity)
     errors, warnings = validate_report(report)
     attach_schema_status(report, errors)
     for w in warnings:
