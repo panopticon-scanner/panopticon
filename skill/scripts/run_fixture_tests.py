@@ -72,12 +72,18 @@ def check_fixtures(tag: str, fixtures: list[dict]) -> tuple[list[str], list[str]
     paths = [f["path"] for f in baked]
     if not paths:
         return present, missing
-    cmd = ["docker", "run", "--rm", tag, "sh", "-c"]
-    test_script = "; ".join(
-        f'if [ -d "{p}" ]; then echo "PRESENT:{p}"; else echo "MISSING:{p}"; fi'
-        for p in paths
+    # Pass the paths as positional ARGUMENTS to sh, never interpolated into the
+    # script text (#664). The old f-string built the script by splicing each
+    # manifest path into `sh -c`, so a path like `"; rm -rf / #` executed as
+    # shell. Here the script is a fixed constant that reads its inputs from
+    # "$@", so a path is data — a shell metacharacter in it can do nothing.
+    # ($0 is set to "sh" so the paths start at $1 and "$@" covers them all.)
+    test_script = (
+        'for p in "$@"; do '
+        'if [ -d "$p" ]; then echo "PRESENT:$p"; else echo "MISSING:$p"; fi; '
+        'done'
     )
-    cmd.append(test_script)
+    cmd = ["docker", "run", "--rm", tag, "sh", "-c", test_script, "sh", *paths]
     result = subprocess.run(cmd, capture_output=True, text=True)
     present_paths = []
     missing_paths = set()
