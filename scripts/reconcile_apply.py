@@ -43,6 +43,13 @@ def ledger_key(record):
                             record.get("kind") or "")
 
 
+def legacy_ledger_key(record):
+    return "%s|%s|%s|%s" % (record.get("stored_fingerprint") or "",
+                            record.get("id") or "",
+                            record.get("location_file") or "",
+                            record.get("kind") or "")
+
+
 ISSUE_REPO_URL = "https://github.com/panopticon-scanner/panopticon/issues/%s"
 
 FP_RE = re.compile(r"\*\*Fingerprint:\*\* `([0-9a-f]+)`")
@@ -102,7 +109,13 @@ def save_recovered_ledger(linkage, path=LEDGER):
 
 
 def resolve_issue(record, ledger):
-    return ledger.get(ledger_key(record))
+    key = ledger_key(record)
+    if key in ledger:
+        return ledger[key]
+    legacy_key = legacy_ledger_key(record)
+    if legacy_key != key:
+        return ledger.get(legacy_key)
+    return None
 
 
 RECUR_COMMENT = ("**Run-3 reconciliation: re-affirmed.** This finding's fingerprint "

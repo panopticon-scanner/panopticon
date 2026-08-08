@@ -146,6 +146,14 @@ class TestPlanActions(unittest.TestCase):
         self.assertEqual(reconcile_apply.resolve_issue(record, ledger),
                          "https://github.com/o/r/issues/1")
 
+    def test_resolves_via_legacy_absolute_path_key(self):
+        abs_path = file_issues.repo_root() + "skill/scripts/run_tools.py"
+        ledger = {"old1|F-1|%s|finding" % abs_path: "https://github.com/o/r/issues/1"}
+        record = {"stored_fingerprint": "old1", "id": "F-1",
+                 "location_file": abs_path, "kind": "finding"}
+        self.assertEqual(reconcile_apply.resolve_issue(record, ledger),
+                         "https://github.com/o/r/issues/1")
+
     def test_unresolvable_record_returns_none(self):
         self.assertEqual(reconcile_apply.resolve_issue(
             {"stored_fingerprint": "nope", "id": "X", "location_file": "y.py",

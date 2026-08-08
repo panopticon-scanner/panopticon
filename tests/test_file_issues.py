@@ -75,6 +75,11 @@ class TestRepoRootPortability(unittest.TestCase):
         self.assertEqual(file_issues.scrub("see %s here" % abs_path),
                          "see skill/scripts/run_tools.py here")
 
+    def test_scrub_does_not_rewrite_sibling_prefixes(self):
+        sibling = file_issues.repo_root().rstrip("/") + "-docs/guide.md"
+        self.assertEqual(file_issues.scrub("see %s here" % sibling),
+                         "see %s here" % sibling)
+
     def test_repo_relative_passes_through_relative_and_foreign_paths(self):
         self.assertEqual(file_issues.repo_relative("skill/a.py"), "skill/a.py")
         self.assertEqual(file_issues.repo_relative("/elsewhere/b.py"),

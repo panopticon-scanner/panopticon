@@ -12,6 +12,7 @@ Usage:  python3 .panopticon/file_issues.py [--dry-run] [--limit N]
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -172,7 +173,9 @@ def repo_relative(path):
 def scrub(text):
     """Reviewers cite absolute local paths; issues are public and permanent."""
     root = repo_root()
-    return str(text).replace(root, "").replace(root.rstrip("/"), "the repo root")
+    scrubbed = str(text).replace(root, "")
+    return re.sub(r"(?<![\w/-])%s(?![\w/-])" % re.escape(root.rstrip("/")),
+                  "the repo root", scrubbed)
 
 
 LEDGER = ".panopticon/filed-issues.json"
