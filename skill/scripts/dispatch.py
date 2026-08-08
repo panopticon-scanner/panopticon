@@ -84,6 +84,12 @@ ROLE_FILES = {"scout": "scout.md", "panel_review": "panel-review.md",
 CLAUDE_AGENTS_DIR = os.path.join(os.path.expanduser("~"), ".claude", "agents")
 KIMI_AGENTS_DIR = os.path.join(os.path.expanduser("~"), ".kimi-code", "agents")
 
+# Roles whose findings gate merge/release decisions (#275). If either lacks a
+# registered enforcement shell, its tool policy is prompt-advisory only --
+# a general-purpose agent reading untrusted repo content would have full
+# Bash/Edit/Write. main() refuses to emit such a plan by default.
+REVIEWER_ROLES = {"panel_review", "lens_sweep"}
+
 # Emission is deterministic policy — ambient PANOPTICON_MODEL_* overrides apply
 # to per-run dispatch plans, never to persisted registrations.
 EMIT_MODEL_POLICY = {"claude": {"scout": "haiku", "lens_sweep": "haiku",
@@ -499,6 +505,10 @@ def main(argv=None):
     ap.add_argument("--emit-host-agents", metavar="HOST", choices=["claude", "kimi"], default=None)
     ap.add_argument("--agents-dir", default=None,
                     help="Directory containing registered agent .md files")
+    ap.add_argument("--allow-unenforced", action="store_true",
+                    help="Emit the plan even when reviewer roles lack a registered "
+                         "enforcement shell (tool policy becomes prompt-advisory); "
+                         "records the acceptance in .panopticon/unenforced-ack.json")
     ap.add_argument("--model-lens-sweep", default=None)
     ap.add_argument("--model-panel-review", default=None)
     ap.add_argument("--model-advisor", default=None)
@@ -578,6 +588,26 @@ def main(argv=None):
     except ValueError as e:
         print("dispatch: %s" % e, file=sys.stderr)
         return 1
+
+    unenforced = sorted({e["role"] for e in plan
+                         if e.get("role") in REVIEWER_ROLES and not e.get("enforced")})
+    if unenforced:
+        if not args.allow_unenforced:
+            print("dispatch: refusing to emit plan — unenforced reviewer role(s): %s.\n"
+                  "Tool policy would be prompt-advisory only (full Bash/Edit/Write on a "
+                  "general-purpose agent reading untrusted repo content).\n"
+                  "Register enforcement shells first:  python3 skill/scripts/dispatch.py "
+                  "--emit-host-agents <host>\n"
+                  "Or accept the risk explicitly with --allow-unenforced."
+                  % ", ".join(unenforced), file=sys.stderr)
+            return 1
+        os.makedirs(".panopticon", exist_ok=True)
+        with open(os.path.join(".panopticon", "unenforced-ack.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump({"acknowledged": True, "roles": unenforced}, fh, indent=2)
+        print("dispatch: WARNING — emitting plan with unenforced reviewer role(s): %s "
+              "(acknowledged via --allow-unenforced)" % ", ".join(unenforced),
+              file=sys.stderr)
 
     if args.out:
         out_dir = os.path.dirname(os.path.abspath(args.out))

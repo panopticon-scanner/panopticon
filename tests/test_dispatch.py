@@ -2,6 +2,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -115,7 +116,12 @@ class TestDispatchPlan(unittest.TestCase):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as fh:
             out_path = fh.name
         try:
-            rc = dispatch.main([profile_path, "--host", "kimi", "--out", out_path])
+            # --allow-unenforced: this test's purpose is main()'s plan-write
+            # path, not enforcement gating (#275, TestUnenforcedGate covers
+            # that) -- host "kimi" has no registered shells here, so the gate
+            # would otherwise refuse to emit and rc would be 1.
+            rc = dispatch.main([profile_path, "--host", "kimi", "--out", out_path,
+                                "--allow-unenforced"])
             self.assertEqual(rc, 0)
             with open(out_path) as fh:
                 plan = json.load(fh)
@@ -676,6 +682,59 @@ class TestEnforcedPlanEntries(unittest.TestCase):
         plan = dispatch.build_plan(self._profile(), host="generic")
         for e in plan:
             self.assertFalse(e["enforced"])
+
+
+class TestUnenforcedGate(unittest.TestCase):
+    PROFILE = {"group": "g", "files": ["a.py"], "depth": "standard", "panels": ["code"]}
+
+    def _run(self, extra_args, agents_dir):
+        # empty agents_dir => unenforced; returns (rc, plan_path, ack_path, cwd used)
+        # NOTE: uses mkdtemp (not a `with TemporaryDirectory()` around the
+        # return) because returning from inside that context manager tears
+        # the directory down before the caller can assert on the returned
+        # paths -- addCleanup keeps it alive until the test finishes.
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        prof = os.path.join(d, "profile.json")
+        with open(prof, "w") as fh:
+            json.dump(self.PROFILE, fh)
+        out = os.path.join(d, "plan.json")
+        cwd = os.getcwd()
+        try:
+            os.chdir(d)
+            rc = dispatch.main([prof, "--host", "claude",
+                                "--agents-dir", agents_dir, "--out", out] + extra_args)
+        finally:
+            os.chdir(cwd)
+        return rc, out, os.path.join(d, ".panopticon", "unenforced-ack.json")
+
+    def test_unenforced_reviewer_hard_fails_without_flag(self):
+        with tempfile.TemporaryDirectory() as empty:
+            rc, out, ack = self._run([], empty)
+        self.assertNotEqual(rc, 0)
+        self.assertFalse(os.path.exists(out))       # no plan written
+        self.assertFalse(os.path.exists(ack))
+
+    def test_allow_unenforced_writes_plan_and_ack(self):
+        with tempfile.TemporaryDirectory() as empty:
+            rc, out, ack = self._run(["--allow-unenforced"], empty)
+        self.assertEqual(rc, 0)
+        self.assertTrue(os.path.exists(out))
+        with open(ack) as fh:
+            data = json.load(fh)
+        self.assertTrue(data["acknowledged"])
+        self.assertIn("panel_review", data["roles"])
+
+    def test_enforced_plan_emits_normally_no_ack(self):
+        with tempfile.TemporaryDirectory() as reg:
+            # register both reviewer shells so the plan is fully enforced
+            for role_file in ("panel-review.md", "lens-sweep.md"):
+                with open(os.path.join(reg, "panopticon-" + role_file), "w") as fh:
+                    fh.write("---\nname: panopticon-%s\n---\nbody\n" % role_file[:-3])
+            rc, out, ack = self._run([], reg)
+        self.assertEqual(rc, 0)
+        self.assertTrue(os.path.exists(out))
+        self.assertFalse(os.path.exists(ack))       # enforced => no ack marker
 
 
 class TestEmitHostAgents(unittest.TestCase):
