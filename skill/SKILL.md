@@ -44,7 +44,18 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
    `.panopticon/` artifact paths, and synthesize's plan/scout globs all resolve
    against the current working directory.
 2. **Discovery** — run `python3 skill/scripts/orchestrator.py` to produce `groups.json`.
-   Standard-mode `--repo-scan` prunes test-fixture corpus roots
+   Git targets are discovered via `git ls-files` (tracked + untracked
+   non-ignored), so the TARGET's own `.gitignore` defines the reviewable
+   surface — runtime data, secrets (`.env`), and build artifacts never reach
+   reviewers; non-git targets fall back to a pruned walk. The method used is
+   recorded at `groups.json` `discovery.method`. When
+   `.panopticon/groups.yml` defines groups with `match:` patterns
+   (gitignore-flavored globs, `!` negation, last-match-wins), `--repo-scan`
+   assigns files to those STABLE group names (first matching group wins;
+   oversize groups split as `<name>_<i>`); files matching no group fall back
+   to `._N` chunks and are disclosed in `ungrouped_files` + stderr — extend
+   the catalog to cover them.
+   Standard-mode `--repo-scan` also prunes test-fixture corpus roots
    (`tests|test|spec`/`fixtures`, `testdata`, `__fixtures__`) — planted
    vulnerabilities must not gate a standard scan (#434); the pruning is
    disclosed on stderr and in `groups.json` under `excluded.fixture_dirs`.
