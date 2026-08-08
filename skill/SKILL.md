@@ -44,6 +44,14 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
    `.panopticon/` artifact paths, and synthesize's plan/scout globs all resolve
    against the current working directory.
 2. **Discovery** — run `python3 skill/scripts/orchestrator.py` to produce `groups.json`.
+   Standard-mode `--repo-scan` prunes test-fixture corpus roots
+   (`tests|test|spec`/`fixtures`, `testdata`, `__fixtures__`) — planted
+   vulnerabilities must not gate a standard scan (#434); the pruning is
+   disclosed on stderr and in `groups.json` under `excluded.fixture_dirs`.
+   `--security redteam` includes them. The deterministic tool scan (step 4)
+   still sweeps the whole target, so pair this with `--tools-exclude`
+   (e.g. `'tests/fixtures/*'`) on BOTH synthesize passes when the target
+   carries such corpora, or tool findings on fixtures reappear on that path.
 3. **Scout** — dispatch the `scout` role (`skill/agents/scout.md`) per group — its template has no placeholders; dispatch its body plus tool-policy line as the prompt — via `subagent_type: panopticon-scout` when that registered shell exists (fresh session after registration), else a general-purpose agent; the scout RETURNS the ScopeProfile JSON; the orchestrator writes it to `.panopticon/scout-{group}.json`.
    Append the group's name, its file list from `groups.json`, and the `security_mode` to the prompt body — the scout template itself carries no assignment.
 4. **Tool scan** — deterministic, not discretionary, total rule: RUN
