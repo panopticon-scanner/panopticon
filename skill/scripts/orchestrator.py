@@ -39,6 +39,16 @@ EXCLUDE_DIRS = frozenset({
 # Directory basename GLOBS pruned from discovery (e.g. "<pkg>.egg-info").
 EXCLUDE_DIR_GLOBS = ("*.egg-info",)
 
+# Test-fixture corpus markers (#434). Intentionally-vulnerable fixture apps
+# under these roots dominate standard self-scans when discovery hands them to
+# review agents (run-3: 67 findings incl. 11 CRITICAL, all planted noise) —
+# the same rationale as ingest_tools' F-CAL-2 exclude_globs, extended to the
+# agentic path. Pruned only in standard mode; redteam scans include them (a
+# red team wants the whole attack surface). A dir merely named "fixtures"
+# outside a test parent is real code and is NOT a marker.
+FIXTURE_DIR_BASENAMES = frozenset({"testdata", "__fixtures__"})
+FIXTURE_PARENT_DIRS = frozenset({"tests", "test", "spec"})
+
 # Dot-dir subtrees that ARE reviewable and must survive the blanket dotdir skip.
 # Targeted on purpose: .github/workflows is a top-risk CI/CD surface. Do NOT
 # widen this to all dotdirs — that reintroduces .git / .venv noise.
@@ -386,7 +396,16 @@ def _on_allowed_dotdir_path(rel):
     )
 
 
-def discover_repo_files(repo):
+def _is_fixture_dir(rel):
+    """True if a repo-relative dir path is a test-fixture corpus root (#434)."""
+    parts = rel.split("/")
+    if parts[-1] in FIXTURE_DIR_BASENAMES:
+        return True
+    return (parts[-1] == "fixtures" and len(parts) >= 2
+            and parts[-2] in FIXTURE_PARENT_DIRS)
+
+
+def discover_repo_files(repo, include_fixtures=False, pruned_fixtures=None):
     """Walk repo for reviewable files, returning sorted repo-relative paths.
 
     Prunes EXCLUDE_DIRS / EXCLUDE_DIR_GLOBS (noise: caches, deps, VCS, scratch)
@@ -394,6 +413,11 @@ def discover_repo_files(repo):
     (e.g. .github/workflows) which are pulled back in. Replaces the old
     glob('**/*') scan, which skipped every dotdir (hiding .github/workflows)
     and descended into venv/tmp/node_modules/etc.
+
+    Unless ``include_fixtures`` (redteam), test-fixture corpus roots
+    (``_is_fixture_dir``) are pruned too; each pruned root is appended to
+    ``pruned_fixtures`` when a list is supplied so the caller can disclose
+    the exclusion rather than let it pass silently.
     """
     out = []
     for dirpath, dirnames, filenames in os.walk(repo):
@@ -405,6 +429,10 @@ def discover_repo_files(repo):
                 continue
             child = (rel_dir + "/" + dn) if rel_dir else dn
             if dn.startswith(".") and not _on_allowed_dotdir_path(child):
+                continue
+            if not include_fixtures and _is_fixture_dir(child):
+                if pruned_fixtures is not None:
+                    pruned_fixtures.append(child)
                 continue
             kept.append(dn)
         dirnames[:] = kept
@@ -561,13 +589,23 @@ def main(argv=None):
 
     else:
         # --repo-scan
-        allf = discover_repo_files(repo)
+        pruned_fixtures = []
+        allf = discover_repo_files(repo,
+                                   include_fixtures=(args.security == "redteam"),
+                                   pruned_fixtures=pruned_fixtures)
         impl = [f for f in allf if not is_test_file(f)]
         tests = [f for f in allf if is_test_file(f)]
         # Group impl AND real test sources so tests aren't silently dropped (only
         # their __pycache__ artifacts used to reach a group); counts stay impl-only.
         result = build_result(repo, "repo", ".", None, impl, tests, args.max_per_group,
                               group_files=impl + tests, security_mode=args.security)
+        if pruned_fixtures:
+            result["excluded"] = {"fixture_dirs": sorted(pruned_fixtures)}
+            print("fixture exclusion (%s mode): pruned %d fixture corpus dir(s): %s "
+                  "— intentionally-vulnerable test corpora do not gate a standard "
+                  "scan; use --security redteam to include them"
+                  % (args.security, len(pruned_fixtures),
+                     ", ".join(sorted(pruned_fixtures))), file=sys.stderr)
 
     if args.out:
         os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
