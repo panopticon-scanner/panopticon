@@ -66,7 +66,14 @@ summary + JSON artifact) with standards citations and CI gating.
   misleading `0%`). `--gate-unverified` is the escape hatch for pipelines
   that want every non-rejected finding — verified or not — to gate,
   restoring the old all-claims-gate behavior. Severity itself is never
-  mutated by any of this.
+  mutated by any of this. **The CI security workflow
+  (`.github/workflows/security.yml`) deliberately adopts that
+  `--gate-unverified` posture**: it runs no advisor phase, so every tool
+  finding is unverified `tool_reported` and a confirmed-only gate would gate
+  on nothing. CI therefore fails on any HIGH/CRITICAL tool finding on raw
+  severity as a conservative pre-merge floor (fixture noise excluded via
+  F-CAL-2) — a documented strict policy (#513), NOT the authority for the
+  reported grade, which still comes from the evidence/advisor pipeline.
 - **`meta.coverage` is the single home for what a run actually observed**:
   `adapters` (per-file disposition — `ok`/`empty`/`failed`, a findings count,
   and a `reason` when failed), `tools_ran`, `build_executing_tools`,

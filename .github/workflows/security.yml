@@ -50,7 +50,20 @@ jobs:
           mkdir -p ${{ env.TOOLS_OUT }}
           python skill/scripts/run_tools.py --target . --out ${{ env.TOOLS_OUT }} --deps
 
-      - name: Ingest findings and gate on HIGH/CRITICAL
+      # INTENTIONAL POLICY, not an oversight (#513): this CI gate fails on any
+      # HIGH/CRITICAL *tool* finding on raw severity, WITHOUT the two-axis
+      # evidence gate the rest of the system uses. That gate promotes a finding
+      # only on an advisor CONFIRMED verdict (evidence.status tool_confirmed /
+      # advisor_confirmed; see skill/scripts/evidence.py GATE_ELIGIBLE_DEFAULT
+      # and DEVELOPMENT.md). CI runs NO advisor phase — every tool finding here
+      # is unverified `tool_reported`, so confirmed-only gating would gate on
+      # nothing and the CI security gate would never fire. So CI deliberately
+      # adopts the strict `--gate-unverified` posture: unverified tool findings
+      # block a merge, accepting the false-positive risk (mitigated by the
+      # F-CAL-2 fixture exclusion below) in exchange for a hard pre-merge floor.
+      # The advisor/evidence pipeline is the authority for the *reported* grade;
+      # this is a conservative merge guard, not that grade.
+      - name: Gate on HIGH/CRITICAL tool findings (unverified-strict policy)
         run: |
           python - <<'PY'
           import os
@@ -62,7 +75,9 @@ jobs:
           findings = it.ingest_dir(os.environ['TOOLS_OUT'], 'ci',
                                    exclude_globs=['tests/fixtures/*'])
           high = [f for f in findings if f.get('severity') in ('HIGH', 'CRITICAL')]
-          print(f"Ingested {len(findings)} non-fixture tool findings; {len(high)} HIGH/CRITICAL")
+          print(f"Ingested {len(findings)} non-fixture tool findings; "
+                f"{len(high)} HIGH/CRITICAL (gating unverified by CI policy — "
+                f"no advisor phase in CI; see step comment / #513)")
           if high:
               for f in high[:20]:
                   loc = f.get('location', {})
