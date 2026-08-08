@@ -67,7 +67,8 @@ def parse(path):
         out.append(cur)
     for f in out:
         # Drop the label line itself and any leading/trailing blanks.
-        body = [ln for ln in f["body"] if not LABEL_RE.fullmatch(ln.strip().replace(", ", ""))]
+        body = [ln for ln in f["body"]
+                if re.sub(r"`[^`]+`", "", ln).strip().replace(",", "").strip()]
         while body and not body[0].strip():
             body.pop(0)
         while body and not body[-1].strip():

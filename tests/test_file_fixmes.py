@@ -36,10 +36,11 @@ Commentary that must not be filed.
 
 class TestParse(unittest.TestCase):
     def _doc(self):
+        import shutil
         d = tempfile.mkdtemp()
-        self.addCleanup(lambda: os.path.exists(path) and os.remove(path))
+        self.addCleanup(shutil.rmtree, d)
         path = os.path.join(d, "fixmes.md")
-        with open(path, "w") as fh:
+        with open(path, "w", encoding="utf-8") as fh:
             fh.write(FIXME_DOC)
         return path
 
@@ -48,7 +49,8 @@ class TestParse(unittest.TestCase):
         self.assertEqual([f["id"] for f in fixmes], ["FIXME-1", "FIXME-2"])
         self.assertEqual(fixmes[0]["title"], "Scout omits a schema field")
         self.assertEqual(fixmes[0]["labels"], ["bug", "panel:code"])
-        # label line dropped; body content retained
+        # label line dropped from body; body content retained
+        self.assertNotIn("`bug`", fixmes[0]["body"])
         self.assertIn("missing `depth`", fixmes[0]["body"])
         self.assertNotIn("Already fixed", " ".join(f["body"] for f in fixmes))
 
