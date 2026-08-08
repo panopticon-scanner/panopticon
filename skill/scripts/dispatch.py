@@ -492,7 +492,7 @@ def emit_kimi_swarm(plan, agents_dir=None, verify_registration=False):
     return {"batches": batches}
 
 
-def _gate_unenforced(plan, allow):
+def _gate_unenforced(plan, allow, reg_dir=None):
     """Reviewer roles in `plan` that lack a registered enforcement shell.
 
     Returns (ok, unenforced): `unenforced` is the sorted set of REVIEWER_ROLES
@@ -502,13 +502,28 @@ def _gate_unenforced(plan, allow):
     `plan` gates on nothing here -- the caller's own JSON/shape validation
     (e.g. emit_kimi_swarm's ValueError) is responsible for that failure mode.
 
+    When `reg_dir` is given, the stored `enforced` flag is re-verified against
+    live registration (#649): a plan built while a reviewer was registered
+    carries `enforced: true`, but registration can be removed before the plan
+    is turned into a swarm manifest in a later invocation. Such an entry is
+    folded into `unenforced` too, so the gate refuses / warns / acks on the
+    ACTUAL emit-time posture rather than a stale snapshot -- matching the live
+    downgrade emit_kimi_swarm(verify_registration=True) performs anyway.
+
     Shared by the plan-emit path and --emit-kimi-swarm (#275/I3) so the two
     cannot drift apart the way disclosure and enforcement did before this.
     """
     entries = plan if isinstance(plan, list) else []
-    unenforced = sorted({e["role"] for e in entries
-                         if isinstance(e, dict) and e.get("role") in REVIEWER_ROLES
-                         and not e.get("enforced")})
+    unenforced = set()
+    for e in entries:
+        if not (isinstance(e, dict) and e.get("role") in REVIEWER_ROLES):
+            continue
+        if not e.get("enforced"):
+            unenforced.add(e["role"])
+        elif reg_dir is not None and not _is_registered(
+                reg_dir, ROLE_FILES.get(e["role"], "")):
+            unenforced.add(e["role"])
+    unenforced = sorted(unenforced)
     return (not unenforced or allow), unenforced
 
 
@@ -604,7 +619,11 @@ def main(argv=None):
         except (OSError, ValueError) as e:
             print("dispatch: cannot read plan %s: %s" % (args.emit_kimi_swarm, e), file=sys.stderr)
             return 1
-        ok, unenforced = _gate_unenforced(plan, args.allow_unenforced)
+        # Gate against LIVE registration, not the plan's stored snapshot (#649):
+        # a plan built with enforced:true whose shells were unregistered since
+        # must refuse / warn+ack here, not silently downgrade inside emit.
+        swarm_reg_dir = _registration_dir("kimi", args.agents_dir)
+        ok, unenforced = _gate_unenforced(plan, args.allow_unenforced, swarm_reg_dir)
         if unenforced:
             if not ok:
                 print(_unenforced_refusal_message(unenforced, context="swarm"), file=sys.stderr)
