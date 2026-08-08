@@ -116,8 +116,12 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
    against `.panopticon/tree-baseline.txt`; any NEW modification outside `.panopticon/`
    means a reviewer had side effects — treat the run as compromised: discard the
    findings files, restore or flag the modified paths to the user (never silently
-   delete their content), report the violation, and re-run. Then check gate, print
-   summary, write JSON.
+   delete their content), report the violation, and re-run.
+   The clean-tree check cannot see inside `.panopticon/`; synthesize covers that
+   blind spot by reconciling the ingested findings files against the plan's
+   declared `out_file` set — an undeclared file appears in
+   `meta.integrity.unexpected_findings_files` and forces `INCONCLUSIVE`.
+   Then check gate, print summary, write JSON.
 
 ## Host dispatch
 
@@ -195,7 +199,12 @@ its own mechanism:
 Tool policy is host-ENFORCED for entries with `enforced: true` (registered
 shells) and prompt-advisory otherwise. The report's `meta.coverage.tool_policy_mode`
 records which posture a run actually had. When any entry is unenforced, tell
-the user in one line before fan-out. `tool_policy_mode` is derived from the
+the user in one line before fan-out.
+`dispatch.py` refuses to emit a plan containing unenforced reviewer entries;
+register shells via `--emit-host-agents`, or pass `--allow-unenforced` to accept
+prompt-advisory tool policy explicitly (recorded in
+`.panopticon/unenforced-ack.json` and surfaced at `meta.integrity`).
+`tool_policy_mode` is derived from the
 fan-out plan entries (panel_review/lens_sweep); scout and advisor shell
 dispatch is instructed in steps 3 and 8 but not recorded in the mode. The
 write-guard is orthogonal to this axis: it governs WHERE a reviewer's Write

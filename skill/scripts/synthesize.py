@@ -971,6 +971,11 @@ def render_summary(report):
             total_pending)
         insert_idx = 4 if not s.get("coverage_certified", True) else 3
         lines.insert(insert_idx, resume_line)
+    integ = report["meta"].get("integrity") or {}
+    bad = integ.get("unexpected_findings_files") or []
+    if bad:
+        lines.insert(3, "**Integrity:** UNEXPECTED FILES — %s (not declared by the "
+                        "dispatch plan; run not certified)" % ", ".join(bad))
     for g in report["groups"]:
         pg = g["panel_grades"]
         grades = " / ".join("%s %s" % (p, pg[p]) for p in PANEL_ORDER)

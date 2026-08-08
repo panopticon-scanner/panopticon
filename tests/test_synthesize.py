@@ -2520,3 +2520,20 @@ class TestIntegrity(unittest.TestCase):
                  "unenforced_acknowledged": False}
         r = syn.build_report([], self.G, "t", "high", self.TS, integrity=integ)
         self.assertEqual(r["summary"]["gate"], "PASS")
+
+
+class TestRenderSummaryIntegrity(unittest.TestCase):
+    G = [{"name": "g1", "files": ["a.py"]}]
+    TS = "2026-01-01T00:00:00Z"
+
+    def test_integrity_line_on_unexpected(self):
+        integ = {"unexpected_findings_files": [".panopticon/findings-EVIL.json"],
+                 "missing_planned_files": [], "unenforced_acknowledged": False}
+        text = syn.render_summary(syn.build_report([], self.G, "t", "high", self.TS,
+                                                   integrity=integ))
+        self.assertIn("Integrity:", text)
+        self.assertIn("findings-EVIL.json", text)
+
+    def test_no_integrity_line_when_clean(self):
+        self.assertNotIn("Integrity:",
+                         syn.render_summary(syn.build_report([], self.G, "t", "high", self.TS)))
