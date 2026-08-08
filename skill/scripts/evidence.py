@@ -12,6 +12,11 @@ import os
 import re
 import sys
 
+try:
+    from scripts._version import __version__
+except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
+    from _version import __version__
+
 SEV_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
 EVIDENCE_STATUSES = ("tool_reported", "tool_confirmed", "advisor_confirmed",
                      "corroborated", "needs_more_info", "unverified",
@@ -223,7 +228,7 @@ def build_verify_queue(findings, max_verify=None):
 def write_verify_queue(entries, cut, path):
     """Serialize the queue for the orchestrating agent (pass 1 artifact)."""
     payload = {
-        "version": "4.2.0",
+        "version": __version__,
         "cut_by_max_verify": cut,
         "entries": [{"queue_id": e["queue_id"], "priority": e["priority"],
                      "finding": {k: v for k, v in e["finding"].items()

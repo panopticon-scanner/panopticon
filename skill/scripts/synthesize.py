@@ -11,6 +11,10 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import scripts.citations as citations
+try:
+    from scripts._version import __version__
+except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
+    from _version import __version__
 from scripts.citations import load_cwe_catalog
 import scripts.evidence as evidence_mod
 import scripts.group_runner as group_runner
@@ -837,7 +841,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
             "target": target,
             "review_type": review_type,
             "timestamp": timestamp,
-            "version": "4.2.0",
+            "version": __version__,
             "security_mode": security_mode,
             "models_used": _collect_models_used(findings),
             "coverage": {
