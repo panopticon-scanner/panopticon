@@ -1,11 +1,29 @@
 """PreToolUse write-guard hook: reviewers may write only the fan-out findings
 files declared in the dispatch plan. Any other Write/Edit is denied. This is the
 harness-enforced replacement for the read-only-reviewer convention (#436).
+
+SCOPE, STATED PLAINLY (#680): this guard backstops the file-mutation TOOLS in
+``_WRITE_TOOLS`` only. It does NOT — and structurally cannot — cover Bash. The
+hook is registered session-wide, so it cannot distinguish the orchestrator's
+own legitimate shell use (git, python, progress checks while the guard is
+installed) from a reviewer subagent's; denying Bash wholesale would break the
+pipeline that installs it. The real control against a shell-capable reviewer is
+an ENFORCED shell (a registered ``panopticon-*`` agent whose tool policy omits
+Bash). ``dispatch.py`` refuses to emit an unenforced reviewer plan by default
+for exactly this reason; ``--allow-unenforced`` accepts the residual risk
+explicitly and records that this guard does not cover Bash-based writes in that
+mode. The matcher and ``_WRITE_TOOLS`` are derived from one source below so
+they can never silently drift apart from each other.
 """
 import json
 import os
 import sys
 
+# The write-capable tools this guard adjudicates. The PreToolUse matcher is
+# DERIVED from this set (see _MATCHER) so the two can never drift: adding a
+# write tool here automatically widens the matcher, and test_write_guard_hook
+# asserts they stay in lockstep. Bash is deliberately absent — see the module
+# docstring; it is out of scope by construction, not by omission.
 _WRITE_TOOLS = {"Write", "Edit", "NotebookEdit"}
 
 
@@ -60,7 +78,10 @@ def main():
 
 
 _HOOK_CMD = "python3 skill/scripts/write_guard_hook.py"
-_HOOK_ENTRY = {"matcher": "Write|Edit|NotebookEdit",
+# Derived from _WRITE_TOOLS so the registered matcher and the adjudicated set
+# cannot silently diverge (#680). Sorted for a stable, deterministic string.
+_MATCHER = "|".join(sorted(_WRITE_TOOLS))
+_HOOK_ENTRY = {"matcher": _MATCHER,
                "hooks": [{"type": "command", "command": _HOOK_CMD}]}
 
 
