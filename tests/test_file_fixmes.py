@@ -5,6 +5,7 @@ hardcoded, so filing a later run's FIXMEs required editing the script. They are
 now flags; defaults preserve run-2 behavior. Also pins the section parser.
 """
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -36,7 +37,6 @@ Commentary that must not be filed.
 
 class TestParse(unittest.TestCase):
     def _doc(self):
-        import shutil
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d)
         path = os.path.join(d, "fixmes.md")

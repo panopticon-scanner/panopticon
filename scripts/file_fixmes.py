@@ -66,9 +66,14 @@ def parse(path):
     if cur:
         out.append(cur)
     for f in out:
-        # Drop the label line itself and any leading/trailing blanks.
-        body = [ln for ln in f["body"]
-                if re.sub(r"`[^`]+`", "", ln).strip().replace(",", "").strip()]
+        # Drop the label line: the first non-blank body line that consists
+        # entirely of backtick-quoted tokens separated by ", ".
+        first_nonblank = next((i for i, ln in enumerate(f["body"]) if ln.strip()), None)
+        if first_nonblank is not None:
+            candidate = f["body"][first_nonblank]
+            if not re.sub(r"`[^`]+`", "", candidate).strip().replace(",", "").strip():
+                f["body"].pop(first_nonblank)
+        body = f["body"]
         while body and not body[0].strip():
             body.pop(0)
         while body and not body[-1].strip():
