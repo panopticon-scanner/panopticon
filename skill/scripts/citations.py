@@ -9,6 +9,11 @@ import sys
 import urllib.parse
 import urllib.request
 
+try:
+    from scripts._version import __version__
+except ImportError:  # imported flat, with skill/scripts itself on sys.path
+    from _version import __version__
+
 CVE_RE = re.compile(r"^CVE-\d{4}-\d{4,}$", re.IGNORECASE)
 CWE_RE = re.compile(r"^CWE-\d+$", re.IGNORECASE)
 SSVC_MODEL = "deployer-reduced"
@@ -150,7 +155,7 @@ def epss_lookup(cves, cache_path, opener=None):
             continue
         try:
             url = "https://api.first.org/data/v1/epss?cve=" + urllib.parse.quote(cve)
-            req = urllib.request.Request(url, headers={"User-Agent": "panopticon/3.0.0"})
+            req = urllib.request.Request(url, headers={"User-Agent": "panopticon/%s" % __version__})
             with opener(req, timeout=8) as resp:
                 payload = json.loads(resp.read(1000000))
             rows = payload.get("data") or []
