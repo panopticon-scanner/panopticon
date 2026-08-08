@@ -27,6 +27,28 @@ class TestDecide(unittest.TestCase):
         ok, _ = wg.decide("Read", "/etc/passwd", self.allow)
         self.assertTrue(ok)
 
+    def test_bash_is_not_adjudicated(self):
+        # Documented scope (#680): the guard covers only _WRITE_TOOLS; Bash is
+        # out of scope by construction (session-wide hook can't distinguish the
+        # orchestrator's own shell use). This test pins the STATED behavior so
+        # a future reader doesn't mistake the allow for a covered case.
+        ok, reason = wg.decide("Bash", "skill/scripts/synthesize.py", self.allow)
+        self.assertTrue(ok)
+        self.assertEqual(reason, "")
+
+    def test_symlink_at_the_target_itself_is_refused(self):
+        # #481: a symlink sitting AT an allowlisted path string authorizes by
+        # string match unless refused; decide() must reject the link outright.
+        with tempfile.TemporaryDirectory() as d:
+            real = os.path.join(d, "real_elsewhere.json")
+            open(real, "w").close()
+            link = os.path.join(d, "findings.json")
+            os.symlink(real, link)
+            # Even if the LINK path is on the allowlist, the write is refused.
+            ok, reason = wg.decide("Write", link, {os.path.realpath(link)})
+            self.assertFalse(ok)
+            self.assertIn("symlink", reason.lower())
+
     def test_symlinked_parent_dir_is_not_authorized(self):
         # A write whose PARENT directory is a symlink must not pass by string
         # match: realpath(target) escapes the allowlisted location even though
@@ -189,6 +211,16 @@ class TestInstallUninstall(unittest.TestCase):
             wg.install(plan, settings, al)
             saved = json.load(open(settings))
             self.assertEqual(len(saved["hooks"]["PreToolUse"]), 1)
+
+    def test_matcher_and_write_tools_cannot_drift(self):
+        # #680: the registered PreToolUse matcher must name EXACTLY the tools
+        # decide() adjudicates — no more (a matcher tool decide() waves
+        # through) and no less (a _WRITE_TOOLS entry the hook never fires for).
+        matcher_tools = set(wg._HOOK_ENTRY["matcher"].split("|"))
+        self.assertEqual(matcher_tools, wg._WRITE_TOOLS)
+        # Bash must NOT be in either — the gap is closed by enforced shells,
+        # not by pretending the session-wide guard can adjudicate the shell.
+        self.assertNotIn("Bash", wg._WRITE_TOOLS)
 
     def test_install_uninstall_preserve_a_coexisting_hook(self):
         # An unrelated PreToolUse hook must survive both install and uninstall.
