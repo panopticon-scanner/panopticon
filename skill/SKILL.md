@@ -39,7 +39,11 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
 
 ## Pipeline
 1. `TodoList`: discovery → scout → tools → panels → lens sub-reviews → synthesis.
-2. **Discovery** — run `python3 scripts/orchestrator.py` to produce `groups.json`.
+   All commands below are written repo-root-relative (`skill/scripts/...`): run
+   the entire pipeline from the TARGET REPO ROOT — the write-guard, the
+   `.panopticon/` artifact paths, and synthesize's plan/scout globs all resolve
+   against the current working directory.
+2. **Discovery** — run `python3 skill/scripts/orchestrator.py` to produce `groups.json`.
 3. **Scout** — dispatch the `scout` role (`agents/scout.md`) per group — its template has no placeholders; dispatch its body plus tool-policy line as the prompt — via `subagent_type: panopticon-scout` when that registered shell exists (fresh session after registration), else a general-purpose agent; the scout RETURNS the ScopeProfile JSON; the orchestrator writes it to `.panopticon/scout-{group}.json`.
    Append the group's name, its file list from `groups.json`, and the `security_mode` to the prompt body — the scout template itself carries no assignment.
 4. **Tool scan** — optional Docker container; SARIF ingested by `skill/scripts/ingest_tools.py`.
@@ -96,9 +100,9 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
      `install` is idempotent, or clear it with `wg.uninstall()`. The hook's
      settings file is git-ignored so a leftover never trips the clean-tree check.
    See Host dispatch below for the full per-host mechanism.
-7. **Synthesize (pass 1)** — `python3 scripts/synthesize.py --emit-verify-queue [flags] .panopticon/findings-*.json`.
+7. **Synthesize (pass 1)** — `python3 skill/scripts/synthesize.py --emit-verify-queue [flags] .panopticon/findings-*.json`.
    If it prints a "verify queue: N entries" line, proceed to step 8; if it printed a report, skip to step 9.
-8. **Verify** — Run `python3 scripts/dispatch.py --render-advisor .panopticon/verify-queue.json --out .panopticon/advisor-prompts`,
+8. **Verify** — Run `python3 skill/scripts/dispatch.py --render-advisor .panopticon/verify-queue.json --out .panopticon/advisor-prompts`,
    then dispatch each `.panopticon/advisor-prompts/{queue_id}.md` file's contents
    as an `advisor` agent (`agents/advisor.md`) in parallel — via `subagent_type: panopticon-advisor` when that registered shell exists, else general-purpose. The advisor RETURNS a
    verdict JSON; write it verbatim to `.panopticon/verdicts/{queue_id}.json`.
@@ -109,7 +113,7 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
    `meta.coverage.resume` and the terminal summary's `Resume:` line, so a resumed
    run never reads as a fresh full scan.
    Then run
-   `python3 scripts/synthesize.py --verdicts-dir .panopticon/verdicts [same flags] .panopticon/findings-*.json`
+   `python3 skill/scripts/synthesize.py --verdicts-dir .panopticon/verdicts [same flags] .panopticon/findings-*.json`
    to produce the final report.
    `[same flags]` is a requirement, not a convenience: `--severity` filtering and
    `--tools-dir` ingestion both run before the verify queue is built, so a flag that
@@ -147,7 +151,7 @@ its own mechanism:
   its own `entry.out_file` directly; the Workflow bounds concurrency, journals
   progress, and re-runs a stalled or failed entry itself. The parent session
   receives only the Workflow's final tally, never per-entry findings.
-  Register once with `python3 scripts/dispatch.py --emit-host-agents claude`.
+  Register once with `python3 skill/scripts/dispatch.py --emit-host-agents claude`.
 - **Kimi Code (portable)** — the `group_runner` role is a nested
   sub-orchestrator per group (the run-2 verify pattern): it holds scoped
   `Write`, dispatches only its group's `pending_entries`, and returns a
@@ -161,9 +165,9 @@ its own mechanism:
 
   1. Register the enforcement shells once (fresh session required after):
      ```bash
-     python3 scripts/dispatch.py --emit-host-agents kimi
+     python3 skill/scripts/dispatch.py --emit-host-agents kimi
      # or explicit:
-     python3 scripts/dispatch.py --emit-host-agents kimi --out ~/.kimi-code/agents
+     python3 skill/scripts/dispatch.py --emit-host-agents kimi --out ~/.kimi-code/agents
      ```
   2. Build the dispatch plan with `--host kimi`. **`dispatch.py` refuses to
      write the plan** (exit 1, nothing written) if a reviewer role
@@ -194,7 +198,7 @@ its own mechanism:
      re-verification below still downgrades it to `coder`/`explore` with a
      stderr warning and succeeds; that gap is tracked separately.)
      ```bash
-     python3 scripts/dispatch.py --emit-kimi-swarm .panopticon/dispatch-plan.json --out .panopticon/kimi-swarm.json
+     python3 skill/scripts/dispatch.py --emit-kimi-swarm .panopticon/dispatch-plan.json --out .panopticon/kimi-swarm.json
      ```
      Then invoke each batch. Raw-prompt dispatch does not honor the shell, so
      an enforced entry must go through its registered profile.
@@ -259,13 +263,13 @@ Panopticon includes a local Docker-based fixture suite for validating scanner ad
 
 ```bash
 # Use existing fixtures image
-python3 scripts/run_fixture_tests.py
+python3 skill/scripts/run_fixture_tests.py
 
 # Force rebuild (clones latest public fixtures)
-python3 scripts/run_fixture_tests.py --rebuild
+python3 skill/scripts/run_fixture_tests.py --rebuild
 
 # Run only one language/test target
-python3 scripts/run_fixture_tests.py --test rust
+python3 skill/scripts/run_fixture_tests.py --test rust
 ```
 
 This is optional and not part of CI. Rebuild the image periodically to pull updated fixtures.
