@@ -2348,6 +2348,32 @@ class TestResumeDisclosure(unittest.TestCase):
         r = syn.build_report([], self.G, "t", "high", self.TS)
         self.assertIsNone(r["meta"]["coverage"]["resume"])
 
+    def test_main_tolerates_non_list_verify_queue_entries(self):
+        # A verify-queue.json with a truthy non-list `entries` (e.g. an int)
+        # is a valid JSON dict -- it passes main()'s isinstance(dict) load
+        # guard -- and used to raise a TypeError deep inside
+        # group_runner.resume_stats, aborting the whole run with no report
+        # artifact. A malformed queue must never abort a run.
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            os.makedirs(os.path.join(d, ".panopticon"), exist_ok=True)
+            with open(os.path.join(d, ".panopticon", "verify-queue.json"), "w") as fh:
+                json.dump({"entries": 42}, fh)
+            with open(os.path.join(d, ".panopticon", "groups.json"), "w") as fh:
+                json.dump({"mode": "repo", "groups": self.G}, fh)
+            fpath = os.path.join(d, "findings-g1-code.json")
+            with open(fpath, "w") as fh:
+                json.dump({"findings": [{"id": "CD-001", "title": "x", "severity": "LOW",
+                    "confidence": "POSSIBLE", "panel": "code", "category": "structure",
+                    "location": {"file": "a.py", "line_start": 1}}]}, fh)
+            out = os.path.join(d, "report.json")
+            rc = syn.main(["--out", out, fpath])
+            self.assertIsInstance(rc, int)
+            self.assertTrue(os.path.exists(out))
+            with open(out) as fh:
+                report = json.load(fh)
+            self.assertEqual(
+                report["meta"]["coverage"]["resume"]["verify"]["total"], 0)
+
 
 class TestMainExitAndScout(unittest.TestCase):
     def test_inconclusive_from_scout_requested_tool_absent_exits_2(self):

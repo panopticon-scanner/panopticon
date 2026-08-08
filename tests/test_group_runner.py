@@ -140,6 +140,15 @@ class TestVerifyResume(unittest.TestCase):
                              ["q2", "q3"])                 # q1 done, "junk" skipped
             self.assertEqual(gr.pending_verdicts(None, vdir), [])
 
+    def test_non_list_entries_is_tolerated(self):
+        # A verify queue with a truthy non-list `entries` (e.g. an int) is a
+        # valid JSON dict, so it passes synthesize.main's isinstance(dict)
+        # load guard; pending_verdicts/resume_stats must treat it as empty
+        # rather than raising when iterating it.
+        self.assertEqual(gr.pending_verdicts({"entries": 42}, None), [])
+        self.assertEqual(gr.resume_stats([], {"entries": 42}, None)["verify"],
+                         {"total": 0, "done": 0, "pending": 0})
+
     def test_resume_stats_counts_both_phases(self):
         with tempfile.TemporaryDirectory() as d:
             done_out = os.path.join(d, "f1.json")

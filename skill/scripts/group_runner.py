@@ -83,6 +83,15 @@ def fan_out_coverage(plan):
             "groups_complete": complete, "groups_partial": partial}
 
 
+def _queue_entries(queue):
+    """The verify queue's entries list, or [] for a None/non-dict queue or a
+    non-list `entries` value — a malformed queue never raises."""
+    if not isinstance(queue, dict):
+        return []
+    entries = queue.get("entries")
+    return entries if isinstance(entries, list) else []
+
+
 def verdict_is_done(queue_id, verdicts_dir):
     """True iff a VALID verdict for queue_id exists — consistent with
     evidence.load_verdicts (a dict whose `verdict` value is in VERDICT_VALUES,
@@ -95,7 +104,7 @@ def pending_verdicts(queue, verdicts_dir):
     verify resume set. `queue` is the verify-queue dict ({'entries': [...]}) or
     None; non-dict entries are skipped, not fatal."""
     done = evidence.load_verdicts(verdicts_dir)
-    entries = queue.get("entries") or [] if isinstance(queue, dict) else []
+    entries = _queue_entries(queue)
     return [e for e in entries
             if isinstance(e, dict) and e.get("queue_id") not in done]
 
@@ -109,7 +118,7 @@ def resume_stats(plan, queue, verdicts_dir):
     plan = plan if isinstance(plan, list) else []
     fo_total = len([e for e in plan if isinstance(e, dict)])
     fo_pending = len(pending_entries(plan))
-    entries = queue.get("entries") or [] if isinstance(queue, dict) else []
+    entries = _queue_entries(queue)
     v_total = len([e for e in entries if isinstance(e, dict)])
     v_pending = len(pending_verdicts(queue, verdicts_dir))
     return {"fan_out": {"total": fo_total, "done": fo_total - fo_pending,
