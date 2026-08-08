@@ -94,6 +94,28 @@ class TestRecoverLinkage(unittest.TestCase):
         self.assertEqual(linkage[expected_key],
                          "https://github.com/panopticon-scanner/panopticon/issues/7")
 
+    def test_absolute_path_finding_recovers_losslessly(self):
+        # #607/#488: a finding whose location.file was ABSOLUTE under the repo
+        # root used to be lost by recovery — key_for keyed on the raw absolute
+        # path, but the issue body was scrubbed to relative. Now both key on
+        # the repo-relative path, so the key reconstructed from the scrubbed
+        # body matches the ledger key.
+        rel = "skill/scripts/tools/npm_audit.py"
+        f = {"fingerprint": "deadbeef", "id": "NOV-008",
+             "location": {"file": file_issues.repo_root() + rel, "line_start": 12}}
+        # Body as actually posted: scrubbed (create() wraps body_for in scrub()).
+        body = file_issues.scrub(file_issues.body_for(f))
+        self.assertIn("`%s:12`" % rel, body)          # relative in the body
+        issues = [{"number": 9, "labels": [{"name": "self-scan"}], "body": body}]
+
+        def runner(argv, capture_output, text):
+            return FakeCompleted(json.dumps(issues))
+
+        linkage = reconcile_apply.recover_linkage_from_github(runner=runner)
+        expected_key = file_issues.key_for(f, rejected=False)
+        self.assertEqual(expected_key, "deadbeef|NOV-008|%s|finding" % rel)
+        self.assertIn(expected_key, linkage)          # recovered, not lost
+
     def test_raises_runtime_error_when_gh_call_fails(self):
         def runner(argv, capture_output, text):
             return FakeCompleted(stdout="", returncode=1,
@@ -121,6 +143,14 @@ class TestPlanActions(unittest.TestCase):
         ledger = {"old1|F-1|a.py|finding": "https://github.com/o/r/issues/1"}
         record = {"stored_fingerprint": "old1", "id": "F-1",
                  "location_file": "a.py", "kind": "finding"}
+        self.assertEqual(reconcile_apply.resolve_issue(record, ledger),
+                         "https://github.com/o/r/issues/1")
+
+    def test_resolves_via_legacy_absolute_path_key(self):
+        abs_path = file_issues.repo_root() + "skill/scripts/run_tools.py"
+        ledger = {"old1|F-1|%s|finding" % abs_path: "https://github.com/o/r/issues/1"}
+        record = {"stored_fingerprint": "old1", "id": "F-1",
+                 "location_file": abs_path, "kind": "finding"}
         self.assertEqual(reconcile_apply.resolve_issue(record, ledger),
                          "https://github.com/o/r/issues/1")
 
