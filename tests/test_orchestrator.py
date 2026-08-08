@@ -432,6 +432,93 @@ class TestRepoScanDiscovery(unittest.TestCase):
                 self.assertNotIn(hidden, grouped, hidden)
 
 
+class TestFixtureExclusion(unittest.TestCase):
+    """Agent-side fixture exclusion (#434): intentionally-vulnerable fixture
+    corpora dominate standard self-scans when discovery hands them to review
+    agents (run-3: 67 findings, 11 CRITICAL, all fixture noise). Standard-mode
+    --repo-scan prunes fixture corpus dirs and discloses the pruning; redteam
+    mode includes them (a red team wants the whole attack surface)."""
+
+    _FIXTURE_LAYOUT = [
+        "tests/fixtures/vulnerable-app/main.rs",
+        "test/fixtures/sql.rb",
+        "spec/fixtures/payload.rb",
+        "pkg/testdata/blob.go",
+        "src/__fixtures__/token.js",
+    ]
+
+    def _touch(self, root, rel):
+        full = os.path.join(root, rel)
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        open(full, "w").close()
+
+    def _run_scan(self, d, *extra):
+        import io
+        import contextlib
+        buf, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
+            rc = orch.main(["--repo", d, "--repo-scan", *extra])
+        self.assertEqual(rc, 0)
+        return json.loads(buf.getvalue()), err.getvalue()
+
+    def _grouped(self, out):
+        return [f for g in out["groups"] for f in g["files"]]
+
+    def test_standard_scan_prunes_fixture_corpora_and_discloses(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._touch(d, "src/app.py")
+            self._touch(d, "tests/test_app.py")
+            for rel in self._FIXTURE_LAYOUT:
+                self._touch(d, rel)
+            out, err = self._run_scan(d)
+            grouped = self._grouped(out)
+            self.assertIn("src/app.py", grouped)
+            self.assertIn("tests/test_app.py", grouped)  # real tests stay
+            for rel in self._FIXTURE_LAYOUT:
+                self.assertNotIn(rel, grouped, rel)
+                self.assertNotIn(rel, out["tests"], rel)
+            # Disclosure: the artifact records what was pruned...
+            self.assertEqual(
+                out["excluded"]["fixture_dirs"],
+                sorted(["tests/fixtures", "test/fixtures", "spec/fixtures",
+                        "pkg/testdata", "src/__fixtures__"]))
+            # ...and the terminal says so loudly.
+            self.assertIn("fixture exclusion", err)
+            self.assertIn("redteam", err)
+
+    def test_redteam_scan_includes_fixture_corpora(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._touch(d, "src/app.py")
+            for rel in self._FIXTURE_LAYOUT:
+                self._touch(d, rel)
+            out, err = self._run_scan(d, "--security", "redteam")
+            grouped = self._grouped(out)
+            for rel in self._FIXTURE_LAYOUT:
+                self.assertIn(rel, grouped, rel)
+            self.assertNotIn("excluded", out)
+            self.assertNotIn("fixture exclusion", err)
+
+    def test_plain_fixtures_dir_outside_test_parents_is_kept(self):
+        # Only (tests|test|spec)/fixtures and the testdata/__fixtures__
+        # conventions are corpus markers; a product dir merely named
+        # "fixtures" is real code and must not be silently dropped.
+        with tempfile.TemporaryDirectory() as d:
+            self._touch(d, "src/fixtures/loader.py")
+            self._touch(d, "fixtures/catalog.py")
+            out, _ = self._run_scan(d)
+            grouped = self._grouped(out)
+            self.assertIn("src/fixtures/loader.py", grouped)
+            self.assertIn("fixtures/catalog.py", grouped)
+            self.assertNotIn("excluded", out)
+
+    def test_no_disclosure_when_nothing_pruned(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._touch(d, "src/app.py")
+            out, err = self._run_scan(d)
+            self.assertNotIn("excluded", out)
+            self.assertNotIn("fixture exclusion", err)
+
+
 class TestPanelPriority(unittest.TestCase):
     def test_compute_group_panels_emits_priority_order(self):
         # Whatever panels are present, they must appear in PANEL_PRIORITY order.
