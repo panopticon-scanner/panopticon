@@ -652,7 +652,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                  security_mode="standard", verdicts=None, gate_unverified=False,
                  max_verify=None, verdicts_supplied=False, tool_policy_mode=None,
                  tools_ran=None, tool_dispositions=None, fan_out=None,
-                 scout_requested=None):
+                 scout_requested=None, resume=None):
     """Build a CodeReviewReport under the two-axis severity x evidence model.
 
     Severity is never mutated here. Verdicts (from evidence.load_verdicts) are
@@ -814,6 +814,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                 "verdicts": verdict_stats,
                 "fan_out": fan_out,
                 "divergence": divergence,
+                "resume": resume,
             },
         },
         "summary": {
@@ -920,6 +921,19 @@ def render_summary(report):
         if tools:
             parts.append("tools " + ", ".join(sorted(tools)))
         lines.insert(3, "**Coverage:** NOT CERTIFIED — %s" % ("; ".join(parts) or "incomplete"))
+    rz = (report["meta"].get("coverage") or {}).get("resume") or {}
+    _fo = rz.get("fan_out") or {}
+    _vf = rz.get("verify") or {}
+    _fo_pending = _fo.get("pending") or 0
+    _vf_pending = _vf.get("pending") or 0
+    if _fo_pending or _vf_pending:
+        total_pending = _fo_pending + _vf_pending
+        resume_line = "**Resume:** fan-out %d/%d done, verify %d/%d done (%d pending)" % (
+            _fo.get("done", 0), _fo.get("total", 0),
+            _vf.get("done", 0), _vf.get("total", 0),
+            total_pending)
+        insert_idx = 4 if not s.get("coverage_certified", True) else 3
+        lines.insert(insert_idx, resume_line)
     for g in report["groups"]:
         pg = g["panel_grades"]
         grades = " / ".join("%s %s" % (p, pg[p]) for p in PANEL_ORDER)
@@ -1145,15 +1159,28 @@ def main(argv=None):
     verdicts = evidence_mod.load_verdicts(args.verdicts_dir)
     tool_policy_mode = derive_tool_policy_mode()
     fan_out = None
+    _plan = []
     plan_path = os.path.join(".panopticon", "dispatch-plan.json")
     if os.path.isfile(plan_path):
         try:
             with open(plan_path, encoding="utf-8") as fh:
-                _plan = json.load(fh)
-            if isinstance(_plan, list):
+                loaded = json.load(fh)
+            if isinstance(loaded, list):
+                _plan = loaded
                 fan_out = group_runner.fan_out_coverage(_plan)
-        except (OSError, ValueError):
+        except (OSError, ValueError):  # tolerant by design: never abort a run
             pass
+    _queue = None
+    queue_path = os.path.join(".panopticon", "verify-queue.json")
+    if os.path.isfile(queue_path):
+        try:
+            with open(queue_path, encoding="utf-8") as fh:
+                loaded_q = json.load(fh)
+            if isinstance(loaded_q, dict):
+                _queue = loaded_q
+        except (OSError, ValueError):  # tolerant by design
+            pass
+    resume = group_runner.resume_stats(_plan, _queue, args.verdicts_dir)
     scout_requested = set()
     for sp in glob.glob(os.path.join(".panopticon", "scout-*.json")):
         try:
@@ -1176,7 +1203,8 @@ def main(argv=None):
                           tools_ran=tools_ran,
                           tool_dispositions=tool_dispositions,
                           fan_out=fan_out,
-                          scout_requested=sorted(scout_requested))
+                          scout_requested=sorted(scout_requested),
+                          resume=resume)
     errors, warnings = validate_report(report)
     attach_schema_status(report, errors)
     for w in warnings:

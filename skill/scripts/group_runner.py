@@ -9,7 +9,10 @@ import json
 import os
 import re
 
-__all__ = ["entry_is_done", "pending_entries", "fan_out_coverage"]
+import scripts.evidence as evidence
+
+__all__ = ["entry_is_done", "pending_entries", "fan_out_coverage",
+           "verdict_is_done", "pending_verdicts", "resume_stats"]
 
 
 def entry_is_done(out_file):
@@ -78,3 +81,54 @@ def fan_out_coverage(plan):
     partial = sorted(g for g, s in by_group.items() if 0 <= s["done"] < s["total"])
     return {"planned": planned, "executed": executed,
             "groups_complete": complete, "groups_partial": partial}
+
+
+def _queue_entries(queue):
+    """The verify queue's entries list, or [] for a None/non-dict queue or a
+    non-list `entries` value — a malformed queue never raises."""
+    if not isinstance(queue, dict):
+        return []
+    entries = queue.get("entries")
+    return entries if isinstance(entries, list) else []
+
+
+def verdict_is_done(queue_id, verdicts_dir, _done=None):
+    """True iff a VALID verdict for queue_id exists — consistent with
+    evidence.load_verdicts (a dict whose `verdict` value is in VERDICT_VALUES,
+    parsed tolerantly). Missing / truncated / invalid-verdict files are NOT done.
+
+    Pass a pre-loaded verdicts dict as `_done` to avoid re-reading the directory
+    on every call when used in a loop."""
+    if _done is None:
+        _done = evidence.load_verdicts(verdicts_dir)
+    return bool(queue_id) and queue_id in _done
+
+
+def pending_verdicts(queue, verdicts_dir):
+    """The verify-queue entries whose queue_id has no valid verdict yet — the
+    verify resume set. `queue` is the verify-queue dict ({'entries': [...]}) or
+    None; non-dict entries and entries without a non-empty queue_id are skipped."""
+    done = evidence.load_verdicts(verdicts_dir)
+    entries = _queue_entries(queue)
+    return [e for e in entries
+            if isinstance(e, dict) and e.get("queue_id") and
+            not verdict_is_done(e["queue_id"], None, _done=done)]
+
+
+def resume_stats(plan, queue, verdicts_dir):
+    """Done/pending/total for both phases, for honest resume disclosure.
+
+    fan_out.total counts the dict entries pending_entries walks; verify.total
+    counts only queue dict entries with a non-empty queue_id (matching the
+    actionable resume set); done = total - pending. Tolerant of
+    None/empty/malformed plan or queue (-> zeros)."""
+    plan = plan if isinstance(plan, list) else []
+    fo_total = len([e for e in plan if isinstance(e, dict)])
+    fo_pending = len(pending_entries(plan))
+    entries = _queue_entries(queue)
+    v_total = len([e for e in entries if isinstance(e, dict) and e.get("queue_id")])
+    v_pending = len(pending_verdicts(queue, verdicts_dir))
+    return {"fan_out": {"total": fo_total, "done": fo_total - fo_pending,
+                        "pending": fo_pending},
+            "verify": {"total": v_total, "done": v_total - v_pending,
+                       "pending": v_pending}}

@@ -2333,6 +2333,48 @@ class TestCoverageDivergence(unittest.TestCase):
         self.assertEqual(r["meta"]["coverage"]["divergence"], {"panels": {}, "tools": {}})
 
 
+class TestResumeDisclosure(unittest.TestCase):
+    G = [{"name": "g1", "files": ["a.py"]}]
+    TS = "2026-01-01T00:00:00Z"
+
+    def test_build_report_emits_resume(self):
+        r = syn.build_report([], self.G, "t", "high", self.TS,
+                             resume={"fan_out": {"total": 74, "done": 33, "pending": 41},
+                                     "verify": {"total": 52, "done": 12, "pending": 40}})
+        self.assertEqual(r["meta"]["coverage"]["resume"]["fan_out"]["done"], 33)
+        self.assertEqual(r["meta"]["coverage"]["resume"]["verify"]["pending"], 40)
+
+    def test_build_report_resume_defaults_none(self):
+        r = syn.build_report([], self.G, "t", "high", self.TS)
+        self.assertIsNone(r["meta"]["coverage"]["resume"])
+
+    def test_main_tolerates_non_list_verify_queue_entries(self):
+        # A verify-queue.json with a truthy non-list `entries` (e.g. an int)
+        # is a valid JSON dict -- it passes main()'s isinstance(dict) load
+        # guard -- and used to raise a TypeError deep inside
+        # group_runner.resume_stats, aborting the whole run with no report
+        # artifact. A malformed queue must never abort a run.
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            os.makedirs(os.path.join(d, ".panopticon"), exist_ok=True)
+            with open(os.path.join(d, ".panopticon", "verify-queue.json"), "w") as fh:
+                json.dump({"entries": 42}, fh)
+            with open(os.path.join(d, ".panopticon", "groups.json"), "w") as fh:
+                json.dump({"mode": "repo", "groups": self.G}, fh)
+            fpath = os.path.join(d, "findings-g1-code.json")
+            with open(fpath, "w") as fh:
+                json.dump({"findings": [{"id": "CD-001", "title": "x", "severity": "LOW",
+                    "confidence": "POSSIBLE", "panel": "code", "category": "structure",
+                    "location": {"file": "a.py", "line_start": 1}}]}, fh)
+            out = os.path.join(d, "report.json")
+            rc = syn.main(["--out", out, fpath])
+            self.assertIsInstance(rc, int)
+            self.assertTrue(os.path.exists(out))
+            with open(out) as fh:
+                report = json.load(fh)
+            self.assertEqual(
+                report["meta"]["coverage"]["resume"]["verify"]["total"], 0)
+
+
 class TestMainExitAndScout(unittest.TestCase):
     def test_inconclusive_from_scout_requested_tool_absent_exits_2(self):
         import tempfile, json as _json
@@ -2405,3 +2447,27 @@ class TestRenderSummaryCoverage(unittest.TestCase):
         self.assertIn("NOT CERTIFIED", text)
         self.assertIn("security", text)
         self.assertIn("provisional", text.lower())
+
+
+class TestRenderSummaryResume(unittest.TestCase):
+    G = [{"name": "g1", "files": ["a.py"]}]
+    TS = "2026-01-01T00:00:00Z"
+
+    def test_resume_line_shown_when_pending(self):
+        r = syn.build_report([], self.G, "t", "high", self.TS,
+                             resume={"fan_out": {"total": 74, "done": 33, "pending": 41},
+                                     "verify": {"total": 52, "done": 12, "pending": 40}})
+        text = syn.render_summary(r)
+        self.assertIn("Resume:", text)
+        self.assertIn("33/74", text)
+        self.assertIn("12/52", text)
+
+    def test_no_resume_line_when_complete(self):
+        r = syn.build_report([], self.G, "t", "high", self.TS,
+                             resume={"fan_out": {"total": 74, "done": 74, "pending": 0},
+                                     "verify": {"total": 52, "done": 52, "pending": 0}})
+        self.assertNotIn("Resume:", syn.render_summary(r))
+
+    def test_no_resume_line_when_resume_absent(self):
+        r = syn.build_report([], self.G, "t", "high", self.TS)  # resume=None
+        self.assertNotIn("Resume:", syn.render_summary(r))

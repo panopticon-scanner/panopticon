@@ -2,6 +2,7 @@ import json, os, tempfile, unittest
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill"))
 import scripts.group_runner as gr
+import scripts.evidence as ev
 
 
 class TestEntryIsDone(unittest.TestCase):
@@ -105,3 +106,59 @@ class TestFanOutCoverage(unittest.TestCase):
         self.assertEqual(cov["planned"], {"code": 1})
         self.assertEqual(gr.pending_entries(plan),
                          [plan[0]])  # only the real (not-done) entry, junk skipped
+
+
+class TestVerifyResume(unittest.TestCase):
+    def _vd(self, d, qid, body):
+        vdir = os.path.join(d, "verdicts")
+        os.makedirs(vdir, exist_ok=True)
+        with open(os.path.join(vdir, qid + ".json"), "w", encoding="utf-8") as fh:
+            fh.write(body)
+        return vdir
+
+    def test_verdict_is_done_matches_load_verdicts(self):
+        with tempfile.TemporaryDirectory() as d:
+            vdir = self._vd(d, "q1", '{"finding_id":"F","verdict":"CONFIRMED"}')
+            self._vd(d, "q2", '```json\n{"verdict":"REJECTED"}\n```')  # fenced, still valid
+            self._vd(d, "q3", '{"finding_id":"F"}')                    # no verdict -> not done
+            self._vd(d, "q4", '{ truncated')                           # unparseable -> not done
+            self.assertTrue(gr.verdict_is_done("q1", vdir))
+            self.assertTrue(gr.verdict_is_done("q2", vdir))
+            self.assertFalse(gr.verdict_is_done("q3", vdir))
+            self.assertFalse(gr.verdict_is_done("q4", vdir))
+            self.assertFalse(gr.verdict_is_done("nope", vdir))
+            self.assertFalse(gr.verdict_is_done("q1", None))
+            # consistency: done-set == load_verdicts keys
+            self.assertEqual({"q1", "q2"}, set(ev.load_verdicts(vdir)))
+
+    def test_pending_verdicts_is_the_resume_set(self):
+        with tempfile.TemporaryDirectory() as d:
+            vdir = self._vd(d, "q1", '{"verdict":"CONFIRMED"}')
+            queue = {"entries": [{"queue_id": "q1"}, {"queue_id": "q2"},
+                                 {"queue_id": "q3"}, "junk"]}
+            self.assertEqual([e["queue_id"] for e in gr.pending_verdicts(queue, vdir)],
+                             ["q2", "q3"])                 # q1 done, "junk" skipped
+            self.assertEqual(gr.pending_verdicts(None, vdir), [])
+
+    def test_non_list_entries_is_tolerated(self):
+        # A verify queue with a truthy non-list `entries` (e.g. an int) is a
+        # valid JSON dict, so it passes synthesize.main's isinstance(dict)
+        # load guard; pending_verdicts/resume_stats must treat it as empty
+        # rather than raising when iterating it.
+        self.assertEqual(gr.pending_verdicts({"entries": 42}, None), [])
+        self.assertEqual(gr.resume_stats([], {"entries": 42}, None)["verify"],
+                         {"total": 0, "done": 0, "pending": 0})
+
+    def test_resume_stats_counts_both_phases(self):
+        with tempfile.TemporaryDirectory() as d:
+            done_out = os.path.join(d, "f1.json")
+            with open(done_out, "w") as fh:
+                fh.write('{"findings":[]}')
+            plan = [{"out_file": done_out}, {"out_file": os.path.join(d, "missing.json")}]
+            vdir = self._vd(d, "q1", '{"verdict":"CONFIRMED"}')
+            queue = {"entries": [{"queue_id": "q1"}, {"queue_id": "q2"}]}
+            st = gr.resume_stats(plan, queue, vdir)
+            self.assertEqual(st["fan_out"], {"total": 2, "done": 1, "pending": 1})
+            self.assertEqual(st["verify"], {"total": 2, "done": 1, "pending": 1})
+            self.assertEqual(gr.resume_stats(None, None, None)["fan_out"],
+                             {"total": 0, "done": 0, "pending": 0})
