@@ -517,6 +517,8 @@ def _unenforced_refusal_message(unenforced, context="plan"):
     return ("dispatch: refusing to %s — unenforced reviewer role(s): %s.\n"
             "Tool policy would be prompt-advisory only (full Bash/Edit/Write on a "
             "general-purpose agent reading untrusted repo content).\n"
+            "The write-guard backstops only Write/Edit/NotebookEdit, NOT Bash, so "
+            "it cannot close this gap (#680).\n"
             "Register enforcement shells first:  python3 skill/scripts/dispatch.py "
             "--emit-host-agents <host>\n"
             "Or accept the risk explicitly with --allow-unenforced."
@@ -526,13 +528,25 @@ def _unenforced_refusal_message(unenforced, context="plan"):
 def _write_unenforced_ack(unenforced):
     """Record an --allow-unenforced acceptance in .panopticon/unenforced-ack.json.
 
+    Records that the write-guard does NOT backstop Bash-based writes in this
+    mode (#680): an unenforced reviewer holds full Bash, and the session-wide
+    write-guard covers only Write/Edit/NotebookEdit, so the operator is
+    accepting that a prompt-injected reviewer could write via the shell with
+    the guard never consulted. The real control is an enforced shell.
+
     Raises OSError on failure; callers must catch it and fail closed (a
     write error right before a plan/manifest emission must never surface as
     a bare traceback -- see the M1 guard)."""
     os.makedirs(".panopticon", exist_ok=True)
     with open(os.path.join(".panopticon", "unenforced-ack.json"), "w",
               encoding="utf-8") as fh:
-        json.dump({"acknowledged": True, "roles": unenforced}, fh, indent=2)
+        json.dump({"acknowledged": True, "roles": unenforced,
+                   "write_guard_covers_bash": False,
+                   "note": ("unenforced reviewers hold Bash; the write-guard "
+                            "backstops only Write/Edit/NotebookEdit, so a "
+                            "shell-based write bypasses it. Use enforced "
+                            "shells to close this.")},
+                  fh, indent=2)
 
 
 def main(argv=None):

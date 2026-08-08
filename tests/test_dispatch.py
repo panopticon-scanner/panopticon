@@ -753,6 +753,10 @@ class TestUnenforcedGate(unittest.TestCase):
             data = json.load(fh)
         self.assertTrue(data["acknowledged"])
         self.assertIn("panel_review", data["roles"])
+        # #680: the ack must record that the write-guard does NOT cover Bash in
+        # this mode, so the accepted residual risk is explicit and auditable.
+        self.assertFalse(data["write_guard_covers_bash"])
+        self.assertIn("Bash", data["note"])
 
     def test_enforced_plan_emits_normally_no_ack(self):
         with tempfile.TemporaryDirectory() as reg:

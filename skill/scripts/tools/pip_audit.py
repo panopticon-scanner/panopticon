@@ -77,9 +77,15 @@ class PipAuditAdapter:
         return run_tool(cmd, timeout=300)
 
     def _find_requirement(self, target: str) -> str | None:
-        for path in sorted(glob.glob(os.path.join(target, "requirements*.txt"))):
-            return path
-        return None
+        # Prefer the canonical requirements.txt (#707). The glob fallback
+        # returns the lexicographically-first match, and '-' (0x2D) sorts
+        # before '.' (0x2E), so requirements-dev.txt would otherwise win over
+        # requirements.txt and the PRIMARY manifest would go unaudited.
+        exact = os.path.join(target, "requirements.txt")
+        if os.path.isfile(exact):
+            return exact
+        matches = sorted(glob.glob(os.path.join(target, "requirements*.txt")))
+        return matches[0] if matches else None
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
         data = json.loads(raw.decode("utf-8", errors="replace"))
