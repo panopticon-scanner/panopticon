@@ -19,6 +19,7 @@ import subprocess
 import sys
 import time
 
+import file_issues
 import triage
 
 LEDGER = ".panopticon/filed-issues.json"
@@ -33,6 +34,16 @@ def load_ledger(path=LEDGER):
 
 
 def ledger_key(record):
+    # Normalize the location the same way file_issues.key_for does, so a record
+    # whose location_file is absolute maps to the same relative key the ledger
+    # was filed under (#607/#488). Byte-identical to key_for's three siblings.
+    return "%s|%s|%s|%s" % (record.get("stored_fingerprint") or "",
+                            record.get("id") or "",
+                            file_issues.repo_relative(record.get("location_file") or ""),
+                            record.get("kind") or "")
+
+
+def legacy_ledger_key(record):
     return "%s|%s|%s|%s" % (record.get("stored_fingerprint") or "",
                             record.get("id") or "",
                             record.get("location_file") or "",
@@ -51,20 +62,17 @@ def recover_linkage_from_github(label="self-scan", runner=subprocess.run):
     .panopticon/filed-issues.json is unavailable. Every field this needs was
     deliberately embedded in the issue body by scripts/file_issues.py.
 
-    Known limitation (not fixed here): scripts/file_issues.py posts issue
-    bodies through scrub() (see its line ~239:
-    `create(scrub(title_for(f)), scrub(body_for(f, rej)), ...)`), which
-    strips the absolute repo-root prefix from paths. So a finding whose
-    original location.file was an ABSOLUTE path under the repo root appears
-    in the issue body as a repo-RELATIVE path. But the ledger key
-    (file_issues.key_for, mirrored by ledger_key) is built from the RAW,
-    unscrubbed location.file. Therefore, for such findings, the key
-    reconstructed here from the scrubbed body will NOT match the ledger
-    key, and those issues are silently unrecoverable via this fallback
-    (they resolve fine on the primary path where the real ledger is
-    present). This is fail-safe — an unmatched issue is simply left open,
-    never mis-acted-on — but lossy. .panopticon/filed-issues.json is the
-    source of truth; preserve it rather than relying on this recovery.
+    Path consistency (#607/#488, resolved): issue bodies are scrubbed to
+    repo-RELATIVE paths, and file_issues.key_for / this module's ledger_key
+    now key on the repo-RELATIVE location too (file_issues.repo_relative). So
+    the key reconstructed here from a scrubbed body matches the ledger key
+    even for findings whose original location.file was absolute — recovery is
+    lossless for anything filed by the fixed key_for. (Ledgers filed BEFORE
+    the fix that stored a raw absolute-path key for such a finding are still
+    unrecoverable via this fallback; those resolve on the primary path where
+    the real ledger is present.) Recovery stays fail-safe regardless — an
+    unmatched issue is simply left open, never mis-acted-on.
+    .panopticon/filed-issues.json remains the source of truth; preserve it.
     """
     r = runner(["gh", "issue", "list", "--label", label, "--state", "all",
                "--json", "number,url,body,labels", "--limit", "1000"],
@@ -101,7 +109,13 @@ def save_recovered_ledger(linkage, path=LEDGER):
 
 
 def resolve_issue(record, ledger):
-    return ledger.get(ledger_key(record))
+    key = ledger_key(record)
+    if key in ledger:
+        return ledger[key]
+    legacy_key = legacy_ledger_key(record)
+    if legacy_key != key:
+        return ledger.get(legacy_key)
+    return None
 
 
 RECUR_COMMENT = ("**Run-3 reconciliation: re-affirmed.** This finding's fingerprint "
