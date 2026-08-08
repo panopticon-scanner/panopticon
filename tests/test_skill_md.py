@@ -86,3 +86,10 @@ class TestSkillMd(unittest.TestCase):
         bare = [ln for ln in self.text.splitlines()
                 if re.search(r"[^l]`(scripts|agents)/", ln)]
         self.assertEqual(bare, [], "bare scripts/ or agents/ path (run-from-where?): %r" % bare)
+
+    def test_tool_scan_step_is_deterministic_not_optional(self):
+        step4 = self.text.split("4. **Tool scan**")[1].split("5. **")[0]
+        self.assertNotIn("optional", step4.lower())
+        self.assertIn("run_tools.py", step4)
+        self.assertIn("--no-tools", step4)
+        self.assertTrue("LOUD" in step4 or "loudly" in step4.lower())

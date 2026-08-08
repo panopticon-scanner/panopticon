@@ -46,7 +46,15 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
 2. **Discovery** — run `python3 skill/scripts/orchestrator.py` to produce `groups.json`.
 3. **Scout** — dispatch the `scout` role (`skill/agents/scout.md`) per group — its template has no placeholders; dispatch its body plus tool-policy line as the prompt — via `subagent_type: panopticon-scout` when that registered shell exists (fresh session after registration), else a general-purpose agent; the scout RETURNS the ScopeProfile JSON; the orchestrator writes it to `.panopticon/scout-{group}.json`.
    Append the group's name, its file list from `groups.json`, and the `security_mode` to the prompt body — the scout template itself carries no assignment.
-4. **Tool scan** — optional Docker container; SARIF ingested by `skill/scripts/ingest_tools.py`.
+4. **Tool scan** — deterministic, not discretionary. RUN
+   `python3 skill/scripts/run_tools.py --target . --out .panopticon/tools --deps` (the same invocation
+   CI uses) whenever ANY of: `--tools` was passed, a scout's ScopeProfile
+   requested scanners in `tools`, or a dependency manifest is present in the
+   target. Skip ONLY when `--no-tools` was passed — and when the scan is
+   skipped or declined for any reason, say so LOUDLY in the terminal before
+   fan-out; `meta.coverage` records `tools_ran` and scout-requested-but-absent
+   tools independently (a silently skipped scan cannot read as clean).
+   SARIF is ingested by `skill/scripts/ingest_tools.py`.
 5. **Plan dispatch** — run one dispatch per group (matching the per-group scout from step 3): `python3 skill/scripts/dispatch.py <scope-profile.json> --host <your host: claude|kimi|generic> --out .panopticon/dispatch-plan-<group>.json` to produce a `DispatchPlan` of role-based agents. Give each group's plan its own file — `synthesize` globs `dispatch-plan*.json` for coverage/resume/integrity (steps 7/9), so a shared `dispatch-plan.json` repeatedly overwritten by each group is just the one-group case of the same naming convention, not a substitute for it.
    Pass your host explicitly — env detection is fallback only. Add --agents-dir DIR when your registered agents live somewhere non-default. `dispatch.py` refuses to emit a plan (exit 1, nothing written) when a reviewer role (`panel_review`/`lens_sweep`) lacks a registered enforcement shell — register shells first (`--emit-host-agents`, step below) or pass `--allow-unenforced` to accept prompt-advisory tool policy explicitly; see Host dispatch below.
 6. **Fan-out** — run the `group_runner` contract (`skill/scripts/group_runner.py`,
