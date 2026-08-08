@@ -9,6 +9,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import depth_planner
 import model_resolver
+from orchestrator import panels_in_priority_order
 
 
 TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -263,7 +264,7 @@ def build_plan(scope_profile, host=None, model_overrides=None, agents_dir=None):
     lens_agent = (registered_agent_name(ROLE_FILES["lens_sweep"])
                   if lens_enforced else AGENT_NAME["lens_sweep"])
 
-    for panel_name in scope_profile.get("panels", []):
+    for panel_name in panels_in_priority_order(scope_profile.get("panels", [])):
         spawned = depth_planner.plan_lenses(scope_profile, panel_name)
         panel_lenses = scope_profile.get("lenses", {}).get(panel_name, [])
         spawned_set = set(spawned)

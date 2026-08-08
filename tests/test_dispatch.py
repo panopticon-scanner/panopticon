@@ -33,6 +33,13 @@ class TestDispatchPlan(unittest.TestCase):
             "has_deps": False,
         }
 
+    def test_build_plan_emits_panels_in_priority_order(self):
+        profile = {"group": "g", "files": ["a.py"], "depth": "standard",
+                   "panels": ["test", "code", "security", "architecture"]}
+        plan = dispatch.build_plan(profile, host="claude")
+        panel_seq = [e["panel"] for e in plan if e["role"] == "panel_review"]
+        self.assertEqual(panel_seq, ["security", "architecture", "code", "test"])
+
     def test_standard_emits_panel_review_and_two_sweeps(self):
         plan = dispatch.build_plan(self._profile("standard"), host="kimi")
         self.assertEqual(len(plan), 3)

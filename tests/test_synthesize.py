@@ -283,6 +283,48 @@ class TestGrading(unittest.TestCase):
         self.assertEqual(stats["critical"], 0)
 
 
+class TestCertify(unittest.TestCase):
+    def _crit(self):
+        return [{"severity": "CRITICAL", "evidence": {"status": "advisor_confirmed"}}]
+
+    def test_clean_complete_pass_real_grade(self):
+        r = syn.certify("A", [], "high", set(), [])
+        self.assertEqual(r["gate"], "PASS")
+        self.assertEqual(r["overall_grade"], "A")
+        self.assertIsNone(r["provisional_grade"])
+        self.assertTrue(r["coverage_certified"])
+        self.assertIsNone(r["coverage_note"])
+
+    def test_clean_high_value_incomplete_inconclusive(self):
+        r = syn.certify("B", [], "high", {"security"}, [])
+        self.assertEqual(r["gate"], "INCONCLUSIVE")
+        self.assertIsNone(r["overall_grade"])
+        self.assertEqual(r["provisional_grade"], "B")
+        self.assertFalse(r["coverage_certified"])
+
+    def test_clean_low_value_tail_pass_with_note(self):
+        r = syn.certify("B", [], "high", {"test"}, [])
+        self.assertEqual(r["gate"], "PASS")
+        self.assertIsNone(r["overall_grade"])
+        self.assertEqual(r["provisional_grade"], "B")
+        self.assertFalse(r["coverage_certified"])
+        self.assertIn("test", r["coverage_note"])
+
+    def test_confirmed_fail_beats_inconclusive(self):
+        r = syn.certify("F", self._crit(), "high", {"security"}, [])
+        self.assertEqual(r["gate"], "FAIL")
+
+    def test_off_preserved_with_gap(self):
+        r = syn.certify("B", [], None, {"security"}, [])
+        self.assertEqual(r["gate"], "OFF")
+        self.assertFalse(r["coverage_certified"])
+
+    def test_requested_absent_tool_inconclusive(self):
+        r = syn.certify("A", [], "high", set(), ["semgrep"])
+        self.assertEqual(r["gate"], "INCONCLUSIVE")
+        self.assertFalse(r["coverage_certified"])
+
+
 class TestReport(unittest.TestCase):
     def _finding(self, **kw):
         base = {"id": "CD-001", "title": "t", "severity": "LOW", "confidence": "POSSIBLE",
@@ -611,7 +653,11 @@ class TestReconciliation(unittest.TestCase):
             out = os.path.join(d, "report.json")
             import io, contextlib
             buf = io.StringIO()
-            with contextlib.redirect_stdout(buf):
+            # Isolate cwd: main() discovers .panopticon/scout-*.json relative
+            # to cwd, and the repo root's own .panopticon carries self-scan
+            # leftovers that would otherwise leak "requested_absent" tools
+            # into this fixture's tiny finding set.
+            with _chdir(d), contextlib.redirect_stdout(buf):
                 rc = syn.main(["--target","t","--fail-on","high","--out",out, p])
             self.assertTrue(os.path.isfile(out))          # report written despite malformed citation
             # Both findings are agentic and carry no verdict -> unverified,
@@ -2253,3 +2299,109 @@ class TestFanOutCoverageMeta(unittest.TestCase):
     def test_fan_out_null_when_absent(self):
         r = syn.build_report([self._f()], [], "t", None, "2026-08-07T00:00:00Z")
         self.assertIsNone(r["meta"]["coverage"]["fan_out"])
+
+
+class TestCoverageDivergence(unittest.TestCase):
+    GROUPS = [{"name": "g1", "files": ["a.py"]}]
+    TS = "2026-01-01T00:00:00Z"
+
+    def test_inconclusive_on_incomplete_high_value_panel(self):
+        fan_out = {"planned": {"security": 21, "code": 10},
+                   "executed": {"security": 3, "code": 10},
+                   "groups_complete": [], "groups_partial": ["g1"]}
+        r = syn.build_report([], self.GROUPS, "t", "high", self.TS, fan_out=fan_out)
+        self.assertEqual(r["summary"]["gate"], "INCONCLUSIVE")
+        self.assertIsNone(r["summary"]["overall_grade"])
+        self.assertEqual(r["summary"]["provisional_grade"], "A")
+        self.assertEqual(r["meta"]["coverage"]["divergence"]["panels"]["security"],
+                         {"planned": 21, "executed": 3})
+        self.assertNotIn("code", r["meta"]["coverage"]["divergence"]["panels"])
+
+    def test_tool_requested_absent_is_disclosed_and_inconclusive(self):
+        r = syn.build_report([], self.GROUPS, "t", "high", self.TS,
+                             tools_ran=["trivy"], scout_requested=["trivy", "semgrep"])
+        self.assertEqual(r["meta"]["coverage"]["divergence"]["tools"],
+                         {"semgrep": "requested_absent"})
+        self.assertEqual(r["summary"]["gate"], "INCONCLUSIVE")
+
+    def test_backward_compat_no_fanout_no_scout(self):
+        r = syn.build_report([], self.GROUPS, "t", "high", self.TS)
+        self.assertEqual(r["summary"]["overall_grade"], "A")
+        self.assertEqual(r["summary"]["gate"], "PASS")
+        self.assertTrue(r["summary"]["coverage_certified"])
+        self.assertIsNone(r["summary"]["provisional_grade"])
+        self.assertEqual(r["meta"]["coverage"]["divergence"], {"panels": {}, "tools": {}})
+
+
+class TestMainExitAndScout(unittest.TestCase):
+    def test_inconclusive_from_scout_requested_tool_absent_exits_2(self):
+        import tempfile, json as _json
+        with tempfile.TemporaryDirectory() as d:
+            pan = os.path.join(d, ".panopticon")
+            os.makedirs(os.path.join(pan, "tools"), exist_ok=True)
+            # a scout requested semgrep; no tool output will exist for it
+            with open(os.path.join(pan, "scout-g1.json"), "w") as fh:
+                _json.dump({"group": "g1", "tools": ["semgrep"], "files": ["a.py"]}, fh)
+            with open(os.path.join(pan, "groups.json"), "w") as fh:
+                _json.dump({"groups": [{"name": "g1", "files": ["a.py"]}]}, fh)
+            findings = os.path.join(pan, "findings-g1-code-panel_review.json")
+            with open(findings, "w") as fh:
+                _json.dump({"findings": []}, fh)
+            cwd = os.getcwd()
+            try:
+                os.chdir(d)
+                rc = syn.main(["--target", "t", "--fail-on", "high",
+                              "--out", os.path.join(pan, "report.json"), findings])
+            finally:
+                os.chdir(cwd)
+            self.assertEqual(rc, 2)  # INCONCLUSIVE -> exit 2
+            with open(os.path.join(pan, "report.json")) as fh:
+                rep = _json.load(fh)
+            self.assertEqual(rep["meta"]["coverage"]["divergence"]["tools"],
+                             {"semgrep": "requested_absent"})
+
+    def test_malformed_scout_tools_are_tolerated(self):
+        """Scout files are agent-authored/untrusted. A non-list `tools` (or a
+        list with non-string items) must never abort the run -- see the
+        scout-discovery loop's type guard in main()."""
+        with tempfile.TemporaryDirectory() as d:
+            pan = os.path.join(d, ".panopticon")
+            os.makedirs(pan, exist_ok=True)
+            with open(os.path.join(pan, "scout-a.json"), "w", encoding="utf-8") as fh:
+                json.dump({"group": "a", "tools": 5}, fh)
+            with open(os.path.join(pan, "scout-b.json"), "w", encoding="utf-8") as fh:
+                json.dump({"group": "b", "tools": "semgrep"}, fh)
+            with open(os.path.join(pan, "scout-c.json"), "w", encoding="utf-8") as fh:
+                json.dump({"group": "c", "tools": ["trivy", None]}, fh)
+            with open(os.path.join(pan, "groups.json"), "w", encoding="utf-8") as fh:
+                json.dump({"groups": [{"name": "a", "files": ["x.py"]}]}, fh)
+            findings = os.path.join(pan, "findings-a-code-panel_review.json")
+            with open(findings, "w", encoding="utf-8") as fh:
+                json.dump({"findings": []}, fh)
+            out_path = os.path.join(pan, "report.json")
+            with _chdir(d):
+                rc = syn.main(["--target", "t", "--out", out_path, findings])
+            # (a) run completed: no exception, an artifact was written.
+            self.assertIsInstance(rc, int)
+            self.assertTrue(os.path.isfile(out_path))
+            with open(out_path, encoding="utf-8") as fh:
+                report = json.load(fh)
+            tools_div = report["meta"]["coverage"]["divergence"]["tools"]
+            # (b) the one valid list-string requested tool is disclosed absent.
+            self.assertIn("trivy", tools_div)
+            # (c) the bare-string "semgrep" must never explode per-character.
+            self.assertNotIn("s", tools_div)
+            self.assertNotIn("e", tools_div)
+
+
+class TestRenderSummaryCoverage(unittest.TestCase):
+    def test_inconclusive_summary_names_divergence(self):
+        fan_out = {"planned": {"security": 21}, "executed": {"security": 3},
+                   "groups_complete": [], "groups_partial": ["g1"]}
+        r = syn.build_report([], [{"name": "g1", "files": ["a.py"]}],
+                             "t", "high", "2026-01-01T00:00:00Z", fan_out=fan_out)
+        text = syn.render_summary(r)
+        self.assertIn("INCONCLUSIVE", text)
+        self.assertIn("NOT CERTIFIED", text)
+        self.assertIn("security", text)
+        self.assertIn("provisional", text.lower())
