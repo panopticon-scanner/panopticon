@@ -804,6 +804,75 @@ class TestUnenforcedGate(unittest.TestCase):
         self.assertTrue(os.path.exists(out_path))
         self.assertTrue(os.path.exists(ack_path))
 
+    def test_emit_kimi_swarm_gates_stale_enforced_true_via_live_registration(self):
+        # #649: a plan built while the shell WAS registered carries
+        # enforced:true, but the registration dir has since been emptied. The
+        # CLI gate must consult live registration (via --agents-dir), not the
+        # stored flag, and refuse-by-default / warn+ack -- not silently
+        # downgrade to an unenforced 'coder' profile with rc 0 and no ack.
+        plan = [{"role": "panel_review", "agent": "panopticon-panel-review",
+                 "enforced": True, "model": {"model": "secondary"},
+                 "prompt": "p", "out_file": ".panopticon/f.json"}]
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        empty_reg = os.path.join(d, "agents-emptied")  # registration revoked
+        os.makedirs(empty_reg)
+        plan_path = os.path.join(d, "plan.json")
+        with open(plan_path, "w", encoding="utf-8") as fh:
+            json.dump(plan, fh)
+        out_path = os.path.join(d, "swarm.json")
+        ack_path = os.path.join(d, ".panopticon", "unenforced-ack.json")
+        cwd = os.getcwd()
+
+        try:
+            os.chdir(d)
+            rc_refused = dispatch.main(["--emit-kimi-swarm", plan_path,
+                                        "--out", out_path, "--agents-dir", empty_reg])
+        finally:
+            os.chdir(cwd)
+        self.assertNotEqual(rc_refused, 0)            # not a silent rc 0
+        self.assertFalse(os.path.exists(out_path))
+        self.assertFalse(os.path.exists(ack_path))
+
+        try:
+            os.chdir(d)
+            rc_allowed = dispatch.main(["--emit-kimi-swarm", plan_path,
+                                        "--out", out_path, "--agents-dir", empty_reg,
+                                        "--allow-unenforced"])
+        finally:
+            os.chdir(cwd)
+        self.assertEqual(rc_allowed, 0)
+        self.assertTrue(os.path.exists(out_path))
+        self.assertTrue(os.path.exists(ack_path))     # ack IS recorded now
+
+    def test_emit_kimi_swarm_stale_enforced_true_passes_when_still_registered(self):
+        # Control: same enforced:true plan, but the shell IS still registered in
+        # --agents-dir -> no gating, no ack, clean emit.
+        plan = [{"role": "panel_review", "agent": "panopticon-panel-review",
+                 "enforced": True, "model": {"model": "secondary"},
+                 "prompt": "p", "out_file": ".panopticon/f.json"}]
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        reg = os.path.join(d, "agents")
+        os.makedirs(reg)
+        with open(os.path.join(reg, "panopticon-panel-review.md"), "w") as fh:
+            fh.write("---\nname: panopticon-panel-review\n---\nbody\n")
+        plan_path = os.path.join(d, "plan.json")
+        with open(plan_path, "w", encoding="utf-8") as fh:
+            json.dump(plan, fh)
+        out_path = os.path.join(d, "swarm.json")
+        ack_path = os.path.join(d, ".panopticon", "unenforced-ack.json")
+        cwd = os.getcwd()
+        try:
+            os.chdir(d)
+            rc = dispatch.main(["--emit-kimi-swarm", plan_path,
+                                "--out", out_path, "--agents-dir", reg])
+        finally:
+            os.chdir(cwd)
+        self.assertEqual(rc, 0)
+        self.assertTrue(os.path.exists(out_path))
+        self.assertFalse(os.path.exists(ack_path))    # enforced live => no ack
+
 
 class TestEmitHostAgents(unittest.TestCase):
     def test_claude_files_written_for_all_roles(self):

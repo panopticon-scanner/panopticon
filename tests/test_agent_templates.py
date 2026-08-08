@@ -9,6 +9,39 @@ import dispatch
 ROLES = ["scout.md", "panel-review.md", "lens-sweep.md", "advisor.md"]
 
 
+class TestUntrustedContentPreamble(unittest.TestCase):
+    """#631: every reviewer template must tell the model that content read from
+    the target repo is untrusted DATA, not instructions — the one integrity
+    control host-level tool restriction cannot substitute for. A reviewer
+    talked into suppressing a finding writes a legitimately-scoped but falsely
+    clean out_file the write-guard has nothing to say about."""
+
+    def test_every_template_carries_the_untrusted_preamble(self):
+        for role_file in ROLES:
+            _meta, body = dispatch.load_template(role_file)
+            low = body.lower()
+            self.assertIn("untrusted data", low, role_file)
+            self.assertIn("prompt-injection", low, role_file)
+            self.assertIn("do not comply", low, role_file)
+
+    def test_finding_roles_route_injections_to_a_finding(self):
+        # panel_review / lens_sweep emit findings, so a caught injection must
+        # become one (category prompt-injection) rather than a silent miss.
+        for role_file in ("panel-review.md", "lens-sweep.md"):
+            _meta, body = dispatch.load_template(role_file)
+            self.assertIn('category: "prompt-injection"', body, role_file)
+
+    def test_rendered_prompts_include_the_preamble(self):
+        # The preamble must survive rendering, not just live in the file.
+        panel = dispatch.render_prompt("panel-review.md", {
+            "panel": "security", "group": "g1", "file_list": "a.py",
+            "security_mode": "standard", "depth": "deep",
+            "out_file": ".panopticon/f.json", "lenses": "x"})
+        self.assertIn("UNTRUSTED DATA", panel)
+        advisor = dispatch.render_prompt("advisor.md", {"claim_json": "{}"})
+        self.assertIn("UNTRUSTED DATA", advisor)
+
+
 class TestTemplateFrontmatter(unittest.TestCase):
     def test_all_templates_parse_with_host_neutral_meta(self):
         for role_file in ROLES:
