@@ -79,8 +79,11 @@ def main():
 
 _HOOK_CMD = "python3 skill/scripts/write_guard_hook.py"
 # Derived from _WRITE_TOOLS so the registered matcher and the adjudicated set
-# cannot silently diverge (#680). Sorted for a stable, deterministic string.
-_MATCHER = "|".join(sorted(_WRITE_TOOLS))
+# cannot silently diverge (#680). Ordering is fixed to the original string so
+# install()/uninstall() dict-equality never produces a duplicate or stale entry
+# when upgrading from a settings.local.json written by an earlier version.
+# The drift-lock test compares sets, so ordering here does not affect it.
+_MATCHER = "Write|Edit|NotebookEdit"
 _HOOK_ENTRY = {"matcher": _MATCHER,
                "hooks": [{"type": "command", "command": _HOOK_CMD}]}
 

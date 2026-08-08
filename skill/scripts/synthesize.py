@@ -609,14 +609,20 @@ def reconcile_findings_files(plan, ingested_paths):
 
 
 def read_unenforced_ack(path=os.path.join(".panopticon", "unenforced-ack.json")):
-    """True iff dispatch recorded an explicit --allow-unenforced acknowledgement.
-    Unreadable/malformed => False (tolerant)."""
+    """Return the full ack dict when dispatch recorded --allow-unenforced, {} otherwise.
+
+    The return value is truthy when acknowledged and falsy (empty dict) when not.
+    Extra fields written by dispatch (e.g. ``write_guard_covers_bash``, ``note``)
+    are included so callers can surface them in ``meta.integrity`` (#680).
+    Unreadable/malformed => {} (tolerant)."""
     try:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
     except (OSError, ValueError):
-        return False
-    return bool(isinstance(data, dict) and data.get("acknowledged"))
+        return {}
+    if not isinstance(data, dict) or not data.get("acknowledged"):
+        return {}
+    return data
 
 
 def tools_ran_from_dispositions(dispositions):
@@ -1238,10 +1244,15 @@ def main(argv=None):
             pass
     resume = group_runner.resume_stats(_plan, _queue, args.verdicts_dir)
     unexpected, missing = reconcile_findings_files(_plan, args.files)
+    _ack = read_unenforced_ack()
     integrity = {"unexpected_findings_files": unexpected,
                  "missing_planned_files": missing,
-                 "unenforced_acknowledged": read_unenforced_ack(),
+                 "unenforced_acknowledged": bool(_ack),
                  "plans_seen": plans_seen}
+    if _ack:
+        # Surface the Bash-coverage disclosure fields written by dispatch so
+        # they appear in meta.integrity in the final report (#680).
+        integrity["write_guard_covers_bash"] = _ack.get("write_guard_covers_bash")
     scout_requested = set()
     for sp in glob.glob(os.path.join(".panopticon", "scout-*.json")):
         try:
