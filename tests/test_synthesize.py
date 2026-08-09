@@ -520,6 +520,48 @@ class TestReport(unittest.TestCase):
             ids = {f["id"] for f in report["findings"]}
             self.assertEqual(ids, {"SE-001"})
 
+    def _tools_dir_with_sarif(self, d):
+        # A semgrep SARIF with one real-code result and one fixture result, so a
+        # --tools-exclude glob has something to drop.
+        sarif = {"runs": [{"tool": {"driver": {"name": "semgrep"}}, "results": [
+            {"ruleId": "r1", "level": "error", "message": {"text": "real"},
+             "locations": [{"physicalLocation": {
+                 "artifactLocation": {"uri": "app/db.py"},
+                 "region": {"startLine": 1}}}]},
+            {"ruleId": "r2", "level": "error", "message": {"text": "fixture"},
+             "locations": [{"physicalLocation": {
+                 "artifactLocation": {"uri": "tests/fixtures/vuln.py"},
+                 "region": {"startLine": 2}}}]},
+        ]}]}
+        tdir = os.path.join(d, "tools")
+        os.makedirs(tdir)
+        with open(os.path.join(tdir, "semgrep.sarif"), "w") as fh:
+            json.dump(sarif, fh)
+        return tdir
+
+    def test_main_tools_exclude_is_wired_end_to_end(self):
+        # #693: --tools-exclude must reach ingest_dir from the CLI. Without it
+        # both tool findings appear; with it the fixture-path one is dropped.
+        import io, contextlib
+        with tempfile.TemporaryDirectory() as d:
+            tdir = self._tools_dir_with_sarif(d)
+            fpath = os.path.join(d, "findings-g1-code.json")
+            with open(fpath, "w") as fh:
+                json.dump({"findings": []}, fh)
+
+            def run(extra):
+                out = os.path.join(d, "r.json")
+                with contextlib.redirect_stdout(io.StringIO()):
+                    rc = syn.main(["--target", "src", "--gate-unverified",
+                                   "--tools-dir", tdir, "--out", out, *extra, fpath])
+                self.assertEqual(rc in (0, 1), True)
+                with open(out) as fh:
+                    return {f["location"]["file"] for f in json.load(fh)["findings"]}
+
+            self.assertEqual(run([]), {"app/db.py", "tests/fixtures/vuln.py"})
+            self.assertEqual(run(["--tools-exclude", "tests/fixtures/*"]),
+                             {"app/db.py"})   # fixture result dropped via CLI
+
     def test_main_changes_alias_sets_review_type(self):
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "findings-g1-code.json")
