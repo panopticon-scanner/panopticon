@@ -269,7 +269,9 @@ class TestCli(unittest.TestCase):
         import io, contextlib
         with tempfile.TemporaryDirectory() as d:
             buf = io.StringIO()
-            with contextlib.redirect_stdout(buf):
+            # No --out: the default diff-hunks.json path is cwd-relative, so chdir
+            # into the temp dir for the call to keep it out of the real repo (#449).
+            with contextlib.redirect_stdout(buf), contextlib.chdir(d):
                 rc = orch.main(["--repo", d, "--files", "src/a.py", "tests/test_a.py"])
             self.assertEqual(rc, 0)
             out = json.loads(buf.getvalue())

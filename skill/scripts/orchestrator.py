@@ -548,6 +548,24 @@ def write_diff_hunks(repo, base, source, out_path, tolerance):
         fh.write("\n")
 
 
+def emit_delta_artifact(repo, out, base, source, diff_context):
+    """Write the diff-hunks.json artifact for an already-resolved (base, source).
+
+    ``hunks_path`` sits next to ``out`` when given, else ``.panopticon/`` under
+    the current working directory. Shared by ``--changes``/``--files`` (base from
+    ``resolve_base(repo, explicit=args.base)``) and ``--pr`` (base from
+    ``resolve_base(wt, explicit=args.base, pr_base=acq["base"])``) so all three
+    call sites emit an identical artifact shape. Warns to stderr when the base
+    could not be resolved, since synthesize will then report INCONCLUSIVE.
+    """
+    hunks_path = (os.path.join(os.path.dirname(os.path.abspath(out)), "diff-hunks.json")
+                  if out else os.path.join(".panopticon", "diff-hunks.json"))
+    write_diff_hunks(repo, base, source, hunks_path, diff_context)
+    if base is None:
+        print("panopticon: base ref could not be resolved for delta review; "
+              "synthesize will report INCONCLUSIVE", file=sys.stderr)
+
+
 def _git_listed_files(repo):
     """Repo-relative paths git considers reviewable surface, or None.
 
@@ -822,12 +840,7 @@ def main(argv=None):
                               sorted(set(tests) | set(related_tests(repo, impl))), args.max_per_group,
                               security_mode=args.security)
         base, source = resolve_base(repo, explicit=args.base)
-        hunks_path = (os.path.join(os.path.dirname(os.path.abspath(args.out)), "diff-hunks.json")
-                      if args.out else os.path.join(".panopticon", "diff-hunks.json"))
-        write_diff_hunks(repo, base, source, hunks_path, args.diff_context)
-        if base is None:
-            print("panopticon: base ref could not be resolved for delta review; "
-                  "synthesize will report INCONCLUSIVE", file=sys.stderr)
+        emit_delta_artifact(repo, args.out, base, source, args.diff_context)
 
     elif args.changes:
         changed = collect_changed_files(repo)
@@ -845,12 +858,7 @@ def main(argv=None):
                               sorted(set(tests) | set(related_tests(repo, impl))), args.max_per_group,
                               security_mode=args.security)
         base, source = resolve_base(repo, explicit=args.base)
-        hunks_path = (os.path.join(os.path.dirname(os.path.abspath(args.out)), "diff-hunks.json")
-                      if args.out else os.path.join(".panopticon", "diff-hunks.json"))
-        write_diff_hunks(repo, base, source, hunks_path, args.diff_context)
-        if base is None:
-            print("panopticon: base ref could not be resolved for delta review; "
-                  "synthesize will report INCONCLUSIVE", file=sys.stderr)
+        emit_delta_artifact(repo, args.out, base, source, args.diff_context)
 
     else:
         # --repo-scan
