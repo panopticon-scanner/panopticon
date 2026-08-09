@@ -2974,10 +2974,10 @@ class TestRenderDelta(unittest.TestCase):
         r = self._report({"critical": 1, "high": 0, "medium": 0, "low": 0})
         out = syn.render_summary(r)
         lines = out.split("\n")
-        ev_idx = next(i for i, l in enumerate(lines) if l.startswith("**Evidence:**"))
-        groups_idx = next(i for i, l in enumerate(lines) if l == "## Groups")
-        ondiff_idx = next(i for i, l in enumerate(lines) if l.startswith("**On-diff:**"))
-        pre_idx = next(i for i, l in enumerate(lines) if l.startswith("**Pre-existing"))
+        ev_idx = next(i for i, ln in enumerate(lines) if ln.startswith("**Evidence:**"))
+        groups_idx = next(i for i, ln in enumerate(lines) if ln == "## Groups")
+        ondiff_idx = next(i for i, ln in enumerate(lines) if ln.startswith("**On-diff:**"))
+        pre_idx = next(i for i, ln in enumerate(lines) if ln.startswith("**Pre-existing"))
         self.assertTrue(ev_idx < ondiff_idx < pre_idx < groups_idx)
 
     def test_no_delta_block_when_not_delta_mode(self):
