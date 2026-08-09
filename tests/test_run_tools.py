@@ -86,18 +86,6 @@ class TestAdapterDispatch(unittest.TestCase):
             self.assertIn("pip-audit", names)
             self.assertNotIn("npm-audit", names)
 
-    def test_run_adapters_writes_raw_output(self):
-        class FakeAdapter:
-            name = "fake"
-            def is_applicable(self, target): return True
-            def invoke(self, target): return (b'{"results":[]}', 0)
-
-        with tempfile.TemporaryDirectory() as d:
-            out_dir = os.path.join(d, "out")
-            rt.run_adapters({"fake": FakeAdapter()}, d, out_dir)
-            with open(os.path.join(out_dir, "fake.json")) as fh:
-                self.assertEqual(json.load(fh), {"results": []})
-
     def test_run_tools_dispatches_phase1_adapter_via_docker_helper(self):
         class FakeAdapter:
             name = "fake"
@@ -123,17 +111,25 @@ class TestAdapterDispatch(unittest.TestCase):
                 self.assertEqual(fh.read(), R.stdout)
 
     def test_empty_adapter_output_warns_on_stderr(self):
-        # An adapter that returns rc 0 with empty stdout still writes a file (so
+        # An adapter run that exits 0 with empty stdout still writes a file (so
         # synthesis can classify it) but must announce it produced nothing.
         import contextlib, io
-        class _EmptyAdapter:
-            def invoke(self, target):
-                return b"", 0
+        class FakeAdapter:
+            name = "fake"
+            def is_applicable(self, target): return True
+        class R: returncode = 0; stdout = b''; stderr = b''
+        def runner(cmd, **kw):
+            return R()
         with tempfile.TemporaryDirectory() as d:
             out = os.path.join(d, "out")
-            with contextlib.redirect_stderr(io.StringIO()) as err:
-                rt.run_adapters({"bandit": _EmptyAdapter()}, d, out)
+            rt.ADAPTERS["fake"] = FakeAdapter()
+            try:
+                with contextlib.redirect_stderr(io.StringIO()) as err:
+                    rt.run_tools(d, ["fake"], out, runner=runner)
+            finally:
+                rt.ADAPTERS.pop("fake", None)
             self.assertIn("produced no output", err.getvalue())
+            self.assertTrue(os.path.exists(os.path.join(out, "fake.json")))
 
     def test_run_tools_uses_readonly_src_mount_for_phase2_build_adapters(self):
         calls = []

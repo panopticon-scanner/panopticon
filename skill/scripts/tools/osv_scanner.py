@@ -1,20 +1,9 @@
 """OSV scanner adapter for cross-ecosystem dependency advisories."""
 from __future__ import annotations
-import json
 import os
-from .base import attach_tool_provenance, normalize_severity, new_finding_id, omit_none, run_tool
+from .base import (cve_ids, cvss_bucket, make_finding, normalize_severity,
+                   omit_none, parse_json_bytes, run_tool)
 from .sarif_utils import _norm_uri
-
-
-def _cvss_bucket(score: float) -> str:
-    """Map a numeric CVSS score to the pipeline's severity scale."""
-    if score >= 9.0:
-        return "CRITICAL"
-    if score >= 7.0:
-        return "HIGH"
-    if score >= 4.0:
-        return "MEDIUM"
-    return "LOW"
 
 
 class OsvScannerAdapter:
@@ -46,7 +35,7 @@ class OsvScannerAdapter:
         CVSS vector dicts, not a label). source.path carries the container
         mount prefix and is normalized like SARIF artifact URIs.
         """
-        data = json.loads(raw.decode("utf-8", errors="replace"))
+        data = parse_json_bytes(raw)
         out = []
         n = 1
         for result in data.get("results", []):
@@ -66,44 +55,32 @@ class OsvScannerAdapter:
                 for vuln in pkg_entry.get("vulnerabilities", []) or []:
                     if not isinstance(vuln, dict):
                         continue
-                    aliases = vuln.get("aliases") or []
-                    cves = [a.upper() for a in aliases
-                            if isinstance(a, str) and a.upper().startswith("CVE-")]
                     score = sev_by_id.get(vuln.get("id"))
                     if score is not None:
-                        severity = _cvss_bucket(score)
+                        severity = cvss_bucket(score)
                     else:
                         raw_sev = vuln.get("severity")
                         severity = normalize_severity(
                             raw_sev if isinstance(raw_sev, str) else None)
-                    finding = {
-                        "id": new_finding_id(self.prefix, n),
-                        "title": f"{pkg.get('name')} {pkg.get('version')}: {vuln.get('id', 'vulnerability')}",
-                        "severity": severity,
-                        "confidence": "CERTAIN",
-                        "panel": "security",
-                        "category": "dependency_vulnerability",
-                        "source": f"tool:{self.name}",
-                        "location": {"file": src_path or pkg.get("ecosystem", "manifest"),
-                                     "line_start": 1},
-                        "description": vuln.get("summary")
+                    out.append(make_finding(
+                        self, n, group,
+                        title=f"{pkg.get('name')} {pkg.get('version')}: {vuln.get('id', 'vulnerability')}",
+                        severity=severity,
+                        category="dependency_vulnerability",
+                        location={"file": src_path or pkg.get("ecosystem", "manifest"),
+                                  "line_start": 1},
+                        description=vuln.get("summary")
                         or (vuln.get("details") or "No description provided.")[:500],
-                        "impact": f"Vulnerable dependency {pkg.get('name')}=={pkg.get('version')} is used.",
-                        "remediation": "Upgrade to a patched version or see the OSV advisory.",
-                        "references": [],
-                        "tool_evidence": omit_none({
+                        impact=f"Vulnerable dependency {pkg.get('name')}=={pkg.get('version')} is used.",
+                        remediation="Upgrade to a patched version or see the OSV advisory.",
+                        citations={"cve": cve_ids(vuln.get("aliases"))},
+                        tool_evidence=omit_none({
                             "rule_id": vuln.get("id"),
                             "package_name": pkg.get("name"),
                             "vulnerable_versions": pkg.get("version"),
                             "ecosystem": pkg.get("ecosystem"),
                             "cvss_max_severity": score,
                         }),
-                        "_group": group,
-                    }
-                    if cves:
-                        finding["citations"] = {"cve": cves}
-                    attach_tool_provenance(finding, self.name,
-                                           reasoning=finding["tool_evidence"].get("rule_id"))
-                    out.append(finding)
+                    ))
                     n += 1
         return out

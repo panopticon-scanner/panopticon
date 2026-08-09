@@ -106,27 +106,35 @@ def filter_online(chosen, online):
     return kept
 
 
-def run_adapters(adapters: dict, target: str, out_dir: str, runner=None) -> list[str]:
-    """Run each adapter and write raw output to out_dir."""
-    runner = runner or subprocess.run
-    os.makedirs(out_dir, exist_ok=True)
-    written = []
-    for name, adapter in adapters.items():
-        ext = "sarif" if name in LEGACY_SARIF_TOOLS else "json"
-        out_path = os.path.join(out_dir, f"{name}.{ext}")
-        try:
-            stdout, rc = adapter.invoke(target)
-            if rc not in (0, 1):
-                print(f"adapter {name} exited {rc}; skipping", file=sys.stderr)
-                continue
-            with open(out_path, "wb") as fh:
-                fh.write(stdout)
-            if not (stdout or b"").strip():
-                print("adapter %s produced no output" % name, file=sys.stderr)
-            written.append(out_path)
-        except Exception as e:
-            print(f"adapter {name} failed: {e}; skipping", file=sys.stderr)
-    return written
+def _capture_run(label, tool, docker, out_path, runner):
+    """Run one docker tool/adapter invocation and land its stdout at out_path.
+
+    The single home for the run/rc-check/write/warn-on-empty/timeout sequence
+    both run_tools branches share. rc 1 is accepted (== findings for most
+    scanners); other exits print a capped stderr excerpt so 'exited N;
+    skipping' is diagnosable. Returns out_path on success, None on skip.
+    """
+    try:
+        res = runner(docker, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                     timeout=TOOL_TIMEOUT)
+        if getattr(res, "returncode", 1) not in (0, 1):  # 1 == findings for many tools
+            excerpt = (getattr(res, "stderr", b"") or b"")[-500:].decode(
+                "utf-8", errors="replace").strip()
+            print("%s %s exited %s; skipping%s" % (
+                label, tool, res.returncode,
+                (" — " + excerpt) if excerpt else ""), file=sys.stderr)
+            return None
+        with open(out_path, "wb") as fh:
+            fh.write(res.stdout or b"")
+        if not (res.stdout or b"").strip():
+            print("%s %s produced no output" % (label, tool), file=sys.stderr)
+        return out_path
+    except subprocess.TimeoutExpired:
+        print("%s %s timed out after %ss; skipping" % (label, tool, TOOL_TIMEOUT),
+              file=sys.stderr)
+    except Exception as e:  # noqa: BLE001
+        print("%s %s failed: %s; skipping" % (label, tool, e), file=sys.stderr)
+    return None
 
 
 def run_tools(target, tools, out_dir, image="panopticon-tools", runner=None, online=False):
@@ -147,25 +155,9 @@ def run_tools(target, tools, out_dir, image="panopticon-tools", runner=None, onl
             out_path = os.path.join(out_dir, "%s.sarif" % tool)
             docker = ["docker", "run", "--rm", "--network", "none",
                       "-v", "%s:/src:ro" % os.path.abspath(target), image] + cmd
-            try:
-                res = runner(docker, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                             timeout=TOOL_TIMEOUT)
-                if getattr(res, "returncode", 1) not in (0, 1):  # 1 == findings for many tools
-                    excerpt = (getattr(res, "stderr", b"") or b"")[-500:].decode(
-                        "utf-8", errors="replace").strip()
-                    print("tool %s exited %s; skipping%s" % (
-                        tool, res.returncode,
-                        (" — " + excerpt) if excerpt else ""), file=sys.stderr)
-                    continue
-                with open(out_path, "wb") as fh:
-                    fh.write(res.stdout or b"")
-                if not (res.stdout or b"").strip():
-                    print("tool %s produced no output" % tool, file=sys.stderr)
-                written.append(out_path)
-            except subprocess.TimeoutExpired:
-                print("tool %s timed out after %ss; skipping" % (tool, TOOL_TIMEOUT), file=sys.stderr)
-            except Exception as e:  # noqa: BLE001
-                print("tool %s failed: %s; skipping" % (tool, e), file=sys.stderr)
+            done = _capture_run("tool", tool, docker, out_path, runner)
+            if done:
+                written.append(done)
             continue
 
         # Phase 1 adapter dispatch path.
@@ -185,21 +177,9 @@ def run_tools(target, tools, out_dir, image="panopticon-tools", runner=None, onl
                 "-v", "%s:/src:ro" % os.path.abspath(target),
                 "-v", "%s:/opt/panopticon/scripts:ro" % scripts_dir, image,
                 "python3", "/opt/panopticon/scripts/_run_adapter.py", tool])
-            try:
-                res = runner(docker, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                             timeout=TOOL_TIMEOUT)
-                if getattr(res, "returncode", 1) not in (0, 1):
-                    print("adapter %s exited %s; skipping" % (tool, res.returncode), file=sys.stderr)
-                    continue
-                with open(out_path, "wb") as fh:
-                    fh.write(res.stdout or b"")
-                if not (res.stdout or b"").strip():
-                    print("adapter %s produced no output" % tool, file=sys.stderr)
-                written.append(out_path)
-            except subprocess.TimeoutExpired:
-                print("adapter %s timed out after %ss; skipping" % (tool, TOOL_TIMEOUT), file=sys.stderr)
-            except Exception as e:  # noqa: BLE001
-                print("adapter %s failed: %s; skipping" % (tool, e), file=sys.stderr)
+            done = _capture_run("adapter", tool, docker, out_path, runner)
+            if done:
+                written.append(done)
     return written
 
 

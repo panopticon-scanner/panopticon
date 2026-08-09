@@ -1,12 +1,11 @@
 """pip-audit adapter for Python dependency CVEs."""
 from __future__ import annotations
 import glob
-import json
 import os
 import sys
 import tempfile
 import tomllib
-from .base import attach_tool_provenance, normalize_severity, new_finding_id, omit_none, run_tool
+from .base import cve_ids, make_finding, normalize_severity, omit_none, parse_json_bytes, run_tool
 
 
 def _deps_from_pyproject(target: str) -> list[str] | None:
@@ -88,36 +87,27 @@ class PipAuditAdapter:
         return matches[0] if matches else None
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
-        data = json.loads(raw.decode("utf-8", errors="replace"))
+        data = parse_json_bytes(raw)
         out = []
         n = 1
         for dep in data.get("dependencies", []):
             for vuln in dep.get("vulns", []):
-                cves = [a.upper() for a in vuln.get("aliases", []) if a.upper().startswith("CVE-")]
-                finding = {
-                    "id": new_finding_id(self.prefix, n),
-                    "title": f"{dep['name']} {dep['version']}: {vuln.get('id', 'vulnerability')}",
-                    "severity": normalize_severity(vuln.get("severity") or "MEDIUM"),
-                    "confidence": "CERTAIN",
-                    "panel": "security",
-                    "category": "dependency_vulnerability",
-                    "source": f"tool:{self.name}",
-                    "location": {"file": self._manifest_path or "requirements.txt", "line_start": 1},
-                    "description": vuln.get("description", "No description provided."),
-                    "impact": f"Vulnerable dependency {dep['name']}=={dep['version']} is used.",
-                    "remediation": f"Upgrade to a fixed version: {', '.join(vuln.get('fix_versions', [])) or 'see advisory'}",
-                    "references": [],
-                    "tool_evidence": omit_none({
+                out.append(make_finding(
+                    self, n, group,
+                    title=f"{dep['name']} {dep['version']}: {vuln.get('id', 'vulnerability')}",
+                    severity=normalize_severity(vuln.get("severity") or "MEDIUM"),
+                    category="dependency_vulnerability",
+                    location={"file": self._manifest_path or "requirements.txt", "line_start": 1},
+                    description=vuln.get("description", "No description provided."),
+                    impact=f"Vulnerable dependency {dep['name']}=={dep['version']} is used.",
+                    remediation=f"Upgrade to a fixed version: {', '.join(vuln.get('fix_versions', [])) or 'see advisory'}",
+                    citations={"cve": cve_ids(vuln.get("aliases"))},
+                    tool_evidence=omit_none({
                         "rule_id": vuln.get("id"),
                         "package_name": dep["name"],
                         "vulnerable_versions": dep["version"],
                         "fixed_version": vuln.get("fix_versions", [None])[0],
                     }),
-                    "_group": group,
-                }
-                if cves:
-                    finding["citations"] = {"cve": cves}
-                attach_tool_provenance(finding, self.name, reasoning=finding["tool_evidence"].get("rule_id"))
-                out.append(finding)
+                ))
                 n += 1
         return out

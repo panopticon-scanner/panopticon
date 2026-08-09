@@ -25,12 +25,8 @@ import triage
 LEDGER = ".panopticon/filed-issues.json"
 
 
-def load_ledger(path=LEDGER):
-    try:
-        with open(path, encoding="utf-8") as fh:
-            return json.load(fh)
-    except (OSError, ValueError):
-        return {}
+# Same machinery, same default path — file_issues owns the ledger read.
+load_ledger = file_issues.load_ledger
 
 
 def ledger_key(record):

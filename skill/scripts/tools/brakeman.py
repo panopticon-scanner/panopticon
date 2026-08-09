@@ -1,8 +1,7 @@
 """Brakeman adapter for Ruby on Rails security findings."""
 from __future__ import annotations
-import json
 import os
-from .base import attach_tool_provenance, normalize_severity, new_finding_id, omit_none, run_tool
+from .base import make_finding, normalize_severity, omit_none, parse_json_bytes, run_tool
 
 
 _CONFIDENCE_MAP = {
@@ -60,36 +59,28 @@ class BrakemanAdapter:
         return stdout, rc
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
-        data = json.loads(raw.decode("utf-8", errors="replace"))
+        data = parse_json_bytes(raw)
         out = []
         n = 1
         for w in data.get("warnings", []):
             wtype = w.get("warning_type", "")
             cwe = _BRAKEMAN_CWE.get(wtype)
-            citations = {"cwe": [cwe]} if cwe else {}
-            finding = {
-                "id": new_finding_id(self.prefix, n),
-                "title": f"{wtype}: {w.get('message', '')}",
-                "severity": normalize_severity(w.get("confidence", "medium")),
-                "confidence": _normalize_confidence(w.get("confidence", "medium")),
-                "panel": "security",
-                "category": "rails_security",
-                "source": f"tool:{self.name}",
-                "location": {
+            out.append(make_finding(
+                self, n, group,
+                title=f"{wtype}: {w.get('message', '')}",
+                severity=normalize_severity(w.get("confidence", "medium")),
+                confidence=_normalize_confidence(w.get("confidence", "medium")),
+                category="rails_security",
+                location={
                     "file": w.get("file", ""),
                     "line_start": w.get("line") or 1,
                 },
-                "description": w.get("message", "No description provided."),
-                "impact": f"Rails security issue of type {wtype}.",
-                "remediation": "Review the linked Brakeman documentation and refactor the affected code.",
-                "references": [w["link"]] if w.get("link") else [],
-                "citations": citations or None,
-                "tool_evidence": omit_none({"rule_id": wtype, "advisory_url": w.get("link")}),
-                "_group": group,
-            }
-            if not finding["citations"]:
-                finding.pop("citations", None)
-            attach_tool_provenance(finding, self.name, reasoning=finding["tool_evidence"].get("rule_id"))
-            out.append(finding)
+                description=w.get("message", "No description provided."),
+                impact=f"Rails security issue of type {wtype}.",
+                remediation="Review the linked Brakeman documentation and refactor the affected code.",
+                references=[w["link"]] if w.get("link") else [],
+                citations={"cwe": [cwe] if cwe else []},
+                tool_evidence=omit_none({"rule_id": wtype, "advisory_url": w.get("link")}),
+            ))
             n += 1
         return out
