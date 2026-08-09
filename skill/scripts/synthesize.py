@@ -612,7 +612,7 @@ def duplicate_out_files(plan):
 
 _FINDINGS_NAME_RE = re.compile(
     r"^findings-(?P<rest>.+)-(?P<role>panel_review|lens_sweep)"
-    r"(?:-(?P<lens>.+))?\.json$")
+    r"(?:-(?P<lens>.+?))?\.json$")
 
 
 def _expected_from_filename(basename):
