@@ -175,10 +175,16 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
    every `dispatch-plan*.json` on disk (`meta.integrity.plans_seen` records how
    many were read, so a deleted/absent plan reads as "not reconciled", not
    "clean") — an undeclared file appears in
-   `meta.integrity.unexpected_findings_files` and forces `INCONCLUSIVE`. This
-   detects undeclared and dropped files only; content substituted inside a
-   legitimately-declared `out_file` is not detected (byte-identity
-   verification is a tracked follow-up).
+   `meta.integrity.unexpected_findings_files` and forces `INCONCLUSIVE`.
+   Two more integrity signals also force `INCONCLUSIVE`:
+   `meta.integrity.duplicate_out_files` (two plan entries assigned the same
+   write target — a silent-overwrite coverage risk the set-keyed reconcile
+   can't see, #936) and `meta.integrity.mislabeled_findings_files` (a findings
+   file whose content carries a `source_role`/`panel` that disagrees with the
+   panel/role its filename declares — a mis-targeted write, #937). Residual
+   gap: content written to the RIGHT panel/role but for the wrong group (e.g. a
+   same-role overwrite) is still not caught — full byte-identity verification
+   remains a tracked follow-up.
    Then check gate, print summary, write JSON.
 
 ## Host dispatch

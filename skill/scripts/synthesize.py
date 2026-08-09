@@ -591,6 +591,70 @@ def derive_tool_policy_mode(panopticon_dir=".panopticon"):
     return "advisory"
 
 
+def duplicate_out_files(plan):
+    """out_file values assigned to more than one reviewer entry in the merged
+    plan (#936). A collision means two reviewers share a write target and one
+    silently overwrites the other — a coverage risk that
+    reconcile_findings_files' set-keyed view structurally cannot see."""
+    if not isinstance(plan, list):
+        return []
+    seen, dupes = set(), set()
+    for e in plan:
+        if isinstance(e, dict) and isinstance(e.get("out_file"), str) and e.get("out_file"):
+            of = e["out_file"]
+            (dupes if of in seen else seen).add(of)
+    return sorted(dupes)
+
+
+_FINDINGS_NAME_RE = re.compile(
+    r"^findings-(?P<rest>.+)-(?P<role>panel_review|lens_sweep)"
+    r"(?:-(?P<lens>[^-]+))?\.json$")
+
+
+def _expected_from_filename(basename):
+    """(panel, role) declared by a reviewer findings filename, or None when the
+    name is not a reviewer findings file or its panel token is unrecognizable.
+    Panels are a fixed hyphen-free set, so the panel is the last token of the
+    `{group}-{panel}` prefix even when the group name contains hyphens."""
+    m = _FINDINGS_NAME_RE.match(basename)
+    if not m:
+        return None
+    panel = m.group("rest").split("-")[-1]
+    if panel not in VALID_PANELS:
+        return None
+    return panel, m.group("role")
+
+
+def mislabeled_findings_files(paths):
+    """Reviewer findings files whose CONTENT contradicts the panel/role their
+    filename declares (#937) — a mis-targeted or overwritten write. Flags a
+    file as soon as any finding carries a source_role or panel that clearly
+    disagrees with the filename; absent fields are never second-guessed. This
+    is the byte-identity follow-up SKILL.md step 9 names."""
+    bad = []
+    for p in paths or []:
+        exp = _expected_from_filename(os.path.basename(p))
+        if not exp:
+            continue
+        panel, role = exp
+        try:
+            with open(p, encoding="utf-8") as fh:
+                data = load_json_tolerant(fh.read())
+        except (OSError, ValueError):
+            continue
+        findings = (data or {}).get("findings") if isinstance(data, dict) else None
+        if not isinstance(findings, list):
+            continue
+        for f in findings:
+            if not isinstance(f, dict):
+                continue
+            sr, fp = f.get("source_role"), f.get("panel")
+            if (sr and sr != role) or (fp and fp != panel):
+                bad.append(p)
+                break
+    return sorted(set(bad))
+
+
 def reconcile_findings_files(plan, ingested_paths):
     """(#146) Reconcile the findings files synthesize ingested against the
     dispatch plan's declared reviewer out_files. Returns (unexpected, missing)
@@ -837,9 +901,13 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
     integrity = integrity if isinstance(integrity, dict) else None
     integrity = integrity or {"unexpected_findings_files": [],
                               "missing_planned_files": [],
+                              "duplicate_out_files": [],
+                              "mislabeled_findings_files": [],
                               "unenforced_acknowledged": False,
                               "plans_seen": 0}
-    integrity_ok = not integrity.get("unexpected_findings_files")
+    integrity_ok = not (integrity.get("unexpected_findings_files")
+                        or integrity.get("duplicate_out_files")
+                        or integrity.get("mislabeled_findings_files"))
     cert = certify(overall, gate_eligible, fail_on, panels_incomplete, tools_absent,
                    integrity_ok=integrity_ok)
     return {
@@ -988,6 +1056,16 @@ def render_summary(report):
     if bad:
         lines.insert(3, "**Integrity:** UNEXPECTED FILES — %s (not declared by the "
                         "dispatch plan; run not certified)" % ", ".join(bad))
+    dupes = integ.get("duplicate_out_files") or []
+    if dupes:
+        lines.insert(3, "**Integrity:** DUPLICATE out_file — %s (two reviewers share "
+                        "a write target; one overwrote the other; run not certified)"
+                        % ", ".join(dupes))
+    mislabeled = integ.get("mislabeled_findings_files") or []
+    if mislabeled:
+        lines.insert(3, "**Integrity:** MISLABELED FILES — %s (content disagrees with "
+                        "the filename's panel/role; possible mis-targeted write; run "
+                        "not certified)" % ", ".join(mislabeled))
     for g in report["groups"]:
         pg = g["panel_grades"]
         grades = " / ".join("%s %s" % (p, pg[p]) for p in PANEL_ORDER)
@@ -1247,6 +1325,8 @@ def main(argv=None):
     _ack = read_unenforced_ack()
     integrity = {"unexpected_findings_files": unexpected,
                  "missing_planned_files": missing,
+                 "duplicate_out_files": duplicate_out_files(_plan),
+                 "mislabeled_findings_files": mislabeled_findings_files(args.files),
                  "unenforced_acknowledged": bool(_ack),
                  "plans_seen": plans_seen}
     if _ack:

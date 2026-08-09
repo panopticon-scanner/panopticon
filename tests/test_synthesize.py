@@ -10,6 +10,81 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill"))
 import scripts.synthesize as syn
 
 
+class TestFindingsFileIntegrity(unittest.TestCase):
+    """#936 duplicate out_file + #937 content-vs-filename validation."""
+
+    def test_duplicate_out_files_detected(self):
+        plan = [
+            {"role": "panel_review", "out_file": ".panopticon/findings-g1-redteam-panel_review.json"},
+            {"role": "panel_review", "out_file": ".panopticon/findings-g1-redteam-panel_review.json"},
+            {"role": "lens_sweep", "out_file": ".panopticon/findings-g1-code-lens_sweep-style.json"},
+        ]
+        self.assertEqual(syn.duplicate_out_files(plan),
+                         [".panopticon/findings-g1-redteam-panel_review.json"])
+        self.assertEqual(syn.duplicate_out_files([]), [])
+
+    def test_expected_from_filename(self):
+        self.assertEqual(syn._expected_from_filename(
+            "findings-DocumentsIntake-redteam-panel_review.json"), ("redteam", "panel_review"))
+        self.assertEqual(syn._expected_from_filename(
+            "findings-g1-security-lens_sweep-injection.json"), ("security", "lens_sweep"))
+        self.assertIsNone(syn._expected_from_filename("groups.json"))
+
+    def test_mislabeled_when_content_disagrees(self):
+        with tempfile.TemporaryDirectory() as d:
+            good = os.path.join(d, "findings-g1-redteam-panel_review.json")
+            with open(good, "w") as fh:
+                json.dump({"findings": [{"panel": "redteam", "source_role": "panel_review"}]}, fh)
+            # a lens_sweep finding written into a panel_review file = mis-targeted write
+            bad = os.path.join(d, "findings-g2-redteam-panel_review.json")
+            with open(bad, "w") as fh:
+                json.dump({"findings": [{"panel": "security", "source_role": "lens_sweep"}]}, fh)
+            self.assertEqual(syn.mislabeled_findings_files([good]), [])
+            self.assertEqual(syn.mislabeled_findings_files([bad]), [bad])
+
+    def test_absent_fields_are_not_second_guessed(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "findings-g1-code-panel_review.json")
+            with open(p, "w") as fh:
+                json.dump({"findings": [{"description": "no role/panel fields"}]}, fh)
+            self.assertEqual(syn.mislabeled_findings_files([p]), [])
+
+    def test_mislabeled_file_forces_inconclusive_end_to_end(self):
+        # --fail-on high makes the base gate PASS (no high findings); the
+        # integrity gap then raises it to INCONCLUSIVE (OFF would be preserved).
+        prev = os.getcwd()
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, ".panopticon"))
+            p = os.path.join(d, "findings-g1-redteam-panel_review.json")  # panel_review name
+            with open(p, "w") as fh:                                       # lens_sweep content
+                json.dump({"findings": [{"id": "XX-001", "title": "t", "severity": "LOW",
+                    "confidence": "POSSIBLE", "panel": "code", "source_role": "lens_sweep",
+                    "category": "x", "location": {"file": "a.py", "line_start": 1}}]}, fh)
+            out = os.path.join(d, "report.json")
+            try:
+                os.chdir(d)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    syn.main(["--target", "t", "--fail-on", "high", "--out", out, p])
+            finally:
+                os.chdir(prev)
+            report = json.load(open(out))
+            self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
+            self.assertFalse(report["summary"]["coverage_certified"])
+            self.assertIn(os.path.basename(p),
+                          " ".join(report["meta"]["integrity"]["mislabeled_findings_files"]))
+
+    def test_real_tapestry_corpus_is_consistent_when_present(self):
+        # If the Tapestry corpus is on this machine, its reviewer findings files
+        # must not trip the mislabel check (they were authored by the real
+        # reviewers) — a regression canary against false positives.
+        base = "/Volumes/Mini Vault/untitled folder/projects/Tapestry/tapestry/.panopticon"
+        import glob
+        files = glob.glob(os.path.join(base, "findings-*.json"))
+        if not files:
+            self.skipTest("Tapestry corpus not present")
+        self.assertEqual(syn.mislabeled_findings_files(files), [])
+
+
 @contextlib.contextmanager
 def _chdir(path):
     prev = os.getcwd()
@@ -2599,6 +2674,7 @@ class TestIntegrity(unittest.TestCase):
         r = syn.build_report([], self.G, "t", "high", self.TS)
         self.assertEqual(r["meta"]["integrity"],
                          {"unexpected_findings_files": [], "missing_planned_files": [],
+                          "duplicate_out_files": [], "mislabeled_findings_files": [],
                           "unenforced_acknowledged": False, "plans_seen": 0})
         self.assertEqual(r["summary"]["gate"], "PASS")
 
@@ -2608,6 +2684,7 @@ class TestIntegrity(unittest.TestCase):
         r = syn.build_report([], self.G, "t", "high", self.TS, integrity=["not", "a", "dict"])
         self.assertEqual(r["meta"]["integrity"],
                          {"unexpected_findings_files": [], "missing_planned_files": [],
+                          "duplicate_out_files": [], "mislabeled_findings_files": [],
                           "unenforced_acknowledged": False, "plans_seen": 0})
         self.assertEqual(r["summary"]["gate"], "PASS")
 
