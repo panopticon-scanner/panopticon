@@ -58,12 +58,15 @@ TEST_PATTERNS = [
     r"_spec\.rb$",
     r"_test\.rb$",
     r"_test\.go$",
-    r"\.test\.[jt]sx?$",
-    r"\.spec\.[jt]sx?$",
+    r"\.test\.[cm]?[jt]sx?$",   # .test.js/ts/jsx/tsx + .test.mjs/cjs/mts/cts
+    r"\.spec\.[cm]?[jt]sx?$",   # .spec.js/ts/... + ESM/CJS variants
+    r"(^|/)__tests__/",          # Jest/Mocha suites by directory, any suffix
     r"(^|/)test_[^/]+\.py$",
-    r"_test\.py$",
+    r"_tests?\.py$",             # foo_test.py AND foo_tests.py (plural)
     r"Test\.java$",
     r"Tests\.cs$",
+    r"Test\.php$",               # PHPUnit
+    r"_test\.exs$",              # Elixir ExUnit
 ]
 
 ARCHITECTURE_PATTERNS = [
