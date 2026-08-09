@@ -73,11 +73,12 @@ class TestTestCandidates(unittest.TestCase):
     """#670: direct coverage for test_candidates() name/dir generation."""
 
     def test_python_candidates_cover_stem_and_dirs(self):
-        cands = orch.test_candidates("src/parser.py")
-        self.assertIn("src/test_parser.py", cands)
-        self.assertIn("src/parser_test.py", cands)
-        self.assertIn("tests/test_parser.py", cands)   # src/ -> tests/ remap
-        self.assertIn("test/test_parser.py", cands)
+        # Use a nested path so the src/ -> test(s)/ remap branch is exercised.
+        cands = orch.test_candidates("src/pkg/parser.py")
+        self.assertIn("src/pkg/test_parser.py", cands)
+        self.assertIn("src/pkg/parser_test.py", cands)
+        self.assertIn("tests/pkg/test_parser.py", cands)  # src/ -> tests/ remap
+        self.assertIn("test/pkg/test_parser.py", cands)   # src/ -> test/ remap
 
     def test_ruby_app_dir_maps_to_spec(self):
         cands = orch.test_candidates("app/models/user.rb")
