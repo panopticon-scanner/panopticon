@@ -260,8 +260,9 @@ History:
 - `--file`/`--files` echo explicit paths verbatim and bypass the `_within` repo-confinement clamp that
   glob-derived scope gets (still 2.2.x backlog; low real risk on a local dev CLI over a trusted repo).
 - SARIF-derived paths are rendered into the markdown summary without escaping (display-only; not opened).
-- `test_related_tests_found` doesn't assert the nested-match it names. Bandit `B112`/`B404` are by-design
-  (tolerant loops + the deliberate `subprocess` import) and stay as LOW tool findings.
+- `test_related_tests_found` doesn't assert the nested-match it names. Bandit `B404`/`B110`/`B112`
+  (subprocess import + tolerant loops) are noise-floor and are now suppressed via
+  `sarif_utils.NOISE_RULES`; `B603`/`B607` are kept as a tool-layer backstop for panel-less runs.
 
 ## Shipped in 2.2.0 (delivered this round)
 Deferred to a 2.2.1 sweep (minors flagged during this cycle): clamp `--file`/`--files` explicit

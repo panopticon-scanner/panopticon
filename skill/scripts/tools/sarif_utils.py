@@ -18,10 +18,25 @@ PREFIX = {"semgrep": "SG", "trivy": "TR", "gitleaks": "GL", "bandit": "BN",
 CWE_TAG = re.compile(r"(CWE-\d+)", re.IGNORECASE)
 CVE_TAG = re.compile(r"(CVE-\d{4}-\d{4,})", re.IGNORECASE)
 
-# Bandit rules that are noise floor, not signal: B101 (assert-used) fires on
-# every pytest/unittest assertion and floods reports with low-value hits.
-# Module constant so the suppression list is easy to extend later.
-NOISE_RULES = {"B101"}
+# Bandit rules that are noise floor, not signal, on any codebase:
+#   B101 assert-used         - fires on every pytest/unittest assertion
+#   B404 import-subprocess    - flags the mere import of the subprocess module
+#   B110 try-except-pass      - style nit, not a vulnerability
+#   B112 try-except-continue  - style nit, not a vulnerability
+# These are blunt heuristics that flood reports with low-value hits; the LLM
+# security panel + advisor already review command-exec/error-handling with real
+# context. B603 (subprocess-call-untrusted-input) and B607 (partial-exec-path)
+# are deliberately NOT suppressed: they remain a tool-layer backstop for
+# panel-less runs (tool-only / lens-only). Module constant so the suppression
+# list is easy to extend later.
+NOISE_RULES = {"B101", "B404", "B110", "B112"}
+
+# Test-fixture corpus definition, kept in sync with orchestrator's
+# FIXTURE_DIR_BASENAMES / FIXTURE_PARENT_DIRS / _is_fixture_dir (#434). A shared
+# import is blocked by the two sys.path conventions in the tree (#742), so the
+# definition is mirrored here; update both places together.
+_FIXTURE_DIR_BASENAMES = frozenset({"testdata", "__fixtures__"})
+_FIXTURE_PARENT_DIRS = frozenset({"tests", "test", "spec"})
 
 
 def _is_test_path(path):
@@ -33,6 +48,29 @@ def _is_test_path(path):
         return True
     base = os.path.basename(path)
     return base.startswith("test_") or base.endswith("_test.py")
+
+
+def _is_fixture_path(path):
+    """True if a repo-relative file path lives under a test-fixture corpus dir
+    (e.g. ``tests/fixtures/...``, ``testdata/...``, ``__fixtures__/...``).
+
+    Mirrors ``orchestrator._is_fixture_dir`` so the tool-ingest path prunes the
+    same intentionally-vulnerable fixtures the agentic review path already
+    prunes in standard mode (#434). The agentic path drops fixture FILES before
+    review; the tool scanners (osv-scanner, trivy) still walk the whole repo and
+    report real fixture paths, so this is where the tool path reaches parity.
+    """
+    if not isinstance(path, str):
+        return False
+    parts = path.split("/")
+    # Inspect each ANCESTOR directory (everything but the file basename).
+    for i in range(len(parts) - 1):
+        name = parts[i]
+        if name in _FIXTURE_DIR_BASENAMES:
+            return True
+        if name == "fixtures" and i >= 1 and parts[i - 1] in _FIXTURE_PARENT_DIRS:
+            return True
+    return False
 
 
 def _norm_uri(uri):

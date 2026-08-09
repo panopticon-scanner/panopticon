@@ -598,8 +598,9 @@ class TestReport(unittest.TestCase):
             self.assertEqual(ids, {"SE-001"})
 
     def _tools_dir_with_sarif(self, d):
-        # A semgrep SARIF with one real-code result and one fixture result, so a
-        # --tools-exclude glob has something to drop.
+        # A semgrep SARIF with three results: real code (kept), a fixture-corpus
+        # path (dropped by the default prune), and a non-fixture path a
+        # --tools-exclude glob can drop independently of the fixture prune.
         sarif = {"runs": [{"tool": {"driver": {"name": "semgrep"}}, "results": [
             {"ruleId": "r1", "level": "error", "message": {"text": "real"},
              "locations": [{"physicalLocation": {
@@ -609,6 +610,10 @@ class TestReport(unittest.TestCase):
              "locations": [{"physicalLocation": {
                  "artifactLocation": {"uri": "tests/fixtures/vuln.py"},
                  "region": {"startLine": 2}}}]},
+            {"ruleId": "r3", "level": "error", "message": {"text": "vendored"},
+             "locations": [{"physicalLocation": {
+                 "artifactLocation": {"uri": "vendor/gen.js"},
+                 "region": {"startLine": 3}}}]},
         ]}]}
         tdir = os.path.join(d, "tools")
         os.makedirs(tdir)
@@ -616,9 +621,10 @@ class TestReport(unittest.TestCase):
             json.dump(sarif, fh)
         return tdir
 
-    def test_main_tools_exclude_is_wired_end_to_end(self):
-        # #693: --tools-exclude must reach ingest_dir from the CLI. Without it
-        # both tool findings appear; with it the fixture-path one is dropped.
+    def test_main_tools_exclude_and_fixture_prune_wired_end_to_end(self):
+        # #693: --tools-exclude must reach ingest_dir from the CLI. Plus the
+        # standard-mode default fixture prune (tool-path parity with #434) and
+        # its --include-fixtures (redteam) escape hatch, all wired through main().
         import io, contextlib
         with tempfile.TemporaryDirectory() as d:
             tdir = self._tools_dir_with_sarif(d)
@@ -635,9 +641,13 @@ class TestReport(unittest.TestCase):
                 with open(out) as fh:
                     return {f["location"]["file"] for f in json.load(fh)["findings"]}
 
-            self.assertEqual(run([]), {"app/db.py", "tests/fixtures/vuln.py"})
-            self.assertEqual(run(["--tools-exclude", "tests/fixtures/*"]),
-                             {"app/db.py"})   # fixture result dropped via CLI
+            # Default: fixture path pruned automatically; non-fixture paths kept.
+            self.assertEqual(run([]), {"app/db.py", "vendor/gen.js"})
+            # --tools-exclude drops a NON-fixture path via the CLI glob (#693).
+            self.assertEqual(run(["--tools-exclude", "vendor/*"]), {"app/db.py"})
+            # --include-fixtures (redteam) keeps the fixture-corpus finding.
+            self.assertEqual(run(["--include-fixtures"]),
+                             {"app/db.py", "tests/fixtures/vuln.py", "vendor/gen.js"})
 
     def test_main_changes_alias_sets_review_type(self):
         with tempfile.TemporaryDirectory() as d:

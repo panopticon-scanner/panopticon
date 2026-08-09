@@ -16,6 +16,7 @@ from scripts.tools.sarif_utils import (
     LEVEL_TO_SEV,
     NOISE_RULES,
     PREFIX,
+    _is_fixture_path,
     _is_test_path,
     _norm_uri,
     _rules_index,
@@ -29,6 +30,7 @@ __all__ = [
     "LEVEL_TO_SEV",
     "NOISE_RULES",
     "PREFIX",
+    "_is_fixture_path",
     "_is_test_path",
     "_norm_uri",
     "_rules_index",
@@ -38,7 +40,7 @@ __all__ = [
 ]
 
 
-def ingest_dir_detailed(tools_dir, group, exclude_globs=None):
+def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=False):
     """Ingest raw tool-output files and report each adapter's disposition.
 
     Returns (findings, dispositions). dispositions maps each output file's
@@ -50,17 +52,24 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None):
     were all fixture-noise still reads as having run (status/findings from the
     raw parse; only `out` is filtered).
 
-    exclude_globs (F-CAL-2): fnmatch patterns matched against each finding's
-    location.file; matches are dropped with a single aggregate stderr note.
-    Standardizes the fixture-noise filter that previously lived only as inline
-    Python in CI (intentionally vulnerable apps under tests/fixtures/ dominate
-    self-scans otherwise).
+    Fixture prune (default): unless *include_fixtures* is True, findings whose
+    location.file lives under a test-fixture corpus dir (``_is_fixture_path``)
+    are dropped — the tool-path equivalent of the agentic review-path prune
+    (#434). The tool scanners (osv-scanner, trivy) walk the whole repo and
+    report the intentionally-vulnerable fixtures under tests/fixtures/, which
+    would otherwise dominate a self-scan. Redteam runs pass include_fixtures=True
+    to keep them, mirroring the review path.
+
+    exclude_globs (F-CAL-2): additional fnmatch patterns matched against each
+    finding's location.file; matches are dropped too. Both filters share one
+    aggregate stderr note.
     """
     import fnmatch
     from scripts.tools import ADAPTERS
     out = []
     dispositions = {}
-    excluded = 0
+    fx_excluded = 0   # dropped by the default fixture-corpus prune
+    gl_excluded = 0   # dropped by an explicit exclude_glob
     for path in sorted(glob.glob(os.path.join(tools_dir, "*.sarif"))
                        + glob.glob(os.path.join(tools_dir, "*.json"))):
         tool = os.path.splitext(os.path.basename(path))[0]
@@ -103,30 +112,38 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None):
                                   % (str(e).splitlines() or [""])[0]}
             continue
         raw_count = len(parsed)
-        if exclude_globs:
+        if not include_fixtures or exclude_globs:
             kept = []
             for f in parsed:
                 fpath = str((f.get("location") or {}).get("file", ""))
-                if any(fnmatch.fnmatch(fpath, g) for g in exclude_globs):
-                    excluded += 1
+                if not include_fixtures and _is_fixture_path(fpath):
+                    fx_excluded += 1
+                elif exclude_globs and any(fnmatch.fnmatch(fpath, g) for g in exclude_globs):
+                    gl_excluded += 1
                 else:
                     kept.append(f)
             parsed = kept
         out.extend(parsed)
         dispositions[tool] = {"status": "ok" if raw_count else "empty",
                               "findings": raw_count}
-    if excluded:
-        print("ingest: excluded %d finding(s) matching %s"
-              % (excluded, ", ".join(exclude_globs)), file=sys.stderr)
+    if fx_excluded or gl_excluded:
+        reasons = []
+        if fx_excluded:
+            reasons.append("test-fixture corpus")
+        if gl_excluded:
+            reasons.append(", ".join(exclude_globs))
+        print("ingest: excluded %d finding(s) (%s)"
+              % (fx_excluded + gl_excluded, "; ".join(reasons)), file=sys.stderr)
     return out, dispositions
 
 
-def ingest_dir(tools_dir, group, exclude_globs=None):
+def ingest_dir(tools_dir, group, exclude_globs=None, include_fixtures=False):
     """Ingest raw tool-output files from a directory and route them to the
     registered adapter for parsing. Files without a registered adapter or that
     fail to parse are skipped with a stderr diagnostic.
 
     Findings-only wrapper over ingest_dir_detailed (unchanged contract).
     """
-    findings, _dispositions = ingest_dir_detailed(tools_dir, group, exclude_globs)
+    findings, _dispositions = ingest_dir_detailed(
+        tools_dir, group, exclude_globs, include_fixtures)
     return findings
