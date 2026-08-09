@@ -85,3 +85,31 @@ class TestHunkMap(unittest.TestCase):
 
     def test_missing_base_returns_empty(self):
         self.assertEqual(diff_map.hunk_map(self._repo(), "no-such-ref"), {})
+
+
+class TestClassify(unittest.TestCase):
+    HM = {"a.py": [(10, 12)], "empty.py": []}
+    def _f(self, path, ls=None, le=None):
+        loc = {"file": path}
+        if ls is not None: loc["line_start"] = ls
+        if le is not None: loc["line_end"] = le
+        return {"location": loc}
+
+    def test_inside_hunk_is_on_diff_distance_zero(self):
+        d = diff_map.classify(self._f("a.py", 11), self.HM)
+        self.assertEqual((d["on_diff"], d["hunk"], d["distance"]), (True, [10, 12], 0))
+
+    def test_within_tolerance_boundary_on_at_5_off_at_6(self):
+        self.assertTrue(diff_map.classify(self._f("a.py", 17), self.HM, 5)["on_diff"])   # 17 vs end 12 = 5
+        off = diff_map.classify(self._f("a.py", 18), self.HM, 5)                          # = 6
+        self.assertFalse(off["on_diff"]); self.assertEqual(off["distance"], 6)
+
+    def test_range_overlap_counts(self):
+        self.assertTrue(diff_map.classify(self._f("a.py", 1, 50), self.HM)["on_diff"])
+
+    def test_lineless_on_changed_file_fails_open(self):
+        self.assertTrue(diff_map.classify(self._f("empty.py"), self.HM)["on_diff"])
+
+    def test_file_not_in_map_is_pre_existing(self):
+        d = diff_map.classify(self._f("other.py", 3), self.HM)
+        self.assertEqual((d["on_diff"], d["distance"]), (False, None))

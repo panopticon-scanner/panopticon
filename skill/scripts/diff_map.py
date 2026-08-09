@@ -79,3 +79,29 @@ def hunk_map(repo, base):
                 continue
             result[rel] = [(1, max(n, 1))]
     return result
+
+
+def classify(finding, hmap, tolerance=5):
+    """{on_diff, hunk, distance} for a finding vs the hunk map (see module docstring)."""
+    loc = finding.get("location") or {}
+    path = loc.get("file")
+    if path not in hmap:
+        return {"on_diff": False, "hunk": None, "distance": None}
+    ranges = hmap[path]
+    ls = loc.get("line_start")
+    if ls is None:
+        return {"on_diff": True, "hunk": None, "distance": None}   # fail-open
+    le = loc.get("line_end") or ls
+    best = None
+    for (s, e) in ranges:
+        if le >= s - tolerance and ls <= e + tolerance:            # within window or overlap
+            dist = 0 if (ls <= e and le >= s) else min(
+                abs(ls - s), abs(ls - e), abs(le - s), abs(le - e))
+            if best is None or dist < best[1]:
+                best = ((s, e), dist)
+    if best is not None:
+        return {"on_diff": True, "hunk": [best[0][0], best[0][1]], "distance": best[1]}
+    if not ranges:
+        return {"on_diff": True, "hunk": None, "distance": None}   # changed file, no ranges, lined finding: fail-open
+    nearest = min(min(abs(ls - s), abs(ls - e)) for (s, e) in ranges)
+    return {"on_diff": False, "hunk": None, "distance": nearest}
