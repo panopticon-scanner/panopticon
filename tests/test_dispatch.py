@@ -41,6 +41,52 @@ class TestDispatchPlan(unittest.TestCase):
         panel_seq = [e["panel"] for e in plan if e["role"] == "panel_review"]
         self.assertEqual(panel_seq, ["security", "architecture", "code", "test"])
 
+    def test_build_plan_emits_absolute_out_file_rooted_at_root(self):
+        # #935: out_file must be ABSOLUTE and rooted at the explicit run root,
+        # so a reviewer subagent resolves it identically from any cwd.
+        root = os.path.join(os.sep, "run", "root")
+        plan = dispatch.build_plan(self._profile(), host="kimi", root=root)
+        self.assertTrue(plan)
+        for e in plan:
+            self.assertTrue(os.path.isabs(e["out_file"]), e["out_file"])
+            self.assertEqual(os.path.dirname(e["out_file"]),
+                             os.path.join(root, ".panopticon"))
+            self.assertTrue(os.path.basename(e["out_file"]).startswith("findings-"))
+
+    def test_build_plan_root_defaults_to_cwd(self):
+        plan = dispatch.build_plan(self._profile(), host="kimi")
+        for e in plan:
+            self.assertEqual(os.path.dirname(e["out_file"]),
+                             os.path.join(os.getcwd(), ".panopticon"))
+
+    def test_build_plan_root_with_spaces(self):
+        # The Tapestry workspace root contains a space (#935).
+        root = os.path.join(os.sep, "tmp", "Mini Vault", "work")
+        plan = dispatch.build_plan(self._profile(), host="kimi", root=root)
+        for e in plan:
+            self.assertEqual(os.path.dirname(e["out_file"]),
+                             os.path.join(root, ".panopticon"))
+
+    def test_build_plan_out_file_authorized_by_guard_across_cwd(self):
+        # End-to-end #935: build_plan's absolute out_file, fed to the write-guard
+        # allowlist, authorizes the reviewer's write even when the hook runs from
+        # a DIFFERENT cwd than the run root. This is the actual regression: with
+        # the old repo-relative out_file, allowlist_from_plan (run-root realpath)
+        # and decide (elsewhere realpath) disagreed and the write was denied.
+        import scripts.write_guard_hook as wg
+        with tempfile.TemporaryDirectory() as run_root, \
+                tempfile.TemporaryDirectory() as elsewhere:
+            plan = dispatch.build_plan(self._profile(), host="kimi", root=run_root)
+            allow = wg.allowlist_from_plan(plan)
+            entry = plan[0]
+            prev = os.getcwd()
+            try:
+                os.chdir(elsewhere)
+                ok, _ = wg.decide("Write", entry["out_file"], allow)
+            finally:
+                os.chdir(prev)
+            self.assertTrue(ok)
+
     def test_standard_emits_panel_review_and_two_sweeps(self):
         plan = dispatch.build_plan(self._profile("standard"), host="kimi")
         self.assertEqual(len(plan), 3)

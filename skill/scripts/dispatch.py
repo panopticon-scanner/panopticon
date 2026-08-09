@@ -247,7 +247,8 @@ def _is_registered(reg_dir, role_file):
         os.path.join(reg_dir, registered_agent_name(role_file) + ".md"))
 
 
-def build_plan(scope_profile, host=None, model_overrides=None, agents_dir=None):
+def build_plan(scope_profile, host=None, model_overrides=None, agents_dir=None,
+               root=None):
     """Return a DispatchPlan: list of agent invocations.
 
     Each invocation has:
@@ -261,13 +262,24 @@ def build_plan(scope_profile, host=None, model_overrides=None, agents_dir=None):
     - depth: panel depth
     - enforced: boolean, true if this role is registered in agents_dir
     - lenses: list of non-spawned lens names (for panel_review only)
-    - out_file: where the agent should write findings
+    - out_file: ABSOLUTE path where the agent should write findings
+
+    ``out_file`` is rooted at *root* (default: the current working directory,
+    i.e. the run's repo/worktree root) and emitted ABSOLUTE (#935). A reviewer
+    subagent whose cwd differs from the orchestrator's -- common on some hosts,
+    and guaranteed once #449's ``--pr`` worktree is in play -- would otherwise
+    resolve a repo-relative out_file against the wrong root: the write lands in
+    the wrong place and the write-guard (which realpaths its allowlist and the
+    incoming write) denies it with no useful signal. An absolute path resolves
+    identically from any cwd, so the reviewer write, the guard allowlist, and
+    group_runner's done-check all agree on one location.
     """
     host = host or _detect_host()
     overrides = model_overrides or {}
     group_name = scope_profile.get("group", "unknown")
     files = scope_profile.get("files", [])
     depth = scope_profile.get("depth", "standard")
+    root = os.path.abspath(root) if root else os.getcwd()
     plan = []
 
     # Compute registration directory once
@@ -288,7 +300,9 @@ def build_plan(scope_profile, host=None, model_overrides=None, agents_dir=None):
         non_spawned = [lens["name"] for lens in panel_lenses if lens["name"] not in spawned_set]
 
         # main panel reviewer
-        panel_out_file = ".panopticon/findings-%s-%s-panel_review.json" % (group_name, panel_name)
+        panel_out_file = os.path.join(
+            root, ".panopticon",
+            "findings-%s-%s-panel_review.json" % (group_name, panel_name))
         plan.append({
             "role": "panel_review",
             "agent": panel_agent,
@@ -313,7 +327,9 @@ def build_plan(scope_profile, host=None, model_overrides=None, agents_dir=None):
 
         # mechanical lens sweeps
         for lens_name in spawned:
-            sweep_out_file = ".panopticon/findings-%s-%s-lens_sweep-%s.json" % (group_name, panel_name, lens_name)
+            sweep_out_file = os.path.join(
+                root, ".panopticon",
+                "findings-%s-%s-lens_sweep-%s.json" % (group_name, panel_name, lens_name))
             plan.append({
                 "role": "lens_sweep",
                 "agent": lens_agent,
