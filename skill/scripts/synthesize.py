@@ -473,20 +473,11 @@ HIGH_VALUE_PANELS = {"security", "redteam", "architecture", "database"}
 
 
 def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_absent,
-            integrity_ok=True, delta_unresolved=False):
+            integrity_ok=True):
     """Coverage-aware certification. Gate keys on high-value-panel completeness
     (+ requested-absent tools + artifact integrity); grade is holistic
     (provisional on ANY gap). Precedence FAIL > INCONCLUSIVE > PASS; OFF
     preserved. Tolerant: pure, never raises.
-
-    `delta_unresolved` (#449): a delta review was requested (--diff-hunks
-    given) but the base ref could not be resolved -- classify_findings never
-    ran, so gate_eligible reflects the whole repo rather than the requested
-    diff scope. Unlike the coverage-gap path above (which only raises a PASS
-    to INCONCLUSIVE, preserving FAIL/OFF), this unconditionally forces
-    INCONCLUSIVE: an unscoped FAIL from a delta request isn't an honest
-    answer to what was asked, and OFF (no --fail-on) doesn't change that the
-    requested review type could not be performed at all.
     """
     base_gate = gate_verdict(gate_eligible, fail_on)          # PASS / FAIL / OFF
     high_value_incomplete = set(panels_incomplete) & HIGH_VALUE_PANELS
@@ -511,12 +502,6 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
         tail = sorted(p for p in panels_incomplete if p not in HIGH_VALUE_PANELS)
         note = ("gate certified; grade provisional — low-value panel(s) incomplete: %s"
                 % ", ".join(tail))
-
-    if delta_unresolved:
-        gate = "INCONCLUSIVE"
-        coverage_certified = False
-        note = (note + "; " if note else "") + \
-            "delta review requested but the base ref could not be resolved"
 
     return {"gate": gate, "overall_grade": cert_grade,
             "provisional_grade": provisional,
@@ -900,8 +885,6 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
     delta_mode = bool(diff_hunks and diff_hunks.get("base"))
     if delta_mode:
         classify_findings(active, diff_hunks.get("hunks") or {}, diff_context)
-    delta_requested = diff_hunks is not None
-    delta_unresolved = delta_requested and not (diff_hunks or {}).get("base")
     on_diff_active = [f for f in active if (f.get("delta") or {}).get("on_diff")]
     pre_existing_active = [f for f in active
                            if delta_mode and not (f.get("delta") or {}).get("on_diff")]
@@ -962,7 +945,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                         or integrity.get("duplicate_out_files")
                         or integrity.get("mislabeled_findings_files"))
     cert = certify(overall, gate_eligible, fail_on, panels_incomplete, tools_absent,
-                   integrity_ok=integrity_ok, delta_unresolved=delta_unresolved)
+                   integrity_ok=integrity_ok)
     return {
         "meta": {
             "target": target,
@@ -986,11 +969,15 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                 "resume": resume,
                 "delta": ({"base": diff_hunks.get("base"),
                            "base_source": diff_hunks.get("base_source"),
+                           "base_commit": diff_hunks.get("base_commit"),
+                           "delta_start": diff_hunks.get("delta_start"),
+                           "delta_end": diff_hunks.get("delta_end"),
+                           "includes_uncommitted": diff_hunks.get("includes_uncommitted"),
                            "files_changed": diff_hunks.get("files_changed"),
                            "diff_context": diff_context,
                            "on_diff_total": len(on_diff_active),
                            "pre_existing_total": len(pre_existing_active)}
-                          if delta_requested else None),
+                          if delta_mode else None),
             },
             "integrity": integrity,
         },

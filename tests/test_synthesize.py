@@ -2874,7 +2874,8 @@ class TestDeltaClassify(unittest.TestCase):
 
     def test_build_report_no_delta_when_base_unresolved(self):
         """diff_hunks present but base is None (unresolved) -> delta_mode is False,
-        so findings are left unstamped (Task 8 owns the INCONCLUSIVE handling)."""
+        so findings are left unstamped. (Orchestrator Task 5 now fails loudly
+        before this artifact shape can occur in practice.)"""
         findings = [
             {"id": "A-1", "title": "x", "severity": "HIGH", "confidence": "POSSIBLE",
              "panel": "code", "category": "x", "location": {"file": "a.py", "line_start": 11}},
@@ -2888,8 +2889,10 @@ class TestDeltaClassify(unittest.TestCase):
 
 
 class TestDeltaGate(unittest.TestCase):
-    """#449 Task 8: on-diff gate/grade scoping, summary.delta, coverage.delta,
-    and INCONCLUSIVE when a requested delta review's base could not be resolved."""
+    """#449 Task 8 (rework): on-diff gate/grade scoping, summary.delta,
+    coverage.delta with three commit anchors. An unresolvable base is now a
+    loud orchestrator failure (Task 5) that never reaches synthesize, so
+    delta_mode alone drives these blocks -- no delta_unresolved path."""
 
     def _findings(self):
         return [
@@ -2918,10 +2921,27 @@ class TestDeltaGate(unittest.TestCase):
                                diff_hunks=hunks, diff_context=5, gate_scope="all")
         self.assertEqual(rep["summary"]["gate"], "FAIL")  # both HIGHs count
 
-    def test_base_unresolved_is_inconclusive(self):
+    def test_coverage_delta_carries_three_anchors(self):
+        hunks = {"base": "main", "base_source": "fallback", "diff_context": 5,
+                 "base_commit": "b0", "delta_start": "d0", "delta_end": "d1",
+                 "includes_uncommitted": False,
+                 "files_changed": 1, "hunks": {"a.py": [(10, 12)]}}
+        rep = syn.build_report(self._findings(), [{"name": "g1", "files": ["a.py"]}],
+                               "t", "high", "2026-01-01T00:00:00Z", gate_unverified=True,
+                               diff_hunks=hunks, diff_context=5)
+        d = rep["meta"]["coverage"]["delta"]
+        self.assertEqual((d["base_commit"], d["delta_start"], d["delta_end"]),
+                         ("b0", "d0", "d1"))
+        self.assertIs(d["includes_uncommitted"], False)
+
+    def test_base_less_artifact_is_non_delta_not_inconclusive(self):
+        # No delta_unresolved path anymore: a base-less artifact (which the
+        # orchestrator no longer produces) is treated as a plain review.
         hunks = {"base": None, "base_source": "unresolved", "diff_context": 5,
                  "files_changed": 0, "hunks": {}}
         rep = syn.build_report(self._findings(), [{"name": "g1", "files": ["a.py"]}],
-                               "t", "high", "2026-01-01T00:00:00Z",
+                               "t", "high", "2026-01-01T00:00:00Z", gate_unverified=True,
                                diff_hunks=hunks, diff_context=5)
-        self.assertEqual(rep["summary"]["gate"], "INCONCLUSIVE")
+        self.assertNotEqual(rep["summary"]["gate"], "INCONCLUSIVE")
+        self.assertIsNone(rep["summary"]["delta"])
+        self.assertIsNone(rep["meta"]["coverage"]["delta"])
