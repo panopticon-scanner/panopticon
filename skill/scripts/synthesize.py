@@ -767,19 +767,20 @@ def load_diff_hunks(path):
         return {}
     if not isinstance(data, dict):
         return {}
-raw = data.get("hunks")
-if not isinstance(raw, dict):
-    raw = {}
-hunks = {}
-for p, rs in raw.items():
-    if not isinstance(rs, list):
-        continue
-    cleaned = []
-    for r in rs:
-        if isinstance(r, (list, tuple)) and len(r) == 2 and isinstance(r[0], int) and isinstance(r[1], int):
-            cleaned.append((r[0], r[1]))
-    hunks[str(p)] = cleaned
-data["hunks"] = hunks
+    
+    raw = data.get("hunks")
+    if not isinstance(raw, dict):
+        raw = {}
+    hunks = {}
+    for p, rs in raw.items():
+        if not isinstance(rs, list):
+            continue
+        cleaned = []
+        for r in rs:
+            if isinstance(r, (list, tuple)) and len(r) == 2 and isinstance(r[0], int) and isinstance(r[1], int):
+                cleaned.append((r[0], r[1]))
+        hunks[str(p)] = cleaned
+    data["hunks"] = hunks
     return data
 
 
