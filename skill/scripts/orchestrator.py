@@ -11,6 +11,9 @@ import re
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import diff_map  # noqa: E402 (sibling on sys.path, same pattern as dispatch.py)
+
 DEFAULT_MAX_PER_GROUP = 15
 
 PANEL_PRIORITY = ["security", "redteam", "architecture", "database", "code", "test"]
@@ -503,6 +506,48 @@ def _is_fixture_dir(rel):
             and parts[-2] in FIXTURE_PARENT_DIRS)
 
 
+def resolve_base(repo, explicit=None, pr_base=None):
+    """(base_ref, source). explicit -> pr_base -> main -> master -> HEAD~1."""
+    if explicit:
+        return explicit, "explicit"
+    if pr_base:
+        return pr_base, "pr-base"
+    for ref in ("main", "master"):
+        r = subprocess.run(["git", "-C", repo, "rev-parse", "--verify", "-q", ref],
+                           capture_output=True, text=True)
+        if r.returncode == 0:
+            return ref, "fallback"
+    r = subprocess.run(["git", "-C", repo, "rev-parse", "--verify", "-q", "HEAD~1"],
+                       capture_output=True, text=True)
+    if r.returncode == 0:
+        return "HEAD~1", "fallback"
+    return None, "unresolved"
+
+
+def _ancestor_dirs(rel):
+    parts = rel.split("/")
+    return ["/".join(parts[:i]) for i in range(1, len(parts))]  # excludes the file itself
+
+
+def prune_fixture_files(paths, include_fixtures):
+    """Drop files under a fixture corpus dir (standard mode); keep all in redteam."""
+    if include_fixtures:
+        return list(paths)
+    return [p for p in paths if not any(_is_fixture_dir(d) for d in _ancestor_dirs(p))]
+
+
+def write_diff_hunks(repo, base, source, out_path, tolerance):
+    """Write .panopticon/diff-hunks.json (#449) for the delta-review synth step."""
+    hmap = diff_map.hunk_map(repo, base) if base else {}
+    artifact = {"base": base, "base_source": source, "diff_context": tolerance,
+                "files_changed": len(hmap),
+                "hunks": {p: [list(r) for r in rs] for p, rs in hmap.items()}}
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".", exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as fh:
+        json.dump(artifact, fh, indent=2)
+        fh.write("\n")
+
+
 def _git_listed_files(repo):
     """Repo-relative paths git considers reviewable surface, or None.
 
@@ -723,6 +768,9 @@ def main(argv=None):
                     help="Write JSON output to this file instead of stdout")
     ap.add_argument("--security", choices=["standard", "redteam"], default="standard",
                     help="Security review mode")
+    ap.add_argument("--base", default=None, help="Base ref for --changes/--pr delta review")
+    ap.add_argument("--diff-context", type=int, default=5,
+                    help="Lines of tolerance for on-diff classification (default 5)")
     modes = ap.add_mutually_exclusive_group(required=True)
     modes.add_argument("--group", metavar="NAME")
     modes.add_argument("--directory", metavar="DIR")
@@ -767,11 +815,19 @@ def main(argv=None):
                               security_mode=args.security)
 
     elif args.files:
-        impl = [f for f in args.files if not is_test_file(f)]
-        tests = [f for f in args.files if is_test_file(f)]
+        files = prune_fixture_files(args.files, args.security == "redteam")
+        impl = [f for f in files if not is_test_file(f)]
+        tests = [f for f in files if is_test_file(f)]
         result = build_result(repo, "files", "changeset", None, impl,
                               sorted(set(tests) | set(related_tests(repo, impl))), args.max_per_group,
                               security_mode=args.security)
+        base, source = resolve_base(repo, explicit=args.base)
+        hunks_path = (os.path.join(os.path.dirname(os.path.abspath(args.out)), "diff-hunks.json")
+                      if args.out else os.path.join(".panopticon", "diff-hunks.json"))
+        write_diff_hunks(repo, base, source, hunks_path, args.diff_context)
+        if base is None:
+            print("panopticon: base ref could not be resolved for delta review; "
+                  "synthesize will report INCONCLUSIVE", file=sys.stderr)
 
     elif args.changes:
         changed = collect_changed_files(repo)
@@ -779,6 +835,7 @@ def main(argv=None):
             print("could not determine changed files; is %s a git repository?" % repo,
                   file=sys.stderr)
             return 2
+        changed = prune_fixture_files(changed, args.security == "redteam")
         if not changed:
             print("no changed files found", file=sys.stderr)
             return 0
@@ -787,6 +844,13 @@ def main(argv=None):
         result = build_result(repo, "changes", "changes", None, impl,
                               sorted(set(tests) | set(related_tests(repo, impl))), args.max_per_group,
                               security_mode=args.security)
+        base, source = resolve_base(repo, explicit=args.base)
+        hunks_path = (os.path.join(os.path.dirname(os.path.abspath(args.out)), "diff-hunks.json")
+                      if args.out else os.path.join(".panopticon", "diff-hunks.json"))
+        write_diff_hunks(repo, base, source, hunks_path, args.diff_context)
+        if base is None:
+            print("panopticon: base ref could not be resolved for delta review; "
+                  "synthesize will report INCONCLUSIVE", file=sys.stderr)
 
     else:
         # --repo-scan

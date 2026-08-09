@@ -830,5 +830,20 @@ class TestPanelPriority(unittest.TestCase):
             ["test", "zzz", "security"]) == ["security", "test", "zzz"]
 
 
+class TestDeltaOrchestration(unittest.TestCase):
+    def test_resolve_base_precedence(self):
+        # explicit wins even if others exist
+        self.assertEqual(orch.resolve_base(".", explicit="v1.0", pr_base="main"),
+                         ("v1.0", "explicit"))
+        self.assertEqual(orch.resolve_base(".", explicit=None, pr_base="release")[1],
+                         "pr-base")
+
+    def test_prune_fixture_files_standard_vs_redteam(self):
+        paths = ["src/app.py", "tests/fixtures/vuln/main.rs"]
+        self.assertEqual(orch.prune_fixture_files(paths, include_fixtures=False),
+                         ["src/app.py"])
+        self.assertEqual(orch.prune_fixture_files(paths, include_fixtures=True), paths)
+
+
 if __name__ == "__main__":
     unittest.main()
