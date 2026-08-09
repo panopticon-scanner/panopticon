@@ -83,6 +83,33 @@ def hunk_map(repo, base):
     return result
 
 
+def diff_anchors(repo, base):
+    """Resolve the three commit anchors the delta artifact records.
+
+    {base_commit, delta_start, delta_end}: the base ref's tip, the
+    merge-base(base, HEAD) fork point, and HEAD. Any field is None if git can't
+    resolve it (in practice the orchestrator has already refused an unresolvable
+    base, so all three are populated).
+    """
+    def _rev(ref):
+        try:
+            r = _run_git(repo, ["rev-parse", "--verify", "-q", ref])
+        except Exception:
+            return None
+        return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
+    delta_start = None
+    if base:
+        try:
+            mb = _run_git(repo, ["merge-base", "HEAD", base])
+            if mb.returncode == 0 and mb.stdout.strip():
+                delta_start = mb.stdout.strip()
+        except Exception:
+            delta_start = None
+    return {"base_commit": _rev(base + "^{commit}") if base else None,
+            "delta_start": delta_start,
+            "delta_end": _rev("HEAD")}
+
+
 def _distance_to_range(ls, le, s, e):
     """Minimum distance from finding [ls, le] to range [s, e] (0 if overlapping)."""
     if ls <= e and le >= s:

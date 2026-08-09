@@ -122,6 +122,50 @@ class TestClassify(unittest.TestCase):
         self.assertEqual(d["distance"], 7)
 
 
+class TestDiffAnchors(unittest.TestCase):
+    def _repo(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, d, ignore_errors=True)
+        subprocess.run(["git", "init", "-q", d], check=True)
+        _git(d, "config", "user.email", "t@e.com")
+        _git(d, "config", "user.name", "T")
+        with open(os.path.join(d, "a.py"), "w") as fh:
+            fh.write("line1\n")
+        _git(d, "add", ".")
+        _git(d, "commit", "-qm", "init")
+        _git(d, "branch", "-M", "main")
+        return d
+
+    def test_anchors_resolve_base_fork_and_head(self):
+        d = self._repo()
+        base_sha = subprocess.run(["git", "-C", d, "rev-parse", "main"],
+                                  capture_output=True, text=True, check=True).stdout.strip()
+        _git(d, "checkout", "-q", "-b", "feat")
+        with open(os.path.join(d, "a.py"), "a") as fh:
+            fh.write("line2\n")
+        _git(d, "commit", "-qam", "c")
+        head_sha = subprocess.run(["git", "-C", d, "rev-parse", "HEAD"],
+                                  capture_output=True, text=True, check=True).stdout.strip()
+        anchors = diff_map.diff_anchors(d, "main")
+        self.assertEqual(anchors["base_commit"], base_sha)
+        self.assertEqual(anchors["delta_start"], base_sha)  # merge-base(HEAD, main)
+        self.assertEqual(anchors["delta_end"], head_sha)
+
+    def test_anchors_unresolvable_base_returns_none_fields(self):
+        d = self._repo()
+        anchors = diff_map.diff_anchors(d, "no-such-ref")
+        self.assertIsNone(anchors["base_commit"])
+        self.assertIsNone(anchors["delta_start"])
+        self.assertIsNotNone(anchors["delta_end"])   # HEAD always resolves
+
+    def test_anchors_no_base_returns_none_for_base_and_start(self):
+        d = self._repo()
+        anchors = diff_map.diff_anchors(d, None)
+        self.assertIsNone(anchors["base_commit"])
+        self.assertIsNone(anchors["delta_start"])
+        self.assertIsNotNone(anchors["delta_end"])
+
+
 class TestPrWorktree(unittest.TestCase):
     def test_acquire_reads_base_and_adds_worktree(self):
         calls = []

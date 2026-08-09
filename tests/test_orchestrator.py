@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+import types
 import unittest
 import tempfile
 
@@ -269,8 +270,8 @@ class TestCli(unittest.TestCase):
         import io, contextlib
         with tempfile.TemporaryDirectory() as d:
             buf = io.StringIO()
-            # No --out: the default diff-hunks.json path is cwd-relative, so chdir
-            # into the temp dir for the call to keep it out of the real repo (#449).
+            # No --out: without --base, --files does not emit diff-hunks.json at
+            # all, so no chdir/cwd concern remains here (#449 rework).
             with contextlib.redirect_stdout(buf), contextlib.chdir(d):
                 rc = orch.main(["--repo", d, "--files", "src/a.py", "tests/test_a.py"])
             self.assertEqual(rc, 0)
@@ -280,6 +281,48 @@ class TestCli(unittest.TestCase):
             self.assertIn("src/a.py", impl)
             self.assertNotIn("tests/test_a.py", impl)      # test partitioned out of impl
             self.assertIn("tests/test_a.py", out["tests"])
+            # No --base given: --files does NOT emit diff-hunks.json (#449 rework).
+            self.assertFalse(os.path.isfile(os.path.join(d, ".panopticon", "diff-hunks.json")))
+
+    def test_main_files_mode_with_base_emits_diff_hunks(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._touch(d, "src/a.py")
+            subprocess.run(["git", "init", "-q", d], check=True)
+            subprocess.run(["git", "-C", d, "config", "user.email", "t@e.com"], check=True)
+            subprocess.run(["git", "-C", d, "config", "user.name", "Test"], check=True)
+            subprocess.run(["git", "-C", d, "add", "."], check=True)
+            subprocess.run(["git", "-C", d, "commit", "-q", "-m", "init"], check=True)
+            with open(os.path.join(d, "src", "a.py"), "w") as fh:
+                fh.write("# changed")
+            out_path = os.path.join(d, "groups.json")
+            rc = orch.main(["--repo", d, "--files", "src/a.py", "--base", "main",
+                            "--out", out_path])
+            self.assertEqual(rc, 0)
+            hunks_path = os.path.join(d, "diff-hunks.json")
+            self.assertTrue(os.path.isfile(hunks_path))    # --base given: DOES emit
+            with open(hunks_path, encoding="utf-8") as fh:
+                hunks = json.load(fh)
+            self.assertEqual(hunks["base"], "main")
+            self.assertEqual(hunks["base_source"], "explicit")
+            self.assertTrue(hunks["includes_uncommitted"])
+            self.assertIsNotNone(hunks["base_commit"])
+            self.assertIsNotNone(hunks["delta_start"])
+            self.assertIsNotNone(hunks["delta_end"])
+
+    def test_main_files_mode_bad_base_fails_loud(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._touch(d, "src/a.py")
+            subprocess.run(["git", "init", "-q", d], check=True)
+            subprocess.run(["git", "-C", d, "config", "user.email", "t@e.com"], check=True)
+            subprocess.run(["git", "-C", d, "config", "user.name", "Test"], check=True)
+            subprocess.run(["git", "-C", d, "add", "."], check=True)
+            subprocess.run(["git", "-C", d, "commit", "-q", "-m", "init"], check=True)
+            out_path = os.path.join(d, "groups.json")
+            rc = orch.main(["--repo", d, "--files", "src/a.py", "--base", "no-such-ref",
+                            "--out", out_path])
+            self.assertEqual(rc, 2)
+            self.assertFalse(os.path.isfile(out_path))                          # no groups.json
+            self.assertFalse(os.path.isfile(os.path.join(d, "diff-hunks.json")))  # no artifact
 
     def test_main_repo_scan_excludes_dotfiles(self):
         import io, contextlib
@@ -366,12 +409,39 @@ class TestCli(unittest.TestCase):
             self.assertIn("src/a.py", grouped)
             self.assertIn("src/c.py", grouped)
             self.assertNotIn("src/b.py", grouped)
+            hunks_path = os.path.join(d, "diff-hunks.json")
+            self.assertTrue(os.path.isfile(hunks_path))    # --changes always emits
+            with open(hunks_path, encoding="utf-8") as fh:
+                hunks = json.load(fh)
+            self.assertEqual(hunks["base"], "main")
+            self.assertEqual(hunks["base_source"], "fallback")
+            self.assertTrue(hunks["includes_uncommitted"])
+            self.assertIsNotNone(hunks["base_commit"])
+            self.assertIsNotNone(hunks["delta_start"])
+            self.assertIsNotNone(hunks["delta_end"])
 
     def test_main_changes_without_git_warns(self):
         with tempfile.TemporaryDirectory() as d:
             self._touch(d, "src/a.py")
             rc = orch.main(["--repo", d, "--changes"])
             self.assertEqual(rc, 2)
+
+    def test_main_changes_bad_base_fails_loud_no_artifact(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._touch(d, "src/a.py")
+            subprocess.run(["git", "init", "-q", d], check=True)
+            subprocess.run(["git", "-C", d, "config", "user.email", "t@e.com"], check=True)
+            subprocess.run(["git", "-C", d, "config", "user.name", "Test"], check=True)
+            subprocess.run(["git", "-C", d, "add", "."], check=True)
+            subprocess.run(["git", "-C", d, "commit", "-q", "-m", "init"], check=True)
+            with open(os.path.join(d, "src", "a.py"), "w") as fh:
+                fh.write("# changed")
+            out_path = os.path.join(d, "groups.json")
+            rc = orch.main(["--repo", d, "--changes", "--base", "no-such-ref",
+                            "--out", out_path])
+            self.assertEqual(rc, 2)
+            self.assertFalse(os.path.isfile(out_path))
+            self.assertFalse(os.path.isfile(os.path.join(d, "diff-hunks.json")))
 
     def test_build_result_computes_surfaces_and_panels(self):
         impl = ["Dockerfile", "src/models.py", "migrations/001.sql"]
@@ -832,13 +902,44 @@ class TestPanelPriority(unittest.TestCase):
             ["test", "zzz", "security"]) == ["security", "test", "zzz"]
 
 
+class _FakeRun:
+    """Fake subprocess.run: returncode 0 iff the git ref arg is in ok_refs."""
+    def __init__(self, ok_refs):
+        self.ok = set(ok_refs)
+        self.calls = []
+    def __call__(self, argv, **kw):
+        self.calls.append(argv)
+        return types.SimpleNamespace(returncode=0 if argv[-1] in self.ok else 1,
+                                     stdout="", stderr="")
+
+
 class TestDeltaOrchestration(unittest.TestCase):
     def test_resolve_base_precedence(self):
-        # explicit wins even if others exist
-        self.assertEqual(orch.resolve_base(".", explicit="v1.0", pr_base="main"),
-                         ("v1.0", "explicit"))
-        self.assertEqual(orch.resolve_base(".", explicit=None, pr_base="release")[1],
-                         "pr-base")
+        # explicit wins even if others resolve
+        self.assertEqual(
+            orch.resolve_base(".", explicit="v1.0", pr_base="main",
+                              runner=_FakeRun({"v1.0^{commit}", "main^{commit}"})),
+            ("v1.0", "explicit"))
+        self.assertEqual(
+            orch.resolve_base(".", pr_base="release",
+                              runner=_FakeRun({"release^{commit}"}))[1],
+            "pr-base")
+
+    def test_resolve_base_bad_explicit_fails_loud_no_fallthrough(self):
+        # explicit given but unresolvable -> (None,'unresolved'); NOT main.
+        self.assertEqual(
+            orch.resolve_base(".", explicit="nope",
+                              runner=_FakeRun({"main^{commit}"})),
+            (None, "unresolved"))
+
+    def test_resolve_base_fallback_and_no_head1(self):
+        self.assertEqual(orch.resolve_base(".", runner=_FakeRun({"main^{commit}"})),
+                         ("main", "fallback"))
+        self.assertEqual(orch.resolve_base(".", runner=_FakeRun({"master^{commit}"})),
+                         ("master", "fallback"))
+        # nothing resolves (no main/master, no HEAD~1 tried) -> unresolved
+        self.assertEqual(orch.resolve_base(".", runner=_FakeRun(set())),
+                         (None, "unresolved"))
 
     def test_prune_fixture_files_standard_vs_redteam(self):
         paths = ["src/app.py", "tests/fixtures/vuln/main.rs"]
@@ -858,6 +959,7 @@ class TestPrMode(unittest.TestCase):
              mock.patch.object(orch.diff_map, "release_worktree",
                                side_effect=lambda p, **k: released.setdefault("p", p)), \
              mock.patch.object(orch, "collect_changed_files", return_value=["a.py"]), \
+             mock.patch.object(orch, "resolve_base", return_value=("main", "pr-base")), \
              mock.patch.object(orch, "write_diff_hunks") as wdh, \
              mock.patch.object(orch, "build_result",
                                return_value={"groups": [], "counts": {}, "tests": []}):
@@ -870,6 +972,7 @@ class TestPrMode(unittest.TestCase):
         self.assertEqual(data["worktree"], "/tmp/wt")   # recorded for the agent
         self.assertIsNone(released.get("p"))            # NOT released on success
         wdh.assert_called()                             # hunks emitted (PR base)
+        self.assertFalse(wdh.call_args.args[-1])         # --pr: includes_uncommitted=False
 
     def test_pr_failure_releases_worktree_then_raises(self):
         from unittest import mock
@@ -882,6 +985,28 @@ class TestPrMode(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 orch.main(["--pr", "7", "--out", "/tmp/x.json"])
         self.assertEqual(released.get("p"), "/tmp/wt")  # released on error
+
+    def test_pr_bad_base_releases_worktree_and_fails_loud(self):
+        import io, contextlib
+        from unittest import mock
+        released = {}
+        with mock.patch.object(orch.diff_map, "acquire_pr", return_value=self.ACQ), \
+             mock.patch.object(orch.diff_map, "release_worktree",
+                               side_effect=lambda p, **k: released.setdefault("p", p)), \
+             mock.patch.object(orch, "collect_changed_files", return_value=["a.py"]), \
+             mock.patch.object(orch, "resolve_base", return_value=(None, "unresolved")), \
+             mock.patch.object(orch, "write_diff_hunks") as wdh, \
+             mock.patch.object(orch, "build_result",
+                               return_value={"groups": [], "counts": {}, "tests": []}):
+            with tempfile.TemporaryDirectory() as d:
+                out = os.path.join(d, "groups.json")
+                with contextlib.redirect_stdout(io.StringIO()), \
+                     contextlib.redirect_stderr(io.StringIO()):
+                    rc = orch.main(["--pr", "7", "--out", out])
+                self.assertFalse(os.path.isfile(out))   # no artifact written on loud fail
+        self.assertEqual(rc, 2)
+        self.assertEqual(released.get("p"), "/tmp/wt")  # worktree released before returning
+        wdh.assert_not_called()
 
 
 if __name__ == "__main__":

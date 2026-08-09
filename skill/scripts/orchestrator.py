@@ -506,21 +506,22 @@ def _is_fixture_dir(rel):
             and parts[-2] in FIXTURE_PARENT_DIRS)
 
 
-def resolve_base(repo, explicit=None, pr_base=None):
-    """(base_ref, source). explicit -> pr_base -> main -> master -> HEAD~1."""
+def resolve_base(repo, explicit=None, pr_base=None, runner=subprocess.run):
+    """(base_ref, source). First candidate that resolves to a real commit:
+    explicit -> pr_base -> main -> master. No HEAD~1. A given explicit/pr_base
+    that does NOT resolve returns (None,'unresolved') without falling through -
+    a bad --base is a loud failure, not a silent downgrade to a branch tip."""
+    def _resolves(ref):
+        r = runner(["git", "-C", repo, "rev-parse", "--verify", "-q", ref + "^{commit}"],
+                   capture_output=True, text=True)
+        return r.returncode == 0
     if explicit:
-        return explicit, "explicit"
+        return (explicit, "explicit") if _resolves(explicit) else (None, "unresolved")
     if pr_base:
-        return pr_base, "pr-base"
+        return (pr_base, "pr-base") if _resolves(pr_base) else (None, "unresolved")
     for ref in ("main", "master"):
-        r = subprocess.run(["git", "-C", repo, "rev-parse", "--verify", "-q", ref],
-                           capture_output=True, text=True)
-        if r.returncode == 0:
+        if _resolves(ref):
             return ref, "fallback"
-    r = subprocess.run(["git", "-C", repo, "rev-parse", "--verify", "-q", "HEAD~1"],
-                       capture_output=True, text=True)
-    if r.returncode == 0:
-        return "HEAD~1", "fallback"
     return None, "unresolved"
 
 
@@ -536,10 +537,22 @@ def prune_fixture_files(paths, include_fixtures):
     return [p for p in paths if not any(_is_fixture_dir(d) for d in _ancestor_dirs(p))]
 
 
-def write_diff_hunks(repo, base, source, out_path, tolerance):
-    """Write .panopticon/diff-hunks.json (#449) for the delta-review synth step."""
+def write_diff_hunks(repo, base, source, out_path, tolerance, includes_uncommitted):
+    """Write .panopticon/diff-hunks.json (#449) for the delta-review synth step.
+
+    ``base_commit``/``delta_start``/``delta_end`` anchor the artifact to real
+    commits (``diff_map.diff_anchors``) so a later reviewer can reconstruct the
+    exact delta even if branch tips move.
+    """
     hmap = diff_map.hunk_map(repo, base) if base else {}
-    artifact = {"base": base, "base_source": source, "diff_context": tolerance,
+    anchors = diff_map.diff_anchors(repo, base) if base else {
+        "base_commit": None, "delta_start": None, "delta_end": None}
+    artifact = {"base": base, "base_source": source,
+                "base_commit": anchors["base_commit"],
+                "delta_start": anchors["delta_start"],
+                "delta_end": anchors["delta_end"],
+                "includes_uncommitted": includes_uncommitted,
+                "diff_context": tolerance,
                 "files_changed": len(hmap),
                 "hunks": {p: [list(r) for r in rs] for p, rs in hmap.items()}}
     os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".", exist_ok=True)
@@ -548,22 +561,29 @@ def write_diff_hunks(repo, base, source, out_path, tolerance):
         fh.write("\n")
 
 
-def emit_delta_artifact(repo, out, base, source, diff_context):
-    """Write the diff-hunks.json artifact for an already-resolved (base, source).
+def _resolve_or_die(repo, out, explicit, pr_base, diff_context,
+                    includes_uncommitted, on_fail=None):
+    """Resolve base and emit diff-hunks.json, or fail loudly (return False).
 
-    ``hunks_path`` sits next to ``out`` when given, else ``.panopticon/`` under
-    the current working directory. Shared by ``--changes``/``--files`` (base from
-    ``resolve_base(repo, explicit=args.base)``) and ``--pr`` (base from
-    ``resolve_base(wt, explicit=args.base, pr_base=acq["base"])``) so all three
-    call sites emit an identical artifact shape. Warns to stderr when the base
-    could not be resolved, since synthesize will then report INCONCLUSIVE.
+    Returns True after writing the artifact; on an unresolvable base it prints a
+    loud message, runs ``on_fail()`` (e.g. release a worktree), and returns
+    False — the caller then ``return 2`` with NO artifact written. An
+    unresolvable base is a loud orchestrator-level failure, not a soft
+    INCONCLUSIVE deferred to synthesize (#449 redirect).
     """
+    base, source = resolve_base(repo, explicit=explicit, pr_base=pr_base)
+    if base is None:
+        print("panopticon: could not resolve a base ref for delta review.\n"
+              "  Anchor the review to a fixed commit or a base-branch tip:\n"
+              "  pass --base <ref|sha>, or ensure main/master exists.",
+              file=sys.stderr)
+        if on_fail:
+            on_fail()
+        return False
     hunks_path = (os.path.join(os.path.dirname(os.path.abspath(out)), "diff-hunks.json")
                   if out else os.path.join(".panopticon", "diff-hunks.json"))
-    write_diff_hunks(repo, base, source, hunks_path, diff_context)
-    if base is None:
-        print("panopticon: base ref could not be resolved for delta review; "
-              "synthesize will report INCONCLUSIVE", file=sys.stderr)
+    write_diff_hunks(repo, base, source, hunks_path, diff_context, includes_uncommitted)
+    return True
 
 
 def _git_listed_files(repo):
@@ -786,7 +806,8 @@ def main(argv=None):
                     help="Write JSON output to this file instead of stdout")
     ap.add_argument("--security", choices=["standard", "redteam"], default="standard",
                     help="Security review mode")
-    ap.add_argument("--base", default=None, help="Base ref for --changes/--pr delta review")
+    ap.add_argument("--base", default=None,
+                    help="Base ref/sha for --changes/--pr/--files delta review")
     ap.add_argument("--diff-context", type=int, default=5,
                     help="Lines of tolerance for on-diff classification (default 5)")
     modes = ap.add_mutually_exclusive_group(required=True)
@@ -841,8 +862,11 @@ def main(argv=None):
         result = build_result(repo, "files", "changeset", None, impl,
                               sorted(set(tests) | set(related_tests(repo, impl))), args.max_per_group,
                               security_mode=args.security)
-        base, source = resolve_base(repo, explicit=args.base)
-        emit_delta_artifact(repo, args.out, base, source, args.diff_context)
+        # Delta artifact only when --base is an explicit request; plain --files
+        # (no --base) is a normal review and emits no diff-hunks.json (#449).
+        if args.base and not _resolve_or_die(repo, args.out, args.base, None,
+                                             args.diff_context, includes_uncommitted=True):
+            return 2
 
     elif args.changes:
         changed = collect_changed_files(repo)
@@ -859,8 +883,11 @@ def main(argv=None):
         result = build_result(repo, "changes", "changes", None, impl,
                               sorted(set(tests) | set(related_tests(repo, impl))), args.max_per_group,
                               security_mode=args.security)
-        base, source = resolve_base(repo, explicit=args.base)
-        emit_delta_artifact(repo, args.out, base, source, args.diff_context)
+        # --changes always requests a delta review; an unresolvable base is a
+        # loud failure, not a soft INCONCLUSIVE deferred to synthesize (#449).
+        if not _resolve_or_die(repo, args.out, args.base, None, args.diff_context,
+                               includes_uncommitted=True):
+            return 2
 
     elif args.pr is not None:
         acq = diff_map.acquire_pr(args.pr, repo=repo)
@@ -873,8 +900,15 @@ def main(argv=None):
             result = build_result(wt, "changes", "changes", None, impl,
                                   sorted(set(tests) | set(related_tests(wt, impl))),
                                   args.max_per_group, security_mode=args.security)
-            base, source = resolve_base(wt, explicit=args.base, pr_base=acq["base"])
-            emit_delta_artifact(wt, args.out, base, source, args.diff_context)
+            # --pr always requests a delta review; the worktree is clean at the
+            # PR head so the working-tree diff is committed-only
+            # (includes_uncommitted=False). An unresolvable base releases the
+            # worktree first, then fails loudly — no artifact (#449).
+            if not _resolve_or_die(
+                    wt, args.out, args.base, acq["base"], args.diff_context,
+                    includes_uncommitted=False,
+                    on_fail=lambda: diff_map.release_worktree(wt, repo=repo)):
+                return 2
             result["worktree"] = wt   # recorded; SKILL cleanup releases it post-review
         except Exception:
             diff_map.release_worktree(wt, repo=repo)
