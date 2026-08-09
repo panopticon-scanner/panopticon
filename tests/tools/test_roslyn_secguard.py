@@ -1,10 +1,8 @@
 import json
 import os
-import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, "skill"))
 import scripts.tools.roslyn_secguard as rs
 
 ROSLYN_SAMPLE = json.dumps({

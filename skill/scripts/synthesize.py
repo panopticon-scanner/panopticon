@@ -30,6 +30,11 @@ load_json_tolerant = evidence_mod.load_json_tolerant
 tool_rule_id = evidence_mod.tool_rule_id
 finding_fingerprint = evidence_mod.finding_fingerprint
 
+# One source for the per-group dispatch-plan filename glob (#681): synthesize
+# reconciles findings against, and derives coverage from, every plan file the
+# fan-out wrote. Both call sites join it against their own base dir.
+DISPATCH_PLAN_GLOB = "dispatch-plan*.json"
+
 SEVERITIES = {"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"}
 SEV_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
 CONFIDENCES = {"CERTAIN", "LIKELY", "POSSIBLE", "NOTE"}
@@ -172,11 +177,10 @@ def _conf_rank(f):
         return len(order)
 
 
-def _is_tool_sourced(f):
-    """Tool-emitted findings carry source='tool:<name>'; agent/panel findings
-    carry no source field. Mirrors the provenance convention in validate_report
-    and render_summary (anything not 'tool:' is agent-sourced)."""
-    return str(f.get("source", "")).startswith("tool:")
+# Alias the shared predicate instead of re-implementing it (#688): a local copy
+# had already drifted from being the single source of the tool/agent provenance
+# rule. evidence_mod.is_tool_sourced is the one definition.
+_is_tool_sourced = evidence_mod.is_tool_sourced
 
 
 def _role_from_discovered_by(discovered_by):
@@ -573,7 +577,7 @@ def derive_tool_policy_mode(panopticon_dir=".panopticon"):
     """
     flags = []
     plans_seen = 0
-    for path in sorted(glob.glob(os.path.join(panopticon_dir, "dispatch-plan*.json"))):
+    for path in sorted(glob.glob(os.path.join(panopticon_dir, DISPATCH_PLAN_GLOB))):
         try:
             with open(path, encoding="utf-8") as fh:
                 plan = json.load(fh)
@@ -1300,7 +1304,7 @@ def main(argv=None):
     # nothing on its own (see meta.integrity below).
     _plan = []
     plans_seen = 0
-    for path in sorted(glob.glob(os.path.join(".panopticon", "dispatch-plan*.json"))):
+    for path in sorted(glob.glob(os.path.join(".panopticon", DISPATCH_PLAN_GLOB))):
         try:
             with open(path, encoding="utf-8") as fh:
                 loaded = json.load(fh)

@@ -1,8 +1,6 @@
 import os
-import sys
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, "skill"))
 from scripts.tools import ADAPTERS
 
 FIXTURE_ROOT = os.environ.get(
@@ -14,16 +12,18 @@ class TestRubyIntegration(unittest.TestCase):
     def _target(self, name: str) -> str:
         return os.path.join(FIXTURE_ROOT, name)
 
+    # Fixture-not-vendored is the "am I in the fixtures image?" gate (skip);
+    # past it, a non-applicable fixture or a tool crash is a real failure, not
+    # a skip that would leave coverage silently empty (#583).
     def test_brakeman_finds_railsgoat_issues(self):
         target = self._target("railsgoat")
         adapter = ADAPTERS["brakeman"]
         if not os.path.isdir(target):
-            self.skipTest("railsgoat fixture not vendored")
-        if not adapter.is_applicable(target):
-            self.skipTest("brakeman not applicable")
+            self.skipTest("railsgoat fixture not vendored (run inside the fixtures image)")
+        self.assertTrue(adapter.is_applicable(target),
+                        "brakeman should apply to the railsgoat Rails project")
         raw, rc = adapter.invoke(target)
-        if rc not in (0, 1):
-            self.skipTest(f"brakeman failed with {rc}")
+        self.assertIn(rc, (0, 1), f"brakeman errored (rc {rc}) on railsgoat")
         findings = adapter.parse(raw, "g1")
         self.assertTrue(findings, "expected brakeman findings against railsgoat")
 
@@ -31,12 +31,11 @@ class TestRubyIntegration(unittest.TestCase):
         target = self._target("railsgoat")
         adapter = ADAPTERS["bundler-audit"]
         if not os.path.isdir(target):
-            self.skipTest("railsgoat fixture not vendored")
-        if not adapter.is_applicable(target):
-            self.skipTest("bundler-audit not applicable")
+            self.skipTest("railsgoat fixture not vendored (run inside the fixtures image)")
+        self.assertTrue(adapter.is_applicable(target),
+                        "bundler-audit should apply to the railsgoat Rails project")
         raw, rc = adapter.invoke(target)
-        if rc not in (0, 1):
-            self.skipTest(f"bundler-audit failed with {rc}")
+        self.assertIn(rc, (0, 1), f"bundler-audit errored (rc {rc}) on railsgoat")
         findings = adapter.parse(raw, "g1")
         self.assertTrue(findings, "expected bundler-audit findings")
 
