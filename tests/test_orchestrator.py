@@ -847,5 +847,42 @@ class TestDeltaOrchestration(unittest.TestCase):
         self.assertEqual(orch.prune_fixture_files(paths, include_fixtures=True), paths)
 
 
+class TestPrMode(unittest.TestCase):
+    ACQ = {"worktree": "/tmp/wt", "base": "main", "head_sha": "abc"}
+
+    def test_pr_success_records_worktree_and_emits_hunks(self):
+        import io, contextlib
+        from unittest import mock
+        released = {}
+        with mock.patch.object(orch.diff_map, "acquire_pr", return_value=self.ACQ), \
+             mock.patch.object(orch.diff_map, "release_worktree",
+                               side_effect=lambda p, **k: released.setdefault("p", p)), \
+             mock.patch.object(orch, "collect_changed_files", return_value=["a.py"]), \
+             mock.patch.object(orch, "write_diff_hunks") as wdh, \
+             mock.patch.object(orch, "build_result",
+                               return_value={"groups": [], "counts": {}, "tests": []}):
+            with tempfile.TemporaryDirectory() as d:
+                out = os.path.join(d, "groups.json")
+                with contextlib.redirect_stdout(io.StringIO()):
+                    rc = orch.main(["--pr", "7", "--out", out])
+                data = json.load(open(out))
+        self.assertEqual(rc, 0)
+        self.assertEqual(data["worktree"], "/tmp/wt")   # recorded for the agent
+        self.assertIsNone(released.get("p"))            # NOT released on success
+        wdh.assert_called()                             # hunks emitted (PR base)
+
+    def test_pr_failure_releases_worktree_then_raises(self):
+        from unittest import mock
+        released = {}
+        with mock.patch.object(orch.diff_map, "acquire_pr", return_value=self.ACQ), \
+             mock.patch.object(orch.diff_map, "release_worktree",
+                               side_effect=lambda p, **k: released.setdefault("p", p)), \
+             mock.patch.object(orch, "collect_changed_files", return_value=["a.py"]), \
+             mock.patch.object(orch, "build_result", side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                orch.main(["--pr", "7", "--out", "/tmp/x.json"])
+        self.assertEqual(released.get("p"), "/tmp/wt")  # released on error
+
+
 if __name__ == "__main__":
     unittest.main()

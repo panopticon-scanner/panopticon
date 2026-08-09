@@ -796,6 +796,8 @@ def main(argv=None):
     modes.add_argument("--files", nargs="+", metavar="PATH")
     modes.add_argument("--changes", "-c", action="store_true",
                        help="Review changed files vs merge base (fallback HEAD~1)")
+    modes.add_argument("--pr", type=int, metavar="N",
+                       help="Review GitHub PR N in an isolated worktree")
     modes.add_argument("--repo-scan", action="store_true")
     args = ap.parse_args(argv)
     if args.max_per_group < 1:
@@ -859,6 +861,24 @@ def main(argv=None):
                               security_mode=args.security)
         base, source = resolve_base(repo, explicit=args.base)
         emit_delta_artifact(repo, args.out, base, source, args.diff_context)
+
+    elif args.pr is not None:
+        acq = diff_map.acquire_pr(args.pr, repo=repo)
+        wt = acq["worktree"]
+        try:
+            changed = prune_fixture_files(collect_changed_files(wt) or [],
+                                          args.security == "redteam")
+            impl = [f for f in changed if not is_test_file(f)]
+            tests = [f for f in changed if is_test_file(f)]
+            result = build_result(wt, "changes", "changes", None, impl,
+                                  sorted(set(tests) | set(related_tests(wt, impl))),
+                                  args.max_per_group, security_mode=args.security)
+            base, source = resolve_base(wt, explicit=args.base, pr_base=acq["base"])
+            emit_delta_artifact(wt, args.out, base, source, args.diff_context)
+            result["worktree"] = wt   # recorded; SKILL cleanup releases it post-review
+        except Exception:
+            diff_map.release_worktree(wt, repo=repo)
+            raise
 
     else:
         # --repo-scan
