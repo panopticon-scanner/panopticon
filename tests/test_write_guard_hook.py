@@ -97,6 +97,57 @@ class TestDecide(unittest.TestCase):
             self.assertFalse(ok, empty)
 
 
+class TestCwdIndependence(unittest.TestCase):
+    """#935: with an ABSOLUTE out_file (build_plan now emits these), the guard
+    authorizes the reviewer's write regardless of the cwd the hook runs in.
+    A relative out_file did not: allowlist_from_plan realpaths against the
+    install cwd, decide against the hook's cwd, so a subagent cwd !=
+    orchestrator cwd silently denied the write and misplaced the file."""
+
+    @contextlib.contextmanager
+    def _in(self, path):
+        prev = os.getcwd()
+        os.chdir(path)
+        try:
+            yield
+        finally:
+            os.chdir(prev)
+
+    def test_absolute_out_file_authorizes_write_from_a_different_cwd(self):
+        with tempfile.TemporaryDirectory() as run_root, \
+                tempfile.TemporaryDirectory() as elsewhere:
+            target = os.path.join(run_root, ".panopticon",
+                                  "findings-g1-code-panel_review.json")
+            allow = wg.allowlist_from_plan([{"out_file": target}])  # install-time
+            with self._in(elsewhere):                               # subagent cwd
+                ok, _ = wg.decide("Write", target, allow)
+            self.assertTrue(ok)
+
+    def test_relative_write_from_wrong_cwd_is_denied(self):
+        # Documents WHY the plan must carry the absolute path: the same relative
+        # name resolved from a different cwd is a different realpath -> denied.
+        with tempfile.TemporaryDirectory() as run_root, \
+                tempfile.TemporaryDirectory() as elsewhere:
+            target = os.path.join(run_root, ".panopticon",
+                                  "findings-g1-code-panel_review.json")
+            allow = wg.allowlist_from_plan([{"out_file": target}])
+            with self._in(elsewhere):
+                ok, _ = wg.decide(
+                    "Write", ".panopticon/findings-g1-code-panel_review.json", allow)
+            self.assertFalse(ok)
+
+    def test_absolute_out_file_with_spaces_round_trips(self):
+        # The Tapestry workspace path contains a space (#935).
+        with tempfile.TemporaryDirectory() as base:
+            run_root = os.path.join(base, "Mini Vault")
+            os.makedirs(os.path.join(run_root, ".panopticon"))
+            target = os.path.join(run_root, ".panopticon",
+                                  "findings-g1-code-panel_review.json")
+            allow = wg.allowlist_from_plan([{"out_file": target}])
+            ok, _ = wg.decide("Write", target, allow)
+            self.assertTrue(ok)
+
+
 class TestAllowlistFromPlan(unittest.TestCase):
     def test_collects_out_files_absolute(self):
         plan = [{"out_file": ".panopticon/a.json"}, {"out_file": ".panopticon/b.json"}]

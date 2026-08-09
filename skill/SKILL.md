@@ -158,11 +158,13 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
      settings file is git-ignored so a leftover never trips the clean-tree check.
    - **Worktree lifecycle (`--pr`)** — run the whole pipeline (scout, tool
      scan, fan-out, synthesize) with the disposable worktree
-     (`groups.json`'s `worktree` field) as cwd, install the write-guard from
-     that same cwd, and render every dispatch `entry.out_file` as an
-     ABSOLUTE worktree-rooted path — a dispatched subagent's cwd may differ
-     from the orchestrator's, and a relative `out_file` fails the guard
-     silently. After step 8/9's final synthesize call writes the report,
+     (`groups.json`'s `worktree` field) as cwd, and install the write-guard from
+     that same cwd. `build_plan` roots every `entry.out_file` at its cwd and
+     emits it ABSOLUTE (#935), so building the plan from the worktree root is
+     all that's needed — a dispatched subagent's cwd may differ from the
+     orchestrator's, and only an absolute `out_file` keeps the reviewer's write,
+     the guard allowlist, and the resume done-check agreeing on one location (a
+     relative one silently misplaced the file and failed the guard). After step 8/9's final synthesize call writes the report,
      call `diff_map.release_worktree(<worktree>)` to remove the disposable
      tree; the orchestrator also releases it on an unresolvable-base failure
      before exiting (see step 2).
