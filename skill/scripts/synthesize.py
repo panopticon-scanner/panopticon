@@ -601,14 +601,14 @@ def duplicate_out_files(plan):
     seen, dupes = set(), set()
     for e in plan:
         if isinstance(e, dict) and isinstance(e.get("out_file"), str) and e.get("out_file"):
-            of = e["out_file"]
+            of = os.path.normpath(e["out_file"])
             (dupes if of in seen else seen).add(of)
     return sorted(dupes)
 
 
 _FINDINGS_NAME_RE = re.compile(
     r"^findings-(?P<rest>.+)-(?P<role>panel_review|lens_sweep)"
-    r"(?:-(?P<lens>[^-]+))?\.json$")
+    r"(?:-(?P<lens>.+))?\.json$")
 
 
 def _expected_from_filename(basename):

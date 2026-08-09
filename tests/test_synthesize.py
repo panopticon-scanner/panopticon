@@ -74,14 +74,16 @@ class TestFindingsFileIntegrity(unittest.TestCase):
                           " ".join(report["meta"]["integrity"]["mislabeled_findings_files"]))
 
     def test_real_tapestry_corpus_is_consistent_when_present(self):
-        # If the Tapestry corpus is on this machine, its reviewer findings files
+        # If PANOPTICON_TAPESTRY_CORPUS_PATH is set, its reviewer findings files
         # must not trip the mislabel check (they were authored by the real
         # reviewers) — a regression canary against false positives.
-        base = "/Volumes/Mini Vault/untitled folder/projects/Tapestry/tapestry/.panopticon"
         import glob
+        base = os.environ.get("PANOPTICON_TAPESTRY_CORPUS_PATH", "")
+        if not base:
+            self.skipTest("PANOPTICON_TAPESTRY_CORPUS_PATH not set")
         files = glob.glob(os.path.join(base, "findings-*.json"))
         if not files:
-            self.skipTest("Tapestry corpus not present")
+            self.skipTest("No findings files found in PANOPTICON_TAPESTRY_CORPUS_PATH")
         self.assertEqual(syn.mislabeled_findings_files(files), [])
 
 
