@@ -16,6 +16,7 @@ try:
 except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
     from _version import __version__
 from scripts.citations import load_cwe_catalog
+import scripts.diff_map as diff_map
 import scripts.evidence as evidence_mod
 import scripts.group_runner as group_runner
 import scripts.html_report as html_report
@@ -757,11 +758,44 @@ def aggregate_tool_findings(findings):
     return out
 
 
+def load_diff_hunks(path):
+    """Load the orchestrator's diff-hunks.json; {} if absent/malformed."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+
+    raw = data.get("hunks")
+    if not isinstance(raw, dict):
+        raw = {}
+    hunks = {}
+    for p, rs in raw.items():
+        if not isinstance(rs, list):
+            continue
+        cleaned = []
+        for r in rs:
+            if isinstance(r, (list, tuple)) and len(r) == 2 and isinstance(r[0], int) and isinstance(r[1], int):
+                cleaned.append((r[0], r[1]))
+        hunks[str(p)] = cleaned
+    data["hunks"] = hunks
+    return data
+
+
+def classify_findings(findings, hunks, tolerance):
+    """Stamp each finding with delta = {on_diff, hunk, distance}."""
+    for f in findings:
+        f["delta"] = diff_map.classify(f, hunks, tolerance)
+
+
 def build_report(findings, groups_meta, target, fail_on, timestamp, review_type="repo",
                  security_mode="standard", verdicts=None, gate_unverified=False,
                  max_verify=None, verdicts_supplied=False, tool_policy_mode=None,
                  tools_ran=None, tool_dispositions=None, fan_out=None,
-                 scout_requested=None, resume=None, integrity=None):
+                 scout_requested=None, resume=None, integrity=None,
+                 diff_hunks=None, diff_context=5, gate_scope="on-diff"):
     """Build a CodeReviewReport under the two-axis severity x evidence model.
 
     Severity is never mutated here. Verdicts (from evidence.load_verdicts) are
@@ -859,8 +893,17 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
 
     rejected = [f for f in findings if f["evidence"]["status"] == "rejected"]
     active = [f for f in findings if f["evidence"]["status"] != "rejected"]
-    gate_eligible = (active if gate_unverified else
-                     [f for f in active
+    delta_mode = bool(diff_hunks and diff_hunks.get("base"))
+    if delta_mode:
+        classify_findings(active, diff_hunks.get("hunks") or {}, diff_context)
+    on_diff_active = [f for f in active if (f.get("delta") or {}).get("on_diff")]
+    pre_existing_active = [f for f in active
+                           if delta_mode and not (f.get("delta") or {}).get("on_diff")]
+    gate_source = active
+    if delta_mode and gate_scope == "on-diff":
+        gate_source = on_diff_active
+    gate_eligible = (gate_source if gate_unverified else
+                     [f for f in gate_source
                       if f["evidence"]["status"] in evidence_mod.GATE_ELIGIBLE_DEFAULT])
 
     by_panel = {p: [] for p in VALID_PANELS}
@@ -935,6 +978,17 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                 "fan_out": fan_out,
                 "divergence": divergence,
                 "resume": resume,
+                "delta": ({"base": diff_hunks.get("base"),
+                           "base_source": diff_hunks.get("base_source"),
+                           "base_commit": diff_hunks.get("base_commit"),
+                           "delta_start": diff_hunks.get("delta_start"),
+                           "delta_end": diff_hunks.get("delta_end"),
+                           "includes_uncommitted": diff_hunks.get("includes_uncommitted"),
+                           "files_changed": diff_hunks.get("files_changed"),
+                           "diff_context": diff_context,
+                           "on_diff_total": len(on_diff_active),
+                           "pre_existing_total": len(pre_existing_active)}
+                          if delta_mode else None),
             },
             "integrity": integrity,
         },
@@ -951,6 +1005,9 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                             else "confirmed_only"),
             "stats": severity_stats(active),
             "evidence_stats": evidence_stats(findings),
+            "delta": ({"on_diff": severity_stats(on_diff_active),
+                       "pre_existing": severity_stats(pre_existing_active)}
+                      if delta_mode else None),
         },
         "groups": group_objs,
         "findings": active,
@@ -1070,6 +1127,27 @@ def render_summary(report):
         lines.insert(3, "**Integrity:** MISLABELED FILES — %s (content disagrees with "
                         "the filename's panel/role; possible mis-targeted write; run "
                         "not certified)" % ", ".join(mislabeled))
+    delta = s.get("delta")
+    if delta:
+        on = delta.get("on_diff") or {}
+        pre = delta.get("pre_existing") or {}
+        delta_lines = [
+            "**On-diff:** " + (", ".join(
+                "%s %d" % (k.upper(), v) for k, v in on.items() if v) or "none"),
+            "",
+            "**Pre-existing (files you touched, not gating):** " + (", ".join(
+                "%s %d" % (k.upper(), v) for k, v in pre.items() if v) or "none"),
+        ]
+        high_plus = (pre.get("critical", 0) or 0) + (pre.get("high", 0) or 0)
+        if high_plus:
+            delta_lines.append("")
+            delta_lines.append(
+                "⚠ %d pre-existing HIGH+ issue(s) in files you touched "
+                "— strongly recommend fixing before merge "
+                "(not gating this change)." % high_plus)
+        delta_lines.append("")
+        groups_idx = lines.index("## Groups")
+        lines[groups_idx:groups_idx] = delta_lines
     for g in report["groups"]:
         pg = g["panel_grades"]
         grades = " / ".join("%s %s" % (p, pg[p]) for p in PANEL_ORDER)
@@ -1171,6 +1249,13 @@ def main(argv=None):
     ap.add_argument("--max-verify", type=int, default=None, metavar="N",
                     help="Cap the verify queue at the top-priority N entries "
                          "(pass the same value to both passes)")
+    ap.add_argument("--diff-hunks", metavar="PATH", default=None,
+                    help="Path to the orchestrator's diff-hunks.json (#449); "
+                         "stamps each finding with finding.delta")
+    ap.add_argument("--diff-context", type=int, default=5, metavar="N",
+                    help="Lines of tolerance for on-diff classification (default 5)")
+    ap.add_argument("--gate-scope", choices=["on-diff", "all"], default="on-diff",
+                    help="Scope the gate/grade to on-diff findings, or all (default on-diff)")
     ap.add_argument("files", nargs="*")
     args = ap.parse_args(argv)
 
@@ -1351,6 +1436,8 @@ def main(argv=None):
         if isinstance(tools, list):
             scout_requested.update(t for t in tools if isinstance(t, str))
 
+    diff_hunks = load_diff_hunks(args.diff_hunks) if args.diff_hunks else None
+
     report = build_report(findings, groups_meta, args.target, args.fail_on, ts,
                           review_type, security_mode, verdicts=verdicts,
                           gate_unverified=args.gate_unverified,
@@ -1362,7 +1449,10 @@ def main(argv=None):
                           fan_out=fan_out,
                           scout_requested=sorted(scout_requested),
                           resume=resume,
-                          integrity=integrity)
+                          integrity=integrity,
+                          diff_hunks=diff_hunks,
+                          diff_context=args.diff_context,
+                          gate_scope=args.gate_scope)
     errors, warnings = validate_report(report)
     attach_schema_status(report, errors)
     for w in warnings:

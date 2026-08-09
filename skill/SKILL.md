@@ -29,13 +29,13 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
 - `-f <path>` / `--file <path>` — single file + related tests + neighbors.
 - `-d <dir>` / `--directory <dir>` — directory review.
 - `-g <name>` / `--group <name>` — group from `.panopticon/groups.yml` (use `-g "Group[Facet]"` for a facet).
-- `-c` / `--changes` — branch diff vs merge base (fallback `HEAD~1`).
-- `--pr <n>` — PR diff (fetch the PR diff via `gh` or `curl`, extract changed paths, and pass them to the internal `--files` path).
+- `-c` / `--changes` — branch diff vs base (`--base <ref|sha>`; default main→master). Reviews whole changed files (committed **and** uncommitted — it diffs the live working tree); gate scopes to on-diff findings. An unresolvable base fails loudly (non-zero exit, no `diff-hunks.json` written) — pass `--base`. There is no `HEAD~1` fallback.
+- `--pr <n>` — review a GitHub PR in an isolated disposable `git worktree` (never touches your checkout). The orchestrator fetches the PR head, detects its base branch via `gh`, emits `.panopticon/diff-hunks.json`, and records the worktree path in `groups.json`'s `worktree` field; run scout/fan-out/synthesize with that worktree as cwd, then remove it with `diff_map.release_worktree(<path>)`. Because the worktree is a clean checkout at the PR head, a PR review is committed-only (reproducible). Same loud-fail on an unresolvable base.
 - `-e` / `--explore` — discover and catalog groups; no panels unless asked.
 - *(none)* — whole-repo scan.
 
 ## Global flags
-`--full` (force all panels), `--security {standard,redteam}` (default standard), `--fail-on {critical,high,medium,low}`, `--severity {all,medium,high,critical}` (report only findings at or above the threshold), `--out PATH`, `--tools` (require tool scan), `--no-tools` (skip tool scan), `--epss` (enrich CVE citations), `--gate-unverified` (unverified findings drive grades/gate), `--max-verify N` (cap the verify queue).
+`--full` (force all panels), `--security {standard,redteam}` (default standard), `--fail-on {critical,high,medium,low}`, `--severity {all,medium,high,critical}` (report only findings at or above the threshold), `--out PATH`, `--tools` (require tool scan), `--no-tools` (skip tool scan), `--epss` (enrich CVE citations), `--gate-unverified` (unverified findings drive grades/gate), `--max-verify N` (cap the verify queue), `--base <ref|sha>` (explicit delta base for `-c`/`--pr`/`--files`), `--diff-context N` (default 5; on-diff tolerance in lines), `--gate-scope {on-diff,all}` (default `on-diff` for delta reviews; scopes the gate to on-diff × gate-eligible findings). `--base` on `--files` makes it an explicit delta request — plain `--files` (no `--base`) is a normal whole-file review and emits no delta artifact.
 
 ## Pipeline
 1. `TodoList`: discovery → scout → tools → panels → lens sub-reviews → synthesis.
@@ -64,6 +64,15 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
    still sweeps the whole target, so pair this with `--tools-exclude`
    (e.g. `'tests/fixtures/*'`) on BOTH synthesize passes when the target
    carries such corpora, or tool findings on fixtures reappear on that path.
+   **Delta reviews** (`-c`, `--pr <n>`, or `--files` with an explicit
+   `--base`) additionally emit `.panopticon/diff-hunks.json`, pinning three
+   commit anchors — `base_commit` (base tip), `delta_start` (the merge-base
+   fork point), `delta_end` (HEAD) — plus `includes_uncommitted` (`true` for
+   `-c`, since it diffs the live working tree; `false` for `--pr`, whose
+   worktree is a clean checkout at the PR head). An unresolvable base is a
+   **loud orchestrator failure**: non-zero exit, no artifact written — `-c`
+   and `--pr` refuse rather than review the wrong thing. Plain `--files`
+   (no `--base`) is a normal whole-file review and emits no delta artifact.
 3. **Scout** — dispatch the `scout` role (`skill/agents/scout.md`) per group — its template has no placeholders; dispatch its body plus tool-policy line as the prompt — via `subagent_type: panopticon-scout` when that registered shell exists (fresh session after registration), else a general-purpose agent; the scout RETURNS the ScopeProfile JSON; the orchestrator writes it to `.panopticon/scout-{group}.json`.
    Append the group's name, its file list from `groups.json`, and the `security_mode` to the prompt body — the scout template itself carries no assignment.
 4. **Tool scan** — deterministic, not discretionary, total rule: RUN
@@ -144,9 +153,28 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
    - **Lifecycle** — an aborted run leaves the guard installed; the next run's
      `install` is idempotent, or clear it with `wg.uninstall()`. The hook's
      settings file is git-ignored so a leftover never trips the clean-tree check.
+   - **Worktree lifecycle (`--pr`)** — run the whole pipeline (scout, tool
+     scan, fan-out, synthesize) with the disposable worktree
+     (`groups.json`'s `worktree` field) as cwd, install the write-guard from
+     that same cwd, and render every dispatch `entry.out_file` as an
+     ABSOLUTE worktree-rooted path — a dispatched subagent's cwd may differ
+     from the orchestrator's, and a relative `out_file` fails the guard
+     silently. After step 8/9's final synthesize call writes the report,
+     call `diff_map.release_worktree(<worktree>)` to remove the disposable
+     tree; the orchestrator also releases it on an unresolvable-base failure
+     before exiting (see step 2).
    See Host dispatch below for the full per-host mechanism.
-7. **Synthesize (pass 1)** — `python3 skill/scripts/synthesize.py --emit-verify-queue [flags] [--tools-dir .panopticon/tools] .panopticon/findings-*.json`.
+7. **Synthesize (pass 1)** — `python3 skill/scripts/synthesize.py --emit-verify-queue [flags] [--tools-dir .panopticon/tools] [--diff-hunks .panopticon/diff-hunks.json] .panopticon/findings-*.json`.
    Include `--tools-dir .panopticon/tools` when step 4's scan ran — see step 4.
+   Include `--diff-hunks .panopticon/diff-hunks.json` when step 2 emitted the
+   delta artifact — `--diff-hunks` is part of the `[same flags]` contract
+   below (like `--tools-dir`): it MUST be passed identically to both
+   synthesize passes, or pass 2's verdicts and pass 1's queue disagree on the
+   finding set. `--diff-context N` (default 5) sets the on-diff tolerance
+   and `--gate-scope {on-diff,all}` (default `on-diff` for delta reviews)
+   scopes the gate to on-diff × gate-eligible findings; pre-existing findings
+   never gate but their per-severity counts are shown, and pre-existing
+   HIGH+ warns loudly.
    If it prints a "verify queue: N entries" line, proceed to step 8; if it printed a report, skip to step 9.
 8. **Verify** — Run `python3 skill/scripts/dispatch.py --render-advisor .panopticon/verify-queue.json --out .panopticon/advisor-prompts`,
    then dispatch each `.panopticon/advisor-prompts/{queue_id}.md` file's contents
@@ -161,10 +189,11 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
    Then run
    `python3 skill/scripts/synthesize.py --verdicts-dir .panopticon/verdicts [same flags] .panopticon/findings-*.json`
    to produce the final report.
-   `[same flags]` is a requirement, not a convenience: `--severity` filtering and
-   `--tools-dir` ingestion both run before the verify queue is built, so a flag that
-   differs between the two passes feeds them different finding sets — and the verdicts
-   pass 1 asked for will name findings that pass 2 has no queue entry for.
+   `[same flags]` is a requirement, not a convenience: `--severity` filtering,
+   `--tools-dir` ingestion, and `--diff-hunks` delta scoping all run before the
+   verify queue is built, so a flag that differs between the two passes feeds
+   them different finding sets — and the verdicts pass 1 asked for will name
+   findings that pass 2 has no queue entry for.
 9. **Validate** — `verification-before-completion`: compare `git status --porcelain`
    against `.panopticon/tree-baseline.txt`; any NEW modification outside `.panopticon/`
    means a reviewer had side effects — treat the run as compromised: discard the

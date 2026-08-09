@@ -121,5 +121,29 @@ class TestReadmeQuickStart(unittest.TestCase):
 
     def test_quick_start_uses_documented_flags(self):
         qs = self._quick_start()
-        for flag in ("-f ", "-d ", "-c", "--pr "):
+        for flag in ("-f ", "-d ", "-c", "--pr ", "--base"):
             self.assertIn(flag, qs, flag)
+
+
+class TestDeltaDocs(unittest.TestCase):
+    """#449: SKILL.md and README must describe the shipped delta-review
+    behavior (base resolution, the diff-hunks.json artifact, and the
+    disposable PR worktree) — not the pre-redirect HEAD~1/--files framing."""
+
+    def setUp(self):
+        with open(os.path.join(ROOT, "SKILL.md"), encoding="utf-8") as fh:
+            self.skill = fh.read()
+        with open(os.path.join(ROOT, os.pardir, "README.md"), encoding="utf-8") as fh:
+            self.readme = fh.read()
+
+    def test_skill_documents_delta_flow(self):
+        for token in ["--base", "--diff-context", "--gate-scope",
+                      "diff-hunks.json", "worktree"]:
+            self.assertIn(token, self.skill, token)
+
+    def test_readme_quick_start_shows_pr_and_base(self):
+        # Reuse TestReadmeQuickStart's Quick start boundary — the brief's
+        # `.split("## ")[1]` split does not match this README's layout.
+        qs = self.readme.split("## Quick start")[1].split("## Repository layout")[0]
+        self.assertIn("--pr", qs)
+        self.assertIn("--base", qs)
