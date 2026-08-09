@@ -65,10 +65,11 @@ Or point it at a file, directory, PR, or changeset (see `skill/SKILL.md` → Mod
 for the full flag list):
 
 ```bash
-kimi /panopticon -f src/auth.py     # a single file + its tests and neighbors
-kimi /panopticon -d src/payments    # a directory
-kimi /panopticon -c                 # branch diff vs the merge base
-kimi /panopticon --pr 217           # a pull request
+kimi /panopticon -f src/auth.py        # a single file + its tests and neighbors
+kimi /panopticon -d src/payments       # a directory
+kimi /panopticon -c                    # review this branch vs its base
+kimi /panopticon -c --base release-2   # review vs an explicit base
+kimi /panopticon --pr 217              # review PR 217 in an isolated worktree
 ```
 
 ## Repository layout
