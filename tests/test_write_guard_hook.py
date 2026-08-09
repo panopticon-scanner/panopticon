@@ -82,6 +82,20 @@ class TestDecide(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("denied", reason.lower())
 
+    def test_non_string_file_path_is_denied_not_raised(self):
+        # #768: a Write payload whose file_path is not a string (int/list/dict)
+        # made os.path.abspath raise TypeError and crash the hook. It must fail
+        # closed instead — a malformed write path is suspicious, never allowed.
+        for bad in (123, ["a"], {"x": 1}, 3.14):
+            ok, reason = wg.decide("Write", bad, self.allow)
+            self.assertFalse(ok, bad)
+            self.assertIn("denied", reason.lower())
+        # empty/None-ish falsy values resolve to cwd — outside the allowlist,
+        # denied, still no crash.
+        for empty in ([], {}, None):
+            ok, _ = wg.decide("Write", empty, self.allow)
+            self.assertFalse(ok, empty)
+
 
 class TestAllowlistFromPlan(unittest.TestCase):
     def test_collects_out_files_absolute(self):
@@ -170,6 +184,16 @@ class TestMain(unittest.TestCase):
         rc, out = self._run_main(payload, allowlist_paths="null")
         self.assertEqual(rc, 0)
         self.assertEqual(out, "")
+
+    def test_non_string_file_path_payload_denies_without_crashing(self):
+        # #768: end-to-end — a Write payload with a non-string file_path must
+        # emit a deny (rc 0, deny JSON), never raise out of main().
+        payload = json.dumps({"tool_name": "Write",
+                               "tool_input": {"file_path": 123}})
+        rc, out = self._run_main(payload, allowlist_paths=[".panopticon/findings-g1-x.json"])
+        self.assertEqual(rc, 0)
+        data = json.loads(out)
+        self.assertEqual(data["hookSpecificOutput"]["permissionDecision"], "deny")
 
 
 class TestInstallUninstall(unittest.TestCase):

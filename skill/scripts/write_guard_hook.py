@@ -42,7 +42,10 @@ def decide(tool_name, file_path, allowlist):
         if os.path.islink(raw):
             return False, ("write to %s is denied: findings targets must not be symlinks" % file_path)
         target = os.path.realpath(raw)
-    except (ValueError, OSError):
+    except (ValueError, OSError, TypeError):
+        # TypeError: a non-string file_path (int/list/dict) — os.path.* rejects
+        # it. A write payload whose path isn't a string is malformed/suspicious;
+        # fail closed (deny) rather than crash the hook (#768).
         return False, ("write to %r is denied: unresolvable path" % file_path)
     if target in allowlist:
         return True, ""
