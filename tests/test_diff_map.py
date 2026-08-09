@@ -1,7 +1,11 @@
 # tests/test_diff_map.py
-import os, sys, unittest
+import os, sys, unittest, subprocess, tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill", "scripts"))
 import diff_map
+
+
+def _git(d, *a):
+    subprocess.run(["git", "-C", d, *a], check=True, capture_output=True)
 
 DIFF = """diff --git a/app/db.py b/app/db.py
 index 111..222 100644
@@ -47,3 +51,37 @@ class TestParse(unittest.TestCase):
     def test_empty_and_garbage_tolerated(self):
         self.assertEqual(diff_map.parse_unified_diff(""), {})
         self.assertEqual(diff_map.parse_unified_diff("not a diff\nrandom\n"), {})
+
+
+class TestHunkMap(unittest.TestCase):
+    def _repo(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, d, ignore_errors=True)
+        subprocess.run(["git", "init", "-q", d], check=True)
+        _git(d, "config", "user.email", "t@e.com")
+        _git(d, "config", "user.name", "T")
+        with open(os.path.join(d, "a.py"), "w") as fh:
+            fh.write("\n".join("line%d" % i for i in range(1, 11)) + "\n")
+        _git(d, "add", ".")
+        _git(d, "commit", "-qm", "init")
+        _git(d, "branch", "-M", "main")
+        return d
+
+    def test_committed_and_uncommitted_changes(self):
+        d = self._repo()
+        _git(d, "checkout", "-q", "-b", "feat")
+        # committed change to line 3
+        p = os.path.join(d, "a.py")
+        lines = open(p).read().splitlines()
+        lines[2] = "CHANGED3"
+        open(p, "w").write("\n".join(lines) + "\n")
+        _git(d, "commit", "-qam", "c")
+        # uncommitted new file (untracked) -> whole-file range
+        open(os.path.join(d, "b.py"), "w").write("x\ny\n")
+        m = diff_map.hunk_map(d, "main")
+        self.assertIn("a.py", m)
+        self.assertTrue(any(s <= 3 <= e for (s, e) in m["a.py"]))
+        self.assertEqual(m["b.py"], [(1, 2)])
+
+    def test_missing_base_returns_empty(self):
+        self.assertEqual(diff_map.hunk_map(self._repo(), "no-such-ref"), {})

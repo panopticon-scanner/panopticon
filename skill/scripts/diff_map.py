@@ -3,6 +3,8 @@ changed-line-range map, and classify findings against it. Stdlib only; pure
 functions plus thin git/gh subprocess wrappers.
 """
 import re
+import subprocess
+import os
 
 _NEWFILE_RE = re.compile(r"^\+\+\+ (?:b/)?(.*?)\s*$")
 _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
@@ -33,4 +35,47 @@ def parse_unified_diff(text):
             count = int(h.group(2)) if h.group(2) is not None else 1
             if count > 0:
                 result[path].append((start, start + count - 1))
+    return result
+
+
+def _run_git(repo, args, timeout=60):
+    return subprocess.run(["git", "-C", repo, *args],
+                          capture_output=True, text=True, timeout=timeout)
+
+
+def hunk_map(repo, base):
+    """Changed new-side line ranges per file (merge-base vs working tree),
+    including untracked non-ignored files as whole-file ranges. {} on failure."""
+    try:
+        mb = _run_git(repo, ["merge-base", "HEAD", base])
+    except Exception:
+        return {}
+    if mb.returncode != 0 or not mb.stdout.strip():
+        return {}
+    base_sha = mb.stdout.strip()
+    try:
+        diff = _run_git(repo, ["diff", "--unified=0", "--no-color",
+                               "--find-renames", base_sha])
+    except Exception:
+        return {}
+    if diff.returncode != 0:
+        return {}
+    result = parse_unified_diff(diff.stdout)
+    # `git diff` omits untracked files; add them as whole-file ranges.
+    try:
+        others = _run_git(repo, ["ls-files", "--others", "--exclude-standard"])
+    except Exception:
+        others = None
+    if others is not None and others.returncode == 0:
+        for rel in others.stdout.splitlines():
+            rel = rel.strip()
+            if not rel:
+                continue
+            full = os.path.join(repo, rel)
+            try:
+                with open(full, "rb") as fh:
+                    n = sum(1 for _ in fh)
+            except OSError:
+                continue
+            result[rel] = [(1, max(n, 1))]
     return result
