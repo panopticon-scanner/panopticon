@@ -192,7 +192,13 @@ class TestStaticPyproject(unittest.TestCase):
         captured = {}
         def fake_run_tool(cmd, timeout=0):
             captured["cmd"] = list(cmd)
-            with open(cmd[cmd.index("--requirement") + 1]) as fh:
+            # Guard the index so a command-shape change fails with a clear
+            # message, not an opaque ValueError/IndexError (#587).
+            self.assertIn("--requirement", cmd)
+            req_idx = cmd.index("--requirement")
+            self.assertLess(req_idx + 1, len(cmd),
+                            "--requirement is the last argument with no value")
+            with open(cmd[req_idx + 1]) as fh:
                 captured["reqs"] = fh.read()
             return b"{}", 0
         with mock.patch.object(pa, "run_tool", fake_run_tool):
