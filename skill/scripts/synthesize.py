@@ -805,7 +805,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                  tools_ran=None, tool_dispositions=None, fan_out=None,
                  scout_requested=None, resume=None, integrity=None,
                  diff_hunks=None, diff_context=5, gate_scope="on-diff",
-                 catalog=None):
+                 catalog=None, verdict_unloadable=None):
     """Build a CodeReviewReport under the two-axis severity x evidence model.
 
     Severity is never mutated here. Verdicts (from evidence.load_verdicts) are
@@ -852,6 +852,17 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
     if unknown:
         print("synthesize: verdict file(s) for unknown queue_id(s): %s"
               % ", ".join(sorted(unknown)), file=sys.stderr)
+    # Verdict files that existed but could not be parsed/validated (#938). Their
+    # findings are already counted as unanswered above (no verdict matched); the
+    # count here records that a verdict was LOST to corruption, not that one was
+    # never generated -- otherwise a malformed advisor return vanishes silently.
+    verdict_unloadable = verdict_unloadable or []
+    if verdict_unloadable:
+        print("synthesize: %d verdict file(s) were un-loadable (corrupt) and "
+              "their findings left unverified: %s"
+              % (len(verdict_unloadable),
+                 ", ".join(u.get("file", "?") for u in verdict_unloadable)),
+              file=sys.stderr)
     # A run whose verdicts all failed to match now produces gate PASS / grade A
     # / risk LOW -- the safest-looking output there is -- because only verified
     # findings gate. Stderr is not what CI consumes, so the drop counts belong
@@ -863,6 +874,10 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
         "supplied": len(verdicts),
         "matched": matched_n,
         "unknown": len(unknown),
+        # Verdict files present on disk but un-loadable (corrupt/invalid). A
+        # non-zero count means verification evidence was lost, distinct from a
+        # finding that never had a verdict generated (#938).
+        "unloadable": len(verdict_unloadable),
         # Measured only when --verdicts-dir was passed at all. Emitting 0 for a
         # run with no verify phase would read as "nothing went unanswered",
         # which is the opposite of the truth; null means "not measured", the
@@ -1394,7 +1409,7 @@ def main(argv=None):
                       file=sys.stderr)
         print("verify queue empty; emitting final report", file=sys.stderr)
 
-    verdicts = evidence_mod.load_verdicts(args.verdicts_dir)
+    verdicts, verdict_unloadable = evidence_mod.load_verdicts_detailed(args.verdicts_dir)
     # Union of every per-group dispatch-plan-*.json on disk -- loaded ONCE and
     # shared with derive_tool_policy_mode, so the two cannot drift apart again
     # (#146/C1). The real fan-out workflow writes one plan file PER GROUP
@@ -1463,7 +1478,8 @@ def main(argv=None):
                           diff_hunks=diff_hunks,
                           diff_context=args.diff_context,
                           gate_scope=args.gate_scope,
-                          catalog=catalog)
+                          catalog=catalog,
+                          verdict_unloadable=verdict_unloadable)
     errors, warnings = validate_report(report)
     attach_schema_status(report, errors)
     for w in warnings:

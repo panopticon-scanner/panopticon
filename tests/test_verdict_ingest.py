@@ -76,6 +76,44 @@ class TestLoadVerdicts(unittest.TestCase):
         self.assertEqual(set(out), {QID_1})
         self.assertEqual(out[QID_1]["verdict"], "CONFIRMED")
 
+    def test_detailed_reports_unloadable_instead_of_dropping(self):
+        # #938: a corrupt / invalid verdict file must be surfaced, not silently
+        # dropped to stderr only. load_verdicts_detailed returns the un-loadable
+        # files so the caller can put the count in meta.coverage.
+        with tempfile.TemporaryDirectory() as d:
+            _write(d, QID_1 + ".json",
+                   {"finding_id": "SEC-001", "verdict": "CONFIRMED", "reasoning": "r"})
+            _write(d, QID_2 + ".json", "{not json")           # unparseable
+            _write(d, QID_3 + ".json", {"reasoning": "no verdict key"})  # invalid
+            out, unloadable = evidence.load_verdicts_detailed(d)
+        self.assertEqual(set(out), {QID_1})
+        self.assertEqual({u["file"] for u in unloadable},
+                         {QID_2 + ".json", QID_3 + ".json"})
+        self.assertTrue(all(u.get("reason") for u in unloadable))
+
+    def test_unescaped_internal_quote_is_reported_not_dropped(self):
+        # The exact field failure (#938): an advisor return with an unescaped "
+        # inside `reasoning` breaks json.load AND load_json_tolerant's object
+        # search, so the verdict is lost. It must land in `unloadable`, never
+        # in the verdicts dict.
+        with tempfile.TemporaryDirectory() as d:
+            _write(d, QID_1 + ".json",
+                   '{"finding_id": "SEC-001", "verdict": "REJECTED", '
+                   '"reasoning": "the call to "eval" is actually safe here"}')
+            out, unloadable = evidence.load_verdicts_detailed(d)
+        self.assertEqual(out, {})
+        self.assertEqual([u["file"] for u in unloadable], [QID_1 + ".json"])
+
+    def test_load_verdicts_is_wrapper_over_detailed(self):
+        with tempfile.TemporaryDirectory() as d:
+            _write(d, QID_1 + ".json",
+                   {"finding_id": "SEC-001", "verdict": "CONFIRMED", "reasoning": "r"})
+            _write(d, QID_2 + ".json", "{not json")
+            self.assertEqual(evidence.load_verdicts(d),
+                             evidence.load_verdicts_detailed(d)[0])
+        # clean dir -> empty unloadable list, never None
+        self.assertEqual(evidence.load_verdicts_detailed("/nonexistent")[1], [])
+
 
 class TestMatchVerdict(unittest.TestCase):
     def test_match_with_echo(self):

@@ -1652,6 +1652,28 @@ class TestTwoPassCli(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertIn("no verdict", err.getvalue())
 
+    def test_corrupt_verdict_file_surfaced_in_coverage(self):
+        # #938 end-to-end: a verdict file with an unescaped internal quote must
+        # route through load_verdicts_detailed into meta.coverage.verdicts.
+        # unloadable, not vanish with only a stderr note.
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            fp = self._write_findings(d, [_agentic()])
+            vd = os.path.join(d, ".panopticon", "verdicts")
+            os.makedirs(vd)
+            with open(os.path.join(vd, "deadbeefdeadbeef.json"), "w") as fh:
+                fh.write('{"verdict": "CONFIRMED", '
+                         '"reasoning": "the "eval" call is safe"}')  # unescaped "
+            out = os.path.join(d, "report.json")
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                rc = syn.main(["--verdicts-dir", vd, "--out", out, fp])
+            self.assertEqual(rc, 0)
+            with open(out) as fh:
+                report = json.load(fh)
+            self.assertEqual(
+                report["meta"]["coverage"]["verdicts"]["unloadable"], 1)
+            self.assertIn("un-loadable", err.getvalue())
+
     def test_pass1_cli_and_pass2_build_report_agree_on_fingerprints(self):
         # #443: pass 1 (--emit-verify-queue) fed build_verify_queue a bare
         # prepare_findings() list while pass 2 (build_report) aggregated
@@ -2266,7 +2288,23 @@ class TestVerdictAccountingMeta(unittest.TestCase):
                              verdicts=verdicts, verdicts_supplied=True)
         self.assertEqual(r["meta"]["coverage"]["verdicts"],
                          {"queued": 2, "cut": 0, "supplied": 2, "matched": 1,
-                          "unknown": 1, "unanswered": 1})
+                          "unknown": 1, "unanswered": 1, "unloadable": 0})
+
+    def test_unloadable_verdicts_surfaced_in_coverage(self):
+        # #938: corrupt verdict files (passed as verdict_unloadable) surface as
+        # a count in meta.coverage, so a lost verdict is visible rather than
+        # only reflected as a lower `supplied`.
+        a = self._f("A-1", "first claim", "a.py")
+        self._queue([a])
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            r = syn.build_report([a], [], "t", None, "2026-08-05T00:00:00Z",
+                                 verdicts={}, verdicts_supplied=True,
+                                 verdict_unloadable=[
+                                     {"file": "x.json", "reason": "unparseable: ..."},
+                                     {"file": "y.json", "reason": "missing/invalid verdict key"}])
+        self.assertEqual(r["meta"]["coverage"]["verdicts"]["unloadable"], 2)
+        self.assertIn("un-loadable", err.getvalue())
 
     def test_echo_mismatch_is_dropped_and_counted_as_unanswered(self):
         # match_verdict refuses a verdict that echoes a different finding_id.
@@ -2283,7 +2321,7 @@ class TestVerdictAccountingMeta(unittest.TestCase):
                                  verdicts=verdicts, verdicts_supplied=True)
         self.assertEqual(r["meta"]["coverage"]["verdicts"],
                          {"queued": 1, "cut": 0, "supplied": 1, "matched": 0,
-                          "unknown": 0, "unanswered": 1})
+                          "unknown": 0, "unanswered": 1, "unloadable": 0})
         self.assertEqual(r["summary"]["gate"], "OFF")  # ...and it looks clean
 
     def test_unanswered_is_null_when_no_verdicts_were_supplied(self):
@@ -2294,7 +2332,7 @@ class TestVerdictAccountingMeta(unittest.TestCase):
                              None, "2026-08-05T00:00:00Z")
         self.assertEqual(r["meta"]["coverage"]["verdicts"],
                          {"queued": 1, "cut": 0, "supplied": 0, "matched": 0,
-                          "unknown": 0, "unanswered": None})
+                          "unknown": 0, "unanswered": None, "unloadable": 0})
 
 
 class TestVerdictCutAccounting(unittest.TestCase):
