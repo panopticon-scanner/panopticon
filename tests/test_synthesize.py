@@ -2945,3 +2945,44 @@ class TestDeltaGate(unittest.TestCase):
         self.assertNotEqual(rep["summary"]["gate"], "INCONCLUSIVE")
         self.assertIsNone(rep["summary"]["delta"])
         self.assertIsNone(rep["meta"]["coverage"]["delta"])
+
+
+class TestRenderDelta(unittest.TestCase):
+    """#449 Task 9: render_summary surfaces summary.delta -- on-diff counts,
+    all-severity pre-existing counts, and a loud (advisory, non-gating)
+    warning when pre-existing CRITICAL+HIGH > 0."""
+
+    def _report(self, pre):
+        return {"meta": {"target": "t"}, "summary": {
+            "overall_grade": "B", "risk_level": "MEDIUM", "gate": "PASS",
+            "stats": {}, "evidence_stats": {}, "delta": {"on_diff": {"high": 1},
+                                   "pre_existing": pre}}, "groups": [], "findings": []}
+
+    def test_warns_on_pre_existing_high(self):
+        out = syn.render_summary(self._report({"critical": 0, "high": 2, "medium": 5, "low": 3}))
+        self.assertIn("pre-existing", out.lower())
+        self.assertIn("2", out)              # HIGH count
+        self.assertIn("⚠", out)         # loud warning glyph
+        self.assertIn("5", out)              # MEDIUM count still shown
+
+    def test_no_warning_without_high(self):
+        out = syn.render_summary(self._report({"critical": 0, "high": 0, "medium": 4, "low": 1}))
+        self.assertNotIn("⚠", out)
+        self.assertIn("4", out)              # MEDIUM count still shown
+
+    def test_delta_lines_placed_between_evidence_and_groups(self):
+        r = self._report({"critical": 1, "high": 0, "medium": 0, "low": 0})
+        out = syn.render_summary(r)
+        lines = out.split("\n")
+        ev_idx = next(i for i, l in enumerate(lines) if l.startswith("**Evidence:**"))
+        groups_idx = next(i for i, l in enumerate(lines) if l == "## Groups")
+        ondiff_idx = next(i for i, l in enumerate(lines) if l.startswith("**On-diff:**"))
+        pre_idx = next(i for i, l in enumerate(lines) if l.startswith("**Pre-existing"))
+        self.assertTrue(ev_idx < ondiff_idx < pre_idx < groups_idx)
+
+    def test_no_delta_block_when_not_delta_mode(self):
+        r = self._report({"critical": 0, "high": 0, "medium": 0, "low": 0})
+        r["summary"]["delta"] = None
+        out = syn.render_summary(r)
+        self.assertNotIn("On-diff", out)
+        self.assertNotIn("Pre-existing", out)

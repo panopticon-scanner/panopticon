@@ -1116,6 +1116,26 @@ def render_summary(report):
         lines.insert(3, "**Integrity:** MISLABELED FILES — %s (content disagrees with "
                         "the filename's panel/role; possible mis-targeted write; run "
                         "not certified)" % ", ".join(mislabeled))
+    delta = s.get("delta")
+    if delta:
+        on = delta.get("on_diff") or {}
+        pre = delta.get("pre_existing") or {}
+        delta_lines = [
+            "**On-diff:** " + (", ".join(
+                "%s %d" % (k.upper(), v) for k, v in on.items() if v) or "none"),
+            "",
+            "**Pre-existing (files you touched, not gating):** " + (", ".join(
+                "%s %d" % (k.upper(), v) for k, v in pre.items() if v) or "none"),
+        ]
+        high_plus = (pre.get("critical", 0) or 0) + (pre.get("high", 0) or 0)
+        if high_plus:
+            delta_lines.append(
+                "⚠ %d pre-existing HIGH+ issue(s) in files you touched "
+                "— strongly recommend fixing before merge "
+                "(not gating this change)." % high_plus)
+        delta_lines.append("")
+        groups_idx = lines.index("## Groups")
+        lines[groups_idx:groups_idx] = delta_lines
     for g in report["groups"]:
         pg = g["panel_grades"]
         grades = " / ".join("%s %s" % (p, pg[p]) for p in PANEL_ORDER)
