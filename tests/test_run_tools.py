@@ -145,13 +145,9 @@ class TestAdapterDispatch(unittest.TestCase):
             out_dir = os.path.join(d, "out")
             for tool in ("spotbugs", "roslyn-secguard"):
                 rt.run_tools(d, [tool], out_dir, image="panopticon-tools", runner=runner)
+            expected_mount = "%s:/src:ro" % os.path.abspath(d)
             for cmd in calls:
-                self.assertIn("-v", cmd)          # clear failure, not ValueError
-            mounts = [cmd[cmd.index("-v") + 1] for cmd in calls]
-            self.assertEqual(mounts, [
-                "%s:/src:ro" % os.path.abspath(d),
-                "%s:/src:ro" % os.path.abspath(d),
-            ])
+                self.assertIn(expected_mount, cmd)
 
 
     def test_default_selection_includes_phase1_adapters(self):
@@ -225,6 +221,7 @@ class TestContainment(unittest.TestCase):
         for cmd in self._calls(["semgrep", "cargo-audit"]):
             self.assertIn("--network", cmd)          # clear failure, not ValueError (#780)
             i = cmd.index("--network")
+            self.assertLess(i + 1, len(cmd), "--network has no value argument")
             self.assertEqual(cmd[i + 1], "none")
 
     def test_nvd_api_key_never_forwarded(self):
@@ -248,6 +245,7 @@ class TestContainment(unittest.TestCase):
         calls = self._calls(["roslyn-secguard"], online=True)
         self.assertIn("--network", calls[0])          # clear failure, not ValueError (#781)
         i = calls[0].index("--network")
+        self.assertLess(i + 1, len(calls[0]), "--network has no value argument")
         self.assertEqual(calls[0][i + 1], "none")
 
     def test_filter_online_helper(self):
