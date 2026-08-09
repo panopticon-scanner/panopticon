@@ -1,9 +1,7 @@
 import contextlib
 import io
 import unittest
-import sys, os
 from unittest import mock
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, "skill"))
 import scripts.tools.base as base
 
 
@@ -35,10 +33,6 @@ class TestBase(unittest.TestCase):
         self.assertEqual(finding["provenance"]["discovered_by"], "tool:demo")
         self.assertEqual(finding["provenance"]["confirmation_status"], "TOOL")
         self.assertEqual(finding["provenance"]["confirmation_reasoning"], "rule-123")
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class TestRunTool(unittest.TestCase):
@@ -87,3 +81,7 @@ class TestRunTool(unittest.TestCase):
             base.run_tool(["t"], timeout=7, cwd="/x", env={"A": "1"})
         rec.assert_called_once_with(["t"], capture_output=True, timeout=7,
                                     cwd="/x", env={"A": "1"})
+
+
+if __name__ == "__main__":
+    unittest.main()
