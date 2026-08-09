@@ -767,7 +767,7 @@ def load_diff_hunks(path):
         return {}
     if not isinstance(data, dict):
         return {}
-    
+
     raw = data.get("hunks")
     if not isinstance(raw, dict):
         raw = {}
