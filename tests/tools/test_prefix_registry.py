@@ -10,14 +10,11 @@ tools without PREFIX entries would give both the same prefix and no test
 would object. These tests make prefix uniqueness a property of the registry,
 not of whichever pair someone remembered to check.
 """
-import os
-import sys
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, "skill"))
-from scripts.tools import ADAPTERS  # noqa: E402
-import scripts.tools.legacy_sarif as legacy  # noqa: E402
-import scripts.tools.sarif_utils as su  # noqa: E402
+from scripts.tools import ADAPTERS
+import scripts.tools.legacy_sarif as legacy
+import scripts.tools.sarif_utils as su
 
 
 def prefix_collisions(adapters):

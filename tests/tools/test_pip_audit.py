@@ -1,12 +1,10 @@
 import json
 import os
 import shutil
-import sys
 import tempfile
 import unittest
 from unittest import mock
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, "skill"))
 import scripts.tools.pip_audit as pa
 
 PIP_AUDIT_SAMPLE = json.dumps({
