@@ -1,5 +1,6 @@
 # tests/test_diff_map.py
 import os, sys, unittest, subprocess, tempfile
+from unittest import mock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill", "scripts"))
 import diff_map
 
@@ -123,14 +124,13 @@ class TestClassify(unittest.TestCase):
 
 class TestPrWorktree(unittest.TestCase):
     def test_acquire_reads_base_and_adds_worktree(self):
-        from unittest import mock
         calls = []
         def runner(argv, **kw):
             calls.append(argv)
             out = ""
             if argv[:3] == ["gh", "pr", "view"]:
                 out = '{"baseRefName": "main"}'
-            elif argv[:2] == ["git", "rev-parse"]:
+            elif "rev-parse" in argv and "FETCH_HEAD" in argv:
                 out = "deadbeef\n"
             class R: returncode = 0; stdout = out; stderr = ""
             return R()
@@ -138,7 +138,7 @@ class TestPrWorktree(unittest.TestCase):
             info = diff_map.acquire_pr(7, repo=".", runner=runner)
         self.assertEqual(info["base"], "main")
         self.assertEqual(info["worktree"], "/tmp/wt-pr7")
-        self.assertTrue(any(a[:2] == ["git", "worktree"] and "add" in a for a in calls))
+        self.assertTrue(any("worktree" in a and "add" in a for a in calls))
         self.assertTrue(any("refs/pull/7/head" in " ".join(a) for a in calls))
 
     def test_acquire_raises_loudly_on_gh_failure(self):

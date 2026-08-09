@@ -136,10 +136,10 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
     base = (_json.loads(view) or {}).get("baseRefName")
     if not base:
         raise RuntimeError("panopticon --pr: could not read base branch for PR %d" % pr_number)
-    _run(["git", "fetch", "origin", "refs/pull/%d/head" % pr_number])
-    head_sha = _run(["git", "rev-parse", "FETCH_HEAD"]).strip()
+    _run(["git", "-C", repo, "fetch", "origin", "refs/pull/%d/head" % pr_number])
+    head_sha = _run(["git", "-C", repo, "rev-parse", "FETCH_HEAD"]).strip()
     wt = _mk_worktree_dir(pr_number)
-    _run(["git", "worktree", "add", "--detach", wt, "FETCH_HEAD"])
+    _run(["git", "-C", repo, "worktree", "add", "--detach", wt, "FETCH_HEAD"])
     return {"worktree": wt, "base": base, "head_sha": head_sha}
 
 
