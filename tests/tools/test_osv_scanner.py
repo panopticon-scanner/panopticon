@@ -5,6 +5,7 @@ import unittest
 from unittest import mock
 
 import scripts.tools.osv_scanner as osv
+import scripts.tools.base as base
 
 # Golden trimmed from a REAL `osv-scanner --format json --recursive` run
 # (2026-08-03, osv-scanner in the panopticon-tools image). The real shape nests
@@ -80,11 +81,11 @@ class TestOsvScannerAdapter(unittest.TestCase):
         self.assertEqual(by_id["GHSA-x84v-xcm2-53pg"]["severity"], "CRITICAL")  # 9.8
 
     def test_cvss_bucket_boundaries(self):
-        self.assertEqual(osv._cvss_bucket(9.0), "CRITICAL")
-        self.assertEqual(osv._cvss_bucket(7.0), "HIGH")
-        self.assertEqual(osv._cvss_bucket(6.9), "MEDIUM")
-        self.assertEqual(osv._cvss_bucket(4.0), "MEDIUM")
-        self.assertEqual(osv._cvss_bucket(3.9), "LOW")
+        self.assertEqual(base.cvss_bucket(9.0), "CRITICAL")
+        self.assertEqual(base.cvss_bucket(7.0), "HIGH")
+        self.assertEqual(base.cvss_bucket(6.9), "MEDIUM")
+        self.assertEqual(base.cvss_bucket(4.0), "MEDIUM")
+        self.assertEqual(base.cvss_bucket(3.9), "LOW")
 
     def test_parse_uppercases_cve_and_filters_aliases(self):
         findings = osv.OsvScannerAdapter().parse(OSV_REAL_SAMPLE, "g1")

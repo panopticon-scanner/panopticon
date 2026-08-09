@@ -12,12 +12,9 @@ after each success, so a re-run files only the remainder.
 Usage:  python3 scripts/file_fixmes.py [--dry-run] [--limit N] [--throttle S]
 """
 import argparse
-import json
-import os
 import re
-import subprocess
-import sys
-import time
+
+import file_issues
 
 # Defaults describe run 2's FIXME doc. A later run passes its own --doc,
 # --doc-url, --run-label, and --run-date, so filing a new run's FIXMEs needs no
@@ -32,8 +29,6 @@ LEDGER = ".panopticon/filed-fixmes.json"
 
 HEAD_RE = re.compile(r"^## (FIXME-\d+) — (.+)$")
 LABEL_RE = re.compile(r"`([^`]+)`")
-RATE_HINTS = ("rate limit", "secondary rate", "abuse detection",
-              "was submitted too quickly")
 
 
 def parse(path):
@@ -99,50 +94,11 @@ def body_for(f, doc=DOC, doc_url=DOC_URL, run_label=RUN_LABEL, run_date=RUN_DATE
     ])
 
 
-def load_ledger():
-    try:
-        with open(LEDGER, encoding="utf-8") as fh:
-            return json.load(fh)
-    except (OSError, ValueError):
-        return {}
-
-
-def record(ledger, key, url):
-    ledger[key] = url
-    tmp = LEDGER + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(ledger, fh, indent=1, sort_keys=True)
-    os.replace(tmp, LEDGER)
-
-
-def create(title, body, labels, dry, throttle):
-    if dry:
-        print("\n" + "=" * 78)
-        print("TITLE : %s" % title)
-        print("LABELS: %s" % ",".join(labels))
-        print("-" * 78)
-        print(body[:700])
-        return None
-    for attempt in range(1, 6):
-        r = subprocess.run(["gh", "issue", "create", "--title", title,
-                            "--body", body, "--label", ",".join(labels)],
-                           capture_output=True, text=True)
-        if r.returncode == 0:
-            url = r.stdout.strip().splitlines()[-1]
-            print("%s  %s" % (url, title[:70]), flush=True)
-            if throttle:
-                time.sleep(throttle)
-            return url
-        err = (r.stderr or "").strip()
-        if any(h in err.lower() for h in RATE_HINTS) and attempt < 5:
-            backoff = 60 * attempt
-            print("rate limited (attempt %d); sleeping %ds" % (attempt, backoff),
-                  file=sys.stderr, flush=True)
-            time.sleep(backoff)
-            continue
-        print("FAILED: %s\n%s" % (title, err), file=sys.stderr, flush=True)
-        return None
-    return None
+# The gh-issue-create retry loop and the resumable ledger live in
+# file_issues.py — this filer used to carry byte-for-byte copies, which had
+# already diverged (file_issues.create gained the rc=0/empty-stdout backoff
+# this copy lacked). Delegate instead.
+create = file_issues.create
 
 
 def main():
@@ -158,7 +114,7 @@ def main():
     a = ap.parse_args()
 
     fixmes = parse(a.doc)
-    ledger = {} if a.dry_run else load_ledger()
+    ledger = {} if a.dry_run else file_issues.load_ledger(LEDGER)
     todo = [f for f in fixmes if f["id"] not in ledger]
     if a.limit:
         todo = todo[:a.limit]
@@ -175,7 +131,7 @@ def main():
         url = create(title, body, f["labels"] or ["self-scan"],
                      a.dry_run, a.throttle)
         if url:
-            record(ledger, f["id"], url)
+            file_issues.record(ledger, f["id"], url, LEDGER)
             created += 1
     if not a.dry_run:
         print("\ncreated %d of %d; ledger: %s" % (created, len(todo), LEDGER))

@@ -185,12 +185,6 @@ def _resolve_raw(host, role, cli_overrides=None):
     return _hardcoded_fallback(host, role)
 
 
-def role_config(role):
-    """Return role metadata (description) from profiles."""
-    profiles = _profiles()
-    return (profiles.get("roles") or {}).get(role) or {}
-
-
 if __name__ == "__main__":
     host = sys.argv[1] if len(sys.argv) > 1 else "kimi"
     role = sys.argv[2] if len(sys.argv) > 2 else "panel_review"

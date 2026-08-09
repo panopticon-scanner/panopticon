@@ -181,21 +181,24 @@ def scrub(text):
 LEDGER = ".panopticon/filed-issues.json"
 
 
-def load_ledger():
-    """Filing is resumable: a run that dies partway must not re-file."""
+def load_ledger(path=LEDGER):
+    """Filing is resumable: a run that dies partway must not re-file.
+
+    Parameterized on the ledger path so sibling filers (file_fixmes,
+    reconcile_apply) share this machinery instead of copying it."""
     try:
-        with open(LEDGER, encoding="utf-8") as fh:
+        with open(path, encoding="utf-8") as fh:
             return json.load(fh)
     except (OSError, ValueError):
         return {}
 
 
-def record(ledger, key, url):
+def record(ledger, key, url, path=LEDGER):
     ledger[key] = url
-    tmp = LEDGER + ".tmp"
+    tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(ledger, fh, indent=1, sort_keys=True)
-    os.replace(tmp, LEDGER)
+    os.replace(tmp, path)
 
 
 def key_for(f, rejected):

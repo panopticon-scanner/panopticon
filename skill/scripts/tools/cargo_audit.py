@@ -1,8 +1,8 @@
 """cargo-audit adapter for Rust dependency CVEs."""
 from __future__ import annotations
-import json
 import os
-from .base import attach_tool_provenance, new_finding_id, omit_none, normalize_severity, run_tool
+from .base import (cve_ids, cvss_bucket, make_finding, normalize_severity,
+                   omit_none, parse_json_bytes, run_tool)
 
 
 def _cvss_v3_score(cvss: str) -> float | None:
@@ -52,7 +52,7 @@ class CargoAuditAdapter:
         return run_tool(cmd, timeout=300, cwd=target)
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
-        data = json.loads(raw.decode("utf-8", errors="replace"))
+        data = parse_json_bytes(raw)
         out = []
         n = 1
         for vuln in data.get("vulnerabilities", {}).get("list", []):
@@ -62,43 +62,33 @@ class CargoAuditAdapter:
             cvss = advisory.get("cvss")
             severity = "HIGH"
             if isinstance(cvss, dict):
-                score = cvss.get("score", 0)
-                severity = "CRITICAL" if score >= 9 else "HIGH" if score >= 7 else "MEDIUM" if score >= 4 else "LOW"
+                severity = cvss_bucket(cvss.get("score", 0))
             elif isinstance(cvss, str):
                 score = _cvss_v3_score(cvss)
                 if score is not None:
-                    severity = "CRITICAL" if score >= 9 else "HIGH" if score >= 7 else "MEDIUM" if score >= 4 else "LOW"
+                    severity = cvss_bucket(score)
             severity = normalize_severity(severity)
             advisory_id = advisory.get("id", "")
-            aliases = [a.upper() for a in advisory.get("aliases", []) if a.upper().startswith("CVE-")]
-            citations = {"rustsec": [advisory_id]} if advisory_id.startswith("RUSTSEC-") else {}
-            if aliases:
-                citations["cve"] = aliases
-            finding = {
-                "id": new_finding_id(self.prefix, n),
-                "title": f"{package.get('name', 'crate')} {package.get('version', '')}: {advisory_id}",
-                "severity": severity,
-                "confidence": "CERTAIN",
-                "panel": "security",
-                "category": "dependency_vulnerability",
-                "source": f"tool:{self.name}",
-                "location": {"file": "Cargo.lock", "line_start": 1},
-                "description": advisory.get("title", "No description provided."),
-                "impact": f"Vulnerable Rust dependency {package.get('name')}=={package.get('version')} is used.",
-                "remediation": f"Upgrade to a fixed version: {', '.join(versions.get('patched', [])) or 'see advisory'}",
-                "references": [advisory["url"]] if advisory.get("url") else [],
-                "citations": citations or None,
-                "tool_evidence": omit_none({
+            out.append(make_finding(
+                self, n, group,
+                title=f"{package.get('name', 'crate')} {package.get('version', '')}: {advisory_id}",
+                severity=severity,
+                category="dependency_vulnerability",
+                location={"file": "Cargo.lock", "line_start": 1},
+                description=advisory.get("title", "No description provided."),
+                impact=f"Vulnerable Rust dependency {package.get('name')}=={package.get('version')} is used.",
+                remediation=f"Upgrade to a fixed version: {', '.join(versions.get('patched', [])) or 'see advisory'}",
+                references=[advisory["url"]] if advisory.get("url") else [],
+                citations={
+                    "rustsec": [advisory_id] if advisory_id.startswith("RUSTSEC-") else [],
+                    "cve": cve_ids(advisory.get("aliases")),
+                },
+                tool_evidence=omit_none({
                     "rule_id": advisory_id,
                     "package_name": package.get("name"),
                     "vulnerable_versions": package.get("version"),
                     "advisory_url": advisory.get("url"),
                 }),
-                "_group": group,
-            }
-            if not finding["citations"]:
-                finding.pop("citations", None)
-            attach_tool_provenance(finding, self.name, reasoning=finding["tool_evidence"].get("rule_id"))
-            out.append(finding)
+            ))
             n += 1
         return out

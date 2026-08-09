@@ -36,16 +36,18 @@ finding_fingerprint = evidence_mod.finding_fingerprint
 # fan-out wrote. Both call sites join it against their own base dir.
 DISPATCH_PLAN_GLOB = "dispatch-plan*.json"
 
-SEVERITIES = {"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"}
-SEV_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
+# evidence_mod owns the canonical severity and panel scales (#688's aliasing
+# rationale: local copies of shared definitions drift).
+SEV_ORDER = evidence_mod.SEV_ORDER
+SEVERITIES = set(SEV_ORDER)
 CONFIDENCES = {"CERTAIN", "LIKELY", "POSSIBLE", "NOTE"}
 VERDICT_TO_CONFIDENCE = {"CONFIRMED": "CERTAIN", "PLAUSIBLE": "LIKELY"}
 MODE_TO_REVIEW_TYPE = {
     "repo": "repo", "file": "file", "directory": "directory",
     "group": "group", "files": "changes", "changes": "changes",
 }
-VALID_PANELS = {"code", "test", "security", "architecture", "database", "redteam"}
-PANEL_ORDER = ["code", "test", "security", "architecture", "database", "redteam"]
+PANEL_ORDER = evidence_mod.PANELS
+VALID_PANELS = set(PANEL_ORDER)
 RELATED_PANELS = {
     "security": {"architecture", "database", "redteam"},
     "redteam": {"security", "architecture", "database"},
@@ -163,11 +165,9 @@ def load_findings(paths):
     return out
 
 
-def _sev_rank(f):
-    try:
-        return SEV_ORDER.index(f.get("severity", "INFO"))
-    except ValueError:
-        return len(SEV_ORDER)
+# Alias the shared severity rank instead of re-implementing it — same
+# rationale as _is_tool_sourced below.
+_sev_rank = evidence_mod.sev_rank
 
 
 def _conf_rank(f):
@@ -520,8 +520,8 @@ def severity_stats(findings):
 
 ID_RE = re.compile(r"^[A-Z]{2,8}-\d{3,}$")  # {2,8}: real agents emit e.g. STRUCT-001
 GROUP_RE = re.compile(
-    r"^findings-(.+)-(?:code|test|security|architecture|database|redteam)"
-    r"(?:-panel_review|-lens_sweep-[A-Za-z0-9_]+)?\.json$")
+    r"^findings-(.+)-(?:%s)"
+    r"(?:-panel_review|-lens_sweep-[A-Za-z0-9_]+)?\.json$" % "|".join(PANEL_ORDER))
 _GRADE_ORDER = ["A", "B", "C", "D", "F"]
 
 
@@ -567,17 +567,10 @@ def _issue_sort(f):
     return (_sev_rank(f), 0 if eligible else 1)
 
 
-def derive_tool_policy_mode(panopticon_dir=".panopticon"):
-    """Derive the run's tool-policy posture from dispatch plan files.
-
-    unknown: no usable plan file was found — posture undetermined (distinct
-    from advisory, which is a plan we DID read that enforced nothing).
-    enforced: every entry across every plan is enforced; mixed: some are;
-    advisory: a plan exists but none are. Tolerant: unreadable/malformed plan
-    files are ignored.
-    """
-    flags = []
-    plans_seen = 0
+def load_dispatch_plans(panopticon_dir=".panopticon"):
+    """Load every per-group dispatch plan file as a list of per-file plan
+    lists. Tolerant: unreadable/malformed plan files are skipped."""
+    plans = []
     for path in sorted(glob.glob(os.path.join(panopticon_dir, DISPATCH_PLAN_GLOB))):
         try:
             with open(path, encoding="utf-8") as fh:
@@ -585,10 +578,26 @@ def derive_tool_policy_mode(panopticon_dir=".panopticon"):
         except (OSError, ValueError):
             continue
         if isinstance(plan, list):
-            plans_seen += 1
-            flags.extend(bool(e.get("enforced")) for e in plan if isinstance(e, dict))
-    if plans_seen == 0:
+            plans.append(plan)
+    return plans
+
+
+def derive_tool_policy_mode(panopticon_dir=".panopticon", plans=None):
+    """Derive the run's tool-policy posture from dispatch plan files.
+
+    unknown: no usable plan file was found — posture undetermined (distinct
+    from advisory, which is a plan we DID read that enforced nothing).
+    enforced: every entry across every plan is enforced; mixed: some are;
+    advisory: a plan exists but none are. Pass `plans` (per-file plan lists,
+    as returned by load_dispatch_plans) to skip re-reading the files a caller
+    already loaded.
+    """
+    if plans is None:
+        plans = load_dispatch_plans(panopticon_dir)
+    if not plans:
         return "unknown"
+    flags = [bool(e.get("enforced")) for plan in plans
+             for e in plan if isinstance(e, dict)]
     if flags and all(flags):
         return "enforced"
     if any(flags):
@@ -795,7 +804,8 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                  max_verify=None, verdicts_supplied=False, tool_policy_mode=None,
                  tools_ran=None, tool_dispositions=None, fan_out=None,
                  scout_requested=None, resume=None, integrity=None,
-                 diff_hunks=None, diff_context=5, gate_scope="on-diff"):
+                 diff_hunks=None, diff_context=5, gate_scope="on-diff",
+                 catalog=None):
     """Build a CodeReviewReport under the two-axis severity x evidence model.
 
     Severity is never mutated here. Verdicts (from evidence.load_verdicts) are
@@ -808,7 +818,8 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
     when omitted, `build_executing_tools` falls back to inferring from findings.
     """
     findings, integration_findings = prepare_for_queue(findings)
-    catalog = load_cwe_catalog()
+    if catalog is None:
+        catalog = load_cwe_catalog()
     queue, cut = evidence_mod.build_verify_queue(findings, max_verify)
     # Identity must be read BEFORE any verdict is applied. For a SARIF-sourced
     # tool finding the adapters park the rule id in
@@ -911,6 +922,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
         by_panel.get(f["panel"], by_panel["code"]).append(f)
 
     known_groups = {g["name"] for g in groups_meta}
+    eligible_ids = {id(x) for x in gate_eligible}
     group_objs = []
     for g in groups_meta:
         gfiles = set(g["files"])
@@ -918,7 +930,6 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                  if (f.get("_group") == g["name"])
                  or (f.get("_group") not in known_groups
                      and (f.get("location") or {}).get("file") in gfiles)]
-        eligible_ids = {id(x) for x in gate_eligible}
         geligible = [f for f in gfind if id(f) in eligible_ids]
         gp = {p: [x for x in geligible if x["panel"] == p] for p in by_panel}
         group_objs.append({
@@ -933,8 +944,8 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
     for f in findings:
         f.pop("_group", None)
         f.pop("_repo_root", None)
-    tool_names = {str(f.get("source", ""))[5:] for f in findings
-                  if str(f.get("source", "")).startswith("tool:")}
+    tool_names = {evidence_mod.tool_name(f) for f in findings
+                  if evidence_mod.is_tool_sourced(f)}
     planned = (fan_out or {}).get("planned") or {} if isinstance(fan_out, dict) else {}
     executed = (fan_out or {}).get("executed") or {} if isinstance(fan_out, dict) else {}
     panels_incomplete = {p for p, n in planned.items() if executed.get(p, 0) < n}
@@ -1052,7 +1063,7 @@ def validate_report(report):
         loc = f.get("location") or {}
         if not loc.get("file") or loc.get("line_start") is None:
             warnings.append("finding[%d] missing location.file/line_start" % i)
-        agent_sourced = not str(f.get("source", "")).startswith("tool:")
+        agent_sourced = not evidence_mod.is_tool_sourced(f)
         if agent_sourced and f.get("panel") in ("security", "redteam") and f.get("severity") in ("CRITICAL", "HIGH"):
             if not f.get("cvss"):
                 errors.append("finding[%d] %s %s missing cvss" % (i, f["panel"], f["severity"]))
@@ -1214,6 +1225,18 @@ def _derive_html_path(json_path):
     return os.path.join(json_path, "report.html")
 
 
+def _read_json_report(path):
+    """Load a JSON report for --compare; None (with a printed error) on failure."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except OSError as e:
+        print("ERROR: cannot read %s: %s" % (path, e), file=sys.stderr)
+    except ValueError as e:
+        print("ERROR: invalid JSON in %s: %s" % (path, e), file=sys.stderr)
+    return None
+
+
 def main(argv=None):
     """Main entry point: load findings, enrich citations, build and validate report."""
     ap = argparse.ArgumentParser(description="panopticon synthesizer")
@@ -1266,23 +1289,11 @@ def main(argv=None):
 
     if args.compare:
         a_path, b_path = args.compare
-        try:
-            with open(a_path, encoding="utf-8") as fh:
-                report_a = json.load(fh)
-        except OSError as e:
-            print("ERROR: cannot read %s: %s" % (a_path, e), file=sys.stderr)
+        report_a = _read_json_report(a_path)
+        if report_a is None:
             return 2
-        except ValueError as e:
-            print("ERROR: invalid JSON in %s: %s" % (a_path, e), file=sys.stderr)
-            return 2
-        try:
-            with open(b_path, encoding="utf-8") as fh:
-                report_b = json.load(fh)
-        except OSError as e:
-            print("ERROR: cannot read %s: %s" % (b_path, e), file=sys.stderr)
-            return 2
-        except ValueError as e:
-            print("ERROR: invalid JSON in %s: %s" % (b_path, e), file=sys.stderr)
+        report_b = _read_json_report(b_path)
+        if report_b is None:
             return 2
         html_out = args.html_out or (_derive_html_path(args.out) if args.out else None)
         if not html_out:
@@ -1384,26 +1395,18 @@ def main(argv=None):
         print("verify queue empty; emitting final report", file=sys.stderr)
 
     verdicts = evidence_mod.load_verdicts(args.verdicts_dir)
-    tool_policy_mode = derive_tool_policy_mode()
-    # Union of every per-group dispatch-plan-*.json on disk -- same glob as
-    # derive_tool_policy_mode, so the two cannot drift apart again (#146/C1).
-    # The real fan-out workflow writes one plan file PER GROUP
+    # Union of every per-group dispatch-plan-*.json on disk -- loaded ONCE and
+    # shared with derive_tool_policy_mode, so the two cannot drift apart again
+    # (#146/C1). The real fan-out workflow writes one plan file PER GROUP
     # (dispatch-plan-<group>.json); a lone dispatch-plan.json is just the
     # one-group case of that same naming convention, not a different shape.
     # plans_seen distinguishes "no plan found -> reconcile skipped" from
     # "reconciled, nothing wrong" -- an empty unexpected/missing pair means
     # nothing on its own (see meta.integrity below).
-    _plan = []
-    plans_seen = 0
-    for path in sorted(glob.glob(os.path.join(".panopticon", DISPATCH_PLAN_GLOB))):
-        try:
-            with open(path, encoding="utf-8") as fh:
-                loaded = json.load(fh)
-        except (OSError, ValueError):  # tolerant by design: never abort a run
-            continue
-        if isinstance(loaded, list):
-            _plan.extend(loaded)
-            plans_seen += 1
+    _plan_lists = load_dispatch_plans()
+    plans_seen = len(_plan_lists)
+    _plan = [e for plan in _plan_lists for e in plan]
+    tool_policy_mode = derive_tool_policy_mode(plans=_plan_lists)
     fan_out = group_runner.fan_out_coverage(_plan) if _plan else None
     _queue = None
     queue_path = os.path.join(".panopticon", "verify-queue.json")
@@ -1415,7 +1418,8 @@ def main(argv=None):
                 _queue = loaded_q
         except (OSError, ValueError):  # tolerant by design
             pass
-    resume = group_runner.resume_stats(_plan, _queue, args.verdicts_dir)
+    resume = group_runner.resume_stats(_plan, _queue, args.verdicts_dir,
+                                       _verdicts=verdicts)
     unexpected, missing = reconcile_findings_files(_plan, args.files)
     _ack = read_unenforced_ack()
     integrity = {"unexpected_findings_files": unexpected,
@@ -1458,7 +1462,8 @@ def main(argv=None):
                           integrity=integrity,
                           diff_hunks=diff_hunks,
                           diff_context=args.diff_context,
-                          gate_scope=args.gate_scope)
+                          gate_scope=args.gate_scope,
+                          catalog=catalog)
     errors, warnings = validate_report(report)
     attach_schema_status(report, errors)
     for w in warnings:

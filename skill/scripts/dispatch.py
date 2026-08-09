@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Build a DispatchPlan from a ScopeProfile."""
 import argparse
+import functools
 import json
 import os
 import re
@@ -69,8 +70,18 @@ def parse_template_frontmatter(text, source="<template>"):
 
 
 def load_template(role_file):
-    """Load and parse an agent template by basename (e.g. 'scout.md')."""
-    path = os.path.join(TEMPLATE_DIR, role_file)
+    """Load and parse an agent template by basename (e.g. 'scout.md').
+
+    Cached per resolved path: templates are shipped, immutable assets, and the
+    per-entry render loops (one advisor prompt per verify-queue entry, one
+    reviewer prompt per plan entry) would otherwise re-read and re-parse the
+    same file once per entry. Callers must treat the returned (meta, body) as
+    read-only."""
+    return _load_template_cached(os.path.join(TEMPLATE_DIR, role_file), role_file)
+
+
+@functools.lru_cache(maxsize=None)
+def _load_template_cached(path, role_file):
     if not os.path.isfile(path):
         raise ValueError("template not found: %s (looked in %s)" % (role_file, TEMPLATE_DIR))
     with open(path, encoding="utf-8") as fh:
@@ -208,12 +219,12 @@ def _detect_host():
     return "generic"
 
 
-AGENT_NAME = {
-    "scout": "scout",
-    "panel_review": "panel-review",
-    "lens_sweep": "lens-sweep",
-    "advisor": "advisor",
-}
+def agent_name(role):
+    """Unenforced agent name for a role: its template basename sans '.md'.
+
+    (Replaces a parallel AGENT_NAME dict whose every value was exactly this
+    derivation from ROLE_FILES.)"""
+    return ROLE_FILES[role][:-len(".md")]
 
 
 def _registration_dir(host, agents_dir):
@@ -266,9 +277,9 @@ def build_plan(scope_profile, host=None, model_overrides=None, agents_dir=None):
     panel_enforced = _is_registered(reg_dir, ROLE_FILES["panel_review"])
     lens_enforced = _is_registered(reg_dir, ROLE_FILES["lens_sweep"])
     panel_agent = (registered_agent_name(ROLE_FILES["panel_review"])
-                   if panel_enforced else AGENT_NAME["panel_review"])
+                   if panel_enforced else agent_name("panel_review"))
     lens_agent = (registered_agent_name(ROLE_FILES["lens_sweep"])
-                  if lens_enforced else AGENT_NAME["lens_sweep"])
+                  if lens_enforced else agent_name("lens_sweep"))
 
     for panel_name in panels_in_priority_order(scope_profile.get("panels", [])):
         spawned = depth_planner.plan_lenses(scope_profile, panel_name)
@@ -290,7 +301,7 @@ def build_plan(scope_profile, host=None, model_overrides=None, agents_dir=None):
             "depth": depth,
             "lenses": non_spawned,
             "out_file": panel_out_file,
-            "prompt": render_prompt(AGENT_NAME["panel_review"] + ".md", {
+            "prompt": render_prompt(ROLE_FILES["panel_review"], {
                 "panel": panel_name, "group": group_name,
                 "file_list": ", ".join(files),
                 "security_mode": scope_profile.get("security_mode", "standard"),
@@ -314,7 +325,7 @@ def build_plan(scope_profile, host=None, model_overrides=None, agents_dir=None):
                 "group": group_name,
                 "depth": depth,
                 "out_file": sweep_out_file,
-                "prompt": render_prompt(AGENT_NAME["lens_sweep"] + ".md", {
+                "prompt": render_prompt(ROLE_FILES["lens_sweep"], {
                     "panel": panel_name, "group": group_name,
                     "file_list": ", ".join(files),
                     "security_mode": scope_profile.get("security_mode", "standard"),

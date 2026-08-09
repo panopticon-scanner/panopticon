@@ -11,8 +11,10 @@ import urllib.request
 
 try:
     from scripts._version import __version__
+    from scripts.evidence import is_tool_sourced
 except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
     from _version import __version__
+    from evidence import is_tool_sourced
 
 CVE_RE = re.compile(r"^CVE-\d{4}-\d{4,}$", re.IGNORECASE)
 CWE_RE = re.compile(r"^CWE-\d+$", re.IGNORECASE)
@@ -231,7 +233,7 @@ def enrich_citations(findings, catalog, epss_enabled=False, cache_path=None, ope
             f["citation_quality"] = "none"
             continue
         try:
-            tool_sourced = str(f.get("source", "")).startswith("tool:")
+            tool_sourced = is_tool_sourced(f)
             clean = {}
             cwe_objs = []
             for cid in _raw_cwe_ids(raw):

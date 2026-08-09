@@ -37,6 +37,22 @@ class TestPipAuditAdapter(unittest.TestCase):
         self.assertEqual(f["tool_evidence"]["package_name"], "requests")
         self.assertEqual(f["tool_evidence"]["fixed_version"], "2.31.0")
 
+    def test_parse_survives_empty_fix_versions_list(self):
+        # pip-audit emits "fix_versions": [] when no fixed release exists; the
+        # .get default only covers a MISSING key, so [..][0] used to IndexError
+        # and ingest marked the whole pip-audit document failed (PR #945 scan,
+        # finding CORR-001).
+        sample = json.dumps({
+            "dependencies": [
+                {"name": "leftpad", "version": "0.1", "vulns": [
+                    {"id": "PYSEC-2024-9", "fix_versions": [],
+                     "description": "d", "aliases": []}]}
+            ]
+        }).encode()
+        findings = pa.PipAuditAdapter().parse(sample, "g1")
+        self.assertEqual(len(findings), 1)
+        self.assertNotIn("fixed_version", findings[0]["tool_evidence"])
+
     def test_parse_uses_actual_manifest_path(self):
         adapter = pa.PipAuditAdapter()
         adapter._manifest_path = "/tmp/fake/pyproject.toml"
