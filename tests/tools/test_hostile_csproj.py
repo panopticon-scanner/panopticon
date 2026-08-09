@@ -12,11 +12,8 @@ preinstalled) have no `--network none` to contain the egress attempt, so
 running this test there would perform the real curl. On bare hosts this
 test always skips unless the env var is set explicitly."""
 import os
-import sys
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__),
-                                os.pardir, os.pardir, "skill"))
 from scripts.tools import ADAPTERS
 
 FIXTURE = os.path.join(os.path.dirname(__file__), os.pardir,
