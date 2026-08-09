@@ -42,6 +42,10 @@ Return ONLY a raw JSON object:
 }
 ```
 
+- Emit VALID JSON: escape every `"`, backslash, and newline inside string
+  values — `reasoning` especially, since it often quotes code. One unescaped
+  quote makes the whole file unparseable, your verdict is lost, and the finding
+  is left unverified (#938). Do not wrap it in a markdown fence or prose.
 - CONFIRMED: the code, as you explored it, supports the claim.
 - REJECTED: the code contradicts the claim, or the claimed path cannot execute.
 - NEEDS_MORE_INFO: the repository alone cannot settle it. State exactly what

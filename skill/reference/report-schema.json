@@ -53,7 +53,8 @@
                 "supplied": {"type": "integer"},
                 "matched": {"type": "integer"},
                 "unknown": {"type": "integer"},
-                "unanswered": {"type": ["integer", "null"], "description": "Queued findings left without a verdict; null when no --verdicts-dir was supplied, i.e. not measured."}
+                "unanswered": {"type": ["integer", "null"], "description": "Queued findings left without a verdict; null when no --verdicts-dir was supplied, i.e. not measured."},
+                "unloadable": {"type": "integer", "description": "Verdict files present on disk but un-loadable (corrupt/invalid JSON); their findings are left unverified. A non-zero count means verification evidence was lost, distinct from a verdict that was never generated (#938)."}
               }
             },
             "fan_out": {"type": ["object", "null"], "description": "Planned-vs-executed fan-out coverage derived at synthesis from the dispatch plan and the findings files on disk: {planned, executed, groups_complete, groups_partial}. null when no dispatch plan was present."}

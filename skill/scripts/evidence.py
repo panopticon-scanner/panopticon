@@ -282,18 +282,27 @@ def load_json_tolerant(body):
         raise
 
 
-def load_verdicts(verdicts_dir):
-    """Load advisor verdict files keyed by queue_id (filename stem).
+def load_verdicts_detailed(verdicts_dir):
+    """Load advisor verdict files, also reporting which ones could not be used.
+
+    Returns (verdicts, unloadable). ``verdicts`` is keyed by queue_id (filename
+    stem); ``unloadable`` is a list of {"file": name, "reason": str} for every
+    ``*.json`` that failed to parse or lacked a valid verdict key.
 
     Tolerant by design: unreadable/malformed files and files without a valid
-    verdict key are skipped with a stderr note; never raises. Advisors
-    routinely wrap their JSON output in a markdown fence (see agents/advisor.md's
-    own output example) or add surrounding prose, so parsing goes through
-    load_json_tolerant rather than a strict json.load.
+    verdict key are skipped (never raises). Advisors routinely wrap their JSON
+    output in a markdown fence (see agents/advisor.md's own output example) or
+    add surrounding prose, so parsing goes through load_json_tolerant rather
+    than a strict json.load. But load_json_tolerant cannot repair arbitrary
+    unescaped quotes inside a string value, so a malformed advisor return would
+    previously vanish with only a stderr note -- hiding a lost verdict from
+    meta.coverage. Callers surface ``unloadable`` in the report so a corrupt
+    verdict is visible, not silently dropped (#938).
     """
     out = {}
+    unloadable = []
     if not verdicts_dir or not os.path.isdir(verdicts_dir):
-        return out
+        return out, unloadable
     for name in sorted(os.listdir(verdicts_dir)):
         if not name.endswith(".json"):
             continue
@@ -304,14 +313,28 @@ def load_verdicts(verdicts_dir):
         except (OSError, ValueError) as e:
             print("evidence: skipping malformed verdict %s: %s" % (name, e),
                   file=sys.stderr)
+            kind = "unreadable" if isinstance(e, OSError) else "unparseable"
+            unloadable.append({"file": name,
+                               "reason": "%s: %s"
+                               % (kind, (str(e).splitlines() or [""])[0])})
             continue
         if (not isinstance(data, dict)
                 or str(data.get("verdict", "")).upper() not in VERDICT_VALUES):
             print("evidence: skipping verdict %s: missing/invalid verdict key" % name,
                   file=sys.stderr)
+            unloadable.append({"file": name, "reason": "missing/invalid verdict key"})
             continue
         out[name[:-len(".json")]] = data
-    return out
+    return out, unloadable
+
+
+def load_verdicts(verdicts_dir):
+    """Load advisor verdict files keyed by queue_id (filename stem).
+
+    Verdicts-only wrapper over load_verdicts_detailed (unchanged contract for
+    callers that don't need the un-loadable-file accounting).
+    """
+    return load_verdicts_detailed(verdicts_dir)[0]
 
 
 def match_verdict(entry, verdicts):
