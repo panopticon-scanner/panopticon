@@ -2885,3 +2885,43 @@ class TestDeltaClassify(unittest.TestCase):
                                "t", "high", "2026-01-01T00:00:00Z",
                                diff_hunks=hunks, diff_context=5)
         self.assertNotIn("delta", rep["findings"][0])
+
+
+class TestDeltaGate(unittest.TestCase):
+    """#449 Task 8: on-diff gate/grade scoping, summary.delta, coverage.delta,
+    and INCONCLUSIVE when a requested delta review's base could not be resolved."""
+
+    def _findings(self):
+        return [
+            {"id": "A-1", "title": "on-high", "severity": "HIGH", "confidence": "POSSIBLE",
+             "panel": "code", "category": "x", "location": {"file": "a.py", "line_start": 11}},
+            {"id": "A-2", "title": "pre-high", "severity": "HIGH", "confidence": "POSSIBLE",
+             "panel": "code", "category": "x", "location": {"file": "a.py", "line_start": 90}},
+        ]
+
+    def test_gate_scopes_to_on_diff(self):
+        hunks = {"base": "main", "base_source": "explicit", "diff_context": 5,
+                 "files_changed": 1, "hunks": {"a.py": [(10, 12)]}}
+        rep = syn.build_report(self._findings(), [{"name": "g1", "files": ["a.py"]}],
+                               "t", "high", "2026-01-01T00:00:00Z", gate_unverified=True,
+                               diff_hunks=hunks, diff_context=5, gate_scope="on-diff")
+        # only the on-diff HIGH gates
+        self.assertEqual(rep["summary"]["delta"]["on_diff"].get("high"), 1)
+        self.assertEqual(rep["summary"]["delta"]["pre_existing"].get("high"), 1)
+        self.assertEqual(rep["meta"]["coverage"]["delta"]["base"], "main")
+
+    def test_gate_scope_all_gates_everything(self):
+        hunks = {"base": "main", "base_source": "explicit", "diff_context": 5,
+                 "files_changed": 1, "hunks": {"a.py": [(10, 12)]}}
+        rep = syn.build_report(self._findings(), [{"name": "g1", "files": ["a.py"]}],
+                               "t", "high", "2026-01-01T00:00:00Z", gate_unverified=True,
+                               diff_hunks=hunks, diff_context=5, gate_scope="all")
+        self.assertEqual(rep["summary"]["gate"], "FAIL")  # both HIGHs count
+
+    def test_base_unresolved_is_inconclusive(self):
+        hunks = {"base": None, "base_source": "unresolved", "diff_context": 5,
+                 "files_changed": 0, "hunks": {}}
+        rep = syn.build_report(self._findings(), [{"name": "g1", "files": ["a.py"]}],
+                               "t", "high", "2026-01-01T00:00:00Z",
+                               diff_hunks=hunks, diff_context=5)
+        self.assertEqual(rep["summary"]["gate"], "INCONCLUSIVE")
