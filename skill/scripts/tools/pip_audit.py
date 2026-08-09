@@ -106,7 +106,7 @@ class PipAuditAdapter:
                         "rule_id": vuln.get("id"),
                         "package_name": dep["name"],
                         "vulnerable_versions": dep["version"],
-                        "fixed_version": vuln.get("fix_versions", [None])[0],
+                        "fixed_version": (vuln.get("fix_versions") or [None])[0],
                     }),
                 ))
                 n += 1
