@@ -16,6 +16,7 @@ try:
 except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
     from _version import __version__
 from scripts.citations import load_cwe_catalog
+import scripts.diff_map as diff_map
 import scripts.evidence as evidence_mod
 import scripts.group_runner as group_runner
 import scripts.html_report as html_report
@@ -757,11 +758,33 @@ def aggregate_tool_findings(findings):
     return out
 
 
+def load_diff_hunks(path):
+    """Load the orchestrator's diff-hunks.json; {} if absent/malformed."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    raw = data.get("hunks") or {}
+    data["hunks"] = {p: [tuple(r) for r in rs] for p, rs in raw.items()
+                     if isinstance(rs, list)}
+    return data
+
+
+def classify_findings(findings, hunks, tolerance):
+    """Stamp each finding with delta = {on_diff, hunk, distance}."""
+    for f in findings:
+        f["delta"] = diff_map.classify(f, hunks, tolerance)
+
+
 def build_report(findings, groups_meta, target, fail_on, timestamp, review_type="repo",
                  security_mode="standard", verdicts=None, gate_unverified=False,
                  max_verify=None, verdicts_supplied=False, tool_policy_mode=None,
                  tools_ran=None, tool_dispositions=None, fan_out=None,
-                 scout_requested=None, resume=None, integrity=None):
+                 scout_requested=None, resume=None, integrity=None,
+                 diff_hunks=None, diff_context=5, gate_scope="on-diff"):
     """Build a CodeReviewReport under the two-axis severity x evidence model.
 
     Severity is never mutated here. Verdicts (from evidence.load_verdicts) are
@@ -859,6 +882,9 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
 
     rejected = [f for f in findings if f["evidence"]["status"] == "rejected"]
     active = [f for f in findings if f["evidence"]["status"] != "rejected"]
+    delta_mode = bool(diff_hunks and diff_hunks.get("base"))
+    if delta_mode:
+        classify_findings(active, diff_hunks.get("hunks") or {}, diff_context)
     gate_eligible = (active if gate_unverified else
                      [f for f in active
                       if f["evidence"]["status"] in evidence_mod.GATE_ELIGIBLE_DEFAULT])
@@ -1171,6 +1197,13 @@ def main(argv=None):
     ap.add_argument("--max-verify", type=int, default=None, metavar="N",
                     help="Cap the verify queue at the top-priority N entries "
                          "(pass the same value to both passes)")
+    ap.add_argument("--diff-hunks", metavar="PATH", default=None,
+                    help="Path to the orchestrator's diff-hunks.json (#449); "
+                         "stamps each finding with finding.delta")
+    ap.add_argument("--diff-context", type=int, default=5, metavar="N",
+                    help="Lines of tolerance for on-diff classification (default 5)")
+    ap.add_argument("--gate-scope", choices=["on-diff", "all"], default="on-diff",
+                    help="Scope the gate/grade to on-diff findings, or all (default on-diff)")
     ap.add_argument("files", nargs="*")
     args = ap.parse_args(argv)
 
@@ -1351,6 +1384,8 @@ def main(argv=None):
         if isinstance(tools, list):
             scout_requested.update(t for t in tools if isinstance(t, str))
 
+    diff_hunks = load_diff_hunks(args.diff_hunks) if args.diff_hunks else None
+
     report = build_report(findings, groups_meta, args.target, args.fail_on, ts,
                           review_type, security_mode, verdicts=verdicts,
                           gate_unverified=args.gate_unverified,
@@ -1362,7 +1397,10 @@ def main(argv=None):
                           fan_out=fan_out,
                           scout_requested=sorted(scout_requested),
                           resume=resume,
-                          integrity=integrity)
+                          integrity=integrity,
+                          diff_hunks=diff_hunks,
+                          diff_context=args.diff_context,
+                          gate_scope=args.gate_scope)
     errors, warnings = validate_report(report)
     attach_schema_status(report, errors)
     for w in warnings:

@@ -2787,3 +2787,101 @@ class TestReadUnenforcedAck(unittest.TestCase):
             with open(path, "w", encoding="utf-8") as fh:
                 json.dump(["not", "a", "dict"], fh)
             self.assertFalse(syn.read_unenforced_ack(path))
+
+
+class TestLoadDiffHunks(unittest.TestCase):
+    """#449 Task 7: the orchestrator's diff-hunks.json artifact, tuple-ified."""
+
+    def test_loads_and_converts_ranges_to_tuples(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "diff-hunks.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"base": "main", "base_source": "explicit",
+                          "diff_context": 5, "files_changed": 1,
+                          "hunks": {"a.py": [[10, 12], [20, 20]]}}, fh)
+            data = syn.load_diff_hunks(path)
+            self.assertEqual(data["base"], "main")
+            self.assertEqual(data["hunks"], {"a.py": [(10, 12), (20, 20)]})
+
+    def test_missing_file_returns_empty_dict(self):
+        self.assertEqual(syn.load_diff_hunks("/does/not/exist/diff-hunks.json"), {})
+
+    def test_malformed_json_returns_empty_dict(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "diff-hunks.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("{not json")
+            self.assertEqual(syn.load_diff_hunks(path), {})
+
+    def test_non_dict_payload_returns_empty_dict(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "diff-hunks.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(["not", "a", "dict"], fh)
+            self.assertEqual(syn.load_diff_hunks(path), {})
+
+    def test_missing_hunks_key_defaults_to_empty(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "diff-hunks.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"base": "main"}, fh)
+            data = syn.load_diff_hunks(path)
+            self.assertEqual(data["hunks"], {})
+
+
+class TestClassifyFindings(unittest.TestCase):
+    """#449 Task 7: classify_findings stamps f['delta'] via diff_map.classify."""
+
+    def test_stamps_delta_on_each_finding(self):
+        findings = [
+            {"id": "A-1", "location": {"file": "a.py", "line_start": 11}},
+            {"id": "A-2", "location": {"file": "a.py", "line_start": 90}},
+        ]
+        hunks = {"a.py": [(10, 12)]}
+        syn.classify_findings(findings, hunks, 5)
+        self.assertTrue(findings[0]["delta"]["on_diff"])
+        self.assertFalse(findings[1]["delta"]["on_diff"])
+        self.assertIn("hunk", findings[0]["delta"])
+        self.assertIn("distance", findings[0]["delta"])
+
+
+class TestDeltaClassify(unittest.TestCase):
+    def test_build_report_stamps_delta_when_hunks_present(self):
+        findings = [
+            {"id": "A-1", "title": "on", "severity": "HIGH", "confidence": "POSSIBLE",
+             "panel": "code", "category": "x", "location": {"file": "a.py", "line_start": 11}},
+            {"id": "A-2", "title": "off", "severity": "HIGH", "confidence": "POSSIBLE",
+             "panel": "code", "category": "x", "location": {"file": "a.py", "line_start": 90}},
+        ]
+        hunks = {"base": "main", "base_source": "explicit", "diff_context": 5,
+                 "files_changed": 1, "hunks": {"a.py": [(10, 12)]}}
+        rep = syn.build_report(findings, [{"name": "g1", "files": ["a.py"]}],
+                               "t", "high", "2026-01-01T00:00:00Z",
+                               diff_hunks=hunks, diff_context=5)
+        by = {f["id"]: f["delta"]["on_diff"] for f in rep["findings"]}
+        self.assertTrue(by["A-1"]); self.assertFalse(by["A-2"])
+
+    def test_build_report_no_delta_key_when_diff_hunks_omitted(self):
+        """Backward compatibility: no diff_hunks kwarg -> no delta stamping at all
+        (not even a False/None placeholder) — existing non-delta callers unaffected."""
+        findings = [
+            {"id": "A-1", "title": "x", "severity": "HIGH", "confidence": "POSSIBLE",
+             "panel": "code", "category": "x", "location": {"file": "a.py", "line_start": 11}},
+        ]
+        rep = syn.build_report(findings, [{"name": "g1", "files": ["a.py"]}],
+                               "t", "high", "2026-01-01T00:00:00Z")
+        self.assertNotIn("delta", rep["findings"][0])
+
+    def test_build_report_no_delta_when_base_unresolved(self):
+        """diff_hunks present but base is None (unresolved) -> delta_mode is False,
+        so findings are left unstamped (Task 8 owns the INCONCLUSIVE handling)."""
+        findings = [
+            {"id": "A-1", "title": "x", "severity": "HIGH", "confidence": "POSSIBLE",
+             "panel": "code", "category": "x", "location": {"file": "a.py", "line_start": 11}},
+        ]
+        hunks = {"base": None, "base_source": "unresolved", "diff_context": 5,
+                 "files_changed": 0, "hunks": {}}
+        rep = syn.build_report(findings, [{"name": "g1", "files": ["a.py"]}],
+                               "t", "high", "2026-01-01T00:00:00Z",
+                               diff_hunks=hunks, diff_context=5)
+        self.assertNotIn("delta", rep["findings"][0])
