@@ -443,6 +443,76 @@ class TestCli(unittest.TestCase):
             self.assertFalse(os.path.isfile(out_path))
             self.assertFalse(os.path.isfile(os.path.join(d, "diff-hunks.json")))
 
+    def test_main_changes_base_coherence_file_set_matches_hunk_map(self):
+        """Finding A (final whole-branch review): the reviewed FILE SET and the
+        on-diff HUNK MAP must share ONE base. Build a repo where `main` and an
+        explicit `--base` ref (`divergent-base`) have DIVERGED -- each gets its
+        own commit after the fork -- then branch a `feature` branch off
+        `divergent-base` and change one more file there. `--changes --base
+        divergent-base` must review AND hunk-map the SAME file set, scoped to
+        divergent-base, not to main:
+          - divergent-only.txt (added on divergent-base itself, before the
+            fork used by `feature`) must be ABSENT from both.
+          - main-only.txt (only ever on `main`) must be ABSENT from both.
+          - common.txt (changed on `feature`, on top of divergent-base) must
+            be the ONLY member of both sets.
+        Under the pre-fix bug, collect_changed_files(repo) ignored --base and
+        always resolved its own base via main/master, so the reviewed file set
+        would include divergent-only.txt (present relative to main's fork
+        point) while diff-hunks.json's hunks (correctly base-scoped by
+        diff_map.hunk_map) would not -- the two artifacts would disagree.
+        """
+        with tempfile.TemporaryDirectory() as d:
+            def run(*args):
+                subprocess.run(["git", "-C", d, *args], check=True,
+                               capture_output=True, text=True)
+            run("init", "-q")
+            run("config", "user.email", "t@e.com")
+            run("config", "user.name", "Test")
+            self._touch(d, "common.txt")
+            run("add", ".")
+            run("commit", "-q", "-m", "init")
+            run("branch", "-M", "main")   # fork point, named 'main' regardless
+                                          # of this git's init.defaultBranch
+
+            run("checkout", "-q", "-b", "divergent-base")
+            self._touch(d, "divergent-only.txt")
+            run("add", ".")
+            run("commit", "-q", "-m", "divergent-base commit")
+
+            run("checkout", "-q", "main")
+            self._touch(d, "main-only.txt")
+            run("add", ".")
+            run("commit", "-q", "-m", "main commit")
+
+            run("checkout", "-q", "-b", "feature", "divergent-base")
+            with open(os.path.join(d, "common.txt"), "w") as fh:
+                fh.write("changed on feature\n")
+            run("add", ".")
+            run("commit", "-q", "-m", "feature commit")
+
+            out_path = os.path.join(d, "groups.json")
+            rc = orch.main(["--repo", d, "--changes", "--base", "divergent-base",
+                            "--out", out_path])
+            self.assertEqual(rc, 0)
+
+            with open(out_path, encoding="utf-8") as fh:
+                groups_out = json.load(fh)
+            reviewed_files = sorted({f for g in groups_out["groups"] for f in g["files"]})
+
+            hunks_path = os.path.join(d, "diff-hunks.json")
+            with open(hunks_path, encoding="utf-8") as fh:
+                hunks = json.load(fh)
+            hunk_files = sorted(hunks["hunks"].keys())
+
+            self.assertEqual(hunks["base"], "divergent-base")
+            self.assertEqual(hunks["base_source"], "explicit")
+            self.assertEqual(reviewed_files, ["common.txt"])
+            self.assertEqual(hunk_files, ["common.txt"])
+            self.assertEqual(reviewed_files, hunk_files)   # THE coherence assertion
+            self.assertNotIn("divergent-only.txt", reviewed_files)
+            self.assertNotIn("main-only.txt", reviewed_files)
+
     def test_build_result_computes_surfaces_and_panels(self):
         impl = ["Dockerfile", "src/models.py", "migrations/001.sql"]
         res = orch.build_result("/tmp", "repo", ".", None, impl, [],
@@ -980,6 +1050,7 @@ class TestPrMode(unittest.TestCase):
         with mock.patch.object(orch.diff_map, "acquire_pr", return_value=self.ACQ), \
              mock.patch.object(orch.diff_map, "release_worktree",
                                side_effect=lambda p, **k: released.setdefault("p", p)), \
+             mock.patch.object(orch, "resolve_base", return_value=("main", "pr-base")), \
              mock.patch.object(orch, "collect_changed_files", return_value=["a.py"]), \
              mock.patch.object(orch, "build_result", side_effect=RuntimeError("boom")):
             with self.assertRaises(RuntimeError):

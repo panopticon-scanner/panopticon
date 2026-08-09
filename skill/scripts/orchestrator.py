@@ -141,38 +141,60 @@ def compute_group_panels(files, security_mode="standard"):
     return panels_in_priority_order(panels)
 
 
-def collect_changed_files(repo):
+def collect_changed_files(repo, base=None):
     """Collect repo-relative paths changed since the merge base (or HEAD~1).
 
-    Tries the default upstream branches first, then falls back to HEAD~1. Only
-    files that still exist in the working tree are returned. Returns None if no
-    git history is available.
+    When ``base`` is given (a resolved ref name or sha), the changed set is
+    computed against ``merge-base(HEAD, base)`` -- the SAME computation
+    ``diff_map.hunk_map`` uses to build the on-diff hunk map -- with NO
+    HEAD~1 fallback: an unresolvable ``base`` returns None (a bad delta base
+    is a loud failure upstream, never a silent downgrade). This keeps the
+    reviewed file set and the on-diff hunk map scoped to one shared base.
+
+    When ``base`` is None (legacy/no-delta callers), tries the default
+    upstream branches (main, then master) first and falls back to HEAD~1 only
+    as the last resort of THIS no-base path.
+
+    Only files that still exist in the working tree are returned. Returns
+    None if no git history is available.
     """
-    base = None
-    for branch in ("main", "master"):
+    if base is not None:
         try:
             out = subprocess.run(
-                ["git", "-C", repo, "merge-base", "HEAD", branch],
+                ["git", "-C", repo, "merge-base", "HEAD", base],
                 capture_output=True, text=True, check=True, timeout=30,
             )
-            base = out.stdout.strip()
-            if base:
-                break
-        except Exception:
-            continue
-    if not base:
-        try:
-            out = subprocess.run(
-                ["git", "-C", repo, "rev-parse", "HEAD~1"],
-                capture_output=True, text=True, check=True, timeout=30,
-            )
-            base = out.stdout.strip()
+            mb = out.stdout.strip()
         except Exception:
             return None
+        if not mb:
+            return None
+    else:
+        mb = None
+        for branch in ("main", "master"):
+            try:
+                out = subprocess.run(
+                    ["git", "-C", repo, "merge-base", "HEAD", branch],
+                    capture_output=True, text=True, check=True, timeout=30,
+                )
+                mb = out.stdout.strip()
+                if mb:
+                    break
+            except Exception:
+                continue
+        if not mb:
+            try:
+                out = subprocess.run(
+                    ["git", "-C", repo, "rev-parse", "HEAD~1"],
+                    capture_output=True, text=True, check=True, timeout=30,
+                )
+                mb = out.stdout.strip()
+            except Exception:
+                return None
     changed = set()
     try:
         out = subprocess.run(
-            ["git", "-C", repo, "diff", "--name-only", "--diff-filter=d", base],
+            ["git", "-C", repo, "diff", "--name-only", "--diff-filter=d", mb],
             capture_output=True, text=True, check=True, timeout=30,
         )
         for p in out.stdout.splitlines():
@@ -561,15 +583,26 @@ def write_diff_hunks(repo, base, source, out_path, tolerance, includes_uncommitt
         fh.write("\n")
 
 
-def _resolve_or_die(repo, out, explicit, pr_base, diff_context,
-                    includes_uncommitted, on_fail=None):
-    """Resolve base and emit diff-hunks.json, or fail loudly (return False).
+def _hunks_path_for(out):
+    """Path for diff-hunks.json: alongside --out's directory, else the default
+    .panopticon/ location. Shared by every mode that emits the artifact so the
+    placement rule has one definition."""
+    return (os.path.join(os.path.dirname(os.path.abspath(out)), "diff-hunks.json")
+            if out else os.path.join(".panopticon", "diff-hunks.json"))
 
-    Returns True after writing the artifact; on an unresolvable base it prints a
-    loud message, runs ``on_fail()`` (e.g. release a worktree), and returns
-    False — the caller then ``return 2`` with NO artifact written. An
-    unresolvable base is a loud orchestrator-level failure, not a soft
-    INCONCLUSIVE deferred to synthesize (#449 redirect).
+
+def resolve_base_or_die(repo, explicit, pr_base, on_fail=None):
+    """Resolve the delta base, or fail loudly and return None.
+
+    Returns ``(base, source)`` on success — the SAME base every downstream
+    step (the reviewed file set via ``collect_changed_files``, and the on-diff
+    hunk map via ``write_diff_hunks``) must share (Finding A: they used to
+    resolve independently and could disagree). On an unresolvable base it
+    prints the loud failure message, runs ``on_fail()`` (e.g. release a
+    worktree), and returns None — the caller then ``return 2`` with NO
+    artifact written. Does NOT itself emit diff-hunks.json; callers resolve
+    the base FIRST, then compute the file set against it, THEN write the
+    artifact.
     """
     base, source = resolve_base(repo, explicit=explicit, pr_base=pr_base)
     if base is None:
@@ -579,10 +612,30 @@ def _resolve_or_die(repo, out, explicit, pr_base, diff_context,
               file=sys.stderr)
         if on_fail:
             on_fail()
+        return None
+    return base, source
+
+
+def _resolve_or_die(repo, out, explicit, pr_base, diff_context,
+                    includes_uncommitted, on_fail=None):
+    """Resolve base and emit diff-hunks.json, or fail loudly (return False).
+
+    Returns True after writing the artifact; on an unresolvable base it prints a
+    loud message, runs ``on_fail()`` (e.g. release a worktree), and returns
+    False — the caller then ``return 2`` with NO artifact written. An
+    unresolvable base is a loud orchestrator-level failure, not a soft
+    INCONCLUSIVE deferred to synthesize (#449 redirect).
+
+    Used only by the ``--files`` mode, whose file set is explicit (no
+    coherence concern between file set and hunk map — see ``resolve_base_or_die``
+    for the modes that need the base resolved before the file set is built).
+    """
+    res = resolve_base_or_die(repo, explicit, pr_base, on_fail=on_fail)
+    if res is None:
         return False
-    hunks_path = (os.path.join(os.path.dirname(os.path.abspath(out)), "diff-hunks.json")
-                  if out else os.path.join(".panopticon", "diff-hunks.json"))
-    write_diff_hunks(repo, base, source, hunks_path, diff_context, includes_uncommitted)
+    base, source = res
+    write_diff_hunks(repo, base, source, _hunks_path_for(out), diff_context,
+                     includes_uncommitted)
     return True
 
 
@@ -816,7 +869,9 @@ def main(argv=None):
     modes.add_argument("--file", metavar="PATH")
     modes.add_argument("--files", nargs="+", metavar="PATH")
     modes.add_argument("--changes", "-c", action="store_true",
-                       help="Review changed files vs merge base (fallback HEAD~1)")
+                       help="Review changed files vs delta base (--base, else "
+                            "main/master; no HEAD~1 -- an unresolvable base "
+                            "fails loudly)")
     modes.add_argument("--pr", type=int, metavar="N",
                        help="Review GitHub PR N in an isolated worktree")
     modes.add_argument("--repo-scan", action="store_true")
@@ -869,7 +924,16 @@ def main(argv=None):
             return 2
 
     elif args.changes:
-        changed = collect_changed_files(repo)
+        # --changes always requests a delta review; the base is resolved FIRST
+        # (Finding A) so the reviewed file set (collect_changed_files) and the
+        # on-diff hunk map (write_diff_hunks) are computed against the SAME
+        # base, never two independently-resolved ones. An unresolvable base is
+        # a loud failure, not a soft INCONCLUSIVE deferred to synthesize (#449).
+        res = resolve_base_or_die(repo, args.base, None)
+        if res is None:
+            return 2
+        base, source = res
+        changed = collect_changed_files(repo, base=base)
         if changed is None:
             print("could not determine changed files; is %s a git repository?" % repo,
                   file=sys.stderr)
@@ -883,32 +947,34 @@ def main(argv=None):
         result = build_result(repo, "changes", "changes", None, impl,
                               sorted(set(tests) | set(related_tests(repo, impl))), args.max_per_group,
                               security_mode=args.security)
-        # --changes always requests a delta review; an unresolvable base is a
-        # loud failure, not a soft INCONCLUSIVE deferred to synthesize (#449).
-        if not _resolve_or_die(repo, args.out, args.base, None, args.diff_context,
-                               includes_uncommitted=True):
-            return 2
+        write_diff_hunks(repo, base, source, _hunks_path_for(args.out),
+                         args.diff_context, True)
 
     elif args.pr is not None:
         acq = diff_map.acquire_pr(args.pr, repo=repo)
         wt = acq["worktree"]
         try:
-            changed = prune_fixture_files(collect_changed_files(wt) or [],
+            # --pr always requests a delta review; base resolved FIRST so the
+            # file set and hunk map share it (Finding A, as in --changes
+            # above). An unresolvable base releases the worktree first, then
+            # fails loudly — no artifact (#449).
+            res = resolve_base_or_die(
+                wt, args.base, acq["base"],
+                on_fail=lambda: diff_map.release_worktree(wt, repo=repo))
+            if res is None:
+                return 2
+            base, source = res
+            changed = prune_fixture_files(collect_changed_files(wt, base=base) or [],
                                           args.security == "redteam")
             impl = [f for f in changed if not is_test_file(f)]
             tests = [f for f in changed if is_test_file(f)]
             result = build_result(wt, "changes", "changes", None, impl,
                                   sorted(set(tests) | set(related_tests(wt, impl))),
                                   args.max_per_group, security_mode=args.security)
-            # --pr always requests a delta review; the worktree is clean at the
-            # PR head so the working-tree diff is committed-only
-            # (includes_uncommitted=False). An unresolvable base releases the
-            # worktree first, then fails loudly — no artifact (#449).
-            if not _resolve_or_die(
-                    wt, args.out, args.base, acq["base"], args.diff_context,
-                    includes_uncommitted=False,
-                    on_fail=lambda: diff_map.release_worktree(wt, repo=repo)):
-                return 2
+            # The worktree is clean at the PR head so the working-tree diff is
+            # committed-only (includes_uncommitted=False).
+            write_diff_hunks(wt, base, source, _hunks_path_for(args.out),
+                             args.diff_context, False)
             result["worktree"] = wt   # recorded; SKILL cleanup releases it post-review
         except Exception:
             diff_map.release_worktree(wt, repo=repo)

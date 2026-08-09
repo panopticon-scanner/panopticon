@@ -1129,6 +1129,7 @@ def render_summary(report):
         ]
         high_plus = (pre.get("critical", 0) or 0) + (pre.get("high", 0) or 0)
         if high_plus:
+            delta_lines.append("")
             delta_lines.append(
                 "⚠ %d pre-existing HIGH+ issue(s) in files you touched "
                 "— strongly recommend fixing before merge "
