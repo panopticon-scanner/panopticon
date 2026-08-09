@@ -102,7 +102,11 @@ class TestPhase1Integration(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "pip-audit.json"), "wb") as fh:
                 fh.write(raw)
-            findings = it.ingest_dir(d, "g1")
+            # This exercises adapter routing on REAL tool output sourced from the
+            # vulnerable-python fixture, so its location.file is under
+            # tests/fixtures/ and the default fixture prune would drop it. Pass
+            # include_fixtures to keep it (we are testing routing, not the prune).
+            findings = it.ingest_dir(d, "g1", include_fixtures=True)
             self.assertTrue(findings)
             self.assertTrue(all(f.get("source") == "tool:pip-audit" for f in findings))
 

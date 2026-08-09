@@ -298,6 +298,21 @@ class TestFixturePrune(unittest.TestCase):
             out = it.ingest_dir(d, "g1")
         self.assertEqual(len(out), 1)
 
+    def test_glob_only_exclusion_note_does_not_blame_fixtures(self):
+        # Honesty of the stderr note: when include_fixtures=True (prune off) and
+        # only an exclude_glob matched, the note must not list "test-fixture
+        # corpus" as a reason.
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "semgrep.sarif"), "w") as fh:
+                json.dump(self._sarif("vendor/gen.js"), fh)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                out = it.ingest_dir(d, "g1", exclude_globs=["vendor/*"],
+                                    include_fixtures=True)
+        self.assertEqual(out, [])
+        self.assertIn("excluded 1 finding", err.getvalue())
+        self.assertNotIn("test-fixture corpus", err.getvalue())
+
 
 class TestIngestDispositions(unittest.TestCase):
     def _write(self, d, name, content):
