@@ -292,6 +292,7 @@ class TestCli(unittest.TestCase):
             subprocess.run(["git", "-C", d, "config", "user.name", "Test"], check=True)
             subprocess.run(["git", "-C", d, "add", "."], check=True)
             subprocess.run(["git", "-C", d, "commit", "-q", "-m", "init"], check=True)
+            subprocess.run(["git", "-C", d, "branch", "-M", "main"], check=True)
             with open(os.path.join(d, "src", "a.py"), "w") as fh:
                 fh.write("# changed")
             out_path = os.path.join(d, "groups.json")
@@ -395,6 +396,7 @@ class TestCli(unittest.TestCase):
             subprocess.run(["git", "-C", d, "config", "user.name", "Test"], check=True)
             subprocess.run(["git", "-C", d, "add", "."], check=True)
             subprocess.run(["git", "-C", d, "commit", "-q", "-m", "init"], check=True)
+            subprocess.run(["git", "-C", d, "branch", "-M", "main"], check=True)
             # modify a.py and add c.py on a feature branch
             with open(os.path.join(d, "src", "a.py"), "w") as fh:
                 fh.write("# changed")
