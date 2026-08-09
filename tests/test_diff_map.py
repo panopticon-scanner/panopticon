@@ -113,3 +113,9 @@ class TestClassify(unittest.TestCase):
     def test_file_not_in_map_is_pre_existing(self):
         d = diff_map.classify(self._f("other.py", 3), self.HM)
         self.assertEqual((d["on_diff"], d["distance"]), (False, None))
+
+    def test_multiline_off_diff_uses_four_corners(self):
+        # finding [1, 3] vs range (10, 12): nearest gap is le=3 to s=10 = 7
+        d = diff_map.classify(self._f("a.py", 1, 3), self.HM, 5)
+        self.assertFalse(d["on_diff"])
+        self.assertEqual(d["distance"], 7)
