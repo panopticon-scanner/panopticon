@@ -1,11 +1,9 @@
 import json
 import os
-import sys
 import tempfile
 import unittest
 from unittest import mock
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, "skill"))
 import scripts.tools.osv_scanner as osv
 
 # Golden trimmed from a REAL `osv-scanner --format json --recursive` run
