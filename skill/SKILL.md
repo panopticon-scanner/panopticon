@@ -35,7 +35,7 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
 - *(none)* — whole-repo scan.
 
 ## Global flags
-`--full` (force all panels), `--security {standard,redteam}` (default standard), `--fail-on {critical,high,medium,low}`, `--severity {all,medium,high,critical}` (report only findings at or above the threshold), `--out PATH`, `--tools` (require tool scan), `--no-tools` (skip tool scan), `--epss` (enrich CVE citations), `--gate-unverified` (unverified findings drive grades/gate), `--max-verify N` (cap the verify queue), `--base <ref|sha>` (explicit delta base for `-c`/`--pr`/`--files`), `--diff-context N` (default 5; on-diff tolerance in lines), `--gate-scope {on-diff,all}` (default `on-diff` for delta reviews; scopes the gate to on-diff × gate-eligible findings). `--base` on `--files` makes it an explicit delta request — plain `--files` (no `--base`) is a normal whole-file review and emits no delta artifact.
+`--full` (force all panels), `--security {standard,redteam}` (default standard), `--fail-on {critical,high,medium,low}`, `--severity {all,medium,high,critical}` (report only findings at or above the threshold), `--out PATH`, `--tools` (require tool scan), `--no-tools` (skip tool scan), `--epss` (enrich CVE citations), `--gate-unverified` (unverified findings drive grades/gate), `--max-verify N` (cap the verify queue), `--base <ref|sha>` (explicit delta base for `-c`/`--pr`/`--files`), `--diff-context N` (default 5; on-diff tolerance in lines), `--gate-scope {on-diff,all}` (default `on-diff` for delta reviews; scopes the gate to on-diff × gate-eligible findings), `--include-fixtures` (keep tool findings under test-fixture corpora; default prunes them for parity with the standard-mode review prune — pass for redteam self-scans), `--tools-exclude GLOB` (drop tool findings whose path matches GLOB; repeatable, for additional non-fixture paths). `--base` on `--files` makes it an explicit delta request — plain `--files` (no `--base`) is a normal whole-file review and emits no delta artifact.
 
 ## Pipeline
 1. `TodoList`: discovery → scout → tools → panels → lens sub-reviews → synthesis.
@@ -61,9 +61,12 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
    vulnerabilities must not gate a standard scan (#434); the pruning is
    disclosed on stderr and in `groups.json` under `excluded.fixture_dirs`.
    `--security redteam` includes them. The deterministic tool scan (step 4)
-   still sweeps the whole target, so pair this with `--tools-exclude`
-   (e.g. `'tests/fixtures/*'`) on BOTH synthesize passes when the target
-   carries such corpora, or tool findings on fixtures reappear on that path.
+   still sweeps the whole target, but **synthesize now prunes tool findings
+   located under those same fixture corpora by default** (tool-path parity with
+   #434), so osv-scanner/trivy CVEs on planted-vulnerable fixtures no longer
+   reappear on that path. Pass `--include-fixtures` on BOTH synthesize passes
+   for a redteam self-scan that must keep them; `--tools-exclude GLOB` remains
+   for pruning ADDITIONAL, non-fixture paths.
    **Delta reviews** (`-c`, `--pr <n>`, or `--files` with an explicit
    `--base`) additionally emit `.panopticon/diff-hunks.json`, pinning three
    commit anchors — `base_commit` (base tip), `delta_start` (the merge-base

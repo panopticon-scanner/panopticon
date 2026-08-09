@@ -124,6 +124,23 @@ class TestIngest(unittest.TestCase):
         self.assertNotIn("B101", ids)      # assert-noise dropped
         self.assertIn("B608", ids)         # real finding kept
 
+    def test_noise_rules_suppress_low_value_bandit_but_keep_backstop(self):
+        # B404/B110/B112 are blunt heuristics -> suppressed on any codebase.
+        # B603/B607 stay a tool-layer backstop for panel-less runs -> kept.
+        def _res(rule):
+            return {"ruleId": rule, "level": "warning", "message": {"text": rule},
+                    "locations": [{"physicalLocation": {
+                        "artifactLocation": {"uri": "skill/scripts/orchestrator.py"},
+                        "region": {"startLine": 9}}}]}
+        sarif = {"runs": [{"tool": {"driver": {"name": "bandit", "rules": []}},
+                           "results": [_res(r) for r in
+                                       ("B404", "B110", "B112", "B603", "B607")]}]}
+        ids = [f["category"] for f in it.sarif_to_findings(sarif, "bandit", "g1", "BN")]
+        for suppressed in ("B404", "B110", "B112"):
+            self.assertNotIn(suppressed, ids)
+        for kept in ("B603", "B607"):
+            self.assertIn(kept, ids)
+
     def test_ingest_filters_nonnoise_bandit_under_test_path(self):
         # Exercises the _is_test_path OR-branch distinctly from NOISE_RULES:
         # a non-noise bandit rule (B608) located in a test file is dropped by
@@ -225,7 +242,60 @@ class TestExcludeGlobs(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "semgrep.sarif"), "w") as fh:
                 json.dump(self._sarif("skill/scripts/dispatch.py"), fh)
-            out = it.ingest_dir(d, "g1", exclude_globs=["tests/fixtures/*"])
+            out = it.ingest_dir(d, "g1", exclude_globs=["tests/fixtures/*"],
+                                include_fixtures=True)
+        self.assertEqual(len(out), 1)
+
+
+class TestFixturePrune(unittest.TestCase):
+    """Tool-path parity with the #434 agentic review prune: standard-mode
+    ingestion drops findings located under a test-fixture corpus by default,
+    so osv-scanner/trivy CVEs on the intentionally-vulnerable fixtures don't
+    dominate a self-scan. Redteam (include_fixtures=True) keeps them."""
+
+    def test_is_fixture_path(self):
+        for p in ("tests/fixtures/vulnerable-node/package-lock.json",
+                  "test/fixtures/x/main.rs",
+                  "spec/fixtures/y.js",
+                  "pkg/testdata/seed.json",
+                  "app/__fixtures__/case.py"):
+            self.assertTrue(it._is_fixture_path(p), p)
+        for p in ("skill/scripts/orchestrator.py",
+                  "tests/test_orchestrator.py",   # a test FILE is not a fixture corpus
+                  "src/fixtures/real.py",         # 'fixtures' but parent not tests/test/spec
+                  "package.json"):
+            self.assertFalse(it._is_fixture_path(p), p)
+
+    def _sarif(self, path):
+        return {"runs": [{"tool": {"driver": {"name": "t", "rules": []}},
+                          "results": [{"ruleId": "R1", "level": "warning",
+                                       "message": {"text": "m"},
+                                       "locations": [{"physicalLocation": {
+                                           "artifactLocation": {"uri": path},
+                                           "region": {"startLine": 1}}}]}]}]}
+
+    def test_fixture_findings_pruned_by_default(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "semgrep.sarif"), "w") as fh:
+                json.dump(self._sarif("tests/fixtures/vulnerable-node/package-lock.json"), fh)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                out = it.ingest_dir(d, "g1")           # standard mode: no flag
+        self.assertEqual(out, [])
+        self.assertIn("test-fixture corpus", err.getvalue())
+
+    def test_fixture_findings_kept_with_include_fixtures(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "semgrep.sarif"), "w") as fh:
+                json.dump(self._sarif("tests/fixtures/vulnerable-node/package-lock.json"), fh)
+            out = it.ingest_dir(d, "g1", include_fixtures=True)   # redteam
+        self.assertEqual(len(out), 1)
+
+    def test_non_fixture_findings_kept_by_default(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "semgrep.sarif"), "w") as fh:
+                json.dump(self._sarif("skill/scripts/orchestrator.py"), fh)
+            out = it.ingest_dir(d, "g1")
         self.assertEqual(len(out), 1)
 
 

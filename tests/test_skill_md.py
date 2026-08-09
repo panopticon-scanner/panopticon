@@ -100,6 +100,16 @@ class TestSkillMd(unittest.TestCase):
         pipeline = self.text.split("## Pipeline")[1].split("## Host dispatch")[0]
         self.assertIn("--tools-dir .panopticon/tools", pipeline)
 
+    def test_documents_default_tool_path_fixture_prune(self):
+        # The tool-ingest path prunes fixture-corpus findings by default (parity
+        # with the #434 review prune); --include-fixtures is the redteam escape
+        # hatch. Doc must not still tell users --tools-exclude is REQUIRED to
+        # stop fixture CVEs reappearing on the tool path.
+        self.assertIn("--include-fixtures", self.text)
+        self.assertRegex(self.text, r"(?i)tool-path parity|prunes tool findings")
+        self.assertNotIn("or tool findings on fixtures reappear on that path",
+                         self.text)
+
 
 class TestReadmeQuickStart(unittest.TestCase):
     """#512: the README Quick start must show real invocation flags, not the

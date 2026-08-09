@@ -1238,6 +1238,11 @@ def main(argv=None):
     ap.add_argument("--tools-exclude", metavar="GLOB", action="append", default=None,
                     help="Drop tool findings whose location.file matches GLOB "
                          "(repeatable; e.g. 'tests/fixtures/*')")
+    ap.add_argument("--include-fixtures", action="store_true",
+                    help="Keep tool findings located under test-fixture corpora "
+                         "(testdata/, __fixtures__/, tests/fixtures/). Default "
+                         "prunes them for parity with the standard-mode agentic "
+                         "review prune (#434); pass this for redteam self-scans.")
     ap.add_argument("--emit-verify-queue", action="store_true",
                     help="Pass 1: write .panopticon/verify-queue.json and skip the "
                          "report when agentic findings need verification")
@@ -1340,7 +1345,8 @@ def main(argv=None):
     tools_ran = None
     if args.tools_dir and os.path.isdir(args.tools_dir):
         tool_findings, tool_dispositions = ingest_tools.ingest_dir_detailed(
-            args.tools_dir, None, exclude_globs=args.tools_exclude)
+            args.tools_dir, None, exclude_globs=args.tools_exclude,
+            include_fixtures=args.include_fixtures)
         for tf in tool_findings:
             findings.append(normalize_finding(tf))
         # A "failed" disposition (empty / unparseable / no-adapter) is excluded,
