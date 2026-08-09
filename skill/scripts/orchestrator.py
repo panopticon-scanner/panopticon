@@ -4,6 +4,7 @@ lists. Stdlib-only; run BEFORE dispatching review subagents.
 """
 import argparse
 import fnmatch
+import functools
 import glob
 import json
 import os
@@ -141,6 +142,14 @@ def compute_group_panels(files, security_mode="standard"):
     return panels_in_priority_order(panels)
 
 
+def _git(repo, args, timeout=30):
+    """Run git -C repo with check=True — the shared invocation for this
+    module's six git call sites; each caller's try/except owns failures."""
+    return subprocess.run(["git", "-C", repo, *args],
+                          capture_output=True, text=True, check=True,
+                          timeout=timeout)
+
+
 def collect_changed_files(repo, base=None):
     """Collect repo-relative paths changed since the merge base (or HEAD~1).
 
@@ -160,11 +169,7 @@ def collect_changed_files(repo, base=None):
     """
     if base is not None:
         try:
-            out = subprocess.run(
-                ["git", "-C", repo, "merge-base", "HEAD", base],
-                capture_output=True, text=True, check=True, timeout=30,
-            )
-            mb = out.stdout.strip()
+            mb = _git(repo, ["merge-base", "HEAD", base]).stdout.strip()
         except Exception:
             return None
         if not mb:
@@ -173,30 +178,19 @@ def collect_changed_files(repo, base=None):
         mb = None
         for branch in ("main", "master"):
             try:
-                out = subprocess.run(
-                    ["git", "-C", repo, "merge-base", "HEAD", branch],
-                    capture_output=True, text=True, check=True, timeout=30,
-                )
-                mb = out.stdout.strip()
+                mb = _git(repo, ["merge-base", "HEAD", branch]).stdout.strip()
                 if mb:
                     break
             except Exception:
                 continue
         if not mb:
             try:
-                out = subprocess.run(
-                    ["git", "-C", repo, "rev-parse", "HEAD~1"],
-                    capture_output=True, text=True, check=True, timeout=30,
-                )
-                mb = out.stdout.strip()
+                mb = _git(repo, ["rev-parse", "HEAD~1"]).stdout.strip()
             except Exception:
                 return None
     changed = set()
     try:
-        out = subprocess.run(
-            ["git", "-C", repo, "diff", "--name-only", "--diff-filter=d", mb],
-            capture_output=True, text=True, check=True, timeout=30,
-        )
+        out = _git(repo, ["diff", "--name-only", "--diff-filter=d", mb])
         for p in out.stdout.splitlines():
             p = p.strip()
             if p:
@@ -205,10 +199,7 @@ def collect_changed_files(repo, base=None):
         return None
     # Include new untracked files so a branch with only added files isn't empty.
     try:
-        out = subprocess.run(
-            ["git", "-C", repo, "ls-files", "--others", "--exclude-standard"],
-            capture_output=True, text=True, check=True, timeout=30,
-        )
+        out = _git(repo, ["ls-files", "--others", "--exclude-standard"])
         for p in out.stdout.splitlines():
             p = p.strip()
             if p:
@@ -447,8 +438,15 @@ def load_catalog(repo):
         return {}
 
 
+@functools.lru_cache(maxsize=None)
+def _repo_realpath(repo):
+    """The repo root's realpath, cached: _within runs once per candidate file
+    on large expansions, and realpath lstats every path component."""
+    return os.path.realpath(repo)
+
+
 def _within(repo, path):
-    repo_r = os.path.realpath(repo)
+    repo_r = _repo_realpath(repo)
     p_r = os.path.realpath(path)
     return p_r == repo_r or p_r.startswith(repo_r + os.sep)
 
@@ -650,10 +648,8 @@ def _git_listed_files(repo):
     so the caller can fall back to walking.
     """
     try:
-        out = subprocess.run(
-            ["git", "-C", repo, "ls-files", "--cached", "--others",
-             "--exclude-standard"],
-            capture_output=True, text=True, check=True, timeout=60)
+        out = _git(repo, ["ls-files", "--cached", "--others",
+                          "--exclude-standard"], timeout=60)
     except Exception:
         return None
     return [p.strip() for p in out.stdout.splitlines() if p.strip()]

@@ -1,11 +1,10 @@
 """Roslyn Security Guard / SecurityCodeScan adapter for C# security findings."""
 from __future__ import annotations
-import json
 import os
 import shutil
 import sys
 import tempfile
-from .base import attach_tool_provenance, new_finding_id, omit_none, run_tool
+from .base import make_finding, omit_none, parse_json_bytes, run_tool
 from .sarif_utils import LEVEL_TO_SEV
 
 
@@ -144,7 +143,7 @@ class RoslynSecGuardAdapter:
         return default
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
-        data = json.loads(raw.decode("utf-8", errors="replace"))
+        data = parse_json_bytes(raw)
         out = []
         n = 1
         runs = data.get("runs") or []
@@ -180,26 +179,19 @@ class RoslynSecGuardAdapter:
                     message = self._message_text(result, rule_id)
                     level = str(result.get("level", "warning")).lower()
                     severity = LEVEL_TO_SEV.get(level, "INFO")
-                    finding = {
-                        "id": new_finding_id(self.prefix, n),
-                        "title": message,
-                        "severity": severity,
-                        "confidence": "LIKELY",
-                        "panel": "security",
-                        "category": "csharp_security",
-                        "source": f"tool:{self.name}",
-                        "location": location,
-                        "description": message or "No description provided.",
-                        "impact": "Potential security issue in C# code.",
-                        "remediation": "Review the SecurityCodeScan rule and refactor.",
-                        "references": [],
-                        "citations": {"cwe": [cwe]} if cwe else None,
-                        "tool_evidence": omit_none({"rule_id": rule_id}),
-                        "_group": group,
-                    }
-                    if not finding["citations"]:
-                        finding.pop("citations", None)
-                    attach_tool_provenance(finding, self.name, reasoning=finding["tool_evidence"].get("rule_id"))
+                    finding = make_finding(
+                        self, n, group,
+                        title=message,
+                        severity=severity,
+                        confidence="LIKELY",
+                        category="csharp_security",
+                        location=location,
+                        description=message or "No description provided.",
+                        impact="Potential security issue in C# code.",
+                        remediation="Review the SecurityCodeScan rule and refactor.",
+                        citations={"cwe": [cwe] if cwe else []},
+                        tool_evidence=omit_none({"rule_id": rule_id}),
+                    )
                 except Exception:  # noqa: BLE001 - tolerant by design: skip only this result
                     continue
                 out.append(finding)

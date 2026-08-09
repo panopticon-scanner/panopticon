@@ -5,6 +5,11 @@ import html
 import os
 import re
 
+try:
+    import scripts.evidence as evidence
+except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
+    import evidence
+
 _CSS = """
 :root {
   --bg: #131418; --card: #1b1d22; --panel: #17181d; --chip: #23262d;
@@ -77,10 +82,6 @@ h2 { font-size: 18px; font-weight: 600; }
 .stat-card { flex: 1; padding: .6rem; text-align: center; background: var(--panel); }
 .stat-label { font-family: var(--mono); font-size: 9px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--faint); }
 .stat-value { font-family: var(--mono); font-size: 22px; font-weight: 700; }
-.grades { width: 100%; border-collapse: collapse; margin-top: 1rem; font-size: 13px; }
-.grades th, .grades td { border: 1px solid var(--border); padding: .4rem .5rem; text-align: center; }
-.grades th { color: var(--muted); font-weight: 600; }
-.grades th:first-child { text-align: left; }
 .top-issues { margin: 0; padding-left: 1.25rem; color: var(--ink2); }
 .findings { margin-top: 1.6rem; }
 .findings-controls { margin-bottom: .5rem; display: flex; gap: .4rem; justify-content: flex-end; }
@@ -130,7 +131,6 @@ button, .tab { font-family: var(--ui); }
 .heat-cell { text-align: center; font-weight: 700; padding: 3px 0; border-radius: 2px; }
 .heat-cell.empty { background: transparent; }
 .heat-total { text-align: center; font-weight: 700; padding: 3px 0; border-radius: 2px; background: var(--chip); color: var(--ink); }
-.heatmap-more { padding: .25rem .5rem; color: var(--faint); font-family: var(--mono); font-size: 11px; }
 .compare-dashboard { display: flex; gap: .5rem; flex-wrap: wrap; }
 .compare-panel { flex: 1; min-width: 250px; background: var(--card); border: 1px solid var(--border); border-radius: 4px; padding: 1rem; }
 .stat-minis { margin-top: .5rem; }
@@ -253,8 +253,8 @@ def _html_doc(title, body):
 </html>"""
 
 
-_SEV_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
-_PANEL_ORDER = ["code", "test", "security", "architecture", "database", "redteam"]
+_SEV_ORDER = evidence.SEV_ORDER
+_PANEL_ORDER = evidence.PANELS
 
 
 def _severity_counts(findings):
@@ -304,7 +304,14 @@ def _normalize_path(path):
 
 
 def _fingerprint(finding):
-    """Stable fingerprint that ignores line numbers so moved issues match."""
+    """Stable fingerprint that ignores line numbers so moved issues match.
+
+    NOTE: deliberately NOT evidence.finding_fingerprint. The compare view
+    includes `description` so a finding whose text changed (edited but not
+    fixed) surfaces as new+resolved rather than silently "unchanged" — see
+    test_compare_scenario_matrix's changed_not_fixed scenario. The pipeline's
+    cross-run identity (exported `fingerprint`) excludes prose by design;
+    these are different questions, not a drifted copy."""
     loc = finding.get("location") or {}
     parts = [
         finding.get("panel", ""),

@@ -18,6 +18,10 @@ except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.p
     from _version import __version__
 
 SEV_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
+# Canonical panel list, in display order. synthesize's VALID_PANELS/PANEL_ORDER,
+# html_report's _PANEL_ORDER, and the findings-filename regexes in synthesize
+# and group_runner all derive from this one definition.
+PANELS = ["code", "test", "security", "architecture", "database", "redteam"]
 EVIDENCE_STATUSES = ("tool_reported", "tool_confirmed", "advisor_confirmed",
                      "corroborated", "needs_more_info", "unverified",
                      "rejected")
@@ -28,6 +32,12 @@ VERDICT_VALUES = {"CONFIRMED", "REJECTED", "NEEDS_MORE_INFO"}
 def is_tool_sourced(finding):
     """Tool-emitted findings carry source='tool:<name>'; everything else is agentic."""
     return str(finding.get("source", "")).startswith("tool:")
+
+
+def tool_name(finding):
+    """The <name> of a tool-sourced finding's 'tool:<name>' source, else None."""
+    src = str(finding.get("source", ""))
+    return src[len("tool:"):] if src.startswith("tool:") else None
 
 
 def tool_rule_id(finding):

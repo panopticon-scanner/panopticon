@@ -1,10 +1,9 @@
 """OWASP dependency-check adapter for Java dependency CVEs."""
 from __future__ import annotations
-import json
 import os
 import shutil
 import tempfile
-from .base import attach_tool_provenance, normalize_severity, new_finding_id, omit_none, run_tool
+from .base import make_finding, normalize_severity, omit_none, parse_json_bytes, run_tool
 
 
 class DependencyCheckAdapter:
@@ -50,7 +49,7 @@ class DependencyCheckAdapter:
         return None
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
-        data = json.loads(raw.decode("utf-8", errors="replace"))
+        data = parse_json_bytes(raw)
         out = []
         n = 1
         for dep in data.get("dependencies", []):
@@ -68,32 +67,23 @@ class DependencyCheckAdapter:
                     if impact_file
                     else "A vulnerable Java dependency is used."
                 )
-                finding = {
-                    "id": new_finding_id(self.prefix, n),
-                    "title": f"{file_name}: {cve}",
-                    "severity": normalize_severity(vuln.get("severity")),
-                    "confidence": "CERTAIN",
-                    "panel": "security",
-                    "category": "dependency_vulnerability",
-                    "source": f"tool:{self.name}",
-                    "location": {"file": file_name, "line_start": 1},
-                    "description": vuln.get("description", "No description provided."),
-                    "impact": impact,
-                    "remediation": "Upgrade to a fixed version per the advisory.",
-                    "references": [],
-                    "citations": omit_none({
-                        "cve": [cve] if cve.startswith("CVE-") else None,
-                        "cwe": cwe_list or None,
-                    }),
-                    "tool_evidence": omit_none({
+                out.append(make_finding(
+                    self, n, group,
+                    title=f"{file_name}: {cve}",
+                    severity=normalize_severity(vuln.get("severity")),
+                    category="dependency_vulnerability",
+                    location={"file": file_name, "line_start": 1},
+                    description=vuln.get("description", "No description provided."),
+                    impact=impact,
+                    remediation="Upgrade to a fixed version per the advisory.",
+                    citations={
+                        "cve": [cve] if cve.startswith("CVE-") else [],
+                        "cwe": cwe_list,
+                    },
+                    tool_evidence=omit_none({
                         "rule_id": cve,
                         "package_name": dep.get("fileName"),
                     }),
-                    "_group": group,
-                }
-                if not finding["citations"]:
-                    finding.pop("citations", None)
-                attach_tool_provenance(finding, self.name, reasoning=finding["tool_evidence"].get("rule_id"))
-                out.append(finding)
+                ))
                 n += 1
         return out

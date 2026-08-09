@@ -2,7 +2,7 @@
 from __future__ import annotations
 import os
 import re
-from .base import attach_tool_provenance, normalize_severity, new_finding_id, omit_none, run_tool
+from .base import make_finding, normalize_severity, omit_none, run_tool
 
 _BLOCK_RE = re.compile(
     r"Name:\s*(?P<name>[^\n]+)\n"
@@ -34,31 +34,23 @@ class BundlerAuditAdapter:
         n = 1
         for m in _BLOCK_RE.finditer(text):
             cve = m.group("cve").strip()
-            finding = {
-                "id": new_finding_id(self.prefix, n),
-                "title": f"{m.group('name').strip()} {m.group('version').strip()}: {m.group('title').strip()}",
-                "severity": normalize_severity(m.group("criticality")),
-                "confidence": "CERTAIN",
-                "panel": "security",
-                "category": "dependency_vulnerability",
-                "source": f"tool:{self.name}",
-                "location": {"file": "Gemfile.lock", "line_start": 1},
-                "description": m.group("title").strip(),
-                "impact": f"Vulnerable dependency {m.group('name').strip()}=={m.group('version').strip()} is used.",
-                "remediation": f"Upgrade: {m.group('solution').strip()}",
-                "references": [m.group("url").strip()],
-                "citations": {"cve": [cve]} if cve.upper().startswith("CVE-") else {},
-                "tool_evidence": omit_none({
+            out.append(make_finding(
+                self, n, group,
+                title=f"{m.group('name').strip()} {m.group('version').strip()}: {m.group('title').strip()}",
+                severity=normalize_severity(m.group("criticality")),
+                category="dependency_vulnerability",
+                location={"file": "Gemfile.lock", "line_start": 1},
+                description=m.group("title").strip(),
+                impact=f"Vulnerable dependency {m.group('name').strip()}=={m.group('version').strip()} is used.",
+                remediation=f"Upgrade: {m.group('solution').strip()}",
+                references=[m.group("url").strip()],
+                citations={"cve": [cve] if cve.upper().startswith("CVE-") else []},
+                tool_evidence=omit_none({
                     "rule_id": cve,
                     "package_name": m.group("name").strip(),
                     "vulnerable_versions": m.group("version").strip(),
                     "advisory_url": m.group("url").strip(),
                 }),
-                "_group": group,
-            }
-            if not finding["citations"]:
-                finding.pop("citations", None)
-            attach_tool_provenance(finding, self.name, reasoning=finding["tool_evidence"].get("rule_id"))
-            out.append(finding)
+            ))
             n += 1
         return out

@@ -1,9 +1,8 @@
 """eslint-plugin-security adapter for JS/TS security anti-patterns."""
 from __future__ import annotations
 import glob
-import json
 import os
-from .base import attach_tool_provenance, new_finding_id, omit_none, run_tool
+from .base import make_finding, omit_none, parse_json_bytes, run_tool
 
 
 # CWE mappings for eslint-plugin-security rules (best-effort).
@@ -64,7 +63,7 @@ class EslintSecurityAdapter:
         return run_tool(cmd, timeout=300, env=env, cwd=trusted_cwd)
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
-        data = json.loads(raw.decode("utf-8", errors="replace"))
+        data = parse_json_bytes(raw)
         out = []
         n = 1
         for file_result in data:
@@ -74,28 +73,18 @@ class EslintSecurityAdapter:
                 rule = msg.get("ruleId", "")
                 if not rule.startswith("security/"):
                     continue
-                severity = "HIGH" if msg.get("severity") == 2 else "MEDIUM"
-                cwe = RULE_CWE.get(rule)
-                finding = {
-                    "id": new_finding_id(self.prefix, n),
-                    "title": msg.get("message", rule),
-                    "severity": severity,
-                    "confidence": "CERTAIN",
-                    "panel": "security",
-                    "category": "code_security",
-                    "source": f"tool:{self.name}",
-                    "location": {"file": rel, "line_start": msg.get("line", 1)},
-                    "description": f"eslint-plugin-security rule {rule} triggered.",
-                    "impact": "Potential security weakness in JavaScript/TypeScript code.",
-                    "remediation": "Review the flagged code and follow the plugin's guidance.",
-                    "references": [],
-                    "tool_evidence": omit_none({"rule_id": rule}),
-                    "_group": group,
-                }
-                if cwe:
-                    finding["citations"] = {"cwe": [cwe]}
-                attach_tool_provenance(finding, self.name, reasoning=finding["tool_evidence"].get("rule_id"))
-                out.append(finding)
+                out.append(make_finding(
+                    self, n, group,
+                    title=msg.get("message", rule),
+                    severity="HIGH" if msg.get("severity") == 2 else "MEDIUM",
+                    category="code_security",
+                    location={"file": rel, "line_start": msg.get("line", 1)},
+                    description=f"eslint-plugin-security rule {rule} triggered.",
+                    impact="Potential security weakness in JavaScript/TypeScript code.",
+                    remediation="Review the flagged code and follow the plugin's guidance.",
+                    citations={"cwe": [RULE_CWE[rule]] if rule in RULE_CWE else []},
+                    tool_evidence=omit_none({"rule_id": rule}),
+                ))
                 n += 1
         return out
 

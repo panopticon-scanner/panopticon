@@ -2,7 +2,7 @@
 from __future__ import annotations
 import os
 import xml.etree.ElementTree as ET
-from .base import attach_tool_provenance, new_finding_id, omit_none, run_tool
+from .base import make_finding, omit_none, run_tool
 
 _SPOTBUGS_CWE = {
     "SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE": "CWE-89",
@@ -53,26 +53,18 @@ class SpotBugsAdapter:
             file_path = source.get("sourcepath", "") if source is not None else ""
             line = source.get("start") if source is not None else 1
             cwe = _SPOTBUGS_CWE.get(btype)
-            finding = {
-                "id": new_finding_id(self.prefix, n),
-                "title": f"{btype}",
-                "severity": severity,
-                "confidence": "LIKELY",
-                "panel": "security",
-                "category": "jvm_security",
-                "source": f"tool:{self.name}",
-                "location": {"file": file_path, "line_start": int(line) if line else 1},
-                "description": f"SpotBugs/FindSecBugs detected issue type {btype}.",
-                "impact": "Potential security flaw in JVM bytecode.",
-                "remediation": "Review the FindSecBugs documentation for this bug type and refactor.",
-                "references": [],
-                "citations": {"cwe": [cwe]} if cwe else None,
-                "tool_evidence": omit_none({"rule_id": btype}),
-                "_group": group,
-            }
-            if not finding["citations"]:
-                finding.pop("citations", None)
-            attach_tool_provenance(finding, self.name, reasoning=finding["tool_evidence"].get("rule_id"))
-            out.append(finding)
+            out.append(make_finding(
+                self, n, group,
+                title=f"{btype}",
+                severity=severity,
+                confidence="LIKELY",
+                category="jvm_security",
+                location={"file": file_path, "line_start": int(line) if line else 1},
+                description=f"SpotBugs/FindSecBugs detected issue type {btype}.",
+                impact="Potential security flaw in JVM bytecode.",
+                remediation="Review the FindSecBugs documentation for this bug type and refactor.",
+                citations={"cwe": [cwe] if cwe else []},
+                tool_evidence=omit_none({"rule_id": btype}),
+            ))
             n += 1
         return out
