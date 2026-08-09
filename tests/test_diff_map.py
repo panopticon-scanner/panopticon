@@ -119,3 +119,37 @@ class TestClassify(unittest.TestCase):
         d = diff_map.classify(self._f("a.py", 1, 3), self.HM, 5)
         self.assertFalse(d["on_diff"])
         self.assertEqual(d["distance"], 7)
+
+
+class TestPrWorktree(unittest.TestCase):
+    def test_acquire_reads_base_and_adds_worktree(self):
+        from unittest import mock
+        calls = []
+        def runner(argv, **kw):
+            calls.append(argv)
+            out = ""
+            if argv[:3] == ["gh", "pr", "view"]:
+                out = '{"baseRefName": "main"}'
+            elif argv[:2] == ["git", "rev-parse"]:
+                out = "deadbeef\n"
+            class R: returncode = 0; stdout = out; stderr = ""
+            return R()
+        with mock.patch.object(diff_map, "_mk_worktree_dir", return_value="/tmp/wt-pr7"):
+            info = diff_map.acquire_pr(7, repo=".", runner=runner)
+        self.assertEqual(info["base"], "main")
+        self.assertEqual(info["worktree"], "/tmp/wt-pr7")
+        self.assertTrue(any(a[:2] == ["git", "worktree"] and "add" in a for a in calls))
+        self.assertTrue(any("refs/pull/7/head" in " ".join(a) for a in calls))
+
+    def test_acquire_raises_loudly_on_gh_failure(self):
+        def runner(argv, **kw):
+            class R: returncode = 1; stdout = ""; stderr = "gh: no PR 999"
+            return R()
+        with self.assertRaises(RuntimeError):
+            diff_map.acquire_pr(999, repo=".", runner=runner)
+
+    def test_release_is_tolerant(self):
+        def runner(argv, **kw):
+            class R: returncode = 1; stdout = ""; stderr = "not a worktree"
+            return R()
+        diff_map.release_worktree("/tmp/gone", runner=runner)  # must not raise

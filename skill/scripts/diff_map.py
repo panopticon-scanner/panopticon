@@ -5,6 +5,8 @@ functions plus thin git/gh subprocess wrappers.
 import re
 import subprocess
 import os
+import json as _json
+import tempfile
 
 _NEWFILE_RE = re.compile(r"^\+\+\+ (?:b/)?(.*?)\s*$")
 _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
@@ -111,3 +113,40 @@ def classify(finding, hmap, tolerance=5):
         return {"on_diff": True, "hunk": None, "distance": None}   # changed file, no ranges, lined finding: fail-open
     nearest = min(_distance_to_range(ls, le, s, e) for (s, e) in ranges)
     return {"on_diff": False, "hunk": None, "distance": nearest}
+
+
+def _mk_worktree_dir(pr_number):
+    return tempfile.mkdtemp(prefix="panopticon-pr%d-" % pr_number)
+
+
+def acquire_pr(pr_number, repo=".", runner=subprocess.run):
+    """Fetch a PR head into a throwaway worktree and return its base branch.
+
+    Never mutates the caller's checkout — all work lands in the new worktree
+    (the blast radius). Raises RuntimeError (loud) on any step's failure.
+    """
+    def _run(argv):
+        r = runner(argv, capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError("panopticon --pr: `%s` failed: %s"
+                               % (" ".join(argv), (r.stderr or "").strip()))
+        return r.stdout
+
+    view = _run(["gh", "pr", "view", str(pr_number), "--json", "baseRefName"])
+    base = (_json.loads(view) or {}).get("baseRefName")
+    if not base:
+        raise RuntimeError("panopticon --pr: could not read base branch for PR %d" % pr_number)
+    _run(["git", "fetch", "origin", "refs/pull/%d/head" % pr_number])
+    head_sha = _run(["git", "rev-parse", "FETCH_HEAD"]).strip()
+    wt = _mk_worktree_dir(pr_number)
+    _run(["git", "worktree", "add", "--detach", wt, "FETCH_HEAD"])
+    return {"worktree": wt, "base": base, "head_sha": head_sha}
+
+
+def release_worktree(path, repo=".", runner=subprocess.run):
+    """Remove a worktree; tolerant if it is already gone."""
+    try:
+        runner(["git", "-C", repo, "worktree", "remove", "--force", path],
+               capture_output=True, text=True)
+    except Exception:
+        pass
