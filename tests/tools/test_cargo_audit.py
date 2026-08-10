@@ -52,11 +52,15 @@ class TestCargoAuditAdapter(unittest.TestCase):
 
     def test_cvss_v3_score_scope_unchanged_known_vector(self):
         # AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H - a textbook "network, no auth,
-        # full CIA impact" vector. Hand-computed via the CVSS v3.1 base-score
-        # formula; NVD's own calculator rounds this to 9.8 (this function
-        # does not implement the official round-up step - see plan Q4).
+        # full CIA impact" vector. NVD's published base score is 9.8; the
+        # v3.1 Roundup step (#475) is what lifts the raw 9.7601... to it.
         score = ca._cvss_v3_score("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H")
-        self.assertAlmostEqual(score, 9.760161495, places=6)
+        self.assertEqual(score, 9.8)
+
+    def test_cvss_v3_score_rounds_up_low_vector(self):
+        # A low-severity vector exercising Roundup away from the ceiling cap.
+        score = ca._cvss_v3_score("CVSS:3.1/AV:L/AC:H/PR:H/UI:R/S:U/C:L/I:N/A:N")
+        self.assertEqual(score, 1.8)
 
     def test_cvss_v3_score_scope_changed_caps_at_ten(self):
         # AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H - the Log4Shell (CVE-2021-44228)
@@ -66,10 +70,11 @@ class TestCargoAuditAdapter(unittest.TestCase):
         self.assertEqual(score, 10.0)
 
     def test_cvss_v3_score_scope_unchanged_medium_vector(self):
-        # A lower-impact vector to confirm the function isn't just always
-        # landing near the ceiling.
+        # A lower-impact vector -- and the ceiling-vs-nearest proof: the raw
+        # score is 4.2477, which round-NEAREST would land on 4.2; the v3.1
+        # Roundup (ceiling to one decimal, #475) gives 4.3, matching NVD.
         score = ca._cvss_v3_score("CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:L/I:N/A:N")
-        self.assertAlmostEqual(score, 4.24765473, places=6)
+        self.assertEqual(score, 4.3)
 
     def test_cvss_v3_score_malformed_vector_returns_none(self):
         self.assertIsNone(ca._cvss_v3_score("garbage"))
