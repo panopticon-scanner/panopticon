@@ -161,7 +161,11 @@ class TestToolReported(unittest.TestCase):
 
     def test_status_is_in_schema_enum(self):
         import json as _json
-        with open("skill/reference/report-schema.json", encoding="utf-8") as fh:
+        # Anchor on __file__, not the cwd: a bare relative path assumes the
+        # suite runs from the repo root and breaks from anywhere else.
+        schema_path = os.path.join(os.path.dirname(__file__), os.pardir,
+                                   "skill", "reference", "report-schema.json")
+        with open(schema_path, encoding="utf-8") as fh:
             schema = _json.load(fh)
         text = _json.dumps(schema)
         self.assertIn("tool_reported", text)
@@ -198,6 +202,30 @@ class TestFingerprintMoved(unittest.TestCase):
         import scripts.synthesize as syn
         self.assertIs(syn.finding_fingerprint, evidence.finding_fingerprint)
         self.assertIs(syn.tool_rule_id, evidence.tool_rule_id)
+
+
+class TestReconcileKey(unittest.TestCase):
+    def _f(self, **kw):
+        base = {"panel": "security", "category": "injection",
+                "location": {"file": "app/db.py"}, "title": "SQLi", "source": "agent"}
+        base.update(kw)
+        return base
+
+    def test_key_is_file_panel_category_tuple(self):
+        self.assertEqual(evidence.reconcile_key(self._f()),
+                         ("app/db.py", "security", "injection"))
+
+    def test_drops_title__reworded_finding_shares_key(self):
+        a = self._f(title="SQL injection in query")
+        b = self._f(title="Unsanitized input reaches execute()")
+        self.assertEqual(evidence.reconcile_key(a), evidence.reconcile_key(b))
+
+    def test_file_normalized_like_fingerprint(self):
+        self.assertEqual(evidence.reconcile_key(self._f(location={"file": "./a\\b.py"}))[0],
+                         "a/b.py")
+
+    def test_missing_fields_become_empty_strings(self):
+        self.assertEqual(evidence.reconcile_key({}), ("", "", ""))
 
 
 if __name__ == "__main__":
