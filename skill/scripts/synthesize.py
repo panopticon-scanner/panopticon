@@ -803,7 +803,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                  security_mode="standard", verdicts=None, gate_unverified=False,
                  max_verify=None, verdicts_supplied=False, tool_policy_mode=None,
                  tools_ran=None, tool_dispositions=None, fan_out=None,
-                 scout_requested=None, resume=None, integrity=None,
+                 scout_requested=None, scout_profiles_seen=0, resume=None, integrity=None,
                  diff_hunks=None, diff_context=5, gate_scope="on-diff",
                  catalog=None, verdict_unloadable=None):
     """Build a CodeReviewReport under the two-axis severity x evidence model.
@@ -1000,6 +1000,11 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                     & EXECUTES_TARGET_BUILD),
                 "tool_policy_mode": tool_policy_mode or "unknown",
                 "tool_axis": tool_axis,
+                # #471: with scout_requested, lets consumers tell "no scouts
+                # ran" (0) apart from "scouts ran and requested no tools"
+                # (N>0 with scout_requested []).
+                "scout_profiles_seen": scout_profiles_seen,
+                "scout_requested": sorted(scout_requested or []),
                 "verdicts": verdict_stats,
                 "fan_out": fan_out,
                 "divergence": divergence,
@@ -1449,6 +1454,7 @@ def main(argv=None):
         # Default to False so consumers never see None for this field.
         integrity["write_guard_covers_bash"] = _ack.get("write_guard_covers_bash", False)
     scout_requested = set()
+    scout_profiles_seen = 0
     for sp in glob.glob(os.path.join(".panopticon", "scout-*.json")):
         try:
             with open(sp, encoding="utf-8") as fh:
@@ -1457,9 +1463,17 @@ def main(argv=None):
             continue
         if not isinstance(sd, dict):
             continue
+        scout_profiles_seen += 1
         tools = sd.get("tools")
         if isinstance(tools, list):
             scout_requested.update(t for t in tools if isinstance(t, str))
+    if scout_profiles_seen and not scout_requested:
+        # #471: a scout can return tools:[] -- a silent decline of the tool
+        # layer. Disclose it; the artifact records scout_profiles_seen so
+        # "no scouts ran" and "scouts ran, requested nothing" read apart.
+        print("synthesize: %d scout profile(s) requested NO tools (tools:[]) "
+              "-- the tool layer ran on default triggers only, not scout "
+              "guidance" % scout_profiles_seen, file=sys.stderr)
 
     diff_hunks = load_diff_hunks(args.diff_hunks) if args.diff_hunks else None
     if args.diff_hunks and not args.fail_on:
@@ -1480,6 +1494,7 @@ def main(argv=None):
                           tool_dispositions=tool_dispositions,
                           fan_out=fan_out,
                           scout_requested=sorted(scout_requested),
+                          scout_profiles_seen=scout_profiles_seen,
                           resume=resume,
                           integrity=integrity,
                           diff_hunks=diff_hunks,

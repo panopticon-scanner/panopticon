@@ -601,3 +601,36 @@ class TestEvidencePartition(unittest.TestCase):
             with open(path, encoding="utf-8") as fh:
                 html = fh.read()
         self.assertIn("Unverified findings", html)
+
+
+class TestCoverageHonesty(unittest.TestCase):
+    """#490: the HTML must not launder an uncertified/INCONCLUSIVE run."""
+
+    def _report(self, **summary):
+        base = {"overall_grade": "B", "risk_level": "MEDIUM", "gate": "PASS",
+                "coverage_certified": True}
+        base.update(summary)
+        return {"meta": {"target": "t", "coverage": {}}, "summary": base,
+                "findings": [], "groups": []}
+
+    def test_inconclusive_gate_gets_distinct_style(self):
+        out = hr.render(self._report(gate="INCONCLUSIVE", coverage_certified=False))
+        self.assertIn("gate-inconclusive", out)      # not the benign gate-off slate
+
+    def test_uncertified_run_shows_banner_and_provisional_grade(self):
+        out = hr.render(self._report(gate="INCONCLUSIVE", coverage_certified=False,
+                                     coverage_note="tool layer incomplete: semgrep absent"))
+        self.assertIn("NOT CERTIFIED", out)
+        self.assertIn("tool layer incomplete: semgrep absent", out)
+        self.assertIn("(provisional)", out)
+
+    def test_grade_none_never_renders_literal_none(self):
+        out = hr.render(self._report(overall_grade=None, coverage_certified=False))
+        self.assertNotIn("Grade: None", out)
+        self.assertIn("Grade: -", out)
+
+    def test_certified_pass_run_unchanged(self):
+        out = hr.render(self._report())
+        self.assertNotIn("NOT CERTIFIED", out)
+        self.assertNotIn("(provisional)", out)
+        self.assertIn("gate-pass", out)
