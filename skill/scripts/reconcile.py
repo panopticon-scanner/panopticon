@@ -76,9 +76,11 @@ def iter_records(report):
                 "kind": kind,
                 "severity": f.get("severity"),
                 "panel": f.get("panel"),
+                "category": f.get("category"),
                 "location_file": loc.get("file") or "",
                 "stored_fingerprint": f.get("fingerprint"),
                 "fingerprint": evidence.finding_fingerprint(f),
+                "coarse_key": evidence.reconcile_key(f),
             })
     return out
 
@@ -104,37 +106,150 @@ def _degenerate(grouped, run_label):
         key=lambda d: (d["fingerprint"], d["run"]))
 
 
-def build_diff(run2_records, run3_records, run2_path, run3_path):
-    """Partition recomputed-fingerprint identities into recurring /
-    fixed_or_gone / new cohorts, and surface (never silently merge)
-    same-side fingerprint collisions plus finding<->rejected kind flips.
+GUARD_REASONS = {
+    "empty_run3": "run3 has zero records -- refusing to corroborate any close",
+    "no_file_overlap": ("run2/run3 file sets share zero paths -- path-shape drift "
+                        "suspected; refusing to corroborate closes"),
+}
 
-    Every cohort and its record lists are sorted, so re-running the tool on the
-    same inputs yields a byte-identical diff.
+
+def build_diff(run2_records, run3_records, run2_path, run3_path):
+    """Partition cross-run identities into recurring / closed / ambiguous / new.
+
+    A finding RECURS if its exact finding_fingerprint OR its coarse reconcile_key
+    (file, panel, category) appears in the other run -- the coarse tier catches
+    agent findings whose title was re-worded (#914); the coarse run3 side is
+    populated from every record sharing that coarse key, so a re-worded run3
+    finding is never silently dropped from the diff (#914 final-review F4).
+    A non-recurring run2 finding is CLOSED only when ALL of the following hold:
+    no close_guard is active (see below), its fingerprint-group carries exactly
+    one coarse key (a degenerate multi-key group can't be trusted to mean one
+    thing), it has a recorded file (an empty file can't be corroborated by any
+    (file, panel) read), and its (file, panel) is entirely clear in run3 (the
+    drift-proof corroboration -- category is free-text and drifts). Failing any
+    of those routes it to AMBIGUOUS instead (kept open, never auto-closed) --
+    when corroboration cannot be performed, refuse to close.
+
+    close_guard fires when corroboration itself can't be trusted for the WHOLE
+    run: run3 has zero records ("empty_run3": nothing ran / nothing loaded,
+    which would otherwise read as "area clear" for everything), or run2 and
+    run3's non-empty file sets share no path at all ("no_file_overlap": e.g.
+    absolute-vs-relative path drift between the two runs). Either guard routes
+    every non-recurring group to ambiguous regardless of its own (file, panel)
+    read.
+
+    Same-side fingerprint collisions and finding<->rejected kind flips are
+    surfaced, never silently merged. Every cohort and record list is sorted, so
+    re-running on the same inputs yields a byte-identical diff.
     """
     g2 = _group_by_fingerprint(run2_records)
     g3 = _group_by_fingerprint(run3_records)
     fps2, fps3 = set(g2), set(g3)
+    ck2 = {r["coarse_key"] for r in run2_records}
+    ck3 = {r["coarse_key"] for r in run3_records}
+    g3_by_ck = defaultdict(list)
+    for r in run3_records:
+        g3_by_ck[r["coarse_key"]].append(r)
 
-    recurring = []
-    for fp in sorted(fps2 & fps3):
-        kinds2 = {r["kind"] for r in g2[fp]}
-        kinds3 = {r["kind"] for r in g3[fp]}
-        recurring.append({"fingerprint": fp, "run2": _by_id(g2[fp]),
-                          "run3": _by_id(g3[fp]),
-                          "kind_changed": kinds2 != kinds3})
-    fixed_or_gone = [{"fingerprint": fp, "run2": _by_id(g2[fp])}
-                     for fp in sorted(fps2 - fps3)]
-    new = [{"fingerprint": fp, "run3": _by_id(g3[fp])}
-          for fp in sorted(fps3 - fps2)]
+    # (file, panel) still active in run3 -- the close corroboration. Counted
+    # per kind (F5): a rejected claim on that (file, panel) blocks a close the
+    # same as a live finding does (safe direction), but the reason string must
+    # not call a rejected claim a "finding".
+    active3 = {(ck[0], ck[1]) for ck in ck3}
+    active3_counts = {}
+    for r in run3_records:
+        file_panel = (r["coarse_key"][0], r["coarse_key"][1])
+        counts = active3_counts.setdefault(file_panel, {})
+        counts[r["kind"]] = counts.get(r["kind"], 0) + 1
+
+    # F2: refuse to corroborate ANY close when corroboration can't be trusted
+    # for the whole run -- see close_guard in the docstring.
+    close_guard = None
+    if run2_records and not run3_records:
+        close_guard = "empty_run3"
+    elif run2_records and run3_records:
+        # coarse_key[0] (not the raw location_file) so a trivial "./"-prefix or
+        # backslash difference between runs -- already normalized away for
+        # coarse matching -- doesn't spuriously trip the drift guard.
+        files2 = {r["coarse_key"][0] for r in run2_records if r["coarse_key"][0]}
+        files3 = {r["coarse_key"][0] for r in run3_records if r["coarse_key"][0]}
+        if not (files2 & files3):
+            close_guard = "no_file_overlap"
+
+    recurring, closed, ambiguous = [], [], []
+    for fp in sorted(fps2):
+        recs = g2[fp]
+        ck = recs[0]["coarse_key"]  # one coarse key per fingerprint-group
+        exact = fp in fps3
+        coarse = ck in ck3
+        if exact or coarse:
+            run3_side = g3[fp] if exact else g3_by_ck[ck]
+            kinds2 = {r["kind"] for r in recs}
+            kinds3 = {r["kind"] for r in run3_side}
+            recurring.append({"fingerprint": fp, "coarse_key": list(ck),
+                              "match_tier": "exact" if exact else "coarse",
+                              "run2": _by_id(recs),
+                              "run3": _by_id(run3_side),
+                              "kind_changed": kinds2 != kinds3})
+            continue
+
+        file_, panel_ = ck[0], ck[1]
+        fdisp, pdisp = file_ or "(no file)", panel_ or "(no panel)"
+        # Decision order (safe direction first, #914 final-review ordering
+        # note): (a) close_guard active; (b) degenerate multi-coarse-key
+        # group; (c) no file recorded; (d) (file,panel) still active; only
+        # then (e) closed.
+        if close_guard:
+            ambiguous.append({"fingerprint": fp, "coarse_key": list(ck),
+                              "reason": GUARD_REASONS[close_guard],
+                              "run2": _by_id(recs)})
+        elif len({r["coarse_key"] for r in recs}) > 1:
+            ambiguous.append({"fingerprint": fp, "coarse_key": list(ck),
+                              "reason": "degenerate group spans multiple coarse keys",
+                              "run2": _by_id(recs)})
+        elif not file_:
+            ambiguous.append({"fingerprint": fp, "coarse_key": list(ck),
+                              "reason": ("no file recorded -- (file,panel)-clear "
+                                        "cannot corroborate a fix"),
+                              "run2": _by_id(recs)})
+        elif (file_, panel_) in active3:
+            counts = active3_counts[(file_, panel_)]
+            parts = []
+            if counts.get("finding"):
+                parts.append("%d finding(s)" % counts["finding"])
+            if counts.get("rejected"):
+                parts.append("%d rejected claim(s)" % counts["rejected"])
+            ambiguous.append({"fingerprint": fp, "coarse_key": list(ck),
+                              "reason": "%s still active on %s (%s in run3)"
+                              % (pdisp, fdisp, ", ".join(parts)),
+                              "run2": _by_id(recs)})
+        else:
+            closed.append({"fingerprint": fp, "coarse_key": list(ck),
+                           "reason": "(file,panel) clear: 0 findings in %s on %s in run3"
+                           % (pdisp, fdisp),
+                           "run2": _by_id(recs)})
+
+    new = []
+    for fp in sorted(fps3 - fps2):
+        recs = g3[fp]
+        ck = recs[0]["coarse_key"]
+        if ck not in ck2:  # a run3 fp whose coarse key matched run2 IS that recurrence
+            new.append({"fingerprint": fp, "coarse_key": list(ck), "run3": _by_id(recs)})
 
     degenerate = sorted(_degenerate(g2, "run2") + _degenerate(g3, "run3"),
                         key=lambda d: (d["fingerprint"], d["run"]))
     return {"meta": {"run2_report": run2_path, "run3_report": run3_path,
-                     "run2_count": len(run2_records),
-                     "run3_count": len(run3_records),
+                     "run2_count": len(run2_records), "run3_count": len(run3_records),
+                     "close_guard": close_guard,
+                     # fingerprint-GROUP counts, not record counts -- a
+                     # degenerate collision can put >1 record under one
+                     # fingerprint's group entry (render_summary's header
+                     # discloses this same distinction for its own counts).
+                     "counts": {"recurring": len(recurring), "closed": len(closed),
+                                "ambiguous": len(ambiguous), "new": len(new)},
                      "degenerate_fingerprints": degenerate},
-           "recurring": recurring, "fixed_or_gone": fixed_or_gone, "new": new}
+            "recurring": recurring, "closed": closed,
+            "ambiguous": ambiguous, "new": new}
 
 
 def _record_count(entries, side):
@@ -144,7 +259,8 @@ def _record_count(entries, side):
 def render_summary(diff):
     m = diff["meta"]
     recurring_n = _record_count(diff["recurring"], "run2")
-    gone_n = _record_count(diff["fixed_or_gone"], "run2")
+    closed_n = _record_count(diff["closed"], "run2")
+    ambiguous_n = _record_count(diff["ambiguous"], "run2")
     new_n = _record_count(diff["new"], "run3")
     lines = ["# Run-3 reconciliation summary", "",
             "run2: %s (%d records)" % (m["run2_report"], m["run2_count"]),
@@ -152,14 +268,15 @@ def render_summary(diff):
             "", "## Cohorts (record counts, not fingerprint-group counts — "
                 "a degenerate collision can put >1 record under one fingerprint)",
             "- recurring: %d" % recurring_n,
-            "- fixed_or_gone: %d" % gone_n,
+            "- closed: %d" % closed_n,
+            "- ambiguous: %d" % ambiguous_n,
             "- new: %d" % new_n, ""]
 
     sev_counts = defaultdict(int)
-    for entry in diff["fixed_or_gone"]:
+    for entry in diff["closed"]:
         for rec in entry["run2"]:
             sev_counts[rec.get("severity") or "UNKNOWN"] += 1
-    lines.append("## fixed_or_gone by severity")
+    lines.append("## closed by severity")
     for sev in sorted(sev_counts):
         lines.append("- %s: %d" % (sev, sev_counts[sev]))
 
@@ -171,6 +288,14 @@ def render_summary(diff):
         for e in kc:
             ids = [r["id"] for r in e["run2"]] + [r["id"] for r in e["run3"]]
             lines.append("- %s: %s" % (e["fingerprint"], ", ".join(ids)))
+
+    amb = diff["ambiguous"]
+    if amb:
+        lines.append("")
+        lines.append("## ambiguous (kept open) — %d fingerprint(s) need human review"
+                     % len(amb))
+        for e in amb:
+            lines.append("- %s: %s" % (e["fingerprint"], e["reason"]))
 
     degen = m["degenerate_fingerprints"]
     if degen:
@@ -201,9 +326,9 @@ def main(argv=None):
         diff = build_diff(r2, r3, a.run2_report, a.run3_report)
         with open(a.out, "w", encoding="utf-8") as fh:
             json.dump(diff, fh, indent=2, sort_keys=True)
-        print("wrote %s (recurring=%d fixed_or_gone=%d new=%d)"
-             % (a.out, len(diff["recurring"]), len(diff["fixed_or_gone"]),
-                len(diff["new"])))
+        print("wrote %s (recurring=%d closed=%d ambiguous=%d new=%d)"
+             % (a.out, len(diff["recurring"]), len(diff["closed"]),
+                len(diff["ambiguous"]), len(diff["new"])))
         if a.summary:
             with open(a.summary, "w", encoding="utf-8") as fh:
                 fh.write(render_summary(diff))

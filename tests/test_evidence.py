@@ -200,5 +200,29 @@ class TestFingerprintMoved(unittest.TestCase):
         self.assertIs(syn.tool_rule_id, evidence.tool_rule_id)
 
 
+class TestReconcileKey(unittest.TestCase):
+    def _f(self, **kw):
+        base = {"panel": "security", "category": "injection",
+                "location": {"file": "app/db.py"}, "title": "SQLi", "source": "agent"}
+        base.update(kw)
+        return base
+
+    def test_key_is_file_panel_category_tuple(self):
+        self.assertEqual(evidence.reconcile_key(self._f()),
+                         ("app/db.py", "security", "injection"))
+
+    def test_drops_title__reworded_finding_shares_key(self):
+        a = self._f(title="SQL injection in query")
+        b = self._f(title="Unsanitized input reaches execute()")
+        self.assertEqual(evidence.reconcile_key(a), evidence.reconcile_key(b))
+
+    def test_file_normalized_like_fingerprint(self):
+        self.assertEqual(evidence.reconcile_key(self._f(location={"file": "./a\\b.py"}))[0],
+                         "a/b.py")
+
+    def test_missing_fields_become_empty_strings(self):
+        self.assertEqual(evidence.reconcile_key({}), ("", "", ""))
+
+
 if __name__ == "__main__":
     unittest.main()
