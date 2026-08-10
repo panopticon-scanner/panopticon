@@ -1,5 +1,6 @@
 """cargo-audit adapter for Rust dependency CVEs."""
 from __future__ import annotations
+import math
 import os
 from .base import (cve_ids, cvss_bucket, make_finding, normalize_severity,
                    omit_none, parse_json_bytes, run_tool)
@@ -35,7 +36,12 @@ def _cvss_v3_score(cvss: str) -> float | None:
             score = min(1.08 * (impact + exploitability), 10.0)
         else:
             score = min(impact + exploitability, 10.0)
-        return score
+        # CVSS v3.1 spec: Roundup(x) = smallest 1-decimal >= x (#475). Without
+        # it every boundary score under-reads (e.g. the textbook 9.8 vector
+        # computed 9.76 -> reported 9.7-ish instead of 9.8), skewing severity
+        # bucketing at HIGH/CRITICAL thresholds. Epsilon per the spec's
+        # reference implementation to dodge float artifacts.
+        return math.ceil(score * 10 - 1e-9) / 10 if score else 0.0
     except Exception:  # noqa: BLE001
         return None
 
