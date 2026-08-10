@@ -11,7 +11,7 @@ arguments:
 disableModelInvocation: false
 license: MIT
 metadata:
-  version: "4.3.1"
+  version: "4.3.2"
 ---
 
 # panopticon
@@ -265,6 +265,12 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
    same-role overwrite) is still not caught — full byte-identity verification
    remains a tracked follow-up.
    Then check gate, print summary, write JSON.
+   Every report carries `meta.cost` — the run's dispatch ledger, derived from
+   the artifacts already on disk (scout profiles, the dispatch-plan union, the
+   verify queue), one `{phase, role, model, count}` row per dispatch class,
+   plus a `tokens` slot that stays null until a host exposes per-dispatch
+   usage. This is the 4.x cost baseline the 5.x economics work measures
+   against — never hand-assemble it.
 
 ## Host dispatch
 

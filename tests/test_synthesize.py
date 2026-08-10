@@ -1481,7 +1481,7 @@ class TestEvidenceReport(unittest.TestCase):
         report = self._report([_agentic()])
         self.assertNotIn("effort_to_remediate", report["summary"])
         self.assertNotIn("recommendations", report)
-        self.assertEqual(report["meta"]["version"], "4.3.1")
+        self.assertEqual(report["meta"]["version"], "4.3.2")
 
     def test_citation_quality_lives_in_evidence(self):
         report = self._report([_agentic(citations={"cwe": ["CWE-89"]})])
@@ -1912,7 +1912,7 @@ class TestToolPolicyMode(unittest.TestCase):
         report = syn.build_report([f], [], "t", None, "2026-08-03T00:00:00Z",
                                   tool_policy_mode="mixed")
         self.assertEqual(report["meta"]["coverage"]["tool_policy_mode"], "mixed")
-        self.assertEqual(report["meta"]["version"], "4.3.1")
+        self.assertEqual(report["meta"]["version"], "4.3.2")
 
 
 class TestToolsRanFromDispositions(unittest.TestCase):
@@ -3326,3 +3326,44 @@ class TestUnloadableVerdictsGate(unittest.TestCase):
                                          {"file": "x.json", "reason": "unparseable"}])
         self.assertEqual(clean["summary"]["gate"], "PASS")
         self.assertEqual(lossy["summary"]["gate"], "INCONCLUSIVE")
+
+
+class TestCostLedger(unittest.TestCase):
+    """meta.cost (4.3.2): the run's dispatch ledger, derived from artifacts —
+    the 4.x cost baseline every 5.x economics exit criterion keys on."""
+
+    def _f(self, fid, fname):
+        return {"id": fid, "title": fid, "severity": "HIGH",
+                "confidence": "POSSIBLE", "panel": "code", "category": "logic",
+                "description": "d", "location": {"file": fname, "line_start": 1}}
+
+    def test_cost_ledger_rows(self):
+        rows = [{"role": "panel_review", "model": "m-panel", "count": 4},
+                {"role": "lens_sweep", "model": "m-lens", "count": 7}]
+        r = syn.build_report([self._f("A-1", "a.py"), self._f("A-2", "b.py")],
+                             [], "t", "high", "2026-08-05T00:00:00Z",
+                             scout_profiles_seen=3, cost_fan_out=rows)
+        cost = r["meta"]["cost"]
+        self.assertIsNone(cost["tokens"])
+        self.assertEqual(cost["dispatches"], [
+            {"phase": "scout", "role": "scout", "model": None, "count": 3},
+            {"phase": "fan_out", "role": "panel_review", "model": "m-panel", "count": 4},
+            {"phase": "fan_out", "role": "lens_sweep", "model": "m-lens", "count": 7},
+            {"phase": "verify", "role": "advisor", "model": None,
+             "count": r["meta"]["coverage"]["verdicts"]["queued"]},
+        ])
+
+    def test_cost_ledger_without_plans(self):
+        r = syn.build_report([self._f("A-1", "a.py")], [], "t", "high",
+                             "2026-08-05T00:00:00Z")
+        phases = [d["phase"] for d in r["meta"]["cost"]["dispatches"]]
+        self.assertEqual(phases, ["scout", "verify"])
+        self.assertEqual(r["meta"]["cost"]["dispatches"][0]["count"], 0)
+
+    def test_cost_in_report_schema(self):
+        import json
+        with open(os.path.join(os.path.dirname(__file__), os.pardir, "skill",
+                               "reference", "report-schema.json"),
+                  encoding="utf-8") as fh:
+            schema = json.load(fh)
+        self.assertIn("cost", schema["properties"]["meta"]["properties"])

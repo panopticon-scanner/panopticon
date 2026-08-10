@@ -28,6 +28,12 @@ class TestSkillMd(unittest.TestCase):
         for token in ["--tools", "--no-tools", "--epss", "scripts/ingest_tools.py"]:
             self.assertIn(token, self.text, token)
 
+    def test_documents_cost_ledger(self):
+        # 4.3.2: meta.cost is the measured 4.x baseline for 5.x economics.
+        self.assertIn("meta.cost", self.text)
+        self.assertIn("{phase, role, model, count}", self.text)
+        self.assertIn("never hand-assemble it", self.text)
+
     def test_documents_unloadable_verdicts_gate_enforced(self):
         # #979: un-loadable verdicts are not just surfaced — they dent the gate.
         self.assertIn("meta.coverage.verdicts.unloadable", self.text)
