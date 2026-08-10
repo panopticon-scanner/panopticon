@@ -156,15 +156,20 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
    - **Lifecycle** — an aborted run leaves the guard installed; the next run's
      `install` is idempotent, or clear it with `wg.uninstall()`. The hook's
      settings file is git-ignored so a leftover never trips the clean-tree check.
-   - **Worktree lifecycle (`--pr`)** — run the whole pipeline (scout, tool
+   - **Worktree lifecycle (`--pr`)** — run the pipeline stages (scout, tool
      scan, fan-out, synthesize) with the disposable worktree
-     (`groups.json`'s `worktree` field) as cwd, and install the write-guard from
-     that same cwd. `build_plan` roots every `entry.out_file` at its cwd and
-     emits it ABSOLUTE (#935), so building the plan from the worktree root is
-     all that's needed — a dispatched subagent's cwd may differ from the
-     orchestrator's, and only an absolute `out_file` keeps the reviewer's write,
-     the guard allowlist, and the resume done-check agreeing on one location (a
-     relative one silently misplaced the file and failed the guard). After step 8/9's final synthesize call writes the report,
+     (`groups.json`'s `worktree` field) as cwd, but **install/uninstall the
+     write-guard from the session root** (the checkout your session was
+     started in), passing it the worktree's dispatch plan (#956). Hook
+     registration is SESSION-rooted: `wg.install` registers the hook in the
+     cwd's `.claude/settings.local.json`, and the harness only honors the
+     session root's settings — a guard installed from inside a temp worktree
+     is inert. This works because `build_plan` roots every `entry.out_file`
+     at its cwd and emits it ABSOLUTE (#935): build the plan from the
+     worktree root, and the guard allowlist (realpath'd absolute paths), the
+     reviewer's write, and the resume done-check all agree on one location
+     regardless of any subagent's cwd (a relative `out_file` silently
+     misplaced the file and failed the guard). After step 8/9's final synthesize call writes the report,
      call `diff_map.release_worktree(<worktree>)` to remove the disposable
      tree; the orchestrator also releases it on an unresolvable-base failure
      before exiting (see step 2).
@@ -179,7 +184,10 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
    and `--gate-scope {on-diff,all}` (default `on-diff` for delta reviews)
    scopes the gate to on-diff × gate-eligible findings; pre-existing findings
    never gate but their per-severity counts are shown, and pre-existing
-   HIGH+ warns loudly.
+   HIGH+ warns loudly. **Pass `--fail-on` (typically `high`) on both
+   synthesize passes or the gate stays OFF** — a delta review is gate-first
+   by intent, and synthesize warns loudly on stderr when a delta review runs
+   ungated (#957).
    If it prints a "verify queue: N entries" line, proceed to step 8; if it printed a report, skip to step 9.
 8. **Verify** — Run `python3 skill/scripts/dispatch.py --render-advisor .panopticon/verify-queue.json --out .panopticon/advisor-prompts`,
    then dispatch each `.panopticon/advisor-prompts/{queue_id}.md` file's contents

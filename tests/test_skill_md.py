@@ -151,6 +151,20 @@ class TestDeltaDocs(unittest.TestCase):
                       "diff-hunks.json", "worktree"]:
             self.assertIn(token, self.skill, token)
 
+    def test_guard_install_is_session_rooted(self):
+        # #956: hook registration is SESSION-rooted — a guard installed from a
+        # temp worktree's cwd is inert. The doc must say install from the
+        # session root and must not retain the old worktree-cwd instruction.
+        self.assertIn("session root", self.skill)
+        self.assertNotIn("install the write-guard from\n     that same cwd",
+                         self.skill)
+
+    def test_delta_docs_warn_gate_needs_fail_on(self):
+        # #957: without --fail-on the gate reads OFF; the delta pipeline notes
+        # must say so where the synthesize commands are given (exact phrase —
+        # a loose regex matched the Global-flags line vacuously).
+        self.assertIn("or the gate stays OFF", self.skill)
+
     def test_readme_quick_start_shows_pr_and_base(self):
         # Reuse TestReadmeQuickStart's Quick start boundary — the brief's
         # `.split("## ")[1]` split does not match this README's layout.

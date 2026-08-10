@@ -666,6 +666,39 @@ class TestReport(unittest.TestCase):
                 report = json.load(_fh)
             self.assertEqual(report["meta"]["review_type"], "changes")
 
+    def _delta_run(self, d, extra):
+        p = os.path.join(d, "findings-g1-code.json")
+        with open(p, "w") as fh:
+            json.dump({"findings": [{"id": "CD-001", "title": "x", "severity": "LOW",
+                "confidence": "POSSIBLE", "panel": "code", "category": "structure",
+                "location": {"file": "a.py", "line_start": 1}}]}, fh)
+        hunks = os.path.join(d, "diff-hunks.json")
+        with open(hunks, "w") as fh:
+            json.dump({"base": "main", "base_source": "pr-base",
+                       "hunks": {"a.py": [[1, 5]]}}, fh)
+        out = os.path.join(d, "report.json")
+        import io, contextlib
+        errbuf = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(errbuf):
+            rc = syn.main(["--target", "src", "--diff-hunks", hunks,
+                           "--out", out, *extra, p])
+        self.assertEqual(rc, 0)
+        return errbuf.getvalue()
+
+    def test_delta_review_without_fail_on_warns_loudly(self):
+        # #957: a delta review is gate-first by intent; running one without
+        # --fail-on silently yields Gate: OFF. Must warn on stderr.
+        with tempfile.TemporaryDirectory() as d:
+            err = self._delta_run(d, [])
+            self.assertIn("Gate: OFF", err)
+            self.assertIn("--fail-on", err)
+
+    def test_delta_review_with_fail_on_does_not_warn(self):
+        with tempfile.TemporaryDirectory() as d:
+            err = self._delta_run(d, ["--fail-on", "high"])
+            self.assertNotIn("Gate: OFF", err)
+
 
 class TestCliAndSummary(unittest.TestCase):
     def test_render_summary_contains_grade_and_location(self):

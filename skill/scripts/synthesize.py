@@ -1462,6 +1462,13 @@ def main(argv=None):
             scout_requested.update(t for t in tools if isinstance(t, str))
 
     diff_hunks = load_diff_hunks(args.diff_hunks) if args.diff_hunks else None
+    if args.diff_hunks and not args.fail_on:
+        # #957: a delta review is gate-first by intent, but the gate only arms
+        # when --fail-on is passed. Without this notice a forgotten flag
+        # yields a green-looking report whose gate silently reads OFF.
+        print("synthesize: DELTA REVIEW WITH Gate: OFF -- no --fail-on was "
+              "passed, so nothing can gate this change; pass --fail-on "
+              "{critical,high,medium,low} to arm the gate", file=sys.stderr)
 
     report = build_report(findings, groups_meta, args.target, args.fail_on, ts,
                           review_type, security_mode, verdicts=verdicts,
