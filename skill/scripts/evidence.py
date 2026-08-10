@@ -82,6 +82,25 @@ def finding_fingerprint(finding):
     return hashlib.sha256(payload).hexdigest()[:16]
 
 
+def reconcile_key(finding):
+    """Coarse CROSS-RUN identity: (normalized_file, panel, category).
+
+    Separate from finding_fingerprint (the within-run identity, left untouched):
+    reconcile keys on this to match a finding across two independent agentic
+    runs, where the free-text title finding_fingerprint uses as an agent
+    finding's discriminator is re-worded every run. Dropping the title (keeping
+    file + panel + category) lets a re-worded finding match; a genuinely-fixed
+    one's key vanishes (#914). The file normalization mirrors
+    finding_fingerprint's exactly -- keep the two in sync. The 5.x finding-code
+    catalog will replace `category` here with a stable `code` field: one seam.
+    """
+    loc = finding.get("location") or {}
+    fpath = str(loc.get("file") or "").replace("\\", "/")
+    while fpath.startswith("./"):
+        fpath = fpath[2:]
+    return (fpath, str(finding.get("panel") or ""), str(finding.get("category") or ""))
+
+
 def sev_rank(finding):
     """Lower is more severe; unknown severities sort last."""
     try:

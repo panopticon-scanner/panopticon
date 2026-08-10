@@ -70,6 +70,15 @@ class TestIterRecords(unittest.TestCase):
         records = reconcile.iter_records(report)
         self.assertEqual(records[0]["location_file"], "")
 
+    def test_carries_category_and_coarse_key(self):
+        report = {"findings": [{"id": "X-1", "panel": "security",
+                                "category": "injection",
+                                "location": {"file": "app/db.py"},
+                                "title": "t"}]}
+        rec = reconcile.iter_records(report)[0]
+        self.assertEqual(rec["category"], "injection")
+        self.assertEqual(rec["coarse_key"], ("app/db.py", "security", "injection"))
+
 
 class TestBuildDiff(unittest.TestCase):
     def _records(self, name):

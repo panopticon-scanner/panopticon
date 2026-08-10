@@ -76,9 +76,11 @@ def iter_records(report):
                 "kind": kind,
                 "severity": f.get("severity"),
                 "panel": f.get("panel"),
+                "category": f.get("category"),
                 "location_file": loc.get("file") or "",
                 "stored_fingerprint": f.get("fingerprint"),
                 "fingerprint": evidence.finding_fingerprint(f),
+                "coarse_key": evidence.reconcile_key(f),
             })
     return out
 
