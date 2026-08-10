@@ -2,26 +2,72 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "CodeReviewReport",
   "type": "object",
-  "required": ["meta", "summary", "groups", "findings", "cross_panel"],
+  "required": [
+    "meta",
+    "summary",
+    "groups",
+    "findings",
+    "cross_panel"
+  ],
   "properties": {
     "meta": {
       "type": "object",
-      "required": ["target", "review_type", "timestamp", "version", "security_mode", "coverage"],
+      "required": [
+        "target",
+        "review_type",
+        "timestamp",
+        "version",
+        "security_mode",
+        "coverage"
+      ],
       "properties": {
-        "target": {"type": "string"},
-        "review_type": {"type": "string", "enum": ["repo", "file", "directory", "group", "changes", "pr"]},
-        "timestamp": {"type": "string"},
-        "version": {"type": "string"},
-        "security_mode": {"type": "string", "enum": ["standard", "redteam"]},
-        "parts": {"type": "array", "items": {"type": "string"}},
+        "target": {
+          "type": "string"
+        },
+        "review_type": {
+          "type": "string",
+          "enum": [
+            "repo",
+            "file",
+            "directory",
+            "group",
+            "changes",
+            "pr"
+          ]
+        },
+        "timestamp": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "security_mode": {
+          "type": "string",
+          "enum": [
+            "standard",
+            "redteam"
+          ]
+        },
+        "parts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "models_used": {
           "type": "array",
           "items": {
             "type": "object",
             "properties": {
-              "model": {"type": "string"},
-              "version": {"type": "string"},
-              "role": {"type": "string"}
+              "model": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              },
+              "role": {
+                "type": "string"
+              }
             }
           }
         },
@@ -29,76 +75,343 @@
           "type": "object",
           "description": "What this run actually did: which adapters produced usable output, which tools ran, verify-phase accounting, and the tool-policy posture.",
           "properties": {
-            "adapters": {"type": "object", "description": "Per output file: {status: ok|empty|failed, findings: int, reason?: str}. A failed file (0-byte, unparseable, or no registered adapter) is not counted as having run."},
-            "tools_ran": {"type": "array", "items": {"type": "string"}, "description": "Adapters that produced a parseable document (status ok or empty)."},
-            "build_executing_tools": {"type": "array", "items": {"type": "string"}, "description": "Names of adapters from EXECUTES_TARGET_BUILD that ran this run (produced an output file), whether or not they emitted findings."},
-            "tool_policy_mode": {"type": "string", "enum": ["enforced", "advisory", "mixed", "unknown"], "description": "Posture of the fan-out reviewer entries (panel_review/lens_sweep) derived from dispatch plans; scout/advisor posture is not recorded. \"unknown\" means no dispatch plan was found."},
+            "adapters": {
+              "type": "object",
+              "description": "Per output file: {status: ok|empty|failed, findings: int, reason?: str}. A failed file (0-byte, unparseable, or no registered adapter) is not counted as having run."
+            },
+            "tools_ran": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Adapters that produced a parseable document (status ok or empty)."
+            },
+            "build_executing_tools": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Names of adapters from EXECUTES_TARGET_BUILD that ran this run (produced an output file), whether or not they emitted findings."
+            },
+            "tool_policy_mode": {
+              "type": "string",
+              "enum": [
+                "enforced",
+                "advisory",
+                "mixed",
+                "unknown"
+              ],
+              "description": "Posture of the fan-out reviewer entries (panel_review/lens_sweep) derived from dispatch plans; scout/advisor posture is not recorded. \"unknown\" means no dispatch plan was found."
+            },
             "tool_axis": {
               "type": "object",
               "properties": {
-                "queued": {"type": "integer"},
-                "confirmed": {"type": "integer"},
-                "rejected": {"type": "integer"},
-                "needs_more_info": {"type": "integer"},
-                "unanswered": {"type": "integer"},
-                "rejection_rate": {"type": ["number", "null"]}
+                "queued": {
+                  "type": "integer"
+                },
+                "confirmed": {
+                  "type": "integer"
+                },
+                "rejected": {
+                  "type": "integer"
+                },
+                "needs_more_info": {
+                  "type": "integer"
+                },
+                "unanswered": {
+                  "type": "integer"
+                },
+                "rejection_rate": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                }
               }
             },
             "verdicts": {
               "type": "object",
               "description": "Verify-phase accounting: verdicts that were dropped are otherwise stderr-only, and under strict gating a run whose verdicts all failed to match looks like a clean pass.",
               "properties": {
-                "queued": {"type": "integer"},
-                "cut": {"type": "integer"},
-                "supplied": {"type": "integer"},
-                "matched": {"type": "integer"},
-                "unknown": {"type": "integer"},
-                "unanswered": {"type": ["integer", "null"], "description": "Queued findings left without a verdict; null when no --verdicts-dir was supplied, i.e. not measured."},
-                "unloadable": {"type": "integer", "description": "Verdict files present on disk but un-loadable (corrupt/invalid JSON); their findings are left unverified. A non-zero count means verification evidence was lost, distinct from a verdict that was never generated (#938)."}
+                "queued": {
+                  "type": "integer"
+                },
+                "cut": {
+                  "type": "integer"
+                },
+                "supplied": {
+                  "type": "integer"
+                },
+                "matched": {
+                  "type": "integer"
+                },
+                "unknown": {
+                  "type": "integer"
+                },
+                "unanswered": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "description": "Queued findings left without a verdict; null when no --verdicts-dir was supplied, i.e. not measured."
+                },
+                "unloadable": {
+                  "type": "integer",
+                  "description": "Verdict files present on disk but un-loadable (corrupt/invalid JSON); their findings are left unverified. A non-zero count means verification evidence was lost, distinct from a verdict that was never generated (#938)."
+                }
               }
             },
-            "fan_out": {"type": ["object", "null"], "description": "Planned-vs-executed fan-out coverage derived at synthesis from the dispatch plan and the findings files on disk: {planned, executed, groups_complete, groups_partial}. null when no dispatch plan was present."}
+            "fan_out": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "description": "Planned-vs-executed fan-out coverage derived at synthesis from the dispatch plan and the findings files on disk: {planned, executed, groups_complete, groups_partial}. null when no dispatch plan was present."
+            },
+            "scout_profiles_seen": {
+              "type": "integer",
+              "description": "Scout profiles harvested; with scout_requested, distinguishes 'no scouts ran' (0) from 'scouts ran and requested no tools' (N>0 with [])."
+            },
+            "scout_requested": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Union of tools requested across scout profiles."
+            },
+            "out_of_scope": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "description": "#441 reviewer scope disclosure: {checked, count, examples} of findings citing files outside their group's assigned list; null when no plan/group could be checked."
+            },
+            "doc_policy": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "description": "#487 planning-doc severity policy disclosure: {downgraded, examples}; null when redteam bypassed the policy."
+            },
+            "divergence": {
+              "type": "object",
+              "description": "Planned-vs-executed gaps: {panels: {name: {planned, executed}}, tools: {name: 'requested_absent'}}."
+            },
+            "resume": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "description": "Resume accounting for fan-out/verify phases; null on fresh full runs."
+            },
+            "delta": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "description": "Delta-review disclosure (#449): {base, base_source, base_commit, delta_start, delta_end, includes_uncommitted, files_changed, diff_context, on_diff_total, pre_existing_total}; null outside delta mode."
+            }
+          }
+        },
+        "integrity": {
+          "type": "object",
+          "description": "Run-integrity reconciliation driving certification: any of unexpected_findings_files / duplicate_out_files / mislabeled_findings_files / content_mismatched_files / empty_dispatch_plans forces gate INCONCLUSIVE.",
+          "properties": {
+            "unexpected_findings_files": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "missing_planned_files": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "duplicate_out_files": {
+              "type": "array"
+            },
+            "mislabeled_findings_files": {
+              "type": "array"
+            },
+            "unenforced_acknowledged": {
+              "type": "boolean"
+            },
+            "ack_stale": {
+              "type": "boolean",
+              "description": "#493 R2: the on-disk ack did not hash-match any dispatch plan; reported false above when stale."
+            },
+            "content_hashes_checked": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "description": "#493 R4: findings files verified against the fan-out snapshot; null = no snapshot (not measured)."
+            },
+            "content_mismatched_files": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "empty_dispatch_plans": {
+              "type": "integer"
+            },
+            "plans_seen": {
+              "type": "integer"
+            },
+            "write_guard_covers_bash": {
+              "type": "boolean"
+            }
           }
         }
       }
     },
     "summary": {
       "type": "object",
-      "required": ["overall_grade", "risk_level", "top_issues", "gate"],
+      "required": [
+        "overall_grade",
+        "risk_level",
+        "top_issues",
+        "gate"
+      ],
       "properties": {
-        "overall_grade": {"type": ["string", "null"], "enum": ["A", "B", "C", "D", "F", null]},
-        "provisional_grade": {"type": ["string", "null"], "enum": ["A", "B", "C", "D", "F", null]},
-        "coverage_certified": {"type": "boolean"},
-        "coverage_note": {"type": ["string", "null"]},
-        "risk_level": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"]},
-        "top_issues": {"type": "array", "items": {"type": "string"}, "maxItems": 3},
-        "gate": {"type": "string", "enum": ["PASS", "FAIL", "OFF", "INCONCLUSIVE"]},
-        "gate_policy": {"type": "string", "enum": ["confirmed_only", "include_unverified"]},
+        "overall_grade": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "A",
+            "B",
+            "C",
+            "D",
+            "F",
+            null
+          ]
+        },
+        "provisional_grade": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "A",
+            "B",
+            "C",
+            "D",
+            "F",
+            null
+          ]
+        },
+        "coverage_certified": {
+          "type": "boolean"
+        },
+        "coverage_note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "risk_level": {
+          "type": "string",
+          "enum": [
+            "LOW",
+            "MEDIUM",
+            "HIGH",
+            "CRITICAL"
+          ]
+        },
+        "top_issues": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 3
+        },
+        "gate": {
+          "type": "string",
+          "enum": [
+            "PASS",
+            "FAIL",
+            "OFF",
+            "INCONCLUSIVE"
+          ]
+        },
+        "gate_policy": {
+          "type": "string",
+          "enum": [
+            "confirmed_only",
+            "include_unverified"
+          ]
+        },
         "evidence_stats": {
           "type": "object",
           "properties": {
-            "tool_reported": {"type": "integer"},
-            "tool_confirmed": {"type": "integer"},
-            "advisor_confirmed": {"type": "integer"},
-            "corroborated": {"type": "integer"},
-            "needs_more_info": {"type": "integer"},
-            "unverified": {"type": "integer"},
-            "rejected": {"type": "integer"}
+            "tool_reported": {
+              "type": "integer"
+            },
+            "tool_confirmed": {
+              "type": "integer"
+            },
+            "advisor_confirmed": {
+              "type": "integer"
+            },
+            "corroborated": {
+              "type": "integer"
+            },
+            "needs_more_info": {
+              "type": "integer"
+            },
+            "unverified": {
+              "type": "integer"
+            },
+            "rejected": {
+              "type": "integer"
+            }
           }
         },
-        "stats": {"type": "object"}
+        "stats": {
+          "type": "object"
+        },
+        "delta": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "description": "Delta gate summary: on-diff and pre-existing per-severity counts; null outside delta mode."
+        }
       }
     },
     "groups": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["name", "files", "panel_grades"],
+        "required": [
+          "name",
+          "files",
+          "panel_grades"
+        ],
         "properties": {
-          "name": {"type": "string"},
-          "files": {"type": "array", "items": {"type": "string"}},
-          "panel_grades": {"type": "object"},
-          "key_findings": {"type": "array", "items": {"type": "string"}}
+          "name": {
+            "type": "string"
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "panel_grades": {
+            "type": "object"
+          },
+          "key_findings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
         }
       }
     },
@@ -106,90 +419,305 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["id", "title", "severity", "confidence", "panel", "category", "evidence"],
+        "required": [
+          "id",
+          "title",
+          "severity",
+          "confidence",
+          "panel",
+          "category",
+          "evidence"
+        ],
         "properties": {
-          "id": {"type": "string", "pattern": "^[A-Z]{2,8}-[0-9]{3,}$"},
-          "title": {"type": "string"},
-          "severity": {"type": "string", "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]},
-          "confidence": {"type": "string", "enum": ["CERTAIN", "LIKELY", "POSSIBLE", "NOTE"]},
-          "panel": {"type": "string", "enum": ["code", "test", "security", "architecture", "database", "redteam"]},
-          "lens": {"type": "string"},
-          "category": {"type": "string"},
-          "source_role": {"type": "string", "enum": ["lens_sweep", "panel_review", "advisor"]},
-          "depth": {"type": "string", "enum": ["shallow", "standard", "deep"]},
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Z]{2,8}-[0-9]{3,}$"
+          },
+          "title": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "CRITICAL",
+              "HIGH",
+              "MEDIUM",
+              "LOW",
+              "INFO"
+            ]
+          },
+          "confidence": {
+            "type": "string",
+            "enum": [
+              "CERTAIN",
+              "LIKELY",
+              "POSSIBLE",
+              "NOTE"
+            ]
+          },
+          "panel": {
+            "type": "string",
+            "enum": [
+              "code",
+              "test",
+              "security",
+              "architecture",
+              "database",
+              "redteam"
+            ]
+          },
+          "lens": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          },
+          "source_role": {
+            "type": "string",
+            "enum": [
+              "lens_sweep",
+              "panel_review",
+              "advisor"
+            ]
+          },
+          "depth": {
+            "type": "string",
+            "enum": [
+              "shallow",
+              "standard",
+              "deep"
+            ]
+          },
           "location": {
             "type": "object",
-            "required": ["file", "line_start"],
+            "required": [
+              "file",
+              "line_start"
+            ],
             "properties": {
-              "file": {"type": "string"},
-              "line_start": {"type": "integer"},
-              "line_end": {"type": "integer"},
-              "function": {"type": ["string", "null"]}
+              "file": {
+                "type": "string"
+              },
+              "line_start": {
+                "type": "integer"
+              },
+              "line_end": {
+                "type": "integer"
+              },
+              "function": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
             }
           },
-          "description": {"type": "string"},
-          "impact": {"type": "string"},
-          "remediation": {"type": "string"},
-          "references": {"type": "array", "items": {"type": "string"}},
-          "cvss": {"type": "object", "properties": {"score": {"type": "number"}, "vector": {"type": "string"}}},
-          "exploit_scenario": {"type": "string"},
-          "source": { "type": "string" },
-          "reinforced": { "type": "boolean" },
-          "corroborated": { "type": "boolean" },
-          "corroborated_by": { "type": "array", "items": { "type": "string" } },
+          "description": {
+            "type": "string"
+          },
+          "impact": {
+            "type": "string"
+          },
+          "remediation": {
+            "type": "string"
+          },
+          "references": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cvss": {
+            "type": "object",
+            "properties": {
+              "score": {
+                "type": "number"
+              },
+              "vector": {
+                "type": "string"
+              }
+            }
+          },
+          "exploit_scenario": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "reinforced": {
+            "type": "boolean"
+          },
+          "corroborated": {
+            "type": "boolean"
+          },
+          "corroborated_by": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "citation_quality": {
             "type": "string",
-            "enum": ["full", "partial", "minimal", "none"]
+            "enum": [
+              "full",
+              "partial",
+              "minimal",
+              "none"
+            ]
           },
           "evidence": {
             "type": "object",
-            "required": ["status"],
+            "required": [
+              "status"
+            ],
             "properties": {
               "status": {
                 "type": "string",
-                "enum": ["tool_reported", "tool_confirmed", "advisor_confirmed", "corroborated", "needs_more_info", "unverified", "rejected"]
+                "enum": [
+                  "tool_reported",
+                  "tool_confirmed",
+                  "advisor_confirmed",
+                  "corroborated",
+                  "needs_more_info",
+                  "unverified",
+                  "rejected"
+                ]
               },
               "verified_by": {},
-              "reasoning": {"type": ["string", "null"]},
-              "citation_quality": {"type": "string", "enum": ["full", "partial", "minimal", "none"]}
+              "reasoning": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "citation_quality": {
+                "type": "string",
+                "enum": [
+                  "full",
+                  "partial",
+                  "minimal",
+                  "none"
+                ]
+              }
             }
           },
           "provenance": {
             "type": "object",
             "properties": {
-              "discovered_by": { "type": "string" },
-              "expanded_by": { "type": ["string", "null"] },
-              "confirmed_by": { "type": ["string", "null"] },
-              "model": { "type": ["string", "null"] },
-              "model_version": { "type": ["string", "null"] },
-              "confirmed_by_model": { "type": ["string", "null"] },
+              "discovered_by": {
+                "type": "string"
+              },
+              "expanded_by": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "confirmed_by": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "model": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "model_version": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "confirmed_by_model": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "confirmation_status": {
                 "type": "string",
-                "enum": ["TOOL", "CONFIRMED", "REJECTED", "NEEDS_MORE_INFO", "UNVERIFIED"]
+                "enum": [
+                  "TOOL",
+                  "CONFIRMED",
+                  "REJECTED",
+                  "NEEDS_MORE_INFO",
+                  "UNVERIFIED"
+                ]
               },
-              "confirmation_reasoning": { "type": ["string", "null"] }
+              "confirmation_reasoning": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
             }
           },
           "citations": {
             "type": "object",
             "properties": {
-              "cwe": { "type": "array", "items": { "anyOf": [{ "type": "string" }, { "type": "object" }] } },
-              "owasp": { "type": "array", "items": { "type": "string" } },
-              "ssvc": { "type": "object" },
-              "cve": { "type": "array", "items": { "type": "string" } },
-              "epss": { "type": "array", "items": { "type": "object" } }
+              "cwe": {
+                "type": "array",
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "object"
+                    }
+                  ]
+                }
+              },
+              "owasp": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "ssvc": {
+                "type": "object"
+              },
+              "cve": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "epss": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              }
             }
           },
           "tool_evidence": {
             "type": "object",
             "properties": {
-              "rule_id": { "type": "string" },
-              "advisory_url": { "type": "string" },
-              "package_name": { "type": "string" },
-              "vulnerable_versions": { "type": "string" },
-              "fixed_version": { "type": "string" },
-              "cvss_score": { "type": "number" },
-              "ecosystem": { "type": "string" }
+              "rule_id": {
+                "type": "string"
+              },
+              "advisory_url": {
+                "type": "string"
+              },
+              "package_name": {
+                "type": "string"
+              },
+              "vulnerable_versions": {
+                "type": "string"
+              },
+              "fixed_version": {
+                "type": "string"
+              },
+              "cvss_score": {
+                "type": "number"
+              },
+              "ecosystem": {
+                "type": "string"
+              }
             }
           }
         }
@@ -197,32 +725,80 @@
     },
     "discarded_claims": {
       "type": "array",
-      "items": { "$ref": "#/properties/findings/items" }
+      "items": {
+        "$ref": "#/properties/findings/items"
+      }
     },
     "cross_panel": {
       "type": "object",
-      "required": ["integration_findings"],
+      "required": [
+        "integration_findings"
+      ],
       "properties": {
         "integration_findings": {
           "type": "array",
           "items": {
             "type": "object",
-            "required": ["location", "panels", "finding_ids"],
+            "required": [
+              "location",
+              "panels",
+              "finding_ids"
+            ],
             "properties": {
               "location": {
                 "type": "object",
                 "properties": {
-                  "file": {"type": "string"},
-                  "line_start": {"type": "integer"},
-                  "line_end": {"type": "integer"}
+                  "file": {
+                    "type": "string"
+                  },
+                  "line_start": {
+                    "type": "integer"
+                  },
+                  "line_end": {
+                    "type": "integer"
+                  }
                 }
               },
-              "panels": {"type": "array", "items": {"type": "string"}},
-              "categories": {"type": "array", "items": {"type": "string"}},
-              "finding_ids": {"type": "array", "items": {"type": "string"}},
-              "severity": {"type": "string", "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]},
-              "confidence": {"type": "string", "enum": ["CERTAIN", "LIKELY", "POSSIBLE", "NOTE"]},
-              "summary": {"type": "string"}
+              "panels": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "categories": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "finding_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "severity": {
+                "type": "string",
+                "enum": [
+                  "CRITICAL",
+                  "HIGH",
+                  "MEDIUM",
+                  "LOW",
+                  "INFO"
+                ]
+              },
+              "confidence": {
+                "type": "string",
+                "enum": [
+                  "CERTAIN",
+                  "LIKELY",
+                  "POSSIBLE",
+                  "NOTE"
+                ]
+              },
+              "summary": {
+                "type": "string"
+              }
             }
           }
         }

@@ -260,3 +260,9 @@ class TestCodexHostDocs(unittest.TestCase):
             skill = fh.read()
         self.assertIn("--emit-host-agents codex", skill)
         self.assertIn("codex_runner.py", skill)
+
+
+class TestGuardFailClosedDocs(unittest.TestCase):
+    def test_skill_documents_fail_closed_guard(self):
+        with open(os.path.join(ROOT, "SKILL.md"), encoding="utf-8") as fh:
+            self.assertIn("fail-closed while registered", fh.read())

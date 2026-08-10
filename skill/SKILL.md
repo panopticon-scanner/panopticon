@@ -175,7 +175,11 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
      inert. Verified live: from the repo root, an in-allowlist write succeeds and
      an out-of-scope write is denied by the harness.
    - **Lifecycle** — an aborted run leaves the guard installed; the next run's
-     `install` is idempotent, or clear it with `wg.uninstall()`. The hook's
+     `install` is idempotent, or clear it with `wg.uninstall()`. The hook is
+     **fail-closed while registered** (4.3.0): an absent, unreadable, or
+     malformed allowlist DENIES guarded writes with a loud reason instead of
+     silently allowing them — so a leftover hook without its allowlist blocks
+     Write/Edit until `wg.uninstall()` runs, by design. The hook's
      settings file is git-ignored so a leftover never trips the clean-tree check.
    - **Worktree lifecycle (`--pr`)** — run the pipeline stages (scout, tool
      scan, fan-out, synthesize) with the disposable worktree
