@@ -62,13 +62,22 @@ def main():
     tool_name = payload.get("tool_name", "")
     tool_input = payload.get("tool_input")
     file_path = tool_input.get("file_path", "") if isinstance(tool_input, dict) else ""
+    if tool_name not in _WRITE_TOOLS:
+        return 0
     try:
         with open(".panopticon/write-allowlist.json", encoding="utf-8") as fh:
             loaded = json.load(fh)
-    except (OSError, ValueError):
-        return 0  # no allowlist installed -> guard inactive, do not block
-    if not isinstance(loaded, list):
-        return 0  # tolerant: a malformed allowlist file never blocks legitimate work
+    except (OSError, ValueError) as exc:
+        loaded = None
+        load_error = "write guard allowlist is unavailable: %s" % exc
+    else:
+        load_error = "write guard allowlist is malformed"
+    if not isinstance(loaded, list) or not all(isinstance(p, str) for p in loaded):
+        print(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": load_error}}))
+        return 0
     allowlist = set(loaded)
     allow, reason = decide(tool_name, file_path, allowlist)
     if allow:

@@ -142,11 +142,11 @@ def compute_group_panels(files, security_mode="standard"):
     return panels_in_priority_order(panels)
 
 
-def _git(repo, args, timeout=30):
+def _git(repo, args, timeout=30, text=True):
     """Run git -C repo with check=True — the shared invocation for this
     module's six git call sites; each caller's try/except owns failures."""
     return subprocess.run(["git", "-C", repo, *args],
-                          capture_output=True, text=True, check=True,
+                          capture_output=True, text=text, check=True,
                           timeout=timeout)
 
 
@@ -657,10 +657,17 @@ def _git_listed_files(repo):
     """
     try:
         out = _git(repo, ["ls-files", "--cached", "--others",
-                          "--exclude-standard"], timeout=60)
+                          "--exclude-standard", "-z"], timeout=60, text=False)
     except Exception:
         return None
-    return [p.strip() for p in out.stdout.splitlines() if p.strip()]
+    return [os.fsdecode(path) for path in out.stdout.split(b"\0") if path]
+
+
+def _is_confined_regular(repo, rel):
+    """True for a non-symlink regular file whose target remains in *repo*."""
+    full = os.path.join(repo, rel)
+    return (not os.path.islink(full) and os.path.isfile(full)
+            and _within(repo, full))
 
 
 def _filter_reviewable(paths, include_fixtures, pruned_fixtures, isfile):
@@ -732,7 +739,7 @@ def discover_repo_files(repo, include_fixtures=False, pruned_fixtures=None,
             info["method"] = "git-ls-files"
         return _filter_reviewable(
             listed, include_fixtures, pruned_fixtures,
-            isfile=lambda rel: os.path.isfile(os.path.join(repo, rel)))
+            isfile=lambda rel: _is_confined_regular(repo, rel))
     if info is not None:
         info["method"] = "walk"
     out = []
@@ -758,7 +765,8 @@ def discover_repo_files(repo, include_fixtures=False, pruned_fixtures=None,
             # Files under a dot-dir top are surfaced only inside an allowlisted subtree.
             if top.startswith(".") and not _on_allowed_dotdir_path(rel):
                 continue
-            out.append(rel)
+            if _is_confined_regular(repo, rel):
+                out.append(rel)
     return sorted(out)
 
 

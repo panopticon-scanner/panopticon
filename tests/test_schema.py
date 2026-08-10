@@ -6,6 +6,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill"))
 
 from scripts.synthesize import build_report
+from scripts._version import __version__
 
 SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "..", "skill", "reference", "report-schema.json")
 
@@ -191,9 +192,22 @@ class TestReportSchema(unittest.TestCase):
 
         # Verify key structure
         self.assertIn("version", report["meta"])
-        self.assertEqual(report["meta"]["version"], "4.2.0")
+        self.assertEqual(report["meta"]["version"], __version__)
         self.assertIn("evidence", report["findings"][0])
         self.assertNotIn("recommendations", report)
+
+    @unittest.skipIf(jsonschema is None, "jsonschema not installed")
+    def test_inconclusive_report_validates_against_schema(self):
+        with open(SCHEMA_PATH, encoding="utf-8") as fh:
+            schema = json.load(fh)
+        report = build_report(
+            [], [{"name": "g1", "files": ["a.py"]}], "t", "high",
+            "2026-08-09T00:00:00Z",
+            fan_out={"planned": {"security": 1}, "executed": {},
+                     "groups_complete": [], "groups_partial": ["g1"]})
+        self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
+        self.assertIsNone(report["summary"]["overall_grade"])
+        jsonschema.validate(report, schema)
 
     def test_schema_declares_tool_policy_mode(self):
         with open(SCHEMA_PATH, encoding="utf-8") as fh:

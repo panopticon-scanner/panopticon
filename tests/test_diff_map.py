@@ -169,12 +169,15 @@ class TestDiffAnchors(unittest.TestCase):
 class TestPrWorktree(unittest.TestCase):
     def test_acquire_reads_base_and_adds_worktree(self):
         calls = []
+        fetched_ref = []
         def runner(argv, **kw):
             calls.append(argv)
             out = ""
             if argv[:3] == ["gh", "pr", "view"]:
                 out = '{"baseRefName": "main"}'
-            elif "rev-parse" in argv and "FETCH_HEAD" in argv:
+            elif "fetch" in argv:
+                fetched_ref.append(argv[-1].split(":", 1)[1])
+            elif "rev-parse" in argv:
                 out = "deadbeef\n"
             class R: returncode = 0; stdout = out; stderr = ""
             return R()
@@ -182,7 +185,11 @@ class TestPrWorktree(unittest.TestCase):
             info = diff_map.acquire_pr(7, repo=".", runner=runner)
         self.assertEqual(info["base"], "main")
         self.assertEqual(info["worktree"], "/tmp/wt-pr7")
-        self.assertTrue(any("worktree" in a and "add" in a for a in calls))
+        worktree = next(a for a in calls if "worktree" in a and "add" in a)
+        self.assertEqual(worktree[-1], "deadbeef")
+        self.assertNotIn("FETCH_HEAD", " ".join(" ".join(a) for a in calls))
+        self.assertTrue(any("--no-write-fetch-head" in a for a in calls))
+        self.assertTrue(any("update-ref" in a and fetched_ref[0] in a for a in calls))
         self.assertTrue(any("refs/pull/7/head" in " ".join(a) for a in calls))
 
     def test_acquire_raises_loudly_on_gh_failure(self):

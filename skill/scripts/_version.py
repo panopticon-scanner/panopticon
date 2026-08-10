@@ -8,4 +8,4 @@ User-Agent did through runs 2 and 3. Code (report meta, verify-queue payload,
 EPSS User-Agent) imports the constant rather than restating it.
 """
 
-__version__ = "4.2.0"
+__version__ = "4.3.0"

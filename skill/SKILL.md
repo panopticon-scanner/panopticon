@@ -11,7 +11,7 @@ arguments:
 disableModelInvocation: false
 license: MIT
 metadata:
-  version: "4.2.0"
+  version: "4.3.0"
 ---
 
 # panopticon
@@ -175,7 +175,11 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
      inert. Verified live: from the repo root, an in-allowlist write succeeds and
      an out-of-scope write is denied by the harness.
    - **Lifecycle** — an aborted run leaves the guard installed; the next run's
-     `install` is idempotent, or clear it with `wg.uninstall()`. The hook's
+     `install` is idempotent, or clear it with `wg.uninstall()`. The hook is
+     **fail-closed while registered** (4.3.0): an absent, unreadable, or
+     malformed allowlist DENIES guarded writes with a loud reason instead of
+     silently allowing them — so a leftover hook without its allowlist blocks
+     Write/Edit until `wg.uninstall()` runs, by design. The hook's
      settings file is git-ignored so a leftover never trips the clean-tree check.
    - **Worktree lifecycle (`--pr`)** — run the pipeline stages (scout, tool
      scan, fan-out, synthesize) with the disposable worktree
@@ -336,6 +340,16 @@ its own mechanism:
      is not a contract.
   4. Verification phase: render advisors with `--render-advisor` and dispatch
      them the same way as panels/lenses.
+- **Codex (portable)** — register once with `python3 skill/scripts/dispatch.py
+  --emit-host-agents codex` (writes per-role TOML profiles into `$CODEX_HOME`,
+  default `~/.codex`; models/effort from model-profiles' `codex` host:
+  gpt-5.6-luna for scout/lens, gpt-5.6-terra for panel, gpt-5.6 for advisor).
+  Build the plan with `--host codex`; entries carry `execution: codex_exec`
+  and `delivery: return_json` — fan-out runs each pending entry through
+  `skill/scripts/codex_runner.py`, which invokes `codex exec` with the
+  entry's prompt/model/effort and persists the returned findings JSON to the
+  entry's `out_file` on the reviewer's behalf (orchestrator-persisted
+  delivery, the same disclosed posture as other non-self-write hosts).
 - **Other hosts (portable, degraded)** — no sub-agent nesting or Workflow
   primitive available: run `pending_entries(plan)` sequentially in-session
   with the same prompts, one reviewer at a time; expect no parallelism. Still

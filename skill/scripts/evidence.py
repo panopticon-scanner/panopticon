@@ -359,8 +359,9 @@ def load_verdicts(verdicts_dir):
 def match_verdict(entry, verdicts):
     """Return the verdict for a queue entry, enforcing the finding_id echo.
 
-    An explicit echo mismatch means the verdict answered a different claim ->
-    treated as malformed (None). A missing echo is accepted with a warning.
+    A missing or mismatched echo means the verdict cannot be bound to the
+    queued claim -> treated as malformed (None). Filename routing alone is not
+    evidence that an advisor answered the intended finding.
     """
     v = verdicts.get(entry["queue_id"])
     if v is None:
@@ -368,9 +369,9 @@ def match_verdict(entry, verdicts):
     fid = entry["finding"].get("id")
     echoed = v.get("finding_id")
     if echoed is None:
-        print("evidence: verdict %s has no finding_id echo; accepting"
+        print("evidence: verdict %s has no finding_id echo; ignoring"
               % entry["queue_id"], file=sys.stderr)
-        return v
+        return None
     if str(echoed) != str(fid):
         print("evidence: verdict %s echoes finding_id %r, expected %r; ignoring"
               % (entry["queue_id"], echoed, fid), file=sys.stderr)

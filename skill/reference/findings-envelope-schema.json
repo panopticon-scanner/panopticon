@@ -1,0 +1,65 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PanopticonFindingsEnvelope",
+  "type": "object",
+  "required": ["findings"],
+  "additionalProperties": false,
+  "properties": {
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "severity",
+          "panel",
+          "category",
+          "location",
+          "title",
+          "description",
+          "impact",
+          "remediation",
+          "references",
+          "source_role",
+          "depth",
+          "provenance",
+          "citations"
+        ],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[A-Z]{2,8}-[0-9]{3,}$"},
+          "severity": {
+            "type": "string",
+            "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
+          },
+          "panel": {
+            "type": "string",
+            "enum": ["code", "test", "security", "architecture", "database", "redteam"]
+          },
+          "lens": {"type": "string"},
+          "category": {"type": "string"},
+          "location": {
+            "type": "object",
+            "required": ["file", "line_start"],
+            "properties": {
+              "file": {"type": "string"},
+              "line_start": {"type": "integer", "minimum": 1},
+              "line_end": {"type": "integer", "minimum": 1},
+              "function": {"type": ["string", "null"]}
+            }
+          },
+          "title": {"type": "string"},
+          "description": {"type": "string"},
+          "impact": {"type": "string"},
+          "remediation": {"type": "string"},
+          "references": {"type": "array", "items": {"type": "string"}},
+          "source_role": {"type": "string", "enum": ["panel_review", "lens_sweep"]},
+          "depth": {"type": "string", "enum": ["shallow", "standard", "deep"]},
+          "provenance": {"type": "object"},
+          "citations": {"type": "object"},
+          "cvss": {"type": "object"},
+          "exploit_scenario": {"type": "string"}
+        }
+      }
+    }
+  }
+}

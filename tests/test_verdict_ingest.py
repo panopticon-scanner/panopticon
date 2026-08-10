@@ -124,9 +124,9 @@ class TestMatchVerdict(unittest.TestCase):
         v = {"finding_id": "SEC-999", "verdict": "CONFIRMED"}
         self.assertIsNone(evidence.match_verdict(_entry(), {QID_1: v}))
 
-    def test_missing_echo_accepted_with_warning(self):
+    def test_missing_echo_rejected(self):
         v = {"verdict": "CONFIRMED"}
-        self.assertIs(evidence.match_verdict(_entry(), {QID_1: v}), v)
+        self.assertIsNone(evidence.match_verdict(_entry(), {QID_1: v}))
 
     def test_no_verdict_returns_none(self):
         self.assertIsNone(evidence.match_verdict(_entry(), {}))

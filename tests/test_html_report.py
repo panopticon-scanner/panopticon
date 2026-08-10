@@ -126,6 +126,22 @@ class TestHtmlReport(unittest.TestCase):
         self.assertIn("User input used directly in query.", out)
         self.assertIn("Use parameterized queries.", out)
 
+    def test_citation_quality_cannot_inject_markup(self):
+        report = _minimal_report()
+        payload = "none'><img src=x onerror=alert(1)><span class='"
+        report["findings"][0]["evidence"]["citation_quality"] = payload
+        out = hr.render(report)
+        self.assertNotIn("<img src=x onerror=alert(1)>", out)
+        self.assertIn("cit-quality cit-unknown", out)
+        self.assertIn("&lt;img", out)
+
+    def test_compare_stats_cannot_inject_markup(self):
+        base = _minimal_report(findings=[])
+        base["summary"]["stats"]["high"] = "<img src=x onerror=alert(1)>"
+        out = hr.render(_minimal_report(findings=[]), compare_report=base)
+        self.assertNotIn("<img src=x onerror=alert(1)>", out)
+        self.assertIn("&lt;img", out)
+
     def test_finding_card_renders_citations(self):
         finding = {
             "id": "SEC-001",

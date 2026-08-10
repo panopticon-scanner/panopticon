@@ -679,7 +679,7 @@ class TestReport(unittest.TestCase):
         out = os.path.join(d, "report.json")
         import io, contextlib
         errbuf = io.StringIO()
-        with contextlib.redirect_stdout(io.StringIO()), \
+        with _chdir(d), contextlib.redirect_stdout(io.StringIO()), \
                 contextlib.redirect_stderr(errbuf):
             rc = syn.main(["--target", "src", "--diff-hunks", hunks,
                            "--out", out, *extra, p])
@@ -1481,7 +1481,7 @@ class TestEvidenceReport(unittest.TestCase):
         report = self._report([_agentic()])
         self.assertNotIn("effort_to_remediate", report["summary"])
         self.assertNotIn("recommendations", report)
-        self.assertEqual(report["meta"]["version"], "4.2.0")
+        self.assertEqual(report["meta"]["version"], "4.3.0")
 
     def test_citation_quality_lives_in_evidence(self):
         report = self._report([_agentic(citations={"cwe": ["CWE-89"]})])
@@ -1912,7 +1912,7 @@ class TestToolPolicyMode(unittest.TestCase):
         report = syn.build_report([f], [], "t", None, "2026-08-03T00:00:00Z",
                                   tool_policy_mode="mixed")
         self.assertEqual(report["meta"]["coverage"]["tool_policy_mode"], "mixed")
-        self.assertEqual(report["meta"]["version"], "4.2.0")
+        self.assertEqual(report["meta"]["version"], "4.3.0")
 
 
 class TestToolsRanFromDispositions(unittest.TestCase):
@@ -2532,6 +2532,13 @@ class TestCoverageDivergence(unittest.TestCase):
         self.assertIsNone(r["summary"]["provisional_grade"])
         self.assertEqual(r["meta"]["coverage"]["divergence"], {"panels": {}, "tools": {}})
 
+    def test_present_empty_dispatch_plan_is_inconclusive(self):
+        r = syn.build_report(
+            [], self.GROUPS, "t", "high", self.TS,
+            integrity={"plans_seen": 1, "empty_dispatch_plans": 1})
+        self.assertEqual(r["summary"]["gate"], "INCONCLUSIVE")
+        self.assertFalse(r["summary"]["coverage_certified"])
+
 
 class TestResumeDisclosure(unittest.TestCase):
     G = [{"name": "g1", "files": ["a.py"]}]
@@ -2800,6 +2807,7 @@ class TestIntegrity(unittest.TestCase):
         self.assertEqual(r["meta"]["integrity"],
                          {"unexpected_findings_files": [], "missing_planned_files": [],
                           "duplicate_out_files": [], "mislabeled_findings_files": [],
+                          "empty_dispatch_plans": 0,
                           "unenforced_acknowledged": False, "plans_seen": 0})
         self.assertEqual(r["summary"]["gate"], "PASS")
 
@@ -2810,6 +2818,7 @@ class TestIntegrity(unittest.TestCase):
         self.assertEqual(r["meta"]["integrity"],
                          {"unexpected_findings_files": [], "missing_planned_files": [],
                           "duplicate_out_files": [], "mislabeled_findings_files": [],
+                          "empty_dispatch_plans": 0,
                           "unenforced_acknowledged": False, "plans_seen": 0})
         self.assertEqual(r["summary"]["gate"], "PASS")
 

@@ -5,7 +5,7 @@ supported, other SKILL.md hosts degraded-sequential. This file is the durable
 design record that travels with the skill (installed dir / OneDrive), so future
 work has context without the original spec/plan docs.
 
-**Current version: 4.2.0** (semver — see Versioning below).
+**Current version: 4.3.0** (semver — see Versioning below).
 
 ## What it is
 A **discovery → scout → fan-out → synthesis** pipeline. It profiles a target with a
@@ -171,7 +171,20 @@ changes to the report schema, CLI, or grade contract. Bump `SKILL.md` `metadata.
 `version` together.
 
 History:
-- **4.2.0** (current) — tool-policy enforcement: uniform read-only/return-JSON
+- **4.3.0** (current) — 4.x series wrap. Codex host support: `codex` host in
+  model-profiles (gpt-5.6-luna/terra per role with reasoning-effort levels),
+  `--emit-host-agents codex`, dispatch/model-resolver/orchestrator wiring +
+  codex-runner tests; `meta.integrity.empty_dispatch_plans` joins the
+  certification gate. Ships on top of the issue-clearing sprint (2026-08-09/10,
+  404 open issues -> the 4 tech-debt epics): PR/branch delta review with loud-fail
+  base anchors (#449), trustworthy cross-run reconcile identity + safety-first
+  close gate (#914), fixture/tool noise precision (#946), verdict-loss and
+  comment-injection hardening (#938/#953), write-guard absolute out_files
+  (#935), plan-integrity re-verification + hash-bound acks + out-file content
+  hashing (#493), coverage-honest HTML (#490), scout/reviewer scope contracts
+  (#431/#441), doc-severity policy (#487), config-declared gh account (#486),
+  `--setup` readiness gate (#485), installed-flow coherence (#495).
+- **4.2.0** — tool-policy enforcement: uniform read-only/return-JSON
   role contracts; `--emit-host-agents` generates registered enforcement shells
   (claude/kimi dialects) from the host-neutral templates; per-role `enforced`
   plan entries dispatched via `subagent_type`; `meta.coverage.tool_policy_mode`

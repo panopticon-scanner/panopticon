@@ -222,19 +222,21 @@ class TestMain(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(out, "")
 
-    def test_missing_allowlist_file_is_tolerated(self):
+    def test_missing_allowlist_file_denies_write(self):
         payload = json.dumps({"tool_name": "Write",
                                "tool_input": {"file_path": "anything.py"}})
         rc, out = self._run_main(payload, allowlist_paths=None)
         self.assertEqual(rc, 0)
-        self.assertEqual(out, "")
+        self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecision"],
+                         "deny")
 
-    def test_non_list_allowlist_content_is_tolerated(self):
+    def test_non_list_allowlist_content_denies_write(self):
         payload = json.dumps({"tool_name": "Write",
                                "tool_input": {"file_path": "anything.py"}})
         rc, out = self._run_main(payload, allowlist_paths="null")
         self.assertEqual(rc, 0)
-        self.assertEqual(out, "")
+        self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecision"],
+                 "deny")
 
     def test_non_string_file_path_payload_denies_without_crashing(self):
         # #768: end-to-end — a Write payload with a non-string file_path must

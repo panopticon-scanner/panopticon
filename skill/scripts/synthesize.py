@@ -1083,12 +1083,14 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                               "missing_planned_files": [],
                               "duplicate_out_files": [],
                               "mislabeled_findings_files": [],
+                        "empty_dispatch_plans": 0,
                               "unenforced_acknowledged": False,
                               "plans_seen": 0}
     integrity_ok = not (integrity.get("unexpected_findings_files")
                         or integrity.get("duplicate_out_files")
                         or integrity.get("mislabeled_findings_files")
-                        or integrity.get("content_mismatched_files"))
+                        or integrity.get("content_mismatched_files")
+                        or integrity.get("empty_dispatch_plans"))
     cert = certify(overall, gate_eligible, fail_on, panels_incomplete, tools_absent,
                    integrity_ok=integrity_ok)
     return {
@@ -1600,6 +1602,7 @@ def main(argv=None):
                  "ack_stale": ack_stale,
                  "content_hashes_checked": content_checked,
                  "content_mismatched_files": content_mismatched,
+                 "empty_dispatch_plans": sum(1 for plan in _plan_lists if not plan),
                  "plans_seen": plans_seen}
     if _ack:
         # Surface the Bash-coverage disclosure fields written by dispatch so

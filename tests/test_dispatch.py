@@ -120,6 +120,12 @@ class TestDispatchPlan(unittest.TestCase):
         self.assertEqual(plan[0]["role"], "panel_review")
         self.assertEqual(plan[0]["lenses"], ["style"])
 
+    def test_empty_panel_schedule_is_rejected(self):
+        profile = {"group": "g1", "panels": [], "files": ["a.py"],
+                   "depth": "standard", "lenses": {}}
+        with self.assertRaisesRegex(ValueError, "at least one panel"):
+            dispatch.build_plan(profile, host="generic")
+
     def test_panel_review_includes_non_spawned_lenses(self):
         profile = {
             "group": "g1",
@@ -422,6 +428,16 @@ class TestDetectHost(unittest.TestCase):
         self.assertIn("WARNING", err)
         self.assertIn("--host", err)
 
+    def test_warns_when_inferred_from_codex_sandbox(self):
+        host, err = self._detect_with_stderr({"CODEX_SANDBOX": "seatbelt"})
+        self.assertEqual(host, "codex")
+        self.assertIn("WARNING", err)
+
+    def test_codex_wins_over_other_host_markers(self):
+        self.assertEqual(self._detect({"CODEX_SANDBOX": "seatbelt",
+                                      "KIMI_SESSION_ID": "x",
+                                      "CLAUDECODE": "1"}), "codex")
+
     def test_warns_when_inferred_from_claude_env(self):
         # clear=True matters: _detect_host checks Kimi first, so an ambient
         # KIMI_* var on the runner would otherwise decide this test.
@@ -500,6 +516,20 @@ class TestRenderPrompt(unittest.TestCase):
             self.assertNotIn("{file_list}", entry["prompt"])
         sweep = [e for e in plan if e["role"] == "lens_sweep"][0]
         self.assertIn("injection", sweep["prompt"])
+
+    def test_codex_plan_returns_json_under_runner_control(self):
+        profile = {"group": "g1", "files": ["a.py"], "depth": "standard",
+                   "panels": ["security"], "lenses": {"security": []}}
+        with tempfile.TemporaryDirectory() as root:
+            plan = dispatch.build_plan(profile, host="codex", codex_exec=True,
+                                       root=root, run_id="run-1")
+        self.assertTrue(plan[0]["enforced"])
+        self.assertEqual(plan[0]["execution"], "codex_exec")
+        self.assertEqual(plan[0]["delivery"], "return_json")
+        self.assertEqual(plan[0]["run_id"], "run-1")
+        self.assertIn("Return ONLY a raw JSON object", plan[0]["prompt"])
+        self.assertIn("read-only sandbox", plan[0]["prompt"])
+        self.assertNotIn("Write your findings", plan[0]["prompt"])
 
 
 class TestRenderGoldens(unittest.TestCase):
@@ -958,6 +988,18 @@ class TestEmitHostAgents(unittest.TestCase):
             text = open(os.path.join(d, "panopticon-lens-sweep.md")).read()
             self.assertIn("disallowedTools:", text)
             self.assertIn("- Bash", text)
+
+    def test_codex_toml_agents_are_read_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            written = dispatch.emit_host_agents("codex", d)
+            self.assertEqual(len(written), 4)
+            self.assertTrue(all(path.endswith(".toml") for path in written))
+            text = open(os.path.join(d, "panopticon-panel-review.toml")).read()
+            self.assertIn('name = "panopticon-panel-review"', text)
+            self.assertIn('model = "gpt-5.6-terra"', text)
+            self.assertIn('model_reasoning_effort = "high"', text)
+            self.assertIn('sandbox_mode = "read-only"', text)
+            self.assertIn("never execute target code", text)
 
     def test_kimi_agent_file_includes_model_preference_and_when_to_use(self):
         with tempfile.TemporaryDirectory() as d:
