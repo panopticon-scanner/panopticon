@@ -210,6 +210,70 @@ class TestPlanActions(unittest.TestCase):
         actions = reconcile_apply.plan_actions(self._diff(), {})
         self.assertEqual(actions, [])
 
+    def test_hostile_reason_is_neutralized_in_posted_comment(self):
+        # #953: reason strings embed scanned-repo file paths verbatim, and the
+        # comments are auto-posted by an authenticated identity. A hostile repo
+        # controls its paths: markdown links, @-mentions, backtick breakouts,
+        # and newlines must all be inert in the posted body.
+        hostile = ("x`](https://evil.example) @octocat\n"
+                   "**bold** still active on a.py")
+        diff = {
+            "closed": [{"fingerprint": "fp2", "reason": hostile,
+                        "run2": [{"id": "F-2", "stored_fingerprint": "old2",
+                                  "location_file": "b.py", "kind": "finding"}]}],
+            "ambiguous": [{"fingerprint": "fp3", "reason": hostile,
+                           "run2": [{"id": "F-3", "stored_fingerprint": "old3",
+                                     "location_file": "c.py", "kind": "finding"}]}],
+        }
+        ledger = {"old2|F-2|b.py|finding": "https://github.com/o/r/issues/2",
+                  "old3|F-3|c.py|finding": "https://github.com/o/r/issues/3"}
+        actions = reconcile_apply.plan_actions(diff, ledger)
+        self.assertEqual(len(actions), 2)
+        for a in actions:
+            body = a["comment"]
+            self.assertNotIn("\n", body)                  # CWE-117 collapse
+            neutral = reconcile_apply.neutralize(hostile)
+            self.assertIn(neutral, body)                  # reason present, wrapped
+            # the interpolated reason sits inside ONE code span, so markdown,
+            # links, and @-mentions cannot activate; no input backtick survives
+            # to break out of it
+            self.assertTrue(neutral.startswith("`") and neutral.endswith("`"))
+            self.assertNotIn("`", neutral[1:-1])
+            self.assertIn("@octocat", neutral)            # visible, but inert
+
+    def test_neutralize_shapes(self):
+        n = reconcile_apply.neutralize
+        self.assertEqual(n("plain reason"), "`plain reason`")
+        self.assertEqual(n("a\nb\tc"), "`a b c`")          # whitespace collapsed
+        self.assertEqual(n("tick`inside"), "`tick'inside`")  # backtick stripped
+        self.assertEqual(n(""), "`(empty)`")               # never an empty span
+        self.assertEqual(n(None), "`(empty)`")
+
+    def test_neutralize_strips_terminal_escape_controls(self):
+        # Non-whitespace C0/C1 controls survive str.split() and would reach
+        # gh/terminal consumers as escape sequences: ESC-based ANSI, BEL
+        # (OSC terminator), backspace overwrite, and the single-byte CSI
+        # (\x9b). All must be stripped outright.
+        n = reconcile_apply.neutralize
+        self.assertEqual(n("a\x1b]0;evil\x07b"), "`a]0;evilb`")
+        self.assertEqual(n("x\x9b31mred"), "`x31mred`")
+        self.assertEqual(n("over\x08write\x7f"), "`overwrite`")
+
+    def test_recurring_fingerprint_interpolant_is_backtick_safe(self):
+        # Fingerprints are generated hex, but the comment boundary treats every
+        # diff.json value as untrusted: a tampered fingerprint with a backtick
+        # must not break out of the template's own code span.
+        diff = {"recurring": [{"fingerprint": "fp` @evil",
+                               "run2": [{"id": "F-1", "stored_fingerprint": "old1",
+                                         "location_file": "a.py", "kind": "finding"}],
+                               "run3": [], "kind_changed": False}]}
+        ledger = {"old1|F-1|a.py|finding": "https://github.com/o/r/issues/1"}
+        actions = reconcile_apply.plan_actions(diff, ledger)
+        body = actions[0]["comment"]
+        # template wraps the fingerprint in `...`; the interpolated value must
+        # carry no backtick of its own
+        self.assertIn("(`fp' @evil`)", body)
+
 
     def test_only_closed_cohort_sets_close_true(self):
         diff = {
