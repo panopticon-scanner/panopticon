@@ -7,11 +7,14 @@ no-secret container (recorded in report meta); pip-audit/npm-audit run only
 under --online. Degrades gracefully when Docker is absent. Stdlib-only.
 """
 import os
+import json
 import subprocess
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.tools import ADAPTERS, EXECUTES_TARGET_BUILD, ONLINE_ONLY  # noqa: F401
+from scripts import plan_contract
 from scripts.tools.legacy_sarif import LEGACY_SARIF_TOOLS, TOOL_CMD
 
 # JS/TS SAST runs via the eslint-security ADAPTER (bundled flat config);
@@ -33,6 +36,22 @@ PHASE2_ADAPTERS = {
 # Max seconds to let a single docker-run tool invocation run before it's killed;
 # prevents a hung tool from blocking the whole batch (CD-007).
 TOOL_TIMEOUT = 900
+
+
+def validate_output_dir(target, out_dir):
+    """Reject default artifact output through a target-controlled symlink."""
+    logical_root = os.path.join(os.path.abspath(target), ".panopticon")
+    candidate = os.path.abspath(out_dir)
+    try:
+        under_artifacts = os.path.commonpath([logical_root, candidate]) == logical_root
+    except ValueError:
+        under_artifacts = False
+    if under_artifacts:
+        safe_root = plan_contract.artifact_root(target)
+        if os.path.commonpath([os.path.realpath(safe_root), os.path.realpath(candidate)]) \
+                != os.path.realpath(safe_root):
+            raise ValueError("scanner output escapes the target artifact directory")
+    return out_dir
 
 
 def docker_available(image="panopticon-tools", runner=None):
@@ -115,6 +134,10 @@ def _capture_run(label, tool, docker, out_path, runner):
     skipping' is diagnosable. Returns out_path on success, None on skip.
     """
     try:
+        os.remove(out_path)
+    except OSError:
+        pass
+    try:
         res = runner(docker, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                      timeout=TOOL_TIMEOUT)
         if getattr(res, "returncode", 1) not in (0, 1):  # 1 == findings for many tools
@@ -124,8 +147,20 @@ def _capture_run(label, tool, docker, out_path, runner):
                 label, tool, res.returncode,
                 (" — " + excerpt) if excerpt else ""), file=sys.stderr)
             return None
-        with open(out_path, "wb") as fh:
-            fh.write(res.stdout or b"")
+        fd, temp_path = tempfile.mkstemp(
+            prefix=".%s-" % os.path.basename(out_path),
+            dir=os.path.dirname(out_path) or ".")
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(res.stdout or b"")
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(temp_path, out_path)
+        finally:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
         if not (res.stdout or b"").strip():
             print("%s %s produced no output" % (label, tool), file=sys.stderr)
         return out_path
@@ -145,6 +180,7 @@ def run_tools(target, tools, out_dir, image="panopticon-tools", runner=None, onl
     container so the same fat image is used for local and CI runs.
     """
     runner = runner or subprocess.run
+    validate_output_dir(target, out_dir)
     os.makedirs(out_dir, exist_ok=True)
     tools = filter_online(tools, online)
     written = []
@@ -183,6 +219,19 @@ def run_tools(target, tools, out_dir, image="panopticon-tools", runner=None, onl
     return written
 
 
+def write_manifest(path, selected, written):
+    """Write the exact selected/produced scanner set for coverage gating."""
+    selected = list(dict.fromkeys(str(tool) for tool in selected))
+    produced = sorted({os.path.splitext(os.path.basename(p))[0] for p in written})
+    payload = {"selected": selected, "produced": produced,
+               "missing": sorted(set(selected) - set(produced))}
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=2)
+        fh.write("\n")
+    return payload
+
+
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser(description="panopticon tool runner")
@@ -192,6 +241,8 @@ if __name__ == "__main__":
     ap.add_argument("--languages", nargs="*", default=[])
     ap.add_argument("--deps", action="store_true")
     ap.add_argument("--online", action="store_true", help="allow pip-audit/npm-audit to reach their advisory APIs")
+    ap.add_argument("--manifest", default=None,
+                    help="Write selected/produced scanner coverage JSON")
     a = ap.parse_args()
     if not docker_available():
         print("panopticon-tools image not available; skipping tool scan", file=sys.stderr)
@@ -204,5 +255,8 @@ if __name__ == "__main__":
         phase2 = [name for name in selected_adapters if name in PHASE2_ADAPTERS]
         languages = a.languages or detect_languages(a.target)
         chosen = select_tools(languages, a.deps) + phase1 + phase2
-    paths = run_tools(a.target, chosen, a.out, online=a.online)
+    effective = filter_online(chosen, a.online)
+    paths = run_tools(a.target, effective, a.out, online=a.online)
+    if a.manifest:
+        write_manifest(a.manifest, effective, paths)
     print("\n".join(paths))

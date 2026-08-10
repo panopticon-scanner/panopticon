@@ -272,6 +272,8 @@ class TestCodexHostDocs(unittest.TestCase):
             skill = fh.read()
         self.assertIn("--emit-host-agents codex", skill)
         self.assertIn("codex_runner.py", skill)
+        self.assertIn("--advisor-queue", skill)
+        self.assertIn("--advisor-model gpt-5.6", skill)
 
 
 class TestGuardFailClosedDocs(unittest.TestCase):

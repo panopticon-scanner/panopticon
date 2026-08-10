@@ -1,4 +1,5 @@
 import io
+import json
 import os, sys, tempfile, unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill"))
 import scripts.run_tools as rt
@@ -52,6 +53,47 @@ class TestRunTools(unittest.TestCase):
             paths = rt.run_tools(d, ["semgrep"], out_dir, runner=lambda cmd, **kw: R())
             self.assertEqual(paths, [])                          # skipped
             self.assertFalse(os.path.exists(os.path.join(out_dir, "semgrep.sarif")))
+
+    def test_failed_rerun_removes_stale_output(self):
+        class R: returncode = 2; stdout = b""; stderr = b"failed"
+        with tempfile.TemporaryDirectory() as d:
+            out_dir = os.path.join(d, "out")
+            os.makedirs(out_dir)
+            stale = os.path.join(out_dir, "semgrep.sarif")
+            with open(stale, "wb") as fh:
+                fh.write(b'{"runs":[]}')
+            self.assertEqual(
+                rt.run_tools(d, ["semgrep"], out_dir,
+                             runner=lambda cmd, **kw: R()), [])
+            self.assertFalse(os.path.exists(stale))
+
+    def test_manifest_discloses_missing_selected_tools(self):
+        with tempfile.TemporaryDirectory() as d:
+            semgrep = os.path.join(d, "semgrep.sarif")
+            open(semgrep, "w").write('{"runs":[]}')
+            path = os.path.join(d, "run-manifest.json")
+            payload = rt.write_manifest(
+                path, ["semgrep", "gitleaks", "semgrep"], [semgrep])
+            self.assertEqual(payload["selected"], ["semgrep", "gitleaks"])
+            self.assertEqual(payload["produced"], ["semgrep"])
+            self.assertEqual(payload["missing"], ["gitleaks"])
+            self.assertEqual(json.load(open(path)), payload)
+
+    def test_manifest_selection_excludes_offline_policy_skips(self):
+        with tempfile.TemporaryDirectory() as d:
+            effective = rt.filter_online(
+                ["semgrep", "pip-audit", "npm-audit"], online=False)
+            payload = rt.write_manifest(
+                os.path.join(d, "manifest.json"), effective, [])
+            self.assertEqual(payload["selected"], ["semgrep"])
+            self.assertEqual(payload["missing"], ["semgrep"])
+
+    def test_default_artifact_output_rejects_symlinked_root(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as outside:
+            os.symlink(outside, os.path.join(d, ".panopticon"))
+            with self.assertRaisesRegex(ValueError, "not a symlink"):
+                rt.run_tools(d, ["semgrep"],
+                             os.path.join(d, ".panopticon", "tools"))
 
     def test_run_tools_builds_exact_docker_argv(self):
         calls = []

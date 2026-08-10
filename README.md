@@ -10,6 +10,7 @@ The skill uses the open `SKILL.md` format and works with:
 
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) — first-class: parallel fan-out via the Agent tool
 - [Kimi Code CLI](https://code.kimi.com/) — supported: AgentSwarm raw-prompt dispatch
+- [OpenAI Codex CLI](https://developers.openai.com/codex/cli) — supported: isolated parallel fan-out via `codex exec`
 - Other agents that read `SKILL.md` files — degraded: sequential dispatch, same prompts
 
 ## Installation
@@ -51,6 +52,20 @@ python3 skill/scripts/dispatch.py --emit-host-agents claude
 ```
 
 Note: Claude Code loads registered agents at session start — after first registration (or re-registration), start a fresh session before the enforcement shells are dispatchable.
+
+### OpenAI Codex CLI
+
+Expose the skill through Codex's shared skills directory and register its
+read-only role profiles:
+
+```bash
+mkdir -p ~/.agents/skills
+ln -s "$(pwd)/skill" ~/.agents/skills/panopticon
+python3 skill/scripts/dispatch.py --emit-host-agents codex
+```
+
+Invoke it with `$panopticon` or select it from `/skills`. Plans built with
+`--host codex` run through the bundled `codex_runner.py` adapter automatically.
 
 
 ## Quick start

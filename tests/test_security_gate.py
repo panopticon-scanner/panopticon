@@ -1,0 +1,78 @@
+import json
+import os
+import sys
+import tempfile
+import unittest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill"))
+import scripts.security_gate as gate
+
+
+def _sarif(level=None):
+    results = []
+    if level:
+        results.append({
+            "ruleId": "test.rule",
+            "level": level,
+            "message": {"text": "test finding"},
+            "locations": [{"physicalLocation": {
+                "artifactLocation": {"uri": "/src/app.py"},
+                "region": {"startLine": 1}}}],
+        })
+    return {"version": "2.1.0", "runs": [{
+        "tool": {"driver": {"name": "semgrep", "rules": []}},
+        "results": results,
+    }]}
+
+
+class TestSecurityGate(unittest.TestCase):
+    def _write(self, root, manifest, sarif=None):
+        tools = os.path.join(root, "tools")
+        os.makedirs(tools)
+        if sarif is not None:
+            with open(os.path.join(tools, "semgrep.sarif"), "w") as fh:
+                json.dump(sarif, fh)
+        manifest_path = os.path.join(root, "manifest.json")
+        with open(manifest_path, "w") as fh:
+            json.dump(manifest, fh)
+        return tools, manifest_path
+
+    def test_complete_clean_scan_passes(self):
+        with tempfile.TemporaryDirectory() as root:
+            tools, manifest = self._write(
+                root, {"selected": ["semgrep"], "produced": ["semgrep"],
+                       "missing": []}, _sarif())
+            findings, dispositions, failures, high = gate.evaluate(tools, manifest)
+        self.assertEqual(findings, [])
+        self.assertEqual(dispositions["semgrep"]["status"], "empty")
+        self.assertEqual(failures, [])
+        self.assertEqual(high, [])
+
+    def test_missing_selected_scanner_fails_coverage(self):
+        with tempfile.TemporaryDirectory() as root:
+            tools, manifest = self._write(
+                root, {"selected": ["semgrep"], "produced": [],
+                       "missing": ["semgrep"]})
+            _, _, failures, _ = gate.evaluate(tools, manifest)
+        self.assertEqual(failures, ["semgrep: no output"])
+
+    def test_high_finding_fails_gate(self):
+        with tempfile.TemporaryDirectory() as root:
+            tools, manifest = self._write(
+                root, {"selected": ["semgrep"], "produced": ["semgrep"],
+                       "missing": []}, _sarif("error"))
+            _, _, failures, high = gate.evaluate(tools, manifest)
+        self.assertEqual(failures, [])
+        self.assertEqual(len(high), 1)
+        self.assertEqual(high[0]["severity"], "HIGH")
+
+    def test_empty_selection_is_invalid(self):
+        with tempfile.TemporaryDirectory() as root:
+            tools, manifest = self._write(
+                root, {"selected": [], "produced": [], "missing": []})
+            with self.assertRaisesRegex(ValueError, "selected no tools"):
+                gate.evaluate(tools, manifest)
+
+
+if __name__ == "__main__":
+    unittest.main()

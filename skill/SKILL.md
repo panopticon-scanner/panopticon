@@ -52,7 +52,8 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
    is load-bearing: artifacts and the guard resolve against cwd, scripts
    against the skill dir). The write-guard registers its hook command with the
    module's own absolute path, so the hook works under both layouts.
-2. **Discovery** — run `python3 skill/scripts/orchestrator.py` to produce `groups.json`.
+2. **Discovery** — run `python3 skill/scripts/orchestrator.py ... --out .panopticon/groups.json`
+  to produce the authoritative grouping artifact.
    Git targets are discovered via `git ls-files` (tracked + untracked
    non-ignored), so the TARGET's own `.gitignore` defines the reviewable
    surface — runtime data, build artifacts, and files ignored by the repo
@@ -113,7 +114,7 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
    gate-enforced. A skip on the other triggers (or a Docker-absent
    degradation) is disclosed via `tools_ran` in `meta.coverage` and the
    mandated loud terminal notice, but is not itself gate-enforced.
-5. **Plan dispatch** — run one dispatch per group (matching the per-group scout from step 3): `python3 skill/scripts/dispatch.py <scope-profile.json> --host <your host: claude|kimi|generic> --out .panopticon/dispatch-plan-<group>.json` to produce a `DispatchPlan` of role-based agents. Give each group's plan its own file — `synthesize` globs `dispatch-plan*.json` for coverage/resume/integrity (steps 7/9), so a shared `dispatch-plan.json` repeatedly overwritten by each group is just the one-group case of the same naming convention, not a substitute for it.
+5. **Plan dispatch** — run one dispatch per group (matching the per-group scout from step 3): `python3 skill/scripts/dispatch.py <scope-profile.json> --groups .panopticon/groups.json --group-name <group> --host <your host: claude|kimi|codex|generic> --out .panopticon/dispatch-plan-<group>.json` to produce a `DispatchPlan` of role-based agents. `--groups` + `--group-name` bind the scout identity, files, mandatory panels, minimum depth, and security mode to the authoritative discovery assignment; a mismatch fails instead of letting untrusted scout output reduce or redefine review scope. Give each group's plan its own file — `synthesize` globs `dispatch-plan*.json` for coverage/resume/integrity (steps 7/9), so a shared `dispatch-plan.json` repeatedly overwritten by each group is just the one-group case of the same naming convention, not a substitute for it.
    Pass your host explicitly — env detection is fallback only. Add --agents-dir DIR when your registered agents live somewhere non-default. `dispatch.py` refuses to emit a plan (exit 1, nothing written) when a reviewer role (`panel_review`/`lens_sweep`) lacks a registered enforcement shell — register shells first (`--emit-host-agents`, step below) or pass `--allow-unenforced` to accept prompt-advisory tool policy explicitly; see Host dispatch below.
 6. **Fan-out** — run the `group_runner` contract (`skill/scripts/group_runner.py`,
    `skill/scripts/write_guard_hook.py`): every reviewer writes its own findings file
@@ -152,7 +153,7 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
      not recollection.
    - **Before fan-out (plan integrity, #493)** — re-verify the on-disk plans
      against the live registration dir:
-     `python3 skill/scripts/dispatch.py --verify-plan .panopticon/dispatch-plan-<group>.json`
+    `python3 skill/scripts/dispatch.py --verify-plan .panopticon/dispatch-plan-<group>.json --groups .panopticon/groups.json --group-name <group> --host <host>`
      (repeatable) — exits 1 on an `enforced: true` entry whose shell is no
      longer registered (an on-disk flip after emission) or an unenforced
      reviewer whose ack does not hash-match this plan's content.
@@ -354,15 +355,22 @@ its own mechanism:
   4. Verification phase: render advisors with `--render-advisor` and dispatch
      them the same way as panels/lenses.
 - **Codex (portable)** — register once with `python3 skill/scripts/dispatch.py
-  --emit-host-agents codex` (writes per-role TOML profiles into `$CODEX_HOME`,
-  default `~/.codex`; models/effort from model-profiles' `codex` host:
+  --emit-host-agents codex` (writes per-role TOML profiles into
+  `$CODEX_HOME/agents`, default `~/.codex/agents`; models/effort from
+  model-profiles' `codex` host:
   gpt-5.6-luna for scout/lens, gpt-5.6-terra for panel, gpt-5.6 for advisor).
-  Build the plan with `--host codex`; entries carry `execution: codex_exec`
+  Build the plan with `--host codex`; this automatically marks entries with
+  `execution: codex_exec`
   and `delivery: return_json` — fan-out runs each pending entry through
-  `skill/scripts/codex_runner.py`, which invokes `codex exec` with the
+  `python3 skill/scripts/codex_runner.py .panopticon/dispatch-plan-<group>.json --root .`,
+  which invokes `codex exec` with the
   entry's prompt/model/effort and persists the returned findings JSON to the
   entry's `out_file` on the reviewer's behalf (orchestrator-persisted
-  delivery, the same disclosed posture as other non-self-write hosts).
+  delivery, the same disclosed posture as other non-self-write hosts). After
+  rendering advisor prompts in step 8, run
+  `python3 skill/scripts/codex_runner.py --advisor-queue .panopticon/verify-queue.json --prompts-dir .panopticon/advisor-prompts --verdicts-dir .panopticon/verdicts --root . --advisor-model gpt-5.6 --advisor-reasoning-effort high`;
+  it applies the same read-only isolation, schema validation, finding-id echo
+  binding, resume predicate, parallelism, and atomic persistence to verdicts.
 - **Other hosts (portable, degraded)** — no sub-agent nesting or Workflow
   primitive available: run `pending_entries(plan)` sequentially in-session
   with the same prompts, one reviewer at a time; expect no parallelism. Still

@@ -1211,7 +1211,59 @@ class TestSetup(unittest.TestCase):
             self.assertEqual(added, orch.SETUP_GITIGNORE_ENTRIES)
             self.assertEqual(orch._ensure_gitignore(d), [])   # second run no-op
             content = open(os.path.join(d, ".gitignore")).read()
-            self.assertEqual(content.count(".panopticon/"), 1)
+            self.assertEqual(content.count(".panopticon/*"), 1)
+            self.assertIn("!.panopticon/", content)
+            self.assertIn("!.panopticon/groups.yml", content)
+
+    def test_seeded_groups_manifest_is_not_ignored(self):
+        with tempfile.TemporaryDirectory() as d:
+            _init_repo(d)
+            os.makedirs(os.path.join(d, "appdir"))
+            with open(os.path.join(d, "appdir", "x.py"), "w") as fh:
+                fh.write("x = 1\n")
+            path, _, _ = orch._seed_groups_manifest(d)
+            orch._ensure_gitignore(d)
+            ignored = subprocess.run(
+                ["git", "-C", d, "check-ignore", path], capture_output=True)
+            self.assertNotEqual(ignored.returncode, 0)
+
+    def test_readiness_accepts_linked_worktree_root(self):
+        from unittest import mock
+        import dispatch
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as reg:
+            _init_repo(d)
+            with open(os.path.join(d, "a.py"), "w") as fh:
+                fh.write("x\n")
+            _git(d, "add", ".")
+            _git(d, "commit", "-qm", "init")
+            wt = os.path.join(d, "linked")
+            _git(d, "worktree", "add", "-q", wt)
+            with mock.patch.object(dispatch, "_registration_dir", return_value=reg):
+                checks = orch.setup_readiness(
+                    wt, host="claude", runner=self._fail_runner, environ={})
+            self.assertTrue(next(c for c in checks if c[0] == "target-root")[1])
+
+    def test_codex_readiness_checks_cli_not_profiles(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._repo(d)
+            checks = orch.setup_readiness(
+                d, host="codex", runner=self._ok_runner, environ={})
+            by = {c[0]: c for c in checks}
+            self.assertTrue(by["codex-cli"][1])
+            self.assertTrue(by["enforced-shells"][1])
+            self.assertIn("optional", by["enforced-shells"][2])
+
+    def test_artifact_output_rejects_symlinked_panopticon(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as outside:
+            os.symlink(outside, os.path.join(d, ".panopticon"))
+            with self.assertRaisesRegex(ValueError, "not a symlink"):
+                orch._validate_artifact_output(
+                    d, os.path.join(d, ".panopticon", "groups.json"))
+
+    def test_main_rejects_symlinked_artifact_root(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as outside:
+            os.symlink(outside, os.path.join(d, ".panopticon"))
+            self.assertEqual(orch.main(["--repo", d, "--repo-scan"]), 2)
 
     def test_readiness_reports_gaps_with_fixes(self):
         from unittest import mock

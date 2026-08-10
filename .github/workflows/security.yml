@@ -3,11 +3,13 @@ name: Security Scan
 on:
   push:
     branches: [main]
-  pull_request:
+  # Base-owned workflow definition; the PR head is checked out separately as
+  # read-only scan data below. Never run this trust boundary under pull_request,
+  # where the patch can rewrite the workflow that judges it.
+  pull_request_target:
     branches: [main]
 
 env:
-  TOOLS_OUT: .panopticon/tools
   IMAGE: ghcr.io/${{ github.repository }}-tools:latest
 jobs:
   scan:
@@ -17,7 +19,23 @@ jobs:
       packages: read
       security-events: write
     steps:
-      - uses: actions/checkout@v4
+      # The controller is trusted code: base SHA for PRs, pushed SHA on main.
+      # Never import/build/execute scanner orchestration from the PR checkout.
+      - name: Checkout trusted scanner controller
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: controller
+          persist-credentials: false
+
+      # The target is untrusted data and is only mounted read-only into scanners.
+      - name: Checkout scan target
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: target
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -41,14 +59,20 @@ jobs:
           if docker pull ${{ env.IMAGE }}; then
             docker tag ${{ env.IMAGE }} panopticon-tools
           else
-            echo "Pre-built image not found; building locally."
-            docker build -t panopticon-tools .
+            echo "Pre-built image not found; building from trusted controller checkout."
+            docker build -t panopticon-tools controller
           fi
 
       - name: Run static-analysis tools
         run: |
-          mkdir -p ${{ env.TOOLS_OUT }}
-          python skill/scripts/run_tools.py --target . --out ${{ env.TOOLS_OUT }} --deps
+          tools_out="$RUNNER_TEMP/panopticon-tools-output"
+          manifest="$RUNNER_TEMP/panopticon-tools-manifest.json"
+          mkdir -p "$tools_out"
+          python controller/skill/scripts/run_tools.py \
+            --target target \
+            --out "$tools_out" \
+            --manifest "$manifest" \
+            --deps
 
       # INTENTIONAL POLICY, not an oversight (#513): this CI gate fails on any
       # HIGH/CRITICAL *tool* finding on raw severity, WITHOUT the two-axis
@@ -65,28 +89,13 @@ jobs:
       # this is a conservative merge guard, not that grade.
       - name: Gate on HIGH/CRITICAL tool findings (unverified-strict policy)
         run: |
-          python - <<'PY'
-          import os
-          import sys
-          sys.path.insert(0, os.path.join(os.getcwd(), 'skill'))
-          import scripts.ingest_tools as it
-          # Fixture exclusion is the standard ingest mechanism (F-CAL-2),
-          # not CI-only inline filtering.
-          findings = it.ingest_dir(os.environ['TOOLS_OUT'], 'ci',
-                                   exclude_globs=['tests/fixtures/*'])
-          high = [f for f in findings if f.get('severity') in ('HIGH', 'CRITICAL')]
-          print(f"Ingested {len(findings)} non-fixture tool findings; "
-                f"{len(high)} HIGH/CRITICAL (gating unverified by CI policy — "
-                f"no advisor phase in CI; see step comment / #513)")
-          if high:
-              for f in high[:20]:
-                  loc = f.get('location', {})
-                  print(f"  {f.get('severity')} {f.get('id')} {loc.get('file')}:{loc.get('line_start')} - {f.get('title')}")
-              sys.exit(1)
-          PY
+          python controller/skill/scripts/security_gate.py \
+            --tools-dir "$RUNNER_TEMP/panopticon-tools-output" \
+            --manifest "$RUNNER_TEMP/panopticon-tools-manifest.json" \
+            --exclude 'tests/fixtures/*'
 
       - name: Upload SARIF to GitHub Security tab
         if: always()
         uses: github/codeql-action/upload-sarif@v4
         with:
-          sarif_file: ${{ env.TOOLS_OUT }}
+          sarif_file: ${{ runner.temp }}/panopticon-tools-output

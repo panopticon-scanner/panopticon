@@ -11,6 +11,7 @@ import json
 import os
 import re
 import sys
+import uuid
 
 try:
     from scripts._version import __version__
@@ -266,10 +267,12 @@ def build_verify_queue(findings, max_verify=None):
     return entries, cut
 
 
-def write_verify_queue(entries, cut, path):
+def write_verify_queue(entries, cut, path, run_id=None):
     """Serialize the queue for the orchestrating agent (pass 1 artifact)."""
+    run_id = run_id or uuid.uuid4().hex
     payload = {
         "version": __version__,
+        "run_id": run_id,
         "cut_by_max_verify": cut,
         "entries": [{"queue_id": e["queue_id"], "priority": e["priority"],
                      "finding": {k: v for k, v in e["finding"].items()
@@ -368,7 +371,7 @@ def load_verdicts(verdicts_dir):
     return load_verdicts_detailed(verdicts_dir)[0]
 
 
-def match_verdict(entry, verdicts):
+def match_verdict(entry, verdicts, run_id=None):
     """Return the verdict for a queue entry, enforcing the finding_id echo.
 
     A missing or mismatched echo means the verdict cannot be bound to the
@@ -387,6 +390,10 @@ def match_verdict(entry, verdicts):
     if str(echoed) != str(fid):
         print("evidence: verdict %s echoes finding_id %r, expected %r; ignoring"
               % (entry["queue_id"], echoed, fid), file=sys.stderr)
+        return None
+    if run_id is not None and v.get("run_id") != run_id:
+        print("evidence: verdict %s has run_id %r, expected %r; ignoring"
+              % (entry["queue_id"], v.get("run_id"), run_id), file=sys.stderr)
         return None
     return v
 

@@ -1,0 +1,39 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PanopticonAdvisorVerdict",
+  "type": "object",
+  "required": [
+    "run_id",
+    "finding_id",
+    "verdict",
+    "confidence",
+    "reasoning",
+    "explored",
+    "references",
+    "citations"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "run_id": {"type": "string", "minLength": 1},
+    "finding_id": {"type": "string"},
+    "verdict": {
+      "type": "string",
+      "enum": ["CONFIRMED", "REJECTED", "NEEDS_MORE_INFO"]
+    },
+    "confidence": {
+      "type": "string",
+      "enum": ["CERTAIN", "LIKELY", "POSSIBLE"]
+    },
+    "reasoning": {"type": "string"},
+    "explored": {"type": "array", "items": {"type": "string"}},
+    "references": {"type": "array", "items": {"type": "string"}},
+    "citations": {
+      "type": "object",
+      "properties": {
+        "cwe": {"type": "array", "items": {"type": "string"}},
+        "owasp": {"type": "array", "items": {"type": "string"}},
+        "cve": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}
