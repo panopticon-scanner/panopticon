@@ -723,10 +723,14 @@ def reconcile_findings_files(plan, ingested_paths):
     """
     if not isinstance(plan, list) or not plan:
         return [], []
-    planned = {os.path.abspath(e["out_file"]): e["out_file"] for e in plan
+    # realpath, not abspath (#947 FIXME-1): macOS temp worktrees live under
+    # /var/folders/... which is a SYMLINK to /private/var/... -- a cwd inside
+    # the worktree yields /private/var paths while the plan recorded /var
+    # ones, and abspath comparison flagged every file on a clean run.
+    planned = {os.path.realpath(e["out_file"]): e["out_file"] for e in plan
                if isinstance(e, dict) and isinstance(e.get("out_file"), str)
                and e.get("out_file")}
-    ingested = {os.path.abspath(p): p for p in ingested_paths or []}
+    ingested = {os.path.realpath(p): p for p in ingested_paths or []}
     unexpected = sorted(ingested[a] for a in ingested if a not in planned)
     missing = sorted(planned[a] for a in planned if a not in ingested)
     return unexpected, missing

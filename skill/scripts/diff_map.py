@@ -143,7 +143,10 @@ def classify(finding, hmap, tolerance=5):
 
 
 def _mk_worktree_dir(pr_number):
-    return tempfile.mkdtemp(prefix="panopticon-pr%d-" % pr_number)
+    # realpath (#947 FIXME-1): on macOS mkdtemp returns /var/folders/...,
+    # a symlink into /private/var/...; record the physical path so every
+    # consumer (guard allowlist, reconcile, cwd-derived paths) agrees.
+    return os.path.realpath(tempfile.mkdtemp(prefix="panopticon-pr%d-" % pr_number))
 
 
 def acquire_pr(pr_number, repo=".", runner=subprocess.run):
