@@ -1249,3 +1249,27 @@ class TestSetup(unittest.TestCase):
         self.assertEqual(rc_ready, 0)
         self.assertIn("READY", out.getvalue())
         self.assertEqual(rc_gap, 1)
+
+
+class TestChangedFilesRenameParity(unittest.TestCase):
+    """#978: discovery's changed-file diff must use the same rename semantics
+    as diff_map.hunk_map (--find-renames), so the reviewed file set and the
+    on-diff hunk map can never diverge on a similarity-threshold edge."""
+
+    def test_diff_invocation_includes_find_renames(self):
+        from unittest import mock
+        calls = []
+
+        def fake_git(repo, args):
+            calls.append(list(args))
+            r = types.SimpleNamespace(stdout="")
+            if args and args[0] == "merge-base":
+                r.stdout = "abc123\n"
+            return r
+
+        with mock.patch.object(orch, "_git", side_effect=fake_git):
+            orch.collect_changed_files("/tmp/x", base="main")
+        diff_calls = [a for a in calls if a and a[0] == "diff"]
+        self.assertTrue(diff_calls, "no git diff invocation captured")
+        for a in diff_calls:
+            self.assertIn("--find-renames", a)

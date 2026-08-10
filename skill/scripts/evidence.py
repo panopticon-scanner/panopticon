@@ -57,6 +57,24 @@ def tool_rule_id(finding):
     return (finding.get("provenance") or {}).get("confirmation_reasoning") or None
 
 
+def norm_path(p):
+    """Canonicalize a finding path for identity/clustering comparisons.
+
+    Backslashes become slashes; a `./` prefix is stripped. Strip only a `./`
+    prefix — `lstrip("./")` would eat the leading dot of every dotfile path,
+    collapsing `.github/x` onto `github/x`. Deliberately NO os.path.normpath:
+    collapsing `a/../a` would change finding_fingerprint identity for paths no
+    real emitter produces (#977). Sole owner of this normalization — used by
+    finding_fingerprint, reconcile_key, and synthesize's clustering keys
+    (dedupe / cross-panel corroboration / tool aggregation), which must all
+    agree on when two spellings are the same file.
+    """
+    fpath = str(p or "").replace("\\", "/")
+    while fpath.startswith("./"):
+        fpath = fpath[2:]
+    return fpath
+
+
 def finding_fingerprint(finding):
     """Stable cross-run identity for a finding.
 
@@ -67,11 +85,7 @@ def finding_fingerprint(finding):
     verify-queue's queue_id (P2) — the same identity both passes compute.
     """
     loc = finding.get("location") or {}
-    fpath = str(loc.get("file") or "").replace("\\", "/")
-    # Strip only a `./` prefix. `lstrip("./")` would eat the leading dot of
-    # every dotfile path, collapsing `.github/x` onto `github/x`.
-    while fpath.startswith("./"):
-        fpath = fpath[2:]
+    fpath = norm_path(loc.get("file"))
     # Gate on tool-sourcing: on an AGENT finding, confirmation_reasoning holds
     # advisor prose, which would be a disastrous identity discriminator.
     rule = tool_rule_id(finding) if is_tool_sourced(finding) else None
@@ -90,15 +104,13 @@ def reconcile_key(finding):
     runs, where the free-text title finding_fingerprint uses as an agent
     finding's discriminator is re-worded every run. Dropping the title (keeping
     file + panel + category) lets a re-worded finding match; a genuinely-fixed
-    one's key vanishes (#914). The file normalization mirrors
-    finding_fingerprint's exactly -- keep the two in sync. The 5.x finding-code
-    catalog will replace `category` here with a stable `code` field: one seam.
+    one's key vanishes (#914). The file normalization is finding_fingerprint's
+    exactly -- both call norm_path. The 5.x finding-code catalog will replace
+    `category` here with a stable `code` field: one seam.
     """
     loc = finding.get("location") or {}
-    fpath = str(loc.get("file") or "").replace("\\", "/")
-    while fpath.startswith("./"):
-        fpath = fpath[2:]
-    return (fpath, str(finding.get("panel") or ""), str(finding.get("category") or ""))
+    return (norm_path(loc.get("file")), str(finding.get("panel") or ""),
+            str(finding.get("category") or ""))
 
 
 def sev_rank(finding):

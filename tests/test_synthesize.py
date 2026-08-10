@@ -1481,7 +1481,7 @@ class TestEvidenceReport(unittest.TestCase):
         report = self._report([_agentic()])
         self.assertNotIn("effort_to_remediate", report["summary"])
         self.assertNotIn("recommendations", report)
-        self.assertEqual(report["meta"]["version"], "4.3.0")
+        self.assertEqual(report["meta"]["version"], "4.3.1")
 
     def test_citation_quality_lives_in_evidence(self):
         report = self._report([_agentic(citations={"cwe": ["CWE-89"]})])
@@ -1912,7 +1912,7 @@ class TestToolPolicyMode(unittest.TestCase):
         report = syn.build_report([f], [], "t", None, "2026-08-03T00:00:00Z",
                                   tool_policy_mode="mixed")
         self.assertEqual(report["meta"]["coverage"]["tool_policy_mode"], "mixed")
-        self.assertEqual(report["meta"]["version"], "4.3.0")
+        self.assertEqual(report["meta"]["version"], "4.3.1")
 
 
 class TestToolsRanFromDispositions(unittest.TestCase):
@@ -3236,3 +3236,93 @@ class TestDocSeverityPolicy(unittest.TestCase):
             f = report["findings"][0]
             self.assertEqual(f["severity"], "INFO")
             self.assertEqual(f["doc_policy"]["downgraded_from"], "MEDIUM")
+
+
+class TestPathVariantClustering(unittest.TestCase):
+    """#977: dedupe/corroboration/aggregation key on evidence.norm_path, so
+    cosmetic path dressing (a `./` prefix, backslashes) from one emitter never
+    splits a cluster and silently costs a finding its reinforcement."""
+
+    def _agent(self, fid, file, line, panel="security", category="sql-injection"):
+        return {"id": fid, "title": fid, "severity": "HIGH",
+                "confidence": "LIKELY", "panel": panel, "category": category,
+                "source": "agent:security-reviewer",
+                "location": {"file": file, "line_start": line}}
+
+    def _tool(self, fid, file, line, rule="B608"):
+        return {"id": fid, "title": fid, "severity": "HIGH",
+                "confidence": "CERTAIN", "panel": "security",
+                "category": "sql-injection", "source": "tool:semgrep",
+                "tool_evidence": {"rule_id": rule},
+                "location": {"file": file, "line_start": line}}
+
+    def test_dedupe_merges_dot_slash_variant(self):
+        out = syn.dedupe([self._agent("SE-001", "./src/auth.py", 10),
+                          self._tool("SG-001", "src/auth.py", 10)])
+        self.assertEqual(len(out), 1)
+        self.assertTrue(out[0].get("reinforced"))
+
+    def test_dedupe_merges_backslash_variant(self):
+        out = syn.dedupe([self._agent("SE-001", "src/auth.py", 10),
+                          self._tool("SG-001", "src\\auth.py", 10)])
+        self.assertEqual(len(out), 1)
+        self.assertTrue(out[0].get("reinforced"))
+
+    def test_corroboration_across_path_variants(self):
+        a = self._agent("SE-001", "./app/resolver.py", 42)
+        b = self._agent("TS-001", "app/resolver.py", 43,
+                        panel="test", category="test-coverage")
+        integration = syn.cross_panel_corroboration([a, b])
+        self.assertEqual(len(integration), 1)
+        self.assertTrue(a.get("corroborated"))
+        self.assertTrue(b.get("corroborated"))
+
+    def test_aggregate_agent_locus_wins_across_variant(self):
+        # The agent flagged ./f.py:10; the tool's rule hit f.py:5 and f.py:10.
+        # The agent-corroborated locus must win primary, exactly as it does
+        # when both spell the path identically.
+        agent = self._agent("SE-001", "./f.py", 10)
+        tools = [self._tool("SG-001", "f.py", 5), self._tool("SG-002", "f.py", 10)]
+        out = syn.aggregate_tool_findings([agent] + tools)
+        merged = [f for f in out if syn.evidence_mod.is_tool_sourced(f)]
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["location"]["line_start"], 10)
+
+
+class TestUnloadableVerdictsGate(unittest.TestCase):
+    """#979: an un-loadable verdict is missing verify coverage — a PASS with
+    verdicts lost must read INCONCLUSIVE, not certified-clean."""
+
+    def _crit(self):
+        return [{"severity": "CRITICAL", "evidence": {"status": "advisor_confirmed"}}]
+
+    def test_unloadable_forces_inconclusive_on_pass(self):
+        r = syn.certify("A", [], "high", set(), [], verdicts_unloadable=1)
+        self.assertEqual(r["gate"], "INCONCLUSIVE")
+        self.assertFalse(r["coverage_certified"])
+
+    def test_zero_unloadable_leaves_pass(self):
+        r = syn.certify("A", [], "high", set(), [], verdicts_unloadable=0)
+        self.assertEqual(r["gate"], "PASS")
+        self.assertTrue(r["coverage_certified"])
+
+    def test_unloadable_never_masks_fail(self):
+        r = syn.certify("F", self._crit(), "high", set(), [], verdicts_unloadable=2)
+        self.assertEqual(r["gate"], "FAIL")
+
+    def test_build_report_wires_unloadable_into_gate(self):
+        f = {"id": "A-1", "title": "claim", "severity": "HIGH",
+             "confidence": "POSSIBLE", "panel": "code", "category": "logic",
+             "description": "d", "location": {"file": "a.py", "line_start": 1}}
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            clean = syn.build_report([dict(f)], [], "t", "high",
+                                     "2026-08-05T00:00:00Z",
+                                     verdicts={}, verdicts_supplied=True)
+            lossy = syn.build_report([dict(f)], [], "t", "high",
+                                     "2026-08-05T00:00:00Z",
+                                     verdicts={}, verdicts_supplied=True,
+                                     verdict_unloadable=[
+                                         {"file": "x.json", "reason": "unparseable"}])
+        self.assertEqual(clean["summary"]["gate"], "PASS")
+        self.assertEqual(lossy["summary"]["gate"], "INCONCLUSIVE")

@@ -190,7 +190,11 @@ def collect_changed_files(repo, base=None):
                 return None
     changed = set()
     try:
-        out = _git(repo, ["diff", "--name-only", "--diff-filter=d", mb])
+        # --find-renames: same rename semantics as diff_map.hunk_map, so the
+        # reviewed file set and the on-diff hunk map can never diverge on a
+        # similarity-threshold edge (#978).
+        out = _git(repo, ["diff", "--name-only", "--diff-filter=d",
+                          "--find-renames", mb])
         for p in out.stdout.splitlines():
             p = p.strip()
             if p:

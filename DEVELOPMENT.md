@@ -5,7 +5,7 @@ supported, other SKILL.md hosts degraded-sequential. This file is the durable
 design record that travels with the skill (installed dir / OneDrive), so future
 work has context without the original spec/plan docs.
 
-**Current version: 4.3.0** (semver — see Versioning below).
+**Current version: 4.3.1** (semver — see Versioning below).
 
 ## What it is
 A **discovery → scout → fan-out → synthesis** pipeline. It profiles a target with a
@@ -171,7 +171,17 @@ changes to the report schema, CLI, or grade contract. Bump `SKILL.md` `metadata.
 `version` together.
 
 History:
-- **4.3.0** (current) — 4.x series wrap. Codex host support: `codex` host in
+- **4.3.1** (current) — external-review point release (first outside audit,
+  Gemini Pro 3.1, triaged claim-by-claim against the tree). Path-variant
+  clustering: `evidence.norm_path` becomes the sole owner of finding-path
+  normalization and `dedupe`/`cross_panel_corroboration`/
+  `aggregate_tool_findings` key on it, so `./`-prefix or backslash dressing
+  from one emitter can no longer split a cluster and cost a finding its
+  reinforcement (#977). Delta discovery's changed-file diff gains
+  `--find-renames` for rename-semantics parity with `diff_map.hunk_map`
+  (#978). Un-loadable verdicts now count as a gate-relevant coverage gap in
+  `certify`: a PASS with lost verdicts reads `INCONCLUSIVE` (#979).
+- **4.3.0** — 4.x series wrap. Codex host support: `codex` host in
   model-profiles (gpt-5.6-luna/terra per role with reasoning-effort levels),
   `--emit-host-agents codex`, dispatch/model-resolver/orchestrator wiring +
   codex-runner tests; `meta.integrity.empty_dispatch_plans` joins the
