@@ -4,6 +4,7 @@ grades and a CI gate verdict. Stdlib-only.
 """
 import argparse
 import glob
+import hashlib
 import json
 import os
 import re
@@ -731,6 +732,15 @@ def reconcile_findings_files(plan, ingested_paths):
     return unexpected, missing
 
 
+def _plan_hash(plan):
+    """Canonical plan-content hash -- mirror of dispatch.plan_content_hash
+    (#493 R2; a shared import is blocked by the two sys.path conventions,
+    #742 -- keep the two in sync)."""
+    return hashlib.sha256(
+        json.dumps(plan, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
 def read_unenforced_ack(path=os.path.join(".panopticon", "unenforced-ack.json")):
     """Return the full ack dict when dispatch recorded --allow-unenforced, {} otherwise.
 
@@ -1026,7 +1036,8 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                               "plans_seen": 0}
     integrity_ok = not (integrity.get("unexpected_findings_files")
                         or integrity.get("duplicate_out_files")
-                        or integrity.get("mislabeled_findings_files"))
+                        or integrity.get("mislabeled_findings_files")
+                        or integrity.get("content_mismatched_files"))
     cert = certify(overall, gate_eligible, fail_on, panels_incomplete, tools_absent,
                    integrity_ok=integrity_ok)
     return {
@@ -1495,11 +1506,36 @@ def main(argv=None):
                                        _verdicts=verdicts)
     unexpected, missing = reconcile_findings_files(_plan, args.files)
     _ack = read_unenforced_ack()
+    # #493 R2: an ack with no run binding over-reports risk forever -- a
+    # stale ack from an earlier --allow-unenforced run would mark a fully
+    # enforced run acknowledged. The ack now carries plan_sha256 (canonical
+    # hash of the plan content it acknowledged); treat a non-matching ack as
+    # STALE: report false + a loud note. A legacy ack without the field stays
+    # trusted (pre-#493 artifacts).
+    ack_stale = False
+    if _ack and _ack.get("plan_sha256") is not None and _plan_lists:
+        _hashes = {_plan_hash(pl) for pl in _plan_lists}
+        if _ack["plan_sha256"] not in _hashes:
+            ack_stale = True
+            print("synthesize: unenforced-ack.json does not hash-match any "
+                  "on-disk dispatch plan -- STALE ack from a previous run; "
+                  "reporting unenforced_acknowledged: false", file=sys.stderr)
+    # #493 R4: after-the-fact content check -- when the orchestrator recorded
+    # out-file hashes at fan-out end, verify the ingested bytes still match.
+    content_checked, content_mismatched = group_runner.verify_out_file_hashes(args.files)
+    if content_mismatched:
+        print("synthesize: %d findings file(s) changed AFTER the fan-out "
+              "snapshot (content substitution?): %s"
+              % (len(content_mismatched), ", ".join(content_mismatched)),
+              file=sys.stderr)
     integrity = {"unexpected_findings_files": unexpected,
                  "missing_planned_files": missing,
                  "duplicate_out_files": duplicate_out_files(_plan),
                  "mislabeled_findings_files": mislabeled_findings_files(args.files),
-                 "unenforced_acknowledged": bool(_ack),
+                 "unenforced_acknowledged": bool(_ack) and not ack_stale,
+                 "ack_stale": ack_stale,
+                 "content_hashes_checked": content_checked,
+                 "content_mismatched_files": content_mismatched,
                  "plans_seen": plans_seen}
     if _ack:
         # Surface the Bash-coverage disclosure fields written by dispatch so

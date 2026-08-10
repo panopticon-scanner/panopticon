@@ -141,6 +141,18 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
      never end a turn with an entry unresolved; resume via the done-predicate
      (`pending_entries`), not a fixed dispatch list; status comes from disk,
      not recollection.
+   - **Before fan-out (plan integrity, #493)** — re-verify the on-disk plans
+     against the live registration dir:
+     `python3 skill/scripts/dispatch.py --verify-plan .panopticon/dispatch-plan-<group>.json`
+     (repeatable) — exits 1 on an `enforced: true` entry whose shell is no
+     longer registered (an on-disk flip after emission) or an unenforced
+     reviewer whose ack does not hash-match this plan's content.
+   - **After fan-out (content snapshot, #493)** — BEFORE uninstalling the
+     guard, record the out-file hashes so synthesize can detect content
+     substituted inside a legitimately-declared out_file after the fact:
+     `python3 -c "import sys, glob, json; sys.path.insert(0,'skill'); import scripts.group_runner as gr; plan=[e for p in sorted(glob.glob('.panopticon/dispatch-plan*.json')) for e in json.load(open(p))]; gr.snapshot_out_files(plan)"`
+     — mismatches surface at `meta.integrity.content_mismatched_files` and
+     force `INCONCLUSIVE`.
    - **After fan-out** — uninstall the guard:
      `python3 -c "import sys; sys.path.insert(0,'skill'); import scripts.write_guard_hook as wg; wg.uninstall()"`.
    - **Coverage** — do not hand-assemble a tally for the artifact:

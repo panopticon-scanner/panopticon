@@ -162,3 +162,33 @@ class TestVerifyResume(unittest.TestCase):
             self.assertEqual(st["verify"], {"total": 2, "done": 1, "pending": 1})
             self.assertEqual(gr.resume_stats(None, None, None)["fan_out"],
                              {"total": 0, "done": 0, "pending": 0})
+
+
+class TestOutFileContentHashes(unittest.TestCase):
+    """#493 R4: fan-out-time snapshot + synthesis-time verification."""
+
+    def test_snapshot_and_verify_roundtrip_then_tamper(self):
+        import tempfile, os, json as _json
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "findings-g1-code-panel_review.json")
+            with open(out, "w") as fh:
+                _json.dump({"findings": []}, fh)
+            hashes_path = os.path.join(d, "out-file-hashes.json")
+            plan = [{"out_file": out}]
+            recorded = gr.snapshot_out_files(plan, out_path=hashes_path)
+            self.assertEqual(len(recorded), 1)
+            checked, mismatched = gr.verify_out_file_hashes(
+                [out], hashes_path=hashes_path)
+            self.assertEqual((checked, mismatched), (1, []))
+            with open(out, "w") as fh:                    # substitute content
+                _json.dump({"findings": [{"id": "EVIL-1"}]}, fh)
+            checked, mismatched = gr.verify_out_file_hashes(
+                [out], hashes_path=hashes_path)
+            self.assertEqual(checked, 1)
+            self.assertEqual(mismatched, [out])
+
+    def test_no_snapshot_reads_as_not_measured(self):
+        checked, mismatched = gr.verify_out_file_hashes(
+            ["x.json"], hashes_path="/nonexistent/h.json")
+        self.assertIsNone(checked)
+        self.assertEqual(mismatched, [])
