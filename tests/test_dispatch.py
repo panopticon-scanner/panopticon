@@ -1109,3 +1109,44 @@ class TestVerifyPlan(unittest.TestCase):
             problems = dispatch.verify_plan(
                 [{"role": "scout", "enforced": False}], host="claude", agents_dir=d)
         self.assertEqual(problems, [])
+
+
+class TestReviewRootPinning(unittest.TestCase):
+    """#975: prompts must pin the review root -- reviewers/advisors inherit
+    the session cwd, and relative paths made them read the wrong checkout
+    (false gate verdicts on the PR-974 release scan)."""
+
+    def _profile(self):
+        return {"group": "g", "files": ["appdir/x.py", "appdir/y.py"],
+                "depth": "standard", "panels": ["code"],
+                "lenses": {"code": [
+                    {"name": "structure", "spawn": True, "priority": 1,
+                     "depth_threshold": "shallow"}]}}
+
+    def test_reviewer_prompts_carry_absolute_worktree_paths(self):
+        root = os.path.join(os.sep, "tmp", "pr-worktree")
+        plan = dispatch.build_plan(self._profile(), host="kimi", root=root)
+        for e in plan:
+            self.assertIn(os.path.join(root, "appdir", "x.py"), e["prompt"])
+            # no bare relative path left in the rendered file list
+            self.assertNotIn(" appdir/x.py", e["prompt"].replace(
+                os.path.join(root, "appdir", "x.py"), ""))
+            # entry["files"] stays repo-relative (out_of_scope/swarm contract)
+            self.assertEqual(e["files"], ["appdir/x.py", "appdir/y.py"])
+
+    def test_advisor_prompts_carry_repo_root_header(self):
+        with tempfile.TemporaryDirectory() as d:
+            queue = {"version": "4.3.0", "cut_by_max_verify": 0, "entries": [
+                {"queue_id": "a" * 16, "priority": 1,
+                 "finding": {"id": "X-1", "title": "t", "severity": "HIGH",
+                             "confidence": "POSSIBLE", "panel": "code",
+                             "category": "logic",
+                             "location": {"file": "appdir/x.py", "line_start": 1}}}]}
+            qp = os.path.join(d, "verify-queue.json")
+            with open(qp, "w") as fh:
+                json.dump(queue, fh)
+            out = os.path.join(d, "prompts")
+            written = dispatch.render_advisor_prompts(qp, out)
+            text = open(written[0]).read()
+        self.assertTrue(text.startswith("Repo root: "))
+        self.assertIn(os.path.abspath(os.getcwd()), text.split("\n")[0])

@@ -266,3 +266,11 @@ class TestGuardFailClosedDocs(unittest.TestCase):
     def test_skill_documents_fail_closed_guard(self):
         with open(os.path.join(ROOT, "SKILL.md"), encoding="utf-8") as fh:
             self.assertIn("fail-closed while registered", fh.read())
+
+
+class TestReviewRootDocs(unittest.TestCase):
+    def test_skill_documents_read_side_rooting(self):
+        with open(os.path.join(ROOT, "SKILL.md"), encoding="utf-8") as fh:
+            skill = fh.read()
+        self.assertIn("Repo root:", skill)
+        self.assertIn("#975", skill)

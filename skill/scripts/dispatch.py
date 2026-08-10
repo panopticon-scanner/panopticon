@@ -398,9 +398,15 @@ def build_plan(scope_profile, host=None, model_overrides=None, agents_dir=None,
         panel_out_file = os.path.join(
             root, ".panopticon",
             "findings-%s-%s-panel_review.json" % (group_name, panel_name))
+        # #975: the PROMPT's file list is rendered ABSOLUTE (worktree-rooted).
+        # A dispatched subagent inherits the session cwd, so relative paths
+        # made reviewers read the session-root checkout instead of the PR
+        # worktree -- the read-side mirror of #935. entry["files"] stays
+        # repo-relative (the out_of_scope checker and swarm routing key on it).
+        files_abs = [os.path.join(root, f) for f in files]
         panel_mapping = {
             "panel": panel_name, "group": group_name,
-            "file_list": ", ".join(files),
+            "file_list": ", ".join(files_abs),
             "security_mode": scope_profile.get("security_mode", "standard"),
             "depth": depth,
             "lenses": "\n".join("- %s" % n for n in non_spawned) or "- (all lenses)",
@@ -434,7 +440,7 @@ def build_plan(scope_profile, host=None, model_overrides=None, agents_dir=None,
                 "findings-%s-%s-lens_sweep-%s.json" % (group_name, panel_name, lens_name))
             sweep_mapping = {
                 "panel": panel_name, "group": group_name,
-                "file_list": ", ".join(files),
+                "file_list": ", ".join(files_abs),
                 "security_mode": scope_profile.get("security_mode", "standard"),
                 "depth": depth, "lens": lens_name,
                 "out_file": sweep_out_file,
@@ -509,6 +515,13 @@ def render_advisor_prompts(queue_path, out_dir):
                              % (queue_path, queue_id))
         claim = json.dumps(finding, indent=2, ensure_ascii=False)
         prompt = render_prompt("advisor.md", {"claim_json": claim})
+        # #975: pin the review root. Advisors inherit the session cwd, so a
+        # relative location in the claim resolved against the wrong checkout
+        # when the session root diverged from the tree under review.
+        prompt = ("Repo root: %s\nEvery relative path in the claim below "
+                  "resolves against this root -- read files THERE, never in "
+                  "your session's default checkout.\n\n%s"
+                  % (os.path.abspath(os.getcwd()), prompt))
         path = os.path.join(out_dir, "%s.md" % queue_id)
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(prompt)
