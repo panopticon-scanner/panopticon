@@ -5,7 +5,7 @@ supported, other SKILL.md hosts degraded-sequential. This file is the durable
 design record that travels with the skill (installed dir / OneDrive), so future
 work has context without the original spec/plan docs.
 
-**Current version: 4.3.1** (semver — see Versioning below).
+**Current version: 4.3.2** (semver — see Versioning below).
 
 ## What it is
 A **discovery → scout → fan-out → synthesis** pipeline. It profiles a target with a
@@ -171,7 +171,21 @@ changes to the report schema, CLI, or grade contract. Bump `SKILL.md` `metadata.
 `version` together.
 
 History:
-- **4.3.1** (current) — external-review point release (first outside audit,
+- **4.3.2** (current) — the 4.x freeze closer (5.x roadmap combined review,
+  adopted 2026-08-10): `meta.cost` dispatch ledger — `{phase, role, model,
+  count}` rows derived from scout profiles, the dispatch-plan union, and the
+  verify queue, plus a `tokens` slot (null until a host exposes usage).
+  Additive and typed in report-schema. This is the before-picture every 5.0
+  economics exit criterion measures against; run-4 (2026-08-15, untouched
+  4.3.x) records baseline #1. Freeze audit note: the roadmap review's three
+  "run-3 confirmed HIGH" freeze items were all already resolved on main
+  (README --mode/--target syntax gone, FindSecBugs jar SHA-256-pinned per
+  #539, #513 CI posture ruled intentional in security.yml) — the freeze
+  reduced to this ledger. 4.x is now CLOSED to features; 5.x sequencing:
+  5.0 = driver state machine + verify-phase redesign + OCRDb identity spine
+  (feature-flagged by bundle presence), 5.1 = trends + panel evolution +
+  trust chain + incremental runs + panel collapsing, 5.2 = reach.
+- **4.3.1** — external-review point release (first outside audit,
   Gemini Pro 3.1, triaged claim-by-claim against the tree). Path-variant
   clustering: `evidence.norm_path` becomes the sole owner of finding-path
   normalization and `dedupe`/`cross_panel_corroboration`/

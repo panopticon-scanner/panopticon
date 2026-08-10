@@ -918,7 +918,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                  scout_requested=None, scout_profiles_seen=0, out_of_scope=None,
                  doc_policy=None, resume=None, integrity=None,
                  diff_hunks=None, diff_context=5, gate_scope="on-diff",
-                 catalog=None, verdict_unloadable=None):
+                 catalog=None, verdict_unloadable=None, cost_fan_out=None):
     """Build a CodeReviewReport under the two-axis severity x evidence model.
 
     Severity is never mutated here. Verdicts (from evidence.load_verdicts) are
@@ -1141,6 +1141,22 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                           if delta_mode else None),
             },
             "integrity": integrity,
+            # meta.cost (4.3.2): the run's dispatch ledger, derived from the
+            # artifacts already ingested (scout profiles, dispatch plans, the
+            # verify queue) — never hand-assembled. `tokens` stays null until
+            # a host exposes per-dispatch usage; the 5.x economics work keys
+            # its exit criteria on this baseline.
+            "cost": {
+                "dispatches": (
+                    [{"phase": "scout", "role": "scout", "model": None,
+                      "count": scout_profiles_seen}]
+                    + [{"phase": "fan_out", "role": r.get("role"),
+                        "model": r.get("model"), "count": r.get("count", 0)}
+                       for r in (cost_fan_out or [])]
+                    + [{"phase": "verify", "role": "advisor", "model": None,
+                        "count": verdict_stats["queued"]}]),
+                "tokens": None,
+            },
         },
         "summary": {
             "overall_grade": cert["overall_grade"],
@@ -1565,6 +1581,19 @@ def main(argv=None):
               file=sys.stderr)
     tool_policy_mode = derive_tool_policy_mode(plans=_plan_lists)
     fan_out = group_runner.fan_out_coverage(_plan) if _plan else None
+    # meta.cost fan-out rows: reviewer dispatch counts grouped by (role, model)
+    # from the same plan union integrity/coverage read — sorted for the
+    # byte-identical re-run guarantee.
+    _cost_counts = {}
+    for _e in _plan or []:
+        if isinstance(_e, dict) and _e.get("role") in ("panel_review", "lens_sweep"):
+            _m = _e.get("model")
+            _m = _m.get("model") if isinstance(_m, dict) else None
+            _k = (_e["role"], _m)
+            _cost_counts[_k] = _cost_counts.get(_k, 0) + 1
+    cost_fan_out = [{"role": r, "model": m, "count": n}
+                    for (r, m), n in sorted(_cost_counts.items(),
+                                            key=lambda kv: (kv[0][0], kv[0][1] or ""))]
     _queue = None
     queue_path = os.path.join(".panopticon", "verify-queue.json")
     if os.path.isfile(queue_path):
@@ -1656,6 +1685,7 @@ def main(argv=None):
                           tools_ran=tools_ran,
                           tool_dispositions=tool_dispositions,
                           fan_out=fan_out,
+                          cost_fan_out=cost_fan_out,
                           scout_requested=sorted(scout_requested),
                           scout_profiles_seen=scout_profiles_seen,
                           out_of_scope=out_of_scope,

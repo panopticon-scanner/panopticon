@@ -265,6 +265,57 @@
               "type": "boolean"
             }
           }
+        },
+        "cost": {
+          "type": "object",
+          "description": "Dispatch ledger for the run, derived from artifacts (scout profiles, dispatch plans, verify queue). The 4.x cost baseline the 5.x economics work keys on.",
+          "properties": {
+            "dispatches": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "phase": {
+                    "type": "string",
+                    "enum": [
+                      "scout",
+                      "fan_out",
+                      "verify"
+                    ]
+                  },
+                  "role": {
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "count": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                },
+                "required": [
+                  "phase",
+                  "role",
+                  "count"
+                ]
+              }
+            },
+            "tokens": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "description": "Host-reported token usage; null until a host exposes per-dispatch usage."
+            }
+          },
+          "required": [
+            "dispatches",
+            "tokens"
+          ]
         }
       }
     },
