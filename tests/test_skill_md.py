@@ -230,3 +230,11 @@ class TestDocPolicyDocs(unittest.TestCase):
             skill = fh.read()
         self.assertIn("--doc-paths", skill)
         self.assertIn("meta.coverage.doc_policy", skill)
+
+
+class TestSetupDocs(unittest.TestCase):
+    def test_skill_documents_setup_mode(self):
+        with open(os.path.join(ROOT, "SKILL.md"), encoding="utf-8") as fh:
+            skill = fh.read()
+        self.assertIn("--setup", skill)
+        self.assertIn("READY", skill)

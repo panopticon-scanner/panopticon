@@ -845,6 +845,157 @@ def build_result(repo, mode, target, facet, impl, tests,
     }
 
 
+SETUP_GITIGNORE_ENTRIES = [".panopticon/", ".claude/settings.local.json"]
+
+
+def _seed_groups_manifest(repo):
+    """#485(1): write a STARTER committable groups.yml from the repo's
+    top-level directory spine -- deterministic, never clobbers an existing
+    manifest. Returns (path, created:bool, group_names)."""
+    path = os.path.join(repo, ".panopticon", "groups.yml")
+    if os.path.isfile(path):
+        try:
+            names = [g["name"] for g in load_catalog(repo) or []]
+        except Exception:
+            names = []
+        return path, False, names
+    files = discover_repo_files(repo)
+    tops = sorted({p.split("/", 1)[0] for p in files
+                   if "/" in p and not p.startswith(".")})
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    lines = ["# panopticon groups catalog -- seeded by --setup (#485).",
+             "# gitignore-flavored globs; first matching group wins; edit and commit.",
+             "groups:"]
+    for t in tops:
+        lines.append("  - name: %s" % t)
+        lines.append("    match:")
+        lines.append("      - %s/**" % t)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+    return path, True, tops
+
+
+def _ensure_gitignore(repo):
+    """#485(2): make sure run artifacts and the local hook settings never get
+    committed. Appends only the MISSING entries; idempotent."""
+    gi = os.path.join(repo, ".gitignore")
+    try:
+        existing = open(gi, encoding="utf-8").read()
+    except OSError:
+        existing = ""
+    have = {ln.strip() for ln in existing.splitlines()}
+    added = [e for e in SETUP_GITIGNORE_ENTRIES if e not in have]
+    if added:
+        with open(gi, "a", encoding="utf-8") as fh:
+            if existing and not existing.endswith("\n"):
+                fh.write("\n")
+            fh.write("# panopticon run artifacts (--setup #485)\n")
+            for e in added:
+                fh.write(e + "\n")
+    return added
+
+
+def _seed_config(repo):
+    """#485/#486: scaffold .panopticon/config.json with the gh-account field
+    (null = inherit ambient) when absent."""
+    path = os.path.join(repo, ".panopticon", "config.json")
+    if os.path.isfile(path):
+        return path, False
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump({"gh_config_dir": None}, fh, indent=1)
+        fh.write("\n")
+    return path, True
+
+
+def setup_readiness(repo, host=None, runner=subprocess.run, environ=None):
+    """#485(3): the preflight. Returns a list of (name, ok, detail) checks.
+
+    ok is True/False/None -- None means informational (not gating READY).
+    Every failing check carries its fix in `detail`.
+    """
+    import dispatch  # noqa: E402 -- sibling flat import, same as diff_map
+    env = environ if environ is not None else os.environ
+    checks = []
+
+    r = runner(["docker", "version"], capture_output=True, text=True)
+    docker_ok = getattr(r, "returncode", 1) == 0
+    checks.append(("docker", docker_ok,
+                   "ok" if docker_ok else
+                   "docker unavailable -- install/start Docker or run with --no-tools"))
+    if docker_ok:
+        r2 = runner(["docker", "image", "inspect", "panopticon-tools"],
+                    capture_output=True, text=True)
+        img_ok = getattr(r2, "returncode", 1) == 0
+        checks.append(("tools-image", img_ok,
+                       "ok" if img_ok else
+                       "panopticon-tools image absent for this arch -- build/pull "
+                       "it (see DEVELOPMENT.md; multi-arch: #461)"))
+
+    root_ok = os.path.isdir(os.path.join(repo, ".git"))
+    checks.append(("target-root", root_ok,
+                   "ok" if root_ok else
+                   "cwd is not a git repo root -- run the pipeline from the "
+                   "TARGET repo root (#483)"))
+
+    nvd = bool(env.get("NVD_API_KEY")) or os.path.isfile(os.path.join(repo, ".env"))
+    checks.append(("nvd-api-key", None,
+                   "present" if nvd else
+                   "absent -- dependency-check will be skipped/slow; export "
+                   "NVD_API_KEY or add it to .env (never commit it)"))
+
+    reg_dir = dispatch._registration_dir(host or dispatch._detect_host(), None)
+    missing_shells = [role for role, rf in sorted(dispatch.ROLE_FILES.items())
+                      if role in ("panel_review", "lens_sweep")
+                      and not dispatch._is_registered(reg_dir, rf)]
+    checks.append(("enforced-shells", not missing_shells,
+                   "ok" if not missing_shells else
+                   "unregistered reviewer shell(s): %s -- run python3 "
+                   "skill/scripts/dispatch.py --emit-host-agents <host> and "
+                   "start a fresh session" % ", ".join(missing_shells)))
+
+    try:
+        catalog = load_catalog(repo) or []
+    except Exception:
+        catalog = []
+    if catalog:
+        empty = [g.get("name") for g in catalog if not g.get("match")]
+        checks.append(("groups-manifest", not empty,
+                       "%d group(s)" % len(catalog) if not empty else
+                       "group(s) with no match patterns: %s" % ", ".join(map(str, empty))))
+    else:
+        checks.append(("groups-manifest", None,
+                       "no committable manifest yet -- --setup seeds one; "
+                       "files fall back to ._N chunks until you commit it"))
+    return checks
+
+
+def run_setup(repo=".", host=None, runner=subprocess.run, environ=None, out=sys.stdout):
+    """#485: guided first run -- seed, scaffold, then readiness-gate."""
+    path, created, names = _seed_groups_manifest(repo)
+    print("groups manifest: %s (%s; %d group(s))"
+          % (path, "created" if created else "existing", len(names)), file=out)
+    added = _ensure_gitignore(repo)
+    print("gitignore: %s" % ("added %s" % ", ".join(added) if added else "ok"),
+          file=out)
+    cfg, cfg_created = _seed_config(repo)
+    print("config: %s (%s)" % (cfg, "created" if cfg_created else "existing"),
+          file=out)
+    checks = setup_readiness(repo, host=host, runner=runner, environ=environ)
+    gaps = [c for c in checks if c[1] is False]
+    print("", file=out)
+    for name, ok, detail in checks:
+        mark = "OK " if ok else ("-- " if ok is None else "GAP")
+        print("  [%s] %-16s %s" % (mark, name, detail), file=out)
+    print("", file=out)
+    if gaps:
+        print("NOT READY -- %d gap(s) above; fix each and re-run --setup"
+              % len(gaps), file=out)
+        return 1
+    print("READY -- repo is provisioned for a panopticon run", file=out)
+    return 0
+
+
 def emit(obj, fh=None):
     """Serialize and emit object as indented JSON to stdout or a file."""
     fh = fh or sys.stdout
@@ -879,7 +1030,14 @@ def main(argv=None):
     modes.add_argument("--pr", type=int, metavar="N",
                        help="Review GitHub PR N in an isolated worktree")
     modes.add_argument("--repo-scan", action="store_true")
+    modes.add_argument("--setup", action="store_true",
+                       help="First-run provisioning + readiness check (#485): "
+                            "seed a committable groups.yml, scaffold "
+                            ".panopticon/ + gitignore + config, then report "
+                            "READY or the exact gaps (exit 1)")
     args = ap.parse_args(argv)
+    if args.setup:
+        return run_setup(".", host=None)
     if args.max_per_group < 1:
         print("--max-per-group must be >= 1", file=sys.stderr)
         return 2
