@@ -3,6 +3,7 @@
 grades and a CI gate verdict. Stdlib-only.
 """
 import argparse
+import fnmatch
 import glob
 import hashlib
 import json
@@ -566,6 +567,52 @@ def out_of_scope_findings(findings_paths, plan):
                 if len(examples) < 10:
                     examples.append({"group": m.group(1), "file": fpath})
     return {"checked": checked, "count": count, "examples": examples}
+# #487: committed planning-doc trees (specs, plans, ADRs) are prose, not
+# code -- code-oriented findings against them are noise. Path-scoped,
+# mode-gated, severity-only soft downgrade with a secrets carve-out.
+DOC_PATH_GLOBS = ["docs/*", "specs/*", "*/specs/*", "plans/*", "*/plans/*"]
+_SECRET_FINDING_RE = re.compile(
+    r"secret|credential|token|password|api[-_ ]?key|private[-_ ]key", re.I)
+
+
+def apply_doc_severity_policy(findings, security_mode, doc_globs=None):
+    """Soft-downgrade code findings under doc-classified paths to INFO (#487).
+
+    Standard mode only -- redteam scans docs for planted content at full
+    severity, so the policy is a no-op there (returns None = not applied).
+    Secret/credential findings keep their severity (a real credential pasted
+    into a plan is the one finding you most want OUT of a doc). Severity is
+    never rewritten upward; the downgrade is recorded on the finding
+    (doc_policy.downgraded_from) and disclosed in the returned summary, never
+    silent. Mutates findings in place.
+    """
+    if security_mode == "redteam":
+        return None
+    globs = doc_globs or DOC_PATH_GLOBS
+    downgraded = 0
+    examples = []
+    for f in findings:
+        if not isinstance(f, dict):
+            continue
+        loc = f.get("location") or {}
+        path = str(loc.get("file") or "").replace("\\", "/")
+        while path.startswith("./"):
+            path = path[2:]
+        if not path or not any(fnmatch.fnmatch(path, g) for g in globs):
+            continue
+        sev = str(f.get("severity", "")).upper()
+        if sev in ("", "INFO"):
+            continue
+        blob = " ".join([str(f.get("category", "")), str(f.get("title", "")),
+                         str(f.get("source", ""))])
+        if _SECRET_FINDING_RE.search(blob) or "gitleaks" in blob:
+            continue
+        f["severity"] = "INFO"
+        f["doc_policy"] = {"downgraded_from": sev}
+        downgraded += 1
+        if len(examples) < 10:
+            examples.append({"file": path, "from": sev})
+    return {"downgraded": downgraded, "examples": examples}
 
 
 _GRADE_ORDER = ["A", "B", "C", "D", "F"]
@@ -863,7 +910,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                  max_verify=None, verdicts_supplied=False, tool_policy_mode=None,
                  tools_ran=None, tool_dispositions=None, fan_out=None,
                  scout_requested=None, scout_profiles_seen=0, out_of_scope=None,
-                 resume=None, integrity=None,
+                 doc_policy=None, resume=None, integrity=None,
                  diff_hunks=None, diff_context=5, gate_scope="on-diff",
                  catalog=None, verdict_unloadable=None):
     """Build a CodeReviewReport under the two-axis severity x evidence model.
@@ -1067,6 +1114,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                 "scout_profiles_seen": scout_profiles_seen,
                 "scout_requested": sorted(scout_requested or []),
                 "out_of_scope": out_of_scope,
+                "doc_policy": doc_policy,
                 "verdicts": verdict_stats,
                 "fan_out": fan_out,
                 "divergence": divergence,
@@ -1343,6 +1391,11 @@ def main(argv=None):
     ap.add_argument("--tools-exclude", metavar="GLOB", action="append", default=None,
                     help="Drop tool findings whose location.file matches GLOB "
                          "(repeatable; e.g. 'tests/fixtures/*')")
+    ap.add_argument("--doc-paths", metavar="GLOB", action="append", default=None,
+                    help="Doc-tree globs for the #487 severity policy "
+                         "(default: docs/*, specs/*, plans/* trees); "
+                         "standard mode soft-downgrades non-secret code "
+                         "findings under them to INFO, disclosed in meta")
     ap.add_argument("--include-fixtures", action="store_true",
                     help="Keep tool findings located under test-fixture corpora "
                          "(testdata/, __fixtures__/, tests/fixtures/). Default "
@@ -1448,6 +1501,13 @@ def main(argv=None):
     catalog = citations.load_cwe_catalog()
     citations.enrich_citations(findings, catalog, epss_enabled=args.epss,
                                cache_path=os.path.join(".panopticon", "epss-cache.json"))
+    doc_policy = apply_doc_severity_policy(findings, security_mode,
+                                           doc_globs=args.doc_paths)
+    if doc_policy and doc_policy["downgraded"]:
+        print("synthesize: %d code finding(s) under doc trees soft-downgraded "
+              "to INFO (#487; secrets exempt, redteam bypasses) -- see "
+              "meta.coverage.doc_policy" % doc_policy["downgraded"],
+              file=sys.stderr)
     if args.severity and args.severity != "all":
         threshold = SEV_ORDER.index(args.severity.upper())
         findings = [f for f in findings if _sev_rank(f) <= threshold]
@@ -1589,6 +1649,7 @@ def main(argv=None):
                           scout_requested=sorted(scout_requested),
                           scout_profiles_seen=scout_profiles_seen,
                           out_of_scope=out_of_scope,
+                          doc_policy=doc_policy,
                           resume=resume,
                           integrity=integrity,
                           diff_hunks=diff_hunks,

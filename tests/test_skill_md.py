@@ -222,3 +222,11 @@ class TestIntegrityResidualDocs(unittest.TestCase):
         self.assertIn("--verify-plan", skill)
         self.assertIn("snapshot_out_files", skill)
         self.assertIn("content_mismatched_files", skill)
+
+
+class TestDocPolicyDocs(unittest.TestCase):
+    def test_skill_documents_doc_severity_policy(self):
+        with open(os.path.join(ROOT, "SKILL.md"), encoding="utf-8") as fh:
+            skill = fh.read()
+        self.assertIn("--doc-paths", skill)
+        self.assertIn("meta.coverage.doc_policy", skill)
