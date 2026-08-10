@@ -36,6 +36,41 @@ class TestLedger(unittest.TestCase):
         self.assertEqual(reconcile_apply.ledger_key(record), "|F-1|x.py|rejected")
 
 
+class TestSaveRecoveredLedger(unittest.TestCase):
+    """Direct coverage for save_recovered_ledger: nested-dir creation, content
+    round-trip, atomic overwrite, and no leftover temp file."""
+
+    def test_writes_linkage_creating_nested_dirs(self):
+        linkage = {"fp|F-1|a.py|finding": "https://github.com/o/r/issues/1"}
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "nested", "dir", "ledger.json")
+            reconcile_apply.save_recovered_ledger(linkage, path=path)
+            with open(path, encoding="utf-8") as fh:
+                self.assertEqual(json.load(fh), linkage)
+            self.assertFalse(os.path.exists(path + ".tmp"))  # temp replaced, not left
+
+    def test_overwrites_existing_ledger_atomically(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "ledger.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("{\"stale\": true}")
+            new = {"fp|F-2|b.py|finding": "https://github.com/o/r/issues/2"}
+            reconcile_apply.save_recovered_ledger(new, path=path)
+            with open(path, encoding="utf-8") as fh:
+                self.assertEqual(json.load(fh), new)   # fully replaced, no merge
+
+    def test_output_is_sorted_and_indented_for_stable_diffs(self):
+        linkage = {"b|B|f|finding": "u2", "a|A|f|finding": "u1"}
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "ledger.json")
+            reconcile_apply.save_recovered_ledger(linkage, path=path)
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+            self.assertLess(text.index('"a|A|f|finding"'),
+                            text.index('"b|B|f|finding"'))  # sort_keys
+            self.assertIn("\n ", text)                       # indent=1
+
+
 class FakeCompleted:
     def __init__(self, stdout, returncode=0, stderr=""):
         self.stdout = stdout
@@ -133,9 +168,9 @@ class TestPlanActions(unittest.TestCase):
                           "run2": [{"id": "F-1", "stored_fingerprint": "old1",
                                    "location_file": "a.py", "kind": "finding"}],
                           "run3": [{"id": "F-1-R3"}], "kind_changed": False}],
-            "fixed_or_gone": [{"fingerprint": "fp2",
-                              "run2": [{"id": "F-2", "stored_fingerprint": "old2",
-                                       "location_file": "b.py", "kind": "finding"}]}],
+            "closed": [{"fingerprint": "fp2", "reason": "area clear",
+                       "run2": [{"id": "F-2", "stored_fingerprint": "old2",
+                                "location_file": "b.py", "kind": "finding"}]}],
             "new": [{"fingerprint": "fp3", "run3": [{"id": "F-3"}]}],
         }
 
@@ -159,21 +194,89 @@ class TestPlanActions(unittest.TestCase):
             {"stored_fingerprint": "nope", "id": "X", "location_file": "y.py",
              "kind": "finding"}, {}), None)
 
-    def test_plan_covers_recurring_and_fixed_or_gone_not_new(self):
+    def test_plan_covers_recurring_and_closed_not_new(self):
         ledger = {"old1|F-1|a.py|finding": "https://github.com/o/r/issues/1",
                  "old2|F-2|b.py|finding": "https://github.com/o/r/issues/2"}
         actions = reconcile_apply.plan_actions(self._diff(), ledger)
         cohorts = {a["cohort"] for a in actions}
-        self.assertEqual(cohorts, {"recurring", "fixed_or_gone"})
+        self.assertEqual(cohorts, {"recurring", "closed"})
         self.assertEqual(len(actions), 2)
         recur = next(a for a in actions if a["cohort"] == "recurring")
         self.assertFalse(recur["close"])
-        gone = next(a for a in actions if a["cohort"] == "fixed_or_gone")
-        self.assertTrue(gone["close"])
+        closed = next(a for a in actions if a["cohort"] == "closed")
+        self.assertTrue(closed["close"])
 
     def test_unresolvable_recurring_finding_is_omitted_not_guessed(self):
         actions = reconcile_apply.plan_actions(self._diff(), {})
         self.assertEqual(actions, [])
+
+
+    def test_only_closed_cohort_sets_close_true(self):
+        diff = {
+            "recurring": [{"fingerprint": "fp1",
+                          "run2": [{"id": "F-1", "stored_fingerprint": "old1",
+                                   "location_file": "a.py", "kind": "finding"}]}],
+            "closed": [{"fingerprint": "fp2", "reason": "(file,panel) clear: area has no findings",
+                       "run2": [{"id": "F-2", "stored_fingerprint": "old2",
+                                "location_file": "b.py", "kind": "finding"}]}],
+            "ambiguous": [{"fingerprint": "fp3", "reason": "security still active on file",
+                          "run2": [{"id": "F-3", "stored_fingerprint": "old3",
+                                   "location_file": "c.py", "kind": "finding"}]}],
+            "new": [{"fingerprint": "fp4", "run3": [{"id": "F-4"}]}],
+        }
+        ledger = {"old1|F-1|a.py|finding": "https://github.com/o/r/issues/1",
+                 "old2|F-2|b.py|finding": "https://github.com/o/r/issues/2",
+                 "old3|F-3|c.py|finding": "https://github.com/o/r/issues/3"}
+        actions = reconcile_apply.plan_actions(diff, ledger)
+        by_cohort = {a["cohort"]: a for a in actions}
+        self.assertTrue(by_cohort["closed"]["close"])
+        self.assertFalse(by_cohort["recurring"]["close"])
+        self.assertFalse(by_cohort["ambiguous"]["close"])
+        self.assertNotIn("new", by_cohort)
+        self.assertIn("clear", by_cohort["closed"]["comment"])
+
+    def test_recurring_coarse_tier_gets_coarse_comment_not_exact(self):
+        # F3: a coarse-tier match's comment must not claim the rule/title
+        # matched -- that's precisely what did NOT happen on that branch.
+        diff = {"recurring": [{"fingerprint": "fp1", "match_tier": "coarse",
+                              "run2": [{"id": "F-1", "stored_fingerprint": "old1",
+                                       "location_file": "a.py", "kind": "finding"}]}],
+               "closed": [], "ambiguous": [], "new": []}
+        ledger = {"old1|F-1|a.py|finding": "https://github.com/o/r/issues/1"}
+        actions = reconcile_apply.plan_actions(diff, ledger)
+        self.assertEqual(len(actions), 1)
+        self.assertIn("re-worded title", actions[0]["comment"])
+        self.assertNotIn("rule/title", actions[0]["comment"])
+
+    def test_recurring_exact_tier_gets_exact_comment(self):
+        diff = {"recurring": [{"fingerprint": "fp1", "match_tier": "exact",
+                              "run2": [{"id": "F-1", "stored_fingerprint": "old1",
+                                       "location_file": "a.py", "kind": "finding"}]}],
+               "closed": [], "ambiguous": [], "new": []}
+        ledger = {"old1|F-1|a.py|finding": "https://github.com/o/r/issues/1"}
+        actions = reconcile_apply.plan_actions(diff, ledger)
+        self.assertEqual(len(actions), 1)
+        self.assertIn("rule/title", actions[0]["comment"])
+        self.assertNotIn("re-worded title", actions[0]["comment"])
+
+    def test_recurring_missing_match_tier_defaults_to_exact_comment(self):
+        # Back-compat: entries built before match_tier existed (or a diff.json
+        # produced before #914) must still get the exact-tier comment.
+        actions = reconcile_apply.plan_actions(self._diff(),
+                                               {"old1|F-1|a.py|finding":
+                                                "https://github.com/o/r/issues/1"})
+        recur = next(a for a in actions if a["cohort"] == "recurring")
+        self.assertIn("rule/title", recur["comment"])
+
+    def test_fixed_or_gone_key_prints_stale_diff_note_to_stderr(self):
+        # M4: a pre-branch diff.json shape (fixed_or_gone, no closed/ambiguous
+        # split) must not silently be planned against as if nothing changed.
+        diff = dict(self._diff())
+        diff["fixed_or_gone"] = []
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            reconcile_apply.plan_actions(diff, {})
+        self.assertIn("predates the closed/ambiguous split", buf.getvalue())
 
 
 class TestLedgerKeyMatchesKeyFor(unittest.TestCase):
@@ -235,7 +338,7 @@ class TestApply(unittest.TestCase):
     def _actions(self):
         return [{"cohort": "recurring", "fingerprint": "fp1",
                 "issue": "https://github.com/o/r/issues/1", "comment": "c1", "close": False},
-               {"cohort": "fixed_or_gone", "fingerprint": "fp2",
+               {"cohort": "closed", "fingerprint": "fp2",
                 "issue": "https://github.com/o/r/issues/2", "comment": "c2", "close": True}]
 
     def _admin_runner(self, calls):
@@ -274,6 +377,12 @@ class TestApply(unittest.TestCase):
         for c in issue_calls:
             self.assertIn("--repo", c)
             self.assertEqual(c[c.index("--repo") + 1], "o/r")
+        # The posted BODY must be the action's comment text, per action —
+        # asserting only that "comment" was invoked would pass even if the
+        # body were dropped or swapped.
+        bodies = [c[c.index("--body") + 1] for c in issue_calls]
+        self.assertEqual(bodies,
+                         [a["comment"] for a in self._actions()])
 
     def test_live_run_closes_when_confirmed(self):
         calls = []
@@ -308,7 +417,7 @@ class TestApply(unittest.TestCase):
         calls = []
         actions = [{"cohort": "recurring", "fingerprint": "fp1",
                    "issue": "https://github.com/o/r/issues/1", "comment": "c1", "close": False},
-                  {"cohort": "fixed_or_gone", "fingerprint": "fp2",
+                  {"cohort": "closed", "fingerprint": "fp2",
                    "issue": "https://github.com/o/other/issues/2", "comment": "c2", "close": True}]
         commented, closed = reconcile_apply.apply(actions, dry=False, confirm_close=True,
                                                    runner=self._admin_runner(calls),
@@ -337,18 +446,21 @@ class TestCliWiring(unittest.TestCase):
             diff = {"recurring": [{"fingerprint": "fp1",
                                   "run2": [{"id": "F-1", "stored_fingerprint": "old1",
                                            "location_file": "a.py", "kind": "finding"}]}],
-                   "fixed_or_gone": [], "new": []}
+                   "closed": [], "new": []}
             ledger = {"old1|F-1|a.py|finding": "https://github.com/o/r/issues/1"}
             diff_path = os.path.join(d, "diff.json")
             ledger_path = os.path.join(d, "ledger.json")
             actions_path = os.path.join(d, "actions.json")
-            json.dump(diff, open(diff_path, "w"))
-            json.dump(ledger, open(ledger_path, "w"))
+            with open(diff_path, "w") as fh:
+                json.dump(diff, fh)
+            with open(ledger_path, "w") as fh:
+                json.dump(ledger, fh)
 
             rc = reconcile_apply.main(["plan", diff_path, "--ledger", ledger_path,
                                        "--out", actions_path])
             self.assertEqual(rc, 0)
-            actions = json.load(open(actions_path))
+            with open(actions_path) as fh:
+                actions = json.load(fh)
             self.assertEqual(len(actions), 1)
 
             # apply defaults to dry-run: must print the DRY summary AND make
