@@ -1020,6 +1020,38 @@ class TestDeltaOrchestration(unittest.TestCase):
         self.assertEqual(orch.prune_fixture_files(paths, include_fixtures=True), paths)
 
 
+class TestResolveBaseOriginFallback(unittest.TestCase):
+    """#947 FIXME-3: a machine-derived pr_base prefers origin/<name> (fresh
+    remote) over a possibly-stale local branch; explicit --base never falls
+    through."""
+
+    def _runner_resolving(self, *refs):
+        def run(argv, capture_output, text):
+            class R:
+                pass
+            r = R()
+            ref = argv[-1]
+            r.returncode = 0 if ref.rstrip("^{commit}") in refs else 1
+            r.stdout = "abc\n" if r.returncode == 0 else ""
+            return r
+        return run
+
+    def test_pr_base_prefers_origin_ref(self):
+        base, src = orch.resolve_base("/r", pr_base="main",
+                                      runner=self._runner_resolving("origin/main", "main"))
+        self.assertEqual((base, src), ("origin/main", "pr-base"))
+
+    def test_pr_base_falls_back_to_local_when_origin_absent(self):
+        base, src = orch.resolve_base("/r", pr_base="main",
+                                      runner=self._runner_resolving("main"))
+        self.assertEqual((base, src), ("main", "pr-base"))
+
+    def test_explicit_base_never_tries_origin(self):
+        base, src = orch.resolve_base("/r", explicit="release-2",
+                                      runner=self._runner_resolving("origin/release-2"))
+        self.assertEqual((base, src), (None, "unresolved"))
+
+
 class TestPrMode(unittest.TestCase):
     ACQ = {"worktree": "/tmp/wt", "base": "main", "head_sha": "abc"}
 

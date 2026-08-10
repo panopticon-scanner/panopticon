@@ -5,6 +5,7 @@ findings file; this module answers "which entries still need running?" (resume)
 and "what did the run actually cover?" (derived at synthesis from the plan and
 the files on disk). No agent return is trusted — disk is the truth.
 """
+import hashlib
 import json
 import os
 import re
@@ -135,3 +136,67 @@ def resume_stats(plan, queue, verdicts_dir, _verdicts=None):
                         "pending": fo_pending},
             "verify": {"total": v_total, "done": v_total - v_pending,
                        "pending": v_pending}}
+
+
+def snapshot_out_files(plan, out_path=None):
+    """#493 R4: record a sha256 per existing plan out_file at fan-out end.
+
+    The write-guard PREVENTS out-of-scope writes on enforced hosts; this is
+    the after-the-fact DETECTION layer for content substituted inside a
+    legitimately-declared out_file (which set-based reconcile cannot see).
+    The orchestrator calls this right after fan-out completes; synthesize
+    verifies the ingested bytes still match. Returns the {realpath: sha256}
+    mapping; writes it to out_path (default .panopticon/out-file-hashes.json)
+    when given a plan with any existing out_file.
+    """
+    hashes = {}
+    for e in plan or []:
+        if not isinstance(e, dict):
+            continue
+        path = e.get("out_file")
+        if not isinstance(path, str) or not path or not os.path.isfile(path):
+            continue
+        with open(path, "rb") as fh:
+            digest = hashlib.sha256(fh.read()).hexdigest()
+        hashes[os.path.realpath(path)] = digest
+    if out_path is None:
+        out_path = os.path.join(".panopticon", "out-file-hashes.json")
+    if hashes:
+        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+        with open(out_path, "w", encoding="utf-8") as fh:
+            json.dump(hashes, fh, indent=1, sort_keys=True)
+    return hashes
+
+
+def verify_out_file_hashes(ingested_paths, hashes_path=None):
+    """Compare ingested findings files against the fan-out-time snapshot.
+
+    Returns (checked, mismatched) where mismatched lists the ORIGINAL path
+    strings whose current bytes no longer hash to the recorded value.
+    (None, []) when no snapshot exists -- an ordinary non-fan-out run.
+    """
+    if hashes_path is None:
+        hashes_path = os.path.join(".panopticon", "out-file-hashes.json")
+    try:
+        with open(hashes_path, encoding="utf-8") as fh:
+            recorded = json.load(fh)
+    except (OSError, ValueError):
+        return None, []
+    if not isinstance(recorded, dict) or not recorded:
+        return None, []
+    checked = 0
+    mismatched = []
+    for p in ingested_paths or []:
+        rp = os.path.realpath(str(p))
+        if rp not in recorded:
+            continue
+        checked += 1
+        try:
+            with open(p, "rb") as fh:
+                digest = hashlib.sha256(fh.read()).hexdigest()
+        except OSError:
+            mismatched.append(str(p))
+            continue
+        if digest != recorded[rp]:
+            mismatched.append(str(p))
+    return checked, sorted(mismatched)

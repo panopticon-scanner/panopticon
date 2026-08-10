@@ -212,3 +212,13 @@ class TestReviewerScopeFence(unittest.TestCase):
         for name in ("panel-review.md", "lens-sweep.md"):
             with open(os.path.join(ROOT, "agents", name), encoding="utf-8") as fh:
                 self.assertIn("Scope fence", fh.read(), name)
+class TestIntegrityResidualDocs(unittest.TestCase):
+    """#493: the pipeline instructs dispatch-time plan re-verification and the
+    fan-out content snapshot."""
+
+    def test_skill_instructs_verify_plan_and_snapshot(self):
+        with open(os.path.join(ROOT, "SKILL.md"), encoding="utf-8") as fh:
+            skill = fh.read()
+        self.assertIn("--verify-plan", skill)
+        self.assertIn("snapshot_out_files", skill)
+        self.assertIn("content_mismatched_files", skill)

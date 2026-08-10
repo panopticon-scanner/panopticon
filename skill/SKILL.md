@@ -35,7 +35,7 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
 - *(none)* — whole-repo scan.
 
 ## Global flags
-`--full` (force all panels), `--security {standard,redteam}` (default standard), `--fail-on {critical,high,medium,low}`, `--severity {all,medium,high,critical}` (report only findings at or above the threshold), `--out PATH`, `--tools` (require tool scan), `--no-tools` (skip tool scan), `--epss` (enrich CVE citations), `--gate-unverified` (unverified findings drive grades/gate), `--max-verify N` (cap the verify queue), `--base <ref|sha>` (explicit delta base for `-c`/`--pr`/`--files`), `--diff-context N` (default 5; on-diff tolerance in lines), `--gate-scope {on-diff,all}` (default `on-diff` for delta reviews; scopes the gate to on-diff × gate-eligible findings), `--include-fixtures` (keep tool findings under test-fixture corpora; default prunes them for parity with the standard-mode review prune — pass for redteam self-scans), `--tools-exclude GLOB` (drop tool findings whose path matches GLOB; repeatable, for additional non-fixture paths). `--base` on `--files` makes it an explicit delta request — plain `--files` (no `--base`) is a normal whole-file review and emits no delta artifact.
+`--full` (force all panels), `--security {standard,redteam}` (default standard), `--fail-on {critical,high,medium,low}`, `--severity {all,medium,high,critical}` (report only findings at or above the threshold), `--out PATH`, `--tools` (require tool scan), `--no-tools` (skip tool scan), `--epss` (enrich CVE citations), `--gate-unverified` (unverified findings drive grades/gate), `--max-verify N` (cap the verify queue; PR-scale delta reviews queue EVERY finding incl. tool claims -- a 25-file PR queued 108 advisors -- so size N ~ 2x the changed-file count unless you want the full sweep), `--base <ref|sha>` (explicit delta base for `-c`/`--pr`/`--files`), `--diff-context N` (default 5; on-diff tolerance in lines), `--gate-scope {on-diff,all}` (default `on-diff` for delta reviews; scopes the gate to on-diff × gate-eligible findings), `--include-fixtures` (keep tool findings under test-fixture corpora; default prunes them for parity with the standard-mode review prune — pass for redteam self-scans), `--tools-exclude GLOB` (drop tool findings whose path matches GLOB; repeatable, for additional non-fixture paths). `--base` on `--files` makes it an explicit delta request — plain `--files` (no `--base`) is a normal whole-file review and emits no delta artifact.
 
 ## Pipeline
 1. `TodoList`: discovery → scout → tools → panels → lens sub-reviews → synthesis.
@@ -141,6 +141,18 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
      never end a turn with an entry unresolved; resume via the done-predicate
      (`pending_entries`), not a fixed dispatch list; status comes from disk,
      not recollection.
+   - **Before fan-out (plan integrity, #493)** — re-verify the on-disk plans
+     against the live registration dir:
+     `python3 skill/scripts/dispatch.py --verify-plan .panopticon/dispatch-plan-<group>.json`
+     (repeatable) — exits 1 on an `enforced: true` entry whose shell is no
+     longer registered (an on-disk flip after emission) or an unenforced
+     reviewer whose ack does not hash-match this plan's content.
+   - **After fan-out (content snapshot, #493)** — BEFORE uninstalling the
+     guard, record the out-file hashes so synthesize can detect content
+     substituted inside a legitimately-declared out_file after the fact:
+     `python3 -c "import sys, glob, json; sys.path.insert(0,'skill'); import scripts.group_runner as gr; plan=[e for p in sorted(glob.glob('.panopticon/dispatch-plan*.json')) for e in json.load(open(p))]; gr.snapshot_out_files(plan)"`
+     — mismatches surface at `meta.integrity.content_mismatched_files` and
+     force `INCONCLUSIVE`.
    - **After fan-out** — uninstall the guard:
      `python3 -c "import sys; sys.path.insert(0,'skill'); import scripts.write_guard_hook as wg; wg.uninstall()"`.
    - **Coverage** — do not hand-assemble a tally for the artifact:
