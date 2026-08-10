@@ -114,9 +114,13 @@ def resolve_issue(record, ledger):
     return None
 
 
-RECUR_COMMENT = ("**Run-3 reconciliation: re-affirmed.** This finding's fingerprint "
-                 "(`%s`) recurred in the run-3 self-scan — the underlying content "
-                 "identity (panel, category, file, rule/title) matched. Left open.")
+RECUR_EXACT_COMMENT = ("**Run-3 reconciliation: re-affirmed.** This finding's fingerprint "
+                       "(`%s`) recurred in the run-3 self-scan — the underlying content "
+                       "identity (panel, category, file, rule/title) matched. Left open.")
+RECUR_COARSE_COMMENT = ("**Run-3 reconciliation: re-affirmed (re-worded).** This finding's "
+                        "fingerprint (`%s`) did not recur exactly, but its file, panel, and "
+                        "category identity recurred in the new run under a re-worded title; "
+                        "treated as the same finding. Left open.")
 CLOSED_COMMENT = ("**Reconciliation: fixed (area clear).** This finding did not "
                   "recur and its (file, panel) is clean in the new run: %s. "
                   "Auto-closed. Reopen if this was a re-word we missed.")
@@ -127,14 +131,19 @@ AMBIGUOUS_COMMENT = ("**Reconciliation: not seen, but area still active.** This 
 
 
 def plan_actions(diff, ledger):
+    if "fixed_or_gone" in diff:
+        print("diff.json predates the closed/ambiguous split -- re-run reconcile.py diff",
+             file=sys.stderr)
     actions = []
     for entry in diff.get("recurring") or []:
+        comment_tpl = (RECUR_COARSE_COMMENT if entry.get("match_tier") == "coarse"
+                       else RECUR_EXACT_COMMENT)
         for record in entry["run2"]:
             issue = resolve_issue(record, ledger)
             if issue is None:
                 continue
             actions.append({"cohort": "recurring", "fingerprint": entry["fingerprint"],
-                            "issue": issue, "comment": RECUR_COMMENT % entry["fingerprint"],
+                            "issue": issue, "comment": comment_tpl % entry["fingerprint"],
                             "close": False})
     for entry in diff.get("closed") or []:
         for record in entry["run2"]:

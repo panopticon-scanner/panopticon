@@ -200,6 +200,50 @@ class TestPlanActions(unittest.TestCase):
         self.assertNotIn("new", by_cohort)
         self.assertIn("clear", by_cohort["closed"]["comment"])
 
+    def test_recurring_coarse_tier_gets_coarse_comment_not_exact(self):
+        # F3: a coarse-tier match's comment must not claim the rule/title
+        # matched -- that's precisely what did NOT happen on that branch.
+        diff = {"recurring": [{"fingerprint": "fp1", "match_tier": "coarse",
+                              "run2": [{"id": "F-1", "stored_fingerprint": "old1",
+                                       "location_file": "a.py", "kind": "finding"}]}],
+               "closed": [], "ambiguous": [], "new": []}
+        ledger = {"old1|F-1|a.py|finding": "https://github.com/o/r/issues/1"}
+        actions = reconcile_apply.plan_actions(diff, ledger)
+        self.assertEqual(len(actions), 1)
+        self.assertIn("re-worded title", actions[0]["comment"])
+        self.assertNotIn("rule/title", actions[0]["comment"])
+
+    def test_recurring_exact_tier_gets_exact_comment(self):
+        diff = {"recurring": [{"fingerprint": "fp1", "match_tier": "exact",
+                              "run2": [{"id": "F-1", "stored_fingerprint": "old1",
+                                       "location_file": "a.py", "kind": "finding"}]}],
+               "closed": [], "ambiguous": [], "new": []}
+        ledger = {"old1|F-1|a.py|finding": "https://github.com/o/r/issues/1"}
+        actions = reconcile_apply.plan_actions(diff, ledger)
+        self.assertEqual(len(actions), 1)
+        self.assertIn("rule/title", actions[0]["comment"])
+        self.assertNotIn("re-worded title", actions[0]["comment"])
+
+    def test_recurring_missing_match_tier_defaults_to_exact_comment(self):
+        # Back-compat: entries built before match_tier existed (or a diff.json
+        # produced before #914) must still get the exact-tier comment.
+        actions = reconcile_apply.plan_actions(self._diff(),
+                                               {"old1|F-1|a.py|finding":
+                                                "https://github.com/o/r/issues/1"})
+        recur = next(a for a in actions if a["cohort"] == "recurring")
+        self.assertIn("rule/title", recur["comment"])
+
+    def test_fixed_or_gone_key_prints_stale_diff_note_to_stderr(self):
+        # M4: a pre-branch diff.json shape (fixed_or_gone, no closed/ambiguous
+        # split) must not silently be planned against as if nothing changed.
+        diff = dict(self._diff())
+        diff["fixed_or_gone"] = []
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            reconcile_apply.plan_actions(diff, {})
+        self.assertIn("predates the closed/ambiguous split", buf.getvalue())
+
+
 class TestLedgerKeyMatchesKeyFor(unittest.TestCase):
     """The load-bearing invariant: reconcile_apply.ledger_key(record) must be
     byte-identical to file_issues.key_for(finding, rejected) for the same
@@ -388,6 +432,3 @@ class TestCliWiring(unittest.TestCase):
                 rc = reconcile_apply.main(["apply", actions_path])
             self.assertEqual(rc, 0)
             self.assertIn("DRY RUN", buf.getvalue())
-
-
-# NEW TEST ADDED VIA BASH

@@ -97,16 +97,18 @@ class TestBuildDiff(unittest.TestCase):
         # else ambiguous. run3's active (file, panel) pairs are
         # {(app/config.py, security), (app/registry.py, architecture),
         # (requirements.txt, security), (app/query.py, security)} — none of
-        # them match F-GONE-1's (app/legacy.py, test), F-GONE-2's
-        # (app/auth.py, security), or F-DUP-1/F-DUP-2's ("", "") — so all
-        # four are closed and none are ambiguous.
+        # them match F-GONE-1's (app/legacy.py, test) or F-GONE-2's
+        # (app/auth.py, security), so both are closed. F-DUP-1/F-DUP-2 carry
+        # NO file (location.file == "") -- final-review F1: an empty file can
+        # never be corroborated by a (file,panel) read, so that group is
+        # routed to ambiguous instead, never closed on vacuous evidence.
         closed_ids = {rec["id"] for entry in diff["closed"]
                      for rec in entry["run2"]}
-        self.assertEqual(closed_ids,
-                         {"F-GONE-1", "F-GONE-2", "F-DUP-1", "F-DUP-2"})
+        self.assertEqual(closed_ids, {"F-GONE-1", "F-GONE-2"})
         ambiguous_ids = {rec["id"] for entry in diff["ambiguous"]
                          for rec in entry["run2"]}
-        self.assertEqual(ambiguous_ids, set())
+        self.assertEqual(ambiguous_ids, {"F-DUP-1", "F-DUP-2"})
+        self.assertIn("no file recorded", diff["ambiguous"][0]["reason"])
         new_ids = {rec["id"] for entry in diff["new"] for rec in entry["run3"]}
         self.assertEqual(new_ids, {"F-NEW-1"})
 
@@ -139,13 +141,27 @@ class TestBuildDiff(unittest.TestCase):
         entry = next(e for e in diff["recurring"] if e["fingerprint"] == fp)
         self.assertTrue(entry["kind_changed"])
 
-    def test_meta_counts(self):
+    def test_meta_run_counts(self):
         r2 = self._records("run2.json")
         r3 = self._records("run3.json")
         diff = reconcile.build_diff(r2, r3, "run2.json", "run3.json")
         self.assertEqual(diff["meta"]["run2_count"], len(r2))
         self.assertEqual(diff["meta"]["run3_count"], len(r3))
         self.assertEqual(diff["meta"]["run2_report"], "run2.json")
+
+    def test_meta_group_counts_and_no_close_guard_in_normal_case(self):
+        # M7: meta.counts values (fingerprint-GROUP counts, not record counts)
+        # asserted directly. F-DUP-1/F-DUP-2 collide onto ONE fingerprint (both
+        # are entirely empty findings, so they hash identically), so "closed"
+        # has 2 groups (F-GONE-1, F-GONE-2) and "ambiguous" has 1 group (the
+        # F-DUP collision).
+        r2 = self._records("run2.json")
+        r3 = self._records("run3.json")
+        diff = reconcile.build_diff(r2, r3, "run2.json", "run3.json")
+        self.assertEqual(diff["meta"]["counts"],
+                         {"recurring": 3, "closed": 2, "ambiguous": 1, "new": 1})
+        # F2: run2 and run3 file sets overlap normally here -- no guard fires.
+        self.assertIsNone(diff["meta"]["close_guard"])
 
 
 class TestBuildDiffCohorts(unittest.TestCase):
@@ -171,6 +187,9 @@ class TestBuildDiffCohorts(unittest.TestCase):
         self.assertEqual(self._cohort_ids(diff, "recurring", "run2"), {"A"})
         entry = diff["recurring"][0]
         self.assertEqual(entry["match_tier"], "coarse")
+        # F4: the re-worded run3 record must appear on the entry's run3 side,
+        # not vanish from every cohort.
+        self.assertEqual({r["id"] for r in entry["run3"]}, {"A3"})
 
     def test_recategorized_on_active_file_is_ambiguous_not_closed(self):
         # SAME (file, panel), DIFFERENT category -> not a coarse match, but the
@@ -182,11 +201,19 @@ class TestBuildDiffCohorts(unittest.TestCase):
         self.assertEqual(self._cohort_ids(diff, "closed", "run2"), set())
 
     def test_genuinely_fixed_file_panel_clear_is_closed(self):
-        r2 = self._recs([self._f("A", "auth.py", "security", "authz", "Missing role check")])
-        r3 = self._recs([self._f("B", "other.py", "code", "structure", "Long function")])
+        # A second, file-bearing recurring pair keeps run2/run3's file sets
+        # overlapping so this exercises the (file,panel)-clear close in
+        # isolation from the F2 close_guard (a single-file-each fixture would
+        # trivially share zero paths and trip the guard instead).
+        r2 = self._recs([self._f("A", "auth.py", "security", "authz", "Missing role check"),
+                         self._f("K", "keep.py", "code", "structure", "kept")])
+        r3 = self._recs([self._f("B", "other.py", "code", "structure", "Long function"),
+                         self._f("K3", "keep.py", "code", "structure", "kept")])
         diff = reconcile.build_diff(r2, r3, "r2", "r3")
+        self.assertIsNone(diff["meta"]["close_guard"])
         self.assertEqual(self._cohort_ids(diff, "closed", "run2"), {"A"})
-        self.assertIn("clear", diff["closed"][0]["reason"])
+        entry = next(e for e in diff["closed"] if "A" in {r["id"] for r in e["run2"]})
+        self.assertIn("clear", entry["reason"])
 
     def test_tool_finding_recurs_via_stable_rule(self):
         t2 = self._recs([self._f("T", "pkg.json", "security", "CVE-2021-1", "lodash",
@@ -211,6 +238,86 @@ class TestBuildDiffCohorts(unittest.TestCase):
         diff = reconcile.build_diff(r2, r3, "r2", "r3")
         self.assertEqual(diff["recurring"][0]["match_tier"], "exact")
 
+    def test_kind_changed_true_for_coarse_match_when_kind_flips(self):
+        # F4/F5: kind_changed must no longer be hardwired False for a coarse
+        # match -- compute it from the coarse-matched run3 records' kinds.
+        r2 = self._recs([self._f("A", "auth.py", "security", "authz", "Missing role check")])
+        r3 = reconcile.iter_records({"findings": [], "discarded_claims": [
+            self._f("A3", "auth.py", "security", "authz", "no longer exploitable")]})
+        diff = reconcile.build_diff(r2, r3, "r2", "r3")
+        entry = diff["recurring"][0]
+        self.assertEqual(entry["match_tier"], "coarse")
+        self.assertTrue(entry["kind_changed"])
+
+    def test_no_file_recorded_routes_to_ambiguous_not_closed(self):
+        # F1: an empty location.file means (file,panel)-clear is vacuous --
+        # it can never corroborate a fix, so this must refuse to close. A
+        # second, file-bearing recurring pair keeps run2/run3's file sets
+        # overlapping so this exercises F1 in isolation from the F2
+        # close_guard (which would otherwise fire first and mask F1's reason).
+        r2 = self._recs([self._f("A", "", "security", "misc", "Something wrong"),
+                         self._f("K", "keep.py", "code", "structure", "kept")])
+        r3 = self._recs([self._f("K3", "keep.py", "code", "structure", "kept"),
+                         self._f("B", "other.py", "code", "structure", "Long function")])
+        diff = reconcile.build_diff(r2, r3, "r2", "r3")
+        self.assertIsNone(diff["meta"]["close_guard"])
+        self.assertEqual(self._cohort_ids(diff, "ambiguous", "run2"), {"A"})
+        self.assertEqual(self._cohort_ids(diff, "closed", "run2"), set())
+        entry = next(e for e in diff["ambiguous"] if "A" in {r["id"] for r in e["run2"]})
+        self.assertIn("no file recorded", entry["reason"])
+
+    def test_ambiguous_reason_counts_rejected_claims_separately_from_findings(self):
+        # F5: a run2 finding whose (file,panel) is active in run3 ONLY via a
+        # rejected claim must still be blocked from closing (safe direction),
+        # but the reason must say "rejected claim(s)", never call it a
+        # "finding".
+        r2 = self._recs([self._f("A", "auth.py", "security", "authz", "Missing role check")])
+        r3 = reconcile.iter_records({"findings": [], "discarded_claims": [
+            self._f("R3", "auth.py", "security", "not-a-real-issue", "false positive")]})
+        diff = reconcile.build_diff(r2, r3, "r2", "r3")
+        self.assertEqual(self._cohort_ids(diff, "ambiguous", "run2"), {"A"})
+        reason = diff["ambiguous"][0]["reason"]
+        self.assertIn("1 rejected claim(s)", reason)
+        self.assertNotIn("finding(s)", reason)
+
+    def test_empty_run3_refuses_to_close_anything(self):
+        # F2: an empty run3 must never read as "area clear" for everything.
+        r2 = self._recs([self._f("A", "auth.py", "security", "authz", "Missing role check")])
+        diff = reconcile.build_diff(r2, [], "r2", "r3")
+        self.assertEqual(diff["meta"]["close_guard"], "empty_run3")
+        self.assertEqual(self._cohort_ids(diff, "closed", "run2"), set())
+        self.assertEqual(self._cohort_ids(diff, "ambiguous", "run2"), {"A"})
+        self.assertIn("zero records", diff["ambiguous"][0]["reason"])
+
+    def test_zero_file_overlap_refuses_to_close_anything(self):
+        # F2 sibling: absolute-vs-relative (or otherwise disjoint) path shapes
+        # between the two runs must not silently read as "area clear" either.
+        r2 = self._recs([self._f("A", "a.py", "security", "authz", "x")])
+        r3 = self._recs([self._f("B", "/abs/a.py", "security", "authz", "y")])
+        diff = reconcile.build_diff(r2, r3, "r2", "r3")
+        self.assertEqual(diff["meta"]["close_guard"], "no_file_overlap")
+        self.assertEqual(self._cohort_ids(diff, "closed", "run2"), set())
+        self.assertEqual(self._cohort_ids(diff, "ambiguous", "run2"), {"A"})
+        self.assertIn("share zero paths", diff["ambiguous"][0]["reason"])
+
+    def test_degenerate_group_spanning_multiple_coarse_keys_is_ambiguous(self):
+        # M5: airtight group-key guard. Unreachable via iter_records today
+        # (fingerprint and coarse_key are both derived from the same finding),
+        # but a fingerprint group built from records that disagree on
+        # coarse_key must still refuse to close -- free insurance.
+        r2 = [{"id": "A", "kind": "finding", "fingerprint": "fp1",
+              "coarse_key": ("a.py", "security", "authz")},
+             {"id": "B", "kind": "finding", "fingerprint": "fp1",
+              "coarse_key": ("b.py", "security", "authz")}]
+        # r3 shares a file with r2 (so the F2 close_guard stays off and this
+        # test exercises M5 in isolation) but neither its fingerprint nor its
+        # coarse key matches fp1's group.
+        r3 = self._recs([self._f("C", "a.py", "code", "structure", "Long function")])
+        diff = reconcile.build_diff(r2, r3, "r2", "r3")
+        self.assertIsNone(diff["meta"]["close_guard"])
+        self.assertEqual(self._cohort_ids(diff, "ambiguous", "run2"), {"A", "B"})
+        self.assertIn("multiple coarse keys", diff["ambiguous"][0]["reason"])
+
     def test_new_finding_with_unseen_coarse_key(self):
         r2 = self._recs([self._f("A", "auth.py", "security", "authz", "x")])
         r3 = self._recs([self._f("A3", "auth.py", "security", "authz", "x re-worded"),
@@ -226,11 +333,23 @@ class TestRenderSummary(unittest.TestCase):
         diff = reconcile.build_diff(r2, r3, "run2.json", "run3.json")
         text = reconcile.render_summary(diff)
         self.assertIn("recurring: 3", text)
-        self.assertIn("closed: 4", text)
-        self.assertIn("ambiguous: 0", text)
+        self.assertIn("closed: 2", text)
+        self.assertIn("ambiguous: 2", text)
         self.assertIn("new: 1", text)
         self.assertIn("degenerate fingerprint", text.lower())
         self.assertIn("F-DUP-1", text)
+
+    def test_summary_lists_ambiguous_entries_for_human_review(self):
+        # M2: the ambiguous cohort is the one a human must review, so its
+        # fingerprint + reason must be surfaced in the summary, mirroring the
+        # existing kind-changed section's style.
+        r2 = reconcile.iter_records(reconcile.load_report(os.path.join(FIXTURES, "run2.json")))
+        r3 = reconcile.iter_records(reconcile.load_report(os.path.join(FIXTURES, "run3.json")))
+        diff = reconcile.build_diff(r2, r3, "run2.json", "run3.json")
+        text = reconcile.render_summary(diff)
+        self.assertIn("## ambiguous (kept open)", text)
+        self.assertIn(diff["ambiguous"][0]["fingerprint"], text)
+        self.assertIn("no file recorded", text)
 
 
 class TestDeterminism(unittest.TestCase):
