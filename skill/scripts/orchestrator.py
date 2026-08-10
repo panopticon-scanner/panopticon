@@ -538,6 +538,14 @@ def resolve_base(repo, explicit=None, pr_base=None, runner=subprocess.run):
     if explicit:
         return (explicit, "explicit") if _resolves(explicit) else (None, "unresolved")
     if pr_base:
+        # #947 FIXME-3: acquire_pr fetches only the PR head, so the base may
+        # exist locally only as origin/<name> -- and a STALE local branch of
+        # that name would silently mis-anchor the delta. Prefer the remote
+        # ref, fall back to the bare name; a machine-derived pr_base may try
+        # both (unlike an explicit --base, which never falls through).
+        origin_ref = "origin/%s" % pr_base
+        if _resolves(origin_ref):
+            return origin_ref, "pr-base"
         return (pr_base, "pr-base") if _resolves(pr_base) else (None, "unresolved")
     for ref in ("main", "master"):
         if _resolves(ref):

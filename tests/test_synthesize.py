@@ -3143,3 +3143,23 @@ class TestOutOfScope(unittest.TestCase):
             res = syn.out_of_scope_findings([fp], plan)
         self.assertEqual(res["checked"], 0)
         self.assertEqual(res["count"], 0)
+
+
+
+
+class TestReconcileRealpath(unittest.TestCase):
+    def test_symlinked_plan_paths_match_physical_ingested_paths(self):
+        # #947 FIXME-1: macOS /var -> /private/var symlink made abspath
+        # comparison flag every file on a clean run. realpath both sides.
+        with tempfile.TemporaryDirectory() as d:
+            real = os.path.join(d, "real")
+            os.makedirs(real)
+            link = os.path.join(d, "link")
+            os.symlink(real, link)
+            fname = "findings-g1-code-panel_review.json"
+            with open(os.path.join(real, fname), "w") as fh:
+                json.dump({"findings": []}, fh)
+            plan = [{"out_file": os.path.join(link, fname)}]   # symlink form
+            ingested = [os.path.join(real, fname)]             # physical form
+            unexpected, missing = syn.reconcile_findings_files(plan, ingested)
+        self.assertEqual((unexpected, missing), ([], []))
