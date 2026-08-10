@@ -189,3 +189,26 @@ class TestAdvisorDoc(unittest.TestCase):
         self.assertIn("Tool claims", advisor)
         self.assertIn("tool:*", advisor)
         self.assertIn("pattern", advisor.lower())
+class TestScoutDoc(unittest.TestCase):
+    """#431: every schema-REQUIRED ScopeProfile field must be named in the
+    scout template -- the schema and the prompt drift apart otherwise (the
+    live failure: scouts omitted `languages`/`surfaces`)."""
+
+    def test_scout_names_every_schema_required_field(self):
+        import json as _json
+        with open(os.path.join(ROOT, "reference", "scope-profile-schema.json"),
+                  encoding="utf-8") as fh:
+            required = _json.load(fh)["required"]
+        with open(os.path.join(ROOT, "agents", "scout.md"), encoding="utf-8") as fh:
+            scout = fh.read()
+        for field in required:
+            self.assertIn(field, scout, field)
+
+
+class TestReviewerScopeFence(unittest.TestCase):
+    """#441: reviewer templates carry the scope fence."""
+
+    def test_panel_and_lens_templates_have_fence(self):
+        for name in ("panel-review.md", "lens-sweep.md"):
+            with open(os.path.join(ROOT, "agents", name), encoding="utf-8") as fh:
+                self.assertIn("Scope fence", fh.read(), name)
