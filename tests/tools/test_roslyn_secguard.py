@@ -155,12 +155,13 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0]["tool_evidence"]["rule_id"], "SCS0002")
 
-    def test_parse_missing_locations_key_uses_empty_default(self):
-        # Already worked before this fix (default [{}]); locked in as a
-        # regression test alongside the empty/null cases above.
+    def test_parse_missing_locations_key_drops_like_empty(self):
+        # #476: an OMITTED locations key is the same location-less case as an
+        # empty/null one -- both drop. Previously the omitted form emitted a
+        # placeholder {"file": "", "line_start": 1} finding while the empty
+        # form was dropped, an asymmetry with no basis in SARIF semantics.
         findings = rs.RoslynSecGuardAdapter().parse(ROSLYN_SAMPLE_MISSING_LOCATIONS_KEY, "g1")
-        self.assertEqual(len(findings), 1)
-        self.assertEqual(findings[0]["location"], {"file": "", "line_start": 1})
+        self.assertEqual(findings, [])
 
     def test_parse_survives_non_dict_run_entry(self):
         # A non-dict entry in the SARIF "runs" array must not crash the whole
