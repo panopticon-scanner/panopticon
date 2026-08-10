@@ -58,6 +58,9 @@ h2 { font-size: 18px; font-weight: 600; }
 .badge.gate-pass { background: #1f6f48; color: #faf8f2; }
 .badge.gate-fail { background: #7d2f2a; color: #faf8f2; }
 .badge.gate-off { background: #4e6375; color: #faf8f2; }
+.badge.gate-inconclusive { background: #8a6d1f; color: #faf8f2; }
+.not-certified { margin: 8px 0; padding: 8px 12px; border-left: 4px solid #8a6d1f;
+  background: #2e2814; color: #e8d9a0; font-weight: 600; }
 .panel-code { background: var(--panel-code); }
 .panel-test { background: var(--panel-test); }
 .panel-security { background: var(--panel-security); }
@@ -364,7 +367,8 @@ def _severity_class(severity):
 
 def _gate_class(gate):
     """Map a gate verdict to a CSS class using the severity palette."""
-    return {"PASS": "gate-pass", "FAIL": "gate-fail"}.get(str(gate).upper(), "gate-off")
+    return {"PASS": "gate-pass", "FAIL": "gate-fail",
+            "INCONCLUSIVE": "gate-inconclusive"}.get(str(gate).upper(), "gate-off")
 
 
 def _panel_class(panel):
@@ -405,13 +409,20 @@ def _render_header(report):
         f"<span>{_escape(meta.get('security_mode', 'standard'))}</span>",
         "</div>",
         "<div class='badges'>",
-        f"<span class='badge grade'>Grade: {_escape(summary.get('overall_grade', '-'))}</span>",
+        # #490: a report with no grade must not render the literal "None",
+        # and an uncertified grade is PROVISIONAL, not settled.
+        f"<span class='badge grade'>Grade: {_escape(summary.get('overall_grade') or '-')}"
+        f"{' (provisional)' if summary.get('coverage_certified') is False else ''}</span>",
         f"<span class='badge {_severity_class(summary.get('risk_level', 'INFO'))}'>"
         f"Risk: {_escape(summary.get('risk_level', '-'))}</span>",
         f"<span class='badge {_gate_class(summary.get('gate', 'OFF'))}'>"
         f"Gate: {_escape(summary.get('gate', 'OFF'))}</span>",
         "</div>",
     ]
+    if summary.get("coverage_certified") is False:
+        note = summary.get("coverage_note") or "gate-relevant coverage did not complete"
+        parts.append("<div class='not-certified'>NOT CERTIFIED &mdash; %s</div>"
+                     % _escape(note))
     ev = summary.get("evidence_stats") or {}
     verified = int(ev.get("advisor_confirmed", 0)) + int(ev.get("tool_confirmed", 0))
     unverified = int(ev.get("unverified", 0))

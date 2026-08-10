@@ -164,16 +164,15 @@ class RoslynSecGuardAdapter:
                     # the report (the #86 exfiltration channel).
                     if not rule_id.startswith("SCS"):
                         continue
-                    if "locations" in result:
-                        # Key present but empty/null (a location-less
-                        # diagnostic) carries no useful location - drop it
-                        # rather than emit a placeholder-location finding.
-                        locs = result.get("locations") or []
-                        if not locs:
-                            continue
-                        loc = locs[0]
-                    else:
-                        loc = {}
+                    # Omitted key and present-but-empty/null are the SAME
+                    # case - a location-less diagnostic (#476). Both drop:
+                    # previously an omitted key emitted a placeholder-location
+                    # finding while an empty list was dropped, an asymmetry
+                    # with no basis in SARIF semantics.
+                    locs = result.get("locations") or []
+                    if not locs:
+                        continue
+                    loc = locs[0]
                     location = self._location(loc)
                     cwe = _ROSLYN_CWE.get(rule_id)
                     message = self._message_text(result, rule_id)
