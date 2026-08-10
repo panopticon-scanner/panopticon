@@ -92,10 +92,21 @@ class TestBuildDiff(unittest.TestCase):
         recurring_ids = {rec["id"] for entry in diff["recurring"]
                          for rec in entry["run2"]}
         self.assertEqual(recurring_ids, {"F-TOOL-1", "F-AGENT-1", "R-REJ-1"})
-        gone_ids = {rec["id"] for entry in diff["fixed_or_gone"]
-                   for rec in entry["run2"]}
-        self.assertEqual(gone_ids,
+        # Non-recurring run2 findings re-partition by the (file, panel)-clear
+        # rule (#914): closed if run3 has zero findings on that (file, panel),
+        # else ambiguous. run3's active (file, panel) pairs are
+        # {(app/config.py, security), (app/registry.py, architecture),
+        # (requirements.txt, security), (app/query.py, security)} — none of
+        # them match F-GONE-1's (app/legacy.py, test), F-GONE-2's
+        # (app/auth.py, security), or F-DUP-1/F-DUP-2's ("", "") — so all
+        # four are closed and none are ambiguous.
+        closed_ids = {rec["id"] for entry in diff["closed"]
+                     for rec in entry["run2"]}
+        self.assertEqual(closed_ids,
                          {"F-GONE-1", "F-GONE-2", "F-DUP-1", "F-DUP-2"})
+        ambiguous_ids = {rec["id"] for entry in diff["ambiguous"]
+                         for rec in entry["run2"]}
+        self.assertEqual(ambiguous_ids, set())
         new_ids = {rec["id"] for entry in diff["new"] for rec in entry["run3"]}
         self.assertEqual(new_ids, {"F-NEW-1"})
 
@@ -121,8 +132,9 @@ class TestBuildDiff(unittest.TestCase):
         # run3 (or vice-versa) must set kind_changed — the signal a triager
         # uses to notice a finding's status flipped across runs.
         fp = "a" * 16
-        r2 = [{"id": "X-1", "kind": "finding", "fingerprint": fp}]
-        r3 = [{"id": "X-1", "kind": "rejected", "fingerprint": fp}]
+        ck = ("f.py", "panel", "cat")
+        r2 = [{"id": "X-1", "kind": "finding", "fingerprint": fp, "coarse_key": ck}]
+        r3 = [{"id": "X-1", "kind": "rejected", "fingerprint": fp, "coarse_key": ck}]
         diff = reconcile.build_diff(r2, r3, "run2.json", "run3.json")
         entry = next(e for e in diff["recurring"] if e["fingerprint"] == fp)
         self.assertTrue(entry["kind_changed"])
@@ -136,6 +148,77 @@ class TestBuildDiff(unittest.TestCase):
         self.assertEqual(diff["meta"]["run2_report"], "run2.json")
 
 
+class TestBuildDiffCohorts(unittest.TestCase):
+    """#914: coarse-key match + safety-first (file,panel)-clear close gate."""
+
+    def _recs(self, findings):
+        return reconcile.iter_records({"findings": findings})
+
+    def _f(self, fid, file, panel, cat, title, source=None):
+        f = {"id": fid, "panel": panel, "category": cat,
+             "location": {"file": file}, "title": title}
+        if source:
+            f["source"] = source
+        return f
+
+    def _cohort_ids(self, diff, cohort, side):
+        return {r["id"] for e in diff[cohort] for r in e.get(side, [])}
+
+    def test_reworded_agent_finding_recurs_via_coarse_key(self):
+        r2 = self._recs([self._f("A", "auth.py", "security", "authz", "Missing role check")])
+        r3 = self._recs([self._f("A3", "auth.py", "security", "authz", "No RBAC on admin route")])
+        diff = reconcile.build_diff(r2, r3, "r2", "r3")
+        self.assertEqual(self._cohort_ids(diff, "recurring", "run2"), {"A"})
+        entry = diff["recurring"][0]
+        self.assertEqual(entry["match_tier"], "coarse")
+
+    def test_recategorized_on_active_file_is_ambiguous_not_closed(self):
+        # SAME (file, panel), DIFFERENT category -> not a coarse match, but the
+        # (file,panel) is still active -> ambiguous, never auto-closed.
+        r2 = self._recs([self._f("A", "auth.py", "security", "weak-crypto", "MD5")])
+        r3 = self._recs([self._f("A3", "auth.py", "security", "crypto-misuse", "MD5 hashing")])
+        diff = reconcile.build_diff(r2, r3, "r2", "r3")
+        self.assertEqual(self._cohort_ids(diff, "ambiguous", "run2"), {"A"})
+        self.assertEqual(self._cohort_ids(diff, "closed", "run2"), set())
+
+    def test_genuinely_fixed_file_panel_clear_is_closed(self):
+        r2 = self._recs([self._f("A", "auth.py", "security", "authz", "Missing role check")])
+        r3 = self._recs([self._f("B", "other.py", "code", "structure", "Long function")])
+        diff = reconcile.build_diff(r2, r3, "r2", "r3")
+        self.assertEqual(self._cohort_ids(diff, "closed", "run2"), {"A"})
+        self.assertIn("clear", diff["closed"][0]["reason"])
+
+    def test_tool_finding_recurs_via_stable_rule(self):
+        t2 = self._recs([self._f("T", "pkg.json", "security", "CVE-2021-1", "lodash",
+                                 source="tool:trivy")])
+        t3 = self._recs([self._f("T3", "pkg.json", "security", "CVE-2021-1", "lodash 4.17.20",
+                                 source="tool:trivy")])
+        diff = reconcile.build_diff(t2, t3, "r2", "r3")
+        self.assertEqual(self._cohort_ids(diff, "recurring", "run2"), {"T"})
+
+    def test_split_merge_cardinality_both_kept(self):
+        # two run2 findings on one coarse key, one run3 finding on it -> both kept.
+        r2 = self._recs([self._f("A", "m.py", "code", "dup", "Dup logic A"),
+                         self._f("B", "m.py", "code", "dup", "Dup logic B")])
+        r3 = self._recs([self._f("C", "m.py", "code", "dup", "Duplicated block")])
+        diff = reconcile.build_diff(r2, r3, "r2", "r3")
+        self.assertEqual(self._cohort_ids(diff, "recurring", "run2"), {"A", "B"})
+        self.assertEqual(self._cohort_ids(diff, "closed", "run2"), set())
+
+    def test_title_held_recurs_via_exact_tier(self):
+        r2 = self._recs([self._f("A", "auth.py", "security", "authz", "Missing role check")])
+        r3 = self._recs([self._f("A3", "auth.py", "security", "authz", "Missing role check")])
+        diff = reconcile.build_diff(r2, r3, "r2", "r3")
+        self.assertEqual(diff["recurring"][0]["match_tier"], "exact")
+
+    def test_new_finding_with_unseen_coarse_key(self):
+        r2 = self._recs([self._f("A", "auth.py", "security", "authz", "x")])
+        r3 = self._recs([self._f("A3", "auth.py", "security", "authz", "x re-worded"),
+                         self._f("N", "new.py", "code", "logic", "off-by-one")])
+        diff = reconcile.build_diff(r2, r3, "r2", "r3")
+        self.assertEqual(self._cohort_ids(diff, "new", "run3"), {"N"})
+
+
 class TestRenderSummary(unittest.TestCase):
     def test_summary_reports_cohort_counts_and_warns_on_collisions(self):
         r2 = reconcile.iter_records(reconcile.load_report(os.path.join(FIXTURES, "run2.json")))
@@ -143,7 +226,8 @@ class TestRenderSummary(unittest.TestCase):
         diff = reconcile.build_diff(r2, r3, "run2.json", "run3.json")
         text = reconcile.render_summary(diff)
         self.assertIn("recurring: 3", text)
-        self.assertIn("fixed_or_gone: 4", text)
+        self.assertIn("closed: 4", text)
+        self.assertIn("ambiguous: 0", text)
         self.assertIn("new: 1", text)
         self.assertIn("degenerate fingerprint", text.lower())
         self.assertIn("F-DUP-1", text)

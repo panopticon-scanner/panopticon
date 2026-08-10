@@ -107,36 +107,74 @@ def _degenerate(grouped, run_label):
 
 
 def build_diff(run2_records, run3_records, run2_path, run3_path):
-    """Partition recomputed-fingerprint identities into recurring /
-    fixed_or_gone / new cohorts, and surface (never silently merge)
-    same-side fingerprint collisions plus finding<->rejected kind flips.
+    """Partition cross-run identities into recurring / closed / ambiguous / new.
 
-    Every cohort and its record lists are sorted, so re-running the tool on the
-    same inputs yields a byte-identical diff.
+    A finding RECURS if its exact finding_fingerprint OR its coarse reconcile_key
+    (file, panel, category) appears in the other run -- the coarse tier catches
+    agent findings whose title was re-worded (#914). A non-recurring run2
+    finding is CLOSED only when its (file, panel) is entirely clear in run3 (the
+    drift-proof corroboration -- category is free-text and drifts); otherwise it
+    is AMBIGUOUS (kept open, never auto-closed). Same-side fingerprint collisions
+    and finding<->rejected kind flips are surfaced, never silently merged. Every
+    cohort and record list is sorted, so re-running on the same inputs yields a
+    byte-identical diff.
     """
     g2 = _group_by_fingerprint(run2_records)
     g3 = _group_by_fingerprint(run3_records)
     fps2, fps3 = set(g2), set(g3)
+    ck2 = {r["coarse_key"] for r in run2_records}
+    ck3 = {r["coarse_key"] for r in run3_records}
+    # (file, panel) still active in run3 -- the close corroboration.
+    active3 = {(ck[0], ck[1]) for ck in ck3}
+    active3_counts = {}
+    for r in run3_records:
+        fp_panel = (r["coarse_key"][0], r["coarse_key"][1])
+        active3_counts[fp_panel] = active3_counts.get(fp_panel, 0) + 1
 
-    recurring = []
-    for fp in sorted(fps2 & fps3):
-        kinds2 = {r["kind"] for r in g2[fp]}
-        kinds3 = {r["kind"] for r in g3[fp]}
-        recurring.append({"fingerprint": fp, "run2": _by_id(g2[fp]),
-                          "run3": _by_id(g3[fp]),
-                          "kind_changed": kinds2 != kinds3})
-    fixed_or_gone = [{"fingerprint": fp, "run2": _by_id(g2[fp])}
-                     for fp in sorted(fps2 - fps3)]
-    new = [{"fingerprint": fp, "run3": _by_id(g3[fp])}
-          for fp in sorted(fps3 - fps2)]
+    recurring, closed, ambiguous = [], [], []
+    for fp in sorted(fps2):
+        recs = g2[fp]
+        ck = recs[0]["coarse_key"]  # one coarse key per fingerprint-group
+        exact = fp in fps3
+        coarse = ck in ck3
+        if exact or coarse:
+            kinds2 = {r["kind"] for r in recs}
+            kinds3 = {r["kind"] for r in g3[fp]} if exact else kinds2
+            recurring.append({"fingerprint": fp, "coarse_key": list(ck),
+                              "match_tier": "exact" if exact else "coarse",
+                              "run2": _by_id(recs),
+                              "run3": _by_id(g3[fp]) if exact else [],
+                              "kind_changed": exact and kinds2 != kinds3})
+        else:
+            file_, panel_ = ck[0], ck[1]
+            fdisp, pdisp = file_ or "(no file)", panel_ or "(no panel)"
+            if (file_, panel_) in active3:
+                ambiguous.append({"fingerprint": fp, "coarse_key": list(ck),
+                                  "reason": "%s still active on %s (%d finding(s) in run3)"
+                                  % (pdisp, fdisp, active3_counts[(file_, panel_)]),
+                                  "run2": _by_id(recs)})
+            else:
+                closed.append({"fingerprint": fp, "coarse_key": list(ck),
+                               "reason": "(file,panel) clear: 0 findings in %s on %s in run3"
+                               % (pdisp, fdisp),
+                               "run2": _by_id(recs)})
+
+    new = []
+    for fp in sorted(fps3 - fps2):
+        recs = g3[fp]
+        ck = recs[0]["coarse_key"]
+        if ck not in ck2:  # a run3 fp whose coarse key matched run2 IS that recurrence
+            new.append({"fingerprint": fp, "coarse_key": list(ck), "run3": _by_id(recs)})
 
     degenerate = sorted(_degenerate(g2, "run2") + _degenerate(g3, "run3"),
                         key=lambda d: (d["fingerprint"], d["run"]))
     return {"meta": {"run2_report": run2_path, "run3_report": run3_path,
-                     "run2_count": len(run2_records),
-                     "run3_count": len(run3_records),
+                     "run2_count": len(run2_records), "run3_count": len(run3_records),
+                     "counts": {"recurring": len(recurring), "closed": len(closed),
+                                "ambiguous": len(ambiguous), "new": len(new)},
                      "degenerate_fingerprints": degenerate},
-           "recurring": recurring, "fixed_or_gone": fixed_or_gone, "new": new}
+            "recurring": recurring, "closed": closed,
+            "ambiguous": ambiguous, "new": new}
 
 
 def _record_count(entries, side):
@@ -146,7 +184,8 @@ def _record_count(entries, side):
 def render_summary(diff):
     m = diff["meta"]
     recurring_n = _record_count(diff["recurring"], "run2")
-    gone_n = _record_count(diff["fixed_or_gone"], "run2")
+    closed_n = _record_count(diff["closed"], "run2")
+    ambiguous_n = _record_count(diff["ambiguous"], "run2")
     new_n = _record_count(diff["new"], "run3")
     lines = ["# Run-3 reconciliation summary", "",
             "run2: %s (%d records)" % (m["run2_report"], m["run2_count"]),
@@ -154,14 +193,15 @@ def render_summary(diff):
             "", "## Cohorts (record counts, not fingerprint-group counts — "
                 "a degenerate collision can put >1 record under one fingerprint)",
             "- recurring: %d" % recurring_n,
-            "- fixed_or_gone: %d" % gone_n,
+            "- closed: %d" % closed_n,
+            "- ambiguous: %d" % ambiguous_n,
             "- new: %d" % new_n, ""]
 
     sev_counts = defaultdict(int)
-    for entry in diff["fixed_or_gone"]:
+    for entry in diff["closed"]:
         for rec in entry["run2"]:
             sev_counts[rec.get("severity") or "UNKNOWN"] += 1
-    lines.append("## fixed_or_gone by severity")
+    lines.append("## closed by severity")
     for sev in sorted(sev_counts):
         lines.append("- %s: %d" % (sev, sev_counts[sev]))
 
@@ -203,9 +243,9 @@ def main(argv=None):
         diff = build_diff(r2, r3, a.run2_report, a.run3_report)
         with open(a.out, "w", encoding="utf-8") as fh:
             json.dump(diff, fh, indent=2, sort_keys=True)
-        print("wrote %s (recurring=%d fixed_or_gone=%d new=%d)"
-             % (a.out, len(diff["recurring"]), len(diff["fixed_or_gone"]),
-                len(diff["new"])))
+        print("wrote %s (recurring=%d closed=%d ambiguous=%d new=%d)"
+             % (a.out, len(diff["recurring"]), len(diff["closed"]),
+                len(diff["ambiguous"]), len(diff["new"])))
         if a.summary:
             with open(a.summary, "w", encoding="utf-8") as fh:
                 fh.write(render_summary(diff))
