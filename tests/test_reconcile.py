@@ -325,6 +325,52 @@ class TestBuildDiffCohorts(unittest.TestCase):
         diff = reconcile.build_diff(r2, r3, "r2", "r3")
         self.assertEqual(self._cohort_ids(diff, "new", "run3"), {"N"})
 
+    def test_exact_match_carries_coarse_key_siblings_on_run3_side(self):
+        # #954: run2 A matches run3 A3 EXACTLY (same title -> same fp). Run3
+        # sibling S shares A's coarse key under a different title (different
+        # fp): `new` suppresses it (its coarse key is in ck2), so unless the
+        # exact entry's run3 side carries it, S appears in NO cohort.
+        r2 = self._recs([self._f("A", "auth.py", "security", "authz", "same title")])
+        r3 = self._recs([self._f("A3", "auth.py", "security", "authz", "same title"),
+                         self._f("S", "auth.py", "security", "authz", "re-worded sibling")])
+        diff = reconcile.build_diff(r2, r3, "r2", "r3")
+        entry = diff["recurring"][0]
+        self.assertEqual(entry["match_tier"], "exact")
+        # exact ordered list, not a set: a broken dedup that duplicated A3
+        # would still satisfy a set comparison (run3 is _by_id-sorted)
+        self.assertEqual([r["id"] for r in entry["run3"]], ["A3", "S"])
+        self.assertEqual(self._cohort_ids(diff, "new", "run3"), set())
+
+    def test_exact_tier_kind_changed_sees_sibling_kind_flip(self):
+        # A run3 coarse-sibling that is a REJECTED claim must flip kind_changed
+        # on the exact-tier entry, same as it would on the coarse tier.
+        r2 = self._recs([self._f("A", "auth.py", "security", "authz", "same title")])
+        run3_report = {"findings": [self._f("A3", "auth.py", "security", "authz", "same title")],
+                       "discarded_claims": [self._f("S", "auth.py", "security", "authz",
+                                                    "re-worded, rejected")]}
+        r3 = reconcile.iter_records(run3_report)
+        diff = reconcile.build_diff(r2, r3, "r2", "r3")
+        entry = diff["recurring"][0]
+        self.assertEqual(entry["match_tier"], "exact")
+        self.assertTrue(entry["kind_changed"])
+
+    def test_every_run3_record_lands_in_some_cohort(self):
+        # Accounting invariant (#443's spirit): the union of recurring[].run3
+        # and new[].run3 ids covers every run3 record -- nothing vanishes.
+        r2 = self._recs([self._f("A", "auth.py", "security", "authz", "same title"),
+                         self._f("B", "m.py", "code", "dup", "dup A")])
+        r3 = self._recs([self._f("A3", "auth.py", "security", "authz", "same title"),
+                         self._f("S", "auth.py", "security", "authz", "sibling"),
+                         self._f("C", "m.py", "code", "dup", "dup re-worded"),
+                         self._f("N", "new.py", "code", "logic", "brand new")])
+        diff = reconcile.build_diff(r2, r3, "r2", "r3")
+        seen = (self._cohort_ids(diff, "recurring", "run3")
+                | self._cohort_ids(diff, "new", "run3"))
+        self.assertEqual(seen, {"A3", "S", "C", "N"})
+        # and no cohort carries a duplicated record (dedup regression guard)
+        all_ids = [r["id"] for e in diff["recurring"] for r in e["run3"]]
+        self.assertEqual(len(all_ids), len(set(all_ids)))
+
 
 class TestRenderSummary(unittest.TestCase):
     def test_summary_reports_cohort_counts_and_warns_on_collisions(self):
