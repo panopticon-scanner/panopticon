@@ -1146,3 +1146,81 @@ class TestPrMode(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSetup(unittest.TestCase):
+    """#485: --setup = seed + scaffold + readiness gate."""
+
+    def _repo(self, d):
+        os.makedirs(os.path.join(d, ".git"))
+        os.makedirs(os.path.join(d, "appdir"))
+        with open(os.path.join(d, "appdir", "x.py"), "w") as fh:
+            fh.write("x = 1\n")
+        return d
+
+    def _ok_runner(self, argv, capture_output, text):
+        class R: returncode = 0; stdout = ""; stderr = ""
+        return R()
+
+    def _fail_runner(self, argv, capture_output, text):
+        class R: returncode = 1; stdout = ""; stderr = ""
+        return R()
+
+    def test_seed_groups_manifest_creates_once_never_clobbers(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._repo(d)
+            path, created, names = orch._seed_groups_manifest(d)
+            self.assertTrue(created)
+            self.assertIn("appdir", names)
+            text = open(path).read()
+            self.assertIn("appdir/**", text)
+            with open(path, "a") as fh:
+                fh.write("# user edit\n")
+            _, created2, _ = orch._seed_groups_manifest(d)
+            self.assertFalse(created2)                 # never clobbers
+            self.assertIn("# user edit", open(path).read())
+
+    def test_ensure_gitignore_idempotent(self):
+        with tempfile.TemporaryDirectory() as d:
+            added = orch._ensure_gitignore(d)
+            self.assertEqual(added, orch.SETUP_GITIGNORE_ENTRIES)
+            self.assertEqual(orch._ensure_gitignore(d), [])   # second run no-op
+            content = open(os.path.join(d, ".gitignore")).read()
+            self.assertEqual(content.count(".panopticon/"), 1)
+
+    def test_readiness_reports_gaps_with_fixes(self):
+        from unittest import mock
+        import dispatch
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as reg:
+            with mock.patch.object(dispatch, "_registration_dir",
+                                   return_value=reg):     # empty = unregistered
+                checks = orch.setup_readiness(d, host="claude",
+                                              runner=self._fail_runner, environ={})
+        by = {c[0]: c for c in checks}
+        self.assertFalse(by["docker"][1])
+        self.assertIn("--no-tools", by["docker"][2])   # every gap carries a fix
+        self.assertFalse(by["target-root"][1])
+        self.assertIsNone(by["nvd-api-key"][1])        # informational, not gating
+        self.assertFalse(by["enforced-shells"][1])
+
+    def test_run_setup_ready_and_exit_codes(self):
+        import io
+        from unittest import mock
+        import dispatch
+        with tempfile.TemporaryDirectory() as d, \
+                tempfile.TemporaryDirectory() as reg:
+            self._repo(d)
+            for rf in ("panel-review.md", "lens-sweep.md"):
+                open(os.path.join(reg, "panopticon-" + rf[:-3] + ".md"), "w").write("x")
+            out = io.StringIO()
+            with mock.patch.object(dispatch, "_registration_dir",
+                                   return_value=reg):
+                rc_ready = orch.run_setup(d, host="claude",
+                                          runner=self._ok_runner,
+                                          environ={"NVD_API_KEY": "k"}, out=out)
+                rc_gap = orch.run_setup(d, host="claude",
+                                        runner=self._fail_runner,
+                                        environ={}, out=io.StringIO())
+        self.assertEqual(rc_ready, 0)
+        self.assertIn("READY", out.getvalue())
+        self.assertEqual(rc_gap, 1)
