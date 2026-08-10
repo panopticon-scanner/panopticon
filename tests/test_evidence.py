@@ -228,5 +228,35 @@ class TestReconcileKey(unittest.TestCase):
         self.assertEqual(evidence.reconcile_key({}), ("", "", ""))
 
 
+class TestNormPath(unittest.TestCase):
+    """#977: the file normalization finding_fingerprint/reconcile_key shared
+    inline is owned by norm_path, and clustering keys use the same function."""
+
+    def test_strips_dot_slash_prefix_and_backslashes(self):
+        self.assertEqual(ev.norm_path("./src/x.py"), "src/x.py")
+        self.assertEqual(ev.norm_path("././src/x.py"), "src/x.py")
+        self.assertEqual(ev.norm_path("src\\x.py"), "src/x.py")
+
+    def test_dotfile_prefix_preserved(self):
+        # lstrip-style stripping would collapse `.github/x` onto `github/x`.
+        self.assertEqual(ev.norm_path(".github/workflows/ci.yml"),
+                         ".github/workflows/ci.yml")
+
+    def test_none_and_empty(self):
+        self.assertEqual(ev.norm_path(None), "")
+        self.assertEqual(ev.norm_path(""), "")
+
+    def test_fingerprint_invariant_under_path_dressing(self):
+        a = _finding(location={"file": "./src/x.py", "line_start": 10})
+        b = _finding(location={"file": "src/x.py", "line_start": 10})
+        self.assertEqual(ev.finding_fingerprint(a), ev.finding_fingerprint(b))
+        self.assertEqual(ev.reconcile_key(a), ev.reconcile_key(b))
+
+    def test_fingerprint_does_not_collapse_dotfiles(self):
+        a = _finding(location={"file": ".github/x", "line_start": 1})
+        b = _finding(location={"file": "github/x", "line_start": 1})
+        self.assertNotEqual(ev.finding_fingerprint(a), ev.finding_fingerprint(b))
+
+
 if __name__ == "__main__":
     unittest.main()

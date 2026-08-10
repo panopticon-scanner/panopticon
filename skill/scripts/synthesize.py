@@ -274,7 +274,7 @@ def dedupe(findings):
     order = []
     for f in findings:
         loc = f.get("location") or {}
-        fkey = loc.get("file")
+        fkey = evidence_mod.norm_path(loc.get("file"))
         line = _norm_line(loc.get("line_start"))
         if not fkey or not isinstance(line, int):
             passthrough.append(f)
@@ -377,7 +377,7 @@ def cross_panel_corroboration(findings, window=CORROBORATION_LINE_WINDOW):
     candidates = []
     for f in findings:
         loc = f.get("location") or {}
-        fkey = loc.get("file")
+        fkey = evidence_mod.norm_path(loc.get("file"))
         line = _norm_line(loc.get("line_start"))
         if fkey and isinstance(line, int):
             candidates.append((fkey, line, f))
@@ -475,16 +475,21 @@ HIGH_VALUE_PANELS = {"security", "redteam", "architecture", "database"}
 
 
 def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_absent,
-            integrity_ok=True):
+            integrity_ok=True, verdicts_unloadable=0):
     """Coverage-aware certification. Gate keys on high-value-panel completeness
-    (+ requested-absent tools + artifact integrity); grade is holistic
-    (provisional on ANY gap). Precedence FAIL > INCONCLUSIVE > PASS; OFF
-    preserved. Tolerant: pure, never raises.
+    (+ requested-absent tools + artifact integrity + verdict loadability);
+    grade is holistic (provisional on ANY gap). Precedence FAIL > INCONCLUSIVE
+    > PASS; OFF preserved. Tolerant: pure, never raises.
+
+    verdicts_unloadable (#979): a verdict file that survived re-dispatch and
+    still failed to parse is lost verify coverage — the finding it ruled on can
+    never confirm. A PASS with verdicts lost is INCONCLUSIVE, so corrupting an
+    advisor's JSON output cannot silently keep a clean gate.
     """
     base_gate = gate_verdict(gate_eligible, fail_on)          # PASS / FAIL / OFF
     high_value_incomplete = set(panels_incomplete) & HIGH_VALUE_PANELS
     gate_relevant_gap = (bool(high_value_incomplete) or bool(tools_absent)
-                         or not integrity_ok)
+                         or not integrity_ok or bool(verdicts_unloadable))
     any_incomplete = bool(panels_incomplete)
 
     if base_gate == "PASS" and gate_relevant_gap:
@@ -837,14 +842,14 @@ def aggregate_tool_findings(findings):
     `tool_reported` now, and only an advisor verdict promotes them.)
     """
     agent_loci = {
-        (str(((f.get("location") or {}).get("file")) or ""),
+        (evidence_mod.norm_path((f.get("location") or {}).get("file")),
          _norm_line((f.get("location") or {}).get("line_start")))
         for f in findings if not evidence_mod.is_tool_sourced(f)}
 
     def _sort_key(f):
         loc = f.get("location") or {}
         line = _norm_line(loc.get("line_start"))
-        corroborated = (str(loc.get("file") or ""), line) in agent_loci
+        corroborated = (evidence_mod.norm_path(loc.get("file")), line) in agent_loci
         return (0 if corroborated else 1, line if isinstance(line, int) else 0)
 
     out, groups, order = [], {}, []
@@ -854,7 +859,8 @@ def aggregate_tool_findings(findings):
             out.append(f)
             continue
         key = (f.get("panel"), f.get("category"),
-               str(((f.get("location") or {}).get("file")) or ""), str(rule))
+               evidence_mod.norm_path(((f.get("location") or {}).get("file"))),
+               str(rule))
         if key not in groups:
             groups[key] = []
             order.append(key)
@@ -1092,7 +1098,8 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                         or integrity.get("content_mismatched_files")
                         or integrity.get("empty_dispatch_plans"))
     cert = certify(overall, gate_eligible, fail_on, panels_incomplete, tools_absent,
-                   integrity_ok=integrity_ok)
+                   integrity_ok=integrity_ok,
+                   verdicts_unloadable=len(verdict_unloadable))
     return {
         "meta": {
             "target": target,

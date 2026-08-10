@@ -11,7 +11,7 @@ arguments:
 disableModelInvocation: false
 license: MIT
 metadata:
-  version: "4.3.0"
+  version: "4.3.1"
 ---
 
 # panopticon
@@ -228,7 +228,9 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
    re-dispatch that advisor rather than writing a corrupt file (an unescaped
    quote inside `reasoning` otherwise yields an un-loadable verdict). Any file
    that still lands un-loadable is surfaced at `meta.coverage.verdicts.unloadable`
-   (not silently dropped) so a lost verdict is visible in the artifact (#938).
+   (not silently dropped) so a lost verdict is visible in the artifact (#938),
+   and forces `INCONCLUSIVE` — un-loadable verdicts are lost verify coverage,
+   and lost verify coverage never certifies a clean gate (#979).
    On resume, dispatch only `group_runner.pending_verdicts(queue, .panopticon/verdicts)` —
    never re-dispatch a `queue_id` that already has a valid verdict on disk; status
    comes from disk, not recollection. The fan-out/verify skip-counts surface in

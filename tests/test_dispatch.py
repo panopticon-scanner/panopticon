@@ -1136,7 +1136,7 @@ class TestReviewRootPinning(unittest.TestCase):
 
     def test_advisor_prompts_carry_repo_root_header(self):
         with tempfile.TemporaryDirectory() as d:
-            queue = {"version": "4.3.0", "cut_by_max_verify": 0, "entries": [
+            queue = {"version": "4.3.1", "cut_by_max_verify": 0, "entries": [
                 {"queue_id": "a" * 16, "priority": 1,
                  "finding": {"id": "X-1", "title": "t", "severity": "HIGH",
                              "confidence": "POSSIBLE", "panel": "code",
