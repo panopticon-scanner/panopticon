@@ -336,6 +336,16 @@ its own mechanism:
      is not a contract.
   4. Verification phase: render advisors with `--render-advisor` and dispatch
      them the same way as panels/lenses.
+- **Codex (portable)** — register once with `python3 skill/scripts/dispatch.py
+  --emit-host-agents codex` (writes per-role TOML profiles into `$CODEX_HOME`,
+  default `~/.codex`; models/effort from model-profiles' `codex` host:
+  gpt-5.6-luna for scout/lens, gpt-5.6-terra for panel, gpt-5.6 for advisor).
+  Build the plan with `--host codex`; entries carry `execution: codex_exec`
+  and `delivery: return_json` — fan-out runs each pending entry through
+  `skill/scripts/codex_runner.py`, which invokes `codex exec` with the
+  entry's prompt/model/effort and persists the returned findings JSON to the
+  entry's `out_file` on the reviewer's behalf (orchestrator-persisted
+  delivery, the same disclosed posture as other non-self-write hosts).
 - **Other hosts (portable, degraded)** — no sub-agent nesting or Workflow
   primitive available: run `pending_entries(plan)` sequentially in-session
   with the same prompts, one reviewer at a time; expect no parallelism. Still
