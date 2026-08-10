@@ -3112,3 +3112,34 @@ class TestScoutToolDisclosure(unittest.TestCase):
             with open(out) as fh:
                 report = json.load(fh)
             self.assertEqual(report["meta"]["coverage"]["scout_profiles_seen"], 0)
+class TestOutOfScope(unittest.TestCase):
+    """#441: report-side disclosure when a reviewer's finding cites a file
+    outside its group's assigned list."""
+
+    def test_out_of_scope_counted_with_examples(self):
+        with tempfile.TemporaryDirectory() as d:
+            fp = os.path.join(d, "findings-g1-code-panel_review.json")
+            with open(fp, "w") as fh:
+                json.dump({"findings": [
+                    {"id": "A-1", "location": {"file": "a.py"}},
+                    {"id": "A-2", "location": {"file": "z.py"}},
+                ]}, fh)
+            plan = [{"group": "g1", "files": ["a.py"], "out_file": "x"}]
+            res = syn.out_of_scope_findings([fp], plan)
+        self.assertEqual(res["checked"], 2)
+        self.assertEqual(res["count"], 1)
+        self.assertEqual(res["examples"], [{"group": "g1", "file": "z.py"}])
+
+    def test_no_plan_returns_none_never_zero_claim(self):
+        self.assertIsNone(syn.out_of_scope_findings(["findings-g1-code.json"], []))
+
+    def test_unplanned_group_and_tool_files_skipped(self):
+        with tempfile.TemporaryDirectory() as d:
+            fp = os.path.join(d, "findings-gX-code-panel_review.json")
+            with open(fp, "w") as fh:
+                json.dump({"findings": [{"id": "A-1",
+                                         "location": {"file": "z.py"}}]}, fh)
+            plan = [{"group": "g1", "files": ["a.py"], "out_file": "x"}]
+            res = syn.out_of_scope_findings([fp], plan)
+        self.assertEqual(res["checked"], 0)
+        self.assertEqual(res["count"], 0)

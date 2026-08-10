@@ -522,6 +522,51 @@ ID_RE = re.compile(r"^[A-Z]{2,8}-\d{3,}$")  # {2,8}: real agents emit e.g. STRUC
 GROUP_RE = re.compile(
     r"^findings-(.+)-(?:%s)"
     r"(?:-panel_review|-lens_sweep-[A-Za-z0-9_]+)?\.json$" % "|".join(PANEL_ORDER))
+def out_of_scope_findings(findings_paths, plan):
+    """#441: count agent findings whose location.file falls outside the FILE
+    LIST of the group their findings-file belongs to (per the dispatch plan).
+
+    Reviewers are prompted to stay inside their assignment, but that fence is
+    prompt-advisory -- this is the report-side disclosure. Only findings files
+    whose name matches GROUP_RE and whose group has a plan entry are checked;
+    tool findings and unplanned groups are out of this check's reach.
+    Returns {"checked": N, "count": N, "examples": [...]} or None when no
+    plan/group could be checked.
+    """
+    group_files = {}
+    for e in plan or []:
+        if isinstance(e, dict) and isinstance(e.get("files"), list):
+            group_files.setdefault(e.get("group"), set()).update(
+                str(f).replace("\\", "/") for f in e["files"])
+    if not group_files:
+        return None
+    checked = count = 0
+    examples = []
+    for path in findings_paths or []:
+        m = GROUP_RE.match(os.path.basename(str(path)))
+        if not m or m.group(1) not in group_files:
+            continue
+        allowed = group_files[m.group(1)]
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        for f in (data.get("findings") or [] if isinstance(data, dict) else []):
+            loc = (f.get("location") or {}) if isinstance(f, dict) else {}
+            fpath = str(loc.get("file") or "").replace("\\", "/")
+            while fpath.startswith("./"):
+                fpath = fpath[2:]
+            if not fpath:
+                continue
+            checked += 1
+            if fpath not in allowed:
+                count += 1
+                if len(examples) < 10:
+                    examples.append({"group": m.group(1), "file": fpath})
+    return {"checked": checked, "count": count, "examples": examples}
+
+
 _GRADE_ORDER = ["A", "B", "C", "D", "F"]
 
 
@@ -803,7 +848,8 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                  security_mode="standard", verdicts=None, gate_unverified=False,
                  max_verify=None, verdicts_supplied=False, tool_policy_mode=None,
                  tools_ran=None, tool_dispositions=None, fan_out=None,
-                 scout_requested=None, scout_profiles_seen=0, resume=None, integrity=None,
+                 scout_requested=None, scout_profiles_seen=0, out_of_scope=None,
+                 resume=None, integrity=None,
                  diff_hunks=None, diff_context=5, gate_scope="on-diff",
                  catalog=None, verdict_unloadable=None):
     """Build a CodeReviewReport under the two-axis severity x evidence model.
@@ -1005,6 +1051,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                 # (N>0 with scout_requested []).
                 "scout_profiles_seen": scout_profiles_seen,
                 "scout_requested": sorted(scout_requested or []),
+                "out_of_scope": out_of_scope,
                 "verdicts": verdict_stats,
                 "fan_out": fan_out,
                 "divergence": divergence,
@@ -1426,6 +1473,12 @@ def main(argv=None):
     _plan_lists = load_dispatch_plans()
     plans_seen = len(_plan_lists)
     _plan = [e for plan in _plan_lists for e in plan]
+    out_of_scope = out_of_scope_findings(args.files, _plan)
+    if out_of_scope and out_of_scope["count"]:
+        print("synthesize: %d finding(s) cite files OUTSIDE their group's "
+              "assigned file list (#441) -- reviewers left their lane; see "
+              "meta.coverage.out_of_scope" % out_of_scope["count"],
+              file=sys.stderr)
     tool_policy_mode = derive_tool_policy_mode(plans=_plan_lists)
     fan_out = group_runner.fan_out_coverage(_plan) if _plan else None
     _queue = None
@@ -1495,6 +1548,7 @@ def main(argv=None):
                           fan_out=fan_out,
                           scout_requested=sorted(scout_requested),
                           scout_profiles_seen=scout_profiles_seen,
+                          out_of_scope=out_of_scope,
                           resume=resume,
                           integrity=integrity,
                           diff_hunks=diff_hunks,
