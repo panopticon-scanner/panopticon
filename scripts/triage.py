@@ -10,6 +10,7 @@ Usage:  python3 scripts/triage.py setup
         python3 scripts/triage.py apply [--dry-run] [--throttle S]
 """
 import argparse
+import functools
 import json
 import os
 import subprocess
@@ -144,7 +145,45 @@ RATE_HINTS = ("rate limit", "secondary rate", "abuse detection",
               "was submitted too quickly")
 
 
-def gh(argv, runner=subprocess.run, sleep=time.sleep):
+CONFIG_PATH = os.path.join(".panopticon", "config.json")
+
+
+def gh_env(config_path=None):
+    """#486: explicit, config-declared gh account selection.
+
+    Reads .panopticon/config.json's "gh_config_dir" and returns an env dict
+    with GH_CONFIG_DIR set to it (expanded), so every gh subprocess the tools
+    spawn uses the DECLARED account instead of whatever ambient credential the
+    shell happens to carry (the thebeamishsociety wrong-account incident:
+    default cred lacked push, the 404 was swallowed). Returns None (= inherit
+    the ambient environment, backward compatible) when the config or field is
+    absent/invalid.
+    """
+    if config_path is None:
+        config_path = CONFIG_PATH   # late-bound so tests/patches can retarget
+    try:
+        with open(config_path, encoding="utf-8") as fh:
+            cfg = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    d = cfg.get("gh_config_dir") if isinstance(cfg, dict) else None
+    if not isinstance(d, str) or not d:
+        return None
+    env = dict(os.environ)
+    env["GH_CONFIG_DIR"] = os.path.expanduser(d)
+    return env
+
+
+def default_gh_runner():
+    """subprocess.run partial carrying the config-declared env (#486). Kept as
+    a factory so gh_env is re-read per call site construction -- tests inject
+    their own runner and never hit this."""
+    return functools.partial(subprocess.run, env=gh_env())
+
+
+def gh(argv, runner=None, sleep=time.sleep):
+    if runner is None:
+        runner = default_gh_runner()
     for attempt in range(1, 6):
         r = runner(argv, capture_output=True, text=True)
         if r.returncode == 0:
@@ -160,8 +199,9 @@ def gh(argv, runner=subprocess.run, sleep=time.sleep):
     raise RuntimeError("%s failed after retries" % " ".join(argv[:4]))
 
 
-def apply(rows, dry=False, throttle=1.5, runner=subprocess.run,
+def apply(rows, dry=False, throttle=1.5, runner=None,
           sleep=time.sleep):
+    runner = runner or default_gh_runner()
     for row in rows:              # validate the whole batch before mutating
         if row.get("status") == "approved":
             validate(row)
@@ -191,7 +231,8 @@ def apply(rows, dry=False, throttle=1.5, runner=subprocess.run,
     return applied, stale
 
 
-def setup(runner=subprocess.run):
+def setup(runner=None):
+    runner = runner or default_gh_runner()
     for verdict in VERDICTS:
         name, color, desc = LABELS[verdict]
         gh(["gh", "label", "create", name, "--color", color,

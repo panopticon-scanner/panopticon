@@ -15,7 +15,7 @@ import argparse
 import json
 import os
 import re
-import subprocess
+import subprocess  # noqa: F401 -- patch target for the dry-run zero-subprocess guard test
 import sys
 import time
 
@@ -53,7 +53,8 @@ ID_RE = re.compile(r"\*\*Finding id in report:\*\* `([^`]+)`")
 LOC_RE = re.compile(r"\*\*Location:\*\* `([^`:]+)(?::\d+)?`")
 
 
-def recover_linkage_from_github(label="self-scan", runner=subprocess.run):
+def recover_linkage_from_github(label="self-scan", runner=None):
+    runner = runner or triage.default_gh_runner()
     """Rebuild the filed-issues ledger from issue bodies when
     .panopticon/filed-issues.json is unavailable. Every field this needs was
     deliberately embedded in the issue body by scripts/file_issues.py.
@@ -205,7 +206,8 @@ def _owner_repo(url):
     return (m.group(1), m.group(2)) if m else (None, None)
 
 
-def preflight_authorized(owner, repo, runner=subprocess.run):
+def preflight_authorized(owner, repo, runner=None):
+    runner = runner or triage.default_gh_runner()
     """Owner/admin gate for the mutating apply. Uses the AUTHENTICATED gh token
     (`gh api repos/{o}/{r} --jq .permissions`), so it reflects whichever
     GH_CONFIG_DIR/account is active — the loud catch for a wrong-account run.
@@ -232,7 +234,8 @@ def preflight_authorized(owner, repo, runner=subprocess.run):
 
 
 def apply(actions, dry=True, confirm_close=False, throttle=1.5,
-         runner=subprocess.run, sleep=time.sleep):
+         runner=None, sleep=time.sleep):
+    runner = runner or triage.default_gh_runner()
     commented = closed = 0
     repo_slug = None
     if not dry and actions:
