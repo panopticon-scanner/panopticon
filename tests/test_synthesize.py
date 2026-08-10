@@ -3067,3 +3067,48 @@ class TestRenderDelta(unittest.TestCase):
         out = syn.render_summary(r)
         self.assertNotIn("On-diff", out)
         self.assertNotIn("Pre-existing", out)
+
+
+class TestScoutToolDisclosure(unittest.TestCase):
+    """#471 remainder: a scout returning tools:[] is a silent decline of the
+    tool layer -- must be disclosed on stderr and readable from the artifact
+    (scout_profiles_seen > 0 with scout_requested [])."""
+
+    def test_scout_declining_tools_is_disclosed(self):
+        import io, contextlib
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            os.makedirs(".panopticon")
+            with open(os.path.join(".panopticon", "scout-g1.json"), "w") as fh:
+                json.dump({"group": "g1", "tools": [], "panels": ["code"]}, fh)
+            fp = os.path.join(d, "findings-g1-code.json")
+            with open(fp, "w") as fh:
+                json.dump({"findings": []}, fh)
+            out = os.path.join(d, "r.json")
+            err = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(err):
+                rc = syn.main(["--target", "src", "--out", out, fp])
+            self.assertEqual(rc, 0)
+            self.assertIn("requested NO tools", err.getvalue())
+            with open(out) as fh:
+                report = json.load(fh)
+            cov = report["meta"]["coverage"]
+            self.assertEqual(cov["scout_profiles_seen"], 1)
+            self.assertEqual(cov["scout_requested"], [])
+
+    def test_no_scout_profiles_no_disclosure(self):
+        import io, contextlib
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            fp = os.path.join(d, "findings-g1-code.json")
+            with open(fp, "w") as fh:
+                json.dump({"findings": []}, fh)
+            out = os.path.join(d, "r.json")
+            err = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(err):
+                rc = syn.main(["--target", "src", "--out", out, fp])
+            self.assertEqual(rc, 0)
+            self.assertNotIn("requested NO tools", err.getvalue())
+            with open(out) as fh:
+                report = json.load(fh)
+            self.assertEqual(report["meta"]["coverage"]["scout_profiles_seen"], 0)
