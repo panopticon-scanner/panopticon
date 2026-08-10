@@ -3163,3 +3163,67 @@ class TestReconcileRealpath(unittest.TestCase):
             ingested = [os.path.join(real, fname)]             # physical form
             unexpected, missing = syn.reconcile_findings_files(plan, ingested)
         self.assertEqual((unexpected, missing), ([], []))
+class TestDocSeverityPolicy(unittest.TestCase):
+    """#487: path-scoped, mode-gated, severity-only soft downgrade with a
+    secrets carve-out -- disclosed, never silent, never upward."""
+
+    def _f(self, file, sev="MEDIUM", category="structure", title="x", source=None):
+        f = {"id": "D-1", "severity": sev, "panel": "code", "category": category,
+             "title": title, "location": {"file": file, "line_start": 1}}
+        if source:
+            f["source"] = source
+        return f
+
+    def test_code_finding_under_doc_tree_downgrades_to_info(self):
+        f = self._f("docs/superpowers/plans/x.md")
+        res = syn.apply_doc_severity_policy([f], "standard")
+        self.assertEqual(f["severity"], "INFO")
+        self.assertEqual(f["doc_policy"], {"downgraded_from": "MEDIUM"})
+        self.assertEqual(res["downgraded"], 1)
+        self.assertEqual(res["examples"][0]["file"], "docs/superpowers/plans/x.md")
+
+    def test_secret_finding_keeps_severity(self):
+        f = self._f("docs/plan.md", sev="CRITICAL",
+                    title="Hardcoded API key pasted into plan",
+                    category="secrets")
+        res = syn.apply_doc_severity_policy([f], "standard")
+        self.assertEqual(f["severity"], "CRITICAL")
+        self.assertEqual(res["downgraded"], 0)
+
+    def test_redteam_mode_is_a_full_bypass(self):
+        f = self._f("docs/plan.md")
+        res = syn.apply_doc_severity_policy([f], "redteam")
+        self.assertIsNone(res)
+        self.assertEqual(f["severity"], "MEDIUM")
+
+    def test_non_doc_path_untouched_and_info_never_touched(self):
+        a = self._f("skill/scripts/synthesize.py")
+        b = self._f("docs/x.md", sev="INFO")
+        res = syn.apply_doc_severity_policy([a, b], "standard")
+        self.assertEqual(a["severity"], "MEDIUM")
+        self.assertNotIn("doc_policy", b)
+        self.assertEqual(res["downgraded"], 0)
+
+    def test_main_wires_policy_and_discloses(self):
+        import io, contextlib
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            fp = os.path.join(d, "findings-g1-code.json")
+            with open(fp, "w") as fh:
+                json.dump({"findings": [
+                    {"id": "A-1", "title": "hardcoded path", "severity": "MEDIUM",
+                     "confidence": "POSSIBLE", "panel": "code",
+                     "category": "structure",
+                     "location": {"file": "docs/plans/roadmap.md", "line_start": 3}}]}, fh)
+            out = os.path.join(d, "r.json")
+            err = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(err):
+                rc = syn.main(["--target", "src", "--out", out, fp])
+            self.assertEqual(rc, 0)
+            self.assertIn("soft-downgraded", err.getvalue())
+            with open(out) as fh:
+                report = json.load(fh)
+            self.assertEqual(report["meta"]["coverage"]["doc_policy"]["downgraded"], 1)
+            f = report["findings"][0]
+            self.assertEqual(f["severity"], "INFO")
+            self.assertEqual(f["doc_policy"]["downgraded_from"], "MEDIUM")
