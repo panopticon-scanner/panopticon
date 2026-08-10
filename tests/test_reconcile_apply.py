@@ -133,9 +133,9 @@ class TestPlanActions(unittest.TestCase):
                           "run2": [{"id": "F-1", "stored_fingerprint": "old1",
                                    "location_file": "a.py", "kind": "finding"}],
                           "run3": [{"id": "F-1-R3"}], "kind_changed": False}],
-            "fixed_or_gone": [{"fingerprint": "fp2",
-                              "run2": [{"id": "F-2", "stored_fingerprint": "old2",
-                                       "location_file": "b.py", "kind": "finding"}]}],
+            "closed": [{"fingerprint": "fp2", "reason": "area clear",
+                       "run2": [{"id": "F-2", "stored_fingerprint": "old2",
+                                "location_file": "b.py", "kind": "finding"}]}],
             "new": [{"fingerprint": "fp3", "run3": [{"id": "F-3"}]}],
         }
 
@@ -159,22 +159,46 @@ class TestPlanActions(unittest.TestCase):
             {"stored_fingerprint": "nope", "id": "X", "location_file": "y.py",
              "kind": "finding"}, {}), None)
 
-    def test_plan_covers_recurring_and_fixed_or_gone_not_new(self):
+    def test_plan_covers_recurring_and_closed_not_new(self):
         ledger = {"old1|F-1|a.py|finding": "https://github.com/o/r/issues/1",
                  "old2|F-2|b.py|finding": "https://github.com/o/r/issues/2"}
         actions = reconcile_apply.plan_actions(self._diff(), ledger)
         cohorts = {a["cohort"] for a in actions}
-        self.assertEqual(cohorts, {"recurring", "fixed_or_gone"})
+        self.assertEqual(cohorts, {"recurring", "closed"})
         self.assertEqual(len(actions), 2)
         recur = next(a for a in actions if a["cohort"] == "recurring")
         self.assertFalse(recur["close"])
-        gone = next(a for a in actions if a["cohort"] == "fixed_or_gone")
-        self.assertTrue(gone["close"])
+        closed = next(a for a in actions if a["cohort"] == "closed")
+        self.assertTrue(closed["close"])
 
     def test_unresolvable_recurring_finding_is_omitted_not_guessed(self):
         actions = reconcile_apply.plan_actions(self._diff(), {})
         self.assertEqual(actions, [])
 
+
+    def test_only_closed_cohort_sets_close_true(self):
+        diff = {
+            "recurring": [{"fingerprint": "fp1",
+                          "run2": [{"id": "F-1", "stored_fingerprint": "old1",
+                                   "location_file": "a.py", "kind": "finding"}]}],
+            "closed": [{"fingerprint": "fp2", "reason": "(file,panel) clear: area has no findings",
+                       "run2": [{"id": "F-2", "stored_fingerprint": "old2",
+                                "location_file": "b.py", "kind": "finding"}]}],
+            "ambiguous": [{"fingerprint": "fp3", "reason": "security still active on file",
+                          "run2": [{"id": "F-3", "stored_fingerprint": "old3",
+                                   "location_file": "c.py", "kind": "finding"}]}],
+            "new": [{"fingerprint": "fp4", "run3": [{"id": "F-4"}]}],
+        }
+        ledger = {"old1|F-1|a.py|finding": "https://github.com/o/r/issues/1",
+                 "old2|F-2|b.py|finding": "https://github.com/o/r/issues/2",
+                 "old3|F-3|c.py|finding": "https://github.com/o/r/issues/3"}
+        actions = reconcile_apply.plan_actions(diff, ledger)
+        by_cohort = {a["cohort"]: a for a in actions}
+        self.assertTrue(by_cohort["closed"]["close"])
+        self.assertFalse(by_cohort["recurring"]["close"])
+        self.assertFalse(by_cohort["ambiguous"]["close"])
+        self.assertNotIn("new", by_cohort)
+        self.assertIn("clear", by_cohort["closed"]["comment"])
 
 class TestLedgerKeyMatchesKeyFor(unittest.TestCase):
     """The load-bearing invariant: reconcile_apply.ledger_key(record) must be
@@ -235,7 +259,7 @@ class TestApply(unittest.TestCase):
     def _actions(self):
         return [{"cohort": "recurring", "fingerprint": "fp1",
                 "issue": "https://github.com/o/r/issues/1", "comment": "c1", "close": False},
-               {"cohort": "fixed_or_gone", "fingerprint": "fp2",
+               {"cohort": "closed", "fingerprint": "fp2",
                 "issue": "https://github.com/o/r/issues/2", "comment": "c2", "close": True}]
 
     def _admin_runner(self, calls):
@@ -308,7 +332,7 @@ class TestApply(unittest.TestCase):
         calls = []
         actions = [{"cohort": "recurring", "fingerprint": "fp1",
                    "issue": "https://github.com/o/r/issues/1", "comment": "c1", "close": False},
-                  {"cohort": "fixed_or_gone", "fingerprint": "fp2",
+                  {"cohort": "closed", "fingerprint": "fp2",
                    "issue": "https://github.com/o/other/issues/2", "comment": "c2", "close": True}]
         commented, closed = reconcile_apply.apply(actions, dry=False, confirm_close=True,
                                                    runner=self._admin_runner(calls),
@@ -337,7 +361,7 @@ class TestCliWiring(unittest.TestCase):
             diff = {"recurring": [{"fingerprint": "fp1",
                                   "run2": [{"id": "F-1", "stored_fingerprint": "old1",
                                            "location_file": "a.py", "kind": "finding"}]}],
-                   "fixed_or_gone": [], "new": []}
+                   "closed": [], "new": []}
             ledger = {"old1|F-1|a.py|finding": "https://github.com/o/r/issues/1"}
             diff_path = os.path.join(d, "diff.json")
             ledger_path = os.path.join(d, "ledger.json")
@@ -364,3 +388,6 @@ class TestCliWiring(unittest.TestCase):
                 rc = reconcile_apply.main(["apply", actions_path])
             self.assertEqual(rc, 0)
             self.assertIn("DRY RUN", buf.getvalue())
+
+
+# NEW TEST ADDED VIA BASH
