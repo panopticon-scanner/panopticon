@@ -1,4 +1,5 @@
 import json, os, sys, tempfile, unittest
+from unittest import mock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "scripts"))
 import triage
 
@@ -244,3 +245,45 @@ class TestGhRetry(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestGhEnv(unittest.TestCase):
+    """#486: config-declared gh account selection."""
+
+    def test_config_field_sets_expanded_gh_config_dir(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = os.path.join(d, "config.json")
+            with open(cfg, "w") as fh:
+                json.dump({"gh_config_dir": "~/gh-panopticon"}, fh)
+            env = triage.gh_env(config_path=cfg)
+        self.assertIsNotNone(env)
+        self.assertEqual(env["GH_CONFIG_DIR"],
+                         os.path.expanduser("~/gh-panopticon"))
+        self.assertIn("PATH", env)          # inherits the rest of the env
+
+    def test_absent_config_or_field_inherits_ambient(self):
+        self.assertIsNone(triage.gh_env(config_path="/nonexistent/c.json"))
+        with tempfile.TemporaryDirectory() as d:
+            cfg = os.path.join(d, "config.json")
+            with open(cfg, "w") as fh:
+                json.dump({"other": 1}, fh)
+            self.assertIsNone(triage.gh_env(config_path=cfg))
+
+    def test_default_runner_carries_declared_env(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = os.path.join(d, "config.json")
+            with open(cfg, "w") as fh:
+                json.dump({"gh_config_dir": d}, fh)
+            with mock.patch.object(triage, "CONFIG_PATH", cfg), \
+                    mock.patch.object(triage.subprocess, "run") as m:
+                m.return_value = mock.Mock(returncode=0, stdout="ok", stderr="")
+                triage.gh(["gh", "api", "x"])
+        self.assertEqual(m.call_args.kwargs["env"]["GH_CONFIG_DIR"], d)
+
+    def test_injected_runner_bypasses_env_resolution(self):
+        calls = []
+        def fake(argv, capture_output, text):
+            calls.append(argv)
+            return mock.Mock(returncode=0, stdout="ok", stderr="")
+        triage.gh(["gh", "api", "x"], runner=fake)
+        self.assertEqual(len(calls), 1)     # signature unchanged for fakes
