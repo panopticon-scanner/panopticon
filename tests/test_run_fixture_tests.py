@@ -1,19 +1,143 @@
-"""Shell-injection regression for check_fixtures (#664).
+"""#878: unit coverage for skill/scripts/run_fixture_tests.py.
 
-check_fixtures asks the fixtures Docker image whether each baked fixture path
-exists. The old implementation spliced each manifest path into an `sh -c`
-script via an f-string, so a path containing shell metacharacters executed as
-code. The fix passes paths as positional arguments to a constant script; these
-tests pin that the untrusted path never reaches the script text and that a
-metacharacter-laden path is treated as inert data.
+The script shells out to docker for everything real; these tests patch the
+module's subprocess (and path constants) so the orchestration logic -- manifest
+handling, fixture presence bookkeeping, the #664 argv-not-interpolated
+contract, CLI flow -- is pinned without Docker.
 """
+import json
 import os
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill", "scripts"))
-import run_fixture_tests as rft
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill"))
+import scripts.run_fixture_tests as rft
+
+
+class _Res:
+    def __init__(self, returncode=0, stdout=""):
+        self.returncode = returncode
+        self.stdout = stdout
+
+
+class TestLoadManifest(unittest.TestCase):
+    def test_missing_manifest_exits_1(self):
+        with mock.patch.object(rft, "MANIFEST", Path("/nonexistent/manifest.json")):
+            with self.assertRaises(SystemExit) as cm:
+                rft.load_manifest()
+        self.assertEqual(cm.exception.code, 1)
+
+    def test_invalid_json_exits_1(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "manifest.json"
+            p.write_text("{not json")
+            with mock.patch.object(rft, "MANIFEST", p):
+                with self.assertRaises(SystemExit) as cm:
+                    rft.load_manifest()
+        self.assertEqual(cm.exception.code, 1)
+
+    def test_valid_manifest_round_trips(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "manifest.json"
+            p.write_text(json.dumps({"fixtures": [{"name": "x"}]}))
+            with mock.patch.object(rft, "MANIFEST", p):
+                self.assertEqual(rft.load_manifest(), {"fixtures": [{"name": "x"}]})
+
+
+class TestCheckFixtures(unittest.TestCase):
+    def test_local_unbaked_fixture_checked_on_host(self):
+        # baked:false fixtures are validated against the host checkout, never
+        # the image (checking inside the image would always read MISSING).
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "tests", "fixtures", "hostile"))
+            fixtures = [
+                {"name": "hostile", "path": "tests/fixtures/hostile", "baked": False},
+                {"name": "ghost", "path": "tests/fixtures/ghost", "baked": False},
+            ]
+            with mock.patch.object(rft, "REPO_ROOT", Path(d)):
+                present, missing = rft.check_fixtures("tag", fixtures)
+        self.assertEqual(present, ["hostile"])
+        self.assertEqual(missing, ["ghost"])
+
+    def test_baked_fixtures_resolved_from_image_probe_output(self):
+        fixtures = [{"name": "rust", "path": "/opt/f/rust", "baked": True},
+                    {"name": "node", "path": "/opt/f/node", "baked": True}]
+        probe = _Res(stdout="PRESENT:/opt/f/rust\nMISSING:/opt/f/node\n")
+        with mock.patch.object(rft.subprocess, "run", return_value=probe) as m:
+            present, missing = rft.check_fixtures("tag", fixtures)
+        self.assertEqual(present, ["rust"])
+        self.assertEqual(missing, ["node"])
+        # #664 contract: the sh script is a FIXED constant; paths ride as argv
+        # after the "sh" $0 placeholder, never interpolated into the script.
+        cmd = m.call_args.args[0]
+        script_idx = cmd.index("-c") + 1
+        self.assertNotIn("/opt/f/rust", cmd[script_idx])
+        self.assertEqual(cmd[script_idx + 1], "sh")
+        self.assertEqual(cmd[script_idx + 2:], ["/opt/f/rust", "/opt/f/node"])
+
+    def test_no_baked_paths_skips_docker_entirely(self):
+        with mock.patch.object(rft.subprocess, "run") as m:
+            present, missing = rft.check_fixtures("tag", [])
+        m.assert_not_called()
+        self.assertEqual((present, missing), ([], []))
+
+
+class TestRunTests(unittest.TestCase):
+    def test_test_filter_becomes_k_expression_and_mounts_are_ro(self):
+        with mock.patch.object(rft.subprocess, "run", return_value=_Res(3)) as m:
+            rc = rft.run_tests("tag", test="rust")
+        self.assertEqual(rc, 3)          # pytest exit code propagates verbatim
+        cmd = m.call_args.args[0]
+        self.assertIn("-k", cmd)
+        self.assertEqual(cmd[cmd.index("-k") + 1], "test_rust_integration")
+        self.assertTrue(any(str(a).endswith("/skill:/opt/panopticon/skill:ro")
+                            for a in cmd))
+
+    def test_no_filter_runs_whole_tools_tree(self):
+        with mock.patch.object(rft.subprocess, "run", return_value=_Res(0)) as m:
+            rft.run_tests("tag")
+        cmd = m.call_args.args[0]
+        self.assertNotIn("-k", cmd)
+        self.assertIn("/opt/panopticon/tests/tools", cmd)
+
+
+class TestMain(unittest.TestCase):
+    def _manifest(self, d):
+        p = Path(d) / "manifest.json"
+        p.write_text(json.dumps({"fixtures": [
+            {"name": "rust", "language": "rust", "path": "/opt/f/rust"}]}))
+        return p
+
+    def test_docker_unavailable_is_rc_1(self):
+        with mock.patch.object(rft, "docker_available", return_value=False):
+            self.assertEqual(rft.main([]), 1)
+
+    def test_happy_path_uses_existing_image_and_propagates_pytest_rc(self):
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(rft, "MANIFEST", self._manifest(d)), \
+                    mock.patch.object(rft, "docker_available", return_value=True), \
+                    mock.patch.object(rft, "image_exists", return_value=True), \
+                    mock.patch.object(rft, "build_image") as build, \
+                    mock.patch.object(rft, "check_fixtures",
+                                      return_value=(["rust"], [])), \
+                    mock.patch.object(rft, "run_tests", return_value=0):
+                rc = rft.main([])
+        self.assertEqual(rc, 0)
+        build.assert_not_called()        # existing image reused
+
+    def test_rebuild_flag_forces_build(self):
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(rft, "MANIFEST", self._manifest(d)), \
+                    mock.patch.object(rft, "docker_available", return_value=True), \
+                    mock.patch.object(rft, "image_exists", return_value=True), \
+                    mock.patch.object(rft, "build_image") as build, \
+                    mock.patch.object(rft, "check_fixtures", return_value=([], [])), \
+                    mock.patch.object(rft, "run_tests", return_value=0):
+                rft.main(["--rebuild"])
+        build.assert_called_once()
 
 
 class TestCheckFixturesInjection(unittest.TestCase):
@@ -74,6 +198,10 @@ class TestCheckFixturesInjection(unittest.TestCase):
             present, missing = rft.check_fixtures("img:tag", [])
         self.assertEqual((present, missing), ([], []))
         self.assertEqual(called["n"], 0)          # no docker invocation
+
+
+if __name__ == "__main__":
+    unittest.main()
 
 
 if __name__ == "__main__":
