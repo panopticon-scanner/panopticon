@@ -183,7 +183,16 @@ def build_diff(run2_records, run3_records, run2_path, run3_path):
         exact = fp in fps3
         coarse = ck in ck3
         if exact or coarse:
-            run3_side = g3[fp] if exact else g3_by_ck[ck]
+            # The run3 side carries the exact-fingerprint records PLUS every
+            # coarse-key sibling (#954): `new` suppresses a run3 fingerprint
+            # whose coarse key was seen in run2, so an exact entry that
+            # ignored siblings would drop them from every cohort — the
+            # exact-tier mirror of the coarse-tier vanishing bug (F4). Union
+            # by object identity: both indexes hold the same record dicts.
+            exact_side = g3[fp] if exact else []
+            seen = {id(r) for r in exact_side}
+            run3_side = exact_side + [r for r in g3_by_ck[ck]
+                                      if id(r) not in seen]
             kinds2 = {r["kind"] for r in recs}
             kinds3 = {r["kind"] for r in run3_side}
             recurring.append({"fingerprint": fp, "coarse_key": list(ck),
