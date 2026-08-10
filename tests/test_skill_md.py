@@ -151,6 +151,11 @@ class TestDeltaDocs(unittest.TestCase):
                       "diff-hunks.json", "worktree"]:
             self.assertIn(token, self.skill, token)
 
+    def test_pr_worktree_documented_pipeline_ready(self):
+        # #955: --pr stages groups.json + diff-hunks.json into the worktree's
+        # .panopticon automatically; the doc must say so (no hand-staging).
+        self.assertIn("pipeline-ready", self.skill)
+
     def test_guard_install_is_session_rooted(self):
         # #956: hook registration is SESSION-rooted — a guard installed from a
         # temp worktree's cwd is inert. The doc must say install from the
