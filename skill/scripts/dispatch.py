@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sys
+import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import depth_planner
@@ -95,6 +96,8 @@ ROLE_FILES = {"scout": "scout.md", "panel_review": "panel-review.md",
               "lens_sweep": "lens-sweep.md", "advisor": "advisor.md"}
 CLAUDE_AGENTS_DIR = os.path.join(os.path.expanduser("~"), ".claude", "agents")
 KIMI_AGENTS_DIR = os.path.join(os.path.expanduser("~"), ".kimi-code", "agents")
+CODEX_HOME = os.path.expanduser(os.environ.get("CODEX_HOME", "~/.codex"))
+CODEX_AGENTS_DIR = os.path.join(CODEX_HOME, "agents")
 
 # Roles whose findings gate merge/release decisions (#275). If either lacks a
 # registered enforcement shell, its tool policy is prompt-advisory only --
@@ -114,10 +117,23 @@ _CHARTER = (
     "you may use only %s and must never attempt %s.\n"
     "Return your result as the task message instructs.\n")
 
+_CODEX_CHARTER = (
+    "You are panopticon's `%s` reviewer. Follow the dispatched task message "
+    "exactly; it contains your full instructions for this run. Your Codex "
+    "sandbox is read-only. Use shell commands only for read-only exploration, "
+    "never execute target code, never access the network, and return the exact "
+    "JSON shape requested by the task.\n")
+
 
 def registered_agent_name(role_file):
     """panopticon-<stem>, e.g. scout.md -> panopticon-scout."""
     return "panopticon-" + role_file[:-len(".md")]
+
+
+def registered_agent_filename(host, role_file):
+    """Host-native filename for one registered enforcement profile."""
+    suffix = ".toml" if host == "codex" else ".md"
+    return registered_agent_name(role_file) + suffix
 
 
 def emit_host_agents(host, out_dir):
@@ -129,8 +145,8 @@ def emit_host_agents(host, out_dir):
     do, never what it is asked to do. Fail-fast on template errors (shipped
     assets); idempotent for unchanged templates.
     """
-    if host not in ("claude", "kimi"):
-        raise ValueError("emit-host-agents: unsupported host %r (claude|kimi)" % host)
+    if host not in ("claude", "kimi", "codex"):
+        raise ValueError("emit-host-agents: unsupported host %r (claude|kimi|codex)" % host)
     os.makedirs(out_dir, exist_ok=True)
     written = []
     for role, role_file in sorted(ROLE_FILES.items()):
@@ -138,7 +154,7 @@ def emit_host_agents(host, out_dir):
         tp = meta["tool_policy"]
         agent = registered_agent_name(role_file)
         charter = _CHARTER % (role, ", ".join(tp["allowed"]),
-                              ", ".join(tp["forbidden"]))
+                      ", ".join(tp["forbidden"]))
         if host == "claude":
             model = EMIT_MODEL_POLICY.get("claude", {}).get(role)
             fm = ["---", "name: %s" % agent,
@@ -147,7 +163,7 @@ def emit_host_agents(host, out_dir):
             if model:
                 fm.append("model: %s" % model)
             fm.append("---")
-        else:
+        elif host == "kimi":
             # Override-free by design (see EMIT_MODEL_POLICY above): the tier
             # comes from model-profiles.yml so it cannot drift from what
             # resolve_model returns at dispatch time.
@@ -162,21 +178,42 @@ def emit_host_agents(host, out_dir):
                   + ["disallowedTools:"]
                   + ["  - %s" % t for t in tp["forbidden"]]
                   + ["---"])
-        path = os.path.join(out_dir, agent + ".md")
+        else:
+            cfg = model_resolver.registration_config("codex", role)
+            lines = ["name = %s" % json.dumps(agent),
+                     "description = %s" % json.dumps(meta["description"])]
+            if cfg.get("model"):
+                lines.append("model = %s" % json.dumps(cfg["model"]))
+            if cfg.get("model_reasoning_effort"):
+                lines.append("model_reasoning_effort = %s"
+                             % json.dumps(cfg["model_reasoning_effort"]))
+            lines.extend(["sandbox_mode = \"read-only\"",
+                          "developer_instructions = %s"
+                          % json.dumps(_CODEX_CHARTER % role)])
+        path = os.path.join(out_dir, registered_agent_filename(host, role_file))
         with open(path, "w", encoding="utf-8") as fh:
-            fh.write("\n".join(fm) + "\n\n" + charter)
+            if host == "codex":
+                fh.write("\n".join(lines) + "\n")
+            else:
+                fh.write("\n".join(fm) + "\n\n" + charter)
         written.append(path)
     return written
 
 
-def _tool_policy_line(meta):
+def _tool_policy_line(meta, host=None):
     tp = meta["tool_policy"]
+    if host == "codex":
+        return ("\n## Tool policy\n\nThe Codex runner enforces a read-only "
+                "sandbox and captures your final JSON itself. You may use shell "
+                "commands only to read or search files. Never execute target "
+                "code, run builds or tests, access the network, spawn agents, "
+                "or attempt any filesystem mutation.\n")
     return ("\n## Tool policy\n\nYour only tools are %s. "
              "You must not use %s under any circumstances.\n"
              % (", ".join(tp["allowed"]), ", ".join(tp["forbidden"])))
 
 
-def render_prompt(role_file, mapping):
+def render_prompt(role_file, mapping, host=None):
     """Render a role template into a dispatchable prompt.
 
     Brace-safe two-step replacement: placeholders are first swapped for unique
@@ -188,6 +225,11 @@ def render_prompt(role_file, mapping):
     single-word lowercase tokens.
     """
     meta, body = load_template(role_file)
+    if role_file in ("panel-review.md", "lens-sweep.md"):
+        mapping = dict(mapping)
+        for key, value in _delivery_fields(
+                host, mapping.get("out_file", ""), role_file).items():
+            mapping.setdefault(key, value)
     tokens = set(PLACEHOLDER_RE.findall(body))
     missing = sorted(t for t in tokens if t not in mapping)
     if missing:
@@ -201,7 +243,7 @@ def render_prompt(role_file, mapping):
         rendered = rendered.replace("{%s}" % tok, sentinel)
     for sentinel, value in sentinels.items():
         rendered = rendered.replace(sentinel, value)
-    return rendered + _tool_policy_line(meta)
+    return rendered + _tool_policy_line(meta, host)
 
 
 def _detect_host():
@@ -210,6 +252,9 @@ def _detect_host():
     Fallback only — the orchestrating agent should pass --host explicitly.
     """
     warning = "WARNING: host detected from environment; pass --host explicitly for stable behavior"
+    if os.environ.get("CODEX_SANDBOX") or os.environ.get("CODEX_SANDBOX_NETWORK_DISABLED"):
+        print(warning, file=sys.stderr)
+        return "codex"
     if os.environ.get("KIMI_CODE_VERSION") or os.environ.get("KIMI_SESSION_ID"):
         print(warning, file=sys.stderr)
         return "kimi"
@@ -239,17 +284,56 @@ def _registration_dir(host, agents_dir):
         return CLAUDE_AGENTS_DIR
     if host == "kimi":
         return KIMI_AGENTS_DIR
+    if host == "codex":
+        return CODEX_AGENTS_DIR
     return None
 
 
-def _is_registered(reg_dir, role_file):
+def _is_registered(reg_dir, role_file, host=None):
     """Check if a role is registered in the registration directory."""
     return bool(reg_dir) and os.path.isfile(
-        os.path.join(reg_dir, registered_agent_name(role_file) + ".md"))
+        os.path.join(reg_dir, registered_agent_filename(host, role_file)))
+
+
+def _artifact_token(value, label):
+    """Return a filename-safe plan token or reject the untrusted profile."""
+    value = str(value or "")
+    if (not value or value in (".", "..") or os.path.isabs(value)
+            or "/" in value or "\\" in value
+            or any(ord(ch) < 32 or ord(ch) == 127 for ch in value)):
+        raise ValueError("unsafe %s %r: artifact names cannot contain paths or controls"
+                         % (label, value))
+    return value
+
+
+def _delivery_fields(host, out_file, role_file):
+    if host == "codex":
+        return {
+            "delivery_contract": (
+                'Return ONLY a raw JSON object `{"findings": [...]}` as your '
+                "final message. Do not write it yourself; the trusted Codex runner "
+                "validates and atomically publishes that response to `%s`." % out_file),
+            "side_effect_boundary": (
+                "Perform NO file writes, GitHub writes, repository mutations, "
+                "dispatches, credential access, or target-code execution. The "
+                "Codex runner enforces a read-only sandbox."),
+        }
+    delivery = (
+        'Write your findings as a raw JSON object `{"findings": [...]}` to `%s`, '
+        "then return a one-line confirmation as your final message. Write ONLY "
+        "that file — the write-guard hook blocks any other path." % out_file)
+    if role_file == "lens-sweep.md":
+        boundary = "Do not perform GitHub writes, repo mutations, or credential mints."
+    else:
+        boundary = (
+            "Write ONLY your findings file at `%s`. Perform NO GitHub writes, NO "
+            "repo mutations, NO dispatches, NO credential mints, and NO OTHER "
+            "file writes — the write-guard hook enforces this." % out_file)
+    return {"delivery_contract": delivery, "side_effect_boundary": boundary}
 
 
 def build_plan(scope_profile, host=None, model_overrides=None, agents_dir=None,
-               root=None):
+               root=None, codex_exec=False, run_id=None):
     """Return a DispatchPlan: list of agent invocations.
 
     Each invocation has:
@@ -276,25 +360,35 @@ def build_plan(scope_profile, host=None, model_overrides=None, agents_dir=None,
     group_runner's done-check all agree on one location.
     """
     host = host or _detect_host()
+    if codex_exec and host != "codex":
+        raise ValueError("codex_exec requires host='codex'")
+    if codex_exec:
+        run_id = run_id or uuid.uuid4().hex
     overrides = model_overrides or {}
-    group_name = scope_profile.get("group", "unknown")
+    group_name = _artifact_token(scope_profile.get("group", "unknown"), "group")
     files = scope_profile.get("files", [])
     depth = scope_profile.get("depth", "standard")
     root = os.path.abspath(root) if root else os.getcwd()
     plan = []
+    panels = scope_profile.get("panels")
+    if not isinstance(panels, list) or not panels:
+        raise ValueError("ScopeProfile must schedule at least one panel")
 
     # Compute registration directory once
     reg_dir = _registration_dir(host, agents_dir)
 
     # Pre-compute enforcement status for each role to avoid triple stat calls
-    panel_enforced = _is_registered(reg_dir, ROLE_FILES["panel_review"])
-    lens_enforced = _is_registered(reg_dir, ROLE_FILES["lens_sweep"])
+    panel_enforced = codex_exec or _is_registered(
+        reg_dir, ROLE_FILES["panel_review"], host)
+    lens_enforced = codex_exec or _is_registered(
+        reg_dir, ROLE_FILES["lens_sweep"], host)
     panel_agent = (registered_agent_name(ROLE_FILES["panel_review"])
                    if panel_enforced else agent_name("panel_review"))
     lens_agent = (registered_agent_name(ROLE_FILES["lens_sweep"])
                   if lens_enforced else agent_name("lens_sweep"))
 
-    for panel_name in panels_in_priority_order(scope_profile.get("panels", [])):
+    for panel_name in panels_in_priority_order(panels):
+        panel_name = _artifact_token(panel_name, "panel")
         spawned = depth_planner.plan_lenses(scope_profile, panel_name)
         panel_lenses = scope_profile.get("lenses", {}).get(panel_name, [])
         spawned_set = set(spawned)
@@ -304,7 +398,16 @@ def build_plan(scope_profile, host=None, model_overrides=None, agents_dir=None,
         panel_out_file = os.path.join(
             root, ".panopticon",
             "findings-%s-%s-panel_review.json" % (group_name, panel_name))
-        plan.append({
+        panel_mapping = {
+            "panel": panel_name, "group": group_name,
+            "file_list": ", ".join(files),
+            "security_mode": scope_profile.get("security_mode", "standard"),
+            "depth": depth,
+            "lenses": "\n".join("- %s" % n for n in non_spawned) or "- (all lenses)",
+            "out_file": panel_out_file,
+        }
+        panel_mapping.update(_delivery_fields(host, panel_out_file, "panel-review.md"))
+        panel_entry = {
             "role": "panel_review",
             "agent": panel_agent,
             "enforced": panel_enforced,
@@ -316,22 +419,28 @@ def build_plan(scope_profile, host=None, model_overrides=None, agents_dir=None,
             "depth": depth,
             "lenses": non_spawned,
             "out_file": panel_out_file,
-            "prompt": render_prompt(ROLE_FILES["panel_review"], {
-                "panel": panel_name, "group": group_name,
-                "file_list": ", ".join(files),
-                "security_mode": scope_profile.get("security_mode", "standard"),
-                "depth": depth,
-                "lenses": "\n".join("- %s" % n for n in non_spawned) or "- (all lenses)",
-                "out_file": panel_out_file,
-            }),
-        })
+            "prompt": render_prompt(ROLE_FILES["panel_review"], panel_mapping, host),
+        }
+        if codex_exec:
+            panel_entry.update({"execution": "codex_exec", "delivery": "return_json",
+                                "run_id": run_id})
+        plan.append(panel_entry)
 
         # mechanical lens sweeps
         for lens_name in spawned:
+            lens_name = _artifact_token(lens_name, "lens")
             sweep_out_file = os.path.join(
                 root, ".panopticon",
                 "findings-%s-%s-lens_sweep-%s.json" % (group_name, panel_name, lens_name))
-            plan.append({
+            sweep_mapping = {
+                "panel": panel_name, "group": group_name,
+                "file_list": ", ".join(files),
+                "security_mode": scope_profile.get("security_mode", "standard"),
+                "depth": depth, "lens": lens_name,
+                "out_file": sweep_out_file,
+            }
+            sweep_mapping.update(_delivery_fields(host, sweep_out_file, "lens-sweep.md"))
+            sweep_entry = {
                 "role": "lens_sweep",
                 "agent": lens_agent,
                 "enforced": lens_enforced,
@@ -342,14 +451,12 @@ def build_plan(scope_profile, host=None, model_overrides=None, agents_dir=None,
                 "group": group_name,
                 "depth": depth,
                 "out_file": sweep_out_file,
-                "prompt": render_prompt(ROLE_FILES["lens_sweep"], {
-                    "panel": panel_name, "group": group_name,
-                    "file_list": ", ".join(files),
-                    "security_mode": scope_profile.get("security_mode", "standard"),
-                    "depth": depth, "lens": lens_name,
-                    "out_file": sweep_out_file,
-                }),
-            })
+                "prompt": render_prompt(ROLE_FILES["lens_sweep"], sweep_mapping, host),
+            }
+            if codex_exec:
+                sweep_entry.update({"execution": "codex_exec", "delivery": "return_json",
+                                    "run_id": run_id})
+            plan.append(sweep_entry)
 
     return plan
 
@@ -638,13 +745,14 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="panopticon dispatch planner")
     ap.add_argument("profile", nargs="?", default=None, help="Path to ScopeProfile JSON")
     ap.add_argument("--host", default=None,
-                    help="Host platform: claude|kimi|generic (any model-profiles.yml host key accepted)")
+                    help="Host platform: claude|kimi|codex|generic (any model-profiles.yml host key accepted)")
     ap.add_argument("--out", default=None, help="Write DispatchPlan JSON to this file")
     ap.add_argument("--render-advisor", metavar="QUEUE", default=None,
                     help="Render advisor prompts from a verify-queue JSON into --out DIR")
     ap.add_argument("--emit-kimi-swarm", metavar="PLAN", default=None,
                     help="Read a DispatchPlan JSON and emit a Kimi Agent/AgentSwarm manifest to --out")
-    ap.add_argument("--emit-host-agents", metavar="HOST", choices=["claude", "kimi"], default=None)
+    ap.add_argument("--emit-host-agents", metavar="HOST",
+                    choices=["claude", "kimi", "codex"], default=None)
     ap.add_argument("--verify-plan", metavar="PLAN", action="append", default=None,
                     help="Re-verify emitted plan file(s) against the LIVE "
                          "registration dir before fan-out (#493): exits 1 on "
@@ -656,14 +764,18 @@ def main(argv=None):
                     help="Emit the plan even when reviewer roles lack a registered "
                          "enforcement shell (tool policy becomes prompt-advisory); "
                          "records the acceptance in .panopticon/unenforced-ack.json")
+    ap.add_argument("--codex-exec", action="store_true",
+                    help="Mark a --host codex plan for the trusted read-only codex_exec "
+                         "runner; no registered reviewer shells are required")
     ap.add_argument("--model-lens-sweep", default=None)
     ap.add_argument("--model-panel-review", default=None)
     ap.add_argument("--model-advisor", default=None)
     args = ap.parse_args(argv)
 
     if args.emit_host_agents:
-        out_dir = args.out or (CLAUDE_AGENTS_DIR if args.emit_host_agents == "claude"
-                               else KIMI_AGENTS_DIR)
+        defaults = {"claude": CLAUDE_AGENTS_DIR, "kimi": KIMI_AGENTS_DIR,
+                "codex": CODEX_AGENTS_DIR}
+        out_dir = args.out or defaults[args.emit_host_agents]
         try:
             written = emit_host_agents(args.emit_host_agents, out_dir)
         except ValueError as e:
@@ -778,7 +890,7 @@ def main(argv=None):
 
     try:
         plan = build_plan(profile, host=args.host, model_overrides=overrides,
-                          agents_dir=args.agents_dir)
+                  agents_dir=args.agents_dir, codex_exec=args.codex_exec)
     except ValueError as e:
         print("dispatch: %s" % e, file=sys.stderr)
         return 1

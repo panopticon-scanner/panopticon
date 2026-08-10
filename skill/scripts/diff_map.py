@@ -7,6 +7,7 @@ import subprocess
 import os
 import json as _json
 import tempfile
+import uuid
 
 _NEWFILE_RE = re.compile(r"^\+\+\+ (?:b/)?(.*?)\s*$")
 _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
@@ -166,10 +167,18 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
     base = (_json.loads(view) or {}).get("baseRefName")
     if not base:
         raise RuntimeError("panopticon --pr: could not read base branch for PR %d" % pr_number)
-    _run(["git", "-C", repo, "fetch", "origin", "refs/pull/%d/head" % pr_number])
-    head_sha = _run(["git", "-C", repo, "rev-parse", "FETCH_HEAD"]).strip()
+    fetch_ref = "refs/panopticon/pr-%d-%s" % (pr_number, uuid.uuid4().hex)
+    _run(["git", "-C", repo, "fetch", "--no-write-fetch-head", "origin",
+          "refs/pull/%d/head:%s" % (pr_number, fetch_ref)])
+    head_sha = _run(["git", "-C", repo, "rev-parse", fetch_ref]).strip()
     wt = _mk_worktree_dir(pr_number)
-    _run(["git", "-C", repo, "worktree", "add", "--detach", wt, "FETCH_HEAD"])
+    try:
+        _run(["git", "-C", repo, "worktree", "add", "--detach", wt, head_sha])
+    finally:
+        try:
+            _run(["git", "-C", repo, "update-ref", "-d", fetch_ref])
+        except RuntimeError:
+            pass
     return {"worktree": wt, "base": base, "head_sha": head_sha}
 
 

@@ -5,7 +5,7 @@ supported, other SKILL.md hosts degraded-sequential. This file is the durable
 design record that travels with the skill (installed dir / OneDrive), so future
 work has context without the original spec/plan docs.
 
-**Current version: 4.2.0** (semver — see Versioning below).
+**Current version: 4.3.0** (semver — see Versioning below).
 
 ## What it is
 A **discovery → scout → fan-out → synthesis** pipeline. It profiles a target with a

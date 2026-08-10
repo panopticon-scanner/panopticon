@@ -65,6 +65,15 @@ class TestModelResolver(unittest.TestCase):
         self.assertEqual(mr.resolve_model("claude", "panel_review")["model"], "sonnet")
         self.assertEqual(mr.resolve_model("claude", "advisor")["model"], "opus")
 
+    def test_codex_defaults(self):
+        self.assertEqual(mr.resolve_model("codex", "scout")["model"], "gpt-5.6-luna")
+        panel = mr.resolve_model("codex", "panel_review")
+        self.assertEqual(panel["model"], "gpt-5.6-terra")
+        self.assertEqual(panel["model_reasoning_effort"], "high")
+        advisor = mr.registration_config("codex", "advisor")
+        self.assertEqual(advisor["model"], "gpt-5.6")
+        self.assertEqual(advisor["model_reasoning_effort"], "high")
+
     def test_unknown_host_falls_back(self):
         self.assertIsNone(mr.resolve_model("generic", "panel_review")["model"])
         self.assertIsNone(mr.resolve_model("someday-host", "scout")["model"])

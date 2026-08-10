@@ -788,6 +788,31 @@ class TestGitAwareDiscovery(unittest.TestCase):
             out, _ = self._run_scan(d)
             self.assertIn("src/brand_new.py", self._grouped(out))
 
+    def test_git_paths_are_nul_safe(self):
+        with tempfile.TemporaryDirectory() as d:
+            names = ["src/line\nbreak.py", "src/tab\tname.py", 'src/quote"name.py']
+            for name in names:
+                self._touch(d, name)
+            _init_repo(d)
+            _git(d, "add", ".")
+            _git(d, "commit", "-q", "-m", "init")
+            out, _ = self._run_scan(d)
+            grouped = self._grouped(out)
+            for name in names:
+                self.assertIn(name, grouped)
+
+    def test_external_symlink_is_excluded(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo = os.path.join(d, "repo")
+            os.makedirs(repo)
+            self._touch(d, "outside.txt", "sentinel")
+            os.symlink("../outside.txt", os.path.join(repo, "external.txt"))
+            _init_repo(repo)
+            _git(repo, "add", ".")
+            _git(repo, "commit", "-q", "-m", "init")
+            out, _ = self._run_scan(repo)
+            self.assertNotIn("external.txt", self._grouped(out))
+
     def test_tracked_noise_dirs_still_excluded(self):
         # A repo that TRACKS node_modules still shouldn't review it.
         with tempfile.TemporaryDirectory() as d:

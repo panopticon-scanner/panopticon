@@ -679,7 +679,7 @@ class TestReport(unittest.TestCase):
         out = os.path.join(d, "report.json")
         import io, contextlib
         errbuf = io.StringIO()
-        with contextlib.redirect_stdout(io.StringIO()), \
+        with _chdir(d), contextlib.redirect_stdout(io.StringIO()), \
                 contextlib.redirect_stderr(errbuf):
             rc = syn.main(["--target", "src", "--diff-hunks", hunks,
                            "--out", out, *extra, p])
@@ -2532,6 +2532,13 @@ class TestCoverageDivergence(unittest.TestCase):
         self.assertIsNone(r["summary"]["provisional_grade"])
         self.assertEqual(r["meta"]["coverage"]["divergence"], {"panels": {}, "tools": {}})
 
+    def test_present_empty_dispatch_plan_is_inconclusive(self):
+        r = syn.build_report(
+            [], self.GROUPS, "t", "high", self.TS,
+            integrity={"plans_seen": 1, "empty_dispatch_plans": 1})
+        self.assertEqual(r["summary"]["gate"], "INCONCLUSIVE")
+        self.assertFalse(r["summary"]["coverage_certified"])
+
 
 class TestResumeDisclosure(unittest.TestCase):
     G = [{"name": "g1", "files": ["a.py"]}]
@@ -2800,6 +2807,7 @@ class TestIntegrity(unittest.TestCase):
         self.assertEqual(r["meta"]["integrity"],
                          {"unexpected_findings_files": [], "missing_planned_files": [],
                           "duplicate_out_files": [], "mislabeled_findings_files": [],
+                          "empty_dispatch_plans": 0,
                           "unenforced_acknowledged": False, "plans_seen": 0})
         self.assertEqual(r["summary"]["gate"], "PASS")
 
@@ -2810,6 +2818,7 @@ class TestIntegrity(unittest.TestCase):
         self.assertEqual(r["meta"]["integrity"],
                          {"unexpected_findings_files": [], "missing_planned_files": [],
                           "duplicate_out_files": [], "mislabeled_findings_files": [],
+                          "empty_dispatch_plans": 0,
                           "unenforced_acknowledged": False, "plans_seen": 0})
         self.assertEqual(r["summary"]["gate"], "PASS")
 

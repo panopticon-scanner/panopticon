@@ -16,7 +16,7 @@ __all__ = ["entry_is_done", "pending_entries", "fan_out_coverage",
            "verdict_is_done", "pending_verdicts", "resume_stats"]
 
 
-def entry_is_done(out_file):
+def entry_is_done(out_file, entry=None):
     """True iff out_file exists and parses as a findings file.
 
     A findings file is a JSON object with a `findings` list (the same shape
@@ -30,7 +30,17 @@ def entry_is_done(out_file):
             data = json.load(fh)
     except (OSError, ValueError):
         return False
-    return isinstance(data, dict) and isinstance(data.get("findings"), list)
+    if not (isinstance(data, dict) and isinstance(data.get("findings"), list)):
+        return False
+    expected_run = entry.get("run_id") if isinstance(entry, dict) else None
+    if expected_run:
+        meta = data.get("_panopticon")
+        if not isinstance(meta, dict) or meta.get("run_id") != expected_run:
+            return False
+        for key in ("role", "panel", "lens", "group"):
+            if meta.get(key) != entry.get(key):
+                return False
+    return True
 
 
 def pending_entries(plan):
@@ -40,7 +50,7 @@ def pending_entries(plan):
     design: a malformed dispatch plan must never abort a run.
     """
     return [e for e in plan
-            if isinstance(e, dict) and not entry_is_done(e.get("out_file"))]
+            if isinstance(e, dict) and not entry_is_done(e.get("out_file"), e)]
 
 
 _OUTFILE_RE = re.compile(
@@ -72,7 +82,7 @@ def fan_out_coverage(plan):
         if group is None or panel is None:
             continue
         planned[panel] = planned.get(panel, 0) + 1
-        done = entry_is_done(e.get("out_file"))
+        done = entry_is_done(e.get("out_file"), e)
         if done:
             executed[panel] = executed.get(panel, 0) + 1
         st = by_group.setdefault(group, {"total": 0, "done": 0})

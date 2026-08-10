@@ -395,7 +395,13 @@ def _render_provenance(provenance):
 
 def _render_citation_quality(quality):
     quality = str(quality).lower() if quality else "none"
-    return f"<span class='cit-quality cit-{quality}'>{_escape(quality)}</span>"
+    quality_class = quality if quality in {"full", "partial", "minimal", "none"} else "unknown"
+    return f"<span class='cit-quality cit-{quality_class}'>{_escape(quality)}</span>"
+
+
+def _stat_value(stats, severity):
+    """Render an untrusted summary statistic as escaped text."""
+    return _escape(stats.get(severity.lower(), 0)) if isinstance(stats, dict) else "0"
 
 
 def _render_header(report):
@@ -444,7 +450,7 @@ def _render_compare_summary(label, report):
     summary = report.get("summary", {})
     stats = summary.get("stats", {})
     stat_cards = " ".join(
-        f"<span class='stat-mini {_severity_class(sev)}'>{sev} {stats.get(sev.lower(), 0)}</span>"
+        f"<span class='stat-mini {_severity_class(sev)}'>{sev} {_stat_value(stats, sev)}</span>"
         for sev in _SEV_ORDER
     )
     return f"""
@@ -536,7 +542,7 @@ def _render_dashboard(report):
     stat_cards = "\n".join(
         f"<div class='stat-card {_severity_class(sev)}'>"
         f"<div class='stat-label'>{sev}</div>"
-        f"<div class='stat-value'>{stats.get(sev.lower(), 0)}</div></div>"
+        f"<div class='stat-value'>{_stat_value(stats, sev)}</div></div>"
         for sev in _SEV_ORDER
     )
 

@@ -58,6 +58,12 @@ _CLAUDE_FALLBACK = {
     "panel_review": {"model": "sonnet"},
     "advisor": {"model": "opus"},
 }
+_CODEX_FALLBACK = {
+    "scout": {"model": "gpt-5.6-luna", "model_reasoning_effort": "medium"},
+    "lens_sweep": {"model": "gpt-5.6-luna", "model_reasoning_effort": "medium"},
+    "panel_review": {"model": "gpt-5.6-terra", "model_reasoning_effort": "high"},
+    "advisor": {"model": "gpt-5.6", "model_reasoning_effort": "high"},
+}
 
 
 def _hardcoded_fallback(host, role):
@@ -72,6 +78,9 @@ def _hardcoded_fallback(host, role):
                                          "max_output_size": 8192})
     if host == "claude":
         return _CLAUDE_FALLBACK.get(role, {"model": "sonnet"})
+    if host == "codex":
+        return _CODEX_FALLBACK.get(role, {"model": "gpt-5.6-terra",
+                                          "model_reasoning_effort": "medium"})
     return {"model": None}
 
 
@@ -102,8 +111,8 @@ _KIMI_TIERS = ("primary", "secondary")
 _KIMI_ALIAS_TIER = {"kimi-for-coding": "primary", "k3": "secondary"}
 
 
-def registration_model(host, role):
-    """Role -> model tier for PERSISTED registration files.
+def registration_config(host, role):
+    """Role -> deterministic config for PERSISTED registration files.
 
     Deliberately override-free: it consults reference/model-profiles.yml and
     the hardcoded fallback only, never PANOPTICON_MODEL_* or CLI overrides.
@@ -114,7 +123,12 @@ def registration_model(host, role):
     cfg = ((profiles.get("hosts") or {}).get(host) or {}).get(role)
     if not isinstance(cfg, dict):
         cfg = _hardcoded_fallback(host, role)
-    return cfg.get("model")
+    return dict(cfg)
+
+
+def registration_model(host, role):
+    """Role -> model identifier for persisted registration files."""
+    return registration_config(host, role).get("model")
 
 
 def _normalize_kimi_model(cfg, role):

@@ -23,7 +23,7 @@ class TestSchemas(unittest.TestCase):
         schema = self._load("report-schema.json")
         self.assertEqual(schema["title"], "CodeReviewReport")
         gate = schema["properties"]["summary"]["properties"]["gate"]
-        self.assertEqual(set(gate["enum"]), {"PASS", "FAIL", "OFF"})
+        self.assertEqual(set(gate["enum"]), {"PASS", "FAIL", "OFF", "INCONCLUSIVE"})
 
     def test_scope_profile_required_fields(self):
         schema = self._load("scope-profile-schema.json")
@@ -50,6 +50,12 @@ class TestSchemas(unittest.TestCase):
         panels = schema["properties"]["panels"]["items"]["enum"]
         for panel in ["architecture", "database", "redteam"]:
             self.assertIn(panel, panels)
+
+    def test_findings_envelope_schema(self):
+        schema = self._load("findings-envelope-schema.json")
+        self.assertEqual(schema["title"], "PanopticonFindingsEnvelope")
+        self.assertEqual(schema["required"], ["findings"])
+        self.assertFalse(schema["additionalProperties"])
 
 
 class TestToolEvidenceSchema(unittest.TestCase):
