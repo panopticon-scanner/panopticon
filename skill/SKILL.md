@@ -190,7 +190,12 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
      cwd's `.claude/settings.local.json`, and the harness only honors the
      session root's settings — a guard installed from inside a temp worktree
      is inert. This works because `build_plan` roots every `entry.out_file`
-     at its cwd and emits it ABSOLUTE (#935): build the plan from the
+     at its cwd and emits it ABSOLUTE (#935), and renders every reviewer
+     prompt's FILE LIST absolute too, with advisor prompts carrying a
+     `Repo root:` header (#975) — a dispatched subagent inherits the SESSION
+     cwd, and relative read paths made reviewers review the wrong checkout
+     (false gate verdicts) whenever session root diverged from the tree under
+     review: build the plan from the
      worktree root, and the guard allowlist (realpath'd absolute paths), the
      reviewer's write, and the resume done-check all agree on one location
      regardless of any subagent's cwd (a relative `out_file` silently
