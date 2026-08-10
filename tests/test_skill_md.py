@@ -176,3 +176,16 @@ class TestDeltaDocs(unittest.TestCase):
         qs = self.readme.split("## Quick start")[1].split("## Repository layout")[0]
         self.assertIn("--pr", qs)
         self.assertIn("--base", qs)
+
+
+class TestAdvisorDoc(unittest.TestCase):
+    """#469: the advisor template must carry an explicit tool-claim branch --
+    it drives tool_axis verdicts (tool_confirmed/rejected) but was written for
+    agent claims only."""
+
+    def test_advisor_has_tool_claim_guidance(self):
+        with open(os.path.join(ROOT, "agents", "advisor.md"), encoding="utf-8") as fh:
+            advisor = fh.read()
+        self.assertIn("Tool claims", advisor)
+        self.assertIn("tool:*", advisor)
+        self.assertIn("pattern", advisor.lower())

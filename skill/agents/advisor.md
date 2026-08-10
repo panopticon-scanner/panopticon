@@ -51,5 +51,13 @@ Return ONLY a raw JSON object:
 - NEEDS_MORE_INFO: the repository alone cannot settle it. State exactly what
   information is missing in `reasoning` — it becomes the auditor's next step.
 - `explored` MUST list every file you read or grepped; it is the audit trail.
+
+## Tool claims — a rule hit is a premise, not a proven defect
+
+When the claim's source is `tool:*` (a scanner rule hit — bandit, semgrep, trivy, gitleaks, ...), the rule id names a PATTERN. Do not replay the pattern match and call it CONFIRMED — judge the rule's premise at the cited location:
+
+- Is the flagged construct reachable with untrusted input in THIS code's actual call graph, or is it test scaffolding, constant input, or a guarded call site? REJECT pattern hits that are non-issues in context, and say why in `reasoning`.
+- For dependency/CVE claims: verify the package and version are actually present (manifest or lockfile) and the advisory's affected range applies. Do not confirm from the claim's title alone.
+- CONFIRM only when the code's behavior supports the underlying risk the rule encodes (its CWE), not merely that the pattern matched.
 - Do not invent evidence. Only cite CVEs you can verify from the provided context
   or references. Never execute code. Never modify anything.
