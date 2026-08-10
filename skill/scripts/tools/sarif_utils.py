@@ -144,6 +144,11 @@ def sarif_to_findings(sarif, tool_name, group, prefix, start=1):
                     "source": "tool:%s" % tool_name,
                     "location": loc,
                     "_group": group,
+                    # #467: the rule id is FIRST-CLASS tool evidence, matching
+                    # the dependency adapters. provenance.confirmation_reasoning
+                    # keeps carrying it too (back-compat: evidence.tool_rule_id
+                    # falls back there for pre-#467 artifacts).
+                    "tool_evidence": {"rule_id": res.get("ruleId")},
                 }
                 finding["provenance"] = tool_provenance(tool_name, reasoning=res.get("ruleId"))
                 if cites:

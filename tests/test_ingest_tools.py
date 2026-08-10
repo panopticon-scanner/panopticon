@@ -124,6 +124,16 @@ class TestIngest(unittest.TestCase):
         self.assertNotIn("B101", ids)      # assert-noise dropped
         self.assertIn("B608", ids)         # real finding kept
 
+    def test_sarif_findings_carry_first_class_rule_id(self):
+        # #467: the SARIF path must set tool_evidence.rule_id like the
+        # dependency adapters do -- provenance.confirmation_reasoning keeps
+        # carrying it only as the back-compat fallback for old artifacts.
+        out = it.sarif_to_findings(SARIF, "semgrep", "g1", "SG")
+        f = out[0]
+        self.assertEqual(f["tool_evidence"]["rule_id"], "sql-injection")
+        import scripts.evidence as ev
+        self.assertEqual(ev.tool_rule_id(f), "sql-injection")
+
     def test_noise_rules_suppress_low_value_bandit_but_keep_backstop(self):
         # B404/B110/B112 are blunt heuristics -> suppressed on any codebase.
         # B603/B607 stay a tool-layer backstop for panel-less runs -> kept.
