@@ -319,3 +319,13 @@ class TestInstallUninstall(unittest.TestCase):
             # neither settings nor allowlist exist -> must not raise
             wg.uninstall(os.path.join(d, "nope.json"),
                          os.path.join(d, "gone.json"))
+
+
+class TestHookCmdSelfLocating(unittest.TestCase):
+    def test_hook_cmd_is_absolute_and_quoted(self):
+        # #495: a literal repo-relative command only worked for the self-scan
+        # layout; the registered command must locate the module absolutely and
+        # survive paths with spaces.
+        self.assertIn(os.path.abspath(wg.__file__), wg._HOOK_CMD)
+        self.assertTrue(wg._HOOK_CMD.startswith('python3 "'))
+        self.assertTrue(wg._HOOK_CMD.endswith('"'))

@@ -80,7 +80,11 @@ def main():
     return 0
 
 
-_HOOK_CMD = "python3 skill/scripts/write_guard_hook.py"
+# #495: self-locate. The old literal "skill/scripts/..." only resolved when
+# the skill lived INSIDE the target repo (the self-scan layout); installed
+# under a skills dir the hook silently never ran. The module's own absolute
+# path works under both layouts (quoted: install paths may contain spaces).
+_HOOK_CMD = 'python3 "%s"' % os.path.abspath(__file__)
 # Ordering is fixed to the original string so install()/uninstall() dict-equality
 # never produces a duplicate or stale entry when upgrading from a
 # settings.local.json written by an earlier version.  The assert below is the
