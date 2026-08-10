@@ -238,3 +238,15 @@ class TestSetupDocs(unittest.TestCase):
             skill = fh.read()
         self.assertIn("--setup", skill)
         self.assertIn("READY", skill)
+
+
+class TestInstalledFlowDocs(unittest.TestCase):
+    """#495: SKILL states the <skill-dir> substitution contract once, and the
+    repo-root cwd rule survives it."""
+
+    def test_preamble_states_substitution_contract(self):
+        with open(os.path.join(ROOT, "SKILL.md"), encoding="utf-8") as fh:
+            skill = fh.read()
+        self.assertIn("Installed-flow substitution", skill)
+        self.assertIn("INSTALL DIRECTORY", skill)
+        self.assertIn("TARGET repo root", skill)

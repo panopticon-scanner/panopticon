@@ -44,6 +44,14 @@ Use `AskUserQuestion` when the target is ambiguous. Otherwise map flags directly
    the entire pipeline from the TARGET REPO ROOT — the write-guard, the
    `.panopticon/` artifact paths, and synthesize's plan/scout globs all resolve
    against the current working directory.
+   **Installed-flow substitution (#495):** `skill/` in every command below
+   means THIS SKILL'S INSTALL DIRECTORY. In the panopticon repo itself that
+   is literally `skill/`; installed anywhere else (e.g.
+   `~/.claude/skills/panopticon/`), substitute that absolute path for the
+   `skill/` prefix — the cwd stays the TARGET repo root either way (that part
+   is load-bearing: artifacts and the guard resolve against cwd, scripts
+   against the skill dir). The write-guard registers its hook command with the
+   module's own absolute path, so the hook works under both layouts.
 2. **Discovery** — run `python3 skill/scripts/orchestrator.py` to produce `groups.json`.
    Git targets are discovered via `git ls-files` (tracked + untracked
    non-ignored), so the TARGET's own `.gitignore` defines the reviewable
