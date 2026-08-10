@@ -114,6 +114,33 @@ def resolve_issue(record, ledger):
     return None
 
 
+def neutralize(text):
+    """Make repo-derived text inert in a GitHub comment (#953).
+
+    Reason strings embed scanned-repo file paths verbatim, and these comments
+    are auto-posted by an authenticated identity — a hostile repo controls its
+    own paths, so markdown links, @-mentions, and backtick breakouts must not
+    activate. Collapse all whitespace/control chars (the CWE-117 convention
+    sarif_to_findings uses for titles), strip backticks so nothing escapes the
+    span, then wrap the whole value in ONE code span, inside which GitHub
+    renders markdown and @-mentions inert.
+    """
+    s = " ".join(str(text or "").split())
+    # str.split() collapses the WHITESPACE class only; other C0/C1 control
+    # bytes (ESC, BEL, single-byte CSI \x9b, ...) survive it and would reach
+    # anyone reading the comment through gh/terminal pipelines as terminal
+    # escape sequences. Strip them outright.
+    s = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", s)
+    s = s.replace("`", "'")
+    return "`%s`" % (s or "(empty)")
+
+
+def _bare(text):
+    """neutralize() minus the wrapping span — for templates that carry their
+    own `...` around the interpolant (the fingerprint slots)."""
+    return neutralize(text)[1:-1]
+
+
 RECUR_EXACT_COMMENT = ("**Run-3 reconciliation: re-affirmed.** This finding's fingerprint "
                        "(`%s`) recurred in the run-3 self-scan — the underlying content "
                        "identity (panel, category, file, rule/title) matched. Left open.")
@@ -143,7 +170,7 @@ def plan_actions(diff, ledger):
             if issue is None:
                 continue
             actions.append({"cohort": "recurring", "fingerprint": entry["fingerprint"],
-                            "issue": issue, "comment": comment_tpl % entry["fingerprint"],
+                            "issue": issue, "comment": comment_tpl % _bare(entry["fingerprint"]),
                             "close": False})
     for entry in diff.get("closed") or []:
         for record in entry["run2"]:
@@ -152,7 +179,7 @@ def plan_actions(diff, ledger):
                 continue
             actions.append({"cohort": "closed", "fingerprint": entry["fingerprint"],
                             "issue": issue,
-                            "comment": CLOSED_COMMENT % entry.get("reason", "no run3 match"),
+                            "comment": CLOSED_COMMENT % neutralize(entry.get("reason", "no run3 match")),
                             "close": True})
     for entry in diff.get("ambiguous") or []:
         for record in entry["run2"]:
@@ -161,7 +188,7 @@ def plan_actions(diff, ledger):
                 continue
             actions.append({"cohort": "ambiguous", "fingerprint": entry["fingerprint"],
                             "issue": issue,
-                            "comment": AMBIGUOUS_COMMENT % entry.get("reason", "area still active"),
+                            "comment": AMBIGUOUS_COMMENT % neutralize(entry.get("reason", "area still active")),
                             "close": False})
     return actions
 
