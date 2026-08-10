@@ -972,6 +972,20 @@ def main(argv=None):
             write_diff_hunks(wt, base, source, _hunks_path_for(args.out),
                              args.diff_context, False)
             result["worktree"] = wt   # recorded; SKILL cleanup releases it post-review
+            # #955: the SKILL runs scout/tools/fan-out/synthesize with the
+            # worktree as cwd, where they expect .panopticon/groups.json and
+            # .panopticon/diff-hunks.json. Stage both so the worktree is
+            # pipeline-ready on exit -- previously they landed only in the
+            # invoking cwd/stdout and the operator had to hand-copy them (and
+            # re-running discovery to fix that leaked a second worktree).
+            wt_pan = os.path.join(wt, ".panopticon")
+            os.makedirs(wt_pan, exist_ok=True)
+            write_diff_hunks(wt, base, source,
+                             os.path.join(wt_pan, "diff-hunks.json"),
+                             args.diff_context, False)
+            with open(os.path.join(wt_pan, "groups.json"), "w",
+                      encoding="utf-8") as fh:
+                emit(result, fh)
         except Exception:
             diff_map.release_worktree(wt, repo=repo)
             raise

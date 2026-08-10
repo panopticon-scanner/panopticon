@@ -1046,6 +1046,36 @@ class TestPrMode(unittest.TestCase):
         wdh.assert_called()                             # hunks emitted (PR base)
         self.assertFalse(wdh.call_args.args[-1])         # --pr: includes_uncommitted=False
 
+    def test_pr_stages_pipeline_artifacts_into_worktree(self):
+        # #955: the worktree must be pipeline-ready on exit -- groups.json and
+        # diff-hunks.json staged into <wt>/.panopticon/, not just the invoking
+        # cwd/--out. The SKILL runs the pipeline with the worktree as cwd.
+        import io, contextlib
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as wt, tempfile.TemporaryDirectory() as d:
+            acq = {"worktree": wt, "base": "main", "head_sha": "abc"}
+            with mock.patch.object(orch.diff_map, "acquire_pr", return_value=acq), \
+                 mock.patch.object(orch.diff_map, "release_worktree"), \
+                 mock.patch.object(orch, "collect_changed_files", return_value=["a.py"]), \
+                 mock.patch.object(orch, "resolve_base", return_value=("main", "pr-base")), \
+                 mock.patch.object(orch, "write_diff_hunks") as wdh, \
+                 mock.patch.object(orch, "build_result",
+                                   return_value={"groups": [], "counts": {}, "tests": []}):
+                out = os.path.join(d, "groups.json")
+                with contextlib.redirect_stdout(io.StringIO()):
+                    rc = orch.main(["--pr", "7", "--out", out])
+            self.assertEqual(rc, 0)
+            # hunks written to BOTH the --out-derived path and the worktree
+            hunk_targets = {c.args[3] for c in wdh.call_args_list}
+            self.assertIn(os.path.join(wt, ".panopticon", "diff-hunks.json"),
+                          hunk_targets)
+            self.assertEqual(len(hunk_targets), 2)
+            # groups.json staged in the worktree, with the worktree recorded
+            staged = os.path.join(wt, ".panopticon", "groups.json")
+            with open(staged, encoding="utf-8") as fh:
+                data = json.load(fh)
+            self.assertEqual(data["worktree"], wt)
+
     def test_pr_failure_releases_worktree_then_raises(self):
         from unittest import mock
         released = {}
