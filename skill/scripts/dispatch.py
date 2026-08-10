@@ -2,6 +2,7 @@
 """Build a DispatchPlan from a ScopeProfile."""
 import argparse
 import functools
+import hashlib
 import json
 import os
 import re
@@ -567,7 +568,45 @@ def _unenforced_refusal_message(unenforced, context="plan"):
             % (action, ", ".join(unenforced)))
 
 
-def _write_unenforced_ack(unenforced):
+def plan_content_hash(plan):
+    """Canonical sha256 of a plan's entry list (#493 R2): formatting- and
+    file-layout-independent, so an ack can bind to the plan CONTENT it
+    acknowledged and synthesize can detect a stale or flipped plan."""
+    return hashlib.sha256(
+        json.dumps(plan, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def verify_plan(plan, host=None, agents_dir=None, ack=None):
+    """Dispatch-time plan re-verification (#493 R1).
+
+    The emission-time gate cannot see an on-disk edit made AFTER emission
+    (an "enforced": true->false flip, a role swap). Re-check each reviewer
+    entry against the LIVE registration dir and return a list of violation
+    strings; empty means the plan still holds the posture it was emitted
+    with. An unenforced reviewer entry is a violation UNLESS a matching
+    (hash-bound) ack acknowledges exactly this plan's content.
+    """
+    reg_dir = _registration_dir(host or _detect_host(), agents_dir)
+    acked = bool(ack and ack.get("acknowledged")
+                 and ack.get("plan_sha256") == plan_content_hash(plan))
+    problems = []
+    for i, e in enumerate(plan):
+        if not isinstance(e, dict) or e.get("role") not in ("panel_review", "lens_sweep"):
+            continue
+        live = _is_registered(reg_dir, ROLE_FILES[e["role"]])
+        if e.get("enforced") and not live:
+            problems.append(
+                "entry %d (%s/%s): enforced:true but no registered shell -- "
+                "on-disk flip or lost registration" % (i, e.get("role"), e.get("agent")))
+        elif not e.get("enforced") and not acked:
+            problems.append(
+                "entry %d (%s): unenforced reviewer with no matching ack "
+                "for THIS plan content" % (i, e.get("role")))
+    return problems
+
+
+def _write_unenforced_ack(unenforced, plan=None):
     """Record an --allow-unenforced acceptance in .panopticon/unenforced-ack.json.
 
     Records that the write-guard does NOT backstop Bash-based writes in this
@@ -583,6 +622,10 @@ def _write_unenforced_ack(unenforced):
     with open(os.path.join(".panopticon", "unenforced-ack.json"), "w",
               encoding="utf-8") as fh:
         json.dump({"acknowledged": True, "roles": unenforced,
+                   # #493 R2: bind the ack to the exact plan content it
+                   # acknowledged; synthesize treats a non-matching ack as
+                   # stale (reports false + a stderr note).
+                   "plan_sha256": plan_content_hash(plan) if plan is not None else None,
                    "write_guard_covers_bash": False,
                    "note": ("unenforced reviewers hold Bash; the write-guard "
                             "backstops only Write/Edit/NotebookEdit, so a "
@@ -602,6 +645,11 @@ def main(argv=None):
     ap.add_argument("--emit-kimi-swarm", metavar="PLAN", default=None,
                     help="Read a DispatchPlan JSON and emit a Kimi Agent/AgentSwarm manifest to --out")
     ap.add_argument("--emit-host-agents", metavar="HOST", choices=["claude", "kimi"], default=None)
+    ap.add_argument("--verify-plan", metavar="PLAN", action="append", default=None,
+                    help="Re-verify emitted plan file(s) against the LIVE "
+                         "registration dir before fan-out (#493): exits 1 on "
+                         "an enforced->unregistered flip or an unenforced "
+                         "reviewer whose ack does not hash-match the plan")
     ap.add_argument("--agents-dir", default=None,
                     help="Directory containing registered agent .md files")
     ap.add_argument("--allow-unenforced", action="store_true",
@@ -673,12 +721,37 @@ def main(argv=None):
             return 1
         if unenforced:
             try:
-                _write_unenforced_ack(unenforced)
+                _write_unenforced_ack(unenforced, plan)
             except OSError as e:
                 print("dispatch: cannot record unenforced ack: %s" % e, file=sys.stderr)
                 return 1
         print("wrote Kimi swarm manifest (%d batch(es)) -> %s" % (len(swarm["batches"]), args.out))
         return 0
+    if args.verify_plan:
+        ack = None
+        try:
+            with open(os.path.join(".panopticon", "unenforced-ack.json"),
+                      encoding="utf-8") as fh:
+                ack = json.load(fh)
+        except (OSError, ValueError):
+            ack = None
+        bad = 0
+        for pth in args.verify_plan:
+            try:
+                with open(pth, encoding="utf-8") as fh:
+                    plan = json.load(fh)
+            except (OSError, ValueError) as e:
+                print("verify-plan: cannot read %s: %s" % (pth, e), file=sys.stderr)
+                bad += 1
+                continue
+            problems = verify_plan(plan, host=args.host,
+                                   agents_dir=args.agents_dir, ack=ack)
+            for prob in problems:
+                print("verify-plan: %s: %s" % (pth, prob), file=sys.stderr)
+            bad += len(problems)
+            if not problems:
+                print("verify-plan: %s: OK (%d entries)" % (pth, len(plan)))
+        return 1 if bad else 0
     if not args.profile:
         ap.error(
             "profile is required unless --render-advisor, --emit-host-agents, "
