@@ -17,6 +17,8 @@ import subprocess
 import sys
 import time
 
+import triage
+
 # Defaults describe run 2 (the first filed self-scan). Each subsequent scan —
 # the cadence is a fresh self-scan every Saturday — passes its own --report,
 # --report-url, --run-label, --run-date, and --run-state-doc, so no code edit
@@ -226,7 +228,8 @@ def create(title, body, labels, dry, throttle=0.0):
     for attempt in range(1, 6):
         r = subprocess.run(["gh", "issue", "create", "--title", title,
                             "--body", body, "--label", ",".join(labels)],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True,
+                           env=triage.gh_env())
         if r.returncode == 0:
             out = r.stdout.strip().splitlines()
             if out:
