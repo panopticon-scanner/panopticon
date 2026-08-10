@@ -161,7 +161,11 @@ class TestToolReported(unittest.TestCase):
 
     def test_status_is_in_schema_enum(self):
         import json as _json
-        with open("skill/reference/report-schema.json", encoding="utf-8") as fh:
+        # Anchor on __file__, not the cwd: a bare relative path assumes the
+        # suite runs from the repo root and breaks from anywhere else.
+        schema_path = os.path.join(os.path.dirname(__file__), os.pardir,
+                                   "skill", "reference", "report-schema.json")
+        with open(schema_path, encoding="utf-8") as fh:
             schema = _json.load(fh)
         text = _json.dumps(schema)
         self.assertIn("tool_reported", text)

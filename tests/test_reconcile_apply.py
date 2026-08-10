@@ -36,6 +36,41 @@ class TestLedger(unittest.TestCase):
         self.assertEqual(reconcile_apply.ledger_key(record), "|F-1|x.py|rejected")
 
 
+class TestSaveRecoveredLedger(unittest.TestCase):
+    """Direct coverage for save_recovered_ledger: nested-dir creation, content
+    round-trip, atomic overwrite, and no leftover temp file."""
+
+    def test_writes_linkage_creating_nested_dirs(self):
+        linkage = {"fp|F-1|a.py|finding": "https://github.com/o/r/issues/1"}
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "nested", "dir", "ledger.json")
+            reconcile_apply.save_recovered_ledger(linkage, path=path)
+            with open(path, encoding="utf-8") as fh:
+                self.assertEqual(json.load(fh), linkage)
+            self.assertFalse(os.path.exists(path + ".tmp"))  # temp replaced, not left
+
+    def test_overwrites_existing_ledger_atomically(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "ledger.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("{\"stale\": true}")
+            new = {"fp|F-2|b.py|finding": "https://github.com/o/r/issues/2"}
+            reconcile_apply.save_recovered_ledger(new, path=path)
+            with open(path, encoding="utf-8") as fh:
+                self.assertEqual(json.load(fh), new)   # fully replaced, no merge
+
+    def test_output_is_sorted_and_indented_for_stable_diffs(self):
+        linkage = {"b|B|f|finding": "u2", "a|A|f|finding": "u1"}
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "ledger.json")
+            reconcile_apply.save_recovered_ledger(linkage, path=path)
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+            self.assertLess(text.index('"a|A|f|finding"'),
+                            text.index('"b|B|f|finding"'))  # sort_keys
+            self.assertIn("\n ", text)                       # indent=1
+
+
 class FakeCompleted:
     def __init__(self, stdout, returncode=0, stderr=""):
         self.stdout = stdout
@@ -342,6 +377,12 @@ class TestApply(unittest.TestCase):
         for c in issue_calls:
             self.assertIn("--repo", c)
             self.assertEqual(c[c.index("--repo") + 1], "o/r")
+        # The posted BODY must be the action's comment text, per action —
+        # asserting only that "comment" was invoked would pass even if the
+        # body were dropped or swapped.
+        bodies = [c[c.index("--body") + 1] for c in issue_calls]
+        self.assertEqual(bodies,
+                         [a["comment"] for a in self._actions()])
 
     def test_live_run_closes_when_confirmed(self):
         calls = []
@@ -410,13 +451,16 @@ class TestCliWiring(unittest.TestCase):
             diff_path = os.path.join(d, "diff.json")
             ledger_path = os.path.join(d, "ledger.json")
             actions_path = os.path.join(d, "actions.json")
-            json.dump(diff, open(diff_path, "w"))
-            json.dump(ledger, open(ledger_path, "w"))
+            with open(diff_path, "w") as fh:
+                json.dump(diff, fh)
+            with open(ledger_path, "w") as fh:
+                json.dump(ledger, fh)
 
             rc = reconcile_apply.main(["plan", diff_path, "--ledger", ledger_path,
                                        "--out", actions_path])
             self.assertEqual(rc, 0)
-            actions = json.load(open(actions_path))
+            with open(actions_path) as fh:
+                actions = json.load(fh)
             self.assertEqual(len(actions), 1)
 
             # apply defaults to dry-run: must print the DRY summary AND make
