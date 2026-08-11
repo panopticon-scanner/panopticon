@@ -35,12 +35,16 @@ jobs:
       packages: read
       security-events: write
     steps:
-      # The controller is trusted code: base SHA for PRs, pushed SHA on main.
-      # Never import/build/execute scanner orchestration from the PR checkout.
+      # Controller = the scanner code that runs the gate. Fork PRs
+      # (pull_request_target) pin it to the BASE SHA so untrusted code can never
+      # execute as the controller. Same-repo PRs (pull_request) pin it to the
+      # HEAD SHA so a branch's own scanner changes are tested by their own CI
+      # (the trusted-contributor self-test), matching the trigger routing above.
+      # push uses the pushed SHA. The target is always mounted read-only below.
       - name: Checkout trusted scanner controller
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          ref: ${{ (github.event_name == 'pull_request_target' && github.event.pull_request.base.sha) || github.event.pull_request.head.sha || github.sha }}
           path: controller
           persist-credentials: false
 
