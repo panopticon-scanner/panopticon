@@ -1776,7 +1776,8 @@ class TestTwoPassCli(unittest.TestCase):
             vd = os.path.join(d, "verdicts")
             os.makedirs(vd)
             with open(os.path.join(vd, "%s.json" % tool_qid), "w") as fh:
-                json.dump({"finding_id": tool_entries[0]["finding"].get("id"),
+                json.dump({"run_id": queue["run_id"],
+                           "finding_id": tool_entries[0]["finding"].get("id"),
                            "verdict": "CONFIRMED",
                            "reasoning": "Advisor prose, deliberately nothing "
                                         "like the rule id B105."}, fh)
@@ -2580,6 +2581,10 @@ class TestResumeDisclosure(unittest.TestCase):
                 report = json.load(fh)
             self.assertEqual(
                 report["meta"]["coverage"]["resume"]["verify"]["total"], 0)
+            self.assertEqual(report["summary"]["gate"], "OFF")
+            self.assertFalse(report["summary"]["coverage_certified"])
+            self.assertIn("entries list",
+                          report["meta"]["integrity"]["invalid_verify_queue"])
 
 
 class TestMainExitAndScout(unittest.TestCase):
@@ -2652,27 +2657,46 @@ class TestMultigroupPlanReconcile(unittest.TestCase):
     load in place."""
 
     def _setup(self, d, decoy):
+        import scripts.plan_contract as plan_contract
         pan = os.path.join(d, ".panopticon")
         os.makedirs(pan, exist_ok=True)
+        assignment_g1 = {"name": "g1", "files": ["a.py"], "panels": ["code"],
+                         "depth": "standard", "security_mode": "standard"}
+        assignment_g2 = {"name": "g2", "files": ["b.py"], "panels": ["code"],
+                         "depth": "standard", "security_mode": "standard"}
         plan_g1 = [{"role": "panel_review", "agent": "panopticon-panel-review",
                     "enforced": True, "group": "g1", "panel": "code",
-                    "out_file": ".panopticon/findings-g1-code-panel_review.json"}]
+                    "lens": None, "run_id": "run-g1", "scope_bound": True,
+                    "scope_sha256": plan_contract.assignment_digest(assignment_g1),
+                    "files": ["a.py"], "depth": "standard",
+                    "security_mode": "standard",
+                    "out_file": os.path.join(
+                        pan, "findings-g1-code-panel_review.json")}]
         plan_g2 = [{"role": "panel_review", "agent": "panopticon-panel-review",
                     "enforced": True, "group": "g2", "panel": "code",
-                    "out_file": ".panopticon/findings-g2-code-panel_review.json"}]
+                    "lens": None, "run_id": "run-g2", "scope_bound": True,
+                    "scope_sha256": plan_contract.assignment_digest(assignment_g2),
+                    "files": ["b.py"], "depth": "standard",
+                    "security_mode": "standard",
+                    "out_file": os.path.join(
+                        pan, "findings-g2-code-panel_review.json")}]
         with open(os.path.join(pan, "dispatch-plan-g1.json"), "w", encoding="utf-8") as fh:
             json.dump(plan_g1, fh)
         with open(os.path.join(pan, "dispatch-plan-g2.json"), "w", encoding="utf-8") as fh:
             json.dump(plan_g2, fh)
         with open(os.path.join(pan, "groups.json"), "w", encoding="utf-8") as fh:
-            json.dump({"groups": [{"name": "g1", "files": ["a.py"]},
-                                  {"name": "g2", "files": ["b.py"]}]}, fh)
+            json.dump({"security_mode": "standard",
+                       "groups": [assignment_g1, assignment_g2]}, fh)
         with open(os.path.join(pan, "findings-g1-code-panel_review.json"),
                  "w", encoding="utf-8") as fh:
-            json.dump({"findings": []}, fh)
+            json.dump({"findings": [], "_panopticon": {
+                "run_id": "run-g1", "role": "panel_review", "panel": "code",
+                "lens": None, "group": "g1"}}, fh)
         with open(os.path.join(pan, "findings-g2-code-panel_review.json"),
                  "w", encoding="utf-8") as fh:
-            json.dump({"findings": []}, fh)
+            json.dump({"findings": [], "_panopticon": {
+                "run_id": "run-g2", "role": "panel_review", "panel": "code",
+                "lens": None, "group": "g2"}}, fh)
         files = [".panopticon/findings-g1-code-panel_review.json",
                  ".panopticon/findings-g2-code-panel_review.json"]
         if decoy:
@@ -2808,6 +2832,8 @@ class TestIntegrity(unittest.TestCase):
                          {"unexpected_findings_files": [], "missing_planned_files": [],
                           "duplicate_out_files": [], "mislabeled_findings_files": [],
                           "empty_dispatch_plans": 0,
+                          "invalid_dispatch_plans": [],
+                          "invalid_verify_queue": None,
                           "unenforced_acknowledged": False, "plans_seen": 0})
         self.assertEqual(r["summary"]["gate"], "PASS")
 
@@ -2819,8 +2845,25 @@ class TestIntegrity(unittest.TestCase):
                          {"unexpected_findings_files": [], "missing_planned_files": [],
                           "duplicate_out_files": [], "mislabeled_findings_files": [],
                           "empty_dispatch_plans": 0,
+                          "invalid_dispatch_plans": [],
+                          "invalid_verify_queue": None,
                           "unenforced_acknowledged": False, "plans_seen": 0})
         self.assertEqual(r["summary"]["gate"], "PASS")
+
+    def test_present_semantically_invalid_plan_is_inconclusive(self):
+        r = syn.build_report(
+            [], self.G, "t", "high", self.TS,
+            integrity={"plans_seen": 1,
+                       "invalid_dispatch_plans": [{"file": "p.json",
+                                                    "reason": "entry 0 is not an object"}]})
+        self.assertEqual(r["summary"]["gate"], "INCONCLUSIVE")
+        self.assertFalse(r["summary"]["coverage_certified"])
+
+    def test_main_rejects_symlinked_artifact_root(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as outside:
+            os.symlink(outside, os.path.join(d, ".panopticon"))
+            with _chdir(d):
+                self.assertEqual(syn.main(["--fail-on", "high"]), 2)
 
     def test_missing_alone_does_not_force_inconclusive(self):
         integ = {"unexpected_findings_files": [],
@@ -3306,6 +3349,11 @@ class TestUnloadableVerdictsGate(unittest.TestCase):
         self.assertEqual(r["gate"], "PASS")
         self.assertTrue(r["coverage_certified"])
 
+    def test_unanswered_supplied_verdict_forces_inconclusive(self):
+        r = syn.certify("A", [], "high", set(), [], verdicts_unanswered=1)
+        self.assertEqual(r["gate"], "INCONCLUSIVE")
+        self.assertFalse(r["coverage_certified"])
+
     def test_unloadable_never_masks_fail(self):
         r = syn.certify("F", self._crit(), "high", set(), [], verdicts_unloadable=2)
         self.assertEqual(r["gate"], "FAIL")
@@ -3324,7 +3372,7 @@ class TestUnloadableVerdictsGate(unittest.TestCase):
                                      verdicts={}, verdicts_supplied=True,
                                      verdict_unloadable=[
                                          {"file": "x.json", "reason": "unparseable"}])
-        self.assertEqual(clean["summary"]["gate"], "PASS")
+        self.assertEqual(clean["summary"]["gate"], "INCONCLUSIVE")
         self.assertEqual(lossy["summary"]["gate"], "INCONCLUSIVE")
 
 

@@ -14,6 +14,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import diff_map  # noqa: E402 (sibling on sys.path, same pattern as dispatch.py)
+import plan_contract  # noqa: E402
 
 DEFAULT_MAX_PER_GROUP = 15
 
@@ -601,6 +602,23 @@ def _hunks_path_for(out):
             if out else os.path.join(".panopticon", "diff-hunks.json"))
 
 
+def _validate_artifact_output(repo, path):
+    """Reject writes through a target-controlled ``.panopticon`` symlink."""
+    candidate = os.path.abspath(path)
+    logical_artifacts = os.path.join(os.path.abspath(repo), ".panopticon")
+    try:
+        under_artifacts = os.path.commonpath([logical_artifacts, candidate]) \
+            == logical_artifacts
+    except ValueError:
+        under_artifacts = False
+    if under_artifacts:
+        safe_root = plan_contract.artifact_root(repo)
+        if os.path.commonpath([os.path.realpath(safe_root), os.path.realpath(candidate)]) \
+                != os.path.realpath(safe_root):
+            raise ValueError("artifact output escapes the target .panopticon directory")
+    return path
+
+
 def resolve_base_or_die(repo, explicit, pr_base, on_fail=None):
     """Resolve the delta base, or fail loudly and return None.
 
@@ -857,14 +875,20 @@ def build_result(repo, mode, target, facet, impl, tests,
     }
 
 
-SETUP_GITIGNORE_ENTRIES = [".panopticon/", ".claude/settings.local.json"]
+SETUP_GITIGNORE_ENTRIES = [
+    ".panopticon/*",
+    "!.panopticon/",
+    "!.panopticon/groups.yml",
+    ".claude/settings.local.json",
+]
 
 
 def _seed_groups_manifest(repo):
     """#485(1): write a STARTER committable groups.yml from the repo's
     top-level directory spine -- deterministic, never clobbers an existing
     manifest. Returns (path, created:bool, group_names)."""
-    path = os.path.join(repo, ".panopticon", "groups.yml")
+    artifact_dir = plan_contract.artifact_root(repo)
+    path = os.path.join(artifact_dir, "groups.yml")
     if os.path.isfile(path):
         try:
             names = [g["name"] for g in load_catalog(repo) or []]
@@ -895,6 +919,16 @@ def _ensure_gitignore(repo):
         existing = open(gi, encoding="utf-8").read()
     except OSError:
         existing = ""
+    lines = existing.splitlines()
+    migrated = False
+    for index, line in enumerate(lines):
+        if line.strip() == ".panopticon/":
+            lines[index] = ".panopticon/*"
+            migrated = True
+    if migrated:
+        existing = "\n".join(lines) + ("\n" if lines else "")
+        with open(gi, "w", encoding="utf-8") as fh:
+            fh.write(existing)
     have = {ln.strip() for ln in existing.splitlines()}
     added = [e for e in SETUP_GITIGNORE_ENTRIES if e not in have]
     if added:
@@ -944,7 +978,8 @@ def setup_readiness(repo, host=None, runner=subprocess.run, environ=None):
                        "panopticon-tools image absent for this arch -- build/pull "
                        "it (see DEVELOPMENT.md; multi-arch: #461)"))
 
-    root_ok = os.path.isdir(os.path.join(repo, ".git"))
+    git_marker = os.path.join(repo, ".git")
+    root_ok = os.path.isdir(git_marker) or os.path.isfile(git_marker)
     checks.append(("target-root", root_ok,
                    "ok" if root_ok else
                    "cwd is not a git repo root -- run the pipeline from the "
@@ -956,15 +991,26 @@ def setup_readiness(repo, host=None, runner=subprocess.run, environ=None):
                    "absent -- dependency-check will be skipped/slow; export "
                    "NVD_API_KEY or add it to .env (never commit it)"))
 
-    reg_dir = dispatch._registration_dir(host or dispatch._detect_host(), None)
-    missing_shells = [role for role, rf in sorted(dispatch.ROLE_FILES.items())
-                      if role in ("panel_review", "lens_sweep")
-                      and not dispatch._is_registered(reg_dir, rf)]
-    checks.append(("enforced-shells", not missing_shells,
-                   "ok" if not missing_shells else
-                   "unregistered reviewer shell(s): %s -- run python3 "
-                   "skill/scripts/dispatch.py --emit-host-agents <host> and "
-                   "start a fresh session" % ", ".join(missing_shells)))
+    resolved_host = host or dispatch._detect_host()
+    if resolved_host == "codex":
+        codex = runner(["codex", "--version"], capture_output=True, text=True)
+        codex_ok = getattr(codex, "returncode", 1) == 0
+        checks.append(("codex-cli", codex_ok,
+                       "ok" if codex_ok else
+                       "Codex CLI unavailable -- install/authenticate `codex`; "
+                       "role TOML profiles are optional for codex_exec"))
+        checks.append(("enforced-shells", True,
+                       "codex_exec enforces read-only execution; role TOML profiles optional"))
+    else:
+        reg_dir = dispatch._registration_dir(resolved_host, None)
+        missing_shells = [role for role, rf in sorted(dispatch.ROLE_FILES.items())
+                          if role in ("panel_review", "lens_sweep")
+                          and not dispatch._is_registered(reg_dir, rf, resolved_host)]
+        checks.append(("enforced-shells", not missing_shells,
+                       "ok" if not missing_shells else
+                       "unregistered reviewer shell(s): %s -- run python3 "
+                       "skill/scripts/dispatch.py --emit-host-agents <host> and "
+                       "start a fresh session" % ", ".join(missing_shells)))
 
     try:
         catalog = load_catalog(repo) or []
@@ -1054,6 +1100,17 @@ def main(argv=None):
         print("--max-per-group must be >= 1", file=sys.stderr)
         return 2
     repo = os.path.abspath(args.target if args.target is not None else args.repo)
+    try:
+        plan_contract.artifact_root(repo)
+    except ValueError as exc:
+        print("panopticon: %s" % exc, file=sys.stderr)
+        return 2
+    if args.out:
+        try:
+            _validate_artifact_output(repo, args.out)
+        except ValueError as exc:
+            print("panopticon: %s" % exc, file=sys.stderr)
+            return 2
 
     result = None
     if args.group:
@@ -1156,7 +1213,7 @@ def main(argv=None):
             # pipeline-ready on exit -- previously they landed only in the
             # invoking cwd/stdout and the operator had to hand-copy them (and
             # re-running discovery to fix that leaked a second worktree).
-            wt_pan = os.path.join(wt, ".panopticon")
+            wt_pan = plan_contract.artifact_root(wt)
             os.makedirs(wt_pan, exist_ok=True)
             write_diff_hunks(wt, base, source,
                              os.path.join(wt_pan, "diff-hunks.json"),

@@ -40,6 +40,8 @@ class TestCodexCommand(unittest.TestCase):
         self.assertIn("--strict-config", command)
         self.assertIn("--ignore-user-config", command)
         self.assertIn("--ignore-rules", command)
+        self.assertIn("--skip-git-repo-check", command)
+        self.assertNotIn("--add-dir", command)
         self.assertEqual(command[command.index("--sandbox") + 1], "read-only")
         self.assertEqual(command[command.index("--ask-for-approval") + 1], "never")
         self.assertEqual(command[command.index("--model") + 1], "gpt-5.6-terra")
@@ -98,6 +100,8 @@ class TestCodexExecution(unittest.TestCase):
                 root=root, run_id="run-123")[0]
 
             def fake_runner(command, **kwargs):
+                self.assertNotEqual(kwargs["cwd"], root)
+                self.assertIn(os.path.join(root, "app.py"), kwargs["input"])
                 output = command[command.index("--output-last-message") + 1]
                 with open(output, "w", encoding="utf-8") as fh:
                     json.dump({"findings": [self._valid_finding()]}, fh)
@@ -141,6 +145,20 @@ class TestCodexExecution(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "escapes"):
                 cr.validate_envelope({"findings": [finding]}, entry, root)
 
+    def test_response_location_must_be_assigned(self):
+        with tempfile.TemporaryDirectory() as root:
+            entry = dispatch.build_plan(self._profile(), host="codex", root=root)[0]
+            finding = self._valid_finding()
+            finding["location"]["file"] = "other.py"
+            with self.assertRaisesRegex(ValueError, "outside the assigned files"):
+                cr.validate_envelope({"findings": [finding]}, entry, root)
+
+    def test_symlinked_artifact_root_is_rejected(self):
+        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as outside:
+            os.symlink(outside, os.path.join(root, ".panopticon"))
+            with self.assertRaisesRegex(ValueError, "not a symlink"):
+                dispatch.build_plan(self._profile(), host="codex", root=root)
+
     def test_run_id_prevents_stale_resume(self):
         with tempfile.TemporaryDirectory() as root:
             entry = dispatch.build_plan(
@@ -163,6 +181,92 @@ class TestCodexExecution(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             with self.assertRaisesRegex(ValueError, "unsafe lens"):
                 dispatch.build_plan(profile, host="codex", codex_exec=True, root=root)
+
+    def test_codex_host_automatically_builds_runner_entries(self):
+        with tempfile.TemporaryDirectory() as root:
+            entry = dispatch.build_plan(self._profile(), host="codex", root=root)[0]
+        self.assertEqual(entry["execution"], "codex_exec")
+        self.assertEqual(entry["delivery"], "return_json")
+        self.assertTrue(entry["run_id"])
+
+    def test_run_plan_validates_done_entries_before_resume(self):
+        with tempfile.TemporaryDirectory() as root:
+            out = os.path.join(root, ".panopticon", "findings.json")
+            os.makedirs(os.path.dirname(out))
+            with open(out, "w", encoding="utf-8") as fh:
+                json.dump({"findings": []}, fh)
+            bad = [{"role": "unknown", "group": "g", "panel": "code",
+                    "out_file": out}]
+            with self.assertRaisesRegex(ValueError, "invalid dispatch plan"):
+                cr.run_plan(bad, root)
+
+
+class TestCodexAdvisors(unittest.TestCase):
+    def _verdict(self, finding_id="SEC-001", run_id="run-test"):
+        return {"run_id": run_id, "finding_id": finding_id,
+                "verdict": "CONFIRMED",
+                "confidence": "CERTAIN", "reasoning": "verified",
+                "explored": ["app.py"], "references": [],
+                "citations": {"cwe": [], "owasp": [], "cve": []}}
+
+    def test_advisor_verdict_is_validated_and_published(self):
+        with tempfile.TemporaryDirectory() as root:
+            pan = os.path.join(root, ".panopticon")
+            prompts = os.path.join(pan, "advisor-prompts")
+            verdicts = os.path.join(pan, "verdicts")
+            os.makedirs(prompts)
+            queue_id = "4f2a9c1e7b30d85a"
+            prompt = os.path.join(prompts, queue_id + ".md")
+            with open(prompt, "w", encoding="utf-8") as fh:
+                fh.write("verify claim")
+            entry = {"queue_id": queue_id,
+                     "finding": {"id": "SEC-001"}}
+
+            def fake_runner(command, **kwargs):
+                self.assertNotEqual(kwargs["cwd"], root)
+                self.assertIn("UNTRUSTED DATA", kwargs["input"])
+                output = command[command.index("--output-last-message") + 1]
+                with open(output, "w", encoding="utf-8") as fh:
+                    json.dump(self._verdict(), fh)
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            path = cr.run_advisor_entry(
+                entry, prompt, verdicts, root, runner=fake_runner,
+                run_id="run-test")
+            with open(path, encoding="utf-8") as fh:
+                self.assertEqual(json.load(fh)["verdict"], "CONFIRMED")
+
+    def test_advisor_wrong_echo_is_not_published(self):
+        with tempfile.TemporaryDirectory() as root:
+            pan = os.path.join(root, ".panopticon")
+            prompts = os.path.join(pan, "advisor-prompts")
+            verdicts = os.path.join(pan, "verdicts")
+            os.makedirs(prompts)
+            queue_id = "4f2a9c1e7b30d85a"
+            prompt = os.path.join(prompts, queue_id + ".md")
+            with open(prompt, "w") as fh:
+                fh.write("verify")
+            entry = {"queue_id": queue_id,
+                     "finding": {"id": "SEC-001"}}
+
+            def fake_runner(command, **kwargs):
+                output = command[command.index("--output-last-message") + 1]
+                with open(output, "w") as fh:
+                    json.dump(self._verdict("WRONG"), fh)
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            with self.assertRaisesRegex(ValueError, "echoes"):
+                cr.run_advisor_entry(entry, prompt, verdicts, root,
+                                     runner=fake_runner, run_id="run-test")
+            self.assertFalse(os.path.exists(os.path.join(verdicts, queue_id + ".json")))
+
+    def test_advisor_paths_are_confined_to_artifacts(self):
+        with tempfile.TemporaryDirectory() as root:
+            entry = {"queue_id": "4f2a9c1e7b30d85a",
+                     "finding": {"id": "SEC-001"}}
+            with self.assertRaisesRegex(ValueError, "escapes"):
+                cr.run_advisor_entry(entry, os.path.join(root, "prompt.md"),
+                                     os.path.join(root, "verdicts"), root)
 
 
 if __name__ == "__main__":

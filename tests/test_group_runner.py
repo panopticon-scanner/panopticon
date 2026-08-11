@@ -133,12 +133,18 @@ class TestVerifyResume(unittest.TestCase):
 
     def test_pending_verdicts_is_the_resume_set(self):
         with tempfile.TemporaryDirectory() as d:
-            vdir = self._vd(d, "q1", '{"verdict":"CONFIRMED"}')
+            vdir = self._vd(d, "q1", '{"finding_id":"F1","verdict":"CONFIRMED"}')
             queue = {"entries": [{"queue_id": "q1"}, {"queue_id": "q2"},
                                  {"queue_id": "q3"}, "junk"]}
             self.assertEqual([e["queue_id"] for e in gr.pending_verdicts(queue, vdir)],
                              ["q2", "q3"])                 # q1 done, "junk" skipped
             self.assertEqual(gr.pending_verdicts(None, vdir), [])
+
+    def test_pending_verdicts_retries_wrong_echo(self):
+        with tempfile.TemporaryDirectory() as d:
+            vdir = self._vd(d, "q1", '{"finding_id":"WRONG","verdict":"REJECTED"}')
+            queue = {"entries": [{"queue_id": "q1", "finding": {"id": "SEC-001"}}]}
+            self.assertEqual(gr.pending_verdicts(queue, vdir), queue["entries"])
 
     def test_non_list_entries_is_tolerated(self):
         # A verify queue with a truthy non-list `entries` (e.g. an int) is a

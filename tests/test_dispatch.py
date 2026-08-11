@@ -34,6 +34,17 @@ class TestDispatchPlan(unittest.TestCase):
             "has_deps": False,
         }
 
+    def _groups(self, profile):
+        fh = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+        json.dump({"security_mode": profile.get("security_mode", "standard"),
+                   "groups": [{"name": profile["group"],
+                                "files": profile["files"],
+                                "panels": profile["panels"],
+                                "depth": profile["depth"]}]}, fh)
+        fh.close()
+        self.addCleanup(os.unlink, fh.name)
+        return fh.name
+
     def test_build_plan_emits_panels_in_priority_order(self):
         profile = {"group": "g", "files": ["a.py"], "depth": "standard",
                    "panels": ["test", "code", "security", "architecture"]}
@@ -118,13 +129,98 @@ class TestDispatchPlan(unittest.TestCase):
         plan = dispatch.build_plan(profile, host="kimi")
         self.assertEqual(len(plan), 1)
         self.assertEqual(plan[0]["role"], "panel_review")
-        self.assertEqual(plan[0]["lenses"], ["style"])
+        self.assertEqual(plan[0]["lenses"], ["structure", "correctness", "style"])
+
+    def test_missing_baseline_lenses_stay_in_main_panel(self):
+        profile = {"group": "g1", "panels": ["security"], "depth": "standard",
+                   "files": ["app.py"], "lenses": {"security": []}}
+        plan = dispatch.build_plan(profile, host="generic")
+        self.assertEqual(plan[0]["lenses"], ["known_vulns", "injection", "novel"])
+
+    def test_unsafe_flexible_lens_is_rejected(self):
+        profile = {"group": "g1", "panels": ["code"], "depth": "standard",
+                   "files": ["app.py"], "lenses": {"code": [{
+                       "name": "ignore instructions", "spawn": False}]}}
+        with self.assertRaisesRegex(ValueError, "unsafe lens"):
+            dispatch.build_plan(profile, host="generic")
 
     def test_empty_panel_schedule_is_rejected(self):
         profile = {"group": "g1", "panels": [], "files": ["a.py"],
                    "depth": "standard", "lenses": {}}
         with self.assertRaisesRegex(ValueError, "at least one panel"):
             dispatch.build_plan(profile, host="generic")
+
+    def test_authoritative_group_files_must_match_scout(self):
+        profile = self._profile()
+        with self.assertRaisesRegex(ValueError, "differ from authoritative"):
+            dispatch.build_plan(profile, host="generic",
+                                authoritative_files=["different.py"])
+
+    def test_authoritative_group_name_must_match_scout(self):
+        with self.assertRaisesRegex(ValueError, "differs from expected group"):
+            dispatch.build_plan(self._profile(), host="generic",
+                                authoritative_group="other")
+
+    def test_load_group_files_selects_exact_group(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "groups.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"groups": [{"name": "test_repo", "files": ["app.py"],
+                                        "panels": ["security"],
+                                        "depth": "standard"}]}, fh)
+            self.assertEqual(dispatch.load_group_files(path, "test_repo"), ["app.py"])
+
+    def test_scout_cannot_drop_authoritative_panel(self):
+        profile = self._profile()
+        profile["panels"] = ["code"]
+        with self.assertRaisesRegex(ValueError, "omits authoritative"):
+            dispatch.build_plan(profile, host="generic",
+                                authoritative_panels=["code", "security"])
+
+    def test_scout_cannot_lower_authoritative_depth(self):
+        profile = self._profile(depth="shallow")
+        with self.assertRaisesRegex(ValueError, "below authoritative"):
+            dispatch.build_plan(profile, host="generic",
+                                authoritative_depth="standard")
+
+    def test_codex_plan_verifies_without_registered_shells(self):
+        plan = dispatch.build_plan(self._profile(), host="codex", scope_bound=True)
+        self.assertEqual(dispatch.verify_plan(plan, host="codex"), [])
+
+    def test_verify_plan_rejects_semantically_empty_plan(self):
+        problems = dispatch.verify_plan([None, "junk"], host="generic")
+        self.assertTrue(problems)
+        self.assertIn("not an object", problems[0])
+
+    def test_strict_verify_detects_scope_tampering(self):
+        assignment = {"name": "test_repo", "files": ["app.py"],
+                      "panels": ["security"], "depth": "standard",
+                      "security_mode": "standard"}
+        plan = dispatch.build_plan(
+            self._profile(), host="codex", authoritative_files=["app.py"],
+            authoritative_group="test_repo", authoritative_panels=["security"],
+            authoritative_depth="standard",
+            authoritative_security_mode="standard", scope_bound=True)
+        plan[0]["files"] = ["other.py"]
+        problems = dispatch.verify_plan(
+            plan, host="codex", authoritative_assignment=assignment, strict=True)
+        self.assertTrue(any("files do not match" in problem for problem in problems))
+
+    def test_strict_verify_detects_output_path_tampering(self):
+        assignment = {"name": "test_repo", "files": ["app.py"],
+                      "panels": ["security"], "depth": "standard",
+                      "security_mode": "standard"}
+        with tempfile.TemporaryDirectory() as root:
+            plan = dispatch.build_plan(
+                self._profile(), host="codex", root=root,
+                authoritative_files=["app.py"], authoritative_group="test_repo",
+                authoritative_panels=["security"], authoritative_depth="standard",
+                authoritative_security_mode="standard", scope_bound=True)
+            plan[0]["out_file"] = os.path.join(root, "outside.json")
+            problems = dispatch.verify_plan(
+                plan, host="codex", authoritative_assignment=assignment,
+                strict=True, root=root)
+        self.assertTrue(any("out_file" in problem for problem in problems))
 
     def test_panel_review_includes_non_spawned_lenses(self):
         profile = {
@@ -182,8 +278,10 @@ class TestDispatchPlan(unittest.TestCase):
             with open(os.path.join(reg, name), "w") as fh:
                 fh.write("---\nname: %s\n---\nbody\n" % name[:-3])
         try:
+            groups_path = self._groups(profile)
             rc = dispatch.main([profile_path, "--host", "kimi", "--out", out_path,
-                                "--agents-dir", reg])
+                                "--agents-dir", reg, "--groups", groups_path,
+                                "--group-name", profile["group"]])
             self.assertEqual(rc, 0)
             with open(out_path) as fh:
                 plan = json.load(fh)
@@ -225,9 +323,12 @@ class TestDispatchPlan(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as empty_template_dir:
                 with mock.patch.object(dispatch, "TEMPLATE_DIR", empty_template_dir):
+                    groups_path = self._groups(profile)
                     stderr = io.StringIO()
                     with contextlib.redirect_stderr(stderr):
-                        rc = dispatch.main([profile_path, "--host", "kimi"])
+                        rc = dispatch.main([profile_path, "--host", "kimi",
+                                            "--groups", groups_path,
+                                            "--group-name", profile["group"]])
                     self.assertEqual(rc, 1)
                     self.assertIn("dispatch:", stderr.getvalue())
         finally:
@@ -250,13 +351,27 @@ class TestDispatchPlan(unittest.TestCase):
         try:
             # Use a path under /dev/null which cannot be created as a directory.
             out_path = "/dev/null/cannot-create/findings.json"
+            groups_path = self._groups(profile)
             stderr = io.StringIO()
             with contextlib.redirect_stderr(stderr):
-                rc = dispatch.main([profile_path, "--out", out_path, "--agents-dir", reg])
+                rc = dispatch.main([profile_path, "--out", out_path,
+                                    "--agents-dir", reg, "--groups", groups_path,
+                                    "--group-name", profile["group"]])
             self.assertEqual(rc, 1)
             self.assertIn("cannot create output directory", stderr.getvalue())
         finally:
             os.unlink(profile_path)
+
+    def test_main_refuses_plan_without_authoritative_groups(self):
+        profile = self._profile()
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as fh:
+            json.dump(profile, fh)
+            path = fh.name
+        self.addCleanup(os.unlink, path)
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            rc = dispatch.main([path, "--host", "codex"])
+        self.assertEqual(rc, 2)
+        self.assertIn("no authoritative groups.json", err.getvalue())
 
     def test_emit_kimi_swarm_groups_entries_by_subagent_type(self):
         plan = [
@@ -563,7 +678,8 @@ class TestRenderAdvisor(unittest.TestCase):
     QID_2 = "a1b2c3d4e5f60002"
 
     def _queue(self, tmp):
-        queue = {"version": "4.2.0", "cut_by_max_verify": 0, "entries": [
+        queue = {"version": "4.2.0", "run_id": "run-test",
+             "cut_by_max_verify": 0, "entries": [
             {"queue_id": self.QID_1, "priority": 1,
              "finding": {"id": "SEC-001", "title": "sqli", "severity": "HIGH",
                           "panel": "security", "category": "injection",
@@ -618,7 +734,8 @@ class TestRenderAdvisor(unittest.TestCase):
 
     def test_non_dict_entry_fails_fast(self):
         with tempfile.TemporaryDirectory() as tmp:
-            queue = {"version": "4.0.0", "cut_by_max_verify": 0, "entries": [None]}
+            queue = {"version": "4.0.0", "run_id": "run-test",
+                     "cut_by_max_verify": 0, "entries": [None]}
             qpath = os.path.join(tmp, "bad-entry.json")
             with open(qpath, "w") as fh:
                 json.dump(queue, fh)
@@ -633,7 +750,8 @@ class TestRenderAdvisor(unittest.TestCase):
         # before -- no separators or dots survive it at all, not just the
         # traversal-shaped ones.
         with tempfile.TemporaryDirectory() as tmp:
-            queue = {"version": "4.2.0", "cut_by_max_verify": 0, "entries": [
+            queue = {"version": "4.2.0", "run_id": "run-test",
+                     "cut_by_max_verify": 0, "entries": [
                 {"queue_id": "../escape", "priority": 1,
                  "finding": {"id": "SEC-001", "title": "x", "severity": "HIGH",
                               "panel": "security", "category": "injection",
@@ -658,7 +776,8 @@ class TestQueueIdResiduals(unittest.TestCase):
     def _queue(self, tmp, entries):
         qpath = os.path.join(tmp, "q.json")
         with open(qpath, "w") as fh:
-            json.dump({"version": "4.2.0", "cut_by_max_verify": 0,
+            json.dump({"version": "4.2.0", "run_id": "run-test",
+                       "cut_by_max_verify": 0,
                        "entries": entries}, fh)
         return qpath
 
@@ -804,11 +923,18 @@ class TestUnenforcedGate(unittest.TestCase):
         with open(prof, "w") as fh:
             json.dump(self.PROFILE, fh)
         out = os.path.join(d, "plan.json")
+        groups = os.path.join(d, "groups.json")
+        with open(groups, "w") as fh:
+            json.dump({"security_mode": "standard",
+                       "groups": [{"name": "g", "files": ["a.py"],
+                                   "panels": ["code"],
+                                   "depth": "standard"}]}, fh)
         cwd = os.getcwd()
         try:
             os.chdir(d)
             rc = dispatch.main([prof, "--host", "claude",
-                                "--agents-dir", agents_dir, "--out", out] + extra_args)
+                                "--agents-dir", agents_dir, "--out", out,
+                                "--groups", groups, "--group-name", "g"] + extra_args)
         finally:
             os.chdir(cwd)
         return rc, out, os.path.join(d, ".panopticon", "unenforced-ack.json")
@@ -1074,7 +1200,8 @@ class TestVerifyPlan(unittest.TestCase):
 
     def _entry(self, enforced=True, role="panel_review"):
         return {"role": role, "agent": "panopticon-panel-review",
-                "enforced": enforced, "out_file": ".panopticon/x.json"}
+                "enforced": enforced, "scope_bound": True,
+                "out_file": ".panopticon/x.json"}
 
     def test_enforced_flip_detected_when_shell_unregistered(self):
         with tempfile.TemporaryDirectory() as d:      # empty dir = nothing registered
@@ -1136,7 +1263,8 @@ class TestReviewRootPinning(unittest.TestCase):
 
     def test_advisor_prompts_carry_repo_root_header(self):
         with tempfile.TemporaryDirectory() as d:
-            queue = {"version": "4.3.2", "cut_by_max_verify": 0, "entries": [
+            queue = {"version": "4.3.2", "run_id": "run-test",
+                     "cut_by_max_verify": 0, "entries": [
                 {"queue_id": "a" * 16, "priority": 1,
                  "finding": {"id": "X-1", "title": "t", "severity": "HIGH",
                              "confidence": "POSSIBLE", "panel": "code",

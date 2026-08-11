@@ -29,8 +29,16 @@ _WRITE_TOOLS = {"Write", "Edit", "NotebookEdit"}
 
 def allowlist_from_plan(plan):
     """Realpath-normalized set of every out_file the plan declares."""
-    return {os.path.realpath(e["out_file"]) for e in plan
-            if isinstance(e, dict) and isinstance(e.get("out_file"), str) and e.get("out_file")}
+    out = set()
+    for entry in plan:
+        path = entry.get("out_file") if isinstance(entry, dict) else None
+        if not isinstance(path, str) or not path:
+            continue
+        artifact_dir = os.path.dirname(os.path.abspath(path))
+        if os.path.basename(artifact_dir) == ".panopticon" and os.path.islink(artifact_dir):
+            raise ValueError("findings output cannot use a symlinked .panopticon directory")
+        out.add(os.path.realpath(path))
+    return out
 
 
 def decide(tool_name, file_path, allowlist):

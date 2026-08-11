@@ -23,6 +23,7 @@ import scripts.evidence as evidence_mod
 import scripts.group_runner as group_runner
 import scripts.html_report as html_report
 import scripts.ingest_tools as ingest_tools
+import scripts.plan_contract as plan_contract
 from scripts.tools import EXECUTES_TARGET_BUILD
 
 # Moved to evidence.py (also used by evidence.load_verdicts for advisor
@@ -475,21 +476,22 @@ HIGH_VALUE_PANELS = {"security", "redteam", "architecture", "database"}
 
 
 def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_absent,
-            integrity_ok=True, verdicts_unloadable=0):
+            integrity_ok=True, verdicts_unloadable=0, verdicts_unanswered=0):
     """Coverage-aware certification. Gate keys on high-value-panel completeness
     (+ requested-absent tools + artifact integrity + verdict loadability);
     grade is holistic (provisional on ANY gap). Precedence FAIL > INCONCLUSIVE
     > PASS; OFF preserved. Tolerant: pure, never raises.
 
-    verdicts_unloadable (#979): a verdict file that survived re-dispatch and
-    still failed to parse is lost verify coverage — the finding it ruled on can
-    never confirm. A PASS with verdicts lost is INCONCLUSIVE, so corrupting an
-    advisor's JSON output cannot silently keep a clean gate.
+    A verdict file that survived re-dispatch but is unloadable or fails its
+    finding-id echo is lost verify coverage. A PASS with supplied verdict work
+    left unanswered is INCONCLUSIVE, so malformed/misrouted advisor output
+    cannot silently keep a clean gate.
     """
     base_gate = gate_verdict(gate_eligible, fail_on)          # PASS / FAIL / OFF
     high_value_incomplete = set(panels_incomplete) & HIGH_VALUE_PANELS
     gate_relevant_gap = (bool(high_value_incomplete) or bool(tools_absent)
-                         or not integrity_ok or bool(verdicts_unloadable))
+                         or not integrity_ok or bool(verdicts_unloadable)
+                         or bool(verdicts_unanswered))
     any_incomplete = bool(panels_incomplete)
 
     if base_gate == "PASS" and gate_relevant_gap:
@@ -663,6 +665,74 @@ def _issue_sort(f):
     eligible = ((f.get("evidence") or {}).get("status")
                 in evidence_mod.GATE_ELIGIBLE_DEFAULT)
     return (_sev_rank(f), 0 if eligible else 1)
+
+
+def _load_group_assignments(path):
+    """Return authoritative groups keyed by name, or an error string."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError) as exc:
+        return {}, "cannot read groups artifact: %s" % exc
+    groups = data.get("groups") if isinstance(data, dict) else None
+    if not isinstance(groups, list):
+        return {}, "groups artifact has no groups list"
+    assignments = {}
+    for group in groups:
+        if not isinstance(group, dict) or not isinstance(group.get("name"), str):
+            return {}, "groups artifact contains malformed group"
+        if group["name"] in assignments:
+            return {}, "groups artifact contains duplicate group %r" % group["name"]
+        if (not isinstance(group.get("files"), list)
+                or not all(isinstance(path, str) and path for path in group["files"])):
+            return {}, "group %r has malformed files" % group["name"]
+        if (not isinstance(group.get("panels"), list)
+                or not all(panel in plan_contract.PANELS for panel in group["panels"])):
+            return {}, "group %r has malformed panels" % group["name"]
+        if group.get("depth") not in plan_contract.DEPTH_ORDER:
+            return {}, "group %r has invalid depth" % group["name"]
+        assignment = dict(group)
+        assignment["security_mode"] = data.get("security_mode", "standard")
+        assignments[group["name"]] = assignment
+    return assignments, None
+
+
+def load_dispatch_plans_detailed(panopticon_dir=".panopticon",
+                                 groups_path=None, root=None):
+    """Return (valid plans, files seen, invalid plan diagnostics)."""
+    plans = []
+    invalid = []
+    groups_path = groups_path or os.path.join(panopticon_dir, "groups.json")
+    assignments, groups_error = _load_group_assignments(groups_path)
+    root = root or os.getcwd()
+    paths = sorted(glob.glob(os.path.join(panopticon_dir, DISPATCH_PLAN_GLOB)))
+    for path in paths:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                plan = json.load(fh)
+        except (OSError, ValueError) as exc:
+            invalid.append({"file": path, "reason": "unreadable: %s" % exc})
+            continue
+        issues = plan_contract.plan_issues(plan)
+        issues.extend(plan_contract.output_issues(plan, root))
+        if not issues:
+            groups = {entry["group"] for entry in plan}
+            if len(groups) != 1:
+                issues.append("plan entries do not name exactly one group")
+            elif groups_error:
+                issues.append(groups_error)
+            else:
+                group_name = next(iter(groups))
+                assignment = assignments.get(group_name)
+                if assignment is None:
+                    issues.append("group %r is absent from groups.json" % group_name)
+                else:
+                    issues.extend(plan_contract.assignment_issues(plan, assignment))
+        if issues:
+            invalid.append({"file": path, "reason": "; ".join(issues)})
+            continue
+        plans.append(plan)
+    return plans, len(paths), invalid
 
 
 def load_dispatch_plans(panopticon_dir=".panopticon"):
@@ -918,7 +988,8 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                  scout_requested=None, scout_profiles_seen=0, out_of_scope=None,
                  doc_policy=None, resume=None, integrity=None,
                  diff_hunks=None, diff_context=5, gate_scope="on-diff",
-                 catalog=None, verdict_unloadable=None, cost_fan_out=None):
+                 catalog=None, verdict_unloadable=None, cost_fan_out=None,
+                 verdict_run_id=None):
     """Build a CodeReviewReport under the two-axis severity x evidence model.
 
     Severity is never mutated here. Verdicts (from evidence.load_verdicts) are
@@ -951,7 +1022,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
     matched_n = 0
     unanswered = 0
     for entry in queue:
-        v = evidence_mod.match_verdict(entry, verdicts)
+        v = evidence_mod.match_verdict(entry, verdicts, run_id=verdict_run_id)
         if v is not None:
             evidence_mod.apply_verdict(entry["finding"], v)
             matched_n += 1
@@ -1090,16 +1161,23 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                               "duplicate_out_files": [],
                               "mislabeled_findings_files": [],
                         "empty_dispatch_plans": 0,
+                            "invalid_dispatch_plans": [],
+                              "invalid_verify_queue": None,
                               "unenforced_acknowledged": False,
                               "plans_seen": 0}
-    integrity_ok = not (integrity.get("unexpected_findings_files")
+    scope_ok = not ((out_of_scope or {}).get("count")
+                    if isinstance(out_of_scope, dict) else False)
+    integrity_ok = scope_ok and not (integrity.get("unexpected_findings_files")
                         or integrity.get("duplicate_out_files")
                         or integrity.get("mislabeled_findings_files")
                         or integrity.get("content_mismatched_files")
-                        or integrity.get("empty_dispatch_plans"))
+                        or integrity.get("empty_dispatch_plans")
+                        or integrity.get("invalid_dispatch_plans")
+                        or integrity.get("invalid_verify_queue"))
     cert = certify(overall, gate_eligible, fail_on, panels_incomplete, tools_absent,
                    integrity_ok=integrity_ok,
-                   verdicts_unloadable=len(verdict_unloadable))
+                   verdicts_unloadable=len(verdict_unloadable),
+                   verdicts_unanswered=(unanswered if verdicts_supplied else 0))
     return {
         "meta": {
             "target": target,
@@ -1463,6 +1541,12 @@ def main(argv=None):
         print("Compare HTML: %s" % html_out)
         return 0
 
+    try:
+        plan_contract.artifact_root(os.getcwd())
+    except ValueError as exc:
+        print("synthesize: %s" % exc, file=sys.stderr)
+        return 2
+
     groups_meta = []
     review_type = "changes" if args.changes else "repo"
     security_mode = args.security
@@ -1570,8 +1654,8 @@ def main(argv=None):
     # plans_seen distinguishes "no plan found -> reconcile skipped" from
     # "reconciled, nothing wrong" -- an empty unexpected/missing pair means
     # nothing on its own (see meta.integrity below).
-    _plan_lists = load_dispatch_plans()
-    plans_seen = len(_plan_lists)
+    _plan_lists, plans_seen, invalid_plans = load_dispatch_plans_detailed(
+        groups_path=groups_path, root=os.getcwd())
     _plan = [e for plan in _plan_lists for e in plan]
     out_of_scope = out_of_scope_findings(args.files, _plan)
     if out_of_scope and out_of_scope["count"]:
@@ -1595,15 +1679,19 @@ def main(argv=None):
                     for (r, m), n in sorted(_cost_counts.items(),
                                             key=lambda kv: (kv[0][0], kv[0][1] or ""))]
     _queue = None
+    invalid_verify_queue = None
     queue_path = os.path.join(".panopticon", "verify-queue.json")
     if os.path.isfile(queue_path):
         try:
             with open(queue_path, encoding="utf-8") as fh:
                 loaded_q = json.load(fh)
-            if isinstance(loaded_q, dict):
+            if (isinstance(loaded_q, dict)
+                    and isinstance(loaded_q.get("entries"), list)):
                 _queue = loaded_q
-        except (OSError, ValueError):  # tolerant by design
-            pass
+            else:
+                invalid_verify_queue = "verify queue has no entries list"
+        except (OSError, ValueError) as exc:
+            invalid_verify_queue = "cannot read verify queue: %s" % exc
     resume = group_runner.resume_stats(_plan, _queue, args.verdicts_dir,
                                        _verdicts=verdicts)
     unexpected, missing = reconcile_findings_files(_plan, args.files)
@@ -1639,6 +1727,8 @@ def main(argv=None):
                  "content_hashes_checked": content_checked,
                  "content_mismatched_files": content_mismatched,
                  "empty_dispatch_plans": sum(1 for plan in _plan_lists if not plan),
+                 "invalid_dispatch_plans": invalid_plans,
+                 "invalid_verify_queue": invalid_verify_queue,
                  "plans_seen": plans_seen}
     if _ack:
         # Surface the Bash-coverage disclosure fields written by dispatch so
@@ -1696,7 +1786,8 @@ def main(argv=None):
                           diff_context=args.diff_context,
                           gate_scope=args.gate_scope,
                           catalog=catalog,
-                          verdict_unloadable=verdict_unloadable)
+                          verdict_unloadable=verdict_unloadable,
+                          verdict_run_id=(_queue or {}).get("run_id"))
     errors, warnings = validate_report(report)
     attach_schema_status(report, errors)
     for w in warnings:

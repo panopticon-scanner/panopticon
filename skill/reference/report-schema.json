@@ -215,7 +215,7 @@
         },
         "integrity": {
           "type": "object",
-          "description": "Run-integrity reconciliation driving certification: any of unexpected_findings_files / duplicate_out_files / mislabeled_findings_files / content_mismatched_files / empty_dispatch_plans forces gate INCONCLUSIVE.",
+          "description": "Run-integrity reconciliation driving certification: unexpected, duplicate, mislabeled, content-mismatched, empty, or invalid dispatch artifacts force gate INCONCLUSIVE.",
           "properties": {
             "unexpected_findings_files": {
               "type": "array",
@@ -257,6 +257,20 @@
             },
             "empty_dispatch_plans": {
               "type": "integer"
+            },
+            "invalid_dispatch_plans": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "file": {"type": "string"},
+                  "reason": {"type": "string"}
+                }
+              }
+            },
+            "invalid_verify_queue": {
+              "type": ["string", "null"],
+              "description": "A present verify-queue artifact could not be parsed or had no entries list; forces INCONCLUSIVE."
             },
             "plans_seen": {
               "type": "integer"

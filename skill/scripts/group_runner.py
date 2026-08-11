@@ -103,7 +103,8 @@ def _queue_entries(queue):
     return entries if isinstance(entries, list) else []
 
 
-def verdict_is_done(queue_id, verdicts_dir, _done=None):
+def verdict_is_done(queue_id, verdicts_dir, finding_id=None, run_id=None,
+                    _done=None):
     """True iff a VALID verdict for queue_id exists — consistent with
     evidence.load_verdicts (a dict whose `verdict` value is in VERDICT_VALUES,
     parsed tolerantly). Missing / truncated / invalid-verdict files are NOT done.
@@ -112,7 +113,14 @@ def verdict_is_done(queue_id, verdicts_dir, _done=None):
     on every call when used in a loop."""
     if _done is None:
         _done = evidence.load_verdicts(verdicts_dir)
-    return bool(queue_id) and queue_id in _done
+    if not queue_id or queue_id not in _done:
+        return False
+    if finding_id is None:
+        finding_matches = True
+    else:
+        finding_matches = str(_done[queue_id].get("finding_id")) == str(finding_id)
+    run_matches = run_id is None or _done[queue_id].get("run_id") == run_id
+    return finding_matches and run_matches
 
 
 def pending_verdicts(queue, verdicts_dir, _verdicts=None):
@@ -123,9 +131,13 @@ def pending_verdicts(queue, verdicts_dir, _verdicts=None):
     directory a caller already loaded (same convention as verdict_is_done)."""
     done = _verdicts if _verdicts is not None else evidence.load_verdicts(verdicts_dir)
     entries = _queue_entries(queue)
+    run_id = queue.get("run_id") if isinstance(queue, dict) else None
     return [e for e in entries
             if isinstance(e, dict) and e.get("queue_id") and
-            not verdict_is_done(e["queue_id"], None, _done=done)]
+            not verdict_is_done(
+                e["queue_id"], None, (e.get("finding") or {}).get("id"),
+                run_id,
+                _done=done)]
 
 
 def resume_stats(plan, queue, verdicts_dir, _verdicts=None):

@@ -12,6 +12,7 @@ import uuid
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import depth_planner
 import model_resolver
+import plan_contract
 from orchestrator import panels_in_priority_order
 
 
@@ -104,6 +105,14 @@ CODEX_AGENTS_DIR = os.path.join(CODEX_HOME, "agents")
 # a general-purpose agent reading untrusted repo content would have full
 # Bash/Edit/Write. main() refuses to emit such a plan by default.
 REVIEWER_ROLES = {"panel_review", "lens_sweep"}
+PANEL_LENSES = {
+    "code": ["structure", "correctness", "style"],
+    "test": ["coverage", "test_quality", "test_design"],
+    "security": ["known_vulns", "injection", "novel"],
+    "architecture": ["architecture"],
+    "database": ["database"],
+    "redteam": ["redteam"],
+}
 
 # Emission is deterministic policy — ambient PANOPTICON_MODEL_* overrides apply
 # to per-run dispatch plans, never to persisted registrations.
@@ -306,7 +315,74 @@ def _artifact_token(value, label):
     return value
 
 
-def _delivery_fields(host, out_file, role_file):
+def _lens_token(value):
+    """Return a prompt/filename-safe flexible lens identifier."""
+    value = str(value or "")
+    if not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", value):
+        raise ValueError("unsafe lens %r: use lowercase letters, digits, and underscores"
+                         % value)
+    return value
+
+
+def _panel_lenses(scope_profile, panel_name):
+    """Validated scout lenses plus every deterministic baseline lens."""
+    raw = (scope_profile.get("lenses") or {}).get(panel_name, [])
+    if not isinstance(raw, list):
+        raise ValueError("ScopeProfile lenses.%s must be a list" % panel_name)
+    by_name = {}
+    extras = []
+    for lens in raw:
+        if not isinstance(lens, dict):
+            raise ValueError("ScopeProfile lens entries must be objects")
+        item = dict(lens)
+        name = _lens_token(item.get("name"))
+        item["name"] = name
+        if name not in by_name:
+            by_name[name] = item
+            extras.append(name)
+    ordered = []
+    baseline = PANEL_LENSES.get(panel_name, [])
+    for name in baseline:
+        ordered.append(by_name.get(name, {
+            "name": name, "spawn": False, "priority": 99,
+            "depth_threshold": "shallow"}))
+    ordered.extend(by_name[name] for name in extras if name not in baseline)
+    return ordered
+
+
+def load_group_assignment(groups_path, group_name):
+    """Load one authoritative group assignment from discovery output."""
+    try:
+        with open(groups_path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError) as exc:
+        raise ValueError("cannot read groups artifact %s: %s" % (groups_path, exc))
+    groups = data.get("groups") if isinstance(data, dict) else None
+    if not isinstance(groups, list):
+        raise ValueError("groups artifact %s has no groups list" % groups_path)
+    matches = [group for group in groups
+               if isinstance(group, dict) and group.get("name") == group_name]
+    if len(matches) != 1 or not isinstance(matches[0].get("files"), list):
+        raise ValueError("groups artifact must contain exactly one %r group"
+                         % group_name)
+    assignment = dict(matches[0])
+    files = assignment["files"]
+    if not all(isinstance(path, str) and path for path in files):
+        raise ValueError("group %r has malformed files" % group_name)
+    panels = assignment.get("panels")
+    if not isinstance(panels, list) or not all(isinstance(panel, str) for panel in panels):
+        raise ValueError("group %r has malformed panels" % group_name)
+    assignment["security_mode"] = data.get("security_mode", "standard")
+    return assignment
+
+
+def load_group_files(groups_path, group_name):
+    """Backward-compatible files-only view of an authoritative assignment."""
+    return load_group_assignment(groups_path, group_name)["files"]
+
+
+def _delivery_fields(host, out_file, role_file, run_id=None, group=None,
+                     panel=None, lens=None):
     if host == "codex":
         return {
             "delivery_contract": (
@@ -318,10 +394,23 @@ def _delivery_fields(host, out_file, role_file):
                 "dispatches, credential access, or target-code execution. The "
                 "Codex runner enforces a read-only sandbox."),
         }
-    delivery = (
-        'Write your findings as a raw JSON object `{"findings": [...]}` to `%s`, '
-        "then return a one-line confirmation as your final message. Write ONLY "
-        "that file — the write-guard hook blocks any other path." % out_file)
+    if run_id is None:
+        delivery = (
+            'Write your findings as a raw JSON object `{"findings": [...]}` to `%s`, '
+            "then return a one-line confirmation as your final message. Write ONLY "
+            "that file — the write-guard hook blocks any other path." % out_file)
+    else:
+        metadata = json.dumps(
+            {"producer": "reviewer_self_write", "run_id": run_id,
+             "role": ("lens_sweep" if role_file == "lens-sweep.md"
+                      else "panel_review"),
+             "panel": panel, "lens": lens, "group": group},
+            separators=(",", ":"))
+        delivery = (
+            'Write a raw JSON object `{"findings": [...], "_panopticon": %s}` to `%s`, '
+            "then return a one-line confirmation as your final message. Write ONLY "
+            "that file — the write-guard hook blocks any other path."
+            % (metadata, out_file))
     if role_file == "lens-sweep.md":
         boundary = "Do not perform GitHub writes, repo mutations, or credential mints."
     else:
@@ -333,7 +422,11 @@ def _delivery_fields(host, out_file, role_file):
 
 
 def build_plan(scope_profile, host=None, model_overrides=None, agents_dir=None,
-               root=None, codex_exec=False, run_id=None):
+               root=None, codex_exec=False, run_id=None,
+               authoritative_files=None, authoritative_group=None,
+               authoritative_panels=None, authoritative_depth=None,
+               authoritative_security_mode=None,
+               scope_bound=False):
     """Return a DispatchPlan: list of agent invocations.
 
     Each invocation has:
@@ -360,19 +453,62 @@ def build_plan(scope_profile, host=None, model_overrides=None, agents_dir=None,
     group_runner's done-check all agree on one location.
     """
     host = host or _detect_host()
+    # Codex review plans are always executed through the trusted read-only
+    # adapter. Keeping this implicit prevents a `--host codex` plan from
+    # rendering return-JSON prompts that codex_runner then refuses (#4.3.0).
+    codex_exec = host == "codex" or codex_exec
     if codex_exec and host != "codex":
         raise ValueError("codex_exec requires host='codex'")
-    if codex_exec:
-        run_id = run_id or uuid.uuid4().hex
+    run_id = run_id or uuid.uuid4().hex
     overrides = model_overrides or {}
     group_name = _artifact_token(scope_profile.get("group", "unknown"), "group")
+    if authoritative_group is not None and group_name != authoritative_group:
+        raise ValueError("ScopeProfile group %r differs from expected group %r"
+                         % (group_name, authoritative_group))
     files = scope_profile.get("files", [])
+    if not isinstance(files, list) or not all(isinstance(path, str) for path in files):
+        raise ValueError("ScopeProfile files must be a list of strings")
+    if authoritative_files is not None:
+        if len(files) != len(authoritative_files) or set(files) != set(authoritative_files):
+            raise ValueError("ScopeProfile files differ from authoritative group %r"
+                             % group_name)
+        files = list(authoritative_files)
+        scope_bound = True
     depth = scope_profile.get("depth", "standard")
+    depth_order = {"shallow": 0, "standard": 1, "deep": 2}
+    if depth not in depth_order:
+        raise ValueError("ScopeProfile has invalid depth %r" % depth)
     root = os.path.abspath(root) if root else os.getcwd()
+    artifact_dir = plan_contract.artifact_root(root)
     plan = []
     panels = scope_profile.get("panels")
     if not isinstance(panels, list) or not panels:
         raise ValueError("ScopeProfile must schedule at least one panel")
+    if authoritative_panels is not None:
+        omitted = sorted(set(authoritative_panels) - set(panels))
+        if omitted:
+            raise ValueError("ScopeProfile omits authoritative panel(s): %s"
+                             % ", ".join(omitted))
+    if (authoritative_depth is not None
+            and depth_order.get(authoritative_depth, 99) > depth_order[depth]):
+        raise ValueError("ScopeProfile depth %r is below authoritative depth %r"
+                         % (depth, authoritative_depth))
+    profile_security = scope_profile.get("security_mode", "standard")
+    if (authoritative_security_mode is not None
+            and profile_security != authoritative_security_mode):
+        raise ValueError("ScopeProfile security_mode %r differs from authoritative %r"
+                         % (profile_security, authoritative_security_mode))
+    scope_sha256 = None
+    if scope_bound:
+        scope_sha256 = plan_contract.assignment_digest({
+            "name": group_name,
+            "files": authoritative_files if authoritative_files is not None else files,
+            "panels": authoritative_panels if authoritative_panels is not None else panels,
+            "depth": authoritative_depth if authoritative_depth is not None else depth,
+            "security_mode": (authoritative_security_mode
+                              if authoritative_security_mode is not None
+                              else profile_security),
+        })
 
     # Compute registration directory once
     reg_dir = _registration_dir(host, agents_dir)
@@ -389,14 +525,19 @@ def build_plan(scope_profile, host=None, model_overrides=None, agents_dir=None,
 
     for panel_name in panels_in_priority_order(panels):
         panel_name = _artifact_token(panel_name, "panel")
-        spawned = depth_planner.plan_lenses(scope_profile, panel_name)
-        panel_lenses = scope_profile.get("lenses", {}).get(panel_name, [])
+        if panel_name not in plan_contract.PANELS:
+            raise ValueError("unsupported panel %r" % panel_name)
+        panel_lenses = _panel_lenses(scope_profile, panel_name)
+        planner_profile = dict(scope_profile)
+        planner_profile["lenses"] = dict(scope_profile.get("lenses") or {})
+        planner_profile["lenses"][panel_name] = panel_lenses
+        spawned = depth_planner.plan_lenses(planner_profile, panel_name)
         spawned_set = set(spawned)
         non_spawned = [lens["name"] for lens in panel_lenses if lens["name"] not in spawned_set]
 
         # main panel reviewer
         panel_out_file = os.path.join(
-            root, ".panopticon",
+            artifact_dir,
             "findings-%s-%s-panel_review.json" % (group_name, panel_name))
         # #975: the PROMPT's file list is rendered ABSOLUTE (worktree-rooted).
         # A dispatched subagent inherits the session cwd, so relative paths
@@ -407,12 +548,14 @@ def build_plan(scope_profile, host=None, model_overrides=None, agents_dir=None,
         panel_mapping = {
             "panel": panel_name, "group": group_name,
             "file_list": ", ".join(files_abs),
-            "security_mode": scope_profile.get("security_mode", "standard"),
             "depth": depth,
+            "security_mode": profile_security,
             "lenses": "\n".join("- %s" % n for n in non_spawned) or "- (all lenses)",
             "out_file": panel_out_file,
         }
-        panel_mapping.update(_delivery_fields(host, panel_out_file, "panel-review.md"))
+        panel_mapping.update(_delivery_fields(
+            host, panel_out_file, "panel-review.md", run_id, group_name,
+            panel_name, None))
         panel_entry = {
             "role": "panel_review",
             "agent": panel_agent,
@@ -426,6 +569,9 @@ def build_plan(scope_profile, host=None, model_overrides=None, agents_dir=None,
             "lenses": non_spawned,
             "out_file": panel_out_file,
             "prompt": render_prompt(ROLE_FILES["panel_review"], panel_mapping, host),
+            "run_id": run_id,
+            "scope_bound": scope_bound,
+            "scope_sha256": scope_sha256,
         }
         if codex_exec:
             panel_entry.update({"execution": "codex_exec", "delivery": "return_json",
@@ -434,9 +580,9 @@ def build_plan(scope_profile, host=None, model_overrides=None, agents_dir=None,
 
         # mechanical lens sweeps
         for lens_name in spawned:
-            lens_name = _artifact_token(lens_name, "lens")
+            lens_name = _lens_token(lens_name)
             sweep_out_file = os.path.join(
-                root, ".panopticon",
+                artifact_dir,
                 "findings-%s-%s-lens_sweep-%s.json" % (group_name, panel_name, lens_name))
             sweep_mapping = {
                 "panel": panel_name, "group": group_name,
@@ -445,7 +591,9 @@ def build_plan(scope_profile, host=None, model_overrides=None, agents_dir=None,
                 "depth": depth, "lens": lens_name,
                 "out_file": sweep_out_file,
             }
-            sweep_mapping.update(_delivery_fields(host, sweep_out_file, "lens-sweep.md"))
+            sweep_mapping.update(_delivery_fields(
+                host, sweep_out_file, "lens-sweep.md", run_id, group_name,
+                panel_name, lens_name))
             sweep_entry = {
                 "role": "lens_sweep",
                 "agent": lens_agent,
@@ -456,8 +604,12 @@ def build_plan(scope_profile, host=None, model_overrides=None, agents_dir=None,
                 "files": files,
                 "group": group_name,
                 "depth": depth,
+                "security_mode": profile_security,
                 "out_file": sweep_out_file,
                 "prompt": render_prompt(ROLE_FILES["lens_sweep"], sweep_mapping, host),
+                "run_id": run_id,
+                "scope_bound": scope_bound,
+                "scope_sha256": scope_sha256,
             }
             if codex_exec:
                 sweep_entry.update({"execution": "codex_exec", "delivery": "return_json",
@@ -490,6 +642,9 @@ def render_advisor_prompts(queue_path, out_dir):
     entries = queue.get("entries")
     if not isinstance(entries, list):
         raise ValueError("verify queue %s has no entries list" % queue_path)
+    run_id = queue.get("run_id")
+    if not isinstance(run_id, str) or not run_id:
+        raise ValueError("verify queue %s has no run_id" % queue_path)
     os.makedirs(out_dir, exist_ok=True)
     written = []
     for entry in entries:
@@ -515,6 +670,8 @@ def render_advisor_prompts(queue_path, out_dir):
                              % (queue_path, queue_id))
         claim = json.dumps(finding, indent=2, ensure_ascii=False)
         prompt = render_prompt("advisor.md", {"claim_json": claim})
+        prompt = ("Verification run id: %s\nEcho it as the top-level JSON field "
+              "`run_id` in your verdict.\n\n%s" % (run_id, prompt))
         # #975: pin the review root. Advisors inherit the session cwd, so a
         # relative location in the claim resolved against the wrong checkout
         # when the session root diverged from the tree under review.
@@ -697,7 +854,8 @@ def plan_content_hash(plan):
     ).hexdigest()
 
 
-def verify_plan(plan, host=None, agents_dir=None, ack=None):
+def verify_plan(plan, host=None, agents_dir=None, ack=None,
+                authoritative_assignment=None, strict=False, root=None):
     """Dispatch-time plan re-verification (#493 R1).
 
     The emission-time gate cannot see an on-disk edit made AFTER emission
@@ -707,14 +865,39 @@ def verify_plan(plan, host=None, agents_dir=None, ack=None):
     with. An unenforced reviewer entry is a violation UNLESS a matching
     (hash-bound) ack acknowledges exactly this plan's content.
     """
-    reg_dir = _registration_dir(host or _detect_host(), agents_dir)
+    resolved_host = host or _detect_host()
+    reg_dir = _registration_dir(resolved_host, agents_dir)
     acked = bool(ack and ack.get("acknowledged")
                  and ack.get("plan_sha256") == plan_content_hash(plan))
+    if not isinstance(plan, list) or not plan:
+        return ["plan is not a non-empty JSON array"]
     problems = []
+    if strict:
+        problems.extend(plan_contract.plan_issues(plan))
+        if authoritative_assignment is None:
+            problems.append("no authoritative groups.json assignment supplied")
+        else:
+            problems.extend(plan_contract.assignment_issues(
+                plan, authoritative_assignment))
+        problems.extend(plan_contract.output_issues(plan, root or os.getcwd()))
+        if problems:
+            return problems
     for i, e in enumerate(plan):
-        if not isinstance(e, dict) or e.get("role") not in ("panel_review", "lens_sweep"):
+        if not isinstance(e, dict):
+            problems.append("entry %d is not an object" % i)
             continue
-        live = _is_registered(reg_dir, ROLE_FILES[e["role"]])
+        if e.get("role") not in REVIEWER_ROLES:
+            continue
+        if e.get("scope_bound") is not True:
+            problems.append("entry %d (%s): reviewer scope is not bound to groups.json"
+                            % (i, e.get("role")))
+        if e.get("execution") == "codex_exec":
+            if e.get("delivery") != "return_json" or not e.get("run_id"):
+                problems.append(
+                    "entry %d (%s): incomplete codex_exec runner metadata"
+                    % (i, e.get("role")))
+            continue
+        live = _is_registered(reg_dir, ROLE_FILES[e["role"]], resolved_host)
         if e.get("enforced") and not live:
             problems.append(
                 "entry %d (%s/%s): enforced:true but no registered shell -- "
@@ -773,13 +956,19 @@ def main(argv=None):
                          "reviewer whose ack does not hash-match the plan")
     ap.add_argument("--agents-dir", default=None,
                     help="Directory containing registered agent .md files")
+    ap.add_argument("--groups", default=None,
+                    help="Authoritative groups.json artifact; binds the scout's files "
+                         "to its discovery-assigned group")
+    ap.add_argument("--group-name", default=None,
+                    help="Expected group name from the orchestrator assignment; required "
+                         "with --groups")
     ap.add_argument("--allow-unenforced", action="store_true",
                     help="Emit the plan even when reviewer roles lack a registered "
                          "enforcement shell (tool policy becomes prompt-advisory); "
                          "records the acceptance in .panopticon/unenforced-ack.json")
     ap.add_argument("--codex-exec", action="store_true",
-                    help="Mark a --host codex plan for the trusted read-only codex_exec "
-                         "runner; no registered reviewer shells are required")
+                    help="Compatibility alias; --host codex automatically uses the "
+                        "trusted read-only codex_exec runner")
     ap.add_argument("--model-lens-sweep", default=None)
     ap.add_argument("--model-panel-review", default=None)
     ap.add_argument("--model-advisor", default=None)
@@ -861,6 +1050,7 @@ def main(argv=None):
         except (OSError, ValueError):
             ack = None
         bad = 0
+        groups_path = args.groups or os.path.join(".panopticon", "groups.json")
         for pth in args.verify_plan:
             try:
                 with open(pth, encoding="utf-8") as fh:
@@ -869,8 +1059,18 @@ def main(argv=None):
                 print("verify-plan: cannot read %s: %s" % (pth, e), file=sys.stderr)
                 bad += 1
                 continue
-            problems = verify_plan(plan, host=args.host,
-                                   agents_dir=args.agents_dir, ack=ack)
+            assignment = None
+            if args.group_name:
+                try:
+                    assignment = load_group_assignment(groups_path, args.group_name)
+                except ValueError as e:
+                    print("verify-plan: %s: %s" % (pth, e), file=sys.stderr)
+                    bad += 1
+                    continue
+            problems = verify_plan(
+                plan, host=args.host, agents_dir=args.agents_dir, ack=ack,
+                authoritative_assignment=assignment, strict=True,
+                root=os.path.dirname(os.path.dirname(os.path.abspath(groups_path))))
             for prob in problems:
                 print("verify-plan: %s: %s" % (pth, prob), file=sys.stderr)
             bad += len(problems)
@@ -901,9 +1101,36 @@ def main(argv=None):
     if args.model_advisor:
         overrides["advisor"] = args.model_advisor
 
+    authoritative_files = None
+    assignment = None
+    groups_path = args.groups
+    if groups_path is None:
+        default_groups = os.path.join(".panopticon", "groups.json")
+        if os.path.isfile(default_groups):
+            groups_path = default_groups
+    if groups_path is None:
+        print("dispatch: no authoritative groups.json; run discovery with "
+              "--out .panopticon/groups.json and pass --group-name", file=sys.stderr)
+        return 2
+    if not args.group_name:
+        print("dispatch: --groups requires --group-name", file=sys.stderr)
+        return 2
+    try:
+        assignment = load_group_assignment(groups_path, args.group_name)
+        authoritative_files = assignment["files"]
+    except ValueError as e:
+        print("dispatch: %s" % e, file=sys.stderr)
+        return 1
+
     try:
         plan = build_plan(profile, host=args.host, model_overrides=overrides,
-                  agents_dir=args.agents_dir, codex_exec=args.codex_exec)
+                  agents_dir=args.agents_dir, codex_exec=args.codex_exec,
+                  authoritative_files=authoritative_files,
+                  authoritative_group=args.group_name,
+                  authoritative_panels=assignment["panels"],
+                  authoritative_depth=assignment.get("depth"),
+                  authoritative_security_mode=assignment["security_mode"],
+                  scope_bound=groups_path is not None)
     except ValueError as e:
         print("dispatch: %s" % e, file=sys.stderr)
         return 1

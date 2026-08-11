@@ -3,21 +3,59 @@ name: Security Scan
 on:
   push:
     branches: [main]
+  # Fork PRs (untrusted) run under pull_request_target so the BASE workflow
+  # judges them and the PR patch can never rewrite the gate that judges it.
+  pull_request_target:
+    branches: [main]
+  # Same-repo branch PRs (trusted: write-access + required review) run under
+  # pull_request. Both triggers are present so the required `scan` check always
+  # reports; the job-level `if` below routes each PR to exactly ONE of them
+  # (fork -> target, same-repo -> pull_request), so there is never a double run.
+  # Regardless of trigger the gate LOGIC always executes from the base-SHA
+  # `controller` checkout below and the PR head is only ever mounted as
+  # read-only scan data, so the scanner code is tamper-proof on every path.
   pull_request:
     branches: [main]
 
 env:
-  TOOLS_OUT: .panopticon/tools
   IMAGE: ghcr.io/${{ github.repository }}-tools:latest
 jobs:
   scan:
     runs-on: ubuntu-latest
+    # Route each PR to exactly one trigger: forks via pull_request_target,
+    # same-repo branches via pull_request; push always runs.
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request_target' &&
+       github.event.pull_request.head.repo.full_name != github.repository) ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
     permissions:
       contents: read
       packages: read
       security-events: write
     steps:
-      - uses: actions/checkout@v4
+      # Controller = the scanner code that runs the gate. Fork PRs
+      # (pull_request_target) pin it to the BASE SHA so untrusted code can never
+      # execute as the controller. Same-repo PRs (pull_request) pin it to the
+      # HEAD SHA so a branch's own scanner changes are tested by their own CI
+      # (the trusted-contributor self-test), matching the trigger routing above.
+      # push uses the pushed SHA. The target is always mounted read-only below.
+      - name: Checkout trusted scanner controller
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ (github.event_name == 'pull_request_target' && github.event.pull_request.base.sha) || github.event.pull_request.head.sha || github.sha }}
+          path: controller
+          persist-credentials: false
+
+      # The target is untrusted data and is only mounted read-only into scanners.
+      - name: Checkout scan target
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: target
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -41,14 +79,21 @@ jobs:
           if docker pull ${{ env.IMAGE }}; then
             docker tag ${{ env.IMAGE }} panopticon-tools
           else
-            echo "Pre-built image not found; building locally."
-            docker build -t panopticon-tools .
+            echo "Pre-built image not found; building from trusted controller checkout."
+            docker build -t panopticon-tools controller
           fi
 
       - name: Run static-analysis tools
         run: |
-          mkdir -p ${{ env.TOOLS_OUT }}
-          python skill/scripts/run_tools.py --target . --out ${{ env.TOOLS_OUT }} --deps
+          tools_out="$RUNNER_TEMP/panopticon-tools-output"
+          manifest="$RUNNER_TEMP/panopticon-tools-manifest.json"
+          mkdir -p "$tools_out"
+          python controller/skill/scripts/run_tools.py \
+            --target target \
+            --out "$tools_out" \
+            --manifest "$manifest" \
+            --exclude 'tests/fixtures/*' \
+            --deps
 
       # INTENTIONAL POLICY, not an oversight (#513): this CI gate fails on any
       # HIGH/CRITICAL *tool* finding on raw severity, WITHOUT the two-axis
@@ -65,28 +110,13 @@ jobs:
       # this is a conservative merge guard, not that grade.
       - name: Gate on HIGH/CRITICAL tool findings (unverified-strict policy)
         run: |
-          python - <<'PY'
-          import os
-          import sys
-          sys.path.insert(0, os.path.join(os.getcwd(), 'skill'))
-          import scripts.ingest_tools as it
-          # Fixture exclusion is the standard ingest mechanism (F-CAL-2),
-          # not CI-only inline filtering.
-          findings = it.ingest_dir(os.environ['TOOLS_OUT'], 'ci',
-                                   exclude_globs=['tests/fixtures/*'])
-          high = [f for f in findings if f.get('severity') in ('HIGH', 'CRITICAL')]
-          print(f"Ingested {len(findings)} non-fixture tool findings; "
-                f"{len(high)} HIGH/CRITICAL (gating unverified by CI policy — "
-                f"no advisor phase in CI; see step comment / #513)")
-          if high:
-              for f in high[:20]:
-                  loc = f.get('location', {})
-                  print(f"  {f.get('severity')} {f.get('id')} {loc.get('file')}:{loc.get('line_start')} - {f.get('title')}")
-              sys.exit(1)
-          PY
+          python controller/skill/scripts/security_gate.py \
+            --tools-dir "$RUNNER_TEMP/panopticon-tools-output" \
+            --manifest "$RUNNER_TEMP/panopticon-tools-manifest.json" \
+            --exclude 'tests/fixtures/*'
 
       - name: Upload SARIF to GitHub Security tab
         if: always()
         uses: github/codeql-action/upload-sarif@v4
         with:
-          sarif_file: ${{ env.TOOLS_OUT }}
+          sarif_file: ${{ runner.temp }}/panopticon-tools-output
