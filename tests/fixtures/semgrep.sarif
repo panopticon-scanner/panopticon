@@ -48,7 +48,7 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "/src/templates/program_detail.html",
+                  "uri": "/src/templates/example_form.html",
                   "uriBaseId": "%SRCROOT%"
                 },
                 "region": {
@@ -57,7 +57,7 @@
                   "endLine": 69,
                   "endColumn": 12,
                   "snippet": {
-                    "text": "    <form\n        method=\"post\"\n        action=\"/programs/{{ program.id }}/generate\"\n        class=\"d-inline\"\n    >\n        <button type=\"submit\" class=\"btn btn-br\">Generate Distro</button>\n    </form>"
+                    "text": "    <form\n        method=\"post\"\n        action=\"/items/{{ item.id }}/submit\"\n        class=\"d-inline\"\n    >\n        <button type=\"submit\" class=\"btn btn-primary\">Submit</button>\n    </form>"
                   }
                 }
               }

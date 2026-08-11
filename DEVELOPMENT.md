@@ -227,7 +227,7 @@ History:
   tool container.
 - **2.1.0** — bug-fix round: must-fixes surfaced by the build's review gates and the
   live real-tool smoke.
-- **2.2.0** — accumulated bug-fix round from the self-review + baskin dogfood: repo-root
+- **2.2.0** — accumulated bug-fix round from the self-review + an internal-app dogfood: repo-root
   clamp (CWE-22), docker-run timeout, catalog tolerance, SARIF path-normalization + per-result
   tolerance, cross-source reinforce (2-member tool+agent), citations hardening (case-insensitive
   ids, CWE-95, EPSS size-cap/UA), DoS guards, bandit noise floor, id-uniqueness + panel label,
@@ -327,7 +327,7 @@ The round-1 criticals are resolved; these narrower residuals were hand-verified 
   ingestion but only SARIF is implemented; unrecognized JSON is dropped with no diagnostic. Fix: log a
   skip, or align the docstring to SARIF-only.
 
-### From the baskin dogfood run (2026-07-23) — tool↔fleet integration (2.2.0)
+### From an internal-app dogfood run (2026-07-23) — tool↔fleet integration (2.2.0)
 - **Tool noise floor**: bandit emitted 579 `B101` "assert used" findings from `tests/` on one run.
   Add a noise filter — skip `tests/` for SAST, drop `B101`, and/or a LOW-severity floor for tool findings.
 - **Normalize SARIF paths**: `ingest_tools` keeps the raw `artifactLocation.uri` (`file:///src/...`);
@@ -335,7 +335,7 @@ The round-1 criticals are resolved; these narrower residuals were hand-verified 
   package-relative paths.
 - **Cross-source reinforce is effectively dead**: `dedupe` keys on `(file, line_start, category)`,
   but tool rule-ids ≠ agent lens categories and tool paths carry `/src/` — so an identical tool+agent
-  finding (observed: the CSRF at `templates/program_detail.html:151`) never merges. Fix the path
+  finding (observed: the CSRF finding whose tool path carried the `/src/` prefix) never merges. Fix the path
   normalization above AND match on `(file, line)` with looser/optional category (or map ruleId→lens).
 
 ### From Panopticon's self-review (2026-07-23) — graded itself F/CRITICAL, 24 findings
