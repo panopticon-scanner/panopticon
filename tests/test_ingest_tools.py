@@ -162,10 +162,10 @@ class TestIngest(unittest.TestCase):
         self.assertEqual(it.sarif_to_findings(sarif, "bandit", "g1", "BN"), [])
 
     def test_ingest_real_semgrep_fixture(self):
-        # tests/fixtures/ holds a trimmed but genuinely-real semgrep SARIF
-        # (one run, one rule, one result) with a container-mount-prefixed
-        # artifactLocation.uri ("/src/..."); proves normalization survives
-        # real tool output, not just hand-built test SARIF.
+        # tests/fixtures/ holds a realistic semgrep SARIF (one run, one rule,
+        # one result) shaped from real semgrep output, with a container-mount-
+        # prefixed artifactLocation.uri ("/src/..."); proves normalization
+        # survives real tool output shape, not just hand-built test SARIF.
         here = os.path.dirname(__file__)
         out = it.ingest_dir(os.path.join(here, "fixtures"), "g1")
         self.assertTrue(out)
