@@ -185,6 +185,12 @@ History:
   5.0 = driver state machine + verify-phase redesign + OCRDb identity spine
   (feature-flagged by bundle presence), 5.1 = trends + panel evolution +
   trust chain + incremental runs + panel collapsing, 5.2 = reach.
+  **OCRDb prerequisite met (2026-08-11):** the identity-spine catalog
+  shipped as OCRDb v0.2.0 (7 domains, 357 single-homed codes, tagged +
+  released), with Gate A assignment-stability recorded. The
+  4.x-freeze → OCRDb → 5.x work order now clears 5.x to begin (Track 1
+  first); run-4 (2026-08-15) still records cost baseline #1 before any
+  5.0 economics work merges.
 - **4.3.1** — external-review point release (first outside audit,
   Gemini Pro 3.1, triaged claim-by-claim against the tree). Path-variant
   clustering: `evidence.norm_path` becomes the sole owner of finding-path
