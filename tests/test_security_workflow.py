@@ -14,13 +14,27 @@ class TestSecurityWorkflowTrustBoundary(unittest.TestCase):
     def test_controller_and_target_are_separate_checkouts(self):
         text = self._text()
         self.assertIn("pull_request_target:", text)
-        self.assertNotIn("\n  pull_request:\n", text)
         self.assertIn("path: controller", text)
         self.assertIn("github.event.pull_request.base.sha", text)
         self.assertIn("path: target", text)
         self.assertIn("github.event.pull_request.head.repo.full_name", text)
         self.assertIn("github.event.pull_request.head.sha", text)
         self.assertGreaterEqual(text.count("persist-credentials: false"), 2)
+
+    def test_fork_isolation_routing_guard(self):
+        # Both triggers exist so the required `scan` check always reports, but
+        # the job `if` routes each PR to exactly one: forks -> target (tamper-
+        # proof base workflow), same-repo -> pull_request (no double run).
+        text = self._text()
+        self.assertIn("pull_request_target:", text)
+        self.assertIn("pull_request:", text)
+        self.assertIn("if:", text)
+        # fork branch: pull_request_target only when head repo != this repo
+        self.assertIn("github.event_name == 'pull_request_target' &&", text)
+        self.assertIn("head.repo.full_name != github.repository", text)
+        # same-repo branch: pull_request only when head repo == this repo
+        self.assertIn("github.event_name == 'pull_request' &&", text)
+        self.assertIn("head.repo.full_name == github.repository", text)
 
     def test_only_trusted_controller_runs_gate_and_scanners(self):
         text = self._text()
