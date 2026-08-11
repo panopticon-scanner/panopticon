@@ -79,6 +79,58 @@ class TestRunTools(unittest.TestCase):
             self.assertEqual(payload["missing"], ["gitleaks"])
             self.assertEqual(json.load(open(path)), payload)
 
+    def test_is_excluded_matches_subtree(self):
+        self.assertTrue(rt._is_excluded("tests/fixtures/insecure-js/app.js",
+                                        ["tests/fixtures/*"]))
+        self.assertFalse(rt._is_excluded("skill/scripts/x.py",
+                                         ["tests/fixtures/*"]))
+        self.assertFalse(rt._is_excluded("a.js", []))
+
+    def test_partition_demotes_adapter_with_only_excluded_files(self):
+        class _Ad:
+            def __init__(self, files):
+                self._files = files
+            def applicable_files(self, target):
+                return [os.path.join(target, f) for f in self._files]
+        class _NoFiles:  # lockfile-triggered adapter: stays required
+            pass
+        adapters = {"eslint-security": _Ad(["tests/fixtures/insecure-js/app.js"]),
+                    "with-src": _Ad(["skill/x.js", "tests/fixtures/y.js"]),
+                    "osv-scanner": _NoFiles()}
+        required, excluded = rt.partition_by_exclusion(
+            adapters, "/repo", ["tests/fixtures/*"])
+        self.assertEqual(excluded, ["eslint-security"])
+        self.assertCountEqual(required, ["with-src", "osv-scanner"])
+
+    def test_partition_no_exclusions_demotes_nothing(self):
+        class _Ad:
+            def applicable_files(self, target):
+                return [os.path.join(target, "tests/fixtures/a.js")]
+        required, excluded = rt.partition_by_exclusion(
+            {"eslint-security": _Ad()}, "/repo", [])
+        self.assertEqual(excluded, [])
+        self.assertEqual(required, ["eslint-security"])
+
+    def test_manifest_records_excluded_scope(self):
+        with tempfile.TemporaryDirectory() as d:
+            payload = rt.write_manifest(
+                os.path.join(d, "m.json"), ["semgrep"], [],
+                excluded_scope=["eslint-security"])
+            self.assertEqual(payload["excluded_scope"], ["eslint-security"])
+            self.assertNotIn("eslint-security", payload["selected"])
+
+    def test_eslint_applicable_files_drives_is_applicable(self):
+        from scripts.tools.eslint_security import EslintSecurityAdapter
+        with tempfile.TemporaryDirectory() as d:
+            ad = EslintSecurityAdapter()
+            self.assertFalse(ad.is_applicable(d))
+            os.makedirs(os.path.join(d, "tests", "fixtures"))
+            open(os.path.join(d, "tests", "fixtures", "app.js"), "w").write("//")
+            self.assertTrue(ad.is_applicable(d))
+            files = ad.applicable_files(d)
+            self.assertEqual(len(files), 1)
+            self.assertTrue(files[0].endswith("app.js"))
+
     def test_manifest_selection_excludes_offline_policy_skips(self):
         with tempfile.TemporaryDirectory() as d:
             effective = rt.filter_online(

@@ -6,6 +6,7 @@ code; roslyn-secguard executes target build logic inside a no-egress,
 no-secret container (recorded in report meta); pip-audit/npm-audit run only
 under --online. Degrades gracefully when Docker is absent. Stdlib-only.
 """
+import fnmatch
 import os
 import json
 import subprocess
@@ -110,6 +111,35 @@ def select_adapters(target: str, adapters: dict | None = None) -> dict:
     """Return the subset of adapters applicable to the target repo."""
     adapters = adapters or ADAPTERS
     return {name: adapter for name, adapter in adapters.items() if adapter.is_applicable(target)}
+
+
+def _is_excluded(rel, exclude_globs):
+    """True if a repo-relative path matches any exclusion glob (fnmatch `*`
+    spans `/`, so `tests/fixtures/*` covers the whole subtree)."""
+    rel = str(rel).replace(os.sep, "/")
+    return any(fnmatch.fnmatch(rel, g) for g in exclude_globs or [])
+
+
+def partition_by_exclusion(adapters, target, exclude_globs):
+    """Split applicable adapters into (required, excluded_scope).
+
+    An adapter is `excluded_scope` when it exposes ``applicable_files`` and
+    EVERY such file matches an --exclude glob: its entire surface is outside the
+    gate's scope, so a missing run cannot hide a gate-relevant finding — it is
+    disclosed, not required. Adapters without file-level applicability (their
+    trigger is a manifest/lockfile, not an excludable source tree) stay
+    required. With no exclusions, nothing is demoted.
+    """
+    required, excluded_scope = [], []
+    for name, adapter in adapters.items():
+        lister = getattr(adapter, "applicable_files", None)
+        files = list(lister(target)) if callable(lister) else []
+        if exclude_globs and files and all(
+                _is_excluded(os.path.relpath(f, target), exclude_globs) for f in files):
+            excluded_scope.append(name)
+        else:
+            required.append(name)
+    return required, excluded_scope
 
 
 def filter_online(chosen, online):
@@ -219,12 +249,19 @@ def run_tools(target, tools, out_dir, image="panopticon-tools", runner=None, onl
     return written
 
 
-def write_manifest(path, selected, written):
-    """Write the exact selected/produced scanner set for coverage gating."""
+def write_manifest(path, selected, written, excluded_scope=()):
+    """Write the exact selected/produced scanner set for coverage gating.
+
+    `excluded_scope` names adapters that were applicable but whose entire
+    surface fell under the gate's --exclude globs; they are disclosed (never
+    required), and are kept out of `selected` so the missing-set invariant
+    holds.
+    """
     selected = list(dict.fromkeys(str(tool) for tool in selected))
     produced = sorted({os.path.splitext(os.path.basename(p))[0] for p in written})
     payload = {"selected": selected, "produced": produced,
-               "missing": sorted(set(selected) - set(produced))}
+               "missing": sorted(set(selected) - set(produced)),
+               "excluded_scope": sorted(dict.fromkeys(str(t) for t in excluded_scope))}
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=2)
@@ -243,20 +280,28 @@ if __name__ == "__main__":
     ap.add_argument("--online", action="store_true", help="allow pip-audit/npm-audit to reach their advisory APIs")
     ap.add_argument("--manifest", default=None,
                     help="Write selected/produced scanner coverage JSON")
+    ap.add_argument("--exclude", action="append", default=[],
+                    help="Path glob whose files are out of gate scope; an "
+                         "adapter applicable only to excluded files is disclosed "
+                         "as excluded_scope, not required (repeatable). Pass the "
+                         "same globs the gate uses.")
     a = ap.parse_args()
     if not docker_available():
         print("panopticon-tools image not available; skipping tool scan", file=sys.stderr)
         sys.exit(0)
+    excluded_scope = []
     if a.tools:
         chosen = a.tools
     else:
         selected_adapters = select_adapters(a.target)
-        phase1 = [name for name in selected_adapters if name in PHASE1_ADAPTERS]
-        phase2 = [name for name in selected_adapters if name in PHASE2_ADAPTERS]
+        required_names, excluded_scope = partition_by_exclusion(
+            selected_adapters, a.target, a.exclude)
+        phase1 = [name for name in required_names if name in PHASE1_ADAPTERS]
+        phase2 = [name for name in required_names if name in PHASE2_ADAPTERS]
         languages = a.languages or detect_languages(a.target)
         chosen = select_tools(languages, a.deps) + phase1 + phase2
     effective = filter_online(chosen, a.online)
     paths = run_tools(a.target, effective, a.out, online=a.online)
     if a.manifest:
-        write_manifest(a.manifest, effective, paths)
+        write_manifest(a.manifest, effective, paths, excluded_scope=excluded_scope)
     print("\n".join(paths))

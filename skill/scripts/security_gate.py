@@ -24,14 +24,22 @@ def load_manifest(path):
     selected = data.get("selected")
     produced = data.get("produced")
     missing = data.get("missing")
-    if not all(isinstance(value, list) for value in (selected, produced, missing)):
+    # excluded_scope: adapters applicable only to --excluded files; disclosed,
+    # never required. Optional for backward compatibility with older manifests.
+    excluded_scope = data.get("excluded_scope", [])
+    data["excluded_scope"] = excluded_scope
+    if not all(isinstance(value, list)
+               for value in (selected, produced, missing, excluded_scope)):
         raise ValueError("scanner manifest lists are malformed")
     if not selected or not all(isinstance(name, str) and name for name in selected):
         raise ValueError("scanner manifest selected no tools")
-    if not all(isinstance(name, str) and name for name in produced + missing):
+    if not all(isinstance(name, str) and name
+               for name in produced + missing + excluded_scope):
         raise ValueError("scanner manifest tool names are malformed")
     if set(missing) != set(selected) - set(produced):
         raise ValueError("scanner manifest missing set is inconsistent")
+    if set(excluded_scope) & set(selected):
+        raise ValueError("scanner manifest excluded_scope overlaps selected")
     return data
 
 
@@ -47,7 +55,10 @@ def evaluate(tools_dir, manifest_path, exclude_globs=None):
             failures.append("%s: no output" % name)
         elif disposition.get("status") == "failed":
             failures.append("%s: %s" % (name, disposition.get("reason", "failed")))
-    unknown = set(dispositions) - set(manifest["selected"])
+    # excluded_scope adapters are disclosed, never required, and their output
+    # (if any lingered) is known — not "unexpected".
+    known = set(manifest["selected"]) | set(manifest.get("excluded_scope", []))
+    unknown = set(dispositions) - known
     if unknown:
         failures.append("unexpected scanner output: %s" % ", ".join(sorted(unknown)))
     high = [finding for finding in findings

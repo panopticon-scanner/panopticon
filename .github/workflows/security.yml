@@ -92,6 +92,7 @@ jobs:
             --target target \
             --out "$tools_out" \
             --manifest "$manifest" \
+            --exclude 'tests/fixtures/*' \
             --deps
 
       # INTENTIONAL POLICY, not an oversight (#513): this CI gate fails on any

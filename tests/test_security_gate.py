@@ -73,6 +73,35 @@ class TestSecurityGate(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "selected no tools"):
                 gate.evaluate(tools, manifest)
 
+    def test_excluded_scope_scanner_does_not_fail_coverage(self):
+        # An adapter demoted to excluded_scope is NOT in selected/missing, so a
+        # clean scan passes even though the adapter produced no output.
+        with tempfile.TemporaryDirectory() as root:
+            tools, manifest = self._write(
+                root, {"selected": ["semgrep"], "produced": ["semgrep"],
+                       "missing": [], "excluded_scope": ["eslint-security"]},
+                _sarif())
+            _, _, failures, high = gate.evaluate(tools, manifest, ["tests/fixtures/*"])
+        self.assertEqual(failures, [])
+        self.assertEqual(high, [])
+
+    def test_excluded_scope_backward_compatible_absent(self):
+        # A manifest without the excluded_scope key still loads (older producer).
+        with tempfile.TemporaryDirectory() as root:
+            tools, manifest = self._write(
+                root, {"selected": ["semgrep"], "produced": ["semgrep"],
+                       "missing": []}, _sarif())
+            data = gate.load_manifest(manifest)
+        self.assertEqual(data["excluded_scope"], [])
+
+    def test_excluded_scope_overlapping_selected_is_invalid(self):
+        with tempfile.TemporaryDirectory() as root:
+            tools, manifest = self._write(
+                root, {"selected": ["semgrep"], "produced": ["semgrep"],
+                       "missing": [], "excluded_scope": ["semgrep"]})
+            with self.assertRaisesRegex(ValueError, "excluded_scope overlaps"):
+                gate.evaluate(tools, manifest)
+
 
 if __name__ == "__main__":
     unittest.main()
