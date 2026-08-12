@@ -122,9 +122,18 @@ def normalize_finding(f):
 #     of every uncorroborated one, so a forged flag jumps the --max-verify cut
 #     and starves genuine claims of the advisor budget. It also flips
 #     derive_evidence's tool_like branch.
+#   `corroborated`/`corroborated_by` (#983): derive_evidence maps a
+#     corroborated finding straight to evidence status `corroborated` -- a
+#     verification tier reached with no advisor -- and triage_priority ranks a
+#     corroborated CRITICAL/HIGH at 0 alongside reinforced. cross_panel_
+#     corroboration only ever SETS these on a real >=2-distinct-panel cluster
+#     and never resets them to False, so a forged flag on a finding in no such
+#     cluster is never cleared: the author self-certifies cross-panel
+#     verification and jumps the --max-verify cut.
 #
-# Only ingest_tools (tool output) and dedupe's real merge branches may set them.
-AGENT_FORBIDDEN_FIELDS = ("source", "reinforced")
+# Only ingest_tools (tool output), dedupe's real merge branches, and
+# cross_panel_corroboration may set these.
+AGENT_FORBIDDEN_FIELDS = ("source", "reinforced", "corroborated", "corroborated_by")
 
 
 def load_findings(paths):
