@@ -58,6 +58,44 @@ class TestBodyProvenance(unittest.TestCase):
         self.assertIn("**Location:** `skill/scripts/run_tools.py:42`", body)
 
 
+class TestBodyDefang(unittest.TestCase):
+    """Attacker-influenced finding text (from scanned repos, incl. quoted
+    injection payloads) is posted to PUBLIC issues: @mentions, links and issue
+    refs must not fire, control bytes are stripped, but legitimate structure
+    (code spans) must survive. (run-4 self-scan C10/C11.)"""
+
+    def _f(self, **over):
+        f = {"id": "X-1", "fingerprint": "fp1", "severity": "HIGH",
+             "confidence": "POSSIBLE", "location": {"file": "a.py", "line_start": 1}}
+        f.update(over)
+        return f
+
+    def test_defuses_mentions_links_and_refs(self):
+        body = file_issues.body_for(self._f(
+            description="@everyone see [click](http://evil.example) re #1",
+            remediation="ping @maintainer"))
+        self.assertNotIn("@everyone", body)
+        self.assertNotIn("@maintainer", body)
+        self.assertIn("@​everyone", body)
+        self.assertNotIn("](http://evil.example)", body)
+        self.assertIn("#​1", body)
+
+    def test_strips_control_bytes(self):
+        body = file_issues.body_for(self._f(description="danger\x1b[31mred\x07bell"))
+        self.assertNotIn("\x1b", body)
+        self.assertNotIn("\x07", body)
+
+    def test_preserves_legitimate_code_spans(self):
+        body = file_issues.body_for(self._f(
+            description="the `parse()` helper mishandles input"))
+        self.assertIn("`parse()`", body)
+
+    def test_title_mention_defanged(self):
+        title = file_issues.title_for(self._f(short_title="@team broken"))
+        self.assertNotIn("@team", title)
+        self.assertIn("@​team", title)
+
+
 class TestRepoRootPortability(unittest.TestCase):
     """#602: REPO_ROOT was a hardcoded machine-specific absolute path; on any
     other machine scrub() silently no-opped and leaked local paths into public

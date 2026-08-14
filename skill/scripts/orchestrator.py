@@ -262,6 +262,14 @@ def _glob_to_re(pat):
     at any depth (gitignore's unanchored form). Patterns with a ``/`` are
     anchored to the repo root.
     """
+    # Collapse runs of adjacent segment-crossing wildcards BEFORE compiling.
+    # `**/**/.../x` compiles to sequential `(?:[^/]+/)*` quantifiers -- the
+    # textbook catastrophic-backtracking ReDoS shape -- and repo-supplied
+    # `.panopticon/groups.yml` `match:` patterns reach this compiler, so a
+    # hostile repo could hang discovery (run-4 self-scan). Adjacent `**`
+    # segments are semantically redundant, so fold each run down to one.
+    pat = re.sub(r"(?:\*\*/)+", "**/", pat)
+    pat = re.sub(r"\*\*\*+", "**", pat)
     anchored = "/" in pat
     out, i = [], 0
     while i < len(pat):
