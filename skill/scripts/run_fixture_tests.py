@@ -84,7 +84,9 @@ def check_fixtures(tag: str, fixtures: list[dict]) -> tuple[list[str], list[str]
         'done'
     )
     cmd = ["docker", "run", "--rm", tag, "sh", "-c", test_script, "sh", *paths]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    # Bound the docker call so a hung container can't wedge the fixture run
+    # (consistent with run_tools.py's timeouts; run-4 self-scan C15).
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     present_paths = []
     missing_paths = set()
     for line in result.stdout.splitlines():

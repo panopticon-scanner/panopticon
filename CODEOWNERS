@@ -4,8 +4,9 @@
 # CI / security tooling
 /.github/ @psyberone
 /Dockerfile @psyberone
-/scripts/run_tools.py @psyberone
-/scripts/tools/ @psyberone
+/Dockerfile.fixtures @psyberone
+/skill/scripts/run_tools.py @psyberone
+/skill/scripts/tools/ @psyberone
 
 # Schemas and reference data
-/reference/ @psyberone
+/skill/reference/ @psyberone

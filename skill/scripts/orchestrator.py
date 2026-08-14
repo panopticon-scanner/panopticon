@@ -1017,7 +1017,7 @@ def setup_readiness(repo, host=None, runner=subprocess.run, environ=None):
     except Exception:
         catalog = []
     if catalog:
-        empty = [g.get("name") for g in catalog if not g.get("match")]
+        empty = [name for name, g in catalog.items() if not g.get("match")]
         checks.append(("groups-manifest", not empty,
                        "%d group(s)" % len(catalog) if not empty else
                        "group(s) with no match patterns: %s" % ", ".join(map(str, empty))))

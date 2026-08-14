@@ -353,6 +353,31 @@ class TestDedupe(unittest.TestCase):
         self.assertEqual(sql.get("confidence"), "CERTAIN")
 
 
+class TestReinforceMerge(unittest.TestCase):
+    def test_protects_tool_cvss_when_category_differs(self):
+        # A same-LOCUS but DIFFERENT-category agent finding must not overwrite a
+        # tool survivor's authoritative cvss/exploit_scenario (run-4 C20); a
+        # MISSING field is still filled from the agent finding.
+        tool_best = {"source": "tool:trivy", "category": "sqli",
+                     "cvss": {"score": 9.8, "vector": "TOOL"}}
+        agent_other = {"source": "agent:panel", "category": "xss",
+                       "cvss": {"score": 1.0, "vector": "AGENT"},
+                       "exploit_scenario": "agent scenario"}
+        syn._reinforce_merge(tool_best, agent_other)
+        self.assertEqual(tool_best["cvss"]["vector"], "TOOL")
+        self.assertEqual(tool_best["exploit_scenario"], "agent scenario")
+
+    def test_same_category_still_prefers_agent_cvss(self):
+        # Same issue (category match): the richer agent cvss still wins --
+        # preserved behavior (guards the deliberate dedupe contract).
+        tool_best = {"source": "tool:semgrep", "category": "sqli",
+                     "cvss": {"score": 5.0, "vector": "TOOL"}}
+        agent_other = {"source": "agent:panel", "category": "sqli",
+                       "cvss": {"score": 8.5, "vector": "AGENT"}}
+        syn._reinforce_merge(tool_best, agent_other)
+        self.assertEqual(tool_best["cvss"]["vector"], "AGENT")
+
+
 class TestGrading(unittest.TestCase):
     def _f(self, sev):
         return {"severity": sev}
