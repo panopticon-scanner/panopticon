@@ -873,6 +873,17 @@ class TestGlobSemantics(unittest.TestCase):
         self.assertTrue(self._m("skill/scripts/tools/x.py", ["skill/scripts/**"]))
         self.assertTrue(self._m("a/b/c/d.py", ["a/**/d.py"]))
 
+    def test_adjacent_double_stars_collapse_no_redos(self):
+        # A repo-supplied groups.yml `match:` pattern with many adjacent `**/`
+        # segments used to compile to sequential `(?:[^/]+/)*` quantifiers --
+        # the catastrophic-backtracking ReDoS shape that could hang discovery.
+        # Adjacent runs now fold to one; matching stays correct.
+        rx = orch._glob_to_re("**/" * 25 + "x")
+        self.assertLessEqual(rx.pattern.count("(?:[^/]+/)*"), 1)
+        self.assertTrue(rx.match("a/b/c/x"))
+        self.assertFalse(rx.match("a/b/c/y"))
+        self.assertTrue(self._m("a/b/x", ["**/" * 25 + "x"]))
+
     def test_no_slash_matches_basename_at_any_depth(self):
         self.assertTrue(self._m("README.md", ["*.md"]))
         self.assertTrue(self._m("docs/deep/notes.md", ["*.md"]))

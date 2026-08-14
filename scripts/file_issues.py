@@ -63,7 +63,7 @@ def labels_for(f, rejected=False):
 def title_for(f):
     loc = f.get("location") or {}
     fname = (loc.get("file") or "").split("/")[-1]
-    t = f.get("short_title") or f.get("title") or "(untitled)"
+    t = defang(f.get("short_title") or f.get("title") or "(untitled)")
     suffix = " (%s)" % fname if fname else ""
     room = 240 - len(suffix)
     if len(t) > room:
@@ -82,7 +82,7 @@ def body_for(f, rejected=False, report=REPORT, report_url=REPORT_URL,
                  "trail, not as work to do. Severity below is the *claimed* "
                  "severity — panopticon never rewrites a severity on rejection, "
                  "so that a wrong rejection stays visible.\n")
-    where = loc.get("file") or "(no file)"
+    where = defang(loc.get("file") or "(no file)").replace("`", "'")
     if loc.get("line_start"):
         where += ":%s" % loc["line_start"]
     L.append("**Location:** `%s`" % where)
@@ -90,7 +90,8 @@ def body_for(f, rejected=False, report=REPORT, report_url=REPORT_URL,
         L.append("**Occurrences:** %d loci of this rule in this file "
                  "(primary above)" % f["occurrences"])
         for a in (f.get("additional_loci") or []):
-            L.append("  - `%s:%s`" % (a.get("file"), a.get("line_start")))
+            L.append("  - `%s:%s`" % (defang(a.get("file") or "").replace("`", "'"),
+                                      a.get("line_start")))
     L.append("**Severity (impact if true):** %s   **Evidence:** `%s`   "
              "**Confidence:** %s" % (f.get("severity"), ev.get("status"),
                                      f.get("confidence")))
@@ -104,17 +105,17 @@ def body_for(f, rejected=False, report=REPORT, report_url=REPORT_URL,
             flat.append(c if isinstance(c, str) else c.get("id", str(c)))
     if flat:
         L.append("**Citations:** %s" % ", ".join(flat))
-    L.append("\n## What was found\n\n%s" % (f.get("description") or "(none)"))
+    L.append("\n## What was found\n\n%s" % defang(f.get("description") or "(none)"))
     if f.get("impact"):
-        L.append("\n## Impact\n\n%s" % f["impact"])
+        L.append("\n## Impact\n\n%s" % defang(f["impact"]))
     if f.get("exploit_scenario"):
-        L.append("\n## Exploit scenario\n\n%s" % f["exploit_scenario"])
+        L.append("\n## Exploit scenario\n\n%s" % defang(f["exploit_scenario"]))
     if f.get("remediation"):
-        L.append("\n## Suggested remediation\n\n%s" % f["remediation"])
+        L.append("\n## Suggested remediation\n\n%s" % defang(f["remediation"]))
     reasoning = ev.get("reasoning") or prov.get("confirmation_reasoning")
     if reasoning and str(reasoning) != str(f.get("category")):
         verb = "Advisor verdict" if not rejected else "Advisor rejection"
-        L.append("\n## %s\n\n%s" % (verb, reasoning))
+        L.append("\n## %s\n\n%s" % (verb, defang(reasoning)))
     if ev.get("verified_by"):
         L.append("\n**Corroborating panels:** %s" % ", ".join(
             str(x) for x in ev["verified_by"]))
@@ -178,6 +179,29 @@ def scrub(text):
     scrubbed = str(text).replace(root, "")
     return re.sub(r"(?<![\w/-])%s(?![\w/-])" % re.escape(root.rstrip("/")),
                   "the repo root", scrubbed)
+
+
+_MENTION_RE = re.compile(r"@(?=[A-Za-z0-9._-])")
+_ISSUEREF_RE = re.compile(r"(?<![\w])#(?=\d)")
+
+
+def defang(text):
+    """Make attacker-influenced finding text inert in a PUBLIC GitHub issue.
+
+    Finding fields quote scanned-repo content -- paths, code, even embedded
+    prompt-injection payloads -- and body_for()/title_for() drop them into
+    Markdown that an authenticated bot posts to public issues. Break the
+    constructs GitHub *activates* -- @mentions (auto-ping / social-engineering),
+    `#NNN` issue autolinks (cross-issue spam), and `[text](url)` / `![alt](url)`
+    links (phishing) -- with a zero-width space, and strip C0/C1 control bytes
+    (terminal escapes reaching anyone reading via gh/CLI). Text stays readable;
+    the active syntax no longer fires. This is the security defang, distinct
+    from scrub() (which only strips local paths for privacy)."""
+    s = str(text or "")
+    s = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]", "", s)  # ctrl; keep \t \n
+    s = _MENTION_RE.sub("@​", s)
+    s = _ISSUEREF_RE.sub("#​", s)
+    return s.replace("](", "]​(")
 
 
 LEDGER = ".panopticon/filed-issues.json"
