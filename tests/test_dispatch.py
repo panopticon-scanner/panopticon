@@ -112,6 +112,23 @@ class TestDispatchPlan(unittest.TestCase):
         self.assertEqual(roles.count("panel_review"), 1)
         self.assertEqual(roles.count("lens_sweep"), 3)
 
+    def test_every_entry_carries_security_mode(self):
+        # Regression (meta.cost fan-out drop-out): build_plan stamped
+        # security_mode on lens_sweep entries but omitted it from panel_review
+        # entries. plan_contract.plan_issues requires it on EVERY entry, so any
+        # plan containing a panel was flagged invalid and excluded from the
+        # meta.cost dispatch ledger -- silently dropping every fan-out row on
+        # every run.
+        profile = self._profile("deep")
+        profile["security_mode"] = "redteam"
+        plan = dispatch.build_plan(profile, host="kimi")
+        self.assertTrue(any(e["role"] == "panel_review" for e in plan),
+                        "expected a panel_review entry")
+        for e in plan:
+            self.assertEqual(
+                e.get("security_mode"), "redteam",
+                "%s entry must carry security_mode" % e["role"])
+
     def test_shallow_emits_only_panel_review(self):
         profile = {
             "group": "g1",
