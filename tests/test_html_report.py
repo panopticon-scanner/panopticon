@@ -126,6 +126,22 @@ class TestHtmlReport(unittest.TestCase):
         self.assertIn("User input used directly in query.", out)
         self.assertIn("Use parameterized queries.", out)
 
+    def test_render_card_tolerates_malformed_cvss_and_epss(self):
+        # Agent-supplied cvss/epss with the wrong type must not crash the card
+        # renderer (run-4 self-scan C12: type confusion). A string cvss is
+        # skipped; a mixed epss list still uses its valid dict element.
+        finding = {
+            "id": "X-1", "title": "t", "severity": "HIGH", "confidence": "POSSIBLE",
+            "panel": "security", "category": "general", "references": [],
+            "location": {"file": "a.py", "line_start": 1}, "description": "d",
+            "cvss": "9.8",  # string, not a dict
+            "citations": {"epss": ["not-a-dict", {"score": 0.4}]},
+        }
+        out = hr._render_card(finding)  # must not raise
+        self.assertIn("X-1", out)
+        self.assertNotIn("<dt>CVSS</dt>", out)
+        self.assertIn("EPSS:0.40", out)
+
     def test_citation_quality_cannot_inject_markup(self):
         report = _minimal_report()
         payload = "none'><img src=x onerror=alert(1)><span class='"

@@ -604,7 +604,7 @@ def _render_card(finding, delta=None):
         details.append(f"<dt>References</dt><dd><ul>{links}</ul></dd>")
 
     cvss = finding.get("cvss")
-    if cvss:
+    if isinstance(cvss, dict):
         details.append(f"<dt>CVSS</dt><dd>{_escape(cvss.get('score', ''))} {_escape(cvss.get('vector', ''))}</dd>")
     if finding.get("exploit_scenario"):
         details.append(f"<dt>Exploit scenario</dt><dd>{_escape(finding['exploit_scenario'])}</dd>")
@@ -622,9 +622,10 @@ def _render_card(finding, delta=None):
     for cve in citations.get("cve") or []:
         chips.append(f"<span class='chip'>{_escape(cve)}</span>")
     epss_list = citations.get("epss")
-    if isinstance(epss_list, list) and epss_list:
-        max_score = max(e.get("score", 0.0) for e in epss_list)
-        chips.append(f"<span class='chip'>EPSS:{max_score:.2f}</span>")
+    if isinstance(epss_list, list):
+        scores = [e.get("score", 0.0) for e in epss_list if isinstance(e, dict)]
+        if scores:
+            chips.append(f"<span class='chip'>EPSS:{max(scores):.2f}</span>")
     if chips:
         details.append(f"<dt>Citations</dt><dd>{' '.join(chips)}</dd>")
 

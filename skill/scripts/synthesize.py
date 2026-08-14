@@ -247,8 +247,14 @@ def _reinforce_merge(best, other):
     exploit_scenario are preferred when either finding has them; other text
     fields are filled only if best lacks them; citations are merged rather
     than overwritten."""
-    # Prefer agent-authored cvss/exploit_scenario.
-    if not _is_tool_sourced(other):
+    # Prefer agent-authored cvss/exploit_scenario ONLY when best and other are
+    # the SAME issue (category match). _reinforce_merge fires for any same-LOCUS
+    # tool+agent pair, so without this gate an agent finding about issue X could
+    # clobber a tool survivor's authoritative cvss/exploit_scenario for a
+    # DIFFERENT issue Y at the same line (run-4 self-scan C20). Missing fields
+    # are still filled from `other` by the fall-back loop below.
+    same_issue = str(best.get("category")) == str(other.get("category"))
+    if not _is_tool_sourced(other) and same_issue:
         for field in ("cvss", "exploit_scenario"):
             if other.get(field):
                 best[field] = other[field]

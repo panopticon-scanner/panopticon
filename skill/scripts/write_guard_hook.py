@@ -108,8 +108,11 @@ _HOOK_CMD = 'python3 "%s"' % os.path.abspath(__file__)
 # import-time drift-lock: if _WRITE_TOOLS and _MATCHER diverge, the module fails
 # to load rather than silently registering the wrong set of tools (#680).
 _MATCHER = "Write|Edit|NotebookEdit"
-assert set(_MATCHER.split("|")) == _WRITE_TOOLS, (  # pragma: no cover
-    "_MATCHER and _WRITE_TOOLS have drifted — update _MATCHER to match _WRITE_TOOLS")
+# Explicit raise, not assert: `python -O` strips asserts, which would silently
+# disable this drift-lock in exactly the optimized runtime a hook may run under.
+if set(_MATCHER.split("|")) != _WRITE_TOOLS:  # (#680)
+    raise RuntimeError(
+        "_MATCHER and _WRITE_TOOLS have drifted — update _MATCHER to match _WRITE_TOOLS")
 _HOOK_ENTRY = {"matcher": _MATCHER,
                "hooks": [{"type": "command", "command": _HOOK_CMD}]}
 

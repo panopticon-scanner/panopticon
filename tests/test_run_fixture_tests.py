@@ -144,7 +144,7 @@ class TestCheckFixturesInjection(unittest.TestCase):
     def _capture_cmd(self, fixtures):
         captured = {}
 
-        def fake_run(cmd, capture_output=False, text=False):
+        def fake_run(cmd, capture_output=False, text=False, timeout=None):
             captured["cmd"] = cmd
             # Echo back PRESENT for each positional path (args after the $0 "sh")
             paths = cmd[cmd.index("sh", 5) + 1:]
@@ -178,7 +178,7 @@ class TestCheckFixturesInjection(unittest.TestCase):
             self.assertEqual(present, ["x"])
 
     def test_present_and_missing_map_back_by_name(self):
-        def fake_run(cmd, capture_output=False, text=False):
+        def fake_run(cmd, capture_output=False, text=False, timeout=None):
             return mock.Mock(stdout="PRESENT:/opt/a\nMISSING:/opt/b",
                              returncode=0)
         fixtures = [{"name": "A", "path": "/opt/a", "baked": True},
