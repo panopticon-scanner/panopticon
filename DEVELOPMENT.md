@@ -177,7 +177,13 @@ History:
   verify queue, plus a `tokens` slot (null until a host exposes usage).
   Additive and typed in report-schema. This is the before-picture every 5.0
   economics exit criterion measures against; run-4 (2026-08-15, untouched
-  4.3.x) records baseline #1. Freeze audit note: the roadmap review's three
+  4.3.x) records baseline #1. **Ledger fix (2026-08-14, surfaced BY run-4's
+  self-scan):** `dispatch.build_plan` stamped `security_mode` on `lens_sweep`
+  entries but omitted it from `panel_review` entries, so `plan_contract`
+  flagged every plan with a panel as invalid and synthesize excluded it from
+  cost derivation — silently dropping ALL fan-out rows (`panel_review` +
+  `lens_sweep`) from `meta.cost` on every run. Corrected so the ledger counts
+  the full fan-out. Freeze audit note: the roadmap review's three
   "run-3 confirmed HIGH" freeze items were all already resolved on main
   (README --mode/--target syntax gone, FindSecBugs jar SHA-256-pinned per
   #539, #513 CI posture ruled intentional in security.yml) — the freeze
