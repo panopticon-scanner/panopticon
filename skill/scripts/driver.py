@@ -20,9 +20,12 @@ import yaml
 import scripts.coverage_model as coverage_model
 import scripts.diff_map as diff_map
 import scripts.dispatch as dispatch
+import scripts.evidence as evidence
 import scripts.groups_schema as groups_schema
 import scripts.ocrdb as ocrdb
 import scripts.run_manifest as run_manifest
+import scripts.score_gate as score_gate
+import scripts.synthesize as synthesize
 
 CHECKPOINT_KINDS = ("scout", "review", "verify")
 
@@ -368,6 +371,63 @@ def _cell_entry(review_root, manifest, group, domain, files, tests, host, bundle
             "enforced": enforced, "model": None, "prompt": prompt, "out_file": out_file}
 
 
+def _load_cell_findings(review_root, manifest, group, domain):
+    """The cell's reviewer findings, normalized + id-assigned exactly as
+    synthesize.load_findings does, or None when the cell file is absent/mismatched.
+    Ids match synthesize's so the advisor's finding_id echo binds at synthesis."""
+    if not _cell_done(review_root, manifest, group, domain):
+        return None
+    data = _load_json(_pano(review_root, "findings-%s-%s.json" % (group, domain)))
+    out = []
+    for f in data.get("findings") or []:
+        if not isinstance(f, dict):
+            continue
+        nf = synthesize.normalize_finding(dict(f))
+        if not synthesize.ID_RE.match(nf.get("id") or ""):
+            nf["id"] = evidence.matrix_finding_id(nf)
+        out.append(nf)
+    return out
+
+
+def _verify_out_file(review_root, group, domain, stage):
+    suffix = "-backup" if stage == "backup" else ""
+    return os.path.abspath(_pano(review_root, "verdicts",
+                                 "verdicts-%s-%s%s.json" % (group, domain, suffix)))
+
+
+def _verify_cell_done(review_root, manifest, group, domain, stage):
+    data = _load_json(_verify_out_file(review_root, group, domain, stage))
+    if not (isinstance(data, dict) and isinstance(data.get("verdicts"), list)):
+        return False
+    meta = data.get("_panopticon") or {}
+    return (meta.get("run_id") == manifest.get("run_id")
+            and meta.get("domain") == domain and meta.get("group") == group
+            and meta.get("stage", "primary") == stage)
+
+
+def _render_findings(cell):
+    """The cell's claims as a compact JSON array the advisor adjudicates."""
+    slim = [{"id": f["id"], "code": f.get("code"), "severity": f["severity"],
+             "title": f["title"], "category": f.get("category"),
+             "location": f.get("location"), "description": f.get("description", "")}
+            for f in cell]
+    return json.dumps(slim, indent=2)
+
+
+def _verify_entry(review_root, manifest, group, domain, files, cell, host, bundle, stage):
+    file_list = "\n".join("- " + f for f in files) or "- (no files)"
+    out_file = _verify_out_file(review_root, group, domain, stage)
+    prompt = dispatch.render_prompt("domain-advisor.md", {
+        "domain": domain, "group": group, "file_list": file_list,
+        "findings": _render_findings(cell), "menu": _render_menu(bundle, domain),
+        "run_id": manifest["run_id"], "stage": stage}, host)
+    enforced = host == "claude"
+    return {"id": "verify-%s-%s-%s" % (group, domain, stage),
+            "agent": dispatch.registered_agent_name("domain-advisor.md") if enforced else None,
+            "enforced": enforced, "model": None, "write_mode": "return",
+            "prompt": prompt, "out_file": out_file}
+
+
 def review_done(review_root, manifest):
     groups = _discovered_groups(review_root)
     if not groups:
@@ -398,13 +458,52 @@ def review_execute(review_root, manifest):
 
 def verify_execute(review_root, manifest):
     os.makedirs(_pano(review_root, "verdicts"), exist_ok=True)
-    _write_json(_pano(review_root, "verify-noop.json"),
-                {"noop": True, "run_id": manifest["run_id"],
-                 "note": "P3 skeleton: verify is a wired no-op; P5 wires advisor+score_gate"})
-    return PhaseResult(kind="advanced", message="verify: no-op (P5 wires advisor)")
+    host = manifest.get("host", "claude")
+    bundle = ocrdb.load_bundle()
+    # PRIMARY round: one advisor per engaged (>= F_p), not-yet-verified cell,
+    # streamed per group (first group with pending work emits, like review_execute).
+    for group, files in _discovered_groups(review_root):
+        pending = []
+        for domain in _effective_domains(review_root, group):
+            cell = _load_cell_findings(review_root, manifest, group, domain)
+            if cell is None or not score_gate.should_engage_primary(cell):
+                continue   # unreviewed, or below-gate: unverified + disclosed at synth
+            if _verify_cell_done(review_root, manifest, group, domain, "primary"):
+                continue
+            pending.append((domain, cell))
+        if pending:
+            entries = [_verify_entry(review_root, manifest, group, d, files, c,
+                                     host, bundle, "primary") for d, c in pending]
+            req = write_dispatch_request(review_root, manifest["run_id"], "verify",
+                                         group, entries)
+            return PhaseResult(kind="checkpoint", checkpoint="verify", group=group,
+                               dispatch_request=req,
+                               message="verify: %d primary advisor(s) for group %s"
+                               % (len(entries), group))
+    # BACKUP round (Task 4 fills this branch).
+    backup = _verify_backup_execute(review_root, manifest, host, bundle)
+    if backup is not None:
+        return backup
+    return PhaseResult(kind="advanced", message="verify: all cells verified")
 
 
-verify_done = _noop_done("verify-noop.json")
+def verify_done(review_root, manifest):
+    for group, _files in _discovered_groups(review_root):
+        for domain in _effective_domains(review_root, group):
+            cell = _load_cell_findings(review_root, manifest, group, domain)
+            if cell is None or not score_gate.should_engage_primary(cell):
+                continue
+            if not _verify_cell_done(review_root, manifest, group, domain, "primary"):
+                return False
+    return _verify_backup_done(review_root, manifest)
+
+
+def _verify_backup_execute(review_root, manifest, host, bundle):
+    return None   # Task 4
+
+
+def _verify_backup_done(review_root, manifest):
+    return True   # Task 4
 
 
 def synthesize_done(review_root, manifest):
@@ -509,7 +608,7 @@ def validate_execute(review_root, manifest, runner=subprocess.run):
 _DEFAULTS = {"host": "claude", "security": "standard"}
 
 _RESET_GLOBS = ("groups.json", "coverage-*.json", "scout-*.json", "tools-ran.json",
-                "verify-noop.json", "validate.json",
+                "validate.json",
                 "report.json", "dispatch-request.json", "tree-baseline.txt",
                 "verify-queue.json", "findings-*.json")
 
