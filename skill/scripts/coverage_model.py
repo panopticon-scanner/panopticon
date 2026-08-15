@@ -12,6 +12,9 @@ def effective_panels(floor, scout_added, exclude):
     """
     floor, scout_added, exclude = set(floor), set(scout_added), set(exclude)
     effective = (floor | scout_added) - exclude
+    # NB: "floor" is the DECLARED floor (not netted against exclude); `effective`
+    # is what actually runs. In a validation-forbidden floor∩exclude overlap a
+    # domain can appear in both "floor" and "excluded" — the loudest disclosure.
     disclosure = {
         "floor": sorted(floor),
         "scout_added": sorted(scout_added - exclude),

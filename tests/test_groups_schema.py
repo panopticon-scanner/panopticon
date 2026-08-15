@@ -49,3 +49,8 @@ def test_non_list_tests_is_error():
     groups, errors = gs.parse_groups({"groups": {"G": {"match": ["a/**"], "tests": "tests/x"}}})
     assert any("tests" in e and "list" in e for e in errors)
     assert groups["G"]["tests"] == []
+
+def test_non_dict_group_value_is_error_not_crash():
+    groups, errors = gs.parse_groups({"groups": {"G": "src/checkout/**"}})
+    assert any("mapping" in e for e in errors)
+    assert groups["G"]["match"] == []   # normalized to all-defaults, no raise

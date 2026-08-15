@@ -27,7 +27,11 @@ def parse_groups(doc):
     """Return (groups, errors). `groups` maps name -> normalized group dict."""
     groups, errors = {}, []
     for name, raw in ((doc or {}).get("groups") or {}).items():
-        raw = raw or {}
+        if raw is None:
+            raw = {}
+        elif not isinstance(raw, dict):
+            errors.append(f"group {name}: definition must be a mapping")
+            raw = {}
         raw_match = raw.get("match")
         if not isinstance(raw_match, list) or not raw_match:
             errors.append(f"group {name}: match must be a non-empty list")

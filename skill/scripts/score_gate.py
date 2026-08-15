@@ -31,7 +31,11 @@ def finding_score(finding):
     """
     sev = SEVERITY_WEIGHT.get(finding.get("severity"), 0)
     conf = CONFIDENCE_MULT.get(finding.get("confidence"), _DEFAULT_CONF)
-    status = (finding.get("evidence") or {}).get("status", "unverified")
+    # evidence may be absent (-> treat as {}) or, defensively, a non-dict;
+    # a missing/unknown status and a non-dict evidence both resolve to the
+    # unverified factor (1.0) via EVIDENCE_FACTOR.get(..., 1.0) below.
+    evidence = finding.get("evidence")
+    status = evidence.get("status", "unverified") if isinstance(evidence, dict) else "unverified"
     ev = EVIDENCE_FACTOR.get(status, 1.0)
     return round(sev * conf * ev, 6)
 
