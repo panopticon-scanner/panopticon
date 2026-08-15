@@ -442,13 +442,19 @@ def match_verdict(entry, verdicts, run_id=None):
 
 def load_verdict_bundles(verdicts_dir):
     """Load per-cell verdict BUNDLES ({"verdicts": [...], "_panopticon": {...}})
-    into a finding_id -> verdict map, applying backup-wins on stage collision.
+    into a finding_id -> list of candidate verdicts map.
 
     A single-verdict file (top-level "verdict", the legacy queue_id flow) is NOT
     a bundle and is ignored here (handled by load_verdicts_detailed). Tolerant:
     unreadable/unparseable files land in `unloadable`, never raise. Each flattened
     verdict inherits the bundle's `_panopticon.run_id` and `stage` when its own are
     absent, so match_verdict_by_id can enforce the run_id.
+
+    Deliberately does NOT collapse multiple candidates for the same finding_id
+    at load time -- backup-preference and run_id filtering both belong in
+    match_verdict_by_id, where the caller's run_id is known. Collapsing here
+    (e.g. backup-wins on stage alone) let a stale cross-run backup evict a
+    valid same-run primary before run_id was ever consulted.
     """
     by_fid = {}
     unloadable = []
@@ -466,7 +472,9 @@ def load_verdict_bundles(verdicts_dir):
             continue
         if not isinstance(data, dict) or not isinstance(data.get("verdicts"), list):
             continue   # not a bundle
-        pano = data.get("_panopticon") or {}
+        pano = data.get("_panopticon")
+        if not isinstance(pano, dict):
+            pano = {}
         run_id = pano.get("run_id")
         stage_default = pano.get("stage") or "primary"
         for raw in data["verdicts"]:
@@ -477,28 +485,30 @@ def load_verdict_bundles(verdicts_dir):
             v = dict(raw)
             v.setdefault("run_id", run_id)
             v.setdefault("stage", stage_default)
-            fid = str(v["finding_id"])
-            prev = by_fid.get(fid)
-            if prev is None or (v.get("stage") == "backup"
-                                and prev.get("stage") != "backup"):
-                by_fid[fid] = v
+            by_fid.setdefault(str(v["finding_id"]), []).append(v)
     return by_fid, unloadable
 
 
 def match_verdict_by_id(finding, by_fid, run_id=None):
-    """Match a bundle verdict to a finding by its assigned `id`, enforcing run_id.
-    The finding-id analogue of match_verdict (which keys on queue_id + echo)."""
+    """Match a bundle verdict to a finding by its assigned `id`. by_fid maps a
+    finding_id to a LIST of candidate verdicts (primary and/or backup, possibly
+    across runs). When run_id is given, only same-run candidates are eligible
+    (so a stale cross-run verdict can never evict a valid one); among the
+    eligible, a backup-stage verdict wins over a primary."""
     fid = finding.get("id")
     if not fid:
         return None
-    v = by_fid.get(str(fid))
-    if v is None:
+    candidates = by_fid.get(str(fid))
+    if not candidates:
         return None
-    if run_id is not None and v.get("run_id") != run_id:
-        print("evidence: bundle verdict for %s has run_id %r, expected %r; ignoring"
-              % (fid, v.get("run_id"), run_id), file=sys.stderr)
-        return None
-    return v
+    if run_id is not None:
+        candidates = [c for c in candidates if c.get("run_id") == run_id]
+        if not candidates:
+            return None
+    for c in candidates:
+        if c.get("stage") == "backup":
+            return c
+    return candidates[0]
 
 
 def apply_verdict(finding, verdict):

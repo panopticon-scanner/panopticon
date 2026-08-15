@@ -1252,12 +1252,19 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
     # findings gate. Stderr is not what CI consumes, so the drop counts belong
     # in the artifact: supplied - matched - unknown is the number of verdicts
     # that named a queued finding but failed match_verdict's finding_id echo.
+    # Includes bundle verdicts (by_fid) alongside queue_id-keyed `verdicts` --
+    # under the P5 bundle flow `verdicts` is often empty while by_fid carries
+    # the actual answers, and matched_n already counts bundle matches, so
+    # leaving bundle verdicts out of "supplied" made the invariant go negative.
+    _bundle_supplied = sum(len(vs) for vs in by_fid.values())
+    _finding_ids = {f.get("id") for f in findings if f.get("id")}
+    _bundle_unknown = sum(len(vs) for fid, vs in by_fid.items() if fid not in _finding_ids)
     verdict_stats = {
         "queued": len(queue),
         "cut": cut,
-        "supplied": len(verdicts),
+        "supplied": len(verdicts) + _bundle_supplied,
         "matched": matched_n,
-        "unknown": len(unknown),
+        "unknown": len(unknown) + _bundle_unknown,
         # Verdict files present on disk but un-loadable (corrupt/invalid). A
         # non-zero count means verification evidence was lost, distinct from a
         # finding that never had a verdict generated (#938).

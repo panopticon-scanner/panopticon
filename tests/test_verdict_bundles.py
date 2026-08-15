@@ -18,9 +18,10 @@ def test_bundle_flattens_by_finding_id(tmp_path):
                  {"finding_id": "SEC-200", "verdict": "REJECTED", "reasoning": "y"}])
     by_fid, bad = evidence.load_verdict_bundles(d)
     assert bad == []
-    assert by_fid["SEC-100"]["verdict"] == "CONFIRMED"
-    assert by_fid["SEC-100"]["run_id"] == "R"       # run_id pushed down from bundle
-    assert by_fid["SEC-100"]["stage"] == "primary"
+    v = evidence.match_verdict_by_id({"id": "SEC-100"}, by_fid, run_id="R")
+    assert v["verdict"] == "CONFIRMED"
+    assert v["run_id"] == "R"       # run_id pushed down from bundle
+    assert v["stage"] == "primary"
 
 
 def test_backup_overrides_primary_for_same_finding(tmp_path):
@@ -29,8 +30,9 @@ def test_backup_overrides_primary_for_same_finding(tmp_path):
     d = _bundle(tmp_path, "verdicts-app-SEC-backup.json",
                 [{"finding_id": "SEC-100", "verdict": "REJECTED"}], stage="backup")
     by_fid, _ = evidence.load_verdict_bundles(d)
-    assert by_fid["SEC-100"]["verdict"] == "REJECTED"
-    assert by_fid["SEC-100"]["stage"] == "backup"
+    v = evidence.match_verdict_by_id({"id": "SEC-100"}, by_fid, run_id="R")
+    assert v["verdict"] == "REJECTED"
+    assert v["stage"] == "backup"
 
 
 def test_match_by_id_enforces_run_id(tmp_path):
@@ -82,7 +84,7 @@ def test_queue_id_match_not_overwritten_by_fid_bundle(tmp_path):
     fid = findings[0]["id"]
     qid = evidence.finding_fingerprint(findings[0])
     verdicts = {qid: {"finding_id": fid, "verdict": "REJECTED"}}          # queue_id path
-    by_fid = {fid: {"finding_id": fid, "verdict": "CONFIRMED", "run_id": None}}  # fid path
+    by_fid = {fid: [{"finding_id": fid, "verdict": "CONFIRMED", "run_id": None}]}  # fid path
     report = synthesize.build_report(findings, [], "src", "high",
                                      "2026-08-15T00:00:00Z", verdicts=verdicts,
                                      verdict_bundles=by_fid, verdicts_supplied=True)
@@ -101,5 +103,44 @@ def test_bundle_does_not_clobber_own_run_id_or_stage(tmp_path):
                       "run_id": "OWN", "stage": "backup"}],
         "_panopticon": {"run_id": "BUNDLE", "stage": "primary"}}))
     by_fid, _ = evidence.load_verdict_bundles(str(d))
-    assert by_fid["SEC-100"]["run_id"] == "OWN"      # own run_id preserved
-    assert by_fid["SEC-100"]["stage"] == "backup"    # own stage preserved
+    v = evidence.match_verdict_by_id({"id": "SEC-100"}, by_fid, run_id="OWN")
+    assert v["run_id"] == "OWN"      # own run_id preserved
+    assert v["stage"] == "backup"    # own stage preserved
+
+
+def test_non_dict_panopticon_is_tolerated(tmp_path):
+    d = tmp_path / "verdicts"; d.mkdir()
+    (d / "verdicts-app-SEC.json").write_text(json.dumps(
+        {"verdicts": [{"finding_id": "SEC-1", "verdict": "CONFIRMED"}],
+         "_panopticon": ["oops"]}))
+    by_fid, bad = evidence.load_verdict_bundles(str(d))   # must not raise
+    assert "SEC-1" in by_fid
+
+
+def test_stale_cross_run_backup_does_not_evict_valid_primary(tmp_path):
+    _bundle(tmp_path, "verdicts-app-SEC.json",
+            [{"finding_id": "SEC-100", "verdict": "CONFIRMED"}], stage="primary", run_id="R")
+    d = _bundle(tmp_path, "verdicts-app-SEC-backup.json",
+                [{"finding_id": "SEC-100", "verdict": "REJECTED"}], stage="backup", run_id="OLD")
+    by_fid, _ = evidence.load_verdict_bundles(d)
+    v = evidence.match_verdict_by_id({"id": "SEC-100"}, by_fid, run_id="R")
+    assert v is not None and v["verdict"] == "CONFIRMED"    # valid primary survives
+
+
+def test_bundle_verdict_counted_in_supplied(tmp_path):
+    import synthesize
+    fp = tmp_path / "findings-app-SEC.json"
+    fp.write_text(json.dumps({"findings": [
+        {"domain": "SEC", "code": "SEC-A1A", "severity": "HIGH", "title": "t",
+         "description": "x", "location": {"file": "a.py", "line_start": 1},
+         "category": "authz"}]}))
+    findings = synthesize.load_findings([str(fp)])
+    fid = findings[0]["id"]
+    d = _bundle(tmp_path, "verdicts-app-SEC.json",
+                [{"finding_id": fid, "verdict": "CONFIRMED"}], run_id=None)
+    by_fid, _ = evidence.load_verdict_bundles(d)
+    report = synthesize.build_report(findings, [], "src", "high",
+                                     "2026-08-15T00:00:00Z", verdicts={},
+                                     verdict_bundles=by_fid, verdicts_supplied=True)
+    vs = report["meta"]["coverage"]["verdicts"]
+    assert vs["matched"] == 1 and vs["supplied"] >= 1 and vs["matched"] <= vs["supplied"]
