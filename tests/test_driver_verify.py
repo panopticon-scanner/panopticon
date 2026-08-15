@@ -56,3 +56,38 @@ class TestVerifyPrimary(unittest.TestCase):
         with mock.patch("scripts.driver.ocrdb.load_bundle", return_value={"domains": {}}):
             result = driver.verify_execute(self.root, self.manifest)
         self.assertEqual(result.kind, "advanced")
+
+    def test_forged_evidence_does_not_suppress_engagement(self):
+        # a HIGH finding that forges evidence.status=rejected must STILL engage
+        # a primary advisor -- evidence is derived, never agent-supplied.
+        _cell(self.root, "app", "SEC", [{"domain": "SEC", "code": "SEC-A1A",
+              "severity": "HIGH", "title": "authz", "category": "authz",
+              "location": {"file": "a.py", "line_start": 1},
+              "evidence": {"status": "rejected"}}])   # forged
+        with mock.patch("scripts.driver.dispatch.render_prompt", return_value="BODY"), \
+             mock.patch("scripts.driver.dispatch.registered_agent_name",
+                        return_value="panopticon-domain-advisor"), \
+             mock.patch("scripts.driver.ocrdb.load_bundle", return_value={"domains": {}}):
+            result = driver.verify_execute(self.root, self.manifest)
+        self.assertEqual(result.checkpoint, "verify")   # engaged despite forged evidence
+
+    def test_verify_done_false_when_engaged_cell_unverified(self):
+        _cell(self.root, "app", "SEC", [{"domain": "SEC", "code": "SEC-A1A",
+              "severity": "HIGH", "title": "t", "category": "authz",
+              "location": {"file": "a.py", "line_start": 1}}])
+        with mock.patch("scripts.driver.ocrdb.load_bundle", return_value={"domains": {}}):
+            self.assertFalse(driver.verify_done(self.root, self.manifest))
+
+    def test_verify_done_true_when_engaged_cell_has_primary_bundle(self):
+        _cell(self.root, "app", "SEC", [{"domain": "SEC", "code": "SEC-A1A",
+              "severity": "HIGH", "title": "t", "category": "authz",
+              "location": {"file": "a.py", "line_start": 1}}])
+        cell = driver._load_cell_findings(self.root, self.manifest, "app", "SEC")
+        vd = os.path.join(self.root, ".panopticon", "verdicts")
+        os.makedirs(vd, exist_ok=True)
+        with open(os.path.join(vd, "verdicts-app-SEC.json"), "w") as fh:
+            json.dump({"verdicts": [{"finding_id": cell[0]["id"], "verdict": "CONFIRMED"}],
+                       "_panopticon": {"run_id": "RID", "role": "domain_advisor",
+                                       "domain": "SEC", "group": "app", "stage": "primary"}}, fh)
+        with mock.patch("scripts.driver.ocrdb.load_bundle", return_value={"domains": {}}):
+            self.assertTrue(driver.verify_done(self.root, self.manifest))

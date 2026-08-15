@@ -329,13 +329,6 @@ def tools_execute(review_root, manifest):
                                               else "SKIPPED — " + note))
 
 
-def _noop_done(name):
-    def done(review_root, manifest):
-        data = _load_json(_pano(review_root, name))
-        return isinstance(data, dict) and data.get("run_id") == manifest.get("run_id")
-    return done
-
-
 def _effective_domains(review_root, group):
     cov = _load_json(_pano(review_root, "coverage-%s.json" % group)) or {}
     return list(cov.get("effective") or [])
@@ -374,7 +367,13 @@ def _cell_entry(review_root, manifest, group, domain, files, tests, host, bundle
 def _load_cell_findings(review_root, manifest, group, domain):
     """The cell's reviewer findings, normalized + id-assigned exactly as
     synthesize.load_findings does, or None when the cell file is absent/mismatched.
-    Ids match synthesize's so the advisor's finding_id echo binds at synthesis."""
+    Ids match synthesize's so the advisor's finding_id echo binds at synthesis.
+
+    Strips synthesize.AGENT_FORBIDDEN_FIELDS (source/reinforced/corroborated/
+    corroborated_by/evidence) before normalizing, mirroring synthesize.load_findings:
+    a raw panel finding must never carry a self-asserted `evidence.status` into
+    score_gate.should_engage_primary, or a forged "rejected" (factor 0.0) would
+    let a finding duck the F_p gate entirely."""
     if not _cell_done(review_root, manifest, group, domain):
         return None
     data = _load_json(_pano(review_root, "findings-%s-%s.json" % (group, domain)))
@@ -382,7 +381,10 @@ def _load_cell_findings(review_root, manifest, group, domain):
     for f in data.get("findings") or []:
         if not isinstance(f, dict):
             continue
-        nf = synthesize.normalize_finding(dict(f))
+        raw = dict(f)
+        for k in synthesize.AGENT_FORBIDDEN_FIELDS:
+            raw.pop(k, None)
+        nf = synthesize.normalize_finding(raw)
         if not synthesize.ID_RE.match(nf.get("id") or ""):
             nf["id"] = evidence.matrix_finding_id(nf)
         out.append(nf)

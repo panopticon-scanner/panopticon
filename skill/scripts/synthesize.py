@@ -138,10 +138,19 @@ def normalize_finding(f):
 #     and never resets them to False, so a forged flag on a finding in no such
 #     cluster is never cleared: the author self-certifies cross-panel
 #     verification and jumps the --max-verify cut.
+#   `evidence` (5.0 P5 Slice B, R1): evidence.status is ALWAYS derived by
+#     derive_evidence from a real verdict bundle (or its absence), never
+#     self-asserted by the panel that authored the finding. score_gate reads
+#     evidence.status straight off the finding via EVIDENCE_FACTOR, so a
+#     forged `evidence: {"status": "rejected"}` (factor 0.0) zeroes the
+#     finding's score and lets it duck should_engage_primary/should_summon_
+#     backup entirely -- the matrix's F_p/F_b verification gate itself.
 #
 # Only ingest_tools (tool output), dedupe's real merge branches, and
-# cross_panel_corroboration may set these.
-AGENT_FORBIDDEN_FIELDS = ("source", "reinforced", "corroborated", "corroborated_by")
+# cross_panel_corroboration may set these. `evidence` specifically is set
+# only by derive_evidence, downstream of this strip.
+AGENT_FORBIDDEN_FIELDS = ("source", "reinforced", "corroborated", "corroborated_by",
+                          "evidence")
 
 
 def load_findings(paths):
