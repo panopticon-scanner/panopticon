@@ -435,6 +435,11 @@ def load_catalog(repo):
             import yaml
             data = yaml.safe_load(text) or {}
             raw = data.get("groups") or {}
+            if isinstance(raw, list):
+                print("groups.yml: legacy list form -- normalizing to mapping; "
+                      "re-run --setup to rewrite", file=sys.stderr)
+                raw = {g.get("name"): g for g in raw
+                       if isinstance(g, dict) and g.get("name")}
             out = {}
             for name, body in raw.items():
                 body = body or {}
@@ -898,10 +903,7 @@ def _seed_groups_manifest(repo):
     artifact_dir = plan_contract.artifact_root(repo)
     path = os.path.join(artifact_dir, "groups.yml")
     if os.path.isfile(path):
-        try:
-            names = [g["name"] for g in load_catalog(repo) or []]
-        except Exception:
-            names = []
+        names = list((load_catalog(repo) or {}).keys())
         return path, False, names
     files = discover_repo_files(repo)
     tops = sorted({p.split("/", 1)[0] for p in files
@@ -911,7 +913,7 @@ def _seed_groups_manifest(repo):
              "# gitignore-flavored globs; first matching group wins; edit and commit.",
              "groups:"]
     for t in tops:
-        lines.append("  - name: %s" % t)
+        lines.append("  %s:" % t)
         lines.append("    match:")
         lines.append("      - %s/**" % t)
     with open(path, "w", encoding="utf-8") as fh:

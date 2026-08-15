@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+import textwrap
 import types
 import unittest
 import tempfile
@@ -1336,3 +1337,47 @@ class TestChangedFilesRenameParity(unittest.TestCase):
         self.assertTrue(diff_calls, "no git diff invocation captured")
         for a in diff_calls:
             self.assertIn("--find-renames", a)
+
+
+class TestGroupsFormatReconciliation(unittest.TestCase):
+    """Task 5: groups.yml mapping form is canonical; load_catalog reads a
+    legacy list form (with a one-time notice) so old seeded files still
+    load instead of silently collapsing to {} on raw.items()."""
+
+    def _repo(self):
+        d = tempfile.mkdtemp()
+        os.makedirs(os.path.join(d, ".panopticon"), exist_ok=True)
+        return d
+
+    def test_seed_writes_mapping_form_that_load_catalog_reads(self):
+        d = self._repo()
+        for sub in ("src", "tests"):
+            os.makedirs(os.path.join(d, sub))
+            open(os.path.join(d, sub, "a.py"), "w").close()
+        path, created, names = orch._seed_groups_manifest(d)
+        self.assertTrue(created)
+        text = open(path, encoding="utf-8").read()
+        self.assertNotIn("- name:", text)          # not the legacy list form
+        catalog = orch.load_catalog(d)
+        self.assertTrue(catalog)                    # actually loads (was silent {})
+        self.assertEqual(catalog["src"]["match"], ["src/**"])
+
+    def test_load_catalog_normalizes_legacy_list_form(self):
+        d = self._repo()
+        with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
+            fh.write(textwrap.dedent("""\
+                groups:
+                  - name: src
+                    match:
+                      - src/**
+            """))
+        catalog = orch.load_catalog(d)
+        self.assertIn("src", catalog)
+        self.assertEqual(catalog["src"]["match"], ["src/**"])
+
+    def test_assignment_identical_across_forms(self):
+        files = ["src/a.py", "tests/b.py", "docs/c.md"]
+        mapping = {"src": {"match": ["src/**"]}, "tests": {"match": ["tests/**"]}}
+        assigned, leftovers = orch.assign_by_catalog(files, mapping)
+        self.assertEqual(assigned, {"src": ["src/a.py"], "tests": ["tests/b.py"]})
+        self.assertEqual(leftovers, ["docs/c.md"])
