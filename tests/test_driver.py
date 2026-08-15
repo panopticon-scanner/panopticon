@@ -470,5 +470,96 @@ class TestValidatePhase(unittest.TestCase):
             driver.validate_execute(d, {"run_id": "R", "worktree": None})
 
 
+import scripts.run_manifest as run_manifest  # noqa: E402
+
+
+class TestDriverCLIAndEndToEnd(unittest.TestCase):
+    def _repo(self):
+        import shutil as _sh
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: _sh.rmtree(d, ignore_errors=True))
+        g = ["git", "-C", d]
+        subprocess.run(["git", "init", "-q", d], check=True)
+        subprocess.run(g + ["config", "user.email", "t@t"], check=True)
+        subprocess.run(g + ["config", "user.name", "t"], check=True)
+        os.makedirs(os.path.join(d, "src"))
+        with open(os.path.join(d, "src", "app.py"), "w") as fh:
+            fh.write("def f():\n    return 1\n")
+        os.makedirs(os.path.join(d, ".panopticon"))
+        with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
+            fh.write("groups:\n  Core:\n    match: ['src/**']\n    panels: [COD]\n")
+        subprocess.run(g + ["add", "-A"], check=True)
+        subprocess.run(g + ["commit", "-qm", "init"], check=True)
+        return d
+
+    def _args(self, target, *extra):
+        return driver.build_parser().parse_args(["run", target, *extra])
+
+    def _inject_scouts(self, root):
+        for g, _ in driver._discovered_groups(root):
+            p = driver._pano(root, "scout-%s.json" % g)
+            if not os.path.exists(p):
+                driver._write_json(p, {"group": g, "panels": ["code"]})
+
+    def test_first_run_writes_manifest_and_baseline(self):
+        d = self._repo()
+        driver.run(self._args(d))
+        self.assertIsNotNone(run_manifest.load_manifest(d))
+        self.assertTrue(os.path.isfile(driver._pano(d, "tree-baseline.txt")))
+
+    def test_end_to_end_reaches_report(self):
+        d = self._repo()
+        args = self._args(d)
+        status = driver.run(args)
+        self.assertEqual(status["status"], "checkpoint")
+        self.assertEqual(status["checkpoint"], "scout")
+        for _ in range(30):
+            if status["status"] == "checkpoint":
+                self._inject_scouts(d)
+            status = driver.run(args)
+            self.assertNotEqual(status["status"], "error", status.get("message"))
+            if status["status"] == "complete":
+                break
+        self.assertEqual(status["status"], "complete")
+        self.assertTrue(os.path.isfile(driver._pano(d, "report.json")))
+        # idempotent: a completed run stays complete
+        self.assertEqual(driver.run(args)["status"], "complete")
+
+    def test_resume_reemits_same_checkpoint_before_dispatch(self):
+        d = self._repo()
+        args = self._args(d)
+        s1 = driver.run(args)
+        s2 = driver.run(args)   # nothing serviced -> identical checkpoint
+        self.assertEqual((s1["checkpoint"], s1["group"]),
+                         (s2["checkpoint"], s2["group"]))
+
+    def test_flag_drift_is_refused(self):
+        d = self._repo()
+        driver.run(self._args(d))                       # manifest = standard
+        status = driver.run(self._args(d, "--security", "redteam"))
+        self.assertEqual(status["status"], "error")
+        self.assertIn("drift", status["message"])
+
+    def test_reset_restarts_from_scratch(self):
+        d = self._repo()
+        args = self._args(d)
+        driver.run(args)
+        self._inject_scouts(d)
+        driver.run(args)                                # advance past scout
+        status = driver.run(self._args(d, "--reset"))   # wipe + restart
+        self.assertEqual(status["status"], "checkpoint")
+        self.assertEqual(status["checkpoint"], "scout")
+        # reset never deletes the committed matrix
+        self.assertTrue(os.path.isfile(driver._pano(d, "groups.yml")))
+
+    def test_main_prints_status_and_returns_exit_code(self):
+        d = self._repo()
+        buf = io.StringIO()
+        with mock.patch("sys.stdout", buf):
+            rc = driver.main(["run", d])
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(buf.getvalue())["status"], "checkpoint")
+
+
 if __name__ == "__main__":
     unittest.main()

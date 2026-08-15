@@ -6,10 +6,12 @@ cursor is never stored — it is recomputed from disk (`first not-done phase`)
 every invocation, so a crash/compaction/interrupt resumes identically. See
 docs/superpowers/specs/2026-08-15-panopticon-5.0-driver-skeleton-design.md.
 """
+import argparse
 import dataclasses
 import glob as _glob
 import json
 import os
+import shutil
 import subprocess
 import sys
 
@@ -19,6 +21,7 @@ import scripts.coverage_model as coverage_model
 import scripts.diff_map as diff_map
 import scripts.dispatch as dispatch
 import scripts.groups_schema as groups_schema
+import scripts.run_manifest as run_manifest
 
 CHECKPOINT_KINDS = ("scout", "review", "verify")
 
@@ -435,3 +438,107 @@ def validate_execute(review_root, manifest, runner=subprocess.run):
         raise DriverError("validate: reviewer side effects outside .panopticon/: "
                           + "; ".join(delta[:10]))
     return PhaseResult(kind="advanced", message="validate: clean tree")
+
+
+_DEFAULTS = {"host": "claude", "security": "standard"}
+
+_RESET_GLOBS = ("groups.json", "coverage-*.json", "scout-*.json", "tools-ran.json",
+                "review-noop.json", "verify-noop.json", "validate.json",
+                "report.json", "dispatch-request.json", "tree-baseline.txt",
+                "verify-queue.json", "findings-*.json")
+
+PHASES = (
+    Phase("discovery", "deterministic", discovery_done, discovery_execute),
+    Phase("coverage", "mixed", coverage_done, coverage_execute),
+    Phase("tools", "deterministic", tools_done, tools_execute),
+    Phase("review", "checkpoint", review_done, review_execute),
+    Phase("verify", "mixed", verify_done, verify_execute),
+    Phase("synthesize", "deterministic", synthesize_done, synthesize_execute),
+    Phase("validate", "deterministic", validate_done, validate_execute),
+)
+
+
+def _cli_flags(args):
+    tools = False if getattr(args, "no_tools", False) else (
+        True if getattr(args, "tools", False) else None)
+    return {"fail_on": args.fail_on, "severity": args.severity,
+            "gate_scope": args.gate_scope, "diff_context": args.diff_context,
+            "tools": tools,
+            "include_fixtures": True if args.include_fixtures else None}
+
+
+def _clear_run_artifacts(review_root):
+    """Remove the manifest's derived artifacts for --reset. NEVER touches
+    groups.yml (the committed matrix)."""
+    pano = _pano(review_root)
+    for pat in _RESET_GLOBS:
+        for path in _glob.glob(os.path.join(pano, pat)):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+    for sub in ("tools", "verdicts"):
+        shutil.rmtree(os.path.join(pano, sub), ignore_errors=True)
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(prog="driver")
+    sub = parser.add_subparsers(dest="verb", required=True)
+    for verb in ("run", "next"):
+        p = sub.add_parser(verb)
+        p.add_argument("target", nargs="?", default=".")
+        p.add_argument("--host", default=None, choices=["claude", "generic"])
+        p.add_argument("--security", default=None, choices=["standard", "redteam"])
+        p.add_argument("--base", default=None)
+        p.add_argument("--pr", type=int, default=None)
+        p.add_argument("--reset", action="store_true")
+        p.add_argument("--fail-on", default=None)
+        p.add_argument("--severity", default=None)
+        p.add_argument("--gate-scope", default=None)
+        p.add_argument("--diff-context", type=int, default=None)
+        p.add_argument("--tools", action="store_true")
+        p.add_argument("--no-tools", action="store_true")
+        p.add_argument("--include-fixtures", action="store_true")
+    return parser
+
+
+def _error_status(message):
+    return {"status": "error", "phase": None, "checkpoint": None, "group": None,
+            "dispatch_request": None, "advanced": [], "message": message}
+
+
+def run(args, runner=subprocess.run, phases=PHASES):
+    review_root, worktree = resolve_review_root(args.target, base=args.base,
+                                                pr=args.pr, runner=runner)
+    if args.reset:
+        run_manifest.reset_run(review_root)
+        _clear_run_artifacts(review_root)
+    manifest = run_manifest.load_manifest(review_root)
+    if manifest is None:
+        manifest = run_manifest.build_manifest(
+            target=args.target, review_root=review_root,
+            host=args.host or _DEFAULTS["host"],
+            security_mode=args.security or _DEFAULTS["security"],
+            base=args.base, flags=_cli_flags(args), worktree=worktree)
+        run_manifest.write_manifest(review_root, manifest)
+        capture_tree_baseline(review_root, runner=runner)
+    else:
+        conflicts = run_manifest.conflicting_flags(
+            manifest, host=args.host, security_mode=args.security,
+            base=args.base, flags=_cli_flags(args))
+        if conflicts:
+            return _error_status("flag drift (use --reset to start over): "
+                                 + "; ".join(conflicts))
+    try:
+        return run_engine(review_root, manifest, phases)
+    except DriverError as exc:
+        return _error_status(str(exc))
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    return emit_status(run(args))
+
+
+if __name__ == "__main__":
+    sys.exit(main())
