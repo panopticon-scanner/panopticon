@@ -34,3 +34,18 @@ def test_floor_and_exclude_overlap_is_error():
 def test_empty_match_is_error():
     _g, errors = gs.parse_groups({"groups": {"G": {"match": []}}})
     assert any("match" in e for e in errors)
+
+def test_scalar_match_does_not_char_explode():
+    groups, errors = gs.parse_groups({"groups": {"G": {"match": "src/checkout/**"}}})
+    assert any("match" in e for e in errors)
+    assert groups["G"]["match"] == []   # not ['s','r','c', ...]
+
+def test_non_list_panels_is_error_not_crash():
+    groups, errors = gs.parse_groups({"groups": {"G": {"match": ["a/**"], "panels": 5}}})
+    assert any("panels" in e and "list" in e for e in errors)
+    assert groups["G"]["floor"] == set()
+
+def test_non_list_tests_is_error():
+    groups, errors = gs.parse_groups({"groups": {"G": {"match": ["a/**"], "tests": "tests/x"}}})
+    assert any("tests" in e and "list" in e for e in errors)
+    assert groups["G"]["tests"] == []

@@ -10,7 +10,12 @@ DOMAINS = frozenset(
 
 def _as_domain_set(name, field, raw, errors):
     out = set()
-    for d in raw or []:
+    if raw is None:
+        return out
+    if not isinstance(raw, list):
+        errors.append(f"group {name}: {field} must be a list")
+        return out
+    for d in raw:
         if d not in DOMAINS:
             errors.append(f"group {name}: {field} {d!r} is not a known domain")
         else:
@@ -23,16 +28,27 @@ def parse_groups(doc):
     groups, errors = {}, []
     for name, raw in ((doc or {}).get("groups") or {}).items():
         raw = raw or {}
-        match = list(raw.get("match") or [])
-        if not match:
+        raw_match = raw.get("match")
+        if not isinstance(raw_match, list) or not raw_match:
             errors.append(f"group {name}: match must be a non-empty list")
+            match = []
+        else:
+            match = list(raw_match)
+        raw_tests = raw.get("tests")
+        if raw_tests is None:
+            tests = []
+        elif not isinstance(raw_tests, list):
+            errors.append(f"group {name}: tests must be a list")
+            tests = []
+        else:
+            tests = list(raw_tests)
         floor = _as_domain_set(name, "panels", raw.get("panels"), errors)
         exclude = _as_domain_set(name, "exclude", raw.get("exclude"), errors)
         for d in sorted(floor & exclude):
             errors.append(f"group {name}: {d} is in both floor and exclude")
         groups[name] = {
             "match": match,
-            "tests": list(raw.get("tests") or []),
+            "tests": tests,
             "floor": floor,
             "exclude": exclude,
         }
