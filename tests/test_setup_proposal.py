@@ -151,5 +151,98 @@ class TestLoaders(unittest.TestCase):
         self.assertTrue(any("Ghost" in e for e in errors))
 
 
+class TestAssemble(unittest.TestCase):
+    def setUp(self):
+        self.vocab, _ = sp.load_vocabulary(VOCAB)
+        self.affinity, _ = sp.load_affinity(AFFINITY, self.vocab)
+
+    def _p(self, groups):
+        return {"groups": groups}
+
+    def test_matched_capability_gets_affinity_floor(self):
+        proposal = self._p([{"capability": "Checkout",
+                             "match": ["src/checkout/**"],
+                             "tests": ["tests/checkout/**"]}])
+        groups, disc = sp.assemble(proposal, self.vocab, self.affinity)
+        self.assertEqual(groups["Checkout"]["panels"], ["SEC", "DAT", "ACC", "OPS"])
+        self.assertEqual(groups["Checkout"]["match"], ["src/checkout/**"])
+        entry = next(g for g in disc["groups"] if g["name"] == "Checkout")
+        self.assertFalse(entry["custom"])
+        self.assertEqual(entry["floor_source"], "affinity")
+
+    def test_custom_group_gets_empty_floor(self):
+        proposal = self._p([{"capability": "custom:GraphQLGateway",
+                             "match": ["src/gateway/**"], "tests": []}])
+        groups, disc = sp.assemble(proposal, self.vocab, self.affinity)
+        self.assertEqual(groups["GraphQLGateway"]["panels"], [])
+        entry = next(g for g in disc["groups"] if g["name"] == "GraphQLGateway")
+        self.assertTrue(entry["custom"])
+        self.assertEqual(entry["floor_source"], "empty(scout-only)")
+
+    def test_unknown_capability_treated_as_custom(self):
+        # a label not in the vocabulary and not prefixed -> custom, empty floor
+        proposal = self._p([{"capability": "Telemetry", "match": ["src/tel/**"]}])
+        groups, _disc = sp.assemble(proposal, self.vocab, self.affinity)
+        self.assertEqual(groups["Telemetry"]["panels"], [])
+
+    def test_malformed_proposal_returns_none_and_errors(self):
+        for bad in ({"groups": "nope"}, {"groups": []},
+                    {"groups": [{"capability": "Auth", "match": []}]},
+                    {"groups": [{"capability": "Auth"}]}):
+            groups, disc = sp.assemble(bad, self.vocab, self.affinity)
+            self.assertIsNone(groups)
+            self.assertTrue(disc["errors"])
+
+    def test_assembled_groups_pass_groups_schema(self):
+        proposal = self._p([{"capability": "Auth", "match": ["src/auth/**"]}])
+        groups, _ = sp.assemble(proposal, self.vocab, self.affinity)
+        parsed, errors = __import__("groups_schema").parse_groups({"groups": groups})
+        self.assertEqual(errors, [])
+        self.assertEqual(parsed["Auth"]["floor"], {"SEC"})
+
+    def test_duplicate_group_name_collision_merges_and_discloses(self):
+        # Auth and custom:Auth collide on group name "Auth"
+        # First (matched) wins floor; match/tests union
+        proposal = self._p([{"capability": "Auth", "match": ["src/auth/**"], "tests": ["tests/auth/**"]},
+                            {"capability": "custom:Auth", "match": ["src/oauth/**"], "tests": ["tests/oauth/**"]}])
+        groups, disc = sp.assemble(proposal, self.vocab, self.affinity)
+        # Only one group named "Auth" in output
+        self.assertIn("Auth", groups)
+        # First occurrence's floor (SEC from affinity) is preserved
+        self.assertEqual(groups["Auth"]["panels"], ["SEC"])
+        # Match and tests are unioned
+        self.assertEqual(groups["Auth"]["match"], ["src/auth/**", "src/oauth/**"])
+        self.assertEqual(groups["Auth"]["tests"], ["tests/auth/**", "tests/oauth/**"])
+        # disclosure["groups"] has only one entry for Auth (the first)
+        auth_entries = [g for g in disc["groups"] if g["name"] == "Auth"]
+        self.assertEqual(len(auth_entries), 1)
+        self.assertFalse(auth_entries[0]["custom"])  # First is matched, not custom
+        # collision is recorded
+        self.assertEqual(len(disc["collisions"]), 1)
+        collision = disc["collisions"][0]
+        self.assertEqual(collision["name"], "Auth")
+        self.assertEqual(collision["capability"], "custom:Auth")
+
+    def test_bare_custom_prefix_rejected_in_validation(self):
+        # "custom:" with no name after should be rejected
+        proposal = self._p([{"capability": "custom:", "match": ["src/**"]}])
+        groups, disc = sp.assemble(proposal, self.vocab, self.affinity)
+        self.assertIsNone(groups)
+        self.assertTrue(any("custom:" in e or "empty" in e for e in disc["errors"]))
+
+    def test_known_capability_with_no_affinity_entry_marked_missing(self):
+        # Build a vocab with a capability not in affinity
+        vocab = {"names": ["Auth", "NoAffinity"], "hints": {"Auth": [], "NoAffinity": []}}
+        affinity = {"Auth": ["SEC"]}  # NoAffinity is intentionally missing
+        proposal = self._p([{"capability": "NoAffinity", "match": ["src/missing/**"]}])
+        groups, disc = sp.assemble(proposal, vocab, affinity)
+        # Group is created with empty floor
+        self.assertEqual(groups["NoAffinity"]["panels"], [])
+        # But floor_source distinguishes it from custom
+        entry = next(g for g in disc["groups"] if g["name"] == "NoAffinity")
+        self.assertFalse(entry["custom"])
+        self.assertEqual(entry["floor_source"], "affinity(missing)")
+
+
 if __name__ == "__main__":
     unittest.main()

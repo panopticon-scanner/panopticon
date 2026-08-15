@@ -108,3 +108,115 @@ def load_affinity(path, vocabulary):
         affinity[cap] = floor
 
     return affinity, errors
+
+
+def validate_proposal(proposal):
+    """Return a list of human-readable errors (empty = valid)."""
+    if not isinstance(proposal, dict):
+        return ["proposal: top-level must be a mapping"]
+    groups = proposal.get("groups")
+    if not isinstance(groups, list) or not groups:
+        return ["proposal: 'groups' must be a non-empty list"]
+    errors = []
+    for i, g in enumerate(groups):
+        if not isinstance(g, dict):
+            errors.append("proposal group %d: must be a mapping" % i)
+            continue
+        cap = g.get("capability")
+        label = cap if isinstance(cap, str) and cap else "#%d" % i
+        if not cap or not isinstance(cap, str):
+            errors.append("proposal group %s: missing/empty capability" % label)
+        # Guard: after stripping custom: prefix, name must not be empty
+        if isinstance(cap, str) and cap and _group_name(cap) == "":
+            errors.append("proposal group %s: custom: prefix cannot be empty" % label)
+        match = g.get("match")
+        if (not isinstance(match, list) or not match
+                or not all(isinstance(m, str) for m in match)):
+            errors.append("proposal group %s: match must be a non-empty list of strings" % label)
+        tests = g.get("tests")
+        if tests is not None and (not isinstance(tests, list)
+                                  or not all(isinstance(t, str) for t in tests)):
+            errors.append("proposal group %s: tests must be a list of strings" % label)
+    return errors
+
+
+def _group_name(capability):
+    """Strip a leading `custom:` prefix to get the committed group name."""
+    return capability.split("custom:", 1)[1] if capability.startswith("custom:") else capability
+
+
+def assemble(proposal, vocabulary, affinity):
+    """Return (groups_mapping | None, disclosure).
+
+    Matched capability -> affinity floor; custom/unknown -> empty floor
+    (scout-only). The assembled mapping is round-tripped through
+    groups_schema.parse_groups; a schema violation returns (None, disclosure)
+    with the errors, so setup fails loudly rather than writing a bad draft.
+    Collisions (same post-_group_name name) are merged: first occurrence's floor
+    wins, match/tests are unioned, collision is recorded in disclosure.
+    """
+    errors = validate_proposal(proposal)
+    if errors:
+        return None, {"groups": [], "errors": errors}
+    known = set(vocabulary.get("names") or [])
+    out = {}
+    disclosure = {"groups": [], "errors": [], "collisions": []}
+    # Track which group names have been added to disclosure (only first)
+    disclosed_names = set()
+    for g in proposal["groups"]:
+        cap = g["capability"]
+        name = _group_name(cap)
+        is_custom = cap.startswith("custom:") or cap not in known
+        # Determine floor_source: distinguish known-but-missing from custom/unknown
+        if is_custom:
+            floor = []
+            floor_source = "empty(scout-only)"
+        elif cap in affinity:
+            floor = list(affinity[cap])
+            floor_source = "affinity"
+        else:
+            # Known capability but missing from affinity table
+            floor = []
+            floor_source = "affinity(missing)"
+        new_match = list(g["match"])
+        new_tests = list(g.get("tests") or [])
+        if name in out:
+            # Collision: merge into existing group
+            # Keep first occurrence's floor and is_custom status
+            # Union match and tests (de-duplicated, order-preserving)
+            existing = out[name]
+            # Union match: preserve order, deduplicate
+            merged_match = list(existing["match"])
+            for m in new_match:
+                if m not in merged_match:
+                    merged_match.append(m)
+            # Union tests: preserve order, deduplicate
+            merged_tests = list(existing["tests"])
+            for t in new_tests:
+                if t not in merged_tests:
+                    merged_tests.append(t)
+            out[name]["match"] = merged_match
+            out[name]["tests"] = merged_tests
+            # Record collision (capability that was merged in)
+            disclosure["collisions"].append({
+                "name": name, "capability": cap
+            })
+        else:
+            # First occurrence of this name
+            out[name] = {
+                "match": new_match,
+                "tests": new_tests,
+                "panels": floor,
+            }
+            # Add to disclosure (only once per name)
+            disclosure["groups"].append({
+                "name": name, "capability": cap, "custom": is_custom,
+                "floor": floor,
+                "floor_source": floor_source,
+            })
+            disclosed_names.add(name)
+    parsed, perrors = groups_schema.parse_groups({"groups": out})
+    if perrors:
+        disclosure["errors"] = perrors
+        return None, disclosure
+    return out, disclosure
