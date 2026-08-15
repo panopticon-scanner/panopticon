@@ -763,5 +763,123 @@ class TestReviewMatrixEndToEnd(unittest.TestCase):
         self.assertEqual(report["meta"]["ocrdb_version"], "0.3.1")
 
 
+class TestVerifyMatrixEndToEnd(unittest.TestCase):
+    """5.0-P5 Slice B Task 5: verify is no longer a no-op. Against the real
+    driver functions (verify_execute/persist_returned_verdict/verify_done) and
+    a real synthesize.py subprocess (driver.synthesize_execute) -- mirrors
+    TestReviewMatrixEndToEnd's real-artifact style, but drives review/verify
+    state directly on disk (as TestVerifyPrimary/TestVerifyBackup in
+    test_driver_verify.py do) rather than through the full driver.run()
+    checkpoint loop, since a withheld verdict would otherwise re-emit the verify
+    checkpoint forever."""
+
+    RUN_ID = "RID"
+
+    def _repo(self, floor):
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        os.makedirs(os.path.join(d, "src"))
+        with open(os.path.join(d, "src", "app.py"), "w") as fh:
+            fh.write("def f():\n    return 1\n")
+        os.makedirs(os.path.join(d, ".panopticon"))
+        driver._write_json(driver._pano(d, "groups.json"),
+                           {"groups": [{"name": "app", "files": ["src/app.py"]}]})
+        driver._write_json(driver._pano(d, "coverage-app.json"),
+                           {"group": "app", "floor": floor, "effective": floor,
+                            "run_id": self.RUN_ID})
+        return d
+
+    def _manifest(self):
+        return {"run_id": self.RUN_ID, "host": "claude", "security_mode": "standard",
+                "flags": {"fail_on": "high"}}
+
+    def _write_cell(self, d, domain, severity="HIGH"):
+        # A HIGH finding at the default (POSSIBLE) confidence scores 5*0.8*1 =
+        # 4.0 -- above F_p (1.5, engages the primary advisor) but, even once
+        # advisor_confirmed (x1.5 -> 6.0), below F_b (8.0, summons a backup) --
+        # so the primary round alone settles the cell.
+        driver._write_json(driver._pano(d, "findings-app-%s.json" % domain), {
+            "findings": [{"title": "issue in %s" % domain, "severity": severity,
+                          "domain": domain, "code": domain + "-A1A", "category": "authz",
+                          "location": {"file": "src/app.py", "line_start": 1}}],
+            "_panopticon": {"run_id": self.RUN_ID, "role": "domain_panel",
+                            "domain": domain, "group": "app"}})
+
+    def _confirm_bundle(self, d, manifest, domain, group="app"):
+        cell = driver._load_cell_findings(d, manifest, group, domain)
+        fid = cell[0]["id"]   # driver's own id assignment -- what an advisor echoes
+        return json.dumps({"verdicts": [{"finding_id": fid, "verdict": "CONFIRMED",
+                                         "reasoning": "verified by advisor"}],
+                           "_panopticon": {"run_id": manifest["run_id"],
+                                           "role": "domain_advisor", "domain": domain,
+                                           "group": group, "stage": "primary"}})
+
+    def test_confirmed_verdict_reaches_advisor_confirmed_report(self):
+        d = self._repo(["SEC"])
+        self._write_cell(d, "SEC")
+        manifest = self._manifest()
+
+        result = driver.verify_execute(d, manifest)
+        self.assertEqual(result.kind, "checkpoint")
+        self.assertEqual(result.checkpoint, "verify")
+        req = driver._load_json(driver._pano(d, "dispatch-request.json"))
+        entry = req["entries"][0]
+        self.assertEqual(entry["write_mode"], "return")
+
+        text = self._confirm_bundle(d, manifest, "SEC")
+        self.assertTrue(driver.persist_returned_verdict(entry, text))
+
+        result2 = driver.verify_execute(d, manifest)   # drains the (empty) backup round
+        self.assertEqual(result2.kind, "advanced")
+        self.assertTrue(driver.verify_done(d, manifest))
+
+        synth = driver.synthesize_execute(d, manifest)
+        self.assertEqual(synth.kind, "advanced")
+        report = driver._load_json(driver._pano(d, "report.json"))
+        finding = next(f for f in report["findings"] if f.get("domain") == "SEC")
+        self.assertEqual(finding["evidence"]["status"], "advisor_confirmed")
+        # verify actually resolved the cell -- not left as an unanswered gap.
+        self.assertNotEqual(report["summary"]["gate"], "INCONCLUSIVE")
+
+    def test_withheld_engaged_cell_yields_inconclusive(self):
+        d = self._repo(["SEC"])
+        self._write_cell(d, "SEC")
+        manifest = self._manifest()
+
+        result = driver.verify_execute(d, manifest)   # engages SEC, dispatches, never answered
+        self.assertEqual(result.checkpoint, "verify")
+        self.assertFalse(driver.verify_done(d, manifest))
+
+        synth = driver.synthesize_execute(d, manifest)
+        self.assertEqual(synth.kind, "advanced")
+        report = driver._load_json(driver._pano(d, "report.json"))
+        self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
+        self.assertIn(["app", "SEC"],
+                      report["meta"]["coverage"]["verify_matrix"]["unverified_engaged"])
+
+    def test_resume_checkpoint_names_only_the_undone_cell(self):
+        d = self._repo(["SEC", "QAL"])
+        self._write_cell(d, "SEC")
+        self._write_cell(d, "QAL")
+        manifest = self._manifest()
+
+        result = driver.verify_execute(d, manifest)   # both cells pending, one dispatch
+        self.assertEqual(result.checkpoint, "verify")
+        req = driver._load_json(driver._pano(d, "dispatch-request.json"))
+        outs = sorted(os.path.basename(e["out_file"]) for e in req["entries"])
+        self.assertEqual(outs, ["verdicts-app-QAL.json", "verdicts-app-SEC.json"])
+        sec_entry = next(e for e in req["entries"]
+                         if e["out_file"].endswith("verdicts-app-SEC.json"))
+
+        text = self._confirm_bundle(d, manifest, "SEC")
+        self.assertTrue(driver.persist_returned_verdict(sec_entry, text))
+
+        result2 = driver.verify_execute(d, manifest)
+        self.assertEqual(result2.kind, "checkpoint")
+        req2 = driver._load_json(driver._pano(d, "dispatch-request.json"))
+        outs2 = [os.path.basename(e["out_file"]) for e in req2["entries"]]
+        self.assertEqual(outs2, ["verdicts-app-QAL.json"])   # SEC is done; only QAL remains
+
+
 if __name__ == "__main__":
     unittest.main()

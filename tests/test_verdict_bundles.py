@@ -127,6 +127,50 @@ def test_stale_cross_run_backup_does_not_evict_valid_primary(tmp_path):
     assert v is not None and v["verdict"] == "CONFIRMED"    # valid primary survives
 
 
+def test_load_verdicts_detailed_ignores_bundles(tmp_path):
+    d = tmp_path / "verdicts"; d.mkdir()
+    (d / "verdicts-app-SEC.json").write_text(json.dumps(
+        {"verdicts": [{"finding_id": "SEC-1", "verdict": "CONFIRMED"}],
+         "_panopticon": {"run_id": "R", "stage": "primary"}}))
+    (d / "junk.json").write_text("not json {")
+    verds, unloadable = evidence.load_verdicts_detailed(str(d))
+    files = {u["file"] for u in unloadable}
+    assert "verdicts-app-SEC.json" not in files   # bundle NOT flagged
+    assert "junk.json" in files                   # genuinely-corrupt STILL flagged
+
+
+def test_valid_bundle_run_has_zero_unloadable(tmp_path):
+    import os
+    import synthesize
+    fp = tmp_path / "findings-app-SEC.json"
+    fp.write_text(json.dumps({"findings": [
+        {"domain": "SEC", "code": "SEC-A1A", "severity": "HIGH", "title": "t",
+         "description": "x", "location": {"file": "a.py", "line_start": 1},
+         "category": "authz"}]}))
+    findings = synthesize.load_findings([str(fp)])
+    fid = findings[0]["id"]
+    vd = tmp_path / "verdicts"; vd.mkdir()
+    (vd / "verdicts-app-SEC.json").write_text(json.dumps(
+        {"verdicts": [{"finding_id": fid, "verdict": "CONFIRMED"}],
+         "_panopticon": {"run_id": "R", "role": "domain_advisor",
+                         "domain": "SEC", "group": "app", "stage": "primary"}}))
+    out = tmp_path / "report.json"
+    # Run from an empty cwd (tmp_path), not the real repo root: main() auto-
+    # discovers .panopticon/verify-queue.json from the CURRENT directory, and
+    # this repo's own .panopticon/ carries a real (stale) run_id that would
+    # shadow the "R" run_id used here, rejecting the bundle's verdict on the
+    # run_id check for reasons unrelated to what this test is asserting.
+    cwd = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+        synthesize.main(["--verdicts-dir", str(vd), "--out", str(out), str(fp)])
+    finally:
+        os.chdir(cwd)
+    rep = json.loads(out.read_text())
+    assert rep["meta"]["coverage"]["verdicts"]["unloadable"] == 0
+    assert rep["findings"][0]["evidence"]["status"] == "advisor_confirmed"
+
+
 def test_bundle_verdict_counted_in_supplied(tmp_path):
     import synthesize
     fp = tmp_path / "findings-app-SEC.json"

@@ -233,8 +233,13 @@ class TestLoad(unittest.TestCase):
         # #983: trust fields the pipeline derives must never come from an agent
         # payload. A forged `corroborated`/`corroborated_by` self-certifies
         # cross-panel verification (evidence status `corroborated` + a triage
-        # queue-jump); `source`/`reinforced` are the pre-existing cases. All
-        # four are stripped in load_findings, before any derivation runs.
+        # queue-jump); `source`/`reinforced` are the pre-existing cases.
+        # `evidence` (5.0 P5 Slice B, R1): evidence.status is ALWAYS derived by
+        # derive_evidence from a real verdict bundle -- never self-asserted -- and
+        # score_gate reads it straight off the finding, so a forged
+        # `evidence: {"status": "rejected"}` (factor 0.0) would let a finding
+        # duck the matrix's F_p/F_b verification gate entirely. All five are
+        # stripped in load_findings, before any derivation runs.
         import contextlib, io
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "findings-g-code.json")
@@ -244,12 +249,14 @@ class TestLoad(unittest.TestCase):
                     "location": {"file": "a.py", "line_start": 1},
                     "source": "tool:semgrep", "reinforced": True,
                     "corroborated": True, "corroborated_by": ["security", "test"],
+                    "evidence": {"status": "rejected"},
                 }]}, fh)
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
                 out = syn.load_findings([p])
             self.assertEqual(len(out), 1)
-            for forged in ("source", "reinforced", "corroborated", "corroborated_by"):
+            for forged in ("source", "reinforced", "corroborated", "corroborated_by",
+                          "evidence"):
                 self.assertNotIn(forged, out[0])
             self.assertIn("stripped self-asserted", err.getvalue())
 

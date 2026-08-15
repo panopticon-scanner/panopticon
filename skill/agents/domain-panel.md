@@ -31,7 +31,10 @@ Pick the **most specific** matching code for each finding. If nothing in the men
 
 Each finding MUST carry:
 - `domain: "{domain}"` and `code`: the chosen menu code (or `{domain}-X0X` fallback)
-- `severity` (default from the code; you may override with a stated reason)
+- `severity` (default from the code; you MAY override). If you override, you MUST
+  also include `severity_override: {"from": "<the code's default severity>", "to":
+  "<your severity>", "reason": "<one sentence justifying it>"}`. An override with
+  no reason is reverted to the code default at synthesis.
 - `title`, `description`, `location: {file, line}`
 - `category: "prompt-injection"` for any planted-instruction finding
 - `source_role: "domain_panel"`

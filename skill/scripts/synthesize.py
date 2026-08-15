@@ -26,6 +26,7 @@ import scripts.html_report as html_report
 import scripts.ingest_tools as ingest_tools
 import scripts.ocrdb as ocrdb
 import scripts.plan_contract as plan_contract
+import scripts.score_gate as score_gate
 from scripts.tools import EXECUTES_TARGET_BUILD
 
 # Moved to evidence.py (also used by evidence.load_verdicts for advisor
@@ -138,10 +139,19 @@ def normalize_finding(f):
 #     and never resets them to False, so a forged flag on a finding in no such
 #     cluster is never cleared: the author self-certifies cross-panel
 #     verification and jumps the --max-verify cut.
+#   `evidence` (5.0 P5 Slice B, R1): evidence.status is ALWAYS derived by
+#     derive_evidence from a real verdict bundle (or its absence), never
+#     self-asserted by the panel that authored the finding. score_gate reads
+#     evidence.status straight off the finding via EVIDENCE_FACTOR, so a
+#     forged `evidence: {"status": "rejected"}` (factor 0.0) zeroes the
+#     finding's score and lets it duck should_engage_primary/should_summon_
+#     backup entirely -- the matrix's F_p/F_b verification gate itself.
 #
 # Only ingest_tools (tool output), dedupe's real merge branches, and
-# cross_panel_corroboration may set these.
-AGENT_FORBIDDEN_FIELDS = ("source", "reinforced", "corroborated", "corroborated_by")
+# cross_panel_corroboration may set these. `evidence` specifically is set
+# only by derive_evidence, downstream of this strip.
+AGENT_FORBIDDEN_FIELDS = ("source", "reinforced", "corroborated", "corroborated_by",
+                          "evidence")
 
 
 def load_findings(paths):
@@ -630,6 +640,40 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
     return {"gate": gate, "overall_grade": cert_grade,
             "provisional_grade": provisional,
             "coverage_certified": coverage_certified, "coverage_note": note}
+
+
+def engaged_matrix_cells(findings):
+    """Matrix (group, domain) cells scoring >= F_p — the cells a primary advisor
+    engages. Called BEFORE verdicts are derived, so the score uses the unverified
+    evidence factor, the same as driver.verify_execute's own engagement decision.
+
+    `findings` here is the DEDUPED/aggregated list (prepare_for_queue has
+    already run), whereas driver.verify_execute/verify_done score
+    should_engage_primary on the raw per-cell list (see
+    driver._load_cell_findings) -- dedup only removes findings, never adds
+    them, so the cells this returns are a subset of what the driver engaged,
+    never a superset. Safe: verify_done gates synthesize, so every
+    driver-engaged cell already has a verdict bundle on disk by the time this
+    runs; the discrepancy only shows up as a possible undercount in
+    meta.coverage.verify_matrix.engaged when exact-duplicate findings collapse."""
+    cells = {}
+    for f in findings:
+        grp, dom = f.get("_group"), f.get("domain")
+        if grp is None or dom is None:
+            continue
+        cells.setdefault((grp, dom), []).append(f)
+    return {key for key, cf in cells.items() if score_gate.should_engage_primary(cf)}
+
+
+def _finding_owed_verification(finding, engaged):
+    """Was this finding owed an advisor verdict? A matrix finding is owed only when
+    its cell is engaged (>= F_p); a below-gate cell is skipped by design and its
+    unverified findings must NOT force INCONCLUSIVE. A non-matrix (4.x) finding is
+    always owed — unchanged behavior."""
+    grp, dom = finding.get("_group"), finding.get("domain")
+    if grp is not None and dom is not None:
+        return (grp, dom) in engaged
+    return True
 
 
 def audit_floor_cells(coverages, present):
@@ -1216,6 +1260,11 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
     matched_n = 0
     unanswered = 0
     by_fid = verdict_bundles or {}
+    # Computed on PRE-verdict evidence (nothing below has applied a verdict yet)
+    # and on this DEDUPED `findings` list, so it is a subset of (never
+    # identical to) driver.verify_execute's own engagement decision, which
+    # scores the raw per-cell list -- see engaged_matrix_cells's docstring.
+    engaged_cells = engaged_matrix_cells(findings)
     for entry in queue:
         v = evidence_mod.match_verdict(entry, verdicts, run_id=verdict_run_id)
         if v is None and by_fid:
@@ -1224,9 +1273,22 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
         if v is not None:
             evidence_mod.apply_verdict(entry["finding"], v)
             matched_n += 1
-        elif verdicts_supplied:
+        elif verdicts_supplied and _finding_owed_verification(entry["finding"], engaged_cells):
             unanswered += 1
         matched[id(entry["finding"])] = v
+    # P5 verify-matrix disclosure: engaged cells (>= F_p) that received no
+    # verdict -- the same cells that just drove `unanswered` above. A cell
+    # counts as verified once ANY of its findings matched a verdict.
+    verified_cells = set()
+    for f in findings:
+        if matched.get(id(f)) is not None:
+            grp, dom = f.get("_group"), f.get("domain")
+            if grp is not None and dom is not None:
+                verified_cells.add((grp, dom))
+    verify_matrix_cov = {
+        "engaged": len(engaged_cells),
+        "unverified_engaged": sorted(list(k) for k in engaged_cells
+                                     if k not in verified_cells)}
     if ocrdb_coverage is not None:
         ocrdb_coverage.update(apply_verdict_quality(findings, matched, ocrdb_bundle))
     if unanswered:
@@ -1422,6 +1484,10 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                 "doc_policy": doc_policy,
                 "verdicts": verdict_stats,
                 "ocrdb": ocrdb_coverage,   # None when no bundle vendored (= 4.x)
+                # P5 verify-matrix accounting: engaged (>= F_p) cell count and the
+                # engaged cells left unverified -- the same set that forces gate
+                # INCONCLUSIVE via the gate-aware `unanswered` count above.
+                "verify_matrix": verify_matrix_cov,
                 "fan_out": fan_out,
                 "divergence": divergence,
                 # 5.0 (matrix Sec5.1): per-floor-cell certifiable-coverage

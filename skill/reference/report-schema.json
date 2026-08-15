@@ -233,6 +233,14 @@
                 },
                 "code_corrections": {"type": "integer"}
               }
+            },
+            "verify_matrix": {
+              "type": ["object", "null"],
+              "description": "P5 verify-matrix accounting: engaged (>= F_p) cell count and the engaged cells left unverified (which force gate INCONCLUSIVE).",
+              "properties": {
+                "engaged": {"type": "integer"},
+                "unverified_engaged": {"type": "array", "items": {"type": "array"}}
+              }
             }
           }
         },
