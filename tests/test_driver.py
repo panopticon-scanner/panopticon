@@ -560,6 +560,38 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(json.loads(buf.getvalue())["status"], "checkpoint")
 
+    def test_pr_is_refused_without_acquiring_worktree(self):
+        # C1: driver --pr must refuse loudly and must NOT call acquire_pr
+        # (which would leak a worktree).
+        d = self._repo()
+        args = driver.build_parser().parse_args(["run", d, "--pr", "7"])
+        with mock.patch("scripts.driver.diff_map.acquire_pr") as acq:
+            status = driver.run(args)
+        acq.assert_not_called()
+        self.assertEqual(status["status"], "error")
+        self.assertIn("pr", status["message"].lower())
+
+    def test_fresh_manifest_clears_stale_artifacts(self):
+        # I1: a stale report.json with no manifest must be cleared on the first
+        # run, not resumed as "synthesize done".
+        d = self._repo()
+        stale = driver._pano(d, "report.json")
+        driver._write_json(stale, {"stale": True})
+        status = driver.run(self._args(d))     # first run -> manifest built
+        self.assertNotEqual(status["status"], "error", status.get("message"))
+        self.assertFalse(os.path.exists(stale))  # stale artifact cleared
+
+    def test_missing_baseline_self_heals_on_resume(self):
+        # I2: a manifest written without a baseline (interrupt window) must get
+        # the baseline captured on the next invocation.
+        d = self._repo()
+        m = run_manifest.build_manifest(
+            target=d, review_root=d, host="claude", security_mode="standard")
+        run_manifest.write_manifest(d, m)        # manifest, but NO baseline
+        self.assertFalse(os.path.exists(driver._pano(d, "tree-baseline.txt")))
+        driver.run(self._args(d))                # resume -> should self-heal
+        self.assertTrue(os.path.exists(driver._pano(d, "tree-baseline.txt")))
+
 
 if __name__ == "__main__":
     unittest.main()

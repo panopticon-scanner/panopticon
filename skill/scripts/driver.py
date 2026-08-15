@@ -508,20 +508,35 @@ def _error_status(message):
 
 
 def run(args, runner=subprocess.run, phases=PHASES):
+    # C1: the driver's --pr resume is not implemented — diff_map.acquire_pr is
+    # non-idempotent, so re-invocation re-acquires a fresh worktree, never finds
+    # the prior manifest, loops re-emitting scout, and leaks worktrees. Refuse
+    # loudly (before resolve_review_root, so acquire_pr is never called) rather
+    # than ship a path that silently restarts. Use the 4.x pipeline for PR
+    # reviews until driver --pr lands.
+    if args.pr is not None:
+        return _error_status(
+            "driver --pr (PR review) is not supported yet — use the 4.x "
+            "pipeline for PR reviews; driver --pr resume lands in a later "
+            "5.0.x slice")
     review_root, worktree = resolve_review_root(args.target, base=args.base,
-                                                pr=args.pr, runner=runner)
+                                                pr=None, runner=runner)
     if args.reset:
         run_manifest.reset_run(review_root)
         _clear_run_artifacts(review_root)
     manifest = run_manifest.load_manifest(review_root)
     if manifest is None:
+        # I1: no manifest means no prior run should count — clear any stale
+        # derived artifacts so done()-predicates never resume on another run's
+        # data (a lost/corrupt manifest, a partially-failed reset, or a
+        # pre-existing 4.x groups.json).
+        _clear_run_artifacts(review_root)
         manifest = run_manifest.build_manifest(
             target=args.target, review_root=review_root,
             host=args.host or _DEFAULTS["host"],
             security_mode=args.security or _DEFAULTS["security"],
             base=args.base, flags=_cli_flags(args), worktree=worktree)
         run_manifest.write_manifest(review_root, manifest)
-        capture_tree_baseline(review_root, runner=runner)
     else:
         conflicts = run_manifest.conflicting_flags(
             manifest, host=args.host, security_mode=args.security,
@@ -529,6 +544,11 @@ def run(args, runner=subprocess.run, phases=PHASES):
         if conflicts:
             return _error_status("flag drift (use --reset to start over): "
                                  + "; ".join(conflicts))
+    # I2: capture the clean-tree baseline unconditionally and BEFORE the engine
+    # runs. Idempotent (returns the existing baseline if present) -> no-op on a
+    # normal resume, but self-heals a baseline that a mid-first-run interrupt
+    # left missing (which had silently disabled the clean-tree guard).
+    capture_tree_baseline(review_root, runner=runner)
     try:
         return run_engine(review_root, manifest, phases)
     except DriverError as exc:
