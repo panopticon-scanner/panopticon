@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import unittest
@@ -110,6 +111,31 @@ class TestSetupScanTemplate(unittest.TestCase):
         meta, _ = dispatch.load_template("setup-scan.md")
         self.assertEqual(meta["tool_policy"]["allowed"], ["Read", "Grep", "Glob"])
         self.assertEqual(meta["tool_policy"]["forbidden"], ["Bash", "Edit", "Write", "Agent"])
+
+
+class TestScopeProfileDomains(unittest.TestCase):
+    def _schema(self):
+        p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         "skill", "reference", "scope-profile-schema.json")
+        with open(p) as fh:
+            return json.load(fh)
+
+    def test_required_has_domains_not_panels(self):
+        s = self._schema()
+        self.assertIn("domains", s["required"])
+        self.assertNotIn("panels", s["required"])
+
+    def test_domains_enum_is_the_ten(self):
+        s = self._schema()
+        enum = set(s["properties"]["domains"]["items"]["enum"])
+        self.assertEqual(enum, {"SEC","COD","ARC","TST","QAL","AGT","DAT","OPS","ACC","LNG"})
+
+    def test_scout_template_emits_domains(self):
+        p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         "skill", "agents", "scout.md")
+        body = open(p).read()
+        self.assertIn("domains", body)
+        self.assertNotIn("Set `panels`", body)   # the old instruction is gone
 
 
 if __name__ == "__main__":
