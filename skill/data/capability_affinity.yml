@@ -1,0 +1,14 @@
+# Capability -> default panel FLOOR (P2 FIXTURE). Domains in groups_schema.DOMAINS.
+affinity:
+  Auth:          [SEC]
+  Accounts:      [SEC, DAT, ACC]
+  Checkout:      [SEC, DAT, ACC, OPS]
+  Billing:       [SEC, DAT, OPS]
+  Catalog:       [DAT, COD]
+  Search:        [DAT, OPS]
+  Fulfillment:   [OPS, DAT]
+  Notifications: [OPS, ACC]
+  Reporting:     [DAT, COD]
+  Admin:         [SEC, ACC]
+  API:           [SEC, ARC]
+  Platform:      [COD, ARC]
