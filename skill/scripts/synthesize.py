@@ -219,6 +219,54 @@ def validate_finding_codes(findings, bundle):
     return {"invalid_codes": invalid, "fallbacks": fallbacks}
 
 
+_SEV_ORDINAL = {"INFO": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
+
+
+def apply_verdict_quality(findings, matched, bundle):
+    """Apply the advisor's code confirm/correct and the severity-override
+    discipline; return the counters merged into meta.coverage.ocrdb.
+
+    Deterministic: the advisor PROPOSES (via its matched verdict / the finding's
+    severity_override), synthesize APPLIES under fixed rules. Severity is mutated
+    only here, only by the disclosed override discipline. `matched` maps
+    id(finding) -> the winning verdict (or None) from build_report's match loop.
+    """
+    code_corrections = 0
+    ov_count = ov_up = ov_down = 0
+    for f in findings:
+        v = matched.get(id(f))
+        if v:
+            vc = v.get("code")
+            if (vc and bundle is not None and ocrdb.validate_code(bundle, vc)
+                    and vc != f.get("code")):
+                f["code"] = vc
+                f["code_corrected_by"] = "agent:advisor"
+                code_corrections += 1
+            if (str(v.get("stage")) == "backup"
+                    and str(v.get("verdict", "")).upper() == "CONFIRMED"):
+                f["backup_confirmed"] = True
+        ov = f.get("severity_override")
+        if isinstance(ov, dict):
+            default = ocrdb.default_severity(bundle, f.get("code"))
+            if not ov.get("reason"):
+                if default:
+                    f["severity"] = default
+                f.pop("severity_override", None)
+                print("synthesize: severity_override without reason on %s dropped; "
+                      "reverted to code default %r" % (f.get("id"), default),
+                      file=sys.stderr)
+            else:
+                ov_count += 1
+                cur = _SEV_ORDINAL.get(f.get("severity"), 0)
+                base = _SEV_ORDINAL.get(default, cur)
+                if cur > base:
+                    ov_up += 1
+                elif cur < base:
+                    ov_down += 1
+    return {"code_corrections": code_corrections,
+            "overrides": {"count": ov_count, "up": ov_up, "down": ov_down}}
+
+
 # Alias the shared severity rank instead of re-implementing it — same
 # rationale as _is_tool_sourced below.
 _sev_rank = evidence_mod.sev_rank
@@ -1179,6 +1227,8 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
         elif verdicts_supplied:
             unanswered += 1
         matched[id(entry["finding"])] = v
+    if ocrdb_coverage is not None:
+        ocrdb_coverage.update(apply_verdict_quality(findings, matched, ocrdb_bundle))
     if unanswered:
         print("synthesize: %d queued findings had no verdict; left unverified"
               % unanswered, file=sys.stderr)
