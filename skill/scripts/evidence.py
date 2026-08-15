@@ -113,7 +113,7 @@ def matrix_finding_id(finding):
     if not dom:
         code = finding.get("code") or ""
         dom = code.split("-", 1)[0] if "-" in code else "GEN"
-    if not (2 <= len(dom) <= 8 and dom.isalpha() and dom.isupper()):
+    if not (isinstance(dom, str) and re.fullmatch(r"[A-Z]{2,8}", dom)):
         dom = "GEN"
     loc = finding.get("location") or {}
     title = " ".join(str(finding.get("title") or "").split())

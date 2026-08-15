@@ -34,6 +34,15 @@ def test_whitespace_in_title_does_not_change_id():
     b = evidence.matrix_finding_id(_f(title="Hardcoded   secret"))
     assert a == b
 
+def test_invalid_domain_falls_back_to_gen():
+    for bad in ["sec", "TOOLONGDOMAIN", "ÀÁ", "S3C"]:
+        fid = evidence.matrix_finding_id(_f(domain=bad))
+        assert fid.startswith("GEN-") and ID_RE.match(fid), (bad, fid)
+
+def test_non_string_domain_does_not_crash():
+    fid = evidence.matrix_finding_id(_f(domain=["S", "E", "C"]))
+    assert fid.startswith("GEN-") and ID_RE.match(fid)
+
 def test_load_findings_fills_missing_id_and_keeps_valid_one(tmp_path):
     import json
     p = tmp_path / "findings-app-SEC.json"
