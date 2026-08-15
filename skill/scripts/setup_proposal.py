@@ -220,3 +220,66 @@ def assemble(proposal, vocabulary, affinity):
         disclosure["errors"] = perrors
         return None, disclosure
     return out, disclosure
+
+
+def merge_additive(committed, assembled, claims):
+    """Additive, never-clobber merge (spec §5).
+
+    committed/assembled: {name: {"match": [...], "tests": [...], "panels": [...]}}.
+    claims: {name: [file]} — the assembled groups that claimed previously-
+    unassigned files (from orchestrator.assign_by_catalog; Task 6). A group that
+    claims nothing new is dropped as redundant. Existing entries (match/tests/
+    panels + any owner edit) are never rewritten; an existing group is only
+    *extended* with globs/tests it does not already carry.
+    """
+    merged = {name: {k: (list(v) if isinstance(v, list) else v)
+                     for k, v in body.items()}
+              for name, body in committed.items()}
+    diff = {"new_groups": [], "extended_groups": [], "dropped_redundant": []}
+    for name, body in assembled.items():
+        if not claims.get(name):
+            diff["dropped_redundant"].append(name)
+            continue
+        if name in merged:
+            existing = merged[name]
+            new_match = [p for p in body.get("match", [])
+                         if p not in existing.get("match", [])]
+            new_tests = [t for t in body.get("tests", [])
+                         if t not in existing.get("tests", [])]
+            if new_match or new_tests:
+                existing["match"] = list(existing.get("match", [])) + new_match
+                existing["tests"] = list(existing.get("tests", [])) + new_tests
+                diff["extended_groups"].append(
+                    {"name": name, "added_match": new_match, "added_tests": new_tests})
+        else:
+            merged[name] = {
+                "match": list(body.get("match", [])),
+                "tests": list(body.get("tests", [])),
+                "panels": list(body.get("panels", [])),
+            }
+            diff["new_groups"].append(
+                {"name": name, "match": list(body.get("match", [])),
+                 "panels": list(body.get("panels", []))})
+    return merged, diff
+
+
+def dump_groups_yaml(groups, header=True):
+    """Serialize a groups mapping to canonical mapping-form groups.yml text.
+    Insertion order preserved; only non-empty fields emitted; round-trips
+    through groups_schema.parse_groups. yaml.safe_dump handles quoting of
+    indicator-leading scalars (e.g. '**/auth/**')."""
+    cleaned = {}
+    for name, body in groups.items():
+        entry = {}
+        for key in ("match", "tests", "panels", "exclude"):
+            vals = body.get(key) or []
+            if vals:
+                entry[key] = list(vals)
+        cleaned[name] = entry
+    body_text = yaml.safe_dump({"groups": cleaned}, sort_keys=False,
+                               default_flow_style=False, allow_unicode=True)
+    if not header:
+        return body_text
+    return ("# panopticon groups catalog (matrix form) -- match/tests/panels/exclude.\n"
+            "# gitignore-flavored globs; first matching group wins; edit and commit.\n"
+            + body_text)

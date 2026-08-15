@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+import yaml
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "skill", "scripts"))
 import setup_proposal as sp
@@ -242,6 +243,94 @@ class TestAssemble(unittest.TestCase):
         entry = next(g for g in disc["groups"] if g["name"] == "NoAffinity")
         self.assertFalse(entry["custom"])
         self.assertEqual(entry["floor_source"], "affinity(missing)")
+
+
+class TestMergeAdditive(unittest.TestCase):
+    def test_first_run_adopts_all_claiming_groups(self):
+        assembled = {"Auth": {"match": ["src/auth/**"], "tests": [], "panels": ["SEC"]}}
+        claims = {"Auth": ["src/auth/login.py"]}
+        merged, diff = sp.merge_additive({}, assembled, claims)
+        self.assertIn("Auth", merged)
+        self.assertEqual([g["name"] for g in diff["new_groups"]], ["Auth"])
+
+    def test_existing_group_is_never_rewritten(self):
+        committed = {"Auth": {"match": ["src/auth/**"], "tests": ["tests/auth/**"],
+                              "panels": ["SEC", "ACC"]}}  # owner added ACC
+        assembled = {"Auth": {"match": ["src/auth/**"], "tests": [], "panels": ["SEC"]}}
+        claims = {"Auth": []}  # claims nothing new
+        merged, diff = sp.merge_additive(committed, assembled, claims)
+        self.assertEqual(merged["Auth"]["panels"], ["SEC", "ACC"])  # floor untouched
+        self.assertEqual(merged["Auth"]["match"], ["src/auth/**"])  # not duplicated
+        self.assertEqual(diff["dropped_redundant"], ["Auth"])
+
+    def test_existing_group_extended_with_new_globs_only(self):
+        committed = {"Auth": {"match": ["src/auth/**"], "tests": [], "panels": ["SEC"]}}
+        assembled = {"Auth": {"match": ["src/auth/**", "src/oauth/**"], "tests": [],
+                              "panels": ["SEC"]}}
+        claims = {"Auth": ["src/oauth/idp.py"]}
+        merged, diff = sp.merge_additive(committed, assembled, claims)
+        self.assertEqual(merged["Auth"]["match"], ["src/auth/**", "src/oauth/**"])
+        self.assertEqual(diff["extended_groups"][0]["added_match"], ["src/oauth/**"])
+        self.assertEqual(merged["Auth"]["panels"], ["SEC"])  # floor still not touched
+
+    def test_new_group_added_when_it_claims_files(self):
+        committed = {"Auth": {"match": ["src/auth/**"], "tests": [], "panels": ["SEC"]}}
+        assembled = {"Checkout": {"match": ["src/checkout/**"], "tests": [],
+                                  "panels": ["SEC", "DAT"]}}
+        claims = {"Checkout": ["src/checkout/pay.py"]}
+        merged, diff = sp.merge_additive(committed, assembled, claims)
+        self.assertIn("Checkout", merged)
+        self.assertIn("Auth", merged)  # existing preserved
+        self.assertEqual(diff["new_groups"][0]["name"], "Checkout")
+
+    def test_redundant_group_dropped(self):
+        assembled = {"Ghost": {"match": ["src/ghost/**"], "tests": [], "panels": []}}
+        merged, diff = sp.merge_additive({"A": {"match": ["a/**"], "tests": [],
+                                                "panels": []}}, assembled, {"Ghost": []})
+        self.assertNotIn("Ghost", merged)
+        self.assertEqual(diff["dropped_redundant"], ["Ghost"])
+
+    def test_dump_round_trips_through_groups_schema(self):
+        import groups_schema
+        groups = {"Checkout": {"match": ["src/checkout/**"],
+                               "tests": ["tests/checkout/**"],
+                               "panels": ["SEC", "DAT"]}}
+        text = sp.dump_groups_yaml(groups)
+        doc = yaml.safe_load(text)
+        parsed, errors = groups_schema.parse_groups(doc)
+        self.assertEqual(errors, [])
+        self.assertEqual(parsed["Checkout"]["floor"], {"SEC", "DAT"})
+        self.assertEqual(parsed["Checkout"]["tests"], ["tests/checkout/**"])
+
+    def test_dump_handles_leading_wildcard_globs(self):
+        """Regression: leading-* globs must round-trip without ScannerError."""
+        import groups_schema
+        groups = {"Auth": {"match": ["**/auth/**", "**/login/**"],
+                           "tests": [],
+                           "panels": ["SEC"]}}
+        text = sp.dump_groups_yaml(groups)
+        # Must not raise ScannerError on leading '*'
+        doc = yaml.safe_load(text)
+        # Must parse successfully
+        parsed, errors = groups_schema.parse_groups(doc)
+        self.assertEqual(errors, [])
+        # Leading-** globs must be preserved verbatim
+        self.assertIn("**/auth/**", parsed["Auth"]["match"])
+        self.assertIn("**/login/**", parsed["Auth"]["match"])
+
+    def test_merge_does_not_mutate_committed(self):
+        """Regression: merged lists must be independent of committed lists."""
+        committed = {"Auth": {"match": ["src/auth/**"], "tests": [],
+                              "panels": ["SEC"]}}
+        # Keep a reference to verify it's not mutated
+        committed_panels_id = id(committed["Auth"]["panels"])
+        merged, _ = sp.merge_additive(committed, {}, {})
+        # Mutate merged
+        merged["Auth"]["panels"].append("NEW")
+        # Committed must be unchanged
+        self.assertEqual(committed["Auth"]["panels"], ["SEC"])
+        # And the list object must be different (deep copy)
+        self.assertNotEqual(id(merged["Auth"]["panels"]), committed_panels_id)
 
 
 if __name__ == "__main__":
