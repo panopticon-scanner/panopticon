@@ -69,3 +69,37 @@ def test_build_report_binds_bundle_verdict_by_finding_id(tmp_path):
                                      verdicts={}, verdict_bundles=by_fid,
                                      verdicts_supplied=True, verdict_run_id="R")
     assert report["findings"][0]["evidence"]["status"] == "advisor_confirmed"
+
+
+def test_queue_id_match_not_overwritten_by_fid_bundle(tmp_path):
+    import synthesize
+    fp = tmp_path / "findings-app-SEC.json"
+    fp.write_text(json.dumps({"findings": [
+        {"domain": "SEC", "code": "SEC-A1A", "severity": "HIGH", "title": "authz",
+         "description": "x", "location": {"file": "app/x.py", "line_start": 4},
+         "category": "authz"}]}))
+    findings = synthesize.load_findings([str(fp)])
+    fid = findings[0]["id"]
+    qid = evidence.finding_fingerprint(findings[0])
+    verdicts = {qid: {"finding_id": fid, "verdict": "REJECTED"}}          # queue_id path
+    by_fid = {fid: {"finding_id": fid, "verdict": "CONFIRMED", "run_id": None}}  # fid path
+    report = synthesize.build_report(findings, [], "src", "high",
+                                     "2026-08-15T00:00:00Z", verdicts=verdicts,
+                                     verdict_bundles=by_fid, verdicts_supplied=True)
+    # A REJECTED finding is moved to discarded_claims, not left in "findings"
+    # (build_report's active/rejected split) -- queue_id's REJECTED verdict won
+    # over the fid bundle's CONFIRMED, so the finding lands there, not as an
+    # advisor_confirmed entry in report["findings"].
+    assert report["findings"] == []
+    assert report["discarded_claims"][0]["evidence"]["status"] == "rejected"
+
+
+def test_bundle_does_not_clobber_own_run_id_or_stage(tmp_path):
+    d = tmp_path / "verdicts"; d.mkdir()
+    (d / "verdicts-app-SEC.json").write_text(json.dumps({
+        "verdicts": [{"finding_id": "SEC-100", "verdict": "CONFIRMED",
+                      "run_id": "OWN", "stage": "backup"}],
+        "_panopticon": {"run_id": "BUNDLE", "stage": "primary"}}))
+    by_fid, _ = evidence.load_verdict_bundles(str(d))
+    assert by_fid["SEC-100"]["run_id"] == "OWN"      # own run_id preserved
+    assert by_fid["SEC-100"]["stage"] == "backup"    # own stage preserved
