@@ -49,10 +49,28 @@ def new_finding_id(prefix: str, n: int) -> str:
     return f"{prefix}-{n:03d}"
 
 
+_ANSI_CSI_RE = re.compile(rb"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def strip_ansi(raw: bytes) -> bytes:
+    """Strip ANSI CSI escape sequences (color, cursor, line-erase) that some
+    tools interleave with their stdout before the JSON payload — e.g.
+    pip-audit's progress spinner, bandit's progress bar. A no-op on clean
+    output (no ESC bytes)."""
+    return _ANSI_CSI_RE.sub(b"", raw)
+
+
 def parse_json_bytes(raw: bytes) -> Any:
     """Decode scanner output bytes tolerantly and parse as JSON — the shared
-    adapter idiom (one home for the decoding policy)."""
-    return json.loads(raw.decode("utf-8", errors="replace"))
+    adapter idiom (one home for the decoding policy). Strips a leading ANSI /
+    log preamble and trims to the first JSON start token so decorated stdout
+    (progress spinners, banners) still parses; genuinely non-JSON input still
+    raises."""
+    cleaned = strip_ansi(raw)
+    starts = [i for i in (cleaned.find(b"{"), cleaned.find(b"[")) if i != -1]
+    if starts:
+        cleaned = cleaned[min(starts):]
+    return json.loads(cleaned.decode("utf-8", errors="replace"))
 
 
 def cvss_bucket(score: float) -> str:

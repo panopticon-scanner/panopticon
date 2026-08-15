@@ -82,6 +82,28 @@ class TestRunTool(unittest.TestCase):
         rec.assert_called_once_with(["t"], capture_output=True, timeout=7,
                                     cwd="/x", env={"A": "1"})
 
+    def test_strip_ansi_removes_csi_sequences(self):
+        self.assertEqual(base.strip_ansi(b"\x1b[32mhi\x1b[0m"), b"hi")
+        self.assertEqual(base.strip_ansi(b"\x1b[?25l\x1b[2Kx"), b"x")
+
+    def test_strip_ansi_leaves_plain_bytes_unchanged(self):
+        self.assertEqual(base.strip_ansi(b'{"a": 1}'), b'{"a": 1}')
+
+    def test_parse_json_bytes_plain_json(self):
+        self.assertEqual(base.parse_json_bytes(b'{"a": 1}'), {"a": 1})
+        self.assertEqual(base.parse_json_bytes(b'[1, 2]'), [1, 2])
+
+    def test_parse_json_bytes_strips_ansi_progress_preamble(self):
+        # pip-audit-style ANSI spinner + progress text before the JSON payload
+        raw = (b"\x1b[?25l\x1b[32m-\x1b[0m Collecting inputs\r\x1b[2K"
+               b'{"dependencies": [], "fixes": []}\n')
+        self.assertEqual(base.parse_json_bytes(raw),
+                         {"dependencies": [], "fixes": []})
+
+    def test_parse_json_bytes_raises_on_non_json(self):
+        with self.assertRaises(ValueError):
+            base.parse_json_bytes(b"not json at all")
+
 
 if __name__ == "__main__":
     unittest.main()

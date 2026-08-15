@@ -385,8 +385,18 @@ class TestDispatchPlan(unittest.TestCase):
             json.dump(profile, fh)
             path = fh.name
         self.addCleanup(os.unlink, path)
-        with contextlib.redirect_stderr(io.StringIO()) as err:
-            rc = dispatch.main([path, "--host", "codex"])
+        # main() falls back to ./.panopticon/groups.json in the CWD, so a stray
+        # groups.json in the invoking directory (e.g. a repo mid-scan) would
+        # flip this to the "--groups requires --group-name" branch. Run from a
+        # clean temp dir so the "no groups.json anywhere" path is exercised.
+        cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmpd:
+            os.chdir(tmpd)
+            try:
+                with contextlib.redirect_stderr(io.StringIO()) as err:
+                    rc = dispatch.main([path, "--host", "codex"])
+            finally:
+                os.chdir(cwd)
         self.assertEqual(rc, 2)
         self.assertIn("no authoritative groups.json", err.getvalue())
 

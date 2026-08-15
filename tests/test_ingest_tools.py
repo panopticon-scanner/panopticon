@@ -399,3 +399,24 @@ class TestIngestDispositions(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             out = it.ingest_dir(d, "g1")
         self.assertEqual(out, [])  # unchanged contract: a bare list
+
+    def test_ingest_strips_ansi_progress_preamble(self):
+        # A tool (e.g. pip-audit's progress spinner) decorates its stdout with
+        # ANSI CSI sequences before the JSON. The CSI introducer '\x1b[' must
+        # not fool the first-JSON-token scan (its '[' would otherwise win).
+        payload = {
+            "dependencies": [
+                {"name": "requests", "version": "2.0.0",
+                 "vulns": [{"id": "PYSEC-0000-1", "description": "x",
+                            "fix_versions": ["2.1"],
+                            "aliases": ["CVE-0000-0001"]}]},
+            ],
+            "fixes": [],
+        }
+        ansi = b"\x1b[?25l\x1b[32m-\x1b[0m Collecting inputs\r\x1b[2K"
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "pip-audit.json"), "wb") as fh:
+                fh.write(ansi + json.dumps(payload).encode())
+            findings = it.ingest_dir(d, "g1", include_fixtures=True)
+        self.assertTrue(findings)
+        self.assertEqual(findings[0]["citations"]["cve"], ["CVE-0000-0001"])
