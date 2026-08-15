@@ -97,6 +97,33 @@ def finding_fingerprint(finding):
     return hashlib.sha256(payload).hexdigest()[:16]
 
 
+def matrix_finding_id(finding):
+    """Deterministic, schema-valid (^[A-Z]{2,8}-[0-9]{3,}$), stable per-finding
+    identity for a matrix (domain-scoped) finding.
+
+    Pure over the finding's OWN stable fields, so the driver (per-cell, Slice B)
+    and synthesize (global) compute the SAME id independently. Callers MUST pass a
+    finding already run through synthesize.normalize_finding so title/category
+    defaults agree on both sides. Deliberately NOT keyed on finding_fingerprint:
+    that hashes `panel`, which a raw cell finding lacks but normalize derives, so
+    the two views would diverge. Includes line_start so two findings sharing a
+    (domain, category, file, title) but at different lines get distinct ids.
+    """
+    dom = finding.get("domain")
+    if not dom:
+        code = finding.get("code") or ""
+        dom = code.split("-", 1)[0] if "-" in code else "GEN"
+    if not (isinstance(dom, str) and re.fullmatch(r"[A-Z]{2,8}", dom)):
+        dom = "GEN"
+    loc = finding.get("location") or {}
+    title = " ".join(str(finding.get("title") or "").split())
+    seed = "|".join([dom, str(finding.get("category") or ""),
+                     norm_path(loc.get("file")), title,
+                     str(loc.get("line_start"))])
+    num = int(hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8], 16)
+    return "%s-%03d" % (dom, num)   # %03d: >=3 digits, never truncates a big num
+
+
 def reconcile_key(finding):
     """Coarse CROSS-RUN identity: (normalized_file, panel, category) -- or,
     once a finding carries an OCRDb domain code (5.0), the tighter
@@ -411,6 +438,77 @@ def match_verdict(entry, verdicts, run_id=None):
               % (entry["queue_id"], v.get("run_id"), run_id), file=sys.stderr)
         return None
     return v
+
+
+def load_verdict_bundles(verdicts_dir):
+    """Load per-cell verdict BUNDLES ({"verdicts": [...], "_panopticon": {...}})
+    into a finding_id -> list of candidate verdicts map.
+
+    A single-verdict file (top-level "verdict", the legacy queue_id flow) is NOT
+    a bundle and is ignored here (handled by load_verdicts_detailed). Tolerant:
+    unreadable/unparseable files land in `unloadable`, never raise. Each flattened
+    verdict inherits the bundle's `_panopticon.run_id` and `stage` when its own are
+    absent, so match_verdict_by_id can enforce the run_id.
+
+    Deliberately does NOT collapse multiple candidates for the same finding_id
+    at load time -- backup-preference and run_id filtering both belong in
+    match_verdict_by_id, where the caller's run_id is known. Collapsing here
+    (e.g. backup-wins on stage alone) let a stale cross-run backup evict a
+    valid same-run primary before run_id was ever consulted.
+    """
+    by_fid = {}
+    unloadable = []
+    if not verdicts_dir or not os.path.isdir(verdicts_dir):
+        return by_fid, unloadable
+    for name in sorted(os.listdir(verdicts_dir)):
+        if not name.endswith(".json"):
+            continue
+        path = os.path.join(verdicts_dir, name)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = load_json_tolerant(fh.read())
+        except (OSError, ValueError) as e:
+            unloadable.append({"file": name, "reason": str(e).splitlines()[0]})
+            continue
+        if not isinstance(data, dict) or not isinstance(data.get("verdicts"), list):
+            continue   # not a bundle
+        pano = data.get("_panopticon")
+        if not isinstance(pano, dict):
+            pano = {}
+        run_id = pano.get("run_id")
+        stage_default = pano.get("stage") or "primary"
+        for raw in data["verdicts"]:
+            if not (isinstance(raw, dict)
+                    and str(raw.get("verdict", "")).upper() in VERDICT_VALUES
+                    and raw.get("finding_id")):
+                continue
+            v = dict(raw)
+            v.setdefault("run_id", run_id)
+            v.setdefault("stage", stage_default)
+            by_fid.setdefault(str(v["finding_id"]), []).append(v)
+    return by_fid, unloadable
+
+
+def match_verdict_by_id(finding, by_fid, run_id=None):
+    """Match a bundle verdict to a finding by its assigned `id`. by_fid maps a
+    finding_id to a LIST of candidate verdicts (primary and/or backup, possibly
+    across runs). When run_id is given, only same-run candidates are eligible
+    (so a stale cross-run verdict can never evict a valid one); among the
+    eligible, a backup-stage verdict wins over a primary."""
+    fid = finding.get("id")
+    if not fid:
+        return None
+    candidates = by_fid.get(str(fid))
+    if not candidates:
+        return None
+    if run_id is not None:
+        candidates = [c for c in candidates if c.get("run_id") == run_id]
+        if not candidates:
+            return None
+    for c in candidates:
+        if c.get("stage") == "backup":
+            return c
+    return candidates[0]
 
 
 def apply_verdict(finding, verdict):

@@ -1856,6 +1856,21 @@ class TestTwoPassCli(unittest.TestCase):
                 report["meta"]["coverage"]["verdicts"]["unloadable"], 1)
             self.assertIn("un-loadable", err.getvalue())
 
+    def test_two_distinct_corrupt_verdict_files_counted_once_each(self):
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            finding = _agentic()
+            fp = self._write_findings(d, [finding])
+            vd = os.path.join(d, ".panopticon", "verdicts")
+            os.makedirs(vd)
+            with open(os.path.join(vd, "bad1.json"), "w") as fh:
+                fh.write("not json {")
+            with open(os.path.join(vd, "bad2.json"), "w") as fh:
+                fh.write("also not } json")
+            out = os.path.join(d, "report.json")
+            syn.main(["--verdicts-dir", vd, "--out", out, fp])
+            report = json.load(open(out))
+            self.assertEqual(report["meta"]["coverage"]["verdicts"]["unloadable"], 2)
+
     def test_pass1_cli_and_pass2_build_report_agree_on_fingerprints(self):
         # #443: pass 1 (--emit-verify-queue) fed build_verify_queue a bare
         # prepare_findings() list while pass 2 (build_report) aggregated

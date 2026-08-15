@@ -82,3 +82,17 @@ def validate_code(bundle, code):
 def domain_fallback(domain):
     """The catalog-gap fallback code for a domain: '<DOM>-X0X'."""
     return "%s-X0X" % domain
+
+
+def default_severity(bundle, code):
+    """The default_severity for a code ('SEC-A1A' -> 'MEDIUM'), or None when the
+    bundle is absent/malformed or the code is unknown."""
+    if not isinstance(bundle, dict) or not code:
+        return None
+    dom = domain_of(code)
+    if not dom:
+        return None
+    entry = ((bundle.get("domains") or {}).get(dom) or {}).get("entries", {}).get(code)
+    if not isinstance(entry, dict):
+        return None
+    return entry.get("default_severity")

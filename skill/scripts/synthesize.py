@@ -179,6 +179,8 @@ def load_findings(paths):
                           % (forbidden, f.get("id", "?"), path), file=sys.stderr)
                     f.pop(forbidden, None)
             nf = normalize_finding(f)
+            if not ID_RE.match(nf.get("id") or ""):
+                nf["id"] = evidence_mod.matrix_finding_id(nf)
             if group is not None:
                 nf["_group"] = group
             out.append(nf)
@@ -215,6 +217,54 @@ def validate_finding_codes(findings, bundle):
                 f["code"] = ocrdb.domain_fallback(domain)
                 fallbacks[domain] = fallbacks.get(domain, 0) + 1
     return {"invalid_codes": invalid, "fallbacks": fallbacks}
+
+
+_SEV_ORDINAL = {"INFO": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
+
+
+def apply_verdict_quality(findings, matched, bundle):
+    """Apply the advisor's code confirm/correct and the severity-override
+    discipline; return the counters merged into meta.coverage.ocrdb.
+
+    Deterministic: the advisor PROPOSES (via its matched verdict / the finding's
+    severity_override), synthesize APPLIES under fixed rules. Severity is mutated
+    only here, only by the disclosed override discipline. `matched` maps
+    id(finding) -> the winning verdict (or None) from build_report's match loop.
+    """
+    code_corrections = 0
+    ov_count = ov_up = ov_down = 0
+    for f in findings:
+        v = matched.get(id(f))
+        if v:
+            vc = v.get("code")
+            if (vc and bundle is not None and ocrdb.validate_code(bundle, vc)
+                    and vc != f.get("code")):
+                f["code"] = vc
+                f["code_corrected_by"] = "agent:advisor"
+                code_corrections += 1
+            if (str(v.get("stage")) == "backup"
+                    and str(v.get("verdict", "")).upper() == "CONFIRMED"):
+                f["backup_confirmed"] = True
+        ov = f.get("severity_override")
+        if isinstance(ov, dict):
+            default = ocrdb.default_severity(bundle, f.get("code"))
+            if not ov.get("reason"):
+                if default:
+                    f["severity"] = default
+                f.pop("severity_override", None)
+                print("synthesize: severity_override without reason on %s dropped; "
+                      "reverted to code default %r" % (f.get("id"), default),
+                      file=sys.stderr)
+            else:
+                ov_count += 1
+                cur = _SEV_ORDINAL.get(f.get("severity"), 0)
+                base = _SEV_ORDINAL.get(default, cur)
+                if cur > base:
+                    ov_up += 1
+                elif cur < base:
+                    ov_down += 1
+    return {"code_corrections": code_corrections,
+            "overrides": {"count": ov_count, "up": ov_up, "down": ov_down}}
 
 
 # Alias the shared severity rank instead of re-implementing it — same
@@ -1125,7 +1175,8 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                  doc_policy=None, resume=None, integrity=None,
                  diff_hunks=None, diff_context=5, gate_scope="on-diff",
                  catalog=None, verdict_unloadable=None, cost_fan_out=None,
-                 verdict_run_id=None, coverages=None, ingested_paths=None):
+                 verdict_run_id=None, coverages=None, ingested_paths=None,
+                 verdict_bundles=None):
     """Build a CodeReviewReport under the two-axis severity x evidence model.
 
     Severity is never mutated here. Verdicts (from evidence.load_verdicts) are
@@ -1164,14 +1215,20 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
     matched = {}
     matched_n = 0
     unanswered = 0
+    by_fid = verdict_bundles or {}
     for entry in queue:
         v = evidence_mod.match_verdict(entry, verdicts, run_id=verdict_run_id)
+        if v is None and by_fid:
+            v = evidence_mod.match_verdict_by_id(entry["finding"], by_fid,
+                                                 run_id=verdict_run_id)
         if v is not None:
             evidence_mod.apply_verdict(entry["finding"], v)
             matched_n += 1
         elif verdicts_supplied:
             unanswered += 1
         matched[id(entry["finding"])] = v
+    if ocrdb_coverage is not None:
+        ocrdb_coverage.update(apply_verdict_quality(findings, matched, ocrdb_bundle))
     if unanswered:
         print("synthesize: %d queued findings had no verdict; left unverified"
               % unanswered, file=sys.stderr)
@@ -1195,12 +1252,19 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
     # findings gate. Stderr is not what CI consumes, so the drop counts belong
     # in the artifact: supplied - matched - unknown is the number of verdicts
     # that named a queued finding but failed match_verdict's finding_id echo.
+    # Includes bundle verdicts (by_fid) alongside queue_id-keyed `verdicts` --
+    # under the P5 bundle flow `verdicts` is often empty while by_fid carries
+    # the actual answers, and matched_n already counts bundle matches, so
+    # leaving bundle verdicts out of "supplied" made the invariant go negative.
+    _bundle_supplied = sum(len(vs) for vs in by_fid.values())
+    _finding_ids = {f.get("id") for f in findings if f.get("id")}
+    _bundle_unknown = sum(len(vs) for fid, vs in by_fid.items() if fid not in _finding_ids)
     verdict_stats = {
         "queued": len(queue),
         "cut": cut,
-        "supplied": len(verdicts),
+        "supplied": len(verdicts) + _bundle_supplied,
         "matched": matched_n,
-        "unknown": len(unknown),
+        "unknown": len(unknown) + _bundle_unknown,
         # Verdict files present on disk but un-loadable (corrupt/invalid). A
         # non-zero count means verification evidence was lost, distinct from a
         # finding that never had a verdict generated (#938).
@@ -1805,6 +1869,15 @@ def main(argv=None):
         print("verify queue empty; emitting final report", file=sys.stderr)
 
     verdicts, verdict_unloadable = evidence_mod.load_verdicts_detailed(args.verdicts_dir)
+    verdict_bundles, bundle_unloadable = evidence_mod.load_verdict_bundles(args.verdicts_dir)
+    # Both loaders scan the same verdicts_dir and independently attempt to parse
+    # every *.json in it, so a single unparseable file is reported by both --
+    # dedupe on filename or a genuinely-corrupt file double-counts in
+    # meta.coverage.verdicts.unloadable (#938 follow-on).
+    verdict_unloadable = verdict_unloadable or []
+    _already_unloadable = {u.get("file") for u in verdict_unloadable}
+    verdict_unloadable = verdict_unloadable + [
+        u for u in bundle_unloadable if u.get("file") not in _already_unloadable]
     # Union of every per-group dispatch-plan-*.json on disk -- loaded ONCE and
     # shared with derive_tool_policy_mode, so the two cannot drift apart again
     # (#146/C1). The real fan-out workflow writes one plan file PER GROUP
@@ -1933,6 +2006,7 @@ def main(argv=None):
 
     report = build_report(findings, groups_meta, args.target, args.fail_on, ts,
                           review_type, security_mode, verdicts=verdicts,
+                          verdict_bundles=verdict_bundles,
                           gate_unverified=args.gate_unverified,
                           max_verify=args.max_verify,
                           verdicts_supplied=args.verdicts_dir is not None,
