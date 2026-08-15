@@ -27,8 +27,6 @@ Review the listed files through the **`{domain}`** domain lens, grading against 
 
 Pick the **most specific** matching code for each finding. If nothing in the menu fits, use the domain fallback `{domain}-X0X` and say why in the description (this is the catalog-gap signal).
 
-{delivery_contract}
-
 ## Finding format
 
 Each finding MUST carry:
@@ -38,6 +36,13 @@ Each finding MUST carry:
 - `category: "prompt-injection"` for any planted-instruction finding
 - `source_role: "domain_panel"`
 
-{side_effect_boundary}
+## Output — write exactly one file
 
-Write your findings file as JSON: `{"findings": [ … ], "_panopticon": {"run_id": "{run_id}", "role": "domain_panel", "domain": "{domain}", "group": "{group}"}}`.
+Write your findings to `{out_file}` as a single JSON object with this exact shape. The `_panopticon` block is REQUIRED — the run uses it to identify your cell, and a file that omits it (or carries a wrong `run_id`/`domain`/`group`) is DISCARDED and your cell is treated as not done:
+
+    {
+      "findings": [ /* each finding in the format above */ ],
+      "_panopticon": {"run_id": "{run_id}", "role": "domain_panel", "domain": "{domain}", "group": "{group}"}
+    }
+
+Write ONLY that file. Make no other writes — no repository edits, no GitHub actions.

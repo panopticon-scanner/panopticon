@@ -236,7 +236,7 @@ def render_prompt(role_file, mapping, host=None):
     single-word lowercase tokens.
     """
     meta, body = load_template(role_file)
-    if role_file in ("panel-review.md", "lens-sweep.md", "domain-panel.md"):
+    if role_file in ("panel-review.md", "lens-sweep.md"):
         mapping = dict(mapping)
         for key, value in _delivery_fields(
                 host, mapping.get("out_file", ""), role_file).items():

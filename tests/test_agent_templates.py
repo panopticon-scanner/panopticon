@@ -141,17 +141,37 @@ class TestScopeProfileDomains(unittest.TestCase):
 
 class TestDomainPanelRenders(unittest.TestCase):
     def test_renders_with_full_mapping(self):
-        import scripts.dispatch as dispatch
         mapping = {"domain": "SEC", "group": "Auth", "file_list": "- a.py",
                    "tests": "- t.py", "security_mode": "standard",
-                   "menu": "SEC-A1A os-command-injection (HIGH)", "run_id": "R"}
+                   "menu": "SEC-A1A os-command-injection (HIGH)", "run_id": "R",
+                   "out_file": "/abs/findings-Auth-SEC.json"}
         out = dispatch.render_prompt("domain-panel.md", mapping, "claude")
         self.assertIn("`SEC` domain reviewer", out)
         self.assertIn("SEC-A1A", out)
         self.assertFalse(dispatch.PLACEHOLDER_RE.search(out.split("## Tool policy")[0]),
                           "leftover unfilled placeholder in rendered output")
+        self.assertIn("_panopticon", out)
+        self.assertIn("/abs/findings-Auth-SEC.json", out)
         self.assertEqual(dispatch.registered_agent_name("domain-panel.md"),
                          "panopticon-domain-panel")
+
+
+class TestDomainPanelSingleWriteInstruction(unittest.TestCase):
+    """#P4-slice-B: domain-panel must carry exactly one, coherent write
+    instruction that requires `_panopticon` and names `{out_file}` -- not the
+    shared delivery-contract mechanism built for panel-review's no-`_panopticon`
+    contract. A reviewer that follows a stray `{delivery_contract}`-style
+    instruction and omits `_panopticon` fails driver._cell_done forever."""
+
+    def test_no_delivery_contract_placeholders(self):
+        _meta, body = dispatch.load_template("domain-panel.md")
+        self.assertNotIn("{delivery_contract}", body)
+        self.assertNotIn("{side_effect_boundary}", body)
+
+    def test_has_panopticon_block_and_out_file_placeholder(self):
+        _meta, body = dispatch.load_template("domain-panel.md")
+        self.assertIn("_panopticon", body)
+        self.assertIn("{out_file}", body)
 
 
 if __name__ == "__main__":
