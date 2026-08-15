@@ -7,14 +7,105 @@ every invocation, so a crash/compaction/interrupt resumes identically. See
 docs/superpowers/specs/2026-08-15-panopticon-5.0-driver-skeleton-design.md.
 """
 import dataclasses
+import glob as _glob  # noqa: F401 -- shared helper import; used by later phases (Tasks 5-9)
 import json
 import os
 import subprocess
 import sys
 
+import yaml
+
 import scripts.diff_map as diff_map
+import scripts.groups_schema as groups_schema
 
 CHECKPOINT_KINDS = ("scout", "review", "verify")
+
+_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+class DriverError(Exception):
+    """A hard phase failure. main() converts it to a status:'error' result."""
+
+
+def _script(name):
+    return os.path.join(_SCRIPTS_DIR, name)
+
+
+def _child_env():
+    """Env for subprocessed panopticon CLIs. They do `import scripts.*` (a
+    namespace package) plus BARE imports of both skill/scripts modules (e.g.
+    `import evidence`) and repo-root scripts/ modules (e.g. `import file_issues`),
+    so PYTHONPATH must mirror tests/conftest.py exactly: skill, skill/scripts,
+    and <repo>/scripts."""
+    scripts_dir = _SCRIPTS_DIR                         # .../skill/scripts
+    skill_dir = os.path.dirname(scripts_dir)           # .../skill
+    repo_root = os.path.dirname(skill_dir)             # .../panopticon
+    repo_scripts = os.path.join(repo_root, "scripts")  # .../panopticon/scripts
+    env = dict(os.environ)
+    parts = [skill_dir, scripts_dir, repo_scripts]
+    env["PYTHONPATH"] = os.pathsep.join(
+        parts + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
+    return env
+
+
+def _pano(review_root, *parts):
+    return os.path.join(review_root, ".panopticon", *parts)
+
+
+def _load_json(path):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
+def _write_json(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2, sort_keys=True)
+    return path
+
+
+def _json_parses(path):
+    return _load_json(path) is not None
+
+
+def load_committed_groups(review_root):
+    """Parse the committed groups.yml via groups_schema (P1). A MISSING file is
+    an error (the driver run requires a committed matrix — `panopticon setup`
+    produces it), not an empty success."""
+    path = _pano(review_root, "groups.yml")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh)
+    except FileNotFoundError:
+        return {}, ["no committed groups.yml at %s — run `panopticon setup` first"
+                    % path]
+    except (OSError, yaml.YAMLError) as exc:
+        return {}, ["groups.yml unreadable: %s" % exc]
+    return groups_schema.parse_groups(doc if isinstance(doc, dict) else {})
+
+
+def discovery_done(review_root, manifest):
+    return _json_parses(_pano(review_root, "groups.json"))
+
+
+def discovery_execute(review_root, manifest):
+    _groups, errors = load_committed_groups(review_root)
+    if errors:
+        raise DriverError("discovery: " + "; ".join(errors))
+    out = _pano(review_root, "groups.json")
+    cmd = [sys.executable, _script("orchestrator.py"), "--repo-scan",
+           "--security", manifest.get("security_mode", "standard"),
+           review_root, "--out", out]
+    proc = subprocess.run(cmd, cwd=review_root, capture_output=True, text=True,
+                          env=_child_env())
+    if not _json_parses(out):
+        raise DriverError(
+            "discovery: orchestrator --repo-scan produced no groups.json "
+            "(rc=%s): %s" % (proc.returncode, (proc.stderr or proc.stdout)[:400]))
+    return PhaseResult(kind="advanced", message="discovery: groups.json written")
 
 
 def resolve_review_root(target, base=None, pr=None, runner=subprocess.run):

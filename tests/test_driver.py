@@ -156,5 +156,43 @@ class TestResolveReviewRoot(unittest.TestCase):
         acq.assert_called_once()
 
 
+class TestDiscoveryPhase(unittest.TestCase):
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self._t.name)
+        os.makedirs(os.path.join(self.root, ".panopticon"))
+        self.addCleanup(self._t.cleanup)
+        self.manifest = {"run_id": "R", "security_mode": "standard"}
+
+    def _write_groups_yml(self, body):
+        with open(driver._pano(self.root, "groups.yml"), "w") as fh:
+            fh.write(body)
+
+    def test_missing_groups_yml_raises(self):
+        with self.assertRaises(driver.DriverError):
+            driver.discovery_execute(self.root, self.manifest)
+
+    def test_discovery_subprocesses_orchestrator_and_marks_done(self):
+        self._write_groups_yml("groups:\n  Auth:\n    match: ['src/auth/**']\n")
+
+        def fake_run(cmd, **kw):   # tolerant: driver passes cwd/env/capture_output
+            out = cmd[cmd.index("--out") + 1]
+            with open(out, "w") as fh:
+                json.dump({"groups": [{"name": "Auth", "files": ["src/auth/a.py"]}]}, fh)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch("scripts.driver.subprocess.run", side_effect=fake_run):
+            result = driver.discovery_execute(self.root, self.manifest)
+        self.assertEqual(result.kind, "advanced")
+        self.assertTrue(driver.discovery_done(self.root, self.manifest))
+
+    def test_discovery_raises_when_no_groups_json_produced(self):
+        self._write_groups_yml("groups:\n  Auth:\n    match: ['src/auth/**']\n")
+        with mock.patch("scripts.driver.subprocess.run",
+                        return_value=mock.Mock(returncode=1, stdout="", stderr="boom")):
+            with self.assertRaises(driver.DriverError):
+                driver.discovery_execute(self.root, self.manifest)
+
+
 if __name__ == "__main__":
     unittest.main()
