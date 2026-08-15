@@ -27,7 +27,7 @@ class TestSchemas(unittest.TestCase):
 
     def test_scope_profile_required_fields(self):
         schema = self._load("scope-profile-schema.json")
-        for field in ("group", "languages", "surfaces", "risk", "lenses", "panels"):
+        for field in ("group", "languages", "surfaces", "risk", "lenses", "domains"):
             self.assertIn(field, schema["required"])
         self.assertNotIn("suggested_lenses", schema["required"])
 
@@ -45,11 +45,11 @@ class TestSchemas(unittest.TestCase):
         schema = self._load("report-schema.json")
         self.assertIn("security_mode", schema["properties"]["meta"]["required"])
 
-    def test_scope_profile_panels_include_new_panels(self):
+    def test_scope_profile_domains_enum_is_the_ten(self):
         schema = self._load("scope-profile-schema.json")
-        panels = schema["properties"]["panels"]["items"]["enum"]
-        for panel in ["architecture", "database", "redteam"]:
-            self.assertIn(panel, panels)
+        domains = set(schema["properties"]["domains"]["items"]["enum"])
+        self.assertEqual(domains,
+                         {"SEC","COD","ARC","TST","QAL","AGT","DAT","OPS","ACC","LNG"})
 
     def test_findings_envelope_schema(self):
         schema = self._load("findings-envelope-schema.json")
