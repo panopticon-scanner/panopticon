@@ -256,8 +256,9 @@ def coverage_done(review_root, manifest):
 
 def coverage_execute(review_root, manifest):
     """Per group: emit the scout checkpoint (streamed) if its output is absent,
-    else compute FLOOR coverage. Returns after one unit of work; the engine
-    re-selects coverage until every group has a coverage file."""
+    else compute coverage as floor widened by the scout's valid domains.
+    Returns after one unit of work; the engine re-selects coverage until
+    every group has a coverage file."""
     matrix, _errors = load_committed_groups(review_root)
     host = manifest.get("host", "claude")
     for group, files in _discovered_groups(review_root):
@@ -271,20 +272,29 @@ def coverage_execute(review_root, manifest):
             return PhaseResult(kind="checkpoint", checkpoint="scout", group=group,
                                dispatch_request=req,
                                message="scout checkpoint for group %s" % group)
+        # scout landed -> widen coverage by the scout's valid domains (P4 bridge)
+        scout = _load_json(scout_path) or {}
+        raw = scout.get("domains") or []
         spec = matrix.get(group) or {}
+        floor = spec.get("floor", set())
+        # net against floor here so disclosure["scout_added"] reports only the
+        # genuinely NEW domains (a domain already on the floor isn't "added").
+        scout_added = {d for d in raw if d in groups_schema.DOMAINS} - set(floor)
+        scout_invalid = sorted(set(raw) - groups_schema.DOMAINS)
         effective, disclosure = coverage_model.effective_panels(
-            spec.get("floor", set()), set(), spec.get("exclude", set()))
+            floor, scout_added, spec.get("exclude", set()))
         _write_json(_pano(review_root, "coverage-%s.json" % group), {
             "group": group,
             "floor": disclosure["floor"],
             "excluded": disclosure["excluded"],
-            "scout_added": [],   # P4 bridges scout panel-names -> domain codes
+            "scout_added": disclosure["scout_added"],   # new domains, exclude-netted
+            "scout_invalid": scout_invalid,             # dropped, disclosed
             "effective": sorted(effective),
             "scout_file": os.path.abspath(scout_path),
             "run_id": manifest["run_id"],
         })
         return PhaseResult(kind="advanced",
-                           message="coverage: group %s (floor)" % group)
+                           message="coverage: group %s (floor+scout)" % group)
     return PhaseResult(kind="advanced", message="coverage: complete")
 
 

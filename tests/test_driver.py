@@ -274,6 +274,46 @@ class TestCoveragePhase(unittest.TestCase):
         self.assertTrue(driver.coverage_done(self.root, self.manifest))
 
 
+class TestCoverageBridge(unittest.TestCase):
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self._t.name)
+        os.makedirs(driver._pano(self.root))
+        self.addCleanup(self._t.cleanup)
+        self.manifest = {"run_id": "R", "security_mode": "standard", "host": "claude"}
+
+    def _setup(self, floor_yaml, scout_domains):
+        driver._write_json(driver._pano(self.root, "groups.json"),
+                           {"groups": [{"name": "Auth", "files": ["a.py"]}]})
+        with open(driver._pano(self.root, "groups.yml"), "w") as fh:
+            fh.write(floor_yaml)
+        driver._write_json(driver._pano(self.root, "scout-Auth.json"),
+                           {"group": "Auth", "domains": scout_domains})
+
+    def test_scout_widens_coverage(self):
+        self._setup("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n",
+                    ["SEC", "DAT"])
+        driver.coverage_execute(self.root, self.manifest)
+        cov = driver._load_json(driver._pano(self.root, "coverage-Auth.json"))
+        self.assertEqual(cov["scout_added"], ["DAT"])          # SEC already floor
+        self.assertEqual(cov["effective"], ["DAT", "SEC"])
+
+    def test_invalid_scout_domain_dropped_and_disclosed(self):
+        self._setup("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n",
+                    ["DAT", "BOGUS"])
+        driver.coverage_execute(self.root, self.manifest)
+        cov = driver._load_json(driver._pano(self.root, "coverage-Auth.json"))
+        self.assertEqual(cov["scout_added"], ["DAT"])
+        self.assertEqual(cov["scout_invalid"], ["BOGUS"])
+
+    def test_scout_cannot_override_exclude(self):
+        self._setup("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n"
+                    "    exclude: [DAT]\n", ["DAT"])
+        driver.coverage_execute(self.root, self.manifest)
+        cov = driver._load_json(driver._pano(self.root, "coverage-Auth.json"))
+        self.assertNotIn("DAT", cov["effective"])              # exclude wins
+
+
 class TestToolsPhase(unittest.TestCase):
     def setUp(self):
         self._t = tempfile.TemporaryDirectory()
