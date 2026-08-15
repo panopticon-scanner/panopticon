@@ -1127,7 +1127,8 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                  doc_policy=None, resume=None, integrity=None,
                  diff_hunks=None, diff_context=5, gate_scope="on-diff",
                  catalog=None, verdict_unloadable=None, cost_fan_out=None,
-                 verdict_run_id=None, coverages=None, ingested_paths=None):
+                 verdict_run_id=None, coverages=None, ingested_paths=None,
+                 verdict_bundles=None):
     """Build a CodeReviewReport under the two-axis severity x evidence model.
 
     Severity is never mutated here. Verdicts (from evidence.load_verdicts) are
@@ -1166,8 +1167,12 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
     matched = {}
     matched_n = 0
     unanswered = 0
+    by_fid = verdict_bundles or {}
     for entry in queue:
         v = evidence_mod.match_verdict(entry, verdicts, run_id=verdict_run_id)
+        if v is None and by_fid:
+            v = evidence_mod.match_verdict_by_id(entry["finding"], by_fid,
+                                                 run_id=verdict_run_id)
         if v is not None:
             evidence_mod.apply_verdict(entry["finding"], v)
             matched_n += 1
@@ -1807,6 +1812,15 @@ def main(argv=None):
         print("verify queue empty; emitting final report", file=sys.stderr)
 
     verdicts, verdict_unloadable = evidence_mod.load_verdicts_detailed(args.verdicts_dir)
+    verdict_bundles, bundle_unloadable = evidence_mod.load_verdict_bundles(args.verdicts_dir)
+    # Both loaders scan the same verdicts_dir and independently attempt to parse
+    # every *.json in it, so a single unparseable file is reported by both --
+    # dedupe on filename or a genuinely-corrupt file double-counts in
+    # meta.coverage.verdicts.unloadable (#938 follow-on).
+    verdict_unloadable = verdict_unloadable or []
+    _already_unloadable = {u.get("file") for u in verdict_unloadable}
+    verdict_unloadable = verdict_unloadable + [
+        u for u in bundle_unloadable if u.get("file") not in _already_unloadable]
     # Union of every per-group dispatch-plan-*.json on disk -- loaded ONCE and
     # shared with derive_tool_policy_mode, so the two cannot drift apart again
     # (#146/C1). The real fan-out workflow writes one plan file PER GROUP
@@ -1935,6 +1949,7 @@ def main(argv=None):
 
     report = build_report(findings, groups_meta, args.target, args.fail_on, ts,
                           review_type, security_mode, verdicts=verdicts,
+                          verdict_bundles=verdict_bundles,
                           gate_unverified=args.gate_unverified,
                           max_verify=args.max_verify,
                           verdicts_supplied=args.verdicts_dir is not None,
