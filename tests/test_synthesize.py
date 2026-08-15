@@ -3514,6 +3514,15 @@ class TestOcrdbValidation(unittest.TestCase):
         cov = syn.validate_finding_codes(findings, b)
         self.assertEqual(findings[0]["code"], "SEC-X0X")
         self.assertEqual(cov["invalid_codes"], 1)
+        self.assertEqual(cov["fallbacks"].get("SEC"), 1)
+
+    def test_code_without_domain_derives_domain_from_code(self):
+        b = self._bundle()
+        findings = [{"code": "SEC-ZZZ"}]          # no "domain" key
+        cov = syn.validate_finding_codes(findings, b)
+        self.assertEqual(findings[0]["code"], "SEC-X0X")  # domain derived via ocrdb.domain_of
+        self.assertEqual(cov["invalid_codes"], 1)
+        self.assertEqual(cov["fallbacks"].get("SEC"), 1)
 
     def test_explicit_fallback_counted_as_fallback_not_invalid(self):
         b = self._bundle()
@@ -3534,3 +3543,12 @@ class TestOcrdbValidation(unittest.TestCase):
             [], "src", None, "2026-07-23T00:00:00Z")
         self.assertEqual(report["meta"]["ocrdb_version"], "0.3.1")
         self.assertIsNotNone(report["meta"]["coverage"]["ocrdb"])
+
+    def test_build_report_bundle_absent_is_null_and_safe(self):
+        with unittest.mock.patch("scripts.ocrdb.load_bundle", return_value=None):
+            report = syn.build_report(
+                [{"title": "t", "severity": "LOW", "code": "SEC-A1A", "domain": "SEC"}],
+                [], "src", None, "2026-07-23T00:00:00Z")
+        self.assertIsNone(report["meta"]["ocrdb_version"])
+        self.assertIsNone(report["meta"]["coverage"]["ocrdb"])
+        self.assertEqual(report["findings"][0]["code"], "SEC-A1A")  # untouched, bundle-absent path
