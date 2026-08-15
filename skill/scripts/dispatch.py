@@ -95,7 +95,8 @@ PLACEHOLDER_RE = re.compile(r"\{([a-z_]+)\}")
 
 ROLE_FILES = {"scout": "scout.md", "panel_review": "panel-review.md",
               "lens_sweep": "lens-sweep.md", "advisor": "advisor.md",
-              "domain_panel": "domain-panel.md"}
+              "domain_panel": "domain-panel.md",
+              "domain_advisor": "domain-advisor.md"}
 CLAUDE_AGENTS_DIR = os.path.join(os.path.expanduser("~"), ".claude", "agents")
 KIMI_AGENTS_DIR = os.path.join(os.path.expanduser("~"), ".kimi-code", "agents")
 CODEX_HOME = os.path.expanduser(os.environ.get("CODEX_HOME", "~/.codex"))
@@ -119,7 +120,8 @@ PANEL_LENSES = {
 # to per-run dispatch plans, never to persisted registrations.
 EMIT_MODEL_POLICY = {"claude": {"scout": "haiku", "lens_sweep": "haiku",
                                  "panel_review": "sonnet", "advisor": "opus",
-                                 "domain_panel": "sonnet"}}
+                                 "domain_panel": "sonnet",
+                                 "domain_advisor": "opus"}}
 
 _CHARTER = (
     "You are panopticon's `%s` reviewer (a registered enforcement shell).\n"
