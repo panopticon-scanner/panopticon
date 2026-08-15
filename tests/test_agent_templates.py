@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill", "
 import dispatch
 
 
-ROLES = ["scout.md", "panel-review.md", "lens-sweep.md", "advisor.md"]
+ROLES = ["scout.md", "panel-review.md", "lens-sweep.md", "advisor.md", "setup-scan.md"]
 
 
 class TestUntrustedContentPreamble(unittest.TestCase):
@@ -61,12 +61,12 @@ class TestTemplateFrontmatter(unittest.TestCase):
             self.assertNotIn("disallowedTools", raw, role_file)
 
     def test_tool_policy_least_privilege(self):
-        # scout/advisor are not fan-out roles and stay read-only. panel_review
+        # scout/advisor/setup-scan are not fan-out roles and stay read-only. panel_review
         # and lens_sweep (#436, spec Decision 3) hold scoped Write so they can
         # self-write their out_file; the write-guard hook (Tasks 4-5) confines
         # that Write to the plan's out_file set. Edit/Bash/Agent stay forbidden
         # for every role.
-        read_only = {"scout.md", "advisor.md"}
+        read_only = {"scout.md", "advisor.md", "setup-scan.md"}
         scoped_write = {"panel-review.md", "lens-sweep.md"}
         self.assertEqual(read_only | scoped_write, set(ROLES))
         for role_file in read_only:
@@ -95,6 +95,21 @@ class TestTemplateFrontmatter(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             dispatch.load_template("nonexistent.md")
         self.assertIn("nonexistent.md", str(ctx.exception))
+
+
+class TestSetupScanTemplate(unittest.TestCase):
+    def test_renders_with_spine_and_vocabulary(self):
+        rendered = dispatch.render_prompt("setup-scan.md", {
+            "repo_spine": "src/, tests/, pyproject.toml",
+            "vocabulary_labels": "Auth, Checkout, Catalog"})
+        self.assertIn("Checkout", rendered)
+        self.assertIn("UNTRUSTED DATA", rendered)
+        self.assertIn('"capability"', rendered)  # proposal JSON shape present
+
+    def test_is_read_only(self):
+        meta, _ = dispatch.load_template("setup-scan.md")
+        self.assertEqual(meta["tool_policy"]["allowed"], ["Read", "Grep", "Glob"])
+        self.assertEqual(meta["tool_policy"]["forbidden"], ["Bash", "Edit", "Write", "Agent"])
 
 
 if __name__ == "__main__":

@@ -435,6 +435,11 @@ def load_catalog(repo):
             import yaml
             data = yaml.safe_load(text) or {}
             raw = data.get("groups") or {}
+            if isinstance(raw, list):
+                print("groups.yml: legacy list form -- normalizing to mapping; "
+                      "re-run --setup to rewrite", file=sys.stderr)
+                raw = {g.get("name"): g for g in raw
+                       if isinstance(g, dict) and g.get("name")}
             out = {}
             for name, body in raw.items():
                 body = body or {}
@@ -898,10 +903,7 @@ def _seed_groups_manifest(repo):
     artifact_dir = plan_contract.artifact_root(repo)
     path = os.path.join(artifact_dir, "groups.yml")
     if os.path.isfile(path):
-        try:
-            names = [g["name"] for g in load_catalog(repo) or []]
-        except Exception:
-            names = []
+        names = list((load_catalog(repo) or {}).keys())
         return path, False, names
     files = discover_repo_files(repo)
     tops = sorted({p.split("/", 1)[0] for p in files
@@ -911,7 +913,7 @@ def _seed_groups_manifest(repo):
              "# gitignore-flavored globs; first matching group wins; edit and commit.",
              "groups:"]
     for t in tops:
-        lines.append("  - name: %s" % t)
+        lines.append("  %s:" % t)
         lines.append("    match:")
         lines.append("      - %s/**" % t)
     with open(path, "w", encoding="utf-8") as fh:
@@ -1036,17 +1038,169 @@ def setup_readiness(repo, host=None, runner=subprocess.run, environ=None):
     return checks
 
 
-def run_setup(repo=".", host=None, runner=subprocess.run, environ=None, out=sys.stdout):
-    """#485: guided first run -- seed, scaffold, then readiness-gate."""
-    path, created, names = _seed_groups_manifest(repo)
-    print("groups manifest: %s (%s; %d group(s))"
-          % (path, "created" if created else "existing", len(names)), file=out)
+_SKILL_DATA = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+_VOCAB_PATH = os.path.join(_SKILL_DATA, "capability_vocabulary.yml")
+_AFFINITY_PATH = os.path.join(_SKILL_DATA, "capability_affinity.yml")
+
+
+def _repo_spine_summary(repo):
+    """A compact, deterministic spine the scan brief hands the agent as a
+    starting point (the agent still explores read-only for itself)."""
+    files = discover_repo_files(repo)
+    tops = sorted({p.split("/", 1)[0] for p in files if "/" in p})
+    manifests = sorted({os.path.basename(p) for p in files
+                        if os.path.basename(p) in (
+                            "pyproject.toml", "package.json", "go.mod",
+                            "Cargo.toml", "pom.xml", "requirements.txt")})
+    return "top-level: %s\nmanifests: %s" % (
+        ", ".join(tops) or "(none)", ", ".join(manifests) or "(none)")
+
+
+def render_scan_brief(repo, vocabulary):
+    """Render the setup-scan agent brief to .panopticon/setup-scan-brief.md."""
+    import dispatch
+    brief = dispatch.render_prompt("setup-scan.md", {
+        "repo_spine": _repo_spine_summary(repo),
+        "vocabulary_labels": ", ".join(vocabulary["names"]),
+    })
+    path = os.path.join(plan_contract.artifact_root(repo), "setup-scan-brief.md")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(brief)
+    return path
+
+
+def run_setup_ingest(repo=".", proposal_path=None, out=sys.stdout):
+    """Ingest a setup-scan proposal → validate → assemble (affinity floors) →
+    additive-merge vs committed groups.yml → write .panopticon/groups.yml.draft.
+    Never clobbers a committed groups.yml. Returns 0 on success, 1 on failure."""
+    import setup_proposal as sp
+    if not (os.path.isfile(_VOCAB_PATH) and os.path.isfile(_AFFINITY_PATH)):
+        print("data error: bundled vocabulary/affinity data is missing "
+              "(expected %s, %s)" % (_VOCAB_PATH, _AFFINITY_PATH), file=out)
+        return 1
+    vocab, verr = sp.load_vocabulary(_VOCAB_PATH)
+    affinity, aerr = sp.load_affinity(_AFFINITY_PATH, vocab)
+    if verr or aerr:
+        for e in verr + aerr:
+            print("data error: %s" % e, file=out)
+        return 1
+    proposal_path = proposal_path or os.path.join(
+        plan_contract.artifact_root(repo), "setup-proposal.json")
+    try:
+        with open(proposal_path, encoding="utf-8") as fh:
+            proposal = json.load(fh)
+    except (OSError, ValueError) as e:
+        print("cannot read proposal %s: %s" % (proposal_path, e), file=out)
+        return 1
+    assembled, disclosure = sp.assemble(proposal, vocab, affinity)
+    if assembled is None:
+        print("proposal rejected -- no draft written:", file=out)
+        for e in disclosure["errors"]:
+            print("  - %s" % e, file=out)
+        return 1
+    committed = _committed_matrix(repo)
+    leftovers = assign_by_catalog(discover_repo_files(repo),
+                                  {n: {"match": b["match"]}
+                                   for n, b in committed.items()})[1]
+    # Redundancy is deliberately MATCH-driven (assign_by_catalog ignores
+    # `tests`): a re-run whose only new coverage is a `tests` glob on an
+    # already-covered `match` set is dropped as redundant, not re-added
+    # (I2, accepted limitation -- tests-only extension needs a manual edit).
+    claims = assign_by_catalog(
+        leftovers, {n: {"match": b["match"]} for n, b in assembled.items()})[0]
+    merged, diff = sp.merge_additive(committed, assembled, claims)
+    draft = os.path.join(plan_contract.artifact_root(repo), "groups.yml.draft")
+    with open(draft, "w", encoding="utf-8") as fh:
+        fh.write(sp.dump_groups_yaml(merged))
+    print("draft groups.yml written: %s" % draft, file=out)
+    print("  new groups:     %s" % (", ".join(
+        g["name"] for g in diff["new_groups"]) or "(none)"), file=out)
+    print("  extended:       %s" % (", ".join(
+        g["name"] for g in diff["extended_groups"]) or "(none)"), file=out)
+    print("  dropped (redundant): %s" % (", ".join(
+        diff["dropped_redundant"]) or "(none)"), file=out)
+    if disclosure.get("collisions"):
+        for c in disclosure["collisions"]:
+            print("  merged duplicate capability %s into group %s"
+                  % (c["capability"], c["name"]), file=out)
+    for g in disclosure.get("groups", []):
+        print("  %s: %s (%s)" % (
+            g["name"], "custom" if g["custom"] else "matched",
+            g["floor_source"]), file=out)
+    print("review the draft, then move it to .panopticon/groups.yml and commit "
+          "(setup never overwrites your committed file).", file=out)
+    return 0
+
+
+def _committed_matrix(repo):
+    """Committed groups.yml as serializable {name: {match, tests, panels, exclude}},
+    preserving committed field ORDER verbatim (never-clobber is byte-faithful).
+    Empty when none is committed (first run -> adopt-all)."""
+    path = os.path.join(repo, ".panopticon", "groups.yml")
+    if not os.path.isfile(path):
+        return {}
+    import yaml
+    import groups_schema
+    with open(path, encoding="utf-8") as fh:
+        data = yaml.safe_load(fh) or {}
+    raw = data.get("groups") or {}
+    if isinstance(raw, list):  # legacy list form (Task 5)
+        raw = {g.get("name"): g for g in raw
+               if isinstance(g, dict) and g.get("name")}
+    # Validate only; errors are non-fatal on read (disclosed, not blocking) --
+    # the raw-order bodies below are returned regardless of what parse_groups
+    # finds.
+    _, errs = groups_schema.parse_groups({"groups": raw})
+    for e in errs:
+        print("committed groups.yml: %s" % e, file=sys.stderr)
+    out = {}
+    for name, body in raw.items():
+        body = body or {}
+        out[name] = {
+            "match": list(body.get("match") or []),
+            "tests": list(body.get("tests") or []),
+            "panels": list(body.get("panels") or []),
+            "exclude": list(body.get("exclude") or []),
+        }
+    return out
+
+
+def run_setup(repo=".", host=None, runner=subprocess.run, environ=None,
+             out=sys.stdout, vocabulary_path=None):
+    """#485 + P2: provision, then render the setup-scan brief (or fall back to
+    the deterministic top-dir seed when no vocabulary is available).
+
+    Spec §8: the scan path is provision -> render brief -> STOP. The flat
+    top-dir groups.yml (_seed_groups_manifest) is the vocabulary-ABSENT
+    fallback ONLY (spec §6/§7) -- it must NEVER be seeded unconditionally,
+    or a later `--ingest` would read that flat catalog back as the
+    "committed" baseline, find no leftover files, and additive-merge would
+    drop every real capability group as redundant (C1)."""
     added = _ensure_gitignore(repo)
     print("gitignore: %s" % ("added %s" % ", ".join(added) if added else "ok"),
           file=out)
     cfg, cfg_created = _seed_config(repo)
     print("config: %s (%s)" % (cfg, "created" if cfg_created else "existing"),
           file=out)
+
+    import setup_proposal as sp
+    vpath = vocabulary_path or _VOCAB_PATH
+    vocab, verr = sp.load_vocabulary(vpath) if os.path.isfile(vpath) \
+        else ({"names": []}, ["absent"])
+    if vocab["names"] and not verr:
+        brief = render_scan_brief(repo, vocab)
+        print("scan brief: %s" % brief, file=out)
+        print("  → dispatch it as the read-only setup-scan agent, save the "
+              "proposal to .panopticon/setup-proposal.json, then run "
+              "`panopticon setup --ingest`.", file=out)
+    else:
+        path, created, names = _seed_groups_manifest(repo)
+        print("groups manifest: %s (%s; %d group(s))"
+              % (path, "created" if created else "existing", len(names)), file=out)
+        print("vocabulary absent -- scan skipped; using the deterministic "
+              "top-dir seed above (edit + commit it by hand).", file=out)
+
     checks = setup_readiness(repo, host=host, runner=runner, environ=environ)
     gaps = [c for c in checks if c[1] is False]
     print("", file=out)
@@ -1101,9 +1255,18 @@ def main(argv=None):
                             "seed a committable groups.yml, scaffold "
                             ".panopticon/ + gitignore + config, then report "
                             "READY or the exact gaps (exit 1)")
+    ap.add_argument("--ingest", nargs="?", const="", default=None,
+                    help="With --setup: ingest a setup-scan proposal JSON "
+                         "(default .panopticon/setup-proposal.json) and write "
+                         "the groups.yml draft")
     args = ap.parse_args(argv)
     if args.setup:
+        if args.ingest is not None:
+            return run_setup_ingest(".", proposal_path=(args.ingest or None))
         return run_setup(".", host=None)
+    if args.ingest is not None:
+        print("panopticon: --ingest has no effect without --setup -- ignoring",
+              file=sys.stderr)
     if args.max_per_group < 1:
         print("--max-per-group must be >= 1", file=sys.stderr)
         return 2

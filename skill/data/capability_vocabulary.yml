@@ -1,0 +1,28 @@
+# Panopticon capability vocabulary (P2 FIXTURE -- replaced by calibrated #2-data).
+# The classifier maps source files onto these business-capability labels.
+# `hints` are optional match suggestions, not authoritative.
+capabilities:
+  - name: Auth
+    hints: ["**/auth/**", "**/login/**", "**/session*/**"]
+  - name: Accounts
+    hints: ["**/account*/**", "**/users/**", "**/profile*/**"]
+  - name: Checkout
+    hints: ["**/checkout/**", "**/payment*/**", "**/cart/**"]
+  - name: Billing
+    hints: ["**/billing/**", "**/invoice*/**", "**/subscription*/**"]
+  - name: Catalog
+    hints: ["**/catalog/**", "**/products/**", "**/inventory/**"]
+  - name: Search
+    hints: ["**/search/**", "**/index*/**", "**/query/**"]
+  - name: Fulfillment
+    hints: ["**/fulfil*/**", "**/shipping/**", "**/orders/**"]
+  - name: Notifications
+    hints: ["**/notif*/**", "**/email*/**", "**/messaging/**"]
+  - name: Reporting
+    hints: ["**/report*/**", "**/analytics/**", "**/dashboard*/**"]
+  - name: Admin
+    hints: ["**/admin/**", "**/backoffice/**"]
+  - name: API
+    hints: ["**/api/**", "**/routes/**", "**/graphql/**"]
+  - name: Platform
+    hints: ["**/core/**", "**/common/**", "**/lib/**", "**/util*/**"]
