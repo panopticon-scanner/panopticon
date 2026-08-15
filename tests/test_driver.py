@@ -316,5 +316,28 @@ class TestToolsPhase(unittest.TestCase):
         self.assertTrue(driver._load_json(driver._pano(self.root, "tools-ran.json"))["skipped"])
 
 
+class TestNoopPhases(unittest.TestCase):
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self._t.name)
+        os.makedirs(driver._pano(self.root))
+        self.addCleanup(self._t.cleanup)
+        self.manifest = {"run_id": "R"}
+
+    def test_review_noop_advances_and_marks(self):
+        result = driver.review_execute(self.root, self.manifest)
+        self.assertEqual(result.kind, "advanced")
+        self.assertTrue(driver.review_done(self.root, self.manifest))
+
+    def test_verify_noop_creates_verdicts_dir(self):
+        driver.verify_execute(self.root, self.manifest)
+        self.assertTrue(os.path.isdir(driver._pano(self.root, "verdicts")))
+        self.assertTrue(driver.verify_done(self.root, self.manifest))
+
+    def test_marker_from_other_run_is_not_done(self):
+        driver.review_execute(self.root, {"run_id": "OLD"})
+        self.assertFalse(driver.review_done(self.root, {"run_id": "NEW"}))
+
+
 if __name__ == "__main__":
     unittest.main()

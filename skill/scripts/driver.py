@@ -310,3 +310,29 @@ def tools_execute(review_root, manifest):
     return PhaseResult(kind="advanced",
                        message="tools: %s" % ("produced output" if produced
                                               else "SKIPPED — " + note))
+
+
+def _noop_done(name):
+    def done(review_root, manifest):
+        data = _load_json(_pano(review_root, name))
+        return isinstance(data, dict) and data.get("run_id") == manifest.get("run_id")
+    return done
+
+
+def review_execute(review_root, manifest):
+    _write_json(_pano(review_root, "review-noop.json"),
+                {"noop": True, "run_id": manifest["run_id"],
+                 "note": "P3 skeleton: review is a wired no-op; P4 renders cells"})
+    return PhaseResult(kind="advanced", message="review: no-op (P4 fills cells)")
+
+
+def verify_execute(review_root, manifest):
+    os.makedirs(_pano(review_root, "verdicts"), exist_ok=True)
+    _write_json(_pano(review_root, "verify-noop.json"),
+                {"noop": True, "run_id": manifest["run_id"],
+                 "note": "P3 skeleton: verify is a wired no-op; P5 wires advisor+score_gate"})
+    return PhaseResult(kind="advanced", message="verify: no-op (P5 wires advisor)")
+
+
+review_done = _noop_done("review-noop.json")
+verify_done = _noop_done("verify-noop.json")
