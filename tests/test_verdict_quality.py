@@ -58,3 +58,42 @@ def test_build_report_counts_land_in_ocrdb_coverage(tmp_path):
     ocrdb_cov = report["meta"]["coverage"]["ocrdb"]
     assert ocrdb_cov["overrides"]["count"] == 1
     assert "code_corrections" in ocrdb_cov
+
+def test_override_de_escalation_counts_down():
+    b = _bundle()  # SEC-A1A default MEDIUM
+    f = {"id": "SEC-1", "code": "SEC-A1A", "severity": "LOW", "domain": "SEC",
+         "severity_override": {"from": "MEDIUM", "to": "LOW", "reason": "intended lower"}}
+    cov = synthesize.apply_verdict_quality([f], {}, b)
+    assert cov["overrides"] == {"count": 1, "up": 0, "down": 1}
+
+def test_bundle_absent_missing_reason_override_leaves_severity_no_crash():
+    f = {"id": "SEC-1", "code": "SEC-A1A", "severity": "CRITICAL",
+         "severity_override": {"from": "MEDIUM", "to": "CRITICAL"}}   # no reason
+    cov = synthesize.apply_verdict_quality([f], {}, None)             # bundle absent
+    assert f["severity"] == "CRITICAL"          # untouched (default_severity None -> can't revert)
+    assert "severity_override" not in f          # override still dropped + disclosed
+    assert cov["code_corrections"] == 0
+
+def test_backup_confirmed_not_set_for_primary_or_backup_reject():
+    f1 = {"id": "SEC-1", "code": "SEC-A1A", "severity": "HIGH"}
+    synthesize.apply_verdict_quality(
+        [f1], {id(f1): {"verdict": "CONFIRMED", "stage": "primary"}}, _bundle())
+    assert "backup_confirmed" not in f1          # primary confirm != double-confirm
+    f2 = {"id": "SEC-2", "code": "SEC-A1A", "severity": "HIGH"}
+    synthesize.apply_verdict_quality(
+        [f2], {id(f2): {"verdict": "REJECTED", "stage": "backup"}}, _bundle())
+    assert "backup_confirmed" not in f2          # backup reject != confirm
+
+def test_code_correction_noops():
+    b = _bundle()
+    f1 = {"id": "SEC-1", "code": "SEC-A1A", "severity": "LOW"}          # verdict has no code
+    synthesize.apply_verdict_quality([f1], {id(f1): {"verdict": "CONFIRMED"}}, b)
+    assert f1["code"] == "SEC-A1A" and "code_corrected_by" not in f1
+    f2 = {"id": "SEC-2", "code": "SEC-A1A", "severity": "LOW"}          # invalid code
+    synthesize.apply_verdict_quality(
+        [f2], {id(f2): {"code": "SEC-ZZZ", "verdict": "CONFIRMED"}}, b)
+    assert f2["code"] == "SEC-A1A" and "code_corrected_by" not in f2
+    f3 = {"id": "SEC-3", "code": "SEC-A1A", "severity": "LOW"}          # code == finding's own
+    cov = synthesize.apply_verdict_quality(
+        [f3], {id(f3): {"code": "SEC-A1A", "verdict": "CONFIRMED"}}, b)
+    assert cov["code_corrections"] == 0
