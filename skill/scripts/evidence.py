@@ -374,6 +374,12 @@ def load_verdicts_detailed(verdicts_dir):
     previously vanish with only a stderr note -- hiding a lost verdict from
     meta.coverage. Callers surface ``unloadable`` in the report so a corrupt
     verdict is visible, not silently dropped (#938).
+
+    A verdict BUNDLE ({"verdicts": [...], "_panopticon": {...}}, the P5 per-cell
+    flow) is a different file shape, not a legacy single-verdict file, and is
+    skipped here -- symmetric with how load_verdict_bundles skips single-verdict
+    files -- so it is handled exactly once, by load_verdict_bundles, instead of
+    being misreported here as "missing/invalid verdict key".
     """
     out = {}
     unloadable = []
@@ -394,6 +400,8 @@ def load_verdicts_detailed(verdicts_dir):
                                "reason": "%s: %s"
                                % (kind, (str(e).splitlines() or [""])[0])})
             continue
+        if isinstance(data, dict) and isinstance(data.get("verdicts"), list):
+            continue   # a verdict BUNDLE (handled by load_verdict_bundles); not a legacy single-verdict file
         if (not isinstance(data, dict)
                 or str(data.get("verdict", "")).upper() not in VERDICT_VALUES):
             print("evidence: skipping verdict %s: missing/invalid verdict key" % name,

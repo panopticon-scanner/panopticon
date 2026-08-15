@@ -645,7 +645,17 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
 def engaged_matrix_cells(findings):
     """Matrix (group, domain) cells scoring >= F_p — the cells a primary advisor
     engages. Called BEFORE verdicts are derived, so the score uses the unverified
-    evidence factor, exactly as driver.verify_execute decides engagement."""
+    evidence factor, the same as driver.verify_execute's own engagement decision.
+
+    `findings` here is the DEDUPED/aggregated list (prepare_for_queue has
+    already run), whereas driver.verify_execute/verify_done score
+    should_engage_primary on the raw per-cell list (see
+    driver._load_cell_findings) -- dedup only removes findings, never adds
+    them, so the cells this returns are a subset of what the driver engaged,
+    never a superset. Safe: verify_done gates synthesize, so every
+    driver-engaged cell already has a verdict bundle on disk by the time this
+    runs; the discrepancy only shows up as a possible undercount in
+    meta.coverage.verify_matrix.engaged when exact-duplicate findings collapse."""
     cells = {}
     for f in findings:
         grp, dom = f.get("_group"), f.get("domain")
@@ -1250,9 +1260,10 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
     matched_n = 0
     unanswered = 0
     by_fid = verdict_bundles or {}
-    # Computed on PRE-verdict evidence (nothing below has applied a verdict yet),
-    # so the score matches driver.verify_execute's own engagement decision —
-    # see engaged_matrix_cells.
+    # Computed on PRE-verdict evidence (nothing below has applied a verdict yet)
+    # and on this DEDUPED `findings` list, so it is a subset of (never
+    # identical to) driver.verify_execute's own engagement decision, which
+    # scores the raw per-cell list -- see engaged_matrix_cells's docstring.
     engaged_cells = engaged_matrix_cells(findings)
     for entry in queue:
         v = evidence_mod.match_verdict(entry, verdicts, run_id=verdict_run_id)

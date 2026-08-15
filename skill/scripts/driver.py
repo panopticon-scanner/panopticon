@@ -373,7 +373,16 @@ def _load_cell_findings(review_root, manifest, group, domain):
     corroborated_by/evidence) before normalizing, mirroring synthesize.load_findings:
     a raw panel finding must never carry a self-asserted `evidence.status` into
     score_gate.should_engage_primary, or a forged "rejected" (factor 0.0) would
-    let a finding duck the F_p gate entirely."""
+    let a finding duck the F_p gate entirely.
+
+    verify_execute/verify_done feed this RAW per-cell list straight into
+    score_gate.should_engage_primary -- no cross-cell dedup. synthesize's own
+    engagement check (engaged_matrix_cells) scores the deduped/aggregated list
+    produced by prepare_for_queue instead, so synth-engaged is a subset of
+    driver-engaged, never the reverse. This is a bounded, safe discrepancy:
+    verify_done gates synthesize (every driver-engaged cell already has a
+    bundle before synthesize runs), but meta.coverage.verify_matrix.engaged can
+    undercount when exact-duplicate findings collapse in dedup."""
     if not _cell_done(review_root, manifest, group, domain):
         return None
     data = _load_json(_pano(review_root, "findings-%s-%s.json" % (group, domain)))
