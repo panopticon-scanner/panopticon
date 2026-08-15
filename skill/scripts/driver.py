@@ -371,3 +371,56 @@ def synthesize_execute(review_root, manifest):
         raise DriverError("synthesize produced no report.json (rc=%s): %s"
                           % (proc.returncode, (proc.stderr or proc.stdout)[:400]))
     return PhaseResult(kind="advanced", message="synthesize: report.json written")
+
+
+def capture_tree_baseline(review_root, runner=subprocess.run):
+    """Snapshot the clean-tree baseline once (run start). No-op for a non-git
+    target (returns None)."""
+    baseline = _pano(review_root, "tree-baseline.txt")
+    if os.path.exists(baseline):
+        return baseline
+    proc = runner(["git", "-C", review_root, "status", "--porcelain"],
+                  capture_output=True, text=True)
+    if proc.returncode != 0:
+        return None
+    os.makedirs(os.path.dirname(baseline), exist_ok=True)
+    with open(baseline, "w", encoding="utf-8") as fh:
+        fh.write(proc.stdout)
+    return baseline
+
+
+def _tree_delta(review_root, runner):
+    """NEW porcelain lines (vs. baseline) whose path is outside .panopticon/.
+    Empty when there is no baseline (non-git) — nothing to compare."""
+    try:
+        with open(_pano(review_root, "tree-baseline.txt"), encoding="utf-8") as fh:
+            baseline = set(fh.read().splitlines())
+    except OSError:
+        return []
+    proc = runner(["git", "-C", review_root, "status", "--porcelain"],
+                  capture_output=True, text=True)
+    if proc.returncode != 0:
+        return []
+    new = set(proc.stdout.splitlines()) - baseline
+    # porcelain line = "XY <path>"; path begins at column 3
+    return sorted(line for line in new if not line[3:].startswith(".panopticon"))
+
+
+def validate_done(review_root, manifest):
+    data = _load_json(_pano(review_root, "validate.json"))
+    return (isinstance(data, dict) and data.get("run_id") == manifest.get("run_id")
+            and data.get("tree_clean") is True)
+
+
+def validate_execute(review_root, manifest, runner=subprocess.run):
+    delta = _tree_delta(review_root, runner)
+    worktree = manifest.get("worktree")
+    if worktree:
+        diff_map.release_worktree(worktree, repo=review_root)   # tolerant
+    _write_json(_pano(review_root, "validate.json"),
+                {"run_id": manifest["run_id"], "tree_clean": not delta,
+                 "unexpected_changes": delta})
+    if delta:
+        raise DriverError("validate: reviewer side effects outside .panopticon/: "
+                          + "; ".join(delta[:10]))
+    return PhaseResult(kind="advanced", message="validate: clean tree")

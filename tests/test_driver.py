@@ -393,5 +393,59 @@ class TestSynthesizePhase(unittest.TestCase):
                 driver.synthesize_execute(self.root, self.manifest)
 
 
+class TestValidatePhase(unittest.TestCase):
+    def _git_repo(self):
+        import shutil as _sh
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: _sh.rmtree(d, ignore_errors=True))
+        subprocess.run(["git", "init", "-q", d], check=True)
+        subprocess.run(["git", "-C", d, "config", "user.email", "t@t"], check=True)
+        subprocess.run(["git", "-C", d, "config", "user.name", "t"], check=True)
+        open(os.path.join(d, "a.py"), "w").close()
+        subprocess.run(["git", "-C", d, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", d, "commit", "-qm", "init"], check=True)
+        os.makedirs(os.path.join(d, ".panopticon"))
+        return d
+
+    def test_clean_tree_advances(self):
+        d = self._git_repo()
+        driver.capture_tree_baseline(d)
+        m = {"run_id": "R", "worktree": None}
+        result = driver.validate_execute(d, m)
+        self.assertEqual(result.kind, "advanced")
+        self.assertTrue(driver.validate_done(d, m))
+
+    def test_reviewer_side_effect_outside_panopticon_raises(self):
+        d = self._git_repo()
+        driver.capture_tree_baseline(d)
+        open(os.path.join(d, "leaked.py"), "w").close()   # NEW file outside .panopticon
+        m = {"run_id": "R", "worktree": None}
+        with self.assertRaises(driver.DriverError):
+            driver.validate_execute(d, m)
+        self.assertFalse(driver.validate_done(d, m))   # dirty tree != validated
+
+    def test_panopticon_changes_are_ignored(self):
+        d = self._git_repo()
+        driver.capture_tree_baseline(d)
+        open(os.path.join(d, ".panopticon", "report.json"), "w").close()
+        result = driver.validate_execute(d, {"run_id": "R", "worktree": None})
+        self.assertEqual(result.kind, "advanced")
+
+    def test_releases_pr_worktree(self):
+        d = self._git_repo()
+        driver.capture_tree_baseline(d)
+        with mock.patch("scripts.driver.diff_map.release_worktree") as rel:
+            driver.validate_execute(d, {"run_id": "R", "worktree": "/tmp/pr-wt"})
+        rel.assert_called_once()
+
+    def test_non_git_target_has_no_baseline_and_advances(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = os.path.realpath(d)
+            os.makedirs(os.path.join(d, ".panopticon"))
+            self.assertIsNone(driver.capture_tree_baseline(d))
+            result = driver.validate_execute(d, {"run_id": "R", "worktree": None})
+            self.assertEqual(result.kind, "advanced")
+
+
 if __name__ == "__main__":
     unittest.main()
