@@ -41,6 +41,9 @@
         "version": {
           "type": "string"
         },
+        "ocrdb_version": {
+          "type": ["string", "null"]
+        },
         "security_mode": {
           "type": "string",
           "enum": [
@@ -210,6 +213,17 @@
                 "null"
               ],
               "description": "Delta-review disclosure (#449): {base, base_source, base_commit, delta_start, delta_end, includes_uncommitted, files_changed, diff_context, on_diff_total, pre_existing_total}; null outside delta mode."
+            },
+            "ocrdb": {
+              "type": ["object", "null"],
+              "properties": {
+                "invalid_codes": {
+                  "type": "integer"
+                },
+                "fallbacks": {
+                  "type": "object"
+                }
+              }
             }
           }
         },
@@ -536,6 +550,24 @@
           },
           "category": {
             "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "domain": {
+            "type": "string",
+            "enum": [
+              "SEC",
+              "COD",
+              "ARC",
+              "TST",
+              "QAL",
+              "AGT",
+              "DAT",
+              "OPS",
+              "ACC",
+              "LNG"
+            ]
           },
           "source_role": {
             "type": "string",

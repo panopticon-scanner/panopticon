@@ -138,6 +138,32 @@ class TestNormalize(unittest.TestCase):
         self.assertEqual(f["location"]["line_end"], 10)
 
 
+class TestNormalizeCodeDomain(unittest.TestCase):
+    def test_code_and_domain_pass_through(self):
+        f = syn.normalize_finding({"code": "SEC-A1A", "domain": "SEC",
+                                     "panel": "security"})
+        self.assertEqual(f["code"], "SEC-A1A")
+        self.assertEqual(f["domain"], "SEC")
+
+    def test_panel_backfilled_from_domain_when_absent(self):
+        # a domain-scoped finding with no valid panel gets panel from the map
+        f = syn.normalize_finding({"code": "DAT-A1A", "domain": "DAT"})
+        self.assertEqual(f["panel"], "database")
+
+    def test_panel_backfilled_for_domain_without_legacy_panel(self):
+        f = syn.normalize_finding({"code": "OPS-A1A", "domain": "OPS"})
+        self.assertEqual(f["panel"], "code")   # OPS has no legacy panel -> code
+
+    def test_explicit_valid_panel_is_not_overridden(self):
+        f = syn.normalize_finding({"domain": "SEC", "panel": "database"})
+        self.assertEqual(f["panel"], "database")   # caller's valid panel wins
+
+    def test_no_domain_no_code_is_unchanged_behavior(self):
+        f = syn.normalize_finding({"title": "x"})
+        self.assertEqual(f["panel"], "code")       # existing default
+        self.assertNotIn("code", f)
+
+
 class TestLoad(unittest.TestCase):
     def test_tolerant_json_with_fences(self):
         body = "```json\n{\"findings\": [{\"severity\": \"LOW\"}]}\n```"

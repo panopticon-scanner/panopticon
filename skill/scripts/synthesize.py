@@ -23,6 +23,7 @@ import scripts.evidence as evidence_mod
 import scripts.group_runner as group_runner
 import scripts.html_report as html_report
 import scripts.ingest_tools as ingest_tools
+import scripts.ocrdb as ocrdb
 import scripts.plan_contract as plan_contract
 from scripts.tools import EXECUTES_TARGET_BUILD
 
@@ -72,8 +73,14 @@ def normalize_finding(f):
     else:
         verdict = str(f.get("verdict", "")).upper()
         f["confidence"] = VERDICT_TO_CONFIDENCE.get(verdict, "POSSIBLE")
-    if f.get("panel") not in VALID_PANELS:
-        f["panel"] = "code"
+    # panel: keep a valid legacy panel; else derive from the finding's domain
+    # (matrix cells are domain-scoped); else the historical "code" default.
+    panel = f.get("panel")
+    if panel not in VALID_PANELS:
+        domain = f.get("domain") or ocrdb.domain_of(f.get("code"))
+        panel = ocrdb.DOMAIN_TO_PANEL.get(domain, "code")
+    f["panel"] = panel
+    # code/domain pass through untouched (validated at synthesize; never fabricated here)
     lens = f.get("lens")
     if lens:
         f["lens"] = str(lens)
