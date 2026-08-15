@@ -657,9 +657,16 @@ def severity_stats(findings):
 
 
 ID_RE = re.compile(r"^[A-Z]{2,8}-\d{3,}$")  # {2,8}: real agents emit e.g. STRUCT-001
+# Axis alternation: the 6 legacy PANEL_ORDER names (4.x findings-<group>-<panel>
+# [-panel_review|-lens_sweep-<lens>].json) plus the 10 P4 matrix domain codes
+# (findings-<group>-<domain>.json, no further suffix -- see present_cells, which
+# parses the same P4 shape independently off groups_schema.DOMAINS to avoid
+# drift). Keyed off groups_schema.DOMAINS, not a hardcoded literal, so a future
+# roster change (P6+) only has to update one place.
+_AXES = list(PANEL_ORDER) + sorted(groups_schema.DOMAINS)
 GROUP_RE = re.compile(
     r"^findings-(.+)-(?:%s)"
-    r"(?:-panel_review|-lens_sweep-[A-Za-z0-9_]+)?\.json$" % "|".join(PANEL_ORDER))
+    r"(?:-panel_review|-lens_sweep-[A-Za-z0-9_]+)?\.json$" % "|".join(_AXES))
 def out_of_scope_findings(findings_paths, plan):
     """#441: count agent findings whose location.file falls outside the FILE
     LIST of the group their findings-file belongs to (per the dispatch plan).

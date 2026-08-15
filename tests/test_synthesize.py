@@ -1020,6 +1020,18 @@ class TestGroupTag(unittest.TestCase):
                 self.assertEqual(out[0]["_group"], "mygroup")
                 self.assertEqual(out[0]["panel"], panel)
 
+    def test_load_findings_tags_group_from_domain_suffixed_filenames(self):
+        # P4 review cells write findings-<group>-<domain>.json (groups_schema.DOMAINS,
+        # e.g. "SEC"), no panel_review/lens_sweep suffix -- GROUP_RE must parse this
+        # shape too, or _group tagging silently fails for every matrix cell.
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "findings-Auth-SEC.json")
+            with open(p, "w") as fh:
+                json.dump({"findings": [{"severity": "LOW", "domain": "SEC",
+                                          "code": "SEC-X0X"}]}, fh)
+            out = syn.load_findings([p])
+            self.assertEqual(out[0]["_group"], "Auth")
+
 
 class TestPipelineCitations(unittest.TestCase):
     def test_citations_enriched_end_to_end(self):
@@ -1510,6 +1522,14 @@ class TestGroupReMatchesDispatchNames(unittest.TestCase):
         m = syn.GROUP_RE.match("findings-changes_1-security.json")
         self.assertIsNotNone(m)
         self.assertEqual(m.group(1), "changes_1")
+
+    def test_matches_p4_domain_suffixed_names(self):
+        # P4 review cells: findings-<group>-<domain>.json, domain from
+        # groups_schema.DOMAINS (e.g. "SEC"), no further panel_review/lens_sweep
+        # suffix. GROUP_RE's axis alternation must include the domain codes.
+        m = syn.GROUP_RE.match("findings-Auth-SEC.json")
+        self.assertIsNotNone(m)
+        self.assertEqual(m.group(1), "Auth")
 
 
 def _agentic(fid="AG-001", sev="HIGH", **kw):

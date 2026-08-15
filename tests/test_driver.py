@@ -699,5 +699,69 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         self.assertTrue(os.path.exists(driver._pano(d, "tree-baseline.txt")))
 
 
+class TestReviewMatrixEndToEnd(unittest.TestCase):
+    """Task 6: the whole 5.0 review matrix, end to end, against the real
+    driver + orchestrator + synthesize subprocesses -- discovery -> coverage
+    (+scout domains) -> tools -> review (cells fire) -> verify (no-op) ->
+    synthesize -> a real report.json with (domain, code) findings."""
+
+    def _repo(self):
+        import shutil as _sh
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: _sh.rmtree(d, ignore_errors=True))
+        g = ["git", "-C", d]
+        subprocess.run(["git", "init", "-q", d], check=True)
+        subprocess.run(g + ["config", "user.email", "t@t"], check=True)
+        subprocess.run(g + ["config", "user.name", "t"], check=True)
+        os.makedirs(os.path.join(d, "src"))
+        with open(os.path.join(d, "src", "app.py"), "w") as fh:
+            fh.write("def f():\n    return 1\n")
+        os.makedirs(os.path.join(d, ".panopticon"))
+        with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
+            fh.write("groups:\n  Core:\n    match: ['src/**']\n    panels: [COD]\n")
+        subprocess.run(g + ["add", "-A"], check=True)
+        subprocess.run(g + ["commit", "-qm", "init"], check=True)
+        return d
+
+    def _args(self, d):
+        return driver.build_parser().parse_args(["run", d, "--host", "claude"])
+
+    def _service(self, d, status, run_id):
+        # emulate the orchestrator dispatching whatever the checkpoint asked for
+        if status.get("checkpoint") == "scout":
+            for g, _ in driver._discovered_groups(d):
+                p = driver._pano(d, "scout-%s.json" % g)
+                if not os.path.exists(p):
+                    driver._write_json(p, {"group": g, "domains": ["COD"]})
+        elif status.get("checkpoint") == "review":
+            req = driver._load_json(driver._pano(d, "dispatch-request.json"))
+            for e in req["entries"]:
+                dom = e["id"].rsplit("-", 1)[-1]
+                driver._write_json(e["out_file"], {
+                    "findings": [{"title": "t", "severity": "LOW",
+                                  "domain": dom, "code": dom + "-X0X",
+                                  "location": {"file": "src/app.py", "line": 1}}],
+                    "_panopticon": {"run_id": run_id, "role": "domain_panel",
+                                    "domain": dom, "group": req["group"]}})
+
+    def test_review_matrix_reaches_report_with_coded_findings(self):
+        d = self._repo()
+        args = self._args(d)
+        status = driver.run(args)
+        run_id = run_manifest.load_manifest(d)["run_id"]
+        for _ in range(40):
+            if status["status"] == "checkpoint":
+                self._service(d, status, run_id)
+            status = driver.run(args)
+            self.assertNotEqual(status["status"], "error", status.get("message"))
+            if status["status"] == "complete":
+                break
+        self.assertEqual(status["status"], "complete")
+        report = driver._load_json(driver._pano(d, "report.json"))
+        codes = [f.get("code") for f in report.get("findings", [])]
+        self.assertTrue(any(c and c.startswith("COD") for c in codes))
+        self.assertEqual(report["meta"]["ocrdb_version"], "0.3.1")
+
+
 if __name__ == "__main__":
     unittest.main()
