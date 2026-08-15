@@ -97,6 +97,33 @@ def finding_fingerprint(finding):
     return hashlib.sha256(payload).hexdigest()[:16]
 
 
+def matrix_finding_id(finding):
+    """Deterministic, schema-valid (^[A-Z]{2,8}-[0-9]{3,}$), stable per-finding
+    identity for a matrix (domain-scoped) finding.
+
+    Pure over the finding's OWN stable fields, so the driver (per-cell, Slice B)
+    and synthesize (global) compute the SAME id independently. Callers MUST pass a
+    finding already run through synthesize.normalize_finding so title/category
+    defaults agree on both sides. Deliberately NOT keyed on finding_fingerprint:
+    that hashes `panel`, which a raw cell finding lacks but normalize derives, so
+    the two views would diverge. Includes line_start so two findings sharing a
+    (domain, category, file, title) but at different lines get distinct ids.
+    """
+    dom = finding.get("domain")
+    if not dom:
+        code = finding.get("code") or ""
+        dom = code.split("-", 1)[0] if "-" in code else "GEN"
+    if not (2 <= len(dom) <= 8 and dom.isalpha() and dom.isupper()):
+        dom = "GEN"
+    loc = finding.get("location") or {}
+    title = " ".join(str(finding.get("title") or "").split())
+    seed = "|".join([dom, str(finding.get("category") or ""),
+                     norm_path(loc.get("file")), title,
+                     str(loc.get("line_start"))])
+    num = int(hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8], 16)
+    return "%s-%03d" % (dom, num)   # %03d: >=3 digits, never truncates a big num
+
+
 def reconcile_key(finding):
     """Coarse CROSS-RUN identity: (normalized_file, panel, category) -- or,
     once a finding carries an OCRDb domain code (5.0), the tighter

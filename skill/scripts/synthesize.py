@@ -179,6 +179,8 @@ def load_findings(paths):
                           % (forbidden, f.get("id", "?"), path), file=sys.stderr)
                     f.pop(forbidden, None)
             nf = normalize_finding(f)
+            if not ID_RE.match(nf.get("id") or ""):
+                nf["id"] = evidence_mod.matrix_finding_id(nf)
             if group is not None:
                 nf["_group"] = group
             out.append(nf)
