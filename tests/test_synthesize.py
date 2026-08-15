@@ -478,6 +478,59 @@ class TestCertify(unittest.TestCase):
         self.assertFalse(r["coverage_certified"])
 
 
+class TestFloorCellAudit(unittest.TestCase):
+    """matrix Sec5.1: a FLOOR (domain, group) cell with no findings file is
+    the INCONCLUSIVE story -- certifiable coverage, not just requested."""
+
+    def test_missing_floor_cell_is_inconclusive(self):
+        # a coverage file declares SEC as floor; no findings-<g>-SEC.json exists
+        cells = syn.audit_floor_cells(
+            [{"group": "Auth", "floor": ["SEC"], "effective": ["SEC"]}],
+            present={"Auth": set()})            # no cell findings present
+        self.assertEqual(cells["missing_floor"], [["Auth", "SEC"]])
+
+    def test_present_floor_cell_ok(self):
+        cells = syn.audit_floor_cells(
+            [{"group": "Auth", "floor": ["SEC"], "effective": ["SEC"]}],
+            present={"Auth": {"SEC"}})
+        self.assertEqual(cells["missing_floor"], [])
+
+
+class TestPresentCells(unittest.TestCase):
+    """present_cells: derives {group: set(domains)} from findings-<group>-
+    <domain>.json names -- the audit_floor_cells `present` input, as build_
+    report derives it from ingested_paths."""
+
+    def test_parses_group_and_domain(self):
+        self.assertEqual(
+            syn.present_cells([os.path.join(".panopticon", "findings-Auth-SEC.json")]),
+            {"Auth": {"SEC"}})
+
+    def test_hyphenated_group_name_preserved(self):
+        # groups may themselves contain hyphens; the domain is the fixed
+        # hyphen-free suffix, so rpartition keeps the rest as the group.
+        self.assertEqual(
+            syn.present_cells(["findings-my-group-DAT.json"]),
+            {"my-group": {"DAT"}})
+
+    def test_legacy_panel_suffixed_names_do_not_match(self):
+        # lowercase panel tokens (and -panel_review/-lens_sweep-<lens>
+        # suffixes) are never a domain code -- no false "present" cell.
+        self.assertEqual(
+            syn.present_cells(["findings-g1-code-panel_review.json",
+                               "findings-g1-security.json"]),
+            {})
+
+    def test_multiple_domains_accumulate_per_group(self):
+        self.assertEqual(
+            syn.present_cells(["findings-Auth-SEC.json", "findings-Auth-DAT.json"]),
+            {"Auth": {"SEC", "DAT"}})
+
+    def test_empty_and_none_tolerated(self):
+        self.assertEqual(syn.present_cells([]), {})
+        self.assertEqual(syn.present_cells(None), {})
+
+
 class TestReport(unittest.TestCase):
     def _finding(self, **kw):
         base = {"id": "CD-001", "title": "t", "severity": "LOW", "confidence": "POSSIBLE",
@@ -2615,6 +2668,39 @@ class TestCoverageDivergence(unittest.TestCase):
             integrity={"plans_seen": 1, "empty_dispatch_plans": 1})
         self.assertEqual(r["summary"]["gate"], "INCONCLUSIVE")
         self.assertFalse(r["summary"]["coverage_certified"])
+
+
+class TestFloorCellCoverageWiring(unittest.TestCase):
+    """5.0 (matrix Sec5.1): build_report's own wiring of audit_floor_cells --
+    not just the pure function (TestFloorCellAudit above). Mirrors
+    TestCoverageDivergence's tools_absent-level coverage for the same
+    INCONCLUSIVE-forcing mechanism."""
+    GROUPS = [{"name": "g1", "files": ["a.py"]}]
+    TS = "2026-01-01T00:00:00Z"
+
+    def test_missing_floor_cell_forces_inconclusive_and_is_disclosed(self):
+        r = syn.build_report(
+            [], self.GROUPS, "t", "high", self.TS,
+            coverages=[{"group": "g1", "floor": ["SEC"], "effective": ["SEC"]}],
+            ingested_paths=[])
+        self.assertEqual(r["meta"]["coverage"]["cells"]["missing_floor"],
+                         [["g1", "SEC"]])
+        self.assertEqual(r["summary"]["gate"], "INCONCLUSIVE")
+        self.assertFalse(r["summary"]["coverage_certified"])
+
+    def test_present_floor_cell_stays_certified(self):
+        r = syn.build_report(
+            [], self.GROUPS, "t", "high", self.TS,
+            coverages=[{"group": "g1", "floor": ["SEC"], "effective": ["SEC"]}],
+            ingested_paths=[os.path.join(".panopticon", "findings-g1-SEC.json")])
+        self.assertEqual(r["meta"]["coverage"]["cells"]["missing_floor"], [])
+        self.assertEqual(r["summary"]["gate"], "PASS")
+        self.assertTrue(r["summary"]["coverage_certified"])
+
+    def test_backward_compat_no_coverages_no_regression(self):
+        r = syn.build_report([], self.GROUPS, "t", "high", self.TS)
+        self.assertEqual(r["meta"]["coverage"]["cells"], {"missing_floor": []})
+        self.assertEqual(r["summary"]["gate"], "PASS")
 
 
 class TestResumeDisclosure(unittest.TestCase):

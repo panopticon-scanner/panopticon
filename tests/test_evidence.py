@@ -228,6 +228,22 @@ class TestReconcileKey(unittest.TestCase):
         self.assertEqual(evidence.reconcile_key({}), ("", "", ""))
 
 
+class TestReconcileKeyCode(unittest.TestCase):
+    """5.0: reconcile_key prefers the OCRDb (file, code) identity when a
+    finding carries a domain code; a code-less finding keeps the legacy
+    (file, panel, category) tuple unchanged."""
+
+    def test_code_preferred(self):
+        k = evidence.reconcile_key({"code": "SEC-A1A", "location": {"file": "a.py"},
+                                    "panel": "security", "category": "x"})
+        self.assertEqual(k, ("a.py", "code", "SEC-A1A"))
+
+    def test_falls_back_without_code(self):
+        k = evidence.reconcile_key({"location": {"file": "a.py"},
+                                    "panel": "security", "category": "x"})
+        self.assertEqual(k, ("a.py", "security", "x"))
+
+
 class TestNormPath(unittest.TestCase):
     """#977: the file normalization finding_fingerprint/reconcile_key shared
     inline is owned by norm_path, and clustering keys use the same function."""
