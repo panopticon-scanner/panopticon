@@ -274,5 +274,47 @@ class TestCoveragePhase(unittest.TestCase):
         self.assertTrue(driver.coverage_done(self.root, self.manifest))
 
 
+class TestToolsPhase(unittest.TestCase):
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self._t.name)
+        os.makedirs(driver._pano(self.root))
+        self.addCleanup(self._t.cleanup)
+        self.manifest = {"run_id": "R", "flags": {}}
+
+    def test_produced_output_marks_ran(self):
+        def fake_run(cmd, **kw):
+            out = cmd[cmd.index("--out") + 1]
+            os.makedirs(out, exist_ok=True)
+            open(os.path.join(out, "trivy.json"), "w").close()
+            return mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch("scripts.driver.subprocess.run", side_effect=fake_run):
+            result = driver.tools_execute(self.root, self.manifest)
+        self.assertEqual(result.kind, "advanced")
+        marker = driver._load_json(driver._pano(self.root, "tools-ran.json"))
+        self.assertTrue(marker["ran"])
+        self.assertTrue(driver.tools_done(self.root, self.manifest))
+
+    def test_docker_absent_is_disclosed_skip_that_advances(self):
+        def fake_run(cmd, **kw):   # produces nothing, exits 0 (docker missing)
+            return mock.Mock(returncode=0, stdout="",
+                             stderr="panopticon-tools image not available; skipping")
+        with mock.patch("scripts.driver.subprocess.run", side_effect=fake_run):
+            result = driver.tools_execute(self.root, self.manifest)
+        self.assertEqual(result.kind, "advanced")
+        marker = driver._load_json(driver._pano(self.root, "tools-ran.json"))
+        self.assertFalse(marker["ran"])
+        self.assertTrue(marker["skipped"])
+        self.assertIn("image not available", marker["note"])
+
+    def test_no_tools_flag_skips_subprocess(self):
+        m = {"run_id": "R", "flags": {"tools": False}}
+        with mock.patch("scripts.driver.subprocess.run") as run_mock:
+            result = driver.tools_execute(self.root, m)
+        run_mock.assert_not_called()
+        self.assertEqual(result.kind, "advanced")
+        self.assertTrue(driver._load_json(driver._pano(self.root, "tools-ran.json"))["skipped"])
+
+
 if __name__ == "__main__":
     unittest.main()

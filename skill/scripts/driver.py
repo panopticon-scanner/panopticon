@@ -283,3 +283,30 @@ def coverage_execute(review_root, manifest):
         return PhaseResult(kind="advanced",
                            message="coverage: group %s (floor)" % group)
     return PhaseResult(kind="advanced", message="coverage: complete")
+
+
+def tools_done(review_root, manifest):
+    return _json_parses(_pano(review_root, "tools-ran.json"))
+
+
+def tools_execute(review_root, manifest):
+    if (manifest.get("flags") or {}).get("tools") is False:
+        _write_json(_pano(review_root, "tools-ran.json"),
+                    {"ran": False, "skipped": True, "note": "tools disabled (--no-tools)",
+                     "returncode": None, "run_id": manifest["run_id"]})
+        return PhaseResult(kind="advanced", message="tools: skipped (--no-tools)")
+    out_dir = _pano(review_root, "tools")
+    cmd = [sys.executable, _script("run_tools.py"), "--target", review_root,
+           "--out", out_dir, "--deps"]
+    proc = subprocess.run(cmd, cwd=review_root, capture_output=True, text=True,
+                          env=_child_env())
+    produced = os.path.isdir(out_dir) and bool(os.listdir(out_dir))
+    note = "" if produced else ((proc.stderr or "").strip()[:300] or "no tool output produced")
+    _write_json(_pano(review_root, "tools-ran.json"),
+                {"ran": produced, "skipped": not produced, "note": note,
+                 "returncode": proc.returncode, "run_id": manifest["run_id"]})
+    if not produced:
+        sys.stderr.write("driver: tool scan produced no output — %s\n" % note)
+    return PhaseResult(kind="advanced",
+                       message="tools: %s" % ("produced output" if produced
+                                              else "SKIPPED — " + note))
