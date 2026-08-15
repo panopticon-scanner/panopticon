@@ -26,6 +26,7 @@ import scripts.html_report as html_report
 import scripts.ingest_tools as ingest_tools
 import scripts.ocrdb as ocrdb
 import scripts.plan_contract as plan_contract
+import scripts.score_gate as score_gate
 from scripts.tools import EXECUTES_TARGET_BUILD
 
 # Moved to evidence.py (also used by evidence.load_verdicts for advisor
@@ -641,6 +642,30 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
             "coverage_certified": coverage_certified, "coverage_note": note}
 
 
+def engaged_matrix_cells(findings):
+    """Matrix (group, domain) cells scoring >= F_p — the cells a primary advisor
+    engages. Called BEFORE verdicts are derived, so the score uses the unverified
+    evidence factor, exactly as driver.verify_execute decides engagement."""
+    cells = {}
+    for f in findings:
+        grp, dom = f.get("_group"), f.get("domain")
+        if grp is None or dom is None:
+            continue
+        cells.setdefault((grp, dom), []).append(f)
+    return {key for key, cf in cells.items() if score_gate.should_engage_primary(cf)}
+
+
+def _finding_owed_verification(finding, engaged):
+    """Was this finding owed an advisor verdict? A matrix finding is owed only when
+    its cell is engaged (>= F_p); a below-gate cell is skipped by design and its
+    unverified findings must NOT force INCONCLUSIVE. A non-matrix (4.x) finding is
+    always owed — unchanged behavior."""
+    grp, dom = finding.get("_group"), finding.get("domain")
+    if grp is not None and dom is not None:
+        return (grp, dom) in engaged
+    return True
+
+
 def audit_floor_cells(coverages, present):
     """Certifiable-coverage check (matrix Sec5.1): every FLOOR (domain, group)
     cell must have produced a findings file. `coverages` = the per-group
@@ -1225,6 +1250,10 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
     matched_n = 0
     unanswered = 0
     by_fid = verdict_bundles or {}
+    # Computed on PRE-verdict evidence (nothing below has applied a verdict yet),
+    # so the score matches driver.verify_execute's own engagement decision —
+    # see engaged_matrix_cells.
+    engaged_cells = engaged_matrix_cells(findings)
     for entry in queue:
         v = evidence_mod.match_verdict(entry, verdicts, run_id=verdict_run_id)
         if v is None and by_fid:
@@ -1233,9 +1262,22 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
         if v is not None:
             evidence_mod.apply_verdict(entry["finding"], v)
             matched_n += 1
-        elif verdicts_supplied:
+        elif verdicts_supplied and _finding_owed_verification(entry["finding"], engaged_cells):
             unanswered += 1
         matched[id(entry["finding"])] = v
+    # P5 verify-matrix disclosure: engaged cells (>= F_p) that received no
+    # verdict -- the same cells that just drove `unanswered` above. A cell
+    # counts as verified once ANY of its findings matched a verdict.
+    verified_cells = set()
+    for f in findings:
+        if matched.get(id(f)) is not None:
+            grp, dom = f.get("_group"), f.get("domain")
+            if grp is not None and dom is not None:
+                verified_cells.add((grp, dom))
+    verify_matrix_cov = {
+        "engaged": len(engaged_cells),
+        "unverified_engaged": sorted(list(k) for k in engaged_cells
+                                     if k not in verified_cells)}
     if ocrdb_coverage is not None:
         ocrdb_coverage.update(apply_verdict_quality(findings, matched, ocrdb_bundle))
     if unanswered:
@@ -1431,6 +1473,10 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                 "doc_policy": doc_policy,
                 "verdicts": verdict_stats,
                 "ocrdb": ocrdb_coverage,   # None when no bundle vendored (= 4.x)
+                # P5 verify-matrix accounting: engaged (>= F_p) cell count and the
+                # engaged cells left unverified -- the same set that forces gate
+                # INCONCLUSIVE via the gate-aware `unanswered` count above.
+                "verify_matrix": verify_matrix_cov,
                 "fan_out": fan_out,
                 "divergence": divergence,
                 # 5.0 (matrix Sec5.1): per-floor-cell certifiable-coverage
