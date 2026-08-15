@@ -339,5 +339,59 @@ class TestNoopPhases(unittest.TestCase):
         self.assertFalse(driver.review_done(self.root, {"run_id": "NEW"}))
 
 
+class TestSynthesizePhase(unittest.TestCase):
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self._t.name)
+        os.makedirs(driver._pano(self.root))
+        self.addCleanup(self._t.cleanup)
+        self.manifest = {"run_id": "R", "security_mode": "standard",
+                         "flags": {"fail_on": "high"}}
+
+    def test_builds_report_via_verdicts_dir_form(self):
+        captured = {}
+        def fake_run(cmd, **kw):
+            captured["cmd"] = cmd
+            with open(cmd[cmd.index("--out") + 1], "w") as fh:
+                json.dump({"grade": "A", "findings": []}, fh)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch("scripts.driver.subprocess.run", side_effect=fake_run):
+            result = driver.synthesize_execute(self.root, self.manifest)
+        self.assertEqual(result.kind, "advanced")
+        self.assertTrue(driver.synthesize_done(self.root, self.manifest))
+        cmd = captured["cmd"]
+        self.assertIn("--verdicts-dir", cmd)
+        self.assertNotIn("--emit-verify-queue", cmd)
+        self.assertIn("--fail-on", cmd)
+        self.assertEqual(cmd[cmd.index("--out") + 1],
+                         driver._pano(self.root, "report.json"))
+
+    def test_tools_dir_added_only_when_tools_ran(self):
+        driver._write_json(driver._pano(self.root, "tools-ran.json"),
+                           {"ran": True, "run_id": "R"})
+        def fake_run(cmd, **kw):
+            with open(cmd[cmd.index("--out") + 1], "w") as fh:
+                json.dump({"findings": []}, fh)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch("scripts.driver.subprocess.run", side_effect=fake_run) as rm_:
+            driver.synthesize_execute(self.root, self.manifest)
+        self.assertIn("--tools-dir", rm_.call_args[0][0])
+
+    def test_gate_fail_nonzero_still_advances_when_report_present(self):
+        def fake_run(cmd, **kw):
+            with open(cmd[cmd.index("--out") + 1], "w") as fh:
+                json.dump({"grade": "F", "findings": []}, fh)
+            return mock.Mock(returncode=2, stdout="", stderr="gate failed")  # non-zero
+        with mock.patch("scripts.driver.subprocess.run", side_effect=fake_run):
+            result = driver.synthesize_execute(self.root, self.manifest)
+        self.assertEqual(result.kind, "advanced")
+
+    def test_absent_report_raises(self):
+        with mock.patch("scripts.driver.subprocess.run",
+                        return_value=mock.Mock(returncode=1, stdout="", stderr="boom")):
+            with self.assertRaises(driver.DriverError):
+                driver.synthesize_execute(self.root, self.manifest)
+
+
 if __name__ == "__main__":
     unittest.main()

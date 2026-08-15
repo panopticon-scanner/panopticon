@@ -7,7 +7,7 @@ every invocation, so a crash/compaction/interrupt resumes identically. See
 docs/superpowers/specs/2026-08-15-panopticon-5.0-driver-skeleton-design.md.
 """
 import dataclasses
-import glob as _glob  # noqa: F401 -- shared helper import; used by later phases (Tasks 5-9)
+import glob as _glob
 import json
 import os
 import subprocess
@@ -336,3 +336,38 @@ def verify_execute(review_root, manifest):
 
 review_done = _noop_done("review-noop.json")
 verify_done = _noop_done("verify-noop.json")
+
+
+def synthesize_done(review_root, manifest):
+    return _json_parses(_pano(review_root, "report.json"))
+
+
+def synthesize_execute(review_root, manifest):
+    findings = sorted(_glob.glob(_pano(review_root, "findings-*.json")))
+    verdicts_dir = _pano(review_root, "verdicts")
+    os.makedirs(verdicts_dir, exist_ok=True)   # empty in P3 (verify is a no-op)
+    report = _pano(review_root, "report.json")
+    flags = manifest.get("flags") or {}
+    cmd = [sys.executable, _script("synthesize.py"),
+           "--out", report,
+           "--groups", _pano(review_root, "groups.json"),
+           "--security", manifest.get("security_mode", "standard"),
+           "--verdicts-dir", verdicts_dir]
+    if (_load_json(_pano(review_root, "tools-ran.json")) or {}).get("ran"):
+        cmd += ["--tools-dir", _pano(review_root, "tools")]
+    for flag, key in (("--fail-on", "fail_on"), ("--severity", "severity"),
+                      ("--gate-scope", "gate_scope")):
+        if flags.get(key):
+            cmd += [flag, str(flags[key])]
+    diff_hunks = _pano(review_root, "diff-hunks.json")
+    if os.path.isfile(diff_hunks):
+        cmd += ["--diff-hunks", diff_hunks]
+    cmd += findings
+    proc = subprocess.run(cmd, cwd=review_root, capture_output=True, text=True,
+                          env=_child_env())
+    # A failing gate exits non-zero but still writes the report — that is a valid
+    # outcome, not a driver error. Only an ABSENT report is a failure.
+    if not _json_parses(report):
+        raise DriverError("synthesize produced no report.json (rc=%s): %s"
+                          % (proc.returncode, (proc.stderr or proc.stdout)[:400]))
+    return PhaseResult(kind="advanced", message="synthesize: report.json written")
