@@ -8,6 +8,7 @@ import unittest
 from unittest import mock
 
 import scripts.driver as driver
+import scripts.ocrdb as ocrdb
 
 
 def _fake_phase(name, *, done_after=1, result_kind="advanced", checkpoint=None):
@@ -274,6 +275,46 @@ class TestCoveragePhase(unittest.TestCase):
         self.assertTrue(driver.coverage_done(self.root, self.manifest))
 
 
+class TestCoverageBridge(unittest.TestCase):
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self._t.name)
+        os.makedirs(driver._pano(self.root))
+        self.addCleanup(self._t.cleanup)
+        self.manifest = {"run_id": "R", "security_mode": "standard", "host": "claude"}
+
+    def _setup(self, floor_yaml, scout_domains):
+        driver._write_json(driver._pano(self.root, "groups.json"),
+                           {"groups": [{"name": "Auth", "files": ["a.py"]}]})
+        with open(driver._pano(self.root, "groups.yml"), "w") as fh:
+            fh.write(floor_yaml)
+        driver._write_json(driver._pano(self.root, "scout-Auth.json"),
+                           {"group": "Auth", "domains": scout_domains})
+
+    def test_scout_widens_coverage(self):
+        self._setup("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n",
+                    ["SEC", "DAT"])
+        driver.coverage_execute(self.root, self.manifest)
+        cov = driver._load_json(driver._pano(self.root, "coverage-Auth.json"))
+        self.assertEqual(cov["scout_added"], ["DAT"])          # SEC already floor
+        self.assertEqual(cov["effective"], ["DAT", "SEC"])
+
+    def test_invalid_scout_domain_dropped_and_disclosed(self):
+        self._setup("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n",
+                    ["DAT", "BOGUS"])
+        driver.coverage_execute(self.root, self.manifest)
+        cov = driver._load_json(driver._pano(self.root, "coverage-Auth.json"))
+        self.assertEqual(cov["scout_added"], ["DAT"])
+        self.assertEqual(cov["scout_invalid"], ["BOGUS"])
+
+    def test_scout_cannot_override_exclude(self):
+        self._setup("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n"
+                    "    exclude: [DAT]\n", ["DAT"])
+        driver.coverage_execute(self.root, self.manifest)
+        cov = driver._load_json(driver._pano(self.root, "coverage-Auth.json"))
+        self.assertNotIn("DAT", cov["effective"])              # exclude wins
+
+
 class TestToolsPhase(unittest.TestCase):
     def setUp(self):
         self._t = tempfile.TemporaryDirectory()
@@ -316,7 +357,9 @@ class TestToolsPhase(unittest.TestCase):
         self.assertTrue(driver._load_json(driver._pano(self.root, "tools-ran.json"))["skipped"])
 
 
-class TestNoopPhases(unittest.TestCase):
+class TestVerifyNoop(unittest.TestCase):
+    # verify_* stays a wired no-op in P4 (P5 wires advisor + score_gate); review_*
+    # was the P3 no-op here but is now the real cell fan-out (see TestCellFanOut).
     def setUp(self):
         self._t = tempfile.TemporaryDirectory()
         self.root = os.path.realpath(self._t.name)
@@ -324,19 +367,65 @@ class TestNoopPhases(unittest.TestCase):
         self.addCleanup(self._t.cleanup)
         self.manifest = {"run_id": "R"}
 
-    def test_review_noop_advances_and_marks(self):
-        result = driver.review_execute(self.root, self.manifest)
-        self.assertEqual(result.kind, "advanced")
-        self.assertTrue(driver.review_done(self.root, self.manifest))
-
     def test_verify_noop_creates_verdicts_dir(self):
         driver.verify_execute(self.root, self.manifest)
         self.assertTrue(os.path.isdir(driver._pano(self.root, "verdicts")))
         self.assertTrue(driver.verify_done(self.root, self.manifest))
 
-    def test_marker_from_other_run_is_not_done(self):
-        driver.review_execute(self.root, {"run_id": "OLD"})
-        self.assertFalse(driver.review_done(self.root, {"run_id": "NEW"}))
+
+class TestCellFanOut(unittest.TestCase):
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self._t.name)
+        os.makedirs(driver._pano(self.root))
+        self.addCleanup(self._t.cleanup)
+        self.manifest = {"run_id": "R", "security_mode": "standard", "host": "claude"}
+        driver._write_json(driver._pano(self.root, "groups.json"),
+                           {"groups": [{"name": "Auth", "files": ["a.py"]}]})
+        driver._write_json(driver._pano(self.root, "coverage-Auth.json"),
+                           {"group": "Auth", "effective": ["SEC", "DAT"], "run_id": "R"})
+
+    def _menu_stub(self):
+        return mock.patch("scripts.driver.ocrdb.domain_menu",
+                          return_value=[{"code": "SEC-A1A", "name": "x", "severity": "HIGH", "cwe": []}])
+
+    def test_review_emits_cell_entries_per_effective_domain(self):
+        with self._menu_stub(), \
+             mock.patch("scripts.driver.dispatch.render_prompt", return_value="BODY"), \
+             mock.patch("scripts.driver.dispatch.registered_agent_name",
+                        return_value="panopticon-domain-panel"), \
+             mock.patch("scripts.driver.ocrdb.load_bundle", return_value={"domains": {}}):
+            result = driver.review_execute(self.root, self.manifest)
+        self.assertEqual(result.kind, "checkpoint")
+        self.assertEqual(result.checkpoint, "review")
+        req = driver._load_json(driver._pano(self.root, "dispatch-request.json"))
+        outs = sorted(e["out_file"].split("/")[-1] for e in req["entries"])
+        self.assertEqual(outs, ["findings-Auth-DAT.json", "findings-Auth-SEC.json"])
+        for e in req["entries"]:
+            self.assertEqual(e["out_file"], os.path.abspath(e["out_file"]))
+            self.assertNotIn("delivery", e)   # host-agnostic
+
+    def test_review_done_requires_all_cells(self):
+        self.assertFalse(driver.review_done(self.root, self.manifest))
+        for dom in ("SEC", "DAT"):
+            driver._write_json(driver._pano(self.root, "findings-Auth-%s.json" % dom),
+                               {"findings": [], "_panopticon": {"run_id": "R",
+                                "role": "domain_panel", "domain": dom, "group": "Auth"}})
+        self.assertTrue(driver.review_done(self.root, self.manifest))
+
+    def test_stale_run_id_cell_is_not_done(self):
+        driver._write_json(driver._pano(self.root, "findings-Auth-SEC.json"),
+                           {"findings": [], "_panopticon": {"run_id": "OLD",
+                            "role": "domain_panel", "domain": "SEC", "group": "Auth"}})
+        self.assertFalse(driver.review_done(self.root, self.manifest))
+
+    def test_cell_prompt_names_the_out_file(self):
+        # a real render (no render_prompt mock): the dispatched reviewer must be
+        # TOLD where to write, or its findings file never appears and the cell
+        # never completes.
+        entry = driver._cell_entry(self.root, self.manifest, "Auth", "SEC",
+                                    ["a.py"], [], "claude", ocrdb.load_bundle())
+        self.assertIn(entry["out_file"], entry["prompt"])
 
 
 class TestSynthesizePhase(unittest.TestCase):
@@ -501,6 +590,22 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
             if not os.path.exists(p):
                 driver._write_json(p, {"group": g, "panels": ["code"]})
 
+    def _inject_review(self, root):
+        # Simulates the dispatched domain-panel reviewers landing their
+        # findings files, so the E2E loop can progress past the review
+        # checkpoint (P4 cell fan-out) the same way _inject_scouts simulates
+        # the scout checkpoint.
+        req = driver._load_json(driver._pano(root, "dispatch-request.json"))
+        if not (isinstance(req, dict) and req.get("checkpoint") == "review"):
+            return
+        run_id = run_manifest.load_manifest(root)["run_id"]
+        for e in req["entries"]:
+            stem = os.path.basename(e["out_file"])[len("findings-"):-len(".json")]
+            group, domain = stem.rsplit("-", 1)
+            driver._write_json(e["out_file"], {"findings": [],
+                "_panopticon": {"run_id": run_id, "role": "domain_panel",
+                                 "domain": domain, "group": group}})
+
     def test_first_run_writes_manifest_and_baseline(self):
         d = self._repo()
         driver.run(self._args(d))
@@ -516,6 +621,7 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         for _ in range(30):
             if status["status"] == "checkpoint":
                 self._inject_scouts(d)
+                self._inject_review(d)
             status = driver.run(args)
             self.assertNotEqual(status["status"], "error", status.get("message"))
             if status["status"] == "complete":
@@ -591,6 +697,70 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         self.assertFalse(os.path.exists(driver._pano(d, "tree-baseline.txt")))
         driver.run(self._args(d))                # resume -> should self-heal
         self.assertTrue(os.path.exists(driver._pano(d, "tree-baseline.txt")))
+
+
+class TestReviewMatrixEndToEnd(unittest.TestCase):
+    """Task 6: the whole 5.0 review matrix, end to end, against the real
+    driver + orchestrator + synthesize subprocesses -- discovery -> coverage
+    (+scout domains) -> tools -> review (cells fire) -> verify (no-op) ->
+    synthesize -> a real report.json with (domain, code) findings."""
+
+    def _repo(self):
+        import shutil as _sh
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: _sh.rmtree(d, ignore_errors=True))
+        g = ["git", "-C", d]
+        subprocess.run(["git", "init", "-q", d], check=True)
+        subprocess.run(g + ["config", "user.email", "t@t"], check=True)
+        subprocess.run(g + ["config", "user.name", "t"], check=True)
+        os.makedirs(os.path.join(d, "src"))
+        with open(os.path.join(d, "src", "app.py"), "w") as fh:
+            fh.write("def f():\n    return 1\n")
+        os.makedirs(os.path.join(d, ".panopticon"))
+        with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
+            fh.write("groups:\n  Core:\n    match: ['src/**']\n    panels: [COD]\n")
+        subprocess.run(g + ["add", "-A"], check=True)
+        subprocess.run(g + ["commit", "-qm", "init"], check=True)
+        return d
+
+    def _args(self, d):
+        return driver.build_parser().parse_args(["run", d, "--host", "claude"])
+
+    def _service(self, d, status, run_id):
+        # emulate the orchestrator dispatching whatever the checkpoint asked for
+        if status.get("checkpoint") == "scout":
+            for g, _ in driver._discovered_groups(d):
+                p = driver._pano(d, "scout-%s.json" % g)
+                if not os.path.exists(p):
+                    driver._write_json(p, {"group": g, "domains": ["COD"]})
+        elif status.get("checkpoint") == "review":
+            req = driver._load_json(driver._pano(d, "dispatch-request.json"))
+            for e in req["entries"]:
+                dom = e["id"].rsplit("-", 1)[-1]
+                driver._write_json(e["out_file"], {
+                    "findings": [{"title": "t", "severity": "LOW",
+                                  "domain": dom, "code": dom + "-X0X",
+                                  "location": {"file": "src/app.py", "line": 1}}],
+                    "_panopticon": {"run_id": run_id, "role": "domain_panel",
+                                    "domain": dom, "group": req["group"]}})
+
+    def test_review_matrix_reaches_report_with_coded_findings(self):
+        d = self._repo()
+        args = self._args(d)
+        status = driver.run(args)
+        run_id = run_manifest.load_manifest(d)["run_id"]
+        for _ in range(40):
+            if status["status"] == "checkpoint":
+                self._service(d, status, run_id)
+            status = driver.run(args)
+            self.assertNotEqual(status["status"], "error", status.get("message"))
+            if status["status"] == "complete":
+                break
+        self.assertEqual(status["status"], "complete")
+        report = driver._load_json(driver._pano(d, "report.json"))
+        codes = [f.get("code") for f in report.get("findings", [])]
+        self.assertTrue(any(c and c.startswith("COD") for c in codes))
+        self.assertEqual(report["meta"]["ocrdb_version"], "0.3.1")
 
 
 if __name__ == "__main__":

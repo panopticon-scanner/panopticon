@@ -21,6 +21,7 @@ from scripts.citations import load_cwe_catalog
 import scripts.diff_map as diff_map
 import scripts.evidence as evidence_mod
 import scripts.group_runner as group_runner
+import scripts.groups_schema as groups_schema
 import scripts.html_report as html_report
 import scripts.ingest_tools as ingest_tools
 import scripts.ocrdb as ocrdb
@@ -530,22 +531,32 @@ HIGH_VALUE_PANELS = {"security", "redteam", "architecture", "database"}
 
 
 def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_absent,
-            integrity_ok=True, verdicts_unloadable=0, verdicts_unanswered=0):
+            integrity_ok=True, verdicts_unloadable=0, verdicts_unanswered=0,
+            missing_floor=0):
     """Coverage-aware certification. Gate keys on high-value-panel completeness
-    (+ requested-absent tools + artifact integrity + verdict loadability);
-    grade is holistic (provisional on ANY gap). Precedence FAIL > INCONCLUSIVE
-    > PASS; OFF preserved. Tolerant: pure, never raises.
+    (+ requested-absent tools + artifact integrity + verdict loadability +
+    missing FLOOR review cells); grade is holistic (provisional on ANY gap).
+    Precedence FAIL > INCONCLUSIVE > PASS; OFF preserved. Tolerant: pure,
+    never raises.
 
     A verdict file that survived re-dispatch but is unloadable or fails its
     finding-id echo is lost verify coverage. A PASS with supplied verdict work
     left unanswered is INCONCLUSIVE, so malformed/misrouted advisor output
     cannot silently keep a clean gate.
+
+    `missing_floor` (5.0, matrix Sec5.1) is the count of FLOOR (domain, group)
+    cells that produced no findings file at all -- see audit_floor_cells.
+    Mirrors `tools_absent`'s treatment exactly: it only feeds
+    gate_relevant_gap, not `any_incomplete` (which stays panel-scoped), so a
+    missing floor cell forces the gate to INCONCLUSIVE without downgrading the
+    holistic overall_grade to provisional -- the same asymmetry a
+    requested-absent tool already gets.
     """
     base_gate = gate_verdict(gate_eligible, fail_on)          # PASS / FAIL / OFF
     high_value_incomplete = set(panels_incomplete) & HIGH_VALUE_PANELS
     gate_relevant_gap = (bool(high_value_incomplete) or bool(tools_absent)
                          or not integrity_ok or bool(verdicts_unloadable)
-                         or bool(verdicts_unanswered))
+                         or bool(verdicts_unanswered) or bool(missing_floor))
     any_incomplete = bool(panels_incomplete)
 
     if base_gate == "PASS" and gate_relevant_gap:
@@ -571,6 +582,70 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
             "coverage_certified": coverage_certified, "coverage_note": note}
 
 
+def audit_floor_cells(coverages, present):
+    """Certifiable-coverage check (matrix Sec5.1): every FLOOR (domain, group)
+    cell must have produced a findings file. `coverages` = the per-group
+    coverage dicts (as written to .panopticon/coverage-<group>.json by
+    driver.coverage_execute: {"group", "floor", "effective", ...}); `present`
+    = {group: set(domains with a findings file)}. A missing floor cell is the
+    INCONCLUSIVE story -- scout-WIDENED (non-floor) domains are never audited
+    here, matching the matrix's floor-is-the-contract semantics. Pure; never
+    raises.
+    """
+    missing = []
+    for cov in coverages:
+        group = cov.get("group")
+        have = present.get(group, set())
+        for dom in cov.get("floor") or []:
+            if dom not in have:
+                missing.append([group, dom])
+    return {"missing_floor": sorted(missing)}
+
+
+def present_cells(paths):
+    """{group: set(domains)} from findings-<group>-<domain>.json names among
+    the ingested paths (P4 review cells; feeds audit_floor_cells).
+
+    Filename-only, deliberately: presence means synthesize was HANDED a
+    findings file for that (group, domain) cell, independent of whether the
+    reviewer found anything in it -- an empty findings-Auth-SEC.json still
+    proves the SEC floor cell for group Auth ran. Domain codes
+    (groups_schema.DOMAINS) are hyphen-free, so the domain is the LAST
+    hyphen-delimited token before `.json`; this can never collide with the
+    legacy panel-suffixed shape (findings-<group>-<panel>[-panel_review|
+    -lens_sweep-<lens>].json, see GROUP_RE) because panel tokens are lowercase
+    words and domain codes are upper-case 2-3 letter codes -- disjoint
+    alphabets by construction (groups_schema.DOMAINS vs. PANEL_ORDER).
+    """
+    out = {}
+    for p in paths or []:
+        base = os.path.basename(str(p))
+        if not (base.startswith("findings-") and base.endswith(".json")):
+            continue
+        stem = base[len("findings-"):-len(".json")]
+        group, sep, domain = stem.rpartition("-")
+        if sep and group and domain in groups_schema.DOMAINS:
+            out.setdefault(group, set()).add(domain)
+    return out
+
+
+def load_coverage_files(panopticon_dir=".panopticon"):
+    """Load every .panopticon/coverage-<group>.json cell-coverage artifact
+    (driver.coverage_execute's output) for audit_floor_cells. Tolerant:
+    unreadable/malformed/non-dict files are skipped, never raise -- these are
+    the same run artifacts groups.json/scout-*.json are read as elsewhere."""
+    out = []
+    for path in sorted(glob.glob(os.path.join(panopticon_dir, "coverage-*.json"))):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict):
+            out.append(data)
+    return out
+
+
 def severity_stats(findings):
     """Count findings by severity level."""
     stats = {s.lower(): 0 for s in SEV_ORDER}
@@ -582,9 +657,16 @@ def severity_stats(findings):
 
 
 ID_RE = re.compile(r"^[A-Z]{2,8}-\d{3,}$")  # {2,8}: real agents emit e.g. STRUCT-001
+# Axis alternation: the 6 legacy PANEL_ORDER names (4.x findings-<group>-<panel>
+# [-panel_review|-lens_sweep-<lens>].json) plus the 10 P4 matrix domain codes
+# (findings-<group>-<domain>.json, no further suffix -- see present_cells, which
+# parses the same P4 shape independently off groups_schema.DOMAINS to avoid
+# drift). Keyed off groups_schema.DOMAINS, not a hardcoded literal, so a future
+# roster change (P6+) only has to update one place.
+_AXES = list(PANEL_ORDER) + sorted(groups_schema.DOMAINS)
 GROUP_RE = re.compile(
     r"^findings-(.+)-(?:%s)"
-    r"(?:-panel_review|-lens_sweep-[A-Za-z0-9_]+)?\.json$" % "|".join(PANEL_ORDER))
+    r"(?:-panel_review|-lens_sweep-[A-Za-z0-9_]+)?\.json$" % "|".join(_AXES))
 def out_of_scope_findings(findings_paths, plan):
     """#441: count agent findings whose location.file falls outside the FILE
     LIST of the group their findings-file belongs to (per the dispatch plan).
@@ -1043,7 +1125,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                  doc_policy=None, resume=None, integrity=None,
                  diff_hunks=None, diff_context=5, gate_scope="on-diff",
                  catalog=None, verdict_unloadable=None, cost_fan_out=None,
-                 verdict_run_id=None):
+                 verdict_run_id=None, coverages=None, ingested_paths=None):
     """Build a CodeReviewReport under the two-axis severity x evidence model.
 
     Severity is never mutated here. Verdicts (from evidence.load_verdicts) are
@@ -1054,6 +1136,11 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
     aggregate "no verdict" note still fires for an existing-but-empty dir.
     `tools_ran` is the set of adapter names that produced output this run;
     when omitted, `build_executing_tools` falls back to inferring from findings.
+    `coverages` (5.0) is the list of .panopticon/coverage-<group>.json dicts
+    (see load_coverage_files); `ingested_paths` is the same findings-file path
+    list the caller ingested (main() passes args.files, matching
+    reconcile_findings_files' "ingested" terminology) -- both feed
+    audit_floor_cells below.
     """
     findings, integration_findings = prepare_for_queue(findings)
     if catalog is None:
@@ -1230,10 +1317,20 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                         or integrity.get("empty_dispatch_plans")
                         or integrity.get("invalid_dispatch_plans")
                         or integrity.get("invalid_verify_queue"))
+    # 5.0 (matrix Sec5.1): certifiable coverage over the review matrix's FLOOR
+    # cells, alongside the requested-absent-TOOL check above. `coverages` is
+    # the raw list of coverage-<group>.json dicts the caller read (main()
+    # auto-discovers them, same convention as groups.json/scout-*.json);
+    # `ingested_paths` is the findings-file path list the caller ingested.
+    # Both default to empty/None for callers that predate P4 cells (every
+    # existing build_report call site), so cell_audit is a no-op {"missing_
+    # floor": []} for them -- byte-identical to pre-5.0 behavior.
+    cell_audit = audit_floor_cells(coverages or [], present_cells(ingested_paths))
     cert = certify(overall, gate_eligible, fail_on, panels_incomplete, tools_absent,
                    integrity_ok=integrity_ok,
                    verdicts_unloadable=len(verdict_unloadable),
-                   verdicts_unanswered=(unanswered if verdicts_supplied else 0))
+                   verdicts_unanswered=(unanswered if verdicts_supplied else 0),
+                   missing_floor=len(cell_audit["missing_floor"]))
     return {
         "meta": {
             "target": target,
@@ -1263,6 +1360,10 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                 "ocrdb": ocrdb_coverage,   # None when no bundle vendored (= 4.x)
                 "fan_out": fan_out,
                 "divergence": divergence,
+                # 5.0 (matrix Sec5.1): per-floor-cell certifiable-coverage
+                # disclosure -- {"missing_floor": [[group, domain], ...]}. A
+                # non-empty list is what forced the gate to INCONCLUSIVE above.
+                "cells": cell_audit,
                 "resume": resume,
                 "delta": ({"base": diff_hunks.get("base"),
                            "base_source": diff_hunks.get("base_source"),
@@ -1815,6 +1916,12 @@ def main(argv=None):
               "-- the tool layer ran on default triggers only, not scout "
               "guidance" % scout_profiles_seen, file=sys.stderr)
 
+    # 5.0 (matrix Sec5.1): auto-discover .panopticon/coverage-<group>.json the
+    # same way groups.json/scout-*.json are auto-discovered above -- fed to
+    # audit_floor_cells in build_report along with args.files (the "ingested
+    # paths", reconcile_findings_files' own term for this same list).
+    coverages = load_coverage_files()
+
     diff_hunks = load_diff_hunks(args.diff_hunks) if args.diff_hunks else None
     if args.diff_hunks and not args.fail_on:
         # #957: a delta review is gate-first by intent, but the gate only arms
@@ -1845,7 +1952,9 @@ def main(argv=None):
                           gate_scope=args.gate_scope,
                           catalog=catalog,
                           verdict_unloadable=verdict_unloadable,
-                          verdict_run_id=(_queue or {}).get("run_id"))
+                          verdict_run_id=(_queue or {}).get("run_id"),
+                          coverages=coverages,
+                          ingested_paths=args.files)
     errors, warnings = validate_report(report)
     attach_schema_status(report, errors)
     for w in warnings:

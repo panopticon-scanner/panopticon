@@ -21,6 +21,7 @@ import scripts.coverage_model as coverage_model
 import scripts.diff_map as diff_map
 import scripts.dispatch as dispatch
 import scripts.groups_schema as groups_schema
+import scripts.ocrdb as ocrdb
 import scripts.run_manifest as run_manifest
 
 CHECKPOINT_KINDS = ("scout", "review", "verify")
@@ -256,8 +257,9 @@ def coverage_done(review_root, manifest):
 
 def coverage_execute(review_root, manifest):
     """Per group: emit the scout checkpoint (streamed) if its output is absent,
-    else compute FLOOR coverage. Returns after one unit of work; the engine
-    re-selects coverage until every group has a coverage file."""
+    else compute coverage as floor widened by the scout's valid domains.
+    Returns after one unit of work; the engine re-selects coverage until
+    every group has a coverage file."""
     matrix, _errors = load_committed_groups(review_root)
     host = manifest.get("host", "claude")
     for group, files in _discovered_groups(review_root):
@@ -271,20 +273,29 @@ def coverage_execute(review_root, manifest):
             return PhaseResult(kind="checkpoint", checkpoint="scout", group=group,
                                dispatch_request=req,
                                message="scout checkpoint for group %s" % group)
+        # scout landed -> widen coverage by the scout's valid domains (P4 bridge)
+        scout = _load_json(scout_path) or {}
+        raw = scout.get("domains") or []
         spec = matrix.get(group) or {}
+        floor = spec.get("floor", set())
+        # net against floor here so disclosure["scout_added"] reports only the
+        # genuinely NEW domains (a domain already on the floor isn't "added").
+        scout_added = {d for d in raw if d in groups_schema.DOMAINS} - set(floor)
+        scout_invalid = sorted(set(raw) - groups_schema.DOMAINS)
         effective, disclosure = coverage_model.effective_panels(
-            spec.get("floor", set()), set(), spec.get("exclude", set()))
+            floor, scout_added, spec.get("exclude", set()))
         _write_json(_pano(review_root, "coverage-%s.json" % group), {
             "group": group,
             "floor": disclosure["floor"],
             "excluded": disclosure["excluded"],
-            "scout_added": [],   # P4 bridges scout panel-names -> domain codes
+            "scout_added": disclosure["scout_added"],   # new domains, exclude-netted
+            "scout_invalid": scout_invalid,             # dropped, disclosed
             "effective": sorted(effective),
             "scout_file": os.path.abspath(scout_path),
             "run_id": manifest["run_id"],
         })
         return PhaseResult(kind="advanced",
-                           message="coverage: group %s (floor)" % group)
+                           message="coverage: group %s (floor+scout)" % group)
     return PhaseResult(kind="advanced", message="coverage: complete")
 
 
@@ -322,11 +333,67 @@ def _noop_done(name):
     return done
 
 
+def _effective_domains(review_root, group):
+    cov = _load_json(_pano(review_root, "coverage-%s.json" % group)) or {}
+    return list(cov.get("effective") or [])
+
+
+def _cell_done(review_root, manifest, group, domain):
+    data = _load_json(_pano(review_root, "findings-%s-%s.json" % (group, domain)))
+    if not (isinstance(data, dict) and isinstance(data.get("findings"), list)):
+        return False
+    meta = data.get("_panopticon")
+    return (isinstance(meta, dict) and meta.get("run_id") == manifest.get("run_id")
+            and meta.get("domain") == domain and meta.get("group") == group)
+
+
+def _render_menu(bundle, domain):
+    lines = ["%s %s (%s)" % (m["code"], m["name"], m["severity"])
+             for m in ocrdb.domain_menu(bundle, domain)]
+    return "\n".join(lines) or "(no OCRDb bundle vendored — use general %s judgment)" % domain
+
+
+def _cell_entry(review_root, manifest, group, domain, files, tests, host, bundle):
+    file_list = "\n".join("- " + f for f in files) or "- (no files)"
+    test_list = "\n".join("- " + t for t in tests) or "- (no tests)"
+    out_file = os.path.abspath(_pano(review_root, "findings-%s-%s.json" % (group, domain)))
+    prompt = dispatch.render_prompt("domain-panel.md", {
+        "domain": domain, "group": group, "file_list": file_list,
+        "tests": test_list, "security_mode": manifest.get("security_mode", "standard"),
+        "menu": _render_menu(bundle, domain), "run_id": manifest["run_id"],
+        "out_file": out_file}, host)
+    enforced = host == "claude"
+    return {"id": "review-%s-%s" % (group, domain),
+            "agent": dispatch.registered_agent_name("domain-panel.md") if enforced else None,
+            "enforced": enforced, "model": None, "prompt": prompt, "out_file": out_file}
+
+
+def review_done(review_root, manifest):
+    groups = _discovered_groups(review_root)
+    if not groups:
+        return True   # vacuous (no groups)
+    return all(_cell_done(review_root, manifest, g, d)
+               for g, _ in groups for d in _effective_domains(review_root, g))
+
+
 def review_execute(review_root, manifest):
-    _write_json(_pano(review_root, "review-noop.json"),
-                {"noop": True, "run_id": manifest["run_id"],
-                 "note": "P3 skeleton: review is a wired no-op; P4 renders cells"})
-    return PhaseResult(kind="advanced", message="review: no-op (P4 fills cells)")
+    host = manifest.get("host", "claude")
+    bundle = ocrdb.load_bundle()
+    # group tests come from the committed matrix (parse_groups tests field)
+    matrix, _errors = load_committed_groups(review_root)
+    for group, files in _discovered_groups(review_root):
+        domains = _effective_domains(review_root, group)
+        pending = [d for d in domains if not _cell_done(review_root, manifest, group, d)]
+        if not pending:
+            continue
+        tests = sorted((matrix.get(group) or {}).get("tests") or [])
+        entries = [_cell_entry(review_root, manifest, group, d, files, tests, host, bundle)
+                   for d in pending]
+        req = write_dispatch_request(review_root, manifest["run_id"], "review", group, entries)
+        return PhaseResult(kind="checkpoint", checkpoint="review", group=group,
+                           dispatch_request=req,
+                           message="review: %d cell(s) for group %s" % (len(entries), group))
+    return PhaseResult(kind="advanced", message="review: all cells complete")
 
 
 def verify_execute(review_root, manifest):
@@ -337,7 +404,6 @@ def verify_execute(review_root, manifest):
     return PhaseResult(kind="advanced", message="verify: no-op (P5 wires advisor)")
 
 
-review_done = _noop_done("review-noop.json")
 verify_done = _noop_done("verify-noop.json")
 
 
@@ -443,7 +509,7 @@ def validate_execute(review_root, manifest, runner=subprocess.run):
 _DEFAULTS = {"host": "claude", "security": "standard"}
 
 _RESET_GLOBS = ("groups.json", "coverage-*.json", "scout-*.json", "tools-ran.json",
-                "review-noop.json", "verify-noop.json", "validate.json",
+                "verify-noop.json", "validate.json",
                 "report.json", "dispatch-request.json", "tree-baseline.txt",
                 "verify-queue.json", "findings-*.json")
 

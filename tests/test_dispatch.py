@@ -1108,7 +1108,8 @@ class TestEmitHostAgents(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             written = dispatch.emit_host_agents("claude", d)
             names = sorted(os.path.basename(p) for p in written)
-            self.assertEqual(names, ["panopticon-advisor.md", "panopticon-lens-sweep.md",
+            self.assertEqual(names, ["panopticon-advisor.md", "panopticon-domain-panel.md",
+                                     "panopticon-lens-sweep.md",
                                      "panopticon-panel-review.md", "panopticon-scout.md"])
 
     def test_claude_frontmatter_is_enforcement_shell(self):
@@ -1131,7 +1132,8 @@ class TestEmitHostAgents(unittest.TestCase):
             for fname, model in (("panopticon-scout.md", "haiku"),
                                  ("panopticon-lens-sweep.md", "haiku"),
                                  ("panopticon-panel-review.md", "sonnet"),
-                                 ("panopticon-advisor.md", "opus")):
+                                 ("panopticon-advisor.md", "opus"),
+                                 ("panopticon-domain-panel.md", "sonnet")):
                 self.assertIn("model: %s" % model,
                               open(os.path.join(d, fname)).read(), fname)
 
@@ -1145,7 +1147,7 @@ class TestEmitHostAgents(unittest.TestCase):
     def test_codex_toml_agents_are_read_only(self):
         with tempfile.TemporaryDirectory() as d:
             written = dispatch.emit_host_agents("codex", d)
-            self.assertEqual(len(written), 4)
+            self.assertEqual(len(written), 5)
             self.assertTrue(all(path.endswith(".toml") for path in written))
             text = open(os.path.join(d, "panopticon-panel-review.toml")).read()
             self.assertIn('name = "panopticon-panel-review"', text)
@@ -1157,7 +1159,7 @@ class TestEmitHostAgents(unittest.TestCase):
     def test_kimi_agent_file_includes_model_preference_and_when_to_use(self):
         with tempfile.TemporaryDirectory() as d:
             paths = dispatch.emit_host_agents("kimi", d)
-            self.assertEqual(len(paths), 4)
+            self.assertEqual(len(paths), 5)
             for p in paths:
                 with open(p, encoding="utf-8") as fh:
                     content = fh.read()

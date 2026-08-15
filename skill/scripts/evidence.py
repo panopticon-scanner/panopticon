@@ -98,7 +98,9 @@ def finding_fingerprint(finding):
 
 
 def reconcile_key(finding):
-    """Coarse CROSS-RUN identity: (normalized_file, panel, category).
+    """Coarse CROSS-RUN identity: (normalized_file, panel, category) -- or,
+    once a finding carries an OCRDb domain code (5.0), the tighter
+    (normalized_file, "code", code).
 
     Separate from finding_fingerprint (the within-run identity, left untouched):
     reconcile keys on this to match a finding across two independent agentic
@@ -106,10 +108,23 @@ def reconcile_key(finding):
     finding's discriminator is re-worded every run. Dropping the title (keeping
     file + panel + category) lets a re-worded finding match; a genuinely-fixed
     one's key vanishes (#914). The file normalization is finding_fingerprint's
-    exactly -- both call norm_path. The 5.x finding-code catalog will replace
-    `category` here with a stable `code` field: one seam.
+    exactly -- both call norm_path.
+
+    5.0: this was the seam the #914-era docstring flagged -- the finding-code
+    catalog now exists (OCRDb), so a code-bearing finding reconciles on
+    (file, code) instead of the free-text `category`, a strictly more precise
+    identity (two reviewers naming the same OCRDb code agree even when their
+    prose category differs). A code-less finding is UNCHANGED: the literal
+    "code" marker keeps this arm's tuple shape disjoint from the legacy
+    (file, panel, category) arm, so a real panel value can never collide with
+    it. A finding without `code` falls through to the legacy tuple exactly as
+    before -- reconcile.py, this function's only consumer, sees no behavior
+    change for pre-5.0/code-less findings.
     """
     loc = finding.get("location") or {}
+    code = finding.get("code")
+    if code:
+        return (norm_path(loc.get("file")), "code", str(code))
     return (norm_path(loc.get("file")), str(finding.get("panel") or ""),
             str(finding.get("category") or ""))
 

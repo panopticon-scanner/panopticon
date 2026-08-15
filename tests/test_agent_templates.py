@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import unittest
@@ -6,7 +7,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill", "
 import dispatch
 
 
-ROLES = ["scout.md", "panel-review.md", "lens-sweep.md", "advisor.md", "setup-scan.md"]
+ROLES = ["scout.md", "panel-review.md", "lens-sweep.md", "advisor.md", "setup-scan.md",
+         "domain-panel.md"]
 
 
 class TestUntrustedContentPreamble(unittest.TestCase):
@@ -27,7 +29,7 @@ class TestUntrustedContentPreamble(unittest.TestCase):
     def test_finding_roles_route_injections_to_a_finding(self):
         # panel_review / lens_sweep emit findings, so a caught injection must
         # become one (category prompt-injection) rather than a silent miss.
-        for role_file in ("panel-review.md", "lens-sweep.md"):
+        for role_file in ("panel-review.md", "lens-sweep.md", "domain-panel.md"):
             _meta, body = dispatch.load_template(role_file)
             self.assertIn('category: "prompt-injection"', body, role_file)
 
@@ -67,7 +69,7 @@ class TestTemplateFrontmatter(unittest.TestCase):
         # that Write to the plan's out_file set. Edit/Bash/Agent stay forbidden
         # for every role.
         read_only = {"scout.md", "advisor.md", "setup-scan.md"}
-        scoped_write = {"panel-review.md", "lens-sweep.md"}
+        scoped_write = {"panel-review.md", "lens-sweep.md", "domain-panel.md"}
         self.assertEqual(read_only | scoped_write, set(ROLES))
         for role_file in read_only:
             meta, _ = dispatch.load_template(role_file)
@@ -110,6 +112,66 @@ class TestSetupScanTemplate(unittest.TestCase):
         meta, _ = dispatch.load_template("setup-scan.md")
         self.assertEqual(meta["tool_policy"]["allowed"], ["Read", "Grep", "Glob"])
         self.assertEqual(meta["tool_policy"]["forbidden"], ["Bash", "Edit", "Write", "Agent"])
+
+
+class TestScopeProfileDomains(unittest.TestCase):
+    def _schema(self):
+        p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         "skill", "reference", "scope-profile-schema.json")
+        with open(p) as fh:
+            return json.load(fh)
+
+    def test_required_has_domains_not_panels(self):
+        s = self._schema()
+        self.assertIn("domains", s["required"])
+        self.assertNotIn("panels", s["required"])
+
+    def test_domains_enum_is_the_ten(self):
+        s = self._schema()
+        enum = set(s["properties"]["domains"]["items"]["enum"])
+        self.assertEqual(enum, {"SEC","COD","ARC","TST","QAL","AGT","DAT","OPS","ACC","LNG"})
+
+    def test_scout_template_emits_domains(self):
+        p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         "skill", "agents", "scout.md")
+        body = open(p).read()
+        self.assertIn("domains", body)
+        self.assertNotIn("Set `panels`", body)   # the old instruction is gone
+
+
+class TestDomainPanelRenders(unittest.TestCase):
+    def test_renders_with_full_mapping(self):
+        mapping = {"domain": "SEC", "group": "Auth", "file_list": "- a.py",
+                   "tests": "- t.py", "security_mode": "standard",
+                   "menu": "SEC-A1A os-command-injection (HIGH)", "run_id": "R",
+                   "out_file": "/abs/findings-Auth-SEC.json"}
+        out = dispatch.render_prompt("domain-panel.md", mapping, "claude")
+        self.assertIn("`SEC` domain reviewer", out)
+        self.assertIn("SEC-A1A", out)
+        self.assertFalse(dispatch.PLACEHOLDER_RE.search(out.split("## Tool policy")[0]),
+                          "leftover unfilled placeholder in rendered output")
+        self.assertIn("_panopticon", out)
+        self.assertIn("/abs/findings-Auth-SEC.json", out)
+        self.assertEqual(dispatch.registered_agent_name("domain-panel.md"),
+                         "panopticon-domain-panel")
+
+
+class TestDomainPanelSingleWriteInstruction(unittest.TestCase):
+    """#P4-slice-B: domain-panel must carry exactly one, coherent write
+    instruction that requires `_panopticon` and names `{out_file}` -- not the
+    shared delivery-contract mechanism built for panel-review's no-`_panopticon`
+    contract. A reviewer that follows a stray `{delivery_contract}`-style
+    instruction and omits `_panopticon` fails driver._cell_done forever."""
+
+    def test_no_delivery_contract_placeholders(self):
+        _meta, body = dispatch.load_template("domain-panel.md")
+        self.assertNotIn("{delivery_contract}", body)
+        self.assertNotIn("{side_effect_boundary}", body)
+
+    def test_has_panopticon_block_and_out_file_placeholder(self):
+        _meta, body = dispatch.load_template("domain-panel.md")
+        self.assertIn("_panopticon", body)
+        self.assertIn("{out_file}", body)
 
 
 if __name__ == "__main__":
