@@ -446,6 +446,29 @@ class TestValidatePhase(unittest.TestCase):
             result = driver.validate_execute(d, {"run_id": "R", "worktree": None})
             self.assertEqual(result.kind, "advanced")
 
+    def test_panopticon_prefix_sibling_is_flagged(self):
+        # a repo-root file sharing the '.panopticon' prefix WITHOUT a '/' boundary
+        # is a reviewer side effect, not an in-.panopticon artifact -> must raise.
+        d = self._git_repo()
+        driver.capture_tree_baseline(d)
+        open(os.path.join(d, ".panopticon-evil.py"), "w").close()
+        with self.assertRaises(driver.DriverError):
+            driver.validate_execute(d, {"run_id": "R", "worktree": None})
+
+    def test_rename_out_of_panopticon_is_flagged(self):
+        # a rename moving a tracked file OUT of .panopticon/ must be caught on
+        # its DESTINATION path.
+        d = self._git_repo()
+        os.makedirs(os.path.join(d, ".panopticon"), exist_ok=True)
+        inside = os.path.join(d, ".panopticon", "x.py")
+        open(inside, "w").close()
+        subprocess.run(["git", "-C", d, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", d, "commit", "-qm", "add pano file"], check=True)
+        driver.capture_tree_baseline(d)
+        subprocess.run(["git", "-C", d, "mv", ".panopticon/x.py", "leaked.py"], check=True)
+        with self.assertRaises(driver.DriverError):
+            driver.validate_execute(d, {"run_id": "R", "worktree": None})
+
 
 if __name__ == "__main__":
     unittest.main()

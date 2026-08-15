@@ -389,6 +389,15 @@ def capture_tree_baseline(review_root, runner=subprocess.run):
     return baseline
 
 
+def _delta_path(line):
+    """The current working-tree path from a porcelain v1 line 'XY <path>'.
+    For a rename ('R  old -> new') the DESTINATION is what matters."""
+    path = line[3:]
+    if " -> " in path:
+        path = path.split(" -> ", 1)[1]
+    return path
+
+
 def _tree_delta(review_root, runner):
     """NEW porcelain lines (vs. baseline) whose path is outside .panopticon/.
     Empty when there is no baseline (non-git) — nothing to compare."""
@@ -402,8 +411,10 @@ def _tree_delta(review_root, runner):
     if proc.returncode != 0:
         return []
     new = set(proc.stdout.splitlines()) - baseline
-    # porcelain line = "XY <path>"; path begins at column 3
-    return sorted(line for line in new if not line[3:].startswith(".panopticon"))
+    # NEW/changed porcelain lines whose FIRST PATH COMPONENT is not `.panopticon`
+    # (a real boundary check: '.panopticon-evil.py' is NOT under .panopticon/).
+    return sorted(line for line in new
+                  if _delta_path(line).split("/", 1)[0] != ".panopticon")
 
 
 def validate_done(review_root, manifest):
