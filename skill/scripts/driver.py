@@ -9,9 +9,36 @@ docs/superpowers/specs/2026-08-15-panopticon-5.0-driver-skeleton-design.md.
 import dataclasses
 import json
 import os
+import subprocess
 import sys
 
+import scripts.diff_map as diff_map
+
 CHECKPOINT_KINDS = ("scout", "review", "verify")
+
+
+def resolve_review_root(target, base=None, pr=None, runner=subprocess.run):
+    """Resolve the single review root, pinned once in the manifest (spec §5).
+
+    - pr given: acquire a disposable PR worktree (diff_map); its path is the root.
+    - git repo: `git rev-parse --show-toplevel` from the target.
+    - non-git: the target directory itself.
+    Returns (review_root, worktree); worktree is the PR worktree to release at
+    validate, else None.
+    """
+    if pr is not None:
+        info = diff_map.acquire_pr(pr, repo=target, runner=runner)
+        return info["worktree"], info["worktree"]
+    target = os.path.abspath(target)
+    start = target if os.path.isdir(target) else os.path.dirname(target)
+    try:
+        proc = runner(["git", "-C", start, "rev-parse", "--show-toplevel"],
+                      capture_output=True, text=True)
+        if proc.returncode == 0 and proc.stdout.strip():
+            return os.path.realpath(proc.stdout.strip()), None
+    except OSError:
+        pass
+    return (start if os.path.isdir(start) else target), None
 
 
 @dataclasses.dataclass(frozen=True)

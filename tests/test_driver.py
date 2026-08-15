@@ -1,8 +1,11 @@
 import io
 import json
 import os
+import shutil
+import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 import scripts.driver as driver
 
@@ -112,6 +115,45 @@ class TestWriteDispatchRequest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             with self.assertRaises(ValueError):
                 driver.write_dispatch_request(root, "RID", "bogus", "Auth", [])
+
+
+class TestResolveReviewRoot(unittest.TestCase):
+    def _git_repo(self):
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        subprocess.run(["git", "init", "-q", d], check=True)
+        return d
+
+    def test_resolves_repo_root_from_subdir(self):
+        d = self._git_repo()
+        sub = os.path.join(d, "pkg")
+        os.makedirs(sub)
+        root, wt = driver.resolve_review_root(sub)
+        self.assertEqual(root, d)
+        self.assertIsNone(wt)
+
+    def test_resolves_repo_root_from_file_target(self):
+        d = self._git_repo()
+        f = os.path.join(d, "a.py")
+        open(f, "w").close()
+        root, wt = driver.resolve_review_root(f)
+        self.assertEqual(root, d)
+
+    def test_non_git_dir_returns_target(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = os.path.realpath(d)
+            root, wt = driver.resolve_review_root(d)
+            self.assertEqual(root, d)
+            self.assertIsNone(wt)
+
+    def test_pr_uses_diff_map_worktree(self):
+        with mock.patch("scripts.driver.diff_map.acquire_pr",
+                        return_value={"worktree": "/tmp/pr-wt", "base": "main",
+                                      "head_sha": "abc"}) as acq:
+            root, wt = driver.resolve_review_root(".", pr=7)
+        self.assertEqual(root, "/tmp/pr-wt")
+        self.assertEqual(wt, "/tmp/pr-wt")
+        acq.assert_called_once()
 
 
 if __name__ == "__main__":
