@@ -173,3 +173,28 @@ class TestVerifyBackup(unittest.TestCase):
         with mock.patch("scripts.driver.ocrdb.load_bundle", return_value={"domains": {}}):
             result = driver.verify_execute(self.root, self.manifest)
         self.assertEqual(result.kind, "advanced")     # nothing to back up
+
+    def test_confirmed_high_alone_below_fb_no_backup(self):
+        _cell(self.root, "app", "SEC", [{"domain": "SEC", "code": "SEC-A1A",
+              "severity": "HIGH", "title": "t", "category": "authz",
+              "location": {"file": "a.py", "line_start": 1}}])
+        cell = driver._load_cell_findings(self.root, self.manifest, "app", "SEC")
+        self._primary_confirm(cell[0]["id"])   # or inline-write the CONFIRMED primary bundle
+        with mock.patch("scripts.driver.ocrdb.load_bundle", return_value={"domains": {}}):
+            result = driver.verify_execute(self.root, self.manifest)
+        self.assertEqual(result.kind, "advanced")   # HIGH alone below F_b -> no backup round
+
+    def test_verify_done_gates_on_backup_round(self):
+        # setUp already writes a CRITICAL cell (clears F_b); if your setUp differs, write one here
+        cell = driver._load_cell_findings(self.root, self.manifest, "app", "SEC")
+        self._primary_confirm(cell[0]["id"])       # primary CONFIRMED bundle only
+        with mock.patch("scripts.driver.ocrdb.load_bundle", return_value={"domains": {}}):
+            self.assertFalse(driver.verify_done(self.root, self.manifest))   # backup owed
+        # now write the -backup bundle
+        vd = os.path.join(self.root, ".panopticon", "verdicts")
+        with open(os.path.join(vd, "verdicts-app-SEC-backup.json"), "w") as fh:
+            json.dump({"verdicts": [{"finding_id": cell[0]["id"], "verdict": "CONFIRMED"}],
+                       "_panopticon": {"run_id": self.manifest["run_id"], "role": "domain_advisor",
+                                       "domain": "SEC", "group": "app", "stage": "backup"}}, fh)
+        with mock.patch("scripts.driver.ocrdb.load_bundle", return_value={"domains": {}}):
+            self.assertTrue(driver.verify_done(self.root, self.manifest))
