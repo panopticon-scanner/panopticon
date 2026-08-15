@@ -94,7 +94,8 @@ def _load_template_cached(path, role_file):
 PLACEHOLDER_RE = re.compile(r"\{([a-z_]+)\}")
 
 ROLE_FILES = {"scout": "scout.md", "panel_review": "panel-review.md",
-              "lens_sweep": "lens-sweep.md", "advisor": "advisor.md"}
+              "lens_sweep": "lens-sweep.md", "advisor": "advisor.md",
+              "domain_panel": "domain-panel.md"}
 CLAUDE_AGENTS_DIR = os.path.join(os.path.expanduser("~"), ".claude", "agents")
 KIMI_AGENTS_DIR = os.path.join(os.path.expanduser("~"), ".kimi-code", "agents")
 CODEX_HOME = os.path.expanduser(os.environ.get("CODEX_HOME", "~/.codex"))
@@ -104,7 +105,7 @@ CODEX_AGENTS_DIR = os.path.join(CODEX_HOME, "agents")
 # registered enforcement shell, its tool policy is prompt-advisory only --
 # a general-purpose agent reading untrusted repo content would have full
 # Bash/Edit/Write. main() refuses to emit such a plan by default.
-REVIEWER_ROLES = {"panel_review", "lens_sweep"}
+REVIEWER_ROLES = {"panel_review", "lens_sweep", "domain_panel"}
 PANEL_LENSES = {
     "code": ["structure", "correctness", "style"],
     "test": ["coverage", "test_quality", "test_design"],
@@ -117,7 +118,8 @@ PANEL_LENSES = {
 # Emission is deterministic policy — ambient PANOPTICON_MODEL_* overrides apply
 # to per-run dispatch plans, never to persisted registrations.
 EMIT_MODEL_POLICY = {"claude": {"scout": "haiku", "lens_sweep": "haiku",
-                                 "panel_review": "sonnet", "advisor": "opus"}}
+                                 "panel_review": "sonnet", "advisor": "opus",
+                                 "domain_panel": "sonnet"}}
 
 _CHARTER = (
     "You are panopticon's `%s` reviewer (a registered enforcement shell).\n"
@@ -234,7 +236,7 @@ def render_prompt(role_file, mapping, host=None):
     single-word lowercase tokens.
     """
     meta, body = load_template(role_file)
-    if role_file in ("panel-review.md", "lens-sweep.md"):
+    if role_file in ("panel-review.md", "lens-sweep.md", "domain-panel.md"):
         mapping = dict(mapping)
         for key, value in _delivery_fields(
                 host, mapping.get("out_file", ""), role_file).items():
@@ -403,6 +405,7 @@ def _delivery_fields(host, out_file, role_file, run_id=None, group=None,
         metadata = json.dumps(
             {"producer": "reviewer_self_write", "run_id": run_id,
              "role": ("lens_sweep" if role_file == "lens-sweep.md"
+                      else "domain_panel" if role_file == "domain-panel.md"
                       else "panel_review"),
              "panel": panel, "lens": lens, "group": group},
             separators=(",", ":"))

@@ -7,7 +7,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill", "
 import dispatch
 
 
-ROLES = ["scout.md", "panel-review.md", "lens-sweep.md", "advisor.md", "setup-scan.md"]
+ROLES = ["scout.md", "panel-review.md", "lens-sweep.md", "advisor.md", "setup-scan.md",
+         "domain-panel.md"]
 
 
 class TestUntrustedContentPreamble(unittest.TestCase):
@@ -28,7 +29,7 @@ class TestUntrustedContentPreamble(unittest.TestCase):
     def test_finding_roles_route_injections_to_a_finding(self):
         # panel_review / lens_sweep emit findings, so a caught injection must
         # become one (category prompt-injection) rather than a silent miss.
-        for role_file in ("panel-review.md", "lens-sweep.md"):
+        for role_file in ("panel-review.md", "lens-sweep.md", "domain-panel.md"):
             _meta, body = dispatch.load_template(role_file)
             self.assertIn('category: "prompt-injection"', body, role_file)
 
@@ -68,7 +69,7 @@ class TestTemplateFrontmatter(unittest.TestCase):
         # that Write to the plan's out_file set. Edit/Bash/Agent stay forbidden
         # for every role.
         read_only = {"scout.md", "advisor.md", "setup-scan.md"}
-        scoped_write = {"panel-review.md", "lens-sweep.md"}
+        scoped_write = {"panel-review.md", "lens-sweep.md", "domain-panel.md"}
         self.assertEqual(read_only | scoped_write, set(ROLES))
         for role_file in read_only:
             meta, _ = dispatch.load_template(role_file)
@@ -136,6 +137,21 @@ class TestScopeProfileDomains(unittest.TestCase):
         body = open(p).read()
         self.assertIn("domains", body)
         self.assertNotIn("Set `panels`", body)   # the old instruction is gone
+
+
+class TestDomainPanelRenders(unittest.TestCase):
+    def test_renders_with_full_mapping(self):
+        import scripts.dispatch as dispatch
+        mapping = {"domain": "SEC", "group": "Auth", "file_list": "- a.py",
+                   "tests": "- t.py", "security_mode": "standard",
+                   "menu": "SEC-A1A os-command-injection (HIGH)", "run_id": "R"}
+        out = dispatch.render_prompt("domain-panel.md", mapping, "claude")
+        self.assertIn("`SEC` domain reviewer", out)
+        self.assertIn("SEC-A1A", out)
+        self.assertFalse(dispatch.PLACEHOLDER_RE.search(out.split("## Tool policy")[0]),
+                          "leftover unfilled placeholder in rendered output")
+        self.assertEqual(dispatch.registered_agent_name("domain-panel.md"),
+                         "panopticon-domain-panel")
 
 
 if __name__ == "__main__":
