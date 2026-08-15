@@ -15,7 +15,9 @@ import sys
 
 import yaml
 
+import scripts.coverage_model as coverage_model
 import scripts.diff_map as diff_map
+import scripts.dispatch as dispatch
 import scripts.groups_schema as groups_schema
 
 CHECKPOINT_KINDS = ("scout", "review", "verify")
@@ -211,3 +213,73 @@ def write_dispatch_request(review_root, run_id, checkpoint, group, entries):
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(request, fh, indent=2)
     return os.path.abspath(path)
+
+
+def _discovered_groups(review_root):
+    """(name, files) per group from discovery's groups.json."""
+    data = _load_json(_pano(review_root, "groups.json")) or {}
+    return [(g.get("name"), g.get("files") or [])
+            for g in (data.get("groups") or [])
+            if isinstance(g, dict) and g.get("name")]
+
+
+def _scout_entry(review_root, manifest, group, files, host):
+    """One host-agnostic scout dispatch entry (spec §4). The scout body +
+    tool-policy line come from dispatch.render_prompt; the assignment is
+    appended. Enforcement is host-declared (claude registers panopticon-scout)."""
+    body = dispatch.render_prompt("scout.md", {}, host)
+    security = manifest.get("security_mode", "standard")
+    file_list = "\n".join("- " + f for f in files) or "- (no files)"
+    prompt = (body
+              + "\n\n## Assignment\n\nGroup: %s\nSecurity mode: %s\n\nFiles:\n%s\n"
+                % (group, security, file_list)
+              + "\nReturn the ScopeProfile JSON for this group.")
+    enforced = host == "claude"
+    return {"id": "scout-%s" % group,
+            "agent": dispatch.registered_agent_name("scout.md") if enforced else None,
+            "enforced": enforced,
+            "model": None,
+            "prompt": prompt,
+            "out_file": os.path.abspath(_pano(review_root, "scout-%s.json" % group))}
+
+
+def coverage_done(review_root, manifest):
+    # Vacuously done when discovery produced no groups (empty target); otherwise
+    # done once every discovered group has a coverage file. (Evaluated only after
+    # discovery, an earlier phase, so groups.json is already present.)
+    return all(_json_parses(_pano(review_root, "coverage-%s.json" % g))
+               for g, _ in _discovered_groups(review_root))
+
+
+def coverage_execute(review_root, manifest):
+    """Per group: emit the scout checkpoint (streamed) if its output is absent,
+    else compute FLOOR coverage. Returns after one unit of work; the engine
+    re-selects coverage until every group has a coverage file."""
+    matrix, _errors = load_committed_groups(review_root)
+    host = manifest.get("host", "claude")
+    for group, files in _discovered_groups(review_root):
+        if _json_parses(_pano(review_root, "coverage-%s.json" % group)):
+            continue
+        scout_path = _pano(review_root, "scout-%s.json" % group)
+        if not _json_parses(scout_path):
+            entry = _scout_entry(review_root, manifest, group, files, host)
+            req = write_dispatch_request(review_root, manifest["run_id"],
+                                         "scout", group, [entry])
+            return PhaseResult(kind="checkpoint", checkpoint="scout", group=group,
+                               dispatch_request=req,
+                               message="scout checkpoint for group %s" % group)
+        spec = matrix.get(group) or {}
+        effective, disclosure = coverage_model.effective_panels(
+            spec.get("floor", set()), set(), spec.get("exclude", set()))
+        _write_json(_pano(review_root, "coverage-%s.json" % group), {
+            "group": group,
+            "floor": disclosure["floor"],
+            "excluded": disclosure["excluded"],
+            "scout_added": [],   # P4 bridges scout panel-names -> domain codes
+            "effective": sorted(effective),
+            "scout_file": os.path.abspath(scout_path),
+            "run_id": manifest["run_id"],
+        })
+        return PhaseResult(kind="advanced",
+                           message="coverage: group %s (floor)" % group)
+    return PhaseResult(kind="advanced", message="coverage: complete")

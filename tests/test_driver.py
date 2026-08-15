@@ -194,5 +194,85 @@ class TestDiscoveryPhase(unittest.TestCase):
                 driver.discovery_execute(self.root, self.manifest)
 
 
+class TestCoveragePhase(unittest.TestCase):
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self._t.name)
+        os.makedirs(driver._pano(self.root))
+        self.addCleanup(self._t.cleanup)
+        self.manifest = {"run_id": "R", "security_mode": "standard", "host": "claude"}
+
+    def _groups_json(self, groups):
+        driver._write_json(driver._pano(self.root, "groups.json"), {"groups": groups})
+
+    def _groups_yml(self, body):
+        with open(driver._pano(self.root, "groups.yml"), "w") as fh:
+            fh.write(body)
+
+    def test_emits_scout_checkpoint_when_scout_absent(self):
+        self._groups_json([{"name": "Auth", "files": ["a.py"]}])
+        self._groups_yml("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n")
+        with mock.patch("scripts.driver.dispatch.render_prompt",
+                        return_value="SCOUT-BODY"), \
+             mock.patch("scripts.driver.dispatch.registered_agent_name",
+                        return_value="panopticon-scout"):
+            result = driver.coverage_execute(self.root, self.manifest)
+        self.assertEqual(result.kind, "checkpoint")
+        self.assertEqual(result.checkpoint, "scout")
+        self.assertEqual(result.group, "Auth")
+        req = driver._load_json(driver._pano(self.root, "dispatch-request.json"))
+        self.assertEqual(req["checkpoint"], "scout")
+        entry = req["entries"][0]
+        self.assertTrue(entry["out_file"].endswith("scout-Auth.json"))
+        self.assertEqual(entry["out_file"], os.path.abspath(entry["out_file"]))
+        self.assertTrue(entry["enforced"])              # claude host
+        self.assertNotIn("delivery", entry)             # host-agnostic
+
+    def test_generic_host_scout_entry_not_enforced(self):
+        self._groups_json([{"name": "Auth", "files": ["a.py"]}])
+        self._groups_yml("groups:\n  Auth:\n    match: ['a.py']\n")
+        m = dict(self.manifest, host="generic")
+        with mock.patch("scripts.driver.dispatch.render_prompt", return_value="B"), \
+             mock.patch("scripts.driver.dispatch.registered_agent_name",
+                        return_value="panopticon-scout"):
+            driver.coverage_execute(self.root, m)
+        entry = driver._load_json(driver._pano(self.root, "dispatch-request.json"))["entries"][0]
+        self.assertFalse(entry["enforced"])
+        self.assertIsNone(entry["agent"])
+
+    def test_computes_floor_coverage_after_scout_lands(self):
+        self._groups_json([{"name": "Auth", "files": ["a.py"]}])
+        self._groups_yml(
+            "groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC, DAT]\n"
+            "    exclude: [OPS]\n")
+        driver._write_json(driver._pano(self.root, "scout-Auth.json"),
+                           {"group": "Auth", "panels": ["code"]})
+        result = driver.coverage_execute(self.root, self.manifest)
+        self.assertEqual(result.kind, "advanced")
+        cov = driver._load_json(driver._pano(self.root, "coverage-Auth.json"))
+        self.assertEqual(cov["floor"], ["DAT", "SEC"])        # disclosure sorts
+        self.assertEqual(cov["excluded"], ["OPS"])
+        self.assertEqual(cov["effective"], ["DAT", "SEC"])    # exclude ∉ floor
+        self.assertEqual(cov["scout_added"], [])              # bridge deferred to P4
+        self.assertTrue(cov["scout_file"].endswith("scout-Auth.json"))
+
+    def test_group_absent_from_matrix_gets_empty_floor(self):
+        # a split group (e.g. Auth_1) not present in groups.yml -> empty floor
+        self._groups_json([{"name": "Auth_1", "files": ["a.py"]}])
+        self._groups_yml("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n")
+        driver._write_json(driver._pano(self.root, "scout-Auth_1.json"), {"g": 1})
+        driver.coverage_execute(self.root, self.manifest)
+        cov = driver._load_json(driver._pano(self.root, "coverage-Auth_1.json"))
+        self.assertEqual(cov["effective"], [])
+
+    def test_coverage_done_only_when_all_groups_covered(self):
+        self._groups_json([{"name": "A", "files": []}, {"name": "B", "files": []}])
+        self._groups_yml("groups:\n  A:\n    match: ['*']\n  B:\n    match: ['*']\n")
+        self.assertFalse(driver.coverage_done(self.root, self.manifest))
+        for g in ("A", "B"):
+            driver._write_json(driver._pano(self.root, "coverage-%s.json" % g), {"g": g})
+        self.assertTrue(driver.coverage_done(self.root, self.manifest))
+
+
 if __name__ == "__main__":
     unittest.main()
