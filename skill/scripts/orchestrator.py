@@ -1075,6 +1075,10 @@ def run_setup_ingest(repo=".", proposal_path=None, out=sys.stdout):
     additive-merge vs committed groups.yml → write .panopticon/groups.yml.draft.
     Never clobbers a committed groups.yml. Returns 0 on success, 1 on failure."""
     import setup_proposal as sp
+    if not (os.path.isfile(_VOCAB_PATH) and os.path.isfile(_AFFINITY_PATH)):
+        print("data error: bundled vocabulary/affinity data is missing "
+              "(expected %s, %s)" % (_VOCAB_PATH, _AFFINITY_PATH), file=out)
+        return 1
     vocab, verr = sp.load_vocabulary(_VOCAB_PATH)
     affinity, aerr = sp.load_affinity(_AFFINITY_PATH, vocab)
     if verr or aerr:
@@ -1099,6 +1103,10 @@ def run_setup_ingest(repo=".", proposal_path=None, out=sys.stdout):
     leftovers = assign_by_catalog(discover_repo_files(repo),
                                   {n: {"match": b["match"]}
                                    for n, b in committed.items()})[1]
+    # Redundancy is deliberately MATCH-driven (assign_by_catalog ignores
+    # `tests`): a re-run whose only new coverage is a `tests` glob on an
+    # already-covered `match` set is dropped as redundant, not re-added
+    # (I2, accepted limitation -- tests-only extension needs a manual edit).
     claims = assign_by_catalog(
         leftovers, {n: {"match": b["match"]} for n, b in assembled.items()})[0]
     merged, diff = sp.merge_additive(committed, assembled, claims)
@@ -1106,12 +1114,20 @@ def run_setup_ingest(repo=".", proposal_path=None, out=sys.stdout):
     with open(draft, "w", encoding="utf-8") as fh:
         fh.write(sp.dump_groups_yaml(merged))
     print("draft groups.yml written: %s" % draft, file=out)
-    print("  new groups:     %s" % ", ".join(
-        g["name"] for g in diff["new_groups"]) or "(none)", file=out)
-    print("  extended:       %s" % ", ".join(
-        g["name"] for g in diff["extended_groups"]) or "(none)", file=out)
-    print("  dropped (redundant): %s" % ", ".join(
-        diff["dropped_redundant"]) or "(none)", file=out)
+    print("  new groups:     %s" % (", ".join(
+        g["name"] for g in diff["new_groups"]) or "(none)"), file=out)
+    print("  extended:       %s" % (", ".join(
+        g["name"] for g in diff["extended_groups"]) or "(none)"), file=out)
+    print("  dropped (redundant): %s" % (", ".join(
+        diff["dropped_redundant"]) or "(none)"), file=out)
+    if disclosure.get("collisions"):
+        for c in disclosure["collisions"]:
+            print("  merged duplicate capability %s into group %s"
+                  % (c["capability"], c["name"]), file=out)
+    for g in disclosure.get("groups", []):
+        print("  %s: %s (%s)" % (
+            g["name"], "custom" if g["custom"] else "matched",
+            g["floor_source"]), file=out)
     print("review the draft, then move it to .panopticon/groups.yml and commit "
           "(setup never overwrites your committed file).", file=out)
     return 0
@@ -1132,7 +1148,12 @@ def _committed_matrix(repo):
     if isinstance(raw, list):  # legacy list form (Task 5)
         raw = {g.get("name"): g for g in raw
                if isinstance(g, dict) and g.get("name")}
-    groups_schema.parse_groups({"groups": raw})  # validate; errors non-fatal on read
+    # Validate only; errors are non-fatal on read (disclosed, not blocking) --
+    # the raw-order bodies below are returned regardless of what parse_groups
+    # finds.
+    _, errs = groups_schema.parse_groups({"groups": raw})
+    for e in errs:
+        print("committed groups.yml: %s" % e, file=sys.stderr)
     out = {}
     for name, body in raw.items():
         body = body or {}
@@ -1148,10 +1169,14 @@ def _committed_matrix(repo):
 def run_setup(repo=".", host=None, runner=subprocess.run, environ=None,
              out=sys.stdout, vocabulary_path=None):
     """#485 + P2: provision, then render the setup-scan brief (or fall back to
-    the deterministic seed when no vocabulary is available)."""
-    path, created, names = _seed_groups_manifest(repo)
-    print("groups manifest: %s (%s; %d group(s))"
-          % (path, "created" if created else "existing", len(names)), file=out)
+    the deterministic top-dir seed when no vocabulary is available).
+
+    Spec §8: the scan path is provision -> render brief -> STOP. The flat
+    top-dir groups.yml (_seed_groups_manifest) is the vocabulary-ABSENT
+    fallback ONLY (spec §6/§7) -- it must NEVER be seeded unconditionally,
+    or a later `--ingest` would read that flat catalog back as the
+    "committed" baseline, find no leftover files, and additive-merge would
+    drop every real capability group as redundant (C1)."""
     added = _ensure_gitignore(repo)
     print("gitignore: %s" % ("added %s" % ", ".join(added) if added else "ok"),
           file=out)
@@ -1170,6 +1195,9 @@ def run_setup(repo=".", host=None, runner=subprocess.run, environ=None,
               "proposal to .panopticon/setup-proposal.json, then run "
               "`panopticon setup --ingest`.", file=out)
     else:
+        path, created, names = _seed_groups_manifest(repo)
+        print("groups manifest: %s (%s; %d group(s))"
+              % (path, "created" if created else "existing", len(names)), file=out)
         print("vocabulary absent -- scan skipped; using the deterministic "
               "top-dir seed above (edit + commit it by hand).", file=out)
 
@@ -1236,6 +1264,9 @@ def main(argv=None):
         if args.ingest is not None:
             return run_setup_ingest(".", proposal_path=(args.ingest or None))
         return run_setup(".", host=None)
+    if args.ingest is not None:
+        print("panopticon: --ingest has no effect without --setup -- ignoring",
+              file=sys.stderr)
     if args.max_per_group < 1:
         print("--max-per-group must be >= 1", file=sys.stderr)
         return 2

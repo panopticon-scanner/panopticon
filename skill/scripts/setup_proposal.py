@@ -161,8 +161,6 @@ def assemble(proposal, vocabulary, affinity):
     known = set(vocabulary.get("names") or [])
     out = {}
     disclosure = {"groups": [], "errors": [], "collisions": []}
-    # Track which group names have been added to disclosure (only first)
-    disclosed_names = set()
     for g in proposal["groups"]:
         cap = g["capability"]
         name = _group_name(cap)
@@ -214,7 +212,6 @@ def assemble(proposal, vocabulary, affinity):
                 "floor": floor,
                 "floor_source": floor_source,
             })
-            disclosed_names.add(name)
     parsed, perrors = groups_schema.parse_groups({"groups": out})
     if perrors:
         disclosure["errors"] = perrors
