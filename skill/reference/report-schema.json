@@ -222,7 +222,16 @@
                 },
                 "fallbacks": {
                   "type": "object"
-                }
+                },
+                "overrides": {
+                  "type": "object",
+                  "properties": {
+                    "count": {"type": "integer"},
+                    "up": {"type": "integer"},
+                    "down": {"type": "integer"}
+                  }
+                },
+                "code_corrections": {"type": "integer"}
               }
             }
           }
@@ -554,6 +563,16 @@
           "code": {
             "type": "string"
           },
+          "severity_override": {
+            "type": "object",
+            "properties": {
+              "from": {"type": "string"},
+              "to": {"type": "string"},
+              "reason": {"type": "string"}
+            }
+          },
+          "code_corrected_by": {"type": "string"},
+          "backup_confirmed": {"type": "boolean"},
           "domain": {
             "type": "string",
             "enum": [

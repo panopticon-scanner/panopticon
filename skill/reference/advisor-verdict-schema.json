@@ -34,6 +34,8 @@
         "owasp": {"type": "array", "items": {"type": "string"}},
         "cve": {"type": "array", "items": {"type": "string"}}
       }
-    }
+    },
+    "code": {"type": "string"},
+    "stage": {"type": "string", "enum": ["primary", "backup"], "default": "primary"}
   }
 }
