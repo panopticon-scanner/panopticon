@@ -124,3 +124,52 @@ class TestPersistReturnedVerdict(unittest.TestCase):
     def test_non_bundle_rejected(self):
         assert driver.persist_returned_verdict(self._entry(),
                                                '{"verdict": "CONFIRMED"}') is False
+
+
+class TestVerifyBackup(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.root = self.tmp.name
+        self.manifest = _manifest(self.root)
+        _write(self.root, "groups.json", {"groups": [{"name": "app", "files": ["a.py"]}]})
+        _write(self.root, "coverage-app.json", {"effective": ["SEC"]})
+        # a confirmed CRITICAL clears F_b (20*0.8*1.5 = 24 >= 8)
+        _cell(self.root, "app", "SEC", [{"domain": "SEC", "code": "SEC-A1A",
+              "severity": "CRITICAL", "title": "t", "category": "authz",
+              "location": {"file": "a.py", "line_start": 1}}])
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _primary_confirm(self, fid):
+        os.makedirs(os.path.join(self.root, ".panopticon", "verdicts"), exist_ok=True)
+        with open(os.path.join(self.root, ".panopticon", "verdicts",
+                               "verdicts-app-SEC.json"), "w") as fh:
+            json.dump({"verdicts": [{"finding_id": fid, "verdict": "CONFIRMED"}],
+                       "_panopticon": {"run_id": "RID", "role": "domain_advisor",
+                                       "domain": "SEC", "group": "app",
+                                       "stage": "primary"}}, fh)
+
+    def test_backup_summoned_after_primary_confirm(self):
+        cell = driver._load_cell_findings(self.root, self.manifest, "app", "SEC")
+        self._primary_confirm(cell[0]["id"])
+        with mock.patch("scripts.driver.dispatch.render_prompt", return_value="BODY"), \
+             mock.patch("scripts.driver.dispatch.registered_agent_name",
+                        return_value="panopticon-domain-advisor"), \
+             mock.patch("scripts.driver.ocrdb.load_bundle", return_value={"domains": {}}):
+            result = driver.verify_execute(self.root, self.manifest)
+        self.assertEqual(result.checkpoint, "verify")
+        e = driver._load_json(driver._pano(self.root, "dispatch-request.json"))["entries"][0]
+        self.assertTrue(e["out_file"].endswith("verdicts-app-SEC-backup.json"))
+        self.assertEqual(e["write_mode"], "return")
+
+    def test_rejected_category_never_summons_backup(self):
+        cell = driver._load_cell_findings(self.root, self.manifest, "app", "SEC")
+        os.makedirs(os.path.join(self.root, ".panopticon", "verdicts"), exist_ok=True)
+        with open(os.path.join(self.root, ".panopticon", "verdicts",
+                               "verdicts-app-SEC.json"), "w") as fh:
+            json.dump({"verdicts": [{"finding_id": cell[0]["id"], "verdict": "REJECTED"}],
+                       "_panopticon": {"run_id": "RID", "role": "domain_advisor",
+                                       "domain": "SEC", "group": "app",
+                                       "stage": "primary"}}, fh)
+        with mock.patch("scripts.driver.ocrdb.load_bundle", return_value={"domains": {}}):
+            result = driver.verify_execute(self.root, self.manifest)
+        self.assertEqual(result.kind, "advanced")     # nothing to back up

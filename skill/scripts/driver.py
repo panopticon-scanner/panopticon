@@ -515,12 +515,60 @@ def persist_returned_verdict(entry, returned_text):
     return True
 
 
+def _cell_backup_findings(review_root, manifest, group, domain):
+    """The cell's primary-CONFIRMED findings that sit in a category scoring
+    >= F_b on primary-stage evidence — the adversarial backup's scope. [] when
+    the primary bundle is absent or no category clears F_b."""
+    cell = _load_cell_findings(review_root, manifest, group, domain)
+    if not cell:
+        return []
+    primary = _load_json(_verify_out_file(review_root, group, domain, "primary"))
+    if not (isinstance(primary, dict) and isinstance(primary.get("verdicts"), list)):
+        return []
+    by_fid = {str(v.get("finding_id")): v for v in primary["verdicts"]
+              if isinstance(v, dict) and v.get("finding_id")}
+    for f in cell:
+        f["evidence"] = evidence.derive_evidence(f, by_fid.get(str(f["id"])))
+    by_cat = {}
+    for f in cell:
+        by_cat.setdefault(f.get("category") or "general", []).append(f)
+    out = []
+    for cat_findings in by_cat.values():
+        if score_gate.should_summon_backup(cat_findings):
+            out += [f for f in cat_findings
+                    if (f["evidence"].get("status") == "advisor_confirmed")]
+    return out
+
+
 def _verify_backup_execute(review_root, manifest, host, bundle):
-    return None   # Task 4
+    for group, files in _discovered_groups(review_root):
+        pending = []
+        for domain in _effective_domains(review_root, group):
+            scope = _cell_backup_findings(review_root, manifest, group, domain)
+            if not scope:
+                continue
+            if _verify_cell_done(review_root, manifest, group, domain, "backup"):
+                continue
+            pending.append((domain, scope))
+        if pending:
+            entries = [_verify_entry(review_root, manifest, group, d, files, c,
+                                     host, bundle, "backup") for d, c in pending]
+            req = write_dispatch_request(review_root, manifest["run_id"], "verify",
+                                         group, entries)
+            return PhaseResult(kind="checkpoint", checkpoint="verify", group=group,
+                               dispatch_request=req,
+                               message="verify: %d backup advisor(s) for group %s"
+                               % (len(entries), group))
+    return None
 
 
 def _verify_backup_done(review_root, manifest):
-    return True   # Task 4
+    for group, _files in _discovered_groups(review_root):
+        for domain in _effective_domains(review_root, group):
+            if _cell_backup_findings(review_root, manifest, group, domain) \
+                    and not _verify_cell_done(review_root, manifest, group, domain, "backup"):
+                return False
+    return True
 
 
 def synthesize_done(review_root, manifest):
