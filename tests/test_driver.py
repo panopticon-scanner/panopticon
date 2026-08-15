@@ -8,6 +8,7 @@ import unittest
 from unittest import mock
 
 import scripts.driver as driver
+import scripts.ocrdb as ocrdb
 
 
 def _fake_phase(name, *, done_after=1, result_kind="advanced", checkpoint=None):
@@ -417,6 +418,14 @@ class TestCellFanOut(unittest.TestCase):
                            {"findings": [], "_panopticon": {"run_id": "OLD",
                             "role": "domain_panel", "domain": "SEC", "group": "Auth"}})
         self.assertFalse(driver.review_done(self.root, self.manifest))
+
+    def test_cell_prompt_names_the_out_file(self):
+        # a real render (no render_prompt mock): the dispatched reviewer must be
+        # TOLD where to write, or its findings file never appears and the cell
+        # never completes.
+        entry = driver._cell_entry(self.root, self.manifest, "Auth", "SEC",
+                                    ["a.py"], [], "claude", ocrdb.load_bundle())
+        self.assertIn(entry["out_file"], entry["prompt"])
 
 
 class TestSynthesizePhase(unittest.TestCase):
