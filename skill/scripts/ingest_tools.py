@@ -10,6 +10,7 @@ import glob
 import os
 import sys
 
+from scripts.tools.base import strip_ansi
 from scripts.tools.sarif_utils import (
     CWE_TAG,
     CVE_TAG,
@@ -94,9 +95,13 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
                                   "reason": "empty output file"}
             continue
         # Some tools decorate stdout before the JSON payload (calibration
-        # 2026-08-03: bandit's progress bar corrupted its SARIF). Trim to the
-        # first JSON start token — object OR array (eslint emits a top-level
-        # array) — so a cosmetic prefix never discards real findings.
+        # 2026-08-03: bandit's progress bar corrupted its SARIF). Strip ANSI
+        # escape sequences first — a CSI introducer '\x1b[' otherwise makes the
+        # scan below trim to the '[' of the escape code rather than the real
+        # JSON (pip-audit's progress spinner) — then trim to the first JSON
+        # start token (object OR array; eslint emits a top-level array) so a
+        # cosmetic prefix never discards real findings.
+        raw = strip_ansi(raw)
         starts = [i for i in (raw.find(b"{"), raw.find(b"[")) if i != -1]
         first = min(starts) if starts else -1
         if first > 0:

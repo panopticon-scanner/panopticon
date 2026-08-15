@@ -150,7 +150,7 @@ class TestPipAuditAdapter(unittest.TestCase):
         self.assertEqual(stdout, b"[]")
         self.assertEqual(rc, 0)
         fake_run.assert_called_once_with(
-            ["pip-audit", "--format=json", "--desc=on", "--requirement", "/tmp/fake/requirements.txt"],
+            ["pip-audit", "--format=json", "--desc=on", "--progress-spinner=off", "--requirement", "/tmp/fake/requirements.txt"],
             capture_output=True,
             timeout=300,
         )

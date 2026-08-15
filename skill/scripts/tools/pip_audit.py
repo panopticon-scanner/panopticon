@@ -49,7 +49,9 @@ class PipAuditAdapter:
         # --desc takes an optional value; the bare form swallows a following
         # positional path (calibration 2026-08-03: --desc /src -> argparse
         # error, exit 2). Always use the explicit-value form.
-        cmd = ["pip-audit", "--format=json", "--desc=on"]
+        # --progress-spinner=off: some pip-audit builds emit an ANSI progress
+        # spinner into stdout ahead of the JSON, which corrupts parsing.
+        cmd = ["pip-audit", "--format=json", "--desc=on", "--progress-spinner=off"]
         req = self._find_requirement(target)
         if req:
             self._manifest_path = req
