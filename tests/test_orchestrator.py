@@ -1381,3 +1381,100 @@ class TestGroupsFormatReconciliation(unittest.TestCase):
         assigned, leftovers = orch.assign_by_catalog(files, mapping)
         self.assertEqual(assigned, {"src": ["src/a.py"], "tests": ["tests/b.py"]})
         self.assertEqual(leftovers, ["docs/c.md"])
+
+
+def _fake_runner(cmd, **kwargs):
+    class R:  # docker/codex/etc. all "succeed" so readiness never blocks the flow test
+        returncode = 0
+        stdout = ""
+        stderr = ""
+    return R()
+
+
+class TestSetupScanFlow(unittest.TestCase):
+    """Task 6: wires setup_proposal (Tasks 1-3) + setup-scan.md (Task 4) +
+    the groups.yml mapping form (Task 5) into `panopticon setup` /
+    `panopticon setup --ingest`."""
+
+    def _repo_with_files(self):
+        d = tempfile.mkdtemp()
+        os.makedirs(os.path.join(d, ".git"))
+        for sub in ("src/auth", "src/checkout", "tests"):
+            os.makedirs(os.path.join(d, sub))
+        open(os.path.join(d, "src/auth/login.py"), "w").close()
+        open(os.path.join(d, "src/checkout/pay.py"), "w").close()
+        return d
+
+    def test_setup_renders_scan_brief(self):
+        import io
+        d = self._repo_with_files()
+        buf = io.StringIO()
+        orch.run_setup(d, host="generic", runner=_fake_runner, out=buf)
+        brief = os.path.join(d, ".panopticon", "setup-scan-brief.md")
+        self.assertTrue(os.path.isfile(brief))
+        text = open(brief).read()
+        self.assertIn("Checkout", text)          # vocabulary injected
+        self.assertIn("scan brief", buf.getvalue().lower())
+
+    def test_ingest_writes_draft_with_affinity_floor(self):
+        import io
+        d = self._repo_with_files()
+        proposal = {"groups": [
+            {"capability": "Auth", "match": ["src/auth/**"], "tests": []},
+            {"capability": "Checkout", "match": ["src/checkout/**"], "tests": []}]}
+        pp = os.path.join(d, ".panopticon", "setup-proposal.json")
+        os.makedirs(os.path.dirname(pp), exist_ok=True)
+        json.dump(proposal, open(pp, "w"))
+        rc = orch.run_setup_ingest(d, proposal_path=pp, out=io.StringIO())
+        self.assertEqual(rc, 0)
+        draft = os.path.join(d, ".panopticon", "groups.yml.draft")
+        self.assertTrue(os.path.isfile(draft))
+        doc = __import__("yaml").safe_load(open(draft))
+        self.assertEqual(doc["groups"]["Checkout"]["panels"],
+                         ["SEC", "DAT", "ACC", "OPS"])
+
+    def test_ingest_is_additive_against_committed(self):
+        import io
+        d = self._repo_with_files()
+        # commit a groups.yml that already covers Auth (owner-edited floor)
+        os.makedirs(os.path.join(d, ".panopticon"), exist_ok=True)
+        with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
+            fh.write("groups:\n  Auth:\n    match:\n      - src/auth/**\n"
+                     "    panels: [SEC, ACC]\n")
+        proposal = {"groups": [
+            {"capability": "Auth", "match": ["src/auth/**"], "tests": []},
+            {"capability": "Checkout", "match": ["src/checkout/**"], "tests": []}]}
+        pp = os.path.join(d, ".panopticon", "setup-proposal.json")
+        json.dump(proposal, open(pp, "w"))
+        orch.run_setup_ingest(d, proposal_path=pp, out=io.StringIO())
+        doc = __import__("yaml").safe_load(
+            open(os.path.join(d, ".panopticon", "groups.yml.draft")))
+        self.assertEqual(doc["groups"]["Auth"]["panels"], ["SEC", "ACC"])  # untouched
+        self.assertIn("Checkout", doc["groups"])                           # added
+        # never overwrote the committed file itself
+        committed = __import__("yaml").safe_load(
+            open(os.path.join(d, ".panopticon", "groups.yml")))
+        self.assertNotIn("Checkout", committed["groups"])
+
+    def test_ingest_malformed_proposal_fails_loudly_no_draft(self):
+        import io
+        d = self._repo_with_files()
+        pp = os.path.join(d, ".panopticon", "setup-proposal.json")
+        os.makedirs(os.path.dirname(pp), exist_ok=True)
+        json.dump({"groups": [{"capability": "Auth", "match": []}]}, open(pp, "w"))
+        buf = io.StringIO()
+        rc = orch.run_setup_ingest(d, proposal_path=pp, out=buf)
+        self.assertEqual(rc, 1)
+        self.assertFalse(os.path.isfile(
+            os.path.join(d, ".panopticon", "groups.yml.draft")))
+
+    def test_setup_without_vocabulary_falls_back_to_seed(self):
+        import io
+        d = self._repo_with_files()
+        buf = io.StringIO()
+        # point the loader at a missing vocabulary
+        orch.run_setup(d, host="generic", runner=_fake_runner, out=buf,
+                       vocabulary_path="/nonexistent/vocab.yml")
+        self.assertIn("vocabulary", buf.getvalue().lower())
+        self.assertFalse(os.path.isfile(
+            os.path.join(d, ".panopticon", "setup-scan-brief.md")))
