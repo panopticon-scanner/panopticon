@@ -91,3 +91,36 @@ class TestVerifyPrimary(unittest.TestCase):
                                        "domain": "SEC", "group": "app", "stage": "primary"}}, fh)
         with mock.patch("scripts.driver.ocrdb.load_bundle", return_value={"domains": {}}):
             self.assertTrue(driver.verify_done(self.root, self.manifest))
+
+
+class TestPersistReturnedVerdict(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.out = os.path.join(self.tmp.name, ".panopticon", "verdicts",
+                                "verdicts-app-SEC.json")
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _entry(self):
+        return {"id": "verify-app-SEC-primary", "write_mode": "return",
+                "out_file": self.out}
+
+    def test_persists_valid_bundle(self):
+        text = ('{"verdicts": [{"finding_id": "SEC-1", "verdict": "CONFIRMED"}], '
+                '"_panopticon": {"run_id": "RID", "role": "domain_advisor", '
+                '"domain": "SEC", "group": "app", "stage": "primary"}}')
+        assert driver.persist_returned_verdict(self._entry(), text) is True
+        with open(self.out) as fh:
+            assert json.load(fh)["verdicts"][0]["finding_id"] == "SEC-1"
+
+    def test_fenced_json_is_tolerated(self):
+        text = "```json\n{\"verdicts\": []}\n```"
+        assert driver.persist_returned_verdict(self._entry(), text) is True
+
+    def test_malformed_return_persists_nothing(self):
+        assert driver.persist_returned_verdict(self._entry(), "not json {") is False
+        assert not os.path.exists(self.out)
+
+    def test_non_bundle_rejected(self):
+        assert driver.persist_returned_verdict(self._entry(),
+                                               '{"verdict": "CONFIRMED"}') is False

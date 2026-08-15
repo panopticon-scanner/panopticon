@@ -500,6 +500,21 @@ def verify_done(review_root, manifest):
     return _verify_backup_done(review_root, manifest)
 
 
+def persist_returned_verdict(entry, returned_text):
+    """Validate an advisor's returned text as a verdict bundle and write it to
+    entry['out_file']. A read-only advisor never writes; the orchestrator persists
+    its return here, refusing to write a malformed/non-bundle response so a corrupt
+    verdict never lands (the host re-dispatches on False)."""
+    try:
+        data = synthesize.load_json_tolerant(returned_text)
+    except (ValueError, TypeError):
+        return False
+    if not (isinstance(data, dict) and isinstance(data.get("verdicts"), list)):
+        return False
+    _write_json(entry["out_file"], data)
+    return True
+
+
 def _verify_backup_execute(review_root, manifest, host, bundle):
     return None   # Task 4
 
