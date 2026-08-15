@@ -184,6 +184,38 @@ def load_findings(paths):
     return out
 
 
+def validate_finding_codes(findings, bundle):
+    """Validate each finding's `code` against the OCRDb bundle. Returns the
+    coverage dict {invalid_codes, fallbacks} or None when no bundle is vendored.
+
+    - a real code: kept, not counted.
+    - an explicit '<DOM>-X0X' fallback (or a code the reviewer couldn't match):
+      counted per-domain at `fallbacks` (the catalog-gap signal).
+    - an unknown, non-fallback code: replaced with the domain fallback and
+      counted at `invalid_codes`.
+    A finding with no `code` is left alone.
+    """
+    if bundle is None:
+        return None
+    invalid = 0
+    fallbacks = {}
+    for f in findings:
+        code = f.get("code")
+        if not code:
+            continue
+        domain = f.get("domain") or ocrdb.domain_of(code)
+        if ocrdb.validate_code(bundle, code):
+            continue
+        if domain and code == ocrdb.domain_fallback(domain):
+            fallbacks[domain] = fallbacks.get(domain, 0) + 1
+        else:
+            invalid += 1
+            if domain:
+                f["code"] = ocrdb.domain_fallback(domain)
+                fallbacks[domain] = fallbacks.get(domain, 0) + 1
+    return {"invalid_codes": invalid, "fallbacks": fallbacks}
+
+
 # Alias the shared severity rank instead of re-implementing it — same
 # rationale as _is_tool_sourced below.
 _sev_rank = evidence_mod.sev_rank
@@ -1026,6 +1058,8 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
     findings, integration_findings = prepare_for_queue(findings)
     if catalog is None:
         catalog = load_cwe_catalog()
+    ocrdb_bundle = ocrdb.load_bundle()
+    ocrdb_coverage = validate_finding_codes(findings, ocrdb_bundle)
     queue, cut = evidence_mod.build_verify_queue(findings, max_verify)
     # Identity must be read BEFORE any verdict is applied. For a SARIF-sourced
     # tool finding the adapters park the rule id in
@@ -1206,6 +1240,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
             "review_type": review_type,
             "timestamp": timestamp,
             "version": __version__,
+            "ocrdb_version": ocrdb.BUNDLE_VERSION if ocrdb_bundle is not None else None,
             "security_mode": security_mode,
             "models_used": _collect_models_used(findings),
             "coverage": {
@@ -1225,6 +1260,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                 "out_of_scope": out_of_scope,
                 "doc_policy": doc_policy,
                 "verdicts": verdict_stats,
+                "ocrdb": ocrdb_coverage,   # None when no bundle vendored (= 4.x)
                 "fan_out": fan_out,
                 "divergence": divergence,
                 "resume": resume,

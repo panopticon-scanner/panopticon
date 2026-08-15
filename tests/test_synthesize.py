@@ -8,6 +8,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill"))
 import scripts.synthesize as syn
+import scripts.ocrdb as ocrdb
 
 
 class TestFindingsFileIntegrity(unittest.TestCase):
@@ -3490,3 +3491,46 @@ class TestCostLedger(unittest.TestCase):
                   encoding="utf-8") as fh:
             schema = json.load(fh)
         self.assertIn("cost", schema["properties"]["meta"]["properties"])
+
+
+class TestOcrdbValidation(unittest.TestCase):
+    """5.0 Slice A Task 3: synthesize auto-loads the OCRDb bundle, stamps
+    the version, and validates finding codes against it."""
+
+    def _bundle(self):
+        return ocrdb.load_bundle()
+
+    def test_valid_code_kept_and_counted_zero(self):
+        b = self._bundle()
+        real = ocrdb.domain_menu(b, "SEC")[0]["code"]
+        findings = [{"code": real, "domain": "SEC"}]
+        cov = syn.validate_finding_codes(findings, b)
+        self.assertEqual(findings[0]["code"], real)
+        self.assertEqual(cov["invalid_codes"], 0)
+
+    def test_unknown_code_replaced_with_fallback_and_counted(self):
+        b = self._bundle()
+        findings = [{"code": "SEC-ZZZ", "domain": "SEC"}]
+        cov = syn.validate_finding_codes(findings, b)
+        self.assertEqual(findings[0]["code"], "SEC-X0X")
+        self.assertEqual(cov["invalid_codes"], 1)
+
+    def test_explicit_fallback_counted_as_fallback_not_invalid(self):
+        b = self._bundle()
+        findings = [{"code": "SEC-X0X", "domain": "SEC"}]
+        cov = syn.validate_finding_codes(findings, b)
+        self.assertEqual(cov["invalid_codes"], 0)
+        self.assertEqual(cov["fallbacks"].get("SEC"), 1)
+
+    def test_bundle_absent_leaves_findings_and_returns_none(self):
+        findings = [{"code": "SEC-A1A"}]
+        cov = syn.validate_finding_codes(findings, None)
+        self.assertIsNone(cov)
+        self.assertEqual(findings[0]["code"], "SEC-A1A")   # untouched
+
+    def test_build_report_stamps_ocrdb_version(self):
+        report = syn.build_report(
+            [{"title": "t", "severity": "LOW", "code": "SEC-A1A", "domain": "SEC"}],
+            [], "src", None, "2026-07-23T00:00:00Z")
+        self.assertEqual(report["meta"]["ocrdb_version"], "0.3.1")
+        self.assertIsNotNone(report["meta"]["coverage"]["ocrdb"])
