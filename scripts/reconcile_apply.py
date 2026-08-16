@@ -158,39 +158,39 @@ AMBIGUOUS_COMMENT = ("**Reconciliation: not seen, but area still active.** This 
                      "auto-closed.")
 
 
+def _cohort_actions(entries, cohort, close, comment_fn, ledger):
+    """Resolve each run2 record in *entries* to its issue and build the action
+    dict for one cohort. comment_fn(entry) -> the comment body for that entry."""
+    out = []
+    for entry in entries or []:
+        for record in entry["run2"]:
+            issue = resolve_issue(record, ledger)
+            if issue is None:
+                continue
+            out.append({"cohort": cohort, "fingerprint": entry["fingerprint"],
+                        "issue": issue, "comment": comment_fn(entry), "close": close})
+    return out
+
+
 def plan_actions(diff, ledger):
     if "fixed_or_gone" in diff:
         print("diff.json predates the closed/ambiguous split -- re-run reconcile.py diff",
              file=sys.stderr)
+
+    def _recur_comment(entry):
+        tpl = (RECUR_COARSE_COMMENT if entry.get("match_tier") == "coarse"
+               else RECUR_EXACT_COMMENT)
+        return tpl % _bare(entry["fingerprint"])
+
     actions = []
-    for entry in diff.get("recurring") or []:
-        comment_tpl = (RECUR_COARSE_COMMENT if entry.get("match_tier") == "coarse"
-                       else RECUR_EXACT_COMMENT)
-        for record in entry["run2"]:
-            issue = resolve_issue(record, ledger)
-            if issue is None:
-                continue
-            actions.append({"cohort": "recurring", "fingerprint": entry["fingerprint"],
-                            "issue": issue, "comment": comment_tpl % _bare(entry["fingerprint"]),
-                            "close": False})
-    for entry in diff.get("closed") or []:
-        for record in entry["run2"]:
-            issue = resolve_issue(record, ledger)
-            if issue is None:
-                continue
-            actions.append({"cohort": "closed", "fingerprint": entry["fingerprint"],
-                            "issue": issue,
-                            "comment": CLOSED_COMMENT % neutralize(entry.get("reason", "no run3 match")),
-                            "close": True})
-    for entry in diff.get("ambiguous") or []:
-        for record in entry["run2"]:
-            issue = resolve_issue(record, ledger)
-            if issue is None:
-                continue
-            actions.append({"cohort": "ambiguous", "fingerprint": entry["fingerprint"],
-                            "issue": issue,
-                            "comment": AMBIGUOUS_COMMENT % neutralize(entry.get("reason", "area still active")),
-                            "close": False})
+    actions += _cohort_actions(diff.get("recurring"), "recurring", False,
+                               _recur_comment, ledger)
+    actions += _cohort_actions(
+        diff.get("closed"), "closed", True,
+        lambda e: CLOSED_COMMENT % neutralize(e.get("reason", "no run3 match")), ledger)
+    actions += _cohort_actions(
+        diff.get("ambiguous"), "ambiguous", False,
+        lambda e: AMBIGUOUS_COMMENT % neutralize(e.get("reason", "area still active")), ledger)
     return actions
 
 
