@@ -1,20 +1,20 @@
 import dispatch
 
-def test_domain_advisor_is_read_only():
-    meta, body = dispatch.load_template("domain-advisor.md")
-    assert meta["tool_policy"]["allowed"] == ["Read", "Grep", "Glob"]
-    assert meta["tool_policy"]["forbidden"] == ["Bash", "Edit", "Write", "Agent"]
+def test_domain_advisor_is_scoped_write():
+    meta, _ = dispatch.load_template("domain-advisor.md")
+    assert meta["tool_policy"]["allowed"] == ["Read", "Grep", "Glob", "Write"]
+    assert meta["tool_policy"]["forbidden"] == ["Bash", "Edit", "Agent"]
 
-def test_domain_advisor_returns_bundle_not_writes():
+def test_domain_advisor_writes_bundle_to_out_file():
     _, body = dispatch.load_template("domain-advisor.md")
-    assert "{out_file}" not in body           # read-only: returns, never writes
-    assert "verdicts" in body                 # returns a verdict bundle
-    assert "_panopticon" in body
-    assert "finding_id" in body
+    assert "{out_file}" in body                # self-writes its bundle
+    assert body.count("## Output") == 1        # one authoritative write instruction
+    assert "verdicts" in body and "_panopticon" in body and "finding_id" in body
 
 def test_domain_advisor_renders_with_driver_mapping():
     prompt = dispatch.render_prompt("domain-advisor.md", {
         "domain": "SEC", "group": "app", "file_list": "- a.py",
         "findings": "[]", "menu": "SEC-A1A n (HIGH)", "run_id": "RID",
-        "stage": "primary"}, "claude")
-    assert "SEC" in prompt and "RID" in prompt
+        "stage": "primary", "out_file": "/abs/verdicts-app-SEC.json"}, "claude")
+    assert "SEC" in prompt and "RID" in prompt and "/abs/verdicts-app-SEC.json" in prompt
+    assert "{" + "out_file}" not in prompt      # placeholder fully substituted

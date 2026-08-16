@@ -106,7 +106,7 @@ CODEX_AGENTS_DIR = os.path.join(CODEX_HOME, "agents")
 # registered enforcement shell, its tool policy is prompt-advisory only --
 # a general-purpose agent reading untrusted repo content would have full
 # Bash/Edit/Write. main() refuses to emit such a plan by default.
-REVIEWER_ROLES = {"panel_review", "lens_sweep", "domain_panel"}
+REVIEWER_ROLES = {"panel_review", "lens_sweep", "domain_panel", "domain_advisor"}
 PANEL_LENSES = {
     "code": ["structure", "correctness", "style"],
     "test": ["coverage", "test_quality", "test_design"],

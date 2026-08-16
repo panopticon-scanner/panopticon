@@ -68,8 +68,9 @@ class TestTemplateFrontmatter(unittest.TestCase):
         # self-write their out_file; the write-guard hook (Tasks 4-5) confines
         # that Write to the plan's out_file set. Edit/Bash/Agent stay forbidden
         # for every role.
-        read_only = {"scout.md", "advisor.md", "setup-scan.md", "domain-advisor.md"}
-        scoped_write = {"panel-review.md", "lens-sweep.md", "domain-panel.md"}
+        read_only = {"scout.md", "advisor.md", "setup-scan.md"}
+        scoped_write = {"panel-review.md", "lens-sweep.md", "domain-panel.md",
+                        "domain-advisor.md"}
         self.assertEqual(read_only | scoped_write, set(ROLES))
         for role_file in read_only:
             meta, _ = dispatch.load_template(role_file)

@@ -44,7 +44,8 @@ class TestVerifyPrimary(unittest.TestCase):
         outs = [os.path.basename(e["out_file"]) for e in req["entries"]]
         self.assertEqual(outs, ["verdicts-app-SEC.json"])          # only engaged
         e = req["entries"][0]
-        self.assertEqual(e["write_mode"], "return")
+        self.assertNotIn("write_mode", e)
+        self.assertTrue(e["out_file"].endswith(".json"))
         self.assertEqual(e["out_file"], os.path.abspath(e["out_file"]))
         self.assertNotIn("delivery", e)                            # host-agnostic
 
@@ -93,39 +94,6 @@ class TestVerifyPrimary(unittest.TestCase):
             self.assertTrue(driver.verify_done(self.root, self.manifest))
 
 
-class TestPersistReturnedVerdict(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.out = os.path.join(self.tmp.name, ".panopticon", "verdicts",
-                                "verdicts-app-SEC.json")
-    def tearDown(self):
-        self.tmp.cleanup()
-
-    def _entry(self):
-        return {"id": "verify-app-SEC-primary", "write_mode": "return",
-                "out_file": self.out}
-
-    def test_persists_valid_bundle(self):
-        text = ('{"verdicts": [{"finding_id": "SEC-1", "verdict": "CONFIRMED"}], '
-                '"_panopticon": {"run_id": "RID", "role": "domain_advisor", '
-                '"domain": "SEC", "group": "app", "stage": "primary"}}')
-        assert driver.persist_returned_verdict(self._entry(), text) is True
-        with open(self.out) as fh:
-            assert json.load(fh)["verdicts"][0]["finding_id"] == "SEC-1"
-
-    def test_fenced_json_is_tolerated(self):
-        text = "```json\n{\"verdicts\": []}\n```"
-        assert driver.persist_returned_verdict(self._entry(), text) is True
-
-    def test_malformed_return_persists_nothing(self):
-        assert driver.persist_returned_verdict(self._entry(), "not json {") is False
-        assert not os.path.exists(self.out)
-
-    def test_non_bundle_rejected(self):
-        assert driver.persist_returned_verdict(self._entry(),
-                                               '{"verdict": "CONFIRMED"}') is False
-
-
 class TestVerifyBackup(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.root = self.tmp.name
@@ -159,7 +127,7 @@ class TestVerifyBackup(unittest.TestCase):
         self.assertEqual(result.checkpoint, "verify")
         e = driver._load_json(driver._pano(self.root, "dispatch-request.json"))["entries"][0]
         self.assertTrue(e["out_file"].endswith("verdicts-app-SEC-backup.json"))
-        self.assertEqual(e["write_mode"], "return")
+        self.assertNotIn("write_mode", e)
 
     def test_rejected_category_never_summons_backup(self):
         cell = driver._load_cell_findings(self.root, self.manifest, "app", "SEC")

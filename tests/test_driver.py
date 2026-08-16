@@ -765,7 +765,7 @@ class TestReviewMatrixEndToEnd(unittest.TestCase):
 
 class TestVerifyMatrixEndToEnd(unittest.TestCase):
     """5.0-P5 Slice B Task 5: verify is no longer a no-op. Against the real
-    driver functions (verify_execute/persist_returned_verdict/verify_done) and
+    driver functions (verify_execute/verify_done) and
     a real synthesize.py subprocess (driver.synthesize_execute) -- mirrors
     TestReviewMatrixEndToEnd's real-artifact style, but drives review/verify
     state directly on disk (as TestVerifyPrimary/TestVerifyBackup in
@@ -814,6 +814,12 @@ class TestVerifyMatrixEndToEnd(unittest.TestCase):
                                            "role": "domain_advisor", "domain": domain,
                                            "group": group, "stage": "primary"}})
 
+    def _self_write(self, entry, text):
+        """Simulate the advisor self-writing its bundle to entry['out_file']."""
+        os.makedirs(os.path.dirname(entry["out_file"]), exist_ok=True)
+        with open(entry["out_file"], "w") as fh:
+            fh.write(text)
+
     def test_confirmed_verdict_reaches_advisor_confirmed_report(self):
         d = self._repo(["SEC"])
         self._write_cell(d, "SEC")
@@ -824,10 +830,9 @@ class TestVerifyMatrixEndToEnd(unittest.TestCase):
         self.assertEqual(result.checkpoint, "verify")
         req = driver._load_json(driver._pano(d, "dispatch-request.json"))
         entry = req["entries"][0]
-        self.assertEqual(entry["write_mode"], "return")
 
         text = self._confirm_bundle(d, manifest, "SEC")
-        self.assertTrue(driver.persist_returned_verdict(entry, text))
+        self._self_write(entry, text)
 
         result2 = driver.verify_execute(d, manifest)   # drains the (empty) backup round
         self.assertEqual(result2.kind, "advanced")
@@ -872,7 +877,7 @@ class TestVerifyMatrixEndToEnd(unittest.TestCase):
                          if e["out_file"].endswith("verdicts-app-SEC.json"))
 
         text = self._confirm_bundle(d, manifest, "SEC")
-        self.assertTrue(driver.persist_returned_verdict(sec_entry, text))
+        self._self_write(sec_entry, text)
 
         result2 = driver.verify_execute(d, manifest)
         self.assertEqual(result2.kind, "checkpoint")
