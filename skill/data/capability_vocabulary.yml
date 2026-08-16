@@ -19,7 +19,7 @@ capabilities:
     hints: ["**/auth/**", "**/login/**", "**/session*/**"]
     see_also: [Accounts]
     provenance: r1
-    evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 92, repos_total: 128}
+    evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 92, repos_total: 96}
 
   - name: Accounts
     tier: universal
@@ -28,7 +28,7 @@ capabilities:
     hints: ["**/account*/**", "**/users/**", "**/profile*/**"]
     see_also: [Auth]
     provenance: r1
-    evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 88, repos_total: 128}
+    evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 88, repos_total: 96}
 
   - name: Checkout
     tier: vertical
@@ -37,7 +37,7 @@ capabilities:
     hints: ["**/checkout/**", "**/payment*/**", "**/cart/**"]
     see_also: [Billing, Fulfillment]
     provenance: r1
-    evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 24, repos_total: 128}
+    evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 24, repos_total: 96}
 
   - name: Billing
     tier: vertical
@@ -46,7 +46,7 @@ capabilities:
     hints: ["**/billing/**", "**/invoice*/**", "**/subscription*/**"]
     see_also: [Checkout]
     provenance: r1
-    evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 37, repos_total: 128}
+    evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 37, repos_total: 96}
 
   - name: Catalog
     tier: vertical
@@ -54,7 +54,7 @@ capabilities:
     boundary: "Not the search/indexing layer (-> Search); a general content/media corpus is out of scope (R2 watch-list, not Catalog)."
     hints: ["**/catalog/**", "**/products/**", "**/inventory/**"]
     provenance: r1
-    evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 24, repos_total: 128}
+    evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 24, repos_total: 96}
 
   - name: Search
     tier: universal
@@ -63,7 +63,7 @@ capabilities:
     hints: ["**/search/**", "**/index*/**", "**/query/**"]
     see_also: [Catalog]
     provenance: r1
-    evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 67, repos_total: 128}
+    evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 67, repos_total: 96}
 
   - name: Fulfillment
     tier: vertical
@@ -73,7 +73,7 @@ capabilities:
     see_also: [Checkout]
     provenance: r1
     # thin presence (n=13, 14%) -- rulings flags re-measure at R2
-    evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 13, repos_total: 128}
+    evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 13, repos_total: 96}
 
   - name: Notifications
     tier: universal
@@ -82,7 +82,7 @@ capabilities:
     hints: ["**/notif*/**", "**/email*/**", "**/messaging/**"]
     see_also: [Platform]
     provenance: r1
-    evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 86, repos_total: 128}
+    evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 86, repos_total: 96}
 
   - name: Reporting
     tier: universal
@@ -91,7 +91,7 @@ capabilities:
     hints: ["**/report*/**", "**/analytics/**", "**/dashboard*/**"]
     see_also: [Admin]
     provenance: r1
-    evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 70, repos_total: 128}
+    evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 70, repos_total: 96}
 
   - name: Admin
     tier: universal
@@ -100,7 +100,7 @@ capabilities:
     hints: ["**/admin/**", "**/backoffice/**"]
     see_also: [Reporting, Accounts]
     provenance: r1
-    evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 77, repos_total: 128}
+    evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 77, repos_total: 96}
 
   - name: API
     tier: universal
@@ -109,7 +109,7 @@ capabilities:
     hints: ["**/api/**", "**/routes/**", "**/graphql/**"]
     see_also: [Platform]
     provenance: r1
-    evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 85, repos_total: 128}
+    evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 85, repos_total: 96}
 
   - name: Platform
     tier: universal
@@ -118,7 +118,7 @@ capabilities:
     hints: ["**/core/**", "**/common/**", "**/lib/**", "**/util*/**"]
     see_also: [UI, API]
     provenance: r1
-    evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 96, repos_total: 128}
+    evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 96, repos_total: 96}
 
   - name: UI
     tier: universal
@@ -129,4 +129,4 @@ capabilities:
     provenance: r1
     # R-1 carve-out out of Platform: not independently seeded/measured in R1
     # (no evidence -> rides the global floor + scout); repos_present omitted.
-    evidence: {round: 2026-08-15-vocab-panel-r1, repos_total: 128, note: "carve-out (R-1); unmeasured in R1"}
+    evidence: {round: 2026-08-15-vocab-panel-r1, repos_total: 96, note: "carve-out (R-1); unmeasured in R1"}
