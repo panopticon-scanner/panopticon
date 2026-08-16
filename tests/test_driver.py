@@ -1715,6 +1715,28 @@ class TestDriverSetup(unittest.TestCase):
         # no scan checkpoint was emitted
         self.assertFalse(os.path.isfile(driver._pano(d, "setup-proposal.json")))
 
+    def test_stale_fallback_marker_self_heals_when_vocab_returns(self):
+        # First run: vocab absent -> fallback marker written, run completes
+        # without a checkpoint.
+        d = self._repo()
+        args = driver.build_parser().parse_args(["setup", d])
+        with mock.patch("scripts.setup_flow.load_bundled_vocabulary",
+                        return_value=({"names": []}, False)):
+            status1 = driver.run_setup_flow(args)
+        self.assertEqual(status1["status"], "complete")
+        marker = driver._load_json(driver._pano(d, "setup-complete.json"))
+        self.assertEqual(marker["mode"], "fallback")
+
+        # Re-invoke WITHOUT --reset, vocab now present (no mock => real bundled
+        # fixture). Without the self-heal, scan_done/ingest_done would both
+        # short-circuit on the stale marker and this would return "complete"
+        # again, reusing the flat fallback seed instead of running a real scan.
+        status2 = driver.run_setup_flow(args)
+        self.assertEqual(status2["status"], "checkpoint")
+        self.assertEqual(status2["checkpoint"], "scan")
+        self.assertFalse(driver._json_parses(driver._pano(d, "setup-complete.json")))
+        self.assertTrue(os.path.isfile(driver._pano(d, "setup-scan-brief.md")))
+
     def test_completion_message_branches_on_draft_vs_fallback(self):
         # vocab-absent fallback: flat groups.yml, no draft -> message must not
         # send the owner looking for a groups.yml.draft that was never written.

@@ -729,7 +729,7 @@ def _read_text(path):
         return fh.read()
 
 
-def _setup_scan_entry(review_root, prompt, host):
+def _setup_scan_entry(review_root, prompt):
     """One return-persist dispatch entry for the read-only setup-scan agent
     (mirrors _scout_entry): the host dispatches it, gets proposal JSON back, and
     persists it to out_file.
@@ -763,7 +763,7 @@ def scan_execute(review_root, manifest):
     if not present:
         return _scan_fallback(review_root, manifest, host)   # Task 3
     brief_path = setup_flow.render_scan_brief(review_root, vocab)
-    entry = _setup_scan_entry(review_root, _read_text(brief_path), host)
+    entry = _setup_scan_entry(review_root, _read_text(brief_path))
     req = write_dispatch_request(review_root, manifest["run_id"], "scan", None, [entry])
     return PhaseResult(kind="checkpoint", checkpoint="scan", group=None,
                        dispatch_request=req, message="setup-scan checkpoint")
@@ -819,6 +819,23 @@ def _scan_fallback(review_root, manifest, host):
     return PhaseResult(kind="advanced", message=msg)
 
 
+def _drop_stale_fallback_marker(review_root):
+    """A vocab-absent run wrote a mode:"fallback" setup-complete.json. Once the
+    vocabulary is available again, that marker is stale — a real scan should
+    supersede the flat seed. Remove it so the engine re-scans (self-healing; no
+    --reset needed). No-op when there is no fallback marker or vocab is still
+    absent."""
+    marker = _load_json(_pano(review_root, "setup-complete.json"))
+    if not (isinstance(marker, dict) and marker.get("mode") == "fallback"):
+        return
+    _vocab, present = setup_flow.load_bundled_vocabulary(None)
+    if present:
+        try:
+            os.remove(_pano(review_root, "setup-complete.json"))
+        except OSError:
+            pass
+
+
 def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES):
     """The `driver setup` entrypoint: a separate two-phase flow (NOT a run
     phase). Resolves the review root, pins a minimal setup-manifest once, and
@@ -827,6 +844,7 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES):
     review_root, _wt, _pr = resolve_review_root(args.target, runner=runner)
     if getattr(args, "reset", False):
         _clear_setup_artifacts(review_root)               # Task 3
+    _drop_stale_fallback_marker(review_root)
     manifest = load_setup_manifest(review_root)
     if manifest is None:
         manifest = {"schema_version": 1, "run_id": run_manifest.new_run_id(),
