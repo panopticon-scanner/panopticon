@@ -1241,9 +1241,10 @@ def main(argv=None):
     # Scope filters (P6.2): apply only with --repo-scan -- they narrow the
     # discovered file universe before the SAME matrix assignment runs, rather
     # than switching modes. Read only in the --repo-scan branch below.
-    ap.add_argument("--scope-file", metavar="PATH", default=None)
-    ap.add_argument("--scope-dir", metavar="DIR", default=None)
-    ap.add_argument("--scope-group", metavar="NAME", default=None)
+    scope = ap.add_mutually_exclusive_group()
+    scope.add_argument("--scope-file", metavar="PATH", default=None)
+    scope.add_argument("--scope-dir", metavar="DIR", default=None)
+    scope.add_argument("--scope-group", metavar="NAME", default=None)
     modes = ap.add_mutually_exclusive_group(required=True)
     modes.add_argument("--group", metavar="NAME")
     modes.add_argument("--directory", metavar="DIR")

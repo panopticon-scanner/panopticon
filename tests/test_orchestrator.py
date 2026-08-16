@@ -1590,7 +1590,8 @@ def _repo_with_matrix(tmp_path):
     import subprocess, os
     repo = tmp_path
     (repo / ".panopticon").mkdir(parents=True)
-    for p in ["src/auth/login.py", "src/checkout/pay.py", "src/checkout/cart.py"]:
+    for p in ["src/auth/login.py", "src/checkout/pay.py", "src/checkout/cart.py",
+              "src/misc/other.py"]:                    # matches no catalog group
         os.makedirs(os.path.dirname(repo / p), exist_ok=True)
         (repo / p).write_text("x=1\n")
     (repo / ".panopticon" / "groups.yml").write_text(
@@ -1626,5 +1627,44 @@ def test_repo_scan_scope_file_restricts_to_file_and_its_group(tmp_path):
     groups = json.loads(out.read_text())["groups"]
     files = sorted(f for g in groups for f in g["files"])
     assert files == ["src/checkout/pay.py"]           # only the file (no related tests here)
-    assert all(g["name"] == "Checkout" or g["name"].startswith("._")
-               for g in groups)                        # assigned to its group
+    assert {g["name"] for g in groups} == {"Checkout"}   # assigned to its group, nothing else
+
+
+def test_repo_scan_scope_dir_restricts_to_directory(tmp_path):
+    import orchestrator, json
+    repo = _repo_with_matrix(tmp_path)
+    out = repo / "groups.json"
+    orchestrator.main(["--repo-scan", "--scope-dir", "src/checkout",
+                       str(repo), "--out", str(out)])
+    groups = json.loads(out.read_text())["groups"]
+    files = sorted(f for g in groups for f in g["files"])
+    assert files == ["src/checkout/cart.py", "src/checkout/pay.py"]
+    assert {g["name"] for g in groups} == {"Checkout"}
+
+
+def test_repo_scan_scope_group_unknown_name_errors(tmp_path, capsys):
+    import orchestrator
+    repo = _repo_with_matrix(tmp_path)
+    out = repo / "groups.json"
+    rc = orchestrator.main(["--repo-scan", "--scope-group", "Nope",
+                            str(repo), "--out", str(out)])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "Nope" in err
+
+
+def test_repo_scan_scope_dir_no_catalog_match_falls_back_to_leftover(tmp_path):
+    # A scoped file with no `match` coverage still surfaces via the ._N
+    # leftover chunk naming AND is disclosed in ungrouped_files -- the same
+    # coverage-honesty contract the unscoped --repo-scan path guarantees.
+    import orchestrator, json
+    repo = _repo_with_matrix(tmp_path)
+    out = repo / "groups.json"
+    orchestrator.main(["--repo-scan", "--scope-dir", "src/misc",
+                       str(repo), "--out", str(out)])
+    data = json.loads(out.read_text())
+    groups = data["groups"]
+    assert [g["files"] for g in groups] == [["src/misc/other.py"]]
+    assert groups[0]["name"].startswith("._")
+    assert data["ungrouped_files"] == ["src/misc/other.py"]
+    assert data["counts"]["ungrouped"] == 1
