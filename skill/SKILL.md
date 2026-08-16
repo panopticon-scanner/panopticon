@@ -455,6 +455,27 @@ so the cell reads as not-done and is re-dispatched on the next `driver run` — 
 corrupt findings/verdict silently lands. Register the enforcement shells once with
 `python3 skill/scripts/dispatch.py --emit-host-agents claude`.
 
+## Driver setup (5.0)
+
+`driver setup [target]` runs the one-time bootstrap that proposes the
+capability `groups.yml`, as a separate two-phase flow on the same status
+protocol as `driver run` (it never runs during a review):
+
+1. **scan** — provisions `.panopticon/` (`.gitignore` + `config.json`), renders
+   the setup-scan brief, and emits a `scan` **checkpoint** naming the read-only
+   `setup-scan` agent. Dispatch it exactly like `scout` (**return-persist**:
+   dispatch, then write the returned proposal JSON to the entry's `out_file`,
+   `.panopticon/setup-proposal.json`).
+2. **ingest** — on re-invoke, the driver assembles the proposal (deterministic
+   affinity floors), additive-merges it against any committed `groups.yml`, and
+   writes `.panopticon/groups.yml.draft` → `complete`.
+
+Setup writes a **draft**: review `.panopticon/groups.yml.draft`, move it to
+`.panopticon/groups.yml`, and commit it (setup never overwrites a committed
+file). A repo with no capability vocabulary falls back to a flat top-dir seed
++ a readiness gate and completes without a checkpoint. `driver setup --reset`
+clears the setup artifacts and starts over.
+
 ## Output
 Terminal markdown summary + JSON artifact at `--out`. CI gate key: `summary.gate`
 (`PASS` / `FAIL` / `OFF` / `INCONCLUSIVE`). `INCONCLUSIVE` means gate-relevant

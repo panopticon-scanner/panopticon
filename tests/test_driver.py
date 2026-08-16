@@ -1810,6 +1810,23 @@ class TestDriverSetup(unittest.TestCase):
         with open(committed_path, encoding="utf-8") as fh:
             self.assertEqual(fh.read(), content)
 
+    def test_setup_end_to_end_loop(self):
+        """scan checkpoint -> host persists proposal -> re-invoke ingests ->
+        complete, draft present, committed groups.yml never written."""
+        d = self._repo()
+        args = driver.build_parser().parse_args(["setup", d])
+        s1 = driver.run_setup_flow(args)
+        self.assertEqual(s1["checkpoint"], "scan")
+        entry = driver._load_json(driver._pano(d, "dispatch-request.json"))["entries"][0]
+        # host return-persist: write the returned proposal to entry["out_file"]
+        with open(entry["out_file"], "w") as fh:
+            json.dump({"groups": [{"capability": "Checkout",
+                                   "match": ["src/checkout/**"], "tests": []}]}, fh)
+        s2 = driver.run_setup_flow(args)
+        self.assertEqual(s2["status"], "complete")
+        self.assertIn("groups.yml.draft", "".join(os.listdir(driver._pano(d))))
+        self.assertFalse(os.path.isfile(driver._pano(d, "groups.yml")))
+
 
 if __name__ == "__main__":
     unittest.main()
