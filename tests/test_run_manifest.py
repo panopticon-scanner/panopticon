@@ -99,6 +99,20 @@ class TestRunManifest(unittest.TestCase):
             m, scope={"mode": "group", "target": "Checkout"})
         self.assertTrue(any("scope" in c for c in conflicts))
 
+    def test_pr_defaults_none_and_is_stored(self):
+        self.assertIsNone(rm.build_manifest(**self._params())["pr"])
+        m = rm.build_manifest(**self._params(), pr=7)
+        self.assertEqual(m["pr"], 7)
+
+    def test_scope_changed_and_pr_recorded_and_conflict(self):
+        m = rm.build_manifest(target=".", review_root=".", host="claude",
+                              security_mode="standard", base="main",
+                              scope={"mode": "changed", "target": None}, pr=7)
+        self.assertEqual(m["scope"]["mode"], "changed")
+        self.assertEqual(m["pr"], 7)
+        conflicts = rm.conflicting_flags(m, pr=9)
+        self.assertTrue(any("pr" in c for c in conflicts))
+
 
 if __name__ == "__main__":
     unittest.main()

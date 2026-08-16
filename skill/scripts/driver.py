@@ -125,25 +125,27 @@ def discovery_execute(review_root, manifest):
 def resolve_review_root(target, base=None, pr=None, runner=subprocess.run):
     """Resolve the single review root, pinned once in the manifest (spec §5).
 
-    - pr given: acquire a disposable PR worktree (diff_map); its path is the root.
+    - pr given: acquire the deterministic PR worktree (diff_map); its path is
+      the root.
     - git repo: `git rev-parse --show-toplevel` from the target.
     - non-git: the target directory itself.
-    Returns (review_root, worktree); worktree is the PR worktree to release at
-    validate, else None.
+    Returns (review_root, worktree, pr_base): worktree is the PR worktree to
+    release at validate (else None); pr_base is the PR's base branch as read
+    by the acquire (else None), for `run()` to pin as the manifest base.
     """
     if pr is not None:
         info = diff_map.acquire_pr(pr, repo=target, runner=runner)
-        return info["worktree"], info["worktree"]
+        return info["worktree"], info["worktree"], info["base"]
     target = os.path.abspath(target)
     start = target if os.path.isdir(target) else os.path.dirname(target)
     try:
         proc = runner(["git", "-C", start, "rev-parse", "--show-toplevel"],
                       capture_output=True, text=True)
         if proc.returncode == 0 and proc.stdout.strip():
-            return os.path.realpath(proc.stdout.strip()), None
+            return os.path.realpath(proc.stdout.strip()), None, None
     except OSError:
         pass
-    return (start if os.path.isdir(start) else target), None
+    return (start if os.path.isdir(start) else target), None, None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -713,6 +715,10 @@ def _scope_from_args(args):
         return {"mode": "directory", "target": args.scope_dir}
     if getattr(args, "scope_group", None):
         return {"mode": "group", "target": args.scope_group}
+    if getattr(args, "scope_changed", False):
+        return {"mode": "changed", "target": None}
+    if getattr(args, "scope_files", None):
+        return {"mode": "files", "target": list(args.scope_files)}
     return None
 
 
@@ -752,6 +758,9 @@ def build_parser():
         scope.add_argument("-f", "--file", dest="scope_file", default=None)
         scope.add_argument("-d", "--directory", dest="scope_dir", default=None)
         scope.add_argument("-g", "--group", dest="scope_group", default=None)
+        scope.add_argument("-c", "--changes", dest="scope_changed",
+                           action="store_true")
+        scope.add_argument("--files", dest="scope_files", nargs="+", default=None)
     return parser
 
 
@@ -761,19 +770,16 @@ def _error_status(message):
 
 
 def run(args, runner=subprocess.run, phases=PHASES):
-    # C1: the driver's --pr resume is not implemented — diff_map.acquire_pr is
-    # non-idempotent, so re-invocation re-acquires a fresh worktree, never finds
-    # the prior manifest, loops re-emitting scout, and leaks worktrees. Refuse
-    # loudly (before resolve_review_root, so acquire_pr is never called) rather
-    # than ship a path that silently restarts. Use the 4.x pipeline for PR
-    # reviews until driver --pr lands.
+    review_root, worktree, pr_base = resolve_review_root(
+        args.target, base=args.base, pr=args.pr, runner=runner)
     if args.pr is not None:
-        return _error_status(
-            "driver --pr (PR review) is not supported yet — use the 4.x "
-            "pipeline for PR reviews; driver --pr resume lands in a later "
-            "5.0.x slice")
-    review_root, worktree = resolve_review_root(args.target, base=args.base,
-                                                pr=None, runner=runner)
+        # A PR is a changed-files delta by definition; the base comes from the
+        # acquire (the PR's actual base branch) unless the caller overrides it.
+        base = args.base or pr_base
+        scope = {"mode": "changed", "target": None}
+    else:
+        base = args.base
+        scope = _scope_from_args(args)
     if args.reset:
         run_manifest.reset_run(review_root)
         _clear_run_artifacts(review_root)
@@ -788,13 +794,13 @@ def run(args, runner=subprocess.run, phases=PHASES):
             target=args.target, review_root=review_root,
             host=args.host or _DEFAULTS["host"],
             security_mode=args.security or _DEFAULTS["security"],
-            base=args.base, flags=_cli_flags(args), worktree=worktree,
-            scope=_scope_from_args(args))
+            base=base, flags=_cli_flags(args), worktree=worktree,
+            scope=scope, pr=args.pr)
         run_manifest.write_manifest(review_root, manifest)
     else:
         conflicts = run_manifest.conflicting_flags(
             manifest, host=args.host, security_mode=args.security,
-            base=args.base, flags=_cli_flags(args), scope=_scope_from_args(args))
+            base=base, flags=_cli_flags(args), scope=scope, pr=args.pr)
         if conflicts:
             return _error_status("flag drift (use --reset to start over): "
                                  + "; ".join(conflicts))

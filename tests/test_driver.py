@@ -129,31 +129,34 @@ class TestResolveReviewRoot(unittest.TestCase):
         d = self._git_repo()
         sub = os.path.join(d, "pkg")
         os.makedirs(sub)
-        root, wt = driver.resolve_review_root(sub)
+        root, wt, pr_base = driver.resolve_review_root(sub)
         self.assertEqual(root, d)
         self.assertIsNone(wt)
+        self.assertIsNone(pr_base)
 
     def test_resolves_repo_root_from_file_target(self):
         d = self._git_repo()
         f = os.path.join(d, "a.py")
         open(f, "w").close()
-        root, wt = driver.resolve_review_root(f)
+        root, wt, pr_base = driver.resolve_review_root(f)
         self.assertEqual(root, d)
 
     def test_non_git_dir_returns_target(self):
         with tempfile.TemporaryDirectory() as d:
             d = os.path.realpath(d)
-            root, wt = driver.resolve_review_root(d)
+            root, wt, pr_base = driver.resolve_review_root(d)
             self.assertEqual(root, d)
             self.assertIsNone(wt)
+            self.assertIsNone(pr_base)
 
     def test_pr_uses_diff_map_worktree(self):
         with mock.patch("scripts.driver.diff_map.acquire_pr",
                         return_value={"worktree": "/tmp/pr-wt", "base": "main",
                                       "head_sha": "abc"}) as acq:
-            root, wt = driver.resolve_review_root(".", pr=7)
+            root, wt, pr_base = driver.resolve_review_root(".", pr=7)
         self.assertEqual(root, "/tmp/pr-wt")
         self.assertEqual(wt, "/tmp/pr-wt")
+        self.assertEqual(pr_base, "main")
         acq.assert_called_once()
 
 
@@ -691,6 +694,23 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
             driver.build_parser().parse_args(
                 ["run", "x", "-g", "Auth", "-f", "src/app.py"])
 
+    def test_scope_changed_flag_parses(self):
+        args = driver.build_parser().parse_args(["run", "x", "-c"])
+        self.assertTrue(args.scope_changed)
+        self.assertEqual(driver._scope_from_args(args),
+                         {"mode": "changed", "target": None})
+
+    def test_scope_files_flag_parses(self):
+        args = driver.build_parser().parse_args(
+            ["run", "x", "--files", "a.py", "b.py"])
+        self.assertEqual(args.scope_files, ["a.py", "b.py"])
+        self.assertEqual(driver._scope_from_args(args),
+                         {"mode": "files", "target": ["a.py", "b.py"]})
+
+    def test_scope_changed_is_mutually_exclusive_with_group(self):
+        with self.assertRaises(SystemExit):
+            driver.build_parser().parse_args(["run", "x", "-g", "Auth", "-c"])
+
     def test_scope_recorded_on_manifest(self):
         d = self._repo()
         driver.run(self._args(d, "-g", "Auth"))
@@ -725,16 +745,24 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(json.loads(buf.getvalue())["status"], "checkpoint")
 
-    def test_pr_is_refused_without_acquiring_worktree(self):
-        # C1: driver --pr must refuse loudly and must NOT call acquire_pr
-        # (which would leak a worktree).
+    def test_pr_acquires_worktree_and_records_manifest(self):
+        # C1 flip: driver --pr now acquires the deterministic PR worktree via
+        # resolve_review_root and pins the acquire base, rather than refusing.
         d = self._repo()
         args = driver.build_parser().parse_args(["run", d, "--pr", "7"])
-        with mock.patch("scripts.driver.diff_map.acquire_pr") as acq:
+        with mock.patch(
+                "scripts.driver.resolve_review_root",
+                return_value=(d, d, "main")) as resolve:
             status = driver.run(args)
-        acq.assert_not_called()
-        self.assertEqual(status["status"], "error")
-        self.assertIn("pr", status["message"].lower())
+        resolve.assert_called_once()
+        _call_args, call_kwargs = resolve.call_args
+        self.assertEqual(call_kwargs.get("pr"), 7)
+        self.assertNotEqual(status["status"], "error", status.get("message"))
+        manifest = run_manifest.load_manifest(d)
+        self.assertEqual(manifest["pr"], 7)
+        self.assertEqual(manifest["worktree"], d)
+        self.assertEqual(manifest["base"], "main")
+        self.assertEqual(manifest["scope"], {"mode": "changed", "target": None})
 
     def test_fresh_manifest_clears_stale_artifacts(self):
         # I1: a stale report.json with no manifest must be cleared on the first
