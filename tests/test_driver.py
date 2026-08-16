@@ -194,6 +194,40 @@ class TestDiscoveryPhase(unittest.TestCase):
             with self.assertRaises(driver.DriverError):
                 driver.discovery_execute(self.root, self.manifest)
 
+    def test_discovery_threads_scope_group_to_repo_scan(self):
+        self._write_groups_yml("groups:\n  Auth:\n    match: ['src/auth/**']\n")
+        manifest = dict(self.manifest, scope={"mode": "group", "target": "Auth"})
+
+        def fake_run(cmd, **kw):
+            out = cmd[cmd.index("--out") + 1]
+            with open(out, "w") as fh:
+                json.dump({"groups": [{"name": "Auth", "files": ["src/auth/a.py"]}]}, fh)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch("scripts.driver.subprocess.run", side_effect=fake_run) as run:
+            result = driver.discovery_execute(self.root, manifest)
+        self.assertEqual(result.kind, "advanced")
+        cmd = run.call_args.args[0]
+        self.assertIn("--scope-group", cmd)
+        self.assertIn("Auth", cmd)
+
+    def test_discovery_repo_scope_appends_no_scope_arg(self):
+        self._write_groups_yml("groups:\n  Auth:\n    match: ['src/auth/**']\n")
+        manifest = dict(self.manifest, scope={"mode": "repo"})
+
+        def fake_run(cmd, **kw):
+            out = cmd[cmd.index("--out") + 1]
+            with open(out, "w") as fh:
+                json.dump({"groups": [{"name": "Auth", "files": ["src/auth/a.py"]}]}, fh)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch("scripts.driver.subprocess.run", side_effect=fake_run) as run:
+            driver.discovery_execute(self.root, manifest)
+        cmd = run.call_args.args[0]
+        self.assertNotIn("--scope-file", cmd)
+        self.assertNotIn("--scope-dir", cmd)
+        self.assertNotIn("--scope-group", cmd)
+
 
 class TestCoveragePhase(unittest.TestCase):
     def setUp(self):

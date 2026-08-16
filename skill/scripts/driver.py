@@ -108,6 +108,11 @@ def discovery_execute(review_root, manifest):
     cmd = [sys.executable, _script("orchestrator.py"), "--repo-scan",
            "--security", manifest.get("security_mode", "standard"),
            review_root, "--out", out]
+    scope = manifest.get("scope") or {"mode": "repo"}
+    _scope_arg = {"file": "--scope-file", "directory": "--scope-dir",
+                  "group": "--scope-group"}.get(scope.get("mode"))
+    if _scope_arg and scope.get("target"):
+        cmd += [_scope_arg, scope["target"]]
     proc = subprocess.run(cmd, cwd=review_root, capture_output=True, text=True,
                           env=_child_env())
     if not _json_parses(out):
