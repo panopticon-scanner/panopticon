@@ -1715,6 +1715,31 @@ class TestDriverSetup(unittest.TestCase):
         # no scan checkpoint was emitted
         self.assertFalse(os.path.isfile(driver._pano(d, "setup-proposal.json")))
 
+    def test_completion_message_branches_on_draft_vs_fallback(self):
+        # vocab-absent fallback: flat groups.yml, no draft -> message must not
+        # send the owner looking for a groups.yml.draft that was never written.
+        d1 = self._repo()
+        args1 = driver.build_parser().parse_args(["setup", d1])
+        with mock.patch("scripts.setup_flow.load_bundled_vocabulary",
+                        return_value=({"names": []}, False)):
+            status1 = driver.run_setup_flow(args1)
+        self.assertEqual(status1["status"], "complete")
+        self.assertNotIn("draft", status1["message"])
+        self.assertIn("groups.yml", status1["message"])
+
+        # vocab-present path: ingest writes a real draft -> message should
+        # point the owner at it.
+        d2 = self._repo()
+        args2 = driver.build_parser().parse_args(["setup", d2])
+        driver.run_setup_flow(args2)                       # scan checkpoint
+        proposal = {"groups": [{"capability": "Checkout",
+                                "match": ["src/checkout/**"], "tests": []}]}
+        with open(driver._pano(d2, "setup-proposal.json"), "w") as fh:
+            json.dump(proposal, fh)
+        status2 = driver.run_setup_flow(args2)              # re-invoke -> ingest
+        self.assertEqual(status2["status"], "complete")
+        self.assertIn("draft", status2["message"])
+
     def test_ingest_malformed_proposal_errors(self):
         d = self._repo()
         args = driver.build_parser().parse_args(["setup", d])

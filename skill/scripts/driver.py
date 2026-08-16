@@ -839,8 +839,12 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES):
     except DriverError as exc:
         return _error_status(str(exc))
     if result.get("status") == "complete":
-        result["message"] = ("setup complete — review .panopticon/groups.yml.draft, "
-                             "move it to .panopticon/groups.yml, and commit")
+        if os.path.isfile(_pano(review_root, "groups.yml.draft")):
+            result["message"] = ("setup complete — review .panopticon/groups.yml.draft, "
+                                 "move it to .panopticon/groups.yml, and commit")
+        else:
+            result["message"] = ("setup complete — vocab-absent fallback seeded a flat "
+                                 ".panopticon/groups.yml; review, edit, and commit it")
     return result
 
 
