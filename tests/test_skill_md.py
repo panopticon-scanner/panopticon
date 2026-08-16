@@ -134,6 +134,16 @@ class TestSkillMd(unittest.TestCase):
         self.assertIn("self-write", loop)
         self.assertNotIn("write_mode", loop)
 
+    def test_driver_run_loop_documents_scout_return_persist(self):
+        # The scout checkpoint is read-only + return-persist (the scout agent
+        # can't self-write), distinct from the review/verify self-write
+        # fan-out documented elsewhere in the same section.
+        loop = self.text.split("## Driver run-loop")[1].split("## Output")[0]
+        self.assertIn("scout", loop)
+        self.assertIn("ScopeProfile", loop)
+        self.assertTrue("returns" in loop.lower() or "returned" in loop.lower(), loop)
+        self.assertIn("read-only", loop)
+
 
 class TestReadmeQuickStart(unittest.TestCase):
     """#512: the README Quick start must show real invocation flags, not the

@@ -971,6 +971,39 @@ class TestDriverRunLoopEndToEnd(unittest.TestCase):
         self.assertEqual(driver.verify_execute(d, manifest).kind, "advanced")
         self.assertTrue(driver.verify_done(d, manifest))
 
+    def test_scout_checkpoint_is_read_only_return_persist(self):
+        # The run's FIRST checkpoint (scout) is the opposite shape from
+        # review/verify: the scout agent is read-only and cannot self-write,
+        # so the host must capture its RETURNED ScopeProfile JSON and write it
+        # to the entry's out_file itself (no write-guard involved). Drive that
+        # live — no pre-seeded coverage-<group>.json — through coverage_execute.
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        os.makedirs(os.path.join(d, "src"))
+        with open(os.path.join(d, "src", "app.py"), "w") as fh:
+            fh.write("def f():\n    return 1\n")
+        os.makedirs(os.path.join(d, ".panopticon"))
+        driver._write_json(driver._pano(d, "groups.json"),
+                           {"groups": [{"name": "app", "files": ["src/app.py"]}]})
+        manifest = self._manifest()
+
+        result = driver.coverage_execute(d, manifest)
+        self.assertEqual(result.kind, "checkpoint")
+        self.assertEqual(result.checkpoint, "scout")
+        self.assertFalse(driver.coverage_done(d, manifest))
+
+        req = driver.load_dispatch_request(d)
+        self.assertEqual(req["checkpoint"], "scout")
+        for entry in req["entries"]:
+            # host-side return-persist: no self-write, the host writes what
+            # the read-only scout returned.
+            driver._write_json(entry["out_file"],
+                               {"group": "app", "domains": ["SEC"]})
+
+        result2 = driver.coverage_execute(d, manifest)
+        self.assertEqual(result2.kind, "advanced")
+        self.assertTrue(driver.coverage_done(d, manifest))
+
 
 if __name__ == "__main__":
     unittest.main()

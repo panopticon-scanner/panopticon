@@ -415,10 +415,19 @@ Loop:
    `summary.gate`). `error` → stop and surface `message`.
 3. `checkpoint` → read `.panopticon/dispatch-request.json` (via
    `driver.load_dispatch_request`). It carries `entries` (host-agnostic:
-   `id`/`agent`/`enforced`/`model`/`prompt`/`out_file`), each a `(domain, group)`
-   cell to dispatch. Then **re-invoke `driver run`** (step 1) — the cursor is
-   recomputed from disk every invocation, so the loop resumes identically after
-   a crash/compaction, and each phase re-emits only its still-pending cells.
+   `id`/`agent`/`enforced`/`model`/`prompt`/`out_file`) — each entry is a unit
+   of work to dispatch: a per-group scout, or a `(domain, group)` review/verify
+   cell. Then **re-invoke `driver run`** (step 1) — the cursor is recomputed
+   from disk every invocation, so the loop resumes identically after a
+   crash/compaction, and each phase re-emits only its still-pending cells.
+
+At a `scout` checkpoint (one entry per group, the run's first checkpoint), the
+scout is **read-only** and RETURNS a ScopeProfile — dispatch it (`enforced` →
+`subagent_type: entry["agent"]` (`panopticon-scout`); else general-purpose)
+and write its returned JSON to the entry's `out_file` (`scout-<group>.json`)
+after confirming it parses. No write-guard here — nothing self-writes. The
+guard-confined **self-write** fan-out below applies to `review` and `verify`
+checkpoints (whose reviewers/advisors write their own `out_file`).
 
 Fan-out (per checkpoint) — ONE mechanism for review and verify:
 
