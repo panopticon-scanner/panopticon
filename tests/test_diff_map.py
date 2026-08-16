@@ -181,7 +181,7 @@ class TestPrWorktree(unittest.TestCase):
                 out = "deadbeef\n"
             class R: returncode = 0; stdout = out; stderr = ""
             return R()
-        with mock.patch.object(diff_map, "_mk_worktree_dir", return_value="/tmp/wt-pr7"):
+        with mock.patch.object(diff_map, "_worktree_dir", return_value="/tmp/wt-pr7"):
             info = diff_map.acquire_pr(7, repo=".", runner=runner)
         self.assertEqual(info["base"], "main")
         self.assertEqual(info["worktree"], "/tmp/wt-pr7")
@@ -191,6 +191,37 @@ class TestPrWorktree(unittest.TestCase):
         self.assertTrue(any("--no-write-fetch-head" in a for a in calls))
         self.assertTrue(any("update-ref" in a and fetched_ref[0] in a for a in calls))
         self.assertTrue(any("refs/pull/7/head" in " ".join(a) for a in calls))
+
+    def test_acquire_is_idempotent_deterministic_path(self):
+        repo = "."
+        wt = diff_map._worktree_dir(repo, 7)
+        calls = {"fetch": 0, "wtadd": 0}
+        def runner(argv, **kw):
+            out = ""
+            if argv[:3] == ["gh", "pr", "view"]:
+                out = '{"baseRefName": "main"}'
+            elif "worktree" in argv and "list" in argv:
+                # Real `git worktree list` (no --porcelain) format:
+                # "<path>  <sha> [<branch>]" / "(detached HEAD)". Only
+                # registered (i.e. after the worktree add) on later calls.
+                out = "%s  deadbeef [detached HEAD]\n" % wt if calls["wtadd"] > 0 else ""
+            elif "worktree" in argv and "add" in argv:
+                calls["wtadd"] += 1
+            elif "fetch" in argv:
+                calls["fetch"] += 1
+            elif "rev-parse" in argv:
+                out = "deadbeef\n"
+            class R: returncode = 0; stdout = out; stderr = ""
+            return R()
+        a = diff_map.acquire_pr(7, repo=repo, runner=runner)
+        b = diff_map.acquire_pr(7, repo=repo, runner=runner)
+        self.assertEqual(a["worktree"], b["worktree"])
+        self.assertEqual(a["worktree"], wt)
+        self.assertEqual(a["base"], "main")
+        self.assertEqual(a["head_sha"], "deadbeef")
+        self.assertEqual(b["head_sha"], "deadbeef")
+        self.assertEqual(calls["wtadd"], 1)   # created once, reused second time
+        self.assertEqual(calls["fetch"], 1)   # no re-fetch on reuse
 
     def test_acquire_raises_loudly_on_gh_failure(self):
         def runner(argv, **kw):

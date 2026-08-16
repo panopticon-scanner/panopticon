@@ -109,10 +109,23 @@ def discovery_execute(review_root, manifest):
            "--security", manifest.get("security_mode", "standard"),
            review_root, "--out", out]
     scope = manifest.get("scope") or {"mode": "repo"}
-    _scope_arg = {"file": "--scope-file", "directory": "--scope-dir",
-                  "group": "--scope-group"}.get(scope.get("mode"))
-    if _scope_arg and scope.get("target"):
-        cmd += [_scope_arg, scope["target"]]
+    mode = scope.get("mode")
+    if mode == "changed":
+        cmd += ["--scope-changed"]
+    elif mode == "files":
+        cmd += ["--scope-files"] + list(scope.get("target") or [])
+    else:
+        _scope_arg = {"file": "--scope-file", "directory": "--scope-dir",
+                      "group": "--scope-group"}.get(mode)
+        if _scope_arg and scope.get("target"):
+            cmd += [_scope_arg, scope["target"]]
+    if manifest.get("base"):
+        cmd += ["--base", manifest["base"]]
+    if manifest.get("pr_base"):
+        cmd += ["--pr-base", manifest["pr_base"]]
+    _dc = (manifest.get("flags") or {}).get("diff_context")
+    if _dc is not None:
+        cmd += ["--diff-context", str(_dc)]
     proc = subprocess.run(cmd, cwd=review_root, capture_output=True, text=True,
                           env=_child_env())
     if not _json_parses(out):
@@ -125,25 +138,27 @@ def discovery_execute(review_root, manifest):
 def resolve_review_root(target, base=None, pr=None, runner=subprocess.run):
     """Resolve the single review root, pinned once in the manifest (spec §5).
 
-    - pr given: acquire a disposable PR worktree (diff_map); its path is the root.
+    - pr given: acquire the deterministic PR worktree (diff_map); its path is
+      the root.
     - git repo: `git rev-parse --show-toplevel` from the target.
     - non-git: the target directory itself.
-    Returns (review_root, worktree); worktree is the PR worktree to release at
-    validate, else None.
+    Returns (review_root, worktree, pr_base): worktree is the PR worktree to
+    release at validate (else None); pr_base is the PR's base branch as read
+    by the acquire (else None), for `run()` to pin as the manifest base.
     """
     if pr is not None:
         info = diff_map.acquire_pr(pr, repo=target, runner=runner)
-        return info["worktree"], info["worktree"]
+        return info["worktree"], info["worktree"], info["base"]
     target = os.path.abspath(target)
     start = target if os.path.isdir(target) else os.path.dirname(target)
     try:
         proc = runner(["git", "-C", start, "rev-parse", "--show-toplevel"],
                       capture_output=True, text=True)
         if proc.returncode == 0 and proc.stdout.strip():
-            return os.path.realpath(proc.stdout.strip()), None
+            return os.path.realpath(proc.stdout.strip()), None, None
     except OSError:
         pass
-    return (start if os.path.isdir(start) else target), None
+    return (start if os.path.isdir(start) else target), None, None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -600,6 +615,8 @@ def synthesize_execute(review_root, manifest):
     diff_hunks = _pano(review_root, "diff-hunks.json")
     if os.path.isfile(diff_hunks):
         cmd += ["--diff-hunks", diff_hunks]
+    if flags.get("diff_context") is not None:
+        cmd += ["--diff-context", str(flags["diff_context"])]
     cmd += findings
     proc = subprocess.run(cmd, cwd=review_root, capture_output=True, text=True,
                           env=_child_env())
@@ -663,9 +680,9 @@ def validate_done(review_root, manifest):
 
 def validate_execute(review_root, manifest, runner=subprocess.run):
     delta = _tree_delta(review_root, runner)
-    worktree = manifest.get("worktree")
-    if worktree:
-        diff_map.release_worktree(worktree, repo=review_root)   # tolerant
+    # The PR worktree (when review_root IS the worktree) is released by run()
+    # AFTER the run completes, NOT here: releasing mid-machine would delete the
+    # review root (report.json + manifest) and break cursor derivation. (Ruling A)
     _write_json(_pano(review_root, "validate.json"),
                 {"run_id": manifest["run_id"], "tree_clean": not delta,
                  "unexpected_changes": delta})
@@ -673,6 +690,26 @@ def validate_execute(review_root, manifest, runner=subprocess.run):
         raise DriverError("validate: reviewer side effects outside .panopticon/: "
                           + "; ".join(delta[:10]))
     return PhaseResult(kind="advanced", message="validate: clean tree")
+
+
+def _finalize_worktree(review_root, manifest):
+    """On a completed --pr run, review_root IS the disposable worktree. Surface
+    report.json to the caller's target .panopticon/ BEFORE releasing the worktree
+    so the deliverable survives disposal (spec §4: no leak + report available).
+    Best-effort surface; release is tolerant. No-op when there is no worktree."""
+    worktree = manifest.get("worktree")
+    if not worktree:
+        return
+    target = manifest.get("target") or review_root
+    src = _pano(review_root, "report.json")
+    dst = _pano(target, "report.json")
+    if os.path.realpath(src) != os.path.realpath(dst) and os.path.isfile(src):
+        try:
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copyfile(src, dst)
+        except OSError:
+            pass
+    diff_map.release_worktree(worktree, repo=target)
 
 
 _DEFAULTS = {"host": "claude", "security": "standard"}
@@ -713,6 +750,10 @@ def _scope_from_args(args):
         return {"mode": "directory", "target": args.scope_dir}
     if getattr(args, "scope_group", None):
         return {"mode": "group", "target": args.scope_group}
+    if getattr(args, "scope_changed", False):
+        return {"mode": "changed", "target": None}
+    if getattr(args, "scope_files", None):
+        return {"mode": "files", "target": list(args.scope_files)}
     return None
 
 
@@ -752,6 +793,9 @@ def build_parser():
         scope.add_argument("-f", "--file", dest="scope_file", default=None)
         scope.add_argument("-d", "--directory", dest="scope_dir", default=None)
         scope.add_argument("-g", "--group", dest="scope_group", default=None)
+        scope.add_argument("-c", "--changes", dest="scope_changed",
+                           action="store_true")
+        scope.add_argument("--files", dest="scope_files", nargs="+", default=None)
     return parser
 
 
@@ -761,19 +805,18 @@ def _error_status(message):
 
 
 def run(args, runner=subprocess.run, phases=PHASES):
-    # C1: the driver's --pr resume is not implemented — diff_map.acquire_pr is
-    # non-idempotent, so re-invocation re-acquires a fresh worktree, never finds
-    # the prior manifest, loops re-emitting scout, and leaks worktrees. Refuse
-    # loudly (before resolve_review_root, so acquire_pr is never called) rather
-    # than ship a path that silently restarts. Use the 4.x pipeline for PR
-    # reviews until driver --pr lands.
+    review_root, worktree, pr_base = resolve_review_root(
+        args.target, base=args.base, pr=args.pr, runner=runner)
     if args.pr is not None:
-        return _error_status(
-            "driver --pr (PR review) is not supported yet — use the 4.x "
-            "pipeline for PR reviews; driver --pr resume lands in a later "
-            "5.0.x slice")
-    review_root, worktree = resolve_review_root(args.target, base=args.base,
-                                                pr=None, runner=runner)
+        # A PR is a changed-files delta by definition. manifest["base"] holds the
+        # user's EXPLICIT override only (anti-drift key); the gh-detected PR base
+        # flows separately via manifest["pr_base"] -> orchestrator --pr-base, so
+        # resolve_base applies its origin/<base> preference (#947 / spec §4 L51).
+        base = args.base
+        scope = {"mode": "changed", "target": None}
+    else:
+        base = args.base
+        scope = _scope_from_args(args)
     if args.reset:
         run_manifest.reset_run(review_root)
         _clear_run_artifacts(review_root)
@@ -788,13 +831,13 @@ def run(args, runner=subprocess.run, phases=PHASES):
             target=args.target, review_root=review_root,
             host=args.host or _DEFAULTS["host"],
             security_mode=args.security or _DEFAULTS["security"],
-            base=args.base, flags=_cli_flags(args), worktree=worktree,
-            scope=_scope_from_args(args))
+            base=base, flags=_cli_flags(args), worktree=worktree,
+            scope=scope, pr=args.pr, pr_base=pr_base)
         run_manifest.write_manifest(review_root, manifest)
     else:
         conflicts = run_manifest.conflicting_flags(
             manifest, host=args.host, security_mode=args.security,
-            base=args.base, flags=_cli_flags(args), scope=_scope_from_args(args))
+            base=base, flags=_cli_flags(args), scope=scope, pr=args.pr)
         if conflicts:
             return _error_status("flag drift (use --reset to start over): "
                                  + "; ".join(conflicts))
@@ -804,9 +847,12 @@ def run(args, runner=subprocess.run, phases=PHASES):
     # left missing (which had silently disabled the clean-tree guard).
     capture_tree_baseline(review_root, runner=runner)
     try:
-        return run_engine(review_root, manifest, phases)
+        result = run_engine(review_root, manifest, phases)
     except DriverError as exc:
         return _error_status(str(exc))
+    if result.get("status") == "complete":
+        _finalize_worktree(review_root, manifest)
+    return result
 
 
 def main(argv=None):

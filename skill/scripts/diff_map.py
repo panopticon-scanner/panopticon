@@ -8,6 +8,7 @@ import os
 import json as _json
 import tempfile
 import uuid
+import hashlib
 
 _NEWFILE_RE = re.compile(r"^\+\+\+ (?:b/)?(.*?)\s*$")
 _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
@@ -143,18 +144,31 @@ def classify(finding, hmap, tolerance=5):
     return {"on_diff": False, "hunk": None, "distance": nearest}
 
 
-def _mk_worktree_dir(pr_number):
-    # realpath (#947 FIXME-1): on macOS mkdtemp returns /var/folders/...,
-    # a symlink into /private/var/...; record the physical path so every
-    # consumer (guard allowlist, reconcile, cwd-derived paths) agrees.
-    return os.path.realpath(tempfile.mkdtemp(prefix="panopticon-pr%d-" % pr_number))
+def _worktree_dir(repo, pr_number):
+    """Deterministic per-(repo, PR) worktree path (owner steer: deterministic
+    wherever possible) so acquire_pr is idempotent and a driver --pr run is
+    resumable — re-acquisition returns the SAME tree, never leaks a fresh one.
+    Under the system temp dir, keyed by the repo's physical path + PR number.
+
+    realpath (#947 FIXME-1): on macOS mkdtemp/tempdir roots live under
+    /var/folders/..., a symlink into /private/var/...; record the physical
+    path so every consumer (guard allowlist, reconcile, cwd-derived paths)
+    agrees.
+    """
+    key = hashlib.sha256(os.path.realpath(repo).encode("utf-8")).hexdigest()[:12]
+    return os.path.realpath(os.path.join(tempfile.gettempdir(),
+                                         "panopticon-pr-%d-%s" % (pr_number, key)))
 
 
 def acquire_pr(pr_number, repo=".", runner=subprocess.run):
-    """Fetch a PR head into a throwaway worktree and return its base branch.
+    """Fetch a PR head into a DETERMINISTIC throwaway worktree and return its
+    base branch. Idempotent: if the deterministic worktree already exists and
+    is registered (per `git worktree list`), REUSE it (no re-fetch, stays at
+    its pinned head) so a driver --pr run resumes in the same tree; else
+    fetch the PR head + create it.
 
-    Never mutates the caller's checkout — all work lands in the new worktree
-    (the blast radius). Raises RuntimeError (loud) on any step's failure.
+    Never mutates the caller's checkout — all work lands in the worktree (the
+    blast radius). Raises RuntimeError (loud) on any step's failure.
     """
     def _run(argv):
         r = runner(argv, capture_output=True, text=True)
@@ -167,11 +181,25 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
     base = (_json.loads(view) or {}).get("baseRefName")
     if not base:
         raise RuntimeError("panopticon --pr: could not read base branch for PR %d" % pr_number)
+
+    wt = _worktree_dir(repo, pr_number)
+    # `git worktree list` (no --porcelain) prints one line per worktree:
+    # "<path>  <sha> [<branch>]" or "<path>  <sha> (detached HEAD)" — column
+    # widths vary with the longest path, so match on the first whitespace-
+    # split token rather than a fixed-width slice (verified against real
+    # `git worktree list` output, not assumed from the porcelain format).
+    listing = runner(["git", "-C", repo, "worktree", "list"],
+                     capture_output=True, text=True)
+    if listing.returncode == 0 and any(
+            line.split()[:1] == [wt]
+            for line in listing.stdout.splitlines() if line.strip()):
+        head_sha = _run(["git", "-C", wt, "rev-parse", "HEAD"]).strip()
+        return {"worktree": wt, "base": base, "head_sha": head_sha}   # reuse (resume)
+
     fetch_ref = "refs/panopticon/pr-%d-%s" % (pr_number, uuid.uuid4().hex)
     _run(["git", "-C", repo, "fetch", "--no-write-fetch-head", "origin",
           "refs/pull/%d/head:%s" % (pr_number, fetch_ref)])
     head_sha = _run(["git", "-C", repo, "rev-parse", fetch_ref]).strip()
-    wt = _mk_worktree_dir(pr_number)
     try:
         _run(["git", "-C", repo, "worktree", "add", "--detach", wt, head_sha])
     finally:

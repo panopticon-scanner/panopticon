@@ -1,7 +1,7 @@
 """The 5.0 driver run-manifest: the written-once record of a run's parameters.
 
 Params live here (target, review_root, host, security_mode, base, flags, run_id,
-scope);
+scope, pr);
 PROGRESS never does — the driver re-derives the phase cursor from artifact
 presence. The manifest is written once by the first `driver run`; a conflicting
 flag on re-invocation is refused. See
@@ -28,7 +28,8 @@ def new_run_id():
 
 
 def build_manifest(*, target, review_root, host, security_mode, base=None,
-                   flags=None, run_id=None, worktree=None, scope=None):
+                   flags=None, run_id=None, worktree=None, scope=None, pr=None,
+                   pr_base=None):
     flags = flags or {}
     return {
         "schema_version": SCHEMA_VERSION,
@@ -41,6 +42,11 @@ def build_manifest(*, target, review_root, host, security_mode, base=None,
         "worktree": worktree,   # PR worktree to release at validate; None otherwise
         "flags": {k: flags.get(k) for k in _FLAG_KEYS},
         "scope": scope or {"mode": "repo", "target": None},
+        "pr": pr,
+        # DERIVED (like worktree): the gh-detected PR base, threaded to
+        # orchestrator's --pr-base for origin/<base> preference (#947). NOT an
+        # anti-drift key -- a PR's base is fixed by the PR, not a user knob.
+        "pr_base": pr_base,
     }
 
 
@@ -67,7 +73,7 @@ def load_manifest(review_root):
 
 
 def conflicting_flags(manifest, *, host=None, security_mode=None, base=None,
-                      flags=None, scope=None):
+                      flags=None, scope=None, pr=None):
     """Human-readable conflicts between an existing manifest and re-invocation
     params. Empty list = no drift. A None incoming value never conflicts (a bare
     `driver run` re-invocation passes nothing and always matches)."""
@@ -82,6 +88,7 @@ def conflicting_flags(manifest, *, host=None, security_mode=None, base=None,
     check("security_mode", manifest.get("security_mode"), security_mode)
     check("base", manifest.get("base"), base)
     check("scope", manifest.get("scope"), scope)
+    check("pr", manifest.get("pr"), pr)
     existing_flags = manifest.get("flags") or {}
     incoming_flags = flags or {}
     for k in _FLAG_KEYS:

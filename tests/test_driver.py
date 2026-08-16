@@ -129,31 +129,34 @@ class TestResolveReviewRoot(unittest.TestCase):
         d = self._git_repo()
         sub = os.path.join(d, "pkg")
         os.makedirs(sub)
-        root, wt = driver.resolve_review_root(sub)
+        root, wt, pr_base = driver.resolve_review_root(sub)
         self.assertEqual(root, d)
         self.assertIsNone(wt)
+        self.assertIsNone(pr_base)
 
     def test_resolves_repo_root_from_file_target(self):
         d = self._git_repo()
         f = os.path.join(d, "a.py")
         open(f, "w").close()
-        root, wt = driver.resolve_review_root(f)
+        root, wt, pr_base = driver.resolve_review_root(f)
         self.assertEqual(root, d)
 
     def test_non_git_dir_returns_target(self):
         with tempfile.TemporaryDirectory() as d:
             d = os.path.realpath(d)
-            root, wt = driver.resolve_review_root(d)
+            root, wt, pr_base = driver.resolve_review_root(d)
             self.assertEqual(root, d)
             self.assertIsNone(wt)
+            self.assertIsNone(pr_base)
 
     def test_pr_uses_diff_map_worktree(self):
         with mock.patch("scripts.driver.diff_map.acquire_pr",
                         return_value={"worktree": "/tmp/pr-wt", "base": "main",
                                       "head_sha": "abc"}) as acq:
-            root, wt = driver.resolve_review_root(".", pr=7)
+            root, wt, pr_base = driver.resolve_review_root(".", pr=7)
         self.assertEqual(root, "/tmp/pr-wt")
         self.assertEqual(wt, "/tmp/pr-wt")
+        self.assertEqual(pr_base, "main")
         acq.assert_called_once()
 
 
@@ -227,6 +230,93 @@ class TestDiscoveryPhase(unittest.TestCase):
         self.assertNotIn("--scope-file", cmd)
         self.assertNotIn("--scope-dir", cmd)
         self.assertNotIn("--scope-group", cmd)
+
+    def test_discovery_threads_changed_scope_with_base_and_diff_context(self):
+        self._write_groups_yml("groups:\n  Auth:\n    match: ['src/auth/**']\n")
+        manifest = dict(self.manifest, scope={"mode": "changed", "target": None},
+                        base="main", flags={"diff_context": 5})
+
+        def fake_run(cmd, **kw):
+            out = cmd[cmd.index("--out") + 1]
+            with open(out, "w") as fh:
+                json.dump({"groups": [{"name": "Auth", "files": ["src/auth/a.py"]}]}, fh)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch("scripts.driver.subprocess.run", side_effect=fake_run) as run:
+            result = driver.discovery_execute(self.root, manifest)
+        self.assertEqual(result.kind, "advanced")
+        cmd = run.call_args.args[0]
+        self.assertIn("--scope-changed", cmd)
+        self.assertIn("--base", cmd)
+        self.assertEqual(cmd[cmd.index("--base") + 1], "main")
+        self.assertIn("--diff-context", cmd)
+        self.assertEqual(cmd[cmd.index("--diff-context") + 1], "5")
+        self.assertNotIn("--scope-file", cmd)
+        self.assertNotIn("--scope-dir", cmd)
+        self.assertNotIn("--scope-group", cmd)
+        self.assertNotIn("--scope-files", cmd)
+
+    def test_discovery_threads_files_scope_with_target_list(self):
+        self._write_groups_yml("groups:\n  Auth:\n    match: ['src/auth/**']\n")
+        manifest = dict(self.manifest,
+                        scope={"mode": "files", "target": ["a.py", "b.py"]})
+
+        def fake_run(cmd, **kw):
+            out = cmd[cmd.index("--out") + 1]
+            with open(out, "w") as fh:
+                json.dump({"groups": [{"name": "Auth", "files": ["src/auth/a.py"]}]}, fh)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch("scripts.driver.subprocess.run", side_effect=fake_run) as run:
+            result = driver.discovery_execute(self.root, manifest)
+        self.assertEqual(result.kind, "advanced")
+        cmd = run.call_args.args[0]
+        self.assertIn("--scope-files", cmd)
+        i = cmd.index("--scope-files")
+        self.assertEqual(cmd[i + 1:i + 3], ["a.py", "b.py"])
+        self.assertNotIn("--base", cmd)
+        self.assertNotIn("--diff-context", cmd)
+
+    def test_discovery_threads_pr_base_when_present(self):
+        # Finding B: a --pr manifest carries the gh-detected base in `pr_base`
+        # (not `base`) so orchestrator resolves it with origin/<base> preference.
+        self._write_groups_yml("groups:\n  Auth:\n    match: ['src/auth/**']\n")
+        manifest = dict(self.manifest, scope={"mode": "changed", "target": None},
+                        base=None, pr_base="main")
+
+        def fake_run(cmd, **kw):
+            out = cmd[cmd.index("--out") + 1]
+            with open(out, "w") as fh:
+                json.dump({"groups": [{"name": "Auth", "files": ["src/auth/a.py"]}]}, fh)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch("scripts.driver.subprocess.run", side_effect=fake_run) as run:
+            result = driver.discovery_execute(self.root, manifest)
+        self.assertEqual(result.kind, "advanced")
+        cmd = run.call_args.args[0]
+        self.assertIn("--scope-changed", cmd)
+        self.assertIn("--pr-base", cmd)
+        self.assertEqual(cmd[cmd.index("--pr-base") + 1], "main")
+        self.assertNotIn("--base", cmd)   # base is None -> not threaded
+
+    def test_discovery_omits_pr_base_when_absent(self):
+        # A -c/--files manifest (no PR) carries no pr_base -> orchestrator gets
+        # no --pr-base and its byte-identical behavior is preserved.
+        self._write_groups_yml("groups:\n  Auth:\n    match: ['src/auth/**']\n")
+        manifest = dict(self.manifest, scope={"mode": "changed", "target": None},
+                        base="main")
+
+        def fake_run(cmd, **kw):
+            out = cmd[cmd.index("--out") + 1]
+            with open(out, "w") as fh:
+                json.dump({"groups": [{"name": "Auth", "files": ["src/auth/a.py"]}]}, fh)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch("scripts.driver.subprocess.run", side_effect=fake_run) as run:
+            driver.discovery_execute(self.root, manifest)
+        cmd = run.call_args.args[0]
+        self.assertNotIn("--pr-base", cmd)
+        self.assertIn("--base", cmd)
 
 
 class TestCoveragePhase(unittest.TestCase):
@@ -515,6 +605,30 @@ class TestSynthesizePhase(unittest.TestCase):
             with self.assertRaises(driver.DriverError):
                 driver.synthesize_execute(self.root, self.manifest)
 
+    def test_diff_context_forwarded_when_set(self):
+        manifest = dict(self.manifest,
+                        flags={"fail_on": "high", "diff_context": 5})
+        captured = {}
+        def fake_run(cmd, **kw):
+            captured["cmd"] = cmd
+            with open(cmd[cmd.index("--out") + 1], "w") as fh:
+                json.dump({"grade": "A", "findings": []}, fh)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch("scripts.driver.subprocess.run", side_effect=fake_run):
+            driver.synthesize_execute(self.root, manifest)
+        cmd = captured["cmd"]
+        self.assertIn("--diff-context", cmd)
+        self.assertEqual(cmd[cmd.index("--diff-context") + 1], "5")
+
+    def test_diff_context_absent_when_unset(self):
+        def fake_run(cmd, **kw):
+            with open(cmd[cmd.index("--out") + 1], "w") as fh:
+                json.dump({"grade": "A", "findings": []}, fh)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch("scripts.driver.subprocess.run", side_effect=fake_run) as run:
+            driver.synthesize_execute(self.root, self.manifest)
+        self.assertNotIn("--diff-context", run.call_args.args[0])
+
 
 class TestValidatePhase(unittest.TestCase):
     def _git_repo(self):
@@ -554,12 +668,17 @@ class TestValidatePhase(unittest.TestCase):
         result = driver.validate_execute(d, {"run_id": "R", "worktree": None})
         self.assertEqual(result.kind, "advanced")
 
-    def test_releases_pr_worktree(self):
+    def test_validate_does_not_release_pr_worktree(self):
+        # Ruling A: validate must NOT release the worktree -- when review_root IS
+        # the worktree, releasing here would delete report.json + the manifest and
+        # break cursor derivation. Release happens in run() on completion instead.
         d = self._git_repo()
         driver.capture_tree_baseline(d)
         with mock.patch("scripts.driver.diff_map.release_worktree") as rel:
-            driver.validate_execute(d, {"run_id": "R", "worktree": "/tmp/pr-wt"})
-        rel.assert_called_once()
+            result = driver.validate_execute(d, {"run_id": "R", "worktree": "/tmp/pr-wt"})
+        rel.assert_not_called()
+        self.assertEqual(result.kind, "advanced")
+        self.assertTrue(driver.validate_done(d, {"run_id": "R", "worktree": "/tmp/pr-wt"}))
 
     def test_non_git_target_has_no_baseline_and_advances(self):
         with tempfile.TemporaryDirectory() as d:
@@ -593,6 +712,37 @@ class TestValidatePhase(unittest.TestCase):
             driver.validate_execute(d, {"run_id": "R", "worktree": None})
 
 
+class TestFinalizeWorktree(unittest.TestCase):
+    """Ruling A: on a completed --pr run, review_root IS the disposable worktree.
+    _finalize_worktree surfaces report.json to the caller's target BEFORE
+    releasing the worktree, and no-ops when there is no worktree."""
+
+    def _dir(self):
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        return d
+
+    def test_surfaces_report_then_releases_with_target_repo(self):
+        worktree = self._dir()
+        target = self._dir()
+        driver._write_json(driver._pano(worktree, "report.json"),
+                           {"summary": {"gate": "PASS"}})
+        manifest = {"run_id": "R", "worktree": worktree, "target": target}
+        with mock.patch.object(driver.diff_map, "release_worktree") as rel:
+            driver._finalize_worktree(worktree, manifest)
+        # report surfaced to the OWNING checkout's .panopticon/
+        surfaced = driver._load_json(driver._pano(target, "report.json"))
+        self.assertEqual(surfaced, {"summary": {"gate": "PASS"}})
+        # released against the owning repo (target), not review_root (==worktree)
+        rel.assert_called_once_with(worktree, repo=target)
+
+    def test_no_worktree_is_a_noop(self):
+        target = self._dir()
+        with mock.patch.object(driver.diff_map, "release_worktree") as rel:
+            driver._finalize_worktree(target, {"run_id": "R", "worktree": None})
+        rel.assert_not_called()
+
+
 import scripts.run_manifest as run_manifest  # noqa: E402
 
 
@@ -613,6 +763,12 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
             fh.write("groups:\n  Core:\n    match: ['src/**']\n    panels: [COD]\n")
         subprocess.run(g + ["add", "-A"], check=True)
         subprocess.run(g + ["commit", "-qm", "init"], check=True)
+        # Pin the branch to `main` so it is deterministic regardless of the
+        # runner's git `init.defaultBranch` (CI defaults to `master`). The --pr
+        # test mocks a gh pr_base of "main"; resolve_base(pr_base="main") does
+        # NOT fall through to master (the #947 loud-fail for a given-but-
+        # unresolvable base), so the repo must actually carry a `main` ref.
+        subprocess.run(g + ["branch", "-M", "main"], check=True)
         return d
 
     def _args(self, target, *extra):
@@ -691,6 +847,23 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
             driver.build_parser().parse_args(
                 ["run", "x", "-g", "Auth", "-f", "src/app.py"])
 
+    def test_scope_changed_flag_parses(self):
+        args = driver.build_parser().parse_args(["run", "x", "-c"])
+        self.assertTrue(args.scope_changed)
+        self.assertEqual(driver._scope_from_args(args),
+                         {"mode": "changed", "target": None})
+
+    def test_scope_files_flag_parses(self):
+        args = driver.build_parser().parse_args(
+            ["run", "x", "--files", "a.py", "b.py"])
+        self.assertEqual(args.scope_files, ["a.py", "b.py"])
+        self.assertEqual(driver._scope_from_args(args),
+                         {"mode": "files", "target": ["a.py", "b.py"]})
+
+    def test_scope_changed_is_mutually_exclusive_with_group(self):
+        with self.assertRaises(SystemExit):
+            driver.build_parser().parse_args(["run", "x", "-g", "Auth", "-c"])
+
     def test_scope_recorded_on_manifest(self):
         d = self._repo()
         driver.run(self._args(d, "-g", "Auth"))
@@ -725,16 +898,52 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(json.loads(buf.getvalue())["status"], "checkpoint")
 
-    def test_pr_is_refused_without_acquiring_worktree(self):
-        # C1: driver --pr must refuse loudly and must NOT call acquire_pr
-        # (which would leak a worktree).
+    def test_pr_acquires_worktree_and_records_manifest(self):
+        # C1 flip: driver --pr now acquires the deterministic PR worktree via
+        # resolve_review_root, rather than refusing. Finding B: with NO explicit
+        # --base, manifest["base"] stays None (anti-drift key -- a bare resume
+        # passes base=None -> no false drift) and the gh-detected PR base lands
+        # in manifest["pr_base"], the origin-preference channel.
         d = self._repo()
         args = driver.build_parser().parse_args(["run", d, "--pr", "7"])
-        with mock.patch("scripts.driver.diff_map.acquire_pr") as acq:
+        with mock.patch(
+                "scripts.driver.resolve_review_root",
+                return_value=(d, d, "main")) as resolve:
             status = driver.run(args)
-        acq.assert_not_called()
-        self.assertEqual(status["status"], "error")
-        self.assertIn("pr", status["message"].lower())
+        resolve.assert_called_once()
+        _call_args, call_kwargs = resolve.call_args
+        self.assertEqual(call_kwargs.get("pr"), 7)
+        self.assertNotEqual(status["status"], "error", status.get("message"))
+        manifest = run_manifest.load_manifest(d)
+        self.assertEqual(manifest["pr"], 7)
+        self.assertEqual(manifest["worktree"], d)
+        self.assertIsNone(manifest["base"])          # explicit-only; none given
+        self.assertEqual(manifest["pr_base"], "main")  # gh base -> pr_base channel
+        self.assertEqual(manifest["scope"], {"mode": "changed", "target": None})
+
+    def test_run_finalizes_worktree_only_on_complete(self):
+        # Ruling A wiring: run() surfaces+releases the worktree via
+        # _finalize_worktree ONLY when the engine returns status=="complete" --
+        # never on a mid-run checkpoint (which must leave the worktree in place so
+        # the resume can re-enter it).
+        d = self._repo()
+        complete = {"status": "complete", "phase": None, "checkpoint": None,
+                    "group": None, "dispatch_request": None, "advanced": [],
+                    "message": "all phases complete"}
+        checkpoint = dict(complete, status="checkpoint", checkpoint="scout")
+
+        with mock.patch("scripts.driver.run_engine", return_value=complete), \
+                mock.patch("scripts.driver._finalize_worktree") as fin:
+            status = driver.run(self._args(d))
+        self.assertEqual(status["status"], "complete")
+        fin.assert_called_once()
+
+        d2 = self._repo()
+        with mock.patch("scripts.driver.run_engine", return_value=checkpoint), \
+                mock.patch("scripts.driver._finalize_worktree") as fin2:
+            status2 = driver.run(self._args(d2))
+        self.assertEqual(status2["status"], "checkpoint")
+        fin2.assert_not_called()
 
     def test_fresh_manifest_clears_stale_artifacts(self):
         # I1: a stale report.json with no manifest must be cleared on the first
@@ -1181,6 +1390,268 @@ class TestDriverSingleScopeEndToEnd(unittest.TestCase):
         with self.assertRaises(driver.DriverError) as cm:
             driver.discovery_execute(d, manifest)
         self.assertIn("panopticon setup", str(cm.exception))
+
+
+class TestDriverDeltaEndToEnd(unittest.TestCase):
+    """P6.3: the LAST 5.0 driver e2e -- proves the delta (`-c`) + `--pr` paths
+    against a REAL git repo, no live `gh`. Mirrors
+    TestDriverSingleScopeEndToEnd's real-git-repo + self-write harness
+    (P6.2), scoped to `changed` instead of `group`:
+
+    - `-c` delta: the real `orchestrator.py --repo-scan --scope-changed
+      --base` subprocess restricts groups.json to the one changed file and
+      emits `.panopticon/diff-hunks.json`; the run-loop reaches a graded
+      report whose delta block is populated and whose gate is scoped to the
+      on-diff findings only (a pre-existing off-diff HIGH that would flip
+      `fail_on: high` to FAIL never reaches the gate).
+    - `--pr` resume: `resolve_review_root(pr=...)` is idempotent over the
+      deterministic worktree (diff_map._worktree_dir, P6.1) and
+      `validate_execute` releases it -- function-level, mocking
+      diff_map.acquire_pr/release_worktree since a live `gh` PR isn't
+      available in tests.
+    - requires-setup: `-c` on a repo with no committed groups.yml fails
+      loudly, same as P6.2's group-scope case.
+    """
+
+    RUN_ID = "RID"
+
+    def _repo_with_changed_file(self):
+        """A committed two-group matrix repo (Auth untouched; Checkout's
+        cart.py untouched too) plus one UNCOMMITTED edit to Checkout/pay.py --
+        the `-c` delta's changed file. Returns (repo_dir, base_sha): base_sha
+        anchors `--scope-changed --base`; HEAD stays pinned there (the edit is
+        uncommitted, like a live `-c` invocation), so diff-hunks.json's
+        includes_uncommitted comes back True.
+
+        pay.py is padded to 60 lines: the edit lands at line 2 (an on-diff
+        finding is placed there), and a pre-existing finding is placed at
+        line 58 -- well outside the default +/-5 diff-context tolerance
+        window around the line-2 hunk, so it classifies off-diff.
+        """
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        for p in ("src/auth/login.py", "src/checkout/cart.py"):
+            full = os.path.join(d, *p.split("/"))
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "w") as fh:
+                fh.write("def f():\n    return 1\n")
+        pay_lines = ["def charge(amount):", "    return amount", "",
+                     "def refund(amount):", "    return -amount"]
+        pay_lines += ["# pad line %d" % i for i in range(6, 61)]
+        pay_path = os.path.join(d, "src", "checkout", "pay.py")
+        os.makedirs(os.path.dirname(pay_path), exist_ok=True)
+        with open(pay_path, "w") as fh:
+            fh.write("\n".join(pay_lines) + "\n")
+        os.makedirs(os.path.join(d, ".panopticon"))
+        with open(driver._pano(d, "groups.yml"), "w") as fh:
+            fh.write(
+                "groups:\n"
+                "  Auth:\n    match: ['src/auth/**']\n    panels: [SEC]\n"
+                "  Checkout:\n    match: ['src/checkout/**']\n    panels: [SEC]\n")
+        subprocess.run(["git", "init", "-q"], cwd=d, check=True)
+        subprocess.run(["git", "add", "-A"], cwd=d, check=True)
+        subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                        "commit", "-qm", "x"], cwd=d, check=True)
+        base_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=d,
+                                  capture_output=True, text=True,
+                                  check=True).stdout.strip()
+        # Uncommitted edit -- the -c delta's live-tree change.
+        pay_lines[1] = "    return amount * 2  # bumped"
+        with open(pay_path, "w") as fh:
+            fh.write("\n".join(pay_lines) + "\n")
+        return d, base_sha
+
+    def _manifest(self, base):
+        return {"run_id": self.RUN_ID, "host": "claude", "security_mode": "standard",
+                "flags": {"fail_on": "high"},
+                "scope": {"mode": "changed", "target": None}, "base": base}
+
+    def _self_write_scout(self, entry):
+        driver._write_json(entry["out_file"], {"group": "Checkout", "domains": ["SEC"]})
+
+    def _self_write_review_two_findings(self, entry):
+        """One on-diff LOW (pay.py's edited line 2) and one pre-existing HIGH
+        (line 58, far outside the diff-context window) -- both SEC/Checkout.
+        Combined cell score (0 + 5*0.8 = 4.0) stays under F_b (8.0), so no
+        backup round is summoned."""
+        driver._write_json(entry["out_file"], {
+            "findings": [
+                {"title": "on-diff nit", "severity": "LOW", "domain": "SEC",
+                 "code": "SEC-A1A", "category": "authz",
+                 "location": {"file": "src/checkout/pay.py", "line_start": 2}},
+                {"title": "pre-existing gap", "severity": "HIGH", "domain": "SEC",
+                 "code": "SEC-A2A", "category": "authz",
+                 "location": {"file": "src/checkout/pay.py", "line_start": 58}},
+            ],
+            "_panopticon": {"run_id": self.RUN_ID, "role": "domain_panel",
+                            "domain": "SEC", "group": "Checkout"}})
+
+    def _self_write_verify_all(self, d, manifest, entry):
+        cell = driver._load_cell_findings(d, manifest, "Checkout", "SEC")
+        driver._write_json(entry["out_file"], {
+            "verdicts": [{"finding_id": f["id"], "verdict": "CONFIRMED",
+                          "reasoning": "verified"} for f in cell],
+            "_panopticon": {"run_id": self.RUN_ID, "role": "domain_advisor",
+                            "domain": "SEC", "group": "Checkout", "stage": "primary"}})
+
+    def test_changed_scope_restricts_matrix_emits_diff_hunks_and_report_has_delta(self):
+        d, base_sha = self._repo_with_changed_file()
+        manifest = self._manifest(base_sha)
+
+        # discovery: the real orchestrator.py --repo-scan --scope-changed
+        # --base subprocess -- restricts groups.json to the one changed file.
+        result = driver.discovery_execute(d, manifest)
+        self.assertEqual(result.kind, "advanced")
+        groups_json = driver._load_json(driver._pano(d, "groups.json"))
+        names = {g["name"] for g in groups_json["groups"]}
+        files = sorted(f for g in groups_json["groups"] for f in g["files"])
+        self.assertEqual(names, {"Checkout"})            # Auth excluded entirely
+        self.assertEqual(files, ["src/checkout/pay.py"])  # cart.py unchanged, excluded
+
+        # the orchestrator's on-diff hunk map, alongside groups.json.
+        hunks_path = driver._pano(d, "diff-hunks.json")
+        self.assertTrue(os.path.isfile(hunks_path))
+        hunks = driver._load_json(hunks_path)
+        self.assertEqual(hunks["base"], base_sha)
+        self.assertEqual(hunks["base_commit"], base_sha)
+        self.assertTrue(hunks["includes_uncommitted"])
+        self.assertIn("src/checkout/pay.py", hunks["hunks"])
+
+        # coverage: scout checkpoint then floor+scout (SEC only, as committed)
+        cov = driver.coverage_execute(d, manifest)
+        self.assertEqual(cov.checkpoint, "scout")
+        self.assertEqual(cov.group, "Checkout")
+        req = driver.load_dispatch_request(d)
+        for e in req["entries"]:
+            self._self_write_scout(e)
+        self.assertEqual(driver.coverage_execute(d, manifest).kind, "advanced")
+        self.assertTrue(driver.coverage_done(d, manifest))
+
+        # review checkpoint -- one cell (Checkout/SEC); self-write both
+        # findings into it, scoped to pay.py (the only file in play).
+        r = driver.review_execute(d, manifest)
+        self.assertEqual(r.checkpoint, "review")
+        req = driver.load_dispatch_request(d)
+        self.assertEqual(len(req["entries"]), 1)
+        self._self_write_review_two_findings(req["entries"][0])
+        self.assertTrue(driver.review_done(d, manifest))
+
+        # verify checkpoint -- primary only (combined score < F_b, no backup)
+        v = driver.verify_execute(d, manifest)
+        self.assertEqual(v.checkpoint, "verify")
+        req = driver.load_dispatch_request(d)
+        self.assertEqual(len(req["entries"]), 1)
+        self._self_write_verify_all(d, manifest, req["entries"][0])
+        self.assertEqual(driver.verify_execute(d, manifest).kind, "advanced")
+        self.assertTrue(driver.verify_done(d, manifest))
+
+        # synthesize -> a graded report with a populated delta block.
+        self.assertEqual(driver.synthesize_execute(d, manifest).kind, "advanced")
+        report = driver._load_json(driver._pano(d, "report.json"))
+
+        delta_meta = report["meta"]["coverage"]["delta"]
+        self.assertIsNotNone(delta_meta)
+        self.assertEqual(delta_meta["base"], base_sha)
+        self.assertTrue(delta_meta["includes_uncommitted"])
+        self.assertEqual(delta_meta["files_changed"], 1)
+        self.assertEqual(delta_meta["on_diff_total"], 1)
+        self.assertEqual(delta_meta["pre_existing_total"], 1)
+
+        delta_summary = report["summary"]["delta"]
+        self.assertIsNotNone(delta_summary)
+        self.assertEqual(delta_summary["on_diff"]["low"], 1)
+        self.assertEqual(delta_summary["pre_existing"]["high"], 1)
+
+        on_diff_f = next(f for f in report["findings"] if f["severity"] == "LOW")
+        pre_existing_f = next(f for f in report["findings"] if f["severity"] == "HIGH")
+        self.assertTrue(on_diff_f["delta"]["on_diff"])
+        self.assertFalse(pre_existing_f["delta"]["on_diff"])
+        self.assertEqual(on_diff_f["evidence"]["status"], "advisor_confirmed")
+        self.assertEqual(pre_existing_f["evidence"]["status"], "advisor_confirmed")
+
+        # gate scoped on-diff (the default --gate-scope): fail_on=high WOULD
+        # FAIL on the pre-existing HIGH if it leaked into the gate -- it
+        # doesn't, only the on-diff LOW is gate-eligible, so the gate stays
+        # clean of it.
+        self.assertEqual(report["summary"]["gate"], "PASS")
+
+        # Item 7 (load-bearing proof): flip --gate-scope to "all" on the SAME
+        # artifacts and the pre-existing off-diff HIGH now reaches the gate ->
+        # FAIL. This proves the default on-diff scoping is what produced the PASS
+        # (not a vacuous pass), i.e. gate scope actually changes the outcome.
+        manifest["flags"]["gate_scope"] = "all"
+        self.assertEqual(driver.synthesize_execute(d, manifest).kind, "advanced")
+        report_all = driver._load_json(driver._pano(d, "report.json"))
+        self.assertEqual(report_all["summary"]["gate"], "FAIL")
+
+    def test_changed_scope_without_committed_groups_yml_raises_loud_setup_error(self):
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        os.makedirs(os.path.join(d, ".panopticon"))   # no groups.yml -- un-setup repo
+        manifest = self._manifest(base="deadbeef")
+        with self.assertRaises(driver.DriverError) as cm:
+            driver.discovery_execute(d, manifest)
+        self.assertIn("panopticon setup", str(cm.exception))
+
+    def test_pr_resolve_review_root_worktree_is_idempotent(self):
+        """resolve_review_root(pr=...) acquires the deterministic per-(repo,
+        PR) worktree (diff_map._worktree_dir, P6.1); a second acquire for the
+        SAME (repo, PR) resumes the SAME path without a second underlying
+        create. `diff_map.acquire_pr` is mocked (no live `gh`) with a fake
+        that mirrors the REAL function's own idempotency contract: reuse an
+        already-materialized deterministic worktree rather than recreating
+        it, using the real (un-mocked) `_worktree_dir` to compute the path."""
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        subprocess.run(["git", "init", "-q"], cwd=d, check=True)
+        wt = driver.diff_map._worktree_dir(d, 7)
+        self.addCleanup(lambda: shutil.rmtree(wt, ignore_errors=True))
+        created = {"count": 0}
+
+        def fake_acquire_pr(pr_number, repo=".", runner=subprocess.run):
+            path = driver.diff_map._worktree_dir(repo, pr_number)
+            if not os.path.isdir(path):
+                created["count"] += 1
+                os.makedirs(path)
+            return {"worktree": path, "base": "main", "head_sha": "deadbeef"}
+
+        with mock.patch.object(driver.diff_map, "acquire_pr",
+                               side_effect=fake_acquire_pr) as m:
+            root1, worktree1, base1 = driver.resolve_review_root(d, pr=7)
+            root2, worktree2, base2 = driver.resolve_review_root(d, pr=7)
+
+        self.assertEqual(m.call_count, 2)
+        self.assertEqual(m.call_args_list[0].args[0], 7)
+        self.assertEqual(m.call_args_list[0].kwargs["repo"], d)
+        self.assertEqual(root1, wt)
+        self.assertEqual(worktree1, wt)
+        self.assertEqual(base1, "main")
+        self.assertEqual(root2, wt)
+        self.assertEqual(worktree2, wt)
+        self.assertEqual(base2, "main")
+        self.assertEqual(created["count"], 1)   # 2nd acquire reused, no re-create
+
+    def test_validate_does_not_release_pr_worktree(self):
+        """Ruling A: validate_execute does NOT release manifest["worktree"] --
+        the PR worktree IS the review root, so releasing here would delete
+        report.json + the manifest mid-machine. It still writes validate.json and
+        advances on a clean tree; release-on-complete is covered at the run()
+        level (test_run_finalizes_worktree_only_on_complete)."""
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        subprocess.run(["git", "init", "-q"], cwd=d, check=True)
+        driver.capture_tree_baseline(d)   # real git status --porcelain, clean
+        wt = driver.diff_map._worktree_dir(d, 7)
+        manifest = {"run_id": self.RUN_ID, "worktree": wt}
+
+        with mock.patch.object(driver.diff_map, "release_worktree") as rel:
+            result = driver.validate_execute(d, manifest)
+
+        self.assertEqual(result.kind, "advanced")
+        rel.assert_not_called()
+        validate = driver._load_json(driver._pano(d, "validate.json"))
+        self.assertTrue(validate["tree_clean"])
+        self.assertEqual(validate["unexpected_changes"], [])
 
 
 if __name__ == "__main__":
