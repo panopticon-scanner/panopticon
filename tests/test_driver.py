@@ -1281,5 +1281,256 @@ class TestDriverSingleScopeEndToEnd(unittest.TestCase):
         self.assertIn("panopticon setup", str(cm.exception))
 
 
+class TestDriverDeltaEndToEnd(unittest.TestCase):
+    """P6.3: the LAST 5.0 driver e2e -- proves the delta (`-c`) + `--pr` paths
+    against a REAL git repo, no live `gh`. Mirrors
+    TestDriverSingleScopeEndToEnd's real-git-repo + self-write harness
+    (P6.2), scoped to `changed` instead of `group`:
+
+    - `-c` delta: the real `orchestrator.py --repo-scan --scope-changed
+      --base` subprocess restricts groups.json to the one changed file and
+      emits `.panopticon/diff-hunks.json`; the run-loop reaches a graded
+      report whose delta block is populated and whose gate is scoped to the
+      on-diff findings only (a pre-existing off-diff HIGH that would flip
+      `fail_on: high` to FAIL never reaches the gate).
+    - `--pr` resume: `resolve_review_root(pr=...)` is idempotent over the
+      deterministic worktree (diff_map._worktree_dir, P6.1) and
+      `validate_execute` releases it -- function-level, mocking
+      diff_map.acquire_pr/release_worktree since a live `gh` PR isn't
+      available in tests.
+    - requires-setup: `-c` on a repo with no committed groups.yml fails
+      loudly, same as P6.2's group-scope case.
+    """
+
+    RUN_ID = "RID"
+
+    def _repo_with_changed_file(self):
+        """A committed two-group matrix repo (Auth untouched; Checkout's
+        cart.py untouched too) plus one UNCOMMITTED edit to Checkout/pay.py --
+        the `-c` delta's changed file. Returns (repo_dir, base_sha): base_sha
+        anchors `--scope-changed --base`; HEAD stays pinned there (the edit is
+        uncommitted, like a live `-c` invocation), so diff-hunks.json's
+        includes_uncommitted comes back True.
+
+        pay.py is padded to 60 lines: the edit lands at line 2 (an on-diff
+        finding is placed there), and a pre-existing finding is placed at
+        line 58 -- well outside the default +/-5 diff-context tolerance
+        window around the line-2 hunk, so it classifies off-diff.
+        """
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        for p in ("src/auth/login.py", "src/checkout/cart.py"):
+            full = os.path.join(d, *p.split("/"))
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "w") as fh:
+                fh.write("def f():\n    return 1\n")
+        pay_lines = ["def charge(amount):", "    return amount", "",
+                     "def refund(amount):", "    return -amount"]
+        pay_lines += ["# pad line %d" % i for i in range(6, 61)]
+        pay_path = os.path.join(d, "src", "checkout", "pay.py")
+        os.makedirs(os.path.dirname(pay_path), exist_ok=True)
+        with open(pay_path, "w") as fh:
+            fh.write("\n".join(pay_lines) + "\n")
+        os.makedirs(os.path.join(d, ".panopticon"))
+        with open(driver._pano(d, "groups.yml"), "w") as fh:
+            fh.write(
+                "groups:\n"
+                "  Auth:\n    match: ['src/auth/**']\n    panels: [SEC]\n"
+                "  Checkout:\n    match: ['src/checkout/**']\n    panels: [SEC]\n")
+        subprocess.run(["git", "init", "-q"], cwd=d, check=True)
+        subprocess.run(["git", "add", "-A"], cwd=d, check=True)
+        subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                        "commit", "-qm", "x"], cwd=d, check=True)
+        base_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=d,
+                                  capture_output=True, text=True,
+                                  check=True).stdout.strip()
+        # Uncommitted edit -- the -c delta's live-tree change.
+        pay_lines[1] = "    return amount * 2  # bumped"
+        with open(pay_path, "w") as fh:
+            fh.write("\n".join(pay_lines) + "\n")
+        return d, base_sha
+
+    def _manifest(self, base):
+        return {"run_id": self.RUN_ID, "host": "claude", "security_mode": "standard",
+                "flags": {"fail_on": "high"},
+                "scope": {"mode": "changed", "target": None}, "base": base}
+
+    def _self_write_scout(self, entry):
+        driver._write_json(entry["out_file"], {"group": "Checkout", "domains": ["SEC"]})
+
+    def _self_write_review_two_findings(self, entry):
+        """One on-diff LOW (pay.py's edited line 2) and one pre-existing HIGH
+        (line 58, far outside the diff-context window) -- both SEC/Checkout.
+        Combined cell score (0 + 5*0.8 = 4.0) stays under F_b (8.0), so no
+        backup round is summoned."""
+        driver._write_json(entry["out_file"], {
+            "findings": [
+                {"title": "on-diff nit", "severity": "LOW", "domain": "SEC",
+                 "code": "SEC-A1A", "category": "authz",
+                 "location": {"file": "src/checkout/pay.py", "line_start": 2}},
+                {"title": "pre-existing gap", "severity": "HIGH", "domain": "SEC",
+                 "code": "SEC-A2A", "category": "authz",
+                 "location": {"file": "src/checkout/pay.py", "line_start": 58}},
+            ],
+            "_panopticon": {"run_id": self.RUN_ID, "role": "domain_panel",
+                            "domain": "SEC", "group": "Checkout"}})
+
+    def _self_write_verify_all(self, d, manifest, entry):
+        cell = driver._load_cell_findings(d, manifest, "Checkout", "SEC")
+        driver._write_json(entry["out_file"], {
+            "verdicts": [{"finding_id": f["id"], "verdict": "CONFIRMED",
+                          "reasoning": "verified"} for f in cell],
+            "_panopticon": {"run_id": self.RUN_ID, "role": "domain_advisor",
+                            "domain": "SEC", "group": "Checkout", "stage": "primary"}})
+
+    def test_changed_scope_restricts_matrix_emits_diff_hunks_and_report_has_delta(self):
+        d, base_sha = self._repo_with_changed_file()
+        manifest = self._manifest(base_sha)
+
+        # discovery: the real orchestrator.py --repo-scan --scope-changed
+        # --base subprocess -- restricts groups.json to the one changed file.
+        result = driver.discovery_execute(d, manifest)
+        self.assertEqual(result.kind, "advanced")
+        groups_json = driver._load_json(driver._pano(d, "groups.json"))
+        names = {g["name"] for g in groups_json["groups"]}
+        files = sorted(f for g in groups_json["groups"] for f in g["files"])
+        self.assertEqual(names, {"Checkout"})            # Auth excluded entirely
+        self.assertEqual(files, ["src/checkout/pay.py"])  # cart.py unchanged, excluded
+
+        # the orchestrator's on-diff hunk map, alongside groups.json.
+        hunks_path = driver._pano(d, "diff-hunks.json")
+        self.assertTrue(os.path.isfile(hunks_path))
+        hunks = driver._load_json(hunks_path)
+        self.assertEqual(hunks["base"], base_sha)
+        self.assertEqual(hunks["base_commit"], base_sha)
+        self.assertTrue(hunks["includes_uncommitted"])
+        self.assertIn("src/checkout/pay.py", hunks["hunks"])
+
+        # coverage: scout checkpoint then floor+scout (SEC only, as committed)
+        cov = driver.coverage_execute(d, manifest)
+        self.assertEqual(cov.checkpoint, "scout")
+        self.assertEqual(cov.group, "Checkout")
+        req = driver.load_dispatch_request(d)
+        for e in req["entries"]:
+            self._self_write_scout(e)
+        self.assertEqual(driver.coverage_execute(d, manifest).kind, "advanced")
+        self.assertTrue(driver.coverage_done(d, manifest))
+
+        # review checkpoint -- one cell (Checkout/SEC); self-write both
+        # findings into it, scoped to pay.py (the only file in play).
+        r = driver.review_execute(d, manifest)
+        self.assertEqual(r.checkpoint, "review")
+        req = driver.load_dispatch_request(d)
+        self.assertEqual(len(req["entries"]), 1)
+        self._self_write_review_two_findings(req["entries"][0])
+        self.assertTrue(driver.review_done(d, manifest))
+
+        # verify checkpoint -- primary only (combined score < F_b, no backup)
+        v = driver.verify_execute(d, manifest)
+        self.assertEqual(v.checkpoint, "verify")
+        req = driver.load_dispatch_request(d)
+        self.assertEqual(len(req["entries"]), 1)
+        self._self_write_verify_all(d, manifest, req["entries"][0])
+        self.assertEqual(driver.verify_execute(d, manifest).kind, "advanced")
+        self.assertTrue(driver.verify_done(d, manifest))
+
+        # synthesize -> a graded report with a populated delta block.
+        self.assertEqual(driver.synthesize_execute(d, manifest).kind, "advanced")
+        report = driver._load_json(driver._pano(d, "report.json"))
+
+        delta_meta = report["meta"]["coverage"]["delta"]
+        self.assertIsNotNone(delta_meta)
+        self.assertEqual(delta_meta["base"], base_sha)
+        self.assertTrue(delta_meta["includes_uncommitted"])
+        self.assertEqual(delta_meta["files_changed"], 1)
+        self.assertEqual(delta_meta["on_diff_total"], 1)
+        self.assertEqual(delta_meta["pre_existing_total"], 1)
+
+        delta_summary = report["summary"]["delta"]
+        self.assertIsNotNone(delta_summary)
+        self.assertEqual(delta_summary["on_diff"]["low"], 1)
+        self.assertEqual(delta_summary["pre_existing"]["high"], 1)
+
+        on_diff_f = next(f for f in report["findings"] if f["severity"] == "LOW")
+        pre_existing_f = next(f for f in report["findings"] if f["severity"] == "HIGH")
+        self.assertTrue(on_diff_f["delta"]["on_diff"])
+        self.assertFalse(pre_existing_f["delta"]["on_diff"])
+        self.assertEqual(on_diff_f["evidence"]["status"], "advisor_confirmed")
+        self.assertEqual(pre_existing_f["evidence"]["status"], "advisor_confirmed")
+
+        # gate scoped on-diff (the default --gate-scope): fail_on=high WOULD
+        # FAIL on the pre-existing HIGH if it leaked into the gate -- it
+        # doesn't, only the on-diff LOW is gate-eligible, so the gate stays
+        # clean of it.
+        self.assertEqual(report["summary"]["gate"], "PASS")
+
+    def test_changed_scope_without_committed_groups_yml_raises_loud_setup_error(self):
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        os.makedirs(os.path.join(d, ".panopticon"))   # no groups.yml -- un-setup repo
+        manifest = self._manifest(base="deadbeef")
+        with self.assertRaises(driver.DriverError) as cm:
+            driver.discovery_execute(d, manifest)
+        self.assertIn("panopticon setup", str(cm.exception))
+
+    def test_pr_resolve_review_root_worktree_is_idempotent(self):
+        """resolve_review_root(pr=...) acquires the deterministic per-(repo,
+        PR) worktree (diff_map._worktree_dir, P6.1); a second acquire for the
+        SAME (repo, PR) resumes the SAME path without a second underlying
+        create. `diff_map.acquire_pr` is mocked (no live `gh`) with a fake
+        that mirrors the REAL function's own idempotency contract: reuse an
+        already-materialized deterministic worktree rather than recreating
+        it, using the real (un-mocked) `_worktree_dir` to compute the path."""
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        subprocess.run(["git", "init", "-q"], cwd=d, check=True)
+        wt = driver.diff_map._worktree_dir(d, 7)
+        self.addCleanup(lambda: shutil.rmtree(wt, ignore_errors=True))
+        created = {"count": 0}
+
+        def fake_acquire_pr(pr_number, repo=".", runner=subprocess.run):
+            path = driver.diff_map._worktree_dir(repo, pr_number)
+            if not os.path.isdir(path):
+                created["count"] += 1
+                os.makedirs(path)
+            return {"worktree": path, "base": "main", "head_sha": "deadbeef"}
+
+        with mock.patch.object(driver.diff_map, "acquire_pr",
+                               side_effect=fake_acquire_pr) as m:
+            root1, worktree1, base1 = driver.resolve_review_root(d, pr=7)
+            root2, worktree2, base2 = driver.resolve_review_root(d, pr=7)
+
+        self.assertEqual(m.call_count, 2)
+        self.assertEqual(m.call_args_list[0].args[0], 7)
+        self.assertEqual(m.call_args_list[0].kwargs["repo"], d)
+        self.assertEqual(root1, wt)
+        self.assertEqual(worktree1, wt)
+        self.assertEqual(base1, "main")
+        self.assertEqual(root2, wt)
+        self.assertEqual(worktree2, wt)
+        self.assertEqual(base2, "main")
+        self.assertEqual(created["count"], 1)   # 2nd acquire reused, no re-create
+
+    def test_validate_execute_releases_pr_worktree(self):
+        """validate_execute releases manifest["worktree"] via
+        diff_map.release_worktree (mocked -- no live `gh` worktree to
+        actually remove) once the real clean-tree check passes."""
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        subprocess.run(["git", "init", "-q"], cwd=d, check=True)
+        driver.capture_tree_baseline(d)   # real git status --porcelain, clean
+        wt = driver.diff_map._worktree_dir(d, 7)
+        manifest = {"run_id": self.RUN_ID, "worktree": wt}
+
+        with mock.patch.object(driver.diff_map, "release_worktree") as rel:
+            result = driver.validate_execute(d, manifest)
+
+        self.assertEqual(result.kind, "advanced")
+        rel.assert_called_once_with(wt, repo=d)
+        validate = driver._load_json(driver._pano(d, "validate.json"))
+        self.assertTrue(validate["tree_clean"])
+        self.assertEqual(validate["unexpected_changes"], [])
+
+
 if __name__ == "__main__":
     unittest.main()
