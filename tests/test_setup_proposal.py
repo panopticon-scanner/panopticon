@@ -48,9 +48,23 @@ class TestLoaders(unittest.TestCase):
         vocab, _ = sp.load_vocabulary(VOCAB)
         affinity, errors = sp.load_affinity(AFFINITY, vocab)
         self.assertEqual(errors, [])
-        self.assertEqual(affinity["Checkout"], ["SEC", "DAT", "ACC", "OPS"])
+        self.assertEqual(affinity["Checkout"], ["SEC", "ACC"])
         # every fixture affinity key is a known vocabulary capability
         self.assertTrue(set(affinity).issubset(set(vocab["names"])))
+
+    def test_affinity_is_the_r1_calibrated_table(self):
+        vocab, _ = sp.load_vocabulary(VOCAB)
+        affinity, errs = sp.load_affinity(AFFINITY, vocab)
+        self.assertEqual(errs, [])
+        self.assertEqual(affinity["Checkout"], ["SEC", "ACC"])      # OPS dropped (R-3, unevidenced)
+        self.assertEqual(affinity["Admin"], ["SEC", "ACC", "OPS"])  # +OPS (R-3, evidenced)
+        self.assertEqual(affinity["Notifications"], ["OPS"])        # ACC dropped (R-3)
+        self.assertEqual(affinity["Catalog"], [])                   # rides global floor
+        self.assertEqual(affinity["UI"], [])                        # not seeded in R1
+        # no global-floor domains leaked into any row
+        for dom in ("COD", "DAT", "TST", "ARC"):
+            for label, floor in affinity.items():
+                self.assertNotIn(dom, floor, f"{dom} leaked into {label}")
 
     def test_vocabulary_flags_duplicate_and_empty_names(self):
         import tempfile
@@ -191,7 +205,7 @@ class TestAssemble(unittest.TestCase):
                              "match": ["src/checkout/**"],
                              "tests": ["tests/checkout/**"]}])
         groups, disc = sp.assemble(proposal, self.vocab, self.affinity)
-        self.assertEqual(groups["Checkout"]["panels"], ["SEC", "DAT", "ACC", "OPS"])
+        self.assertEqual(groups["Checkout"]["panels"], ["SEC", "ACC"])
         self.assertEqual(groups["Checkout"]["match"], ["src/checkout/**"])
         entry = next(g for g in disc["groups"] if g["name"] == "Checkout")
         self.assertFalse(entry["custom"])

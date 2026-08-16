@@ -1,14 +1,16 @@
-# Capability -> default panel FLOOR (P2 FIXTURE). Domains in groups_schema.DOMAINS.
+# Capability -> default panel FLOOR (R1-calibrated; see calibration/2026-08-15-vocab-panel-r1/rulings.md).
+# Global-floor domains {COD, DAT, TST, ARC} are matrix-level, NOT affinity rows.
 affinity:
   Auth:          [SEC]
-  Accounts:      [SEC, DAT, ACC]
-  Checkout:      [SEC, DAT, ACC, OPS]
-  Billing:       [SEC, DAT, OPS]
-  Catalog:       [DAT, COD]
-  Search:        [DAT, OPS]
-  Fulfillment:   [OPS, DAT]
-  Notifications: [OPS, ACC]
-  Reporting:     [DAT, COD]
-  Admin:         [SEC, ACC]
-  API:           [SEC, ARC]
-  Platform:      [COD, ARC]
+  Accounts:      [SEC, ACC]
+  Checkout:      [SEC, ACC]
+  Billing:       [SEC]
+  Catalog:       []
+  Search:        []
+  Fulfillment:   []
+  Notifications: [OPS]
+  Reporting:     []
+  Admin:         [SEC, ACC, OPS]
+  API:           [SEC]
+  Platform:      [OPS, SEC]
+  UI:            []
