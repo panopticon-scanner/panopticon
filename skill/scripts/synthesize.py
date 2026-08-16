@@ -579,11 +579,8 @@ def gate_verdict(findings, fail_on):
         return "OFF"
     threshold = SEV_ORDER.index(str(fail_on).upper())
     for f in findings:
-        try:
-            if SEV_ORDER.index(f.get("severity", "INFO")) <= threshold:
-                return "FAIL"
-        except ValueError:
-            continue
+        if _sev_rank(f) <= threshold:
+            return "FAIL"
     return "PASS"
 
 
@@ -793,9 +790,7 @@ def out_of_scope_findings(findings_paths, plan):
             continue
         for f in (data.get("findings") or [] if isinstance(data, dict) else []):
             loc = (f.get("location") or {}) if isinstance(f, dict) else {}
-            fpath = str(loc.get("file") or "").replace("\\", "/")
-            while fpath.startswith("./"):
-                fpath = fpath[2:]
+            fpath = evidence_mod.norm_path(loc.get("file"))
             if not fpath:
                 continue
             checked += 1
@@ -832,9 +827,7 @@ def apply_doc_severity_policy(findings, security_mode, doc_globs=None):
         if not isinstance(f, dict):
             continue
         loc = f.get("location") or {}
-        path = str(loc.get("file") or "").replace("\\", "/")
-        while path.startswith("./"):
-            path = path[2:]
+        path = evidence_mod.norm_path(loc.get("file"))
         if not path or not any(fnmatch.fnmatch(path, g) for g in globs):
             continue
         sev = str(f.get("severity", "")).upper()

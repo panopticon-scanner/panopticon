@@ -4,7 +4,7 @@ import os
 import shutil
 import sys
 import tempfile
-from .base import make_finding, omit_none, parse_json_bytes, run_tool
+from .base import as_list, make_finding, omit_none, parse_json_bytes, run_tool
 from .sarif_utils import LEVEL_TO_SEV
 
 
@@ -188,7 +188,7 @@ class RoslynSecGuardAdapter:
                         description=message or "No description provided.",
                         impact="Potential security issue in C# code.",
                         remediation="Review the SecurityCodeScan rule and refactor.",
-                        citations={"cwe": [cwe] if cwe else []},
+                        citations={"cwe": as_list(cwe)},
                         tool_evidence=omit_none({"rule_id": rule_id}),
                     )
                 except Exception:  # noqa: BLE001 - tolerant by design: skip only this result
