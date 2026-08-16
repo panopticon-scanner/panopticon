@@ -222,6 +222,13 @@ def write_dispatch_request(review_root, run_id, checkpoint, group, entries):
     return os.path.abspath(path)
 
 
+def load_dispatch_request(review_root):
+    """The parsed .panopticon/dispatch-request.json (or None if absent/invalid).
+    The host reads req['entries'] to install the write-guard
+    (write_guard_hook.install(entries)) and to dispatch the checkpoint's cells."""
+    return _load_json(_pano(review_root, "dispatch-request.json"))
+
+
 def _discovered_groups(review_root):
     """(name, files) per group from discovery's groups.json."""
     data = _load_json(_pano(review_root, "groups.json")) or {}
@@ -431,12 +438,11 @@ def _verify_entry(review_root, manifest, group, domain, files, cell, host, bundl
     prompt = dispatch.render_prompt("domain-advisor.md", {
         "domain": domain, "group": group, "file_list": file_list,
         "findings": _render_findings(cell), "menu": _render_menu(bundle, domain),
-        "run_id": manifest["run_id"], "stage": stage}, host)
+        "run_id": manifest["run_id"], "stage": stage, "out_file": out_file}, host)
     enforced = host == "claude"
     return {"id": "verify-%s-%s-%s" % (group, domain, stage),
             "agent": dispatch.registered_agent_name("domain-advisor.md") if enforced else None,
-            "enforced": enforced, "model": None, "write_mode": "return",
-            "prompt": prompt, "out_file": out_file}
+            "enforced": enforced, "model": None, "prompt": prompt, "out_file": out_file}
 
 
 def review_done(review_root, manifest):
@@ -507,21 +513,6 @@ def verify_done(review_root, manifest):
             if not _verify_cell_done(review_root, manifest, group, domain, "primary"):
                 return False
     return _verify_backup_done(review_root, manifest)
-
-
-def persist_returned_verdict(entry, returned_text):
-    """Validate an advisor's returned text as a verdict bundle and write it to
-    entry['out_file']. A read-only advisor never writes; the orchestrator persists
-    its return here, refusing to write a malformed/non-bundle response so a corrupt
-    verdict never lands (the host re-dispatches on False)."""
-    try:
-        data = synthesize.load_json_tolerant(returned_text)
-    except (ValueError, TypeError):
-        return False
-    if not (isinstance(data, dict) and isinstance(data.get("verdicts"), list)):
-        return False
-    _write_json(entry["out_file"], data)
-    return True
 
 
 def _cell_backup_findings(review_root, manifest, group, domain):

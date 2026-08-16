@@ -122,6 +122,28 @@ class TestSkillMd(unittest.TestCase):
         self.assertNotIn("or tool findings on fixtures reappear on that path",
                          self.text)
 
+    def test_has_driver_run_loop_section(self):
+        self.assertIn("## Driver run-loop", self.text)
+        loop = self.text.split("## Driver run-loop")[1].split("## Output")[0]
+        # the controller loop + status protocol
+        self.assertIn("driver.py run", loop)
+        for word in ("checkpoint", "dispatch-request.json", "re-invoke", "complete"):
+            self.assertIn(word, loop)
+        # unified guard-confined self-write (no write_mode/return handshake)
+        self.assertIn("write-guard", loop)
+        self.assertIn("self-write", loop)
+        self.assertNotIn("write_mode", loop)
+
+    def test_driver_run_loop_documents_scout_return_persist(self):
+        # The scout checkpoint is read-only + return-persist (the scout agent
+        # can't self-write), distinct from the review/verify self-write
+        # fan-out documented elsewhere in the same section.
+        loop = self.text.split("## Driver run-loop")[1].split("## Output")[0]
+        self.assertIn("scout", loop)
+        self.assertIn("ScopeProfile", loop)
+        self.assertTrue("returns" in loop.lower() or "returned" in loop.lower(), loop)
+        self.assertIn("read-only", loop)
+
 
 class TestReadmeQuickStart(unittest.TestCase):
     """#512: the README Quick start must show real invocation flags, not the

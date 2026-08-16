@@ -398,6 +398,63 @@ may target, installed for the fan-out phase regardless of `enforced`, and
 does not change how tool restrictions are enforced — `tool_policy_mode` gains
 no new value from it.
 
+## Driver run-loop (5.0)
+
+The 5.0 driver (`skill/scripts/driver.py`) runs the whole-repo committed-matrix
+review as a resumable state machine; the host drives it through its status
+protocol. (The manual `## Pipeline` / `## Host dispatch` steps above still serve
+the other modes — `-f`/`-d`/`-g`, `-c`/`--pr`, `--setup` — until those land on
+the driver.)
+
+Loop:
+
+1. Run `python3 skill/scripts/driver.py run <target> --host claude [flags]` from
+   the TARGET repo root. It advances to the first not-done phase and prints one
+   status JSON line: `complete`, `error`, or `checkpoint`.
+2. `complete` → done; the report is at `.panopticon/report.json` (gate =
+   `summary.gate`). `error` → stop and surface `message`.
+3. `checkpoint` → read `.panopticon/dispatch-request.json` (via
+   `driver.load_dispatch_request`). It carries `entries` (host-agnostic:
+   `id`/`agent`/`enforced`/`model`/`prompt`/`out_file`) — each entry is a unit
+   of work to dispatch: a per-group scout, or a `(domain, group)` review/verify
+   cell. Then **re-invoke `driver run`** (step 1) — the cursor is recomputed
+   from disk every invocation, so the loop resumes identically after a
+   crash/compaction, and each phase re-emits only its still-pending cells.
+
+At a `scout` checkpoint (one entry per group, the run's first checkpoint), the
+scout is **read-only** and RETURNS a ScopeProfile — dispatch it (`enforced` →
+`subagent_type: entry["agent"]` (`panopticon-scout`); else general-purpose)
+and write its returned JSON to the entry's `out_file` (`scout-<group>.json`)
+after confirming it parses. No write-guard here — nothing self-writes. The
+guard-confined **self-write** fan-out below applies to `review` and `verify`
+checkpoints (whose reviewers/advisors write their own `out_file`).
+
+Fan-out (per checkpoint) — ONE mechanism for review and verify:
+
+- Install the write-guard from the request's entries:
+  `write_guard_hook.install(req["entries"])` — it confines every dispatched
+  agent's Write to exactly the `out_file`s the entries declare.
+- Dispatch one agent per entry: `enforced` → `subagent_type: entry["agent"]` (a
+  registered `panopticon-*` shell, tools+model host-enforced); else
+  general-purpose with `entry["prompt"]` and the model named by `entry["model"]`
+  (omit when null). Each reviewer/advisor **self-writes** its own
+  `entry["out_file"]` (a findings file for review, a verdict bundle for verify)
+  and returns a one-line confirmation — findings/verdicts never transit the
+  controller.
+- Uninstall the guard after the fan-out (`write_guard_hook.uninstall()`).
+
+- **Claude host (mechanical):** run the fan-out as a deterministic Workflow —
+  one agent per entry, concurrency-bounded and journaled, re-running a stalled
+  entry itself; the parent session receives only the tally.
+- **Other hosts (portable):** the same contract without the Workflow — a nested
+  per-group sub-orchestrator (or per-entry dispatch) holding scoped Write,
+  dispatching pending-only, returning a tally.
+
+A malformed self-write fails its done-predicate (`_cell_done` / `_verify_cell_done`)
+so the cell reads as not-done and is re-dispatched on the next `driver run` — no
+corrupt findings/verdict silently lands. Register the enforcement shells once with
+`python3 skill/scripts/dispatch.py --emit-host-agents claude`.
+
 ## Output
 Terminal markdown summary + JSON artifact at `--out`. CI gate key: `summary.gate`
 (`PASS` / `FAIL` / `OFF` / `INCONCLUSIVE`). `INCONCLUSIVE` means gate-relevant
