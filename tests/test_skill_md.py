@@ -273,6 +273,12 @@ class TestSetupDocs(unittest.TestCase):
         self.assertIn("--setup", skill)
         self.assertIn("READY", skill)
 
+    def test_skill_documents_driver_setup(self):
+        with open(os.path.join(ROOT, "SKILL.md"), encoding="utf-8") as fh:
+            skill = fh.read()
+        self.assertIn("driver setup", skill)
+        self.assertIn("groups.yml.draft", skill)
+
 
 class TestInstalledFlowDocs(unittest.TestCase):
     """#495: SKILL states the <skill-dir> substitution contract once, and the

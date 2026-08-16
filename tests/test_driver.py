@@ -1654,5 +1654,201 @@ class TestDriverDeltaEndToEnd(unittest.TestCase):
         self.assertEqual(validate["unexpected_changes"], [])
 
 
+class TestDriverSetup(unittest.TestCase):
+    def _repo(self):
+        import shutil as _sh
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: _sh.rmtree(d, ignore_errors=True))
+        g = ["git", "-C", d]
+        subprocess.run(["git", "init", "-q", d], check=True)
+        subprocess.run(g + ["config", "user.email", "t@t"], check=True)
+        subprocess.run(g + ["config", "user.name", "t"], check=True)
+        os.makedirs(os.path.join(d, "src", "checkout"))
+        with open(os.path.join(d, "src", "checkout", "pay.py"), "w") as fh:
+            fh.write("x = 1\n")
+        subprocess.run(g + ["add", "-A"], check=True)
+        subprocess.run(g + ["commit", "-qm", "init"], check=True)
+        subprocess.run(g + ["branch", "-M", "main"], check=True)
+        return d
+
+    def test_setup_verb_parses(self):
+        args = driver.build_parser().parse_args(["setup", "."])
+        self.assertEqual(args.verb, "setup")
+
+    def test_scan_emits_setup_scan_checkpoint_when_vocab_present(self):
+        d = self._repo()
+        args = driver.build_parser().parse_args(["setup", d])
+        status = driver.run_setup_flow(args)
+        self.assertEqual(status["status"], "checkpoint")
+        self.assertEqual(status["checkpoint"], "scan")
+        req = driver._load_json(driver._pano(d, "dispatch-request.json"))
+        self.assertEqual(req["checkpoint"], "scan")
+        entry = req["entries"][0]
+        self.assertEqual(entry["id"], "setup-scan")
+        self.assertTrue(entry["out_file"].endswith("setup-proposal.json"))
+        self.assertTrue(os.path.isfile(driver._pano(d, "setup-scan-brief.md")))
+
+    def test_ingest_writes_draft_then_completes(self):
+        d = self._repo()
+        args = driver.build_parser().parse_args(["setup", d])
+        driver.run_setup_flow(args)                       # scan checkpoint
+        proposal = {"groups": [{"capability": "Checkout",
+                                "match": ["src/checkout/**"], "tests": []}]}
+        with open(driver._pano(d, "setup-proposal.json"), "w") as fh:
+            json.dump(proposal, fh)
+        status = driver.run_setup_flow(args)              # re-invoke -> ingest
+        self.assertEqual(status["status"], "complete")
+        self.assertTrue(os.path.isfile(driver._pano(d, "groups.yml.draft")))
+        self.assertFalse(os.path.isfile(driver._pano(d, "groups.yml")))
+
+    def test_vocab_absent_falls_back_to_seed_and_completes(self):
+        # The bundled fixture is always present, so force absence at the loader
+        # boundary to exercise the fallback path deterministically.
+        d = self._repo()
+        args = driver.build_parser().parse_args(["setup", d])
+        with mock.patch("scripts.setup_flow.load_bundled_vocabulary",
+                        return_value=({"names": []}, False)):
+            status = driver.run_setup_flow(args)
+        self.assertEqual(status["status"], "complete")
+        self.assertTrue(driver._json_parses(driver._pano(d, "setup-complete.json")))
+        self.assertTrue(os.path.isfile(driver._pano(d, "groups.yml")))   # flat seed
+        # no scan checkpoint was emitted
+        self.assertFalse(os.path.isfile(driver._pano(d, "setup-proposal.json")))
+
+    def test_stale_fallback_marker_self_heals_when_vocab_returns(self):
+        # First run: vocab absent -> fallback marker written, run completes
+        # without a checkpoint.
+        d = self._repo()
+        args = driver.build_parser().parse_args(["setup", d])
+        with mock.patch("scripts.setup_flow.load_bundled_vocabulary",
+                        return_value=({"names": []}, False)):
+            status1 = driver.run_setup_flow(args)
+        self.assertEqual(status1["status"], "complete")
+        marker = driver._load_json(driver._pano(d, "setup-complete.json"))
+        self.assertEqual(marker["mode"], "fallback")
+
+        # Re-invoke WITHOUT --reset, vocab now present (no mock => real bundled
+        # fixture). Without the self-heal, scan_done/ingest_done would both
+        # short-circuit on the stale marker and this would return "complete"
+        # again, reusing the flat fallback seed instead of running a real scan.
+        status2 = driver.run_setup_flow(args)
+        self.assertEqual(status2["status"], "checkpoint")
+        self.assertEqual(status2["checkpoint"], "scan")
+        self.assertFalse(driver._json_parses(driver._pano(d, "setup-complete.json")))
+        self.assertTrue(os.path.isfile(driver._pano(d, "setup-scan-brief.md")))
+
+    def test_completion_message_branches_on_draft_vs_fallback(self):
+        # vocab-absent fallback: flat groups.yml, no draft -> message must not
+        # send the owner looking for a groups.yml.draft that was never written.
+        d1 = self._repo()
+        args1 = driver.build_parser().parse_args(["setup", d1])
+        with mock.patch("scripts.setup_flow.load_bundled_vocabulary",
+                        return_value=({"names": []}, False)):
+            status1 = driver.run_setup_flow(args1)
+        self.assertEqual(status1["status"], "complete")
+        self.assertNotIn("draft", status1["message"])
+        self.assertIn("groups.yml", status1["message"])
+
+        # vocab-present path: ingest writes a real draft -> message should
+        # point the owner at it.
+        d2 = self._repo()
+        args2 = driver.build_parser().parse_args(["setup", d2])
+        driver.run_setup_flow(args2)                       # scan checkpoint
+        proposal = {"groups": [{"capability": "Checkout",
+                                "match": ["src/checkout/**"], "tests": []}]}
+        with open(driver._pano(d2, "setup-proposal.json"), "w") as fh:
+            json.dump(proposal, fh)
+        status2 = driver.run_setup_flow(args2)              # re-invoke -> ingest
+        self.assertEqual(status2["status"], "complete")
+        self.assertIn("draft", status2["message"])
+
+    def test_fallback_message_surfaces_readiness_gaps(self):
+        # Force a deterministic readiness gap (a docker check that failed)
+        # rather than relying on the real docker/tools-image state of the
+        # machine running the tests -- that state varies by environment and
+        # would make this assertion flaky.
+        d = self._repo()
+        args = driver.build_parser().parse_args(["setup", d])
+        fake_checks = [("docker", False,
+                        "docker unavailable -- install/start Docker or run with --no-tools")]
+        with mock.patch("scripts.setup_flow.load_bundled_vocabulary",
+                        return_value=({"names": []}, False)), \
+             mock.patch("scripts.setup_flow.readiness", return_value=fake_checks):
+            status = driver.run_setup_flow(args)
+        self.assertEqual(status["status"], "complete")
+        self.assertIn("readiness gaps", status["message"])
+        self.assertIn("docker", status["message"])
+
+    def test_ingest_malformed_proposal_errors(self):
+        d = self._repo()
+        args = driver.build_parser().parse_args(["setup", d])
+        driver.run_setup_flow(args)
+        with open(driver._pano(d, "setup-proposal.json"), "w") as fh:
+            json.dump({"groups": [{"capability": "", "match": []}]}, fh)
+        status = driver.run_setup_flow(args)
+        self.assertEqual(status["status"], "error")
+        self.assertFalse(os.path.isfile(driver._pano(d, "groups.yml.draft")))
+
+    def test_reset_clears_setup_artifacts(self):
+        d = self._repo()
+        args = driver.build_parser().parse_args(["setup", d])
+        driver.run_setup_flow(args)                        # scan checkpoint: brief + manifest
+        self.assertTrue(os.path.isfile(driver._pano(d, "setup-scan-brief.md")))
+        # Simulate a real returned proposal sitting on disk pre-reset (the host
+        # wrote it back but it was never ingested) -- a genuine artifact for
+        # --reset to clear, not one that never existed.
+        proposal = {"groups": [{"capability": "Checkout",
+                                "match": ["src/checkout/**"], "tests": []}]}
+        with open(driver._pano(d, "setup-proposal.json"), "w") as fh:
+            json.dump(proposal, fh)
+        run_id_before = driver.load_setup_manifest(d)["run_id"]
+
+        reset_args = driver.build_parser().parse_args(["setup", d, "--reset"])
+        driver.run_setup_flow(reset_args)                  # clears, then re-scans
+
+        # the pre-existing proposal was actually removed (not left for the
+        # re-scan to trip over as a stale "already done" marker)
+        self.assertFalse(os.path.isfile(driver._pano(d, "setup-proposal.json")))
+        # the setup-manifest was regenerated, not reused -> a genuinely fresh run
+        self.assertNotEqual(driver.load_setup_manifest(d)["run_id"], run_id_before)
+        # a real re-scan happened (brief re-rendered under the fresh run)
+        self.assertTrue(os.path.isfile(driver._pano(d, "setup-scan-brief.md")))
+
+    def test_reset_preserves_committed_groups_yml(self):
+        d = self._repo()
+        os.makedirs(driver._pano(d), exist_ok=True)
+        committed_path = driver._pano(d, "groups.yml")
+        content = "groups:\n  checkout:\n    match:\n      - src/checkout/**\n"
+        with open(committed_path, "w") as fh:
+            fh.write(content)
+
+        args = driver.build_parser().parse_args(["setup", d])
+        driver.run_setup_flow(args)                        # scan checkpoint
+
+        reset_args = driver.build_parser().parse_args(["setup", d, "--reset"])
+        driver.run_setup_flow(reset_args)                  # clears setup artifacts only
+
+        self.assertTrue(os.path.isfile(committed_path))
+        with open(committed_path, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), content)
+
+    def test_setup_end_to_end_loop(self):
+        """scan checkpoint -> host persists proposal -> re-invoke ingests ->
+        complete, draft present, committed groups.yml never written."""
+        d = self._repo()
+        args = driver.build_parser().parse_args(["setup", d])
+        s1 = driver.run_setup_flow(args)
+        self.assertEqual(s1["checkpoint"], "scan")
+        entry = driver._load_json(driver._pano(d, "dispatch-request.json"))["entries"][0]
+        # host return-persist: write the returned proposal to entry["out_file"]
+        with open(entry["out_file"], "w") as fh:
+            json.dump({"groups": [{"capability": "Checkout",
+                                   "match": ["src/checkout/**"], "tests": []}]}, fh)
+        s2 = driver.run_setup_flow(args)
+        self.assertEqual(s2["status"], "complete")
+        self.assertIn("groups.yml.draft", "".join(os.listdir(driver._pano(d))))
+        self.assertFalse(os.path.isfile(driver._pano(d, "groups.yml")))
+
+
 if __name__ == "__main__":
     unittest.main()
