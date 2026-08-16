@@ -238,10 +238,7 @@ def key_for(f, rejected):
                             "rejected" if rejected else "finding")
 
 
-RATE_HINTS = ("rate limit", "secondary rate", "abuse detection", "was submitted too quickly")
-
-
-def create(title, body, labels, dry, throttle=0.0):
+def create(title, body, labels, dry, throttle=0.0, env=None):
     if dry:
         print("\n" + "=" * 78)
         print("TITLE : %s" % title)
@@ -249,11 +246,13 @@ def create(title, body, labels, dry, throttle=0.0):
         print("-" * 78)
         print(body[:900])
         return None
+    if env is None:
+        env = triage.gh_env()
     for attempt in range(1, 6):
         r = subprocess.run(["gh", "issue", "create", "--title", title,
                             "--body", body, "--label", ",".join(labels)],
                            capture_output=True, text=True,
-                           env=triage.gh_env())
+                           env=env)
         if r.returncode == 0:
             out = r.stdout.strip().splitlines()
             if out:
@@ -278,7 +277,7 @@ def create(title, body, labels, dry, throttle=0.0):
                   file=sys.stderr, flush=True)
             return None
         err = (r.stderr or "").strip()
-        if any(h in err.lower() for h in RATE_HINTS) and attempt < 5:
+        if any(h in err.lower() for h in triage.RATE_HINTS) and attempt < 5:
             backoff = 60 * attempt
             print("rate limited (attempt %d); sleeping %ds" % (attempt, backoff),
                   file=sys.stderr, flush=True)
@@ -348,12 +347,13 @@ def main():
         "; %d already filed, skipping" % skipped if skipped else ""))
 
     created = 0
+    env = None if a.dry_run else triage.gh_env()  # read once per run, not per issue
     for f, rej in todo:
         body = body_for(f, rej, report=a.report, report_url=a.report_url,
                         run_label=a.run_label, run_date=a.run_date,
                         run_state_doc=a.run_state_doc)
         url = create(scrub(title_for(f)), scrub(body),
-                     labels_for(f, rej), a.dry_run, a.throttle)
+                     labels_for(f, rej), a.dry_run, a.throttle, env=env)
         if url:
             record(ledger, key_for(f, rej), url)
             created += 1
