@@ -1023,9 +1023,9 @@ def setup_readiness(repo, host=None, runner=subprocess.run, environ=None):
                        "start a fresh session" % ", ".join(missing_shells)))
 
     try:
-        catalog = load_catalog(repo) or []
+        catalog = _matrix_catalog(repo) or {}
     except Exception:
-        catalog = []
+        catalog = {}
     if catalog:
         empty = [name for name, g in catalog.items() if not g.get("match")]
         checks.append(("groups-manifest", not empty,
@@ -1166,6 +1166,29 @@ def _committed_matrix(repo):
     return out
 
 
+def _matrix_catalog(repo):
+    """The committed matrix as parse_groups-NORMALIZED groups for --repo-scan /
+    readiness: {name: {match: [...], tests, floor, exclude}} with `match`
+    VALIDATED (a scalar/invalid match normalizes to [] -- never char-split).
+    Errors are disclosed (stderr), not fatal (the driver's load_committed_groups
+    gates fatally upstream). Empty {} when no groups.yml is committed."""
+    path = os.path.join(repo, ".panopticon", "groups.yml")
+    if not os.path.isfile(path):
+        return {}
+    import yaml
+    import groups_schema
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh) or {}
+    except (OSError, yaml.YAMLError) as e:
+        print("groups.yml unreadable: %s" % e, file=sys.stderr)
+        return {}
+    groups, errs = groups_schema.parse_groups(doc if isinstance(doc, dict) else {})
+    for e in errs:
+        print("committed groups.yml: %s" % e, file=sys.stderr)
+    return groups
+
+
 def run_setup(repo=".", host=None, runner=subprocess.run, environ=None,
              out=sys.stdout, vocabulary_path=None):
     """#485 + P2: provision, then render the setup-scan brief (or fall back to
@@ -1238,6 +1261,13 @@ def main(argv=None):
                     help="Base ref/sha for --changes/--pr/--files delta review")
     ap.add_argument("--diff-context", type=int, default=5,
                     help="Lines of tolerance for on-diff classification (default 5)")
+    # Scope filters (P6.2): apply only with --repo-scan -- they narrow the
+    # discovered file universe before the SAME matrix assignment runs, rather
+    # than switching modes. Read only in the --repo-scan branch below.
+    scope = ap.add_mutually_exclusive_group()
+    scope.add_argument("--scope-file", metavar="PATH", default=None)
+    scope.add_argument("--scope-dir", metavar="DIR", default=None)
+    scope.add_argument("--scope-group", metavar="NAME", default=None)
     modes = ap.add_mutually_exclusive_group(required=True)
     modes.add_argument("--group", metavar="NAME")
     modes.add_argument("--directory", metavar="DIR")
@@ -1411,7 +1441,42 @@ def main(argv=None):
         result = build_result(repo, "repo", ".", None, impl, tests, args.max_per_group,
                               group_files=impl + tests, security_mode=args.security)
         result["discovery"] = {"method": info.get("method")}
-        catalog = load_catalog(repo)
+        catalog = _matrix_catalog(repo)   # SEC-3: parse_groups-validated matrix read
+        # P6.2: --scope-file/--scope-dir/--scope-group narrow the discovered
+        # universe to a target BEFORE the same matrix assignment below runs --
+        # a scope filter, not a new mode. No scope arg -> scoped stays None ->
+        # allf/impl/tests/result are untouched (byte-identical no-scope path).
+        scoped = None
+        if args.scope_group:
+            if args.scope_group not in catalog:
+                print("unknown group %r for --scope-group" % args.scope_group,
+                      file=sys.stderr)
+                return 2
+            assigned, _ = assign_by_catalog(allf, {args.scope_group:
+                                                   catalog[args.scope_group]})
+            scoped = assigned.get(args.scope_group, [])
+        elif args.scope_dir:
+            d = args.scope_dir.strip("/") + "/"
+            scoped = [f for f in allf if f.startswith(d)]
+            if not scoped:
+                print("--scope-dir %r matched no tracked files"
+                      % args.scope_dir, file=sys.stderr)
+                return 2
+        elif args.scope_file:
+            if args.scope_file not in allf:
+                print("--scope-file %r not found among discovered repo files"
+                      % args.scope_file, file=sys.stderr)
+                return 2
+            scoped = [args.scope_file] + [t for t in related_tests(repo, [args.scope_file])
+                                          if t in allf]
+        if scoped is not None:
+            allf = scoped
+            impl = [f for f in allf if not is_test_file(f)]
+            tests = [f for f in allf if is_test_file(f)]
+            result = build_result(repo, "repo", ".", None, impl, tests,
+                                  args.max_per_group, group_files=impl + tests,
+                                  security_mode=args.security)
+            result["discovery"] = {"method": info.get("method")}
         if any(g.get("match") for g in catalog.values()):
             groups, leftovers = catalog_groups(allf, catalog, args.max_per_group,
                                                args.security)

@@ -1557,3 +1557,257 @@ class TestSetupScanFlow(unittest.TestCase):
         orch.run_setup_ingest(d, proposal_path=pp, out=io.StringIO())
         after = open(os.path.join(d, ".panopticon", "groups.yml")).read()
         self.assertEqual(before, after)
+
+
+def test_repo_scan_reads_matrix_via_parse_groups(tmp_path, monkeypatch):
+    # A matrix groups.yml (match/panels) drives --repo-scan grouping identically
+    # whether read by load_catalog or _committed_matrix, since assign_by_catalog
+    # keys on `match`. Guards the SEC-3 migration: no grouping regression.
+    import orchestrator
+    repo = tmp_path
+    (repo / ".panopticon").mkdir()
+    (repo / "src").mkdir(); (repo / "src" / "a.py").write_text("x=1\n")
+    (repo / ".panopticon" / "groups.yml").write_text(
+        "groups:\n  Core:\n    match: ['src/**']\n    panels: [SEC]\n")
+    cat = orchestrator._committed_matrix(str(repo))
+    assert cat["Core"]["match"] == ["src/**"]
+    # assign_by_catalog uses only `match` → Core claims src/a.py
+    assigned, leftovers = orchestrator.assign_by_catalog(["src/a.py"], cat)
+    assert assigned == {"Core": ["src/a.py"]} and leftovers == []
+
+
+def test_repo_scan_scalar_match_disclosed_not_silently_coerced(tmp_path, capsys):
+    import orchestrator
+    (tmp_path / ".panopticon").mkdir()
+    (tmp_path / ".panopticon" / "groups.yml").write_text(
+        "groups:\n  Bad:\n    match: 'src/**'\n")   # scalar, not a list
+    orchestrator._committed_matrix(str(tmp_path))   # parse_groups validates
+    err = capsys.readouterr().err
+    assert "match must be a non-empty list" in err   # disclosed, not silent-coerced
+
+
+def _repo_with_matrix(tmp_path):
+    import subprocess, os
+    repo = tmp_path
+    (repo / ".panopticon").mkdir(parents=True)
+    for p in ["src/auth/login.py", "src/checkout/pay.py", "src/checkout/cart.py",
+              "src/misc/other.py"]:                    # matches no catalog group
+        os.makedirs(os.path.dirname(repo / p), exist_ok=True)
+        (repo / p).write_text("x=1\n")
+    (repo / ".panopticon" / "groups.yml").write_text(
+        "groups:\n"
+        "  Auth:\n    match: ['src/auth/**']\n    panels: [SEC]\n"
+        "  Checkout:\n    match: ['src/checkout/**']\n    panels: [SEC, DAT]\n")
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-qm", "x"], cwd=repo, check=True)
+    return repo
+
+
+def test_repo_scan_scope_group_restricts_to_named_group(tmp_path):
+    import orchestrator, json
+    repo = _repo_with_matrix(tmp_path)
+    out = repo / "groups.json"
+    orchestrator.main(["--repo-scan", "--scope-group", "Checkout",
+                       str(repo), "--out", str(out)])
+    groups = json.loads(out.read_text())["groups"]
+    names = {g["name"] for g in groups}
+    files = sorted(f for g in groups for f in g["files"])
+    assert names == {"Checkout"}
+    assert files == ["src/checkout/cart.py", "src/checkout/pay.py"]
+
+
+def test_repo_scan_scope_file_restricts_to_file_and_its_group(tmp_path):
+    import orchestrator, json
+    repo = _repo_with_matrix(tmp_path)
+    out = repo / "groups.json"
+    orchestrator.main(["--repo-scan", "--scope-file", "src/checkout/pay.py",
+                       str(repo), "--out", str(out)])
+    groups = json.loads(out.read_text())["groups"]
+    files = sorted(f for g in groups for f in g["files"])
+    assert files == ["src/checkout/pay.py"]           # only the file (no related tests here)
+    assert {g["name"] for g in groups} == {"Checkout"}   # assigned to its group, nothing else
+
+
+def test_repo_scan_scope_dir_restricts_to_directory(tmp_path):
+    import orchestrator, json
+    repo = _repo_with_matrix(tmp_path)
+    out = repo / "groups.json"
+    orchestrator.main(["--repo-scan", "--scope-dir", "src/checkout",
+                       str(repo), "--out", str(out)])
+    groups = json.loads(out.read_text())["groups"]
+    files = sorted(f for g in groups for f in g["files"])
+    assert files == ["src/checkout/cart.py", "src/checkout/pay.py"]
+    assert {g["name"] for g in groups} == {"Checkout"}
+
+
+def test_repo_scan_scope_group_unknown_name_errors(tmp_path, capsys):
+    import orchestrator
+    repo = _repo_with_matrix(tmp_path)
+    out = repo / "groups.json"
+    rc = orchestrator.main(["--repo-scan", "--scope-group", "Nope",
+                            str(repo), "--out", str(out)])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "Nope" in err
+
+
+def test_repo_scan_scope_dir_no_catalog_match_falls_back_to_leftover(tmp_path):
+    # A scoped file with no `match` coverage still surfaces via the ._N
+    # leftover chunk naming AND is disclosed in ungrouped_files -- the same
+    # coverage-honesty contract the unscoped --repo-scan path guarantees.
+    import orchestrator, json
+    repo = _repo_with_matrix(tmp_path)
+    out = repo / "groups.json"
+    orchestrator.main(["--repo-scan", "--scope-dir", "src/misc",
+                       str(repo), "--out", str(out)])
+    data = json.loads(out.read_text())
+    groups = data["groups"]
+    assert [g["files"] for g in groups] == [["src/misc/other.py"]]
+    assert groups[0]["name"].startswith("._")
+    assert data["ungrouped_files"] == ["src/misc/other.py"]
+    assert data["counts"]["ungrouped"] == 1
+
+
+# --- SEC-3: --repo-scan/setup_readiness must read a parse_groups-NORMALIZED
+# matrix, not _committed_matrix's raw (byte-faithful, un-validated) bodies. A
+# scalar `match:` is valid YAML but invalid per the schema (must be a
+# non-empty list); the raw path used to char-split the scalar string, and a
+# lone `*` character compiles to a match-everything glob -- silently
+# mis-scoping the whole repo into one group. -----------------------------
+
+def _repo_with_scalar_match_group(tmp_path):
+    """groups.yml with a SCALAR `match:` group ("Bad") ahead of a
+    well-formed one ("Auth") -- the worst-case catalog order for the
+    char-split bug (Bad, if corrupted, would shadow every later group)."""
+    import subprocess
+    repo = tmp_path
+    (repo / ".panopticon").mkdir(parents=True)
+    for p in ["src/auth/login.py", "src/bad/thing.py"]:
+        os.makedirs(os.path.dirname(repo / p), exist_ok=True)
+        (repo / p).write_text("x=1\n")
+    (repo / ".panopticon" / "groups.yml").write_text(
+        "groups:\n"
+        "  Bad:\n    match: src/bad/**\n"           # scalar -- NOT a list
+        "  Auth:\n    match: ['src/auth/**']\n")
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-qm", "x"], cwd=repo, check=True)
+    return repo
+
+
+def test_matrix_catalog_normalizes_scalar_match_to_empty_list(tmp_path, capsys):
+    import orchestrator
+    (tmp_path / ".panopticon").mkdir()
+    (tmp_path / ".panopticon" / "groups.yml").write_text(
+        "groups:\n  Bad:\n    match: 'src/auth/**'\n")   # scalar, not a list
+    cat = orchestrator._matrix_catalog(str(tmp_path))
+    assert cat["Bad"]["match"] == []                      # never char-split
+    err = capsys.readouterr().err
+    assert "match must be a non-empty list" in err        # disclosed, not silent
+
+
+def test_matrix_catalog_empty_when_no_groups_yml(tmp_path):
+    import orchestrator
+    assert orchestrator._matrix_catalog(str(tmp_path)) == {}
+
+
+def test_repo_scan_bare_scalar_match_group_does_not_swallow_whole_repo(tmp_path):
+    # Unscoped --repo-scan: the scalar-match group ("Bad") must NOT collapse
+    # the entire repo into one group. Its own target file falls to the
+    # leftover ._N chunk (disclosed via ungrouped_files); the well-formed
+    # group ("Auth") groups its file normally, unaffected.
+    import orchestrator, json
+    repo = _repo_with_scalar_match_group(tmp_path)
+    out = repo / "groups.json"
+    orchestrator.main(["--repo-scan", str(repo), "--out", str(out)])
+    data = json.loads(out.read_text())
+    by_name = {g["name"]: g["files"] for g in data["groups"]}
+    assert by_name.get("Auth") == ["src/auth/login.py"]
+    assert "Bad" not in by_name                     # never grouped -- match=[]
+    assert data["ungrouped_files"] == ["src/bad/thing.py"]
+    leftover = [g for g in data["groups"] if g["name"].startswith("._")]
+    assert [f for g in leftover for f in g["files"]] == ["src/bad/thing.py"]
+
+
+def test_repo_scan_scope_group_scalar_match_does_not_claim_whole_repo(tmp_path):
+    # Scoping directly to the corrupted group must NOT fall back to "every
+    # file in the repo" (the old char-split bug) -- a well-formed OTHER
+    # group's files must never leak into this scope.
+    import orchestrator, json
+    repo = _repo_with_scalar_match_group(tmp_path)
+    out = repo / "groups.json"
+    orchestrator.main(["--repo-scan", "--scope-group", "Bad",
+                       str(repo), "--out", str(out)])
+    data = json.loads(out.read_text())
+    files = sorted(f for g in data["groups"] for f in g["files"])
+    assert "src/auth/login.py" not in files          # Auth's file never leaks in
+    assert files == []                               # Bad's own match is invalid -> nothing
+
+
+def test_repo_scan_bare_well_formed_matrix_groups_unchanged(tmp_path):
+    # Guard: a well-formed matrix groups IDENTICALLY before/after the SEC-3
+    # fix -- assign_by_catalog keys only on `match`, which parse_groups
+    # returns unchanged for valid input.
+    import orchestrator, json
+    repo = _repo_with_matrix(tmp_path)
+    out = repo / "groups.json"
+    orchestrator.main(["--repo-scan", str(repo), "--out", str(out)])
+    data = json.loads(out.read_text())
+    by_name = {g["name"]: sorted(g["files"]) for g in data["groups"]}
+    assert by_name["Auth"] == ["src/auth/login.py"]
+    assert by_name["Checkout"] == ["src/checkout/cart.py", "src/checkout/pay.py"]
+    leftover = [g for g in data["groups"] if g["name"].startswith("._")]
+    assert [f for g in leftover for f in g["files"]] == ["src/misc/other.py"]
+    assert data["ungrouped_files"] == ["src/misc/other.py"]
+
+
+def test_setup_readiness_scalar_match_only_reports_gap_not_ok(tmp_path):
+    # setup_readiness's groups-manifest check must see the NORMALIZED match
+    # (empty for a scalar) -- not the raw char-split list, which used to
+    # read as a non-empty `match` and falsely report "OK -- 1 group(s)".
+    import orchestrator
+    os.makedirs(str(tmp_path / ".git"))
+    os.makedirs(str(tmp_path / ".panopticon"))
+    (tmp_path / ".panopticon" / "groups.yml").write_text(
+        "groups:\n  Bad:\n    match: src/bad/**\n")   # scalar, not a list
+
+    def ok_runner(argv, capture_output, text):
+        class R: returncode = 0; stdout = ""; stderr = ""
+        return R()
+
+    checks = orchestrator.setup_readiness(str(tmp_path), host="claude",
+                                          runner=ok_runner,
+                                          environ={"NVD_API_KEY": "k"})
+    by = {c[0]: c for c in checks}
+    ok, detail = by["groups-manifest"][1], by["groups-manifest"][2]
+    assert ok is False                # not silently "OK -- 1 group(s)"
+    assert "Bad" in detail
+
+
+# --- --scope-file/--scope-dir must loudly reject a target that resolves to
+# no discovered files, instead of silently producing a phantom cell or an
+# empty-but-"successful" scan (mirrors --scope-group's unknown-name error).
+
+def test_repo_scan_scope_file_untracked_target_errors(tmp_path, capsys):
+    import orchestrator
+    repo = _repo_with_matrix(tmp_path)
+    out = repo / "groups.json"
+    rc = orchestrator.main(["--repo-scan", "--scope-file", "src/ghost.py",
+                            str(repo), "--out", str(out)])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "src/ghost.py" in err
+
+
+def test_repo_scan_scope_dir_no_tracked_files_errors(tmp_path, capsys):
+    import orchestrator
+    repo = _repo_with_matrix(tmp_path)
+    out = repo / "groups.json"
+    rc = orchestrator.main(["--repo-scan", "--scope-dir", "no/such/dir",
+                            str(repo), "--out", str(out)])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "no/such/dir" in err

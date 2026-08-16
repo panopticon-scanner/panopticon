@@ -87,6 +87,18 @@ class TestRunManifest(unittest.TestCase):
         self.assertIsNone(rm.load_manifest(self.root))
         self.assertFalse(rm.reset_run(self.root))  # idempotent: nothing to remove
 
+    def test_scope_defaults_to_repo(self):
+        m = rm.build_manifest(**self._params())
+        self.assertEqual(m["scope"], {"mode": "repo", "target": None})
+
+    def test_scope_recorded_and_conflict_detected(self):
+        m = rm.build_manifest(**self._params(
+            scope={"mode": "group", "target": "Auth"}))
+        self.assertEqual(m["scope"], {"mode": "group", "target": "Auth"})
+        conflicts = rm.conflicting_flags(
+            m, scope={"mode": "group", "target": "Checkout"})
+        self.assertTrue(any("scope" in c for c in conflicts))
+
 
 if __name__ == "__main__":
     unittest.main()
