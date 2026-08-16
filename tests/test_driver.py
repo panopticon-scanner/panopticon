@@ -763,6 +763,12 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
             fh.write("groups:\n  Core:\n    match: ['src/**']\n    panels: [COD]\n")
         subprocess.run(g + ["add", "-A"], check=True)
         subprocess.run(g + ["commit", "-qm", "init"], check=True)
+        # Pin the branch to `main` so it is deterministic regardless of the
+        # runner's git `init.defaultBranch` (CI defaults to `master`). The --pr
+        # test mocks a gh pr_base of "main"; resolve_base(pr_base="main") does
+        # NOT fall through to master (the #947 loud-fail for a given-but-
+        # unresolvable base), so the repo must actually carry a `main` ref.
+        subprocess.run(g + ["branch", "-M", "main"], check=True)
         return d
 
     def _args(self, target, *extra):
