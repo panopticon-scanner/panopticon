@@ -92,8 +92,8 @@ kimi /panopticon --pr 217              # review PR 217 in an isolated worktree
 | Path | Purpose |
 |------|---------|
 | `skill/` | The installable skill surface — symlink THIS directory into your agent's skills dir |
-| `skill/SKILL.md` | Skill entry point and orchestration spec |
-| `skill/scripts/` | Runnable Python modules (orchestrator, synthesizer, dispatch, tools) |
+| `skill/SKILL.md` | Skill entry point and driver run-loop spec |
+| `skill/scripts/` | Runnable Python modules (driver, discovery, synthesizer, dispatch, tools) |
 | `skill/agents/` | Custom agent definitions (`scout`, `panel-review`, `lens-sweep`, `advisor`) |
 | `skill/reference/` | Schemas, CWE catalog, security checklists, example group profiles |
 | `tests/` | pytest suite |

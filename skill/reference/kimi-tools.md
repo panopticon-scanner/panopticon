@@ -34,10 +34,10 @@ Manual pipeline:
 
 ```bash
 # 1. discovery
-python3 skill/scripts/orchestrator.py --repo-scan --repo . --out .panopticon/groups.json
+python3 skill/scripts/discovery.py --repo-scan --repo . --out .panopticon/groups.json
 
 # 2. scout each group (dispatched by orchestrating agent)
-#    see SKILL.md "Host dispatch" for subagent instructions
+#    dispatch as one of the registered `panopticon-*` shells above
 
 # 3. plan (one per group -- give each its own --out file, e.g.
 #    dispatch-plan-<group>.json, so synthesize's dispatch-plan*.json glob

@@ -836,6 +836,16 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         self.assertEqual(status["status"], "error")
         self.assertIn("drift", status["message"])
 
+    def test_flag_drift_refused_no_synthesize_divergence(self):
+        # RETIRED HAZARD (#957 both-pass flag mismatch): the manifest pins the
+        # gate flags once; a conflicting re-invocation is refused, so pass-1 and
+        # pass-2 synthesize can never diverge.
+        d = self._repo()
+        driver.run(self._args(d, "--fail-on", "high"))
+        status = driver.run(self._args(d, "--fail-on", "low"))
+        self.assertEqual(status["status"], "error")
+        self.assertIn("drift", status["message"])
+
     def test_scope_group_flag_parses(self):
         args = driver.build_parser().parse_args(["run", "x", "-g", "Auth"])
         self.assertEqual(args.scope_group, "Auth")

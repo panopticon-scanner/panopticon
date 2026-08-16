@@ -2940,6 +2940,9 @@ class TestMultigroupPlanReconcile(unittest.TestCase):
         self.assertEqual(rc, 0)
         integ = report["meta"]["integrity"]
         self.assertEqual(integ["unexpected_findings_files"], [])
+        # RETIRED-HAZARD ANCHOR (5.0 P6.5 Slice B, plan-glob under-read):
+        # plans_seen == 2 proves main() globbed BOTH per-group dispatch-plan
+        # files, not just one -- see skill/reference/integrity-retirement-p65.md.
         self.assertEqual(integ["plans_seen"], 2)
 
 
