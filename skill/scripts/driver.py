@@ -843,8 +843,13 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES):
             result["message"] = ("setup complete — review .panopticon/groups.yml.draft, "
                                  "move it to .panopticon/groups.yml, and commit")
         else:
-            result["message"] = ("setup complete — vocab-absent fallback seeded a flat "
-                                 ".panopticon/groups.yml; review, edit, and commit it")
+            msg = ("setup complete — vocab-absent fallback seeded a flat "
+                  ".panopticon/groups.yml; review, edit, and commit it")
+            gaps = (_load_json(_pano(review_root, "setup-complete.json")) or {}).get("gaps") or []
+            if gaps:
+                msg += (" — readiness gaps: %s (fix before running a review)"
+                       % ", ".join(gaps))
+            result["message"] = msg
     return result
 
 

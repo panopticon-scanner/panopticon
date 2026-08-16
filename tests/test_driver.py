@@ -1740,6 +1740,23 @@ class TestDriverSetup(unittest.TestCase):
         self.assertEqual(status2["status"], "complete")
         self.assertIn("draft", status2["message"])
 
+    def test_fallback_message_surfaces_readiness_gaps(self):
+        # Force a deterministic readiness gap (a docker check that failed)
+        # rather than relying on the real docker/tools-image state of the
+        # machine running the tests -- that state varies by environment and
+        # would make this assertion flaky.
+        d = self._repo()
+        args = driver.build_parser().parse_args(["setup", d])
+        fake_checks = [("docker", False,
+                        "docker unavailable -- install/start Docker or run with --no-tools")]
+        with mock.patch("scripts.setup_flow.load_bundled_vocabulary",
+                        return_value=({"names": []}, False)), \
+             mock.patch("scripts.setup_flow.readiness", return_value=fake_checks):
+            status = driver.run_setup_flow(args)
+        self.assertEqual(status["status"], "complete")
+        self.assertIn("readiness gaps", status["message"])
+        self.assertIn("docker", status["message"])
+
     def test_ingest_malformed_proposal_errors(self):
         d = self._repo()
         args = driver.build_parser().parse_args(["setup", d])
@@ -1753,12 +1770,45 @@ class TestDriverSetup(unittest.TestCase):
     def test_reset_clears_setup_artifacts(self):
         d = self._repo()
         args = driver.build_parser().parse_args(["setup", d])
-        driver.run_setup_flow(args)                        # writes brief + manifest
+        driver.run_setup_flow(args)                        # scan checkpoint: brief + manifest
         self.assertTrue(os.path.isfile(driver._pano(d, "setup-scan-brief.md")))
+        # Simulate a real returned proposal sitting on disk pre-reset (the host
+        # wrote it back but it was never ingested) -- a genuine artifact for
+        # --reset to clear, not one that never existed.
+        proposal = {"groups": [{"capability": "Checkout",
+                                "match": ["src/checkout/**"], "tests": []}]}
+        with open(driver._pano(d, "setup-proposal.json"), "w") as fh:
+            json.dump(proposal, fh)
+        run_id_before = driver.load_setup_manifest(d)["run_id"]
+
         reset_args = driver.build_parser().parse_args(["setup", d, "--reset"])
         driver.run_setup_flow(reset_args)                  # clears, then re-scans
-        # brief re-rendered fresh; proposal/draft/complete-marker gone
-        self.assertFalse(os.path.isfile(driver._pano(d, "groups.yml.draft")))
+
+        # the pre-existing proposal was actually removed (not left for the
+        # re-scan to trip over as a stale "already done" marker)
+        self.assertFalse(os.path.isfile(driver._pano(d, "setup-proposal.json")))
+        # the setup-manifest was regenerated, not reused -> a genuinely fresh run
+        self.assertNotEqual(driver.load_setup_manifest(d)["run_id"], run_id_before)
+        # a real re-scan happened (brief re-rendered under the fresh run)
+        self.assertTrue(os.path.isfile(driver._pano(d, "setup-scan-brief.md")))
+
+    def test_reset_preserves_committed_groups_yml(self):
+        d = self._repo()
+        os.makedirs(driver._pano(d), exist_ok=True)
+        committed_path = driver._pano(d, "groups.yml")
+        content = "groups:\n  checkout:\n    match:\n      - src/checkout/**\n"
+        with open(committed_path, "w") as fh:
+            fh.write(content)
+
+        args = driver.build_parser().parse_args(["setup", d])
+        driver.run_setup_flow(args)                        # scan checkpoint
+
+        reset_args = driver.build_parser().parse_args(["setup", d, "--reset"])
+        driver.run_setup_flow(reset_args)                  # clears setup artifacts only
+
+        self.assertTrue(os.path.isfile(committed_path))
+        with open(committed_path, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), content)
 
 
 if __name__ == "__main__":
