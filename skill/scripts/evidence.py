@@ -358,6 +358,20 @@ def load_json_tolerant(body):
         raise
 
 
+def _iter_verdict_files(verdicts_dir):
+    """Yield (name, path) for every *.json in verdicts_dir, sorted by name.
+
+    Yields nothing when verdicts_dir is falsy or not a directory -- callers
+    rely on this to preserve their empty-accumulator early-return behavior.
+    """
+    if not verdicts_dir or not os.path.isdir(verdicts_dir):
+        return
+    for name in sorted(os.listdir(verdicts_dir)):
+        if not name.endswith(".json"):
+            continue
+        yield name, os.path.join(verdicts_dir, name)
+
+
 def load_verdicts_detailed(verdicts_dir):
     """Load advisor verdict files, also reporting which ones could not be used.
 
@@ -383,12 +397,7 @@ def load_verdicts_detailed(verdicts_dir):
     """
     out = {}
     unloadable = []
-    if not verdicts_dir or not os.path.isdir(verdicts_dir):
-        return out, unloadable
-    for name in sorted(os.listdir(verdicts_dir)):
-        if not name.endswith(".json"):
-            continue
-        path = os.path.join(verdicts_dir, name)
+    for name, path in _iter_verdict_files(verdicts_dir):
         try:
             with open(path, encoding="utf-8") as fh:
                 data = load_json_tolerant(fh.read())
@@ -466,12 +475,7 @@ def load_verdict_bundles(verdicts_dir):
     """
     by_fid = {}
     unloadable = []
-    if not verdicts_dir or not os.path.isdir(verdicts_dir):
-        return by_fid, unloadable
-    for name in sorted(os.listdir(verdicts_dir)):
-        if not name.endswith(".json"):
-            continue
-        path = os.path.join(verdicts_dir, name)
+    for name, path in _iter_verdict_files(verdicts_dir):
         try:
             with open(path, encoding="utf-8") as fh:
                 data = load_json_tolerant(fh.read())

@@ -176,13 +176,14 @@ def resolve_model(host, role, cli_overrides=None):
     return cfg
 
 
+def _as_model_dict(v):
+    return v if isinstance(v, dict) else {"model": v}
+
+
 def _resolve_raw(host, role, cli_overrides=None):
     """resolve_model's precedence chain, before host-specific normalization."""
     if cli_overrides and role in cli_overrides:
-        override = cli_overrides[role]
-        if isinstance(override, dict):
-            return override
-        return {"model": override}
+        return _as_model_dict(cli_overrides[role])
 
     env_override = _env_override(role)
     if env_override:
@@ -191,10 +192,7 @@ def _resolve_raw(host, role, cli_overrides=None):
     profiles = _profiles()
     host_defaults = (profiles.get("hosts") or {}).get(host) or {}
     if role in host_defaults:
-        cfg = host_defaults[role]
-        if isinstance(cfg, dict):
-            return cfg
-        return {"model": cfg}
+        return _as_model_dict(host_defaults[role])
 
     return _hardcoded_fallback(host, role)
 

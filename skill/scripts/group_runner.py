@@ -160,6 +160,11 @@ def resume_stats(plan, queue, verdicts_dir, _verdicts=None):
                        "pending": v_pending}}
 
 
+def _sha256_file(path):
+    with open(path, "rb") as fh:
+        return hashlib.sha256(fh.read()).hexdigest()
+
+
 def snapshot_out_files(plan, out_path=None):
     """#493 R4: record a sha256 per existing plan out_file at fan-out end.
 
@@ -178,8 +183,7 @@ def snapshot_out_files(plan, out_path=None):
         path = e.get("out_file")
         if not isinstance(path, str) or not path or not os.path.isfile(path):
             continue
-        with open(path, "rb") as fh:
-            digest = hashlib.sha256(fh.read()).hexdigest()
+        digest = _sha256_file(path)
         hashes[os.path.realpath(path)] = digest
     if out_path is None:
         out_path = os.path.join(".panopticon", "out-file-hashes.json")
@@ -214,8 +218,7 @@ def verify_out_file_hashes(ingested_paths, hashes_path=None):
             continue
         checked += 1
         try:
-            with open(p, "rb") as fh:
-                digest = hashlib.sha256(fh.read()).hexdigest()
+            digest = _sha256_file(p)
         except OSError:
             mismatched.append(str(p))
             continue

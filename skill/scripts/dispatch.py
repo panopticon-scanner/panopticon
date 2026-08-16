@@ -426,6 +426,12 @@ def _delivery_fields(host, out_file, role_file, run_id=None, group=None,
     return {"delivery_contract": delivery, "side_effect_boundary": boundary}
 
 
+def _apply_codex_exec(entry, codex_exec, run_id):
+    if codex_exec:
+        entry.update({"execution": "codex_exec", "delivery": "return_json",
+                      "run_id": run_id})
+
+
 def build_plan(scope_profile, host=None, model_overrides=None, agents_dir=None,
                root=None, codex_exec=False, run_id=None,
                authoritative_files=None, authoritative_group=None,
@@ -480,7 +486,7 @@ def build_plan(scope_profile, host=None, model_overrides=None, agents_dir=None,
         files = list(authoritative_files)
         scope_bound = True
     depth = scope_profile.get("depth", "standard")
-    depth_order = {"shallow": 0, "standard": 1, "deep": 2}
+    depth_order = plan_contract.DEPTH_ORDER
     if depth not in depth_order:
         raise ValueError("ScopeProfile has invalid depth %r" % depth)
     root = os.path.abspath(root) if root else os.getcwd()
@@ -579,9 +585,7 @@ def build_plan(scope_profile, host=None, model_overrides=None, agents_dir=None,
             "scope_bound": scope_bound,
             "scope_sha256": scope_sha256,
         }
-        if codex_exec:
-            panel_entry.update({"execution": "codex_exec", "delivery": "return_json",
-                                "run_id": run_id})
+        _apply_codex_exec(panel_entry, codex_exec, run_id)
         plan.append(panel_entry)
 
         # mechanical lens sweeps
@@ -617,9 +621,7 @@ def build_plan(scope_profile, host=None, model_overrides=None, agents_dir=None,
                 "scope_bound": scope_bound,
                 "scope_sha256": scope_sha256,
             }
-            if codex_exec:
-                sweep_entry.update({"execution": "codex_exec", "delivery": "return_json",
-                                    "run_id": run_id})
+            _apply_codex_exec(sweep_entry, codex_exec, run_id)
             plan.append(sweep_entry)
 
     return plan

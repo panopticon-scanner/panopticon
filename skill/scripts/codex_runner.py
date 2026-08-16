@@ -130,6 +130,7 @@ def validate_envelope(data, entry, root):
     expected_role = entry.get("role")
     expected_panel = entry.get("panel")
     expected_lens = entry.get("lens")
+    assigned = {os.path.normpath(str(path)) for path in entry.get("files") or []}
     for index, finding in enumerate(data["findings"]):
         if not isinstance(finding, dict):
             raise ValueError("finding %d is not an object" % index)
@@ -149,7 +150,6 @@ def validate_envelope(data, entry, root):
         candidate = os.path.join(root, rel)
         if not _within(root, candidate):
             raise ValueError("finding %d location.file escapes the target" % index)
-        assigned = {os.path.normpath(str(path)) for path in entry.get("files") or []}
         if os.path.normpath(rel) not in assigned:
             raise ValueError("finding %d location.file is outside the assigned files" % index)
     data["_panopticon"] = {

@@ -32,7 +32,7 @@ DEFAULT_BUNDLE_PATH = _bundle_path()
 def load_bundle(path=None):
     """The parsed OCRDb bundle dict, or None if the vendored file is absent.
     A present-but-malformed bundle raises ValueError (loud)."""
-    path = path or _bundle_path()
+    path = path or DEFAULT_BUNDLE_PATH
     if not os.path.isfile(path):
         return None
     with open(path, encoding="utf-8") as fh:
