@@ -570,6 +570,14 @@ class TestReviewerFileListsAreAbsolute(unittest.TestCase):
         self.assertNotEqual(self.root, os.path.realpath(os.getcwd()))
         self.files = ["src/checkout/pay.py"]
         self.abs_file = os.path.abspath(os.path.join(self.root, self.files[0]))
+        self.cell = [{"id": "F1", "code": "SEC-A1A", "severity": "HIGH", "title": "t",
+                      "category": "SEC", "location": {"file": self.files[0], "line": 1},
+                      "description": "d"}]
+
+    def _make_verify_entry(self):
+        return driver._verify_entry(self.root, self.manifest, "Auth", "SEC",
+                                    self.files, self.cell, "claude",
+                                    ocrdb.load_bundle(), "primary")
 
     def _assert_absolute_not_relative(self, prompt):
         self.assertIn("- %s" % self.abs_file, prompt)
@@ -588,13 +596,7 @@ class TestReviewerFileListsAreAbsolute(unittest.TestCase):
         self._assert_absolute_not_relative(entry["prompt"])
 
     def test_verify_entry_file_list_is_absolute(self):
-        cell = [{"id": "F1", "code": "SEC-A1A", "severity": "HIGH", "title": "t",
-                 "category": "SEC", "location": {"file": self.files[0], "line": 1},
-                 "description": "d"}]
-        entry = driver._verify_entry(self.root, self.manifest, "Auth", "SEC",
-                                     self.files, cell, "claude", ocrdb.load_bundle(),
-                                     "primary")
-        self._assert_absolute_not_relative(entry["prompt"])
+        self._assert_absolute_not_relative(self._make_verify_entry()["prompt"])
 
     def test_verify_entry_prompt_carries_repo_root_header(self):
         # The advisor also adjudicates the findings JSON's `location` fields,
@@ -602,15 +604,9 @@ class TestReviewerFileListsAreAbsolute(unittest.TestCase):
         # payload) -- so the prompt itself must tell the advisor the absolute
         # root those relative locations resolve against (mirrors the retired
         # dispatch.render_advisor_prompts' #975 "Repo root:" prepend).
-        cell = [{"id": "F1", "code": "SEC-A1A", "severity": "HIGH", "title": "t",
-                 "category": "SEC", "location": {"file": self.files[0], "line": 1},
-                 "description": "d"}]
-        entry = driver._verify_entry(self.root, self.manifest, "Auth", "SEC",
-                                     self.files, cell, "claude", ocrdb.load_bundle(),
-                                     "primary")
         expected_header = "Repo root: %s" % os.path.abspath(self.root)
-        self.assertIn(expected_header, entry["prompt"])
-        self.assertTrue(entry["prompt"].startswith(expected_header))
+        # startswith is strictly stronger than assertIn (present AND at pos 0).
+        self.assertTrue(self._make_verify_entry()["prompt"].startswith(expected_header))
 
 
 class TestSynthesizePhase(unittest.TestCase):

@@ -62,6 +62,16 @@ def _pano(review_root, *parts):
     return os.path.join(review_root, ".panopticon", *parts)
 
 
+def _abs_file_list(review_root, files):
+    """Bullet list of files absolutized against review_root (#975): the reviewer
+    subagent inherits the HOST's cwd, not review_root/the --pr worktree, so a
+    bare-relative path resolves against the wrong tree. File-list specific — do
+    NOT route tests or other bullet lists through this; they stay repo-relative."""
+    return "\n".join(
+        "- " + os.path.abspath(os.path.join(review_root, f)) for f in files
+    ) or "- (no files)"
+
+
 def _load_json(path):
     try:
         with open(path, encoding="utf-8") as fh:
@@ -264,9 +274,7 @@ def _scout_entry(review_root, manifest, group, files, host):
     appended. Enforcement is host-declared (claude registers panopticon-scout)."""
     body = dispatch.render_prompt("scout.md", {}, host)
     security = manifest.get("security_mode", "standard")
-    file_list = "\n".join(
-        "- " + os.path.abspath(os.path.join(review_root, f)) for f in files
-    ) or "- (no files)"
+    file_list = _abs_file_list(review_root, files)
     prompt = (body
               + "\n\n## Assignment\n\nGroup: %s\nSecurity mode: %s\n\nFiles:\n%s\n"
                 % (group, security, file_list)
@@ -380,9 +388,7 @@ def _render_menu(bundle, domain):
 
 
 def _cell_entry(review_root, manifest, group, domain, files, tests, host, bundle):
-    file_list = "\n".join(
-        "- " + os.path.abspath(os.path.join(review_root, f)) for f in files
-    ) or "- (no files)"
+    file_list = _abs_file_list(review_root, files)
     test_list = "\n".join("- " + t for t in tests) or "- (no tests)"
     out_file = os.path.abspath(_pano(review_root, "findings-%s-%s.json" % (group, domain)))
     prompt = dispatch.render_prompt("domain-panel.md", {
@@ -458,9 +464,7 @@ def _render_findings(cell):
 
 
 def _verify_entry(review_root, manifest, group, domain, files, cell, host, bundle, stage):
-    file_list = "\n".join(
-        "- " + os.path.abspath(os.path.join(review_root, f)) for f in files
-    ) or "- (no files)"
+    file_list = _abs_file_list(review_root, files)
     out_file = _verify_out_file(review_root, group, domain, stage)
     prompt = dispatch.render_prompt("domain-advisor.md", {
         "domain": domain, "group": group, "file_list": file_list,
