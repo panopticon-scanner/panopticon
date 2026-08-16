@@ -5,7 +5,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill", "scripts"))
-import orchestrator as orch
+from discovery import build_result
 import dispatch
 
 
@@ -16,7 +16,7 @@ class TestDispatchIntegration(unittest.TestCase):
             with open(os.path.join(td, "docs", "readme.md"), "w") as fh:
                 fh.write("# hello")
             subprocess.run(["git", "init", td], capture_output=True)
-            result = orch.build_result(td, "repo", ".", None, ["docs/readme.md"], [], 15)
+            result = build_result(td, "repo", ".", None, ["docs/readme.md"], [], 15)
             depth = result["groups"][0].get("depth", "standard")
             plan = dispatch.build_plan({
                 "group": "root",

@@ -176,7 +176,7 @@ class TestDiscoveryPhase(unittest.TestCase):
         with self.assertRaises(driver.DriverError):
             driver.discovery_execute(self.root, self.manifest)
 
-    def test_discovery_subprocesses_orchestrator_and_marks_done(self):
+    def test_discovery_subprocesses_discovery_and_marks_done(self):
         self._write_groups_yml("groups:\n  Auth:\n    match: ['src/auth/**']\n")
 
         def fake_run(cmd, **kw):   # tolerant: driver passes cwd/env/capture_output
@@ -279,7 +279,7 @@ class TestDiscoveryPhase(unittest.TestCase):
 
     def test_discovery_threads_pr_base_when_present(self):
         # Finding B: a --pr manifest carries the gh-detected base in `pr_base`
-        # (not `base`) so orchestrator resolves it with origin/<base> preference.
+        # (not `base`) so discovery.py resolves it with origin/<base> preference.
         self._write_groups_yml("groups:\n  Auth:\n    match: ['src/auth/**']\n")
         manifest = dict(self.manifest, scope={"mode": "changed", "target": None},
                         base=None, pr_base="main")
@@ -300,7 +300,7 @@ class TestDiscoveryPhase(unittest.TestCase):
         self.assertNotIn("--base", cmd)   # base is None -> not threaded
 
     def test_discovery_omits_pr_base_when_absent(self):
-        # A -c/--files manifest (no PR) carries no pr_base -> orchestrator gets
+        # A -c/--files manifest (no PR) carries no pr_base -> discovery.py gets
         # no --pr-base and its byte-identical behavior is preserved.
         self._write_groups_yml("groups:\n  Auth:\n    match: ['src/auth/**']\n")
         manifest = dict(self.manifest, scope={"mode": "changed", "target": None},
@@ -969,7 +969,7 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
 
 class TestReviewMatrixEndToEnd(unittest.TestCase):
     """Task 6: the whole 5.0 review matrix, end to end, against the real
-    driver + orchestrator + synthesize subprocesses -- discovery -> coverage
+    driver + discovery + synthesize subprocesses -- discovery -> coverage
     (+scout domains) -> tools -> review (cells fire) -> verify (no-op) ->
     synthesize -> a real report.json with (domain, code) findings."""
 
@@ -1275,7 +1275,7 @@ class TestDriverRunLoopEndToEnd(unittest.TestCase):
 
 class TestDriverSingleScopeEndToEnd(unittest.TestCase):
     """P6.2: a committed multi-group matrix + `manifest["scope"]` restricts
-    the REAL `orchestrator.py --repo-scan --scope-group` subprocess to the
+    the REAL `discovery.py --repo-scan --scope-group` subprocess to the
     target group's files, and the run-loop reaches a graded report from that
     restricted matrix -- mirrors TestDriverRunLoopEndToEnd's self-write
     harness (P6.1), starting one phase earlier at discovery. A repo with no
@@ -1298,7 +1298,7 @@ class TestDriverSingleScopeEndToEnd(unittest.TestCase):
                 "groups:\n"
                 "  Auth:\n    match: ['src/auth/**']\n    panels: [SEC]\n"
                 "  Checkout:\n    match: ['src/checkout/**']\n    panels: [SEC]\n")
-        # discovery_execute subprocesses the REAL orchestrator.py --repo-scan,
+        # discovery_execute subprocesses the REAL discovery.py --repo-scan,
         # which discovers via `git ls-files` -- commit the fixture so it's seen.
         subprocess.run(["git", "init", "-q"], cwd=d, check=True)
         subprocess.run(["git", "add", "-A"], cwd=d, check=True)
@@ -1333,7 +1333,7 @@ class TestDriverSingleScopeEndToEnd(unittest.TestCase):
         d = self._repo_with_two_groups()
         manifest = self._manifest()
 
-        # discovery: the real orchestrator.py --repo-scan --scope-group Checkout
+        # discovery: the real discovery.py --repo-scan --scope-group Checkout
         # subprocess -- single-scope restricts the matrix to the target group.
         result = driver.discovery_execute(d, manifest)
         self.assertEqual(result.kind, "advanced")
@@ -1398,7 +1398,7 @@ class TestDriverDeltaEndToEnd(unittest.TestCase):
     TestDriverSingleScopeEndToEnd's real-git-repo + self-write harness
     (P6.2), scoped to `changed` instead of `group`:
 
-    - `-c` delta: the real `orchestrator.py --repo-scan --scope-changed
+    - `-c` delta: the real `discovery.py --repo-scan --scope-changed
       --base` subprocess restricts groups.json to the one changed file and
       emits `.panopticon/diff-hunks.json`; the run-loop reaches a graded
       report whose delta block is populated and whose gate is scoped to the
@@ -1498,7 +1498,7 @@ class TestDriverDeltaEndToEnd(unittest.TestCase):
         d, base_sha = self._repo_with_changed_file()
         manifest = self._manifest(base_sha)
 
-        # discovery: the real orchestrator.py --repo-scan --scope-changed
+        # discovery: the real discovery.py --repo-scan --scope-changed
         # --base subprocess -- restricts groups.json to the one changed file.
         result = driver.discovery_execute(d, manifest)
         self.assertEqual(result.kind, "advanced")
@@ -1508,7 +1508,7 @@ class TestDriverDeltaEndToEnd(unittest.TestCase):
         self.assertEqual(names, {"Checkout"})            # Auth excluded entirely
         self.assertEqual(files, ["src/checkout/pay.py"])  # cart.py unchanged, excluded
 
-        # the orchestrator's on-diff hunk map, alongside groups.json.
+        # discovery.py's on-diff hunk map, alongside groups.json.
         hunks_path = driver._pano(d, "diff-hunks.json")
         self.assertTrue(os.path.isfile(hunks_path))
         hunks = driver._load_json(hunks_path)

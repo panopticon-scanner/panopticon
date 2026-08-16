@@ -2,13 +2,64 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import textwrap
 import types
 import unittest
-import tempfile
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill", "scripts"))
-import orchestrator as orch
+SCRIPTS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                       "skill", "scripts")
+
+sys.path.insert(0, SCRIPTS)
+import discovery as orch  # noqa: E402  (P6.5 Slice A: orchestrator.py retired)
+
+
+def _run(script, *args, cwd=None):
+    return subprocess.run([sys.executable, os.path.join(SCRIPTS, script), *args],
+                          cwd=cwd, capture_output=True, text=True)
+
+
+class TestDiscoveryRepoScanParity(unittest.TestCase):
+    """discovery.py --repo-scan produces a stable groups.json on a real
+    committed-matrix repo (regression guard for the P6.5 Slice A discovery/
+    matrix core)."""
+
+    def _repo(self):
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(d, ignore_errors=True))
+        g = ["git", "-C", d]
+        subprocess.run(["git", "init", "-q", d], check=True)
+        subprocess.run(g + ["config", "user.email", "t@t"], check=True)
+        subprocess.run(g + ["config", "user.name", "t"], check=True)
+        os.makedirs(os.path.join(d, "src", "checkout"))
+        with open(os.path.join(d, "src", "checkout", "pay.py"), "w") as fh:
+            fh.write("x = 1\n")
+        os.makedirs(os.path.join(d, ".panopticon"))
+        with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
+            fh.write("groups:\n  Checkout:\n    match: ['src/checkout/**']\n    panels: [SEC]\n")
+        subprocess.run(g + ["add", "-A"], check=True)
+        subprocess.run(g + ["commit", "-qm", "init"], check=True)
+        subprocess.run(g + ["branch", "-M", "main"], check=True)
+        return d
+
+    def test_repo_scan_writes_groups_json(self):
+        d = self._repo()
+        out = os.path.join(d, ".panopticon", "groups.json")
+        proc = _run("discovery.py", "--repo-scan", "--security", "standard",
+                    d, "--out", out, cwd=d)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        data = json.load(open(out))
+        names = {g["name"] for g in data["groups"]}
+        self.assertIn("Checkout", names)
+
+    def test_matrix_catalog_normalizes_scalar_match(self):
+        import discovery
+        d = self._repo()
+        # a scalar match must normalize to [] (SEC-3), never char-split
+        with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
+            fh.write("groups:\n  Bad:\n    match: src/**\n    panels: [SEC]\n")
+        cat = discovery._matrix_catalog(d)
+        self.assertEqual(cat.get("Bad", {}).get("match", None), [])
 
 
 class TestIsTestFile(unittest.TestCase):
@@ -121,420 +172,6 @@ class TestChunkFiles(unittest.TestCase):
         with self.assertRaises(ValueError) as cm:
             orch.chunk_files(["a/b.py"], max_per=-1)
         self.assertIn("max_per must be >= 1", str(cm.exception))
-
-
-class TestGroupArg(unittest.TestCase):
-    def test_plain_group(self):
-        self.assertEqual(orch.parse_group_arg("Products"), ("Products", None))
-
-    def test_group_with_facet(self):
-        self.assertEqual(orch.parse_group_arg("Products[Uploads]"), ("Products", "Uploads"))
-
-    def test_strips_whitespace(self):
-        self.assertEqual(orch.parse_group_arg(" Products [ Uploads ] "), ("Products", "Uploads"))
-
-
-class TestCatalog(unittest.TestCase):
-    CATALOG = (
-        "groups:\n"
-        "  Products:\n"
-        "    patterns:\n"
-        "      - '**/product*'\n"
-        "      - '**/*product*/**'\n"
-        "    facets:\n"
-        "      Uploads: [upload, attachment, multipart]\n"
-        "      Pricing:\n"
-        "        - price\n"
-        "        - discount\n"
-    )
-
-    def test_fallback_parser(self):
-        data = orch._parse_catalog_yaml(self.CATALOG)
-        self.assertIn("Products", data)
-        self.assertEqual(data["Products"]["patterns"], ["**/product*", "**/*product*/**"])
-        self.assertEqual(data["Products"]["facets"]["Uploads"], ["upload", "attachment", "multipart"])
-        self.assertEqual(data["Products"]["facets"]["Pricing"], ["price", "discount"])
-
-    def test_load_catalog_missing_file(self):
-        with tempfile.TemporaryDirectory() as d:
-            self.assertEqual(orch.load_catalog(d), {})
-
-    def test_load_catalog_reads_file(self):
-        with tempfile.TemporaryDirectory() as d:
-            os.makedirs(os.path.join(d, ".panopticon"))
-            with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
-                fh.write(self.CATALOG)
-            data = orch.load_catalog(d)
-            self.assertIn("Products", data)
-
-    def test_load_catalog_tolerates_malformed(self):
-        with tempfile.TemporaryDirectory() as d:
-            os.makedirs(os.path.join(d, ".panopticon"))
-            with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
-                fh.write("groups:\n  : : :\n   ??? not valid\n")
-            self.assertEqual(orch.load_catalog(d), {})   # tolerant, no raise
-
-
-class TestExpandAndTests(unittest.TestCase):
-    def _touch(self, root, rel):
-        full = os.path.join(root, rel)
-        os.makedirs(os.path.dirname(full), exist_ok=True)
-        open(full, "w").close()
-
-    def test_expand_patterns_recursive(self):
-        with tempfile.TemporaryDirectory() as d:
-            self._touch(d, "app/models/product.rb")
-            self._touch(d, "app/models/product_variant.rb")
-            self._touch(d, "app/models/user.rb")
-            hits = orch.expand_patterns(d, ["app/models/product*.rb"])
-            self.assertEqual(hits, ["app/models/product.rb", "app/models/product_variant.rb"])
-
-    def test_related_tests_found(self):
-        with tempfile.TemporaryDirectory() as d:
-            self._touch(d, "app/models/user.rb")
-            self._touch(d, "spec/models/user_spec.rb")
-            self._touch(d, "src/parser.py")
-            self._touch(d, "tests/test_parser.py")
-            found = orch.related_tests(d, ["app/models/user.rb", "src/parser.py"])
-            self.assertIn("spec/models/user_spec.rb", found)
-            self.assertIn("tests/test_parser.py", found)
-
-    def test_expand_patterns_stays_within_repo(self):
-        with tempfile.TemporaryDirectory() as d:
-            outside = os.path.join(d, "secret.txt")
-            open(outside, "w").close()
-            repo = os.path.join(d, "repo"); os.makedirs(repo)
-            open(os.path.join(repo, "in.py"), "w").close()
-            hits = orch.expand_patterns(repo, ["../secret.txt", "in.py"])
-            self.assertEqual(hits, ["in.py"])          # the ../ escape is excluded
-
-
-class TestCli(unittest.TestCase):
-    def _touch(self, root, rel):
-        full = os.path.join(root, rel)
-        os.makedirs(os.path.dirname(full), exist_ok=True)
-        open(full, "w").close()
-
-    def test_directory_mode_separates_tests(self):
-        with tempfile.TemporaryDirectory() as d:
-            self._touch(d, "src/a.py")
-            self._touch(d, "src/b.py")
-            self._touch(d, "tests/test_a.py")
-            res = orch.build_result(
-                d, "directory", "src",
-                None,
-                impl=["src/a.py", "src/b.py"],
-                tests=["tests/test_a.py"],
-            )
-            self.assertEqual(res["counts"]["implementation"], 2)
-            self.assertEqual(res["counts"]["tests"], 1)
-            self.assertEqual(len(res["groups"]), 1)
-
-    def test_main_group_unknown_exits_2(self):
-        with tempfile.TemporaryDirectory() as d:
-            rc = orch.main(["--repo", d, "--group", "Nope"])
-            self.assertEqual(rc, 2)
-
-    def test_main_file_mode_emits_json(self):
-        with tempfile.TemporaryDirectory() as d:
-            self._touch(d, "src/parser.py")
-            self._touch(d, "tests/test_parser.py")
-            import io
-            import contextlib
-            buf = io.StringIO()
-            with contextlib.redirect_stdout(buf):
-                rc = orch.main(["--repo", d, "--file", "src/parser.py"])
-            self.assertEqual(rc, 0)
-            out = json.loads(buf.getvalue())
-            self.assertEqual(out["mode"], "file")
-            self.assertEqual(out["groups"][0]["files"], ["src/parser.py"])
-            self.assertIn("tests/test_parser.py", out["tests"])
-
-    def test_main_group_success_emits_group(self):
-        import io, contextlib
-        with tempfile.TemporaryDirectory() as d:
-            self._touch(d, "src/pay/charge.py")
-            os.makedirs(os.path.join(d, ".panopticon"), exist_ok=True)
-            with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
-                fh.write("groups:\n  Payments:\n    patterns:\n      - src/pay/**/*\n")
-            buf = io.StringIO()
-            with contextlib.redirect_stdout(buf):
-                rc = orch.main(["--repo", d, "--group", "Payments"])
-            self.assertEqual(rc, 0)
-            out = json.loads(buf.getvalue())
-            self.assertEqual(out["mode"], "group")
-            self.assertEqual(out["target"], "Payments")
-            allfiles = [f for g in out["groups"] for f in g["files"]]
-            self.assertIn("src/pay/charge.py", allfiles)   # catalog->expand->group wiring
-
-    def test_main_files_mode_partitions_impl_and_tests(self):
-        import io, contextlib
-        with tempfile.TemporaryDirectory() as d:
-            buf = io.StringIO()
-            # No --out: without --base, --files does not emit diff-hunks.json at
-            # all, so no chdir/cwd concern remains here (#449 rework).
-            with contextlib.redirect_stdout(buf), contextlib.chdir(d):
-                rc = orch.main(["--repo", d, "--files", "src/a.py", "tests/test_a.py"])
-            self.assertEqual(rc, 0)
-            out = json.loads(buf.getvalue())
-            self.assertEqual(out["mode"], "files")
-            impl = [f for g in out["groups"] for f in g["files"]]
-            self.assertIn("src/a.py", impl)
-            self.assertNotIn("tests/test_a.py", impl)      # test partitioned out of impl
-            self.assertIn("tests/test_a.py", out["tests"])
-            # No --base given: --files does NOT emit diff-hunks.json (#449 rework).
-            self.assertFalse(os.path.isfile(os.path.join(d, ".panopticon", "diff-hunks.json")))
-
-    def test_main_files_mode_with_base_emits_diff_hunks(self):
-        with tempfile.TemporaryDirectory() as d:
-            self._touch(d, "src/a.py")
-            subprocess.run(["git", "init", "-q", d], check=True)
-            subprocess.run(["git", "-C", d, "config", "user.email", "t@e.com"], check=True)
-            subprocess.run(["git", "-C", d, "config", "user.name", "Test"], check=True)
-            subprocess.run(["git", "-C", d, "add", "."], check=True)
-            subprocess.run(["git", "-C", d, "commit", "-q", "-m", "init"], check=True)
-            subprocess.run(["git", "-C", d, "branch", "-M", "main"], check=True)
-            with open(os.path.join(d, "src", "a.py"), "w") as fh:
-                fh.write("# changed")
-            out_path = os.path.join(d, "groups.json")
-            rc = orch.main(["--repo", d, "--files", "src/a.py", "--base", "main",
-                            "--out", out_path])
-            self.assertEqual(rc, 0)
-            hunks_path = os.path.join(d, "diff-hunks.json")
-            self.assertTrue(os.path.isfile(hunks_path))    # --base given: DOES emit
-            with open(hunks_path, encoding="utf-8") as fh:
-                hunks = json.load(fh)
-            self.assertEqual(hunks["base"], "main")
-            self.assertEqual(hunks["base_source"], "explicit")
-            self.assertTrue(hunks["includes_uncommitted"])
-            self.assertIsNotNone(hunks["base_commit"])
-            self.assertIsNotNone(hunks["delta_start"])
-            self.assertIsNotNone(hunks["delta_end"])
-
-    def test_main_files_mode_bad_base_fails_loud(self):
-        with tempfile.TemporaryDirectory() as d:
-            self._touch(d, "src/a.py")
-            subprocess.run(["git", "init", "-q", d], check=True)
-            subprocess.run(["git", "-C", d, "config", "user.email", "t@e.com"], check=True)
-            subprocess.run(["git", "-C", d, "config", "user.name", "Test"], check=True)
-            subprocess.run(["git", "-C", d, "add", "."], check=True)
-            subprocess.run(["git", "-C", d, "commit", "-q", "-m", "init"], check=True)
-            out_path = os.path.join(d, "groups.json")
-            rc = orch.main(["--repo", d, "--files", "src/a.py", "--base", "no-such-ref",
-                            "--out", out_path])
-            self.assertEqual(rc, 2)
-            self.assertFalse(os.path.isfile(out_path))                          # no groups.json
-            self.assertFalse(os.path.isfile(os.path.join(d, "diff-hunks.json")))  # no artifact
-
-    def test_main_repo_scan_excludes_dotfiles(self):
-        import io, contextlib
-        with tempfile.TemporaryDirectory() as d:
-            self._touch(d, "src/main.py")
-            self._touch(d, ".hidden/secret.py")
-            buf = io.StringIO()
-            with contextlib.redirect_stdout(buf):
-                rc = orch.main(["--repo", d, "--repo-scan"])
-            self.assertEqual(rc, 0)
-            out = json.loads(buf.getvalue())
-            self.assertEqual(out["mode"], "repo")
-            impl = [f for g in out["groups"] for f in g["files"]]
-            self.assertIn("src/main.py", impl)
-            self.assertFalse(any(f.startswith(".") or "/." in f for f in impl))  # dotfiles excluded
-
-    def test_max_per_group_flag_limits_group_size(self):
-        files = ["pkg/f%02d.py" % i for i in range(5)]
-        res = orch.build_result("/tmp", "files", "changeset", None, files, [], max_per_group=2)
-        self.assertTrue(all(len(g["files"]) <= 2 for g in res["groups"]))
-        self.assertEqual(res["counts"]["groups"], 3)
-
-    def test_build_result_includes_security_mode(self):
-        res = orch.build_result("/tmp", "repo", ".", None, [], [],
-                                security_mode="redteam")
-        self.assertEqual(res["security_mode"], "redteam")
-
-    def test_main_repo_scan_honors_security_mode_flag(self):
-        import io, contextlib
-        with tempfile.TemporaryDirectory() as d:
-            self._touch(d, "src/a.py")
-            buf = io.StringIO()
-            with contextlib.redirect_stdout(buf):
-                rc = orch.main(["--repo", d, "--repo-scan", "--security", "redteam"])
-            self.assertEqual(rc, 0)
-            out = json.loads(buf.getvalue())
-            self.assertEqual(out["security_mode"], "redteam")
-
-    def test_main_repo_scan_writes_to_out_file(self):
-        with tempfile.TemporaryDirectory() as d:
-            self._touch(d, "src/a.py")
-            out_path = os.path.join(d, "groups.json")
-            rc = orch.main(["--repo", d, "--repo-scan", "--out", out_path])
-            self.assertEqual(rc, 0)
-            self.assertTrue(os.path.isfile(out_path))
-            with open(out_path, encoding="utf-8") as fh:
-                out = json.load(fh)
-            self.assertEqual(out["mode"], "repo")
-            self.assertIn("src/a.py", [f for g in out["groups"] for f in g["files"]])
-
-    def test_main_repo_scan_accepts_positional_target_and_out(self):
-        """Regression for the brief's invocation style: --repo-scan TARGET --out PATH."""
-        with tempfile.TemporaryDirectory() as d:
-            self._touch(d, "src/a.py")
-            out_path = os.path.join(d, "groups.json")
-            rc = orch.main(["--repo-scan", d, "--out", out_path])
-            self.assertEqual(rc, 0)
-            self.assertTrue(os.path.isfile(out_path))
-            with open(out_path, encoding="utf-8") as fh:
-                out = json.load(fh)
-            self.assertEqual(out["mode"], "repo")
-            self.assertIn("src/a.py", [f for g in out["groups"] for f in g["files"]])
-
-    def test_main_changes_mode_uses_git_diff(self):
-        with tempfile.TemporaryDirectory() as d:
-            self._touch(d, "src/a.py")
-            self._touch(d, "src/b.py")
-            subprocess.run(["git", "init", "-q", d], check=True)
-            subprocess.run(["git", "-C", d, "config", "user.email", "t@e.com"], check=True)
-            subprocess.run(["git", "-C", d, "config", "user.name", "Test"], check=True)
-            subprocess.run(["git", "-C", d, "add", "."], check=True)
-            subprocess.run(["git", "-C", d, "commit", "-q", "-m", "init"], check=True)
-            subprocess.run(["git", "-C", d, "branch", "-M", "main"], check=True)
-            # modify a.py and add c.py on a feature branch
-            with open(os.path.join(d, "src", "a.py"), "w") as fh:
-                fh.write("# changed")
-            self._touch(d, "src/c.py")
-            out_path = os.path.join(d, "groups.json")
-            rc = orch.main(["--repo", d, "--changes", "--out", out_path])
-            self.assertEqual(rc, 0)
-            with open(out_path, encoding="utf-8") as fh:
-                out = json.load(fh)
-            self.assertEqual(out["mode"], "changes")
-            grouped = [f for g in out["groups"] for f in g["files"]]
-            self.assertIn("src/a.py", grouped)
-            self.assertIn("src/c.py", grouped)
-            self.assertNotIn("src/b.py", grouped)
-            hunks_path = os.path.join(d, "diff-hunks.json")
-            self.assertTrue(os.path.isfile(hunks_path))    # --changes always emits
-            with open(hunks_path, encoding="utf-8") as fh:
-                hunks = json.load(fh)
-            self.assertEqual(hunks["base"], "main")
-            self.assertEqual(hunks["base_source"], "fallback")
-            self.assertTrue(hunks["includes_uncommitted"])
-            self.assertIsNotNone(hunks["base_commit"])
-            self.assertIsNotNone(hunks["delta_start"])
-            self.assertIsNotNone(hunks["delta_end"])
-
-    def test_main_changes_without_git_warns(self):
-        with tempfile.TemporaryDirectory() as d:
-            self._touch(d, "src/a.py")
-            rc = orch.main(["--repo", d, "--changes"])
-            self.assertEqual(rc, 2)
-
-    def test_main_changes_bad_base_fails_loud_no_artifact(self):
-        with tempfile.TemporaryDirectory() as d:
-            self._touch(d, "src/a.py")
-            subprocess.run(["git", "init", "-q", d], check=True)
-            subprocess.run(["git", "-C", d, "config", "user.email", "t@e.com"], check=True)
-            subprocess.run(["git", "-C", d, "config", "user.name", "Test"], check=True)
-            subprocess.run(["git", "-C", d, "add", "."], check=True)
-            subprocess.run(["git", "-C", d, "commit", "-q", "-m", "init"], check=True)
-            with open(os.path.join(d, "src", "a.py"), "w") as fh:
-                fh.write("# changed")
-            out_path = os.path.join(d, "groups.json")
-            rc = orch.main(["--repo", d, "--changes", "--base", "no-such-ref",
-                            "--out", out_path])
-            self.assertEqual(rc, 2)
-            self.assertFalse(os.path.isfile(out_path))
-            self.assertFalse(os.path.isfile(os.path.join(d, "diff-hunks.json")))
-
-    def test_main_changes_base_coherence_file_set_matches_hunk_map(self):
-        """Finding A (final whole-branch review): the reviewed FILE SET and the
-        on-diff HUNK MAP must share ONE base. Build a repo where `main` and an
-        explicit `--base` ref (`divergent-base`) have DIVERGED -- each gets its
-        own commit after the fork -- then branch a `feature` branch off
-        `divergent-base` and change one more file there. `--changes --base
-        divergent-base` must review AND hunk-map the SAME file set, scoped to
-        divergent-base, not to main:
-          - divergent-only.txt (added on divergent-base itself, before the
-            fork used by `feature`) must be ABSENT from both.
-          - main-only.txt (only ever on `main`) must be ABSENT from both.
-          - common.txt (changed on `feature`, on top of divergent-base) must
-            be the ONLY member of both sets.
-        Under the pre-fix bug, collect_changed_files(repo) ignored --base and
-        always resolved its own base via main/master, so the reviewed file set
-        would include divergent-only.txt (present relative to main's fork
-        point) while diff-hunks.json's hunks (correctly base-scoped by
-        diff_map.hunk_map) would not -- the two artifacts would disagree.
-        """
-        with tempfile.TemporaryDirectory() as d:
-            def run(*args):
-                subprocess.run(["git", "-C", d, *args], check=True,
-                               capture_output=True, text=True)
-            run("init", "-q")
-            run("config", "user.email", "t@e.com")
-            run("config", "user.name", "Test")
-            self._touch(d, "common.txt")
-            run("add", ".")
-            run("commit", "-q", "-m", "init")
-            run("branch", "-M", "main")   # fork point, named 'main' regardless
-                                          # of this git's init.defaultBranch
-
-            run("checkout", "-q", "-b", "divergent-base")
-            self._touch(d, "divergent-only.txt")
-            run("add", ".")
-            run("commit", "-q", "-m", "divergent-base commit")
-
-            run("checkout", "-q", "main")
-            self._touch(d, "main-only.txt")
-            run("add", ".")
-            run("commit", "-q", "-m", "main commit")
-
-            run("checkout", "-q", "-b", "feature", "divergent-base")
-            with open(os.path.join(d, "common.txt"), "w") as fh:
-                fh.write("changed on feature\n")
-            run("add", ".")
-            run("commit", "-q", "-m", "feature commit")
-
-            out_path = os.path.join(d, "groups.json")
-            rc = orch.main(["--repo", d, "--changes", "--base", "divergent-base",
-                            "--out", out_path])
-            self.assertEqual(rc, 0)
-
-            with open(out_path, encoding="utf-8") as fh:
-                groups_out = json.load(fh)
-            reviewed_files = sorted({f for g in groups_out["groups"] for f in g["files"]})
-
-            hunks_path = os.path.join(d, "diff-hunks.json")
-            with open(hunks_path, encoding="utf-8") as fh:
-                hunks = json.load(fh)
-            hunk_files = sorted(hunks["hunks"].keys())
-
-            self.assertEqual(hunks["base"], "divergent-base")
-            self.assertEqual(hunks["base_source"], "explicit")
-            self.assertEqual(reviewed_files, ["common.txt"])
-            self.assertEqual(hunk_files, ["common.txt"])
-            self.assertEqual(reviewed_files, hunk_files)   # THE coherence assertion
-            self.assertNotIn("divergent-only.txt", reviewed_files)
-            self.assertNotIn("main-only.txt", reviewed_files)
-
-    def test_build_result_computes_surfaces_and_panels(self):
-        impl = ["Dockerfile", "src/models.py", "migrations/001.sql"]
-        res = orch.build_result("/tmp", "repo", ".", None, impl, [],
-                                security_mode="standard")
-        g = res["groups"][0]
-        self.assertEqual(sorted(g["surfaces"]), ["architecture", "database"])
-        self.assertIn("code", g["panels"])
-        self.assertIn("security", g["panels"])
-        self.assertIn("architecture", g["panels"])
-        self.assertIn("database", g["panels"])
-
-    def test_redteam_replaces_security_panel(self):
-        impl = ["src/web.py"]
-        res = orch.build_result("/tmp", "repo", ".", None, impl, [],
-                                security_mode="redteam")
-        g = res["groups"][0]
-        self.assertIn("redteam", g["panels"])
-        self.assertNotIn("security", g["panels"])
-        self.assertEqual(res["security_mode"], "redteam")
 
 
 class TestDepth(unittest.TestCase):
@@ -1089,181 +726,11 @@ class TestResolveBaseOriginFallback(unittest.TestCase):
         self.assertEqual((base, src), (None, "unresolved"))
 
 
-class TestPrMode(unittest.TestCase):
-    ACQ = {"worktree": "/tmp/wt", "base": "main", "head_sha": "abc"}
-
-    def test_pr_success_records_worktree_and_emits_hunks(self):
-        import io, contextlib
-        from unittest import mock
-        released = {}
-        with mock.patch.object(orch.diff_map, "acquire_pr", return_value=self.ACQ), \
-             mock.patch.object(orch.diff_map, "release_worktree",
-                               side_effect=lambda p, **k: released.setdefault("p", p)), \
-             mock.patch.object(orch, "collect_changed_files", return_value=["a.py"]), \
-             mock.patch.object(orch, "resolve_base", return_value=("main", "pr-base")), \
-             mock.patch.object(orch, "write_diff_hunks") as wdh, \
-             mock.patch.object(orch, "build_result",
-                               return_value={"groups": [], "counts": {}, "tests": []}):
-            with tempfile.TemporaryDirectory() as d:
-                out = os.path.join(d, "groups.json")
-                with contextlib.redirect_stdout(io.StringIO()):
-                    rc = orch.main(["--pr", "7", "--out", out])
-                data = json.load(open(out))
-        self.assertEqual(rc, 0)
-        self.assertEqual(data["worktree"], "/tmp/wt")   # recorded for the agent
-        self.assertIsNone(released.get("p"))            # NOT released on success
-        wdh.assert_called()                             # hunks emitted (PR base)
-        self.assertFalse(wdh.call_args.args[-1])         # --pr: includes_uncommitted=False
-
-    def test_pr_stages_pipeline_artifacts_into_worktree(self):
-        # #955: the worktree must be pipeline-ready on exit -- groups.json and
-        # diff-hunks.json staged into <wt>/.panopticon/, not just the invoking
-        # cwd/--out. The SKILL runs the pipeline with the worktree as cwd.
-        import io, contextlib
-        from unittest import mock
-        with tempfile.TemporaryDirectory() as wt, tempfile.TemporaryDirectory() as d:
-            acq = {"worktree": wt, "base": "main", "head_sha": "abc"}
-            with mock.patch.object(orch.diff_map, "acquire_pr", return_value=acq), \
-                 mock.patch.object(orch.diff_map, "release_worktree"), \
-                 mock.patch.object(orch, "collect_changed_files", return_value=["a.py"]), \
-                 mock.patch.object(orch, "resolve_base", return_value=("main", "pr-base")), \
-                 mock.patch.object(orch, "write_diff_hunks") as wdh, \
-                 mock.patch.object(orch, "build_result",
-                                   return_value={"groups": [], "counts": {}, "tests": []}):
-                out = os.path.join(d, "groups.json")
-                with contextlib.redirect_stdout(io.StringIO()):
-                    rc = orch.main(["--pr", "7", "--out", out])
-            self.assertEqual(rc, 0)
-            # hunks written to BOTH the --out-derived path and the worktree
-            hunk_targets = {c.args[3] for c in wdh.call_args_list}
-            self.assertIn(os.path.join(wt, ".panopticon", "diff-hunks.json"),
-                          hunk_targets)
-            self.assertEqual(len(hunk_targets), 2)
-            # groups.json staged in the worktree, with the worktree recorded
-            staged = os.path.join(wt, ".panopticon", "groups.json")
-            with open(staged, encoding="utf-8") as fh:
-                data = json.load(fh)
-            self.assertEqual(data["worktree"], wt)
-
-    def test_pr_failure_releases_worktree_then_raises(self):
-        from unittest import mock
-        released = {}
-        with mock.patch.object(orch.diff_map, "acquire_pr", return_value=self.ACQ), \
-             mock.patch.object(orch.diff_map, "release_worktree",
-                               side_effect=lambda p, **k: released.setdefault("p", p)), \
-             mock.patch.object(orch, "resolve_base", return_value=("main", "pr-base")), \
-             mock.patch.object(orch, "collect_changed_files", return_value=["a.py"]), \
-             mock.patch.object(orch, "build_result", side_effect=RuntimeError("boom")):
-            with self.assertRaises(RuntimeError):
-                orch.main(["--pr", "7", "--out", "/tmp/x.json"])
-        self.assertEqual(released.get("p"), "/tmp/wt")  # released on error
-
-    def test_pr_bad_base_releases_worktree_and_fails_loud(self):
-        import io, contextlib
-        from unittest import mock
-        released = {}
-        with mock.patch.object(orch.diff_map, "acquire_pr", return_value=self.ACQ), \
-             mock.patch.object(orch.diff_map, "release_worktree",
-                               side_effect=lambda p, **k: released.setdefault("p", p)), \
-             mock.patch.object(orch, "collect_changed_files", return_value=["a.py"]), \
-             mock.patch.object(orch, "resolve_base", return_value=(None, "unresolved")), \
-             mock.patch.object(orch, "write_diff_hunks") as wdh, \
-             mock.patch.object(orch, "build_result",
-                               return_value={"groups": [], "counts": {}, "tests": []}):
-            with tempfile.TemporaryDirectory() as d:
-                out = os.path.join(d, "groups.json")
-                with contextlib.redirect_stdout(io.StringIO()), \
-                     contextlib.redirect_stderr(io.StringIO()):
-                    rc = orch.main(["--pr", "7", "--out", out])
-                self.assertFalse(os.path.isfile(out))   # no artifact written on loud fail
-        self.assertEqual(rc, 2)
-        self.assertEqual(released.get("p"), "/tmp/wt")  # worktree released before returning
-        wdh.assert_not_called()
-
-
-if __name__ == "__main__":
-    unittest.main()
-
-
-class TestSetup(unittest.TestCase):
-    """#485: --setup = seed + scaffold + readiness gate."""
-
-    def _repo(self, d):
-        os.makedirs(os.path.join(d, ".git"))
-        os.makedirs(os.path.join(d, "appdir"))
-        with open(os.path.join(d, "appdir", "x.py"), "w") as fh:
-            fh.write("x = 1\n")
-        return d
-
-    def _ok_runner(self, argv, capture_output, text):
-        class R: returncode = 0; stdout = ""; stderr = ""
-        return R()
-
-    def _fail_runner(self, argv, capture_output, text):
-        class R: returncode = 1; stdout = ""; stderr = ""
-        return R()
-
-    def test_seed_groups_manifest_creates_once_never_clobbers(self):
-        with tempfile.TemporaryDirectory() as d:
-            self._repo(d)
-            path, created, names = orch._seed_groups_manifest(d)
-            self.assertTrue(created)
-            self.assertIn("appdir", names)
-            text = open(path).read()
-            self.assertIn("appdir/**", text)
-            with open(path, "a") as fh:
-                fh.write("# user edit\n")
-            _, created2, _ = orch._seed_groups_manifest(d)
-            self.assertFalse(created2)                 # never clobbers
-            self.assertIn("# user edit", open(path).read())
-
-    def test_ensure_gitignore_idempotent(self):
-        with tempfile.TemporaryDirectory() as d:
-            added = orch._ensure_gitignore(d)
-            self.assertEqual(added, orch.SETUP_GITIGNORE_ENTRIES)
-            self.assertEqual(orch._ensure_gitignore(d), [])   # second run no-op
-            content = open(os.path.join(d, ".gitignore")).read()
-            self.assertEqual(content.count(".panopticon/*"), 1)
-            self.assertIn("!.panopticon/", content)
-            self.assertIn("!.panopticon/groups.yml", content)
-
-    def test_seeded_groups_manifest_is_not_ignored(self):
-        with tempfile.TemporaryDirectory() as d:
-            _init_repo(d)
-            os.makedirs(os.path.join(d, "appdir"))
-            with open(os.path.join(d, "appdir", "x.py"), "w") as fh:
-                fh.write("x = 1\n")
-            path, _, _ = orch._seed_groups_manifest(d)
-            orch._ensure_gitignore(d)
-            ignored = subprocess.run(
-                ["git", "-C", d, "check-ignore", path], capture_output=True)
-            self.assertNotEqual(ignored.returncode, 0)
-
-    def test_readiness_accepts_linked_worktree_root(self):
-        from unittest import mock
-        import dispatch
-        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as reg:
-            _init_repo(d)
-            with open(os.path.join(d, "a.py"), "w") as fh:
-                fh.write("x\n")
-            _git(d, "add", ".")
-            _git(d, "commit", "-qm", "init")
-            wt = os.path.join(d, "linked")
-            _git(d, "worktree", "add", "-q", wt)
-            with mock.patch.object(dispatch, "_registration_dir", return_value=reg):
-                checks = orch.setup_readiness(
-                    wt, host="claude", runner=self._fail_runner, environ={})
-            self.assertTrue(next(c for c in checks if c[0] == "target-root")[1])
-
-    def test_codex_readiness_checks_cli_not_profiles(self):
-        with tempfile.TemporaryDirectory() as d:
-            self._repo(d)
-            checks = orch.setup_readiness(
-                d, host="codex", runner=self._ok_runner, environ={})
-            by = {c[0]: c for c in checks}
-            self.assertTrue(by["codex-cli"][1])
-            self.assertTrue(by["enforced-shells"][1])
-            self.assertIn("optional", by["enforced-shells"][2])
+class TestArtifactOutputGuard(unittest.TestCase):
+    """Symlink-escape guards on the --out artifact root, migrated out of
+    test_orchestrator.py::TestSetup (the rest of that class -- --setup
+    scaffolding/readiness -- is covered by test_setup_flow.py and
+    test_driver.py::TestDriverSetup)."""
 
     def test_artifact_output_rejects_symlinked_panopticon(self):
         with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as outside:
@@ -1276,43 +743,6 @@ class TestSetup(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as outside:
             os.symlink(outside, os.path.join(d, ".panopticon"))
             self.assertEqual(orch.main(["--repo", d, "--repo-scan"]), 2)
-
-    def test_readiness_reports_gaps_with_fixes(self):
-        from unittest import mock
-        import dispatch
-        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as reg:
-            with mock.patch.object(dispatch, "_registration_dir",
-                                   return_value=reg):     # empty = unregistered
-                checks = orch.setup_readiness(d, host="claude",
-                                              runner=self._fail_runner, environ={})
-        by = {c[0]: c for c in checks}
-        self.assertFalse(by["docker"][1])
-        self.assertIn("--no-tools", by["docker"][2])   # every gap carries a fix
-        self.assertFalse(by["target-root"][1])
-        self.assertIsNone(by["nvd-api-key"][1])        # informational, not gating
-        self.assertFalse(by["enforced-shells"][1])
-
-    def test_run_setup_ready_and_exit_codes(self):
-        import io
-        from unittest import mock
-        import dispatch
-        with tempfile.TemporaryDirectory() as d, \
-                tempfile.TemporaryDirectory() as reg:
-            self._repo(d)
-            for rf in ("panel-review.md", "lens-sweep.md"):
-                open(os.path.join(reg, "panopticon-" + rf[:-3] + ".md"), "w").write("x")
-            out = io.StringIO()
-            with mock.patch.object(dispatch, "_registration_dir",
-                                   return_value=reg):
-                rc_ready = orch.run_setup(d, host="claude",
-                                          runner=self._ok_runner,
-                                          environ={"NVD_API_KEY": "k"}, out=out)
-                rc_gap = orch.run_setup(d, host="claude",
-                                        runner=self._fail_runner,
-                                        environ={}, out=io.StringIO())
-        self.assertEqual(rc_ready, 0)
-        self.assertIn("READY", out.getvalue())
-        self.assertEqual(rc_gap, 1)
 
 
 class TestChangedFilesRenameParity(unittest.TestCase):
@@ -1331,6 +761,10 @@ class TestChangedFilesRenameParity(unittest.TestCase):
                 r.stdout = "abc123\n"
             return r
 
+        # orch IS discovery (import discovery as orch); patching orch._git
+        # patches discovery._git directly, which is also what
+        # discovery.collect_changed_files's bare _git(...) global lookup
+        # resolves through -- no cross-module duplication needed post-A2.
         with mock.patch.object(orch, "_git", side_effect=fake_git):
             orch.collect_changed_files("/tmp/x", base="main")
         diff_calls = [a for a in calls if a and a[0] == "diff"]
@@ -1350,11 +784,15 @@ class TestGroupsFormatReconciliation(unittest.TestCase):
         return d
 
     def test_seed_writes_mapping_form_that_load_catalog_reads(self):
+        # _seed_groups_manifest lives in setup_flow.py (orchestrator only ever
+        # re-exported it); load_catalog is the discovery primitive this test
+        # actually guards.
+        import setup_flow
         d = self._repo()
         for sub in ("src", "tests"):
             os.makedirs(os.path.join(d, sub))
             open(os.path.join(d, sub, "a.py"), "w").close()
-        path, created, names = orch._seed_groups_manifest(d)
+        path, created, names = setup_flow._seed_groups_manifest(d)
         self.assertTrue(created)
         text = open(path, encoding="utf-8").read()
         self.assertNotIn("- name:", text)          # not the legacy list form
@@ -1383,209 +821,6 @@ class TestGroupsFormatReconciliation(unittest.TestCase):
         self.assertEqual(leftovers, ["docs/c.md"])
 
 
-def _fake_runner(cmd, **kwargs):
-    class R:  # docker/codex/etc. all "succeed" so readiness never blocks the flow test
-        returncode = 0
-        stdout = ""
-        stderr = ""
-    return R()
-
-
-class TestSetupScanFlow(unittest.TestCase):
-    """Task 6: wires setup_proposal (Tasks 1-3) + setup-scan.md (Task 4) +
-    the groups.yml mapping form (Task 5) into `panopticon setup` /
-    `panopticon setup --ingest`."""
-
-    def _repo_with_files(self):
-        d = tempfile.mkdtemp()
-        os.makedirs(os.path.join(d, ".git"))
-        for sub in ("src/auth", "src/checkout", "tests"):
-            os.makedirs(os.path.join(d, sub))
-        open(os.path.join(d, "src/auth/login.py"), "w").close()
-        open(os.path.join(d, "src/checkout/pay.py"), "w").close()
-        return d
-
-    def test_setup_renders_scan_brief(self):
-        import io
-        d = self._repo_with_files()
-        buf = io.StringIO()
-        orch.run_setup(d, host="generic", runner=_fake_runner, out=buf)
-        brief = os.path.join(d, ".panopticon", "setup-scan-brief.md")
-        self.assertTrue(os.path.isfile(brief))
-        text = open(brief).read()
-        self.assertIn("Checkout", text)          # vocabulary injected
-        self.assertIn("scan brief", buf.getvalue().lower())
-
-    def test_ingest_writes_draft_with_affinity_floor(self):
-        import io
-        d = self._repo_with_files()
-        proposal = {"groups": [
-            {"capability": "Auth", "match": ["src/auth/**"], "tests": []},
-            {"capability": "Checkout", "match": ["src/checkout/**"], "tests": []}]}
-        pp = os.path.join(d, ".panopticon", "setup-proposal.json")
-        os.makedirs(os.path.dirname(pp), exist_ok=True)
-        json.dump(proposal, open(pp, "w"))
-        rc = orch.run_setup_ingest(d, proposal_path=pp, out=io.StringIO())
-        self.assertEqual(rc, 0)
-        draft = os.path.join(d, ".panopticon", "groups.yml.draft")
-        self.assertTrue(os.path.isfile(draft))
-        doc = __import__("yaml").safe_load(open(draft))
-        self.assertEqual(doc["groups"]["Checkout"]["panels"],
-                         ["SEC", "DAT", "ACC", "OPS"])
-
-    def test_ingest_is_additive_against_committed(self):
-        import io
-        d = self._repo_with_files()
-        # commit a groups.yml that already covers Auth (owner-edited floor)
-        os.makedirs(os.path.join(d, ".panopticon"), exist_ok=True)
-        with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
-            fh.write("groups:\n  Auth:\n    match:\n      - src/auth/**\n"
-                     "    panels: [SEC, ACC]\n")
-        proposal = {"groups": [
-            {"capability": "Auth", "match": ["src/auth/**"], "tests": []},
-            {"capability": "Checkout", "match": ["src/checkout/**"], "tests": []}]}
-        pp = os.path.join(d, ".panopticon", "setup-proposal.json")
-        json.dump(proposal, open(pp, "w"))
-        orch.run_setup_ingest(d, proposal_path=pp, out=io.StringIO())
-        doc = __import__("yaml").safe_load(
-            open(os.path.join(d, ".panopticon", "groups.yml.draft")))
-        self.assertEqual(doc["groups"]["Auth"]["panels"], ["SEC", "ACC"])  # untouched
-        self.assertIn("Checkout", doc["groups"])                           # added
-        # never overwrote the committed file itself
-        committed = __import__("yaml").safe_load(
-            open(os.path.join(d, ".panopticon", "groups.yml")))
-        self.assertNotIn("Checkout", committed["groups"])
-
-    def test_ingest_malformed_proposal_fails_loudly_no_draft(self):
-        import io
-        d = self._repo_with_files()
-        pp = os.path.join(d, ".panopticon", "setup-proposal.json")
-        os.makedirs(os.path.dirname(pp), exist_ok=True)
-        json.dump({"groups": [{"capability": "Auth", "match": []}]}, open(pp, "w"))
-        buf = io.StringIO()
-        rc = orch.run_setup_ingest(d, proposal_path=pp, out=buf)
-        self.assertEqual(rc, 1)
-        self.assertFalse(os.path.isfile(
-            os.path.join(d, ".panopticon", "groups.yml.draft")))
-
-    def test_setup_without_vocabulary_falls_back_to_seed(self):
-        import io
-        d = self._repo_with_files()
-        buf = io.StringIO()
-        # point the loader at a missing vocabulary
-        orch.run_setup(d, host="generic", runner=_fake_runner, out=buf,
-                       vocabulary_path="/nonexistent/vocab.yml")
-        self.assertIn("vocabulary", buf.getvalue().lower())
-        self.assertFalse(os.path.isfile(
-            os.path.join(d, ".panopticon", "setup-scan-brief.md")))
-
-    def test_setup_then_ingest_does_not_drop_capability_groups(self):
-        """C1 regression: the documented setup -> --ingest flow must not
-        silently discard the classification. run_setup with a vocabulary
-        present must NOT seed the flat top-dir groups.yml (that's the
-        vocabulary-absent fallback ONLY, spec §6/§7/§8) -- otherwise
-        run_setup_ingest's committed-baseline read finds the flat catalog
-        already "covers" everything and additive-merge drops every real
-        capability group as redundant."""
-        import io
-        d = self._repo_with_files()
-        orch.run_setup(d, host="generic", runner=_fake_runner, out=io.StringIO())
-        # the scan path (vocabulary present) must stop at the brief -- no
-        # flat groups.yml, so nothing is "committed" yet for --ingest to
-        # (mis)read as a baseline.
-        self.assertFalse(os.path.isfile(
-            os.path.join(d, ".panopticon", "groups.yml")))
-        proposal = {"groups": [
-            {"capability": "Auth", "match": ["src/auth/**"], "tests": []},
-            {"capability": "Checkout", "match": ["src/checkout/**"], "tests": []}]}
-        pp = os.path.join(d, ".panopticon", "setup-proposal.json")
-        json.dump(proposal, open(pp, "w"))
-        rc = orch.run_setup_ingest(d, proposal_path=pp, out=io.StringIO())
-        self.assertEqual(rc, 0)
-        doc = __import__("yaml").safe_load(
-            open(os.path.join(d, ".panopticon", "groups.yml.draft")))
-        # both capability groups must survive -- NOT dropped as redundant
-        self.assertIn("Auth", doc["groups"])
-        self.assertIn("Checkout", doc["groups"])
-
-    def test_ingest_discloses_collision(self):
-        """#6: a collided duplicate capability (same post-custom: group name)
-        must be surfaced in the ingest disclosure, not silently merged."""
-        import io
-        d = self._repo_with_files()
-        proposal = {"groups": [
-            {"capability": "Auth", "match": ["src/auth/**"], "tests": []},
-            {"capability": "custom:Auth", "match": ["src/auth/legacy/**"],
-             "tests": []}]}
-        pp = os.path.join(d, ".panopticon", "setup-proposal.json")
-        os.makedirs(os.path.dirname(pp), exist_ok=True)
-        json.dump(proposal, open(pp, "w"))
-        buf = io.StringIO()
-        rc = orch.run_setup_ingest(d, proposal_path=pp, out=buf)
-        self.assertEqual(rc, 0)
-        self.assertIn(
-            "merged duplicate capability custom:Auth into group Auth",
-            buf.getvalue())
-
-    def test_ingest_without_bundled_data_fails_loudly(self):
-        """#7: run_setup_ingest must guard the vocab/affinity load the same
-        way run_setup does -- a missing bundled data file is a loud "data
-        error", never an uncaught FileNotFoundError."""
-        import io
-        from unittest import mock
-        d = self._repo_with_files()
-        buf = io.StringIO()
-        with mock.patch.object(orch, "_VOCAB_PATH", "/nonexistent/vocab.yml"):
-            rc = orch.run_setup_ingest(d, out=buf)
-        self.assertEqual(rc, 1)
-        self.assertIn("data error", buf.getvalue().lower())
-
-    def test_ingest_never_writes_committed_groups_yml(self):
-        """Global constraint: run_setup_ingest must only ever write the
-        .draft file, never .panopticon/groups.yml itself."""
-        import io
-        d = self._repo_with_files()
-        os.makedirs(os.path.join(d, ".panopticon"), exist_ok=True)
-        with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
-            fh.write("groups:\n  Auth:\n    match:\n      - src/auth/**\n")
-        before = open(os.path.join(d, ".panopticon", "groups.yml")).read()
-        proposal = {"groups": [
-            {"capability": "Checkout", "match": ["src/checkout/**"],
-             "tests": []}]}
-        pp = os.path.join(d, ".panopticon", "setup-proposal.json")
-        json.dump(proposal, open(pp, "w"))
-        orch.run_setup_ingest(d, proposal_path=pp, out=io.StringIO())
-        after = open(os.path.join(d, ".panopticon", "groups.yml")).read()
-        self.assertEqual(before, after)
-
-
-def test_repo_scan_reads_matrix_via_parse_groups(tmp_path, monkeypatch):
-    # A matrix groups.yml (match/panels) drives --repo-scan grouping identically
-    # whether read by load_catalog or _committed_matrix, since assign_by_catalog
-    # keys on `match`. Guards the SEC-3 migration: no grouping regression.
-    import orchestrator
-    repo = tmp_path
-    (repo / ".panopticon").mkdir()
-    (repo / "src").mkdir(); (repo / "src" / "a.py").write_text("x=1\n")
-    (repo / ".panopticon" / "groups.yml").write_text(
-        "groups:\n  Core:\n    match: ['src/**']\n    panels: [SEC]\n")
-    cat = orchestrator._committed_matrix(str(repo))
-    assert cat["Core"]["match"] == ["src/**"]
-    # assign_by_catalog uses only `match` → Core claims src/a.py
-    assigned, leftovers = orchestrator.assign_by_catalog(["src/a.py"], cat)
-    assert assigned == {"Core": ["src/a.py"]} and leftovers == []
-
-
-def test_repo_scan_scalar_match_disclosed_not_silently_coerced(tmp_path, capsys):
-    import orchestrator
-    (tmp_path / ".panopticon").mkdir()
-    (tmp_path / ".panopticon" / "groups.yml").write_text(
-        "groups:\n  Bad:\n    match: 'src/**'\n")   # scalar, not a list
-    orchestrator._committed_matrix(str(tmp_path))   # parse_groups validates
-    err = capsys.readouterr().err
-    assert "match must be a non-empty list" in err   # disclosed, not silent-coerced
-
-
 def _repo_with_matrix(tmp_path):
     import subprocess, os
     repo = tmp_path
@@ -1605,8 +840,35 @@ def _repo_with_matrix(tmp_path):
     return repo
 
 
+def test_repo_scan_reads_matrix_via_parse_groups(tmp_path, monkeypatch):
+    # A matrix groups.yml (match/panels) drives --repo-scan grouping identically
+    # whether read by load_catalog or _committed_matrix, since assign_by_catalog
+    # keys on `match`. Guards the SEC-3 migration: no grouping regression.
+    import discovery as orchestrator
+    repo = tmp_path
+    (repo / ".panopticon").mkdir()
+    (repo / "src").mkdir(); (repo / "src" / "a.py").write_text("x=1\n")
+    (repo / ".panopticon" / "groups.yml").write_text(
+        "groups:\n  Core:\n    match: ['src/**']\n    panels: [SEC]\n")
+    cat = orchestrator._committed_matrix(str(repo))
+    assert cat["Core"]["match"] == ["src/**"]
+    # assign_by_catalog uses only `match` → Core claims src/a.py
+    assigned, leftovers = orchestrator.assign_by_catalog(["src/a.py"], cat)
+    assert assigned == {"Core": ["src/a.py"]} and leftovers == []
+
+
+def test_repo_scan_scalar_match_disclosed_not_silently_coerced(tmp_path, capsys):
+    import discovery as orchestrator
+    (tmp_path / ".panopticon").mkdir()
+    (tmp_path / ".panopticon" / "groups.yml").write_text(
+        "groups:\n  Bad:\n    match: 'src/**'\n")   # scalar, not a list
+    orchestrator._committed_matrix(str(tmp_path))   # parse_groups validates
+    err = capsys.readouterr().err
+    assert "match must be a non-empty list" in err   # disclosed, not silent-coerced
+
+
 def test_repo_scan_scope_group_restricts_to_named_group(tmp_path):
-    import orchestrator, json
+    import discovery as orchestrator, json
     repo = _repo_with_matrix(tmp_path)
     out = repo / "groups.json"
     orchestrator.main(["--repo-scan", "--scope-group", "Checkout",
@@ -1619,7 +881,7 @@ def test_repo_scan_scope_group_restricts_to_named_group(tmp_path):
 
 
 def test_repo_scan_scope_file_restricts_to_file_and_its_group(tmp_path):
-    import orchestrator, json
+    import discovery as orchestrator, json
     repo = _repo_with_matrix(tmp_path)
     out = repo / "groups.json"
     orchestrator.main(["--repo-scan", "--scope-file", "src/checkout/pay.py",
@@ -1630,8 +892,32 @@ def test_repo_scan_scope_file_restricts_to_file_and_its_group(tmp_path):
     assert {g["name"] for g in groups} == {"Checkout"}   # assigned to its group, nothing else
 
 
+def test_repo_scan_scope_file_includes_sibling_related_test(tmp_path):
+    # related_tests()'s filtering (discovery.py:969) actually pulls a real
+    # co-located sibling test file into a --scope-file scope -- the sibling
+    # case: test_candidates("src/checkout/pay.py") generates "src/checkout/
+    # test_pay.py" as its first same-directory candidate (before falling
+    # back to spec/test/tests dirs); commit that file for real and confirm
+    # it surfaces alongside the impl file. Complements
+    # test_repo_scan_scope_file_restricts_to_file_and_its_group's negative
+    # case ("no related tests here").
+    import discovery as orchestrator, json
+    repo = _repo_with_matrix(tmp_path)
+    (repo / "src" / "checkout" / "test_pay.py").write_text("def test_x():\n    pass\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-qm", "add sibling test"], cwd=repo, check=True)
+    out = repo / "groups.json"
+    orchestrator.main(["--repo-scan", "--scope-file", "src/checkout/pay.py",
+                       str(repo), "--out", str(out)])
+    groups = json.loads(out.read_text())["groups"]
+    files = sorted(f for g in groups for f in g["files"])
+    assert files == ["src/checkout/pay.py", "src/checkout/test_pay.py"]
+    assert {g["name"] for g in groups} == {"Checkout"}
+
+
 def test_repo_scan_scope_dir_restricts_to_directory(tmp_path):
-    import orchestrator, json
+    import discovery as orchestrator, json
     repo = _repo_with_matrix(tmp_path)
     out = repo / "groups.json"
     orchestrator.main(["--repo-scan", "--scope-dir", "src/checkout",
@@ -1643,7 +929,7 @@ def test_repo_scan_scope_dir_restricts_to_directory(tmp_path):
 
 
 def test_repo_scan_scope_group_unknown_name_errors(tmp_path, capsys):
-    import orchestrator
+    import discovery as orchestrator
     repo = _repo_with_matrix(tmp_path)
     out = repo / "groups.json"
     rc = orchestrator.main(["--repo-scan", "--scope-group", "Nope",
@@ -1657,7 +943,7 @@ def test_repo_scan_scope_dir_no_catalog_match_falls_back_to_leftover(tmp_path):
     # A scoped file with no `match` coverage still surfaces via the ._N
     # leftover chunk naming AND is disclosed in ungrouped_files -- the same
     # coverage-honesty contract the unscoped --repo-scan path guarantees.
-    import orchestrator, json
+    import discovery as orchestrator, json
     repo = _repo_with_matrix(tmp_path)
     out = repo / "groups.json"
     orchestrator.main(["--repo-scan", "--scope-dir", "src/misc",
@@ -1699,7 +985,7 @@ def _repo_with_scalar_match_group(tmp_path):
 
 
 def test_matrix_catalog_normalizes_scalar_match_to_empty_list(tmp_path, capsys):
-    import orchestrator
+    import discovery as orchestrator
     (tmp_path / ".panopticon").mkdir()
     (tmp_path / ".panopticon" / "groups.yml").write_text(
         "groups:\n  Bad:\n    match: 'src/auth/**'\n")   # scalar, not a list
@@ -1710,7 +996,7 @@ def test_matrix_catalog_normalizes_scalar_match_to_empty_list(tmp_path, capsys):
 
 
 def test_matrix_catalog_empty_when_no_groups_yml(tmp_path):
-    import orchestrator
+    import discovery as orchestrator
     assert orchestrator._matrix_catalog(str(tmp_path)) == {}
 
 
@@ -1719,7 +1005,7 @@ def test_repo_scan_bare_scalar_match_group_does_not_swallow_whole_repo(tmp_path)
     # the entire repo into one group. Its own target file falls to the
     # leftover ._N chunk (disclosed via ungrouped_files); the well-formed
     # group ("Auth") groups its file normally, unaffected.
-    import orchestrator, json
+    import discovery as orchestrator, json
     repo = _repo_with_scalar_match_group(tmp_path)
     out = repo / "groups.json"
     orchestrator.main(["--repo-scan", str(repo), "--out", str(out)])
@@ -1736,7 +1022,7 @@ def test_repo_scan_scope_group_scalar_match_does_not_claim_whole_repo(tmp_path):
     # Scoping directly to the corrupted group must NOT fall back to "every
     # file in the repo" (the old char-split bug) -- a well-formed OTHER
     # group's files must never leak into this scope.
-    import orchestrator, json
+    import discovery as orchestrator, json
     repo = _repo_with_scalar_match_group(tmp_path)
     out = repo / "groups.json"
     orchestrator.main(["--repo-scan", "--scope-group", "Bad",
@@ -1751,7 +1037,7 @@ def test_repo_scan_bare_well_formed_matrix_groups_unchanged(tmp_path):
     # Guard: a well-formed matrix groups IDENTICALLY before/after the SEC-3
     # fix -- assign_by_catalog keys only on `match`, which parse_groups
     # returns unchanged for valid input.
-    import orchestrator, json
+    import discovery as orchestrator, json
     repo = _repo_with_matrix(tmp_path)
     out = repo / "groups.json"
     orchestrator.main(["--repo-scan", str(repo), "--out", str(out)])
@@ -1768,7 +1054,11 @@ def test_setup_readiness_scalar_match_only_reports_gap_not_ok(tmp_path):
     # setup_readiness's groups-manifest check must see the NORMALIZED match
     # (empty for a scalar) -- not the raw char-split list, which used to
     # read as a non-empty `match` and falsely report "OK -- 1 group(s)".
-    import orchestrator
+    # setup_readiness itself lives in setup_flow.py (orchestrator only ever
+    # re-exported it); the SEC-3 regression it guards is discovery-side
+    # (setup_flow.setup_readiness calls discovery._matrix_catalog directly),
+    # so this stays a discovery-side regression test.
+    import setup_flow
     os.makedirs(str(tmp_path / ".git"))
     os.makedirs(str(tmp_path / ".panopticon"))
     (tmp_path / ".panopticon" / "groups.yml").write_text(
@@ -1778,9 +1068,9 @@ def test_setup_readiness_scalar_match_only_reports_gap_not_ok(tmp_path):
         class R: returncode = 0; stdout = ""; stderr = ""
         return R()
 
-    checks = orchestrator.setup_readiness(str(tmp_path), host="claude",
-                                          runner=ok_runner,
-                                          environ={"NVD_API_KEY": "k"})
+    checks = setup_flow.setup_readiness(str(tmp_path), host="claude",
+                                        runner=ok_runner,
+                                        environ={"NVD_API_KEY": "k"})
     by = {c[0]: c for c in checks}
     ok, detail = by["groups-manifest"][1], by["groups-manifest"][2]
     assert ok is False                # not silently "OK -- 1 group(s)"
@@ -1792,7 +1082,7 @@ def test_setup_readiness_scalar_match_only_reports_gap_not_ok(tmp_path):
 # empty-but-"successful" scan (mirrors --scope-group's unknown-name error).
 
 def test_repo_scan_scope_file_untracked_target_errors(tmp_path, capsys):
-    import orchestrator
+    import discovery as orchestrator
     repo = _repo_with_matrix(tmp_path)
     out = repo / "groups.json"
     rc = orchestrator.main(["--repo-scan", "--scope-file", "src/ghost.py",
@@ -1803,7 +1093,7 @@ def test_repo_scan_scope_file_untracked_target_errors(tmp_path, capsys):
 
 
 def test_repo_scan_scope_dir_no_tracked_files_errors(tmp_path, capsys):
-    import orchestrator
+    import discovery as orchestrator
     repo = _repo_with_matrix(tmp_path)
     out = repo / "groups.json"
     rc = orchestrator.main(["--repo-scan", "--scope-dir", "no/such/dir",
@@ -1820,7 +1110,7 @@ def test_repo_scan_scope_dir_no_tracked_files_errors(tmp_path, capsys):
 # synthesize's on-diff gate has a hunk map to scope findings against.
 
 def test_repo_scan_scope_changed_restricts_and_emits_diff_hunks(tmp_path):
-    import orchestrator, json, subprocess
+    import discovery as orchestrator, json, subprocess
     repo = _repo_with_matrix(tmp_path)   # commits Auth + Checkout matrix + files
     # create a new commit changing one checkout file
     (repo / "src/checkout/pay.py").write_text("x=2\n")
@@ -1838,7 +1128,7 @@ def test_repo_scan_scope_changed_restricts_and_emits_diff_hunks(tmp_path):
 
 
 def test_repo_scan_scope_changed_bad_base_exits_2_no_artifact(tmp_path):
-    import orchestrator
+    import discovery as orchestrator
     repo = _repo_with_matrix(tmp_path)
     out = repo / ".panopticon" / "groups.json"
     assert orchestrator.main(["--repo-scan","--scope-changed","--base","nope",
@@ -1847,7 +1137,7 @@ def test_repo_scan_scope_changed_bad_base_exits_2_no_artifact(tmp_path):
 
 
 def test_repo_scan_scope_files_with_base_emits_diff_hunks(tmp_path):
-    import orchestrator, json, subprocess
+    import discovery as orchestrator, json, subprocess
     repo = _repo_with_matrix(tmp_path)
     (repo / "src/checkout/pay.py").write_text("x=2\n")
     subprocess.run(["git","-c","user.email=t@t","-c","user.name=t","commit","-aqm","c2"],
@@ -1868,7 +1158,7 @@ def test_repo_scan_scope_files_with_base_emits_diff_hunks(tmp_path):
 
 
 def test_repo_scan_scope_files_without_base_emits_no_diff_hunks(tmp_path):
-    import orchestrator, json
+    import discovery as orchestrator, json
     repo = _repo_with_matrix(tmp_path)
     out = repo / ".panopticon" / "groups.json"
     rc = orchestrator.main(["--repo", str(repo), "--repo-scan", "--scope-files",
@@ -1888,7 +1178,7 @@ def test_repo_scan_scope_changed_pr_base_resolves_origin_only_base(tmp_path):
     # only the PR head). Under the OLD code path (the base threaded as an explicit
     # --base main) resolve_base would treat "main" as explicit, fail to resolve
     # it, and return 2 with no artifact. With --pr-base it resolves to origin/main.
-    import orchestrator, json, subprocess
+    import discovery as orchestrator, json, subprocess
     repo = _repo_with_matrix(tmp_path)   # commits Auth + Checkout matrix + files
     base_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo,
                               capture_output=True, text=True,
@@ -1924,7 +1214,7 @@ def test_repo_scan_scope_changed_explicit_base_ignores_pr_base(tmp_path):
     # --base (explicit user override) still takes precedence over --pr-base and
     # never falls through: a bad explicit base fails loudly even when a valid
     # --pr-base is present (resolve_base's explicit-never-fallthrough contract).
-    import orchestrator
+    import discovery as orchestrator
     repo = _repo_with_matrix(tmp_path)
     out = repo / ".panopticon" / "groups.json"
     rc = orchestrator.main(["--repo-scan", "--scope-changed",
@@ -1932,3 +1222,7 @@ def test_repo_scan_scope_changed_explicit_base_ignores_pr_base(tmp_path):
                             str(repo), "--out", str(out)])
     assert rc == 2
     assert not (repo/".panopticon"/"diff-hunks.json").exists()
+
+
+if __name__ == "__main__":
+    unittest.main()

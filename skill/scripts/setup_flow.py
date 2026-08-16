@@ -11,14 +11,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import plan_contract  # noqa: E402
-
-
-def _orch():
-    """Lazy handle to orchestrator's discovery primitives (transitional; P6.5
-    relocates these out of orchestrator). Function-level import breaks the
-    module-load cycle (orchestrator imports setup_flow at top level)."""
-    import orchestrator
-    return orchestrator
+import discovery  # noqa: E402  (P6.5 Slice A: discovery primitives, moved off orchestrator)
 
 
 SETUP_GITIGNORE_ENTRIES = [
@@ -36,9 +29,9 @@ def _seed_groups_manifest(repo):
     artifact_dir = plan_contract.artifact_root(repo)
     path = os.path.join(artifact_dir, "groups.yml")
     if os.path.isfile(path):
-        names = list((_orch().load_catalog(repo) or {}).keys())
+        names = list((discovery.load_catalog(repo) or {}).keys())
         return path, False, names
-    files = _orch().discover_repo_files(repo)
+    files = discovery.discover_repo_files(repo)
     tops = sorted({p.split("/", 1)[0] for p in files
                    if "/" in p and not p.startswith(".")})
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -159,7 +152,7 @@ def setup_readiness(repo, host=None, runner=subprocess.run, environ=None):
                        "start a fresh session" % ", ".join(missing_shells)))
 
     try:
-        catalog = _matrix_catalog(repo) or {}
+        catalog = discovery._matrix_catalog(repo) or {}
     except Exception:
         catalog = {}
     if catalog:
@@ -186,7 +179,7 @@ _AFFINITY_PATH = os.path.join(_SKILL_DATA, "capability_affinity.yml")
 def _repo_spine_summary(repo):
     """A compact, deterministic spine the scan brief hands the agent as a
     starting point (the agent still explores read-only for itself)."""
-    files = _orch().discover_repo_files(repo)
+    files = discovery.discover_repo_files(repo)
     tops = sorted({p.split("/", 1)[0] for p in files if "/" in p})
     manifests = sorted({os.path.basename(p) for p in files
                         if os.path.basename(p) in (
@@ -209,66 +202,12 @@ def render_scan_brief(repo, vocabulary):
     return path
 
 
-def _committed_matrix(repo):
-    """Committed groups.yml as serializable {name: {match, tests, panels, exclude}},
-    preserving committed field ORDER verbatim (never-clobber is byte-faithful).
-    Empty when none is committed (first run -> adopt-all)."""
-    path = os.path.join(repo, ".panopticon", "groups.yml")
-    if not os.path.isfile(path):
-        return {}
-    import yaml
-    import groups_schema
-    with open(path, encoding="utf-8") as fh:
-        data = yaml.safe_load(fh) or {}
-    raw = data.get("groups") or {}
-    if isinstance(raw, list):  # legacy list form (Task 5)
-        raw = {g.get("name"): g for g in raw
-               if isinstance(g, dict) and g.get("name")}
-    # Validate only; errors are non-fatal on read (disclosed, not blocking) --
-    # the raw-order bodies below are returned regardless of what parse_groups
-    # finds.
-    _, errs = groups_schema.parse_groups({"groups": raw})
-    for e in errs:
-        print("committed groups.yml: %s" % e, file=sys.stderr)
-    out = {}
-    for name, body in raw.items():
-        body = body or {}
-        out[name] = {
-            "match": list(body.get("match") or []),
-            "tests": list(body.get("tests") or []),
-            "panels": list(body.get("panels") or []),
-            "exclude": list(body.get("exclude") or []),
-        }
-    return out
-
-
-committed_matrix = _committed_matrix
-
-
-def _matrix_catalog(repo):
-    """The committed matrix as parse_groups-NORMALIZED groups for --repo-scan /
-    readiness: {name: {match: [...], tests, floor, exclude}} with `match`
-    VALIDATED (a scalar/invalid match normalizes to [] -- never char-split).
-    Errors are disclosed (stderr), not fatal (the driver's load_committed_groups
-    gates fatally upstream). Empty {} when no groups.yml is committed."""
-    path = os.path.join(repo, ".panopticon", "groups.yml")
-    if not os.path.isfile(path):
-        return {}
-    import yaml
-    import groups_schema
-    try:
-        with open(path, encoding="utf-8") as fh:
-            doc = yaml.safe_load(fh) or {}
-    except (OSError, yaml.YAMLError) as e:
-        print("groups.yml unreadable: %s" % e, file=sys.stderr)
-        return {}
-    groups, errs = groups_schema.parse_groups(doc if isinstance(doc, dict) else {})
-    for e in errs:
-        print("committed groups.yml: %s" % e, file=sys.stderr)
-    return groups
-
-
-matrix_catalog = _matrix_catalog
+# _committed_matrix/_matrix_catalog RELOCATED to discovery.py (P6.5 Slice A):
+# they read .panopticon/groups.yml via yaml + groups_schema.parse_groups and
+# depend on nothing else from setup_flow. Aliases kept so existing callers
+# (setup_flow.committed_matrix / setup_flow.matrix_catalog) still resolve.
+committed_matrix = discovery._committed_matrix
+matrix_catalog = discovery._matrix_catalog
 
 
 def provision(repo):
@@ -319,10 +258,10 @@ def ingest_proposal(repo=".", proposal_path=None):
             ["proposal rejected -- no draft written:"]
             + ["  - %s" % e for e in disclosure["errors"]])}
     committed = committed_matrix(repo)
-    leftovers = _orch().assign_by_catalog(
-        _orch().discover_repo_files(repo),
+    leftovers = discovery.assign_by_catalog(
+        discovery.discover_repo_files(repo),
         {n: {"match": b["match"]} for n, b in committed.items()})[1]
-    claims = _orch().assign_by_catalog(
+    claims = discovery.assign_by_catalog(
         leftovers, {n: {"match": b["match"]} for n, b in assembled.items()})[0]
     merged, diff = sp.merge_additive(committed, assembled, claims)
     draft = os.path.join(plan_contract.artifact_root(repo), "groups.yml.draft")

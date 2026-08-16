@@ -13,14 +13,16 @@ import scripts.synthesize as syn  # noqa: E402
 
 
 class TestEndToEnd(unittest.TestCase):
-    def test_orchestrator_then_synthesize(self):
+    def test_discovery_then_synthesize(self):
         with tempfile.TemporaryDirectory() as d:
             os.makedirs(os.path.join(d, "src"))
             open(os.path.join(d, "src", "app.py"), "w").close()
-            # 1. resolve target
+            # 1. resolve target (P6.5 Slice A: orchestrator.py --directory
+            # retired; discovery.py --repo-scan is the sole surviving mode --
+            # same groups.json shape, driven the way driver.py drives it)
             r = subprocess.run(
-                [sys.executable, os.path.join(SCRIPTS, "orchestrator.py"),
-                 "--repo", d, "--directory", "src"],
+                [sys.executable, os.path.join(SCRIPTS, "discovery.py"),
+                 "--repo-scan", d],
                 capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stderr)
             groups = json.loads(r.stdout)

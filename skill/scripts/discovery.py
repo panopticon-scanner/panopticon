@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
-"""Resolve panopticon targets (files, dirs, groups, repos) to grouped file
-lists. Stdlib-only; run BEFORE dispatching review subagents.
+"""Discovery/matrix core (P6.5 Slice A): resolve --repo-scan targets to
+grouped file lists via the committed groups.yml catalog. Stdlib-only; run
+BEFORE dispatching review subagents.
+
+The focused discovery/matrix module: repo file discovery, `.panopticon/
+groups.yml` matrix assignment, the --repo-scan CLI (whole-repo and the
+--scope-file/--scope-dir/--scope-group/--scope-changed/--scope-files
+filters), and delta review support (--base/--pr-base resolution,
+diff-hunks.json emission). Extracted from the now-retired orchestrator.py
+in P6.5 -- discovery.py is the sole discovery entry point the 5.0 driver
+subprocesses.
 """
 import argparse
 import fnmatch
 import functools
-import glob
 import json
 import os
 import re
@@ -15,11 +23,6 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import diff_map  # noqa: E402 (sibling on sys.path, same pattern as dispatch.py)
 import plan_contract  # noqa: E402
-from setup_flow import (  # noqa: E402  (setup wrapping extracted in P6.4)
-    SETUP_GITIGNORE_ENTRIES, _seed_groups_manifest, _ensure_gitignore,  # noqa: F401
-    _seed_config, setup_readiness, _repo_spine_summary, render_scan_brief,  # noqa: F401
-    _committed_matrix, _matrix_catalog, _VOCAB_PATH, _AFFINITY_PATH,  # noqa: F401
-)
 
 DEFAULT_MAX_PER_GROUP = 15
 
@@ -30,7 +33,6 @@ def panels_in_priority_order(panels):
     """Sort panel names by PANEL_PRIORITY; unknown panels sort last (stable)."""
     return sorted(panels, key=lambda p: PANEL_PRIORITY.index(p)
                   if p in PANEL_PRIORITY else len(PANEL_PRIORITY))
-
 
 # Directory NAMES pruned from --repo-scan discovery walking. These are build
 # artifacts, dependency trees, caches, VCS internals, and scratch/audit copies
@@ -96,21 +98,17 @@ DATABASE_PATTERNS = [
     r"(_migration|\.migration)\.",
 ]
 
-
 def is_test_file(path):
     """Return True if path matches any test file pattern."""
     return any(re.search(p, path) for p in TEST_PATTERNS)
-
 
 def is_architecture_file(path):
     """Return True if path matches any architecture/infrastructure pattern."""
     return any(re.search(p, path) for p in ARCHITECTURE_PATTERNS)
 
-
 def is_database_file(path):
     """Return True if path matches any database/migration pattern."""
     return any(re.search(p, path) for p in DATABASE_PATTERNS)
-
 
 def compute_group_surfaces(files):
     """Return architecture/database surface labels for a group of files.
@@ -126,7 +124,6 @@ def compute_group_surfaces(files):
         if is_database_file(f):
             surfaces.add("database")
     return sorted(surfaces)
-
 
 def compute_group_panels(files, security_mode="standard"):
     """Return default panel schedule for a group.
@@ -147,14 +144,12 @@ def compute_group_panels(files, security_mode="standard"):
         panels.append("database")
     return panels_in_priority_order(panels)
 
-
 def _git(repo, args, timeout=30, text=True):
     """Run git -C repo with check=True — the shared invocation for this
     module's six git call sites; each caller's try/except owns failures."""
     return subprocess.run(["git", "-C", repo, *args],
                           capture_output=True, text=text, check=True,
                           timeout=timeout)
-
 
 def _worktree_dirty(repo):
     """True when repo's working tree has uncommitted changes (git status
@@ -163,7 +158,6 @@ def _worktree_dirty(repo):
     live tree (e.g. -c usage), False for a clean checkout."""
     r = _git(repo, ["status", "--porcelain"])
     return bool(r.stdout.strip())
-
 
 def collect_changed_files(repo, base=None):
     """Collect repo-relative paths changed since the merge base (or HEAD~1).
@@ -232,7 +226,6 @@ def collect_changed_files(repo, base=None):
             out.append(p.replace(os.sep, "/"))
     return out
 
-
 def chunk_files(files, max_per=15):
     """Group files into balanced chunks by directory, each with at most max_per files."""
     if max_per < 1:
@@ -255,18 +248,8 @@ def chunk_files(files, max_per=15):
         chunks.append(cur)
     return chunks
 
-
-def parse_group_arg(arg):
-    """Parse group name and optional facet from group[facet] format."""
-    m = re.match(r"^\s*([^\[\]]+?)\s*(?:\[\s*([^\[\]]+?)\s*\])?\s*$", arg)
-    if not m:
-        return arg.strip(), None
-    return m.group(1), m.group(2)
-
-
 def _split_inline_list(rest):
     return [x.strip().strip("'\"") for x in rest[1:-1].split(",") if x.strip()]
-
 
 def _glob_to_re(pat):
     """Compile one gitignore-flavored glob to a regex over repo-relative paths.
@@ -309,7 +292,6 @@ def _glob_to_re(pat):
         body = r"(?:.*/)?" + body
     return re.compile("^" + body + "$")
 
-
 def match_patterns(path, patterns):
     """gitignore-style decision for one path against an ordered pattern list.
 
@@ -325,7 +307,6 @@ def match_patterns(path, patterns):
         if _glob_to_re(pat).match(path):
             matched = not negate
     return matched
-
 
 def assign_by_catalog(files, catalog):
     """Assign files to catalog groups that declare ``match`` patterns (#499).
@@ -359,7 +340,6 @@ def assign_by_catalog(files, catalog):
             leftovers.append(f)
     return ({n: sorted(fs) for n, fs in assigned.items() if fs},
             sorted(leftovers))
-
 
 def _parse_catalog_yaml(text):
     """Parse the documented catalog structure (2-space indent):
@@ -427,7 +407,6 @@ def _parse_catalog_yaml(text):
         raise ValueError("cannot parse catalog line: %r" % raw)
     return groups
 
-
 def _to_list(val):
     """Normalise a YAML scalar, sequence, or None into a list."""
     if val is None:
@@ -435,7 +414,6 @@ def _to_list(val):
     if isinstance(val, str):
         return [val]
     return list(val)
-
 
 def load_catalog(repo):
     """Load file group catalog from .panopticon/groups.yml or parse YAML fallback."""
@@ -469,29 +447,16 @@ def load_catalog(repo):
         print("catalog parse error: %s" % e, file=sys.stderr)
         return {}
 
-
 @functools.lru_cache(maxsize=None)
 def _repo_realpath(repo):
     """The repo root's realpath, cached: _within runs once per candidate file
     on large expansions, and realpath lstats every path component."""
     return os.path.realpath(repo)
 
-
 def _within(repo, path):
     repo_r = _repo_realpath(repo)
     p_r = os.path.realpath(path)
     return p_r == repo_r or p_r.startswith(repo_r + os.sep)
-
-
-def expand_patterns(repo, patterns):
-    """Expand glob patterns to repo-relative file paths, filtering for files within repo."""
-    found = set()
-    for pat in patterns:
-        for hit in glob.glob(os.path.join(repo, pat), recursive=True):
-            if os.path.isfile(hit) and _within(repo, hit):
-                found.add(os.path.relpath(hit, repo).replace(os.sep, "/"))
-    return sorted(found)
-
 
 def test_candidates(path):
     """Generate candidate test file paths for a given implementation file."""
@@ -523,7 +488,6 @@ def test_candidates(path):
             cands.append((dd + "/" + nm) if dd else nm)
     return cands
 
-
 def related_tests(repo, impl_files):
     """Find test files related to given implementation files."""
     found = set()
@@ -533,13 +497,11 @@ def related_tests(repo, impl_files):
                 found.add(cand.replace(os.sep, "/"))
     return sorted(found)
 
-
 def _is_excluded_dir(name):
     """Return True if a directory basename is discovery noise (denylist)."""
     if name in EXCLUDE_DIRS:
         return True
     return any(fnmatch.fnmatch(name, g) for g in EXCLUDE_DIR_GLOBS)
-
 
 def _on_allowed_dotdir_path(rel):
     """True if rel is (a prefix of / inside) an allowlisted dot-dir subtree."""
@@ -548,7 +510,6 @@ def _on_allowed_dotdir_path(rel):
         for allowed in ALLOWED_DOTDIR_SUBTREES
     )
 
-
 def _is_fixture_dir(rel):
     """True if a repo-relative dir path is a test-fixture corpus root (#434)."""
     parts = rel.split("/")
@@ -556,7 +517,6 @@ def _is_fixture_dir(rel):
         return True
     return (parts[-1] == "fixtures" and len(parts) >= 2
             and parts[-2] in FIXTURE_PARENT_DIRS)
-
 
 def resolve_base(repo, explicit=None, pr_base=None, runner=subprocess.run):
     """(base_ref, source). First candidate that resolves to a real commit:
@@ -584,18 +544,15 @@ def resolve_base(repo, explicit=None, pr_base=None, runner=subprocess.run):
             return ref, "fallback"
     return None, "unresolved"
 
-
 def _ancestor_dirs(rel):
     parts = rel.split("/")
     return ["/".join(parts[:i]) for i in range(1, len(parts))]  # excludes the file itself
-
 
 def prune_fixture_files(paths, include_fixtures):
     """Drop files under a fixture corpus dir (standard mode); keep all in redteam."""
     if include_fixtures:
         return list(paths)
     return [p for p in paths if not any(_is_fixture_dir(d) for d in _ancestor_dirs(p))]
-
 
 def write_diff_hunks(repo, base, source, out_path, tolerance, includes_uncommitted):
     """Write .panopticon/diff-hunks.json (#449) for the delta-review synth step.
@@ -620,14 +577,12 @@ def write_diff_hunks(repo, base, source, out_path, tolerance, includes_uncommitt
         json.dump(artifact, fh, indent=2)
         fh.write("\n")
 
-
 def _hunks_path_for(out):
     """Path for diff-hunks.json: alongside --out's directory, else the default
     .panopticon/ location. Shared by every mode that emits the artifact so the
     placement rule has one definition."""
     return (os.path.join(os.path.dirname(os.path.abspath(out)), "diff-hunks.json")
             if out else os.path.join(".panopticon", "diff-hunks.json"))
-
 
 def _validate_artifact_output(repo, path):
     """Reject writes through a target-controlled ``.panopticon`` symlink."""
@@ -644,7 +599,6 @@ def _validate_artifact_output(repo, path):
                 != os.path.realpath(safe_root):
             raise ValueError("artifact output escapes the target .panopticon directory")
     return path
-
 
 def resolve_base_or_die(repo, explicit, pr_base, on_fail=None):
     """Resolve the delta base, or fail loudly and return None.
@@ -670,30 +624,6 @@ def resolve_base_or_die(repo, explicit, pr_base, on_fail=None):
         return None
     return base, source
 
-
-def _resolve_or_die(repo, out, explicit, pr_base, diff_context,
-                    includes_uncommitted, on_fail=None):
-    """Resolve base and emit diff-hunks.json, or fail loudly (return False).
-
-    Returns True after writing the artifact; on an unresolvable base it prints a
-    loud message, runs ``on_fail()`` (e.g. release a worktree), and returns
-    False — the caller then ``return 2`` with NO artifact written. An
-    unresolvable base is a loud orchestrator-level failure, not a soft
-    INCONCLUSIVE deferred to synthesize (#449 redirect).
-
-    Used only by the ``--files`` mode, whose file set is explicit (no
-    coherence concern between file set and hunk map — see ``resolve_base_or_die``
-    for the modes that need the base resolved before the file set is built).
-    """
-    res = resolve_base_or_die(repo, explicit, pr_base, on_fail=on_fail)
-    if res is None:
-        return False
-    base, source = res
-    write_diff_hunks(repo, base, source, _hunks_path_for(out), diff_context,
-                     includes_uncommitted)
-    return True
-
-
 def _git_listed_files(repo):
     """Repo-relative paths git considers reviewable surface, or None.
 
@@ -711,13 +641,11 @@ def _git_listed_files(repo):
         return None
     return [os.fsdecode(path) for path in out.stdout.split(b"\0") if path]
 
-
 def _is_confined_regular(repo, rel):
     """True for a non-symlink regular file whose target remains in *repo*."""
     full = os.path.join(repo, rel)
     return (not os.path.islink(full) and os.path.isfile(full)
             and _within(repo, full))
-
 
 def _filter_reviewable(paths, include_fixtures, pruned_fixtures, isfile):
     """Apply the discovery policy to a candidate path list.
@@ -763,7 +691,6 @@ def _filter_reviewable(paths, include_fixtures, pruned_fixtures, isfile):
             continue
         out.append(rel)
     return out
-
 
 def discover_repo_files(repo, include_fixtures=False, pruned_fixtures=None,
                         info=None):
@@ -818,12 +745,10 @@ def discover_repo_files(repo, include_fixtures=False, pruned_fixtures=None,
                 out.append(rel)
     return sorted(out)
 
-
 def _looks_risky(path):
     """Crude heuristic for risky code surfaces until scout provides them."""
     lowered = path.lower()
     return any(k in lowered for k in ("auth", "login", "password", "payment", "pii", "encrypt", "token", "api"))
-
 
 def _compute_depth(files, panels, security_mode):
     """Assign shallow/standard/deep based on surfaces, panel mix, and security mode."""
@@ -839,7 +764,6 @@ def _compute_depth(files, panels, security_mode):
         return "standard"
     return "shallow"
 
-
 def _group_obj(name, files, security_mode):
     """Build one group entry: panels, surfaces, and depth for a file set."""
     panels = compute_group_panels(files, security_mode)
@@ -850,7 +774,6 @@ def _group_obj(name, files, security_mode):
         "panels": panels,
         "depth": _compute_depth(files, panels, security_mode),
     }
-
 
 def catalog_groups(files, catalog, max_per_group, security_mode):
     """Build stable, catalog-named groups for --repo-scan (#499).
@@ -872,7 +795,6 @@ def catalog_groups(files, catalog, max_per_group, security_mode):
     groups.extend(_group_obj("._%d" % (i + 1), c, security_mode)
                   for i, c in enumerate(chunk_files(leftovers, max_per_group)))
     return groups, leftovers
-
 
 def build_result(repo, mode, target, facet, impl, tests,
                  max_per_group=DEFAULT_MAX_PER_GROUP, group_files=None,
@@ -901,107 +823,71 @@ def build_result(repo, mode, target, facet, impl, tests,
         },
     }
 
-
-def run_setup_ingest(repo=".", proposal_path=None, out=sys.stdout):
-    """Thin CLI wrapper over setup_flow.ingest_proposal (extracted P6.4).
-    Preserves the exact printed output + exit codes.
-
-    Re-checks the bundled-data paths against orchestrator's own (re-exported)
-    _VOCAB_PATH/_AFFINITY_PATH before delegating: setup_flow.ingest_proposal
-    guards its OWN module-level copies, which a test (or caller) patching
-    orchestrator._VOCAB_PATH would not otherwise reach (P6.4 TestSetupScanFlow
-    regression: test_ingest_without_bundled_data_fails_loudly)."""
-    if not (os.path.isfile(_VOCAB_PATH) and os.path.isfile(_AFFINITY_PATH)):
-        print("data error: bundled vocabulary/affinity data is missing "
-              "(expected %s, %s)" % (_VOCAB_PATH, _AFFINITY_PATH), file=out)
-        return 1
-    import setup_flow
-    res = setup_flow.ingest_proposal(repo, proposal_path)
-    if not res["ok"]:
-        for line in res["errors"]:
-            print(line, file=out)
-        return 1
-    diff, disclosure = res["diff"], res["disclosure"]
-    print("draft groups.yml written: %s" % res["draft"], file=out)
-    print("  new groups:     %s" % (", ".join(
-        g["name"] for g in diff["new_groups"]) or "(none)"), file=out)
-    print("  extended:       %s" % (", ".join(
-        g["name"] for g in diff["extended_groups"]) or "(none)"), file=out)
-    print("  dropped (redundant): %s" % (", ".join(
-        diff["dropped_redundant"]) or "(none)"), file=out)
-    if disclosure.get("collisions"):
-        for c in disclosure["collisions"]:
-            print("  merged duplicate capability %s into group %s"
-                  % (c["capability"], c["name"]), file=out)
-    for g in disclosure.get("groups", []):
-        print("  %s: %s (%s)" % (
-            g["name"], "custom" if g["custom"] else "matched",
-            g["floor_source"]), file=out)
-    print("review the draft, then move it to .panopticon/groups.yml and commit "
-          "(setup never overwrites your committed file).", file=out)
-    return 0
-
-
-def run_setup(repo=".", host=None, runner=subprocess.run, environ=None,
-             out=sys.stdout, vocabulary_path=None):
-    """#485 + P2: provision, then render the setup-scan brief (or fall back to
-    the deterministic top-dir seed when no vocabulary is available).
-
-    Spec §8: the scan path is provision -> render brief -> STOP. The flat
-    top-dir groups.yml (_seed_groups_manifest) is the vocabulary-ABSENT
-    fallback ONLY (spec §6/§7) -- it must NEVER be seeded unconditionally,
-    or a later `--ingest` would read that flat catalog back as the
-    "committed" baseline, find no leftover files, and additive-merge would
-    drop every real capability group as redundant (C1)."""
-    added = _ensure_gitignore(repo)
-    print("gitignore: %s" % ("added %s" % ", ".join(added) if added else "ok"),
-          file=out)
-    cfg, cfg_created = _seed_config(repo)
-    print("config: %s (%s)" % (cfg, "created" if cfg_created else "existing"),
-          file=out)
-
-    import setup_proposal as sp
-    vpath = vocabulary_path or _VOCAB_PATH
-    vocab, verr = sp.load_vocabulary(vpath) if os.path.isfile(vpath) \
-        else ({"names": []}, ["absent"])
-    if vocab["names"] and not verr:
-        brief = render_scan_brief(repo, vocab)
-        print("scan brief: %s" % brief, file=out)
-        print("  → dispatch it as the read-only setup-scan agent, save the "
-              "proposal to .panopticon/setup-proposal.json, then run "
-              "`panopticon setup --ingest`.", file=out)
-    else:
-        path, created, names = _seed_groups_manifest(repo)
-        print("groups manifest: %s (%s; %d group(s))"
-              % (path, "created" if created else "existing", len(names)), file=out)
-        print("vocabulary absent -- scan skipped; using the deterministic "
-              "top-dir seed above (edit + commit it by hand).", file=out)
-
-    checks = setup_readiness(repo, host=host, runner=runner, environ=environ)
-    gaps = [c for c in checks if c[1] is False]
-    print("", file=out)
-    for name, ok, detail in checks:
-        mark = "OK " if ok else ("-- " if ok is None else "GAP")
-        print("  [%s] %-16s %s" % (mark, name, detail), file=out)
-    print("", file=out)
-    if gaps:
-        print("NOT READY -- %d gap(s) above; fix each and re-run --setup"
-              % len(gaps), file=out)
-        return 1
-    print("READY -- repo is provisioned for a panopticon run", file=out)
-    return 0
-
-
 def emit(obj, fh=None):
     """Serialize and emit object as indented JSON to stdout or a file."""
     fh = fh or sys.stdout
     json.dump(obj, fh, indent=2)
     fh.write("\n")
 
+def _committed_matrix(repo):
+    """Committed groups.yml as serializable {name: {match, tests, panels, exclude}},
+    preserving committed field ORDER verbatim (never-clobber is byte-faithful).
+    Empty when none is committed (first run -> adopt-all)."""
+    path = os.path.join(repo, ".panopticon", "groups.yml")
+    if not os.path.isfile(path):
+        return {}
+    import yaml
+    import groups_schema
+    with open(path, encoding="utf-8") as fh:
+        data = yaml.safe_load(fh) or {}
+    raw = data.get("groups") or {}
+    if isinstance(raw, list):  # legacy list form (Task 5)
+        raw = {g.get("name"): g for g in raw
+               if isinstance(g, dict) and g.get("name")}
+    # Validate only; errors are non-fatal on read (disclosed, not blocking) --
+    # the raw-order bodies below are returned regardless of what parse_groups
+    # finds.
+    _, errs = groups_schema.parse_groups({"groups": raw})
+    for e in errs:
+        print("committed groups.yml: %s" % e, file=sys.stderr)
+    out = {}
+    for name, body in raw.items():
+        body = body or {}
+        out[name] = {
+            "match": list(body.get("match") or []),
+            "tests": list(body.get("tests") or []),
+            "panels": list(body.get("panels") or []),
+            "exclude": list(body.get("exclude") or []),
+        }
+    return out
+
+def _matrix_catalog(repo):
+    """The committed matrix as parse_groups-NORMALIZED groups for --repo-scan /
+    readiness: {name: {match: [...], tests, floor, exclude}} with `match`
+    VALIDATED (a scalar/invalid match normalizes to [] -- never char-split).
+    Errors are disclosed (stderr), not fatal (the driver's load_committed_groups
+    gates fatally upstream). Empty {} when no groups.yml is committed."""
+    path = os.path.join(repo, ".panopticon", "groups.yml")
+    if not os.path.isfile(path):
+        return {}
+    import yaml
+    import groups_schema
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh) or {}
+    except (OSError, yaml.YAMLError) as e:
+        print("groups.yml unreadable: %s" % e, file=sys.stderr)
+        return {}
+    groups, errs = groups_schema.parse_groups(doc if isinstance(doc, dict) else {})
+    for e in errs:
+        print("committed groups.yml: %s" % e, file=sys.stderr)
+    return groups
 
 def main(argv=None):
-    """Resolve panopticon targets to grouped file lists and emit as JSON."""
-    ap = argparse.ArgumentParser(description="panopticon target resolver")
+    """Resolve --repo-scan discovery/matrix targets to grouped file lists and
+    emit as JSON. The sole mode the 5.0 driver invokes."""
+    ap = argparse.ArgumentParser(description="panopticon repo-scan discovery/matrix resolver",
+                                 allow_abbrev=False)
     ap.add_argument("target", nargs="?", default=None,
                     help="Repository path (overrides --repo)")
     ap.add_argument("--repo", default=".")
@@ -1011,51 +897,23 @@ def main(argv=None):
     ap.add_argument("--security", choices=["standard", "redteam"], default="standard",
                     help="Security review mode")
     ap.add_argument("--base", default=None,
-                    help="Base ref/sha for --changes/--pr/--files delta review")
+                    help="Base ref/sha for --scope-changed delta review")
     ap.add_argument("--pr-base", default=None,
                     help="PR base branch (gh-detected) for --repo-scan "
                          "--scope-changed; resolved with origin/<base> "
-                         "preference (#947). None for -c/--files.")
+                         "preference (#947).")
     ap.add_argument("--diff-context", type=int, default=5,
                     help="Lines of tolerance for on-diff classification (default 5)")
-    # Scope filters (P6.2): apply only with --repo-scan -- they narrow the
-    # discovered file universe before the SAME matrix assignment runs, rather
-    # than switching modes. Read only in the --repo-scan branch below.
+    ap.add_argument("--repo-scan", action="store_true")
+    # Scope filters (P6.2): narrow the discovered file universe to a target
+    # BEFORE the same matrix assignment runs, rather than switching modes.
     scope = ap.add_mutually_exclusive_group()
     scope.add_argument("--scope-file", metavar="PATH", default=None)
     scope.add_argument("--scope-dir", metavar="DIR", default=None)
     scope.add_argument("--scope-group", metavar="NAME", default=None)
     scope.add_argument("--scope-changed", action="store_true")
     scope.add_argument("--scope-files", nargs="+", metavar="PATH", default=None)
-    modes = ap.add_mutually_exclusive_group(required=True)
-    modes.add_argument("--group", metavar="NAME")
-    modes.add_argument("--directory", metavar="DIR")
-    modes.add_argument("--file", metavar="PATH")
-    modes.add_argument("--files", nargs="+", metavar="PATH")
-    modes.add_argument("--changes", "-c", action="store_true",
-                       help="Review changed files vs delta base (--base, else "
-                            "main/master; no HEAD~1 -- an unresolvable base "
-                            "fails loudly)")
-    modes.add_argument("--pr", type=int, metavar="N",
-                       help="Review GitHub PR N in an isolated worktree")
-    modes.add_argument("--repo-scan", action="store_true")
-    modes.add_argument("--setup", action="store_true",
-                       help="First-run provisioning + readiness check (#485): "
-                            "seed a committable groups.yml, scaffold "
-                            ".panopticon/ + gitignore + config, then report "
-                            "READY or the exact gaps (exit 1)")
-    ap.add_argument("--ingest", nargs="?", const="", default=None,
-                    help="With --setup: ingest a setup-scan proposal JSON "
-                         "(default .panopticon/setup-proposal.json) and write "
-                         "the groups.yml draft")
     args = ap.parse_args(argv)
-    if args.setup:
-        if args.ingest is not None:
-            return run_setup_ingest(".", proposal_path=(args.ingest or None))
-        return run_setup(".", host=None)
-    if args.ingest is not None:
-        print("panopticon: --ingest has no effect without --setup -- ignoring",
-              file=sys.stderr)
     if args.max_per_group < 1:
         print("--max-per-group must be >= 1", file=sys.stderr)
         return 2
@@ -1072,220 +930,105 @@ def main(argv=None):
             print("panopticon: %s" % exc, file=sys.stderr)
             return 2
 
-    result = None
-    if args.group:
-        name, facet = parse_group_arg(args.group)
-        catalog = load_catalog(repo)
-        if name not in catalog:
-            print("unknown group %r; run explore (-e) to build the catalog" % name,
+    pruned_fixtures = []
+    info = {}
+    allf = discover_repo_files(repo,
+                               include_fixtures=(args.security == "redteam"),
+                               pruned_fixtures=pruned_fixtures,
+                               info=info)
+    impl = [f for f in allf if not is_test_file(f)]
+    tests = [f for f in allf if is_test_file(f)]
+    # Group impl AND real test sources so tests aren't silently dropped (only
+    # their __pycache__ artifacts used to reach a group); counts stay impl-only.
+    result = build_result(repo, "repo", ".", None, impl, tests, args.max_per_group,
+                          group_files=impl + tests, security_mode=args.security)
+    result["discovery"] = {"method": info.get("method")}
+    catalog = _matrix_catalog(repo)   # SEC-3: parse_groups-validated matrix read
+    # P6.2: --scope-file/--scope-dir/--scope-group narrow the discovered
+    # universe to a target BEFORE the same matrix assignment below runs --
+    # a scope filter, not a new mode. No scope arg -> scoped stays None ->
+    # allf/impl/tests/result are untouched (byte-identical no-scope path).
+    scoped = None
+    _delta = None
+    if args.scope_group:
+        if args.scope_group not in catalog:
+            print("unknown group %r for --scope-group" % args.scope_group,
                   file=sys.stderr)
             return 2
-        impl = [f for f in expand_patterns(repo, catalog[name]["patterns"])
-                if not is_test_file(f)]
-        result = build_result(repo, "group", name, facet, impl, related_tests(repo, impl),
-                              args.max_per_group, security_mode=args.security)
-
-    elif args.directory:
-        d = args.directory.strip("/")
-        allf = expand_patterns(repo, [d + "/**/*"])
-        impl = [f for f in allf if not is_test_file(f)]
-        tests = [f for f in allf if is_test_file(f)]
-        result = build_result(repo, "directory", d, None, impl, tests, args.max_per_group,
-                              security_mode=args.security)
-
-    elif args.file:
-        if not os.path.isfile(os.path.join(repo, args.file)):
-            print("no such file: %s" % args.file, file=sys.stderr)
+        assigned, _ = assign_by_catalog(allf, {args.scope_group:
+                                               catalog[args.scope_group]})
+        scoped = assigned.get(args.scope_group, [])
+    elif args.scope_dir:
+        d = args.scope_dir.strip("/") + "/"
+        scoped = [f for f in allf if f.startswith(d)]
+        if not scoped:
+            print("--scope-dir %r matched no tracked files"
+                  % args.scope_dir, file=sys.stderr)
             return 2
-        result = build_result(repo, "file", args.file, None, [args.file],
-                              related_tests(repo, [args.file]), args.max_per_group,
-                              security_mode=args.security)
-
-    elif args.files:
-        files = prune_fixture_files(args.files, args.security == "redteam")
-        impl = [f for f in files if not is_test_file(f)]
-        tests = [f for f in files if is_test_file(f)]
-        result = build_result(repo, "files", "changeset", None, impl,
-                              sorted(set(tests) | set(related_tests(repo, impl))), args.max_per_group,
-                              security_mode=args.security)
-        # Delta artifact only when --base is an explicit request; plain --files
-        # (no --base) is a normal review and emits no diff-hunks.json (#449).
-        if args.base and not _resolve_or_die(repo, args.out, args.base, None,
-                                             args.diff_context, includes_uncommitted=True):
+    elif args.scope_file:
+        if args.scope_file not in allf:
+            print("--scope-file %r not found among discovered repo files"
+                  % args.scope_file, file=sys.stderr)
             return 2
-
-    elif args.changes:
-        # --changes always requests a delta review; the base is resolved FIRST
-        # (Finding A) so the reviewed file set (collect_changed_files) and the
-        # on-diff hunk map (write_diff_hunks) are computed against the SAME
-        # base, never two independently-resolved ones. An unresolvable base is
-        # a loud failure, not a soft INCONCLUSIVE deferred to synthesize (#449).
-        res = resolve_base_or_die(repo, args.base, None)
+        scoped = [args.scope_file] + [t for t in related_tests(repo, [args.scope_file])
+                                      if t in allf]
+    elif args.scope_changed:
+        res = resolve_base_or_die(repo, args.base, args.pr_base)
         if res is None:
             return 2
         base, source = res
         changed = collect_changed_files(repo, base=base)
         if changed is None:
-            print("could not determine changed files; is %s a git repository?" % repo,
+            print("could not determine changed files; is %s a git repo?" % repo,
                   file=sys.stderr)
             return 2
-        changed = prune_fixture_files(changed, args.security == "redteam")
-        if not changed:
-            print("no changed files found", file=sys.stderr)
-            return 0
-        impl = [f for f in changed if not is_test_file(f)]
-        tests = [f for f in changed if is_test_file(f)]
-        result = build_result(repo, "changes", "changes", None, impl,
-                              sorted(set(tests) | set(related_tests(repo, impl))), args.max_per_group,
-                              security_mode=args.security)
-        write_diff_hunks(repo, base, source, _hunks_path_for(args.out),
-                         args.diff_context, True)
-
-    elif args.pr is not None:
-        acq = diff_map.acquire_pr(args.pr, repo=repo)
-        wt = acq["worktree"]
-        try:
-            # --pr always requests a delta review; base resolved FIRST so the
-            # file set and hunk map share it (Finding A, as in --changes
-            # above). An unresolvable base releases the worktree first, then
-            # fails loudly — no artifact (#449).
-            res = resolve_base_or_die(
-                wt, args.base, acq["base"],
-                on_fail=lambda: diff_map.release_worktree(wt, repo=repo))
+        scoped = prune_fixture_files(changed, args.security == "redteam")
+        _delta = (base, source)
+    elif args.scope_files:
+        scoped = prune_fixture_files(list(args.scope_files),
+                                    args.security == "redteam")
+        _delta = None
+        if args.base:
+            res = resolve_base_or_die(repo, args.base, None)
             if res is None:
                 return 2
-            base, source = res
-            changed = prune_fixture_files(collect_changed_files(wt, base=base) or [],
-                                          args.security == "redteam")
-            impl = [f for f in changed if not is_test_file(f)]
-            tests = [f for f in changed if is_test_file(f)]
-            result = build_result(wt, "changes", "changes", None, impl,
-                                  sorted(set(tests) | set(related_tests(wt, impl))),
-                                  args.max_per_group, security_mode=args.security)
-            # The worktree is clean at the PR head so the working-tree diff is
-            # committed-only (includes_uncommitted=False).
-            write_diff_hunks(wt, base, source, _hunks_path_for(args.out),
-                             args.diff_context, False)
-            result["worktree"] = wt   # recorded; SKILL cleanup releases it post-review
-            # #955: the SKILL runs scout/tools/fan-out/synthesize with the
-            # worktree as cwd, where they expect .panopticon/groups.json and
-            # .panopticon/diff-hunks.json. Stage both so the worktree is
-            # pipeline-ready on exit -- previously they landed only in the
-            # invoking cwd/stdout and the operator had to hand-copy them (and
-            # re-running discovery to fix that leaked a second worktree).
-            wt_pan = plan_contract.artifact_root(wt)
-            os.makedirs(wt_pan, exist_ok=True)
-            write_diff_hunks(wt, base, source,
-                             os.path.join(wt_pan, "diff-hunks.json"),
-                             args.diff_context, False)
-            with open(os.path.join(wt_pan, "groups.json"), "w",
-                      encoding="utf-8") as fh:
-                emit(result, fh)
-        except Exception:
-            diff_map.release_worktree(wt, repo=repo)
-            raise
-
-    else:
-        # --repo-scan
-        pruned_fixtures = []
-        info = {}
-        allf = discover_repo_files(repo,
-                                   include_fixtures=(args.security == "redteam"),
-                                   pruned_fixtures=pruned_fixtures,
-                                   info=info)
+            _delta = res
+    if scoped is not None:
+        allf = scoped
         impl = [f for f in allf if not is_test_file(f)]
         tests = [f for f in allf if is_test_file(f)]
-        # Group impl AND real test sources so tests aren't silently dropped (only
-        # their __pycache__ artifacts used to reach a group); counts stay impl-only.
-        result = build_result(repo, "repo", ".", None, impl, tests, args.max_per_group,
-                              group_files=impl + tests, security_mode=args.security)
+        result = build_result(repo, "repo", ".", None, impl, tests,
+                              args.max_per_group, group_files=impl + tests,
+                              security_mode=args.security)
         result["discovery"] = {"method": info.get("method")}
-        catalog = _matrix_catalog(repo)   # SEC-3: parse_groups-validated matrix read
-        # P6.2: --scope-file/--scope-dir/--scope-group narrow the discovered
-        # universe to a target BEFORE the same matrix assignment below runs --
-        # a scope filter, not a new mode. No scope arg -> scoped stays None ->
-        # allf/impl/tests/result are untouched (byte-identical no-scope path).
-        scoped = None
-        _delta = None
-        if args.scope_group:
-            if args.scope_group not in catalog:
-                print("unknown group %r for --scope-group" % args.scope_group,
-                      file=sys.stderr)
-                return 2
-            assigned, _ = assign_by_catalog(allf, {args.scope_group:
-                                                   catalog[args.scope_group]})
-            scoped = assigned.get(args.scope_group, [])
-        elif args.scope_dir:
-            d = args.scope_dir.strip("/") + "/"
-            scoped = [f for f in allf if f.startswith(d)]
-            if not scoped:
-                print("--scope-dir %r matched no tracked files"
-                      % args.scope_dir, file=sys.stderr)
-                return 2
-        elif args.scope_file:
-            if args.scope_file not in allf:
-                print("--scope-file %r not found among discovered repo files"
-                      % args.scope_file, file=sys.stderr)
-                return 2
-            scoped = [args.scope_file] + [t for t in related_tests(repo, [args.scope_file])
-                                          if t in allf]
-        elif args.scope_changed:
-            res = resolve_base_or_die(repo, args.base, args.pr_base)
-            if res is None:
-                return 2
-            base, source = res
-            changed = collect_changed_files(repo, base=base)
-            if changed is None:
-                print("could not determine changed files; is %s a git repo?" % repo,
-                      file=sys.stderr)
-                return 2
-            scoped = prune_fixture_files(changed, args.security == "redteam")
-            _delta = (base, source)
-        elif args.scope_files:
-            scoped = prune_fixture_files(list(args.scope_files),
-                                        args.security == "redteam")
-            _delta = None
-            if args.base:
-                res = resolve_base_or_die(repo, args.base, None)
-                if res is None:
-                    return 2
-                _delta = res
-        if scoped is not None:
-            allf = scoped
-            impl = [f for f in allf if not is_test_file(f)]
-            tests = [f for f in allf if is_test_file(f)]
-            result = build_result(repo, "repo", ".", None, impl, tests,
-                                  args.max_per_group, group_files=impl + tests,
-                                  security_mode=args.security)
-            result["discovery"] = {"method": info.get("method")}
-        if _delta is not None:
-            base, source = _delta
-            includes_uncommitted = _worktree_dirty(repo)   # True for -c live tree; False for a clean --pr worktree
-            write_diff_hunks(repo, base, source,
-                             _hunks_path_for(args.out), args.diff_context,
-                             includes_uncommitted)
-        if any(g.get("match") for g in catalog.values()):
-            groups, leftovers = catalog_groups(allf, catalog, args.max_per_group,
-                                               args.security)
-            result["groups"] = groups
-            result["counts"]["groups"] = len(groups)
-            result["counts"]["ungrouped"] = len(leftovers)
-            result["ungrouped_files"] = leftovers
-            if leftovers:
-                print("catalog coverage: %d file(s) matched no group's `match` "
-                      "patterns and fell back to ._N chunks — see "
-                      "ungrouped_files; extend .panopticon/groups.yml to cover "
-                      "them: %s"
-                      % (len(leftovers), ", ".join(leftovers[:10])
-                         + (" …" if len(leftovers) > 10 else "")),
-                      file=sys.stderr)
-        if pruned_fixtures:
-            result["excluded"] = {"fixture_dirs": sorted(pruned_fixtures)}
-            print("fixture exclusion (%s mode): pruned %d fixture corpus dir(s): %s "
-                  "— intentionally-vulnerable test corpora do not gate a standard "
-                  "scan; use --security redteam to include them"
-                  % (args.security, len(pruned_fixtures),
-                     ", ".join(sorted(pruned_fixtures))), file=sys.stderr)
+    if _delta is not None:
+        base, source = _delta
+        includes_uncommitted = _worktree_dirty(repo)   # True for -c live tree; False for a clean --pr worktree
+        write_diff_hunks(repo, base, source,
+                         _hunks_path_for(args.out), args.diff_context,
+                         includes_uncommitted)
+    if any(g.get("match") for g in catalog.values()):
+        groups, leftovers = catalog_groups(allf, catalog, args.max_per_group,
+                                           args.security)
+        result["groups"] = groups
+        result["counts"]["groups"] = len(groups)
+        result["counts"]["ungrouped"] = len(leftovers)
+        result["ungrouped_files"] = leftovers
+        if leftovers:
+            print("catalog coverage: %d file(s) matched no group's `match` "
+                  "patterns and fell back to ._N chunks — see "
+                  "ungrouped_files; extend .panopticon/groups.yml to cover "
+                  "them: %s"
+                  % (len(leftovers), ", ".join(leftovers[:10])
+                     + (" …" if len(leftovers) > 10 else "")),
+                  file=sys.stderr)
+    if pruned_fixtures:
+        result["excluded"] = {"fixture_dirs": sorted(pruned_fixtures)}
+        print("fixture exclusion (%s mode): pruned %d fixture corpus dir(s): %s "
+              "— intentionally-vulnerable test corpora do not gate a standard "
+              "scan; use --security redteam to include them"
+              % (args.security, len(pruned_fixtures),
+                 ", ".join(sorted(pruned_fixtures))), file=sys.stderr)
 
     if args.out:
         os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)

@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import depth_planner
 import model_resolver
 import plan_contract
-from orchestrator import panels_in_priority_order
+from discovery import panels_in_priority_order
 
 
 TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
