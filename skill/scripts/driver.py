@@ -131,7 +131,7 @@ def discovery_execute(review_root, manifest):
                           env=_child_env())
     if not _json_parses(out):
         raise DriverError(
-            "discovery: orchestrator --repo-scan produced no groups.json "
+            "discovery: discovery --repo-scan produced no groups.json "
             "(rc=%s): %s" % (proc.returncode, (proc.stderr or proc.stdout)[:400]))
     return PhaseResult(kind="advanced", message="discovery: groups.json written")
 
