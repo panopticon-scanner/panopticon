@@ -16,6 +16,16 @@ def omit_none(mapping: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in mapping.items() if v is not None}
 
 
+def has_any_file(target: str, *names: str) -> bool:
+    """True if any of *names* exists as a regular file directly under *target*."""
+    return any(os.path.isfile(os.path.join(target, n)) for n in names)
+
+
+def as_list(value: Any) -> list:
+    """Wrap a single optional value as a one-item list, or [] when falsy."""
+    return [value] if value else []
+
+
 def attach_tool_provenance(finding: dict[str, Any], adapter_name: str,
                            reasoning: str | None = None) -> dict[str, Any]:
     """Attach tool provenance to *finding* and return the finding."""

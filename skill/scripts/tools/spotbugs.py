@@ -2,7 +2,7 @@
 from __future__ import annotations
 import os
 import xml.etree.ElementTree as ET
-from .base import make_finding, omit_none, run_tool
+from .base import as_list, make_finding, omit_none, run_tool
 
 _SPOTBUGS_CWE = {
     "SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE": "CWE-89",
@@ -63,7 +63,7 @@ class SpotBugsAdapter:
                 description=f"SpotBugs/FindSecBugs detected issue type {btype}.",
                 impact="Potential security flaw in JVM bytecode.",
                 remediation="Review the FindSecBugs documentation for this bug type and refactor.",
-                citations={"cwe": [cwe] if cwe else []},
+                citations={"cwe": as_list(cwe)},
                 tool_evidence=omit_none({"rule_id": btype}),
             ))
             n += 1
