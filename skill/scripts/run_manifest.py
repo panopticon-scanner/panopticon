@@ -28,7 +28,8 @@ def new_run_id():
 
 
 def build_manifest(*, target, review_root, host, security_mode, base=None,
-                   flags=None, run_id=None, worktree=None, scope=None, pr=None):
+                   flags=None, run_id=None, worktree=None, scope=None, pr=None,
+                   pr_base=None):
     flags = flags or {}
     return {
         "schema_version": SCHEMA_VERSION,
@@ -42,6 +43,10 @@ def build_manifest(*, target, review_root, host, security_mode, base=None,
         "flags": {k: flags.get(k) for k in _FLAG_KEYS},
         "scope": scope or {"mode": "repo", "target": None},
         "pr": pr,
+        # DERIVED (like worktree): the gh-detected PR base, threaded to
+        # orchestrator's --pr-base for origin/<base> preference (#947). NOT an
+        # anti-drift key -- a PR's base is fixed by the PR, not a user knob.
+        "pr_base": pr_base,
     }
 
 

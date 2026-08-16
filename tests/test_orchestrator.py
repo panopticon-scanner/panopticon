@@ -1878,3 +1878,57 @@ def test_repo_scan_scope_files_without_base_emits_no_diff_hunks(tmp_path):
     files = sorted(f for g in groups for f in g["files"])
     assert files == ["src/checkout/pay.py"]
     assert not (repo/".panopticon"/"diff-hunks.json").exists()
+
+
+def test_repo_scan_scope_changed_pr_base_resolves_origin_only_base(tmp_path):
+    # Finding B (B1 regression lock): the gh-detected PR base must flow through
+    # the --pr-base channel so resolve_base applies its origin/<base> preference
+    # (#947). This repo has the base ONLY as refs/remotes/origin/main -- there is
+    # NO local `main` branch -- exactly the shape acquire_pr leaves (it fetches
+    # only the PR head). Under the OLD code path (the base threaded as an explicit
+    # --base main) resolve_base would treat "main" as explicit, fail to resolve
+    # it, and return 2 with no artifact. With --pr-base it resolves to origin/main.
+    import orchestrator, json, subprocess
+    repo = _repo_with_matrix(tmp_path)   # commits Auth + Checkout matrix + files
+    base_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo,
+                              capture_output=True, text=True,
+                              check=True).stdout.strip()
+    # Base lives ONLY as a remote-tracking ref; rename the local default branch
+    # away so no local `main` (or `master`) can satisfy an explicit resolve.
+    subprocess.run(["git", "update-ref", "refs/remotes/origin/main", base_sha],
+                   cwd=repo, check=True)
+    subprocess.run(["git", "branch", "-m", "work"], cwd=repo, check=True)
+    # A committed change on top of the origin/main base so there IS a delta.
+    (repo / "src/checkout/pay.py").write_text("x=2\n")
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-aqm", "c2"], cwd=repo, check=True)
+    # Sanity: no local `main` branch exists (only origin/main).
+    branches = subprocess.run(["git", "branch", "--format=%(refname:short)"],
+                              cwd=repo, capture_output=True, text=True,
+                              check=True).stdout.split()
+    assert "main" not in branches
+
+    out = repo / ".panopticon" / "groups.json"
+    rc = orchestrator.main(["--repo-scan", "--scope-changed", "--pr-base", "main",
+                            str(repo), "--out", str(out)])
+    assert rc == 0                                              # did NOT return 2
+    groups = json.loads(out.read_text())["groups"]
+    files = sorted(f for g in groups for f in g["files"])
+    assert files == ["src/checkout/pay.py"]                    # restricted to changed
+    hunks = json.loads((repo/".panopticon"/"diff-hunks.json").read_text())
+    assert hunks["base"] == "origin/main"                      # origin-preference won
+    assert "src/checkout/pay.py" in hunks["hunks"]
+
+
+def test_repo_scan_scope_changed_explicit_base_ignores_pr_base(tmp_path):
+    # --base (explicit user override) still takes precedence over --pr-base and
+    # never falls through: a bad explicit base fails loudly even when a valid
+    # --pr-base is present (resolve_base's explicit-never-fallthrough contract).
+    import orchestrator
+    repo = _repo_with_matrix(tmp_path)
+    out = repo / ".panopticon" / "groups.json"
+    rc = orchestrator.main(["--repo-scan", "--scope-changed",
+                            "--base", "nope", "--pr-base", "main",
+                            str(repo), "--out", str(out)])
+    assert rc == 2
+    assert not (repo/".panopticon"/"diff-hunks.json").exists()

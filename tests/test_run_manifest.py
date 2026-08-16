@@ -113,6 +113,19 @@ class TestRunManifest(unittest.TestCase):
         conflicts = rm.conflicting_flags(m, pr=9)
         self.assertTrue(any("pr" in c for c in conflicts))
 
+    def test_pr_base_defaults_none_and_is_stored(self):
+        # Finding B: pr_base is a DERIVED field (like worktree) -- the gh-detected
+        # PR base, threaded to orchestrator's --pr-base for origin-preference.
+        self.assertIsNone(rm.build_manifest(**self._params())["pr_base"])
+        m = rm.build_manifest(**self._params(), pr_base="main")
+        self.assertEqual(m["pr_base"], "main")
+
+    def test_pr_base_is_not_an_anti_drift_key(self):
+        # A PR's base is fixed by the PR, not a user knob -- pr_base must NOT be a
+        # conflicting_flags key (only pr/scope/base gate drift).
+        m = rm.build_manifest(**self._params(), pr_base="main")
+        self.assertEqual(rm.conflicting_flags(m), [])
+
 
 if __name__ == "__main__":
     unittest.main()

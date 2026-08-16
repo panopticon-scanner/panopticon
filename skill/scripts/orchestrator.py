@@ -1268,6 +1268,10 @@ def main(argv=None):
                     help="Security review mode")
     ap.add_argument("--base", default=None,
                     help="Base ref/sha for --changes/--pr/--files delta review")
+    ap.add_argument("--pr-base", default=None,
+                    help="PR base branch (gh-detected) for --repo-scan "
+                         "--scope-changed; resolved with origin/<base> "
+                         "preference (#947). None for -c/--files.")
     ap.add_argument("--diff-context", type=int, default=5,
                     help="Lines of tolerance for on-diff classification (default 5)")
     # Scope filters (P6.2): apply only with --repo-scan -- they narrow the
@@ -1482,7 +1486,7 @@ def main(argv=None):
             scoped = [args.scope_file] + [t for t in related_tests(repo, [args.scope_file])
                                           if t in allf]
         elif args.scope_changed:
-            res = resolve_base_or_die(repo, args.base, None)
+            res = resolve_base_or_die(repo, args.base, args.pr_base)
             if res is None:
                 return 2
             base, source = res

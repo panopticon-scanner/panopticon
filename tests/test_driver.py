@@ -277,6 +277,47 @@ class TestDiscoveryPhase(unittest.TestCase):
         self.assertNotIn("--base", cmd)
         self.assertNotIn("--diff-context", cmd)
 
+    def test_discovery_threads_pr_base_when_present(self):
+        # Finding B: a --pr manifest carries the gh-detected base in `pr_base`
+        # (not `base`) so orchestrator resolves it with origin/<base> preference.
+        self._write_groups_yml("groups:\n  Auth:\n    match: ['src/auth/**']\n")
+        manifest = dict(self.manifest, scope={"mode": "changed", "target": None},
+                        base=None, pr_base="main")
+
+        def fake_run(cmd, **kw):
+            out = cmd[cmd.index("--out") + 1]
+            with open(out, "w") as fh:
+                json.dump({"groups": [{"name": "Auth", "files": ["src/auth/a.py"]}]}, fh)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch("scripts.driver.subprocess.run", side_effect=fake_run) as run:
+            result = driver.discovery_execute(self.root, manifest)
+        self.assertEqual(result.kind, "advanced")
+        cmd = run.call_args.args[0]
+        self.assertIn("--scope-changed", cmd)
+        self.assertIn("--pr-base", cmd)
+        self.assertEqual(cmd[cmd.index("--pr-base") + 1], "main")
+        self.assertNotIn("--base", cmd)   # base is None -> not threaded
+
+    def test_discovery_omits_pr_base_when_absent(self):
+        # A -c/--files manifest (no PR) carries no pr_base -> orchestrator gets
+        # no --pr-base and its byte-identical behavior is preserved.
+        self._write_groups_yml("groups:\n  Auth:\n    match: ['src/auth/**']\n")
+        manifest = dict(self.manifest, scope={"mode": "changed", "target": None},
+                        base="main")
+
+        def fake_run(cmd, **kw):
+            out = cmd[cmd.index("--out") + 1]
+            with open(out, "w") as fh:
+                json.dump({"groups": [{"name": "Auth", "files": ["src/auth/a.py"]}]}, fh)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch("scripts.driver.subprocess.run", side_effect=fake_run) as run:
+            driver.discovery_execute(self.root, manifest)
+        cmd = run.call_args.args[0]
+        self.assertNotIn("--pr-base", cmd)
+        self.assertIn("--base", cmd)
+
 
 class TestCoveragePhase(unittest.TestCase):
     def setUp(self):
@@ -627,12 +668,17 @@ class TestValidatePhase(unittest.TestCase):
         result = driver.validate_execute(d, {"run_id": "R", "worktree": None})
         self.assertEqual(result.kind, "advanced")
 
-    def test_releases_pr_worktree(self):
+    def test_validate_does_not_release_pr_worktree(self):
+        # Ruling A: validate must NOT release the worktree -- when review_root IS
+        # the worktree, releasing here would delete report.json + the manifest and
+        # break cursor derivation. Release happens in run() on completion instead.
         d = self._git_repo()
         driver.capture_tree_baseline(d)
         with mock.patch("scripts.driver.diff_map.release_worktree") as rel:
-            driver.validate_execute(d, {"run_id": "R", "worktree": "/tmp/pr-wt"})
-        rel.assert_called_once()
+            result = driver.validate_execute(d, {"run_id": "R", "worktree": "/tmp/pr-wt"})
+        rel.assert_not_called()
+        self.assertEqual(result.kind, "advanced")
+        self.assertTrue(driver.validate_done(d, {"run_id": "R", "worktree": "/tmp/pr-wt"}))
 
     def test_non_git_target_has_no_baseline_and_advances(self):
         with tempfile.TemporaryDirectory() as d:
@@ -664,6 +710,37 @@ class TestValidatePhase(unittest.TestCase):
         subprocess.run(["git", "-C", d, "mv", ".panopticon/x.py", "leaked.py"], check=True)
         with self.assertRaises(driver.DriverError):
             driver.validate_execute(d, {"run_id": "R", "worktree": None})
+
+
+class TestFinalizeWorktree(unittest.TestCase):
+    """Ruling A: on a completed --pr run, review_root IS the disposable worktree.
+    _finalize_worktree surfaces report.json to the caller's target BEFORE
+    releasing the worktree, and no-ops when there is no worktree."""
+
+    def _dir(self):
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        return d
+
+    def test_surfaces_report_then_releases_with_target_repo(self):
+        worktree = self._dir()
+        target = self._dir()
+        driver._write_json(driver._pano(worktree, "report.json"),
+                           {"summary": {"gate": "PASS"}})
+        manifest = {"run_id": "R", "worktree": worktree, "target": target}
+        with mock.patch.object(driver.diff_map, "release_worktree") as rel:
+            driver._finalize_worktree(worktree, manifest)
+        # report surfaced to the OWNING checkout's .panopticon/
+        surfaced = driver._load_json(driver._pano(target, "report.json"))
+        self.assertEqual(surfaced, {"summary": {"gate": "PASS"}})
+        # released against the owning repo (target), not review_root (==worktree)
+        rel.assert_called_once_with(worktree, repo=target)
+
+    def test_no_worktree_is_a_noop(self):
+        target = self._dir()
+        with mock.patch.object(driver.diff_map, "release_worktree") as rel:
+            driver._finalize_worktree(target, {"run_id": "R", "worktree": None})
+        rel.assert_not_called()
 
 
 import scripts.run_manifest as run_manifest  # noqa: E402
@@ -817,7 +894,10 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
 
     def test_pr_acquires_worktree_and_records_manifest(self):
         # C1 flip: driver --pr now acquires the deterministic PR worktree via
-        # resolve_review_root and pins the acquire base, rather than refusing.
+        # resolve_review_root, rather than refusing. Finding B: with NO explicit
+        # --base, manifest["base"] stays None (anti-drift key -- a bare resume
+        # passes base=None -> no false drift) and the gh-detected PR base lands
+        # in manifest["pr_base"], the origin-preference channel.
         d = self._repo()
         args = driver.build_parser().parse_args(["run", d, "--pr", "7"])
         with mock.patch(
@@ -831,8 +911,33 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         manifest = run_manifest.load_manifest(d)
         self.assertEqual(manifest["pr"], 7)
         self.assertEqual(manifest["worktree"], d)
-        self.assertEqual(manifest["base"], "main")
+        self.assertIsNone(manifest["base"])          # explicit-only; none given
+        self.assertEqual(manifest["pr_base"], "main")  # gh base -> pr_base channel
         self.assertEqual(manifest["scope"], {"mode": "changed", "target": None})
+
+    def test_run_finalizes_worktree_only_on_complete(self):
+        # Ruling A wiring: run() surfaces+releases the worktree via
+        # _finalize_worktree ONLY when the engine returns status=="complete" --
+        # never on a mid-run checkpoint (which must leave the worktree in place so
+        # the resume can re-enter it).
+        d = self._repo()
+        complete = {"status": "complete", "phase": None, "checkpoint": None,
+                    "group": None, "dispatch_request": None, "advanced": [],
+                    "message": "all phases complete"}
+        checkpoint = dict(complete, status="checkpoint", checkpoint="scout")
+
+        with mock.patch("scripts.driver.run_engine", return_value=complete), \
+                mock.patch("scripts.driver._finalize_worktree") as fin:
+            status = driver.run(self._args(d))
+        self.assertEqual(status["status"], "complete")
+        fin.assert_called_once()
+
+        d2 = self._repo()
+        with mock.patch("scripts.driver.run_engine", return_value=checkpoint), \
+                mock.patch("scripts.driver._finalize_worktree") as fin2:
+            status2 = driver.run(self._args(d2))
+        self.assertEqual(status2["status"], "checkpoint")
+        fin2.assert_not_called()
 
     def test_fresh_manifest_clears_stale_artifacts(self):
         # I1: a stale report.json with no manifest must be cleared on the first
@@ -1464,6 +1569,15 @@ class TestDriverDeltaEndToEnd(unittest.TestCase):
         # clean of it.
         self.assertEqual(report["summary"]["gate"], "PASS")
 
+        # Item 7 (load-bearing proof): flip --gate-scope to "all" on the SAME
+        # artifacts and the pre-existing off-diff HIGH now reaches the gate ->
+        # FAIL. This proves the default on-diff scoping is what produced the PASS
+        # (not a vacuous pass), i.e. gate scope actually changes the outcome.
+        manifest["flags"]["gate_scope"] = "all"
+        self.assertEqual(driver.synthesize_execute(d, manifest).kind, "advanced")
+        report_all = driver._load_json(driver._pano(d, "report.json"))
+        self.assertEqual(report_all["summary"]["gate"], "FAIL")
+
     def test_changed_scope_without_committed_groups_yml_raises_loud_setup_error(self):
         d = os.path.realpath(tempfile.mkdtemp())
         self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
@@ -1511,10 +1625,12 @@ class TestDriverDeltaEndToEnd(unittest.TestCase):
         self.assertEqual(base2, "main")
         self.assertEqual(created["count"], 1)   # 2nd acquire reused, no re-create
 
-    def test_validate_execute_releases_pr_worktree(self):
-        """validate_execute releases manifest["worktree"] via
-        diff_map.release_worktree (mocked -- no live `gh` worktree to
-        actually remove) once the real clean-tree check passes."""
+    def test_validate_does_not_release_pr_worktree(self):
+        """Ruling A: validate_execute does NOT release manifest["worktree"] --
+        the PR worktree IS the review root, so releasing here would delete
+        report.json + the manifest mid-machine. It still writes validate.json and
+        advances on a clean tree; release-on-complete is covered at the run()
+        level (test_run_finalizes_worktree_only_on_complete)."""
         d = os.path.realpath(tempfile.mkdtemp())
         self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
         subprocess.run(["git", "init", "-q"], cwd=d, check=True)
@@ -1526,7 +1642,7 @@ class TestDriverDeltaEndToEnd(unittest.TestCase):
             result = driver.validate_execute(d, manifest)
 
         self.assertEqual(result.kind, "advanced")
-        rel.assert_called_once_with(wt, repo=d)
+        rel.assert_not_called()
         validate = driver._load_json(driver._pano(d, "validate.json"))
         self.assertTrue(validate["tree_clean"])
         self.assertEqual(validate["unexpected_changes"], [])

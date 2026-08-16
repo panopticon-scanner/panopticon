@@ -121,6 +121,8 @@ def discovery_execute(review_root, manifest):
             cmd += [_scope_arg, scope["target"]]
     if manifest.get("base"):
         cmd += ["--base", manifest["base"]]
+    if manifest.get("pr_base"):
+        cmd += ["--pr-base", manifest["pr_base"]]
     _dc = (manifest.get("flags") or {}).get("diff_context")
     if _dc is not None:
         cmd += ["--diff-context", str(_dc)]
@@ -678,9 +680,9 @@ def validate_done(review_root, manifest):
 
 def validate_execute(review_root, manifest, runner=subprocess.run):
     delta = _tree_delta(review_root, runner)
-    worktree = manifest.get("worktree")
-    if worktree:
-        diff_map.release_worktree(worktree, repo=review_root)   # tolerant
+    # The PR worktree (when review_root IS the worktree) is released by run()
+    # AFTER the run completes, NOT here: releasing mid-machine would delete the
+    # review root (report.json + manifest) and break cursor derivation. (Ruling A)
     _write_json(_pano(review_root, "validate.json"),
                 {"run_id": manifest["run_id"], "tree_clean": not delta,
                  "unexpected_changes": delta})
@@ -688,6 +690,26 @@ def validate_execute(review_root, manifest, runner=subprocess.run):
         raise DriverError("validate: reviewer side effects outside .panopticon/: "
                           + "; ".join(delta[:10]))
     return PhaseResult(kind="advanced", message="validate: clean tree")
+
+
+def _finalize_worktree(review_root, manifest):
+    """On a completed --pr run, review_root IS the disposable worktree. Surface
+    report.json to the caller's target .panopticon/ BEFORE releasing the worktree
+    so the deliverable survives disposal (spec §4: no leak + report available).
+    Best-effort surface; release is tolerant. No-op when there is no worktree."""
+    worktree = manifest.get("worktree")
+    if not worktree:
+        return
+    target = manifest.get("target") or review_root
+    src = _pano(review_root, "report.json")
+    dst = _pano(target, "report.json")
+    if os.path.realpath(src) != os.path.realpath(dst) and os.path.isfile(src):
+        try:
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copyfile(src, dst)
+        except OSError:
+            pass
+    diff_map.release_worktree(worktree, repo=target)
 
 
 _DEFAULTS = {"host": "claude", "security": "standard"}
@@ -786,9 +808,11 @@ def run(args, runner=subprocess.run, phases=PHASES):
     review_root, worktree, pr_base = resolve_review_root(
         args.target, base=args.base, pr=args.pr, runner=runner)
     if args.pr is not None:
-        # A PR is a changed-files delta by definition; the base comes from the
-        # acquire (the PR's actual base branch) unless the caller overrides it.
-        base = args.base or pr_base
+        # A PR is a changed-files delta by definition. manifest["base"] holds the
+        # user's EXPLICIT override only (anti-drift key); the gh-detected PR base
+        # flows separately via manifest["pr_base"] -> orchestrator --pr-base, so
+        # resolve_base applies its origin/<base> preference (#947 / spec §4 L51).
+        base = args.base
         scope = {"mode": "changed", "target": None}
     else:
         base = args.base
@@ -808,7 +832,7 @@ def run(args, runner=subprocess.run, phases=PHASES):
             host=args.host or _DEFAULTS["host"],
             security_mode=args.security or _DEFAULTS["security"],
             base=base, flags=_cli_flags(args), worktree=worktree,
-            scope=scope, pr=args.pr)
+            scope=scope, pr=args.pr, pr_base=pr_base)
         run_manifest.write_manifest(review_root, manifest)
     else:
         conflicts = run_manifest.conflicting_flags(
@@ -823,9 +847,12 @@ def run(args, runner=subprocess.run, phases=PHASES):
     # left missing (which had silently disabled the clean-tree guard).
     capture_tree_baseline(review_root, runner=runner)
     try:
-        return run_engine(review_root, manifest, phases)
+        result = run_engine(review_root, manifest, phases)
     except DriverError as exc:
         return _error_status(str(exc))
+    if result.get("status") == "complete":
+        _finalize_worktree(review_root, manifest)
+    return result
 
 
 def main(argv=None):
