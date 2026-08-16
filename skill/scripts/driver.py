@@ -222,6 +222,13 @@ def write_dispatch_request(review_root, run_id, checkpoint, group, entries):
     return os.path.abspath(path)
 
 
+def load_dispatch_request(review_root):
+    """The parsed .panopticon/dispatch-request.json (or None if absent/invalid).
+    The host reads req['entries'] to install the write-guard
+    (write_guard_hook.install(entries)) and to dispatch the checkpoint's cells."""
+    return _load_json(_pano(review_root, "dispatch-request.json"))
+
+
 def _discovered_groups(review_root):
     """(name, files) per group from discovery's groups.json."""
     data = _load_json(_pano(review_root, "groups.json")) or {}
