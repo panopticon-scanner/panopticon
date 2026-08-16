@@ -19,8 +19,8 @@ summary + JSON artifact) with standards citations and CI gating.
 
 ## Architecture
 - `skill/` — the installable skill surface (symlink target); everything an agent loads lives here.
-- `skill/SKILL.md` — orchestration spec (modes, pipeline, dispatch templates, flags). Instructions
-  to the orchestrating agent; not a runnable script.
+- `skill/SKILL.md` — driver run-loop spec (modes, driver verbs, flags). Instructions
+  the host follows to drive the driver; not a runnable script.
 - `skill/scripts/discovery.py` — resolve a target (`-f/-d/-g/-c/--pr`/repo) to cohesive
   ≤15-file groups (`groups.json`); extracted from the retired `orchestrator.py` (5.0 Slice A).
   Language-neutral, stdlib only.
