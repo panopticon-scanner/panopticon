@@ -1811,3 +1811,70 @@ def test_repo_scan_scope_dir_no_tracked_files_errors(tmp_path, capsys):
     assert rc == 2
     err = capsys.readouterr().err
     assert "no/such/dir" in err
+
+
+# --- P6.3: --scope-changed/--scope-files -- delta scopes on --repo-scan.
+# These narrow the discovered file universe to a changed-vs-base set (or an
+# explicit list) BEFORE the same matrix assignment runs (like --scope-file/
+# -dir/-group), and additionally emit .panopticon/diff-hunks.json so
+# synthesize's on-diff gate has a hunk map to scope findings against.
+
+def test_repo_scan_scope_changed_restricts_and_emits_diff_hunks(tmp_path):
+    import orchestrator, json, subprocess
+    repo = _repo_with_matrix(tmp_path)   # commits Auth + Checkout matrix + files
+    # create a new commit changing one checkout file
+    (repo / "src/checkout/pay.py").write_text("x=2\n")
+    subprocess.run(["git","-c","user.email=t@t","-c","user.name=t","commit","-aqm","c2"],
+                   cwd=repo, check=True)
+    out = repo / ".panopticon" / "groups.json"
+    rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
+                            str(repo), "--out", str(out)])
+    assert rc == 0
+    groups = json.loads(out.read_text())["groups"]
+    files = sorted(f for g in groups for f in g["files"])
+    assert files == ["src/checkout/pay.py"]                       # restricted to changed
+    hunks = json.loads((repo/".panopticon"/"diff-hunks.json").read_text())
+    assert hunks["base"] and "src/checkout/pay.py" in hunks["hunks"]
+
+
+def test_repo_scan_scope_changed_bad_base_exits_2_no_artifact(tmp_path):
+    import orchestrator
+    repo = _repo_with_matrix(tmp_path)
+    out = repo / ".panopticon" / "groups.json"
+    assert orchestrator.main(["--repo-scan","--scope-changed","--base","nope",
+                              str(repo),"--out",str(out)]) == 2
+    assert not (repo/".panopticon"/"diff-hunks.json").exists()
+
+
+def test_repo_scan_scope_files_with_base_emits_diff_hunks(tmp_path):
+    import orchestrator, json, subprocess
+    repo = _repo_with_matrix(tmp_path)
+    (repo / "src/checkout/pay.py").write_text("x=2\n")
+    subprocess.run(["git","-c","user.email=t@t","-c","user.name=t","commit","-aqm","c2"],
+                   cwd=repo, check=True)
+    out = repo / ".panopticon" / "groups.json"
+    # --repo (not the positional target) precedes --scope-files here -- nargs="+"
+    # would otherwise greedily swallow a trailing positional target (same
+    # convention as the existing --files tests).
+    rc = orchestrator.main(["--repo", str(repo), "--repo-scan", "--scope-files",
+                            "src/checkout/pay.py", "--base", "HEAD~1",
+                            "--out", str(out)])
+    assert rc == 0
+    groups = json.loads(out.read_text())["groups"]
+    files = sorted(f for g in groups for f in g["files"])
+    assert files == ["src/checkout/pay.py"]
+    hunks = json.loads((repo/".panopticon"/"diff-hunks.json").read_text())
+    assert hunks["base"] and "src/checkout/pay.py" in hunks["hunks"]
+
+
+def test_repo_scan_scope_files_without_base_emits_no_diff_hunks(tmp_path):
+    import orchestrator, json
+    repo = _repo_with_matrix(tmp_path)
+    out = repo / ".panopticon" / "groups.json"
+    rc = orchestrator.main(["--repo", str(repo), "--repo-scan", "--scope-files",
+                            "src/checkout/pay.py", "--out", str(out)])
+    assert rc == 0
+    groups = json.loads(out.read_text())["groups"]
+    files = sorted(f for g in groups for f in g["files"])
+    assert files == ["src/checkout/pay.py"]
+    assert not (repo/".panopticon"/"diff-hunks.json").exists()

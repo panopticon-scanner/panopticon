@@ -151,6 +151,15 @@ def _git(repo, args, timeout=30, text=True):
                           timeout=timeout)
 
 
+def _worktree_dirty(repo):
+    """True when repo's working tree has uncommitted changes (git status
+    --porcelain is non-empty) -- used to set diff-hunks.json's
+    includes_uncommitted for the P6.3 --repo-scan delta scopes: True for a
+    live tree (e.g. -c usage), False for a clean checkout."""
+    r = _git(repo, ["status", "--porcelain"])
+    return bool(r.stdout.strip())
+
+
 def collect_changed_files(repo, base=None):
     """Collect repo-relative paths changed since the merge base (or HEAD~1).
 
@@ -1268,6 +1277,8 @@ def main(argv=None):
     scope.add_argument("--scope-file", metavar="PATH", default=None)
     scope.add_argument("--scope-dir", metavar="DIR", default=None)
     scope.add_argument("--scope-group", metavar="NAME", default=None)
+    scope.add_argument("--scope-changed", action="store_true")
+    scope.add_argument("--scope-files", nargs="+", metavar="PATH", default=None)
     modes = ap.add_mutually_exclusive_group(required=True)
     modes.add_argument("--group", metavar="NAME")
     modes.add_argument("--directory", metavar="DIR")
@@ -1447,6 +1458,7 @@ def main(argv=None):
         # a scope filter, not a new mode. No scope arg -> scoped stays None ->
         # allf/impl/tests/result are untouched (byte-identical no-scope path).
         scoped = None
+        _delta = None
         if args.scope_group:
             if args.scope_group not in catalog:
                 print("unknown group %r for --scope-group" % args.scope_group,
@@ -1469,6 +1481,27 @@ def main(argv=None):
                 return 2
             scoped = [args.scope_file] + [t for t in related_tests(repo, [args.scope_file])
                                           if t in allf]
+        elif args.scope_changed:
+            res = resolve_base_or_die(repo, args.base, None)
+            if res is None:
+                return 2
+            base, source = res
+            changed = collect_changed_files(repo, base=base)
+            if changed is None:
+                print("could not determine changed files; is %s a git repo?" % repo,
+                      file=sys.stderr)
+                return 2
+            scoped = prune_fixture_files(changed, args.security == "redteam")
+            _delta = (base, source)
+        elif args.scope_files:
+            scoped = prune_fixture_files(list(args.scope_files),
+                                        args.security == "redteam")
+            _delta = None
+            if args.base:
+                res = resolve_base_or_die(repo, args.base, None)
+                if res is None:
+                    return 2
+                _delta = res
         if scoped is not None:
             allf = scoped
             impl = [f for f in allf if not is_test_file(f)]
@@ -1477,6 +1510,12 @@ def main(argv=None):
                                   args.max_per_group, group_files=impl + tests,
                                   security_mode=args.security)
             result["discovery"] = {"method": info.get("method")}
+        if _delta is not None:
+            base, source = _delta
+            includes_uncommitted = _worktree_dirty(repo)   # True for -c live tree; False for a clean --pr worktree
+            write_diff_hunks(repo, base, source,
+                             _hunks_path_for(args.out), args.diff_context,
+                             includes_uncommitted)
         if any(g.get("match") for g in catalog.values()):
             groups, leftovers = catalog_groups(allf, catalog, args.max_per_group,
                                                args.security)
