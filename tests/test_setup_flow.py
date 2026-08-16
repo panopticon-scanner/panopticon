@@ -60,6 +60,14 @@ class TestSetupFlow(unittest.TestCase):
         self.assertFalse(res["ok"])
         self.assertFalse(os.path.isfile(os.path.join(d, ".panopticon", "groups.yml.draft")))
 
+    def test_scan_brief_includes_vocabulary_hints(self):
+        d = _repo()
+        vocab = {"names": ["Auth"], "hints": {"Auth": ["**/auth/**", "**/login/**"]}}
+        path = setup_flow.render_scan_brief(d, vocab)
+        brief = open(path).read()
+        self.assertIn("Auth", brief)
+        self.assertIn("**/auth/**", brief)  # the hint globs reach the classifier
+
     def test_readiness_returns_checks(self):
         d = _repo()
         checks = setup_flow.readiness(d, host="claude",

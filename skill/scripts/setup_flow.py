@@ -189,12 +189,27 @@ def _repo_spine_summary(repo):
         ", ".join(tops) or "(none)", ", ".join(manifests) or "(none)")
 
 
+def _format_vocabulary_hints(vocabulary):
+    """Render vocabulary['hints'] ({name: [globs]}) as one line per label
+    that has hints: '- <name>: <comma-joined globs>'. Labels with no hints
+    are omitted. These are non-authoritative starting suggestions (#2-data
+    spec §2.1/§10.6) -- setup-scan.md labels them as such to the classifier."""
+    hints = vocabulary.get("hints") or {}
+    lines = []
+    for name in vocabulary.get("names", []):
+        globs = hints.get(name) or []
+        if globs:
+            lines.append("- %s: %s" % (name, ", ".join(globs)))
+    return "\n".join(lines)
+
+
 def render_scan_brief(repo, vocabulary):
     """Render the setup-scan agent brief to .panopticon/setup-scan-brief.md."""
     import dispatch
     brief = dispatch.render_prompt("setup-scan.md", {
         "repo_spine": _repo_spine_summary(repo),
         "vocabulary_labels": ", ".join(vocabulary["names"]),
+        "vocabulary_hints": _format_vocabulary_hints(vocabulary),
     })
     path = os.path.join(plan_contract.artifact_root(repo), "setup-scan-brief.md")
     with open(path, "w", encoding="utf-8") as fh:
