@@ -892,6 +892,30 @@ def test_repo_scan_scope_file_restricts_to_file_and_its_group(tmp_path):
     assert {g["name"] for g in groups} == {"Checkout"}   # assigned to its group, nothing else
 
 
+def test_repo_scan_scope_file_includes_sibling_related_test(tmp_path):
+    # related_tests()'s filtering (discovery.py:969) actually pulls a real
+    # co-located sibling test file into a --scope-file scope -- the sibling
+    # case: test_candidates("src/checkout/pay.py") generates "src/checkout/
+    # test_pay.py" as its first same-directory candidate (before falling
+    # back to spec/test/tests dirs); commit that file for real and confirm
+    # it surfaces alongside the impl file. Complements
+    # test_repo_scan_scope_file_restricts_to_file_and_its_group's negative
+    # case ("no related tests here").
+    import discovery as orchestrator, json
+    repo = _repo_with_matrix(tmp_path)
+    (repo / "src" / "checkout" / "test_pay.py").write_text("def test_x():\n    pass\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-qm", "add sibling test"], cwd=repo, check=True)
+    out = repo / "groups.json"
+    orchestrator.main(["--repo-scan", "--scope-file", "src/checkout/pay.py",
+                       str(repo), "--out", str(out)])
+    groups = json.loads(out.read_text())["groups"]
+    files = sorted(f for g in groups for f in g["files"])
+    assert files == ["src/checkout/pay.py", "src/checkout/test_pay.py"]
+    assert {g["name"] for g in groups} == {"Checkout"}
+
+
 def test_repo_scan_scope_dir_restricts_to_directory(tmp_path):
     import discovery as orchestrator, json
     repo = _repo_with_matrix(tmp_path)

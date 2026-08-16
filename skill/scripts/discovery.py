@@ -3,10 +3,13 @@
 grouped file lists via the committed groups.yml catalog. Stdlib-only; run
 BEFORE dispatching review subagents.
 
-Extracted from orchestrator.py -- the surviving --repo-scan core, now the
-sole mode the 5.0 driver invokes. orchestrator.py keeps its legacy per-mode
-CLI (-f/-d/-g/-c/--pr/--files/-e/--setup) as a shim over these primitives
-until A2 retires it.
+The focused discovery/matrix module: repo file discovery, `.panopticon/
+groups.yml` matrix assignment, the --repo-scan CLI (whole-repo and the
+--scope-file/--scope-dir/--scope-group/--scope-changed/--scope-files
+filters), and delta review support (--base/--pr-base resolution,
+diff-hunks.json emission). Extracted from the now-retired orchestrator.py
+in P6.5 -- discovery.py is the sole discovery entry point the 5.0 driver
+subprocesses.
 """
 import argparse
 import fnmatch
@@ -883,7 +886,8 @@ def _matrix_catalog(repo):
 def main(argv=None):
     """Resolve --repo-scan discovery/matrix targets to grouped file lists and
     emit as JSON. The sole mode the 5.0 driver invokes."""
-    ap = argparse.ArgumentParser(description="panopticon repo-scan discovery/matrix resolver")
+    ap = argparse.ArgumentParser(description="panopticon repo-scan discovery/matrix resolver",
+                                 allow_abbrev=False)
     ap.add_argument("target", nargs="?", default=None,
                     help="Repository path (overrides --repo)")
     ap.add_argument("--repo", default=".")
