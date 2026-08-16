@@ -697,6 +697,20 @@ def _cli_flags(args):
             "include_fixtures": True if args.include_fixtures else None}
 
 
+def _scope_from_args(args):
+    """The {mode,target} scope implied by -f/-d/-g, or None if none was given
+    (a bare re-invocation with no scope opinion — mirrors host/security_mode/
+    base/flags: None never conflicts in conflicting_flags, and build_manifest
+    defaults a None scope to {"mode":"repo","target":None} itself)."""
+    if getattr(args, "scope_file", None):
+        return {"mode": "file", "target": args.scope_file}
+    if getattr(args, "scope_dir", None):
+        return {"mode": "directory", "target": args.scope_dir}
+    if getattr(args, "scope_group", None):
+        return {"mode": "group", "target": args.scope_group}
+    return None
+
+
 def _clear_run_artifacts(review_root):
     """Remove the manifest's derived artifacts for --reset. NEVER touches
     groups.yml (the committed matrix)."""
@@ -729,6 +743,10 @@ def build_parser():
         p.add_argument("--tools", action="store_true")
         p.add_argument("--no-tools", action="store_true")
         p.add_argument("--include-fixtures", action="store_true")
+        scope = p.add_mutually_exclusive_group()
+        scope.add_argument("-f", "--file", dest="scope_file", default=None)
+        scope.add_argument("-d", "--directory", dest="scope_dir", default=None)
+        scope.add_argument("-g", "--group", dest="scope_group", default=None)
     return parser
 
 
@@ -765,12 +783,13 @@ def run(args, runner=subprocess.run, phases=PHASES):
             target=args.target, review_root=review_root,
             host=args.host or _DEFAULTS["host"],
             security_mode=args.security or _DEFAULTS["security"],
-            base=args.base, flags=_cli_flags(args), worktree=worktree)
+            base=args.base, flags=_cli_flags(args), worktree=worktree,
+            scope=_scope_from_args(args))
         run_manifest.write_manifest(review_root, manifest)
     else:
         conflicts = run_manifest.conflicting_flags(
             manifest, host=args.host, security_mode=args.security,
-            base=args.base, flags=_cli_flags(args))
+            base=args.base, flags=_cli_flags(args), scope=_scope_from_args(args))
         if conflicts:
             return _error_status("flag drift (use --reset to start over): "
                                  + "; ".join(conflicts))

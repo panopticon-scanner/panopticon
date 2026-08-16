@@ -646,6 +646,31 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         self.assertEqual(status["status"], "error")
         self.assertIn("drift", status["message"])
 
+    def test_scope_group_flag_parses(self):
+        args = driver.build_parser().parse_args(["run", "x", "-g", "Auth"])
+        self.assertEqual(args.scope_group, "Auth")
+        self.assertIsNone(args.scope_file)
+        self.assertIsNone(args.scope_dir)
+
+    def test_scope_flags_are_mutually_exclusive(self):
+        with self.assertRaises(SystemExit):
+            driver.build_parser().parse_args(
+                ["run", "x", "-g", "Auth", "-f", "src/app.py"])
+
+    def test_scope_recorded_on_manifest(self):
+        d = self._repo()
+        driver.run(self._args(d, "-g", "Auth"))
+        manifest = run_manifest.load_manifest(d)
+        self.assertEqual(manifest["scope"], {"mode": "group", "target": "Auth"})
+
+    def test_scope_drift_is_refused(self):
+        d = self._repo()
+        driver.run(self._args(d, "-g", "Auth"))          # manifest scoped to Auth
+        status = driver.run(self._args(d, "-g", "Checkout"))
+        self.assertEqual(status["status"], "error")
+        self.assertIn("drift", status["message"])
+        self.assertIn("scope", status["message"])
+
     def test_reset_restarts_from_scratch(self):
         d = self._repo()
         args = self._args(d)
