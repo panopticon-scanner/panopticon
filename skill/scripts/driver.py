@@ -264,7 +264,9 @@ def _scout_entry(review_root, manifest, group, files, host):
     appended. Enforcement is host-declared (claude registers panopticon-scout)."""
     body = dispatch.render_prompt("scout.md", {}, host)
     security = manifest.get("security_mode", "standard")
-    file_list = "\n".join("- " + f for f in files) or "- (no files)"
+    file_list = "\n".join(
+        "- " + os.path.abspath(os.path.join(review_root, f)) for f in files
+    ) or "- (no files)"
     prompt = (body
               + "\n\n## Assignment\n\nGroup: %s\nSecurity mode: %s\n\nFiles:\n%s\n"
                 % (group, security, file_list)
@@ -378,7 +380,9 @@ def _render_menu(bundle, domain):
 
 
 def _cell_entry(review_root, manifest, group, domain, files, tests, host, bundle):
-    file_list = "\n".join("- " + f for f in files) or "- (no files)"
+    file_list = "\n".join(
+        "- " + os.path.abspath(os.path.join(review_root, f)) for f in files
+    ) or "- (no files)"
     test_list = "\n".join("- " + t for t in tests) or "- (no tests)"
     out_file = os.path.abspath(_pano(review_root, "findings-%s-%s.json" % (group, domain)))
     prompt = dispatch.render_prompt("domain-panel.md", {
@@ -454,12 +458,23 @@ def _render_findings(cell):
 
 
 def _verify_entry(review_root, manifest, group, domain, files, cell, host, bundle, stage):
-    file_list = "\n".join("- " + f for f in files) or "- (no files)"
+    file_list = "\n".join(
+        "- " + os.path.abspath(os.path.join(review_root, f)) for f in files
+    ) or "- (no files)"
     out_file = _verify_out_file(review_root, group, domain, stage)
     prompt = dispatch.render_prompt("domain-advisor.md", {
         "domain": domain, "group": group, "file_list": file_list,
         "findings": _render_findings(cell), "menu": _render_menu(bundle, domain),
         "run_id": manifest["run_id"], "stage": stage, "out_file": out_file}, host)
+    # #975: pin the review root for the advisor too. Unlike the scout/panel file
+    # list above, the findings JSON's `location` fields are carried verbatim from
+    # the panel's raw claims and stay repo-relative on disk (_render_findings) —
+    # Part A's abspath can't reach into that payload. The advisor inherits the
+    # HOST's cwd (the user's checkout), never review_root/the --pr worktree, so
+    # without this header a relative `location` resolves against the wrong tree.
+    prompt = ("Repo root: %s\nEvery relative path in the claims below resolves "
+              "against this root -- read files THERE, never in your session's "
+              "default checkout.\n\n%s" % (os.path.abspath(review_root), prompt))
     enforced = host == "claude"
     return {"id": "verify-%s-%s-%s" % (group, domain, stage),
             "agent": dispatch.registered_agent_name("domain-advisor.md") if enforced else None,
