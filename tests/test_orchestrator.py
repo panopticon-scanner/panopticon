@@ -1584,3 +1584,47 @@ def test_repo_scan_scalar_match_disclosed_not_silently_coerced(tmp_path, capsys)
     orchestrator._committed_matrix(str(tmp_path))   # parse_groups validates
     err = capsys.readouterr().err
     assert "match must be a non-empty list" in err   # disclosed, not silent-coerced
+
+
+def _repo_with_matrix(tmp_path):
+    import subprocess, os
+    repo = tmp_path
+    (repo / ".panopticon").mkdir(parents=True)
+    for p in ["src/auth/login.py", "src/checkout/pay.py", "src/checkout/cart.py"]:
+        os.makedirs(os.path.dirname(repo / p), exist_ok=True)
+        (repo / p).write_text("x=1\n")
+    (repo / ".panopticon" / "groups.yml").write_text(
+        "groups:\n"
+        "  Auth:\n    match: ['src/auth/**']\n    panels: [SEC]\n"
+        "  Checkout:\n    match: ['src/checkout/**']\n    panels: [SEC, DAT]\n")
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-qm", "x"], cwd=repo, check=True)
+    return repo
+
+
+def test_repo_scan_scope_group_restricts_to_named_group(tmp_path):
+    import orchestrator, json
+    repo = _repo_with_matrix(tmp_path)
+    out = repo / "groups.json"
+    orchestrator.main(["--repo-scan", "--scope-group", "Checkout",
+                       str(repo), "--out", str(out)])
+    groups = json.loads(out.read_text())["groups"]
+    names = {g["name"] for g in groups}
+    files = sorted(f for g in groups for f in g["files"])
+    assert names == {"Checkout"}
+    assert files == ["src/checkout/cart.py", "src/checkout/pay.py"]
+
+
+def test_repo_scan_scope_file_restricts_to_file_and_its_group(tmp_path):
+    import orchestrator, json
+    repo = _repo_with_matrix(tmp_path)
+    out = repo / "groups.json"
+    orchestrator.main(["--repo-scan", "--scope-file", "src/checkout/pay.py",
+                       str(repo), "--out", str(out)])
+    groups = json.loads(out.read_text())["groups"]
+    files = sorted(f for g in groups for f in g["files"])
+    assert files == ["src/checkout/pay.py"]           # only the file (no related tests here)
+    assert all(g["name"] == "Checkout" or g["name"].startswith("._")
+               for g in groups)                        # assigned to its group

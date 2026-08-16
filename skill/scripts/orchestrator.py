@@ -1238,6 +1238,12 @@ def main(argv=None):
                     help="Base ref/sha for --changes/--pr/--files delta review")
     ap.add_argument("--diff-context", type=int, default=5,
                     help="Lines of tolerance for on-diff classification (default 5)")
+    # Scope filters (P6.2): apply only with --repo-scan -- they narrow the
+    # discovered file universe before the SAME matrix assignment runs, rather
+    # than switching modes. Read only in the --repo-scan branch below.
+    ap.add_argument("--scope-file", metavar="PATH", default=None)
+    ap.add_argument("--scope-dir", metavar="DIR", default=None)
+    ap.add_argument("--scope-group", metavar="NAME", default=None)
     modes = ap.add_mutually_exclusive_group(required=True)
     modes.add_argument("--group", metavar="NAME")
     modes.add_argument("--directory", metavar="DIR")
@@ -1412,6 +1418,33 @@ def main(argv=None):
                               group_files=impl + tests, security_mode=args.security)
         result["discovery"] = {"method": info.get("method")}
         catalog = _committed_matrix(repo)   # SEC-3: parse_groups-validated matrix read
+        # P6.2: --scope-file/--scope-dir/--scope-group narrow the discovered
+        # universe to a target BEFORE the same matrix assignment below runs --
+        # a scope filter, not a new mode. No scope arg -> scoped stays None ->
+        # allf/impl/tests/result are untouched (byte-identical no-scope path).
+        scoped = None
+        if args.scope_group:
+            if args.scope_group not in catalog:
+                print("unknown group %r for --scope-group" % args.scope_group,
+                      file=sys.stderr)
+                return 2
+            assigned, _ = assign_by_catalog(allf, {args.scope_group:
+                                                   catalog[args.scope_group]})
+            scoped = assigned.get(args.scope_group, [])
+        elif args.scope_dir:
+            d = args.scope_dir.strip("/") + "/"
+            scoped = [f for f in allf if f.startswith(d)]
+        elif args.scope_file:
+            scoped = [args.scope_file] + [t for t in related_tests(repo, [args.scope_file])
+                                          if t in allf]
+        if scoped is not None:
+            allf = scoped
+            impl = [f for f in allf if not is_test_file(f)]
+            tests = [f for f in allf if is_test_file(f)]
+            result = build_result(repo, "repo", ".", None, impl, tests,
+                                  args.max_per_group, group_files=impl + tests,
+                                  security_mode=args.security)
+            result["discovery"] = {"method": info.get("method")}
         if any(g.get("match") for g in catalog.values()):
             groups, leftovers = catalog_groups(allf, catalog, args.max_per_group,
                                                args.security)
