@@ -104,10 +104,13 @@ class TestSetupScanTemplate(unittest.TestCase):
     def test_renders_with_spine_and_vocabulary(self):
         rendered = dispatch.render_prompt("setup-scan.md", {
             "repo_spine": "src/, tests/, pyproject.toml",
-            "vocabulary_labels": "Auth, Checkout, Catalog"})
+            "vocabulary_labels": "Auth, Checkout, Catalog",
+            "vocabulary_hints": "- Auth: **/auth/**, **/login/**"})
         self.assertIn("Checkout", rendered)
         self.assertIn("UNTRUSTED DATA", rendered)
         self.assertIn('"capability"', rendered)  # proposal JSON shape present
+        self.assertIn("**/auth/**", rendered)  # hint globs reach the classifier
+        self.assertIn("non-authoritative", rendered)  # hints labeled as suggestions
 
     def test_is_read_only(self):
         meta, _ = dispatch.load_template("setup-scan.md")
