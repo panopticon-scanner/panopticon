@@ -1064,5 +1064,124 @@ class TestDriverRunLoopEndToEnd(unittest.TestCase):
         self.assertTrue(driver.coverage_done(d, manifest))
 
 
+class TestDriverSingleScopeEndToEnd(unittest.TestCase):
+    """P6.2: a committed multi-group matrix + `manifest["scope"]` restricts
+    the REAL `orchestrator.py --repo-scan --scope-group` subprocess to the
+    target group's files, and the run-loop reaches a graded report from that
+    restricted matrix -- mirrors TestDriverRunLoopEndToEnd's self-write
+    harness (P6.1), starting one phase earlier at discovery. A repo with no
+    committed groups.yml fails discovery loudly (run `panopticon setup`
+    first) rather than silently reviewing everything."""
+
+    RUN_ID = "RID"
+
+    def _repo_with_two_groups(self):
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        for p in ("src/auth/login.py", "src/checkout/pay.py", "src/checkout/cart.py"):
+            full = os.path.join(d, *p.split("/"))
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "w") as fh:
+                fh.write("def f():\n    return 1\n")
+        os.makedirs(os.path.join(d, ".panopticon"))
+        with open(driver._pano(d, "groups.yml"), "w") as fh:
+            fh.write(
+                "groups:\n"
+                "  Auth:\n    match: ['src/auth/**']\n    panels: [SEC]\n"
+                "  Checkout:\n    match: ['src/checkout/**']\n    panels: [SEC]\n")
+        # discovery_execute subprocesses the REAL orchestrator.py --repo-scan,
+        # which discovers via `git ls-files` -- commit the fixture so it's seen.
+        subprocess.run(["git", "init", "-q"], cwd=d, check=True)
+        subprocess.run(["git", "add", "-A"], cwd=d, check=True)
+        subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                        "commit", "-qm", "x"], cwd=d, check=True)
+        return d
+
+    def _manifest(self):
+        return {"run_id": self.RUN_ID, "host": "claude", "security_mode": "standard",
+                "flags": {"fail_on": "high"},
+                "scope": {"mode": "group", "target": "Checkout"}}
+
+    def _self_write_review(self, entry, domain, group):
+        driver._write_json(entry["out_file"], {
+            "findings": [{"title": "issue in %s" % domain, "severity": "HIGH",
+                          "domain": domain, "code": domain + "-A1A", "category": "authz",
+                          "location": {"file": "src/checkout/pay.py", "line_start": 1}}],
+            "_panopticon": {"run_id": self.RUN_ID, "role": "domain_panel",
+                            "domain": domain, "group": group}})
+
+    def _self_write_verify(self, d, manifest, entry, domain, group):
+        cell = driver._load_cell_findings(d, manifest, group, domain)
+        fid = cell[0]["id"]
+        stage = "backup" if entry["out_file"].endswith("-backup.json") else "primary"
+        driver._write_json(entry["out_file"], {
+            "verdicts": [{"finding_id": fid, "verdict": "CONFIRMED",
+                          "reasoning": "verified"}],
+            "_panopticon": {"run_id": self.RUN_ID, "role": "domain_advisor",
+                            "domain": domain, "group": group, "stage": stage}})
+
+    def test_single_scope_restricts_matrix_and_reaches_graded_report(self):
+        d = self._repo_with_two_groups()
+        manifest = self._manifest()
+
+        # discovery: the real orchestrator.py --repo-scan --scope-group Checkout
+        # subprocess -- single-scope restricts the matrix to the target group.
+        result = driver.discovery_execute(d, manifest)
+        self.assertEqual(result.kind, "advanced")
+        groups_json = driver._load_json(driver._pano(d, "groups.json"))
+        names = {g["name"] for g in groups_json["groups"]}
+        files = sorted(f for g in groups_json["groups"] for f in g["files"])
+        self.assertEqual(names, {"Checkout"})              # Auth excluded entirely
+        self.assertEqual(files, ["src/checkout/cart.py", "src/checkout/pay.py"])
+
+        # coverage: scout checkpoint (read-only return-persist) then floor+scout
+        cov = driver.coverage_execute(d, manifest)
+        self.assertEqual(cov.checkpoint, "scout")
+        self.assertEqual(cov.group, "Checkout")
+        req = driver.load_dispatch_request(d)
+        for e in req["entries"]:
+            driver._write_json(e["out_file"], {"group": "Checkout", "domains": ["SEC"]})
+        self.assertEqual(driver.coverage_execute(d, manifest).kind, "advanced")
+        self.assertTrue(driver.coverage_done(d, manifest))
+
+        # review checkpoint -- self-write cell findings, scoped to Checkout's files
+        r = driver.review_execute(d, manifest)
+        self.assertEqual(r.checkpoint, "review")
+        self.assertEqual(r.group, "Checkout")
+        req = driver.load_dispatch_request(d)
+        for e in req["entries"]:
+            self.assertNotIn("write_mode", e)               # unified self-write shape
+            self._self_write_review(e, "SEC", "Checkout")
+        self.assertTrue(driver.review_done(d, manifest))
+
+        # verify checkpoint -- primary only (SEC HIGH is < F_b, so no backup)
+        v = driver.verify_execute(d, manifest)
+        self.assertEqual(v.checkpoint, "verify")
+        req = driver.load_dispatch_request(d)
+        for e in req["entries"]:
+            self._self_write_verify(d, manifest, e, "SEC", "Checkout")
+        self.assertEqual(driver.verify_execute(d, manifest).kind, "advanced")
+        self.assertTrue(driver.verify_done(d, manifest))
+
+        # synthesize -> graded report, every finding confined to Checkout's files
+        self.assertEqual(driver.synthesize_execute(d, manifest).kind, "advanced")
+        report = driver._load_json(driver._pano(d, "report.json"))
+        self.assertTrue(report["findings"])
+        for f in report["findings"]:
+            self.assertTrue(f["location"]["file"].startswith("src/checkout/"))
+        finding = next(f for f in report["findings"] if f.get("domain") == "SEC")
+        self.assertEqual(finding["evidence"]["status"], "advisor_confirmed")
+        self.assertNotEqual(report["summary"]["gate"], "INCONCLUSIVE")
+
+    def test_discovery_without_committed_groups_yml_raises_loud_setup_error(self):
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        os.makedirs(os.path.join(d, ".panopticon"))   # no groups.yml -- un-setup repo
+        manifest = self._manifest()
+        with self.assertRaises(driver.DriverError) as cm:
+            driver.discovery_execute(d, manifest)
+        self.assertIn("panopticon setup", str(cm.exception))
+
+
 if __name__ == "__main__":
     unittest.main()
