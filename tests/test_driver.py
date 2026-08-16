@@ -552,6 +552,67 @@ class TestCellFanOut(unittest.TestCase):
         self.assertIn(entry["out_file"], entry["prompt"])
 
 
+class TestReviewerFileListsAreAbsolute(unittest.TestCase):
+    """#975-class regression: the reviewer subagent inherits the HOST's cwd
+    (the user's checkout), never the --pr worktree/review_root. A relative
+    file list in the checkpoint prompt resolves against the wrong checkout —
+    silent wrong-tree review. review_root here is deliberately NOT cwd (a
+    dedicated tmp dir distinct from the test process's cwd), so a prompt that
+    still carries a bare-relative entry would resolve to nothing/the wrong
+    file under the old code, exactly like a real --pr run."""
+
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self._t.name)
+        os.makedirs(driver._pano(self.root))
+        self.addCleanup(self._t.cleanup)
+        self.manifest = {"run_id": "R", "security_mode": "standard", "host": "claude"}
+        self.assertNotEqual(self.root, os.path.realpath(os.getcwd()))
+        self.files = ["src/checkout/pay.py"]
+        self.abs_file = os.path.abspath(os.path.join(self.root, self.files[0]))
+
+    def _assert_absolute_not_relative(self, prompt):
+        self.assertIn("- %s" % self.abs_file, prompt)
+        # no bare-relative remnant: "- src/checkout/pay.py" is not a substring
+        # of "- /tmp/.../src/checkout/pay.py" (the dash-space precedes the
+        # absolute root, not "src"), so this is a real, precise negative.
+        self.assertNotIn("- %s" % self.files[0], prompt)
+
+    def test_scout_entry_file_list_is_absolute(self):
+        entry = driver._scout_entry(self.root, self.manifest, "Auth", self.files, "claude")
+        self._assert_absolute_not_relative(entry["prompt"])
+
+    def test_cell_entry_file_list_is_absolute(self):
+        entry = driver._cell_entry(self.root, self.manifest, "Auth", "SEC",
+                                    self.files, [], "claude", ocrdb.load_bundle())
+        self._assert_absolute_not_relative(entry["prompt"])
+
+    def test_verify_entry_file_list_is_absolute(self):
+        cell = [{"id": "F1", "code": "SEC-A1A", "severity": "HIGH", "title": "t",
+                 "category": "SEC", "location": {"file": self.files[0], "line": 1},
+                 "description": "d"}]
+        entry = driver._verify_entry(self.root, self.manifest, "Auth", "SEC",
+                                     self.files, cell, "claude", ocrdb.load_bundle(),
+                                     "primary")
+        self._assert_absolute_not_relative(entry["prompt"])
+
+    def test_verify_entry_prompt_carries_repo_root_header(self):
+        # The advisor also adjudicates the findings JSON's `location` fields,
+        # which stay repo-relative on disk (Part A can't reach into that
+        # payload) -- so the prompt itself must tell the advisor the absolute
+        # root those relative locations resolve against (mirrors the retired
+        # dispatch.render_advisor_prompts' #975 "Repo root:" prepend).
+        cell = [{"id": "F1", "code": "SEC-A1A", "severity": "HIGH", "title": "t",
+                 "category": "SEC", "location": {"file": self.files[0], "line": 1},
+                 "description": "d"}]
+        entry = driver._verify_entry(self.root, self.manifest, "Auth", "SEC",
+                                     self.files, cell, "claude", ocrdb.load_bundle(),
+                                     "primary")
+        expected_header = "Repo root: %s" % os.path.abspath(self.root)
+        self.assertIn(expected_header, entry["prompt"])
+        self.assertTrue(entry["prompt"].startswith(expected_header))
+
+
 class TestSynthesizePhase(unittest.TestCase):
     def setUp(self):
         self._t = tempfile.TemporaryDirectory()
