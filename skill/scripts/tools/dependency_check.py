@@ -3,7 +3,8 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
-from .base import make_finding, normalize_severity, omit_none, parse_json_bytes, run_tool
+from .base import (has_any_file, make_finding, normalize_severity, omit_none,
+                   parse_json_bytes, run_tool)
 
 
 class DependencyCheckAdapter:
@@ -12,7 +13,7 @@ class DependencyCheckAdapter:
 
     def is_applicable(self, target: str) -> bool:
         markers = ["pom.xml", "build.gradle", "build.gradle.kts"]
-        return any(os.path.exists(os.path.join(target, m)) for m in markers)
+        return has_any_file(target, *markers)
 
     def invoke(self, target: str) -> tuple[bytes, int]:
         out_dir = tempfile.mkdtemp(prefix="dc-")

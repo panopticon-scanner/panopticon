@@ -2,7 +2,7 @@
 from __future__ import annotations
 import math
 import os
-from .base import (cve_ids, cvss_bucket, make_finding, normalize_severity,
+from .base import (as_list, cve_ids, cvss_bucket, make_finding, normalize_severity,
                    omit_none, parse_json_bytes, run_tool)
 
 
@@ -84,7 +84,7 @@ class CargoAuditAdapter:
                 description=advisory.get("title", "No description provided."),
                 impact=f"Vulnerable Rust dependency {package.get('name')}=={package.get('version')} is used.",
                 remediation=f"Upgrade to a fixed version: {', '.join(versions.get('patched', [])) or 'see advisory'}",
-                references=[advisory["url"]] if advisory.get("url") else [],
+                references=as_list(advisory.get("url")),
                 citations={
                     "rustsec": [advisory_id] if advisory_id.startswith("RUSTSEC-") else [],
                     "cve": cve_ids(advisory.get("aliases")),

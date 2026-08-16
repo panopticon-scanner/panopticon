@@ -1,8 +1,7 @@
 """OSV scanner adapter for cross-ecosystem dependency advisories."""
 from __future__ import annotations
-import os
-from .base import (cve_ids, cvss_bucket, make_finding, normalize_severity,
-                   omit_none, parse_json_bytes, run_tool)
+from .base import (cve_ids, cvss_bucket, has_any_file, make_finding,
+                   normalize_severity, omit_none, parse_json_bytes, run_tool)
 from .sarif_utils import _norm_uri
 
 
@@ -18,7 +17,7 @@ class OsvScannerAdapter:
             "Cargo.lock", "Cargo.toml",
             "pom.xml", "build.gradle", "gradle.lockfile",
         ]
-        return any(os.path.isfile(os.path.join(target, m)) for m in markers)
+        return has_any_file(target, *markers)
 
     def invoke(self, target: str) -> tuple[bytes, int]:
         # v1.8.2 spells it --experimental-offline; re-check when OSV_SCANNER_VERSION bumps
