@@ -106,7 +106,7 @@ def discovery_execute(review_root, manifest):
     if errors:
         raise DriverError("discovery: " + "; ".join(errors))
     out = _pano(review_root, "groups.json")
-    cmd = [sys.executable, _script("orchestrator.py"), "--repo-scan",
+    cmd = [sys.executable, _script("discovery.py"), "--repo-scan",
            "--security", manifest.get("security_mode", "standard"),
            review_root, "--out", out]
     scope = manifest.get("scope") or {"mode": "repo"}
