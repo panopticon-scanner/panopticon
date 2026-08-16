@@ -231,6 +231,52 @@ class TestDiscoveryPhase(unittest.TestCase):
         self.assertNotIn("--scope-dir", cmd)
         self.assertNotIn("--scope-group", cmd)
 
+    def test_discovery_threads_changed_scope_with_base_and_diff_context(self):
+        self._write_groups_yml("groups:\n  Auth:\n    match: ['src/auth/**']\n")
+        manifest = dict(self.manifest, scope={"mode": "changed", "target": None},
+                        base="main", flags={"diff_context": 5})
+
+        def fake_run(cmd, **kw):
+            out = cmd[cmd.index("--out") + 1]
+            with open(out, "w") as fh:
+                json.dump({"groups": [{"name": "Auth", "files": ["src/auth/a.py"]}]}, fh)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch("scripts.driver.subprocess.run", side_effect=fake_run) as run:
+            result = driver.discovery_execute(self.root, manifest)
+        self.assertEqual(result.kind, "advanced")
+        cmd = run.call_args.args[0]
+        self.assertIn("--scope-changed", cmd)
+        self.assertIn("--base", cmd)
+        self.assertEqual(cmd[cmd.index("--base") + 1], "main")
+        self.assertIn("--diff-context", cmd)
+        self.assertEqual(cmd[cmd.index("--diff-context") + 1], "5")
+        self.assertNotIn("--scope-file", cmd)
+        self.assertNotIn("--scope-dir", cmd)
+        self.assertNotIn("--scope-group", cmd)
+        self.assertNotIn("--scope-files", cmd)
+
+    def test_discovery_threads_files_scope_with_target_list(self):
+        self._write_groups_yml("groups:\n  Auth:\n    match: ['src/auth/**']\n")
+        manifest = dict(self.manifest,
+                        scope={"mode": "files", "target": ["a.py", "b.py"]})
+
+        def fake_run(cmd, **kw):
+            out = cmd[cmd.index("--out") + 1]
+            with open(out, "w") as fh:
+                json.dump({"groups": [{"name": "Auth", "files": ["src/auth/a.py"]}]}, fh)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch("scripts.driver.subprocess.run", side_effect=fake_run) as run:
+            result = driver.discovery_execute(self.root, manifest)
+        self.assertEqual(result.kind, "advanced")
+        cmd = run.call_args.args[0]
+        self.assertIn("--scope-files", cmd)
+        i = cmd.index("--scope-files")
+        self.assertEqual(cmd[i + 1:i + 3], ["a.py", "b.py"])
+        self.assertNotIn("--base", cmd)
+        self.assertNotIn("--diff-context", cmd)
+
 
 class TestCoveragePhase(unittest.TestCase):
     def setUp(self):
@@ -517,6 +563,30 @@ class TestSynthesizePhase(unittest.TestCase):
                         return_value=mock.Mock(returncode=1, stdout="", stderr="boom")):
             with self.assertRaises(driver.DriverError):
                 driver.synthesize_execute(self.root, self.manifest)
+
+    def test_diff_context_forwarded_when_set(self):
+        manifest = dict(self.manifest,
+                        flags={"fail_on": "high", "diff_context": 5})
+        captured = {}
+        def fake_run(cmd, **kw):
+            captured["cmd"] = cmd
+            with open(cmd[cmd.index("--out") + 1], "w") as fh:
+                json.dump({"grade": "A", "findings": []}, fh)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch("scripts.driver.subprocess.run", side_effect=fake_run):
+            driver.synthesize_execute(self.root, manifest)
+        cmd = captured["cmd"]
+        self.assertIn("--diff-context", cmd)
+        self.assertEqual(cmd[cmd.index("--diff-context") + 1], "5")
+
+    def test_diff_context_absent_when_unset(self):
+        def fake_run(cmd, **kw):
+            with open(cmd[cmd.index("--out") + 1], "w") as fh:
+                json.dump({"grade": "A", "findings": []}, fh)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch("scripts.driver.subprocess.run", side_effect=fake_run) as run:
+            driver.synthesize_execute(self.root, self.manifest)
+        self.assertNotIn("--diff-context", run.call_args.args[0])
 
 
 class TestValidatePhase(unittest.TestCase):

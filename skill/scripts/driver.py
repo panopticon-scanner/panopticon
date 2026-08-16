@@ -109,10 +109,21 @@ def discovery_execute(review_root, manifest):
            "--security", manifest.get("security_mode", "standard"),
            review_root, "--out", out]
     scope = manifest.get("scope") or {"mode": "repo"}
-    _scope_arg = {"file": "--scope-file", "directory": "--scope-dir",
-                  "group": "--scope-group"}.get(scope.get("mode"))
-    if _scope_arg and scope.get("target"):
-        cmd += [_scope_arg, scope["target"]]
+    mode = scope.get("mode")
+    if mode == "changed":
+        cmd += ["--scope-changed"]
+    elif mode == "files":
+        cmd += ["--scope-files"] + list(scope.get("target") or [])
+    else:
+        _scope_arg = {"file": "--scope-file", "directory": "--scope-dir",
+                      "group": "--scope-group"}.get(mode)
+        if _scope_arg and scope.get("target"):
+            cmd += [_scope_arg, scope["target"]]
+    if manifest.get("base"):
+        cmd += ["--base", manifest["base"]]
+    _dc = (manifest.get("flags") or {}).get("diff_context")
+    if _dc is not None:
+        cmd += ["--diff-context", str(_dc)]
     proc = subprocess.run(cmd, cwd=review_root, capture_output=True, text=True,
                           env=_child_env())
     if not _json_parses(out):
@@ -602,6 +613,8 @@ def synthesize_execute(review_root, manifest):
     diff_hunks = _pano(review_root, "diff-hunks.json")
     if os.path.isfile(diff_hunks):
         cmd += ["--diff-hunks", diff_hunks]
+    if flags.get("diff_context") is not None:
+        cmd += ["--diff-context", str(flags["diff_context"])]
     cmd += findings
     proc = subprocess.run(cmd, cwd=review_root, capture_output=True, text=True,
                           env=_child_env())
