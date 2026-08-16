@@ -788,12 +788,35 @@ SETUP_PHASES = (
 )
 
 
-def _scan_fallback(review_root, manifest, host):
-    raise DriverError("vocab-absent setup fallback not yet implemented")  # Task 3
+_SETUP_ARTIFACTS = ("setup-scan-brief.md", "setup-proposal.json",
+                    "groups.yml.draft", "setup-complete.json", SETUP_MANIFEST)
 
 
 def _clear_setup_artifacts(review_root):
-    pass  # Task 3
+    """Remove derived setup artifacts + the setup-manifest for --reset. NEVER
+    touches the committed groups.yml."""
+    for name in _SETUP_ARTIFACTS:
+        try:
+            os.remove(_pano(review_root, name))
+        except OSError:
+            pass
+
+
+def _scan_fallback(review_root, manifest, host):
+    """Vocab-absent path (parity with orchestrator.run_setup): flat top-dir seed
+    + readiness gate, then a fallback-complete marker so both setup phases'
+    done-predicates are satisfied -> run_engine completes without a checkpoint
+    and without entering ingest."""
+    path, created, names = setup_flow.seed_flat_manifest(review_root)
+    checks = setup_flow.readiness(review_root, host=host)
+    gaps = [c[0] for c in checks if c[1] is False]
+    _write_json(_pano(review_root, "setup-complete.json"), {
+        "mode": "fallback", "seed": path, "created": created, "groups": names,
+        "readiness": [[c[0], c[1], c[2]] for c in checks],
+        "gaps": gaps, "run_id": manifest["run_id"]})
+    msg = ("setup: vocab-absent fallback — flat seed %s; readiness %s"
+           % (path, "OK" if not gaps else "gaps: " + ", ".join(gaps)))
+    return PhaseResult(kind="advanced", message=msg)
 
 
 def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES):

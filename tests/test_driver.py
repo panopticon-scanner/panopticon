@@ -1701,6 +1701,40 @@ class TestDriverSetup(unittest.TestCase):
         self.assertTrue(os.path.isfile(driver._pano(d, "groups.yml.draft")))
         self.assertFalse(os.path.isfile(driver._pano(d, "groups.yml")))
 
+    def test_vocab_absent_falls_back_to_seed_and_completes(self):
+        # The bundled fixture is always present, so force absence at the loader
+        # boundary to exercise the fallback path deterministically.
+        d = self._repo()
+        args = driver.build_parser().parse_args(["setup", d])
+        with mock.patch("scripts.setup_flow.load_bundled_vocabulary",
+                        return_value=({"names": []}, False)):
+            status = driver.run_setup_flow(args)
+        self.assertEqual(status["status"], "complete")
+        self.assertTrue(driver._json_parses(driver._pano(d, "setup-complete.json")))
+        self.assertTrue(os.path.isfile(driver._pano(d, "groups.yml")))   # flat seed
+        # no scan checkpoint was emitted
+        self.assertFalse(os.path.isfile(driver._pano(d, "setup-proposal.json")))
+
+    def test_ingest_malformed_proposal_errors(self):
+        d = self._repo()
+        args = driver.build_parser().parse_args(["setup", d])
+        driver.run_setup_flow(args)
+        with open(driver._pano(d, "setup-proposal.json"), "w") as fh:
+            json.dump({"groups": [{"capability": "", "match": []}]}, fh)
+        status = driver.run_setup_flow(args)
+        self.assertEqual(status["status"], "error")
+        self.assertFalse(os.path.isfile(driver._pano(d, "groups.yml.draft")))
+
+    def test_reset_clears_setup_artifacts(self):
+        d = self._repo()
+        args = driver.build_parser().parse_args(["setup", d])
+        driver.run_setup_flow(args)                        # writes brief + manifest
+        self.assertTrue(os.path.isfile(driver._pano(d, "setup-scan-brief.md")))
+        reset_args = driver.build_parser().parse_args(["setup", d, "--reset"])
+        driver.run_setup_flow(reset_args)                  # clears, then re-scans
+        # brief re-rendered fresh; proposal/draft/complete-marker gone
+        self.assertFalse(os.path.isfile(driver._pano(d, "groups.yml.draft")))
+
 
 if __name__ == "__main__":
     unittest.main()
