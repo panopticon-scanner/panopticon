@@ -1,28 +1,132 @@
-# Panopticon capability vocabulary (P2 FIXTURE -- replaced by calibrated #2-data).
+# Panopticon capability vocabulary -- R1-calibrated roster (#2-data).
+# Ratified 2026-08-16: calibration/2026-08-15-vocab-panel-r1/rulings.md
+# (owner rulings R-1..R-4) + synthesis.md (T1 per-label findings, evidence
+# behind each definition/boundary). 234 valid reports over 128 targets
+# (96 app-shaped arm) -- see synthesis-data.json for per-label counts.
+#
 # The classifier maps source files onto these business-capability labels.
-# `hints` are optional match suggestions, not authoritative.
+# `name` + `hints` are the only loader-consumed keys (setup_proposal.load_
+# vocabulary); `hints` are optional match suggestions fed to the classifier,
+# not authoritative. `tier`/`definition`/`boundary`/`see_also`/`provenance`/
+# `evidence` are additive metadata (loader-ignored) carrying the round's
+# menu-grade one-liners and audit trail.
+version: 1.0.0
 capabilities:
   - name: Auth
+    tier: universal
+    definition: "Credential, session, and identity-verification lifecycle (login, MFA, token/session issuance)."
+    boundary: "Profile, preference, and org-membership CRUD is Accounts, not Auth."
     hints: ["**/auth/**", "**/login/**", "**/session*/**"]
+    see_also: [Accounts]
+    provenance: r1
+    evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 92, repos_total: 128}
+
   - name: Accounts
+    tier: universal
+    definition: "User profile, preference, and organization-membership management (account CRUD)."
+    boundary: "Credential, session, and identity lifecycle is Auth, not Accounts."
     hints: ["**/account*/**", "**/users/**", "**/profile*/**"]
+    see_also: [Auth]
+    provenance: r1
+    evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 88, repos_total: 128}
+
   - name: Checkout
+    tier: vertical
+    definition: "The purchase-completion flow: cart, payment capture, and order placement."
+    boundary: "Not recurring billing/subscription management (-> Billing) or post-purchase shipping/order processing (-> Fulfillment)."
     hints: ["**/checkout/**", "**/payment*/**", "**/cart/**"]
+    see_also: [Billing, Fulfillment]
+    provenance: r1
+    evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 24, repos_total: 128}
+
   - name: Billing
+    tier: vertical
+    definition: "Recurring billing, invoicing, and subscription lifecycle management."
+    boundary: "Not the one-time purchase/payment-capture flow (-> Checkout)."
     hints: ["**/billing/**", "**/invoice*/**", "**/subscription*/**"]
+    see_also: [Checkout]
+    provenance: r1
+    evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 37, repos_total: 128}
+
   - name: Catalog
+    tier: vertical
+    definition: "Merchandise: product and inventory data, listings, and catalog structure."
+    boundary: "Not the search/indexing layer (-> Search); a general content/media corpus is out of scope (R2 watch-list, not Catalog)."
     hints: ["**/catalog/**", "**/products/**", "**/inventory/**"]
+    provenance: r1
+    evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 24, repos_total: 128}
+
   - name: Search
+    tier: universal
+    definition: "User-facing search and query/indexing surfaces (search bar, filters, index build/rebuild)."
+    boundary: "Not the product catalog/browse UI (-> Catalog) and not analytics/BI on search behavior (-> Reporting)."
     hints: ["**/search/**", "**/index*/**", "**/query/**"]
+    see_also: [Catalog]
+    provenance: r1
+    evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 67, repos_total: 128}
+
   - name: Fulfillment
+    tier: vertical
+    definition: "Order fulfillment: shipping, delivery, and post-purchase order processing."
+    boundary: "Not the purchase/payment-capture flow (-> Checkout)."
     hints: ["**/fulfil*/**", "**/shipping/**", "**/orders/**"]
+    see_also: [Checkout]
+    provenance: r1
+    # thin presence (n=13, 14%) -- rulings flags re-measure at R2
+    evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 13, repos_total: 128}
+
   - name: Notifications
+    tier: universal
+    definition: "User-facing messaging across any channel (email, push, SMS, in-app, webhook delivery to the user)."
+    boundary: "Not internal event/pub-sub buses (-> Platform or the owning vertical)."
     hints: ["**/notif*/**", "**/email*/**", "**/messaging/**"]
+    see_also: [Platform]
+    provenance: r1
+    evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 86, repos_total: 128}
+
   - name: Reporting
+    tier: universal
+    definition: "Business reporting and BI: user-facing analytics and reports."
+    boundary: "Not operational/telemetry dashboards (-> the OPS domain surface) and not data-export tooling (-> the owning vertical)."
     hints: ["**/report*/**", "**/analytics/**", "**/dashboard*/**"]
+    see_also: [Admin]
+    provenance: r1
+    evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 70, repos_total: 128}
+
   - name: Admin
+    tier: universal
+    definition: "Back-office administration and operator tooling (admin console, backoffice screens)."
+    boundary: "Not business reporting/BI (-> Reporting) and not end-user account self-service (-> Accounts)."
     hints: ["**/admin/**", "**/backoffice/**"]
+    see_also: [Reporting, Accounts]
+    provenance: r1
+    evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 77, repos_total: 128}
+
   - name: API
+    tier: universal
+    definition: "The externally-exposed interface surface: routes, controllers, schemas, and versioning."
+    boundary: "Never internal wiring or clients calling out to other services -- that stays with the owning capability."
     hints: ["**/api/**", "**/routes/**", "**/graphql/**"]
+    see_also: [Platform]
+    provenance: r1
+    evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 85, repos_total: 128}
+
   - name: Platform
+    tier: universal
+    definition: "Shared core infrastructure and cross-cutting code that no vertical owns."
+    boundary: "Only what no vertical owns; shared UI/design-system code is its own capability (-> UI), not Platform."
     hints: ["**/core/**", "**/common/**", "**/lib/**", "**/util*/**"]
+    see_also: [UI, API]
+    provenance: r1
+    evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 96, repos_total: 128}
+
+  - name: UI
+    tier: universal
+    definition: "Shared, reusable presentation and design-system code: component library, shared web UI."
+    boundary: "Not a vertical's own feature screens -- those stay with the owning capability."
+    hints: ["**/design-system/**", "**/components/ui/**", "**/ui-kit/**"]
+    see_also: [Platform]
+    provenance: r1
+    # R-1 carve-out out of Platform: not independently seeded/measured in R1
+    # (no evidence -> rides the global floor + scout); repos_present omitted.
+    evidence: {round: 2026-08-15-vocab-panel-r1, repos_total: 128, note: "carve-out (R-1); unmeasured in R1"}

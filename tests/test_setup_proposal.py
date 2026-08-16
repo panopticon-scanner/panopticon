@@ -18,6 +18,32 @@ class TestLoaders(unittest.TestCase):
         self.assertIn("Checkout", vocab["names"])
         self.assertIn("**/checkout/**", vocab["hints"]["Checkout"])
 
+    def test_vocabulary_is_the_r1_calibrated_roster(self):
+        vocab, errs = sp.load_vocabulary(VOCAB)
+        self.assertEqual(errs, [])
+        names = set(vocab["names"])
+        # 13 capabilities: the 12 seed + the ratified UI carve-out
+        self.assertEqual(len(vocab["names"]), 13)
+        self.assertIn("UI", names)
+        self.assertNotIn("Integrations", names)  # ratified out (R-2)
+        for seed in ["Auth", "Accounts", "Checkout", "Billing", "Catalog",
+                     "Search", "Fulfillment", "Notifications", "Reporting",
+                     "Admin", "API", "Platform"]:
+            self.assertIn(seed, names)
+        # loader-consumed hints still present (non-empty for a hinted label)
+        self.assertTrue(vocab["hints"].get("Auth"))
+
+    def test_vocabulary_carries_tier_and_definition_metadata(self):
+        doc = yaml.safe_load(open(VOCAB))  # read raw for the additive keys
+        by_name = {c["name"]: c for c in doc["capabilities"]}
+        self.assertEqual(by_name["Checkout"]["tier"], "vertical")
+        self.assertEqual(by_name["Platform"]["tier"], "universal")
+        self.assertEqual(by_name["UI"]["tier"], "universal")
+        for c in doc["capabilities"]:  # every cap has definition + boundary + tier
+            self.assertTrue(c.get("definition"))
+            self.assertTrue(c.get("boundary"))
+            self.assertIn(c.get("tier"), ("universal", "vertical"))
+
     def test_affinity_loads_fixture_and_validates_domains(self):
         vocab, _ = sp.load_vocabulary(VOCAB)
         affinity, errors = sp.load_affinity(AFFINITY, vocab)
