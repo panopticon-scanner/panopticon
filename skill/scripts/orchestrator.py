@@ -1023,7 +1023,7 @@ def setup_readiness(repo, host=None, runner=subprocess.run, environ=None):
                        "start a fresh session" % ", ".join(missing_shells)))
 
     try:
-        catalog = _committed_matrix(repo) or {}
+        catalog = _matrix_catalog(repo) or {}
     except Exception:
         catalog = {}
     if catalog:
@@ -1164,6 +1164,29 @@ def _committed_matrix(repo):
             "exclude": list(body.get("exclude") or []),
         }
     return out
+
+
+def _matrix_catalog(repo):
+    """The committed matrix as parse_groups-NORMALIZED groups for --repo-scan /
+    readiness: {name: {match: [...], tests, floor, exclude}} with `match`
+    VALIDATED (a scalar/invalid match normalizes to [] -- never char-split).
+    Errors are disclosed (stderr), not fatal (the driver's load_committed_groups
+    gates fatally upstream). Empty {} when no groups.yml is committed."""
+    path = os.path.join(repo, ".panopticon", "groups.yml")
+    if not os.path.isfile(path):
+        return {}
+    import yaml
+    import groups_schema
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh) or {}
+    except (OSError, yaml.YAMLError) as e:
+        print("groups.yml unreadable: %s" % e, file=sys.stderr)
+        return {}
+    groups, errs = groups_schema.parse_groups(doc if isinstance(doc, dict) else {})
+    for e in errs:
+        print("committed groups.yml: %s" % e, file=sys.stderr)
+    return groups
 
 
 def run_setup(repo=".", host=None, runner=subprocess.run, environ=None,
@@ -1418,7 +1441,7 @@ def main(argv=None):
         result = build_result(repo, "repo", ".", None, impl, tests, args.max_per_group,
                               group_files=impl + tests, security_mode=args.security)
         result["discovery"] = {"method": info.get("method")}
-        catalog = _committed_matrix(repo)   # SEC-3: parse_groups-validated matrix read
+        catalog = _matrix_catalog(repo)   # SEC-3: parse_groups-validated matrix read
         # P6.2: --scope-file/--scope-dir/--scope-group narrow the discovered
         # universe to a target BEFORE the same matrix assignment below runs --
         # a scope filter, not a new mode. No scope arg -> scoped stays None ->
@@ -1435,7 +1458,15 @@ def main(argv=None):
         elif args.scope_dir:
             d = args.scope_dir.strip("/") + "/"
             scoped = [f for f in allf if f.startswith(d)]
+            if not scoped:
+                print("--scope-dir %r matched no tracked files"
+                      % args.scope_dir, file=sys.stderr)
+                return 2
         elif args.scope_file:
+            if args.scope_file not in allf:
+                print("--scope-file %r not found among discovered repo files"
+                      % args.scope_file, file=sys.stderr)
+                return 2
             scoped = [args.scope_file] + [t for t in related_tests(repo, [args.scope_file])
                                           if t in allf]
         if scoped is not None:
