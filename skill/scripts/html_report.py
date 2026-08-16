@@ -550,7 +550,7 @@ def _render_dashboard(report):
     top_list = "\n".join(f"<li>{_escape(t)}</li>" for t in top) or "<li>None</li>"
 
     findings = report.get("findings", [])
-    severity_rows = list(_severity_counts(findings).items())
+    severity_rows = [(sev, int(stats.get(sev.lower(), 0))) for sev in _SEV_ORDER]
     panel_rows = list(_panel_counts(findings).items())
     category_rows = _top_category_counts(findings)
 
@@ -648,7 +648,7 @@ def _render_card(finding, delta=None):
 """
 
 
-_SEV_RANK = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
+_SEV_RANK = {sev: i for i, sev in enumerate(_SEV_ORDER)}
 
 
 def _heatmap_data(findings):

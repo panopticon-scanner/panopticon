@@ -1,7 +1,7 @@
 """Brakeman adapter for Ruby on Rails security findings."""
 from __future__ import annotations
 import os
-from .base import make_finding, normalize_severity, omit_none, parse_json_bytes, run_tool
+from .base import as_list, make_finding, normalize_severity, omit_none, parse_json_bytes, run_tool
 
 
 _CONFIDENCE_MAP = {
@@ -78,8 +78,8 @@ class BrakemanAdapter:
                 description=w.get("message", "No description provided."),
                 impact=f"Rails security issue of type {wtype}.",
                 remediation="Review the linked Brakeman documentation and refactor the affected code.",
-                references=[w["link"]] if w.get("link") else [],
-                citations={"cwe": [cwe] if cwe else []},
+                references=as_list(w.get("link")),
+                citations={"cwe": as_list(cwe)},
                 tool_evidence=omit_none({"rule_id": wtype, "advisory_url": w.get("link")}),
             ))
             n += 1
