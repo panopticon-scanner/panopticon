@@ -25,9 +25,10 @@ import scripts.groups_schema as groups_schema
 import scripts.ocrdb as ocrdb
 import scripts.run_manifest as run_manifest
 import scripts.score_gate as score_gate
+import scripts.setup_flow as setup_flow
 import scripts.synthesize as synthesize
 
-CHECKPOINT_KINDS = ("scout", "review", "verify")
+CHECKPOINT_KINDS = ("scout", "review", "verify", "scan")
 
 _SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -712,6 +713,114 @@ def _finalize_worktree(review_root, manifest):
     diff_map.release_worktree(worktree, repo=target)
 
 
+SETUP_MANIFEST = "setup-manifest.json"
+
+
+def _setup_manifest_path(review_root):
+    return _pano(review_root, SETUP_MANIFEST)
+
+
+def load_setup_manifest(review_root):
+    return _load_json(_setup_manifest_path(review_root))
+
+
+def _read_text(path):
+    with open(path, encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _setup_scan_entry(review_root, prompt, host):
+    """One return-persist dispatch entry for the read-only setup-scan agent
+    (mirrors _scout_entry): the host dispatches it, gets proposal JSON back, and
+    persists it to out_file.
+
+    Unlike scout/panel/advisor roles, setup-scan is NEVER enforced: it is not in
+    dispatch.ROLE_FILES, so no `panopticon-setup-scan` shell is ever registered
+    for any host — dispatching it as "enforced" would ask the host to invoke a
+    subagent that doesn't exist. It is read-only + return-persist by template
+    tool_policy (Read/Grep/Glob only), so a plain general-purpose dispatch is
+    sufficient and safe.
+    """
+    return {"id": "setup-scan",
+            "agent": None,
+            "enforced": False,
+            "model": None,
+            "prompt": prompt,
+            "out_file": os.path.abspath(_pano(review_root, "setup-proposal.json"))}
+
+
+def scan_done(review_root, manifest):
+    return (_json_parses(_pano(review_root, "setup-proposal.json"))
+            or _json_parses(_pano(review_root, "setup-complete.json")))
+
+
+def scan_execute(review_root, manifest):
+    """Provision + render the scan brief -> setup-scan checkpoint (vocab present);
+    or flat-seed + readiness + a fallback-complete marker (vocab absent, Task 3)."""
+    host = manifest.get("host", "claude")
+    setup_flow.provision(review_root)
+    vocab, present = setup_flow.load_bundled_vocabulary(manifest.get("vocabulary_path"))
+    if not present:
+        return _scan_fallback(review_root, manifest, host)   # Task 3
+    brief_path = setup_flow.render_scan_brief(review_root, vocab)
+    entry = _setup_scan_entry(review_root, _read_text(brief_path), host)
+    req = write_dispatch_request(review_root, manifest["run_id"], "scan", None, [entry])
+    return PhaseResult(kind="checkpoint", checkpoint="scan", group=None,
+                       dispatch_request=req, message="setup-scan checkpoint")
+
+
+def ingest_done(review_root, manifest):
+    return (os.path.isfile(_pano(review_root, "groups.yml.draft"))
+            or _json_parses(_pano(review_root, "setup-complete.json")))
+
+
+def ingest_execute(review_root, manifest):
+    res = setup_flow.ingest_proposal(review_root)
+    if not res["ok"]:
+        raise DriverError("ingest: " + "; ".join(res["errors"]))
+    return PhaseResult(kind="advanced",
+                       message="setup: draft written %s" % res["draft"])
+
+
+SETUP_PHASES = (
+    Phase("scan", "checkpoint", scan_done, scan_execute),
+    Phase("ingest", "deterministic", ingest_done, ingest_execute),
+)
+
+
+def _scan_fallback(review_root, manifest, host):
+    raise DriverError("vocab-absent setup fallback not yet implemented")  # Task 3
+
+
+def _clear_setup_artifacts(review_root):
+    pass  # Task 3
+
+
+def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES):
+    """The `driver setup` entrypoint: a separate two-phase flow (NOT a run
+    phase). Resolves the review root, pins a minimal setup-manifest once, and
+    advances scan->ingest through run_engine. Writes a draft; the owner reviews
+    and commits it."""
+    review_root, _wt, _pr = resolve_review_root(args.target, runner=runner)
+    if getattr(args, "reset", False):
+        _clear_setup_artifacts(review_root)               # Task 3
+    manifest = load_setup_manifest(review_root)
+    if manifest is None:
+        manifest = {"schema_version": 1, "run_id": run_manifest.new_run_id(),
+                    "target": os.path.abspath(args.target),
+                    "host": args.host or _DEFAULTS["host"],
+                    "vocabulary_path": None}
+        _write_json(_setup_manifest_path(review_root), manifest)
+    try:
+        result = run_engine(review_root, manifest, phases)
+    except DriverError as exc:
+        return _error_status(str(exc))
+    if result.get("status") == "complete":
+        result["message"] = ("setup complete — review .panopticon/groups.yml.draft, "
+                             "move it to .panopticon/groups.yml, and commit")
+    return result
+
+
 _DEFAULTS = {"host": "claude", "security": "standard"}
 
 _RESET_GLOBS = ("groups.json", "coverage-*.json", "scout-*.json", "tools-ran.json",
@@ -796,6 +905,10 @@ def build_parser():
         scope.add_argument("-c", "--changes", dest="scope_changed",
                            action="store_true")
         scope.add_argument("--files", dest="scope_files", nargs="+", default=None)
+    sp = sub.add_parser("setup")
+    sp.add_argument("target", nargs="?", default=".")
+    sp.add_argument("--host", default=None, choices=["claude", "generic"])
+    sp.add_argument("--reset", action="store_true")
     return parser
 
 
@@ -857,6 +970,8 @@ def run(args, runner=subprocess.run, phases=PHASES):
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    if args.verb == "setup":
+        return emit_status(run_setup_flow(args))
     return emit_status(run(args))
 
 

@@ -1654,5 +1654,53 @@ class TestDriverDeltaEndToEnd(unittest.TestCase):
         self.assertEqual(validate["unexpected_changes"], [])
 
 
+class TestDriverSetup(unittest.TestCase):
+    def _repo(self):
+        import shutil as _sh
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: _sh.rmtree(d, ignore_errors=True))
+        g = ["git", "-C", d]
+        subprocess.run(["git", "init", "-q", d], check=True)
+        subprocess.run(g + ["config", "user.email", "t@t"], check=True)
+        subprocess.run(g + ["config", "user.name", "t"], check=True)
+        os.makedirs(os.path.join(d, "src", "checkout"))
+        with open(os.path.join(d, "src", "checkout", "pay.py"), "w") as fh:
+            fh.write("x = 1\n")
+        subprocess.run(g + ["add", "-A"], check=True)
+        subprocess.run(g + ["commit", "-qm", "init"], check=True)
+        subprocess.run(g + ["branch", "-M", "main"], check=True)
+        return d
+
+    def test_setup_verb_parses(self):
+        args = driver.build_parser().parse_args(["setup", "."])
+        self.assertEqual(args.verb, "setup")
+
+    def test_scan_emits_setup_scan_checkpoint_when_vocab_present(self):
+        d = self._repo()
+        args = driver.build_parser().parse_args(["setup", d])
+        status = driver.run_setup_flow(args)
+        self.assertEqual(status["status"], "checkpoint")
+        self.assertEqual(status["checkpoint"], "scan")
+        req = driver._load_json(driver._pano(d, "dispatch-request.json"))
+        self.assertEqual(req["checkpoint"], "scan")
+        entry = req["entries"][0]
+        self.assertEqual(entry["id"], "setup-scan")
+        self.assertTrue(entry["out_file"].endswith("setup-proposal.json"))
+        self.assertTrue(os.path.isfile(driver._pano(d, "setup-scan-brief.md")))
+
+    def test_ingest_writes_draft_then_completes(self):
+        d = self._repo()
+        args = driver.build_parser().parse_args(["setup", d])
+        driver.run_setup_flow(args)                       # scan checkpoint
+        proposal = {"groups": [{"capability": "Checkout",
+                                "match": ["src/checkout/**"], "tests": []}]}
+        with open(driver._pano(d, "setup-proposal.json"), "w") as fh:
+            json.dump(proposal, fh)
+        status = driver.run_setup_flow(args)              # re-invoke -> ingest
+        self.assertEqual(status["status"], "complete")
+        self.assertTrue(os.path.isfile(driver._pano(d, "groups.yml.draft")))
+        self.assertFalse(os.path.isfile(driver._pano(d, "groups.yml")))
+
+
 if __name__ == "__main__":
     unittest.main()
