@@ -21,8 +21,13 @@ summary + JSON artifact) with standards citations and CI gating.
 - `skill/` — the installable skill surface (symlink target); everything an agent loads lives here.
 - `skill/SKILL.md` — orchestration spec (modes, pipeline, dispatch templates, flags). Instructions
   to the orchestrating agent; not a runnable script.
-- `skill/scripts/orchestrator.py` — resolve a target (`-f/-d/-g/-c/--pr/-e`/repo) to cohesive
-  ≤15-file groups (`groups.json`). Language-neutral. stdlib only.
+- `skill/scripts/discovery.py` — resolve a target (`-f/-d/-g/-c/--pr`/repo) to cohesive
+  ≤15-file groups (`groups.json`); extracted from the retired `orchestrator.py` (5.0 Slice A).
+  Language-neutral, stdlib only.
+- `skill/scripts/driver.py` — the 5.0 resumable driver: a table-driven phase state machine
+  (`discovery`→`coverage`→`tools`→`review`→`verify`→`synthesize`→`validate`) that runs
+  `discovery.py`/`dispatch.py`/`synthesize.py`/`run_tools.py` itself and stops at each dispatch
+  checkpoint; the phase cursor is recomputed from disk every invocation (crash/compaction-resumable).
 - `skill/scripts/synthesize.py` — merge per-panel finding files (+ optional `--tools-dir` tool
   findings) into a validated `CodeReviewReport`: dedupe/reinforce, grade, gate, citations.
 - `skill/scripts/dispatch.py` — DispatchPlan builder + template renderer (host-neutral frontmatter
@@ -271,7 +276,8 @@ History:
   that populates the previously-always-empty `cross_panel.integration_findings` and annotates
   `corroborated`/`corroborated_by` + a confidence bump, without collapsing the distinct lenses;
   extends the round-3 tool+agent dead-branch to agent+agent. (2) **discovery** —
-  `orchestrator.discover_repo_files` (os.walk + prune) excludes noise (`tmp`/venv/`__pycache__`/
+  `discovery.discover_repo_files` (os.walk + prune; originally `orchestrator.discover_repo_files`,
+  the module was later extracted to `discovery.py`) excludes noise (`tmp`/venv/`__pycache__`/
   `*.egg-info`/caches), targets `.github/workflows` back in (dotdirs were silently skipped → CI
   surface invisible), and surfaces real test files (were dropped in favor of their `__pycache__`).
   (3+4) **panel-prompt hardening** — the dispatch template now forbids any side effect beyond the
@@ -296,7 +302,8 @@ History:
   no group in this run (overall grade/gate were already correct — this was display-only);
   reinforcement now generalizes to same-category tool+agent pairs inside >2-member clusters (was
   silently skipped whenever a third finding shared the line); + `run_tools` stdout-persist assertion
-  and `orchestrator.main()` coverage for `--group`/`--files`/`--repo-scan`. **138 tests (was 125).**
+  and `orchestrator.main()` coverage for `--group`/`--files`/`--repo-scan` (now `discovery.main()`,
+  since the module was extracted to `discovery.py`). **138 tests (was 125).**
 
   **Note on the treadmill:** each ruthless self-scan clears the prior MEDIUMs and surfaces a fresh,
   narrower batch (CRITICAL→HIGH→broad-MEDIUM→coverage-MEDIUM). We stopped at B by decision: all known
@@ -352,9 +359,9 @@ The round-1 criticals are resolved; these narrower residuals were hand-verified 
 
 ### From Panopticon's self-review (2026-07-23) — graded itself F/CRITICAL, 24 findings
 Correctness/security (do first):
-- **Path-traversal / scope escape** (code+security both flagged, CWE-22): `expand_patterns` + catalog globs can escape the repo root via `..` or absolute paths (`orchestrator.py:154`). Clamp resolved paths under the repo root.
+- **Path-traversal / scope escape** (code+security both flagged, CWE-22): `expand_patterns` + catalog globs can escape the repo root via `..` or absolute paths (originally `orchestrator.py:154`; the module is retired — see `discovery.py`'s equivalent). Clamp resolved paths under the repo root.
 - **No docker-run subprocess timeout** (`run_tools.py:60`): a hung/slow tool blocks the pipeline forever. Add a per-run timeout.
-- **`load_catalog` only catches `ImportError`** (`orchestrator.py:135`): a malformed `groups.yml` crashes with a raw traceback when PyYAML is installed. Catch parse errors too.
+- **`load_catalog` only catches `ImportError`** (originally `orchestrator.py:135`; the module is retired — see `discovery.py`'s equivalent): a malformed `groups.yml` crashes with a raw traceback when PyYAML is installed. Catch parse errors too.
 - **`sarif_to_findings` tolerance is per-file, not per-result** (`ingest_tools.py:20`): one malformed entry drops every result in that file. Guard per-result.
 - **Untrusted-input DoS hardening** (`ingest_tools.py`/`citations.py`): cap EPSS response size (CWE-400), bound JSON nesting (RecursionError), sanitize SARIF `uri`/`message` before rendering (CWE-117).
 - **`dedupe` cluster key is type/path-sensitive on `line_start`+file** (`synthesize.py:125`): normalize `line_start` to int and paths — ties directly to the `/src` path-prefix + dead-reinforce items above.

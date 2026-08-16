@@ -14,7 +14,9 @@ class TestSkillMd(unittest.TestCase):
         self.assertRegex(self.text, r"(?m)^name:\s*panopticon\s*$")
 
     def test_references_scripts_and_agents(self):
-        for ref in ["scripts/orchestrator.py", "scripts/synthesize.py",
+        # 5.0: orchestrator.py is retired (Slice A); driver.py is the
+        # collapsed doc's canonical entrypoint.
+        for ref in ["scripts/driver.py", "scripts/synthesize.py",
                     "scripts/dispatch.py", "agents/scout.md",
                     "agents/advisor.md"]:
             self.assertIn(ref, self.text, ref)
@@ -49,10 +51,16 @@ class TestSkillMd(unittest.TestCase):
         self.assertNotIn("Kimi", desc)
         self.assertNotIn("→", desc)  # no workflow summary
 
-    def test_has_host_dispatch_section(self):
-        self.assertIn("## Host dispatch", self.text)
-        for host in ("Claude Code", "Kimi Code"):
-            self.assertIn(host, self.text)
+    def test_driver_run_loop_documents_host_dispatch(self):
+        # 5.0: the standalone `## Host dispatch` section (keyed to the
+        # deleted manual pipeline) is gone -- host dispatch is now a
+        # paragraph inside the driver run-loop. `driver run --host` only
+        # accepts claude|generic; Kimi/Codex are named as the generic path's
+        # examples, not as separate --host values.
+        self.assertNotIn("## Host dispatch", self.text)
+        loop = self.text.split("## Driver run-loop")[1].split("## Output")[0]
+        for host in ("Claude", "Kimi", "generic"):
+            self.assertIn(host, loop, host)
 
     def test_pins_round1_flags_and_render_advisor(self):
         for token in ["--gate-unverified", "--max-verify", "--render-advisor",
@@ -60,13 +68,17 @@ class TestSkillMd(unittest.TestCase):
             self.assertIn(token, self.text, token)
 
     def test_return_contract_by_role(self):
-        # P2 SP-A flips fan-out (panel_review/lens_sweep) to self-write +
-        # confirmation-only return; scout and advisor are unchanged (they
-        # still RETURN their JSON and the orchestrator persists it).
-        self.assertIn("writes its own `entry.out_file`", self.text)
-        self.assertIn("short confirmation only", self.text)
-        self.assertIn("the scout RETURNS the ScopeProfile JSON", self.text)
-        self.assertIn("The advisor RETURNS a", self.text)
+        # 5.0: driver fan-out (review/verify) is uniformly self-write; only
+        # the scout checkpoint is read-only + return-persist (the scout
+        # can't self-write). This supersedes the pipeline-era contract where
+        # the advisor also RETURNED its JSON for the orchestrator to persist
+        # -- under the driver the advisor self-writes its verdict just like
+        # a reviewer -- and the old dot-notation `entry.out_file`, since
+        # driver entries are dicts (`entry["out_file"]`).
+        self.assertIn("self-writes** its own", self.text)
+        self.assertIn('entry["out_file"]', self.text)
+        self.assertIn("returns a one-line confirmation", self.text)
+        self.assertIn("the scout is **read-only** and RETURNS", self.text)
         self.assertNotIn("their tool policy allows Bash", self.text)
 
     def test_host_dispatch_is_enforcement_conditional(self):
@@ -100,17 +112,23 @@ class TestSkillMd(unittest.TestCase):
         self.assertEqual(bare, [], "bare scripts/ or agents/ path (run-from-where?): %r" % bare)
 
     def test_tool_scan_step_is_deterministic_not_optional(self):
-        step4 = self.text.split("4. **Tool scan**")[1].split("5. **")[0]
-        self.assertNotIn("optional", step4.lower())
-        self.assertIn("run_tools.py", step4)
-        self.assertIn("--no-tools", step4)
-        self.assertTrue("LOUD" in step4 or "loudly" in step4.lower())
+        # 5.0: the tool scan is a driver PHASE (`tools`), not a numbered
+        # manual-pipeline step -- re-anchored to the phase's own prose in
+        # the driver run-loop, bounded by the next phase's backtick marker.
+        loop = self.text.split("## Driver run-loop")[1].split("## Driver setup")[0]
+        tools = loop.split("`tools`**")[1].split("`review`**")[0]
+        self.assertNotIn("optional", tools.lower())
+        self.assertIn("run_tools.py", tools)
+        self.assertIn("--no-tools", tools)
+        self.assertTrue("LOUD" in tools or "loudly" in tools.lower())
 
     def test_tools_dir_is_wired_into_synthesize_passes(self):
-        # F-2: a scan that runs but is never ingested reads as clean. Pin
-        # that the pipeline instructs --tools-dir where synthesize is invoked.
-        pipeline = self.text.split("## Pipeline")[1].split("## Host dispatch")[0]
-        self.assertIn("--tools-dir .panopticon/tools", pipeline)
+        # F-2: a scan that runs but is never ingested reads as clean. 5.0:
+        # the tool scan is a driver PHASE now, wired into the driver's own
+        # synthesize invocation -- re-anchored from the deleted `## Pipeline`
+        # to the driver run-loop section.
+        loop = self.text.split("## Driver run-loop")[1].split("## Output")[0]
+        self.assertIn("--tools-dir .panopticon/tools", loop)
 
     def test_documents_default_tool_path_fixture_prune(self):
         # The tool-ingest path prunes fixture-corpus findings by default (parity
@@ -185,10 +203,13 @@ class TestDeltaDocs(unittest.TestCase):
                       "diff-hunks.json", "worktree"]:
             self.assertIn(token, self.skill, token)
 
-    def test_pr_worktree_documented_pipeline_ready(self):
-        # #955: --pr stages groups.json + diff-hunks.json into the worktree's
-        # .panopticon automatically; the doc must say so (no hand-staging).
-        self.assertIn("pipeline-ready", self.skill)
+    def test_pr_worktree_is_native_review_root(self):
+        # #955's separate "stage groups.json+diff-hunks.json into the
+        # worktree" step doesn't exist under the driver: the driver resolves
+        # the worktree as review_root before any phase runs, so every phase
+        # writes there natively from the start -- nothing to stage.
+        self.assertIn("runs every phase natively inside it", self.skill)
+        self.assertIn("no separate staging step", self.skill)
 
     def test_guard_install_is_session_rooted(self):
         # #956: hook registration is SESSION-rooted — a guard installed from a
@@ -247,15 +268,19 @@ class TestReviewerScopeFence(unittest.TestCase):
             with open(os.path.join(ROOT, "agents", name), encoding="utf-8") as fh:
                 self.assertIn("Scope fence", fh.read(), name)
 class TestIntegrityResidualDocs(unittest.TestCase):
-    """#493: the pipeline instructs dispatch-time plan re-verification and the
-    fan-out content snapshot."""
+    """#493's plan-integrity CLI (`--verify-plan`/`snapshot_out_files`/
+    `content_mismatched_files`) was manual-pipeline-only (dispatch.py's
+    `dispatch-plan*.json` glob + `synthesize --files` hash check); `driver
+    run` never invokes it. The driver's own self-write safety net -- a
+    malformed write fails its done-predicate and gets re-dispatched -- is
+    documented in the run-loop section and is what this re-anchors to."""
 
-    def test_skill_instructs_verify_plan_and_snapshot(self):
+    def test_skill_instructs_malformed_selfwrite_redispatch(self):
         with open(os.path.join(ROOT, "SKILL.md"), encoding="utf-8") as fh:
             skill = fh.read()
-        self.assertIn("--verify-plan", skill)
-        self.assertIn("snapshot_out_files", skill)
-        self.assertIn("content_mismatched_files", skill)
+        self.assertIn("_cell_done", skill)
+        self.assertIn("_verify_cell_done", skill)
+        self.assertIn("re-dispatched", skill)
 
 
 class TestDocPolicyDocs(unittest.TestCase):
@@ -268,10 +293,14 @@ class TestDocPolicyDocs(unittest.TestCase):
 
 class TestSetupDocs(unittest.TestCase):
     def test_skill_documents_setup_mode(self):
+        # 5.0: the pre-driver `--setup` flag (with its "READY" checklist) was
+        # implemented by the now-retired orchestrator.py and never existed on
+        # driver.py's CLI -- `driver setup` (a subcommand) with its own
+        # readiness gate is the only setup mode there is now.
         with open(os.path.join(ROOT, "SKILL.md"), encoding="utf-8") as fh:
             skill = fh.read()
-        self.assertIn("--setup", skill)
-        self.assertIn("READY", skill)
+        self.assertIn("driver setup", skill)
+        self.assertIn("readiness gate", skill)
 
     def test_skill_documents_driver_setup(self):
         with open(os.path.join(ROOT, "SKILL.md"), encoding="utf-8") as fh:
@@ -293,15 +322,20 @@ class TestInstalledFlowDocs(unittest.TestCase):
 
 
 class TestCodexHostDocs(unittest.TestCase):
-    """4.3.0: the codex host must be documented where the other hosts are."""
+    """4.3.0's per-host Codex fan-out (`codex_runner.py`/`--advisor-queue`/
+    `--advisor-model`) was manual-pipeline-only. `driver run --host` accepts
+    only claude|generic today -- Codex isn't yet a first-class driver host,
+    so it falls back to the generic/portable path; dispatch.py's legacy shell
+    registration still covers it (`--emit-host-agents codex`, still true, is
+    what this re-anchors to instead of the retired fan-out mechanism)."""
 
-    def test_codex_host_documented(self):
+    def test_codex_documented_as_generic_fallback_with_legacy_registration(self):
         with open(os.path.join(ROOT, "SKILL.md"), encoding="utf-8") as fh:
             skill = fh.read()
-        self.assertIn("--emit-host-agents codex", skill)
-        self.assertIn("codex_runner.py", skill)
-        self.assertIn("--advisor-queue", skill)
-        self.assertIn("--advisor-model gpt-5.6", skill)
+        self.assertIn("--emit-host-agents", skill)
+        self.assertIn("codex", skill.lower())
+        self.assertIn("kimi", skill.lower())
+        self.assertIn("generic", skill)
 
 
 class TestGuardFailClosedDocs(unittest.TestCase):
