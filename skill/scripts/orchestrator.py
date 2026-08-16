@@ -1023,9 +1023,9 @@ def setup_readiness(repo, host=None, runner=subprocess.run, environ=None):
                        "start a fresh session" % ", ".join(missing_shells)))
 
     try:
-        catalog = load_catalog(repo) or []
+        catalog = _committed_matrix(repo) or {}
     except Exception:
-        catalog = []
+        catalog = {}
     if catalog:
         empty = [name for name, g in catalog.items() if not g.get("match")]
         checks.append(("groups-manifest", not empty,
@@ -1411,7 +1411,7 @@ def main(argv=None):
         result = build_result(repo, "repo", ".", None, impl, tests, args.max_per_group,
                               group_files=impl + tests, security_mode=args.security)
         result["discovery"] = {"method": info.get("method")}
-        catalog = load_catalog(repo)
+        catalog = _committed_matrix(repo)   # SEC-3: parse_groups-validated matrix read
         if any(g.get("match") for g in catalog.values()):
             groups, leftovers = catalog_groups(allf, catalog, args.max_per_group,
                                                args.security)

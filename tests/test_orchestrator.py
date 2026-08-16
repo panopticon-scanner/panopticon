@@ -1557,3 +1557,30 @@ class TestSetupScanFlow(unittest.TestCase):
         orch.run_setup_ingest(d, proposal_path=pp, out=io.StringIO())
         after = open(os.path.join(d, ".panopticon", "groups.yml")).read()
         self.assertEqual(before, after)
+
+
+def test_repo_scan_reads_matrix_via_parse_groups(tmp_path, monkeypatch):
+    # A matrix groups.yml (match/panels) drives --repo-scan grouping identically
+    # whether read by load_catalog or _committed_matrix, since assign_by_catalog
+    # keys on `match`. Guards the SEC-3 migration: no grouping regression.
+    import orchestrator
+    repo = tmp_path
+    (repo / ".panopticon").mkdir()
+    (repo / "src").mkdir(); (repo / "src" / "a.py").write_text("x=1\n")
+    (repo / ".panopticon" / "groups.yml").write_text(
+        "groups:\n  Core:\n    match: ['src/**']\n    panels: [SEC]\n")
+    cat = orchestrator._committed_matrix(str(repo))
+    assert cat["Core"]["match"] == ["src/**"]
+    # assign_by_catalog uses only `match` → Core claims src/a.py
+    assigned, leftovers = orchestrator.assign_by_catalog(["src/a.py"], cat)
+    assert assigned == {"Core": ["src/a.py"]} and leftovers == []
+
+
+def test_repo_scan_scalar_match_disclosed_not_silently_coerced(tmp_path, capsys):
+    import orchestrator
+    (tmp_path / ".panopticon").mkdir()
+    (tmp_path / ".panopticon" / "groups.yml").write_text(
+        "groups:\n  Bad:\n    match: 'src/**'\n")   # scalar, not a list
+    orchestrator._committed_matrix(str(tmp_path))   # parse_groups validates
+    err = capsys.readouterr().err
+    assert "match must be a non-empty list" in err   # disclosed, not silent-coerced
