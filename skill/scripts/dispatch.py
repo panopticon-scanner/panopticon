@@ -406,8 +406,12 @@ def _delivery_fields(host, out_file, role_file, run_id=None, group=None,
     else:
         metadata = json.dumps(
             {"producer": "reviewer_self_write", "run_id": run_id,
+             # #1034: this delivery-contract path is reached only for
+             # panel-review/lens-sweep entries (render_prompt gates the contract
+             # to those two, and build_plan calls _delivery_fields only for
+             # them). domain-panel.md is rendered solely by the driver, so the
+             # old `domain_panel` branch here was dead — removed.
              "role": ("lens_sweep" if role_file == "lens-sweep.md"
-                      else "domain_panel" if role_file == "domain-panel.md"
                       else "panel_review"),
              "panel": panel, "lens": lens, "group": group},
             separators=(",", ":"))

@@ -57,8 +57,11 @@ WIDENS coverage beyond the committed floor — you can only add, never remove):
 - `DAT` if a `db_sql` surface (queries, ORM, migrations) is present
 - `ARC` if any file is repo-scope / architectural
 - `TST` if tests or testable logic are present
-- `QAL`/`AGT`/`OPS`/`ACC`/`LNG` where you detect that domain's surface (quality
-  tooling, agentic/LLM code, ops/deploy, accessibility, i18n/localization).
+- `QAL` on any non-trivial module (readability/duplication/dead-code/complexity/structure apply broadly)
+- `AGT` if LLM/agent code is present: prompt templating, tool/function calling, autonomy loops, output-trust boundaries
+- `OPS` if deploy/runtime ops are present: startup/health-checks, retries/timeouts, resource limits, deployment config
+- `ACC` if user-facing UI is present: markup/ARIA, forms, keyboard/interactive components, contrast/motion
+- `LNG` if user-facing strings / i18n are present: externalized strings, locale/plural formatting, key drift, encoding/directionality
 
 Emit the domain CODES (e.g. `["SEC","COD","DAT"]`), not panel names. The
 committed floor already forces its domains ON regardless of what you list.

@@ -23,7 +23,21 @@ DOMAIN_TO_PANEL = {
     "SEC": "security", "COD": "code", "ARC": "architecture",
     "TST": "test", "DAT": "database",
     "QAL": "code", "AGT": "code", "OPS": "code", "ACC": "code", "LNG": "code",
+    # #1034: the reserved "no derivable domain" sentinel (UNKNOWN_DOMAIN_FALLBACK)
+    # buckets to the code panel so a normalized domainless finding still segments.
+    "ZZZ": "code",
 }
+
+# #1034: a finding whose code yields no derivable domain is normalized to this
+# reserved sentinel (canonical, greppable, and — ZZZ being no real domain —
+# unmistakably not a catalog code) instead of shipping the raw string.
+UNKNOWN_DOMAIN_FALLBACK = "ZZZ-X0X"
+
+# #1034: severity used for a bundle entry that omits default_severity. None in
+# the pinned 0.3.1 bundle omit it, so this is latent — but any future entry that
+# does gets this assumed level plus a `severity_assumed` flag, never a silent
+# fabrication.
+_MENU_SEVERITY_WHEN_ABSENT = "MEDIUM"
 
 
 def _bundle_path():
@@ -56,10 +70,14 @@ def domain_menu(bundle, domain):
     menu = []
     for code in sorted(entries):
         entry = entries[code] or {}
-        menu.append({"code": code,
-                     "name": entry.get("name", ""),
-                     "severity": entry.get("default_severity", "MEDIUM"),
-                     "cwe": entry.get("cwe") or []})
+        sev = entry.get("default_severity")
+        item = {"code": code,
+                "name": entry.get("name", ""),
+                "severity": sev or _MENU_SEVERITY_WHEN_ABSENT,
+                "cwe": entry.get("cwe") or []}
+        if not sev:   # #1034: flag the assumed severity, never silently fabricate
+            item["severity_assumed"] = True
+        menu.append(item)
     return menu
 
 
