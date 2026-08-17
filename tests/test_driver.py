@@ -2253,5 +2253,83 @@ class TestDriverIntegrityWiring(unittest.TestCase):
         self.assertEqual(driver._load_json(hashes_path), snap1)
 
 
+class TestVerifyBackupNarrowing(unittest.TestCase):
+    """#1029: the backup adversary re-reads only the files its scoped
+    (advisor-confirmed, >= F_b) claims cite, not the whole cell -- a
+    coverage-preserving cost cut (the advisor is claim-driven, reads unconfined)."""
+
+    RUN_ID = "run-backup-narrow"
+
+    def test_backup_scope_files_narrows_to_cited_files(self):
+        scope = [{"location": {"file": "src/a.py", "line_start": 3}},
+                 {"location": {"file": "src/b.py", "line_start": 9}}]
+        self.assertEqual(
+            driver._backup_scope_files(["src/a.py", "src/b.py", "src/c.py"], scope),
+            ["src/a.py", "src/b.py"])   # c.py (uncited) dropped
+
+    def test_backup_scope_files_dedups_preserving_order(self):
+        scope = [{"location": {"file": "src/a.py"}},
+                 {"location": {"file": "src/a.py"}},
+                 {"location": {"file": "src/b.py"}}]
+        self.assertEqual(
+            driver._backup_scope_files(["src/a.py", "src/b.py"], scope),
+            ["src/a.py", "src/b.py"])
+
+    def test_backup_scope_files_falls_back_when_location_missing(self):
+        # a scoped claim with no resolvable file -> the full group list; never
+        # refute blind.
+        full = ["src/a.py", "src/b.py", "src/c.py"]
+        for bad in ({"location": {"file": ""}}, {"location": None}, {},
+                    {"location": {}}):
+            scope = [{"location": {"file": "src/a.py"}}, bad]
+            self.assertEqual(driver._backup_scope_files(full, scope), full)
+
+    def _manifest(self):
+        return {"run_id": self.RUN_ID, "host": "claude",
+                "security_mode": "standard", "flags": {}}
+
+    def test_verify_backup_execute_narrows_file_list(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(driver._pano(d, "verdicts"), exist_ok=True)
+            manifest = self._manifest()
+            # group G spans 3 files; two CONFIRMED CRIT claims cite a.py + b.py.
+            driver._write_json(driver._pano(d, "groups.json"),
+                {"groups": [{"name": "G",
+                             "files": ["src/a.py", "src/b.py", "src/c.py"]}]})
+            driver._write_json(driver._pano(d, "coverage-G.json"),
+                {"effective": ["SEC"]})
+            driver._write_json(driver._pano(d, "findings-G-SEC.json"), {
+                "findings": [
+                    {"title": "authz bypass A", "severity": "CRITICAL",
+                     "domain": "SEC", "code": "SEC-A2A", "category": "authz",
+                     "location": {"file": "src/a.py", "line_start": 10}},
+                    {"title": "authz bypass B", "severity": "CRITICAL",
+                     "domain": "SEC", "code": "SEC-A2A", "category": "authz",
+                     "location": {"file": "src/b.py", "line_start": 20}}],
+                "_panopticon": {"run_id": self.RUN_ID, "role": "domain_panel",
+                                "domain": "SEC", "group": "G"}})
+            # load the cell for its synthesize-assigned ids, then CONFIRM both
+            # (primary) so the authz category clears F_b and a backup is summoned.
+            cell = driver._load_cell_findings(d, manifest, "G", "SEC")
+            self.assertEqual(len(cell), 2)
+            driver._write_json(
+                driver._verify_out_file(d, "G", "SEC", "primary"), {
+                    "verdicts": [{"finding_id": f["id"], "verdict": "CONFIRMED",
+                                  "reasoning": "real"} for f in cell],
+                    "_panopticon": {"run_id": self.RUN_ID, "role": "domain_advisor",
+                                    "domain": "SEC", "group": "G",
+                                    "stage": "primary"}})
+            res = driver._verify_backup_execute(d, manifest, "claude",
+                                                ocrdb.load_bundle())
+            self.assertIsNotNone(res)
+            self.assertEqual(res.checkpoint, "verify")
+            entry = driver.load_dispatch_request(d)["entries"][0]
+            self.assertTrue(entry["out_file"].endswith("-backup.json"))
+            prompt = entry["prompt"]
+            self.assertIn("src/a.py", prompt)
+            self.assertIn("src/b.py", prompt)
+            self.assertNotIn("src/c.py", prompt)   # uncited group file excluded
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -119,7 +119,7 @@ PANEL_LENSES = {
 # Emission is deterministic policy — ambient PANOPTICON_MODEL_* overrides apply
 # to per-run dispatch plans, never to persisted registrations.
 EMIT_MODEL_POLICY = {"claude": {"scout": "haiku", "lens_sweep": "haiku",
-                                 "panel_review": "sonnet", "advisor": "opus",
+                                 "panel_review": "sonnet", "advisor": "haiku",
                                  "domain_panel": "sonnet",
                                  "domain_advisor": "opus"}}
 

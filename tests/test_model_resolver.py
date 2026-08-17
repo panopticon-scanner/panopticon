@@ -63,7 +63,8 @@ class TestModelResolver(unittest.TestCase):
         self.assertEqual(mr.resolve_model("claude", "scout")["model"], "haiku")
         self.assertEqual(mr.resolve_model("claude", "lens_sweep")["model"], "haiku")
         self.assertEqual(mr.resolve_model("claude", "panel_review")["model"], "sonnet")
-        self.assertEqual(mr.resolve_model("claude", "advisor")["model"], "opus")
+        # #1029: the per-finding tool-advisor is narrow single-claim work -> haiku
+        self.assertEqual(mr.resolve_model("claude", "advisor")["model"], "haiku")
 
     def test_codex_defaults(self):
         self.assertEqual(mr.resolve_model("codex", "scout")["model"], "gpt-5.6-luna")
@@ -147,4 +148,4 @@ class TestModelResolver(unittest.TestCase):
 
     def test_claude_fallback_matches_policy_without_yaml(self):
         with patch.object(mr, "_PROFILES", {}):
-            self.assertEqual(mr.resolve_model("claude", "advisor")["model"], "opus")
+            self.assertEqual(mr.resolve_model("claude", "advisor")["model"], "haiku")

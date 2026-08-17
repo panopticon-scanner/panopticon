@@ -692,6 +692,24 @@ def _cell_backup_findings(review_root, manifest, group, domain):
     return out
 
 
+def _backup_scope_files(files, scope):
+    """The files a backup advisor needs: the ones its scoped (advisor-confirmed,
+    >= F_b) claims cite -- not the whole cell. The domain-advisor is claim-driven
+    and its Read/Grep/Glob are unconfined, so a narrow list preserves coverage
+    while dropping the whole-cell re-read cost (#1029). Falls back to the full
+    group `files` if ANY scoped claim lacks a resolvable location.file -- a
+    backup must never refute blind."""
+    located = []
+    for f in scope:
+        loc = f.get("location") if isinstance(f, dict) else None
+        path = loc.get("file") if isinstance(loc, dict) else None
+        if not path:
+            return list(files)
+        if path not in located:
+            located.append(path)
+    return located or list(files)
+
+
 def _verify_backup_execute(review_root, manifest, host, bundle):
     for group, files in _discovered_groups(review_root):
         pending = []
@@ -703,7 +721,10 @@ def _verify_backup_execute(review_root, manifest, host, bundle):
                 continue
             pending.append((domain, scope))
         if pending:
-            entries = [_verify_entry(review_root, manifest, group, d, files, c,
+            # #1029: the backup re-reads only its scoped claims' files, not the
+            # whole group -- coverage-preserving (claim-driven, unconfined reads).
+            entries = [_verify_entry(review_root, manifest, group, d,
+                                     _backup_scope_files(files, c), c,
                                      host, bundle, "backup") for d, c in pending]
             req = write_dispatch_request(review_root, manifest["run_id"], "verify",
                                          group, entries)
