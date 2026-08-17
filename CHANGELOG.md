@@ -1,5 +1,40 @@
 # Changelog
 
+## 5.0.1 — Honest instrumentation
+
+The first 5.0 point release: the residuals surfaced by the BursarBuddy
+calibration and the 5.0 PR sweep, all keeping the pipeline's self-reporting and
+gating honest.
+
+- **Honest cost ledger:** `meta.cost` enumerates every 5.0 driver dispatch class
+  from its own on-disk artifact — review cells, verify primary/backup, the tool
+  round, and the scan — instead of only scout + a lumped advisor row (#1030).
+- **Cheaper verify:** the second-witness backup re-reads only its scoped claims'
+  files (not the whole cell), and the per-finding tool-advisor runs on a lighter
+  model — the biggest cost lever, with zero coverage loss (#1029).
+- **Honest tool certification:** coverage certifies against the runner's
+  deterministic adapter manifest (`selected/produced/missing`), not the scout's
+  free-form tool list, so a scout naming an absent/inapplicable tool no longer
+  sinks the gate (#1031); `eslint-security` reports empty-valid on a
+  nothing-to-lint target instead of a skip (#984).
+- **Nightly image health:** a push-triggered keep-alive re-enables the
+  `panopticon-tools` schedule, and a freshness heartbeat fails loudly on a stale
+  image (#1032).
+- **Driver robustness:** the clean-tree tamper guard reads `git status -z` and
+  checks both rename endpoints, plus atomic manifest writes, spawn-error
+  wrapping, and a tools crash-vs-skip marker (#1033).
+- **OCRDb consumer & matrix hardening:** a distinct exit code for a corrupt
+  bundle, a `ZZZ-X0X` sentinel for a domainless code, `code_domain_mismatch`
+  disclosure, and the `{criteria}` advisor lens — the domain-advisor now grades
+  against a code's explicit pass/fail criteria where defined (#1034, #1035).
+- **Config dedup:** `model_resolver` is the single owner of the claude
+  role→model map; the duplicate `EMIT_MODEL_POLICY` is retired (#1036).
+- **Severity discipline:** an explicit CRITICAL-vs-HIGH bar in the reviewer
+  prompt so CRITICAL is earned, not defaulted-to (#1038).
+- **OCRDb feedback groundwork:** an `x0x-report-schema.json` — Panopticon's
+  catalog-gap findings as candidate records for OCRDb's new-code pool (schema
+  only; emission wires up in 5.1).
+
 ## 5.0.0 — The matrix flagship
 
 - Review is now a single resumable **driver** (`skill/scripts/driver.py`,
