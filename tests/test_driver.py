@@ -948,7 +948,11 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
 
     def test_end_to_end_reaches_report(self):
         d = self._repo()
-        args = self._args(d)
+        # --no-tools keeps this review->report end-to-end deterministic: with a
+        # working tools image present the tool scan emits findings, and the
+        # #5.0-03 tool-advisor verify round has no servicer in this fixture (that
+        # path is covered by test_driver_tool_verify.py).
+        args = self._args(d, "--no-tools")
         status = driver.run(args)
         self.assertEqual(status["status"], "checkpoint")
         self.assertEqual(status["checkpoint"], "scout")
@@ -1150,7 +1154,12 @@ class TestReviewMatrixEndToEnd(unittest.TestCase):
         return d
 
     def _args(self, d):
-        return driver.build_parser().parse_args(["run", d, "--host", "claude"])
+        # --no-tools: this fixture services scout + review checkpoints only; with
+        # a tools image present the tool scan would emit the #5.0-03 tool-advisor
+        # verify round, which has no servicer here (that path is covered by
+        # test_driver_tool_verify.py). Keeps the run deterministic across envs.
+        return driver.build_parser().parse_args(
+            ["run", d, "--host", "claude", "--no-tools"])
 
     def _service(self, d, status, run_id):
         # emulate the orchestrator dispatching whatever the checkpoint asked for
