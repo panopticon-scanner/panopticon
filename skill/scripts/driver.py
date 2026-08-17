@@ -31,6 +31,7 @@ import scripts.dispatch as dispatch
 import scripts.evidence as evidence
 import scripts.group_runner as group_runner
 import scripts.groups_schema as groups_schema
+import scripts.ingest_tools as ingest_tools
 import scripts.ocrdb as ocrdb
 import scripts.plan_contract as plan_contract
 import scripts.run_manifest as run_manifest
@@ -635,6 +636,11 @@ def verify_execute(review_root, manifest):
     backup = _verify_backup_execute(review_root, manifest, host, bundle)
     if backup is not None:
         return backup
+    # TOOL round (#5.0-03): dispatch a per-finding advisor for each tool finding
+    # so synthesize can promote tool_confirmed and stop counting them unanswered.
+    tools = _verify_tools_execute(review_root, manifest, host)
+    if tools is not None:
+        return tools
     return PhaseResult(kind="advanced", message="verify: all cells verified")
 
 
@@ -646,7 +652,8 @@ def verify_done(review_root, manifest):
                 continue
             if not _verify_cell_done(review_root, manifest, group, domain, "primary"):
                 return False
-    return _verify_backup_done(review_root, manifest)
+    return (_verify_backup_done(review_root, manifest)
+            and _verify_tools_done(review_root, manifest))
 
 
 def _cell_backup_findings(review_root, manifest, group, domain):
@@ -705,6 +712,130 @@ def _verify_backup_done(review_root, manifest):
     return True
 
 
+def _tools_include_fixtures(manifest):
+    """Whether tool-finding ingestion keeps test-fixture-corpus findings.
+
+    ONE source of truth, shared by _tool_verify_queue (the driver's tool
+    verify queue) and synthesize_execute (the --include-fixtures it forwards),
+    so the driver and synthesize ingest the IDENTICAL set of tool findings.
+    Fingerprint/id parity of the tool-verify queue depends on this agreement:
+    if the driver ingested fixtures synthesize prunes (or vice versa),
+    synthesize could queue a tool finding the driver never dispatched an
+    advisor for -> unanswered -> a spurious INCONCLUSIVE. Mirrors
+    ingest_dir_detailed's own redteam-keeps-fixtures contract plus the
+    explicit --include-fixtures flag captured in the manifest."""
+    flags = manifest.get("flags") or {}
+    return bool(flags.get("include_fixtures")) or manifest.get("security_mode") == "redteam"
+
+
+def _tool_verify_queue(review_root, manifest):
+    """The tool-sourced verify-queue entries, computed EXACTLY as synthesize
+    will, so their queue_ids AND finding ids match synthesize's for the same
+    tool output. Returns a list of (queue_id, finding); [] when the tool scan
+    did not run.
+
+    Runs synthesize's OWN combined pipeline (agent findings from the cell files
+    PLUS the ingested tool findings) -> prepare_for_queue -> build_verify_queue,
+    then filters to is_tool_sourced entries. The full combined pipeline (not a
+    tool-only slice) is what guarantees FINDING-ID parity: aggregate_tool_findings
+    chooses its survivor for a repeated rule using the AGENT findings' loci, so a
+    tool-only pipeline could keep a different survivor -- same fingerprint/queue_id
+    but a different finding id -- and synthesize's match_verdict enforces the
+    finding_id echo, so a mismatched id would drop the driver's verdict and force
+    the very INCONCLUSIVE this phase exists to prevent. Feeding the identical
+    inputs through the identical functions makes the (queue_id, id) pair the tool
+    findings carry here byte-identical to what synthesize's report exports.
+
+    Additive only: this CALLS synthesize.load_findings/normalize_finding/
+    prepare_for_queue and evidence.build_verify_queue; it changes none of them.
+    include_fixtures/group/exclude are pinned to synthesize's main() tool-ingest
+    call (group=None, exclude_globs=None) for identity; _tools_include_fixtures
+    is the value synthesize_execute forwards."""
+    ran = (_load_json(_pano(review_root, "tools-ran.json")) or {}).get("ran")
+    tools_dir = _pano(review_root, "tools")
+    if not ran or not os.path.isdir(tools_dir):
+        return []
+    findings = synthesize.load_findings(
+        sorted(_glob.glob(_pano(review_root, "findings-*.json"))))
+    tool_findings, _disp = ingest_tools.ingest_dir_detailed(
+        tools_dir, None, include_fixtures=_tools_include_fixtures(manifest))
+    for tf in tool_findings:
+        findings.append(synthesize.normalize_finding(tf))
+    prepared, _integration = synthesize.prepare_for_queue(findings)
+    queue, _cut = evidence.build_verify_queue(prepared, max_verify=None)
+    return [(e["queue_id"], e["finding"]) for e in queue
+            if evidence.is_tool_sourced(e["finding"])]
+
+
+def _tool_verdict_out_file(review_root, queue_id):
+    """Where a tool finding's advisor verdict lands: verdicts/<queue_id>.json --
+    the SAME directory the cell verdict bundles use, but a single-verdict file
+    keyed by queue_id (synthesize's evidence.load_verdicts_detailed picks it up;
+    load_verdict_bundles skips it as not-a-bundle)."""
+    return os.path.abspath(_pano(review_root, "verdicts", "%s.json" % queue_id))
+
+
+def _tool_verdict_done(review_root, queue_id):
+    """A tool-finding verdict is settled once verdicts/<queue_id>.json parses as
+    a single-verdict file synthesize will load -- a dict carrying a valid verdict
+    value. Mirrors evidence.load_verdicts_detailed's own acceptance test (tolerant
+    parse, VERDICT_VALUES), so 'done' means 'synthesize will match it', and a
+    truncated/garbled return re-dispatches rather than reading as done."""
+    path = _tool_verdict_out_file(review_root, queue_id)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = evidence.load_json_tolerant(fh.read())
+    except (OSError, ValueError):
+        return False
+    return (isinstance(data, dict)
+            and str(data.get("verdict", "")).upper() in evidence.VERDICT_VALUES)
+
+
+def _tool_verify_entry(review_root, manifest, queue_id, finding, host):
+    """One per-finding advisor (advisor.md) dispatch entry for a tool finding.
+
+    Return-persist by construction: advisor.md is Read/Grep/Glob only (no Write),
+    so the advisor RETURNS a verdict JSON and the HOST writes it to out_file --
+    `delivery: return_json` flags that, exactly like the scout/setup-scan
+    return-persist entries. Reuses render_prompt('advisor.md', {claim_json}) and
+    the repo-root pin from dispatch.render_advisor_prompts. NO run_id echo line:
+    the driver writes no verify-queue.json, so synthesize's verdict_run_id is None
+    and match_verdict binds on the finding_id echo alone."""
+    out_file = _tool_verdict_out_file(review_root, queue_id)
+    claim = json.dumps(finding, indent=2, ensure_ascii=False)
+    prompt = dispatch.render_prompt("advisor.md", {"claim_json": claim}, host)
+    prompt = ("Repo root: %s\nEvery relative path in the claim below resolves "
+              "against this root -- read files THERE, never in your session's "
+              "default checkout.\n\n%s" % (os.path.abspath(review_root), prompt))
+    enforced = host == "claude"
+    return {"id": "verify-tool-%s" % queue_id,
+            "agent": dispatch.registered_agent_name("advisor.md") if enforced else None,
+            "enforced": enforced, "model": None, "prompt": prompt,
+            "out_file": out_file, "delivery": "return_json"}
+
+
+def _verify_tools_execute(review_root, manifest, host):
+    """Emit the tool-finding verify checkpoint when any tool finding still lacks
+    a verdict; None when every tool finding is verified (or none exist). Runs as
+    a round of the verify phase after primary/backup cells."""
+    pending = [(qid, f) for qid, f in _tool_verify_queue(review_root, manifest)
+               if not _tool_verdict_done(review_root, qid)]
+    if not pending:
+        return None
+    entries = [_tool_verify_entry(review_root, manifest, qid, f, host)
+               for qid, f in pending]
+    req = write_dispatch_request(review_root, manifest["run_id"], "verify",
+                                 "tools", entries)
+    return PhaseResult(kind="checkpoint", checkpoint="verify", group="tools",
+                       dispatch_request=req,
+                       message="verify: %d tool advisor(s)" % len(entries))
+
+
+def _verify_tools_done(review_root, manifest):
+    return all(_tool_verdict_done(review_root, qid)
+               for qid, _f in _tool_verify_queue(review_root, manifest))
+
+
 def synthesize_done(review_root, manifest):
     return _json_parses(_pano(review_root, "report.json"))
 
@@ -729,6 +860,13 @@ def synthesize_execute(review_root, manifest):
            "--verdicts-dir", verdicts_dir]
     if (_load_json(_pano(review_root, "tools-ran.json")) or {}).get("ran"):
         cmd += ["--tools-dir", _pano(review_root, "tools")]
+        # Pin synthesize's fixture posture to the tool-verify queue's
+        # (#5.0-03): both must ingest the SAME tool findings or synthesize
+        # could queue one the driver never dispatched a verdict for. Also
+        # closes the latent gap where the manifest captured include_fixtures
+        # but synthesize_execute never forwarded it.
+        if _tools_include_fixtures(manifest):
+            cmd += ["--include-fixtures"]
     for flag, key in (("--fail-on", "fail_on"), ("--severity", "severity"),
                       ("--gate-scope", "gate_scope")):
         if flags.get(key):
