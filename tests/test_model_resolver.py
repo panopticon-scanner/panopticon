@@ -149,3 +149,13 @@ class TestModelResolver(unittest.TestCase):
     def test_claude_fallback_matches_policy_without_yaml(self):
         with patch.object(mr, "_PROFILES", {}):
             self.assertEqual(mr.resolve_model("claude", "advisor")["model"], "haiku")
+
+    def test_claude_registration_model_covers_matrix_roles(self):   # #1036
+        # domain_panel/domain_advisor now resolve via model_resolver (the single
+        # owner that dispatch's emit path reads), both with the yml present and
+        # via the hardcoded fallback — no more duplicate EMIT_MODEL_POLICY dict.
+        self.assertEqual(mr.registration_model("claude", "domain_panel"), "sonnet")
+        self.assertEqual(mr.registration_model("claude", "domain_advisor"), "opus")
+        with patch.object(mr, "_PROFILES", {}):   # yml absent -> fallback
+            self.assertEqual(mr.registration_model("claude", "domain_panel"), "sonnet")
+            self.assertEqual(mr.registration_model("claude", "domain_advisor"), "opus")

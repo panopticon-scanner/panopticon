@@ -29,6 +29,10 @@ hosts:
       model: sonnet
     advisor:
       model: haiku
+    domain_panel:
+      model: sonnet
+    domain_advisor:
+      model: opus
   codex:
     scout:
       model: gpt-5.6-luna
