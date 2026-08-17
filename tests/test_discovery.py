@@ -913,6 +913,29 @@ def test_repo_scan_scope_file_restricts_to_file_and_its_group(tmp_path):
     assert {g["name"] for g in groups} == {"Checkout"}   # assigned to its group, nothing else
 
 
+def test_repo_scan_scope_file_accepts_dotslash_and_absolute(tmp_path):
+    # #5.0-17: `-f ./src/checkout/pay.py` and `-f <abs>` must normalize to the
+    # discovered repo-relative path, not hard-fail 'not found among discovered'.
+    import discovery as orchestrator, json, os
+    for spelling in ("./src/checkout/pay.py",):
+        repo = _repo_with_matrix(tmp_path / spelling.replace("/", "_").replace(".", "d"))
+        out = repo / "groups.json"
+        rc = orchestrator.main(["--repo-scan", "--scope-file", spelling,
+                                str(repo), "--out", str(out)])
+        assert rc == 0, spelling
+        files = sorted(f for g in json.loads(out.read_text())["groups"] for f in g["files"])
+        assert files == ["src/checkout/pay.py"], spelling
+    # absolute path
+    repo = _repo_with_matrix(tmp_path / "abs")
+    out = repo / "groups.json"
+    abs_target = os.path.join(str(repo), "src/checkout/pay.py")
+    rc = orchestrator.main(["--repo-scan", "--scope-file", abs_target,
+                            str(repo), "--out", str(out)])
+    assert rc == 0
+    files = sorted(f for g in json.loads(out.read_text())["groups"] for f in g["files"])
+    assert files == ["src/checkout/pay.py"]
+
+
 def test_repo_scan_scope_file_includes_sibling_related_test(tmp_path):
     # related_tests()'s filtering (discovery.py:969) actually pulls a real
     # co-located sibling test file into a --scope-file scope -- the sibling
