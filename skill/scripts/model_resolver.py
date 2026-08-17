@@ -61,6 +61,11 @@ _CLAUDE_FALLBACK = {
     "lens_sweep": {"model": "haiku"},
     "panel_review": {"model": "sonnet"},
     "advisor": {"model": "haiku"},   # #1029: per-finding tool-advisor is narrow
+    # #1036: the 5.0 matrix roles, moved here so model_resolver is the single
+    # owner of the claude role->model map (dispatch's emit path used to keep a
+    # duplicate EMIT_MODEL_POLICY dict — #1029 had to edit both).
+    "domain_panel": {"model": "sonnet"},
+    "domain_advisor": {"model": "opus"},
 }
 _CODEX_FALLBACK = {
     "scout": {"model": "gpt-5.6-luna", "model_reasoning_effort": "medium"},

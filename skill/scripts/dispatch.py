@@ -116,13 +116,6 @@ PANEL_LENSES = {
     "redteam": ["redteam"],
 }
 
-# Emission is deterministic policy — ambient PANOPTICON_MODEL_* overrides apply
-# to per-run dispatch plans, never to persisted registrations.
-EMIT_MODEL_POLICY = {"claude": {"scout": "haiku", "lens_sweep": "haiku",
-                                 "panel_review": "sonnet", "advisor": "haiku",
-                                 "domain_panel": "sonnet",
-                                 "domain_advisor": "opus"}}
-
 _CHARTER = (
     "You are panopticon's `%s` reviewer (a registered enforcement shell).\n"
     "Follow the dispatched task message exactly — it contains your full\n"
@@ -169,7 +162,12 @@ def emit_host_agents(host, out_dir):
         charter = _CHARTER % (role, ", ".join(tp["allowed"]),
                       ", ".join(tp["forbidden"]))
         if host == "claude":
-            model = EMIT_MODEL_POLICY.get("claude", {}).get(role)
+            # #1036: model_resolver is the single owner of the role->model map
+            # for every host (kimi/codex already source from it). registration_
+            # model is override-free (profiles + hardcoded fallback only, never
+            # PANOPTICON_MODEL_*), so emission stays deterministic policy — env
+            # overrides shape a run's dispatch plan, never a persisted shell.
+            model = model_resolver.registration_model("claude", role)
             fm = ["---", "name: %s" % agent,
                   "description: %s" % meta["description"],
                   "tools: %s" % ", ".join(tp["allowed"])]
@@ -177,9 +175,9 @@ def emit_host_agents(host, out_dir):
                 fm.append("model: %s" % model)
             fm.append("---")
         elif host == "kimi":
-            # Override-free by design (see EMIT_MODEL_POLICY above): the tier
-            # comes from model-profiles.yml so it cannot drift from what
-            # resolve_model returns at dispatch time.
+            # Override-free by design (registration_model, like the claude
+            # branch): the tier comes from model-profiles.yml so it cannot drift
+            # from what resolve_model returns at dispatch time.
             preference = model_resolver.registration_model("kimi", role) or "primary"
             fm = (["---", "name: %s" % agent,
                    "description: %s" % meta["description"],
