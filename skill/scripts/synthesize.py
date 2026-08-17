@@ -1236,6 +1236,91 @@ def classify_findings(findings, hunks, tolerance):
         f["delta"] = diff_map.classify(f, hunks, tolerance, repo_root=repo_root)
 
 
+def cost_dispatches(scout_profiles_seen, cost_fan_out, verify_queued,
+                    driver_cost=None):
+    """Assemble the meta.cost dispatch ledger rows. Pure.
+
+    Legacy path (`driver_cost` is None): the 4.x shape -- a scout row, the
+    panel_review/lens_sweep fan-out rows, and a single queued-count advisor
+    row. Byte-identical to the pre-#1030 ledger.
+
+    5.0 driver path (`driver_cost` is a dict of per-class counts): one row per
+    real dispatch class -- the review domain-panel cells, the verify
+    primary/backup domain-advisor rounds, the per-finding tool-advisor round,
+    and the deterministic tool scan. The legacy role filter never saw these
+    (driver review cells are role-less domain cells; verify is cell-batched,
+    not per-finding-queued; the tool scan is not an agent role at all), so they
+    were silently absent from the ledger (#1030).
+    """
+    scout = [{"phase": "scout", "role": "scout", "model": None,
+              "count": scout_profiles_seen}]
+    if driver_cost is None:
+        return (scout
+                + [{"phase": "fan_out", "role": r.get("role"),
+                    "model": r.get("model"), "count": r.get("count", 0)}
+                   for r in (cost_fan_out or [])]
+                + [{"phase": "verify", "role": "advisor", "model": None,
+                    "count": verify_queued}])
+    # Driver rows carry model=None like the scout/advisor rows above: the count
+    # is the load-bearing figure, and per-model/token attribution rides the
+    # `tokens` slot (null until a host exposes per-dispatch usage). The verify
+    # rounds are pipeline phases, always disclosed even at count 0; the tool
+    # scan row appears only when the scan actually ran.
+    rows = scout + [
+        {"phase": "review", "role": "domain_panel", "model": None,
+         "count": driver_cost.get("review_cells", 0)},
+        {"phase": "verify", "role": "domain_advisor", "model": None,
+         "count": driver_cost.get("verify_primary", 0)},
+        {"phase": "verify", "role": "domain_advisor_backup", "model": None,
+         "count": driver_cost.get("verify_backup", 0)},
+        {"phase": "verify", "role": "tool_advisor", "model": None,
+         "count": driver_cost.get("verify_tools", 0)},
+    ]
+    if driver_cost.get("tool_scan", 0):
+        rows.append({"phase": "tools", "role": "scan", "model": None,
+                     "count": driver_cost["tool_scan"]})
+    return rows
+
+
+def driver_cost_counts(pano_dir, verdicts_dir, tools_ran):
+    """Count each 5.0 driver dispatch class from its own on-disk artifact, for
+    meta.cost (#1030). Returns None on the legacy path (no
+    dispatch-plan-driver.json) so `cost_dispatches` keeps the 4.x shape.
+
+    Every count is artifact-derived -- the driver's gating logic is never
+    re-run here:
+      review cells   = the (group, domain) cell declarations in
+                       dispatch-plan-driver.json (each is one domain-panel
+                       dispatch; read straight from the plan, not the validated
+                       union, so the count stays faithful to what was declared)
+      verify primary = the self-written cell bundles verdicts-<g>-<d>.json
+      verify backup  = the ...-backup.json bundles
+      tool-advisor   = the return-persisted verdicts/<queue_id>.json files
+      tool scan      = the adapters that produced output (`tools_ran`)
+    """
+    plan_path = os.path.join(pano_dir, DRIVER_DISPATCH_PLAN)
+    if not os.path.isfile(plan_path):
+        return None
+    try:
+        with open(plan_path, encoding="utf-8") as fh:
+            entries = json.load(fh)
+    except (OSError, ValueError):   # tolerant: a corrupt plan counts 0 cells
+        entries = []
+    review_cells = sum(1 for e in entries
+                       if isinstance(e, dict) and e.get("domain"))
+    # Cell bundles live at the .panopticon root (verdicts-<g>-<d>.json); the
+    # tool-advisor verdicts live one level down in verdicts/ -- disjoint globs.
+    bundles = glob.glob(os.path.join(pano_dir, "verdicts-*.json"))
+    backup = sum(1 for p in bundles if p.endswith("-backup.json"))
+    tool_adv = (len(glob.glob(os.path.join(verdicts_dir, "*.json")))
+                if verdicts_dir and os.path.isdir(verdicts_dir) else 0)
+    return {"review_cells": review_cells,
+            "verify_primary": len(bundles) - backup,
+            "verify_backup": backup,
+            "verify_tools": tool_adv,
+            "tool_scan": len(tools_ran) if tools_ran else 0}
+
+
 def build_report(findings, groups_meta, target, fail_on, timestamp, review_type="repo",
                  security_mode="standard", verdicts=None, gate_unverified=False,
                  max_verify=None, verdicts_supplied=False, tool_policy_mode=None,
@@ -1245,7 +1330,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                  diff_hunks=None, diff_context=5, gate_scope="on-diff",
                  catalog=None, verdict_unloadable=None, cost_fan_out=None,
                  verdict_run_id=None, coverages=None, ingested_paths=None,
-                 verdict_bundles=None):
+                 verdict_bundles=None, driver_cost=None):
     """Build a CodeReviewReport under the two-axis severity x evidence model.
 
     Severity is never mutated here. Verdicts (from evidence.load_verdicts) are
@@ -1533,20 +1618,17 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                           if delta_mode else None),
             },
             "integrity": integrity,
-            # meta.cost (4.3.2): the run's dispatch ledger, derived from the
-            # artifacts already ingested (scout profiles, dispatch plans, the
-            # verify queue) — never hand-assembled. `tokens` stays null until
-            # a host exposes per-dispatch usage; the 5.x economics work keys
-            # its exit criteria on this baseline.
+            # meta.cost: the run's dispatch ledger, derived from the artifacts
+            # already ingested (scout profiles, dispatch plans, verify queue /
+            # driver verdict bundles) — never hand-assembled. On the 5.0 driver
+            # path `driver_cost` carries the per-class counts so review cells +
+            # verify rounds + the tool scan are all represented (#1030); it is
+            # None on the legacy path, keeping the exact 4.x shape. `tokens`
+            # stays null until a host exposes per-dispatch usage.
             "cost": {
-                "dispatches": (
-                    [{"phase": "scout", "role": "scout", "model": None,
-                      "count": scout_profiles_seen}]
-                    + [{"phase": "fan_out", "role": r.get("role"),
-                        "model": r.get("model"), "count": r.get("count", 0)}
-                       for r in (cost_fan_out or [])]
-                    + [{"phase": "verify", "role": "advisor", "model": None,
-                        "count": verdict_stats["queued"]}]),
+                "dispatches": cost_dispatches(
+                    scout_profiles_seen, cost_fan_out,
+                    verdict_stats["queued"], driver_cost),
                 "tokens": None,
             },
         },
@@ -2086,6 +2168,16 @@ def main(argv=None):
     # paths", reconcile_findings_files' own term for this same list).
     coverages = load_coverage_files()
 
+    # meta.cost (#1030): on the 5.0 driver path, count every dispatch class from
+    # its own on-disk artifact. The legacy cost_fan_out role filter only sees
+    # the retired panel_review/lens_sweep roles, so the driver's review cells,
+    # verify rounds, and tool scan were absent from the ledger. driver_cost is
+    # None off the driver path (no dispatch-plan-driver.json), so cost_dispatches
+    # keeps the exact 4.x shape. Paths are cwd-relative — synthesize runs from
+    # the review root, like the scout/coverage reads above.
+    driver_cost = driver_cost_counts(
+        ".panopticon", args.verdicts_dir, tools_ran)
+
     diff_hunks = load_diff_hunks(args.diff_hunks) if args.diff_hunks else None
     if args.diff_hunks and not args.fail_on:
         # #957: a delta review is gate-first by intent, but the gate only arms
@@ -2119,7 +2211,8 @@ def main(argv=None):
                           verdict_unloadable=verdict_unloadable,
                           verdict_run_id=(_queue or {}).get("run_id"),
                           coverages=coverages,
-                          ingested_paths=args.files)
+                          ingested_paths=args.files,
+                          driver_cost=driver_cost)
     errors, warnings = validate_report(report)
     attach_schema_status(report, errors)
     for w in warnings:

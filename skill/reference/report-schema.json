@@ -325,7 +325,9 @@
                     "enum": [
                       "scout",
                       "fan_out",
-                      "verify"
+                      "review",
+                      "verify",
+                      "tools"
                     ]
                   },
                   "role": {
