@@ -81,6 +81,27 @@ def domain_menu(bundle, domain):
     return menu
 
 
+def domain_criteria(bundle, domain):
+    """The domain's entries that carry explicit `criteria` text, as
+    [{code, name, criteria}], sorted by code. [] for an unknown domain, a
+    None/non-dict bundle, or a domain whose entries have no criteria. The
+    advisor's grading lens is gated per-code on criteria PRESENCE (#1035): a
+    code without criteria is simply omitted and falls back to its menu
+    one-liner."""
+    if not isinstance(bundle, dict):
+        return []
+    dom = (bundle.get("domains") or {}).get(domain) or {}
+    entries = dom.get("entries") or {}
+    out = []
+    for code in sorted(entries):
+        entry = entries[code] or {}
+        crit = entry.get("criteria")
+        if crit:
+            out.append({"code": code, "name": entry.get("name", ""),
+                        "criteria": crit})
+    return out
+
+
 def domain_of(code):
     """The domain prefix of a code ('SEC-A1A' -> 'SEC'), or None."""
     if not isinstance(code, str) or "-" not in code:

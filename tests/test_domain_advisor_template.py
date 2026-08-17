@@ -14,7 +14,21 @@ def test_domain_advisor_writes_bundle_to_out_file():
 def test_domain_advisor_renders_with_driver_mapping():
     prompt = dispatch.render_prompt("domain-advisor.md", {
         "domain": "SEC", "group": "app", "file_list": "- a.py",
-        "findings": "[]", "menu": "SEC-A1A n (HIGH)", "run_id": "RID",
+        "findings": "[]", "menu": "SEC-A1A n (HIGH)",
+        "criteria": "SEC-A1A n — qualifies when X",   # #1035
+        "run_id": "RID",
         "stage": "primary", "out_file": "/abs/verdicts-app-SEC.json"}, "claude")
     assert "SEC" in prompt and "RID" in prompt and "/abs/verdicts-app-SEC.json" in prompt
     assert "{" + "out_file}" not in prompt      # placeholder fully substituted
+
+def test_domain_advisor_renders_criteria_lens():   # #1035
+    _, body = dispatch.load_template("domain-advisor.md")
+    assert "{criteria}" in body                     # the lens placeholder exists
+    prompt = dispatch.render_prompt("domain-advisor.md", {
+        "domain": "SEC", "group": "app", "file_list": "- a.py",
+        "findings": "[]", "menu": "SEC-A1A n (HIGH)",
+        "criteria": "SEC-A1A n — qualifies when the sentinel CRITERIONTEXT holds",
+        "run_id": "RID", "stage": "primary",
+        "out_file": "/abs/verdicts-app-SEC.json"}, "claude")
+    assert "CRITERIONTEXT" in prompt                # criteria block is rendered
+    assert "explicit grading criteria" in prompt.lower()   # the lens section header
