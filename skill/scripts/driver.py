@@ -31,6 +31,7 @@ import scripts.dispatch as dispatch
 import scripts.evidence as evidence
 import scripts.groups_schema as groups_schema
 import scripts.ocrdb as ocrdb
+import scripts.plan_contract as plan_contract
 import scripts.run_manifest as run_manifest
 import scripts.score_gate as score_gate
 import scripts.setup_flow as setup_flow
@@ -1010,6 +1011,17 @@ def run(args, runner=subprocess.run, phases=PHASES):
     else:
         base = args.base
         scope = _scope_from_args(args)
+    # #5.0-09: verify .panopticon is a real in-repo directory BEFORE any write or
+    # delete under it. A committed .panopticon symlink in a hostile target (or PR
+    # fork checkout) would otherwise redirect the driver's own reset/manifest/
+    # baseline writes outside the repo, because discovery's artifact_root guard
+    # runs only later, inside the discovery subprocess.
+    try:
+        plan_contract.artifact_root(review_root)
+    except ValueError as exc:
+        if worktree:
+            diff_map.release_worktree(worktree)
+        return _error_status("unsafe artifact root: %s" % exc)
     if args.reset:
         run_manifest.reset_run(review_root)
         _clear_run_artifacts(review_root)
