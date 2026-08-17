@@ -376,12 +376,32 @@ class TestCoveragePhase(unittest.TestCase):
         result = driver.coverage_execute(self.root, self.manifest)
         self.assertEqual(result.kind, "advanced")
         cov = driver._load_json(driver._pano(self.root, "coverage-Auth.json"))
-        # #5.0-11: the universal global floor (COD/DAT/TST/ARC) is folded in.
-        self.assertEqual(cov["floor"], ["ARC", "COD", "DAT", "SEC", "TST"])
+        # #5.0-19: the universal floor (#5.0-11) is now surface-gated. This
+        # group is a single, surfaceless file ('a.py', no db/test/arch signal
+        # and a scout with no surfaces), so only COD (universal) is injected;
+        # ARC/TST are suppressed. DAT is still present because it is the group's
+        # COMMITTED vertical floor (panels: [SEC, DAT]) -- the gate only governs
+        # the GLOBAL injection, never the declared floor.
+        self.assertEqual(cov["floor"], ["COD", "DAT", "SEC"])
         self.assertEqual(cov["excluded"], ["OPS"])
-        self.assertEqual(cov["effective"], ["ARC", "COD", "DAT", "SEC", "TST"])
+        self.assertEqual(cov["effective"], ["COD", "DAT", "SEC"])
+        self.assertEqual(cov["global_floor_suppressed"], ["ARC", "DAT", "TST"])
         self.assertEqual(cov["scout_added"], [])              # bridge deferred to P4
         self.assertTrue(cov["scout_file"].endswith("scout-Auth.json"))
+
+    def test_surfaced_group_retains_full_global_floor(self):
+        # #5.0-19: a group whose files/scout show db, tests, and cross-module
+        # structure keeps the whole universal floor -- the gate drops cells only
+        # where the surface is absent, never where it exists.
+        self._groups_json([{"name": "Core", "files": [
+            "src/db/schema.prisma", "src/api/route.ts", "tests/route.test.ts"]}])
+        self._groups_yml("groups:\n  Core:\n    match: ['src/**']\n    panels: [SEC]\n")
+        driver._write_json(driver._pano(self.root, "scout-Core.json"),
+                           {"group": "Core", "surfaces": ["database", "architecture"]})
+        driver.coverage_execute(self.root, self.manifest)
+        cov = driver._load_json(driver._pano(self.root, "coverage-Core.json"))
+        self.assertEqual(cov["effective"], ["ARC", "COD", "DAT", "SEC", "TST"])
+        self.assertEqual(cov["global_floor_suppressed"], [])
 
     def test_group_absent_from_matrix_gets_only_global_floor(self):
         # A group GENUINELY absent from groups.yml (not a <name>_<i> chunk of any
@@ -394,7 +414,9 @@ class TestCoveragePhase(unittest.TestCase):
         driver._write_json(driver._pano(self.root, "scout-Orphan.json"), {"g": 1})
         driver.coverage_execute(self.root, self.manifest)
         cov = driver._load_json(driver._pano(self.root, "coverage-Orphan.json"))
-        self.assertEqual(cov["effective"], ["ARC", "COD", "DAT", "TST"])   # no vertical floor
+        # no vertical floor, and a single surfaceless file ('a.py') -> the
+        # surface-gated global floor (#5.0-19) injects only universal COD.
+        self.assertEqual(cov["effective"], ["COD"])
 
     def test_coverage_done_only_when_all_groups_covered(self):
         self._groups_json([{"name": "A", "files": []}, {"name": "B", "files": []}])
@@ -429,7 +451,9 @@ class TestCoverageBridge(unittest.TestCase):
         driver.coverage_execute(self.root, self.manifest)
         cov = driver._load_json(driver._pano(self.root, "coverage-Auth.json"))
         self.assertEqual(cov["scout_added"], ["OPS"])          # SEC already floor
-        self.assertEqual(cov["effective"], ["ARC", "COD", "DAT", "OPS", "SEC", "TST"])
+        # #5.0-19: 'a.py' is surfaceless, so the global floor injects only COD;
+        # OPS still widens via scout_added, SEC is the committed floor.
+        self.assertEqual(cov["effective"], ["COD", "OPS", "SEC"])
 
     def test_invalid_scout_domain_dropped_and_disclosed(self):
         self._setup("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n",
@@ -1688,14 +1712,14 @@ class TestDriverDeltaEndToEnd(unittest.TestCase):
         self.assertEqual(driver.coverage_execute(d, manifest).kind, "advanced")
         self.assertTrue(driver.coverage_done(d, manifest))
 
-        # review checkpoint -- 5 floor cells (Checkout/SEC + the #5.0-11
-        # GLOBAL_FLOOR's ARC/COD/DAT/TST); self-write both findings into
-        # SEC (scoped to pay.py, the only file in play) and empty cells into
-        # the other four.
+        # review checkpoint -- 2 cells (Checkout/SEC committed + universal COD).
+        # #5.0-19: pay.py is a single, surfaceless file, so the global floor's
+        # ARC/DAT/TST are surface-gated off; self-write both findings into SEC
+        # (scoped to pay.py) and an empty cell into COD.
         r = driver.review_execute(d, manifest)
         self.assertEqual(r.checkpoint, "review")
         req = driver.load_dispatch_request(d)
-        self.assertEqual(len(req["entries"]), 5)
+        self.assertEqual(len(req["entries"]), 2)
         self._self_write_review_two_findings(req["entries"])
         self.assertTrue(driver.review_done(d, manifest))
 

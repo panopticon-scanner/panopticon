@@ -355,14 +355,25 @@ def coverage_execute(review_root, manifest):
         # genuinely NEW domains (a domain already on the floor isn't "added").
         scout_added = {d for d in raw if d in groups_schema.DOMAINS} - set(floor)
         scout_invalid = sorted(set(raw) - groups_schema.DOMAINS)
+        # #5.0-19: gate the universal-tier floor on this group's observable
+        # surface, so a testless / db-free / single-module group does not spend
+        # a DAT/TST/ARC cell manufacturing noise (BursarBuddy calibration:
+        # those cells produced 59 of 97 noise findings and caught 0 vulns). COD
+        # stays universal; a scout that requested a domain still gets it via
+        # scout_added regardless of the gate, so this only drops floor domains
+        # the scout omitted AND whose surface is objectively absent.
+        gated_floor = coverage_model.applicable_global_floor(files, scout)
         effective, disclosure = coverage_model.effective_panels(
-            floor, scout_added, spec.get("exclude", set()))
+            floor, scout_added, spec.get("exclude", set()),
+            global_floor=gated_floor)
         _write_json(_pano(review_root, "coverage-%s.json" % group), {
             "group": group,
             "floor": disclosure["floor"],
             "excluded": disclosure["excluded"],
             "scout_added": disclosure["scout_added"],   # new domains, exclude-netted
             "scout_invalid": scout_invalid,             # dropped, disclosed
+            "global_floor_suppressed": sorted(          # #5.0-19: surface absent
+                coverage_model.GLOBAL_FLOOR - gated_floor),
             "effective": sorted(effective),
             "scout_file": os.path.abspath(scout_path),
             "run_id": manifest["run_id"],
