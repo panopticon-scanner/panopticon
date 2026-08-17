@@ -1,0 +1,114 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "X0XReport",
+  "description": "Panopticon's catalog-gap report: the <DOM>-X0X fallback and ZZZ-X0X domainless findings from a review, emitted as candidate records for OCRDb's new-code adjudication pool. A candidate maps onto the OCRDb entry model (name / default_severity / cwe / examples / recurrence) plus a `rationale` — why no existing code fit — which is the load-bearing signal for deciding whether to mint a new code. Basic schema only; NOT wired into synthesize yet (emission + occurrence clustering + evidence scrubbing land in 5.1). `additionalProperties` is left open on every object: this is a young contract meant to grow without a schema bump.",
+  "type": "object",
+  "required": ["schema_version", "generated_by", "ocrdb_version", "candidates"],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "description": "Version of THIS report schema, bumped only on a breaking shape change."
+    },
+    "generated_by": {
+      "type": "object",
+      "description": "Provenance of the Panopticon run that emitted this report.",
+      "required": ["panopticon_version", "run_id"],
+      "properties": {
+        "panopticon_version": {"type": "string"},
+        "run_id": {"type": "string"}
+      }
+    },
+    "ocrdb_version": {
+      "type": "string",
+      "description": "The OCRDb bundle version the review ran against. Every candidate is a gap RELATIVE to this catalog state, so it can be re-evaluated (or retired) as the catalog grows."
+    },
+    "target": {
+      "type": "object",
+      "description": "What was reviewed. Optional, and may be scrubbed before a candidate leaves Panopticon (a 5.1 policy decision).",
+      "properties": {
+        "name": {"type": "string"},
+        "ecosystem": {"type": "string", "description": "e.g. python, typescript, rust"},
+        "ref": {"type": "string", "description": "commit sha / ref reviewed"}
+      }
+    },
+    "generated_at": {
+      "type": "string",
+      "description": "ISO-8601 timestamp the report was produced (optional)."
+    },
+    "candidates": {
+      "type": "array",
+      "description": "One record per proposed OCRDb code candidate — a catalog gap with its supporting evidence.",
+      "items": {
+        "type": "object",
+        "required": ["domain", "summary", "severity", "occurrences"],
+        "properties": {
+          "domain": {
+            "type": "string",
+            "enum": ["SEC", "COD", "ARC", "TST", "QAL", "AGT", "DAT", "OPS", "ACC", "LNG", "ZZZ"],
+            "description": "The OCRDb domain the candidate belongs to, or `ZZZ` when even the domain could not be derived (the domainless sentinel)."
+          },
+          "fallback_code": {
+            "type": "string",
+            "description": "The `<DOM>-X0X` (or `ZZZ-X0X`) fallback code Panopticon assigned during the review — ties the candidate back to its source finding."
+          },
+          "proposed_name": {
+            "type": "string",
+            "description": "Panopticon's suggested kebab-case anti-pattern name (e.g. `unbounded-external-response-read`). Maps to the OCRDb entry `name`; the adjudicator finalizes it."
+          },
+          "summary": {
+            "type": "string",
+            "description": "The anti-pattern in one human-readable line — becomes an OCRDb `examples` entry."
+          },
+          "description": {
+            "type": "string",
+            "description": "What the pattern is and why it is a defect."
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"],
+            "description": "Proposed default severity — maps to OCRDb `default_severity`."
+          },
+          "area": {
+            "type": "string",
+            "description": "The OCRDb sub-grouping (domain `area`) the candidate would slot into, if known."
+          },
+          "cwe": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "CWE identifiers (e.g. `CWE-400`) — maps to OCRDb `cwe`."
+          },
+          "rationale": {
+            "type": "string",
+            "description": "WHY no existing OCRDb code matched — the catalog-gap justification. The load-bearing field for adjudication: the argument for minting a new code rather than reusing one."
+          },
+          "recurrence": {
+            "type": "integer",
+            "description": "How many times this pattern was seen (a convenience mirror of len(occurrences); OCRDb tracks `recurrence`)."
+          },
+          "occurrences": {
+            "type": "array",
+            "minItems": 1,
+            "description": "The concrete evidence sites for this candidate. A naive emitter produces one occurrence per finding; a clustering emitter (5.1) aggregates many under one candidate.",
+            "items": {
+              "type": "object",
+              "required": ["file"],
+              "properties": {
+                "file": {"type": "string", "description": "Repository-relative path."},
+                "line_start": {"type": "integer"},
+                "line_end": {"type": "integer"},
+                "snippet": {
+                  "type": "string",
+                  "description": "Optional code excerpt. Whether it is populated (and scrubbed of secrets / PII) is a wiring/policy decision deferred to 5.1."
+                },
+                "finding_id": {
+                  "type": "string",
+                  "description": "The Panopticon finding id this occurrence came from — traces the candidate back to the source review report."
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
