@@ -883,6 +883,21 @@ def _matrix_catalog(repo):
         print("committed groups.yml: %s" % e, file=sys.stderr)
     return groups
 
+def _norm_scope_path(repo, p):
+    """Normalize a --scope-file/--scope-files path to the repo-relative spelling
+    discover_repo_files keys on (#5.0-17): relativize an absolute path under
+    repo, strip a leading './', collapse '..', forward slashes. So `-f
+    ./src/app.py` and `-f /abs/repo/src/app.py` both match the discovered
+    `src/app.py` instead of hard-failing 'not found among discovered repo files'."""
+    p = str(p or "")
+    if os.path.isabs(p):
+        try:
+            p = os.path.relpath(p, repo)
+        except ValueError:
+            pass
+    return os.path.normpath(p).replace(os.sep, "/") if p else p
+
+
 def main(argv=None):
     """Resolve --repo-scan discovery/matrix targets to grouped file lists and
     emit as JSON. The sole mode the 5.0 driver invokes."""
@@ -966,12 +981,12 @@ def main(argv=None):
                   % args.scope_dir, file=sys.stderr)
             return 2
     elif args.scope_file:
-        if args.scope_file not in allf:
+        sf = _norm_scope_path(repo, args.scope_file)   # #5.0-17
+        if sf not in allf:
             print("--scope-file %r not found among discovered repo files"
                   % args.scope_file, file=sys.stderr)
             return 2
-        scoped = [args.scope_file] + [t for t in related_tests(repo, [args.scope_file])
-                                      if t in allf]
+        scoped = [sf] + [t for t in related_tests(repo, [sf]) if t in allf]
     elif args.scope_changed:
         res = resolve_base_or_die(repo, args.base, args.pr_base)
         if res is None:
@@ -985,8 +1000,9 @@ def main(argv=None):
         scoped = prune_fixture_files(changed, args.security == "redteam")
         _delta = (base, source)
     elif args.scope_files:
-        scoped = prune_fixture_files(list(args.scope_files),
-                                    args.security == "redteam")
+        scoped = prune_fixture_files(
+            [_norm_scope_path(repo, f) for f in args.scope_files],   # #5.0-17
+            args.security == "redteam")
         _delta = None
         if args.base:
             res = resolve_base_or_die(repo, args.base, None)

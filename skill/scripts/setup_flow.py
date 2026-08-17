@@ -140,10 +140,22 @@ def setup_readiness(repo, host=None, runner=subprocess.run, environ=None):
                        "role TOML profiles are optional for codex_exec"))
         checks.append(("enforced-shells", True,
                        "codex_exec enforces read-only execution; role TOML profiles optional"))
+    elif resolved_host == "generic":
+        # #5.0-15: the generic host runs reviewers UNENFORCED by design (no
+        # registered shells), so an enforced-shells pass/FAIL verdict is wrong
+        # here -- report it informationally instead of failing readiness.
+        checks.append(("enforced-shells", None,
+                       "generic host runs reviewers unenforced (prompt-advisory "
+                       "tool policy); no shell registration to verify"))
     else:
+        # #5.0-15: the 5.0 driver dispatches scout / domain_panel / domain_advisor,
+        # so verify THOSE shells -- not the retired panel_review/lens_sweep, whose
+        # stale 4.x registration would report READY and then fail at the first
+        # matrix checkpoint.
         reg_dir = dispatch._registration_dir(resolved_host, None)
+        _driver_roles = ("scout", "domain_panel", "domain_advisor")
         missing_shells = [role for role, rf in sorted(dispatch.ROLE_FILES.items())
-                          if role in ("panel_review", "lens_sweep")
+                          if role in _driver_roles
                           and not dispatch._is_registered(reg_dir, rf, resolved_host)]
         checks.append(("enforced-shells", not missing_shells,
                        "ok" if not missing_shells else
