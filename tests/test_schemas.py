@@ -57,6 +57,29 @@ class TestSchemas(unittest.TestCase):
         self.assertEqual(schema["required"], ["findings"])
         self.assertFalse(schema["additionalProperties"])
 
+    def test_report_schema_source_role_includes_matrix_roles(self):
+        # #5.0-05: the 5.0 matrix reviewers emit source_role domain_panel /
+        # domain_advisor; the shipped report schema must accept them.
+        schema = self._load("report-schema.json")
+        src = schema["properties"]["findings"]["items"]["properties"]["source_role"]
+        self.assertLessEqual({"domain_panel", "domain_advisor"}, set(src["enum"]))
+
+    def test_findings_envelope_accepts_matrix_finding_and_panopticon(self):
+        # #5.0-05: a conformant matrix cell (domain_panel source_role + the
+        # REQUIRED _panopticon block) must validate against the shipped envelope.
+        schema = self._load("findings-envelope-schema.json")
+        finding = {
+            "id": "SEC-001", "severity": "HIGH", "panel": "security",
+            "category": "injection",
+            "location": {"file": "src/app.py", "line_start": 10},
+            "title": "t", "description": "d", "impact": "i", "remediation": "r",
+            "references": [], "source_role": "domain_panel", "depth": "standard",
+            "provenance": {}, "citations": {},
+        }
+        envelope = {"findings": [finding],
+                    "_panopticon": {"run_id": "R", "domain": "SEC", "group": "g"}}
+        validate(instance=envelope, schema=schema)  # must not raise
+
 
 class TestToolEvidenceSchema(unittest.TestCase):
     def _load(self, name):

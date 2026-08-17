@@ -91,6 +91,11 @@ def normalize_finding(f):
     if not isinstance(f.get("location"), dict):
         f["location"] = {}
     loc = f["location"]
+    # #5.0-04: bridge the {file, line} shape agents emit (older templates /
+    # non-conforming output) into the pipeline's canonical line_start, so id
+    # uniqueness, delta classification, and schema validation all work.
+    if "line_start" not in loc and loc.get("line") is not None:
+        loc["line_start"] = loc.pop("line")
     loc.setdefault("line_end", loc.get("line_start"))
     loc.setdefault("function", None)
     f.setdefault("references", [])
@@ -1200,8 +1205,12 @@ def load_diff_hunks(path):
 
 def classify_findings(findings, hunks, tolerance):
     """Stamp each finding with delta = {on_diff, hunk, distance}."""
+    # synthesize runs from the review root, so an absolute location.file (e.g.
+    # the worktree-absolute paths --pr panels emit) relativizes correctly against
+    # cwd before matching the git-relative hunk keys (#5.0-06).
+    repo_root = os.getcwd()
     for f in findings:
-        f["delta"] = diff_map.classify(f, hunks, tolerance)
+        f["delta"] = diff_map.classify(f, hunks, tolerance, repo_root=repo_root)
 
 
 def build_report(findings, groups_meta, target, fail_on, timestamp, review_type="repo",
