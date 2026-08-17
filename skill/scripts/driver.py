@@ -15,6 +15,14 @@ import shutil
 import subprocess
 import sys
 
+# #5.0-01: when run directly (`python3 skill/scripts/driver.py run ...`, the
+# documented entrypoint) the package roots are not on sys.path, so the
+# `import scripts.*` below crash with ModuleNotFoundError. Bootstrap the same
+# roots _child_env() puts on PYTHONPATH for subprocesses. Idempotent under
+# pytest, whose conftest already provides them.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))                   # skill/scripts
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # skill
+
 import yaml
 
 import scripts.coverage_model as coverage_model
