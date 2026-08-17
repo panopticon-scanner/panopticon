@@ -5,7 +5,7 @@ supported, other SKILL.md hosts degraded-sequential. This file is the durable
 design record that travels with the skill (installed dir / OneDrive), so future
 work has context without the original spec/plan docs.
 
-**Current version: 4.3.2** (semver — see Versioning below).
+**Current version: 5.0.0** (semver — see Versioning below).
 
 ## What it is
 A **discovery → scout → fan-out → synthesis** pipeline. It profiles a target with a
@@ -176,7 +176,22 @@ changes to the report schema, CLI, or grade contract. Bump `SKILL.md` `metadata.
 `version` together.
 
 History:
-- **4.3.2** (current) — the 4.x freeze closer (5.x roadmap combined review,
+- **5.0.0** (current) — the matrix flagship. The review pipeline is now a
+  single resumable driver (`skill/scripts/driver.py`, subcommands
+  `setup`/`run`/`next`) that the host drives through a status protocol:
+  discovery → coverage (per-group scout + surface-gated universal floor) →
+  tools → review → verify (primary + backup + per-finding tool advisors) →
+  synthesize → validate. The legacy orchestrator is retired (P6 collapse).
+  Highlights: driver-path integrity controls wired (`dispatch-plan-driver.json`
+  reconcile + `out-file-hashes.json` content snapshot, #1024); tool findings
+  routed through the verify phase to reach `tool_confirmed` (#5.0-03); the
+  universal floor `{COD,DAT,TST,ARC}` is gated per group on observable surface
+  signals so surfaceless groups don't manufacture noise (#1025); hostile-target
+  path confinement, status-protocol crash hardening, and delta/`--pr` gate
+  correctness across the #1014-1027 series. Validated end-to-end against the
+  BursarBuddy answer-key corpus (recall 8/11, precision 1.0, perfect decoy
+  discrimination, all controls firing on a real hostile target).
+- **4.3.2** — the 4.x freeze closer (5.x roadmap combined review,
   adopted 2026-08-10): `meta.cost` dispatch ledger — `{phase, role, model,
   count}` rows derived from scout profiles, the dispatch-plan union, and the
   verify queue, plus a `tokens` slot (null until a host exposes usage).

@@ -16,7 +16,7 @@ inline so its resolved path stays byte-identical.
 """
 import os
 
-__version__ = "4.3.2"
+__version__ = "5.0.0"
 
 
 def reference_path(*parts):

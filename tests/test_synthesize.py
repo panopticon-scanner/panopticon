@@ -1657,7 +1657,7 @@ class TestEvidenceReport(unittest.TestCase):
         report = self._report([_agentic()])
         self.assertNotIn("effort_to_remediate", report["summary"])
         self.assertNotIn("recommendations", report)
-        self.assertEqual(report["meta"]["version"], "4.3.2")
+        self.assertEqual(report["meta"]["version"], "5.0.0")
 
     def test_citation_quality_lives_in_evidence(self):
         report = self._report([_agentic(citations={"cwe": ["CWE-89"]})])
@@ -2104,7 +2104,7 @@ class TestToolPolicyMode(unittest.TestCase):
         report = syn.build_report([f], [], "t", None, "2026-08-03T00:00:00Z",
                                   tool_policy_mode="mixed")
         self.assertEqual(report["meta"]["coverage"]["tool_policy_mode"], "mixed")
-        self.assertEqual(report["meta"]["version"], "4.3.2")
+        self.assertEqual(report["meta"]["version"], "5.0.0")
 
 
 class TestToolsRanFromDispositions(unittest.TestCase):
