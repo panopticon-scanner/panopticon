@@ -42,7 +42,12 @@ class TestOcrdb(unittest.TestCase):
         self.assertEqual(ocrdb.domain_fallback("SEC"), "SEC-X0X")
 
     def test_domain_to_panel_covers_ten_domains(self):
-        self.assertEqual(set(ocrdb.DOMAIN_TO_PANEL), set(self.bundle["domains"]))
+        # every bundle domain maps to a panel; "ZZZ" is the #1034 domainless
+        # sentinel (UNKNOWN_DOMAIN_FALLBACK), not a real bundle domain.
+        self.assertEqual(set(ocrdb.DOMAIN_TO_PANEL) - {"ZZZ"},
+                         set(self.bundle["domains"]))
+        self.assertEqual(ocrdb.DOMAIN_TO_PANEL["ZZZ"], "code")
+        self.assertEqual(ocrdb.domain_of(ocrdb.UNKNOWN_DOMAIN_FALLBACK), "ZZZ")
 
     def test_absent_bundle_returns_none(self):
         self.assertIsNone(ocrdb.load_bundle("/no/such/ocrdb.json"))
@@ -62,6 +67,30 @@ class TestOcrdb(unittest.TestCase):
                 json.dump({"version": "0.3.1"}, fh)
             with self.assertRaises(ValueError):
                 ocrdb.load_bundle(p)
+
+
+class TestDomainMenuSeverity(unittest.TestCase):
+    """#1034: domain_menu flags an assumed severity rather than silently
+    fabricating 'MEDIUM' for a bundle entry that omits default_severity."""
+
+    def test_menu_flags_assumed_severity(self):
+        bundle = {"domains": {"XXX": {"entries": {
+            "XXX-A1A": {"name": "no-sev"},                       # no default_severity
+            "XXX-A1B": {"name": "has-sev", "default_severity": "HIGH"}}}}}
+        menu = {e["code"]: e for e in ocrdb.domain_menu(bundle, "XXX")}
+        self.assertEqual(menu["XXX-A1A"]["severity"], "MEDIUM")
+        self.assertTrue(menu["XXX-A1A"]["severity_assumed"])
+        self.assertEqual(menu["XXX-A1B"]["severity"], "HIGH")
+        self.assertNotIn("severity_assumed", menu["XXX-A1B"])   # real severity
+        # default_severity() stays None for the absent case (the two agree)
+        self.assertIsNone(ocrdb.default_severity(bundle, "XXX-A1A"))
+
+    def test_real_bundle_menu_has_no_assumed_severities(self):
+        # every pinned-bundle entry carries a real severity -> no marker today
+        b = ocrdb.load_bundle()
+        for dom in b["domains"]:
+            for entry in ocrdb.domain_menu(b, dom):
+                self.assertNotIn("severity_assumed", entry, entry["code"])
 
 
 if __name__ == "__main__":

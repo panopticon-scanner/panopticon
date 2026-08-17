@@ -274,5 +274,22 @@ class TestNormPath(unittest.TestCase):
         self.assertNotEqual(ev.finding_fingerprint(a), ev.finding_fingerprint(b))
 
 
+class TestReconcileKeyCollision(unittest.TestCase):
+    """#1034: pin the narrow, acknowledged reconcile_key aliasing the docstring
+    now describes honestly (it is NOT the impossibility earlier wording claimed)."""
+
+    def test_code_arm_aliases_panel_code_category_codestring(self):
+        a = ev.reconcile_key({"location": {"file": "a.py"}, "code": "COD-A1A"})
+        b = ev.reconcile_key({"location": {"file": "a.py"},
+                              "panel": "code", "category": "COD-A1A"})
+        self.assertEqual(a, b)   # documented coarse match at the same file
+
+    def test_ordinary_panel_does_not_alias_a_code(self):
+        a = ev.reconcile_key({"location": {"file": "a.py"}, "code": "SEC-A1A"})
+        b = ev.reconcile_key({"location": {"file": "a.py"},
+                              "panel": "security", "category": "SEC-A1A"})
+        self.assertNotEqual(a, b)   # only panel=="code" can collide
+
+
 if __name__ == "__main__":
     unittest.main()

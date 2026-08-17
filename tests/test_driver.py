@@ -2464,6 +2464,14 @@ class TestDriverHardening(unittest.TestCase):
                                              "scope": {"mode": "repo"}})
         self.assertIn("could not spawn", str(ctx.exception))
 
+    def test_load_ocrdb_bundle_wraps_valueerror(self):   # #1034/#1
+        # a malformed OCRDb bundle on the driver path becomes a DriverError
+        # (clean status:error), not a raw traceback crashing the phase.
+        with mock.patch("scripts.driver.ocrdb.load_bundle",
+                        side_effect=ValueError("bundle malformed")):
+            with self.assertRaises(driver.DriverError):
+                driver._load_ocrdb_bundle()
+
 
 if __name__ == "__main__":
     unittest.main()

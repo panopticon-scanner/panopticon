@@ -152,6 +152,16 @@ def _run_child(cmd, review_root, phase):
                           % (phase, cmd[1] if len(cmd) > 1 else cmd[0], exc))
 
 
+def _load_ocrdb_bundle():
+    """ocrdb.load_bundle, converting a malformed-bundle ValueError into a
+    DriverError so a corrupt bundle is a clean status:error, not a raw traceback
+    that crashes the driver mid-phase (#1034)."""
+    try:
+        return ocrdb.load_bundle()
+    except ValueError as exc:
+        raise DriverError("OCRDb bundle unreadable: %s" % exc)
+
+
 def discovery_done(review_root, manifest):
     return _json_parses(_pano(review_root, "groups.json"))
 
@@ -659,7 +669,7 @@ def review_execute(review_root, manifest):
     # injected/undeclared findings file is caught by reconcile at synthesis.
     _write_driver_plan(review_root, manifest)
     host = manifest.get("host", "claude")
-    bundle = ocrdb.load_bundle()
+    bundle = _load_ocrdb_bundle()
     # group tests come from the committed matrix (parse_groups tests field)
     matrix, _errors = load_committed_groups(review_root)
     for group, files in _discovered_groups(review_root):
@@ -684,7 +694,7 @@ def verify_execute(review_root, manifest):
     _snapshot_review_out_files(review_root, manifest)
     os.makedirs(_pano(review_root, "verdicts"), exist_ok=True)
     host = manifest.get("host", "claude")
-    bundle = ocrdb.load_bundle()
+    bundle = _load_ocrdb_bundle()
     # PRIMARY round: one advisor per engaged (>= F_p), not-yet-verified cell,
     # streamed per group (first group with pending work emits, like review_execute).
     for group, files in _discovered_groups(review_root):
