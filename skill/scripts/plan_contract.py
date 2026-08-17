@@ -3,6 +3,11 @@ import hashlib
 import json
 import os
 
+try:  # dual import convention (#742): both `scripts.plan_contract` and a bare
+    from scripts import groups_schema  # `import plan_contract` occur in-tree.
+except ModuleNotFoundError:  # imported flat, with skill/scripts on sys.path
+    import groups_schema
+
 REVIEWER_ROLES = frozenset({"panel_review", "lens_sweep"})
 DEPTH_ORDER = {"shallow": 0, "standard": 1, "deep": 2}
 PANELS = frozenset({"code", "test", "security", "architecture",
@@ -112,6 +117,48 @@ def assignment_issues(plan, assignment):
     missing = sorted(expected_panels - panel_reviews)
     if missing:
         issues.append("plan omits authoritative panel review(s): %s" % ", ".join(missing))
+    return issues
+
+
+def driver_plan_issues(plan):
+    """Return structural problems in a 5.0 DRIVER (matrix domain-cell) plan.
+
+    Distinct from plan_issues (the 4.x panel-review contract, left untouched):
+    the resumable driver fans out one reviewer per (group, domain) MATRIX CELL,
+    not per (group, panel), so its dedicated `dispatch-plan-driver.json`
+    declares domain cells. Each entry is a dict carrying a non-empty str
+    `group`, a `domain` in groups_schema.DOMAINS, and an `out_file` whose
+    BASENAME is exactly `findings-<group>-<domain>.json` (the deterministic
+    spelling driver._cell_entry writes, so reconcile_findings_files agrees).
+    Returns issue strings ([] = valid); a valid driver plan feeds
+    reconcile_findings_files / snapshot_out_files exactly as a panel plan does.
+    Structural only -- it declares which out_files the review fan-out was to
+    write; it never confers scope trust (no scope_sha256/depth binding).
+    """
+    if not isinstance(plan, list):
+        return ["driver plan is not a JSON array"]
+    if not plan:
+        return ["driver plan has no reviewer entries"]
+    issues = []
+    for index, entry in enumerate(plan):
+        if not isinstance(entry, dict):
+            issues.append("entry %d is not an object" % index)
+            continue
+        group = entry.get("group")
+        group_ok = isinstance(group, str) and bool(group)
+        if not group_ok:
+            issues.append("entry %d has no non-empty group" % index)
+        domain = entry.get("domain")
+        domain_ok = domain in groups_schema.DOMAINS
+        if not domain_ok:
+            issues.append("entry %d has unsupported domain %r" % (index, domain))
+        out_file = entry.get("out_file")
+        if not isinstance(out_file, str) or not out_file:
+            issues.append("entry %d has no non-empty out_file" % index)
+        elif group_ok and domain_ok and os.path.basename(out_file) != (
+                "findings-%s-%s.json" % (group, domain)):
+            issues.append("entry %d out_file basename does not match "
+                          "findings-<group>-<domain>.json" % index)
     return issues
 
 
