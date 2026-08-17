@@ -334,7 +334,13 @@ def coverage_execute(review_root, manifest):
                                dispatch_request=req,
                                message="scout checkpoint for group %s" % group)
         # scout landed -> widen coverage by the scout's valid domains (P4 bridge)
-        scout = _load_json(scout_path) or {}
+        # #5.0-12: a scout that returns a non-object (e.g. a JSON array) would
+        # slip past `or {}` (a non-empty list is truthy) and crash `.get` with an
+        # uncaught AttributeError, wedging the primary scout checkpoint. Validate
+        # the shape at the gate and fail loud (status:error) instead.
+        scout = _load_json(scout_path)
+        if not isinstance(scout, dict):
+            raise DriverError("scout output for group %s is not a JSON object" % group)
         raw = scout.get("domains") or []
         spec = matrix.get(group)
         if spec is None:
@@ -1014,8 +1020,14 @@ def _error_status(message):
 
 
 def run(args, runner=subprocess.run, phases=PHASES):
-    review_root, worktree, pr_base = resolve_review_root(
-        args.target, base=args.base, pr=args.pr, runner=runner)
+    # #5.0-14: resolving the review root can fail loudly for a --pr run (gh
+    # auth/network, a bad PR number, worktree acquisition) — keep it inside the
+    # status protocol instead of letting a raw RuntimeError escape run().
+    try:
+        review_root, worktree, pr_base = resolve_review_root(
+            args.target, base=args.base, pr=args.pr, runner=runner)
+    except Exception as exc:
+        return _error_status("could not resolve review root: %s" % exc)
     if args.pr is not None:
         # A PR is a changed-files delta by definition. manifest["base"] holds the
         # user's EXPLICIT override only (anti-drift key); the gh-detected PR base
@@ -1046,6 +1058,10 @@ def run(args, runner=subprocess.run, phases=PHASES):
         # derived artifacts so done()-predicates never resume on another run's
         # data (a lost/corrupt manifest, a partially-failed reset, or a
         # pre-existing 4.x groups.json).
+        # #5.0-13: load_manifest also returns None for a CORRUPT (present-but-
+        # unparseable) manifest — remove it first so write_manifest (write-once)
+        # can't raise an uncaught FileExistsError and wedge the run.
+        run_manifest.reset_run(review_root)
         _clear_run_artifacts(review_root)
         manifest = run_manifest.build_manifest(
             target=args.target, review_root=review_root,
