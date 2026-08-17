@@ -7,7 +7,9 @@ every invocation, so a crash/compaction/interrupt resumes identically. See
 docs/superpowers/specs/2026-08-15-panopticon-5.0-driver-skeleton-design.md.
 """
 import argparse
+import copy
 import dataclasses
+import functools
 import glob as _glob
 import json
 import os
@@ -102,20 +104,52 @@ def _json_parses(path):
     return _load_json(path) is not None
 
 
+@functools.lru_cache(maxsize=8)
+def _parse_committed_groups(path, _mtime):
+    """Parse + validate groups.yml, memoized on (path, mtime) so a single
+    `driver run` re-parses the file at most once per content version instead of
+    once per group/phase (#1033). `_mtime` is part of the cache key only — a
+    changed file busts the entry. Never mutate the returned structures; callers
+    get deep copies via load_committed_groups."""
+    with open(path, encoding="utf-8") as fh:
+        doc = yaml.safe_load(fh)
+    return groups_schema.parse_groups(doc if isinstance(doc, dict) else {})
+
+
 def load_committed_groups(review_root):
     """Parse the committed groups.yml via groups_schema (P1). A MISSING file is
     an error (the driver run requires a committed matrix — `panopticon setup`
     produces it), not an empty success."""
     path = _pano(review_root, "groups.yml")
     try:
-        with open(path, encoding="utf-8") as fh:
-            doc = yaml.safe_load(fh)
+        mtime = os.path.getmtime(path)
     except FileNotFoundError:
         return {}, ["no committed groups.yml at %s — run `panopticon setup` first"
                     % path]
+    except OSError as exc:
+        return {}, ["groups.yml unreadable: %s" % exc]
+    try:
+        groups, errors = _parse_committed_groups(path, mtime)
     except (OSError, yaml.YAMLError) as exc:
         return {}, ["groups.yml unreadable: %s" % exc]
-    return groups_schema.parse_groups(doc if isinstance(doc, dict) else {})
+    # Deep-copy so a caller mutating its result can never corrupt the shared
+    # cache entry the next phase reads.
+    return copy.deepcopy(groups), list(errors)
+
+
+def _run_child(cmd, review_root, phase):
+    """subprocess.run for a deterministic phase, converting a spawn-level OSError
+    (ENOENT on the interpreter, EMFILE, a bad cwd, ...) into a DriverError so
+    run()'s handler yields a clean status:error instead of a raw traceback
+    (#1033; #1021/5.0-14 covered only the --pr acquire path). Returns the
+    CompletedProcess on a normal spawn — a non-zero exit is the caller's to
+    interpret, not a spawn error."""
+    try:
+        return subprocess.run(cmd, cwd=review_root, capture_output=True,
+                              text=True, env=_child_env())
+    except OSError as exc:
+        raise DriverError("%s: could not spawn %s: %s"
+                          % (phase, cmd[1] if len(cmd) > 1 else cmd[0], exc))
 
 
 def discovery_done(review_root, manifest):
@@ -148,8 +182,7 @@ def discovery_execute(review_root, manifest):
     _dc = (manifest.get("flags") or {}).get("diff_context")
     if _dc is not None:
         cmd += ["--diff-context", str(_dc)]
-    proc = subprocess.run(cmd, cwd=review_root, capture_output=True, text=True,
-                          env=_child_env())
+    proc = _run_child(cmd, review_root, "discovery")
     if not _json_parses(out):
         raise DriverError(
             "discovery: discovery --repo-scan produced no groups.json "
@@ -191,6 +224,9 @@ class Phase:
     execute: object  # callable(review_root, manifest) -> PhaseResult
 
 
+_PHASE_RESULT_KINDS = ("advanced", "checkpoint")
+
+
 @dataclasses.dataclass
 class PhaseResult:
     kind: str                     # "advanced" | "checkpoint"
@@ -198,6 +234,13 @@ class PhaseResult:
     group: str = None
     dispatch_request: str = None  # absolute path (iff checkpoint)
     message: str = ""
+
+    def __post_init__(self):
+        # #1033: reject an unknown kind loudly. run_engine treats anything that
+        # isn't "checkpoint" as "advanced", so a typo ("advance") or a status
+        # string ("complete"/"error") would be silently mishandled otherwise.
+        if self.kind not in _PHASE_RESULT_KINDS:
+            raise ValueError("unknown PhaseResult kind: %r" % self.kind)
 
 
 def _first_not_done(phases, review_root, manifest):
@@ -390,7 +433,8 @@ def tools_done(review_root, manifest):
 def tools_execute(review_root, manifest):
     if (manifest.get("flags") or {}).get("tools") is False:
         _write_json(_pano(review_root, "tools-ran.json"),
-                    {"ran": False, "skipped": True, "note": "tools disabled (--no-tools)",
+                    {"ran": False, "skipped": True, "crashed": False,
+                     "note": "tools disabled (--no-tools)",
                      "returncode": None, "run_id": manifest["run_id"]})
         return PhaseResult(kind="advanced", message="tools: skipped (--no-tools)")
     out_dir = _pano(review_root, "tools")
@@ -400,18 +444,32 @@ def tools_execute(review_root, manifest):
     cmd = [sys.executable, _script("run_tools.py"), "--target", review_root,
            "--out", out_dir, "--deps",
            "--manifest", _pano(review_root, "tools-manifest.json")]
-    proc = subprocess.run(cmd, cwd=review_root, capture_output=True, text=True,
-                          env=_child_env())
+    proc = _run_child(cmd, review_root, "tools")
     produced = os.path.isdir(out_dir) and bool(os.listdir(out_dir))
-    note = "" if produced else ((proc.stderr or "").strip()[:300] or "no tool output produced")
+    # #1033: a real scanner/runner CRASH (non-zero exit + no output) is NOT a
+    # benign Docker-absent skip (exit 0 + no output). Distinguish them: record a
+    # `crashed` marker + a loud stderr line, but still advance -- tools are
+    # best-effort and #1031's manifest gate already fails certification when a
+    # selected adapter produces nothing, so the run stays honest without a hard
+    # stop that a missing Docker image doesn't deserve.
+    crashed = (not produced) and proc.returncode not in (0, None)
+    note = "" if produced else ((proc.stderr or "").strip()[:300]
+                                or ("tool scan crashed" if crashed
+                                    else "no tool output produced"))
     _write_json(_pano(review_root, "tools-ran.json"),
-                {"ran": produced, "skipped": not produced, "note": note,
-                 "returncode": proc.returncode, "run_id": manifest["run_id"]})
-    if not produced:
+                {"ran": produced, "skipped": not produced, "crashed": crashed,
+                 "note": note, "returncode": proc.returncode,
+                 "run_id": manifest["run_id"]})
+    if crashed:
+        sys.stderr.write("driver: tool scan CRASHED (rc=%s) — %s\n"
+                         % (proc.returncode, note))
+    elif not produced:
         sys.stderr.write("driver: tool scan produced no output — %s\n" % note)
     return PhaseResult(kind="advanced",
-                       message="tools: %s" % ("produced output" if produced
-                                              else "SKIPPED — " + note))
+                       message="tools: %s" % (
+                           "produced output" if produced
+                           else ("CRASHED — " + note if crashed
+                                 else "SKIPPED — " + note)))
 
 
 def _effective_domains(review_root, group):
@@ -913,8 +971,7 @@ def synthesize_execute(review_root, manifest):
     if flags.get("diff_context") is not None:
         cmd += ["--diff-context", str(flags["diff_context"])]
     cmd += findings
-    proc = subprocess.run(cmd, cwd=review_root, capture_output=True, text=True,
-                          env=_child_env())
+    proc = _run_child(cmd, review_root, "synthesize")
     # A failing gate exits non-zero but still writes the report — that is a valid
     # outcome, not a driver error. Only an ABSENT report is a failure.
     if not _json_parses(report):
@@ -929,7 +986,7 @@ def capture_tree_baseline(review_root, runner=subprocess.run):
     baseline = _pano(review_root, "tree-baseline.txt")
     if os.path.exists(baseline):
         return baseline
-    proc = runner(["git", "-C", review_root, "status", "--porcelain"],
+    proc = runner(["git", "-C", review_root, "status", "--porcelain", "-z"],
                   capture_output=True, text=True)
     if proc.returncode != 0:
         return None
@@ -939,32 +996,55 @@ def capture_tree_baseline(review_root, runner=subprocess.run):
     return baseline
 
 
-def _delta_path(line):
-    """The current working-tree path from a porcelain v1 line 'XY <path>'.
-    For a rename ('R  old -> new') the DESTINATION is what matters."""
-    path = line[3:]
-    if " -> " in path:
-        path = path.split(" -> ", 1)[1]
-    return path
+def _porcelain_z_records(output):
+    """Parse `git status --porcelain -z` into a set of (XY, paths) records. Paths
+    are RAW -- `-z` disables core.quotePath, so a non-ASCII name is emitted
+    verbatim between NULs instead of C-quoted (`".panopticon/\\303\\251.py"`),
+    which the old line-split mis-flagged. A rename/copy (X in R/C) carries BOTH
+    endpoints: the entry's own (new) path plus the NUL-separated original path
+    that immediately follows it (#1033/SEC-1)."""
+    tokens = output.split("\0")
+    records = set()
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if not tok:
+            i += 1
+            continue
+        xy, path = tok[:2], tok[3:]
+        if xy[:1] in ("R", "C") and i + 1 < len(tokens):
+            records.add((xy, (path, tokens[i + 1])))   # (new, original)
+            i += 2
+        else:
+            records.add((xy, (path,)))
+            i += 1
+    return records
+
+
+def _outside_panopticon(path):
+    """First path component is not `.panopticon` (a real boundary check:
+    '.panopticon-evil.py' is NOT under .panopticon/)."""
+    return path.split("/", 1)[0] != ".panopticon"
 
 
 def _tree_delta(review_root, runner):
-    """NEW porcelain lines (vs. baseline) whose path is outside .panopticon/.
-    Empty when there is no baseline (non-git) — nothing to compare."""
+    """NEW porcelain records (vs. baseline) that touch a path outside
+    .panopticon/. Empty when there is no baseline (non-git) — nothing to compare.
+    A rename is checked on BOTH endpoints (#1033/SEC-1): a rename moving a real
+    file INTO .panopticon/ still changed the outside tree via its source, which
+    the old destination-only check silently missed."""
     try:
         with open(_pano(review_root, "tree-baseline.txt"), encoding="utf-8") as fh:
-            baseline = set(fh.read().splitlines())
+            baseline = _porcelain_z_records(fh.read())
     except OSError:
         return []
-    proc = runner(["git", "-C", review_root, "status", "--porcelain"],
+    proc = runner(["git", "-C", review_root, "status", "--porcelain", "-z"],
                   capture_output=True, text=True)
     if proc.returncode != 0:
         return []
-    new = set(proc.stdout.splitlines()) - baseline
-    # NEW/changed porcelain lines whose FIRST PATH COMPONENT is not `.panopticon`
-    # (a real boundary check: '.panopticon-evil.py' is NOT under .panopticon/).
-    return sorted(line for line in new
-                  if _delta_path(line).split("/", 1)[0] != ".panopticon")
+    new = _porcelain_z_records(proc.stdout) - baseline
+    return sorted("%s %s" % (xy, " -> ".join(paths)) for xy, paths in new
+                  if any(_outside_panopticon(p) for p in paths))
 
 
 def validate_done(review_root, manifest):
@@ -1233,7 +1313,10 @@ def _clear_run_artifacts(review_root):
 def build_parser():
     parser = argparse.ArgumentParser(prog="driver")
     sub = parser.add_subparsers(dest="verb", required=True)
-    for verb in ("run", "next"):
+    # #1033: `next` was a silent, undifferentiated alias of `run` (run() is
+    # already idempotent + resumes from disk), so it's removed rather than kept
+    # as a confusing second spelling.
+    for verb in ("run",):
         p = sub.add_parser(verb)
         p.add_argument("target", nargs="?", default=".")
         p.add_argument("--host", default=None, choices=["claude", "generic"])

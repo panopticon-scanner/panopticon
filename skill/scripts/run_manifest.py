@@ -55,9 +55,10 @@ def write_manifest(review_root, manifest):
     callers reset explicitly (reset_run) before re-writing."""
     path = manifest_path(review_root)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    if os.path.exists(path):
-        raise FileExistsError(path)
-    with open(path, "w", encoding="utf-8") as fh:
+    # #1033: mode "x" is exclusive-create — it raises FileExistsError ATOMICALLY
+    # at the syscall, closing the check-then-open TOCTOU window and never
+    # truncating an existing manifest (which "w" would).
+    with open(path, "x", encoding="utf-8") as fh:
         json.dump(manifest, fh, indent=2, sort_keys=True)
     return path
 
@@ -103,5 +104,9 @@ def reset_run(review_root):
     try:
         os.remove(manifest_path(review_root))
         return True
-    except OSError:
+    except FileNotFoundError:
+        # #1033: only "already absent" is a benign no-op -> False. A real removal
+        # failure (PermissionError, IsADirectoryError, ...) must propagate: a
+        # manifest that exists but can't be removed would otherwise report False
+        # and wedge run()'s next write_manifest with an uncaught FileExistsError.
         return False

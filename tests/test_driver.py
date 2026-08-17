@@ -1,3 +1,4 @@
+import contextlib
 import io
 import json
 import os
@@ -556,7 +557,21 @@ class TestToolsPhase(unittest.TestCase):
         marker = driver._load_json(driver._pano(self.root, "tools-ran.json"))
         self.assertFalse(marker["ran"])
         self.assertTrue(marker["skipped"])
+        self.assertFalse(marker["crashed"])   # #1033: rc 0 + no output = benign
         self.assertIn("image not available", marker["note"])
+
+    def test_tool_crash_is_distinct_from_docker_absent(self):
+        # #1033: rc != 0 + no output = a real scanner/runner CRASH, recorded with
+        # a distinct `crashed` marker (still advances -- tools are best-effort).
+        def crash_run(cmd, **kw):
+            return mock.Mock(returncode=2, stdout="", stderr="run_tools traceback")
+        with mock.patch("scripts.driver.subprocess.run", side_effect=crash_run):
+            result = driver.tools_execute(self.root, self.manifest)
+        self.assertEqual(result.kind, "advanced")
+        marker = driver._load_json(driver._pano(self.root, "tools-ran.json"))
+        self.assertFalse(marker["ran"])
+        self.assertTrue(marker["crashed"])
+        self.assertEqual(marker["returncode"], 2)
 
     def test_no_tools_flag_skips_subprocess(self):
         m = {"run_id": "R", "flags": {"tools": False}}
@@ -853,6 +868,36 @@ class TestValidatePhase(unittest.TestCase):
         subprocess.run(["git", "-C", d, "mv", ".panopticon/x.py", "leaked.py"], check=True)
         with self.assertRaises(driver.DriverError):
             driver.validate_execute(d, {"run_id": "R", "worktree": None})
+
+    def test_rename_into_panopticon_is_flagged(self):
+        # #1033/SEC-1: a rename moving a tracked file INTO .panopticon/ still
+        # changed the OUTSIDE tree (its source) -> must be caught on the SOURCE
+        # endpoint. The old destination-only check silently missed this.
+        d = self._git_repo()
+        open(os.path.join(d, "real_src.py"), "w").close()
+        subprocess.run(["git", "-C", d, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", d, "commit", "-qm", "add real_src"], check=True)
+        driver.capture_tree_baseline(d)
+        subprocess.run(["git", "-C", d, "mv", "real_src.py", ".panopticon/hidden.py"],
+                       check=True)
+        with self.assertRaises(driver.DriverError):
+            driver.validate_execute(d, {"run_id": "R", "worktree": None})
+
+    def test_nonascii_name_in_panopticon_is_not_flagged(self):
+        # #1033/SEC-1: -z emits RAW paths, so a non-ASCII filename inside
+        # .panopticon/ is no longer C-quoted ('".panopticon/\\303\\251.py"') and
+        # mis-flagged as a leak (the leading quote broke the old prefix check).
+        d = self._git_repo()
+        # .panopticon must hold TRACKED content, else git collapses an entirely-
+        # untracked dir to '.panopticon/' and the individual (quotable) path never
+        # appears — which wouldn't exercise the quoting fix at all.
+        open(os.path.join(d, ".panopticon", "keep.txt"), "w").close()
+        subprocess.run(["git", "-C", d, "add", ".panopticon/keep.txt"], check=True)
+        subprocess.run(["git", "-C", d, "commit", "-qm", "track pano"], check=True)
+        driver.capture_tree_baseline(d)
+        open(os.path.join(d, ".panopticon", "é.py"), "w").close()   # é.py
+        result = driver.validate_execute(d, {"run_id": "R", "worktree": None})
+        self.assertEqual(result.kind, "advanced")   # in-.panopticon -> ignored
 
 
 class TestFinalizeWorktree(unittest.TestCase):
@@ -2348,6 +2393,76 @@ class TestVerifyBackupNarrowing(unittest.TestCase):
             self.assertIn("src/a.py", prompt)
             self.assertIn("src/b.py", prompt)
             self.assertNotIn("src/c.py", prompt)   # uncited group file excluded
+
+
+class TestDriverHardening(unittest.TestCase):
+    """#1033: small driver robustness residuals from the P3 tail."""
+
+    def _pano_dir(self):
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        os.makedirs(driver._pano(d))
+        return d
+
+    def test_phase_result_rejects_unknown_kind(self):   # #5
+        for kind in ("advanced", "checkpoint"):
+            self.assertEqual(driver.PhaseResult(kind=kind).kind, kind)
+        for bad in ("advance", "complete", "error", ""):
+            with self.assertRaises(ValueError):
+                driver.PhaseResult(kind=bad)
+
+    def test_next_verb_is_removed(self):   # #10
+        with self.assertRaises(SystemExit):
+            driver.build_parser().parse_args(["next", "."])
+        self.assertEqual(driver.build_parser().parse_args(["run", "."]).verb, "run")
+
+    def test_committed_groups_parsed_once_per_version(self):   # #7
+        d = self._pano_dir()
+        with open(driver._pano(d, "groups.yml"), "w", encoding="utf-8") as fh:
+            fh.write("groups:\n  Auth:\n    match: ['src/auth/**']\n")
+        driver._parse_committed_groups.cache_clear()
+        self.addCleanup(driver._parse_committed_groups.cache_clear)
+        calls = []
+        real = driver.groups_schema.parse_groups
+        with mock.patch("scripts.driver.groups_schema.parse_groups",
+                        side_effect=lambda doc: calls.append(1) or real(doc)):
+            driver.load_committed_groups(d)
+            driver.load_committed_groups(d)      # same file -> cache hit
+        self.assertEqual(len(calls), 1)
+
+    def test_phase_driver_error_is_status_error(self):   # #9 (run level)
+        d = self._pano_dir()
+
+        def boom_exec(r, m):
+            raise driver.DriverError("kaboom")
+        boom = driver.Phase(name="discovery", kind="deterministic",
+                            done=lambda r, m: False, execute=boom_exec)
+        args = driver.build_parser().parse_args(["run", d])
+        status = driver.run(args, phases=(boom,))
+        self.assertEqual(status["status"], "error")
+        self.assertIn("kaboom", status["message"])
+
+    def test_main_driver_error_prints_status_and_exits_1(self):   # #9 (CLI level)
+        # no committed groups.yml -> discovery raises DriverError -> main() prints
+        # ONE status:error JSON line (no traceback) and returns exit code 1.
+        d = self._pano_dir()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = driver.main(["run", d])
+        self.assertEqual(rc, 1)
+        status = json.loads(buf.getvalue().strip().splitlines()[-1])
+        self.assertEqual(status["status"], "error")
+
+    def test_spawn_oserror_becomes_driver_error(self):   # #6
+        d = self._pano_dir()
+        with open(driver._pano(d, "groups.yml"), "w", encoding="utf-8") as fh:
+            fh.write("groups:\n  Auth:\n    match: ['**/*.py']\n")
+        with mock.patch("scripts.driver.subprocess.run",
+                        side_effect=OSError("ENOENT: no python")):
+            with self.assertRaises(driver.DriverError) as ctx:
+                driver.discovery_execute(d, {"security_mode": "standard",
+                                             "scope": {"mode": "repo"}})
+        self.assertIn("could not spawn", str(ctx.exception))
 
 
 if __name__ == "__main__":
