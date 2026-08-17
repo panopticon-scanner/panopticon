@@ -305,6 +305,16 @@ def coverage_done(review_root, manifest):
                for g, _ in _discovered_groups(review_root))
 
 
+def _chunk_parent(name):
+    """The committed parent of a discovery chunk `<name>_<i>` (#5.0-10), or None
+    if `name` is not a `<something>_<digits>` chunk. Leftover `._N` chunks map to
+    parent '.', never in the matrix, so they correctly keep an empty floor."""
+    if not name or "_" not in name:
+        return None
+    head, _, tail = name.rpartition("_")
+    return head if head and tail.isdigit() else None
+
+
 def coverage_execute(review_root, manifest):
     """Per group: emit the scout checkpoint (streamed) if its output is absent,
     else compute coverage as floor widened by the scout's valid domains.
@@ -326,7 +336,12 @@ def coverage_execute(review_root, manifest):
         # scout landed -> widen coverage by the scout's valid domains (P4 bridge)
         scout = _load_json(scout_path) or {}
         raw = scout.get("domains") or []
-        spec = matrix.get(group) or {}
+        spec = matrix.get(group)
+        if spec is None:
+            parent = _chunk_parent(group)   # #5.0-10: a >15-file group split into
+            if parent is not None:          # <name>_<i> chunks inherits its parent's
+                spec = matrix.get(parent)   # committed floor/exclude/tests
+        spec = spec or {}
         floor = spec.get("floor", set())
         # net against floor here so disclosure["scout_added"] reports only the
         # genuinely NEW domains (a domain already on the floor isn't "added").

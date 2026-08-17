@@ -383,12 +383,15 @@ class TestCoveragePhase(unittest.TestCase):
         self.assertTrue(cov["scout_file"].endswith("scout-Auth.json"))
 
     def test_group_absent_from_matrix_gets_empty_floor(self):
-        # a split group (e.g. Auth_1) not present in groups.yml -> empty floor
-        self._groups_json([{"name": "Auth_1", "files": ["a.py"]}])
+        # A group GENUINELY absent from groups.yml (not a <name>_<i> chunk of any
+        # committed group) -> empty floor. (A chunk instead inherits its parent's
+        # floor, see TestCoverageBridge.test_chunk_inherits_parent_committed_floor
+        # — #5.0-10.)
+        self._groups_json([{"name": "Orphan", "files": ["a.py"]}])
         self._groups_yml("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n")
-        driver._write_json(driver._pano(self.root, "scout-Auth_1.json"), {"g": 1})
+        driver._write_json(driver._pano(self.root, "scout-Orphan.json"), {"g": 1})
         driver.coverage_execute(self.root, self.manifest)
-        cov = driver._load_json(driver._pano(self.root, "coverage-Auth_1.json"))
+        cov = driver._load_json(driver._pano(self.root, "coverage-Orphan.json"))
         self.assertEqual(cov["effective"], [])
 
     def test_coverage_done_only_when_all_groups_covered(self):
@@ -438,6 +441,29 @@ class TestCoverageBridge(unittest.TestCase):
         driver.coverage_execute(self.root, self.manifest)
         cov = driver._load_json(driver._pano(self.root, "coverage-Auth.json"))
         self.assertNotIn("DAT", cov["effective"])              # exclude wins
+
+    def test_chunk_inherits_parent_committed_floor(self):
+        # #5.0-10: a >15-file group split into Auth_1/Auth_2 chunks must inherit
+        # the committed parent (Auth) floor, not fall back to an empty floor.
+        driver._write_json(driver._pano(self.root, "groups.json"),
+                           {"groups": [{"name": "Auth_1", "files": ["a.py"]}]})
+        with open(driver._pano(self.root, "groups.yml"), "w") as fh:
+            fh.write("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n")
+        driver._write_json(driver._pano(self.root, "scout-Auth_1.json"),
+                           {"group": "Auth_1", "domains": []})
+        driver.coverage_execute(self.root, self.manifest)
+        cov = driver._load_json(driver._pano(self.root, "coverage-Auth_1.json"))
+        # SEC is the parent's committed floor — only present if the chunk resolved
+        # to Auth (without the fix the chunk misses the matrix -> no SEC).
+        self.assertIn("SEC", cov["floor"])
+        self.assertIn("SEC", cov["effective"])
+
+    def test_chunk_parent_parsing(self):
+        self.assertEqual(driver._chunk_parent("Auth_1"), "Auth")
+        self.assertEqual(driver._chunk_parent("skill_1_2"), "skill_1")
+        self.assertEqual(driver._chunk_parent("._3"), ".")   # leftover chunk
+        self.assertIsNone(driver._chunk_parent("Auth"))
+        self.assertIsNone(driver._chunk_parent("Auth_x"))
 
 
 class TestToolsPhase(unittest.TestCase):
