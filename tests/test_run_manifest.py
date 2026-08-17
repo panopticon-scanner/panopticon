@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 import scripts.run_manifest as rm
 
@@ -10,6 +11,23 @@ class TestRunManifest(unittest.TestCase):
         self._d = tempfile.TemporaryDirectory()
         self.root = self._d.name
         self.addCleanup(self._d.cleanup)
+
+    def test_write_manifest_does_not_truncate_existing(self):   # #1033
+        rm.write_manifest(self.root, {"run_id": "first"})
+        with self.assertRaises(FileExistsError):
+            rm.write_manifest(self.root, {"run_id": "second"})
+        # the refused write must NOT have truncated the original ("x", not "w")
+        self.assertEqual(rm.load_manifest(self.root)["run_id"], "first")
+
+    def test_reset_run_propagates_real_removal_error(self):   # #1033
+        rm.write_manifest(self.root, {"run_id": "x"})
+        with mock.patch("scripts.run_manifest.os.remove",
+                        side_effect=PermissionError("denied")):
+            with self.assertRaises(PermissionError):
+                rm.reset_run(self.root)      # a REAL failure must not be swallowed
+        # an absent manifest stays a benign False (FileNotFoundError only)
+        with tempfile.TemporaryDirectory() as empty:
+            self.assertFalse(rm.reset_run(empty))
 
     def _params(self, **over):
         p = dict(target=self.root, review_root=self.root, host="claude",
