@@ -3,6 +3,11 @@
 import os
 import sys
 
+try:
+    from scripts import _version
+except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
+    import _version
+
 
 def _load_profiles():
     """Load model profiles from reference/model-profiles.yml.
@@ -11,8 +16,7 @@ def _load_profiles():
     cannot be read/parsed; a warning is emitted to stderr so configuration
     problems are not silently ignored.
     """
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        os.pardir, "reference", "model-profiles.yml")
+    path = _version.reference_path("model-profiles.yml")
     try:
         import yaml
     except ImportError:
