@@ -27,6 +27,18 @@ Review the listed files through the **`{domain}`** domain lens, grading against 
 
 Pick the **most specific** matching code for each finding. If nothing in the menu fits, use the domain fallback `{domain}-X0X` and say why in the description (this is the catalog-gap signal).
 
+## Severity bar
+
+Set `severity` to what the concrete case actually warrants — a code's
+`default_severity` is a starting point, not a verdict. Reserve **CRITICAL** for
+defects that are DIRECTLY and TRIVIALLY exploitable for severe, immediate impact:
+unauthenticated RCE, direct auth/authz bypass to privileged access, injection
+with data exfiltration on an exposed surface, or secret disclosure enabling full
+compromise. If exploitation requires authentication, a specific precondition, or
+chaining with another issue — or the blast radius is bounded — it is **HIGH**,
+not CRITICAL, EVEN IF the code defaults to CRITICAL (down-override to HIGH with a
+reason). When genuinely torn between CRITICAL and HIGH, choose **HIGH**.
+
 ## Finding format
 
 Each finding MUST carry:

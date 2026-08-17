@@ -176,5 +176,21 @@ class TestDomainPanelSingleWriteInstruction(unittest.TestCase):
         self.assertIn("{out_file}", body)
 
 
+class TestSeverityBar(unittest.TestCase):
+    """#1038: the reviewer template carries an explicit CRITICAL-vs-HIGH bar so
+    CRITICAL is earned (BursarBuddy flagged 3 HIGH-key vulns as CRITICAL). The
+    advisor has no severity lever (severity_override lives on the finding), so
+    the fix is reviewer-side only."""
+
+    def test_domain_panel_has_severity_bar(self):
+        _, body = dispatch.load_template("domain-panel.md")
+        low = body.lower()
+        self.assertIn("severity bar", low)
+        self.assertIn("down-override", low)                    # the down direction
+        self.assertIn("torn between critical and high", low)   # tie-break to HIGH
+        # the bar names concrete CRITICAL preconditions, not a bare word
+        self.assertIn("unauthenticated rce", low)
+
+
 if __name__ == "__main__":
     unittest.main()
