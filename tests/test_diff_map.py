@@ -87,6 +87,39 @@ class TestHunkMap(unittest.TestCase):
     def test_missing_base_returns_empty(self):
         self.assertEqual(diff_map.hunk_map(self._repo(), "no-such-ref"), {})
 
+    def _fake_git(self, seen, diff_rc=0, diff_err=""):
+        def fake(repo, args, timeout=60):
+            r = mock.Mock()
+            if args[0] == "merge-base":
+                r.returncode, r.stdout, r.stderr = 0, "deadbeef\n", ""
+            elif args[0] == "-c":                 # the pinned `git -c ... diff`
+                seen["diff"] = args
+                r.returncode, r.stdout, r.stderr = diff_rc, "", diff_err
+            else:                                  # ls-files --others
+                r.returncode, r.stdout, r.stderr = 0, "", ""
+            return r
+        return fake
+
+    def test_diff_command_failure_raises_not_empty(self):
+        # #5.0-08: merge-base OK but the diff itself fails -> DiffMapError, so
+        # the run fails loud instead of returning {} and passing the gate vacuously.
+        seen = {}
+        with mock.patch.object(diff_map, "_run_git",
+                               side_effect=self._fake_git(seen, diff_rc=128, diff_err="boom")):
+            with self.assertRaises(diff_map.DiffMapError):
+                diff_map.hunk_map(".", "main")
+
+    def test_diff_flags_are_pinned(self):
+        # #5.0-08: pin mnemonicPrefix/quotepath/prefixes so a user's gitconfig
+        # can't reshape the `+++ b/<path>` headers parse_unified_diff keys on.
+        seen = {}
+        with mock.patch.object(diff_map, "_run_git", side_effect=self._fake_git(seen)):
+            diff_map.hunk_map(".", "main")
+        argv = seen["diff"]
+        self.assertIn("diff.mnemonicPrefix=false", argv)
+        self.assertIn("core.quotepath=false", argv)
+        self.assertIn("--dst-prefix=b/", argv)
+
 
 class TestClassify(unittest.TestCase):
     HM = {"a.py": [(10, 12)], "empty.py": []}
