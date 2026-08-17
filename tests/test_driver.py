@@ -2472,6 +2472,29 @@ class TestDriverHardening(unittest.TestCase):
             with self.assertRaises(driver.DriverError):
                 driver._load_ocrdb_bundle()
 
+    def test_render_criteria_gates_and_falls_back(self):   # #1035
+        b = {"domains": {"SEC": {"entries": {
+            "SEC-A1A": {"name": "cmd-inj", "criteria": "qualifies when unsanitized"},
+            "SEC-A1B": {"name": "nocrit"}}}}}
+        out = driver._render_criteria(b, "SEC")
+        self.assertIn("SEC-A1A", out)
+        self.assertIn("qualifies when unsanitized", out)
+        self.assertNotIn("SEC-A1B", out)              # no criteria -> omitted
+        none = driver._render_criteria(
+            {"domains": {"SEC": {"entries": {"SEC-A1B": {"name": "nocrit"}}}}}, "SEC")
+        self.assertIn("no explicit OCRDb criteria", none)   # never blank
+
+    def test_verify_entry_carries_the_criteria_lens(self):   # #1035
+        b = {"domains": {"SEC": {"entries": {
+            "SEC-A1A": {"name": "cmd-inj", "default_severity": "HIGH",
+                        "criteria": "CRITSENTINEL when the sink is reached"}}}}}
+        cell = [{"id": "SEC-1", "title": "t", "severity": "HIGH", "domain": "SEC",
+                 "category": "x", "location": {"file": "a.py", "line_start": 1}}]
+        entry = driver._verify_entry("/repo", {"run_id": "R", "host": "claude"},
+                                     "app", "SEC", ["a.py"], cell, "claude", b,
+                                     "primary")
+        self.assertIn("CRITSENTINEL", entry["prompt"])
+
 
 if __name__ == "__main__":
     unittest.main()

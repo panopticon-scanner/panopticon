@@ -502,6 +502,18 @@ def _render_menu(bundle, domain):
     return "\n".join(lines) or "(no OCRDb bundle vendored — use general %s judgment)" % domain
 
 
+def _render_criteria(bundle, domain):
+    """The domain's explicit OCRDb pass/fail criteria for the advisor to grade a
+    claim against, one code per line. Codes without criteria are omitted (they
+    fall back to the menu one-liner). A domain with no criteria at all renders a
+    note, so the {criteria} lens is never a blank section (#1035)."""
+    blocks = ["%s %s — %s" % (c["code"], c["name"], c["criteria"])
+              for c in ocrdb.domain_criteria(bundle, domain)]
+    return "\n".join(blocks) or (
+        "(no explicit OCRDb criteria for the %s domain in this bundle — grade "
+        "against the menu one-liners above)" % domain)
+
+
 def _cell_entry(review_root, manifest, group, domain, files, tests, host, bundle):
     file_list = _abs_file_list(review_root, files)
     test_list = "\n".join("- " + t for t in tests) or "- (no tests)"
@@ -584,6 +596,7 @@ def _verify_entry(review_root, manifest, group, domain, files, cell, host, bundl
     prompt = dispatch.render_prompt("domain-advisor.md", {
         "domain": domain, "group": group, "file_list": file_list,
         "findings": _render_findings(cell), "menu": _render_menu(bundle, domain),
+        "criteria": _render_criteria(bundle, domain),   # #1035
         "run_id": manifest["run_id"], "stage": stage, "out_file": out_file}, host)
     # #975: pin the review root for the advisor too. Unlike the scout/panel file
     # list above, the findings JSON's `location` fields are carried verbatim from

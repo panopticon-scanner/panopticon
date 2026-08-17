@@ -93,5 +93,31 @@ class TestDomainMenuSeverity(unittest.TestCase):
                 self.assertNotIn("severity_assumed", entry, entry["code"])
 
 
+class TestDomainCriteria(unittest.TestCase):
+    """#1035: domain_criteria returns only the codes that carry criteria text."""
+
+    def test_real_bundle_has_criteria_across_domains(self):
+        b = ocrdb.load_bundle()
+        total = sum(len(ocrdb.domain_criteria(b, d)) for d in b["domains"])
+        self.assertGreater(total, 100)   # 114 in 0.3.1, every domain represented
+        for d in b["domains"]:
+            for c in ocrdb.domain_criteria(b, d):
+                self.assertEqual(set(c), {"code", "name", "criteria"})
+                self.assertTrue(c["criteria"])
+                self.assertTrue(c["code"].startswith(d + "-"))
+
+    def test_gated_on_presence(self):
+        bundle = {"domains": {"XXX": {"entries": {
+            "XXX-A1A": {"name": "has", "criteria": "must X"},
+            "XXX-A1B": {"name": "none"}}}}}
+        crit = ocrdb.domain_criteria(bundle, "XXX")
+        self.assertEqual([c["code"] for c in crit], ["XXX-A1A"])   # A1B omitted
+
+    def test_empty_on_bad_or_criteria_less(self):
+        self.assertEqual(ocrdb.domain_criteria(None, "SEC"), [])
+        self.assertEqual(ocrdb.domain_criteria({}, "SEC"), [])
+        self.assertEqual(ocrdb.domain_criteria(ocrdb.load_bundle(), "ZZZ"), [])
+
+
 if __name__ == "__main__":
     unittest.main()
