@@ -141,12 +141,15 @@ def reconcile_key(finding):
     catalog now exists (OCRDb), so a code-bearing finding reconciles on
     (file, code) instead of the free-text `category`, a strictly more precise
     identity (two reviewers naming the same OCRDb code agree even when their
-    prose category differs). A code-less finding is UNCHANGED: the literal
-    "code" marker keeps this arm's tuple shape disjoint from the legacy
-    (file, panel, category) arm, so a real panel value can never collide with
-    it. A finding without `code` falls through to the legacy tuple exactly as
-    before -- reconcile.py, this function's only consumer, sees no behavior
-    change for pre-5.0/code-less findings.
+    prose category differs). A code-less finding is UNCHANGED: it falls through
+    to the legacy (file, panel, category) tuple exactly as before, so reconcile.py
+    (this function's only consumer) sees no behavior change for pre-5.0/code-less
+    findings. The two arms are disjoint EXCEPT one narrow case -- a code-less
+    finding whose `panel` is the literal "code" (itself a real PANELS value) and
+    whose `category` happens to equal a code-string aliases a code-bearing
+    finding at the same file. That coarse cross-run match is benign (both keys
+    resolve to the same reconcile identity, not a correctness bug); it is NOT the
+    impossibility earlier wording claimed.
     """
     loc = finding.get("location") or {}
     code = finding.get("code")

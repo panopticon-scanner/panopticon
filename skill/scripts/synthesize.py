@@ -212,24 +212,35 @@ def load_findings(paths):
 
 def validate_finding_codes(findings, bundle):
     """Validate each finding's `code` against the OCRDb bundle. Returns the
-    coverage dict {invalid_codes, fallbacks} or None when no bundle is vendored.
+    coverage dict {invalid_codes, fallbacks, domainless, code_domain_mismatch}
+    or None when no bundle is vendored.
 
     - a real code: kept, not counted.
     - an explicit '<DOM>-X0X' fallback (or a code the reviewer couldn't match):
       counted per-domain at `fallbacks` (the catalog-gap signal).
-    - an unknown, non-fallback code: replaced with the domain fallback and
+    - an unknown, domain-derivable code: replaced with the domain fallback and
       counted at `invalid_codes`.
+    - an unknown code with NO derivable domain: normalized to the reserved
+      `ZZZ-X0X` sentinel and counted at `domainless` (#1034/#2) — still counted
+      at `invalid_codes` too, so that total stays "codes that weren't real".
+    - a finding whose stated `domain` disagrees with its code's prefix is
+      counted at `code_domain_mismatch` (disclosure only, #1034/#3).
     A finding with no `code` is left alone.
     """
     if bundle is None:
         return None
     invalid = 0
     fallbacks = {}
+    domainless = 0
+    mismatch = 0
     for f in findings:
         code = f.get("code")
         if not code:
             continue
-        domain = f.get("domain") or ocrdb.domain_of(code)
+        stated, derived = f.get("domain"), ocrdb.domain_of(code)
+        if stated and derived and stated != derived:
+            mismatch += 1                      # #1034/#3: disclose, don't rewrite
+        domain = stated or derived
         if ocrdb.validate_code(bundle, code):
             continue
         if domain and code == ocrdb.domain_fallback(domain):
@@ -239,7 +250,11 @@ def validate_finding_codes(findings, bundle):
             if domain:
                 f["code"] = ocrdb.domain_fallback(domain)
                 fallbacks[domain] = fallbacks.get(domain, 0) + 1
-    return {"invalid_codes": invalid, "fallbacks": fallbacks}
+            else:                              # #1034/#2: no derivable domain
+                domainless += 1
+                f["code"] = ocrdb.UNKNOWN_DOMAIN_FALLBACK
+    return {"invalid_codes": invalid, "fallbacks": fallbacks,
+            "domainless": domainless, "code_domain_mismatch": mismatch}
 
 
 _SEV_ORDINAL = {"INFO": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
@@ -693,8 +708,10 @@ def audit_floor_cells(coverages, present):
     driver.coverage_execute: {"group", "floor", "effective", ...}); `present`
     = {group: set(domains with a findings file)}. A missing floor cell is the
     INCONCLUSIVE story -- scout-WIDENED (non-floor) domains are never audited
-    here, matching the matrix's floor-is-the-contract semantics. Pure; never
-    raises.
+    here, matching the matrix's floor-is-the-contract semantics. A floor domain
+    listed in the cell's `excluded` (e.g. a universal global-floor domain a group
+    opted out of, #5.0-11) does NOT run and is netted out first -- it is not a
+    missing floor cell. Pure; never raises.
     """
     missing = []
     for cov in coverages:
@@ -2217,6 +2234,16 @@ def main(argv=None):
         print("synthesize: DELTA REVIEW WITH Gate: OFF -- no --fail-on was "
               "passed, so nothing can gate this change; pass --fail-on "
               "{critical,high,medium,low} to arm the gate", file=sys.stderr)
+
+    # #1034/#1: a corrupt/malformed OCRDb bundle must exit with a code CI can
+    # tell apart from a gate FAIL (1) or INCONCLUSIVE (2). Validate it up front
+    # (build_report loads it again internally) and return 3 loudly, rather than
+    # letting the ValueError escape as a traceback that Python exits 1 on.
+    try:
+        ocrdb.load_bundle()
+    except ValueError as exc:
+        print("synthesize: OCRDb bundle unreadable: %s" % exc, file=sys.stderr)
+        return 3
 
     report = build_report(findings, groups_meta, args.target, args.fail_on, ts,
                           review_type, security_mode, verdicts=verdicts,

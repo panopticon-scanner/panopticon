@@ -231,7 +231,9 @@
                     "down": {"type": "integer"}
                   }
                 },
-                "code_corrections": {"type": "integer"}
+                "code_corrections": {"type": "integer"},
+                "domainless": {"type": "integer"},
+                "code_domain_mismatch": {"type": "integer"}
               }
             },
             "verify_matrix": {
