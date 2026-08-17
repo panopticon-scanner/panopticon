@@ -60,7 +60,7 @@ _CLAUDE_FALLBACK = {
     "scout": {"model": "haiku"},
     "lens_sweep": {"model": "haiku"},
     "panel_review": {"model": "sonnet"},
-    "advisor": {"model": "opus"},
+    "advisor": {"model": "haiku"},   # #1029: per-finding tool-advisor is narrow
 }
 _CODEX_FALLBACK = {
     "scout": {"model": "gpt-5.6-luna", "model_reasoning_effort": "medium"},

@@ -28,7 +28,7 @@ hosts:
     panel_review:
       model: sonnet
     advisor:
-      model: opus
+      model: haiku
   codex:
     scout:
       model: gpt-5.6-luna

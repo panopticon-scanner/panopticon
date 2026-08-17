@@ -1133,7 +1133,9 @@ class TestEmitHostAgents(unittest.TestCase):
             for fname, model in (("panopticon-scout.md", "haiku"),
                                  ("panopticon-lens-sweep.md", "haiku"),
                                  ("panopticon-panel-review.md", "sonnet"),
-                                 ("panopticon-advisor.md", "opus"),
+                                 # #1029: tool-advisor -> haiku; the cell
+                                 # domain-advisor (incl. backup) stays opus.
+                                 ("panopticon-advisor.md", "haiku"),
                                  ("panopticon-domain-panel.md", "sonnet"),
                                  ("panopticon-domain-advisor.md", "opus")):
                 self.assertIn("model: %s" % model,
@@ -1218,12 +1220,14 @@ class TestEmitHostAgents(unittest.TestCase):
             self.assertTrue(os.path.isfile(os.path.join(d, "panopticon-scout.md")))
 
     def test_emission_ignores_ambient_model_env_overrides(self):
+        # The advisor policy model is haiku (#1029); set the env override to a
+        # DIFFERENT value so the test still proves emission ignores the env.
         with tempfile.TemporaryDirectory() as d, \
-             mock.patch.dict(os.environ, {"PANOPTICON_MODEL_ADVISOR": "haiku"}):
+             mock.patch.dict(os.environ, {"PANOPTICON_MODEL_ADVISOR": "opus"}):
             dispatch.emit_host_agents("claude", d)
             text = open(os.path.join(d, "panopticon-advisor.md")).read()
-        self.assertIn("model: opus", text)
-        self.assertNotIn("model: haiku", text)
+        self.assertIn("model: haiku", text)
+        self.assertNotIn("model: opus", text)
 
 
 class TestVerifyPlan(unittest.TestCase):
