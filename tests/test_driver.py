@@ -376,23 +376,25 @@ class TestCoveragePhase(unittest.TestCase):
         result = driver.coverage_execute(self.root, self.manifest)
         self.assertEqual(result.kind, "advanced")
         cov = driver._load_json(driver._pano(self.root, "coverage-Auth.json"))
-        self.assertEqual(cov["floor"], ["DAT", "SEC"])        # disclosure sorts
+        # #5.0-11: the universal global floor (COD/DAT/TST/ARC) is folded in.
+        self.assertEqual(cov["floor"], ["ARC", "COD", "DAT", "SEC", "TST"])
         self.assertEqual(cov["excluded"], ["OPS"])
-        self.assertEqual(cov["effective"], ["DAT", "SEC"])    # exclude ∉ floor
+        self.assertEqual(cov["effective"], ["ARC", "COD", "DAT", "SEC", "TST"])
         self.assertEqual(cov["scout_added"], [])              # bridge deferred to P4
         self.assertTrue(cov["scout_file"].endswith("scout-Auth.json"))
 
-    def test_group_absent_from_matrix_gets_empty_floor(self):
+    def test_group_absent_from_matrix_gets_only_global_floor(self):
         # A group GENUINELY absent from groups.yml (not a <name>_<i> chunk of any
-        # committed group) -> empty floor. (A chunk instead inherits its parent's
-        # floor, see TestCoverageBridge.test_chunk_inherits_parent_committed_floor
-        # — #5.0-10.)
+        # committed group) has no VERTICAL floor, but still rides the universal
+        # global floor (#5.0-11). (A chunk instead inherits its parent's floor,
+        # see TestCoverageBridge.test_chunk_inherits_parent_committed_floor —
+        # #5.0-10.)
         self._groups_json([{"name": "Orphan", "files": ["a.py"]}])
         self._groups_yml("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n")
         driver._write_json(driver._pano(self.root, "scout-Orphan.json"), {"g": 1})
         driver.coverage_execute(self.root, self.manifest)
         cov = driver._load_json(driver._pano(self.root, "coverage-Orphan.json"))
-        self.assertEqual(cov["effective"], [])
+        self.assertEqual(cov["effective"], ["ARC", "COD", "DAT", "TST"])   # no vertical floor
 
     def test_coverage_done_only_when_all_groups_covered(self):
         self._groups_json([{"name": "A", "files": []}, {"name": "B", "files": []}])
@@ -420,12 +422,14 @@ class TestCoverageBridge(unittest.TestCase):
                            {"group": "Auth", "domains": scout_domains})
 
     def test_scout_widens_coverage(self):
+        # OPS is a vertical domain (not in the global floor), so the scout genuinely
+        # widens coverage with it; SEC is already the committed floor.
         self._setup("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n",
-                    ["SEC", "DAT"])
+                    ["SEC", "OPS"])
         driver.coverage_execute(self.root, self.manifest)
         cov = driver._load_json(driver._pano(self.root, "coverage-Auth.json"))
-        self.assertEqual(cov["scout_added"], ["DAT"])          # SEC already floor
-        self.assertEqual(cov["effective"], ["DAT", "SEC"])
+        self.assertEqual(cov["scout_added"], ["OPS"])          # SEC already floor
+        self.assertEqual(cov["effective"], ["ARC", "COD", "DAT", "OPS", "SEC", "TST"])
 
     def test_invalid_scout_domain_dropped_and_disclosed(self):
         self._setup("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n",
@@ -1112,7 +1116,11 @@ class TestReviewMatrixEndToEnd(unittest.TestCase):
             fh.write("def f():\n    return 1\n")
         os.makedirs(os.path.join(d, ".panopticon"))
         with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
-            fh.write("groups:\n  Core:\n    match: ['src/**']\n    panels: [COD]\n")
+            # #5.0-11: GLOBAL_FLOOR folds ARC/COD/DAT/TST into every group's
+            # effective panel set; exclude the three non-COD floor members so
+            # this fixture keeps its original single-cell (COD-only) shape.
+            fh.write("groups:\n  Core:\n    match: ['src/**']\n"
+                     "    panels: [COD]\n    exclude: [ARC, DAT, TST]\n")
         subprocess.run(g + ["add", "-A"], check=True)
         subprocess.run(g + ["commit", "-qm", "init"], check=True)
         return d
@@ -1420,10 +1428,15 @@ class TestDriverSingleScopeEndToEnd(unittest.TestCase):
                 fh.write("def f():\n    return 1\n")
         os.makedirs(os.path.join(d, ".panopticon"))
         with open(driver._pano(d, "groups.yml"), "w") as fh:
+            # #5.0-11: GLOBAL_FLOOR folds ARC/COD/DAT/TST into every group's
+            # effective panel set; exclude all four so each group's fixture
+            # keeps its original single-cell (SEC-only) shape.
             fh.write(
                 "groups:\n"
                 "  Auth:\n    match: ['src/auth/**']\n    panels: [SEC]\n"
-                "  Checkout:\n    match: ['src/checkout/**']\n    panels: [SEC]\n")
+                "    exclude: [ARC, COD, DAT, TST]\n"
+                "  Checkout:\n    match: ['src/checkout/**']\n    panels: [SEC]\n"
+                "    exclude: [ARC, COD, DAT, TST]\n")
         # discovery_execute subprocesses the REAL discovery.py --repo-scan,
         # which discovers via `git ls-files` -- commit the fixture so it's seen.
         subprocess.run(["git", "init", "-q"], cwd=d, check=True)
@@ -1570,6 +1583,17 @@ class TestDriverDeltaEndToEnd(unittest.TestCase):
             fh.write("\n".join(pay_lines) + "\n")
         os.makedirs(os.path.join(d, ".panopticon"))
         with open(driver._pano(d, "groups.yml"), "w") as fh:
+            # #5.0-11: GLOBAL_FLOOR folds ARC/COD/DAT/TST into every group's
+            # effective panel set. Deliberately NOT excluded here (unlike the
+            # other two matrix e2e fixtures): audit_floor_cells checks the
+            # DISCLOSED floor (declared | GLOBAL_FLOOR), not the exclude-netted
+            # effective set, so excluding a global-floor domain leaves it
+            # "on the floor" with no findings file -> missing_floor -> the
+            # gate downgrades PASS to INCONCLUSIVE, which would defeat this
+            # test's on-diff-vs-all gate-scope comparison (its whole point).
+            # Instead Checkout's review cell fires all 5 floor domains and
+            # _self_write_review_two_findings below services all of them
+            # (SEC real, the other 4 empty) so every floor cell is present.
             fh.write(
                 "groups:\n"
                 "  Auth:\n    match: ['src/auth/**']\n    panels: [SEC]\n"
@@ -1595,22 +1619,32 @@ class TestDriverDeltaEndToEnd(unittest.TestCase):
     def _self_write_scout(self, entry):
         driver._write_json(entry["out_file"], {"group": "Checkout", "domains": ["SEC"]})
 
-    def _self_write_review_two_findings(self, entry):
-        """One on-diff LOW (pay.py's edited line 2) and one pre-existing HIGH
-        (line 58, far outside the diff-context window) -- both SEC/Checkout.
+    def _self_write_review_two_findings(self, entries):
+        """SEC gets one on-diff LOW (pay.py's edited line 2) and one
+        pre-existing HIGH (line 58, far outside the diff-context window).
         Combined cell score (0 + 5*0.8 = 4.0) stays under F_b (8.0), so no
-        backup round is summoned."""
-        driver._write_json(entry["out_file"], {
-            "findings": [
-                {"title": "on-diff nit", "severity": "LOW", "domain": "SEC",
-                 "code": "SEC-A1A", "category": "authz",
-                 "location": {"file": "src/checkout/pay.py", "line_start": 2}},
-                {"title": "pre-existing gap", "severity": "HIGH", "domain": "SEC",
-                 "code": "SEC-A2A", "category": "authz",
-                 "location": {"file": "src/checkout/pay.py", "line_start": 58}},
-            ],
-            "_panopticon": {"run_id": self.RUN_ID, "role": "domain_panel",
-                            "domain": "SEC", "group": "Checkout"}})
+        backup round is summoned. #5.0-11: GLOBAL_FLOOR also fires
+        ARC/COD/DAT/TST for this group -- service those with empty cells (no
+        findings) so every floor cell is present (audit_floor_cells) without
+        adding score-engaging noise (they never reach F_p, so verify only
+        ever dispatches for SEC)."""
+        for e in entries:
+            domain = e["id"].rsplit("-", 1)[-1]
+            if domain == "SEC":
+                findings = [
+                    {"title": "on-diff nit", "severity": "LOW", "domain": "SEC",
+                     "code": "SEC-A1A", "category": "authz",
+                     "location": {"file": "src/checkout/pay.py", "line_start": 2}},
+                    {"title": "pre-existing gap", "severity": "HIGH", "domain": "SEC",
+                     "code": "SEC-A2A", "category": "authz",
+                     "location": {"file": "src/checkout/pay.py", "line_start": 58}},
+                ]
+            else:
+                findings = []
+            driver._write_json(e["out_file"], {
+                "findings": findings,
+                "_panopticon": {"run_id": self.RUN_ID, "role": "domain_panel",
+                                "domain": domain, "group": "Checkout"}})
 
     def _self_write_verify_all(self, d, manifest, entry):
         cell = driver._load_cell_findings(d, manifest, "Checkout", "SEC")
@@ -1643,7 +1677,8 @@ class TestDriverDeltaEndToEnd(unittest.TestCase):
         self.assertTrue(hunks["includes_uncommitted"])
         self.assertIn("src/checkout/pay.py", hunks["hunks"])
 
-        # coverage: scout checkpoint then floor+scout (SEC only, as committed)
+        # coverage: scout checkpoint then floor+scout (SEC as committed, plus
+        # #5.0-11's GLOBAL_FLOOR ARC/COD/DAT/TST on every group)
         cov = driver.coverage_execute(d, manifest)
         self.assertEqual(cov.checkpoint, "scout")
         self.assertEqual(cov.group, "Checkout")
@@ -1653,13 +1688,15 @@ class TestDriverDeltaEndToEnd(unittest.TestCase):
         self.assertEqual(driver.coverage_execute(d, manifest).kind, "advanced")
         self.assertTrue(driver.coverage_done(d, manifest))
 
-        # review checkpoint -- one cell (Checkout/SEC); self-write both
-        # findings into it, scoped to pay.py (the only file in play).
+        # review checkpoint -- 5 floor cells (Checkout/SEC + the #5.0-11
+        # GLOBAL_FLOOR's ARC/COD/DAT/TST); self-write both findings into
+        # SEC (scoped to pay.py, the only file in play) and empty cells into
+        # the other four.
         r = driver.review_execute(d, manifest)
         self.assertEqual(r.checkpoint, "review")
         req = driver.load_dispatch_request(d)
-        self.assertEqual(len(req["entries"]), 1)
-        self._self_write_review_two_findings(req["entries"][0])
+        self.assertEqual(len(req["entries"]), 5)
+        self._self_write_review_two_findings(req["entries"])
         self.assertTrue(driver.review_done(d, manifest))
 
         # verify checkpoint -- primary only (combined score < F_b, no backup)
