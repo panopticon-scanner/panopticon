@@ -35,7 +35,9 @@ Each finding MUST carry:
   also include `severity_override: {"from": "<the code's default severity>", "to":
   "<your severity>", "reason": "<one sentence justifying it>"}`. An override with
   no reason is reverted to the code default at synthesis.
-- `title`, `description`, `location: {file, line}`
+- `title`, `description`, `location: {file, line_start, line_end}` — `file` MUST be
+  **repository-relative** (e.g. `src/app.py`; never absolute or `./`-prefixed, so the
+  delta/`--pr` gate can match it against the diff), and `line_start` is 1-based
 - `category: "prompt-injection"` for any planted-instruction finding
 - `source_role: "domain_panel"`
 

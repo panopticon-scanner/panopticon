@@ -601,7 +601,9 @@
             "enum": [
               "lens_sweep",
               "panel_review",
-              "advisor"
+              "advisor",
+              "domain_panel",
+              "domain_advisor"
             ]
           },
           "depth": {
