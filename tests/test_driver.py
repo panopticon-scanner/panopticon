@@ -1940,5 +1940,23 @@ class TestDriverEntrypoint(unittest.TestCase):
                          % (r.returncode, r.stderr))
 
 
+class TestArtifactConfinement(unittest.TestCase):
+    def _args(self, target, *extra):
+        return driver.build_parser().parse_args(["run", target, *extra])
+
+    def test_symlinked_panopticon_fails_before_any_write(self):
+        # #5.0-09: a committed .panopticon symlink must be rejected BEFORE the
+        # driver's own reset/manifest/baseline writes, so nothing escapes the repo.
+        outside = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, outside, ignore_errors=True)
+        repo = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, repo, ignore_errors=True)
+        os.symlink(outside, os.path.join(repo, ".panopticon"))
+        status = driver.run(self._args(repo))
+        self.assertEqual(status["status"], "error")
+        self.assertIn("artifact root", status["message"].lower())
+        self.assertEqual(os.listdir(outside), [])   # no write followed the symlink
+
+
 if __name__ == "__main__":
     unittest.main()
