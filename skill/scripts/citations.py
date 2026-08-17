@@ -10,9 +10,11 @@ import urllib.parse
 import urllib.request
 
 try:
+    from scripts import _version
     from scripts._version import __version__
     from scripts.evidence import is_tool_sourced
 except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
+    import _version
     from _version import __version__
     from evidence import is_tool_sourced
 
@@ -37,8 +39,7 @@ CATEGORY_CWE_OVERRIDES = {
 
 
 def _catalog_path():
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        os.pardir, "reference", "cwe-catalog.json")
+    return _version.reference_path("cwe-catalog.json")
 
 
 def load_cwe_catalog(path=None):

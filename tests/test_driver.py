@@ -3,6 +3,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -1915,6 +1916,28 @@ class TestDriverSetup(unittest.TestCase):
         self.assertEqual(s2["status"], "complete")
         self.assertIn("groups.yml.draft", "".join(os.listdir(driver._pano(d))))
         self.assertFalse(os.path.isfile(driver._pano(d, "groups.yml")))
+
+
+class TestDriverEntrypoint(unittest.TestCase):
+    """#5.0-01: the documented `python3 skill/scripts/driver.py run ...` must
+    start without ModuleNotFoundError. This runs the driver as a FRESH process
+    with PYTHONPATH stripped, because conftest sets PYTHONPATH in-process and
+    would otherwise mask the missing sys.path bootstrap (the actual bug)."""
+
+    def _repo_root(self):
+        return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    def test_documented_invocation_starts_without_import_crash(self):
+        root = self._repo_root()
+        driver_py = os.path.join(root, "skill", "scripts", "driver.py")
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        r = subprocess.run([sys.executable, driver_py, "run", "--help"],
+                           capture_output=True, text=True, env=env, cwd=root)
+        self.assertNotIn("ModuleNotFoundError", r.stderr,
+                         "driver crashed at import as a fresh process:\n%s" % r.stderr)
+        self.assertEqual(r.returncode, 0,
+                         "`driver.py run --help` exited %d:\n%s"
+                         % (r.returncode, r.stderr))
 
 
 if __name__ == "__main__":

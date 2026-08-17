@@ -8,6 +8,11 @@ See docs/superpowers/specs/2026-08-15-panopticon-5.0-review-matrix-design.md §4
 import json
 import os
 
+try:
+    from scripts import _version
+except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
+    import _version
+
 BUNDLE_VERSION = "0.3.1"
 _BUNDLE_NAME = "ocrdb-%s.json" % BUNDLE_VERSION
 
@@ -22,8 +27,7 @@ DOMAIN_TO_PANEL = {
 
 
 def _bundle_path():
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        os.pardir, "reference", _BUNDLE_NAME)
+    return _version.reference_path(_BUNDLE_NAME)
 
 
 DEFAULT_BUNDLE_PATH = _bundle_path()
