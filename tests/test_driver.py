@@ -527,6 +527,25 @@ class TestToolsPhase(unittest.TestCase):
         self.assertTrue(marker["ran"])
         self.assertTrue(driver.tools_done(self.root, self.manifest))
 
+    def test_passes_manifest_flag(self):
+        # #1031: tools_execute asks run_tools for the deterministic adapter
+        # manifest so synthesize certifies tool coverage against it, not the
+        # scout's advisory list.
+        captured = {}
+
+        def fake_run(cmd, **kw):
+            captured["cmd"] = cmd
+            out = cmd[cmd.index("--out") + 1]
+            os.makedirs(out, exist_ok=True)
+            open(os.path.join(out, "trivy.json"), "w").close()
+            return mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch("scripts.driver.subprocess.run", side_effect=fake_run):
+            driver.tools_execute(self.root, self.manifest)
+        cmd = captured["cmd"]
+        self.assertIn("--manifest", cmd)
+        self.assertEqual(cmd[cmd.index("--manifest") + 1],
+                         driver._pano(self.root, "tools-manifest.json"))
+
     def test_docker_absent_is_disclosed_skip_that_advances(self):
         def fake_run(cmd, **kw):   # produces nothing, exits 0 (docker missing)
             return mock.Mock(returncode=0, stdout="",

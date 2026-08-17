@@ -3779,6 +3779,62 @@ class TestCostLedgerDriver(unittest.TestCase):
         self.assertTrue({"review", "tools"} <= phases)
 
 
+class TestToolCoverageCertification(unittest.TestCase):
+    """#1031: tool-coverage certification keys on the runner's DETERMINISTIC
+    adapter manifest (selected/produced/missing), not the scout's advisory tool
+    list. A scout naming a tool the runner can't run -> disclosed, never gates."""
+
+    TS = "2026-08-17T00:00:00Z"
+
+    def _div_tools(self, r):
+        return r["meta"]["coverage"]["divergence"]["tools"]
+
+    def test_scout_noise_disclosed_not_gating(self):
+        # scout named tools with no adapter / inapplicable to the target; every
+        # SELECTED adapter produced -> certified, noise only disclosed.
+        tm = {"selected": ["eslint-security", "semgrep"],
+              "produced": ["eslint-security", "semgrep"], "missing": [],
+              "excluded_scope": []}
+        r = syn.build_report([], [], "t", "high", self.TS,
+                             scout_requested=["bcryptjs", "pip-audit", "eslint"],
+                             tool_manifest=tm)
+        self.assertEqual(self._div_tools(r),
+                         {"bcryptjs": "requested_unavailable",
+                          "pip-audit": "requested_unavailable",
+                          "eslint": "requested_unavailable"})
+        self.assertTrue(r["summary"]["coverage_certified"])
+
+    def test_real_missing_adapter_gates(self):
+        # a SELECTED adapter that didn't produce is a real coverage loss ->
+        # requested_absent -> not certified, even if the scout never named it.
+        tm = {"selected": ["eslint-security", "npm-audit"],
+              "produced": ["eslint-security"], "missing": ["npm-audit"],
+              "excluded_scope": []}
+        r = syn.build_report([], [], "t", "high", self.TS,
+                             scout_requested=[], tool_manifest=tm)
+        self.assertEqual(self._div_tools(r), {"npm-audit": "requested_absent"})
+        self.assertFalse(r["summary"]["coverage_certified"])
+
+    def test_scout_wanted_a_real_missing_adapter_still_gates(self):
+        # the scout named a selected-but-unproduced adapter: it's a real gap.
+        tm = {"selected": ["npm-audit"], "produced": [], "missing": ["npm-audit"],
+              "excluded_scope": []}
+        r = syn.build_report([], [], "t", "high", self.TS,
+                             scout_requested=["npm-audit", "bcryptjs"],
+                             tool_manifest=tm)
+        self.assertEqual(self._div_tools(r),
+                         {"npm-audit": "requested_absent",
+                          "bcryptjs": "requested_unavailable"})
+        self.assertFalse(r["summary"]["coverage_certified"])
+
+    def test_manifest_absent_uses_legacy_scout_gate(self):
+        # no manifest -> unchanged 4.x behavior (scout_requested - produced).
+        r = syn.build_report([], [], "t", "high", self.TS,
+                             scout_requested=["eslint"], tools_ran=[])
+        self.assertEqual(self._div_tools(r), {"eslint": "requested_absent"})
+        self.assertFalse(r["summary"]["coverage_certified"])
+
+
 class TestOcrdbValidation(unittest.TestCase):
     """5.0 Slice A Task 3: synthesize auto-loads the OCRDb bundle, stamps
     the version, and validates finding codes against it."""
