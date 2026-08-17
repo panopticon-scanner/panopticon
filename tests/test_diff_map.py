@@ -121,6 +121,25 @@ class TestClassify(unittest.TestCase):
         self.assertFalse(d["on_diff"])
         self.assertEqual(d["distance"], 7)
 
+    def test_dotslash_prefix_still_matches(self):
+        # #5.0-06: './a.py' must still match the git-relative key 'a.py'.
+        self.assertTrue(diff_map.classify(self._f("./a.py", 11), self.HM)["on_diff"])
+
+    def test_absolute_path_relativizes_against_repo_root(self):
+        # #5.0-06: a worktree-absolute location.file (what --pr panels emit)
+        # must match the git-relative hunk key once relativized against the root.
+        d = diff_map.classify(self._f("/repo/a.py", 11), self.HM, repo_root="/repo")
+        self.assertTrue(d["on_diff"])
+        # and without a repo_root it (correctly) cannot relativize -> pre-existing,
+        # which is exactly the silent-drop the fix closes when repo_root IS passed.
+        self.assertFalse(diff_map.classify(self._f("/repo/a.py", 11), self.HM)["on_diff"])
+
+    def test_norm_key(self):
+        self.assertEqual(diff_map.norm_key("a\\b.py"), "a/b.py")
+        self.assertEqual(diff_map.norm_key("./a.py"), "a.py")
+        self.assertEqual(diff_map.norm_key("/repo/sub/a.py", "/repo"), "sub/a.py")
+        self.assertEqual(diff_map.norm_key("/outside/a.py", "/repo"), "/outside/a.py")
+
 
 class TestDiffAnchors(unittest.TestCase):
     def _repo(self):
