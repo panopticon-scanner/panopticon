@@ -91,6 +91,11 @@ def normalize_finding(f):
     if not isinstance(f.get("location"), dict):
         f["location"] = {}
     loc = f["location"]
+    # #5.0-04: bridge the {file, line} shape agents emit (older templates /
+    # non-conforming output) into the pipeline's canonical line_start, so id
+    # uniqueness, delta classification, and schema validation all work.
+    if "line_start" not in loc and loc.get("line") is not None:
+        loc["line_start"] = loc.pop("line")
     loc.setdefault("line_end", loc.get("line_start"))
     loc.setdefault("function", None)
     f.setdefault("references", [])

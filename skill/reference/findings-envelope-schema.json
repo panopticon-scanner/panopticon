@@ -52,7 +52,7 @@
           "impact": {"type": "string"},
           "remediation": {"type": "string"},
           "references": {"type": "array", "items": {"type": "string"}},
-          "source_role": {"type": "string", "enum": ["panel_review", "lens_sweep"]},
+          "source_role": {"type": "string", "enum": ["panel_review", "lens_sweep", "domain_panel", "domain_advisor"]},
           "depth": {"type": "string", "enum": ["shallow", "standard", "deep"]},
           "provenance": {"type": "object"},
           "citations": {"type": "object"},
@@ -60,6 +60,10 @@
           "exploit_scenario": {"type": "string"}
         }
       }
+    },
+    "_panopticon": {
+      "type": "object",
+      "description": "Cell-identity block (run_id/domain/group/stage) written by the matrix reviewer; REQUIRED by the driver, so the envelope must permit it under additionalProperties:false (#5.0-05)."
     }
   }
 }
