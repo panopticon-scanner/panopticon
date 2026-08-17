@@ -42,6 +42,14 @@ finding_fingerprint = evidence_mod.finding_fingerprint
 # fan-out wrote. Both call sites join it against their own base dir.
 DISPATCH_PLAN_GLOB = "dispatch-plan*.json"
 
+# #5.0-16: the resumable driver emits ONE dedicated plan under this name. It
+# matches DISPATCH_PLAN_GLOB (so reconcile/coverage/snapshot see its out_files)
+# but declares matrix (group, domain) cells -- findings-<group>-<domain>.json --
+# not the 4.x panel-review shape, so load_dispatch_plans_detailed validates it
+# with plan_contract.driver_plan_issues rather than the panel contract. Every
+# OTHER dispatch-plan*.json stays on the panel validator, untouched.
+DRIVER_DISPATCH_PLAN = "dispatch-plan-driver.json"
+
 # evidence_mod owns the canonical severity and panel scales (#688's aliasing
 # rationale: local copies of shared definitions drift).
 SEV_ORDER = evidence_mod.SEV_ORDER
@@ -947,21 +955,30 @@ def load_dispatch_plans_detailed(panopticon_dir=".panopticon",
         except (OSError, ValueError) as exc:
             invalid.append({"file": path, "reason": "unreadable: %s" % exc})
             continue
-        issues = plan_contract.plan_issues(plan)
-        issues.extend(plan_contract.output_issues(plan, root))
-        if not issues:
-            groups = {entry["group"] for entry in plan}
-            if len(groups) != 1:
-                issues.append("plan entries do not name exactly one group")
-            elif groups_error:
-                issues.append(groups_error)
-            else:
-                group_name = next(iter(groups))
-                assignment = assignments.get(group_name)
-                if assignment is None:
-                    issues.append("group %r is absent from groups.json" % group_name)
+        # #5.0-16: route by filename. The driver's dispatch-plan-driver.json
+        # carries the matrix domain-cell shape (validated by driver_plan_issues);
+        # every other dispatch-plan*.json is a 4.x per-group panel plan validated
+        # by the panel contract. Both, when valid, feed _plan -> reconcile the
+        # same way; a malformed driver plan still lands in `invalid` (=>
+        # invalid_dispatch_plans => INCONCLUSIVE), preserving the semantics.
+        if os.path.basename(path) == DRIVER_DISPATCH_PLAN:
+            issues = plan_contract.driver_plan_issues(plan)
+        else:
+            issues = plan_contract.plan_issues(plan)
+            issues.extend(plan_contract.output_issues(plan, root))
+            if not issues:
+                groups = {entry["group"] for entry in plan}
+                if len(groups) != 1:
+                    issues.append("plan entries do not name exactly one group")
+                elif groups_error:
+                    issues.append(groups_error)
                 else:
-                    issues.extend(plan_contract.assignment_issues(plan, assignment))
+                    group_name = next(iter(groups))
+                    assignment = assignments.get(group_name)
+                    if assignment is None:
+                        issues.append("group %r is absent from groups.json" % group_name)
+                    else:
+                        issues.extend(plan_contract.assignment_issues(plan, assignment))
         if issues:
             invalid.append({"file": path, "reason": "; ".join(issues)})
             continue

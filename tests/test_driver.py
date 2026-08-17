@@ -2060,6 +2060,165 @@ class TestResetGlobs(unittest.TestCase):
         self.assertIn("diff-hunks.json", driver._RESET_GLOBS)
         self.assertIn("out-file-hashes.json", driver._RESET_GLOBS)
 
+    def test_reset_clears_driver_dispatch_plan(self):
+        # #5.0-16: --reset must clear the driver's own dispatch plan so a
+        # --reset run re-declares its cells from fresh coverage.
+        self.assertIn("dispatch-plan-driver.json", driver._RESET_GLOBS)
+
+
+class TestDriverPlanIssues(unittest.TestCase):
+    """#5.0-16 H2 unit: plan_contract.driver_plan_issues validates the driver's
+    matrix domain-cell plan, distinct from the 4.x panel-review plan_issues."""
+
+    def test_valid_domain_cell_plan_has_no_issues(self):
+        plan = [{"group": "app", "domain": "SEC",
+                 "out_file": "/x/.panopticon/findings-app-SEC.json"}]
+        self.assertEqual(driver.plan_contract.driver_plan_issues(plan), [])
+
+    def test_empty_or_non_list_plan_is_invalid(self):
+        self.assertTrue(driver.plan_contract.driver_plan_issues([]))
+        self.assertTrue(driver.plan_contract.driver_plan_issues({}))
+
+    def test_panel_shaped_entry_is_invalid(self):
+        # A 4.x panel-review entry (no `domain`) must NOT validate as a driver
+        # plan -- the two contracts are disjoint.
+        plan = [{"role": "panel_review", "group": "app", "panel": "security",
+                 "out_file": "/x/findings-app-security-panel_review.json"}]
+        issues = driver.plan_contract.driver_plan_issues(plan)
+        self.assertTrue(any("unsupported domain" in i for i in issues))
+
+    def test_missing_group_and_out_file_flagged(self):
+        issues = driver.plan_contract.driver_plan_issues([{"domain": "SEC"}])
+        self.assertTrue(any("group" in i for i in issues))
+        self.assertTrue(any("out_file" in i for i in issues))
+
+    def test_out_file_basename_must_match_group_domain(self):
+        plan = [{"group": "app", "domain": "SEC",
+                 "out_file": "/x/findings-other-SEC.json"}]
+        issues = driver.plan_contract.driver_plan_issues(plan)
+        self.assertTrue(any("basename" in i for i in issues))
+
+
+class TestDriverIntegrityWiring(unittest.TestCase):
+    """#5.0-16: the driver emits dispatch-plan-driver.json (H2, reconcile) and
+    out-file-hashes.json (H3, content snapshot) so both anti-tampering controls
+    -- dead on the driver path when neither artifact was written -- actually
+    run. Drives review->verify->synthesize via self-writes (like
+    TestDriverRunLoopEndToEnd) and asserts on the graded report's
+    meta.integrity."""
+
+    RUN_ID = "RID"
+
+    def _repo(self, effective):
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        os.makedirs(os.path.join(d, "src"))
+        with open(os.path.join(d, "src", "app.py"), "w") as fh:
+            fh.write("def f():\n    return 1\n")
+        os.makedirs(os.path.join(d, ".panopticon"))
+        driver._write_json(driver._pano(d, "groups.json"),
+                           {"groups": [{"name": "app", "files": ["src/app.py"]}]})
+        driver._write_json(driver._pano(d, "coverage-app.json"),
+                           {"group": "app", "floor": effective,
+                            "effective": effective, "run_id": self.RUN_ID})
+        return d
+
+    def _manifest(self):
+        return {"run_id": self.RUN_ID, "host": "claude",
+                "security_mode": "standard", "flags": {"fail_on": "high"}}
+
+    def _cell_payload(self, domain, title="nit"):
+        # QAL LOW scores below F_p, so verify engages nothing -- the only reason
+        # a gate could go INCONCLUSIVE is the integrity signal under test.
+        return {"findings": [{"title": title, "severity": "LOW", "domain": domain,
+                              "code": domain + "-A1A", "category": "style",
+                              "location": {"file": "src/app.py", "line_start": 1}}],
+                "_panopticon": {"run_id": self.RUN_ID, "role": "domain_panel",
+                                "domain": domain, "group": "app"}}
+
+    def _drive_review(self, d, m, domain="QAL"):
+        r = driver.review_execute(d, m)
+        self.assertEqual(r.checkpoint, "review")
+        for e in driver.load_dispatch_request(d)["entries"]:
+            driver._write_json(e["out_file"], self._cell_payload(domain))
+        self.assertTrue(driver.review_done(d, m))
+
+    def test_clean_run_integrity_not_inconclusive(self):
+        d = self._repo(["QAL"])
+        m = self._manifest()
+        self._drive_review(d, m)
+        # verify engages nothing -> advances, but snapshots at its top first
+        self.assertEqual(driver.verify_execute(d, m).kind, "advanced")
+        self.assertTrue(driver.verify_done(d, m))
+        self.assertTrue(os.path.isfile(driver._pano(d, "dispatch-plan-driver.json")))
+        self.assertTrue(os.path.isfile(driver._pano(d, "out-file-hashes.json")))
+        self.assertEqual(driver.synthesize_execute(d, m).kind, "advanced")
+        report = driver._load_json(driver._pano(d, "report.json"))
+        integ = report["meta"]["integrity"]
+        self.assertGreaterEqual(integ["plans_seen"], 1)
+        self.assertEqual(integ["unexpected_findings_files"], [])
+        self.assertEqual(integ["missing_planned_files"], [])
+        self.assertEqual(integ["invalid_dispatch_plans"], [])
+        self.assertEqual(integ["content_mismatched_files"], [])
+        self.assertEqual(integ["empty_dispatch_plans"], 0)
+        self.assertGreaterEqual(integ["content_hashes_checked"], 1)
+        self.assertNotEqual(report["summary"]["gate"], "INCONCLUSIVE")
+
+    def test_h2_injected_undeclared_findings_file_forces_inconclusive(self):
+        d = self._repo(["QAL"])
+        m = self._manifest()
+        self._drive_review(d, m)
+        driver.verify_execute(d, m)   # snapshot taken over the DECLARED cells
+        # a rogue reviewer writes a cell the plan never declared
+        driver._write_json(driver._pano(d, "findings-app-BOGUS.json"),
+                           {"findings": [], "_panopticon": {
+                               "run_id": self.RUN_ID, "role": "domain_panel",
+                               "domain": "BOGUS", "group": "app"}})
+        driver.synthesize_execute(d, m)
+        report = driver._load_json(driver._pano(d, "report.json"))
+        integ = report["meta"]["integrity"]
+        self.assertTrue(any("findings-app-BOGUS.json" in p
+                            for p in integ["unexpected_findings_files"]),
+                        integ["unexpected_findings_files"])
+        self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
+
+    def test_h3_content_substitution_after_snapshot_forces_inconclusive(self):
+        d = self._repo(["QAL"])
+        m = self._manifest()
+        self._drive_review(d, m)
+        driver.verify_execute(d, m)   # snapshot the ORIGINAL bytes now
+        self.assertTrue(os.path.isfile(driver._pano(d, "out-file-hashes.json")))
+        # substitute the DECLARED cell's bytes after the snapshot
+        cell = driver._pano(d, "findings-app-QAL.json")
+        driver._write_json(cell, self._cell_payload("QAL", title="INJECTED"))
+        driver.synthesize_execute(d, m)
+        report = driver._load_json(driver._pano(d, "report.json"))
+        integ = report["meta"]["integrity"]
+        # still a DECLARED file -> not unexpected; only the content check fires
+        self.assertEqual(integ["unexpected_findings_files"], [])
+        self.assertTrue(any("findings-app-QAL.json" in p
+                            for p in integ["content_mismatched_files"]),
+                        integ["content_mismatched_files"])
+        self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
+
+    def test_resume_is_idempotent_snapshot_one_way_plan_stable(self):
+        d = self._repo(["QAL"])
+        m = self._manifest()
+        self._drive_review(d, m)
+        plan_path = driver._pano(d, "dispatch-plan-driver.json")
+        plan1 = driver._load_json(plan_path)
+        driver.review_execute(d, m)   # second pass: plan write is a no-op
+        self.assertEqual(driver._load_json(plan_path), plan1)
+        driver.verify_execute(d, m)   # first snapshot
+        hashes_path = driver._pano(d, "out-file-hashes.json")
+        snap1 = driver._load_json(hashes_path)
+        # substitute a declared cell, then a SECOND verify_execute must NOT
+        # re-hash -- re-hashing would silently mask the substitution
+        with open(driver._pano(d, "findings-app-QAL.json"), "a") as fh:
+            fh.write("\n")
+        driver.verify_execute(d, m)
+        self.assertEqual(driver._load_json(hashes_path), snap1)
+
 
 if __name__ == "__main__":
     unittest.main()

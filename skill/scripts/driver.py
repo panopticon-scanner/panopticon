@@ -29,6 +29,7 @@ import scripts.coverage_model as coverage_model
 import scripts.diff_map as diff_map
 import scripts.dispatch as dispatch
 import scripts.evidence as evidence
+import scripts.group_runner as group_runner
 import scripts.groups_schema as groups_schema
 import scripts.ocrdb as ocrdb
 import scripts.plan_contract as plan_contract
@@ -515,6 +516,62 @@ def _verify_entry(review_root, manifest, group, domain, files, cell, host, bundl
             "enforced": enforced, "model": None, "prompt": prompt, "out_file": out_file}
 
 
+def _driver_plan_entries(review_root, manifest):
+    """The declared review cells as a matrix domain-cell dispatch plan
+    (#5.0-16). Computed DETERMINISTICALLY from groups.json (each discovered
+    group) x its effective domains -- the SAME two sources review_execute
+    dispatches from (_discovered_groups x _effective_domains) -- with the EXACT
+    out_file spelling _cell_entry uses, so synthesize.reconcile_findings_files
+    sees no missing/unexpected on a clean run. `enforced` mirrors _cell_entry so
+    synthesize.derive_tool_policy_mode reports the run's real posture rather than
+    defaulting to "advisory". No `files`/`role` -- this is a declaration of
+    which out_files must exist, not a scope grant or a cost row."""
+    enforced = manifest.get("host", "claude") == "claude"
+    entries = []
+    for group, _files in _discovered_groups(review_root):
+        for domain in _effective_domains(review_root, group):
+            entries.append({
+                "group": group, "domain": domain, "enforced": enforced,
+                "out_file": os.path.abspath(
+                    _pano(review_root, "findings-%s-%s.json" % (group, domain)))})
+    return entries
+
+
+def _write_driver_plan(review_root, manifest):
+    """Write .panopticon/dispatch-plan-driver.json declaring every review cell
+    (#5.0-16 H2), so synthesize's reconcile_findings_files (undeclared-file
+    detection) is live on the driver path. Idempotent: written once, only when
+    cells exist; a later call is a no-op if the file is already present (the
+    cell set is fixed once coverage completes, which gates the review phase).
+    An empty target (no cells) writes NO plan -- reconcile then stays a correct
+    no-op rather than flagging an empty plan."""
+    path = _pano(review_root, synthesize.DRIVER_DISPATCH_PLAN)
+    if os.path.isfile(path):
+        return path
+    entries = _driver_plan_entries(review_root, manifest)
+    if not entries:
+        return None
+    return _write_json(path, entries)
+
+
+def _snapshot_review_out_files(review_root, manifest):
+    """Snapshot a sha256 per declared review cell at the review->verify boundary
+    (#5.0-16 H3), so synthesize's verify_out_file_hashes (content-substitution
+    detection) is live on the driver path. Runs after review_done (every cell
+    written) and before any verify-phase agent can touch a findings file, so a
+    later substitution -- e.g. by a rogue advisor on the unenforced generic host
+    -- is caught. Idempotent AND one-way: if the snapshot already exists it is
+    NOT rewritten -- re-hashing after a substitution would mask it."""
+    path = _pano(review_root, "out-file-hashes.json")
+    if os.path.isfile(path):
+        return path
+    entries = _driver_plan_entries(review_root, manifest)
+    if not entries:
+        return None
+    group_runner.snapshot_out_files(entries, out_path=os.path.abspath(path))
+    return path if os.path.isfile(path) else None
+
+
 def review_done(review_root, manifest):
     groups = _discovered_groups(review_root)
     if not groups:
@@ -524,6 +581,9 @@ def review_done(review_root, manifest):
 
 
 def review_execute(review_root, manifest):
+    # #5.0-16 H2: declare every review cell before dispatching any, so an
+    # injected/undeclared findings file is caught by reconcile at synthesis.
+    _write_driver_plan(review_root, manifest)
     host = manifest.get("host", "claude")
     bundle = ocrdb.load_bundle()
     # group tests come from the committed matrix (parse_groups tests field)
@@ -544,6 +604,10 @@ def review_execute(review_root, manifest):
 
 
 def verify_execute(review_root, manifest):
+    # #5.0-16 H3: snapshot every declared cell's bytes at the review->verify
+    # boundary (idempotent) BEFORE any advisor runs, so a verify-phase
+    # substitution is caught. review_done gates this phase, so all cells exist.
+    _snapshot_review_out_files(review_root, manifest)
     os.makedirs(_pano(review_root, "verdicts"), exist_ok=True)
     host = manifest.get("host", "claude")
     bundle = ocrdb.load_bundle()
@@ -646,6 +710,13 @@ def synthesize_done(review_root, manifest):
 
 
 def synthesize_execute(review_root, manifest):
+    # #5.0-16 fallback: guarantee both integrity artifacts exist once, after
+    # review and before synthesize, even when the verify phase was vacuously
+    # done (no engaged cell -> verify_execute never ran, so no agent ran either
+    # -- the snapshot here still captures authentic post-review bytes). Both are
+    # idempotent no-ops when review_execute/verify_execute already wrote them.
+    _write_driver_plan(review_root, manifest)
+    _snapshot_review_out_files(review_root, manifest)
     findings = sorted(_glob.glob(_pano(review_root, "findings-*.json")))
     verdicts_dir = _pano(review_root, "verdicts")
     os.makedirs(verdicts_dir, exist_ok=True)   # empty in P3 (verify is a no-op)
@@ -928,7 +999,10 @@ _RESET_GLOBS = ("groups.json", "coverage-*.json", "scout-*.json", "tools-ran.jso
                 "verify-queue.json", "findings-*.json",
                 # #5.0-07: stale delta artifacts must not survive a --reset and
                 # silently delta-scope (or content-check) the next run.
-                "diff-hunks.json", "out-file-hashes.json")
+                # #5.0-16: the driver's own dispatch plan clears too, so a
+                # --reset run re-declares cells from fresh coverage.
+                "diff-hunks.json", "out-file-hashes.json",
+                "dispatch-plan-driver.json")
 
 PHASES = (
     Phase("discovery", "deterministic", discovery_done, discovery_execute),
