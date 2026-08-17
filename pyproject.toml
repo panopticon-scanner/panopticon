@@ -1,6 +1,6 @@
 [project]
 name = "panopticon"
-version = "5.0.0"
+version = "5.0.1"
 description = "Portable, standards-cited code-review skill for AI coding agents"
 readme = "README.md"
 license = {text = "MIT"}

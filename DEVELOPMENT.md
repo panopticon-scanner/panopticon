@@ -5,7 +5,7 @@ supported, other SKILL.md hosts degraded-sequential. This file is the durable
 design record that travels with the skill (installed dir / OneDrive), so future
 work has context without the original spec/plan docs.
 
-**Current version: 5.0.0** (semver — see Versioning below).
+**Current version: 5.0.1** (semver — see Versioning below).
 
 ## What it is
 A **discovery → scout → fan-out → synthesis** pipeline. It profiles a target with a
@@ -176,7 +176,21 @@ changes to the report schema, CLI, or grade contract. Bump `SKILL.md` `metadata.
 `version` together.
 
 History:
-- **5.0.0** (current) — the matrix flagship. The review pipeline is now a
+- **5.0.1** (current) — honest instrumentation. The first 5.0 point release,
+  clearing the residuals from the BursarBuddy calibration and the 5.0 PR sweep.
+  `meta.cost` now enumerates every driver dispatch class (#1030); the verify
+  backup re-reads only its scoped files and the tool-advisor runs lighter, the
+  biggest cost lever at zero coverage loss (#1029); tool coverage certifies
+  against the runner's deterministic adapter manifest, not the scout's advisory
+  list (#1031, #984); a nightly image keep-alive + freshness heartbeat (#1032);
+  the clean-tree tamper guard reads `git status -z` and checks both rename
+  endpoints (#1033); OCRDb-consumer hardening incl. a corrupt-bundle exit code,
+  a `ZZZ-X0X` domainless sentinel, and the `{criteria}` advisor lens (#1034,
+  #1035); `model_resolver` becomes the single owner of the claude role→model map
+  (#1036); an explicit CRITICAL-vs-HIGH severity bar (#1038); and an
+  `x0x-report-schema.json` for the Panopticon→OCRDb candidate-pool loop (schema
+  only, emission is 5.1).
+- **5.0.0** — the matrix flagship. The review pipeline is now a
   single resumable driver (`skill/scripts/driver.py`, subcommands
   `setup`/`run`/`next`) that the host drives through a status protocol:
   discovery → coverage (per-group scout + surface-gated universal floor) →

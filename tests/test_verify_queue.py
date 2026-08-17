@@ -129,7 +129,7 @@ class TestWriteVerifyQueue(unittest.TestCase):
             evidence.write_verify_queue(entries, cut, path)
             with open(path) as fh:
                 payload = json.load(fh)
-        self.assertEqual(payload["version"], "5.0.0")
+        self.assertEqual(payload["version"], "5.0.1")
         self.assertEqual(payload["cut_by_max_verify"], 0)
         self.assertEqual(payload["entries"][0]["queue_id"],
                          evidence.finding_fingerprint(f))
