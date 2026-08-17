@@ -903,7 +903,10 @@ _DEFAULTS = {"host": "claude", "security": "standard"}
 _RESET_GLOBS = ("groups.json", "coverage-*.json", "scout-*.json", "tools-ran.json",
                 "validate.json",
                 "report.json", "dispatch-request.json", "tree-baseline.txt",
-                "verify-queue.json", "findings-*.json")
+                "verify-queue.json", "findings-*.json",
+                # #5.0-07: stale delta artifacts must not survive a --reset and
+                # silently delta-scope (or content-check) the next run.
+                "diff-hunks.json", "out-file-hashes.json")
 
 PHASES = (
     Phase("discovery", "deterministic", discovery_done, discovery_execute),
