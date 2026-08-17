@@ -87,6 +87,39 @@ class TestHunkMap(unittest.TestCase):
     def test_missing_base_returns_empty(self):
         self.assertEqual(diff_map.hunk_map(self._repo(), "no-such-ref"), {})
 
+    def _fake_git(self, seen, diff_rc=0, diff_err=""):
+        def fake(repo, args, timeout=60):
+            r = mock.Mock()
+            if args[0] == "merge-base":
+                r.returncode, r.stdout, r.stderr = 0, "deadbeef\n", ""
+            elif args[0] == "-c":                 # the pinned `git -c ... diff`
+                seen["diff"] = args
+                r.returncode, r.stdout, r.stderr = diff_rc, "", diff_err
+            else:                                  # ls-files --others
+                r.returncode, r.stdout, r.stderr = 0, "", ""
+            return r
+        return fake
+
+    def test_diff_command_failure_raises_not_empty(self):
+        # #5.0-08: merge-base OK but the diff itself fails -> DiffMapError, so
+        # the run fails loud instead of returning {} and passing the gate vacuously.
+        seen = {}
+        with mock.patch.object(diff_map, "_run_git",
+                               side_effect=self._fake_git(seen, diff_rc=128, diff_err="boom")):
+            with self.assertRaises(diff_map.DiffMapError):
+                diff_map.hunk_map(".", "main")
+
+    def test_diff_flags_are_pinned(self):
+        # #5.0-08: pin mnemonicPrefix/quotepath/prefixes so a user's gitconfig
+        # can't reshape the `+++ b/<path>` headers parse_unified_diff keys on.
+        seen = {}
+        with mock.patch.object(diff_map, "_run_git", side_effect=self._fake_git(seen)):
+            diff_map.hunk_map(".", "main")
+        argv = seen["diff"]
+        self.assertIn("diff.mnemonicPrefix=false", argv)
+        self.assertIn("core.quotepath=false", argv)
+        self.assertIn("--dst-prefix=b/", argv)
+
 
 class TestClassify(unittest.TestCase):
     HM = {"a.py": [(10, 12)], "empty.py": []}
@@ -120,6 +153,25 @@ class TestClassify(unittest.TestCase):
         d = diff_map.classify(self._f("a.py", 1, 3), self.HM, 5)
         self.assertFalse(d["on_diff"])
         self.assertEqual(d["distance"], 7)
+
+    def test_dotslash_prefix_still_matches(self):
+        # #5.0-06: './a.py' must still match the git-relative key 'a.py'.
+        self.assertTrue(diff_map.classify(self._f("./a.py", 11), self.HM)["on_diff"])
+
+    def test_absolute_path_relativizes_against_repo_root(self):
+        # #5.0-06: a worktree-absolute location.file (what --pr panels emit)
+        # must match the git-relative hunk key once relativized against the root.
+        d = diff_map.classify(self._f("/repo/a.py", 11), self.HM, repo_root="/repo")
+        self.assertTrue(d["on_diff"])
+        # and without a repo_root it (correctly) cannot relativize -> pre-existing,
+        # which is exactly the silent-drop the fix closes when repo_root IS passed.
+        self.assertFalse(diff_map.classify(self._f("/repo/a.py", 11), self.HM)["on_diff"])
+
+    def test_norm_key(self):
+        self.assertEqual(diff_map.norm_key("a\\b.py"), "a/b.py")
+        self.assertEqual(diff_map.norm_key("./a.py"), "a.py")
+        self.assertEqual(diff_map.norm_key("/repo/sub/a.py", "/repo"), "sub/a.py")
+        self.assertEqual(diff_map.norm_key("/outside/a.py", "/repo"), "/outside/a.py")
 
 
 class TestDiffAnchors(unittest.TestCase):

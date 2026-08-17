@@ -47,9 +47,20 @@ def _run_git(repo, args, timeout=60):
                           capture_output=True, text=True, timeout=timeout)
 
 
+class DiffMapError(Exception):
+    """A delta-map computation failed in a way that must NOT silently degrade to
+    an empty (and therefore vacuous-PASS) hunk map — the caller fails loud
+    instead of scoping the on-diff gate to nothing (#5.0-08)."""
+
+
 def hunk_map(repo, base):
     """Changed new-side line ranges per file (merge-base vs working tree),
-    including untracked non-ignored files as whole-file ranges. {} on failure."""
+    including untracked non-ignored files as whole-file ranges.
+
+    Returns {} when the base is unresolvable (an upstream loud-fail already
+    guards this). RAISES DiffMapError when the diff itself fails after a valid
+    base — a git-diff failure must not fall through to an empty map that passes
+    the delta gate vacuously (#5.0-08)."""
     try:
         mb = _run_git(repo, ["merge-base", "HEAD", base])
     except Exception:
@@ -57,13 +68,20 @@ def hunk_map(repo, base):
     if mb.returncode != 0 or not mb.stdout.strip():
         return {}
     base_sha = mb.stdout.strip()
+    # Pin diff formatting so a user's gitconfig (diff.mnemonicPrefix=true, a
+    # diff.external driver, quotepath escaping) can't reshape the `+++ b/<path>`
+    # headers parse_unified_diff keys on — which would yield an empty map and a
+    # vacuous PASS (#5.0-08).
     try:
-        diff = _run_git(repo, ["diff", "--unified=0", "--no-color",
-                               "--find-renames", base_sha])
-    except Exception:
-        return {}
+        diff = _run_git(repo, ["-c", "diff.mnemonicPrefix=false",
+                               "-c", "core.quotepath=false", "diff",
+                               "--unified=0", "--no-color", "--find-renames",
+                               "--src-prefix=a/", "--dst-prefix=b/", base_sha])
+    except Exception as e:
+        raise DiffMapError("git diff against %s failed: %s" % (base_sha, e))
     if diff.returncode != 0:
-        return {}
+        raise DiffMapError("git diff against %s failed (rc=%s): %s"
+                           % (base_sha, diff.returncode, (diff.stderr or "").strip()))
     result = parse_unified_diff(diff.stdout)
     # `git diff` omits untracked files; add them as whole-file ranges.
     try:
@@ -119,13 +137,38 @@ def _distance_to_range(ls, le, s, e):
     return min(abs(ls - s), abs(ls - e), abs(le - s), abs(le - e))
 
 
-def classify(finding, hmap, tolerance=5):
-    """{on_diff, hunk, distance} for a finding vs the hunk map (see module docstring)."""
+def norm_key(path, repo_root=None):
+    """Normalize a location.file / hunk key to the repo-relative spelling the
+    hunk map is keyed by: backslash->/, strip leading './', and (when repo_root
+    is given) relativize an absolute path that lives under it. Without this a
+    finding whose location.file is absolute (e.g. the worktree-absolute paths
+    panels are handed on a --pr run, #1007) or './'-prefixed never matches the
+    git-relative hunk keys, silently dropping off the on-diff gate -> vacuous
+    PASS (#5.0-06)."""
+    p = str(path or "").replace("\\", "/")
+    while p.startswith("./"):
+        p = p[2:]
+    if repo_root and os.path.isabs(p):
+        try:
+            rel = os.path.relpath(p, repo_root).replace("\\", "/")
+        except ValueError:
+            rel = p
+        if not rel.startswith("../"):   # only relativize paths inside the repo
+            p = rel
+    return p
+
+
+def classify(finding, hmap, tolerance=5, repo_root=None):
+    """{on_diff, hunk, distance} for a finding vs the hunk map (see module docstring).
+
+    Both the finding's location.file and the hunk keys are normalized via
+    norm_key so absolute/'./'/backslash spellings still match (#5.0-06)."""
     loc = finding.get("location") or {}
-    path = loc.get("file")
-    if path not in hmap:
+    path = norm_key(loc.get("file"), repo_root)
+    nmap = {norm_key(k, repo_root): v for k, v in hmap.items()}
+    if path not in nmap:
         return {"on_diff": False, "hunk": None, "distance": None}
-    ranges = hmap[path]
+    ranges = nmap[path]
     ls = loc.get("line_start")
     if ls is None:
         return {"on_diff": True, "hunk": None, "distance": None}   # fail-open

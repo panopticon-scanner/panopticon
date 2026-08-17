@@ -1007,6 +1007,14 @@ def main(argv=None):
         write_diff_hunks(repo, base, source,
                          _hunks_path_for(args.out), args.diff_context,
                          includes_uncommitted)
+    else:
+        # #5.0-07: a NON-delta (whole-repo) scan must be authoritative and drop
+        # any stale diff-hunks.json left by a prior -c/--pr run — otherwise the
+        # driver's file-existence check re-scopes this whole-repo run to the old
+        # diff and PASSES vacuously.
+        _stale_hunks = _hunks_path_for(args.out)
+        if os.path.isfile(_stale_hunks):
+            os.remove(_stale_hunks)
     if any(g.get("match") for g in catalog.values()):
         groups, leftovers = catalog_groups(allf, catalog, args.max_per_group,
                                            args.security)

@@ -209,6 +209,27 @@ class TestRepoScanDiscovery(unittest.TestCase):
     def _grouped(self, out):
         return [f for g in out["groups"] for f in g["files"]]
 
+    def test_nondelta_scan_removes_stale_diff_hunks(self):
+        # #5.0-07: a whole-repo (non-delta) scan must drop a stale diff-hunks.json
+        # left by a prior -c/--pr run, or the driver's file-existence check would
+        # re-scope this run to the old diff and PASS vacuously.
+        import io
+        import contextlib
+        with tempfile.TemporaryDirectory() as d:
+            self._touch(d, "src/app.py")
+            pano = os.path.join(d, ".panopticon")
+            os.makedirs(pano, exist_ok=True)
+            hunks = os.path.join(pano, "diff-hunks.json")
+            with open(hunks, "w") as fh:
+                fh.write('{"base": "main", "hunks": {}}')
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = orch.main(["--repo", d, "--repo-scan",
+                                "--out", os.path.join(pano, "groups.json")])
+            self.assertEqual(rc, 0)
+            self.assertFalse(os.path.isfile(hunks),
+                             "stale diff-hunks.json survived a non-delta scan")
+
     def test_repo_scan_excludes_noise_dirs(self):
         with tempfile.TemporaryDirectory() as d:
             self._touch(d, "src/app.py")

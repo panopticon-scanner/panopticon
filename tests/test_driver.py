@@ -1957,6 +1957,14 @@ class TestArtifactConfinement(unittest.TestCase):
         self.assertIn("artifact root", status["message"].lower())
         self.assertEqual(os.listdir(outside), [])   # no write followed the symlink
 
+        
+class TestResetGlobs(unittest.TestCase):
+    def test_reset_clears_stale_delta_artifacts(self):
+        # #5.0-07: --reset must clear stale delta artifacts so they can't
+        # silently re-scope (diff-hunks) or content-check (out-file-hashes) a run.
+        self.assertIn("diff-hunks.json", driver._RESET_GLOBS)
+        self.assertIn("out-file-hashes.json", driver._RESET_GLOBS)
+
 
 if __name__ == "__main__":
     unittest.main()
