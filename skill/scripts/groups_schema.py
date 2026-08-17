@@ -3,9 +3,16 @@
 Extends the 4.x groups.yml (match-only) with the matrix fields. Pure: takes an
 already-loaded dict, returns (groups, errors). No file I/O. See spec §3.
 """
+import re
 
 DOMAINS = frozenset(
     {"SEC", "COD", "ARC", "TST", "QAL", "AGT", "DAT", "OPS", "ACC", "LNG"})
+
+# #5.0-02: group names are interpolated into artifact FILENAMES and into trusted
+# reviewer prompts, so a name from a (possibly hostile) committed groups.yml must
+# be a strict token — no path separators, '..', leading dot, control chars, or
+# trailing newline, which would escape .panopticon or inject into the task text.
+_GROUP_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
 
 
 def _as_domain_set(name, field, raw, errors):
@@ -27,6 +34,11 @@ def parse_groups(doc):
     """Return (groups, errors). `groups` maps name -> normalized group dict."""
     groups, errors = {}, []
     for name, raw in ((doc or {}).get("groups") or {}).items():
+        if not isinstance(name, str) or ".." in name or not _GROUP_NAME_RE.match(name):
+            errors.append("group name %r is invalid: must match "
+                          "[A-Za-z0-9][A-Za-z0-9_.-]{0,63} with no path separators, "
+                          "'..', or control characters (#5.0-02)" % (name,))
+            continue
         if raw is None:
             raw = {}
         elif not isinstance(raw, dict):
