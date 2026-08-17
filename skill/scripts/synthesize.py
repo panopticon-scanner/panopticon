@@ -1330,7 +1330,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                  diff_hunks=None, diff_context=5, gate_scope="on-diff",
                  catalog=None, verdict_unloadable=None, cost_fan_out=None,
                  verdict_run_id=None, coverages=None, ingested_paths=None,
-                 verdict_bundles=None, driver_cost=None):
+                 verdict_bundles=None, driver_cost=None, tool_manifest=None):
     """Build a CodeReviewReport under the two-axis severity x evidence model.
 
     Severity is never mutated here. Verdicts (from evidence.load_verdicts) are
@@ -1528,11 +1528,29 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
     executed = (fan_out or {}).get("executed") or {} if isinstance(fan_out, dict) else {}
     panels_incomplete = {p for p, n in planned.items() if executed.get(p, 0) < n}
     produced = set(tools_ran if tools_ran is not None else tool_names)
-    tools_absent = sorted(set(scout_requested or []) - produced)
+    # #1031: certify on the runner's DETERMINISTIC adapter set when its manifest
+    # is present -- `missing` (applicable known adapters that didn't produce) is
+    # the only real tool-coverage loss, so it drives the gate (`tools_absent`).
+    # The scout's advisory list is demoted: a request the runner can't satisfy
+    # (no adapter, or inapplicable to the target) is disclosed as non-gating
+    # `requested_unavailable`, never sinking coverage_certified. With no manifest
+    # (e.g. --no-tools, or a pre-manifest run) the 4.x scout-derived gate stands.
+    if isinstance(tool_manifest, dict):
+        selected = set(tool_manifest.get("selected") or [])
+        produced_m = set(tool_manifest.get("produced") or [])
+        missing = tool_manifest.get("missing")
+        tools_absent = sorted(missing if isinstance(missing, list)
+                              else selected - produced_m)
+        unavailable = sorted(set(scout_requested or []) - selected - produced_m)
+        tool_divergence = {t: "requested_absent" for t in tools_absent}
+        tool_divergence.update({t: "requested_unavailable" for t in unavailable})
+    else:
+        tools_absent = sorted(set(scout_requested or []) - produced)
+        tool_divergence = {t: "requested_absent" for t in tools_absent}
     divergence = {
         "panels": {p: {"planned": planned[p], "executed": executed.get(p, 0)}
                    for p in sorted(panels_incomplete)},
-        "tools": {t: "requested_absent" for t in tools_absent},
+        "tools": tool_divergence,
     }
     integrity = integrity if isinstance(integrity, dict) else None
     integrity = integrity or {"unexpected_findings_files": [],
@@ -2003,6 +2021,19 @@ def main(argv=None):
         # A "failed" disposition (empty / unparseable / no-adapter) is excluded,
         # so build_executing_tools can no longer name an adapter that ran empty.
         tools_ran = tools_ran_from_dispositions(tool_dispositions)
+    # #1031: the runner's deterministic adapter manifest (run_tools --manifest:
+    # selected/produced/missing/excluded_scope). Present -> build_report gates on
+    # `missing`, not the scout's advisory list. Tolerant read: a corrupt/absent
+    # manifest just falls back to the 4.x scout-derived gate.
+    tool_manifest = None
+    _tm_path = os.path.join(".panopticon", "tools-manifest.json")
+    if os.path.isfile(_tm_path):
+        try:
+            with open(_tm_path, encoding="utf-8") as fh:
+                _tm = json.load(fh)
+            tool_manifest = _tm if isinstance(_tm, dict) else None
+        except (OSError, ValueError):
+            tool_manifest = None
     catalog = citations.load_cwe_catalog()
     citations.enrich_citations(findings, catalog, epss_enabled=args.epss,
                                cache_path=os.path.join(".panopticon", "epss-cache.json"))
@@ -2212,7 +2243,8 @@ def main(argv=None):
                           verdict_run_id=(_queue or {}).get("run_id"),
                           coverages=coverages,
                           ingested_paths=args.files,
-                          driver_cost=driver_cost)
+                          driver_cost=driver_cost,
+                          tool_manifest=tool_manifest)
     errors, warnings = validate_report(report)
     attach_schema_status(report, errors)
     for w in warnings:

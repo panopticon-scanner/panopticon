@@ -394,8 +394,12 @@ def tools_execute(review_root, manifest):
                      "returncode": None, "run_id": manifest["run_id"]})
         return PhaseResult(kind="advanced", message="tools: skipped (--no-tools)")
     out_dir = _pano(review_root, "tools")
+    # #1031: --manifest records the deterministic adapter set (selected/produced/
+    # missing) so synthesize can certify tool coverage against what the runner
+    # actually resolved, not the scout's advisory tool list.
     cmd = [sys.executable, _script("run_tools.py"), "--target", review_root,
-           "--out", out_dir, "--deps"]
+           "--out", out_dir, "--deps",
+           "--manifest", _pano(review_root, "tools-manifest.json")]
     proc = subprocess.run(cmd, cwd=review_root, capture_output=True, text=True,
                           env=_child_env())
     produced = os.path.isdir(out_dir) and bool(os.listdir(out_dir))
