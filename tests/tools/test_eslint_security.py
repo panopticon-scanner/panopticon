@@ -133,7 +133,9 @@ class TestEslintSecurityAdapter(unittest.TestCase):
     def test_invoke_runs_eslint_security(self):
         adapter = es.EslintSecurityAdapter()
         fake_run = mock.Mock(return_value=mock.Mock(stdout=b"[]", returncode=0))
-        with mock.patch("scripts.tools.base.subprocess.run", fake_run):
+        with mock.patch("scripts.tools.base.subprocess.run", fake_run), \
+             mock.patch.object(es.EslintSecurityAdapter, "_lintable_sources",
+                               return_value=["x.js"]):
             stdout, rc = adapter.invoke("/tmp/fake")
         self.assertEqual(stdout, b"[]")
         self.assertEqual(rc, 0)
@@ -149,7 +151,9 @@ class TestEslintSecurityAdapter(unittest.TestCase):
     def test_invoke_enables_all_rule_cwe_rules(self):
         adapter = es.EslintSecurityAdapter()
         fake_run = mock.Mock(return_value=mock.Mock(stdout=b"[]", returncode=0))
-        with mock.patch("scripts.tools.base.subprocess.run", fake_run):
+        with mock.patch("scripts.tools.base.subprocess.run", fake_run), \
+             mock.patch.object(es.EslintSecurityAdapter, "_lintable_sources",
+                               return_value=["x.js"]):
             adapter.invoke("/tmp/fake")
         args, _ = fake_run.call_args
         cmd = args[0]
@@ -166,7 +170,9 @@ class TestEslintSecurityAdapter(unittest.TestCase):
         # scanned target's own node_modules.
         adapter = es.EslintSecurityAdapter()
         fake_run = mock.Mock(return_value=mock.Mock(stdout=b"[]", returncode=0))
-        with mock.patch("scripts.tools.base.subprocess.run", fake_run):
+        with mock.patch("scripts.tools.base.subprocess.run", fake_run), \
+             mock.patch.object(es.EslintSecurityAdapter, "_lintable_sources",
+                               return_value=["x.js"]):
             adapter.invoke("/tmp/fake-target")
         _args, kwargs = fake_run.call_args
         expected_cwd = os.path.dirname(os.path.abspath(es.__file__))
@@ -181,6 +187,8 @@ class TestEslintSecurityAdapter(unittest.TestCase):
         adapter = es.EslintSecurityAdapter()
         fake_run = mock.Mock(return_value=mock.Mock(stdout=b"[]", returncode=0))
         with mock.patch("scripts.tools.base.subprocess.run", fake_run), \
+             mock.patch.object(es.EslintSecurityAdapter, "_lintable_sources",
+                               return_value=["x.js"]), \
              mock.patch.dict(os.environ, {"NODE_PATH": "/evil/node_modules"}), \
              mock.patch("os.path.isdir",
                         side_effect=lambda p: p == "/usr/local/lib/node_modules"):
@@ -195,6 +203,8 @@ class TestEslintSecurityAdapter(unittest.TestCase):
         adapter = es.EslintSecurityAdapter()
         fake_run = mock.Mock(return_value=mock.Mock(stdout=b"[]", returncode=0))
         with mock.patch("scripts.tools.base.subprocess.run", fake_run), \
+             mock.patch.object(es.EslintSecurityAdapter, "_lintable_sources",
+                               return_value=["x.js"]), \
              mock.patch.dict(os.environ, {"NODE_PATH": "/evil/node_modules"}), \
              mock.patch("os.path.isdir", return_value=False):
             adapter.invoke("/tmp/fake-target")
@@ -207,11 +217,44 @@ class TestEslintSecurityAdapter(unittest.TestCase):
         # regardless of the pinned cwd.
         adapter = es.EslintSecurityAdapter()
         fake_run = mock.Mock(return_value=mock.Mock(stdout=b"[]", returncode=0))
-        with mock.patch("scripts.tools.base.subprocess.run", fake_run):
+        with mock.patch("scripts.tools.base.subprocess.run", fake_run), \
+             mock.patch.object(es.EslintSecurityAdapter, "_lintable_sources",
+                               return_value=["x.js"]):
             adapter.invoke("relative/target")
         args, _kwargs = fake_run.call_args
         cmd = args[0]
         self.assertEqual(cmd[-1], os.path.abspath("relative/target"))
+
+    # #984: applicable-but-nothing-to-lint -> ran-clean empty, not a skip.
+    def test_invoke_short_circuits_when_only_package_json(self):
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, "package.json"), "w").close()
+            fake_run = mock.Mock()
+            with mock.patch("scripts.tools.base.subprocess.run", fake_run):
+                stdout, rc = es.EslintSecurityAdapter().invoke(d)
+        self.assertEqual((stdout, rc), (b"[]", 0))
+        fake_run.assert_not_called()   # eslint never invoked -> ran-clean empty
+
+    def test_invoke_short_circuits_when_source_only_in_node_modules(self):
+        with tempfile.TemporaryDirectory() as d:
+            nm = os.path.join(d, "node_modules", "dep")
+            os.makedirs(nm)
+            open(os.path.join(nm, "index.js"), "w").close()
+            open(os.path.join(d, "package.json"), "w").close()
+            fake_run = mock.Mock()
+            with mock.patch("scripts.tools.base.subprocess.run", fake_run):
+                stdout, rc = es.EslintSecurityAdapter().invoke(d)
+        self.assertEqual((stdout, rc), (b"[]", 0))
+        fake_run.assert_not_called()
+
+    def test_invoke_runs_eslint_when_real_source_present(self):
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, "app.js"), "w").close()
+            fake_run = mock.Mock(return_value=mock.Mock(stdout=b"[]", returncode=0))
+            with mock.patch("scripts.tools.base.subprocess.run", fake_run):
+                es.EslintSecurityAdapter().invoke(d)
+        fake_run.assert_called_once()   # source present -> eslint really runs
+        self.assertEqual(fake_run.call_args[0][0][0], "eslint")
 
     def test_parse_includes_provenance(self):
         findings = es.EslintSecurityAdapter().parse(ESLINT_SAMPLE, "g1")
