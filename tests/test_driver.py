@@ -446,6 +446,18 @@ class TestCoverageBridge(unittest.TestCase):
         cov = driver._load_json(driver._pano(self.root, "coverage-Auth.json"))
         self.assertNotIn("DAT", cov["effective"])              # exclude wins
 
+    def test_non_dict_scout_raises_driver_error(self):
+        # #5.0-12: a scout returning a JSON ARRAY (not an object) must fail loud
+        # at the checkpoint, not crash `.get` with an uncaught AttributeError.
+        driver._write_json(driver._pano(self.root, "groups.json"),
+                           {"groups": [{"name": "Auth", "files": ["a.py"]}]})
+        with open(driver._pano(self.root, "groups.yml"), "w") as fh:
+            fh.write("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n")
+        with open(driver._pano(self.root, "scout-Auth.json"), "w") as fh:
+            fh.write('["SEC", "DAT"]')          # a list, not an object
+        with self.assertRaises(driver.DriverError):
+            driver.coverage_execute(self.root, self.manifest)
+
     def test_chunk_inherits_parent_committed_floor(self):
         # #5.0-10: a >15-file group split into Auth_1/Auth_2 chunks must inherit
         # the committed parent (Auth) floor, not fall back to an empty floor.
@@ -889,6 +901,26 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         driver.run(self._args(d))
         self.assertIsNotNone(run_manifest.load_manifest(d))
         self.assertTrue(os.path.isfile(driver._pano(d, "tree-baseline.txt")))
+
+    def test_corrupt_manifest_is_reset_not_wedged(self):
+        # #5.0-13: a present-but-unparseable run-manifest.json must not raise an
+        # uncaught FileExistsError from write_manifest (write-once); it's reset.
+        d = self._repo()
+        with open(run_manifest.manifest_path(d), "w", encoding="utf-8") as fh:
+            fh.write("{ not valid json")
+        status = driver.run(self._args(d))   # must not raise FileExistsError
+        self.assertNotEqual(status["status"], "error", status.get("message"))
+        self.assertIsNotNone(run_manifest.load_manifest(d))   # fresh manifest written
+
+    def test_resolve_review_root_failure_is_status_error(self):
+        # #5.0-14: a --pr acquisition failure (gh/network/bad PR) is reported via
+        # the status protocol, not a raw RuntimeError escaping run().
+        d = self._repo()
+        with mock.patch.object(driver, "resolve_review_root",
+                               side_effect=RuntimeError("gh: PR not found")):
+            status = driver.run(self._args(d))
+        self.assertEqual(status["status"], "error")
+        self.assertIn("resolve review root", status["message"])
 
     def test_end_to_end_reaches_report(self):
         d = self._repo()
