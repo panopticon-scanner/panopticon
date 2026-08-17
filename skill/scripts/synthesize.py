@@ -692,7 +692,13 @@ def audit_floor_cells(coverages, present):
     for cov in coverages:
         group = cov.get("group")
         have = present.get(group, set())
+        excluded = set(cov.get("excluded") or [])
         for dom in cov.get("floor") or []:
+            # #5.0-11: a floor domain explicitly excluded (e.g. a universal
+            # global-floor domain a group opted out of) does not run, so it is
+            # not a missing floor cell — net exclude before auditing.
+            if dom in excluded:
+                continue
             if dom not in have:
                 missing.append([group, dom])
     return {"missing_floor": sorted(missing)}

@@ -513,6 +513,15 @@ class TestFloorCellAudit(unittest.TestCase):
             present={"Auth": {"SEC"}})
         self.assertEqual(cells["missing_floor"], [])
 
+    def test_excluded_floor_cell_not_missing(self):
+        # #5.0-11: a floor domain a group opted out of (e.g. a universal global-
+        # floor domain) does not run, so it is not a missing floor cell.
+        cells = syn.audit_floor_cells(
+            [{"group": "Auth", "floor": ["SEC", "DAT"], "excluded": ["DAT"],
+              "effective": ["SEC"]}],
+            present={"Auth": {"SEC"}})            # only SEC ran; DAT excluded
+        self.assertEqual(cells["missing_floor"], [])
+
 
 class TestPresentCells(unittest.TestCase):
     """present_cells: derives {group: set(domains)} from findings-<group>-
