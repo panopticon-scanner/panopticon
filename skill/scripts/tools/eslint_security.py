@@ -45,7 +45,26 @@ class EslintSecurityAdapter:
     def is_applicable(self, target: str) -> bool:
         return bool(self.applicable_files(target))
 
+    def _lintable_sources(self, target: str) -> list[str]:
+        """The actual source files eslint would lint: applicable_files minus the
+        package.json manifest and anything under node_modules (eslint ignores
+        node_modules by default). Empty means the adapter was selected only by a
+        manifest, or its source is all excluded -- there is nothing to lint.
+        """
+        return [f for f in self.applicable_files(target)
+                if os.path.basename(f) != "package.json"
+                and "node_modules" not in f.replace("\\", "/").split("/")]
+
     def invoke(self, target: str) -> tuple[bytes, int]:
+        # #984: applicable via a manifest but with no lintable source (or its
+        # source all excluded) -> eslint would find "no files matching" and exit
+        # 2, which run_tools discards as a skip, sinking coverage. Distinguish
+        # ran-clean-no-source from could-not-run: emit a valid empty result so
+        # this counts as PRODUCED (disposition "empty"), not missing. A genuine
+        # eslint failure (source present, tool errors) still exits non-zero and
+        # is honestly skipped.
+        if not self._lintable_sources(target):
+            return b"[]", 0
         cmd = [
             "eslint", "--no-config-lookup", "--parser-options", "ecmaVersion:latest",
             "--plugin", "security",
