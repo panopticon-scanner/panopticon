@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 import setup_flow
 
@@ -74,6 +75,31 @@ class TestSetupFlow(unittest.TestCase):
                                       runner=lambda *a, **k: type("R", (), {"returncode": 1})())
         names = {c[0] for c in checks}
         self.assertIn("target-root", names)
+
+    def test_readiness_checks_driver_roles_not_legacy(self):
+        # #5.0-15: enforced-shells must verify the driver's scout/domain_panel/
+        # domain_advisor shells, NOT the retired panel_review/lens_sweep.
+        import dispatch
+        d = _repo()
+        with mock.patch.object(dispatch, "_is_registered", return_value=False):
+            checks = setup_flow.readiness(
+                d, host="claude",
+                runner=lambda *a, **k: type("R", (), {"returncode": 0})())
+        es = next(c for c in checks if c[0] == "enforced-shells")
+        self.assertFalse(es[1])                       # unregistered -> not ok
+        for role in ("scout", "domain_panel", "domain_advisor"):
+            self.assertIn(role, es[2])
+        self.assertNotIn("panel_review", es[2])
+        self.assertNotIn("lens_sweep", es[2])
+
+    def test_readiness_generic_host_enforced_shells_informational(self):
+        # #5.0-15: the generic host runs unenforced -> informational (None), not FAIL.
+        d = _repo()
+        checks = setup_flow.readiness(
+            d, host="generic",
+            runner=lambda *a, **k: type("R", (), {"returncode": 0})())
+        es = next(c for c in checks if c[0] == "enforced-shells")
+        self.assertIsNone(es[1])
 
 
 if __name__ == "__main__":
