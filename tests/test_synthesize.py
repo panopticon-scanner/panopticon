@@ -134,6 +134,17 @@ class TestNormalize(unittest.TestCase):
         f = syn.normalize_finding({"title": "x", "lens": "injection"})
         self.assertEqual(f["lens"], "injection")
 
+    def test_normalize_bridges_line_to_line_start(self):
+        # #5.0-04: agents emit location {file, line}; the pipeline keys line_start.
+        f = syn.normalize_finding({"title": "x", "location": {"file": "a.py", "line": 7}})
+        self.assertEqual(f["location"]["line_start"], 7)
+        self.assertNotIn("line", f["location"])
+
+    def test_normalize_does_not_override_explicit_line_start(self):
+        f = syn.normalize_finding(
+            {"title": "x", "location": {"file": "a.py", "line": 7, "line_start": 3}})
+        self.assertEqual(f["location"]["line_start"], 3)
+
     def test_location_coerced(self):
         f = syn.normalize_finding({"location": {"file": "a.py", "line_start": 10}})
         self.assertEqual(f["location"]["line_end"], 10)
