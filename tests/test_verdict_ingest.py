@@ -76,6 +76,45 @@ class TestLoadVerdicts(unittest.TestCase):
         self.assertEqual(set(out), {QID_1})
         self.assertEqual(out[QID_1]["verdict"], "CONFIRMED")
 
+    def test_prose_with_trailing_brace_extracts_first_object(self):
+        # #1058: a stray brace AFTER the JSON (a config example, a template) made
+        # the greedy {.*} span run to the last }, swallowing the trailing prose
+        # brace and breaking the parse. The balanced scanner takes the first
+        # well-formed object.
+        with tempfile.TemporaryDirectory() as d:
+            _write(d, QID_1 + ".json",
+                   "Verdict below.\n"
+                   '{"finding_id": "SEC-001", "verdict": "CONFIRMED", "reasoning": "r"}\n'
+                   "Then set {threshold} in your config.")
+            out = evidence.load_verdicts(d)
+        self.assertEqual(set(out), {QID_1})
+        self.assertEqual(out[QID_1]["verdict"], "CONFIRMED")
+
+    def test_prose_with_leading_nonjson_brace_extracts_real_object(self):
+        # #1058: a non-JSON brace BEFORE the object ({see note}) made the greedy
+        # span start too early. The scanner rejects the unparseable {see note}
+        # and advances to the real object.
+        with tempfile.TemporaryDirectory() as d:
+            _write(d, QID_1 + ".json",
+                   "Per the rubric {see note above}, here is the result: "
+                   '{"finding_id": "SEC-001", "verdict": "REJECTED", "reasoning": "r"}')
+            out = evidence.load_verdicts(d)
+        self.assertEqual(set(out), {QID_1})
+        self.assertEqual(out[QID_1]["verdict"], "REJECTED")
+
+    def test_nested_json_object_in_prose(self):
+        # #1058: a real verdict nests (citations{}); the scanner must balance
+        # braces, not stop at the first inner }.
+        with tempfile.TemporaryDirectory() as d:
+            _write(d, QID_1 + ".json",
+                   "Here you go: "
+                   '{"finding_id": "SEC-001", "verdict": "CONFIRMED", '
+                   '"reasoning": "r", "citations": {"cwe": ["CWE-89"]}}'
+                   " -- done.")
+            out = evidence.load_verdicts(d)
+        self.assertEqual(set(out), {QID_1})
+        self.assertEqual(out[QID_1]["citations"], {"cwe": ["CWE-89"]})
+
     def test_detailed_reports_unloadable_instead_of_dropping(self):
         # #938: a corrupt / invalid verdict file must be surfaced, not silently
         # dropped to stderr only. load_verdicts_detailed returns the un-loadable

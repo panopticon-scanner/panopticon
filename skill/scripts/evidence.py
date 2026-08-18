@@ -346,6 +346,45 @@ def merge_citations(best, other):
             bc[key] = value
 
 
+def _first_balanced_json(body):
+    """Return the first balanced, parseable ``{...}`` object embedded in ``body``,
+    or None. Scans brace depth while respecting string literals and escapes, so a
+    stray brace in surrounding prose -- before OR after the object -- does not
+    derail extraction the way a greedy ``\\{.*\\}`` span does (it runs from the
+    first ``{`` to the LAST ``}``, swallowing any prose brace at either end).
+    Advances to the next ``{`` when a balanced span fails to parse, so a non-JSON
+    ``{see note}`` ahead of the real object is skipped, not mistaken for it.
+    Pure; never raises."""
+    n = len(body)
+    i = 0
+    while True:
+        start = body.find("{", i)
+        if start < 0:
+            return None
+        depth, in_str, esc = 0, False, False
+        for j in range(start, n):
+            c = body[j]
+            if in_str:
+                if esc:
+                    esc = False
+                elif c == "\\":
+                    esc = True
+                elif c == '"':
+                    in_str = False
+            elif c == '"':
+                in_str = True
+            elif c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(body[start:j + 1])
+                    except json.JSONDecodeError:
+                        break   # not parseable; try the next '{'
+        i = start + 1
+
+
 def load_json_tolerant(body):
     """Parse JSON from text, stripping markdown code blocks and searching for JSON object."""
     body = body.strip()
@@ -354,11 +393,24 @@ def load_json_tolerant(body):
         body = re.sub(r"\s*```\s*$", "", body).strip()
     try:
         return json.loads(body)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as first_err:
+        # #1058: first-class brace extraction. Narrative wrapping ("Here is my
+        # verdict: {...}. Set {x} in config.") lost 8/79 advisor verdicts in
+        # run-5; 3 repeated on retry, so it is prompt-induced, not noise. The
+        # balanced scanner accepts the first well-formed object regardless of
+        # prose braces at either end; the greedy regex stays as a last-resort
+        # fallback for shapes the scanner can't balance. A total miss re-raises
+        # so a genuinely-corrupt return still lands in `unloadable` (#938).
+        obj = _first_balanced_json(body)
+        if obj is not None:
+            return obj
         m = re.search(r"(\{.*\})", body, re.DOTALL)
         if m:
-            return json.loads(m.group(1))
-        raise
+            try:
+                return json.loads(m.group(1))
+            except json.JSONDecodeError:
+                pass
+        raise first_err
 
 
 def _iter_verdict_files(verdicts_dir):
