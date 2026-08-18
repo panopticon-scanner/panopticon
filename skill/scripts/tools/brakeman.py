@@ -1,7 +1,7 @@
 """Brakeman adapter for Ruby on Rails security findings."""
 from __future__ import annotations
 import os
-from .base import as_list, make_finding, normalize_severity, omit_none, parse_json_bytes, run_tool
+from .base import as_list, make_finding, omit_none, parse_json_bytes, run_tool
 
 
 _CONFIDENCE_MAP = {
@@ -30,6 +30,23 @@ _BRAKEMAN_CWE = {
     "Dangerous Eval": "CWE-94",
     "Command Injection": "CWE-78",
     "Unsafe Reflection": "CWE-470",
+}
+
+
+_BRAKEMAN_SEVERITY = {
+    "Remote Code Execution": "CRITICAL",
+    "Dangerous Eval": "HIGH",
+    "Command Injection": "HIGH",
+    "SQL Injection": "HIGH",
+    "Cross-Site Scripting": "MEDIUM",
+    "Cross-Site Request Forgery": "MEDIUM",
+    "Mass Assignment": "MEDIUM",
+    "File Access": "MEDIUM",
+    "Dynamic Render Path": "MEDIUM",
+    "Redirect": "LOW",
+    "Session Setting": "LOW",
+    "Basic Auth": "LOW",
+    "Unsafe Reflection": "MEDIUM",
 }
 
 
@@ -65,10 +82,11 @@ class BrakemanAdapter:
         for w in data.get("warnings", []):
             wtype = w.get("warning_type", "")
             cwe = _BRAKEMAN_CWE.get(wtype)
+            sev = _BRAKEMAN_SEVERITY.get(wtype, "MEDIUM")
             out.append(make_finding(
                 self, n, group,
                 title=f"{wtype}: {w.get('message', '')}",
-                severity=normalize_severity(w.get("confidence", "medium")),
+                severity=sev,
                 confidence=_normalize_confidence(w.get("confidence", "medium")),
                 category="rails_security",
                 location={

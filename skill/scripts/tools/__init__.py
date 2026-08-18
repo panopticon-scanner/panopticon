@@ -21,7 +21,6 @@ ADAPTERS = {
     "trivy": LegacySarifAdapter("trivy"),
     "gitleaks": LegacySarifAdapter("gitleaks"),
     "gosec": LegacySarifAdapter("gosec"),
-    "eslint": LegacySarifAdapter("eslint"),
     "brakeman": BrakemanAdapter(),
     "bundler-audit": BundlerAuditAdapter(),
     "spotbugs": SpotBugsAdapter(),

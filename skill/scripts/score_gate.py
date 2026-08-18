@@ -5,6 +5,15 @@ a finding already carries. No I/O, no dispatch. See
 docs/superpowers/specs/2026-08-14-panopticon-5.0-domain-panel-matrix-design.md §7.
 """
 
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    import evidence
+except ImportError:
+    from scripts import evidence
+
 SEVERITY_WEIGHT = {"CRITICAL": 20, "HIGH": 5, "MEDIUM": 2, "LOW": 0, "INFO": 0}
 CONFIDENCE_MULT = {"CERTAIN": 1.0, "LIKELY": 0.9, "POSSIBLE": 0.8, "NOTE": 0.4}
 EVIDENCE_FACTOR = {
@@ -16,6 +25,8 @@ EVIDENCE_FACTOR = {
     "advisor_confirmed": 1.5,
     "tool_confirmed": 1.5,
 }
+# Enforce that every canonical evidence status is accounted for in the score gate
+assert set(EVIDENCE_FACTOR) == set(evidence.EVIDENCE_STATUSES)
 PRIMARY_FLOOR = 1.5   # F_p — the per-cell advisor engages at/above this
 BACKUP_FLOOR = 8.0    # F_b — a category backup sub-advisor is summoned at/above this
 

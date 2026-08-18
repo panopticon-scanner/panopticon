@@ -1,6 +1,6 @@
 ---
 name: panel-review
-description: Holistic panel reviewer covering all non-mechanical lenses
+description: Legacy holistic panel reviewer (superseded by domain_panel in 5.x architecture; preserved for back-compat)
 tool_policy:
   allowed: [Read, Grep, Glob, Write]
   forbidden: [Bash, Edit, Agent]
