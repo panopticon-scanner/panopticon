@@ -6,10 +6,7 @@ on:
     paths:
       - .github/workflows/docker-publish.yml
       - Dockerfile
-      - skill/scripts/tools/**
-      - skill/scripts/_run_adapter.py
-      - skill/scripts/ingest_tools.py
-      - skill/scripts/run_tools.py
+      - skill/scripts/**
   schedule:
     - cron: "0 6 * * *"   # daily asset refresh (06:00 UTC)
   workflow_dispatch:

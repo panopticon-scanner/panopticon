@@ -369,7 +369,7 @@ class TestLedgerKeyMatchesKeyFor(unittest.TestCase):
         cases = [
             ({"fingerprint": "abc123", "id": "F-1", "location": {"file": "app.py"}}, False),
             ({"fingerprint": "def456", "id": "F-2", "location": {"file":
-              "/opt/project/skill/scripts/tools/npm_audit.py"}}, False),
+              file_issues.repo_root() + "skill/scripts/tools/npm_audit.py"}}, False),
             ({"fingerprint": "aaa111", "id": "R-1", "location": {"file": "x.py"}}, True),
             ({"fingerprint": "bbb222", "id": "F-3"}, False),  # no location at all
         ]

@@ -44,8 +44,8 @@ jobs:
           set -uo pipefail
           api="/orgs/${OWNER}/packages/container/panopticon-tools/versions?per_page=100"
           if ! resp=$(gh api "${api}" 2>err.txt); then
-            echo "::warning::Could not query the panopticon-tools package ($(cat err.txt)); skipping the freshness check this run."
-            exit 0
+            echo "::error::Could not query the panopticon-tools package ($(cat err.txt))."
+            exit 1
           fi
           updated=$(printf '%s' "${resp}" | jq -r \
             '[.[] | select(.metadata.container.tags[]? == "latest")]

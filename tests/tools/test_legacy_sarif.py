@@ -79,10 +79,11 @@ class TestLegacySarifAdapter(unittest.TestCase):
         self.assertEqual(adapter.prefix, "TL")
 
     def test_registry_contains_legacy_adapters(self):
-        for name in ("semgrep", "bandit", "trivy", "gitleaks", "gosec", "eslint"):
+        for name in ("semgrep", "bandit", "trivy", "gitleaks", "gosec"):
             self.assertIn(name, ADAPTERS)
             self.assertIsInstance(ADAPTERS[name], legacy.LegacySarifAdapter)
             self.assertEqual(ADAPTERS[name].name, name)
+        self.assertNotIn("eslint", ADAPTERS)
 
     def test_semgrep_argv_has_offline_flags(self):
         expected = ["semgrep", "scan", "--config", "/opt/semgrep-rules",

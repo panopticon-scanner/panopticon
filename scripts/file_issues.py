@@ -133,6 +133,7 @@ def body_for(f, rejected=False, report=REPORT, report_url=REPORT_URL,
     return "\n".join(L)
 
 
+REPO_SLUG = "panopticon-scanner/panopticon"
 _REPO_ROOT_CACHE = None
 
 
@@ -149,7 +150,7 @@ def _detect_repo_root():
                            capture_output=True, text=True, timeout=10)
         if r.returncode == 0 and r.stdout.strip():
             return r.stdout.strip().rstrip("/") + "/"
-    except Exception:
+    except (subprocess.SubprocessError, OSError):
         pass
     return os.getcwd().rstrip("/") + "/"
 
@@ -254,15 +255,34 @@ def record(ledger, key, url, path=LEDGER):
     os.replace(tmp, path)
 
 
+def make_ledger_key(fingerprint, finding_id, location_file, kind):
+    """Canonical 4-part ledger key format (#607/#488/#1122)."""
+    return "%s|%s|%s|%s" % (
+        fingerprint or "",
+        finding_id or "",
+        repo_relative(location_file or "") if location_file else "",
+        kind or ""
+    )
+
+
+def resolve_part_path(base_dir, part):
+    """Resolve and validate a report part continuation path within base_dir (#1122)."""
+    part = str(part)
+    base_norm = os.path.normpath(base_dir or ".")
+    ppath = os.path.normpath(os.path.join(base_norm, part))
+    if os.path.isabs(part) or not (ppath == base_norm or ppath.startswith(base_norm + os.sep)):
+        raise ValueError("invalid meta.parts entry: %r" % part)
+    return ppath
+
+
 def key_for(f, rejected):
     loc = f.get("location") or {}
-    # Normalize the location to repo-relative so the ledger key matches the
-    # scrubbed path in the issue body — recover_linkage_from_github can then
-    # reconstruct it losslessly even for findings whose location was absolute
-    # (#607/#488). Relative paths (the common case) are unchanged.
-    return "%s|%s|%s|%s" % (f.get("fingerprint") or "", f.get("id") or "",
-                            repo_relative(loc.get("file") or ""),
-                            "rejected" if rejected else "finding")
+    return make_ledger_key(
+        f.get("fingerprint"),
+        f.get("id"),
+        loc.get("file"),
+        "rejected" if rejected else "finding"
+    )
 
 
 def create(title, body, labels, dry, throttle=0.0, env=None):
@@ -341,12 +361,7 @@ def main():
     # A large report is split; meta.parts names the continuation files, resolved
     # beside the main artifact. Reading only the first part silently under-files.
     for part in (report.get("meta") or {}).get("parts") or []:
-        part = str(part)
-        base_dir = os.path.dirname(a.report)
-        ppath = os.path.normpath(os.path.join(base_dir, part))
-        base_dir_norm = os.path.normpath(base_dir)
-        if os.path.isabs(part) or not (ppath == base_dir_norm or ppath.startswith(base_dir_norm + os.sep)):
-            raise ValueError("invalid meta.parts entry: %r" % part)
+        ppath = resolve_part_path(os.path.dirname(a.report), part)
         try:
             with open(ppath, encoding="utf-8") as fh:
                 pdata = json.load(fh)

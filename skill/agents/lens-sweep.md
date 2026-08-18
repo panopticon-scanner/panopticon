@@ -1,6 +1,6 @@
 ---
 name: lens-sweep
-description: Cheap mechanical lens sweep emitting narrow, cited findings only
+description: Legacy cheap mechanical lens sweep (superseded by domain_panel in 5.x architecture; preserved for back-compat)
 tool_policy:
   allowed: [Read, Grep, Glob, Write]
   forbidden: [Bash, Edit, Agent]

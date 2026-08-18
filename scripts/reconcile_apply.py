@@ -30,13 +30,12 @@ load_ledger = file_issues.load_ledger
 
 
 def ledger_key(record):
-    # Normalize the location the same way file_issues.key_for does, so a record
-    # whose location_file is absolute maps to the same relative key the ledger
-    # was filed under (#607/#488). Byte-identical to key_for's three siblings.
-    return "%s|%s|%s|%s" % (record.get("stored_fingerprint") or "",
-                            record.get("id") or "",
-                            file_issues.repo_relative(record.get("location_file") or ""),
-                            record.get("kind") or "")
+    return file_issues.make_ledger_key(
+        record.get("stored_fingerprint"),
+        record.get("id"),
+        record.get("location_file"),
+        record.get("kind")
+    )
 
 
 def legacy_ledger_key(record):
@@ -46,7 +45,7 @@ def legacy_ledger_key(record):
                             record.get("kind") or "")
 
 
-ISSUE_REPO_URL = "https://github.com/panopticon-scanner/panopticon/issues/%s"
+ISSUE_REPO_URL = f"https://github.com/{file_issues.REPO_SLUG}/issues/%s"
 
 FP_RE = re.compile(r"\*\*Fingerprint:\*\* `([0-9a-f]+)`")
 ID_RE = re.compile(r"\*\*Finding id in report:\*\* `([^`]+)`")
