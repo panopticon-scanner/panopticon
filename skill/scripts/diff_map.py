@@ -254,6 +254,11 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
             _run(["git", "-C", repo, "update-ref", "-d", fetch_ref])
         except RuntimeError:
             pass
+    src_groups = os.path.join(repo, ".panopticon", "groups.yml")
+    if os.path.isfile(src_groups):
+        dest_dir = os.path.join(wt, ".panopticon")
+        os.makedirs(dest_dir, exist_ok=True)
+        shutil.copy2(src_groups, os.path.join(dest_dir, "groups.yml"))
     return {"worktree": wt, "base": base, "head_sha": head_sha}
 
 
