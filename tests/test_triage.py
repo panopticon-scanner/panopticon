@@ -9,7 +9,8 @@ def fix_row(**over):
            "rationale": "queue identity bug", "duplicate_of": None,
            "fixed_by": None, "spot_check": None, "rank": 1,
            "status": "proposed", "batch": "B1",
-           "triaged_at": "2026-08-04T23:00:00Z"}
+           "triaged_at": "2026-08-04T23:00:00Z",
+           "schema_version": 1}
     row.update(over)
     return row
 
@@ -21,6 +22,18 @@ class TestLedger(unittest.TestCase):
             p = os.path.join(d, "ledger.jsonl")
             triage.save_rows(rows, path=p)
             self.assertEqual(triage.load_rows(path=p), rows)
+
+    def test_save_rows_adds_schema_version_if_absent(self):
+        row_without_version = {
+            "issue": 100, "set": "FIXME", "verdict": "fix",
+            "rationale": "test", "status": "proposed", "batch": "B1",
+            "triaged_at": "2026-08-04T23:00:00Z", "rank": 1
+        }
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "ledger.jsonl")
+            triage.save_rows([row_without_version], path=p)
+            loaded = triage.load_rows(path=p)
+            self.assertEqual(loaded[0].get("schema_version"), 1)
 
     def test_load_missing_file_returns_empty(self):
         self.assertEqual(triage.load_rows(path="/nonexistent/x.jsonl"), [])
