@@ -2,13 +2,14 @@
 changed-line-range map, and classify findings against it. Stdlib only; pure
 functions plus thin git/gh subprocess wrappers.
 """
-import re
-import subprocess
-import os
+import hashlib
 import json as _json
+import os
+import re
+import shutil
+import subprocess
 import tempfile
 import uuid
-import hashlib
 
 _NEWFILE_RE = re.compile(r"^\+\+\+ (?:b/)?(.*?)\s*$")
 _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
@@ -43,7 +44,8 @@ def parse_unified_diff(text):
 
 
 def _run_git(repo, args, timeout=60):
-    return subprocess.run(["git", "-C", repo, *args],
+    git_bin = shutil.which("git") or "git"
+    return subprocess.run([git_bin, "-C", repo, *args],
                           capture_output=True, text=True, timeout=timeout)
 
 
@@ -226,6 +228,8 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
         raise RuntimeError("panopticon --pr: could not read base branch for PR %d" % pr_number)
 
     wt = _worktree_dir(repo, pr_number)
+    if os.path.islink(wt):
+        raise RuntimeError("panopticon --pr: insecure symlink detected at worktree path %s" % wt)
     # `git worktree list` (no --porcelain) prints one line per worktree:
     # "<path>  <sha> [<branch>]" or "<path>  <sha> (detached HEAD)" — column
     # widths vary with the longest path, so match on the first whitespace-

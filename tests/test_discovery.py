@@ -188,23 +188,36 @@ class TestDepth(unittest.TestCase):
         self.assertEqual(result["groups"][0]["depth"], "deep")
 
 
+def _touch(root, rel, content=""):
+    full = os.path.join(root, rel)
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    with open(full, "w", encoding="utf-8") as fh:
+        fh.write(content)
+
+
+def _run_scan_helper(d, *extra):
+    import io
+    import contextlib
+    buf = io.StringIO()
+    err = io.StringIO()
+    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
+        rc = orch.main(["--repo", d, "--repo-scan", *extra])
+    val = buf.getvalue().strip()
+    data = json.loads(val) if val else {}
+    return rc, data, err.getvalue()
+
+
 class TestRepoScanDiscovery(unittest.TestCase):
     """Discovery-gap regressions for --repo-scan: noise exclusion, targeted
     dotdir inclusion (.github/workflows), and real test-file surfacing."""
 
-    def _touch(self, root, rel):
-        full = os.path.join(root, rel)
-        os.makedirs(os.path.dirname(full), exist_ok=True)
-        open(full, "w").close()
+    def _touch(self, root, rel, content=""):
+        _touch(root, rel, content)
 
-    def _run_scan(self, d):
-        import io
-        import contextlib
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            rc = orch.main(["--repo", d, "--repo-scan"])
+    def _run_scan(self, d, *extra):
+        rc, data, _err = _run_scan_helper(d, *extra)
         self.assertEqual(rc, 0)
-        return json.loads(buf.getvalue())
+        return data
 
     def _grouped(self, out):
         return [f for g in out["groups"] for f in g["files"]]
@@ -313,29 +326,20 @@ class TestFixtureExclusion(unittest.TestCase):
         "src/__fixtures__/token.js",
     ]
 
-    def _touch(self, root, rel):
-        full = os.path.join(root, rel)
-        os.makedirs(os.path.dirname(full), exist_ok=True)
-        open(full, "w").close()
-
     def _run_scan(self, d, *extra):
-        import io
-        import contextlib
-        buf, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
-            rc = orch.main(["--repo", d, "--repo-scan", *extra])
+        rc, data, err = _run_scan_helper(d, *extra)
         self.assertEqual(rc, 0)
-        return json.loads(buf.getvalue()), err.getvalue()
+        return data, err
 
     def _grouped(self, out):
         return [f for g in out["groups"] for f in g["files"]]
 
     def test_standard_scan_prunes_fixture_corpora_and_discloses(self):
         with tempfile.TemporaryDirectory() as d:
-            self._touch(d, "src/app.py")
-            self._touch(d, "tests/test_app.py")
+            _touch(d, "src/app.py")
+            _touch(d, "tests/test_app.py")
             for rel in self._FIXTURE_LAYOUT:
-                self._touch(d, rel)
+                _touch(d, rel)
             out, err = self._run_scan(d)
             grouped = self._grouped(out)
             self.assertIn("src/app.py", grouped)
@@ -354,9 +358,9 @@ class TestFixtureExclusion(unittest.TestCase):
 
     def test_redteam_scan_includes_fixture_corpora(self):
         with tempfile.TemporaryDirectory() as d:
-            self._touch(d, "src/app.py")
+            _touch(d, "src/app.py")
             for rel in self._FIXTURE_LAYOUT:
-                self._touch(d, rel)
+                _touch(d, rel)
             out, err = self._run_scan(d, "--security", "redteam")
             grouped = self._grouped(out)
             for rel in self._FIXTURE_LAYOUT:
@@ -369,8 +373,8 @@ class TestFixtureExclusion(unittest.TestCase):
         # conventions are corpus markers; a product dir merely named
         # "fixtures" is real code and must not be silently dropped.
         with tempfile.TemporaryDirectory() as d:
-            self._touch(d, "src/fixtures/loader.py")
-            self._touch(d, "fixtures/catalog.py")
+            _touch(d, "src/fixtures/loader.py")
+            _touch(d, "fixtures/catalog.py")
             out, _ = self._run_scan(d)
             grouped = self._grouped(out)
             self.assertIn("src/fixtures/loader.py", grouped)
@@ -379,10 +383,24 @@ class TestFixtureExclusion(unittest.TestCase):
 
     def test_no_disclosure_when_nothing_pruned(self):
         with tempfile.TemporaryDirectory() as d:
-            self._touch(d, "src/app.py")
+            _touch(d, "src/app.py")
             out, err = self._run_scan(d)
             self.assertNotIn("excluded", out)
             self.assertNotIn("fixture exclusion", err)
+
+    def test_max_per_group_validation(self):
+        with tempfile.TemporaryDirectory() as d:
+            _touch(d, "src/app.py")
+            rc, _data, err = _run_scan_helper(d, "--max-per-group", "0")
+            self.assertEqual(rc, 2)
+            self.assertIn("--max-per-group must be >= 1", err)
+
+    def test_diff_context_cli_flag(self):
+        with tempfile.TemporaryDirectory() as d:
+            _touch(d, "src/app.py")
+            rc, data, _err = _run_scan_helper(d, "--diff-context", "10")
+            self.assertEqual(rc, 0)
+            self.assertIn("groups", data)
 
 
 def _git(d, *args):
@@ -402,32 +420,25 @@ class TestGitAwareDiscovery(unittest.TestCase):
     of reviewable surface. Non-git targets keep the walk fallback."""
 
     def _touch(self, root, rel, content=""):
-        full = os.path.join(root, rel)
-        os.makedirs(os.path.dirname(full), exist_ok=True)
-        with open(full, "w") as fh:
-            fh.write(content)
+        _touch(root, rel, content)
 
     def _run_scan(self, d, *extra):
-        import io
-        import contextlib
-        buf, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
-            rc = orch.main(["--repo", d, "--repo-scan", *extra])
+        rc, data, err = _run_scan_helper(d, *extra)
         self.assertEqual(rc, 0)
-        return json.loads(buf.getvalue()), err.getvalue()
+        return data, err
 
     def _grouped(self, out):
         return [f for g in out["groups"] for f in g["files"]]
 
     def test_gitignored_paths_are_excluded(self):
         with tempfile.TemporaryDirectory() as d:
-            self._touch(d, "src/app.py")
-            self._touch(d, ".gitignore", "storage/\n.env\n")
+            _touch(d, "src/app.py")
+            _touch(d, ".gitignore", "storage/\n.env\n")
             _init_repo(d)
             _git(d, "add", ".")
             _git(d, "commit", "-q", "-m", "init")
-            self._touch(d, "storage/data.txt")       # runtime data, ignored
-            self._touch(d, "storage/blob.enc")
+            _touch(d, "storage/data.txt")       # runtime data, ignored
+            _touch(d, "storage/blob.enc")
             self._touch(d, ".env", "SECRET=1")       # ignored credential
             out, _ = self._run_scan(d)
             grouped = self._grouped(out)
@@ -543,6 +554,13 @@ class TestGlobSemantics(unittest.TestCase):
         self.assertFalse(rx.match("a/b/c/y"))
         self.assertTrue(self._m("a/b/x", ["**/" * 25 + "x"]))
 
+    def test_single_star_chain_no_redos(self):
+        rx = orch._glob_to_re("*/" * 20 + "file.py")
+        path = "a/" * 20 + "file.py"
+        self.assertTrue(rx.match(path))
+        self.assertFalse(rx.match("a/" * 19 + "file.py"))
+        self.assertTrue(self._m(path, ["*/" * 20 + "file.py"]))
+
     def test_no_slash_matches_basename_at_any_depth(self):
         self.assertTrue(self._m("README.md", ["*.md"]))
         self.assertTrue(self._m("docs/deep/notes.md", ["*.md"]))
@@ -581,21 +599,15 @@ class TestCatalogMatchGroups(unittest.TestCase):
     def _setup(self, d):
         for rel in ["skill/scripts/run.py", "skill/scripts/tools/pip.py",
                     "README.md", "docs/notes.md", "orphan/loner.py"]:
-            full = os.path.join(d, rel)
-            os.makedirs(os.path.dirname(full), exist_ok=True)
-            open(full, "w").close()
+            _touch(d, rel)
         os.makedirs(os.path.join(d, ".panopticon"), exist_ok=True)
-        with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
+        with open(os.path.join(d, ".panopticon", "groups.yml"), "w", encoding="utf-8") as fh:
             fh.write(self.CATALOG)
 
     def _run_scan(self, d):
-        import io
-        import contextlib
-        buf, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
-            rc = orch.main(["--repo", d, "--repo-scan"])
+        rc, data, err = _run_scan_helper(d)
         self.assertEqual(rc, 0)
-        return json.loads(buf.getvalue()), err.getvalue()
+        return data, err
 
     def test_files_assigned_to_stable_named_groups(self):
         with tempfile.TemporaryDirectory() as d:

@@ -37,6 +37,7 @@ LABELS = {
 }
 REQUIRED = ("issue", "set", "verdict", "rationale", "status", "batch",
             "triaged_at")
+SCHEMA_VERSION = 1
 
 
 def load_rows(path=LEDGER):
@@ -60,6 +61,8 @@ def save_rows(rows, path=LEDGER):
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         for r in rows:
+            if isinstance(r, dict) and "schema_version" not in r:
+                r["schema_version"] = SCHEMA_VERSION
             fh.write(json.dumps(r, sort_keys=True) + "\n")
     os.replace(tmp, path)
 

@@ -1,3 +1,4 @@
+"""Tests for OCRDb domain catalog loading, validation, and domain-to-panel mapping."""
 import json
 import os
 import tempfile
@@ -46,7 +47,21 @@ class TestOcrdb(unittest.TestCase):
         # sentinel (UNKNOWN_DOMAIN_FALLBACK), not a real bundle domain.
         self.assertEqual(set(ocrdb.DOMAIN_TO_PANEL) - {"ZZZ"},
                          set(self.bundle["domains"]))
-        self.assertEqual(ocrdb.DOMAIN_TO_PANEL["ZZZ"], "code")
+        expected_mappings = {
+            "SEC": "security",
+            "COD": "code",
+            "ARC": "architecture",
+            "TST": "test",
+            "DAT": "database",
+            "QAL": "code",
+            "AGT": "code",
+            "OPS": "code",
+            "ACC": "code",
+            "LNG": "code",
+            "ZZZ": "code",
+        }
+        for domain, panel in expected_mappings.items():
+            self.assertEqual(ocrdb.DOMAIN_TO_PANEL.get(domain), panel, f"Domain {domain} mismatch")
         self.assertEqual(ocrdb.domain_of(ocrdb.UNKNOWN_DOMAIN_FALLBACK), "ZZZ")
 
     def test_absent_bundle_returns_none(self):
@@ -67,6 +82,26 @@ class TestOcrdb(unittest.TestCase):
                 json.dump({"version": "0.3.1"}, fh)
             with self.assertRaises(ValueError):
                 ocrdb.load_bundle(p)
+
+    def test_malformed_per_domain_entries_handled_gracefully(self):
+        # Bundle with non-dict domain, non-dict entries, and non-dict entry values
+        malformed_bundle = {
+            "domains": {
+                "SEC": "not-a-dict",
+                "COD": {"entries": "not-a-dict"},
+                "DAT": {"entries": {"DAT-1": "not-a-dict", "DAT-2": None, "DAT-3": {"name": "valid"}}}
+            }
+        }
+        self.assertEqual(ocrdb.domain_menu(malformed_bundle, "SEC"), [])
+        self.assertEqual(ocrdb.domain_menu(malformed_bundle, "COD"), [])
+        dat_menu = ocrdb.domain_menu(malformed_bundle, "DAT")
+        self.assertEqual(len(dat_menu), 1)
+        self.assertEqual(dat_menu[0]["code"], "DAT-3")
+
+        self.assertEqual(ocrdb.domain_criteria(malformed_bundle, "SEC"), [])
+        self.assertEqual(ocrdb.domain_criteria(malformed_bundle, "COD"), [])
+        self.assertEqual(ocrdb.domain_criteria(malformed_bundle, "DAT"), [])
+        self.assertIsNone(ocrdb.default_severity(malformed_bundle, "DAT-1"))
 
 
 class TestDomainMenuSeverity(unittest.TestCase):

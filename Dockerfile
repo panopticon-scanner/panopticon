@@ -132,8 +132,9 @@ ENV TRIVY_CACHE_DIR=/opt/trivy-cache
 # tree on disk, so vendor the source repo instead and strip anything that
 # isn't a standalone rule config (test fixtures, metadata, project
 # dotfiles) — semgrep refuses to load a directory containing an invalid one.
+ARG SEMGREP_RULES_REF=master
 RUN : "asset-refresh ${ASSET_REFRESH}" \
-    && git clone --depth 1 https://github.com/semgrep/semgrep-rules /opt/semgrep-rules \
+    && git clone --depth 1 --branch "${SEMGREP_RULES_REF}" https://github.com/semgrep/semgrep-rules /opt/semgrep-rules \
     && rm -rf /opt/semgrep-rules/.git \
     && grep -rLE '^rules:' --include='*.yml' --include='*.yaml' /opt/semgrep-rules \
        | xargs -r rm -f \

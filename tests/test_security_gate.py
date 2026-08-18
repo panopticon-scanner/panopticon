@@ -102,6 +102,53 @@ class TestSecurityGate(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "excluded_scope overlaps"):
                 gate.evaluate(tools, manifest)
 
+    def test_unexpected_scanner_output_recorded_as_failure(self):
+        with tempfile.TemporaryDirectory() as root:
+            tools, manifest = self._write(
+                root, {"selected": ["semgrep"], "produced": ["semgrep"], "missing": []},
+                _sarif())
+            # Add an extra tool output file not declared in the manifest
+            bandit_file = os.path.join(tools, "bandit.json")
+            with open(bandit_file, "w", encoding="utf-8") as fh:
+                json.dump({"results": []}, fh)
+            _, _, failures, _ = gate.evaluate(tools, manifest)
+        self.assertTrue(any("unexpected scanner output: bandit" in f for f in failures))
+
+    def test_large_sarif_file_loading(self):
+        # Generate a large SARIF file with many findings to verify performance and scaling
+        results = [
+            {
+                "ruleId": f"rule.{i}",
+                "level": "warning" if i % 10 != 0 else "error",
+                "message": {"text": f"Finding description {i}"},
+                "locations": [{
+                    "physicalLocation": {
+                        "artifactLocation": {"uri": f"/src/module_{i % 50}.py"},
+                        "region": {"startLine": (i * 3) % 1000 + 1},
+                    }
+                }],
+            }
+            for i in range(1000)
+        ]
+        large_sarif = {
+            "version": "2.1.0",
+            "runs": [{
+                "tool": {"driver": {"name": "semgrep", "rules": []}},
+                "results": results,
+            }],
+        }
+        with tempfile.TemporaryDirectory() as root:
+            tools, manifest = self._write(
+                root, {"selected": ["semgrep"], "produced": ["semgrep"], "missing": []},
+                large_sarif,
+            )
+            findings, dispositions, failures, high = gate.evaluate(tools, manifest)
+        self.assertEqual(len(findings), 1000)
+        self.assertEqual(dispositions["semgrep"]["status"], "ok")
+        self.assertEqual(dispositions["semgrep"]["findings"], 1000)
+        self.assertEqual(failures, [])
+        self.assertEqual(len(high), 100)  # 1000 / 10 = 100 error/high findings
+
 
 if __name__ == "__main__":
     unittest.main()

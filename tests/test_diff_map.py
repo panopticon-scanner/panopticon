@@ -54,19 +54,23 @@ class TestParse(unittest.TestCase):
         self.assertEqual(diff_map.parse_unified_diff("not a diff\nrandom\n"), {})
 
 
+def _make_repo(test_case):
+    d = tempfile.mkdtemp()
+    test_case.addCleanup(__import__("shutil").rmtree, d, ignore_errors=True)
+    subprocess.run(["git", "init", "-q", d], check=True)
+    _git(d, "config", "user.email", "t@e.com")
+    _git(d, "config", "user.name", "T")
+    with open(os.path.join(d, "a.py"), "w", encoding="utf-8") as fh:
+        fh.write("\n".join("line%d" % i for i in range(1, 11)) + "\n")
+    _git(d, "add", ".")
+    _git(d, "commit", "-qm", "init")
+    _git(d, "branch", "-M", "main")
+    return d
+
+
 class TestHunkMap(unittest.TestCase):
     def _repo(self):
-        d = tempfile.mkdtemp()
-        self.addCleanup(__import__("shutil").rmtree, d, ignore_errors=True)
-        subprocess.run(["git", "init", "-q", d], check=True)
-        _git(d, "config", "user.email", "t@e.com")
-        _git(d, "config", "user.name", "T")
-        with open(os.path.join(d, "a.py"), "w") as fh:
-            fh.write("\n".join("line%d" % i for i in range(1, 11)) + "\n")
-        _git(d, "add", ".")
-        _git(d, "commit", "-qm", "init")
-        _git(d, "branch", "-M", "main")
-        return d
+        return _make_repo(self)
 
     def test_committed_and_uncommitted_changes(self):
         d = self._repo()
@@ -176,17 +180,7 @@ class TestClassify(unittest.TestCase):
 
 class TestDiffAnchors(unittest.TestCase):
     def _repo(self):
-        d = tempfile.mkdtemp()
-        self.addCleanup(__import__("shutil").rmtree, d, ignore_errors=True)
-        subprocess.run(["git", "init", "-q", d], check=True)
-        _git(d, "config", "user.email", "t@e.com")
-        _git(d, "config", "user.name", "T")
-        with open(os.path.join(d, "a.py"), "w") as fh:
-            fh.write("line1\n")
-        _git(d, "add", ".")
-        _git(d, "commit", "-qm", "init")
-        _git(d, "branch", "-M", "main")
-        return d
+        return _make_repo(self)
 
     def test_anchors_resolve_base_fork_and_head(self):
         d = self._repo()
@@ -281,6 +275,21 @@ class TestPrWorktree(unittest.TestCase):
             return R()
         with self.assertRaises(RuntimeError):
             diff_map.acquire_pr(999, repo=".", runner=runner)
+
+    def test_acquire_rejects_symlink_worktree(self):
+        def runner(argv, **kw):
+            if argv[:3] == ["gh", "pr", "view"]:
+                return mock.Mock(returncode=0, stdout='{"baseRefName": "main"}', stderr="")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with tempfile.TemporaryDirectory() as d:
+            target_dir = os.path.join(d, "target")
+            os.makedirs(target_dir)
+            symlink_path = os.path.join(d, "symlink_wt")
+            os.symlink(target_dir, symlink_path)
+            with mock.patch.object(diff_map, "_worktree_dir", return_value=symlink_path):
+                with self.assertRaisesRegex(RuntimeError, "insecure symlink detected"):
+                    diff_map.acquire_pr(7, repo=".", runner=runner)
 
     def test_release_is_tolerant(self):
         def runner(argv, **kw):
