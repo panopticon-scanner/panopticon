@@ -375,6 +375,24 @@ class TestCoveragePhase(unittest.TestCase):
         req = driver._load_json(driver._pano(self.root, "dispatch-request.json"))
         outs = sorted(os.path.basename(e["out_file"]) for e in req["entries"])
         self.assertEqual(outs, ["scout-Auth.json", "scout-UI.json"])   # Core omitted
+    def test_scout_entry_injects_adapter_registry(self):
+        # #1053: the scout prompt must carry the real scanner registry so it can
+        # only recommend tools that exist -- deleting the requested_unavailable
+        # noise class. The registry is appended by _scout_entry (not the mocked
+        # body), so it appears in the dispatched prompt regardless of template.
+        self._groups_json([{"name": "Auth", "files": ["a.py"]}])
+        self._groups_yml("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n")
+        with mock.patch("scripts.driver.dispatch.render_prompt",
+                        return_value="SCOUT-BODY"), \
+             mock.patch("scripts.driver.dispatch.registered_agent_name",
+                        return_value="panopticon-scout"):
+            driver.coverage_execute(self.root, self.manifest)
+        prompt = driver._load_json(
+            driver._pano(self.root, "dispatch-request.json"))["entries"][0]["prompt"]
+        self.assertIn("Available scanners", prompt)
+        self.assertIn("semgrep", prompt)
+        self.assertIn("eslint-security", prompt)
+        self.assertNotIn("pytest", prompt)     # an invented tool never appears
 
     def test_generic_host_scout_entry_not_enforced(self):
         self._groups_json([{"name": "Auth", "files": ["a.py"]}])

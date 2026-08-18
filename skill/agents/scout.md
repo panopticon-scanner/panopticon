@@ -95,6 +95,11 @@ Include the list of files you reviewed in the `files` field.
 
 ## Tool selection
 
-If the container layer is in use, recommend scanners in `tools` and set `has_deps` true when a dependency manifest is present.
+Recommend scanners in `tools` **only** from the "Available scanners" registry in
+your assignment — those are the only scanners that can actually run. Pick the
+ones whose ecosystem/language this group exercises; emit `[]` when none apply.
+Never invent a tool name (pytest, ruff, pylint, and the like are NOT scanners
+here) — an off-registry name is dropped as noise and helps no one. Set
+`has_deps` true when a dependency manifest is present.
 
 Return ONLY the ScopeProfile JSON. No prose.

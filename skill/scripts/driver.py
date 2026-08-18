@@ -36,6 +36,7 @@ import scripts.groups_schema as groups_schema
 import scripts.ingest_tools as ingest_tools
 import scripts.ocrdb as ocrdb
 import scripts.plan_contract as plan_contract
+import scripts.run_tools as run_tools
 import scripts.run_manifest as run_manifest
 import scripts.score_gate as score_gate
 import scripts.setup_flow as setup_flow
@@ -402,9 +403,18 @@ def _scout_entry(review_root, manifest, group, files, host):
     body = dispatch.render_prompt("scout.md", {}, host)
     security = manifest.get("security_mode", "standard")
     file_list = _abs_file_list(review_root, files)
+    # #1053: ground the scout's tool recommendation in the real adapter registry
+    # so it can only name scanners that exist -- an ungrounded scout invents
+    # pytest/pylint/ruff/... and #1031 can only disclose them as
+    # requested_unavailable noise. The list is the single source of truth from
+    # run_tools, appended here so it reaches enforced and generic scouts alike.
+    registry = ", ".join(run_tools.recommendable_tools())
     prompt = (body
               + "\n\n## Assignment\n\nGroup: %s\nSecurity mode: %s\n\nFiles:\n%s\n"
                 % (group, security, file_list)
+              + "\n## Available scanners\n\nRecommend `tools` ONLY from this "
+                "registry — these are the only scanners that can run. Emit `[]` "
+                "if none apply; never invent a tool name:\n%s\n" % registry
               + "\nReturn the ScopeProfile JSON for this group.")
     enforced = host == "claude"
     return {"id": "scout-%s" % group,
