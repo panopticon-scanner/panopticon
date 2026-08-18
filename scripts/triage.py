@@ -252,10 +252,10 @@ def setup(runner=None):
     if MILESTONE in titles:
         print("milestone exists: %s" % MILESTONE)
     else:
+        desc = "description=Ranked fix queue from the remediation triage arc — see %s" % SPEC
         gh(["gh", "api", "-X", "POST", "repos/{owner}/{repo}/milestones",
             "-f", "title=%s" % MILESTONE,
-            "-f", ("description=Ranked fix queue from the remediation triage "
-                   "arc — see %s" % SPEC)], runner=runner)
+            "-f", desc], runner=runner)
         print("milestone created: %s" % MILESTONE)
 
 
