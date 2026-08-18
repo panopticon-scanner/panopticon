@@ -204,9 +204,11 @@ class TestAdapterDispatch(unittest.TestCase):
             with open(os.path.join(out_dir, "fake.json"), "rb") as fh:
                 self.assertEqual(fh.read(), R.stdout)
 
-    def test_empty_adapter_output_warns_on_stderr(self):
-        # An adapter run that exits 0 with empty stdout still writes a file (so
-        # synthesis can classify it) but must announce it produced nothing.
+    def test_empty_adapter_output_fails_closed(self):
+        # #1051: an adapter run that exits 0 with EMPTY stdout is a silent
+        # failure, not a clean run. Fail closed: announce it, write NO file, and
+        # drop it from the produced set so write_manifest lands it in `missing`
+        # (-> INCONCLUSIVE) instead of certifying it as ran-clean.
         import contextlib, io
         class FakeAdapter:
             name = "fake"
@@ -219,11 +221,32 @@ class TestAdapterDispatch(unittest.TestCase):
             rt.ADAPTERS["fake"] = FakeAdapter()
             try:
                 with contextlib.redirect_stderr(io.StringIO()) as err:
-                    rt.run_tools(d, ["fake"], out, runner=runner)
+                    paths = rt.run_tools(d, ["fake"], out, runner=runner)
             finally:
                 rt.ADAPTERS.pop("fake", None)
             self.assertIn("produced no output", err.getvalue())
-            self.assertTrue(os.path.exists(os.path.join(out, "fake.json")))
+            self.assertEqual(paths, [])                                   # not produced
+            self.assertFalse(os.path.exists(os.path.join(out, "fake.json")))  # no empty file
+
+    def test_empty_adapter_output_lands_in_manifest_missing(self):
+        # #1051, end-to-end: the empty-output adapter must show up in the
+        # runner's coverage manifest as `missing`, never `produced` -- that is
+        # the signal synthesize's #1031 gate turns into INCONCLUSIVE.
+        class FakeAdapter:
+            name = "fake"
+            def is_applicable(self, target): return True
+        class R: returncode = 0; stdout = b''; stderr = b''
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "out")
+            rt.ADAPTERS["fake"] = FakeAdapter()
+            try:
+                written = rt.run_tools(d, ["fake"], out, runner=lambda cmd, **kw: R())
+            finally:
+                rt.ADAPTERS.pop("fake", None)
+            payload = rt.write_manifest(
+                os.path.join(d, "m.json"), ["fake"], written)
+            self.assertEqual(payload["produced"], [])
+            self.assertEqual(payload["missing"], ["fake"])
 
     def test_run_tools_uses_readonly_src_mount_for_phase2_build_adapters(self):
         calls = []
@@ -273,11 +296,13 @@ class TestRunAdapterHelper(unittest.TestCase):
         finally:
             ra.ADAPTERS.pop("fake", None)
 
-    def test_main_skips_unregistered_adapter(self):
+    def test_main_fails_closed_on_unregistered_adapter(self):
+        # #1051: an unregistered adapter must exit non-zero (was 0 == "ran clean")
         rc = ra.main(["_run_adapter.py", "not-a-real-adapter", "/tmp/target"])
-        self.assertEqual(rc, 0)
+        self.assertEqual(rc, ra.FAIL_RC)
 
-    def test_main_skips_adapter_that_crashes(self):
+    def test_main_fails_closed_on_adapter_that_crashes(self):
+        # #1051 / SEC-G2B: a crash must exit non-zero, never a silent rc 0
         class CrashingAdapter:
             name = "crash"
             def invoke(self, target):
@@ -286,7 +311,7 @@ class TestRunAdapterHelper(unittest.TestCase):
         ra.ADAPTERS["crash"] = CrashingAdapter()
         try:
             rc = ra.main(["_run_adapter.py", "crash", "/tmp/target"])
-            self.assertEqual(rc, 0)
+            self.assertEqual(rc, ra.FAIL_RC)
         finally:
             ra.ADAPTERS.pop("crash", None)
 
