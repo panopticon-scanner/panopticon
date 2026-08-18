@@ -71,6 +71,12 @@ class TestBrakemanAdapter(unittest.TestCase):
         self.assertEqual(findings[0]["provenance"]["discovered_by"], "tool:brakeman")
         self.assertEqual(findings[0]["provenance"]["confirmation_status"], "TOOL")
 
+    def test_parse_empty_findings(self):
+        findings = br.BrakemanAdapter().parse(b"{}", "g1")
+        self.assertEqual(findings, [])
+        findings = br.BrakemanAdapter().parse(b'{"warnings": []}', "g1")
+        self.assertEqual(findings, [])
+
     def test_invoke_runs_brakeman_json(self):
         adapter = br.BrakemanAdapter()
         fake_run = mock.Mock(return_value=mock.Mock(stdout=b"{}", returncode=0))

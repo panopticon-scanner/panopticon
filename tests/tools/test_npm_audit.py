@@ -216,6 +216,14 @@ class TestNpmAuditAdapter(unittest.TestCase):
         self.assertNotIn("fixed_version", evidence)
         self.assertEqual(evidence["rule_id"], "1234")
 
+    def test_parse_empty_findings(self):
+        findings = na.NpmAuditAdapter().parse(b"{}", "g1")
+        self.assertEqual(findings, [])
+        findings = na.NpmAuditAdapter().parse(b'{"advisories": {}}', "g1")
+        self.assertEqual(findings, [])
+        findings = na.NpmAuditAdapter().parse(b'{"vulnerabilities": {}}', "g1")
+        self.assertEqual(findings, [])
+
 
 if __name__ == "__main__":
     unittest.main()

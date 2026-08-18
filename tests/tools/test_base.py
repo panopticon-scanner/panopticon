@@ -82,6 +82,12 @@ class TestRunTool(unittest.TestCase):
         rec.assert_called_once_with(["t"], capture_output=True, timeout=7,
                                     cwd="/x", env={"A": "1"})
 
+    def test_timeout_expired_propagates(self):
+        with mock.patch("scripts.tools.base.subprocess.run",
+                        side_effect=base.subprocess.TimeoutExpired(cmd=["t"], timeout=5)):
+            with self.assertRaises(base.subprocess.TimeoutExpired):
+                base.run_tool(["t"], timeout=5)
+
     def test_strip_ansi_removes_csi_sequences(self):
         self.assertEqual(base.strip_ansi(b"\x1b[32mhi\x1b[0m"), b"hi")
         self.assertEqual(base.strip_ansi(b"\x1b[?25l\x1b[2Kx"), b"x")
