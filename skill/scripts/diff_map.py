@@ -237,10 +237,19 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
     # `git worktree list` output, not assumed from the porcelain format).
     listing = runner(["git", "-C", repo, "worktree", "list"],
                      capture_output=True, text=True)
+    def _sync_groups(wt_path):
+        src = os.path.join(repo, ".panopticon", "groups.yml")
+        if os.path.isfile(src):
+            dst = os.path.join(wt_path, ".panopticon", "groups.yml")
+            if not os.path.isfile(dst):
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.copy2(src, dst)
+
     if listing.returncode == 0 and any(
             line.split()[:1] == [wt]
             for line in listing.stdout.splitlines() if line.strip()):
         head_sha = _run(["git", "-C", wt, "rev-parse", "HEAD"]).strip()
+        _sync_groups(wt)
         return {"worktree": wt, "base": base, "head_sha": head_sha}   # reuse (resume)
 
     fetch_ref = "refs/panopticon/pr-%d-%s" % (pr_number, uuid.uuid4().hex)
@@ -254,11 +263,7 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
             _run(["git", "-C", repo, "update-ref", "-d", fetch_ref])
         except RuntimeError:
             pass
-    src_groups = os.path.join(repo, ".panopticon", "groups.yml")
-    if os.path.isfile(src_groups):
-        dest_dir = os.path.join(wt, ".panopticon")
-        os.makedirs(dest_dir, exist_ok=True)
-        shutil.copy2(src_groups, os.path.join(dest_dir, "groups.yml"))
+    _sync_groups(wt)
     return {"worktree": wt, "base": base, "head_sha": head_sha}
 
 
