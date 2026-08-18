@@ -504,6 +504,33 @@
             }
           }
         },
+        "health": {
+          "type": "object",
+          "description": "#1146: secondary size-aware health ratio reported ALONGSIDE the max-severity letter (never touches the gate or the letter). score = total_loc / weighted_defect (higher = healthier); null when weighted_defect is 0. Population is the gate-eligible set, same as the letter.",
+          "properties": {
+            "score": {
+              "type": ["number", "null"]
+            },
+            "total_loc": {
+              "type": "integer",
+              "description": "Non-blank lines across the unique reviewed files (the numerator)."
+            },
+            "weighted_defect": {
+              "type": "integer",
+              "description": "Sum over gate-eligible findings of weight[severity] * lines-spanned."
+            },
+            "weights": {
+              "type": "object",
+              "description": "Severity weights used: info 0, low 1, medium 5, high 25, critical 125."
+            },
+            "population": {
+              "type": "string",
+              "enum": [
+                "gate_eligible"
+              ]
+            }
+          }
+        },
         "delta": {
           "type": [
             "object",
