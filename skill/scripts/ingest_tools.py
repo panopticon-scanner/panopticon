@@ -58,8 +58,11 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
     are dropped — the tool-path equivalent of the agentic review-path prune
     (#434). The tool scanners (osv-scanner, trivy) walk the whole repo and
     report the intentionally-vulnerable fixtures under tests/fixtures/, which
-    would otherwise dominate a self-scan. Redteam runs pass include_fixtures=True
-    to keep them, mirroring the review path.
+    would otherwise dominate a self-scan. #1055: the prune is keyed on the
+    explicit include_fixtures flag alone — redteam no longer auto-keeps fixture
+    TOOL findings (that only re-adjudicated designed-vulnerable scaffolding);
+    pass include_fixtures=True to opt in. Fixture CONTENT review is independent
+    of this flag (it is governed by groups.yml routing on the review path).
 
     exclude_globs (F-CAL-2): additional fnmatch patterns matched against each
     finding's location.file; matches are dropped too. Both filters share one
