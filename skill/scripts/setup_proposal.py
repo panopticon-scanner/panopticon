@@ -114,6 +114,8 @@ def validate_proposal(proposal):
     """Return a list of human-readable errors (empty = valid)."""
     if not isinstance(proposal, dict):
         return ["proposal: top-level must be a mapping"]
+    if "schema_version" in proposal and not isinstance(proposal.get("schema_version"), int):
+        return ["proposal: schema_version must be an integer"]
     groups = proposal.get("groups")
     if not isinstance(groups, list) or not groups:
         return ["proposal: 'groups' must be a non-empty list"]

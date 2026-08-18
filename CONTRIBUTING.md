@@ -19,7 +19,7 @@ Thanks for your interest in improving Panopticon.
 
 - Python 3.11+.
 - Ruff is used for linting; configuration is in `pyproject.toml`.
-- Keep the skill cross-platform: avoid host-specific code paths outside `skill/scripts/model_resolver.py`.
+- Keep the skill cross-platform: isolate host-specific code inside dedicated host adapters (e.g. `model_resolver.py`, `dispatch.py`, `emit_host_agents`).
 - Agent prompts and skill docs should not name competitors.
 
 ## Testing

@@ -42,7 +42,7 @@ def _cvss_v3_score(cvss: str) -> float | None:
         # bucketing at HIGH/CRITICAL thresholds. Epsilon per the spec's
         # reference implementation to dodge float artifacts.
         return math.ceil(score * 10 - 1e-9) / 10 if score else 0.0
-    except Exception:  # noqa: BLE001
+    except (ValueError, TypeError, KeyError, AttributeError):
         return None
 
 

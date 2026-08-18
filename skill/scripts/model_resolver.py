@@ -173,7 +173,8 @@ def resolve_model(host, role, cli_overrides=None):
     3. host default in reference/model-profiles.yml
     4. hardcoded fallback
 
-    Returns dict with at least {"model": ..., "max_context_size": ..., "max_output_size": ...}
+    Returns dict with at least {"model": ...} and optional keys
+    like "max_context_size", "max_output_size", "model_reasoning_effort" when configured.
 
     On Kimi the result is normalized to the primary/secondary dispatch
     contract, since every override path above can otherwise supply a value

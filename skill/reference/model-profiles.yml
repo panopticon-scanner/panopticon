@@ -20,6 +20,16 @@ hosts:
       alias: k3
       max_context_size: 524288
       max_output_size: 32768
+    domain_panel:
+      model: secondary
+      alias: k3
+      max_context_size: 131072
+      max_output_size: 16384
+    domain_advisor:
+      model: secondary
+      alias: k3
+      max_context_size: 524288
+      max_output_size: 32768
   claude:
     scout:
       model: haiku
@@ -46,6 +56,12 @@ hosts:
     advisor:
       model: gpt-5.6
       model_reasoning_effort: high
+    domain_panel:
+      model: gpt-5.6-terra
+      model_reasoning_effort: high
+    domain_advisor:
+      model: gpt-5.6
+      model_reasoning_effort: high
   openrouter:
     scout:
       model: openai/gpt-4o-mini
@@ -63,6 +79,14 @@ hosts:
       model: anthropic/claude-opus
       max_context_size: 200000
       max_output_size: 16384
+    domain_panel:
+      model: anthropic/claude-sonnet
+      max_context_size: 200000
+      max_output_size: 8192
+    domain_advisor:
+      model: anthropic/claude-opus
+      max_context_size: 200000
+      max_output_size: 16384
 
 roles:
   scout:
@@ -73,3 +97,7 @@ roles:
     description: Main reviewer for a panel
   advisor:
     description: Independent claim verification
+  domain_panel:
+    description: Specialised domain panel reviewer
+  domain_advisor:
+    description: Specialised domain advisor verification

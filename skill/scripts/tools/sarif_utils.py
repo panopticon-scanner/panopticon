@@ -73,7 +73,11 @@ def _is_fixture_path(path):
     return False
 
 
-def _norm_uri(uri):
+is_test_path = _is_test_path
+is_fixture_path = _is_fixture_path
+
+
+def norm_uri(uri):
     """Normalize a SARIF artifactLocation URI to a repo-relative path.
 
     Strips the file:// scheme and the container-mount prefix (/src/), so tool
@@ -89,11 +93,17 @@ def _norm_uri(uri):
     return uri.lstrip("/")
 
 
-def _rules_index(run):
+_norm_uri = norm_uri
+
+
+def rules_index(run):
     idx = {}
     for r in (run.get("tool", {}).get("driver", {}).get("rules") or []):
         idx[r.get("id")] = r
     return idx
+
+
+_rules_index = rules_index
 
 
 def sarif_to_findings(sarif, tool_name, group, prefix, start=1):

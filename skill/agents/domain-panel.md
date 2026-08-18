@@ -58,6 +58,7 @@ Each finding MUST carry:
 Write your findings to `{out_file}` as a single JSON object with this exact shape. The `_panopticon` block is REQUIRED — the run uses it to identify your cell, and a file that omits it (or carries a wrong `run_id`/`domain`/`group`) is DISCARDED and your cell is treated as not done:
 
     {
+      "schema_version": 1,
       "findings": [ /* each finding in the format above */ ],
       "_panopticon": {"run_id": "{run_id}", "role": "domain_panel", "domain": "{domain}", "group": "{group}"}
     }

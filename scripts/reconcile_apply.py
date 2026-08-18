@@ -173,9 +173,13 @@ def _cohort_actions(entries, cohort, close, comment_fn, ledger):
 
 
 def plan_actions(diff, ledger):
+    if not isinstance(diff, dict):
+        raise ValueError("diff must be a dictionary")
+    if "schema_version" in diff and not isinstance(diff.get("schema_version"), int):
+        raise ValueError("diff schema_version must be an integer")
     if "fixed_or_gone" in diff:
         print("diff.json predates the closed/ambiguous split -- re-run reconcile.py diff",
-             file=sys.stderr)
+              file=sys.stderr)
 
     def _recur_comment(entry):
         tpl = (RECUR_COARSE_COMMENT if entry.get("match_tier") == "coarse"

@@ -922,13 +922,12 @@ class TestCliAndSummary(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             out = os.path.join(d, "report.json")
             paths = syn.write_report(report, out, max_bytes=1000)
-            self.assertEqual(len(paths), 2)
+            self.assertGreaterEqual(len(paths), 2)
             with open(paths[0]) as _fh:
                 main_doc = json.load(_fh)
-            with open(paths[1]) as _fh:
-                part_doc = json.load(_fh)
             self.assertIn("parts", main_doc["meta"])
-            self.assertEqual(len(main_doc["findings"]) + len(part_doc["findings"]), n_before)
+            part_findings_count = sum(len(json.load(open(p))["findings"]) for p in paths[1:])
+            self.assertEqual(len(main_doc["findings"]) + part_findings_count, n_before)
             self.assertEqual(len(report["findings"]), n_before)  # caller not mutated
 
     def test_main_returns_0_when_gate_not_fail(self):

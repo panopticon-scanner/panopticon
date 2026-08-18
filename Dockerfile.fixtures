@@ -32,9 +32,9 @@ ARG ASP_GOAT_REF=main
 RUN git clone --depth 1 --branch ${ASP_GOAT_REF} https://github.com/Soham7-dev/AspGoat.git
 
 # Prepare fixture dependencies when possible; static-analysis tests tolerate missing deps.
-RUN cd /opt/panopticon-fixtures/railsgoat && (bundle install 2>/dev/null || echo "railsgoat bundle install skipped")
-RUN cd /opt/panopticon-fixtures/WebGoat && (./mvnw clean compile -DskipTests 2>/dev/null || mvn clean compile -DskipTests 2>/dev/null || echo "WebGoat compile skipped")
-RUN cd /opt/panopticon-fixtures/AspGoat && (dotnet restore && dotnet build --no-restore 2>/dev/null || echo "AspGoat build skipped")
+RUN cd /opt/panopticon-fixtures/railsgoat && (bundle install || echo "railsgoat bundle install skipped")
+RUN cd /opt/panopticon-fixtures/WebGoat && (./mvnw clean compile -DskipTests || mvn clean compile -DskipTests || echo "WebGoat compile skipped")
+RUN cd /opt/panopticon-fixtures/AspGoat && (dotnet restore && dotnet build --no-restore || echo "AspGoat build skipped")
 
 # Copy the hand-rolled Rust fixture from the repo.
 # The fixture must include a committed Cargo.lock so cargo-audit has a dependency graph to audit.
