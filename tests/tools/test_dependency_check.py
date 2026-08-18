@@ -70,3 +70,8 @@ class TestDependencyCheckAdapter(unittest.TestCase):
                     stdout, rc = adapter.invoke("/tmp/fake")
         self.assertEqual(stdout, b"")
         self.assertNotEqual(rc, 0)
+
+
+if __name__ == "__main__":
+    unittest.main()
+

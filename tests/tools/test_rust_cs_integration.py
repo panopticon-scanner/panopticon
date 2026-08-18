@@ -18,3 +18,8 @@ class TestRustCsIntegration(unittest.TestCase):
         if shutil.which("dotnet"):
             raise unittest.SkipTest("dotnet is available; run full fixture test instead")
         self.assertTrue(True)
+
+
+if __name__ == "__main__":
+    unittest.main()
+

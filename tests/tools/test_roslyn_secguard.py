@@ -309,3 +309,8 @@ class TestScsOnlyFilter(unittest.TestCase):
         found = rs.RoslynSecGuardAdapter().parse(MIXED_SARIF, "g")
         self.assertEqual(len(found), 1)
         self.assertEqual(found[0]["tool_evidence"]["rule_id"], "SCS0002")
+
+
+if __name__ == "__main__":
+    unittest.main()
+
