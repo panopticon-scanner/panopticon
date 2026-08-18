@@ -71,8 +71,71 @@ def _child_env():
     return env
 
 
+# §5.1 per-run folders. These artifacts stay at `.panopticon/` top-level: setup
+# files, the resume anchors (run-manifest / setup-manifest), the cross-run EPSS
+# cache, the transient write-guard allowlist (the hook reads it CWD-relative and is
+# run-context-free), and the compat report symlinks. EVERY other artifact is per-run
+# and routes into `.panopticon/runs/<tag>/`. The durable reports live top-level and
+# tag-named (`<tag>-report.json`), so the run folder can be cleared — reclaiming the
+# findings/verdicts bulk — without losing any report.
+_TOP_LEVEL = frozenset({
+    "config.json", "groups.yml", "groups.yml.draft",
+    "run-manifest.json", "setup-manifest.json",
+    "setup-proposal.json", "setup-complete.json", "setup-scan-brief.md",
+    "epss-cache.json", "write-allowlist.json",
+    "report.json", "report.json.html",
+})
+
+
+def _run_tag(review_root):
+    """The active run's folder name from the manifest, or None before one exists
+    (setup / pre-discovery) — callers then fall back to the flat top-level."""
+    return run_manifest.run_tag(run_manifest.load_manifest(review_root))
+
+
 def _pano(review_root, *parts):
-    return os.path.join(review_root, ".panopticon", *parts)
+    """Resolve a `.panopticon` artifact path: top-level for setup/anchor/cache/report
+    (`_TOP_LEVEL`), else per-run under `.panopticon/runs/<tag>/`. The manifest anchors
+    the tag, so every done-predicate (which stats a `_pano` path) resolves the same
+    folder on every resume."""
+    base = os.path.join(review_root, ".panopticon")
+    if parts and parts[0] not in _TOP_LEVEL:
+        tag = _run_tag(review_root)
+        if tag is not None:
+            return os.path.join(base, "runs", tag, *parts)
+    return os.path.join(base, *parts)
+
+
+def _report_out(review_root):
+    """The durable, top-level, tag-named report path passed to synthesize as --out;
+    `_part2.json` and `.html` derive from this stem, so all three land top-level and
+    tag-named. Falls back to flat `report.json` when there is no manifest."""
+    tag = _run_tag(review_root)
+    name = f"{tag}-report.json" if tag else "report.json"
+    return os.path.join(review_root, ".panopticon", name)
+
+
+def _relink(link_path, target_name):
+    """Create or replace a relative symlink `link_path -> target_name` (same dir)."""
+    os.makedirs(os.path.dirname(link_path), exist_ok=True)
+    try:
+        if os.path.islink(link_path) or os.path.exists(link_path):
+            os.remove(link_path)
+    except OSError:
+        pass
+    os.symlink(target_name, link_path)
+
+
+def _ensure_run_symlinks(review_root):
+    """Point `.panopticon/runs/latest` at the active run folder (best-effort; a
+    platform without symlinks simply skips it — the tag-named paths still work)."""
+    tag = _run_tag(review_root)
+    if not tag:
+        return
+    try:
+        _relink(os.path.join(review_root, ".panopticon", "runs", "latest"), tag)
+    except OSError:
+        pass
 
 
 def _abs_file_list(review_root, files):
@@ -310,7 +373,7 @@ def write_dispatch_request(review_root, run_id, checkpoint, group, entries):
         raise ValueError("unknown checkpoint kind: %r" % checkpoint)
     request = {"schema_version": 1, "run_id": run_id, "checkpoint": checkpoint,
                "group": group, "entries": list(entries)}
-    path = os.path.join(review_root, ".panopticon", "dispatch-request.json")
+    path = _pano(review_root, "dispatch-request.json")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(request, fh, indent=2)
@@ -954,7 +1017,9 @@ def _verify_tools_done(review_root, manifest):
 
 
 def synthesize_done(review_root, manifest):
-    return _json_parses(_pano(review_root, "report.json"))
+    # §5.1: gate on the durable tag-named report, not the convenience symlink, so
+    # resume never depends on symlink creation having succeeded.
+    return _json_parses(_report_out(review_root))
 
 
 def synthesize_execute(review_root, manifest):
@@ -968,7 +1033,7 @@ def synthesize_execute(review_root, manifest):
     findings = sorted(_glob.glob(_pano(review_root, "findings-*.json")))
     verdicts_dir = _pano(review_root, "verdicts")
     os.makedirs(verdicts_dir, exist_ok=True)   # empty in P3 (verify is a no-op)
-    report = _pano(review_root, "report.json")
+    report = _report_out(review_root)   # §5.1: durable, top-level, tag-named
     flags = manifest.get("flags") or {}
     cmd = [sys.executable, _script("synthesize.py"),
            "--out", report,
@@ -1000,6 +1065,20 @@ def synthesize_execute(review_root, manifest):
     if not _json_parses(report):
         raise DriverError("synthesize produced no report.json (rc=%s): %s"
                           % (proc.returncode, (proc.stderr or proc.stdout)[:400]))
+    # §5.1: point the flat compat paths at the latest tag-named report, so every
+    # existing reader of report.json / report.json.html resolves it unchanged, and
+    # refresh runs/latest. The tag-named files are the durable top-level outputs;
+    # the run folder can be cleared without touching them.
+    tag = _run_tag(review_root)
+    if tag:
+        try:   # compat symlinks are best-effort; the tag-named report is authoritative
+            _relink(_pano(review_root, "report.json"), f"{tag}-report.json")
+            if os.path.exists(f"{report}.html"):
+                _relink(_pano(review_root, "report.json.html"),
+                        f"{tag}-report.json.html")
+        except OSError:
+            pass
+        _ensure_run_symlinks(review_root)
     return PhaseResult(kind="advanced", message="synthesize: report.json written")
 
 
@@ -1099,12 +1178,29 @@ def _finalize_worktree(review_root, manifest):
     if not worktree:
         return
     target = manifest.get("target") or review_root
-    src = _pano(review_root, "report.json")
-    dst = _pano(target, "report.json")
-    if os.path.realpath(src) != os.path.realpath(dst) and os.path.isfile(src):
+    tag = run_manifest.run_tag(manifest)
+    src_dir = os.path.join(review_root, ".panopticon")
+    dst_dir = os.path.join(target, ".panopticon")
+    # §5.1: surface the durable, top-level, tag-named outputs (report + optional
+    # split part + html) so the caller's report is complete and self-consistent even
+    # when split, then re-link report.json there. Falls back to a flat report.json
+    # copy if there is no tag (no manifest — should not happen post-run).
+    names = ([f"{tag}-report.json", f"{tag}-report_part2.json",
+              f"{tag}-report.json.html"] if tag else ["report.json"])
+    for name in names:
+        src, dst = os.path.join(src_dir, name), os.path.join(dst_dir, name)
+        if os.path.realpath(src) != os.path.realpath(dst) and os.path.isfile(src):
+            try:
+                os.makedirs(dst_dir, exist_ok=True)
+                shutil.copyfile(src, dst)
+            except OSError:
+                pass
+    if tag and os.path.isfile(os.path.join(dst_dir, f"{tag}-report.json")):
         try:
-            os.makedirs(os.path.dirname(dst), exist_ok=True)
-            shutil.copyfile(src, dst)
+            _relink(os.path.join(dst_dir, "report.json"), f"{tag}-report.json")
+            if os.path.isfile(os.path.join(dst_dir, f"{tag}-report.json.html")):
+                _relink(os.path.join(dst_dir, "report.json.html"),
+                        f"{tag}-report.json.html")
         except OSError:
             pass
     diff_map.release_worktree(worktree, repo=target)
@@ -1320,17 +1416,37 @@ def _scope_from_args(args):
 
 
 def _clear_run_artifacts(review_root):
-    """Remove the manifest's derived artifacts for --reset. NEVER touches
-    groups.yml (the committed matrix)."""
-    pano = _pano(review_root)
+    """--reset: clear the current run's working folder (findings / verdicts /
+    coverage / scouts / dispatch / ...) so a fresh run starts, while KEEPING the
+    durable top-level tag-named report — reset reclaims the scratch, not the
+    deliverable (§5.1). NEVER touches groups.yml (the committed matrix) or another
+    run's folder/report. MUST run BEFORE the manifest is removed, so the tag still
+    resolves; with no/corrupt manifest it degrades to the legacy flat sweep."""
+    base = os.path.join(review_root, ".panopticon")
+    tag = _run_tag(review_root)
+    if tag:
+        shutil.rmtree(os.path.join(base, "runs", tag), ignore_errors=True)
+        # runs/latest now dangles (its target folder is gone) — drop the pointer;
+        # report.json is left pointing at the kept durable report.
+        try:
+            os.remove(os.path.join(base, "runs", "latest"))
+        except OSError:
+            pass
+    # Migration safety: sweep any legacy FLAT run artifacts a pre-5.1 run may have
+    # left at top-level. The report.json SYMLINK points at the durable tag-named
+    # report and is kept; only a STALE FLAT report.json (a real file — pre-5.1 or
+    # a corrupt/orphaned state) is swept, preserving the I1 no-resume-on-stale-data
+    # invariant. The tag-named reports themselves are never in _RESET_GLOBS.
     for pat in _RESET_GLOBS:
-        for path in _glob.glob(os.path.join(pano, pat)):
+        for path in _glob.glob(os.path.join(base, pat)):
+            if os.path.basename(path) == "report.json" and os.path.islink(path):
+                continue
             try:
                 os.remove(path)
             except OSError:
                 pass
     for sub in ("tools", "verdicts"):
-        shutil.rmtree(os.path.join(pano, sub), ignore_errors=True)
+        shutil.rmtree(os.path.join(base, sub), ignore_errors=True)
 
 
 def build_parser():
@@ -1404,8 +1520,8 @@ def run(args, runner=subprocess.run, phases=PHASES):
             diff_map.release_worktree(worktree)
         return _error_status("unsafe artifact root: %s" % exc)
     if args.reset:
+        _clear_run_artifacts(review_root)   # §5.1: resolve the tag before the manifest goes
         run_manifest.reset_run(review_root)
-        _clear_run_artifacts(review_root)
     manifest = run_manifest.load_manifest(review_root)
     if manifest is None:
         # I1: no manifest means no prior run should count — clear any stale
@@ -1415,8 +1531,8 @@ def run(args, runner=subprocess.run, phases=PHASES):
         # #5.0-13: load_manifest also returns None for a CORRUPT (present-but-
         # unparseable) manifest — remove it first so write_manifest (write-once)
         # can't raise an uncaught FileExistsError and wedge the run.
-        run_manifest.reset_run(review_root)
         _clear_run_artifacts(review_root)
+        run_manifest.reset_run(review_root)
         manifest = run_manifest.build_manifest(
             target=args.target, review_root=review_root,
             host=args.host or _DEFAULTS["host"],
@@ -1431,6 +1547,10 @@ def run(args, runner=subprocess.run, phases=PHASES):
         if conflicts:
             return _error_status("flag drift (use --reset to start over): "
                                  + "; ".join(conflicts))
+    # §5.1: point runs/latest at the active run folder now that the manifest (hence
+    # the tag) is established — so the pointer exists throughout the run, not just
+    # after synthesize writes the report.
+    _ensure_run_symlinks(review_root)
     # I2: capture the clean-tree baseline unconditionally and BEFORE the engine
     # runs. Idempotent (returns the existing baseline if present) -> no-op on a
     # normal resume, but self-heals a baseline that a mid-first-run interrupt

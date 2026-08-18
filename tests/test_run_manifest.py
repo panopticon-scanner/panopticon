@@ -109,6 +109,22 @@ class TestRunManifest(unittest.TestCase):
         m = rm.build_manifest(**self._params())
         self.assertEqual(m["scope"], {"mode": "repo", "target": None})
 
+    def test_build_manifest_stamps_created(self):   # §5.1 per-run folders
+        m = rm.build_manifest(**self._params())
+        self.assertRegex(m["created"], r"^\d{4}-\d{2}-\d{2}T")
+
+    def test_run_tag_is_stable_and_formatted(self):   # §5.1
+        m = {"host": "claude", "security_mode": "redteam",
+             "scope": {"mode": "repo"}, "run_id": "deadbeefcafe0000",
+             "created": "2026-08-18T09:30:00Z"}
+        self.assertEqual(rm.run_tag(m), "claude-redteam-repo-20260818-deadbeef")
+        # deterministic from the write-once manifest -> identical on every resume
+        self.assertEqual(rm.run_tag(m), rm.run_tag(dict(m)))
+
+    def test_run_tag_none_for_empty_manifest(self):   # §5.1 (falls back to flat)
+        self.assertIsNone(rm.run_tag(None))
+        self.assertIsNone(rm.run_tag({}))
+
     def test_scope_recorded_and_conflict_detected(self):
         m = rm.build_manifest(**self._params(
             scope={"mode": "group", "target": "Auth"}))

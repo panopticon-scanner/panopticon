@@ -7,12 +7,41 @@ presence. The manifest is written once by the first `driver run`; a conflicting
 flag on re-invocation is refused. See
 docs/superpowers/specs/2026-08-15-panopticon-5.0-driver-skeleton-design.md §3.
 """
+import datetime
 import json
 import os
+import re
 import uuid
 
 MANIFEST_NAME = "run-manifest.json"
 SCHEMA_VERSION = 1
+
+
+def _now_iso():
+    return datetime.datetime.now(datetime.timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+
+
+def _slug(value, default):
+    """Filesystem-safe component for the run tag (alphanumerics only)."""
+    s = re.sub(r"[^A-Za-z0-9]+", "", str(value or ""))
+    return s or default
+
+
+def run_tag(manifest):
+    """The stable per-run folder name: ``<host>-<mode>-<scope>-<yyyymmdd>-<runid8>``.
+
+    Derived entirely from the write-once manifest, so it is byte-identical across
+    every resume of the same run (the per-run folder never moves mid-run). Returns
+    None for a falsy/None manifest so callers fall back to the flat top-level."""
+    if not manifest:
+        return None
+    host = _slug(manifest.get("host"), "host")
+    mode = _slug(manifest.get("security_mode"), "standard")
+    scope = _slug((manifest.get("scope") or {}).get("mode"), "repo")
+    stamp = (manifest.get("created") or "")[:10].replace("-", "") or "00000000"
+    rid = _slug(manifest.get("run_id"), "")[:8] or "00000000"
+    return f"{host}-{mode}-{scope}-{stamp}-{rid}"
 
 # The flag keys whose drift across re-invocations must be refused (anti-drift).
 _FLAG_KEYS = ("fail_on", "severity", "gate_scope", "diff_context", "tools",
@@ -29,11 +58,14 @@ def new_run_id():
 
 def build_manifest(*, target, review_root, host, security_mode, base=None,
                    flags=None, run_id=None, worktree=None, scope=None, pr=None,
-                   pr_base=None):
+                   pr_base=None, created=None):
     flags = flags or {}
     return {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id or new_run_id(),
+        # Stamped once at manifest creation (write-once); the run tag derives its
+        # yyyymmdd from here, so the per-run folder name is stable across resumes.
+        "created": created or _now_iso(),
         "target": os.path.abspath(target),
         "review_root": os.path.abspath(review_root),
         "base": base,
