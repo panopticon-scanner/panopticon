@@ -434,28 +434,42 @@ def _chunk_parent(name):
 
 
 def coverage_execute(review_root, manifest):
-    """Per group: emit the scout checkpoint (streamed) if its output is absent,
-    else compute coverage as floor widened by the scout's valid domains.
-    Returns after one unit of work; the engine re-selects coverage until
-    every group has a coverage file."""
+    """Emit ALL pending scouts in one checkpoint (#1056), then compute each
+    group's coverage as the floor widened by the scout's valid domains. Returns
+    after one unit of work; the engine re-selects coverage until every group has
+    a coverage file. Re-emits only the still-missing scouts on resume."""
     matrix, _errors = load_committed_groups(review_root)
     host = manifest.get("host", "claude")
-    for group, files in _discovered_groups(review_root):
+    groups = _discovered_groups(review_root)
+    # #1056: scouts are independent and there is exactly one per group, so a
+    # per-group checkpoint (like the review fan-out) would be no better than the
+    # old sequential loop -- run-5's 21 groups cost ~40 min of pure profiling
+    # round-trips. Emit EVERY pending scout in one checkpoint so the host
+    # dispatches them concurrently; on a crash/resume this re-emits only the
+    # scouts that still have no output (durable state = the entries' out_files).
+    pending_scouts = [
+        (g, f) for g, f in groups
+        if not _json_parses(_pano(review_root, "coverage-%s.json" % g))
+        and not _json_parses(_pano(review_root, "scout-%s.json" % g))]
+    if pending_scouts:
+        entries = [_scout_entry(review_root, manifest, g, f, host)
+                   for g, f in pending_scouts]
+        req = write_dispatch_request(review_root, manifest["run_id"],
+                                     "scout", None, entries)
+        return PhaseResult(kind="checkpoint", checkpoint="scout", group=None,
+                           dispatch_request=req,
+                           message="scout checkpoint for %d group(s)"
+                                   % len(entries))
+    # Every group now has a scout output -> compute coverage (one group per call:
+    # local work, no dispatch, so the cadence is unchanged and cheap).
+    for group, files in groups:
         if _json_parses(_pano(review_root, "coverage-%s.json" % group)):
             continue
         scout_path = _pano(review_root, "scout-%s.json" % group)
-        if not _json_parses(scout_path):
-            entry = _scout_entry(review_root, manifest, group, files, host)
-            req = write_dispatch_request(review_root, manifest["run_id"],
-                                         "scout", group, [entry])
-            return PhaseResult(kind="checkpoint", checkpoint="scout", group=group,
-                               dispatch_request=req,
-                               message="scout checkpoint for group %s" % group)
-        # scout landed -> widen coverage by the scout's valid domains (P4 bridge)
-        # #5.0-12: a scout that returns a non-object (e.g. a JSON array) would
-        # slip past `or {}` (a non-empty list is truthy) and crash `.get` with an
-        # uncaught AttributeError, wedging the primary scout checkpoint. Validate
-        # the shape at the gate and fail loud (status:error) instead.
+        # #5.0-12: a scout that returns a non-object (e.g. a JSON array) parses as
+        # JSON but would slip past `or {}` (a non-empty list is truthy) and crash
+        # `.get` with an uncaught AttributeError. Validate the shape at the gate
+        # and fail loud (status:error) instead.
         scout = _load_json(scout_path)
         if not isinstance(scout, dict):
             raise DriverError("scout output for group %s is not a JSON object" % group)
