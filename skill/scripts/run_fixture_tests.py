@@ -25,19 +25,25 @@ def _docker_bin() -> str:
 
 
 def docker_available() -> bool:
-    result = subprocess.run(
-        [_docker_bin(), "version"],
-        capture_output=True,
-    )
-    return result.returncode == 0
+    try:
+        result = subprocess.run(
+            [_docker_bin(), "version"],
+            capture_output=True,
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, OSError):
+        return False
 
 
 def image_exists(tag: str) -> bool:
-    result = subprocess.run(
-        [_docker_bin(), "image", "inspect", tag],
-        capture_output=True,
-    )
-    return result.returncode == 0
+    try:
+        result = subprocess.run(
+            [_docker_bin(), "image", "inspect", tag],
+            capture_output=True,
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, OSError):
+        return False
 
 
 def build_image(tag: str) -> None:
@@ -91,14 +97,20 @@ def check_fixtures(tag: str, fixtures: list[dict]) -> tuple[list[str], list[str]
     cmd = [_docker_bin(), "run", "--rm", tag, "sh", "-c", test_script, "sh", *paths]
     # Bound the docker call so a hung container can't wedge the fixture run
     # (consistent with run_tools.py's timeouts; run-4 self-scan C15).
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    except (subprocess.SubprocessError, OSError):
+        result = None
     present_paths = []
     missing_paths = set()
-    for line in result.stdout.splitlines():
-        if line.startswith("PRESENT:"):
-            present_paths.append(line.split(":", 1)[1])
-        elif line.startswith("MISSING:"):
-            missing_paths.add(line.split(":", 1)[1])
+    if result and result.returncode == 0:
+        for line in result.stdout.splitlines():
+            if line.startswith("PRESENT:"):
+                present_paths.append(line.split(":", 1)[1])
+            elif line.startswith("MISSING:"):
+                missing_paths.add(line.split(":", 1)[1])
+    else:
+        missing_paths.update(paths)
     path_to_name = {f["path"]: f["name"] for f in baked}
     present += [path_to_name[p] for p in present_paths if p in path_to_name]
     missing += [path_to_name[p] for p in missing_paths if p in path_to_name]

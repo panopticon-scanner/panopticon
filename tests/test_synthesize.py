@@ -69,7 +69,8 @@ class TestFindingsFileIntegrity(unittest.TestCase):
                     syn.main(["--target", "t", "--fail-on", "high", "--out", out, p])
             finally:
                 os.chdir(prev)
-            report = json.load(open(out))
+            with open(out, encoding="utf-8") as fh:
+                report = json.load(fh)
             self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
             self.assertFalse(report["summary"]["coverage_certified"])
             self.assertIn(os.path.basename(p),
@@ -2035,7 +2036,8 @@ class TestTwoPassCli(unittest.TestCase):
                 fh.write("also not } json")
             out = os.path.join(d, "report.json")
             syn.main(["--verdicts-dir", vd, "--out", out, fp])
-            report = json.load(open(out))
+            with open(out, encoding="utf-8") as fh:
+                report = json.load(fh)
             self.assertEqual(report["meta"]["coverage"]["verdicts"]["unloadable"], 2)
 
     def test_pass1_cli_and_pass2_build_report_agree_on_fingerprints(self):

@@ -1,9 +1,21 @@
 import io
 import json
-import os, shutil, sys, tempfile, unittest
+import os
+import shutil
+import sys
+import tempfile
+import unittest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill"))
 import scripts.run_tools as rt
 import scripts._run_adapter as ra
+
+
+class _FakeResult:
+    def __init__(self, returncode=0, stdout=b"", stderr=b""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
 
 
 class TestRunTools(unittest.TestCase):
@@ -13,16 +25,12 @@ class TestRunTools(unittest.TestCase):
         self.assertFalse(rt.docker_available(runner=runner))
 
     def test_docker_available_when_inspect_ok(self):
-        class R:  # noqa
-            returncode = 0
-        self.assertTrue(rt.docker_available(runner=lambda cmd, **kw: R()))
+        self.assertTrue(rt.docker_available(runner=lambda cmd, **kw: _FakeResult(returncode=0)))
 
     def test_docker_unavailable_when_image_missing(self):
         # Docker is installed (no exception) but `image inspect` returns non-zero
         # because the panopticon-tools image isn't built -> unavailable.
-        class R:  # noqa
-            returncode = 1
-        self.assertFalse(rt.docker_available(runner=lambda cmd, **kw: R()))
+        self.assertFalse(rt.docker_available(runner=lambda cmd, **kw: _FakeResult(returncode=1)))
 
     def test_recommendable_tools_is_the_selectable_universe(self):
         # #1053: the scout must recommend tools only from the set run_tools can
@@ -60,37 +68,38 @@ class TestRunTools(unittest.TestCase):
     def test_run_tools_skips_tool_on_unexpected_returncode(self):
         # returncode not in (0, 1) means the tool errored (not "clean"/"findings"):
         # skip it, write no file, and don't raise.
-        class R: returncode = 2; stdout = b'garbage'; stderr = b'boom'
+        fake = _FakeResult(returncode=2, stdout=b'garbage', stderr=b'boom')
         with tempfile.TemporaryDirectory() as d:
             out_dir = os.path.join(d, "out")
-            paths = rt.run_tools(d, ["semgrep"], out_dir, runner=lambda cmd, **kw: R())
+            paths = rt.run_tools(d, ["semgrep"], out_dir, runner=lambda cmd, **kw: fake)
             self.assertEqual(paths, [])                          # skipped
             self.assertFalse(os.path.exists(os.path.join(out_dir, "semgrep.sarif")))
 
     def test_failed_rerun_removes_stale_output(self):
-        class R: returncode = 2; stdout = b""; stderr = b"failed"
+        fake = _FakeResult(returncode=2, stdout=b"", stderr=b"failed")
         with tempfile.TemporaryDirectory() as d:
             out_dir = os.path.join(d, "out")
+            sarif = os.path.join(out_dir, "semgrep.sarif")
             os.makedirs(out_dir)
-            stale = os.path.join(out_dir, "semgrep.sarif")
-            with open(stale, "wb") as fh:
-                fh.write(b'{"runs":[]}')
-            self.assertEqual(
-                rt.run_tools(d, ["semgrep"], out_dir,
-                             runner=lambda cmd, **kw: R()), [])
-            self.assertFalse(os.path.exists(stale))
+            with open(sarif, "w") as fh:
+                fh.write("{}")
+            paths = rt.run_tools(d, ["semgrep"], out_dir, runner=lambda cmd, **kw: fake)
+            self.assertEqual(paths, [])
+            self.assertFalse(os.path.exists(sarif))
 
     def test_manifest_discloses_missing_selected_tools(self):
         with tempfile.TemporaryDirectory() as d:
             semgrep = os.path.join(d, "semgrep.sarif")
-            open(semgrep, "w").write('{"runs":[]}')
+            with open(semgrep, "w", encoding="utf-8") as fh:
+                fh.write('{"runs":[]}')
             path = os.path.join(d, "run-manifest.json")
             payload = rt.write_manifest(
                 path, ["semgrep", "gitleaks", "semgrep"], [semgrep])
             self.assertEqual(payload["selected"], ["semgrep", "gitleaks"])
             self.assertEqual(payload["produced"], ["semgrep"])
             self.assertEqual(payload["missing"], ["gitleaks"])
-            self.assertEqual(json.load(open(path)), payload)
+            with open(path, encoding="utf-8") as fh:
+                self.assertEqual(json.load(fh), payload)
 
     def test_is_excluded_matches_subtree(self):
         self.assertTrue(rt._is_excluded("tests/fixtures/insecure-js/app.js",
@@ -162,9 +171,9 @@ class TestRunTools(unittest.TestCase):
 
     def test_run_tools_builds_exact_docker_argv(self):
         calls = []
-        class R: returncode = 0; stdout = b'{"runs":[]}'; stderr = b''
+        fake = _FakeResult(returncode=0, stdout=b'{"runs":[]}', stderr=b'')
         def runner(cmd, **kw):
-            calls.append(cmd); return R()
+            calls.append(cmd); return fake
         with tempfile.TemporaryDirectory() as d:
             out_dir = os.path.join(d, "out")
             rt.run_tools(d, ["semgrep"], out_dir, image="panopticon-tools", runner=runner)
@@ -174,13 +183,12 @@ class TestRunTools(unittest.TestCase):
                         "panopticon-tools"] + rt.TOOL_CMD["semgrep"]
             self.assertEqual(calls[0], expected)   # exact argv: flags, :ro mount, image, per-tool cmd
             with open(os.path.join(out_dir, "semgrep.sarif"), "rb") as fh:
-                self.assertEqual(fh.read(), R.stdout)  # runner stdout bytes persisted verbatim
+                self.assertEqual(fh.read(), fake.stdout)  # runner stdout bytes persisted verbatim
 
     def test_run_tools_continues_after_one_tool_fails(self):
         def runner(cmd, **kw):
             if "semgrep" in cmd: raise OSError("boom")
-            class R: returncode = 0; stdout = b'{"runs":[]}'; stderr = b''
-            return R()
+            return _FakeResult(returncode=0, stdout=b'{"runs":[]}', stderr=b'')
         with tempfile.TemporaryDirectory() as d:
             paths = rt.run_tools(d, ["semgrep", "gitleaks"], os.path.join(d, "out"), runner=runner)
             self.assertEqual(len(paths), 1)                  # gitleaks still ran
@@ -201,9 +209,9 @@ class TestAdapterDispatch(unittest.TestCase):
             def invoke(self, target): return (b'{"findings":[]}', 0)
 
         calls = []
-        class R: returncode = 0; stdout = b'{"findings":[]}'; stderr = b''
+        fake = _FakeResult(returncode=0, stdout=b'{"findings":[]}', stderr=b'')
         def runner(cmd, **kw):
-            calls.append(cmd); return R()
+            calls.append(cmd); return fake
 
         with tempfile.TemporaryDirectory() as d:
             out_dir = os.path.join(d, "out")
@@ -216,7 +224,7 @@ class TestAdapterDispatch(unittest.TestCase):
             self.assertIn("/opt/panopticon/scripts/_run_adapter.py", calls[0])
             self.assertIn("fake", calls[0])
             with open(os.path.join(out_dir, "fake.json"), "rb") as fh:
-                self.assertEqual(fh.read(), R.stdout)
+                self.assertEqual(fh.read(), fake.stdout)
 
     def test_empty_adapter_output_fails_closed(self):
         # #1051: an adapter run that exits 0 with EMPTY stdout is a silent
@@ -227,9 +235,9 @@ class TestAdapterDispatch(unittest.TestCase):
         class FakeAdapter:
             name = "fake"
             def is_applicable(self, target): return True
-        class R: returncode = 0; stdout = b''; stderr = b''
+        fake = _FakeResult(returncode=0, stdout=b'', stderr=b'')
         def runner(cmd, **kw):
-            return R()
+            return fake
         with tempfile.TemporaryDirectory() as d:
             out = os.path.join(d, "out")
             rt.ADAPTERS["fake"] = FakeAdapter()
@@ -249,12 +257,12 @@ class TestAdapterDispatch(unittest.TestCase):
         class FakeAdapter:
             name = "fake"
             def is_applicable(self, target): return True
-        class R: returncode = 0; stdout = b''; stderr = b''
+        fake = _FakeResult(returncode=0, stdout=b'', stderr=b'')
         with tempfile.TemporaryDirectory() as d:
             out = os.path.join(d, "out")
             rt.ADAPTERS["fake"] = FakeAdapter()
             try:
-                written = rt.run_tools(d, ["fake"], out, runner=lambda cmd, **kw: R())
+                written = rt.run_tools(d, ["fake"], out, runner=lambda cmd, **kw: fake)
             finally:
                 rt.ADAPTERS.pop("fake", None)
             payload = rt.write_manifest(
@@ -264,9 +272,9 @@ class TestAdapterDispatch(unittest.TestCase):
 
     def test_run_tools_uses_readonly_src_mount_for_phase2_build_adapters(self):
         calls = []
-        class R: returncode = 0; stdout = b'{"runs":[]}'; stderr = b''
+        fake = _FakeResult(returncode=0, stdout=b'{"runs":[]}', stderr=b'')
         def runner(cmd, **kw):
-            calls.append(cmd); return R()
+            calls.append(cmd); return fake
 
         with tempfile.TemporaryDirectory() as d:
             out_dir = os.path.join(d, "out")
@@ -333,9 +341,9 @@ class TestRunAdapterHelper(unittest.TestCase):
 class TestContainment(unittest.TestCase):
     def _calls(self, tools, online=False, env=None):
         calls = []
-        class R: returncode = 0; stdout = b'{"runs":[]}'; stderr = b''
+        fake = _FakeResult(returncode=0, stdout=b'{"runs":[]}', stderr=b'')
         def runner(cmd, **kw):
-            calls.append(cmd); return R()
+            calls.append(cmd); return fake
         old = dict(os.environ)
         os.environ.update(env or {})
         try:

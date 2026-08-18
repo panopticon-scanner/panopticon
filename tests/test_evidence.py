@@ -4,7 +4,8 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill"))
 import scripts.evidence as evidence
-import scripts.evidence as ev
+
+ev = evidence
 
 
 def _finding(**kw):
@@ -21,78 +22,78 @@ class TestDeriveEvidence(unittest.TestCase):
         # P2/#446: no verdict means the tool's claim is reported, not verified.
         f = _finding(source="tool:semgrep",
                      provenance={"confirmation_reasoning": "Reported by semgrep"})
-        ev = evidence.derive_evidence(f)
-        self.assertEqual(ev["status"], "tool_reported")
-        self.assertEqual(ev["verified_by"], "tool:semgrep")
-        self.assertEqual(ev["reasoning"], "Reported by semgrep")
-        self.assertEqual(ev["citation_quality"], "partial")
+        derived = ev.derive_evidence(f)
+        self.assertEqual(derived["status"], "tool_reported")
+        self.assertEqual(derived["verified_by"], "tool:semgrep")
+        self.assertEqual(derived["reasoning"], "Reported by semgrep")
+        self.assertEqual(derived["citation_quality"], "partial")
 
     def test_confirmed_verdict_is_advisor_confirmed(self):
-        ev = evidence.derive_evidence(
+        derived = ev.derive_evidence(
             _finding(), {"verdict": "CONFIRMED", "reasoning": "sink verified"})
-        self.assertEqual(ev["status"], "advisor_confirmed")
-        self.assertEqual(ev["verified_by"], "agent:advisor")
-        self.assertEqual(ev["reasoning"], "sink verified")
+        self.assertEqual(derived["status"], "advisor_confirmed")
+        self.assertEqual(derived["verified_by"], "agent:advisor")
+        self.assertEqual(derived["reasoning"], "sink verified")
 
     def test_rejected_verdict_is_rejected(self):
-        ev = evidence.derive_evidence(
+        derived = ev.derive_evidence(
             _finding(), {"verdict": "REJECTED", "reasoning": "no sink"})
-        self.assertEqual(ev["status"], "rejected")
+        self.assertEqual(derived["status"], "rejected")
 
     def test_needs_more_info_verdict(self):
-        ev = evidence.derive_evidence(
+        derived = ev.derive_evidence(
             _finding(), {"verdict": "NEEDS_MORE_INFO", "reasoning": "need config"})
-        self.assertEqual(ev["status"], "needs_more_info")
-        self.assertEqual(ev["reasoning"], "need config")
+        self.assertEqual(derived["status"], "needs_more_info")
+        self.assertEqual(derived["reasoning"], "need config")
 
     def test_verdict_beats_corroboration(self):
-        ev = evidence.derive_evidence(
+        derived = ev.derive_evidence(
             _finding(corroborated=True, corroborated_by=["security", "database"]),
             {"verdict": "REJECTED", "reasoning": "r"})
-        self.assertEqual(ev["status"], "rejected")
+        self.assertEqual(derived["status"], "rejected")
 
     def test_verdict_beats_tool_source(self):
         # P2/#446: precedence inverted. An advisor verdict now outranks
         # tool-sourcing -- the whole point being that an advisor CAN refute a
         # scanner (e.g. Bandit B105 flagging a CSS-class-name string as a
         # "hardcoded password").
-        ev = evidence.derive_evidence(
+        derived = ev.derive_evidence(
             _finding(source="tool:bandit"), {"verdict": "REJECTED"})
-        self.assertEqual(ev["status"], "rejected")
+        self.assertEqual(derived["status"], "rejected")
 
     def test_cross_panel_corroborated(self):
-        ev = evidence.derive_evidence(
+        derived = ev.derive_evidence(
             _finding(corroborated=True, corroborated_by=["security", "database"]))
-        self.assertEqual(ev["status"], "corroborated")
-        self.assertEqual(ev["verified_by"], ["security", "database"])
+        self.assertEqual(derived["status"], "corroborated")
+        self.assertEqual(derived["verified_by"], ["security", "database"])
 
     def test_reinforced_is_tool_reported(self):
         # A tool+agent same-locus merge is tool-reported by construction
         # (never demoted to mere `corroborated`), but P2/#446 means that alone
         # no longer gates -- it still needs an advisor CONFIRMED verdict to
         # reach tool_confirmed.
-        ev = evidence.derive_evidence(_finding(reinforced=True))
-        self.assertEqual(ev["status"], "tool_reported")
-        self.assertEqual(ev["verified_by"], "tool+agent")
+        derived = ev.derive_evidence(_finding(reinforced=True))
+        self.assertEqual(derived["status"], "tool_reported")
+        self.assertEqual(derived["verified_by"], "tool+agent")
 
     def test_default_is_unverified(self):
-        ev = evidence.derive_evidence(_finding())
-        self.assertEqual(ev["status"], "unverified")
-        self.assertIsNone(ev["verified_by"])
-        self.assertIsNone(ev["reasoning"])
+        derived = ev.derive_evidence(_finding())
+        self.assertEqual(derived["status"], "unverified")
+        self.assertIsNone(derived["verified_by"])
+        self.assertIsNone(derived["reasoning"])
 
     def test_never_mutates_severity_or_confidence(self):
         for verdict in (None, {"verdict": "CONFIRMED"}, {"verdict": "REJECTED"},
                         {"verdict": "NEEDS_MORE_INFO"}):
             f = _finding()
-            evidence.derive_evidence(f, verdict)
+            ev.derive_evidence(f, verdict)
             self.assertEqual(f["severity"], "HIGH")
             self.assertEqual(f["confidence"], "POSSIBLE")
 
     def test_missing_citation_quality_defaults_none(self):
         f = _finding()
         del f["citation_quality"]
-        self.assertEqual(evidence.derive_evidence(f)["citation_quality"], "none")
+        self.assertEqual(ev.derive_evidence(f)["citation_quality"], "none")
 
 
 class TestToolReported(unittest.TestCase):

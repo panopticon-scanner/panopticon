@@ -1,5 +1,7 @@
 # tests/test_coverage_model.py
-import sys, os
+import os
+import sys
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "skill", "scripts"))
 import coverage_model as cov
 

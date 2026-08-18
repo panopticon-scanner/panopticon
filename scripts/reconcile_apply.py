@@ -318,7 +318,8 @@ def main(argv=None):
         return 0
 
     if a.cmd == "apply":
-        actions = json.load(open(a.actions_json, encoding="utf-8"))
+        with open(a.actions_json, encoding="utf-8") as fh:
+            actions = json.load(fh)
         commented, closed = apply(actions, dry=a.dry_run, confirm_close=a.confirm_close,
                                   throttle=a.throttle)
         print("%s: commented %d, closed %d"

@@ -1,4 +1,6 @@
+import json
 import re
+
 import evidence
 import synthesize
 
@@ -59,7 +61,6 @@ def test_load_findings_fills_missing_id_and_keeps_valid_one(tmp_path):
     assert out[1]["id"] == "SEC-001"            # reviewer id preserved
 
 def test_matrix_report_has_no_id_schema_error(tmp_path):
-    import json
     p = tmp_path / "findings-app-COD.json"
     p.write_text(json.dumps({"findings": [
         {"domain": "COD", "code": "COD-A1A", "severity": "LOW",
@@ -67,5 +68,6 @@ def test_matrix_report_has_no_id_schema_error(tmp_path):
          "location": {"file": "a.py", "line_start": 3}, "category": "logic"}]}))
     out = str(tmp_path / "report.json")
     synthesize.main(["--out", out, str(p)])
-    rep = json.load(open(out))
+    with open(out, encoding="utf-8") as fh:
+        rep = json.load(fh)
     assert ID_RE.match(rep["findings"][0]["id"])

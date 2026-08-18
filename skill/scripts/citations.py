@@ -237,10 +237,22 @@ def enrich_citations(findings, catalog, epss_enabled=False, cache_path=None, ope
             tool_sourced = is_tool_sourced(f)
             clean = {}
             cwe_objs = []
-            for cid in _raw_cwe_ids(raw):
-                v = validate_cwe(cid, catalog, tool_sourced=tool_sourced)
-                if v:
-                    cwe_objs.append(v)
+            for entry in raw.get("cwe") if isinstance(raw.get("cwe"), list) else []:
+                if isinstance(entry, dict):
+                    cid = entry.get("id")
+                    if isinstance(cid, str):
+                        v = validate_cwe(cid, catalog, tool_sourced=tool_sourced)
+                        if v:
+                            if entry.get("derived"):
+                                v["derived"] = True
+                                v["verified"] = False
+                            elif "verified" in entry:
+                                v["verified"] = entry["verified"]
+                            cwe_objs.append(v)
+                elif isinstance(entry, str):
+                    v = validate_cwe(entry, catalog, tool_sourced=tool_sourced)
+                    if v:
+                        cwe_objs.append(v)
             if cwe_objs:
                 clean["cwe"] = cwe_objs
             owasp_raw = raw.get("owasp")

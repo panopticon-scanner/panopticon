@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -6,12 +8,17 @@ import tempfile
 import textwrap
 import types
 import unittest
+from unittest import mock
 
 SCRIPTS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                        "skill", "scripts")
 
 sys.path.insert(0, SCRIPTS)
+import discovery  # noqa: E402
 import discovery as orch  # noqa: E402  (P6.5 Slice A: orchestrator.py retired)
+import setup_flow  # noqa: E402
+
+orchestrator = orch
 
 
 def _run(script, *args, cwd=None):
@@ -25,17 +32,17 @@ class TestDiscoveryRepoScanParity(unittest.TestCase):
     matrix core)."""
 
     def _repo(self):
-        d = os.path.realpath(tempfile.mkdtemp())
-        self.addCleanup(lambda: __import__("shutil").rmtree(d, ignore_errors=True))
+        d = tempfile.mkdtemp()
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", d], check=False))
         g = ["git", "-C", d]
-        subprocess.run(["git", "init", "-q", d], check=True)
-        subprocess.run(g + ["config", "user.email", "t@t"], check=True)
-        subprocess.run(g + ["config", "user.name", "t"], check=True)
+        subprocess.run(g + ["init", "-q"], check=True)
+        subprocess.run(g + ["config", "user.name", "Test"], check=True)
+        subprocess.run(g + ["config", "user.email", "test@example.com"], check=True)
         os.makedirs(os.path.join(d, "src", "checkout"))
-        with open(os.path.join(d, "src", "checkout", "pay.py"), "w") as fh:
-            fh.write("x = 1\n")
+        with open(os.path.join(d, "src", "checkout", "pay.py"), "w", encoding="utf-8") as fh:
+            fh.write("# pay\n")
         os.makedirs(os.path.join(d, ".panopticon"))
-        with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
+        with open(os.path.join(d, ".panopticon", "groups.yml"), "w", encoding="utf-8") as fh:
             fh.write("groups:\n  Checkout:\n    match: ['src/checkout/**']\n    panels: [SEC]\n")
         subprocess.run(g + ["add", "-A"], check=True)
         subprocess.run(g + ["commit", "-qm", "init"], check=True)
@@ -48,15 +55,15 @@ class TestDiscoveryRepoScanParity(unittest.TestCase):
         proc = _run("discovery.py", "--repo-scan", "--security", "standard",
                     d, "--out", out, cwd=d)
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        data = json.load(open(out))
+        with open(out, encoding="utf-8") as fh:
+            data = json.load(fh)
         names = {g["name"] for g in data["groups"]}
         self.assertIn("Checkout", names)
 
     def test_matrix_catalog_normalizes_scalar_match(self):
-        import discovery
         d = self._repo()
         # a scalar match must normalize to [] (SEC-3), never char-split
-        with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
+        with open(os.path.join(d, ".panopticon", "groups.yml"), "w", encoding="utf-8") as fh:
             fh.write("groups:\n  Bad:\n    match: src/**\n    panels: [SEC]\n")
         cat = discovery._matrix_catalog(d)
         self.assertEqual(cat.get("Bad", {}).get("match", None), [])
@@ -196,8 +203,6 @@ def _touch(root, rel, content=""):
 
 
 def _run_scan_helper(d, *extra):
-    import io
-    import contextlib
     buf = io.StringIO()
     err = io.StringIO()
     with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
@@ -226,8 +231,6 @@ class TestRepoScanDiscovery(unittest.TestCase):
         # #5.0-07: a whole-repo (non-delta) scan must drop a stale diff-hunks.json
         # left by a prior -c/--pr run, or the driver's file-existence check would
         # re-scope this run to the old diff and PASS vacuously.
-        import io
-        import contextlib
         with tempfile.TemporaryDirectory() as d:
             self._touch(d, "src/app.py")
             pano = os.path.join(d, ".panopticon")
@@ -784,7 +787,6 @@ class TestChangedFilesRenameParity(unittest.TestCase):
     on-diff hunk map can never diverge on a similarity-threshold edge."""
 
     def test_diff_invocation_includes_find_renames(self):
-        from unittest import mock
         calls = []
 
         def fake_git(repo, args):
@@ -820,7 +822,6 @@ class TestGroupsFormatReconciliation(unittest.TestCase):
         # _seed_groups_manifest lives in setup_flow.py (orchestrator only ever
         # re-exported it); load_catalog is the discovery primitive this test
         # actually guards.
-        import setup_flow
         d = self._repo()
         for sub in ("src", "tests"):
             os.makedirs(os.path.join(d, sub))
@@ -1114,7 +1115,6 @@ def test_setup_readiness_scalar_match_only_reports_gap_not_ok(tmp_path):
     # re-exported it); the SEC-3 regression it guards is discovery-side
     # (setup_flow.setup_readiness calls discovery._matrix_catalog directly),
     # so this stays a discovery-side regression test.
-    import setup_flow
     os.makedirs(str(tmp_path / ".git"))
     os.makedirs(str(tmp_path / ".panopticon"))
     (tmp_path / ".panopticon" / "groups.yml").write_text(

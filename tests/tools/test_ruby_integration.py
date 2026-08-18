@@ -2,10 +2,9 @@ import os
 import unittest
 
 from scripts.tools import ADAPTERS
+from conftest import FIXTURE_ROOT
 
-FIXTURE_ROOT = os.environ.get(
-    "FIXTURE_ROOT", os.path.join(os.path.dirname(__file__), "..", "fixtures")
-)
+OK_SCAN_EXIT_CODES = (0, 1)  # 0 = clean exit, 1 = findings detected
 
 
 class TestRubyIntegration(unittest.TestCase):
@@ -23,7 +22,7 @@ class TestRubyIntegration(unittest.TestCase):
         self.assertTrue(adapter.is_applicable(target),
                         "brakeman should apply to the railsgoat Rails project")
         raw, rc = adapter.invoke(target)
-        self.assertIn(rc, (0, 1), f"brakeman errored (rc {rc}) on railsgoat")
+        self.assertIn(rc, OK_SCAN_EXIT_CODES, f"brakeman errored (rc {rc}) on railsgoat")
         findings = adapter.parse(raw, "g1")
         self.assertTrue(findings, "expected brakeman findings against railsgoat")
 
@@ -35,7 +34,7 @@ class TestRubyIntegration(unittest.TestCase):
         self.assertTrue(adapter.is_applicable(target),
                         "bundler-audit should apply to the railsgoat Rails project")
         raw, rc = adapter.invoke(target)
-        self.assertIn(rc, (0, 1), f"bundler-audit errored (rc {rc}) on railsgoat")
+        self.assertIn(rc, OK_SCAN_EXIT_CODES, f"bundler-audit errored (rc {rc}) on railsgoat")
         findings = adapter.parse(raw, "g1")
         self.assertTrue(findings, "expected bundler-audit findings")
 

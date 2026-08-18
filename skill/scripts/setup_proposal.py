@@ -150,12 +150,16 @@ def _group_name(capability):
 def assemble(proposal, vocabulary, affinity):
     """Return (groups_mapping | None, disclosure).
 
-    Matched capability -> affinity floor; custom/unknown -> empty floor
-    (scout-only). The assembled mapping is round-tripped through
-    groups_schema.parse_groups; a schema violation returns (None, disclosure)
-    with the errors, so setup fails loudly rather than writing a bad draft.
-    Collisions (same post-_group_name name) are merged: first occurrence's floor
-    wins, match/tests are unioned, collision is recorded in disclosure.
+    Floor outcomes:
+    - matched capability with affinity entry -> affinity floor (`floor_source: "affinity"`)
+    - custom or unknown capability -> empty floor (`floor_source: "empty(scout-only)"`)
+    - known capability absent from affinity table -> empty floor (`floor_source: "affinity(missing)"`)
+
+    The assembled mapping is round-tripped through groups_schema.parse_groups; a
+    schema violation returns (None, disclosure) with the errors, so setup fails
+    loudly rather than writing a bad draft. Collisions (same post-_group_name name)
+    are merged: first occurrence's floor wins, match/tests are unioned, collision
+    is recorded in disclosure.
     """
     errors = validate_proposal(proposal)
     if errors:

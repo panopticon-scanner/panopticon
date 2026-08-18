@@ -45,7 +45,8 @@ def decide(tool_name, file_path, allowlist):
     try:
         raw = os.path.abspath(file_path or "")
         if os.path.islink(raw):
-            return False, ("write to %s is denied: findings targets must not be symlinks" % file_path)
+            return False, (
+                "write to %s is denied: findings targets must not be symlinks" % file_path)
         target = os.path.realpath(raw)
     except (ValueError, OSError, TypeError):
         # TypeError: a non-string file_path (int/list/dict) — os.path.* rejects
@@ -56,6 +57,17 @@ def decide(tool_name, file_path, allowlist):
         return True, ""
     return False, ("write to %s is outside the fan-out allowlist; reviewers may "
                    "write only to plan-declared findings files" % file_path)
+
+
+def _deny_response(reason):
+    return json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }
+    })
+
 
 def main():
     try:
@@ -78,19 +90,13 @@ def main():
     else:
         load_error = "write guard allowlist is malformed"
     if not isinstance(loaded, list) or not all(isinstance(p, str) for p in loaded):
-        print(json.dumps({"hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": load_error}}))
+        print(_deny_response(load_error))
         return 0
     allowlist = set(loaded)
     allow, reason = decide(tool_name, file_path, allowlist)
     if allow:
         return 0
-    print(json.dumps({"hookSpecificOutput": {
-        "hookEventName": "PreToolUse",
-        "permissionDecision": "deny",
-        "permissionDecisionReason": reason}}))
+    print(_deny_response(reason))
     return 0
 
 

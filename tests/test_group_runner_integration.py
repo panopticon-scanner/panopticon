@@ -5,7 +5,12 @@
 # real plan, a dispatched reviewer's in-allowlist write succeeded and its
 # out-of-scope write was denied by the harness. Re-run that live smoke test if
 # the hook plumbing or its paths change.
-import json, os, tempfile, unittest, sys
+import json
+import os
+import sys
+import tempfile
+import unittest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill"))
 import scripts.group_runner as gr
 import scripts.write_guard_hook as wg

@@ -89,9 +89,11 @@ class TestX0XReport(unittest.TestCase):
             import jsonschema
         except ImportError:
             self.skipTest("jsonschema not installed")
-        schema = json.load(open(os.path.join(
+        schema_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "skill", "reference", "x0x-report-schema.json")))
+            "skill", "reference", "x0x-report-schema.json")
+        with open(schema_path, encoding="utf-8") as fh:
+            schema = json.load(fh)
         meta = {"version": "5.0.1", "ocrdb_version": "0.3.1", "target": "/r",
                 "timestamp": "t"}
         findings = [_f("COD-X0X", "COD", "LOW", "dup block", "a.py", 1, "f1"),

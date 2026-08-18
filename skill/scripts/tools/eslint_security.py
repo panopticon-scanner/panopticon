@@ -1,6 +1,5 @@
 """eslint-plugin-security adapter for JS/TS security anti-patterns."""
 from __future__ import annotations
-import glob
 import os
 from .base import make_finding, omit_none, parse_json_bytes, run_tool
 
@@ -26,24 +25,27 @@ class EslintSecurityAdapter:
     prefix = "ESS"
 
     def applicable_files(self, target: str) -> list[str]:
-        """The concrete files that make this adapter applicable.
-
-        Coverage gating (run_tools + security_gate) uses this to decide whether
-        the adapter has any in-scope surface once the gate's --exclude globs are
-        applied: an adapter whose every applicable file is excluded cannot
-        produce a gate-relevant finding, so a missing run is disclosed, not a
-        coverage failure.
-        """
+        """The concrete files that make this adapter applicable."""
         matched: list[str] = []
-        for pattern in ("**/*.js", "**/*.ts", "**/*.jsx", "**/*.tsx"):
-            matched.extend(glob.glob(os.path.join(target, pattern), recursive=True))
+        for root, dirs, files in os.walk(target):
+            dirs[:] = [d for d in dirs if d != "node_modules"]
+            for f in files:
+                if f.endswith((".js", ".ts", ".jsx", ".tsx")):
+                    matched.append(os.path.join(root, f))
         pkg = os.path.join(target, "package.json")
         if os.path.isfile(pkg):
             matched.append(pkg)
         return matched
 
     def is_applicable(self, target: str) -> bool:
-        return bool(self.applicable_files(target))
+        if os.path.isfile(os.path.join(target, "package.json")):
+            return True
+        for root, dirs, files in os.walk(target):
+            dirs[:] = [d for d in dirs if d != "node_modules"]
+            for f in files:
+                if f.endswith((".js", ".ts", ".jsx", ".tsx")):
+                    return True
+        return False
 
     def _lintable_sources(self, target: str) -> list[str]:
         """The actual source files eslint would lint: applicable_files minus the

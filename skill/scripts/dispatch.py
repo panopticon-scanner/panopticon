@@ -442,18 +442,24 @@ def build_plan(scope_profile, host=None, model_overrides=None, agents_dir=None,
                scope_bound=False):
     """Return a DispatchPlan: list of agent invocations.
 
-    Each invocation has:
+    Each invocation entry has:
     - role: lens_sweep | panel_review
-    - agent: Kimi Code custom agent name (or registered name if enforced)
+    - agent: custom agent name (or registered name if enforced)
     - model: resolved model config dict
     - panel: panel name
-    - lens: lens name (for lens_sweep only)
-    - files: list of files to review
+    - lens: lens name (for lens_sweep; None for panel_review)
+    - files: list of repository-relative file paths to review
     - group: group name
     - depth: panel depth
+    - security_mode: security mode (standard | redteam)
     - enforced: boolean, true if this role is registered in agents_dir
-    - lenses: list of non-spawned lens names (for panel_review only)
-    - out_file: ABSOLUTE path where the agent should write findings
+    - lenses: list of non-spawned lens names (for panel_review)
+    - out_file: ABSOLUTE path where findings JSON should be written
+    - prompt: fully rendered task prompt text
+    - run_id: run identifier string or None
+    - scope_bound: boolean indicating if assignment is bound
+    - scope_sha256: SHA-256 digest of the assignment when scope_bound is True
+    - delivery / execution: optional delivery and execution contracts (e.g. for codex)
 
     ``out_file`` is rooted at *root* (default: the current working directory,
     i.e. the run's repo/worktree root) and emitted ABSOLUTE (#935). A reviewer
@@ -535,6 +541,7 @@ def build_plan(scope_profile, host=None, model_overrides=None, agents_dir=None,
                    if panel_enforced else agent_name("panel_review"))
     lens_agent = (registered_agent_name(ROLE_FILES["lens_sweep"])
                   if lens_enforced else agent_name("lens_sweep"))
+    files_abs = [os.path.join(root, f) for f in files]
 
     for panel_name in panels_in_priority_order(panels):
         panel_name = _artifact_token(panel_name, "panel")
@@ -557,7 +564,6 @@ def build_plan(scope_profile, host=None, model_overrides=None, agents_dir=None,
         # made reviewers read the session-root checkout instead of the PR
         # worktree -- the read-side mirror of #935. entry["files"] stays
         # repo-relative (the out_of_scope checker and swarm routing key on it).
-        files_abs = [os.path.join(root, f) for f in files]
         panel_mapping = {
             "panel": panel_name, "group": group_name,
             "file_list": ", ".join(files_abs),
