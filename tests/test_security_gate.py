@@ -102,6 +102,18 @@ class TestSecurityGate(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "excluded_scope overlaps"):
                 gate.evaluate(tools, manifest)
 
+    def test_unexpected_scanner_output_recorded_as_failure(self):
+        with tempfile.TemporaryDirectory() as root:
+            tools, manifest = self._write(
+                root, {"selected": ["semgrep"], "produced": ["semgrep"], "missing": []},
+                _sarif())
+            # Add an extra tool output file not declared in the manifest
+            bandit_file = os.path.join(tools, "bandit.json")
+            with open(bandit_file, "w", encoding="utf-8") as fh:
+                json.dump({"results": []}, fh)
+            _, _, failures, _ = gate.evaluate(tools, manifest)
+        self.assertTrue(any("unexpected scanner output: bandit" in f for f in failures))
+
     def test_large_sarif_file_loading(self):
         # Generate a large SARIF file with many findings to verify performance and scaling
         results = [

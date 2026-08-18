@@ -1412,8 +1412,30 @@ class TestHtmlOut(unittest.TestCase):
             rc = syn.main(["--target", "test", "--out", out_json, "--html-out", out_html, finding])
             self.assertEqual(rc, 0)
             self.assertTrue(os.path.exists(out_html))
-            with open(out_html) as fh:
+            with open(out_html, encoding="utf-8") as fh:
                 self.assertIn("<!DOCTYPE html>", fh.read())
+
+    def test_html_out_escapes_special_characters(self):
+        with tempfile.TemporaryDirectory() as d:
+            out_json = os.path.join(d, "report.json")
+            out_html = os.path.join(d, "report.html")
+            finding = os.path.join(d, "findings-x-code.json")
+            with open(finding, "w", encoding="utf-8") as fh:
+                json.dump({"findings": [{
+                    "id": "CODE-001",
+                    "title": "<script>alert('title')</script>",
+                    "description": "<b>Description with <img src=x onerror=alert(1)></b>",
+                    "severity": "LOW",
+                    "panel": "code",
+                    "category": "style",
+                    "location": {"file": "<script>a.py</script>", "line_start": 1}
+                }]}, fh)
+            rc = syn.main(["--target", "test", "--out", out_json, "--html-out", out_html, finding])
+            self.assertEqual(rc, 0)
+            with open(out_html, encoding="utf-8") as fh:
+                content = fh.read()
+            self.assertNotIn("<script>alert('title')</script>", content)
+            self.assertNotIn("<img src=x onerror=alert(1)>", content)
 
     def test_compare_mode_writes_html(self):
         with tempfile.TemporaryDirectory() as d:

@@ -1,6 +1,6 @@
 import io
 import json
-import os, sys, tempfile, unittest
+import os, shutil, sys, tempfile, unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill"))
 import scripts.run_tools as rt
 import scripts._run_adapter as ra
@@ -168,7 +168,8 @@ class TestRunTools(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             out_dir = os.path.join(d, "out")
             rt.run_tools(d, ["semgrep"], out_dir, image="panopticon-tools", runner=runner)
-            expected = ["docker", "run", "--rm", "--network", "none",
+            docker_bin = shutil.which("docker") or "docker"
+            expected = [docker_bin, "run", "--rm", "--network", "none",
                         "-v", "%s:/src:ro" % os.path.abspath(d),
                         "panopticon-tools"] + rt.TOOL_CMD["semgrep"]
             self.assertEqual(calls[0], expected)   # exact argv: flags, :ro mount, image, per-tool cmd

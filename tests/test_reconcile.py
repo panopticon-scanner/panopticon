@@ -31,6 +31,10 @@ class TestLoadReport(unittest.TestCase):
         with self.assertRaises(ValueError):
             reconcile._resolve_part_path(FIXTURES, "../../etc/passwd")
 
+    def test_rejects_absolute_path_parts_entry(self):
+        with self.assertRaises(ValueError):
+            reconcile._resolve_part_path(FIXTURES, "/etc/passwd")
+
     def test_bare_filename_with_same_dir_part_does_not_raise(self):
         # Regression test: os.path.dirname("run2.json") == "" when the
         # caller passes a bare filename (the normal case when running the

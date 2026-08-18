@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -19,9 +20,13 @@ def run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, check=True, **kwargs)
 
 
+def _docker_bin() -> str:
+    return shutil.which("docker") or "docker"
+
+
 def docker_available() -> bool:
     result = subprocess.run(
-        ["docker", "version"],
+        [_docker_bin(), "version"],
         capture_output=True,
     )
     return result.returncode == 0
@@ -29,7 +34,7 @@ def docker_available() -> bool:
 
 def image_exists(tag: str) -> bool:
     result = subprocess.run(
-        ["docker", "image", "inspect", tag],
+        [_docker_bin(), "image", "inspect", tag],
         capture_output=True,
     )
     return result.returncode == 0
@@ -37,7 +42,7 @@ def image_exists(tag: str) -> bool:
 
 def build_image(tag: str) -> None:
     run([
-        "docker", "build",
+        _docker_bin(), "build",
         "-f", str(DOCKERFILE),
         "-t", tag,
         str(REPO_ROOT),
@@ -83,7 +88,7 @@ def check_fixtures(tag: str, fixtures: list[dict]) -> tuple[list[str], list[str]
         'if [ -d "$p" ]; then printf "PRESENT:%s\n" "$p"; else printf "MISSING:%s\n" "$p"; fi; '
         'done'
     )
-    cmd = ["docker", "run", "--rm", tag, "sh", "-c", test_script, "sh", *paths]
+    cmd = [_docker_bin(), "run", "--rm", tag, "sh", "-c", test_script, "sh", *paths]
     # Bound the docker call so a hung container can't wedge the fixture run
     # (consistent with run_tools.py's timeouts; run-4 self-scan C15).
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
@@ -108,7 +113,7 @@ def run_tests(tag: str, test: str | None = None) -> int:
         pytest_args.extend(["-k", f"test_{test}_integration"])
     pytest_args.extend(test_paths)
     cmd = [
-        "docker", "run", "--rm",
+        _docker_bin(), "run", "--rm",
         "-e", "FIXTURE_ROOT=/opt/panopticon-fixtures",
         "-v", f"{repo}/skill:/opt/panopticon/skill:ro",
         "-v", f"{repo}/tests:/opt/panopticon/tests:ro",

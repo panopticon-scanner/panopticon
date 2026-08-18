@@ -13,6 +13,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -248,8 +249,9 @@ def create(title, body, labels, dry, throttle=0.0, env=None):
         return None
     if env is None:
         env = triage.gh_env()
+    gh_bin = shutil.which("gh") or "gh"
     for attempt in range(1, 6):
-        r = subprocess.run(["gh", "issue", "create", "--title", title,
+        r = subprocess.run([gh_bin, "issue", "create", "--title", title,
                             "--body", body, "--label", ",".join(labels)],
                            capture_output=True, text=True,
                            env=env)

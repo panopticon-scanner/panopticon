@@ -13,9 +13,11 @@ import functools
 import glob as _glob
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
+
 
 # #5.0-01: when run directly (`python3 skill/scripts/driver.py run ...`, the
 # documented entrypoint) the package roots are not on sys.path, so the
@@ -25,26 +27,35 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))                   # skill/scripts
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # skill
 
-import yaml
+import yaml  # noqa: E402
 
-import scripts.coverage_model as coverage_model
-import scripts.diff_map as diff_map
-import scripts.dispatch as dispatch
-import scripts.evidence as evidence
-import scripts.group_runner as group_runner
-import scripts.groups_schema as groups_schema
-import scripts.ingest_tools as ingest_tools
-import scripts.ocrdb as ocrdb
-import scripts.plan_contract as plan_contract
-import scripts.run_tools as run_tools
-import scripts.run_manifest as run_manifest
-import scripts.score_gate as score_gate
-import scripts.setup_flow as setup_flow
-import scripts.synthesize as synthesize
+import scripts.coverage_model as coverage_model  # noqa: E402
+import scripts.diff_map as diff_map  # noqa: E402
+import scripts.dispatch as dispatch  # noqa: E402
+import scripts.evidence as evidence  # noqa: E402
+import scripts.group_runner as group_runner  # noqa: E402
+import scripts.groups_schema as groups_schema  # noqa: E402
+import scripts.ingest_tools as ingest_tools  # noqa: E402
+import scripts.ocrdb as ocrdb  # noqa: E402
+import scripts.plan_contract as plan_contract  # noqa: E402
+import scripts.run_tools as run_tools  # noqa: E402
+import scripts.run_manifest as run_manifest  # noqa: E402
+import scripts.score_gate as score_gate  # noqa: E402
+import scripts.setup_flow as setup_flow  # noqa: E402
+import scripts.synthesize as synthesize  # noqa: E402
 
 CHECKPOINT_KINDS = ("scout", "review", "verify", "scan")
 
 _SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _redact_output(text):
+    if not text:
+        return ""
+    redacted = re.sub(r"(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{16,}", "[REDACTED_TOKEN]", str(text))
+    redacted = re.sub(r"(?:sk-[A-Za-z0-9_-]{16,})", "[REDACTED_KEY]", redacted)
+    redacted = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._-]{16,}", r"\1[REDACTED]", redacted)
+    return redacted
 
 
 class DriverError(Exception):
@@ -260,7 +271,7 @@ def discovery_execute(review_root, manifest):
     if not _json_parses(out):
         raise DriverError(
             "discovery: discovery --repo-scan produced no groups.json "
-            "(rc=%s): %s" % (proc.returncode, (proc.stderr or proc.stdout)[:400]))
+            "(rc=%s): %s" % (proc.returncode, _redact_output((proc.stderr or proc.stdout)[:400])))
     return PhaseResult(kind="advanced", message="discovery: groups.json written")
 
 
@@ -550,7 +561,8 @@ def tools_execute(review_root, manifest):
     # selected adapter produces nothing, so the run stays honest without a hard
     # stop that a missing Docker image doesn't deserve.
     crashed = (not produced) and proc.returncode not in (0, None)
-    note = "" if produced else ((proc.stderr or "").strip()[:300]
+    raw_err = (proc.stderr or "").strip()[:300]
+    note = "" if produced else (_redact_output(raw_err)
                                 or ("tool scan crashed" if crashed
                                     else "no tool output produced"))
     _write_json(_pano(review_root, "tools-ran.json"),
@@ -1095,7 +1107,7 @@ def synthesize_execute(review_root, manifest):
     # outcome, not a driver error. Only an ABSENT report is a failure.
     if not _json_parses(report):
         raise DriverError("synthesize produced no report.json (rc=%s): %s"
-                          % (proc.returncode, (proc.stderr or proc.stdout)[:400]))
+                          % (proc.returncode, _redact_output((proc.stderr or proc.stdout)[:400])))
     # §5.1: point the flat compat paths at the latest tag-named report, so every
     # existing reader of report.json / report.json.html resolves it unchanged, and
     # refresh runs/latest. The tag-named files are the durable top-level outputs;
