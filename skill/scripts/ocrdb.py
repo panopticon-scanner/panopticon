@@ -66,10 +66,16 @@ def domain_menu(bundle, domain):
     if not isinstance(bundle, dict):
         return []
     dom = (bundle.get("domains") or {}).get(domain) or {}
+    if not isinstance(dom, dict):
+        return []
     entries = dom.get("entries") or {}
+    if not isinstance(entries, dict):
+        return []
     menu = []
     for code in sorted(entries):
-        entry = entries[code] or {}
+        entry = entries[code]
+        if not isinstance(entry, dict):
+            continue
         sev = entry.get("default_severity")
         item = {"code": code,
                 "name": entry.get("name", ""),
@@ -91,10 +97,16 @@ def domain_criteria(bundle, domain):
     if not isinstance(bundle, dict):
         return []
     dom = (bundle.get("domains") or {}).get(domain) or {}
+    if not isinstance(dom, dict):
+        return []
     entries = dom.get("entries") or {}
+    if not isinstance(entries, dict):
+        return []
     out = []
     for code in sorted(entries):
-        entry = entries[code] or {}
+        entry = entries[code]
+        if not isinstance(entry, dict):
+            continue
         crit = entry.get("criteria")
         if crit:
             out.append({"code": code, "name": entry.get("name", ""),

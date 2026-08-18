@@ -7,8 +7,9 @@ no-secret container (recorded in report meta); pip-audit/npm-audit run only
 under --online. Degrades gracefully when Docker is absent. Stdlib-only.
 """
 import fnmatch
-import os
 import json
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -238,12 +239,13 @@ def run_tools(target, tools, out_dir, image="panopticon-tools", runner=None, onl
     os.makedirs(out_dir, exist_ok=True)
     tools = filter_online(tools, online)
     written = []
+    docker_bin = shutil.which("docker") or "docker"
     for tool in tools:
         # Legacy SARIF path (kept for backward compatibility).
         cmd = TOOL_CMD.get(tool)
         if cmd:
             out_path = os.path.join(out_dir, "%s.sarif" % tool)
-            docker = ["docker", "run", "--rm", "--network", "none",
+            docker = [docker_bin, "run", "--rm", "--network", "none",
                       "-v", "%s:/src:ro" % os.path.abspath(target), image] + cmd
             done = _capture_run("tool", tool, docker, out_path, runner)
             if done:
@@ -255,7 +257,7 @@ def run_tools(target, tools, out_dir, image="panopticon-tools", runner=None, onl
         if adapter:
             ext = "sarif" if tool in LEGACY_SARIF_TOOLS else "json"
             out_path = os.path.join(out_dir, "%s.%s" % (tool, ext))
-            docker = ["docker", "run", "--rm"]
+            docker = [docker_bin, "run", "--rm"]
             if tool not in ONLINE_ONLY:
                 docker.extend(["--network", "none"])
             # Mount the checkout's adapter code over the image's baked-in copy

@@ -543,6 +543,13 @@ class TestGlobSemantics(unittest.TestCase):
         self.assertFalse(rx.match("a/b/c/y"))
         self.assertTrue(self._m("a/b/x", ["**/" * 25 + "x"]))
 
+    def test_single_star_chain_no_redos(self):
+        rx = orch._glob_to_re("*/" * 20 + "file.py")
+        path = "a/" * 20 + "file.py"
+        self.assertTrue(rx.match(path))
+        self.assertFalse(rx.match("a/" * 19 + "file.py"))
+        self.assertTrue(self._m(path, ["*/" * 20 + "file.py"]))
+
     def test_no_slash_matches_basename_at_any_depth(self):
         self.assertTrue(self._m("README.md", ["*.md"]))
         self.assertTrue(self._m("docs/deep/notes.md", ["*.md"]))

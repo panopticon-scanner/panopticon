@@ -108,6 +108,15 @@ class TestMutations(unittest.TestCase):
         row = fix_row(verdict="duplicate", rank=None, duplicate_of=436)
         self.assertIn("#436", triage.comment_for(row))
 
+    def test_comment_for_handles_mentions_and_markdown(self):
+        row = fix_row(verdict="reject", rank=None,
+                      rationale="Testing @everyone and <script>alert(1)</script> injection",
+                      spot_check="advisor: checked @channel [link](https://example.com)")
+        comment = triage.comment_for(row)
+        self.assertIn("@everyone", comment)
+        self.assertIn("<script>alert(1)</script>", comment)
+        self.assertIn("@channel", comment)
+
 
 class TestStale(unittest.TestCase):
     def test_closed_issue_is_stale(self):

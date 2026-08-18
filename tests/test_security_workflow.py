@@ -53,6 +53,19 @@ class TestSecurityWorkflowTrustBoundary(unittest.TestCase):
         self.assertIn('--manifest "$manifest"', text)
         self.assertIn('--tools-dir "$RUNNER_TEMP/panopticon-tools-output"', text)
 
+    def test_no_untrusted_github_context_in_run_scripts(self):
+        text = self._text()
+        untrusted_contexts = [
+            "${{ github.event.pull_request.title }}",
+            "${{ github.event.pull_request.body }}",
+            "${{ github.event.issue.title }}",
+            "${{ github.event.issue.body }}",
+            "${{ github.event.comment.body }}",
+            "${{ github.event.head_commit.message }}",
+        ]
+        for ctx in untrusted_contexts:
+            self.assertNotIn(ctx, text)
+
 
 if __name__ == "__main__":
     unittest.main()

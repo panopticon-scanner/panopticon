@@ -1,7 +1,12 @@
 """SpotBugs + FindSecBugs adapter for Java/Kotlin security findings."""
 from __future__ import annotations
 import os
-import xml.etree.ElementTree as ET
+
+try:
+    import defusedxml.ElementTree as ET
+except ImportError:
+    import xml.etree.ElementTree as ET
+
 from .base import as_list, make_finding, omit_none, run_tool
 
 _SPOTBUGS_CWE = {

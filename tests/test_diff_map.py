@@ -282,6 +282,21 @@ class TestPrWorktree(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             diff_map.acquire_pr(999, repo=".", runner=runner)
 
+    def test_acquire_rejects_symlink_worktree(self):
+        def runner(argv, **kw):
+            if argv[:3] == ["gh", "pr", "view"]:
+                return mock.Mock(returncode=0, stdout='{"baseRefName": "main"}', stderr="")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with tempfile.TemporaryDirectory() as d:
+            target_dir = os.path.join(d, "target")
+            os.makedirs(target_dir)
+            symlink_path = os.path.join(d, "symlink_wt")
+            os.symlink(target_dir, symlink_path)
+            with mock.patch.object(diff_map, "_worktree_dir", return_value=symlink_path):
+                with self.assertRaisesRegex(RuntimeError, "insecure symlink detected"):
+                    diff_map.acquire_pr(7, repo=".", runner=runner)
+
     def test_release_is_tolerant(self):
         def runner(argv, **kw):
             class R: returncode = 1; stdout = ""; stderr = "not a worktree"
