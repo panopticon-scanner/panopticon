@@ -1,7 +1,7 @@
 # panopticon-tools: bundled static-analysis tools for grounded code review.
 # Build:  docker build -t panopticon-tools .
 # Run:    docker run --rm -v "$PWD":/src:ro panopticon-tools <tool> ...
-FROM python:3.12-slim
+FROM python:3.12-slim@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
@@ -180,11 +180,11 @@ RUN set -euo pipefail \
        ' "dependencies":{"lodash":{"version":"4.17.15"}}}' \
        > /tmp/osv-warm/package-lock.json \
     && printf 'requests==2.31.0\n' > /tmp/osv-warm/requirements.txt \
-    && ( osv-scanner --experimental-offline --experimental-download-offline-databases \
-           --format json --recursive /tmp/osv-warm >/dev/null 2>&1 || true ) \
-    && if [ ! -s /opt/osv-db/osv-scanner/npm/all.zip ] || [ ! -s /opt/osv-db/osv-scanner/PyPI/all.zip ]; then \
-         osv-scanner scan source --offline --download-offline-databases \
-           --format json --recursive /tmp/osv-warm >/dev/null 2>&1 || true; \
+    && if ! osv-scanner --experimental-offline --experimental-download-offline-databases \
+           --format json --recursive /tmp/osv-warm >/dev/null 2>&1; then :; fi \
+    && if [ ! -s /opt/osv-db/osv-scanner/npm/all.zip -o ! -s /opt/osv-db/osv-scanner/PyPI/all.zip ]; then \
+         if ! osv-scanner scan source --offline --download-offline-databases \
+           --format json --recursive /tmp/osv-warm >/dev/null 2>&1; then :; fi; \
        fi \
     && rm -rf /tmp/osv-warm \
     && chmod -R a+rX /opt/osv-db
@@ -197,9 +197,9 @@ RUN --mount=type=secret,id=nvd_api_key \
     set -euo pipefail \
     && : "asset-refresh ${ASSET_REFRESH}" \
     && mkdir -p /opt/odc-data \
-    && KEY="$(cat /run/secrets/nvd_api_key 2>/dev/null || true)" \
-    && ( timeout 600 /opt/dependency-check/bin/dependency-check.sh --updateonly \
-           --data /opt/odc-data ${KEY:+--nvdApiKey "$KEY"} || true ) \
+    && if [ -f /run/secrets/nvd_api_key ]; then KEY="$(cat /run/secrets/nvd_api_key 2>/dev/null)"; else KEY=""; fi \
+    && if ! timeout 600 /opt/dependency-check/bin/dependency-check.sh --updateonly \
+           --data /opt/odc-data ${KEY:+--nvdApiKey "$KEY"}; then :; fi \
     && chmod -R a+rX /opt/odc-data
 
 # SecurityCodeScan offline NuGet feed: warm a package folder via a throwaway
