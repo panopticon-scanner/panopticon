@@ -77,8 +77,29 @@ class TestSchemas(unittest.TestCase):
             "provenance": {}, "citations": {},
         }
         envelope = {"findings": [finding],
-                    "_panopticon": {"run_id": "R", "domain": "SEC", "group": "g"}}
+                    "_panopticon": {"run_id": "R", "domain": "SEC", "group": "g"},
+                    "schema_version": 1}
         validate(instance=envelope, schema=schema)  # must not raise
+
+    def test_advisor_verdict_schema_accepts_schema_version(self):
+        schema = self._load("advisor-verdict-schema.json")
+        verdict = {
+            "finding_id": "SEC-001",
+            "verdict": "CONFIRMED",
+            "confidence": "CERTAIN",
+            "reasoning": "Confirmed via trace",
+            "explored": ["src/app.py"],
+            "references": [],
+            "citations": {},
+            "schema_version": 1,
+        }
+        validate(instance=verdict, schema=schema)  # must not raise
+
+    def test_report_schema_location_requires_positive_line_numbers(self):
+        schema = self._load("report-schema.json")
+        loc_props = schema["properties"]["findings"]["items"]["properties"]["location"]["properties"]
+        self.assertEqual(loc_props["line_start"].get("minimum"), 1)
+        self.assertEqual(loc_props["line_end"].get("minimum"), 1)
 
 
 class TestToolEvidenceSchema(unittest.TestCase):

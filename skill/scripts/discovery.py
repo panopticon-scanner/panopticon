@@ -19,6 +19,7 @@ import os
 import re
 import subprocess
 import sys
+import uuid
 import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -573,7 +574,8 @@ def write_diff_hunks(repo, base, source, out_path, tolerance, includes_uncommitt
     hmap = diff_map.hunk_map(repo, base) if base else {}
     anchors = diff_map.diff_anchors(repo, base) if base else {
         "base_commit": None, "delta_start": None, "delta_end": None}
-    artifact = {"base": base, "base_source": source,
+    artifact = {"schema_version": 1,
+                "base": base, "base_source": source,
                 "base_commit": anchors["base_commit"],
                 "delta_start": anchors["delta_start"],
                 "delta_end": anchors["delta_end"],
@@ -581,10 +583,20 @@ def write_diff_hunks(repo, base, source, out_path, tolerance, includes_uncommitt
                 "diff_context": tolerance,
                 "files_changed": len(hmap),
                 "hunks": {p: [list(r) for r in rs] for p, rs in hmap.items()}}
-    os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".", exist_ok=True)
-    with open(out_path, "w", encoding="utf-8") as fh:
-        json.dump(artifact, fh, indent=2)
-        fh.write("\n")
+    out_dir = os.path.dirname(os.path.abspath(out_path)) or "."
+    os.makedirs(out_dir, exist_ok=True)
+    tmp = os.path.join(out_dir, ".diff-hunks-%s.tmp" % uuid.uuid4().hex)
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(artifact, fh, indent=2)
+            fh.write("\n")
+        os.replace(tmp, out_path)
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
 def _hunks_path_for(out):
     """Path for diff-hunks.json: alongside --out's directory, else the default
@@ -1059,10 +1071,23 @@ def main(argv=None):
               % (args.security, len(pruned_fixtures),
                  ", ".join(sorted(pruned_fixtures))), file=sys.stderr)
 
+    if "schema_version" not in result:
+        result["schema_version"] = 1
+
     if args.out:
-        os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
-        with open(args.out, "w", encoding="utf-8") as fh:
-            emit(result, fh)
+        out_dir = os.path.dirname(os.path.abspath(args.out)) or "."
+        os.makedirs(out_dir, exist_ok=True)
+        tmp = os.path.join(out_dir, ".discovery-%s.tmp" % uuid.uuid4().hex)
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                emit(result, fh)
+            os.replace(tmp, args.out)
+        finally:
+            if os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
     else:
         emit(result)
     return 0

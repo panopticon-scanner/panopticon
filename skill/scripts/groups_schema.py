@@ -49,7 +49,10 @@ def parse_groups(doc):
             errors.append(f"group {name}: match must be a non-empty list")
             match = []
         else:
-            match = list(raw_match)
+            invalid_match = [x for x in raw_match if not isinstance(x, str) or not x.strip()]
+            if invalid_match:
+                errors.append(f"group {name}: match entries must be non-empty strings")
+            match = [x for x in raw_match if isinstance(x, str) and x.strip()]
         raw_tests = raw.get("tests")
         if raw_tests is None:
             tests = []
@@ -57,7 +60,10 @@ def parse_groups(doc):
             errors.append(f"group {name}: tests must be a list")
             tests = []
         else:
-            tests = list(raw_tests)
+            invalid_tests = [x for x in raw_tests if not isinstance(x, str) or not x.strip()]
+            if invalid_tests:
+                errors.append(f"group {name}: tests entries must be non-empty strings")
+            tests = [x for x in raw_tests if isinstance(x, str) and x.strip()]
         floor = _as_domain_set(name, "panels", raw.get("panels"), errors)
         exclude = _as_domain_set(name, "exclude", raw.get("exclude"), errors)
         for d in sorted(floor & exclude):

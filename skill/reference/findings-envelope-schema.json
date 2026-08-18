@@ -64,6 +64,10 @@
     "_panopticon": {
       "type": "object",
       "description": "Cell-identity block (run_id/domain/group/stage) written by the matrix reviewer; REQUIRED by the driver, so the envelope must permit it under additionalProperties:false (#5.0-05)."
+    },
+    "schema_version": {
+      "type": "integer",
+      "description": "Format/schema version of the findings envelope (P1 contract)."
     }
   }
 }

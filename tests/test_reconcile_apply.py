@@ -551,3 +551,14 @@ class TestCliWiring(unittest.TestCase):
                 rc = reconcile_apply.main(["apply", actions_path])
             self.assertEqual(rc, 0)
             self.assertIn("DRY RUN", buf.getvalue())
+
+    def test_load_ledger_normalizes_legacy_absolute_keys(self):
+        abs_path = file_issues.repo_root() + "skill/scripts/run_tools.py"
+        rel_path = "skill/scripts/run_tools.py"
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "filed-issues.json")
+            with open(p, "w", encoding="utf-8") as fh:
+                json.dump({"old1|F-1|%s|finding" % abs_path: "https://github.com/o/r/issues/1"}, fh)
+            ledger = file_issues.load_ledger(p)
+            self.assertIn("old1|F-1|%s|finding" % rel_path, ledger)
+            self.assertEqual(ledger["old1|F-1|%s|finding" % rel_path], "https://github.com/o/r/issues/1")

@@ -83,5 +83,16 @@ class TestGroupsSchema(unittest.TestCase):
             self.assertTrue(any("invalid" in e for e in errors), repr(bad))
 
 
+    def test_non_string_match_element_is_error(self):
+        groups, errors = gs.parse_groups({"groups": {"G": {"match": ["a/**", 123, ""]}}})
+        self.assertTrue(any("match entries must be non-empty strings" in e for e in errors))
+        self.assertEqual(groups["G"]["match"], ["a/**"])
+
+    def test_non_string_tests_element_is_error(self):
+        groups, errors = gs.parse_groups({"groups": {"G": {"match": ["a/**"], "tests": ["t/**", None, "   "]}}})
+        self.assertTrue(any("tests entries must be non-empty strings" in e for e in errors))
+        self.assertEqual(groups["G"]["tests"], ["t/**"])
+
+
 if __name__ == "__main__":
     unittest.main()

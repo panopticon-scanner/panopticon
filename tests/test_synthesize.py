@@ -931,6 +931,22 @@ class TestCliAndSummary(unittest.TestCase):
             self.assertEqual(len(main_doc["findings"]) + part_findings_count, n_before)
             self.assertEqual(len(report["findings"]), n_before)  # caller not mutated
 
+    def test_write_report_atomic_cleans_up_on_error(self):
+        findings = [{"id": "CD-%03d" % i, "title": "t" * 40, "severity": "LOW",
+                     "confidence": "POSSIBLE", "panel": "code", "category": "structure",
+                     "location": {"file": "a.py", "line_start": i}}
+                    for i in range(1, 400)]
+        report = syn.build_report(findings, [], "src", None, "2026-07-23T00:00:00Z")
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "report.json")
+            # If os.replace fails partway, no incomplete files should be left behind
+            with unittest.mock.patch("os.replace", side_effect=OSError("disk full")):
+                with self.assertRaises(OSError):
+                    syn.write_report(report, out, max_bytes=1000)
+            self.assertFalse(os.path.exists(out))
+            # No stray .tmp files left in dir
+            self.assertEqual(os.listdir(d), [])
+
     def test_main_returns_0_when_gate_not_fail(self):
         with tempfile.TemporaryDirectory() as d:
             fpath = os.path.join(d, "findings-g1-code.json")
