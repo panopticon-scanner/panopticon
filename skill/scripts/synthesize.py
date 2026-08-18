@@ -784,6 +784,84 @@ def severity_stats(findings):
     return stats
 
 
+# #1146: a secondary "health" ratio reported ALONGSIDE the max-severity letter
+# (never replacing it, never touching the gate -- see #1057's adjudication). It
+# is non-blank LoC divided by a severity-weighted defect footprint, so HIGHER =
+# healthier: more clean code per unit of confirmed, severity-weighted defect.
+# Weights escalate x5 per band; INFO is weightless.
+HEALTH_WEIGHTS = {"INFO": 0, "LOW": 1, "MEDIUM": 5, "HIGH": 25, "CRITICAL": 125}
+
+
+def _loc_span(finding):
+    """Lines a finding spans: line_end - line_start + 1, floored at 1. Tolerant
+    of missing/None/non-int/inverted ranges (any such finding counts as 1)."""
+    loc = finding.get("location") or {}
+    start = loc.get("line_start")
+    if not isinstance(start, int):
+        return 1
+    end = loc.get("line_end", start)
+    if not isinstance(end, int):
+        end = start
+    return max(1, end - start + 1)
+
+
+def weighted_defect(findings):
+    """Severity-weighted defect footprint: sum over `findings` of
+    weight[severity] * _loc_span(finding). INFO (weight 0) contributes nothing."""
+    total = 0
+    for f in findings:
+        weight = HEALTH_WEIGHTS.get(str(f.get("severity", "INFO")).upper(), 0)
+        if weight:
+            total += weight * _loc_span(f)
+    return total
+
+
+def nonblank_loc(target, groups_meta):
+    """Total non-blank lines across the UNIQUE reviewed files (the numerator).
+    Each file path is resolved against `target` (a repo root) or cwd; a missing,
+    unreadable, or binary file is skipped, never fatal -- the score degrades
+    gracefully rather than crashing synthesis."""
+    base = target if os.path.isdir(target) else "."
+    seen = set()
+    total = 0
+    for g in groups_meta:
+        for rel in g.get("files") or []:
+            if rel in seen:
+                continue
+            seen.add(rel)
+            path = rel if os.path.isabs(rel) else os.path.join(base, rel)
+            try:
+                with open(path, encoding="utf-8", errors="ignore") as fh:
+                    total += sum(1 for line in fh if line.strip())
+            except (OSError, ValueError):
+                continue
+    return total
+
+
+def health_score(total_loc, weighted):
+    """total_loc / weighted defect footprint (higher = healthier), rounded to 2
+    decimals. None when there is no weighted defect -- the ratio is undefined and
+    'no gate-eligible weighted findings' (the clean case) is better expressed as
+    'not applicable' than as an infinity or a hidden divide-by-zero."""
+    if not weighted:
+        return None
+    return round(total_loc / weighted, 2)
+
+
+def health_stats(total_loc, gate_eligible):
+    """The `summary.health` block (#1146). `gate_eligible` is the same set the
+    letter grade and gate count, so the health ratio inherits their honesty
+    contract (unverified/rejected claims never move it)."""
+    weighted = weighted_defect(gate_eligible)
+    return {
+        "score": health_score(total_loc, weighted),
+        "total_loc": total_loc,
+        "weighted_defect": weighted,
+        "weights": {k.lower(): v for k, v in HEALTH_WEIGHTS.items()},
+        "population": "gate_eligible",
+    }
+
+
 ID_RE = re.compile(r"^[A-Z]{2,8}-\d{3,}$")  # {2,8}: real agents emit e.g. STRUCT-001
 # Axis alternation: the 6 legacy PANEL_ORDER names (4.x findings-<group>-<panel>
 # [-panel_review|-lens_sweep-<lens>].json) plus the 10 P4 matrix domain codes
@@ -1698,6 +1776,9 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
             # surfaced two unlabeled HIGH counts in one summary).
             "stats": severity_stats(active),
             "stats_population": "active",
+            # #1146: size-aware health ratio alongside the letter; denominator is
+            # the gate-eligible set, numerator the reviewed scope's non-blank LoC.
+            "health": health_stats(nonblank_loc(target, groups_meta), gate_eligible),
             "evidence_stats": evidence_stats(findings),
             "evidence_stats_population": "all",
             "counts": {
@@ -1769,9 +1850,22 @@ def validate_report(report):
     return errors, warnings
 
 
+def _render_health(health):
+    """One-line health-ratio summary (#1146): score plus the clean-LoC and
+    weighted-defect it reconciles from. n/a when there is no weighted defect."""
+    if not isinstance(health, dict):
+        return None
+    loc, wd, score = health.get("total_loc", 0), health.get("weighted_defect", 0), health.get("score")
+    if score is None:
+        return "**Health:** n/a (no gate-eligible weighted defect; %d clean LoC)" % loc
+    return "**Health:** %s (%d clean LoC / %d weighted defect; higher is healthier)" % (
+        score, loc, wd)
+
+
 def render_summary(report):
     """Render markdown summary of report with grades, stats, groups, and top findings."""
     s = report["summary"]
+    health_line = _render_health(s.get("health"))
     lines = [
         "# panopticon — %s" % report["meta"]["target"],
         "",
@@ -1785,6 +1879,7 @@ def render_summary(report):
         "**Evidence:** %s" % ", ".join(
             "%s %d" % (k, v) for k, v in s["evidence_stats"].items() if v),
         "",
+    ] + ([health_line, ""] if health_line else []) + [
         "## Groups",
     ]
     if not s.get("coverage_certified", True):

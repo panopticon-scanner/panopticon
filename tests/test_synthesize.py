@@ -1570,6 +1570,53 @@ def _agentic(fid="AG-001", sev="HIGH", **kw):
     return f
 
 
+class TestHealthScore(unittest.TestCase):
+    """#1146: secondary health ratio = non-blank LoC / weighted defect
+    footprint, reported ALONGSIDE the letter grade, never touching the gate.
+    Higher = healthier (more clean code per unit of severity-weighted defect)."""
+
+    def test_loc_span_point_and_range(self):
+        self.assertEqual(
+            syn._loc_span({"location": {"line_start": 10, "line_end": 10}}), 1)
+        self.assertEqual(
+            syn._loc_span({"location": {"line_start": 20, "line_end": 59}}), 40)
+
+    def test_loc_span_tolerates_missing_or_bad_range(self):
+        self.assertEqual(syn._loc_span({}), 1)
+        self.assertEqual(syn._loc_span({"location": {"line_start": None}}), 1)
+        self.assertEqual(syn._loc_span({"location": {"line_start": 5}}), 1)
+        # inverted range floors at 1, never negative
+        self.assertEqual(
+            syn._loc_span({"location": {"line_start": 9, "line_end": 3}}), 1)
+
+    def test_weighted_defect_line_span_weighting(self):
+        findings = [
+            {"severity": "HIGH", "location": {"line_start": 20, "line_end": 59}},
+            {"severity": "LOW", "location": {"line_start": 1, "line_end": 1}},
+            {"severity": "INFO", "location": {"line_start": 1, "line_end": 100}},
+        ]
+        # 25*40 (HIGH span 40) + 1*1 (LOW span 1) + 0*100 (INFO weight 0)
+        self.assertEqual(syn.weighted_defect(findings), 1001)
+
+    def test_health_score_ratio_and_clean_case(self):
+        self.assertEqual(syn.health_score(2000, 100), 20.0)
+        # no weighted defect -> undefined ratio -> None (the clean case)
+        self.assertIsNone(syn.health_score(2000, 0))
+
+    def test_nonblank_loc_excludes_blanks_and_dedupes(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "a.py"), "w") as fh:
+                fh.write("import os\n\n   \nx = 1\n")   # 2 non-blank lines
+            groups = [{"name": "g", "files": ["a.py"]},
+                      {"name": "h", "files": ["a.py"]}]   # same file -> counted once
+            self.assertEqual(syn.nonblank_loc(d, groups), 2)
+
+    def test_nonblank_loc_tolerates_missing_file(self):
+        self.assertEqual(
+            syn.nonblank_loc("/no/such/dir",
+                             [{"name": "g", "files": ["nope.py"]}]), 0)
+
+
 class TestEvidenceReport(unittest.TestCase):
     def _report(self, findings, verdicts=None, gate_unverified=False, fail_on="high"):
         return syn.build_report(findings, [], "target", fail_on, "2026-08-03T00:00:00Z",
@@ -1599,6 +1646,34 @@ class TestEvidenceReport(unittest.TestCase):
         self.assertEqual(f["evidence"]["status"], "advisor_confirmed")
         self.assertEqual(report["summary"]["gate"], "FAIL")
         self.assertEqual(report["summary"]["overall_grade"], "D")
+
+    def test_summary_health_counts_only_gate_eligible(self):
+        # #1146: the health denominator is the gate-eligible set (same as the
+        # letter). A CONFIRMED HIGH spanning 4 lines -> weighted_defect = 25*4.
+        # An UNVERIFIED finding is NOT gate-eligible and must not move it.
+        confirmed = _agentic(location={"file": "app.py", "line_start": 10,
+                                       "line_end": 13})
+        unverified = _agentic(fid="AG-002",
+                              location={"file": "app.py", "line_start": 90,
+                                        "line_end": 99})
+        verdicts = {syn.finding_fingerprint(confirmed):
+                    {"finding_id": "AG-001", "verdict": "CONFIRMED",
+                     "reasoning": "v"}}
+        health = self._report([confirmed, unverified],
+                              verdicts=verdicts)["summary"]["health"]
+        self.assertEqual(health["population"], "gate_eligible")
+        self.assertEqual(health["weighted_defect"], 100)   # 25 * 4, unverified excluded
+        self.assertEqual(health["weights"]["critical"], 125)
+        self.assertIsInstance(health["total_loc"], int)    # file absent in test -> 0
+        # total_loc 0 over a non-zero defect -> a real (0.0) score, not None
+        self.assertEqual(health["score"], 0.0)
+
+    def test_summary_health_score_null_when_no_gate_eligible_defect(self):
+        # An unverified-only report has an empty gate-eligible set -> no weighted
+        # defect -> score is None (clean case), not a divide-by-zero.
+        health = self._report([_agentic()])["summary"]["health"]
+        self.assertEqual(health["weighted_defect"], 0)
+        self.assertIsNone(health["score"])
 
     def test_rejected_moves_to_discarded_with_severity_intact(self):
         finding = _agentic()
