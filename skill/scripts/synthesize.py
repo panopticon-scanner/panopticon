@@ -322,7 +322,8 @@ def _conf_rank(f):
 # Alias the shared predicate instead of re-implementing it (#688): a local copy
 # had already drifted from being the single source of the tool/agent provenance
 # rule. evidence_mod.is_tool_sourced is the one definition.
-_is_tool_sourced = evidence_mod.is_tool_sourced
+def _is_tool_sourced(finding):
+    return evidence_mod.is_tool_sourced(finding)
 
 
 def _role_from_discovered_by(discovered_by):
