@@ -82,19 +82,24 @@ def parse(path):
 
 
 def body_for(f, doc=DOC, doc_url=DOC_URL, run_label=RUN_LABEL, run_date=RUN_DATE):
+    source_line = (
+        "**Source:** `%s` — %s, an orchestration defect observed while running "
+        "the scan rather than a finding produced by a reviewer panel."
+    ) % (file_issues.defang(f["id"]), doc)
+    footer_line = (
+        "*Filed from panopticon's %s self-scan (%s, `tool_policy_mode: enforced`).*"
+    ) % (run_label, run_date)
     return "\n".join([
         file_issues.defang(f["body"]),
         "",
         "---",
         "",
-        (("**Source:** `%s` — %s, an orchestration defect observed while running "
-          "the scan rather than a finding produced by a reviewer panel.") % (file_issues.defang(f["id"]), doc)),
+        source_line,
         "",
         "Full context, including the other FIXMEs from this run: [%s](%s)"
         % (doc, doc_url),
         "",
-        (("*Filed from panopticon's %s self-scan (%s, "
-          "`tool_policy_mode: enforced`).*") % (run_label, run_date)),
+        footer_line,
     ])
 
 
