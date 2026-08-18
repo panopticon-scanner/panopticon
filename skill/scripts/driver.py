@@ -925,11 +925,17 @@ def _tools_include_fixtures(manifest):
     Fingerprint/id parity of the tool-verify queue depends on this agreement:
     if the driver ingested fixtures synthesize prunes (or vice versa),
     synthesize could queue a tool finding the driver never dispatched an
-    advisor for -> unanswered -> a spurious INCONCLUSIVE. Mirrors
-    ingest_dir_detailed's own redteam-keeps-fixtures contract plus the
-    explicit --include-fixtures flag captured in the manifest."""
+    advisor for -> unanswered -> a spurious INCONCLUSIVE.
+
+    #1055: keyed on the explicit --include-fixtures flag ALONE. Redteam no
+    longer auto-includes fixture TOOL findings -- adjudicating designed-
+    vulnerable fixture CVEs (e.g. TR-010 on vulnerable-rust/Cargo.lock) burned
+    verify budget to re-reject scaffolding by construction. Fixture CONTENT
+    injection-hunting is unaffected: it is a review-panel job (groups.yml
+    routing), independent of this tool-finding flag. Pass --include-fixtures
+    to opt in to tool coverage of fixtures (incl. under redteam)."""
     flags = manifest.get("flags") or {}
-    return bool(flags.get("include_fixtures")) or manifest.get("security_mode") == "redteam"
+    return bool(flags.get("include_fixtures"))
 
 
 def _tool_verify_queue(review_root, manifest):

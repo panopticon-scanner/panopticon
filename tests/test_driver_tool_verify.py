@@ -256,10 +256,13 @@ class TestSynthesizeFixtureParityWiring(_ToolVerifyBase):
             driver.synthesize_execute(d, manifest)
         return captured["cmd"]
 
-    def test_redteam_forwards_include_fixtures(self):
+    def test_redteam_omits_include_fixtures(self):
+        # #1055: redteam no longer auto-forwards --include-fixtures. The
+        # tool-finding fixture prune is now keyed on the explicit flag alone;
+        # fixture CONTENT injection-hunting stays a review-panel job.
         m = self._manifest()
         m["security_mode"] = "redteam"
-        self.assertIn("--include-fixtures", self._cmd_for(m))
+        self.assertNotIn("--include-fixtures", self._cmd_for(m))
 
     def test_flag_forwards_include_fixtures(self):
         m = self._manifest()
@@ -268,6 +271,41 @@ class TestSynthesizeFixtureParityWiring(_ToolVerifyBase):
 
     def test_standard_omits_include_fixtures(self):
         self.assertNotIn("--include-fixtures", self._cmd_for(self._manifest()))
+
+
+class TestRedteamFixtureDecouple(_ToolVerifyBase):
+    """#1055: redteam no longer auto-includes fixture-corpus TOOL findings.
+    Decoupling redteam from the tool-finding include stops the verify budget
+    being spent re-rejecting designed-vulnerable fixture CVEs (e.g. TR-010 on
+    vulnerable-rust/Cargo.lock). Fixture CONTENT injection-hunting stays a
+    review-panel job (groups.yml routing); --include-fixtures remains the
+    explicit opt-in for tool coverage of fixtures."""
+
+    _FIXTURE_URI = "tests/fixtures/vulnerable-rust/Cargo.lock"
+
+    def _redteam(self, **flags):
+        m = self._manifest(**flags)
+        m["security_mode"] = "redteam"
+        return m
+
+    def _queue_uris(self, manifest):
+        d = self._repo([_result("rust-cve", self._FIXTURE_URI, 1)])
+        queue = driver._tool_verify_queue(d, manifest)
+        return [f.get("location", {}).get("file") for _q, f in queue]
+
+    def test_tools_include_fixtures_false_for_redteam_without_flag(self):
+        self.assertFalse(driver._tools_include_fixtures(self._redteam()))
+
+    def test_tools_include_fixtures_true_only_with_explicit_flag(self):
+        self.assertTrue(
+            driver._tools_include_fixtures(self._redteam(include_fixtures=True)))
+
+    def test_redteam_prunes_fixture_finding_from_verify_queue(self):
+        self.assertNotIn(self._FIXTURE_URI, self._queue_uris(self._redteam()))
+
+    def test_explicit_flag_keeps_fixture_finding_in_redteam_queue(self):
+        self.assertIn(self._FIXTURE_URI,
+                      self._queue_uris(self._redteam(include_fixtures=True)))
 
 
 if __name__ == "__main__":
