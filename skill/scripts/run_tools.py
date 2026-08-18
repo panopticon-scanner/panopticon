@@ -283,7 +283,8 @@ def write_manifest(path, selected, written, excluded_scope=()):
     """
     selected = list(dict.fromkeys(str(tool) for tool in selected))
     produced = sorted({os.path.splitext(os.path.basename(p))[0] for p in written})
-    payload = {"selected": selected, "produced": produced,
+    payload = {"schema_version": 1,
+               "selected": selected, "produced": produced,
                "missing": sorted(set(selected) - set(produced)),
                "excluded_scope": sorted(dict.fromkeys(str(t) for t in excluded_scope))}
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)

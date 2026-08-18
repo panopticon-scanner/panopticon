@@ -2,7 +2,7 @@
 from __future__ import annotations
 from .base import (cve_ids, cvss_bucket, has_any_file, make_finding,
                    normalize_severity, omit_none, parse_json_bytes, run_tool)
-from .sarif_utils import _norm_uri
+from .sarif_utils import norm_uri, _norm_uri
 
 
 class OsvScannerAdapter:

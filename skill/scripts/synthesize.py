@@ -1984,23 +1984,58 @@ def write_report(report, out_path, max_bytes=800000):
     """Write report to JSON file, splitting into parts if size exceeds max_bytes."""
     blob = json.dumps(report, indent=2)
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
-    if len(blob.encode("utf-8")) <= max_bytes:
+    findings = list(report.get("findings") or [])
+    if len(blob.encode("utf-8")) <= max_bytes or len(findings) <= 1:
         with open(out_path, "w", encoding="utf-8") as fh:
             fh.write(blob)
         return [out_path]
-    findings = report["findings"]
-    half = max(1, len(findings) // 2)
+
     stem, ext = os.path.splitext(out_path)
-    part_path = "%s_part2%s" % (stem, ext)
     main_report = dict(report)
-    main_report["meta"] = dict(report["meta"])
-    main_report["meta"]["parts"] = [os.path.basename(part_path)]
-    main_report["findings"] = findings[:half]
+    main_report["meta"] = dict(report.get("meta") or {})
+
+    empty_doc = dict(report)
+    empty_doc["findings"] = []
+    base_bytes = len(json.dumps(empty_doc, indent=2).encode("utf-8"))
+    chunk_limit = max(1000, max_bytes - base_bytes - 500)
+
+    chunks = []
+    current_chunk = []
+    for f in findings:
+        current_chunk.append(f)
+        payload = {"findings": current_chunk}
+        if len(json.dumps(payload, indent=2).encode("utf-8")) > chunk_limit and len(current_chunk) > 1:
+            last = current_chunk.pop()
+            chunks.append(current_chunk)
+            current_chunk = [last]
+    if current_chunk:
+        chunks.append(current_chunk)
+
+    if len(chunks) <= 1:
+        half = max(1, len(findings) // 2)
+        chunks = [findings[:half], findings[half:]]
+
+    part_files = []
+    part_paths = []
+    for idx in range(1, len(chunks)):
+        pname = "%s_part%d%s" % (stem, idx + 1, ext)
+        part_paths.append(pname)
+        part_files.append(os.path.basename(pname))
+
+    main_report["meta"]["parts"] = part_files
+    main_report["findings"] = chunks[0]
+
+    written = [out_path]
     with open(out_path, "w", encoding="utf-8") as fh:
         json.dump(main_report, fh, indent=2)
-    with open(part_path, "w", encoding="utf-8") as fh:
-        json.dump({"findings": findings[half:]}, fh, indent=2)
-    return [out_path, part_path]
+
+    for idx in range(1, len(chunks)):
+        ppath = part_paths[idx - 1]
+        with open(ppath, "w", encoding="utf-8") as fh:
+            json.dump({"findings": chunks[idx]}, fh, indent=2)
+        written.append(ppath)
+
+    return written
 
 
 def _derive_html_path(json_path):

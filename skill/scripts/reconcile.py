@@ -247,7 +247,8 @@ def build_diff(run2_records, run3_records, run2_path, run3_path):
 
     degenerate = sorted(_degenerate(g2, "run2") + _degenerate(g3, "run3"),
                         key=lambda d: (d["fingerprint"], d["run"]))
-    return {"meta": {"run2_report": run2_path, "run3_report": run3_path,
+    return {"schema_version": 1,
+            "meta": {"run2_report": run2_path, "run3_report": run3_path,
                      "run2_count": len(run2_records), "run3_count": len(run3_records),
                      "close_guard": close_guard,
                      # fingerprint-GROUP counts, not record counts -- a

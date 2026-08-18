@@ -507,6 +507,7 @@ def coverage_execute(review_root, manifest):
             floor, scout_added, spec.get("exclude", set()),
             global_floor=gated_floor)
         _write_json(_pano(review_root, "coverage-%s.json" % group), {
+            "schema_version": 1,
             "group": group,
             "floor": disclosure["floor"],
             "excluded": disclosure["excluded"],
@@ -530,7 +531,7 @@ def tools_done(review_root, manifest):
 def tools_execute(review_root, manifest):
     if (manifest.get("flags") or {}).get("tools") is False:
         _write_json(_pano(review_root, "tools-ran.json"),
-                    {"ran": False, "skipped": True, "crashed": False,
+                    {"schema_version": 1, "ran": False, "skipped": True, "crashed": False,
                      "note": "tools disabled (--no-tools)",
                      "returncode": None, "run_id": manifest["run_id"]})
         return PhaseResult(kind="advanced", message="tools: skipped (--no-tools)")
@@ -554,7 +555,7 @@ def tools_execute(review_root, manifest):
                                 or ("tool scan crashed" if crashed
                                     else "no tool output produced"))
     _write_json(_pano(review_root, "tools-ran.json"),
-                {"ran": produced, "skipped": not produced, "crashed": crashed,
+                {"schema_version": 1, "ran": produced, "skipped": not produced, "crashed": crashed,
                  "note": note, "returncode": proc.returncode,
                  "run_id": manifest["run_id"]})
     if crashed:
@@ -1192,8 +1193,8 @@ def validate_execute(review_root, manifest, runner=subprocess.run):
     # AFTER the run completes, NOT here: releasing mid-machine would delete the
     # review root (report.json + manifest) and break cursor derivation. (Ruling A)
     _write_json(_pano(review_root, "validate.json"),
-                {"run_id": manifest["run_id"], "tree_clean": not delta,
-                 "unexpected_changes": delta})
+                {"schema_version": 1, "run_id": manifest["run_id"],
+                 "tree_clean": not delta, "unexpected_changes": delta})
     if delta:
         raise DriverError("validate: reviewer side effects outside .panopticon/: "
                           + "; ".join(delta[:10]))
@@ -1335,6 +1336,7 @@ def _scan_fallback(review_root, manifest, host):
     checks = setup_flow.readiness(review_root, host=host)
     gaps = [c[0] for c in checks if c[1] is False]
     _write_json(_pano(review_root, "setup-complete.json"), {
+        "schema_version": 1,
         "mode": "fallback", "seed": path, "created": created, "groups": names,
         "readiness": [[c[0], c[1], c[2]] for c in checks],
         "gaps": gaps, "run_id": manifest["run_id"]})
@@ -1422,10 +1424,13 @@ PHASES = (
 def _cli_flags(args):
     tools = False if getattr(args, "no_tools", False) else (
         True if getattr(args, "tools", False) else None)
-    return {"fail_on": args.fail_on, "severity": args.severity,
-            "gate_scope": args.gate_scope, "diff_context": args.diff_context,
-            "tools": tools,
-            "include_fixtures": True if args.include_fixtures else None}
+    values = {"fail_on": getattr(args, "fail_on", None),
+              "severity": getattr(args, "severity", None),
+              "gate_scope": getattr(args, "gate_scope", None),
+              "diff_context": getattr(args, "diff_context", None),
+              "tools": tools,
+              "include_fixtures": True if getattr(args, "include_fixtures", False) else None}
+    return {k: values.get(k) for k in run_manifest._FLAG_KEYS}
 
 
 def _scope_from_args(args):
@@ -1489,7 +1494,7 @@ def build_parser():
     for verb in ("run",):
         p = sub.add_parser(verb)
         p.add_argument("target", nargs="?", default=".")
-        p.add_argument("--host", default=None, choices=["claude", "generic"])
+        p.add_argument("--host", default=None, choices=["claude", "generic", "gemini"])
         p.add_argument("--security", default=None, choices=["standard", "redteam"])
         p.add_argument("--base", default=None)
         p.add_argument("--pr", type=int, default=None)
@@ -1510,7 +1515,7 @@ def build_parser():
         scope.add_argument("--files", dest="scope_files", nargs="+", default=None)
     sp = sub.add_parser("setup")
     sp.add_argument("target", nargs="?", default=".")
-    sp.add_argument("--host", default=None, choices=["claude", "generic"])
+    sp.add_argument("--host", default=None, choices=["claude", "generic", "gemini"])
     sp.add_argument("--reset", action="store_true")
     return parser
 
@@ -1527,7 +1532,7 @@ def run(args, runner=subprocess.run, phases=PHASES):
     try:
         review_root, worktree, pr_base = resolve_review_root(
             args.target, base=args.base, pr=args.pr, runner=runner)
-    except Exception as exc:
+    except (RuntimeError, ValueError, OSError) as exc:
         return _error_status("could not resolve review root: %s" % exc)
     if args.pr is not None:
         # A PR is a changed-files delta by definition. manifest["base"] holds the

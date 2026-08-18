@@ -19,12 +19,9 @@ import json
 import os
 import sys
 
-# The write-capable tools this guard adjudicates. The PreToolUse matcher is
-# DERIVED from this set (see _MATCHER) so the two can never drift: adding a
-# write tool here automatically widens the matcher, and test_write_guard_hook
-# asserts they stay in lockstep. Bash is deliberately absent — see the module
-# docstring; it is out of scope by construction, not by omission.
-_WRITE_TOOLS = {"Write", "Edit", "NotebookEdit"}
+_WRITE_TOOLS_LIST = ["Write", "Edit", "NotebookEdit"]
+_WRITE_TOOLS = set(_WRITE_TOOLS_LIST)
+_MATCHER = "|".join(_WRITE_TOOLS_LIST)
 
 
 def allowlist_from_plan(plan):
@@ -104,15 +101,7 @@ def main():
 _HOOK_CMD = 'python3 "%s"' % os.path.abspath(__file__)
 # Ordering is fixed to the original string so install()/uninstall() dict-equality
 # never produces a duplicate or stale entry when upgrading from a
-# settings.local.json written by an earlier version.  The assert below is the
-# import-time drift-lock: if _WRITE_TOOLS and _MATCHER diverge, the module fails
-# to load rather than silently registering the wrong set of tools (#680).
-_MATCHER = "Write|Edit|NotebookEdit"
-# Explicit raise, not assert: `python -O` strips asserts, which would silently
-# disable this drift-lock in exactly the optimized runtime a hook may run under.
-if set(_MATCHER.split("|")) != _WRITE_TOOLS:  # (#680)
-    raise RuntimeError(
-        "_MATCHER and _WRITE_TOOLS have drifted — update _MATCHER to match _WRITE_TOOLS")
+# settings.local.json written by an earlier version.
 _HOOK_ENTRY = {"matcher": _MATCHER,
                "hooks": [{"type": "command", "command": _HOOK_CMD}]}
 

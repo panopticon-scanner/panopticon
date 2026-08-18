@@ -67,6 +67,14 @@ python3 skill/scripts/dispatch.py --emit-host-agents codex
 Invoke it with `$panopticon` or select it from `/skills`. Plans built with
 `--host codex` run through the bundled `codex_runner.py` adapter automatically.
 
+### Python Package / CLI (Development & Direct Use)
+
+Install in editable mode for local development or direct CLI execution:
+
+```bash
+pip install -e .
+```
+
 
 ## Quick start
 
@@ -96,8 +104,10 @@ kimi /panopticon --pr 217              # review PR 217 in an isolated worktree
 | `skill/scripts/` | Runnable Python modules (driver, discovery, synthesizer, dispatch, tools) |
 | `skill/agents/` | Custom agent definitions (`scout`, `panel-review`, `lens-sweep`, `advisor`) |
 | `skill/reference/` | Schemas, CWE catalog, security checklists, example group profiles |
+| `scripts/` | Project maintenance, issue filing, and triage CLI scripts |
 | `tests/` | pytest suite |
 | `Dockerfile` | `panopticon-tools` scanner image |
+| `Dockerfile.fixtures` | Test fixture image definition |
 | `docs/` | Design docs and implementation plans |
 
 ## Development

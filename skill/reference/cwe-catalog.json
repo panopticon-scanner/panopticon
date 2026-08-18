@@ -61,7 +61,15 @@
     "CWE-330": "A02:2021-Cryptographic Failures",
     "CWE-200": "A01:2021-Broken Access Control",
     "CWE-732": "A01:2021-Broken Access Control",
-    "CWE-276": "A05:2021-Security Misconfiguration"
+    "CWE-276": "A05:2021-Security Misconfiguration",
+    "CWE-125": "A08:2021-Software and Data Integrity Failures",
+    "CWE-787": "A08:2021-Software and Data Integrity Failures",
+    "CWE-476": "A08:2021-Software and Data Integrity Failures",
+    "CWE-416": "A08:2021-Software and Data Integrity Failures",
+    "CWE-190": "A08:2021-Software and Data Integrity Failures",
+    "CWE-362": "A04:2021-Insecure Design",
+    "CWE-400": "A04:2021-Insecure Design",
+    "CWE-1333": "A03:2021-Injection"
   },
   "owasp_top10": [
     "A01:2021-Broken Access Control",

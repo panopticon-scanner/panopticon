@@ -124,7 +124,19 @@ def setup_readiness(repo, host=None, runner=subprocess.run, environ=None):
                    "cwd is not a git repo root -- run the pipeline from the "
                    "TARGET repo root (#483)"))
 
-    nvd = bool(env.get("NVD_API_KEY")) or os.path.isfile(os.path.join(repo, ".env"))
+    nvd_in_file = False
+    env_path = os.path.join(repo, ".env")
+    if os.path.isfile(env_path):
+        try:
+            with open(env_path, "r", encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line.startswith("NVD_API_KEY=") and len(line.split("=", 1)[1].strip()) > 0:
+                        nvd_in_file = True
+                        break
+        except OSError:
+            pass
+    nvd = bool(env.get("NVD_API_KEY")) or nvd_in_file
     checks.append(("nvd-api-key", None,
                    "present" if nvd else
                    "absent -- dependency-check will be skipped/slow; export "
