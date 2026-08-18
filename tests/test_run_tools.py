@@ -24,6 +24,19 @@ class TestRunTools(unittest.TestCase):
             returncode = 1
         self.assertFalse(rt.docker_available(runner=lambda cmd, **kw: R()))
 
+    def test_recommendable_tools_is_the_selectable_universe(self):
+        # #1053: the scout must recommend tools only from the set run_tools can
+        # actually select/run -- the base SARIF tools + LANG_TOOL SAST + the
+        # Phase-1/Phase-2 adapters. Excludes the retired bare `eslint` (can't run
+        # on arbitrary targets), includes eslint-security.
+        rec = rt.recommendable_tools()
+        self.assertEqual(rec, sorted(rec))                 # sorted, stable
+        for t in ("semgrep", "gitleaks", "trivy", "bandit", "gosec",
+                  "eslint-security", "osv-scanner", "cargo-audit"):
+            self.assertIn(t, rec)
+        self.assertNotIn("eslint", rec)                    # retired bare eslint
+        self.assertNotIn("pytest", rec)                    # never an adapter
+
     def test_select_tools(self):
         tools = rt.select_tools(["python", "go"], has_deps=True)
         self.assertIn("semgrep", tools)

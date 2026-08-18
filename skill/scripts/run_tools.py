@@ -34,6 +34,22 @@ PHASE2_ADAPTERS = {
     "cargo-audit", "roslyn-secguard",
 }
 
+# Always-on SARIF scanners select_tools seeds regardless of language.
+BASE_TOOLS = {"semgrep", "gitleaks", "trivy"}
+
+
+def recommendable_tools():
+    """The scanner universe run_tools can actually select and run: the always-on
+    SARIF tools + the language-keyed SAST tools + the Phase-1/Phase-2 adapters.
+
+    This is the ground truth the scout must recommend from (#1053) -- an
+    ungrounded scout invents pytest/pylint/ruff/... (none are adapters), which
+    #1031 could only disclose as requested_unavailable noise after the fact.
+    Excludes the retired bare `eslint` (eslint >=9 can't run on arbitrary
+    targets; JS/TS SAST runs via the eslint-security adapter instead)."""
+    return sorted(BASE_TOOLS | set(LANG_TOOL.values())
+                  | PHASE1_ADAPTERS | PHASE2_ADAPTERS)
+
 # Max seconds to let a single docker-run tool invocation run before it's killed;
 # prevents a hung tool from blocking the whole batch (CD-007).
 TOOL_TIMEOUT = 900
