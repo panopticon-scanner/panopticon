@@ -208,6 +208,22 @@ def defang(text):
 LEDGER = ".panopticon/filed-issues.json"
 
 
+def normalize_ledger(raw_ledger):
+    """Normalize legacy ledger keys (e.g. absolute paths) to canonical repo-relative keys (#1124)."""
+    if not isinstance(raw_ledger, dict):
+        return {}
+    migrated = {}
+    for k, v in raw_ledger.items():
+        parts = k.split("|")
+        if len(parts) == 4:
+            fp, fid, path_part, kind = parts
+            migrated_key = "%s|%s|%s|%s" % (fp, fid, repo_relative(path_part), kind)
+            migrated[migrated_key] = v
+        else:
+            migrated[k] = v
+    return migrated
+
+
 def load_ledger(path=LEDGER):
     """Filing is resumable: a run that dies partway must not re-file.
 
@@ -215,7 +231,8 @@ def load_ledger(path=LEDGER):
     reconcile_apply) share this machinery instead of copying it."""
     try:
         with open(path, encoding="utf-8") as fh:
-            return json.load(fh)
+            data = json.load(fh)
+            return normalize_ledger(data)
     except (OSError, ValueError):
         return {}
 

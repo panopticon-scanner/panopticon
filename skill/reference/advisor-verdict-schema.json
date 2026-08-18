@@ -36,6 +36,7 @@
       }
     },
     "code": {"type": "string"},
-    "stage": {"type": "string", "enum": ["primary", "backup"], "default": "primary"}
+    "stage": {"type": "string", "enum": ["primary", "backup"], "default": "primary"},
+    "schema_version": {"type": "integer", "description": "Format/schema version of the advisor verdict."}
   }
 }

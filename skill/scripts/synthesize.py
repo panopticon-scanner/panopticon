@@ -10,6 +10,7 @@ import json
 import os
 import re
 import sys
+import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import scripts.citations as citations
@@ -1982,13 +1983,25 @@ def render_summary(report):
 
 
 def write_report(report, out_path, max_bytes=800000):
-    """Write report to JSON file, splitting into parts if size exceeds max_bytes."""
+    """Write report to JSON file, splitting into parts if size exceeds max_bytes.
+    Writes all files atomically using staging temp files (#1124).
+    """
     blob = json.dumps(report, indent=2)
-    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    out_dir = os.path.dirname(os.path.abspath(out_path)) or "."
+    os.makedirs(out_dir, exist_ok=True)
     findings = list(report.get("findings") or [])
     if len(blob.encode("utf-8")) <= max_bytes or len(findings) <= 1:
-        with open(out_path, "w", encoding="utf-8") as fh:
-            fh.write(blob)
+        tmp = os.path.join(out_dir, ".report-%s.tmp" % uuid.uuid4().hex)
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                fh.write(blob)
+            os.replace(tmp, out_path)
+        finally:
+            if os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
         return [out_path]
 
     stem, ext = os.path.splitext(out_path)
@@ -2026,17 +2039,31 @@ def write_report(report, out_path, max_bytes=800000):
     main_report["meta"]["parts"] = part_files
     main_report["findings"] = chunks[0]
 
-    written = [out_path]
-    with open(out_path, "w", encoding="utf-8") as fh:
-        json.dump(main_report, fh, indent=2)
-
+    all_targets = [(out_path, main_report)]
     for idx in range(1, len(chunks)):
-        ppath = part_paths[idx - 1]
-        with open(ppath, "w", encoding="utf-8") as fh:
-            json.dump({"findings": chunks[idx]}, fh, indent=2)
-        written.append(ppath)
+        all_targets.append((part_paths[idx - 1], {"findings": chunks[idx]}))
 
-    return written
+    temp_files = []
+    try:
+        for final_path, content in all_targets:
+            parent = os.path.dirname(os.path.abspath(final_path)) or "."
+            os.makedirs(parent, exist_ok=True)
+            tmp_p = os.path.join(parent, ".part-%s.tmp" % uuid.uuid4().hex)
+            with open(tmp_p, "w", encoding="utf-8") as fh:
+                json.dump(content, fh, indent=2)
+            temp_files.append((tmp_p, final_path))
+
+        for tmp_p, final_path in temp_files:
+            os.replace(tmp_p, final_path)
+    finally:
+        for tmp_p, _ in temp_files:
+            if os.path.exists(tmp_p):
+                try:
+                    os.remove(tmp_p)
+                except OSError:
+                    pass
+
+    return [t[0] for t in all_targets]
 
 
 def _derive_html_path(json_path):

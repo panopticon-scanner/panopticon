@@ -1280,5 +1280,15 @@ def test_repo_scan_scope_changed_explicit_base_ignores_pr_base(tmp_path):
     assert not (repo/".panopticon"/"diff-hunks.json").exists()
 
 
+def test_write_diff_hunks_schema_version_and_atomic(tmp_path):
+    import discovery
+    hunks_out = tmp_path / "diff-hunks.json"
+    discovery.write_diff_hunks(str(tmp_path), None, "none", str(hunks_out), 0, False)
+    assert hunks_out.exists()
+    data = json.loads(hunks_out.read_text(encoding="utf-8"))
+    assert data["schema_version"] == 1
+    assert data["files_changed"] == 0
+
+
 if __name__ == "__main__":
     unittest.main()

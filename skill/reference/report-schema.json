@@ -685,10 +685,12 @@
                 "type": "string"
               },
               "line_start": {
-                "type": "integer"
+                "type": "integer",
+                "minimum": 1
               },
               "line_end": {
-                "type": "integer"
+                "type": "integer",
+                "minimum": 1
               },
               "function": {
                 "type": [
@@ -938,10 +940,12 @@
                     "type": "string"
                   },
                   "line_start": {
-                    "type": "integer"
+                    "type": "integer",
+                    "minimum": 1
                   },
                   "line_end": {
-                    "type": "integer"
+                    "type": "integer",
+                    "minimum": 1
                   }
                 }
               },
