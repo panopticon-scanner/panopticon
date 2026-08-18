@@ -42,7 +42,7 @@ jobs:
       # (the trusted-contributor self-test), matching the trigger routing above.
       # push uses the pushed SHA. The target is always mounted read-only below.
       - name: Checkout trusted scanner controller
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4.2.2
         with:
           ref: ${{ (github.event_name == 'pull_request_target' && github.event.pull_request.base.sha) || github.event.pull_request.head.sha || github.sha }}
           path: controller
@@ -50,7 +50,7 @@ jobs:
 
       # The target is untrusted data and is only mounted read-only into scanners.
       - name: Checkout scan target
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4.2.2
         with:
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
