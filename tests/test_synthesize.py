@@ -1654,6 +1654,45 @@ class TestEvidenceReport(unittest.TestCase):
         self.assertEqual(stats["rejected"], 1)
         self.assertEqual(stats["unverified"], 1)
 
+    def _split_report(self):
+        # f1 gets REJECTED -> discarded; f2 stays active. So `stats` (active)
+        # and `evidence_stats` (all) count DIFFERENT populations.
+        f1 = _agentic()
+        f2 = _agentic(fid="AG-002", sev="LOW",
+                      location={"file": "app.py", "line_start": 99})
+        verdicts = {syn.finding_fingerprint(f1):
+                    {"finding_id": "AG-001", "verdict": "REJECTED",
+                     "reasoning": "r"}}
+        return self._report([f1, f2], verdicts=verdicts)
+
+    def test_summary_counts_label_the_two_populations(self):
+        # #1059: summary.stats counts ACTIVE (kept) findings while
+        # summary.evidence_stats counts ALL findings (kept + discarded), so the
+        # two histograms' totals differ with nothing saying which is which --
+        # the run-5 self-scan's unlabeled 65-vs-30. A labeled counts block plus
+        # explicit population tags make each histogram reconcilable.
+        summary = self._split_report()["summary"]
+        counts = summary["counts"]
+        self.assertEqual(counts["active"], 1)
+        self.assertEqual(counts["discarded"], 1)
+        self.assertEqual(counts["total"], 2)
+        self.assertEqual(summary["stats_population"], "active")
+        self.assertEqual(summary["evidence_stats_population"], "all")
+        self.assertEqual(sum(summary["stats"].values()), counts["active"])
+        self.assertEqual(sum(summary["evidence_stats"].values()), counts["total"])
+
+    def test_summary_counts_reconcile_with_report_arrays(self):
+        # counts must equal the ACTUAL report array lengths, not a parallel
+        # tally that could drift from what the report emits.
+        report = self._split_report()
+        self.assertEqual(report["summary"]["counts"]["active"],
+                         len(report["findings"]))
+        self.assertEqual(report["summary"]["counts"]["discarded"],
+                         len(report["discarded_claims"]))
+        self.assertEqual(
+            report["summary"]["counts"]["total"],
+            len(report["findings"]) + len(report["discarded_claims"]))
+
     def test_schema_theater_removed(self):
         report = self._report([_agentic()])
         self.assertNotIn("effort_to_remediate", report["summary"])

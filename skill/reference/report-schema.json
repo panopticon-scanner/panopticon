@@ -475,6 +475,35 @@
         "stats": {
           "type": "object"
         },
+        "stats_population": {
+          "type": "string",
+          "description": "Which finding population summary.stats counts. 'active' = non-rejected findings (== findings[]).",
+          "enum": [
+            "active"
+          ]
+        },
+        "evidence_stats_population": {
+          "type": "string",
+          "description": "Which finding population summary.evidence_stats counts. 'all' = active + discarded (== findings[] + discarded_claims[]).",
+          "enum": [
+            "all"
+          ]
+        },
+        "counts": {
+          "type": "object",
+          "description": "#1059: reconcilable finding-population totals so the two histograms above are never ambiguous. active == len(findings[]); discarded == len(discarded_claims[]); total == active + discarded.",
+          "properties": {
+            "active": {
+              "type": "integer"
+            },
+            "discarded": {
+              "type": "integer"
+            },
+            "total": {
+              "type": "integer"
+            }
+          }
+        },
         "delta": {
           "type": [
             "object",
