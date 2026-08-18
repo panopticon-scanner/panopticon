@@ -227,21 +227,22 @@ class TestNonJsonPrefixTolerance(unittest.TestCase):
         self.assertEqual(out, [])  # array payload reaches the adapter intact
 
 
+def _sarif_fixture(path):
+    return {"runs": [{"tool": {"driver": {"name": "t", "rules": []}},
+                      "results": [{"ruleId": "R1", "level": "warning",
+                                   "message": {"text": "m"},
+                                   "locations": [{"physicalLocation": {
+                                       "artifactLocation": {"uri": path},
+                                       "region": {"startLine": 1}}}]}]}]}
+
+
 class TestExcludeGlobs(unittest.TestCase):
     """F-CAL-2: fixture-noise exclusion is a standard ingest mechanism."""
-
-    def _sarif(self, path):
-        return {"runs": [{"tool": {"driver": {"name": "t", "rules": []}},
-                          "results": [{"ruleId": "R1", "level": "warning",
-                                       "message": {"text": "m"},
-                                       "locations": [{"physicalLocation": {
-                                           "artifactLocation": {"uri": path},
-                                           "region": {"startLine": 1}}}]}]}]}
 
     def test_excluded_paths_dropped_with_note(self):
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "semgrep.sarif"), "w") as fh:
-                json.dump(self._sarif("tests/fixtures/insecure-js/app.js"), fh)
+                json.dump(_sarif_fixture("tests/fixtures/insecure-js/app.js"), fh)
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
                 out = it.ingest_dir(d, "g1", exclude_globs=["tests/fixtures/*"])
@@ -251,7 +252,7 @@ class TestExcludeGlobs(unittest.TestCase):
     def test_non_matching_paths_kept(self):
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "semgrep.sarif"), "w") as fh:
-                json.dump(self._sarif("skill/scripts/dispatch.py"), fh)
+                json.dump(_sarif_fixture("skill/scripts/dispatch.py"), fh)
             out = it.ingest_dir(d, "g1", exclude_globs=["tests/fixtures/*"],
                                 include_fixtures=True)
         self.assertEqual(len(out), 1)
@@ -276,18 +277,10 @@ class TestFixturePrune(unittest.TestCase):
                   "package.json"):
             self.assertFalse(it._is_fixture_path(p), p)
 
-    def _sarif(self, path):
-        return {"runs": [{"tool": {"driver": {"name": "t", "rules": []}},
-                          "results": [{"ruleId": "R1", "level": "warning",
-                                       "message": {"text": "m"},
-                                       "locations": [{"physicalLocation": {
-                                           "artifactLocation": {"uri": path},
-                                           "region": {"startLine": 1}}}]}]}]}
-
     def test_fixture_findings_pruned_by_default(self):
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "semgrep.sarif"), "w") as fh:
-                json.dump(self._sarif("tests/fixtures/vulnerable-node/package-lock.json"), fh)
+                json.dump(_sarif_fixture("tests/fixtures/vulnerable-node/package-lock.json"), fh)
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
                 out = it.ingest_dir(d, "g1")           # standard mode: no flag
@@ -297,14 +290,14 @@ class TestFixturePrune(unittest.TestCase):
     def test_fixture_findings_kept_with_include_fixtures(self):
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "semgrep.sarif"), "w") as fh:
-                json.dump(self._sarif("tests/fixtures/vulnerable-node/package-lock.json"), fh)
+                json.dump(_sarif_fixture("tests/fixtures/vulnerable-node/package-lock.json"), fh)
             out = it.ingest_dir(d, "g1", include_fixtures=True)   # redteam
         self.assertEqual(len(out), 1)
 
     def test_non_fixture_findings_kept_by_default(self):
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "semgrep.sarif"), "w") as fh:
-                json.dump(self._sarif("skill/scripts/orchestrator.py"), fh)
+                json.dump(_sarif_fixture("skill/scripts/orchestrator.py"), fh)
             out = it.ingest_dir(d, "g1")
         self.assertEqual(len(out), 1)
 
@@ -314,7 +307,7 @@ class TestFixturePrune(unittest.TestCase):
         # corpus" as a reason.
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "semgrep.sarif"), "w") as fh:
-                json.dump(self._sarif("vendor/gen.js"), fh)
+                json.dump(_sarif_fixture("vendor/gen.js"), fh)
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
                 out = it.ingest_dir(d, "g1", exclude_globs=["vendor/*"],

@@ -691,8 +691,9 @@ class TestRenderGoldens(unittest.TestCase):
         gdir = os.path.join(os.path.dirname(__file__), "goldens")
         for role, out_file in out_files.items():
             m = dict(base, out_file=out_file)
-            expected = open(os.path.join(gdir, role[:-3] + ".rendered.txt"),
-                            encoding="utf-8").read()
+            with open(os.path.join(gdir, role[:-3] + ".rendered.txt"),
+                      encoding="utf-8") as fh:
+                expected = fh.read()
             self.assertEqual(dispatch.render_prompt(role, m), expected, role)
 
 
@@ -729,7 +730,8 @@ class TestRenderAdvisor(unittest.TestCase):
             written = dispatch.render_advisor_prompts(qpath, outdir)
             self.assertEqual([os.path.basename(p) for p in written],
                              [self.QID_1 + ".md", self.QID_2 + ".md"])
-            text = open(written[0], encoding="utf-8").read()
+            with open(written[0], encoding="utf-8") as fh:
+                text = fh.read()
             self.assertIn('"id": "SEC-001"', text)        # claim embedded
             self.assertIn("{code_context}", text)          # brace-safe: survives
             self.assertNotIn("{claim_json}", text)         # placeholder filled
@@ -738,7 +740,8 @@ class TestRenderAdvisor(unittest.TestCase):
     def test_malformed_queue_fails_fast(self):
         with tempfile.TemporaryDirectory() as tmp:
             qpath = os.path.join(tmp, "bad.json")
-            open(qpath, "w").write("{not json")
+            with open(qpath, "w", encoding="utf-8") as fh:
+                fh.write("{not json")
             with self.assertRaises(ValueError):
                 dispatch.render_advisor_prompts(qpath, tmp)
 
@@ -1116,7 +1119,8 @@ class TestEmitHostAgents(unittest.TestCase):
     def test_claude_frontmatter_is_enforcement_shell(self):
         with tempfile.TemporaryDirectory() as d:
             dispatch.emit_host_agents("claude", d)
-            text = open(os.path.join(d, "panopticon-panel-review.md")).read()
+            with open(os.path.join(d, "panopticon-panel-review.md"), encoding="utf-8") as fh:
+                text = fh.read()
             self.assertIn("name: panopticon-panel-review", text)
             # panel_review holds scoped Write (#436): it self-writes its
             # out_file; the write-guard hook (Tasks 4-5) confines the write.
@@ -1138,13 +1142,14 @@ class TestEmitHostAgents(unittest.TestCase):
                                  ("panopticon-advisor.md", "haiku"),
                                  ("panopticon-domain-panel.md", "sonnet"),
                                  ("panopticon-domain-advisor.md", "opus")):
-                self.assertIn("model: %s" % model,
-                              open(os.path.join(d, fname)).read(), fname)
+                with open(os.path.join(d, fname), encoding="utf-8") as fh:
+                    self.assertIn("model: %s" % model, fh.read(), fname)
 
     def test_kimi_dialect_has_disallowed_tools(self):
         with tempfile.TemporaryDirectory() as d:
             dispatch.emit_host_agents("kimi", d)
-            text = open(os.path.join(d, "panopticon-lens-sweep.md")).read()
+            with open(os.path.join(d, "panopticon-lens-sweep.md"), encoding="utf-8") as fh:
+                text = fh.read()
             self.assertIn("disallowedTools:", text)
             self.assertIn("- Bash", text)
 
@@ -1153,7 +1158,8 @@ class TestEmitHostAgents(unittest.TestCase):
             written = dispatch.emit_host_agents("codex", d)
             self.assertEqual(len(written), 6)
             self.assertTrue(all(path.endswith(".toml") for path in written))
-            text = open(os.path.join(d, "panopticon-panel-review.toml")).read()
+            with open(os.path.join(d, "panopticon-panel-review.toml"), encoding="utf-8") as fh:
+                text = fh.read()
             self.assertIn('name = "panopticon-panel-review"', text)
             self.assertIn('model = "gpt-5.6-terra"', text)
             self.assertIn('model_reasoning_effort = "high"', text)
@@ -1186,11 +1192,18 @@ class TestEmitHostAgents(unittest.TestCase):
                 self.assertIn("model_preference: secondary", fh.read())
 
     def test_idempotent(self):
+        def _read_all(d):
+            out = {}
+            for p in os.listdir(d):
+                with open(os.path.join(d, p), encoding="utf-8") as fh:
+                    out[p] = fh.read()
+            return out
+
         with tempfile.TemporaryDirectory() as d:
             dispatch.emit_host_agents("claude", d)
-            first = {p: open(os.path.join(d, p)).read() for p in os.listdir(d)}
+            first = _read_all(d)
             dispatch.emit_host_agents("claude", d)
-            second = {p: open(os.path.join(d, p)).read() for p in os.listdir(d)}
+            second = _read_all(d)
             self.assertEqual(first, second)
 
     def test_unsupported_host_fails_fast(self):
@@ -1225,7 +1238,8 @@ class TestEmitHostAgents(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d, \
              mock.patch.dict(os.environ, {"PANOPTICON_MODEL_ADVISOR": "opus"}):
             dispatch.emit_host_agents("claude", d)
-            text = open(os.path.join(d, "panopticon-advisor.md")).read()
+            with open(os.path.join(d, "panopticon-advisor.md"), encoding="utf-8") as fh:
+                text = fh.read()
         self.assertIn("model: haiku", text)
         self.assertNotIn("model: opus", text)
 
@@ -1247,7 +1261,8 @@ class TestVerifyPlan(unittest.TestCase):
 
     def test_enforced_entry_with_live_shell_is_clean(self):
         with tempfile.TemporaryDirectory() as d:
-            open(os.path.join(d, "panopticon-panel-review.md"), "w").write("x")
+            with open(os.path.join(d, "panopticon-panel-review.md"), "w", encoding="utf-8") as fh:
+                fh.write("x")
             problems = dispatch.verify_plan([self._entry(enforced=True)],
                                             host="claude", agents_dir=d)
         self.assertEqual(problems, [])
@@ -1310,6 +1325,7 @@ class TestReviewRootPinning(unittest.TestCase):
                 json.dump(queue, fh)
             out = os.path.join(d, "prompts")
             written = dispatch.render_advisor_prompts(qp, out)
-            text = open(written[0]).read()
+            with open(written[0], encoding="utf-8") as fh:
+                text = fh.read()
         self.assertTrue(text.startswith("Repo root: "))
         self.assertIn(os.path.abspath(os.getcwd()), text.split("\n")[0])

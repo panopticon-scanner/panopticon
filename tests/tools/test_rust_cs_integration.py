@@ -11,3 +11,10 @@ class TestRustCsIntegration(unittest.TestCase):
         if shutil.which("cargo"):
             raise unittest.SkipTest("cargo is available; run full fixture test instead")
         self.assertTrue(True)
+
+    def test_roslyn_secguard_skips_without_dotnet(self):
+        adapter = ADAPTERS.get("roslyn-secguard")
+        self.assertIsNotNone(adapter)
+        if shutil.which("dotnet"):
+            raise unittest.SkipTest("dotnet is available; run full fixture test instead")
+        self.assertTrue(True)

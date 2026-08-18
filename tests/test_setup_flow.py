@@ -24,7 +24,8 @@ class TestSetupFlow(unittest.TestCase):
         d = _repo()
         res = setup_flow.provision(d)
         self.assertTrue(os.path.isfile(os.path.join(d, ".panopticon", "config.json")))
-        self.assertIn(".panopticon/*", open(os.path.join(d, ".gitignore")).read())
+        with open(os.path.join(d, ".gitignore"), encoding="utf-8") as fh:
+            self.assertIn(".panopticon/*", fh.read())
         self.assertTrue(res["config_created"])
 
     def test_committed_matrix_preserves_order(self):
@@ -65,9 +66,25 @@ class TestSetupFlow(unittest.TestCase):
         d = _repo()
         vocab = {"names": ["Auth"], "hints": {"Auth": ["**/auth/**", "**/login/**"]}}
         path = setup_flow.render_scan_brief(d, vocab)
-        brief = open(path).read()
+        with open(path, encoding="utf-8") as fh:
+            brief = fh.read()
         self.assertIn("Auth", brief)
         self.assertIn("**/auth/**", brief)  # the hint globs reach the classifier
+
+    def test_repo_spine_summary(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "src", "app"))
+            os.makedirs(os.path.join(d, "tests"))
+            with open(os.path.join(d, "src", "app", "main.py"), "w") as fh:
+                fh.write("print(1)")
+            with open(os.path.join(d, "package.json"), "w") as fh:
+                fh.write("{}")
+            with open(os.path.join(d, "pyproject.toml"), "w") as fh:
+                fh.write("[project]")
+            summary = setup_flow._repo_spine_summary(d)
+            self.assertIn("top-level: src", summary)
+            self.assertIn("package.json", summary)
+            self.assertIn("pyproject.toml", summary)
 
     def test_readiness_returns_checks(self):
         d = _repo()

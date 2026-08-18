@@ -559,13 +559,17 @@ class TestPresentCells(unittest.TestCase):
         self.assertEqual(syn.present_cells(None), {})
 
 
+def _make_finding(**kw):
+    base = {"id": "CD-001", "title": "t", "severity": "LOW", "confidence": "POSSIBLE",
+            "panel": "code", "category": "structure",
+            "location": {"file": "a.py", "line_start": 3}}
+    base.update(kw)
+    return base
+
+
 class TestReport(unittest.TestCase):
     def _finding(self, **kw):
-        base = {"id": "CD-001", "title": "t", "severity": "LOW", "confidence": "POSSIBLE",
-                "panel": "code", "category": "structure",
-                "location": {"file": "a.py", "line_start": 3}}
-        base.update(kw)
-        return base
+        return _make_finding(**kw)
 
     def test_build_report_has_grades_and_gate(self):
         # A HIGH finding with no source/verdict is agentic + unverified, and
@@ -2239,11 +2243,7 @@ class TestToolsRanFromDispositions(unittest.TestCase):
 
 class TestBuildExecutingTools(unittest.TestCase):
     def _finding(self, **kw):
-        base = {"id": "CD-001", "title": "t", "severity": "LOW", "confidence": "POSSIBLE",
-                "panel": "code", "category": "structure",
-                "location": {"file": "a.py", "line_start": 3}}
-        base.update(kw)
-        return base
+        return _make_finding(**kw)
 
     def test_meta_records_build_executing_tool(self):
         f = self._finding(source="tool:roslyn-secguard")
