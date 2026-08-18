@@ -346,7 +346,7 @@ class TestCoveragePhase(unittest.TestCase):
             result = driver.coverage_execute(self.root, self.manifest)
         self.assertEqual(result.kind, "checkpoint")
         self.assertEqual(result.checkpoint, "scout")
-        self.assertEqual(result.group, "Auth")
+        self.assertIsNone(result.group)                 # #1056: batched, not per-group
         req = driver._load_json(driver._pano(self.root, "dispatch-request.json"))
         self.assertEqual(req["checkpoint"], "scout")
         entry = req["entries"][0]
@@ -355,6 +355,26 @@ class TestCoveragePhase(unittest.TestCase):
         self.assertTrue(entry["enforced"])              # claude host
         self.assertNotIn("delivery", entry)             # host-agnostic
 
+    def test_batches_all_pending_scouts_into_one_checkpoint(self):
+        # #1056: every group's scout goes in ONE checkpoint (they are
+        # independent) so they dispatch concurrently, not 21 sequential
+        # round-trips. A group whose scout already landed is not re-emitted.
+        self._groups_json([{"name": "Auth", "files": ["a.py"]},
+                           {"name": "Core", "files": ["b.py"]},
+                           {"name": "UI", "files": ["c.py"]}])
+        self._groups_yml("groups:\n  Auth:\n    match: ['a.py']\n"
+                         "  Core:\n    match: ['b.py']\n  UI:\n    match: ['c.py']\n")
+        # Core already has a scout output -> only Auth + UI should be emitted.
+        driver._write_json(driver._pano(self.root, "scout-Core.json"),
+                           {"group": "Core", "domains": ["COD"]})
+        with mock.patch("scripts.driver.dispatch.render_prompt", return_value="B"), \
+             mock.patch("scripts.driver.dispatch.registered_agent_name",
+                        return_value="panopticon-scout"):
+            result = driver.coverage_execute(self.root, self.manifest)
+        self.assertEqual(result.checkpoint, "scout")
+        req = driver._load_json(driver._pano(self.root, "dispatch-request.json"))
+        outs = sorted(os.path.basename(e["out_file"]) for e in req["entries"])
+        self.assertEqual(outs, ["scout-Auth.json", "scout-UI.json"])   # Core omitted
     def test_scout_entry_injects_adapter_registry(self):
         # #1053: the scout prompt must carry the real scanner registry so it can
         # only recommend tools that exist -- deleting the requested_unavailable
@@ -1609,7 +1629,7 @@ class TestDriverSingleScopeEndToEnd(unittest.TestCase):
         # coverage: scout checkpoint (read-only return-persist) then floor+scout
         cov = driver.coverage_execute(d, manifest)
         self.assertEqual(cov.checkpoint, "scout")
-        self.assertEqual(cov.group, "Checkout")
+        self.assertIsNone(cov.group)                 # #1056: scouts batched, group=None
         req = driver.load_dispatch_request(d)
         for e in req["entries"]:
             driver._write_json(e["out_file"], {"group": "Checkout", "domains": ["SEC"]})
@@ -1805,7 +1825,7 @@ class TestDriverDeltaEndToEnd(unittest.TestCase):
         # #5.0-11's GLOBAL_FLOOR ARC/COD/DAT/TST on every group)
         cov = driver.coverage_execute(d, manifest)
         self.assertEqual(cov.checkpoint, "scout")
-        self.assertEqual(cov.group, "Checkout")
+        self.assertIsNone(cov.group)                 # #1056: scouts batched, group=None
         req = driver.load_dispatch_request(d)
         for e in req["entries"]:
             self._self_write_scout(e)

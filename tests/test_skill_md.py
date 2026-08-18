@@ -78,7 +78,7 @@ class TestSkillMd(unittest.TestCase):
         self.assertIn("self-writes** its own", self.text)
         self.assertIn('entry["out_file"]', self.text)
         self.assertIn("returns a one-line confirmation", self.text)
-        self.assertIn("the scout is **read-only** and RETURNS", self.text)
+        self.assertIn("each scout is **read-only** and RETURNS", self.text)
         self.assertNotIn("their tool policy allows Bash", self.text)
 
     def test_host_dispatch_is_enforcement_conditional(self):
