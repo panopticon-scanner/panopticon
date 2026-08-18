@@ -276,8 +276,9 @@ def render_summary(diff):
     lines = ["# Run-3 reconciliation summary", "",
             "run2: %s (%d records)" % (m["run2_report"], m["run2_count"]),
             "run3: %s (%d records)" % (m["run3_report"], m["run3_count"]),
-            "", "## Cohorts (record counts, not fingerprint-group counts — "
-                "a degenerate collision can put >1 record under one fingerprint)",
+            "",
+            ("## Cohorts (record counts, not fingerprint-group counts — " +
+             "a degenerate collision can put >1 record under one fingerprint)"),
             "- recurring: %d" % recurring_n,
             "- closed: %d" % closed_n,
             "- ambiguous: %d" % ambiguous_n,

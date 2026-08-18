@@ -170,7 +170,8 @@ RUN : "asset-refresh ${ASSET_REFRESH}" \
 # experimental-prefixed flags; the plain spellings are kept as a fallback
 # for whenever OSV_SCANNER_VERSION next gets bumped past them.
 ENV OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY=/opt/osv-db
-RUN : "asset-refresh ${ASSET_REFRESH}" \
+RUN set -euo pipefail \
+    && : "asset-refresh ${ASSET_REFRESH}" \
     && mkdir -p /opt/osv-db /tmp/osv-warm \
     && printf '%s\n' \
        '{"name":"warm","version":"1.0.0","lockfileVersion":3,"requires":true,' \
@@ -193,7 +194,8 @@ RUN : "asset-refresh ${ASSET_REFRESH}" \
 # a full sync can take the better part of an hour, so the update is bounded
 # and allowed to fail or partial-fill rather than hang a scheduled build).
 RUN --mount=type=secret,id=nvd_api_key \
-    : "asset-refresh ${ASSET_REFRESH}" \
+    set -euo pipefail \
+    && : "asset-refresh ${ASSET_REFRESH}" \
     && mkdir -p /opt/odc-data \
     && if [ -f /run/secrets/nvd_api_key ]; then KEY="$(cat /run/secrets/nvd_api_key 2>/dev/null)"; else KEY=""; fi \
     && if ! timeout 600 /opt/dependency-check/bin/dependency-check.sh --updateonly \
@@ -203,7 +205,8 @@ RUN --mount=type=secret,id=nvd_api_key \
 # SecurityCodeScan offline NuGet feed: warm a package folder via a throwaway
 # project (the root /Directory.Build.props injects the analyzer reference),
 # then pin restore to it via fallbackPackageFolders.
-RUN : "asset-refresh ${ASSET_REFRESH}" \
+RUN set -euo pipefail \
+    && : "asset-refresh ${ASSET_REFRESH}" \
     && mkdir -p /tmp/warm && cd /tmp/warm \
     && dotnet new classlib -o warmproj --no-restore \
     && dotnet restore warmproj --packages /opt/nuget-packages \
