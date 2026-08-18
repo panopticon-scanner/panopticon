@@ -1690,8 +1690,21 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
             "gate": cert["gate"],
             "gate_policy": ("include_unverified" if gate_unverified
                             else "confirmed_only"),
+            # #1059: `stats` and `evidence_stats` count DIFFERENT populations --
+            # `stats` the ACTIVE (non-rejected == findings[]) set, `evidence_stats`
+            # ALL findings (active + discarded == findings[] + discarded_claims[]).
+            # Their totals differ by len(rejected); the population tags + counts
+            # block below make that explicit and reconcilable (the run-5 self-scan
+            # surfaced two unlabeled HIGH counts in one summary).
             "stats": severity_stats(active),
+            "stats_population": "active",
             "evidence_stats": evidence_stats(findings),
+            "evidence_stats_population": "all",
+            "counts": {
+                "active": len(active),
+                "discarded": len(rejected),
+                "total": len(findings),
+            },
             "delta": ({"on_diff": severity_stats(on_diff_active),
                        "pre_existing": severity_stats(pre_existing_active)}
                       if delta_mode else None),
