@@ -69,6 +69,22 @@ def _deny_response(reason):
     })
 
 
+def _resolve_allowlist_path():
+    env_path = os.environ.get("PANOPTICON_WRITE_ALLOWLIST")
+    if env_path and os.path.isfile(env_path):
+        return env_path
+    cur = os.path.abspath(os.getcwd())
+    while True:
+        candidate = os.path.join(cur, ".panopticon", "write-allowlist.json")
+        if os.path.isfile(candidate):
+            return candidate
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
+    return os.path.join(".panopticon", "write-allowlist.json")
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -82,7 +98,7 @@ def main():
     if tool_name not in _WRITE_TOOLS:
         return 0
     try:
-        with open(".panopticon/write-allowlist.json", encoding="utf-8") as fh:
+        with open(_resolve_allowlist_path(), encoding="utf-8") as fh:
             loaded = json.load(fh)
     except (OSError, ValueError) as exc:
         loaded = None

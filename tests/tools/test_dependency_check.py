@@ -60,3 +60,13 @@ class TestDependencyCheckAdapter(unittest.TestCase):
         self.assertIn("--data", called_cmd)
         data_idx = called_cmd.index("--data")
         self.assertEqual(called_cmd[data_idx + 1], "/opt/odc-data")
+
+    def test_invoke_fails_closed_when_report_missing(self):
+        adapter = dc.DependencyCheckAdapter()
+        fake_run = mock.Mock(return_value=(b"", 0))
+        with mock.patch("scripts.tools.dependency_check.run_tool", fake_run):
+            with mock.patch("scripts.tools.dependency_check.os.path.exists", return_value=False):
+                with mock.patch("shutil.rmtree"):
+                    stdout, rc = adapter.invoke("/tmp/fake")
+        self.assertEqual(stdout, b"")
+        self.assertNotEqual(rc, 0)

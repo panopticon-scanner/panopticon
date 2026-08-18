@@ -235,10 +235,13 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
             rs._safe_copytree = old_safe_copytree
 
         cmd = calls[0][0]
+        kwargs = calls[0][1]
         self.assertEqual(cmd[0], "dotnet")
         self.assertEqual(cmd[1], "build")
         self.assertTrue(cmd[2].startswith(copied_dst[0]))
         self.assertTrue(any(arg.startswith("-p:ErrorLog=") for arg in cmd))
+        self.assertEqual(kwargs.get("timeout"), 600)
+        self.assertTrue(kwargs.get("capture_output"))
 
 
 class TestSafeCopytree(unittest.TestCase):

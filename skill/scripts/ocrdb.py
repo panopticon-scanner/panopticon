@@ -60,17 +60,21 @@ def load_bundle(path=None):
     return data
 
 
+def _safe_get_dict(mapping, key):
+    if not isinstance(mapping, dict):
+        return {}
+    val = mapping.get(key)
+    return val if isinstance(val, dict) else {}
+
+
 def domain_menu(bundle, domain):
     """The domain's entries as [{code, name, severity, cwe}], sorted by code.
     [] for an unknown domain or a None/non-dict bundle."""
     if not isinstance(bundle, dict):
         return []
-    dom = (bundle.get("domains") or {}).get(domain) or {}
-    if not isinstance(dom, dict):
-        return []
-    entries = dom.get("entries") or {}
-    if not isinstance(entries, dict):
-        return []
+    doms = _safe_get_dict(bundle, "domains")
+    dom = _safe_get_dict(doms, domain)
+    entries = _safe_get_dict(dom, "entries")
     menu = []
     for code in sorted(entries):
         entry = entries[code]
@@ -80,7 +84,7 @@ def domain_menu(bundle, domain):
         item = {"code": code,
                 "name": entry.get("name", ""),
                 "severity": sev or _MENU_SEVERITY_WHEN_ABSENT,
-                "cwe": entry.get("cwe") or []}
+                "cwe": entry.get("cwe") if isinstance(entry.get("cwe"), list) else []}
         if not sev:   # #1034: flag the assumed severity, never silently fabricate
             item["severity_assumed"] = True
         menu.append(item)
@@ -96,19 +100,16 @@ def domain_criteria(bundle, domain):
     one-liner."""
     if not isinstance(bundle, dict):
         return []
-    dom = (bundle.get("domains") or {}).get(domain) or {}
-    if not isinstance(dom, dict):
-        return []
-    entries = dom.get("entries") or {}
-    if not isinstance(entries, dict):
-        return []
+    doms = _safe_get_dict(bundle, "domains")
+    dom = _safe_get_dict(doms, domain)
+    entries = _safe_get_dict(dom, "entries")
     out = []
     for code in sorted(entries):
         entry = entries[code]
         if not isinstance(entry, dict):
             continue
         crit = entry.get("criteria")
-        if crit:
+        if crit and isinstance(crit, str):
             out.append({"code": code, "name": entry.get("name", ""),
                         "criteria": crit})
     return out
@@ -125,12 +126,14 @@ def validate_code(bundle, code):
     """True iff `code` is a real entry in the bundle. A synthetic '<DOM>-X0X'
     fallback code is NOT a real entry (returns False) — that is the catalog-gap
     signal synthesize counts."""
-    if not isinstance(bundle, dict) or not code:
+    if not isinstance(bundle, dict) or not isinstance(code, str):
         return False
     dom = domain_of(code)
     if not dom:
         return False
-    entries = ((bundle.get("domains") or {}).get(dom) or {}).get("entries") or {}
+    doms = _safe_get_dict(bundle, "domains")
+    dom_obj = _safe_get_dict(doms, dom)
+    entries = _safe_get_dict(dom_obj, "entries")
     return code in entries
 
 
@@ -142,12 +145,15 @@ def domain_fallback(domain):
 def default_severity(bundle, code):
     """The default_severity for a code ('SEC-A1A' -> 'MEDIUM'), or None when the
     bundle is absent/malformed or the code is unknown."""
-    if not isinstance(bundle, dict) or not code:
+    if not isinstance(bundle, dict) or not isinstance(code, str):
         return None
     dom = domain_of(code)
     if not dom:
         return None
-    entry = ((bundle.get("domains") or {}).get(dom) or {}).get("entries", {}).get(code)
+    doms = _safe_get_dict(bundle, "domains")
+    dom_obj = _safe_get_dict(doms, dom)
+    entries = _safe_get_dict(dom_obj, "entries")
+    entry = entries.get(code)
     if not isinstance(entry, dict):
         return None
     return entry.get("default_severity")

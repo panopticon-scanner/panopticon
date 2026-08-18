@@ -127,8 +127,7 @@ def sarif_to_findings(sarif, tool_name, group, prefix, start=1):
                     loc = {"file": _norm_uri(phys.get("artifactLocation", {}).get("uri")),
                            "line_start": phys.get("region", {}).get("startLine")}
                 rule_id = res.get("ruleId")
-                if tool_name == "bandit" and (
-                        rule_id in NOISE_RULES or _is_test_path(loc.get("file"))):
+                if tool_name == "bandit" and rule_id in NOISE_RULES:
                     continue
                 rule = rules.get(res.get("ruleId"), {})
                 tags = " ".join(str(t) for t in (rule.get("properties", {}).get("tags") or []))

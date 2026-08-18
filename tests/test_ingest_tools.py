@@ -151,15 +151,15 @@ class TestIngest(unittest.TestCase):
         for kept in ("B603", "B607"):
             self.assertIn(kept, ids)
 
-    def test_ingest_filters_nonnoise_bandit_under_test_path(self):
-        # Exercises the _is_test_path OR-branch distinctly from NOISE_RULES:
-        # a non-noise bandit rule (B608) located in a test file is dropped by
-        # design (test-path suppression is bandit-wide, not just B101).
+    def test_ingest_preserves_nonnoise_bandit_under_test_path(self):
+        # Non-noise bandit rules (e.g. B608) located in test paths are preserved (#1120)
         sarif = {"runs": [{"tool": {"driver": {"name": "bandit", "rules": []}},
             "results": [{"ruleId": "B608", "level": "warning", "message": {"text": "sql"},
               "locations": [{"physicalLocation": {"artifactLocation": {"uri": "tests/test_x.py"},
                              "region": {"startLine": 9}}}]}]}]}
-        self.assertEqual(it.sarif_to_findings(sarif, "bandit", "g1", "BN"), [])
+        findings = it.sarif_to_findings(sarif, "bandit", "g1", "BN")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["category"], "B608")
 
     def test_ingest_real_semgrep_fixture(self):
         # tests/fixtures/ holds a realistic semgrep SARIF (one run, one rule,

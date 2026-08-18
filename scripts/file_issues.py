@@ -94,16 +94,16 @@ def body_for(f, rejected=False, report=REPORT, report_url=REPORT_URL,
             L.append("  - `%s:%s`" % (defang(a.get("file") or "").replace("`", "'"),
                                       a.get("line_start")))
     L.append("**Severity (impact if true):** %s   **Evidence:** `%s`   "
-             "**Confidence:** %s" % (f.get("severity"), ev.get("status"),
-                                     f.get("confidence")))
-    src = prov.get("discovered_by") or f.get("source") or "unknown"
-    L.append("**Found by:** %s%s" % (src, "  ·  model: %s" % prov["model"]
+             "**Confidence:** %s" % (defang(f.get("severity")), defang(ev.get("status")),
+                                     defang(f.get("confidence"))))
+    src = defang(prov.get("discovered_by") or f.get("source") or "unknown")
+    L.append("**Found by:** %s%s" % (src, "  ·  model: %s" % defang(prov["model"])
                                      if prov.get("model") else ""))
     cites = f.get("citations") or {}
     flat = []
     for k in ("cwe", "owasp", "cve"):
         for c in (cites.get(k) or []):
-            flat.append(c if isinstance(c, str) else c.get("id", str(c)))
+            flat.append(defang(c if isinstance(c, str) else c.get("id", str(c))))
     if flat:
         L.append("**Citations:** %s" % ", ".join(flat))
     L.append("\n## What was found\n\n%s" % defang(f.get("description") or "(none)"))
@@ -119,12 +119,12 @@ def body_for(f, rejected=False, report=REPORT, report_url=REPORT_URL,
         L.append("\n## %s\n\n%s" % (verb, defang(reasoning)))
     if ev.get("verified_by"):
         L.append("\n**Corroborating panels:** %s" % ", ".join(
-            str(x) for x in ev["verified_by"]))
+            defang(str(x)) for x in ev["verified_by"]))
     L.append("\n---\n")
     L.append("**Fingerprint:** `%s` — stable cross-run identity; excludes line "
              "numbers and free-text so this issue survives code moves and "
              "re-wordings." % f.get("fingerprint"))
-    L.append("**Finding id in report:** `%s`" % f.get("id"))
+    L.append("**Finding id in report:** `%s`" % defang(f.get("id")))
     L.append("**Report artifact:** [%s](%s) (self-scan %s, %s, "
              "`tool_policy_mode: enforced`)" % (report, report_url,
                                                 run_label, run_date))
@@ -184,6 +184,7 @@ def scrub(text):
 
 _MENTION_RE = re.compile(r"@(?=[A-Za-z0-9._-])")
 _ISSUEREF_RE = re.compile(r"(?<![\w])#(?=\d)")
+_AUTOLINK_RE = re.compile(r"<([a-zA-Z][a-zA-Z0-9+.-]*://[^>]+)>")
 
 
 def defang(text):
@@ -193,16 +194,24 @@ def defang(text):
     prompt-injection payloads -- and body_for()/title_for() drop them into
     Markdown that an authenticated bot posts to public issues. Break the
     constructs GitHub *activates* -- @mentions (auto-ping / social-engineering),
-    `#NNN` issue autolinks (cross-issue spam), and `[text](url)` / `![alt](url)`
-    links (phishing) -- with a zero-width space, and strip C0/C1 control bytes
-    (terminal escapes reaching anyone reading via gh/CLI). Text stays readable;
-    the active syntax no longer fires. This is the security defang, distinct
-    from scrub() (which only strips local paths for privacy)."""
+    `#NNN` issue autolinks (cross-issue spam), inline and reference links/images
+    `[text](url)` / `![alt](url)` / `[text][ref]` / `[ref]: url`, and autolinks
+    `<http://...>` or bare URLs -- with a zero-width space, and strip C0/C1
+    control bytes (terminal escapes reaching anyone reading via gh/CLI). Text
+    stays readable; the active syntax no longer fires. This is the security
+    defang, distinct from scrub() (which only strips local paths for privacy)."""
     s = str(text or "")
     s = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]", "", s)  # ctrl; keep \t \n
-    s = _MENTION_RE.sub("@​", s)
-    s = _ISSUEREF_RE.sub("#​", s)
-    return s.replace("](", "]​(")
+    s = _MENTION_RE.sub("@\u200b", s)
+    s = _ISSUEREF_RE.sub("#\u200b", s)
+    s = s.replace("](", "]\u200b(")
+    s = s.replace("][", "]\u200b[")
+    s = s.replace("]:", "]\u200b:")
+    s = s.replace("![", "!\u200b[")
+    s = _AUTOLINK_RE.sub(lambda m: "<\u200b" + m.group(1) + ">", s)
+    s = re.sub(r"\bhttps://", "h\u200bttps://", s)
+    s = re.sub(r"\bhttp://", "h\u200bttp://", s)
+    return s
 
 
 LEDGER = ".panopticon/filed-issues.json"
