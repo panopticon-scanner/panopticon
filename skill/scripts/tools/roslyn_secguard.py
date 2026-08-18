@@ -58,6 +58,8 @@ class RoslynSecGuardAdapter:
     prefix = "RS"
 
     def is_applicable(self, target: str) -> bool:
+        if not os.path.isdir(target):
+            return False
         return any(
             f.endswith(".csproj") or f.endswith(".sln")
             for f in os.listdir(target)
