@@ -69,6 +69,52 @@ class TestEndToEnd(unittest.TestCase):
             self.assertEqual(report["summary"]["overall_grade"], "C")
 
 
+class TestX0XEmissionEndToEnd(unittest.TestCase):
+    def test_synthesize_emits_x0x_report(self):
+        # §5.1: a real synthesize run emits an X0X catalog-gap report sibling from
+        # the <DOM>-X0X findings, stamped with the driver-supplied run_id.
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "src"))
+            open(os.path.join(d, "src", "app.py"), "w").close()
+            r = subprocess.run(
+                [sys.executable, os.path.join(SCRIPTS, "discovery.py"),
+                 "--repo-scan", d], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            groups = json.loads(r.stdout)
+            gname = groups["groups"][0]["name"]
+            os.makedirs(os.path.join(d, ".panopticon"))
+            fp = os.path.join(d, ".panopticon", "findings-%s-code.json" % gname)
+            with open(fp, "w") as fh:
+                json.dump({"findings": [{
+                    "id": "AR-001", "code": "ARC-X0X", "domain": "ARC",
+                    "title": "ungated fixture provisioning",
+                    "short_title": "ungated fixture provisioning",
+                    "severity": "MEDIUM", "confidence": "POSSIBLE", "panel": "code",
+                    "category": "general", "description": "runs on every start",
+                    "location": {"file": "src/app.py", "line_start": 1,
+                                 "line_end": 3}}]}, fh)
+            gj = os.path.join(d, "groups.json")
+            with open(gj, "w") as fh:
+                json.dump(groups, fh)
+            out = os.path.join(d, ".panopticon", "report.json")
+            r2 = subprocess.run(
+                [sys.executable, os.path.join(SCRIPTS, "synthesize.py"),
+                 "--target", "src", "--groups", gj, "--run-id", "RID-123",
+                 "--out", out, fp],
+                capture_output=True, text=True, cwd=d)
+            self.assertEqual(r2.returncode, 0, r2.stderr)
+            x0x_path = os.path.join(d, ".panopticon", "report-x0x.json")
+            self.assertTrue(os.path.isfile(x0x_path), r2.stdout + r2.stderr)
+            x0x = json.load(open(x0x_path))
+            self.assertEqual(x0x["generated_by"]["run_id"], "RID-123")
+            self.assertEqual(len(x0x["candidates"]), 1, x0x)
+            c = x0x["candidates"][0]
+            self.assertEqual(c["domain"], "ARC")
+            self.assertEqual(c["fallback_code"], "ARC-X0X")
+            self.assertEqual(c["proposed_name"], "ungated-fixture-provisioning")
+            self.assertEqual(c["occurrences"][0]["finding_id"], "AR-001")
+
+
 class TestStrictGateEndToEnd(unittest.TestCase):
     # P2/#446, combined effect: derive_evidence now checks the advisor
     # verdict before the finding's source, and the verify queue (fingerprint-

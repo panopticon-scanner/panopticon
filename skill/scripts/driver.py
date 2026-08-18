@@ -974,6 +974,7 @@ def synthesize_execute(review_root, manifest):
            "--out", report,
            "--groups", _pano(review_root, "groups.json"),
            "--security", manifest.get("security_mode", "standard"),
+           "--run-id", manifest.get("run_id") or "",   # §5.1: X0X report provenance
            "--verdicts-dir", verdicts_dir]
     if (_load_json(_pano(review_root, "tools-ran.json")) or {}).get("ran"):
         cmd += ["--tools-dir", _pano(review_root, "tools")]
