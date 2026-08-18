@@ -3701,20 +3701,56 @@ class TestCostLedgerDriver(unittest.TestCase):
                 json.dump([{"group": "Auth", "domain": "SEC", "out_file": "x"},
                            {"group": "Auth", "domain": "COD", "out_file": "y"},
                            {"group": "UI", "domain": "COD", "out_file": "z"}], fh)
-            # 2 primary cell bundles + 1 backup bundle (root of .panopticon)
+            # #1052: the driver writes cell bundles INTO the verdicts/ subdir
+            # (_verify_out_file -> verdicts/verdicts-<g>-<d>[-backup].json), not
+            # the .panopticon root. 2 primary cell bundles + 1 backup bundle.
             for name in ("verdicts-Auth-SEC.json", "verdicts-Auth-COD.json",
                          "verdicts-Auth-SEC-backup.json"):
-                with open(os.path.join(pano, name), "w", encoding="utf-8") as fh:
+                with open(os.path.join(vdir, name), "w", encoding="utf-8") as fh:
                     fh.write("{}")
-            # 4 tool-advisor verdicts in the verdicts/ subdir (not the root)
+            # 4 tool-advisor verdicts in the same subdir, keyed by queue_id (a
+            # 16-char sha prefix -- never the "verdicts-" bundle prefix).
             for i in range(4):
-                with open(os.path.join(vdir, "q%d.json" % i),
+                with open(os.path.join(vdir, "abc123def456000%d.json" % i),
                           "w", encoding="utf-8") as fh:
                     fh.write("{}")
             self.assertEqual(
                 syn.driver_cost_counts(pano, vdir, {"semgrep", "bandit"}),
                 {"review_cells": 3, "verify_primary": 2, "verify_backup": 1,
                  "verify_tools": 4, "tool_scan": 2})
+
+    def test_driver_cost_counts_does_not_mislabel_cell_bundles_as_tool_advisor(self):
+        # #1052 regression: the run-5 symptom was domain_advisor:0,
+        # domain_advisor_backup:0, tool_advisor:235 -- every cell bundle counted
+        # as a tool-advisor dispatch because both live in verdicts/ and the old
+        # code globbed bundles from the root (matched nothing) then swept the
+        # whole subdir into tool_advisor. Many cell bundles + a couple of tool
+        # verdicts must split correctly.
+        with tempfile.TemporaryDirectory() as d:
+            pano = os.path.join(d, ".panopticon")
+            vdir = os.path.join(pano, "verdicts")
+            os.makedirs(vdir)
+            plan = [{"group": "G%d" % i, "domain": "SEC", "out_file": "x"}
+                    for i in range(5)]
+            with open(os.path.join(pano, "dispatch-plan-driver.json"),
+                      "w", encoding="utf-8") as fh:
+                json.dump(plan, fh)
+            for i in range(5):        # 5 primary cell bundles
+                with open(os.path.join(vdir, "verdicts-G%d-SEC.json" % i),
+                          "w", encoding="utf-8") as fh:
+                    fh.write("{}")
+            for i in range(2):        # 2 backup cell bundles
+                with open(os.path.join(vdir, "verdicts-G%d-SEC-backup.json" % i),
+                          "w", encoding="utf-8") as fh:
+                    fh.write("{}")
+            for i in range(3):        # 3 genuine tool-advisor verdicts
+                with open(os.path.join(vdir, "ff00aa11bb22cc3%d.json" % i),
+                          "w", encoding="utf-8") as fh:
+                    fh.write("{}")
+            counts = syn.driver_cost_counts(pano, vdir, set())
+            self.assertEqual(counts["verify_primary"], 5)
+            self.assertEqual(counts["verify_backup"], 2)
+            self.assertEqual(counts["verify_tools"], 3)   # NOT 10
 
     def test_main_emits_driver_cost_from_artifacts(self):
         # End-to-end main() wiring -- the seam the unit tests above don't
@@ -3741,12 +3777,14 @@ class TestCostLedgerDriver(unittest.TestCase):
             with open(os.path.join(pano, "dispatch-plan-driver.json"),
                       "w", encoding="utf-8") as fh:
                 json.dump(plan, fh)
-            # 2 primary cell bundles + 1 backup (root); 1 tool-advisor (subdir)
+            # #1052: 2 primary cell bundles + 1 backup + 1 tool-advisor, ALL in
+            # the verdicts/ subdir (where the driver actually writes them).
             for name in ("verdicts-Auth-SEC.json", "verdicts-Auth-COD.json",
                          "verdicts-Auth-SEC-backup.json"):
-                with open(os.path.join(pano, name), "w", encoding="utf-8") as fh:
+                with open(os.path.join(vdir, name), "w", encoding="utf-8") as fh:
                     json.dump({"verdicts": [], "_panopticon": {"run_id": "r"}}, fh)
-            with open(os.path.join(vdir, "q0.json"), "w", encoding="utf-8") as fh:
+            with open(os.path.join(vdir, "ab12cd34ef560000.json"),
+                      "w", encoding="utf-8") as fh:
                 json.dump({"verdicts": []}, fh)
             out = os.path.join(pano, "report.json")
             try:

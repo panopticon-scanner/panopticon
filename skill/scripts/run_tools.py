@@ -177,6 +177,16 @@ def _capture_run(label, tool, docker, out_path, runner):
                 label, tool, res.returncode,
                 (" — " + excerpt) if excerpt else ""), file=sys.stderr)
             return None
+        if not (res.stdout or b"").strip():
+            # #1051: empty output on a selected target is a silent failure, not a
+            # clean no-findings run (every scanner/adapter emits a JSON/SARIF
+            # envelope when it finds nothing). Fail closed: write NO file and
+            # skip, so write_manifest lands this tool in `missing` -> synthesize's
+            # #1031 gate reads INCONCLUSIVE, never a certified success. The stale
+            # file (if any) was already removed at the top of this function.
+            print("%s %s produced no output on a selected target; recording as "
+                  "missing (fail-closed, #1051)" % (label, tool), file=sys.stderr)
+            return None
         fd, temp_path = tempfile.mkstemp(
             prefix=".%s-" % os.path.basename(out_path),
             dir=os.path.dirname(out_path) or ".")
@@ -191,8 +201,6 @@ def _capture_run(label, tool, docker, out_path, runner):
                 os.remove(temp_path)
             except OSError:
                 pass
-        if not (res.stdout or b"").strip():
-            print("%s %s produced no output" % (label, tool), file=sys.stderr)
         return out_path
     except subprocess.TimeoutExpired:
         print("%s %s timed out after %ss; skipping" % (label, tool, TOOL_TIMEOUT),
