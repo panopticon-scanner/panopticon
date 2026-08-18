@@ -75,14 +75,16 @@ class TestHunkMap(unittest.TestCase):
     def test_committed_and_uncommitted_changes(self):
         d = self._repo()
         _git(d, "checkout", "-q", "-b", "feat")
-        # committed change to line 3
         p = os.path.join(d, "a.py")
-        lines = open(p).read().splitlines()
+        with open(p, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
         lines[2] = "CHANGED3"
-        open(p, "w").write("\n".join(lines) + "\n")
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
         _git(d, "commit", "-qam", "c")
         # uncommitted new file (untracked) -> whole-file range
-        open(os.path.join(d, "b.py"), "w").write("x\ny\n")
+        with open(os.path.join(d, "b.py"), "w", encoding="utf-8") as fh:
+            fh.write("x\ny\n")
         m = diff_map.hunk_map(d, "main")
         self.assertIn("a.py", m)
         self.assertTrue(any(s <= 3 <= e for (s, e) in m["a.py"]))

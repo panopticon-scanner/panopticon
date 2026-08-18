@@ -34,10 +34,8 @@ class TestFindSecBugsIntegrity(unittest.TestCase):
         self.text = _read_dockerfile()
 
     def test_findsecbugs_digest_is_pinned_and_verified(self):
-        self.assertIn("FINDSECBUGS_SHA256=", self.text)
-        # A 64-hex-char sha256 must be pinned and checked with sha256sum -c.
         self.assertRegex(self.text, r"FINDSECBUGS_SHA256=[0-9a-f]{64}")
-        self.assertIn("sha256sum -c", self.text)
+        self.assertRegex(self.text, r'echo "\$\{FINDSECBUGS_SHA256\}\s+/opt/spotbugs/plugin/findsecbugs-plugin\.jar"\s*\|\s*sha256sum -c')
 
     def test_findsecbugs_uses_canonical_maven_path_not_scrape_endpoint(self):
         # The legacy remotecontent?filepath= scrape endpoint ships no checksum

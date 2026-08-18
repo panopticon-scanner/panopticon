@@ -42,3 +42,26 @@ class TestSpotBugsAdapter(unittest.TestCase):
     def test_parse_empty_output_returns_no_findings(self):
         findings = sb.SpotBugsAdapter().parse(b"", "g1")
         self.assertEqual(findings, [])
+
+    def test_parse_multiple_bug_instances(self):
+        sample = b"""<?xml version="1.0" encoding="UTF-8"?>
+<BugCollection version="4.8.6" sequence="0" timestamp="0" analysisTimestamp="0" release="">
+  <BugInstance type="SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE" priority="1" category="SECURITY">
+    <Class classname="com.example.App">
+      <SourceLine sourcepath="com/example/App.java" start="42"/>
+    </Class>
+  </BugInstance>
+  <BugInstance type="XSS_REQUEST_PARAMETER_TO_SERVLET_WRITER" priority="2" category="SECURITY">
+    <Class classname="com.example.Servlet">
+      <SourceLine sourcepath="com/example/Servlet.java" start="88"/>
+    </Class>
+  </BugInstance>
+</BugCollection>
+"""
+        findings = sb.SpotBugsAdapter().parse(sample, "g1")
+        self.assertEqual(len(findings), 2)
+        self.assertEqual(findings[0]["severity"], "HIGH")
+        self.assertEqual(findings[0]["location"]["line_start"], 42)
+        self.assertEqual(findings[1]["severity"], "MEDIUM")
+        self.assertEqual(findings[1]["location"]["file"], "com/example/Servlet.java")
+        self.assertEqual(findings[1]["location"]["line_start"], 88)

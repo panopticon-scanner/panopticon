@@ -194,6 +194,14 @@ class TestApply(unittest.TestCase):
             triage.apply(rows, runner=runner, sleep=lambda s: None)
         self.assertEqual(runner.calls, [])
 
+    def test_apply_handles_malformed_gh_json(self):
+        runner = FakeRunner(view_json="not valid json")
+        rows = [fix_row(status="approved")]
+        done, stale = triage.apply(rows, runner=runner, sleep=lambda s: None)
+        # Malformed state json results in empty state -> treated as stale (state != 'OPEN')
+        self.assertEqual((done, stale), (0, 1))
+        self.assertEqual(rows[0]["status"], "stale")
+
 
 class SequencingFakeRunner:
     """Returns scripted sequence of (returncode, stdout, stderr) results."""

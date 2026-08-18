@@ -1,5 +1,5 @@
 import json
-import evidence
+import scripts.evidence as evidence
 
 
 def _bundle(tmp_path, name, verdicts, stage="primary", run_id="R"):

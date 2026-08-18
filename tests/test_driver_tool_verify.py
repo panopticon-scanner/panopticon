@@ -146,6 +146,14 @@ class TestToolVerifyDispatch(_ToolVerifyBase):
         self.assertIsNone(entry["agent"])
         self.assertFalse(entry["enforced"])
 
+    def test_tool_verify_queue_respects_max_verify_cap(self):
+        results = [_result(f"r{i}", f"src/app{i}.py", i, level="warning") for i in range(10)]
+        d = self._repo(results)
+        m = self._manifest()
+        m["flags"] = {"max_verify": 3}
+        queue = driver._tool_verify_queue(d, m)
+        self.assertLessEqual(len(queue), 3)
+
 
 class TestToolVerifyEndToEnd(_ToolVerifyBase):
     """The money test: without a verdict a tool finding forces INCONCLUSIVE

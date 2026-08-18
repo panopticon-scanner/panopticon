@@ -48,6 +48,7 @@ class TestNpmAuditAdapter(unittest.TestCase):
             }
         }).encode()
         findings = na.NpmAuditAdapter().parse(sample, "g1")
+        self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0]["citations"]["cve"], ["CVE-2021-23337"])
 
     def test_parse_omits_non_cve_aliases(self):
@@ -66,6 +67,7 @@ class TestNpmAuditAdapter(unittest.TestCase):
             }
         }).encode()
         findings = na.NpmAuditAdapter().parse(sample, "g1")
+        self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0]["citations"]["cve"], ["CVE-2021-23337"])
 
     def test_is_applicable_when_package_lock_present(self):

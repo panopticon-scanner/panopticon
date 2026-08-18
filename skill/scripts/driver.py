@@ -991,7 +991,9 @@ def _tool_verify_queue(review_root, manifest):
     for tf in tool_findings:
         findings.append(synthesize.normalize_finding(tf))
     prepared, _integration = synthesize.prepare_for_queue(findings)
-    queue, _cut = evidence.build_verify_queue(prepared, max_verify=None)
+    flags = manifest.get("flags") or {}
+    max_verify = flags.get("max_verify", 100)
+    queue, _cut = evidence.build_verify_queue(prepared, max_verify=max_verify)
     return [(e["queue_id"], e["finding"]) for e in queue
             if evidence.is_tool_sourced(e["finding"])]
 
