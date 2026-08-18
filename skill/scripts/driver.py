@@ -19,14 +19,6 @@ import subprocess
 import sys
 
 
-def _redact_output(text):
-    if not text:
-        return ""
-    redacted = re.sub(r"(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{16,}", "[REDACTED_TOKEN]", str(text))
-    redacted = re.sub(r"(?:sk-[A-Za-z0-9_-]{16,})", "[REDACTED_KEY]", redacted)
-    redacted = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._-]{16,}", r"\1[REDACTED]", redacted)
-    return redacted
-
 # #5.0-01: when run directly (`python3 skill/scripts/driver.py run ...`, the
 # documented entrypoint) the package roots are not on sys.path, so the
 # `import scripts.*` below crash with ModuleNotFoundError. Bootstrap the same
@@ -35,26 +27,35 @@ def _redact_output(text):
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))                   # skill/scripts
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # skill
 
-import yaml
+import yaml  # noqa: E402
 
-import scripts.coverage_model as coverage_model
-import scripts.diff_map as diff_map
-import scripts.dispatch as dispatch
-import scripts.evidence as evidence
-import scripts.group_runner as group_runner
-import scripts.groups_schema as groups_schema
-import scripts.ingest_tools as ingest_tools
-import scripts.ocrdb as ocrdb
-import scripts.plan_contract as plan_contract
-import scripts.run_tools as run_tools
-import scripts.run_manifest as run_manifest
-import scripts.score_gate as score_gate
-import scripts.setup_flow as setup_flow
-import scripts.synthesize as synthesize
+import scripts.coverage_model as coverage_model  # noqa: E402
+import scripts.diff_map as diff_map  # noqa: E402
+import scripts.dispatch as dispatch  # noqa: E402
+import scripts.evidence as evidence  # noqa: E402
+import scripts.group_runner as group_runner  # noqa: E402
+import scripts.groups_schema as groups_schema  # noqa: E402
+import scripts.ingest_tools as ingest_tools  # noqa: E402
+import scripts.ocrdb as ocrdb  # noqa: E402
+import scripts.plan_contract as plan_contract  # noqa: E402
+import scripts.run_tools as run_tools  # noqa: E402
+import scripts.run_manifest as run_manifest  # noqa: E402
+import scripts.score_gate as score_gate  # noqa: E402
+import scripts.setup_flow as setup_flow  # noqa: E402
+import scripts.synthesize as synthesize  # noqa: E402
 
 CHECKPOINT_KINDS = ("scout", "review", "verify", "scan")
 
 _SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _redact_output(text):
+    if not text:
+        return ""
+    redacted = re.sub(r"(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{16,}", "[REDACTED_TOKEN]", str(text))
+    redacted = re.sub(r"(?:sk-[A-Za-z0-9_-]{16,})", "[REDACTED_KEY]", redacted)
+    redacted = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._-]{16,}", r"\1[REDACTED]", redacted)
+    return redacted
 
 
 class DriverError(Exception):
