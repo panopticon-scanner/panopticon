@@ -72,12 +72,17 @@ class TestBodyDefang(unittest.TestCase):
 
     def test_defuses_mentions_links_and_refs(self):
         body = file_issues.body_for(self._f(
-            description="@everyone see [click](http://evil.example) re #1",
-            remediation="ping @maintainer"))
+            description="@everyone see [click](http://evil.example) and [ref][1] and <https://evil.example> and https://evil.example re #1\n![img](http://evil.example)",
+            remediation="ping @maintainer at [1]: http://evil.example"))
         self.assertNotIn("@everyone", body)
         self.assertNotIn("@maintainer", body)
         self.assertIn("@​everyone", body)
         self.assertNotIn("](http://evil.example)", body)
+        self.assertNotIn("][1]", body)
+        self.assertNotIn("]: http://evil.example", body)
+        self.assertNotIn("![img]", body)
+        self.assertNotIn("<https://evil.example>", body)
+        self.assertNotIn(" https://evil.example", body)
         self.assertIn("#​1", body)
 
     def test_strips_control_bytes(self):

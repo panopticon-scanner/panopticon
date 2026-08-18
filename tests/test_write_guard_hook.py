@@ -344,3 +344,15 @@ class TestHookCmdSelfLocating(unittest.TestCase):
         self.assertIn(os.path.abspath(wg.__file__), wg._HOOK_CMD)
         self.assertTrue(wg._HOOK_CMD.startswith('python3 "'))
         self.assertTrue(wg._HOOK_CMD.endswith('"'))
+
+    def test_resolve_allowlist_path_finds_parent_dir(self):
+        with tempfile.TemporaryDirectory() as d:
+            pan_dir = os.path.join(d, ".panopticon")
+            os.makedirs(pan_dir)
+            allow_path = os.path.join(pan_dir, "write-allowlist.json")
+            open(allow_path, "w").close()
+            sub_dir = os.path.join(d, "src", "nested")
+            os.makedirs(sub_dir)
+            with mock.patch("os.getcwd", return_value=sub_dir):
+                resolved = wg._resolve_allowlist_path()
+                self.assertEqual(os.path.abspath(resolved), os.path.abspath(allow_path))

@@ -111,6 +111,6 @@ Every finding queues for verification, tool claims included, so `--max-verify N`
 Citations (CWE/OWASP/CVE/EPSS) are audit metadata — they annotate findings but never decide truth.
 
 ## Notes
-Fan-out reviewers and advisors hold scoped `Write` for their own `out_file` only, guarded by the write-guard hook — never anywhere else in the repo. The scout never writes at all: fully read-only, its returned JSON persisted by the driver (see Driver run-loop above). Every role is otherwise constrained the same way: no other repo/GitHub writes, no claiming unperformed actions, no materializing discovered secrets.
+Fan-out reviewers and advisors hold scoped `Write` for their own `out_file` only, guarded by the write-guard hook — never anywhere else in the repo. The scout never writes at all: fully read-only, its returned JSON persisted by the driver (see Driver run-loop above). Every role is otherwise constrained the same way: no other repo/GitHub writes, no claiming unperformed actions, no materializing discovered secrets (redact discovered passwords, API keys, PII, and credentials as `[REDACTED]` in descriptions, exploit scenarios, and evidence citations).
 
 Hostile-content review (redteam mode, deliberately vulnerable corpora, repos that may contain planted injection payloads) should run with enforcement registered via `--emit-host-agents` so `meta.coverage.tool_policy_mode` reads `enforced`.

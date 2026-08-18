@@ -172,6 +172,9 @@ def filter_online(chosen, online):
     return kept
 
 
+MAX_TOOL_OUTPUT_BYTES = 50 * 1024 * 1024
+
+
 def _capture_run(label, tool, docker, out_path, runner):
     """Run one docker tool/adapter invocation and land its stdout at out_path.
 
@@ -194,7 +197,12 @@ def _capture_run(label, tool, docker, out_path, runner):
                 label, tool, res.returncode,
                 (" — " + excerpt) if excerpt else ""), file=sys.stderr)
             return None
-        if not (res.stdout or b"").strip():
+        out_bytes = res.stdout or b""
+        if len(out_bytes) > MAX_TOOL_OUTPUT_BYTES:
+            print("%s %s output exceeded %d byte limit; skipping" % (
+                label, tool, MAX_TOOL_OUTPUT_BYTES), file=sys.stderr)
+            return None
+        if not out_bytes.strip():
             # #1051: empty output on a selected target is a silent failure, not a
             # clean no-findings run (every scanner/adapter emits a JSON/SARIF
             # envelope when it finds nothing). Fail closed: write NO file and
@@ -209,7 +217,7 @@ def _capture_run(label, tool, docker, out_path, runner):
             dir=os.path.dirname(out_path) or ".")
         try:
             with os.fdopen(fd, "wb") as fh:
-                fh.write(res.stdout or b"")
+                fh.write(out_bytes)
                 fh.flush()
                 os.fsync(fh.fileno())
             os.replace(temp_path, out_path)

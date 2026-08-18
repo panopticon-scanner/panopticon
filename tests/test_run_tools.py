@@ -410,3 +410,12 @@ class TestDetectLanguages(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as d:
             self.assertEqual(rt.detect_languages(d), [])
+
+    def test_run_tools_skips_when_output_exceeds_cap(self):
+        huge = b"x" * (rt.MAX_TOOL_OUTPUT_BYTES + 10)
+        fake = _FakeResult(returncode=0, stdout=huge)
+        with tempfile.TemporaryDirectory() as d:
+            out_dir = os.path.join(d, "out")
+            paths = rt.run_tools(d, ["semgrep"], out_dir, runner=lambda cmd, **kw: fake)
+            self.assertEqual(paths, [])
+            self.assertFalse(os.path.exists(os.path.join(out_dir, "semgrep.sarif")))

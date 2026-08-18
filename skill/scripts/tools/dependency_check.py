@@ -33,7 +33,7 @@ class DependencyCheckAdapter:
             if os.path.exists(out_path):
                 with open(out_path, "rb") as fh:
                     return fh.read(), rc
-            return b"{}", rc
+            return b"", (rc if rc != 0 else 1)
         finally:
             shutil.rmtree(out_dir, ignore_errors=True)
 

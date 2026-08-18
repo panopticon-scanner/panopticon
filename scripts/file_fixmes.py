@@ -83,12 +83,12 @@ def parse(path):
 
 def body_for(f, doc=DOC, doc_url=DOC_URL, run_label=RUN_LABEL, run_date=RUN_DATE):
     return "\n".join([
-        f["body"],
+        file_issues.defang(f["body"]),
         "",
         "---",
         "",
         (("**Source:** `%s` — %s, an orchestration defect observed while running "
-          "the scan rather than a finding produced by a reviewer panel.") % (f["id"], doc)),
+          "the scan rather than a finding produced by a reviewer panel.") % (file_issues.defang(f["id"]), doc)),
         "",
         "Full context, including the other FIXMEs from this run: [%s](%s)"
         % (doc, doc_url),
@@ -130,7 +130,7 @@ def main():
     created = 0
     env = None if a.dry_run else triage.gh_env()  # read once per run, not per issue
     for f in todo:
-        title = "%s — %s" % (f["id"], f["title"])
+        title = file_issues.defang("%s — %s" % (f["id"], f["title"]))
         body = body_for(f, doc=a.doc, doc_url=a.doc_url,
                         run_label=a.run_label, run_date=a.run_date)
         url = create(title, body, f["labels"] or ["self-scan"],

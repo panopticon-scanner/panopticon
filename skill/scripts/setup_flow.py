@@ -6,6 +6,7 @@ directly without going through the orchestrator CLI wrapper.
 """
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -212,12 +213,18 @@ _VOCAB_PATH = os.path.join(_SKILL_DATA, "capability_vocabulary.yml")
 _AFFINITY_PATH = os.path.join(_SKILL_DATA, "capability_affinity.yml")
 
 
+def _sanitize_spine_token(token):
+    s = re.sub(r"[\x00-\x1f\x7f-\x9f`]", "", str(token or "")).strip()
+    return repr(s) if any(c in s for c in " \n\r\t\"'") else s
+
+
 def _repo_spine_summary(repo):
     """A compact, deterministic spine the scan brief hands the agent as a
-    starting point (the agent still explores read-only for itself)."""
+    starting point (the agent still explores read-only for itself). Sanitizes
+    untrusted repo paths against prompt injection (#1120)."""
     files = discovery.discover_repo_files(repo)
-    tops = sorted({p.split("/", 1)[0] for p in files if "/" in p})
-    manifests = sorted({os.path.basename(p) for p in files
+    tops = sorted({_sanitize_spine_token(p.split("/", 1)[0]) for p in files if "/" in p})
+    manifests = sorted({_sanitize_spine_token(os.path.basename(p)) for p in files
                         if os.path.basename(p) in (
                             "pyproject.toml", "package.json", "go.mod",
                             "Cargo.toml", "pom.xml", "requirements.txt")})
