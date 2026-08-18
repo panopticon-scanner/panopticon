@@ -54,3 +54,8 @@ class TestBundlerAuditAdapter(unittest.TestCase):
             ["bundle-audit", "check", "--no-update"],
             capture_output=True, timeout=300, cwd="/tmp/fake",
         )
+
+
+if __name__ == "__main__":
+    unittest.main()
+

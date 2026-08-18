@@ -103,3 +103,8 @@ class TestCargoAuditAdapter(unittest.TestCase):
         }).encode()
         findings = ca.CargoAuditAdapter().parse(sample, "g1")
         self.assertEqual(findings[0]["severity"], "CRITICAL")
+
+
+if __name__ == "__main__":
+    unittest.main()
+

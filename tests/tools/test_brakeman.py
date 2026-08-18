@@ -81,3 +81,7 @@ class TestBrakemanAdapter(unittest.TestCase):
             ["brakeman", "--format", "json", "--quiet", "--run-all-checks", "/tmp/fake"],
             capture_output=True, timeout=300,
         )
+
+
+if __name__ == "__main__":
+    unittest.main()

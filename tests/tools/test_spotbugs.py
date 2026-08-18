@@ -65,3 +65,8 @@ class TestSpotBugsAdapter(unittest.TestCase):
         self.assertEqual(findings[1]["severity"], "MEDIUM")
         self.assertEqual(findings[1]["location"]["file"], "com/example/Servlet.java")
         self.assertEqual(findings[1]["location"]["line_start"], 88)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
