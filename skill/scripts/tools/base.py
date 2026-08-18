@@ -161,6 +161,6 @@ def run_tool(cmd, timeout, ok_codes=(0, 1), **kwargs):
     rc = res.returncode
     if rc not in ok_codes:
         excerpt = (res.stderr or b"")[-1000:].decode("utf-8", errors="replace").strip()
-        print("tool %s exited %d%s" % (cmd[0], rc,
-              (": %s" % excerpt) if excerpt else ""), file=sys.stderr)
+        details = f": {excerpt}" if excerpt else ""
+        print(f"tool {cmd[0]} exited {rc}{details}", file=sys.stderr)
     return res.stdout, rc

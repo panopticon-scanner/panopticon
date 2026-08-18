@@ -691,8 +691,7 @@ class TestRenderGoldens(unittest.TestCase):
         gdir = os.path.join(os.path.dirname(__file__), "goldens")
         for role, out_file in out_files.items():
             m = dict(base, out_file=out_file)
-            with open(os.path.join(gdir, role[:-3] + ".rendered.txt"),
-                      encoding="utf-8") as fh:
+            with open(os.path.join(gdir, role[:-3] + ".rendered.txt"), encoding="utf-8") as fh:
                 expected = fh.read()
             self.assertEqual(dispatch.render_prompt(role, m), expected, role)
 
@@ -719,7 +718,7 @@ class TestRenderAdvisor(unittest.TestCase):
                           "location": {"file": "b.py", "line_start": 4}}},
         ]}
         qpath = os.path.join(tmp, "verify-queue.json")
-        with open(qpath, "w") as fh:
+        with open(qpath, "w", encoding="utf-8") as fh:
             json.dump(queue, fh)
         return qpath
 
@@ -1321,7 +1320,7 @@ class TestReviewRootPinning(unittest.TestCase):
                              "category": "logic",
                              "location": {"file": "appdir/x.py", "line_start": 1}}}]}
             qp = os.path.join(d, "verify-queue.json")
-            with open(qp, "w") as fh:
+            with open(qp, "w", encoding="utf-8") as fh:
                 json.dump(queue, fh)
             out = os.path.join(d, "prompts")
             written = dispatch.render_advisor_prompts(qp, out)

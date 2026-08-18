@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Resolve reviewer role + host to a concrete model identifier."""
+import json
 import os
 import sys
 
@@ -107,7 +108,6 @@ def _env_override(role):
     env_value = env_value.strip()
     if env_value.startswith("{"):
         try:
-            import json
             return json.loads(env_value)
         except ValueError:
             pass

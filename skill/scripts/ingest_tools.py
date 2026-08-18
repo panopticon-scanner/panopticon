@@ -6,10 +6,12 @@ registered adapters in ``scripts.tools.ADAPTERS`` and routed to the matching
 adapter for parsing. SARIF or JSON files whose basename has no registered
 adapter are skipped with a diagnostic. Stdlib-only.
 """
+import fnmatch
 import glob
 import os
 import sys
 
+from scripts.tools import ADAPTERS
 from scripts.tools.base import strip_ansi
 from scripts.tools.sarif_utils import (
     CWE_TAG,
@@ -49,6 +51,23 @@ __all__ = [
 ]
 
 
+def _filter_parsed_findings(parsed, include_fixtures, exclude_globs):
+    if include_fixtures and not exclude_globs:
+        return parsed, 0, 0
+    kept = []
+    fx_count = 0
+    gl_count = 0
+    for f in parsed:
+        fpath = str((f.get("location") or {}).get("file", ""))
+        if not include_fixtures and _is_fixture_path(fpath):
+            fx_count += 1
+        elif exclude_globs and any(fnmatch.fnmatch(fpath, g) for g in exclude_globs):
+            gl_count += 1
+        else:
+            kept.append(f)
+    return kept, fx_count, gl_count
+
+
 def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=False):
     """Ingest raw tool-output files and report each adapter's disposition.
 
@@ -76,8 +95,6 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
     finding's location.file; matches are dropped too. Both filters share one
     aggregate stderr note.
     """
-    import fnmatch
-    from scripts.tools import ADAPTERS
     out = []
     dispositions = {}
     fx_excluded = 0   # dropped by the default fixture-corpus prune
@@ -128,17 +145,9 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
                                   % (str(e).splitlines() or [""])[0]}
             continue
         raw_count = len(parsed)
-        if not include_fixtures or exclude_globs:
-            kept = []
-            for f in parsed:
-                fpath = str((f.get("location") or {}).get("file", ""))
-                if not include_fixtures and _is_fixture_path(fpath):
-                    fx_excluded += 1
-                elif exclude_globs and any(fnmatch.fnmatch(fpath, g) for g in exclude_globs):
-                    gl_excluded += 1
-                else:
-                    kept.append(f)
-            parsed = kept
+        parsed, fx_cnt, gl_cnt = _filter_parsed_findings(parsed, include_fixtures, exclude_globs)
+        fx_excluded += fx_cnt
+        gl_excluded += gl_cnt
         out.extend(parsed)
         dispositions[tool] = {"status": "ok" if raw_count else "empty",
                               "findings": raw_count}

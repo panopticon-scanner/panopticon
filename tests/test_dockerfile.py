@@ -66,8 +66,7 @@ class TestOfflineAssets(unittest.TestCase):
         self.assertNotIn("ENV NVD_API_KEY", self.text)
 
     def test_publish_cadence_and_tags(self):
-        with open(os.path.join(os.path.dirname(__file__), os.pardir,
-                               ".github", "workflows",
+        with open(os.path.join(ROOT, ".github", "workflows",
                                "docker-publish.yml"), encoding="utf-8") as fh:
             wf = fh.read()
         self.assertIn('cron: "0 6 * * *"', wf)      # daily asset refresh

@@ -1,10 +1,12 @@
 import os
 import sys
+import tempfile
 import unittest
 import yaml
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "skill", "scripts"))
-import setup_proposal as sp
+import groups_schema  # noqa: E402
+import setup_proposal as sp  # noqa: E402
 
 DATA = os.path.join(os.path.dirname(__file__), "..", "skill", "data")
 VOCAB = os.path.join(DATA, "capability_vocabulary.yml")
@@ -68,7 +70,6 @@ class TestLoaders(unittest.TestCase):
                 self.assertNotIn(dom, floor, f"{dom} leaked into {label}")
 
     def test_vocabulary_flags_duplicate_and_empty_names(self):
-        import tempfile
         doc = "capabilities:\n  - name: A\n  - name: A\n  - hints: [x]\n"
         with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as fh:
             fh.write(doc)
@@ -79,7 +80,6 @@ class TestLoaders(unittest.TestCase):
         self.assertTrue(any("name" in e for e in errors))
 
     def test_affinity_flags_unknown_domain_and_capability(self):
-        import tempfile
         vocab = {"names": ["Auth"], "hints": {"Auth": []}}
         doc = "affinity:\n  Auth: [SEC, ZZZ]\n  Ghost: [SEC]\n"
         with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as fh:
@@ -93,7 +93,6 @@ class TestLoaders(unittest.TestCase):
     # Regression tests for robustness guards
 
     def test_vocabulary_scalar_hints_produces_error_no_char_explosion(self):
-        import tempfile
         doc = 'capabilities:\n  - name: Auth\n    hints: "**/auth/**"\n'
         with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as fh:
             fh.write(doc)
@@ -106,7 +105,6 @@ class TestLoaders(unittest.TestCase):
         self.assertEqual(vocab["hints"]["Auth"], [])
 
     def test_vocabulary_bare_string_entry_produces_error_no_crash(self):
-        import tempfile
         doc = "capabilities:\n  - Auth\n"
         with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as fh:
             fh.write(doc)
@@ -119,7 +117,6 @@ class TestLoaders(unittest.TestCase):
         self.assertEqual(vocab["names"], [])
 
     def test_vocabulary_non_mapping_doc_produces_error(self):
-        import tempfile
         doc = "capabilities"
         with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as fh:
             fh.write(doc)
@@ -130,7 +127,6 @@ class TestLoaders(unittest.TestCase):
         self.assertEqual(vocab["names"], [])
 
     def test_vocabulary_non_list_capabilities_produces_error(self):
-        import tempfile
         doc = "capabilities: {Auth: {hints: []}}\n"
         with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as fh:
             fh.write(doc)
@@ -141,7 +137,6 @@ class TestLoaders(unittest.TestCase):
         self.assertEqual(vocab["names"], [])
 
     def test_affinity_scalar_domains_produces_error_no_char_explosion(self):
-        import tempfile
         vocab = {"names": ["Auth"], "hints": {"Auth": []}}
         doc = "affinity:\n  Auth: SEC\n"
         with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as fh:
@@ -155,7 +150,6 @@ class TestLoaders(unittest.TestCase):
         self.assertEqual(affinity.get("Auth"), [])
 
     def test_affinity_non_mapping_doc_produces_error(self):
-        import tempfile
         vocab = {"names": ["Auth"], "hints": {"Auth": []}}
         doc = "affinity"
         with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as fh:
@@ -167,7 +161,6 @@ class TestLoaders(unittest.TestCase):
         self.assertEqual(affinity, {})
 
     def test_affinity_non_mapping_affinity_block_produces_error(self):
-        import tempfile
         vocab = {"names": ["Auth"], "hints": {"Auth": []}}
         doc = "affinity: [SEC]\n"
         with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as fh:
@@ -179,7 +172,6 @@ class TestLoaders(unittest.TestCase):
         self.assertEqual(affinity, {})
 
     def test_affinity_unknown_capability_excluded_from_result(self):
-        import tempfile
         vocab = {"names": ["Auth"], "hints": {"Auth": []}}
         doc = "affinity:\n  Auth: [SEC]\n  Ghost: [SEC]\n"
         with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as fh:
@@ -332,7 +324,6 @@ class TestMergeAdditive(unittest.TestCase):
         self.assertEqual(diff["dropped_redundant"], ["Ghost"])
 
     def test_dump_round_trips_through_groups_schema(self):
-        import groups_schema
         groups = {"Checkout": {"match": ["src/checkout/**"],
                                "tests": ["tests/checkout/**"],
                                "panels": ["SEC", "DAT"]}}
@@ -345,7 +336,6 @@ class TestMergeAdditive(unittest.TestCase):
 
     def test_dump_handles_leading_wildcard_globs(self):
         """Regression: leading-* globs must round-trip without ScannerError."""
-        import groups_schema
         groups = {"Auth": {"match": ["**/auth/**", "**/login/**"],
                            "tests": [],
                            "panels": ["SEC"]}}

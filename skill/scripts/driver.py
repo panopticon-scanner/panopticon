@@ -587,13 +587,19 @@ def _effective_domains(review_root, group):
     return list(cov.get("effective") or [])
 
 
-def _cell_done(review_root, manifest, group, domain):
+def _get_valid_cell_data(review_root, manifest, group, domain):
     data = _load_json(_pano(review_root, "findings-%s-%s.json" % (group, domain)))
     if not (isinstance(data, dict) and isinstance(data.get("findings"), list)):
-        return False
+        return None
     meta = data.get("_panopticon")
-    return (isinstance(meta, dict) and meta.get("run_id") == manifest.get("run_id")
-            and meta.get("domain") == domain and meta.get("group") == group)
+    if (isinstance(meta, dict) and meta.get("run_id") == manifest.get("run_id")
+            and meta.get("domain") == domain and meta.get("group") == group):
+        return data
+    return None
+
+
+def _cell_done(review_root, manifest, group, domain):
+    return _get_valid_cell_data(review_root, manifest, group, domain) is not None
 
 
 def _render_menu(bundle, domain):
@@ -648,9 +654,9 @@ def _load_cell_findings(review_root, manifest, group, domain):
     verify_done gates synthesize (every driver-engaged cell already has a
     bundle before synthesize runs), but meta.coverage.verify_matrix.engaged can
     undercount when exact-duplicate findings collapse in dedup."""
-    if not _cell_done(review_root, manifest, group, domain):
+    data = _get_valid_cell_data(review_root, manifest, group, domain)
+    if data is None:
         return None
-    data = _load_json(_pano(review_root, "findings-%s-%s.json" % (group, domain)))
     out = []
     for f in data.get("findings") or []:
         if not isinstance(f, dict):
@@ -1434,6 +1440,8 @@ PHASES = (
 
 
 def _cli_flags(args):
+    if getattr(args, "tools", False) and getattr(args, "no_tools", False):
+        raise ValueError("cannot specify both --tools and --no-tools")
     tools = False if getattr(args, "no_tools", False) else (
         True if getattr(args, "tools", False) else None)
     values = {"fail_on": getattr(args, "fail_on", None),
@@ -1515,8 +1523,9 @@ def build_parser():
         p.add_argument("--severity", default=None)
         p.add_argument("--gate-scope", default=None)
         p.add_argument("--diff-context", type=int, default=None)
-        p.add_argument("--tools", action="store_true")
-        p.add_argument("--no-tools", action="store_true")
+        tools_group = p.add_mutually_exclusive_group()
+        tools_group.add_argument("--tools", action="store_true")
+        tools_group.add_argument("--no-tools", action="store_true")
         p.add_argument("--include-fixtures", action="store_true")
         scope = p.add_mutually_exclusive_group()
         scope.add_argument("-f", "--file", dest="scope_file", default=None)

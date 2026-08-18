@@ -39,7 +39,8 @@ def parse(path):
     trailing 'Already fixed' / 'Still open' sections are commentary, not
     issues to file.
     """
-    lines = open(path, encoding="utf-8").read().splitlines()
+    with open(path, encoding="utf-8") as fh:
+        lines = fh.read().splitlines()
     out, cur = [], None
     for i, line in enumerate(lines):
         m = HEAD_RE.match(line)
@@ -48,7 +49,9 @@ def parse(path):
                 out.append(cur)
             labels = []
             if i + 1 < len(lines):
-                labels = LABEL_RE.findall(lines[i + 1])
+                next_line = lines[i + 1].strip()
+                if next_line and not re.sub(r"`[^`]+`", "", next_line).strip().replace(",", "").strip():
+                    labels = LABEL_RE.findall(next_line)
             cur = {"id": m.group(1), "title": m.group(2).strip(),
                    "labels": labels, "body": []}
             continue

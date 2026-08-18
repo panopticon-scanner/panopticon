@@ -10,11 +10,11 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
 from scripts.provenance import tool_provenance
+from .base import new_finding_id
 
 
 LEVEL_TO_SEV = {"error": "HIGH", "warning": "MEDIUM", "note": "LOW", "none": "INFO"}
-PREFIX = {"semgrep": "SG", "trivy": "TR", "gitleaks": "GL", "bandit": "BN",
-          "brakeman": "BR", "gosec": "GS", "eslint": "ES"}
+PREFIX = {"semgrep": "SG", "trivy": "TR", "gitleaks": "GL", "bandit": "BN", "gosec": "GS", "eslint": "ES"}
 CWE_TAG = re.compile(r"(CWE-\d+)", re.IGNORECASE)
 CVE_TAG = re.compile(r"(CVE-\d{4}-\d{4,})", re.IGNORECASE)
 
@@ -142,7 +142,7 @@ def sarif_to_findings(sarif, tool_name, group, prefix, start=1):
                     cites["cve"] = cves
                 title_text = (res.get("message", {}) or {}).get("text", res.get("ruleId", "finding"))
                 finding = {
-                    "id": "%s-%03d" % (prefix, n),
+                    "id": new_finding_id(prefix, n),
                     # collapse newlines/control chars so a crafted SARIF message can't
                     # inject formatting into the rendered summary (mirrors
                     # normalize_finding's title collapse; CWE-117 log injection).

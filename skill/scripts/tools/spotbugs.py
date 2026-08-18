@@ -19,6 +19,12 @@ _SPOTBUGS_CWE = {
     "HARDCODED_KEY": "CWE-798",
 }
 
+_PRIORITY_TO_SEVERITY = {
+    "1": "HIGH",    # SpotBugs high priority / confidence
+    "2": "MEDIUM",  # SpotBugs normal priority
+    "3": "LOW",     # SpotBugs low priority
+}
+
 
 class SpotBugsAdapter:
     name = "spotbugs"
@@ -53,7 +59,7 @@ class SpotBugsAdapter:
         for bug in root.findall("BugInstance"):
             btype = bug.get("type", "")
             priority = bug.get("priority", "3")
-            severity = { "1": "HIGH", "2": "MEDIUM", "3": "LOW" }.get(priority, "MEDIUM")
+            severity = _PRIORITY_TO_SEVERITY.get(priority, "MEDIUM")
             source = bug.find(".//SourceLine")
             file_path = source.get("sourcepath", "") if source is not None else ""
             line = source.get("start") if source is not None else 1

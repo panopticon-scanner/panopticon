@@ -3,10 +3,9 @@ import shutil
 import unittest
 
 from scripts.tools import ADAPTERS
+from conftest import FIXTURE_ROOT
 
-FIXTURE_ROOT = os.environ.get(
-    "FIXTURE_ROOT", os.path.join(os.path.dirname(__file__), "..", "fixtures")
-)
+OK_SCAN_EXIT_CODES = (0, 1)  # 0 = clean exit, 1 = findings detected
 
 
 class TestRustIntegration(unittest.TestCase):
@@ -22,7 +21,7 @@ class TestRustIntegration(unittest.TestCase):
         if not adapter.is_applicable(target):
             self.skipTest("cargo-audit not applicable")
         raw, rc = adapter.invoke(target)
-        if rc not in (0, 1):
+        if rc not in OK_SCAN_EXIT_CODES:
             self.skipTest(f"cargo-audit failed with {rc}")
         findings = adapter.parse(raw, "g1")
         self.assertTrue(findings, "expected cargo-audit findings")

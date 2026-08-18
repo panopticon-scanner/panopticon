@@ -245,7 +245,7 @@ class TestPlanActions(unittest.TestCase):
         n = reconcile_apply.neutralize
         self.assertEqual(n("plain reason"), "`plain reason`")
         self.assertEqual(n("a\nb\tc"), "`a b c`")          # whitespace collapsed
-        self.assertEqual(n("tick`inside"), "`tick'inside`")  # backtick stripped
+        self.assertEqual(n("tick`inside"), "`tick'inside`")  # backtick neutralized to single quote
         self.assertEqual(n(""), "`(empty)`")               # never an empty span
         self.assertEqual(n(None), "`(empty)`")
 
@@ -258,6 +258,17 @@ class TestPlanActions(unittest.TestCase):
         self.assertEqual(n("a\x1b]0;evil\x07b"), "`a]0;evilb`")
         self.assertEqual(n("x\x9b31mred"), "`x31mred`")
         self.assertEqual(n("over\x08write\x7f"), "`overwrite`")
+
+    def test_neutralize_preserves_unicode_visible_glyphs(self):
+        # Accented characters, Cyrillic, CJK, emoji, and other multi-byte
+        # UTF-8 characters are legitimate prose in issue bodies / tool findings;
+        # neutralizing must preserve them verbatim rather than stripping or
+        # mangling them (#768).
+        n = reconcile_apply.neutralize
+        self.assertEqual(n("café"), "`café`")
+        self.assertEqual(n("warning: 警告"), "`warning: 警告`")
+        self.assertEqual(n("hello 🌍"), "`hello 🌍`")
+        self.assertEqual(n("тест"), "`тест`")
 
     def test_recurring_fingerprint_interpolant_is_backtick_safe(self):
         # Fingerprints are generated hex, but the comment boundary treats every
@@ -358,7 +369,7 @@ class TestLedgerKeyMatchesKeyFor(unittest.TestCase):
         cases = [
             ({"fingerprint": "abc123", "id": "F-1", "location": {"file": "app.py"}}, False),
             ({"fingerprint": "def456", "id": "F-2", "location": {"file":
-              "/Volumes/Mini Vault/untitled_folder/projects/panopticon/skill/scripts/tools/npm_audit.py"}}, False),
+              "/opt/project/skill/scripts/tools/npm_audit.py"}}, False),
             ({"fingerprint": "aaa111", "id": "R-1", "location": {"file": "x.py"}}, True),
             ({"fingerprint": "bbb222", "id": "F-3"}, False),  # no location at all
         ]

@@ -109,7 +109,8 @@ class TestToolEvidenceSchema(unittest.TestCase):
 
 class TestAdapterFindingsValidateAgainstSchema(unittest.TestCase):
     def _finding_schema(self):
-        schema = json.load(open(os.path.join(REF, "report-schema.json"), encoding="utf-8"))
+        with open(os.path.join(REF, "report-schema.json"), encoding="utf-8") as fh:
+            schema = json.load(fh)
         return schema["properties"]["findings"]["items"]
 
     def _add_evidence_if_missing(self, finding):

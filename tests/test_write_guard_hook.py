@@ -1,5 +1,13 @@
-import contextlib, io, json, os, shutil, tempfile, unittest, sys
+import contextlib
+import io
+import json
+import os
+import shutil
+import sys
+import tempfile
+import unittest
 from unittest import mock
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill"))
 import scripts.write_guard_hook as wg
 
@@ -253,26 +261,28 @@ class TestInstallUninstall(unittest.TestCase):
     def test_install_writes_allowlist_and_registers_hook(self):
         with tempfile.TemporaryDirectory() as d:
             settings = os.path.join(d, "settings.local.json")
-            with open(settings, "w") as fh:
+            with open(settings, "w", encoding="utf-8") as fh:
                 json.dump({"env": {"X": "1"}}, fh)  # pre-existing settings
             al = os.path.join(d, "allow.json")
             plan = [{"out_file": ".panopticon/f.json"}]
             wg.install(plan, settings, al)
-            saved = json.load(open(settings))
+            with open(settings, encoding="utf-8") as fh:
+                saved = json.load(fh)
             self.assertEqual(saved["env"], {"X": "1"})            # preserved
             self.assertIn("PreToolUse", saved["hooks"])           # registered
-            self.assertEqual(json.load(open(al)),
-                             [os.path.realpath(".panopticon/f.json")])
+            with open(al, encoding="utf-8") as fh:
+                self.assertEqual(json.load(fh), [os.path.realpath(".panopticon/f.json")])
 
     def test_uninstall_removes_hook_and_allowlist(self):
         with tempfile.TemporaryDirectory() as d:
             settings = os.path.join(d, "settings.local.json")
-            with open(settings, "w") as fh:
+            with open(settings, "w", encoding="utf-8") as fh:
                 json.dump({"env": {"X": "1"}}, fh)
             al = os.path.join(d, "allow.json")
             wg.install([{"out_file": ".panopticon/f.json"}], settings, al)
             wg.uninstall(settings, al)
-            saved = json.load(open(settings))
+            with open(settings, encoding="utf-8") as fh:
+                saved = json.load(fh)
             self.assertEqual(saved.get("env"), {"X": "1"})
             self.assertNotIn("PreToolUse", saved.get("hooks", {}))
             self.assertFalse(os.path.exists(al))
@@ -286,7 +296,8 @@ class TestInstallUninstall(unittest.TestCase):
             wg.install(plan, settings, al)
             wg.install(plan, settings, al)
             wg.install(plan, settings, al)
-            saved = json.load(open(settings))
+            with open(settings, encoding="utf-8") as fh:
+                saved = json.load(fh)
             self.assertEqual(len(saved["hooks"]["PreToolUse"]), 1)
 
     def test_matcher_and_write_tools_cannot_drift(self):
@@ -305,15 +316,17 @@ class TestInstallUninstall(unittest.TestCase):
             settings = os.path.join(d, "settings.local.json")
             other = {"matcher": "Bash", "hooks": [{"type": "command",
                                                    "command": "echo other"}]}
-            with open(settings, "w") as fh:
+            with open(settings, "w", encoding="utf-8") as fh:
                 json.dump({"hooks": {"PreToolUse": [other]}}, fh)
             al = os.path.join(d, "allow.json")
             wg.install([{"out_file": ".panopticon/f.json"}], settings, al)
-            saved = json.load(open(settings))
+            with open(settings, encoding="utf-8") as fh:
+                saved = json.load(fh)
             self.assertIn(other, saved["hooks"]["PreToolUse"])   # survived install
             self.assertEqual(len(saved["hooks"]["PreToolUse"]), 2)
             wg.uninstall(settings, al)
-            saved = json.load(open(settings))
+            with open(settings, encoding="utf-8") as fh:
+                saved = json.load(fh)
             self.assertEqual(saved["hooks"]["PreToolUse"], [other])  # only ours removed
 
     def test_uninstall_tolerates_absent_files(self):

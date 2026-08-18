@@ -1,5 +1,6 @@
 import json
 import unittest
+from unittest import mock
 
 import scripts.tools.dependency_check as dc
 
@@ -44,7 +45,6 @@ class TestDependencyCheckAdapter(unittest.TestCase):
         self.assertIsNone(adapter._normalize_cwe("invalid"))
 
     def test_invoke_uses_noupdate_and_odc_data(self):
-        from unittest import mock
         adapter = dc.DependencyCheckAdapter()
         fake_run = mock.Mock(return_value=(b"{}", 0))
         def mock_exists(path):

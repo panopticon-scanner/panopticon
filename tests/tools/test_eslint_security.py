@@ -37,10 +37,12 @@ class TestEslintSecurityAdapter(unittest.TestCase):
 
     def test_parse_tool_evidence_has_only_rule_id(self):
         findings = es.EslintSecurityAdapter().parse(ESLINT_SAMPLE, "g1")
+        self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0]["tool_evidence"], {"rule_id": "security/detect-eval-with-expression"})
 
     def test_parse_uses_ess_prefix(self):
         findings = es.EslintSecurityAdapter().parse(ESLINT_SAMPLE, "g1")
+        self.assertEqual(len(findings), 1)
         self.assertTrue(findings[0]["id"].startswith("ESS-"))
 
     def test_parse_uppercases_cwe(self):
@@ -58,6 +60,7 @@ class TestEslintSecurityAdapter(unittest.TestCase):
             }
         ]).encode()
         findings = es.EslintSecurityAdapter().parse(sample, "g1")
+        self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0]["citations"]["cwe"], ["CWE-95"])
 
     def test_parse_skips_non_security_rules(self):
@@ -92,6 +95,7 @@ class TestEslintSecurityAdapter(unittest.TestCase):
             }
         ]).encode()
         findings = es.EslintSecurityAdapter().parse(sample, "g1")
+        self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0]["severity"], "MEDIUM")
 
     def test_parse_handles_empty_results(self):

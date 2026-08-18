@@ -406,6 +406,8 @@ def main(argv=None):
         parser.error("--max-workers must be >= 1")
     if args.timeout < 1:
         parser.error("--timeout must be >= 1")
+    if args.advisor_queue and args.plan:
+        parser.error("cannot specify both a plan and --advisor-queue")
     if not args.advisor_queue and not args.plan:
         parser.error("plan is required unless --advisor-queue is supplied")
     if shutil.which(args.codex) is None:

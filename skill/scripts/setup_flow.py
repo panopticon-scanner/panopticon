@@ -47,6 +47,7 @@ def _seed_groups_manifest(repo):
     return path, True, tops
 
 
+seed_groups_manifest = _seed_groups_manifest
 seed_flat_manifest = _seed_groups_manifest
 
 
@@ -55,7 +56,8 @@ def _ensure_gitignore(repo):
     committed. Appends only the MISSING entries; idempotent."""
     gi = os.path.join(repo, ".gitignore")
     try:
-        existing = open(gi, encoding="utf-8").read()
+        with open(gi, encoding="utf-8") as fh:
+            existing = fh.read()
     except OSError:
         existing = ""
     lines = existing.splitlines()
@@ -93,16 +95,8 @@ def _seed_config(repo):
     return path, True
 
 
-def setup_readiness(repo, host=None, runner=subprocess.run, environ=None):
-    """#485(3): the preflight. Returns a list of (name, ok, detail) checks.
-
-    ok is True/False/None -- None means informational (not gating READY).
-    Every failing check carries its fix in `detail`.
-    """
-    import dispatch  # noqa: E402 -- sibling flat import, same as diff_map
-    env = environ if environ is not None else os.environ
+def _check_docker(runner):
     checks = []
-
     r = runner(["docker", "version"], capture_output=True, text=True)
     docker_ok = getattr(r, "returncode", 1) == 0
     checks.append(("docker", docker_ok,
@@ -116,14 +110,18 @@ def setup_readiness(repo, host=None, runner=subprocess.run, environ=None):
                        "ok" if img_ok else
                        "panopticon-tools image absent for this arch -- build/pull "
                        "it (see DEVELOPMENT.md; multi-arch: #461)"))
+    return checks
 
+
+def _check_git_root(repo):
     git_marker = os.path.join(repo, ".git")
     root_ok = os.path.isdir(git_marker) or os.path.isfile(git_marker)
-    checks.append(("target-root", root_ok,
-                   "ok" if root_ok else
-                   "cwd is not a git repo root -- run the pipeline from the "
-                   "TARGET repo root (#483)"))
+    return ("target-root", root_ok,
+            "ok" if root_ok else
+            "cwd is not a git repo root -- run the pipeline from the "
+            "TARGET repo root (#483)")
 
+def _check_nvd_key(repo, env):
     nvd_in_file = False
     env_path = os.path.join(repo, ".env")
     if os.path.isfile(env_path):
@@ -137,12 +135,16 @@ def setup_readiness(repo, host=None, runner=subprocess.run, environ=None):
         except OSError:
             pass
     nvd = bool(env.get("NVD_API_KEY")) or nvd_in_file
-    checks.append(("nvd-api-key", None,
-                   "present" if nvd else
-                   "absent -- dependency-check will be skipped/slow; export "
-                   "NVD_API_KEY or add it to .env (never commit it)"))
+    return ("nvd-api-key", None,
+            "present" if nvd else
+            "absent -- dependency-check will be skipped/slow; export "
+            "NVD_API_KEY or add it to .env (never commit it)")
 
+
+def _check_host_shells(host, runner):
+    import dispatch  # noqa: E402
     resolved_host = host or dispatch._detect_host()
+    checks = []
     if resolved_host == "codex":
         codex = runner(["codex", "--version"], capture_output=True, text=True)
         codex_ok = getattr(codex, "returncode", 1) == 0
@@ -153,17 +155,10 @@ def setup_readiness(repo, host=None, runner=subprocess.run, environ=None):
         checks.append(("enforced-shells", True,
                        "codex_exec enforces read-only execution; role TOML profiles optional"))
     elif resolved_host == "generic":
-        # #5.0-15: the generic host runs reviewers UNENFORCED by design (no
-        # registered shells), so an enforced-shells pass/FAIL verdict is wrong
-        # here -- report it informationally instead of failing readiness.
         checks.append(("enforced-shells", None,
                        "generic host runs reviewers unenforced (prompt-advisory "
                        "tool policy); no shell registration to verify"))
     else:
-        # #5.0-15: the 5.0 driver dispatches scout / domain_panel / domain_advisor,
-        # so verify THOSE shells -- not the retired panel_review/lens_sweep, whose
-        # stale 4.x registration would report READY and then fail at the first
-        # matrix checkpoint.
         reg_dir = dispatch._registration_dir(resolved_host, None)
         _driver_roles = ("scout", "domain_panel", "domain_advisor")
         missing_shells = [role for role, rf in sorted(dispatch.ROLE_FILES.items())
@@ -174,20 +169,37 @@ def setup_readiness(repo, host=None, runner=subprocess.run, environ=None):
                        "unregistered reviewer shell(s): %s -- run python3 "
                        "skill/scripts/dispatch.py --emit-host-agents <host> and "
                        "start a fresh session" % ", ".join(missing_shells)))
+    return checks
 
+
+def _check_groups_manifest(repo):
     try:
         catalog = discovery._matrix_catalog(repo) or {}
     except Exception:
         catalog = {}
     if catalog:
         empty = [name for name, g in catalog.items() if not g.get("match")]
-        checks.append(("groups-manifest", not empty,
-                       "%d group(s)" % len(catalog) if not empty else
-                       "group(s) with no match patterns: %s" % ", ".join(map(str, empty))))
-    else:
-        checks.append(("groups-manifest", None,
-                       "no committable manifest yet -- --setup seeds one; "
-                       "files fall back to ._N chunks until you commit it"))
+        return ("groups-manifest", not empty,
+                "%d group(s)" % len(catalog) if not empty else
+                "group(s) with no match patterns: %s" % ", ".join(map(str, empty)))
+    return ("groups-manifest", None,
+            "no committable manifest yet -- --setup seeds one; "
+            "files fall back to ._N chunks until you commit it")
+
+
+def setup_readiness(repo, host=None, runner=subprocess.run, environ=None):
+    """#485(3): the preflight. Returns a list of (name, ok, detail) checks.
+
+    ok is True/False/None -- None means informational (not gating READY).
+    Every failing check carries its fix in `detail`.
+    """
+    env = environ if environ is not None else os.environ
+    checks = []
+    checks.extend(_check_docker(runner))
+    checks.append(_check_git_root(repo))
+    checks.append(_check_nvd_key(repo, env))
+    checks.extend(_check_host_shells(host, runner))
+    checks.append(_check_groups_manifest(repo))
     return checks
 
 

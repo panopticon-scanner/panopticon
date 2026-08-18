@@ -1,4 +1,5 @@
 import os
+import re
 import unittest
 
 ROOT = os.path.join(os.path.dirname(__file__), os.pardir, "skill")
@@ -43,7 +44,6 @@ class TestSkillMd(unittest.TestCase):
         self.assertIn("lost verify coverage never certifies a clean gate", self.text)
 
     def test_description_is_trigger_only_and_host_neutral(self):
-        import re
         m = re.search(r"(?m)^description:\s*(.+)$", self.text)
         self.assertIsNotNone(m)
         desc = m.group(1)

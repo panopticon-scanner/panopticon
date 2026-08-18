@@ -12,7 +12,9 @@ import sys
 
 _TESTS = os.path.dirname(os.path.abspath(__file__))
 _REPO = os.path.dirname(_TESTS)
-for _p in reversed((os.path.join(_REPO, "skill"),
+FIXTURE_ROOT = os.environ.get("FIXTURE_ROOT", os.path.join(_TESTS, "fixtures"))
+for _p in reversed((_TESTS,
+                    os.path.join(_REPO, "skill"),
                     os.path.join(_REPO, "skill", "scripts"),
                     os.path.join(_REPO, "scripts"))):
     if _p in sys.path:

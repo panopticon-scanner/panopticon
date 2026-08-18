@@ -265,10 +265,6 @@ class TestGhRetry(unittest.TestCase):
         self.assertEqual(sleep_calls, [60, 120, 180, 240])  # sleeps before attempts 2-5
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestGhEnv(unittest.TestCase):
     """#486: config-declared gh account selection."""
 
@@ -309,3 +305,7 @@ class TestGhEnv(unittest.TestCase):
             return mock.Mock(returncode=0, stdout="ok", stderr="")
         triage.gh(["gh", "api", "x"], runner=fake)
         self.assertEqual(len(calls), 1)     # signature unchanged for fakes
+
+
+if __name__ == "__main__":
+    unittest.main()

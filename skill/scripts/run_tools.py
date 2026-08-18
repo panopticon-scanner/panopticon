@@ -15,7 +15,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from scripts.tools import ADAPTERS, EXECUTES_TARGET_BUILD, ONLINE_ONLY  # noqa: F401
+from scripts.tools import ADAPTERS, ONLINE_ONLY
 from scripts import plan_contract
 from scripts.tools.legacy_sarif import LEGACY_SARIF_TOOLS, TOOL_CMD
 
@@ -296,7 +296,7 @@ def write_manifest(path, selected, written, excluded_scope=()):
     return payload
 
 
-if __name__ == "__main__":
+def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(description="panopticon tool runner")
     ap.add_argument("--target", default=".")
@@ -312,13 +312,19 @@ if __name__ == "__main__":
                          "adapter applicable only to excluded files is disclosed "
                          "as excluded_scope, not required (repeatable). Pass the "
                          "same globs the gate uses.")
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
     if not docker_available():
         print("panopticon-tools image not available; skipping tool scan", file=sys.stderr)
-        sys.exit(0)
+        return 0
     excluded_scope = []
-    if a.tools:
-        chosen = a.tools
+    if a.tools is not None:
+        if a.exclude:
+            matched_adapters = [ADAPTERS[t] for t in a.tools if t in ADAPTERS]
+            required_names, excluded_scope = partition_by_exclusion(
+                matched_adapters, a.target, a.exclude)
+            chosen = required_names + [t for t in a.tools if t not in ADAPTERS]
+        else:
+            chosen = a.tools
     else:
         selected_adapters = select_adapters(a.target)
         required_names, excluded_scope = partition_by_exclusion(
@@ -332,3 +338,8 @@ if __name__ == "__main__":
     if a.manifest:
         write_manifest(a.manifest, effective, paths, excluded_scope=excluded_scope)
     print("\n".join(paths))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

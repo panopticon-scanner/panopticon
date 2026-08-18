@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 
+import scripts.tools.base as tools_base
 import scripts.tools.roslyn_secguard as rs
 
 ROSLYN_SAMPLE = json.dumps({
@@ -208,7 +209,6 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
             stdout = b""
             stderr = b""
 
-        import scripts.tools.base as tools_base
         old_run = tools_base.subprocess.run
         old_safe_copytree = rs._safe_copytree
         try:

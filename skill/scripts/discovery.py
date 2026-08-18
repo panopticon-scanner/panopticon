@@ -19,9 +19,11 @@ import os
 import re
 import subprocess
 import sys
+import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import diff_map  # noqa: E402 (sibling on sys.path, same pattern as dispatch.py)
+import groups_schema  # noqa: E402
 import plan_contract  # noqa: E402
 
 DEFAULT_MAX_PER_GROUP = 15
@@ -101,6 +103,13 @@ DATABASE_PATTERNS = [
 def is_test_file(path):
     """Return True if path matches any test file pattern."""
     return any(re.search(p, path) for p in TEST_PATTERNS)
+
+
+def partition_test_files(files):
+    """Partition a list of file paths into (implementation_files, test_files)."""
+    impl = [f for f in files if not is_test_file(f)]
+    tests = [f for f in files if is_test_file(f)]
+    return impl, tests
 
 def is_architecture_file(path):
     """Return True if path matches any architecture/infrastructure pattern."""
@@ -836,8 +845,6 @@ def _committed_matrix(repo):
     path = os.path.join(repo, ".panopticon", "groups.yml")
     if not os.path.isfile(path):
         return {}
-    import yaml
-    import groups_schema
     with open(path, encoding="utf-8") as fh:
         data = yaml.safe_load(fh) or {}
     raw = data.get("groups") or {}
@@ -930,7 +937,7 @@ def main(argv=None):
     scope.add_argument("--scope-files", nargs="+", metavar="PATH", default=None)
     args = ap.parse_args(argv)
     if args.max_per_group < 1:
-        print("--max-per-group must be >= 1", file=sys.stderr)
+        print("panopticon: --max-per-group must be >= 1", file=sys.stderr)
         return 2
     repo = os.path.abspath(args.target if args.target is not None else args.repo)
     try:
@@ -951,8 +958,7 @@ def main(argv=None):
                                include_fixtures=(args.security == "redteam"),
                                pruned_fixtures=pruned_fixtures,
                                info=info)
-    impl = [f for f in allf if not is_test_file(f)]
-    tests = [f for f in allf if is_test_file(f)]
+    impl, tests = partition_test_files(allf)
     # Group impl AND real test sources so tests aren't silently dropped (only
     # their __pycache__ artifacts used to reach a group); counts stay impl-only.
     result = build_result(repo, "repo", ".", None, impl, tests, args.max_per_group,
@@ -1011,8 +1017,7 @@ def main(argv=None):
             _delta = res
     if scoped is not None:
         allf = scoped
-        impl = [f for f in allf if not is_test_file(f)]
-        tests = [f for f in allf if is_test_file(f)]
+        impl, tests = partition_test_files(allf)
         result = build_result(repo, "repo", ".", None, impl, tests,
                               args.max_per_group, group_files=impl + tests,
                               security_mode=args.security)

@@ -309,7 +309,8 @@ def main():
                     help="path to the run's coverage/run-state doc, linked in each issue")
     a = ap.parse_args()
 
-    report = json.load(open(a.report, encoding="utf-8"))
+    with open(a.report, encoding="utf-8") as fh:
+        report = json.load(fh)
     findings = list(report["findings"])
     # A large report is split; meta.parts names the continuation files, resolved
     # beside the main artifact. Reading only the first part silently under-files.

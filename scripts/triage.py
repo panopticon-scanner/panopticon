@@ -42,19 +42,18 @@ SCHEMA_VERSION = 1
 
 def load_rows(path=LEDGER):
     try:
-        fh = open(path, encoding="utf-8")
+        with open(path, encoding="utf-8") as fh:
+            rows = []
+            for n, line in enumerate(fh, 1):
+                if not line.strip():
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except ValueError as e:
+                    raise ValueError("ledger line %d unparseable: %s" % (n, e))
+            return rows
     except OSError:
         return []
-    rows = []
-    with fh:
-        for n, line in enumerate(fh, 1):
-            if not line.strip():
-                continue
-            try:
-                rows.append(json.loads(line))
-            except ValueError as e:
-                raise ValueError("ledger line %d unparseable: %s" % (n, e))
-    return rows
 
 
 def save_rows(rows, path=LEDGER):
