@@ -28,7 +28,11 @@ Verify the claim by exploring the repository yourself:
    handler alone; check how the route is mounted.
 4. Decide.
 
-Return ONLY a raw JSON object:
+Your ENTIRE response is the raw JSON object below and nothing else. The first
+character you emit is `{` and the last is `}`. No preamble ("Here is my
+verdict"), no closing remark ("Let me know if…"), no markdown fence. Surrounding
+prose — especially prose that itself contains braces — can corrupt extraction
+and lose your verdict, so emit the object alone:
 
 ```json
 {
@@ -45,7 +49,7 @@ Return ONLY a raw JSON object:
 - Emit VALID JSON: escape every `"`, backslash, and newline inside string
   values — `reasoning` especially, since it often quotes code. One unescaped
   quote makes the whole file unparseable, your verdict is lost, and the finding
-  is left unverified (#938). Do not wrap it in a markdown fence or prose.
+  is left unverified (#938).
 - CONFIRMED: the code, as you explored it, supports the claim.
 - REJECTED: the code contradicts the claim, or the claimed path cannot execute.
 - NEEDS_MORE_INFO: the repository alone cannot settle it. State exactly what
