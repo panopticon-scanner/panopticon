@@ -1326,12 +1326,23 @@ def driver_cost_counts(pano_dir, verdicts_dir, tools_ran):
         entries = []
     review_cells = sum(1 for e in entries
                        if isinstance(e, dict) and e.get("domain"))
-    # Cell bundles live at the .panopticon root (verdicts-<g>-<d>.json); the
-    # tool-advisor verdicts live one level down in verdicts/ -- disjoint globs.
-    bundles = glob.glob(os.path.join(pano_dir, "verdicts-*.json"))
+    # #1052: the driver writes BOTH classes of verdict into the SAME verdicts/
+    # subdir -- the domain-advisor cell bundles verdicts-<g>-<d>[-backup].json
+    # (_verify_out_file) and the per-finding tool-advisor verdicts
+    # <queue_id>.json (_tool_verdict_out_file, queue_id = a 16-char sha prefix,
+    # never "verdicts-*"). The old code globbed cell bundles from the pano_dir
+    # ROOT -- where the driver never writes them -- so primary/backup counted 0
+    # and every verdicts/*.json (cell bundles included) was swept into
+    # tool_advisor (run-5: 0/0/235). Split on the bundle prefix, both in the
+    # subdir where the artifacts actually land.
+    vdir = verdicts_dir or os.path.join(pano_dir, "verdicts")
+    have_vdir = os.path.isdir(vdir)
+    bundles = (glob.glob(os.path.join(vdir, "verdicts-*.json"))
+               if have_vdir else [])
     backup = sum(1 for p in bundles if p.endswith("-backup.json"))
-    tool_adv = (len(glob.glob(os.path.join(verdicts_dir, "*.json")))
-                if verdicts_dir and os.path.isdir(verdicts_dir) else 0)
+    tool_adv = (sum(1 for p in glob.glob(os.path.join(vdir, "*.json"))
+                    if not os.path.basename(p).startswith("verdicts-"))
+                if have_vdir else 0)
     return {"review_cells": review_cells,
             "verify_primary": len(bundles) - backup,
             "verify_backup": backup,
