@@ -736,6 +736,7 @@ class TestSynthesizePhase(unittest.TestCase):
         self.assertIn("--fail-on", cmd)
         self.assertEqual(cmd[cmd.index("--out") + 1],
                          driver._pano(self.root, "report.json"))
+        self.assertEqual(cmd[cmd.index("--run-id") + 1], "R")   # §5.1: X0X provenance
 
     def test_tools_dir_added_only_when_tools_ran(self):
         driver._write_json(driver._pano(self.root, "tools-ran.json"),

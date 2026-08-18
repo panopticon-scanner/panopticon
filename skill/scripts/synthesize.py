@@ -27,6 +27,7 @@ import scripts.ingest_tools as ingest_tools
 import scripts.ocrdb as ocrdb
 import scripts.plan_contract as plan_contract
 import scripts.score_gate as score_gate
+import scripts.x0x_report as x0x_report
 from scripts.tools import EXECUTES_TARGET_BUILD
 
 # Moved to evidence.py (also used by evidence.load_verdicts for advisor
@@ -1916,6 +1917,8 @@ def main(argv=None):
     ap.add_argument("--changes", "-c", action="store_true",
                     help="Alias for a changes/diff review type")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--run-id", default=None,
+                    help="driver run-manifest run_id -> X0X generated_by.run_id")
     ap.add_argument("--html-out", metavar="PATH", default=None,
                     help="Write HTML report to PATH")
     ap.add_argument("--compare", metavar="JSON", nargs=2, default=None,
@@ -2280,6 +2283,19 @@ def main(argv=None):
         print("SCHEMA: %s" % e, file=sys.stderr)
 
     paths = write_report(report, out)
+    # §5.1: emit the X0X catalog-gap report — the <DOM>-X0X / ZZZ-X0X findings as
+    # candidate records for OCRDb's new-code adjudication pool (ingested
+    # downstream), a sibling of the JSON report. Always emitted; empty candidates
+    # = an honest "no catalog gaps this run".
+    x0x = x0x_report.build_report(report.get("findings") or [],
+                                  report.get("meta") or {}, args.run_id)
+    x0x_stem = out[:-len(".json")] if out.endswith(".json") else out
+    x0x_path = x0x_stem + "-x0x.json"
+    x0x_tmp = x0x_path + ".tmp"
+    with open(x0x_tmp, "w", encoding="utf-8") as fh:
+        json.dump(x0x, fh, indent=2, sort_keys=True)
+    os.replace(x0x_tmp, x0x_path)
+    print("X0X artifact: %s (%d candidates)" % (x0x_path, len(x0x["candidates"])))
     html_out = args.html_out
     if html_out is None and args.out:
         html_out = _derive_html_path(paths[0])
