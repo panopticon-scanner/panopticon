@@ -128,6 +128,20 @@ class TestSurfaceClassifiers(unittest.TestCase):
         for p in ["src/app.py", "README.md", "Dockerfile"]:
             self.assertFalse(orch.is_database_file(p), p)
 
+    def test_compute_group_surfaces(self):
+        self.assertEqual(orch.compute_group_surfaces(["Dockerfile", "db/schema.sql"]),
+                         ["architecture", "database"])
+        self.assertEqual(orch.compute_group_surfaces(["src/app.py"]), [])
+        self.assertEqual(orch.compute_group_surfaces(["k8s/deploy.yaml"]), ["architecture"])
+        self.assertEqual(orch.compute_group_surfaces(["migrations/001.sql"]), ["database"])
+
+    def test_looks_risky(self):
+        for p in ["src/auth/service.py", "src/login_handler.ts", "models/password.go",
+                  "controllers/payment.rb", "lib/encrypt.rs", "config/api_token.json"]:
+            self.assertTrue(orch._looks_risky(p), p)
+        for p in ["src/utils/math.py", "assets/style.css", "docs/index.html"]:
+            self.assertFalse(orch._looks_risky(p), p)
+
 
 class TestTestCandidates(unittest.TestCase):
     """#670: direct coverage for test_candidates() name/dir generation."""
@@ -825,10 +839,12 @@ class TestGroupsFormatReconciliation(unittest.TestCase):
         d = self._repo()
         for sub in ("src", "tests"):
             os.makedirs(os.path.join(d, sub))
-            open(os.path.join(d, sub, "a.py"), "w").close()
+            with open(os.path.join(d, sub, "a.py"), "w", encoding="utf-8") as fh:
+                pass
         path, created, names = setup_flow._seed_groups_manifest(d)
         self.assertTrue(created)
-        text = open(path, encoding="utf-8").read()
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
         self.assertNotIn("- name:", text)          # not the legacy list form
         catalog = orch.load_catalog(d)
         self.assertTrue(catalog)                    # actually loads (was silent {})

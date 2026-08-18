@@ -57,11 +57,13 @@ class TestPipAuditAdapter(unittest.TestCase):
         adapter = pa.PipAuditAdapter()
         adapter._manifest_path = "/tmp/fake/pyproject.toml"
         findings = adapter.parse(PIP_AUDIT_SAMPLE, "g1")
+        self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0]["location"]["file"], "/tmp/fake/pyproject.toml")
 
     def test_parse_defaults_location_file_when_no_manifest(self):
         adapter = pa.PipAuditAdapter()
         findings = adapter.parse(PIP_AUDIT_SAMPLE, "g1")
+        self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0]["location"]["file"], "requirements.txt")
 
     def test_parse_omits_none_tool_evidence_fields(self):

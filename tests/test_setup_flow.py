@@ -88,10 +88,12 @@ class TestSetupFlow(unittest.TestCase):
 
     def test_readiness_returns_checks(self):
         d = _repo()
+        os.makedirs(os.path.join(d, ".git"))
         checks = setup_flow.readiness(d, host="claude",
                                       runner=lambda *a, **k: type("R", (), {"returncode": 1})())
-        names = {c[0] for c in checks}
-        self.assertIn("target-root", names)
+        check_dict = {c[0]: (c[1], c[2]) for c in checks}
+        self.assertIn("target-root", check_dict)
+        self.assertTrue(check_dict["target-root"][0])
 
     def test_readiness_checks_driver_roles_not_legacy(self):
         # #5.0-15: enforced-shells must verify the driver's scout/domain_panel/

@@ -246,8 +246,10 @@ class TestHtmlReport(unittest.TestCase):
              "description": "y", "impact": "", "remediation": "", "references": []},
         ])
         out = hr.render(head, compare_report=base)
-        self.assertIn("new", out)
-        self.assertIn("resolved", out)
+        self.assertIn("class='delta-card delta-new'", out)
+        self.assertIn("class='delta-card delta-resolved'", out)
+        self.assertIn("data-delta='new'", out)
+        self.assertIn("data-delta='resolved'", out)
         self.assertIn("XSS", out)
         self.assertIn("SQL injection", out)
 

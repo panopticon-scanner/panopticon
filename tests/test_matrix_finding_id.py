@@ -1,8 +1,8 @@
 import json
 import re
 
-import evidence
-import synthesize
+import scripts.evidence as evidence
+import scripts.synthesize as synthesize
 
 ID_RE = re.compile(r"^[A-Z]{2,8}-[0-9]{3,}$")
 

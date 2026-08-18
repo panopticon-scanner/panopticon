@@ -59,11 +59,23 @@ class TestLoaders(unittest.TestCase):
         vocab, _ = sp.load_vocabulary(VOCAB)
         affinity, errs = sp.load_affinity(AFFINITY, vocab)
         self.assertEqual(errs, [])
-        self.assertEqual(affinity["Checkout"], ["SEC", "ACC"])      # OPS dropped (R-3, unevidenced)
-        self.assertEqual(affinity["Admin"], ["SEC", "ACC", "OPS"])  # +OPS (R-3, evidenced)
-        self.assertEqual(affinity["Notifications"], ["OPS"])        # ACC dropped (R-3)
-        self.assertEqual(affinity["Catalog"], [])                   # rides global floor
-        self.assertEqual(affinity["UI"], [])                        # not seeded in R1
+        self.assertEqual(len(affinity), 13)
+        expected_floors = {
+            "Auth": ["SEC"],
+            "Accounts": ["SEC", "ACC"],
+            "Checkout": ["SEC", "ACC"],
+            "Billing": ["SEC"],
+            "Catalog": [],
+            "Search": [],
+            "Fulfillment": [],
+            "Notifications": ["OPS"],
+            "Reporting": [],
+            "Admin": ["SEC", "ACC", "OPS"],
+            "API": ["SEC"],
+            "Platform": ["OPS", "SEC"],
+            "UI": [],
+        }
+        self.assertEqual(affinity, expected_floors)
         # no global-floor domains leaked into any row
         for dom in ("COD", "DAT", "TST", "ARC"):
             for label, floor in affinity.items():

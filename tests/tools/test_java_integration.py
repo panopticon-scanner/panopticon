@@ -2,10 +2,7 @@ import os
 import unittest
 
 from scripts.tools import ADAPTERS
-
-FIXTURE_ROOT = os.environ.get(
-    "FIXTURE_ROOT", os.path.join(os.path.dirname(__file__), "..", "fixtures")
-)
+from conftest import FIXTURE_ROOT
 
 
 class TestJavaIntegration(unittest.TestCase):
@@ -39,7 +36,10 @@ class TestJavaIntegration(unittest.TestCase):
         findings = adapter.parse(raw, "g1")
         self.assertTrue(findings, "expected dependency-check findings")
         self.assertTrue(
-            any("CVE-" in str(f.get("citations")) for f in findings),
+            any(
+                any(c.startswith("CVE-") for c in (f.get("citations") or {}).get("cve", []))
+                for f in findings
+            ),
             "expected CVE citations",
         )
 

@@ -215,9 +215,15 @@ def apply(rows, dry=False, throttle=1.5, runner=None,
             for cmd in plan_mutations(row):
                 print("DRY #%s: %s" % (row["issue"], " ".join(cmd[:6])))
             continue
-        state = json.loads(gh(["gh", "issue", "view", str(row["issue"]),
-                               "--json", "state,updatedAt"],
-                              runner=runner, sleep=sleep))
+        raw_view = gh(["gh", "issue", "view", str(row["issue"]),
+                        "--json", "state,updatedAt"],
+                       runner=runner, sleep=sleep)
+        try:
+            state = json.loads(raw_view)
+            if not isinstance(state, dict):
+                state = {}
+        except (ValueError, TypeError):
+            state = {}
         if is_stale(row, state):
             row["status"] = "stale"
             stale += 1

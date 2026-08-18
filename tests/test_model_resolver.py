@@ -4,6 +4,7 @@ import io
 import os
 import sys
 import unittest
+from unittest import mock
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill", "scripts"))
@@ -92,31 +93,22 @@ class TestModelResolver(unittest.TestCase):
         self.assertEqual(mr.resolve_model("claude", "advisor", overrides)["model"], "custom-model")
 
     def test_env_override(self):
-        os.environ["PANOPTICON_MODEL_ADVISOR"] = "env-advisor"
-        try:
+        with mock.patch.dict(os.environ, {"PANOPTICON_MODEL_ADVISOR": "env-advisor"}):
             self.assertEqual(mr.resolve_model("claude", "advisor")["model"], "env-advisor")
-        finally:
-            del os.environ["PANOPTICON_MODEL_ADVISOR"]
 
     def test_cli_beats_env(self):
-        os.environ["PANOPTICON_MODEL_ADVISOR"] = "env-advisor"
-        try:
+        with mock.patch.dict(os.environ, {"PANOPTICON_MODEL_ADVISOR": "env-advisor"}):
             self.assertEqual(
                 mr.resolve_model("claude", "advisor", {"advisor": {"model": "cli-advisor"}})["model"],
                 "cli-advisor"
             )
-        finally:
-            del os.environ["PANOPTICON_MODEL_ADVISOR"]
 
     def test_kimi_override_precedence_still_applies_within_the_contract(self):
-        os.environ["PANOPTICON_MODEL_ADVISOR"] = "primary"
-        try:
+        with mock.patch.dict(os.environ, {"PANOPTICON_MODEL_ADVISOR": "primary"}):
             self.assertEqual(mr.resolve_model("kimi", "advisor")["model"], "primary")
             self.assertEqual(
                 mr.resolve_model("kimi", "advisor", {"advisor": {"model": "secondary"}})["model"],
                 "secondary")
-        finally:
-            del os.environ["PANOPTICON_MODEL_ADVISOR"]
 
     def test_missing_yaml_warns_and_falls_back(self):
         real_import = builtins.__import__
