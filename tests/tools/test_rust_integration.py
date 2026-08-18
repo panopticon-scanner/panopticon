@@ -1,5 +1,6 @@
 import os
 import shutil
+import subprocess
 import unittest
 
 from scripts.tools import ADAPTERS
@@ -12,6 +13,9 @@ class TestRustIntegration(unittest.TestCase):
     def test_cargo_audit_finds_rustsec_advisories(self):
         if not shutil.which("cargo"):
             self.skipTest("cargo not installed")
+        proc = subprocess.run(["cargo", "audit", "--version"], capture_output=True, text=True)
+        if proc.returncode != 0:
+            self.skipTest("cargo-audit subcommand not installed")
         target = os.path.join(FIXTURE_ROOT, "vulnerable-rust")
         if "cargo-audit" not in ADAPTERS:
             self.skipTest("cargo-audit adapter not registered")
