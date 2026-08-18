@@ -3,7 +3,6 @@
   "title": "PanopticonAdvisorVerdict",
   "type": "object",
   "required": [
-    "run_id",
     "finding_id",
     "verdict",
     "confidence",
@@ -14,7 +13,8 @@
   ],
   "additionalProperties": false,
   "properties": {
-    "run_id": {"type": "string", "minLength": 1},
+    "run_id": {"type": "string", "minLength": 1,
+      "description": "Optional (#1054): the tool-advisor path echoes no run_id (the driver writes no verify-queue.json for it and match_verdict binds on finding_id alone), and the advisor prompt example omits it. Allowed if a host stamps it, never required."},
     "finding_id": {"type": "string"},
     "verdict": {
       "type": "string",
