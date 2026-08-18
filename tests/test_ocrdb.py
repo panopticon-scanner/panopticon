@@ -1,3 +1,4 @@
+"""Tests for OCRDb domain catalog loading, validation, and domain-to-panel mapping."""
 import json
 import os
 import tempfile
@@ -46,7 +47,21 @@ class TestOcrdb(unittest.TestCase):
         # sentinel (UNKNOWN_DOMAIN_FALLBACK), not a real bundle domain.
         self.assertEqual(set(ocrdb.DOMAIN_TO_PANEL) - {"ZZZ"},
                          set(self.bundle["domains"]))
-        self.assertEqual(ocrdb.DOMAIN_TO_PANEL["ZZZ"], "code")
+        expected_mappings = {
+            "SEC": "security",
+            "COD": "code",
+            "ARC": "architecture",
+            "TST": "test",
+            "DAT": "database",
+            "QAL": "code",
+            "AGT": "code",
+            "OPS": "code",
+            "ACC": "code",
+            "LNG": "code",
+            "ZZZ": "code",
+        }
+        for domain, panel in expected_mappings.items():
+            self.assertEqual(ocrdb.DOMAIN_TO_PANEL.get(domain), panel, f"Domain {domain} mismatch")
         self.assertEqual(ocrdb.domain_of(ocrdb.UNKNOWN_DOMAIN_FALLBACK), "ZZZ")
 
     def test_absent_bundle_returns_none(self):

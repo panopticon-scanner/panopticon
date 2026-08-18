@@ -75,6 +75,28 @@ def test_applicable_floor_surfaceless_group_drops_dat_tst_arc():
                                       {"surfaces": ["http_web", "templating"]})
     assert got == frozenset({"COD"})
 
+def test_applicable_floor_keeps_dat_on_all_db_file_hints():
+    for hint in cov._DB_FILE_HINTS:
+        if hint.startswith("/") and hint.endswith("/"):
+            fname = f"src{hint}file.py"
+        elif hint.startswith("/"):
+            fname = f"src{hint}py"
+        else:
+            fname = f"src/sub/{hint}"
+        got = cov.applicable_global_floor([fname], {"surfaces": []})
+        assert "DAT" in got, f"Hint {hint} on {fname} failed to trigger DAT"
+
+def test_applicable_floor_keeps_tst_on_all_test_file_hints():
+    for hint in cov._TEST_FILE_HINTS:
+        if hint.startswith("/") and hint.endswith("/"):
+            fname = f"src{hint}file.py"
+        elif hint.startswith("/"):
+            fname = f"src{hint}py"
+        else:
+            fname = f"src/sub/{hint}"
+        got = cov.applicable_global_floor([fname], {"surfaces": []})
+        assert "TST" in got, f"Hint {hint} on {fname} failed to trigger TST"
+
 def test_applicable_floor_keeps_dat_on_db_file():
     got = cov.applicable_global_floor(["prisma/schema.prisma", "src/lib/db.ts"],
                                       {"surfaces": []})

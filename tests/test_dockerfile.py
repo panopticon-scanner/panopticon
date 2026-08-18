@@ -1,14 +1,17 @@
 import os
 import unittest
-from pathlib import Path
 
 ROOT = os.path.join(os.path.dirname(__file__), os.pardir)
 
 
+def _read_dockerfile() -> str:
+    with open(os.path.join(ROOT, "Dockerfile"), encoding="utf-8") as fh:
+        return fh.read()
+
+
 class TestDockerfile(unittest.TestCase):
     def test_bundles_core_tools(self):
-        with open(os.path.join(ROOT, "Dockerfile"), encoding="utf-8") as fh:
-            text = fh.read().lower()
+        text = _read_dockerfile().lower()
         for tool in ["semgrep", "gitleaks", "trivy", "bandit", "brakeman", "gosec", "eslint"]:
             self.assertIn(tool, text, tool)
         self.assertIn("useradd", text)  # non-root user created
@@ -16,7 +19,7 @@ class TestDockerfile(unittest.TestCase):
 
 class TestDockerfilePhase1(unittest.TestCase):
     def test_phase1_adapters_mentioned(self):
-        text = (Path(ROOT) / "Dockerfile").read_text()
+        text = _read_dockerfile()
         self.assertIn("pip-audit", text)
         self.assertIn("osv-scanner", text)
         self.assertIn("eslint-plugin-security", text)
@@ -28,7 +31,7 @@ class TestFindSecBugsIntegrity(unittest.TestCase):
     its download must be integrity-verified, not piped straight to disk."""
 
     def setUp(self):
-        self.text = (Path(ROOT) / "Dockerfile").read_text()
+        self.text = _read_dockerfile()
 
     def test_findsecbugs_digest_is_pinned_and_verified(self):
         self.assertIn("FINDSECBUGS_SHA256=", self.text)
@@ -46,9 +49,7 @@ class TestFindSecBugsIntegrity(unittest.TestCase):
 
 class TestOfflineAssets(unittest.TestCase):
     def setUp(self):
-        with open(os.path.join(os.path.dirname(__file__), os.pardir,
-                               "Dockerfile")) as fh:
-            self.text = fh.read()
+        self.text = _read_dockerfile()
 
     def test_offline_assets_baked(self):
         for marker in ["--download-db-only",          # trivy DB
@@ -67,7 +68,7 @@ class TestOfflineAssets(unittest.TestCase):
     def test_publish_cadence_and_tags(self):
         with open(os.path.join(os.path.dirname(__file__), os.pardir,
                                ".github", "workflows",
-                               "docker-publish.yml")) as fh:
+                               "docker-publish.yml"), encoding="utf-8") as fh:
             wf = fh.read()
         self.assertIn('cron: "0 6 * * *"', wf)      # daily asset refresh
         self.assertIn("workflow_dispatch", wf)

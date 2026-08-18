@@ -47,6 +47,9 @@ class TestModelResolver(unittest.TestCase):
         cfg = mr.resolve_model("kimi", "panel_review", {"panel_review": "k3"})
         self.assertEqual(cfg["model"], "secondary")
         self.assertEqual(cfg["alias"], "k3")
+        cfg_coding = mr.resolve_model("kimi", "panel_review", {"panel_review": "kimi-for-coding"})
+        self.assertEqual(cfg_coding["model"], "primary")
+        self.assertEqual(cfg_coding["alias"], "kimi-for-coding")
         with contextlib.redirect_stderr(io.StringIO()) as err:
             unknown = mr.resolve_model("kimi", "scout", {"scout": "nonsense"})
         self.assertEqual(unknown["model"], "primary")
