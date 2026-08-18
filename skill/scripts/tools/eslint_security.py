@@ -2,6 +2,7 @@
 from __future__ import annotations
 import os
 from .base import make_finding, omit_none, parse_json_bytes, run_tool
+from .sarif_utils import norm_uri
 
 
 # CWE mappings for eslint-plugin-security rules (best-effort).
@@ -75,36 +76,23 @@ class EslintSecurityAdapter:
             cmd.extend(["--rule", f"{rule}: error"])
         cmd.extend(["--format", "json", os.path.abspath(target)])
         env = os.environ.copy()
-        # eslint v10 resolves plugins relative to the *child process's cwd*,
-        # not the linted path on argv - if cwd stayed inside the scanned
-        # target, a hostile target-controlled node_modules/eslint-plugin-security
-        # would load and execute ahead of the trusted global plugin (#83).
-        # Pin cwd to this adapter's own directory (never contains
-        # node_modules) so plugin resolution always finds the trusted copy
-        # via the NODE_PATH fallback below.
-        # Set NODE_PATH EXCLUSIVELY to the trusted global dir; never prepend an
-        # inherited NODE_PATH (#715). Node searches NODE_PATH left-to-right, so
-        # an inherited entry like /evil/node_modules would shadow the trusted
-        # eslint-plugin-security and execute during the scan. Also drop any
-        # inherited value so a stale entry can't leak in when neither global
-        # dir exists.
         env.pop("NODE_PATH", None)
         for global_node in ["/usr/local/lib/node_modules", "/usr/lib/node_modules"]:
             if os.path.isdir(global_node):
                 env["NODE_PATH"] = global_node
                 break
         trusted_cwd = os.path.dirname(os.path.abspath(__file__))
-        return run_tool(cmd, timeout=300, env=env, cwd=trusted_cwd)
+        return run_tool(cmd, timeout=300, env=env, cwd=trusted_cwd, ok_codes=(0, 1))
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
         data = parse_json_bytes(raw)
         out = []
         n = 1
-        for file_result in data:
-            file_path = file_result.get("filePath", "")
-            rel = self._strip_prefix(file_path)
-            for msg in file_result.get("messages", []):
-                rule = msg.get("ruleId", "")
+        for f in data:
+            fpath = f.get("filePath", "")
+            rel = self._strip_prefix(fpath)
+            for msg in f.get("messages", []):
+                rule = msg.get("ruleId") or "unknown"
                 if not rule.startswith("security/"):
                     continue
                 out.append(make_finding(
@@ -123,7 +111,4 @@ class EslintSecurityAdapter:
         return out
 
     def _strip_prefix(self, path: str) -> str:
-        for prefix in ["/src/", "src/", "/"]:
-            if path.startswith(prefix):
-                return path[len(prefix):]
-        return path
+        return norm_uri(path)

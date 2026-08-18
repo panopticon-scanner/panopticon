@@ -1138,9 +1138,12 @@ def capture_tree_baseline(review_root, runner=subprocess.run):
     baseline = _pano(review_root, "tree-baseline.txt")
     if os.path.exists(baseline):
         return baseline
-    proc = runner(["git", "-C", review_root, "status", "--porcelain", "-z"],
-                  capture_output=True, text=True)
-    if proc.returncode != 0:
+    try:
+        proc = runner(["git", "-C", review_root, "status", "--porcelain", "-z"],
+                      capture_output=True, text=True, timeout=15)
+        if proc.returncode != 0:
+            return None
+    except (subprocess.SubprocessError, OSError):
         return None
     os.makedirs(os.path.dirname(baseline), exist_ok=True)
     with open(baseline, "w", encoding="utf-8") as fh:
@@ -1190,9 +1193,12 @@ def _tree_delta(review_root, runner):
             baseline = _porcelain_z_records(fh.read())
     except OSError:
         return []
-    proc = runner(["git", "-C", review_root, "status", "--porcelain", "-z"],
-                  capture_output=True, text=True)
-    if proc.returncode != 0:
+    try:
+        proc = runner(["git", "-C", review_root, "status", "--porcelain", "-z"],
+                      capture_output=True, text=True, timeout=15)
+        if proc.returncode != 0:
+            return []
+    except (subprocess.SubprocessError, OSError):
         return []
     new = _porcelain_z_records(proc.stdout) - baseline
     return sorted("%s %s" % (xy, " -> ".join(paths)) for xy, paths in new
@@ -1574,7 +1580,7 @@ def run(args, runner=subprocess.run, phases=PHASES):
         plan_contract.artifact_root(review_root)
     except ValueError as exc:
         if worktree:
-            diff_map.release_worktree(worktree)
+            diff_map.release_worktree(worktree, repo=args.target)
         return _error_status("unsafe artifact root: %s" % exc)
     if args.reset:
         _clear_run_artifacts(review_root)   # §5.1: resolve the tag before the manifest goes

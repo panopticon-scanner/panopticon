@@ -99,6 +99,10 @@ DATABASE_PATTERNS = [
     r"\.sql$",
     r"(^|/)(migrations|migrate)/",
     r"(_migration|\.migration)\.",
+    r"(^|/)schema\.prisma$",
+    r"\.prisma$",
+    r"(^|/)(models|model|entities|entity|repository)/",
+    r"(\.schema|\.orm)\.",
 ]
 
 def is_test_file(path):
@@ -534,9 +538,12 @@ def resolve_base(repo, explicit=None, pr_base=None, runner=subprocess.run):
     that does NOT resolve returns (None,'unresolved') without falling through -
     a bad --base is a loud failure, not a silent downgrade to a branch tip."""
     def _resolves(ref):
-        r = runner(["git", "-C", repo, "rev-parse", "--verify", "-q", ref + "^{commit}"],
-                   capture_output=True, text=True)
-        return r.returncode == 0
+        try:
+            r = runner(["git", "-C", repo, "rev-parse", "--verify", "-q", ref + "^{commit}"],
+                       capture_output=True, text=True, timeout=15)
+            return r.returncode == 0
+        except (subprocess.SubprocessError, OSError):
+            return False
     if explicit:
         return (explicit, "explicit") if _resolves(explicit) else (None, "unresolved")
     if pr_base:
