@@ -6,10 +6,13 @@ from .base import (as_list, cve_ids, cvss_bucket, make_finding, normalize_severi
                    omit_none, parse_json_bytes, run_tool)
 
 
-def _cvss_v3_score(cvss: str) -> float | None:
-    """Approximate CVSS v3.1 base score from a vector string."""
+_CIA_WEIGHTS = {"N": 0, "L": 0.22, "H": 0.56}
+
+
+def _cvss_v3_score(vector: str) -> float | None:
+    """Calculate CVSS v3.1 base score from a vector string."""
     try:
-        metrics = dict(p.split(":") for p in cvss.split("/") if ":" in p)
+        metrics = dict(part.split(":") for part in vector.replace("CVSS:3.1/", "").replace("CVSS:3.0/", "").split("/"))
         av = metrics.get("AV", "")
         ac = metrics.get("AC", "")
         pr = metrics.get("PR", "")
@@ -20,9 +23,9 @@ def _cvss_v3_score(cvss: str) -> float | None:
         a = metrics.get("A", "")
         if not all([av, ac, pr, ui, s, c, i, a]):
             return None
-        iss = 1 - ((1 - {"N": 0, "L": 0.22, "H": 0.56}.get(c, 0)) *
-                   (1 - {"N": 0, "L": 0.22, "H": 0.56}.get(i, 0)) *
-                   (1 - {"N": 0, "L": 0.22, "H": 0.56}.get(a, 0)))
+        iss = 1 - ((1 - _CIA_WEIGHTS.get(c, 0)) *
+                   (1 - _CIA_WEIGHTS.get(i, 0)) *
+                   (1 - _CIA_WEIGHTS.get(a, 0)))
         impact = 7.52 * (iss - 0.029) - 3.25 * (iss - 0.02) ** 15 if s == "C" else 6.42 * iss
         av_score = {"N": 0.85, "A": 0.62, "L": 0.55, "P": 0.2}.get(av, 0.85)
         ac_score = {"L": 0.77, "H": 0.44}.get(ac, 0.77)

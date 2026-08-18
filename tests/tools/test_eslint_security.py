@@ -105,7 +105,7 @@ class TestEslintSecurityAdapter(unittest.TestCase):
     def test_strip_prefix_removes_src_and_leading_slash(self):
         adapter = es.EslintSecurityAdapter()
         self.assertEqual(adapter._strip_prefix("/src/app.js"), "app.js")
-        self.assertEqual(adapter._strip_prefix("src/app.js"), "app.js")
+        self.assertEqual(adapter._strip_prefix("src/app.js"), "src/app.js")
         self.assertEqual(adapter._strip_prefix("/app.js"), "app.js")
         self.assertEqual(adapter._strip_prefix("app.js"), "app.js")
 

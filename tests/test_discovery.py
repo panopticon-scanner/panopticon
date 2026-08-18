@@ -736,7 +736,7 @@ class TestResolveBaseOriginFallback(unittest.TestCase):
     through."""
 
     def _runner_resolving(self, *refs):
-        def run(argv, capture_output, text):
+        def run(argv, *args, **kwargs):
             class R:
                 pass
             r = R()

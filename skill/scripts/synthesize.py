@@ -67,8 +67,8 @@ VALID_PANELS = set(PANEL_ORDER)
 RELATED_PANELS = {
     "security": {"architecture", "database", "redteam"},
     "redteam": {"security", "architecture", "database"},
-    "architecture": {"security", "redteam"},
-    "database": {"security", "redteam"},
+    "architecture": {"security", "database", "redteam"},
+    "database": {"security", "architecture", "redteam"},
 }
 
 

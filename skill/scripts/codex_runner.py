@@ -190,7 +190,7 @@ def run_entry(entry, root, schema=DEFAULT_SCHEMA, instructions=DEFAULT_INSTRUCTI
         with tempfile.TemporaryDirectory(prefix="panopticon-codex-workspace-") as workspace:
             result = runner(
                 command, input=_isolated_prompt(entry["prompt"], root, entry.get("files")),
-                text=True, capture_output=True, cwd=workspace, timeout=timeout)
+                text=True, encoding="utf-8", capture_output=True, cwd=workspace, timeout=timeout)
         if getattr(result, "returncode", 1) != 0:
             stderr = (getattr(result, "stderr", "") or "").strip()
             raise RuntimeError("codex exec exited %s%s" % (
@@ -283,7 +283,7 @@ def run_advisor_entry(entry, prompt_path, verdicts_dir, root,
         with tempfile.TemporaryDirectory(prefix="panopticon-codex-advisor-") as workspace:
             result = runner(
                 command, input=_isolated_prompt(prompt, root), text=True,
-                capture_output=True, cwd=workspace, timeout=timeout)
+                encoding="utf-8", capture_output=True, cwd=workspace, timeout=timeout)
         if getattr(result, "returncode", 1) != 0:
             stderr = (getattr(result, "stderr", "") or "").strip()
             raise RuntimeError("codex exec advisor exited %s%s" % (

@@ -183,7 +183,7 @@ def epss_lookup(cves, cache_path, opener=None):
 
 
 def _derive_cwe_from_category(category, catalog):
-    cid = CATEGORY_CWE_OVERRIDES.get(str(category).lower().replace(" ", "_"))
+    cid = CATEGORY_CWE_OVERRIDES.get(str(category).lower().replace(" ", "_").replace("-", "_"))
     if cid and cid in catalog["cwe"]:
         return {"id": cid, "name": catalog["cwe"][cid], "verified": False, "derived": True}
     return None
@@ -230,9 +230,7 @@ def enrich_citations(findings, catalog, epss_enabled=False, cache_path=None, ope
     for f in findings:
         raw = f.get("citations")
         if not isinstance(raw, dict):
-            f.pop("citations", None)
-            f["citation_quality"] = "none"
-            continue
+            raw = {}
         try:
             tool_sourced = is_tool_sourced(f)
             clean = {}

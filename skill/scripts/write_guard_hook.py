@@ -138,17 +138,28 @@ def _load(settings_path):
 
 def install(plan, settings_path=".claude/settings.local.json",
             allowlist_path=".panopticon/write-allowlist.json"):
-    os.makedirs(os.path.dirname(allowlist_path) or ".", exist_ok=True)
-    with open(allowlist_path, "w", encoding="utf-8") as fh:
+    allow_dir = os.path.dirname(allowlist_path) or "."
+    os.makedirs(allow_dir, exist_ok=True)
+    tmp_allow = allowlist_path + ".tmp"
+    with open(tmp_allow, "w", encoding="utf-8") as fh:
         json.dump(sorted(allowlist_from_plan(plan)), fh)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp_allow, allowlist_path)
+
     settings = _load(settings_path)
     hooks = settings.setdefault("hooks", {})
     pre = [h for h in hooks.get("PreToolUse", []) if h != _HOOK_ENTRY]
     pre.append(_HOOK_ENTRY)
     hooks["PreToolUse"] = pre
-    os.makedirs(os.path.dirname(settings_path) or ".", exist_ok=True)
-    with open(settings_path, "w", encoding="utf-8") as fh:
+    set_dir = os.path.dirname(settings_path) or "."
+    os.makedirs(set_dir, exist_ok=True)
+    tmp_set = settings_path + ".tmp"
+    with open(tmp_set, "w", encoding="utf-8") as fh:
         json.dump(settings, fh, indent=2)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp_set, settings_path)
 
 
 def uninstall(settings_path=".claude/settings.local.json",

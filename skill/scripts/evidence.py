@@ -535,7 +535,7 @@ def load_verdict_bundles(verdicts_dir):
             with open(path, encoding="utf-8") as fh:
                 data = load_json_tolerant(fh.read())
         except (OSError, ValueError) as e:
-            unloadable.append({"file": name, "reason": str(e).splitlines()[0]})
+            unloadable.append({"file": name, "reason": (str(e).splitlines() or [""])[0]})
             continue
         if not isinstance(data, dict) or not isinstance(data.get("verdicts"), list):
             continue   # not a bundle
