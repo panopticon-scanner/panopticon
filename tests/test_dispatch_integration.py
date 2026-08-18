@@ -15,7 +15,7 @@ class TestDispatchIntegration(unittest.TestCase):
             os.makedirs(os.path.join(td, "docs"))
             with open(os.path.join(td, "docs", "readme.md"), "w") as fh:
                 fh.write("# hello")
-            subprocess.run(["git", "init", td], capture_output=True)
+            subprocess.run(["git", "init", td], capture_output=True, timeout=30, check=True)
             result = build_result(td, "repo", ".", None, ["docs/readme.md"], [], 15)
             depth = result["groups"][0].get("depth", "standard")
             plan = dispatch.build_plan({

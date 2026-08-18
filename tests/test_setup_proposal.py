@@ -34,7 +34,8 @@ class TestLoaders(unittest.TestCase):
         self.assertTrue(vocab["hints"].get("Auth"))
 
     def test_vocabulary_carries_tier_and_definition_metadata(self):
-        doc = yaml.safe_load(open(VOCAB))  # read raw for the additive keys
+        with open(VOCAB, encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh)  # read raw for the additive keys
         by_name = {c["name"]: c for c in doc["capabilities"]}
         self.assertEqual(by_name["Checkout"]["tier"], "vertical")
         self.assertEqual(by_name["Platform"]["tier"], "universal")

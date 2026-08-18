@@ -29,6 +29,10 @@ class TestSpotBugsAdapter(unittest.TestCase):
         with mock.patch("os.path.exists", side_effect=lambda p: p.endswith("pom.xml")):
             self.assertTrue(sb.SpotBugsAdapter().is_applicable("/tmp/fake"))
 
+    def test_is_applicable_false_without_pom(self):
+        with mock.patch("os.path.exists", return_value=False):
+            self.assertFalse(sb.SpotBugsAdapter().is_applicable("/tmp/fake"))
+
     def test_parse_includes_provenance(self):
         findings = sb.SpotBugsAdapter().parse(SPOTBUGS_SAMPLE, "g1")
         self.assertTrue(findings)

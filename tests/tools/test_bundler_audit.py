@@ -29,7 +29,11 @@ class TestBundlerAuditAdapter(unittest.TestCase):
         findings = ba.BundlerAuditAdapter().parse(BUNDLE_AUDIT_SAMPLE, "g1")
         self.assertEqual(len(findings), 2)
         self.assertEqual(findings[0]["tool_evidence"]["package_name"], "actionpack")
+        self.assertEqual(findings[0]["severity"], "HIGH")
         self.assertEqual(findings[0]["citations"]["cve"], ["CVE-2020-8164"])
+        self.assertEqual(findings[1]["tool_evidence"]["package_name"], "nokogiri")
+        self.assertEqual(findings[1]["severity"], "MEDIUM")
+        self.assertEqual(findings[1]["citations"]["cve"], ["CVE-2020-7595"])
 
     def test_is_applicable_when_gemfile_lock_present(self):
         with mock.patch("os.path.exists", side_effect=lambda p: p.endswith("Gemfile.lock")):
