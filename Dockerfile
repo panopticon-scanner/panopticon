@@ -3,12 +3,14 @@
 # Run:    docker run --rm -v "$PWD":/src:ro panopticon-tools <tool> ...
 FROM python:3.12-slim
 
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
 ARG GITLEAKS_VERSION=8.18.4
 ARG GOSEC_VERSION=2.20.0
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl ca-certificates git gnupg ruby nodejs npm \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Python tools
 RUN pip install --no-cache-dir semgrep bandit bandit-sarif-formatter
@@ -41,7 +43,7 @@ RUN arch="$(dpkg --print-architecture)" \
 RUN curl -sfL https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor -o /usr/share/keyrings/trivy.gpg \
     && echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" > /etc/apt/sources.list.d/trivy.list \
     && apt-get update && apt-get install -y --no-install-recommends trivy \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # gosec (architecture-aware)
 RUN arch="$(dpkg --print-architecture)" \
@@ -55,7 +57,7 @@ ENV PYTHONPATH=/opt/panopticon
 
 # OpenJDK (needed by SpotBugs and dependency-check)
 RUN apt-get update && apt-get install -y --no-install-recommends default-jdk unzip build-essential \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # SpotBugs + FindSecBugs plugin
 ARG SPOTBUGS_VERSION=4.8.6

@@ -248,8 +248,8 @@ def setup(runner=None):
     else:
         gh(["gh", "api", "-X", "POST", "repos/{owner}/{repo}/milestones",
             "-f", "title=%s" % MILESTONE,
-            "-f", "description=Ranked fix queue from the remediation triage "
-                  "arc — see %s" % SPEC], runner=runner)
+            "-f", ("description=Ranked fix queue from the remediation triage "
+                   "arc — see %s" % SPEC)], runner=runner)
         print("milestone created: %s" % MILESTONE)
 
 

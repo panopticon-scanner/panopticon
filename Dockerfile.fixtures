@@ -5,11 +5,13 @@ FROM panopticon-tools:latest
 
 USER root
 
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
 # Ruby runtime + Bundler for RailsGoat and OpenJDK for WebGoat.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ruby ruby-dev build-essential libsqlite3-dev \
         openjdk-21-jdk-headless \
-    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean && rm -rf /var/lib/apt/lists/* \
     && gem install bundler --no-document
 
 # .NET SDK for AspGoat.

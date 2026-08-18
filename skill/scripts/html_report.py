@@ -418,12 +418,12 @@ def _render_header(report):
         "<div class='badges'>",
         # #490: a report with no grade must not render the literal "None",
         # and an uncertified grade is PROVISIONAL, not settled.
-        f"<span class='badge grade'>Grade: {_escape(summary.get('overall_grade') or '-')}"
-        f"{' (provisional)' if summary.get('coverage_certified') is False else ''}</span>",
-        f"<span class='badge {_severity_class(summary.get('risk_level', 'INFO'))}'>"
-        f"Risk: {_escape(summary.get('risk_level', '-'))}</span>",
-        f"<span class='badge {_gate_class(summary.get('gate', 'OFF'))}'>"
-        f"Gate: {_escape(summary.get('gate', 'OFF'))}</span>",
+        (f"<span class='badge grade'>Grade: {_escape(summary.get('overall_grade') or '-')}"
+         f"{' (provisional)' if summary.get('coverage_certified') is False else ''}</span>"),
+        (f"<span class='badge {_severity_class(summary.get('risk_level', 'INFO'))}'>"
+         f"Risk: {_escape(summary.get('risk_level', '-'))}</span>"),
+        (f"<span class='badge {_gate_class(summary.get('gate', 'OFF'))}'>"
+         f"Gate: {_escape(summary.get('gate', 'OFF'))}</span>"),
         "</div>",
     ]
     if summary.get("coverage_certified") is False:
@@ -472,8 +472,8 @@ def _render_compare_dashboard(matches):
     for m in matches:
         counts[m["delta"]] = counts.get(m["delta"], 0) + 1
     delta_cards = " ".join(
-        f"<div class='delta-card delta-{k.replace(' ', '-')}'><div class='delta-label'>{_escape(k)}</div>"
-        f"<div class='delta-value'>{v}</div></div>"
+        (f"<div class='delta-card delta-{k.replace(' ', '-')}'><div class='delta-label'>{_escape(k)}</div>"
+         f"<div class='delta-value'>{v}</div></div>")
         for k, v in counts.items()
     )
     return f"""
