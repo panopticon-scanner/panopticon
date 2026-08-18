@@ -914,14 +914,21 @@ class TestFinalizeWorktree(unittest.TestCase):
     def test_surfaces_report_then_releases_with_target_repo(self):
         worktree = self._dir()
         target = self._dir()
-        driver._write_json(driver._pano(worktree, "report.json"),
-                           {"summary": {"gate": "PASS"}})
         manifest = {"run_id": "R", "worktree": worktree, "target": target}
+        # §5.1: synthesize writes the durable, top-level, tag-named report.
+        tag = driver.run_manifest.run_tag(manifest)
+        driver._write_json(
+            os.path.join(worktree, ".panopticon", f"{tag}-report.json"),
+            {"summary": {"gate": "PASS"}})
         with mock.patch.object(driver.diff_map, "release_worktree") as rel:
             driver._finalize_worktree(worktree, manifest)
-        # report surfaced to the OWNING checkout's .panopticon/
-        surfaced = driver._load_json(driver._pano(target, "report.json"))
-        self.assertEqual(surfaced, {"summary": {"gate": "PASS"}})
+        # the durable tag-named report is surfaced to the OWNING checkout...
+        self.assertEqual(
+            driver._load_json(os.path.join(target, ".panopticon", f"{tag}-report.json")),
+            {"summary": {"gate": "PASS"}})
+        # ...and the compat report.json symlink there resolves to it (zero-break).
+        self.assertEqual(driver._load_json(driver._pano(target, "report.json")),
+                         {"summary": {"gate": "PASS"}})
         # released against the owning repo (target), not review_root (==worktree)
         rel.assert_called_once_with(worktree, repo=target)
 
@@ -2495,6 +2502,91 @@ class TestDriverHardening(unittest.TestCase):
                                      "app", "SEC", ["a.py"], cell, "claude", b,
                                      "primary")
         self.assertIn("CRITSENTINEL", entry["prompt"])
+
+
+class TestPerRunFolders(unittest.TestCase):
+    """§5.1: run artifacts live under .panopticon/runs/<tag>/; the durable reports
+    are top-level and tag-named, so the run folder can be cleared without losing
+    them, and report.json is a compat symlink to the latest tag-named report."""
+
+    def _repo(self, **kw):
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        os.makedirs(os.path.join(d, ".panopticon"))
+        m = run_manifest.build_manifest(
+            target=d, review_root=d, host=kw.get("host", "claude"),
+            security_mode=kw.get("mode", "redteam"),
+            scope={"mode": kw.get("scope", "repo"), "target": None},
+            run_id=kw.get("run_id", "deadbeefcafe0000"),
+            created=kw.get("created", "2026-08-18T00:00:00Z"))
+        run_manifest.write_manifest(d, m)
+        return d, run_manifest.run_tag(m)
+
+    def test_pano_routes_run_artifacts_into_run_folder(self):
+        d, tag = self._repo()
+        runs = os.path.join(d, ".panopticon", "runs", tag)
+        self.assertEqual(driver._pano(d, "findings-Driver-SEC.json"),
+                         os.path.join(runs, "findings-Driver-SEC.json"))
+        self.assertEqual(driver._pano(d, "verdicts", "v.json"),
+                         os.path.join(runs, "verdicts", "v.json"))
+        self.assertEqual(driver._pano(d, "coverage-Driver.json"),
+                         os.path.join(runs, "coverage-Driver.json"))
+
+    def test_pano_keeps_anchors_and_reports_top_level(self):
+        d, _ = self._repo()
+        base = os.path.join(d, ".panopticon")
+        for name in ("config.json", "groups.yml", "run-manifest.json",
+                     "setup-manifest.json", "epss-cache.json",
+                     "report.json", "report.json.html", "write-allowlist.json"):
+            self.assertEqual(driver._pano(d, name), os.path.join(base, name), name)
+
+    def test_pano_falls_back_flat_without_manifest(self):
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        self.assertEqual(driver._pano(d, "findings-x.json"),
+                         os.path.join(d, ".panopticon", "findings-x.json"))
+
+    def test_report_out_is_tag_named_top_level(self):
+        d, tag = self._repo()
+        self.assertEqual(driver._report_out(d),
+                         os.path.join(d, ".panopticon", f"{tag}-report.json"))
+
+    def test_latest_symlink_points_to_run_folder(self):
+        d, tag = self._repo()
+        driver._ensure_run_symlinks(d)
+        latest = os.path.join(d, ".panopticon", "runs", "latest")
+        self.assertTrue(os.path.islink(latest))
+        self.assertEqual(os.readlink(latest), tag)
+
+    def test_clearing_run_folder_keeps_report(self):
+        d, tag = self._repo()
+        # simulate a completed run: findings in the run folder; durable report +
+        # compat symlink top-level (what synthesize_execute produces).
+        driver._write_json(driver._pano(d, "findings-G-SEC.json"), {"x": 1})
+        driver._write_json(driver._report_out(d), {"summary": {"gate": "PASS"}})
+        driver._relink(driver._pano(d, "report.json"), f"{tag}-report.json")
+        driver._ensure_run_symlinks(d)
+        self.assertTrue(os.path.isdir(os.path.join(d, ".panopticon", "runs", tag)))
+        # the durability operation: clear every run folder
+        shutil.rmtree(os.path.join(d, ".panopticon", "runs"), ignore_errors=True)
+        # report content survives, reachable via the tag-named file AND report.json
+        self.assertTrue(os.path.isfile(
+            os.path.join(d, ".panopticon", f"{tag}-report.json")))
+        self.assertEqual(driver._load_json(driver._pano(d, "report.json")),
+                         {"summary": {"gate": "PASS"}})
+
+    def test_reset_clears_run_folder_but_keeps_report(self):
+        d, tag = self._repo()
+        driver._write_json(driver._pano(d, "findings-G-SEC.json"), {"x": 1})
+        driver._write_json(driver._report_out(d), {"summary": {"gate": "PASS"}})
+        driver._relink(driver._pano(d, "report.json"), f"{tag}-report.json")
+        driver._clear_run_artifacts(d)   # --reset clears BEFORE the manifest goes
+        self.assertFalse(os.path.isdir(os.path.join(d, ".panopticon", "runs", tag)))
+        self.assertTrue(os.path.isfile(
+            os.path.join(d, ".panopticon", f"{tag}-report.json")))
+        # the report.json symlink is kept and still resolves to the durable report
+        self.assertEqual(driver._load_json(driver._pano(d, "report.json")),
+                         {"summary": {"gate": "PASS"}})
 
 
 if __name__ == "__main__":
