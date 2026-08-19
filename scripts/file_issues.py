@@ -63,7 +63,7 @@ def labels_for(f, rejected=False):
 
 def title_for(f):
     loc = f.get("location") or {}
-    fname = (loc.get("file") or "").split("/")[-1]
+    fname = defang(loc.get("file") or "")
     t = defang(f.get("short_title") or f.get("title") or "(untitled)")
     suffix = " (%s)" % fname if fname else ""
     room = 240 - len(suffix)
