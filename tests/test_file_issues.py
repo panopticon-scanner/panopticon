@@ -102,6 +102,15 @@ class TestBodyDefang(unittest.TestCase):
         self.assertNotIn("@team", title)
         self.assertIn("@​team", title)
 
+    def test_title_filename_suffix_is_defanged(self):
+        f = {
+            "title": "Some issue",
+            "location": {"file": "src/@mention.py"},
+        }
+        title = file_issues.title_for(f)
+        self.assertNotIn("@mention", title)
+        self.assertIn("(@\u200bmention.py)", title)
+
 
 class TestRepoRootPortability(unittest.TestCase):
     """#602: REPO_ROOT was a hardcoded machine-specific absolute path; on any
@@ -175,6 +184,23 @@ class TestCreateEmptyStdout(unittest.TestCase):
              mock.patch.object(file_issues.time, "sleep"):
             url = file_issues.create("t", "b", ["self-scan"], dry=False)
         self.assertIsNone(url)  # gave up after retries; run continues, no exception
+
+
+def test_body_fingerprint_and_id_are_backtick_safe():
+    f = {
+        "title": "x",
+        "description": "x",
+        "severity": "HIGH",
+        "confidence": "CERTAIN",
+        "location": {"file": "src/x.py"},
+        "fingerprint": "abc`def",
+        "id": "SEC-001`inject",
+        "citations": {"cwe": ["CWE-079`x"]},
+    }
+    body = file_issues.body_for(f)
+    assert "`abc`def`" not in body
+    assert "`SEC-001`inject`" not in body
+    assert "CWE-079`x" not in body
 
 
 if __name__ == "__main__":

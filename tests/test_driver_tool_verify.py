@@ -37,6 +37,13 @@ def _result(rule, uri, line, level="error", text=None):
     }
 
 
+def _out_path(cmd):
+    for i, arg in enumerate(cmd):
+        if arg == "--out":
+            return cmd[i + 1]
+    raise AssertionError("--out not found in command: %r" % cmd)
+
+
 class _ToolVerifyBase(unittest.TestCase):
     def _repo(self, results, floor=None, agent_findings=None):
         d = os.path.realpath(tempfile.mkdtemp())
@@ -283,7 +290,7 @@ class TestSynthesizeFixtureParityWiring(_ToolVerifyBase):
 
         def fake_run(cmd, **kw):
             captured["cmd"] = cmd
-            with open(cmd[cmd.index("--out") + 1], "w") as fh:
+            with open(_out_path(cmd), "w") as fh:
                 json.dump({"findings": []}, fh)
             return mock.Mock(returncode=0, stdout="", stderr="")
 
@@ -291,6 +298,13 @@ class TestSynthesizeFixtureParityWiring(_ToolVerifyBase):
         with mock.patch("scripts.driver.subprocess.run", side_effect=fake_run):
             driver.synthesize_execute(d, manifest)
         return captured["cmd"]
+
+    def test_out_path_missing_flag_raises_clear_error(self):
+        cmd = ["synthesize", "--foo", "bar"]
+        with self.assertRaises(AssertionError) as ctx:
+            _out_path(cmd)
+        self.assertIn("--out not found", str(ctx.exception))
+        self.assertIn(repr(cmd), str(ctx.exception))
 
     def test_redteam_omits_include_fixtures(self):
         # #1055: redteam no longer auto-forwards --include-fixtures. The

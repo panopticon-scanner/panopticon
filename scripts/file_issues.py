@@ -63,7 +63,7 @@ def labels_for(f, rejected=False):
 
 def title_for(f):
     loc = f.get("location") or {}
-    fname = (loc.get("file") or "").split("/")[-1]
+    fname = defang((loc.get("file") or "").split("/")[-1])
     t = defang(f.get("short_title") or f.get("title") or "(untitled)")
     suffix = " (%s)" % fname if fname else ""
     room = 240 - len(suffix)
@@ -103,7 +103,8 @@ def body_for(f, rejected=False, report=REPORT, report_url=REPORT_URL,
     flat = []
     for k in ("cwe", "owasp", "cve"):
         for c in (cites.get(k) or []):
-            flat.append(defang(c if isinstance(c, str) else c.get("id", str(c))))
+            cid = defang(c if isinstance(c, str) else c.get("id", str(c))).replace("`", "'")
+            flat.append(cid)
     if flat:
         L.append("**Citations:** %s" % ", ".join(flat))
     L.append("\n## What was found\n\n%s" % defang(f.get("description") or "(none)"))
@@ -121,10 +122,12 @@ def body_for(f, rejected=False, report=REPORT, report_url=REPORT_URL,
         L.append("\n**Corroborating panels:** %s" % ", ".join(
             defang(str(x)) for x in ev["verified_by"]))
     L.append("\n---\n")
+    fp = defang(f.get("fingerprint") or "").replace("`", "'")
     L.append("**Fingerprint:** `%s` — stable cross-run identity; excludes line "
              "numbers and free-text so this issue survives code moves and "
-             "re-wordings." % f.get("fingerprint"))
-    L.append("**Finding id in report:** `%s`" % defang(f.get("id")))
+             "re-wordings." % fp)
+    fid = defang(f.get("id") or "").replace("`", "'")
+    L.append("**Finding id in report:** `%s`" % fid)
     L.append("**Report artifact:** [%s](%s) (self-scan %s, %s, "
              "`tool_policy_mode: enforced`)" % (report, report_url,
                                                 run_label, run_date))
