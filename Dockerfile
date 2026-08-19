@@ -7,13 +7,17 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 ARG GITLEAKS_VERSION=8.18.4
 ARG GOSEC_VERSION=2.20.0
+ARG SEMGREP_VERSION=1.173.0
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl ca-certificates git gnupg ruby nodejs npm \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Python tools
-RUN pip install --no-cache-dir semgrep bandit bandit-sarif-formatter
+# Python tools. semgrep pinned (#outage 2026-08-18): the rules-corpus pin
+# below is a commit SHA on a live branch, but that pin is only meaningful
+# paired with a known-compatible semgrep build -- an unpinned `pip install`
+# would keep re-validating tomorrow's semgrep release against today's rules.
+RUN pip install --no-cache-dir "semgrep==${SEMGREP_VERSION}" bandit bandit-sarif-formatter
 
 # Ruby (brakeman + bundler-audit)
 RUN gem install --no-document brakeman bundler-audit \
