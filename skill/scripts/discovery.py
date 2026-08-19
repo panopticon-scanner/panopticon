@@ -163,7 +163,7 @@ def _git(repo, args, timeout=30, text=True):
     module's six git call sites; each caller's try/except owns failures."""
     return subprocess.run(["git", "-C", repo, *args],  # nosec
                           capture_output=True, text=text, check=True,
-                          timeout=timeout)
+                          timeout=timeout, env={"PATH": os.environ.get("PATH", "")})
 
 def _worktree_dirty(repo):
     """True when repo's working tree has uncommitted changes (git status
