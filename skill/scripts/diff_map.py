@@ -46,7 +46,8 @@ def parse_unified_diff(text):
 def _run_git(repo, args, timeout=60):
     git_bin = shutil.which("git") or "git"
     return subprocess.run([git_bin, "-C", repo, *args],  # nosec B603
-                          capture_output=True, text=True, timeout=timeout)
+                          capture_output=True, text=True, timeout=timeout,
+                          env={"PATH": os.environ.get("PATH", "")})
 
 
 class DiffMapError(Exception):
@@ -87,15 +88,20 @@ def hunk_map(repo, base):
     result = parse_unified_diff(diff.stdout)
     # `git diff` omits untracked files; add them as whole-file ranges.
     try:
+        # Include new untracked files, matching discovery.collect_changed_files.
         others = _run_git(repo, ["ls-files", "--others", "--exclude-standard"])
-    except Exception:
-        others = None
-    if others is not None and others.returncode == 0:
+    except Exception as e:
+        raise RuntimeError(f"git ls-files failed: {e}")
+    if others is not None:
+        if others.returncode != 0:
+            raise RuntimeError(f"git ls-files failed: {others.stderr}")
         for rel in others.stdout.splitlines():
             rel = rel.strip()
             if not rel:
                 continue
             full = os.path.join(repo, rel)
+            if os.path.islink(full):
+                continue
             try:
                 with open(full, "rb") as fh:
                     n = sum(1 for _ in fh)
