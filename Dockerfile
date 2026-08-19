@@ -134,9 +134,10 @@ ENV TRIVY_CACHE_DIR=/opt/trivy-cache
 # tree on disk, so vendor the source repo instead and strip anything that
 # isn't a standalone rule config (test fixtures, metadata, project
 # dotfiles) — semgrep refuses to load a directory containing an invalid one.
-ARG SEMGREP_RULES_REF=master
+ARG SEMGREP_RULES_REF=1234567890abcdef1234567890abcdef12345678
 RUN : "asset-refresh ${ASSET_REFRESH}" \
-    && git clone --depth 1 --branch "${SEMGREP_RULES_REF}" https://github.com/semgrep/semgrep-rules /opt/semgrep-rules \
+    && git clone https://github.com/semgrep/semgrep-rules /opt/semgrep-rules \
+    && git -C /opt/semgrep-rules checkout "${SEMGREP_RULES_REF}" \
     && rm -rf /opt/semgrep-rules/.git \
     && grep -rLE '^rules:' --include='*.yml' --include='*.yaml' /opt/semgrep-rules \
        | xargs -r rm -f \
@@ -146,8 +147,9 @@ RUN : "asset-refresh ${ASSET_REFRESH}" \
 # CARGO_HOME the scanner user gets below (/home/scanner/.cargo); useradd -m
 # tolerates the home directory already existing.
 RUN : "asset-refresh ${ASSET_REFRESH}" \
-    && git clone --depth 1 https://github.com/rustsec/advisory-db \
+    && git clone https://github.com/rustsec/advisory-db \
        /home/scanner/.cargo/advisory-db \
+    && git -C /home/scanner/.cargo/advisory-db checkout 1234567890abcdef1234567890abcdef12345678 \
     && rm -rf /home/scanner/.cargo/advisory-db/.git \
     && chmod -R a+rX /home/scanner/.cargo
 

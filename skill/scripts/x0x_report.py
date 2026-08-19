@@ -15,7 +15,7 @@ import re
 
 SCHEMA_VERSION = 1
 
-_CWE_RE = re.compile(r"CWE-\d+")
+_CWE_RE = re.compile(r"CWE-\d+", re.IGNORECASE)
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 _WS_RE = re.compile(r"\s+")
 _SEV_ORDER = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "INFO": 0}
@@ -75,7 +75,8 @@ def build_candidates(findings):
         if not is_fallback(f.get("code")):
             continue
         title = f.get("short_title") or f.get("title") or ""
-        key = (_domain(f), _WS_RE.sub(" ", title.strip().lower()))
+        norm = _WS_RE.sub(" ", title.strip().lower())
+        key = (_domain(f), norm if norm else f.get("id", ""))
         clusters.setdefault(key, []).append(f)
 
     candidates = []
@@ -84,7 +85,7 @@ def build_candidates(findings):
         if not occurrences:          # schema: occurrences has minItems 1
             continue
         # the most severe finding leads the candidate's summary/severity/name
-        lead = max(fs, key=lambda f: _SEV_ORDER.get(f.get("severity"), -1))
+        lead = max(fs, key=lambda f: _SEV_ORDER.get(str(f.get("severity") or "").upper(), -1))
         cwe = []
         for f in fs:
             for c in _cwes(f):

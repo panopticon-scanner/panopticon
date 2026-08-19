@@ -36,6 +36,6 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest ruff pyyaml jsonschema
+          pip install pytest pyyaml jsonschema
       - name: Test
         run: python -m pytest tests/ -q

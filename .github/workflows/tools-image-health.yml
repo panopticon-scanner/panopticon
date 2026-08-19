@@ -41,7 +41,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           OWNER: ${{ github.repository_owner }}
         run: |
-          set -uo pipefail
+          set -euo pipefail
           api="/orgs/${OWNER}/packages/container/panopticon-tools/versions?per_page=100"
           if ! resp=$(gh api "${api}" 2>err.txt); then
             echo "::error::Could not query the panopticon-tools package ($(cat err.txt))."

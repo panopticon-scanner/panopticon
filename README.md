@@ -132,7 +132,7 @@ docker build -t panopticon-tools .
 Then run:
 
 ```bash
-python skill/scripts/run_tools.py --target . --deps
+python skill/scripts/run_tools.py --deps
 ```
 
 ## License
