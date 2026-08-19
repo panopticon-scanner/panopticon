@@ -368,7 +368,7 @@ def _severity_class(severity):
 
 def _gate_class(gate):
     """Map a gate verdict to a CSS class using the severity palette."""
-    return {"PASS": "gate-pass", "FAIL": "gate-fail",
+    return {"PASS": "gate-pass", "FAIL": "gate-fail",  # nosec B105
             "INCONCLUSIVE": "gate-inconclusive"}.get(str(gate).upper(), "gate-off")
 
 

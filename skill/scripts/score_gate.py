@@ -26,7 +26,8 @@ EVIDENCE_FACTOR = {
     "tool_confirmed": 1.5,
 }
 # Enforce that every canonical evidence status is accounted for in the score gate
-assert set(EVIDENCE_FACTOR) == set(evidence.EVIDENCE_STATUSES)
+if set(EVIDENCE_FACTOR) != set(evidence.EVIDENCE_STATUSES):
+    raise ValueError("EVIDENCE_FACTOR keys do not match EVIDENCE_STATUSES")
 PRIMARY_FLOOR = 1.5   # F_p — the per-cell advisor engages at/above this
 BACKUP_FLOOR = 8.0    # F_b — a category backup sub-advisor is summoned at/above this
 

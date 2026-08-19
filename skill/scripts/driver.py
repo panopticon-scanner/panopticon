@@ -220,7 +220,7 @@ def _run_child(cmd, review_root, phase):
     CompletedProcess on a normal spawn — a non-zero exit is the caller's to
     interpret, not a spawn error."""
     try:
-        return subprocess.run(cmd, cwd=review_root, capture_output=True,
+        return subprocess.run(cmd, cwd=review_root, capture_output=True,  # nosec B603
                               text=True, env=_child_env())
     except OSError as exc:
         raise DriverError("%s: could not spawn %s: %s"
