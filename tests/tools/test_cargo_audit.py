@@ -29,6 +29,7 @@ class TestCargoAuditAdapter(unittest.TestCase):
         f = findings[0]
         self.assertEqual(f["source"], "tool:cargo-audit")
         self.assertEqual(f["tool_evidence"]["package_name"], "foo")
+        self.assertEqual(f["severity"], "HIGH")
 
     def test_is_applicable_when_cargo_toml_present(self):
         with mock.patch("os.path.exists", side_effect=lambda p: p.endswith("Cargo.toml")):
