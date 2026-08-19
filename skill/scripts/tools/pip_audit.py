@@ -93,21 +93,23 @@ class PipAuditAdapter:
         out = []
         n = 1
         for dep in data.get("dependencies", []):
+            dep_name = dep.get("name") or "unknown"
+            dep_version = dep.get("version") or ""
             for vuln in dep.get("vulns", []):
                 out.append(make_finding(
                     self, n, group,
-                    title=f"{dep['name']} {dep['version']}: {vuln.get('id', 'vulnerability')}",
+                    title=f"{dep_name} {dep_version}: {vuln.get('id', 'vulnerability')}".strip(),
                     severity=normalize_severity(vuln.get("severity") or "MEDIUM"),
                     category="dependency_vulnerability",
                     location={"file": self._manifest_path or "requirements.txt", "line_start": 1},
                     description=vuln.get("description", "No description provided."),
-                    impact=f"Vulnerable dependency {dep['name']}=={dep['version']} is used.",
+                    impact=f"Vulnerable dependency {dep_name}=={dep_version} is used.",
                     remediation=f"Upgrade to a fixed version: {', '.join(vuln.get('fix_versions', [])) or 'see advisory'}",
                     citations={"cve": cve_ids(vuln.get("aliases"))},
                     tool_evidence=omit_none({
                         "rule_id": vuln.get("id"),
-                        "package_name": dep["name"],
-                        "vulnerable_versions": dep["version"],
+                        "package_name": dep_name,
+                        "vulnerable_versions": dep_version,
                         "fixed_version": (vuln.get("fix_versions") or [None])[0],
                     }),
                 ))
