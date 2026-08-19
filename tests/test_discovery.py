@@ -1321,3 +1321,16 @@ def test_write_diff_hunks_schema_version_and_atomic(tmp_path):
     assert data["files_changed"] == 0
 
 
+
+def test_collect_changed_files_default_branch_fallback():
+    from unittest.mock import patch, MagicMock
+    import discovery
+    with patch('discovery._git') as mock_git:
+        mock_git.side_effect = [
+            Exception("not main"),  # fails on main
+            MagicMock(stdout="fake_master_hash\n"), # succeeds on master
+            MagicMock(stdout="file1.py\n"), MagicMock(stdout="")
+        ]
+        with patch('discovery._on_allowed_dotdir_path', return_value=True), patch('os.path.isfile', return_value=True):
+            res = discovery.collect_changed_files("/tmp/x", base=None)
+        assert res == ["file1.py"]
