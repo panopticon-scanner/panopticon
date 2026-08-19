@@ -313,14 +313,14 @@ class TestRepoScanDiscovery(unittest.TestCase):
         # (.git, non-workflow .github paths, arbitrary hidden dirs) stay noise.
         with tempfile.TemporaryDirectory() as d:
             self._touch(d, "src/app.py")
-            self._touch(d, ".git/config")
+            self._touch(d, "vendor/.git/config")
             self._touch(d, ".github/CODEOWNERS")
             self._touch(d, ".github/ISSUE_TEMPLATE/bug.md")
             self._touch(d, ".hidden/secret.py")
             out = self._run_scan(d)
             grouped = self._grouped(out)
             for hidden in [
-                ".git/config",
+                "vendor/.git/config",
                 ".github/CODEOWNERS",
                 ".github/ISSUE_TEMPLATE/bug.md",
                 ".hidden/secret.py",
