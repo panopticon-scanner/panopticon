@@ -7,5 +7,5 @@ def test_authors_and_keywords_are_under_project_table():
     data = tomllib.loads(text)
     assert "authors" in data["project"], "authors must be under [project]"
     assert "keywords" in data["project"], "keywords must be under [project]"
-    assert "authors" not in data.get("project.optional-dependencies", {})
-    assert "keywords" not in data.get("project.optional-dependencies", {})
+    assert "authors" not in data["project"].get("optional-dependencies", {})
+    assert "keywords" not in data["project"].get("optional-dependencies", {})
