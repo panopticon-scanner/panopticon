@@ -282,7 +282,9 @@ def _glob_to_re(pat):
     # segments are semantically redundant, so fold each run down to one.
     pat = re.sub(r"(?:\*\*/)+", "**/", pat)
     pat = re.sub(r"\*\*\*+", "**", pat)
-    anchored = "/" in pat
+    anchored = "/" in pat[:-1] if pat.endswith("/") else "/" in pat
+    if pat.startswith("/"):
+        pat = pat[1:]
     out, i = [], 0
     while i < len(pat):
         c = pat[i]
