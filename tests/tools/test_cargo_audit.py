@@ -40,6 +40,12 @@ class TestCargoAuditAdapter(unittest.TestCase):
         self.assertEqual(findings[0]["provenance"]["discovered_by"], "tool:cargo-audit")
         self.assertEqual(findings[0]["provenance"]["confirmation_status"], "TOOL")
 
+    def test_parse_empty_findings(self):
+        findings = ca.CargoAuditAdapter().parse(b"{}", "g1")
+        self.assertEqual(findings, [])
+        findings = ca.CargoAuditAdapter().parse(b'{"vulnerabilities": {"list": []}}', "g1")
+        self.assertEqual(findings, [])
+
     def test_invoke_runs_cargo_audit(self):
         fake_run = mock.Mock(return_value=mock.Mock(stdout=b"", returncode=0))
         with mock.patch("scripts.tools.base.subprocess.run", fake_run):

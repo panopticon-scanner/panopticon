@@ -66,6 +66,21 @@ class TestSpotBugsAdapter(unittest.TestCase):
         self.assertEqual(findings[1]["location"]["file"], "com/example/Servlet.java")
         self.assertEqual(findings[1]["location"]["line_start"], 88)
 
+    def test_parse_bug_instance_without_cwe_mapping(self):
+        sample = b"""<?xml version="1.0" encoding="UTF-8"?>
+<BugCollection version="4.8.6" sequence="0" timestamp="0" analysisTimestamp="0" release="">
+  <BugInstance type="UNKNOWN_CUSTOM_BUG_TYPE" priority="2" category="CORRECTNESS">
+    <Class classname="com.example.Util">
+      <SourceLine sourcepath="com/example/Util.java" start="10"/>
+    </Class>
+  </BugInstance>
+</BugCollection>
+"""
+        findings = sb.SpotBugsAdapter().parse(sample, "g1")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["title"], "UNKNOWN_CUSTOM_BUG_TYPE")
+        self.assertNotIn("citations", findings[0])
+
 
 if __name__ == "__main__":
     unittest.main()

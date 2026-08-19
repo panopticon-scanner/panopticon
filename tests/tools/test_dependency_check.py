@@ -44,6 +44,12 @@ class TestDependencyCheckAdapter(unittest.TestCase):
         self.assertEqual(adapter._normalize_cwe("94"), "CWE-94")
         self.assertIsNone(adapter._normalize_cwe("invalid"))
 
+    def test_parse_empty_findings(self):
+        findings = dc.DependencyCheckAdapter().parse(b"{}", "g1")
+        self.assertEqual(findings, [])
+        findings = dc.DependencyCheckAdapter().parse(b'{"dependencies": []}', "g1")
+        self.assertEqual(findings, [])
+
     def test_invoke_uses_noupdate_and_odc_data(self):
         adapter = dc.DependencyCheckAdapter()
         fake_run = mock.Mock(return_value=(b"{}", 0))
