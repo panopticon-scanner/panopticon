@@ -102,6 +102,15 @@ class TestBodyDefang(unittest.TestCase):
         self.assertNotIn("@team", title)
         self.assertIn("@​team", title)
 
+    def test_title_filename_suffix_is_defanged(self):
+        f = {
+            "title": "Some issue",
+            "location": {"file": "src/@mention.py"},
+        }
+        title = file_issues.title_for(f)
+        self.assertNotIn("@mention", title)
+        self.assertIn("(@\u200bmention.py)", title)
+
 
 class TestRepoRootPortability(unittest.TestCase):
     """#602: REPO_ROOT was a hardcoded machine-specific absolute path; on any
