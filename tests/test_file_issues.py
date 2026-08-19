@@ -177,5 +177,22 @@ class TestCreateEmptyStdout(unittest.TestCase):
         self.assertIsNone(url)  # gave up after retries; run continues, no exception
 
 
+def test_body_fingerprint_and_id_are_backtick_safe():
+    f = {
+        "title": "x",
+        "description": "x",
+        "severity": "HIGH",
+        "confidence": "CERTAIN",
+        "location": {"file": "src/x.py"},
+        "fingerprint": "abc`def",
+        "id": "SEC-001`inject",
+        "citations": {"cwe": ["CWE-079`x"]},
+    }
+    body = file_issues.body_for(f)
+    assert "`abc`def`" not in body
+    assert "`SEC-001`inject`" not in body
+    assert "CWE-079`x" not in body
+
+
 if __name__ == "__main__":
     unittest.main()
