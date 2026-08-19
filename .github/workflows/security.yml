@@ -19,6 +19,9 @@ on:
 
 env:
   IMAGE: ghcr.io/${{ github.repository }}-tools:latest
+  FIXTURE_EXCLUDE: 'tests/fixtures/*'
+  TOOLS_OUT: ${{ runner.temp }}/panopticon-tools-output
+  MANIFEST: ${{ runner.temp }}/panopticon-tools-manifest.json
 jobs:
   scan:
     runs-on: ubuntu-latest
@@ -85,14 +88,12 @@ jobs:
 
       - name: Run static-analysis tools
         run: |
-          tools_out="$RUNNER_TEMP/panopticon-tools-output"
-          manifest="$RUNNER_TEMP/panopticon-tools-manifest.json"
-          mkdir -p "$tools_out"
+          mkdir -p "$TOOLS_OUT"
           python controller/skill/scripts/run_tools.py \
             --target target \
-            --out "$tools_out" \
-            --manifest "$manifest" \
-            --exclude 'tests/fixtures/*' \
+            --out "$TOOLS_OUT" \
+            --manifest "$MANIFEST" \
+            --exclude "$FIXTURE_EXCLUDE" \
             --deps
 
       # INTENTIONAL POLICY, not an oversight (#513): this CI gate fails on any
@@ -111,9 +112,9 @@ jobs:
       - name: Gate on HIGH/CRITICAL tool findings (unverified-strict policy)
         run: |
           python controller/skill/scripts/security_gate.py \
-            --tools-dir "$RUNNER_TEMP/panopticon-tools-output" \
-            --manifest "$RUNNER_TEMP/panopticon-tools-manifest.json" \
-            --exclude 'tests/fixtures/*'
+            --tools-dir "$TOOLS_OUT" \
+            --manifest "$MANIFEST" \
+            --exclude "$FIXTURE_EXCLUDE"
 
       - name: Upload SARIF to GitHub Security tab
         if: always()

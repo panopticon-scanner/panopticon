@@ -4,10 +4,7 @@ import subprocess
 import unittest
 
 from scripts.tools import ADAPTERS
-from conftest import FIXTURE_ROOT
-
-OK_SCAN_EXIT_CODES = (0, 1)  # 0 = clean exit, 1 = findings detected
-
+from conftest import FIXTURE_ROOT, OK_SCAN_EXIT_CODES
 
 class TestRustIntegration(unittest.TestCase):
     def test_cargo_audit_finds_rustsec_advisories(self):

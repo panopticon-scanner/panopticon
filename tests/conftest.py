@@ -20,3 +20,4 @@ for _p in reversed((_TESTS,
     if _p in sys.path:
         sys.path.remove(_p)
     sys.path.insert(0, _p)
+OK_SCAN_EXIT_CODES = (0, 1)

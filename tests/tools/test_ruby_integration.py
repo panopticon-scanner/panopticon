@@ -2,10 +2,7 @@ import os
 import unittest
 
 from scripts.tools import ADAPTERS
-from conftest import FIXTURE_ROOT
-
-OK_SCAN_EXIT_CODES = (0, 1)  # 0 = clean exit, 1 = findings detected
-
+from conftest import FIXTURE_ROOT, OK_SCAN_EXIT_CODES
 
 class TestRubyIntegration(unittest.TestCase):
     def _target(self, name: str) -> str:
