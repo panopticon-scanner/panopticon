@@ -745,6 +745,8 @@ def discover_repo_files(repo, include_fixtures=False, pruned_fixtures=None,
         return _filter_reviewable(
             listed, include_fixtures, pruned_fixtures,
             isfile=lambda rel: _is_confined_regular(repo, rel))
+    if os.path.exists(os.path.join(repo, ".git")):
+        raise RuntimeError("git ls-files failed on a git repository")
     if info is not None:
         info["method"] = "walk"
     out = []
