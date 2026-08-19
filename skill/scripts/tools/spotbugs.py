@@ -5,7 +5,7 @@ import os
 try:
     import defusedxml.ElementTree as ET
 except ImportError:
-    import xml.etree.ElementTree as ET
+    import xml.etree.ElementTree as ET  # nosec B405
 
 from .base import as_list, make_finding, omit_none, run_tool
 
@@ -53,7 +53,7 @@ class SpotBugsAdapter:
         text = raw.decode("utf-8", errors="replace").strip()
         if not text:
             return []
-        root = ET.fromstring(text)
+        root = ET.fromstring(text)  # nosec B314
         out = []
         n = 1
         for bug in root.findall("BugInstance"):

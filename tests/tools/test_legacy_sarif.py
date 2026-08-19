@@ -104,6 +104,11 @@ class TestLegacySarifAdapter(unittest.TestCase):
                     "--format", "sarif", "/src"]
         self.assertEqual(legacy.TOOL_CMD["trivy"], expected)
 
+    def test_bandit_argv_has_noise_suppression_flags(self):
+        argv = legacy.TOOL_CMD["bandit"]
+        self.assertIn("-s", argv)
+        self.assertIn("B101,B404,B110,B112", argv)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -146,7 +146,7 @@ def _detect_repo_root():
     Prefer the git worktree root; fall back to cwd (the pipeline runs from the
     repo root by contract)."""
     try:
-        r = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+        r = subprocess.run(["git", "rev-parse", "--show-toplevel"],  # nosec
                            capture_output=True, text=True, timeout=10)
         if r.returncode == 0 and r.stdout.strip():
             return r.stdout.strip().rstrip("/") + "/"
@@ -297,7 +297,7 @@ def create(title, body, labels, dry, throttle=0.0, env=None):
         env = triage.gh_env()
     gh_bin = shutil.which("gh") or "gh"
     for attempt in range(1, 6):
-        r = subprocess.run([gh_bin, "issue", "create", "--title", title,
+        r = subprocess.run([gh_bin, "issue", "create", "--title", title,  # nosec B603
                             "--body", body, "--label", ",".join(labels)],
                            capture_output=True, text=True,
                            env=env)

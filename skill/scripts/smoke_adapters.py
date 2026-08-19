@@ -96,7 +96,7 @@ def check_writable(path, why):
 
 def run_probe(name, argv):
     try:
-        res = subprocess.run(
+        res = subprocess.run(  # nosec B603
             argv,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,

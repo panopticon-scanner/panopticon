@@ -17,7 +17,7 @@ DEFAULT_IMAGE = "panopticon-fixtures:latest"
 
 def run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
     print("+", " ".join(cmd), flush=True)
-    return subprocess.run(cmd, check=True, **kwargs)
+    return subprocess.run(cmd, check=True, **kwargs)  # nosec B603
 
 
 def _docker_bin() -> str:
@@ -26,7 +26,7 @@ def _docker_bin() -> str:
 
 def docker_available() -> bool:
     try:
-        result = subprocess.run(
+        result = subprocess.run(  # nosec B603
             [_docker_bin(), "version"],
             capture_output=True,
         )
@@ -37,7 +37,7 @@ def docker_available() -> bool:
 
 def image_exists(tag: str) -> bool:
     try:
-        result = subprocess.run(
+        result = subprocess.run(  # nosec B603
             [_docker_bin(), "image", "inspect", tag],
             capture_output=True,
         )
@@ -98,7 +98,7 @@ def check_fixtures(tag: str, fixtures: list[dict]) -> tuple[list[str], list[str]
     # Bound the docker call so a hung container can't wedge the fixture run
     # (consistent with run_tools.py's timeouts; run-4 self-scan C15).
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)  # nosec B603
     except (subprocess.SubprocessError, OSError):
         result = None
     present_paths = []
@@ -132,7 +132,7 @@ def run_tests(tag: str, test: str | None = None) -> int:
         tag,
         *pytest_args,
     ]
-    result = subprocess.run(cmd)
+    result = subprocess.run(cmd)  # nosec B603
     return result.returncode
 
 

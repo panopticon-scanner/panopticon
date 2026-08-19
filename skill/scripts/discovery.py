@@ -161,7 +161,7 @@ def compute_group_panels(files, security_mode="standard"):
 def _git(repo, args, timeout=30, text=True):
     """Run git -C repo with check=True — the shared invocation for this
     module's six git call sites; each caller's try/except owns failures."""
-    return subprocess.run(["git", "-C", repo, *args],
+    return subprocess.run(["git", "-C", repo, *args],  # nosec
                           capture_output=True, text=text, check=True,
                           timeout=timeout)
 

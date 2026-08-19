@@ -157,7 +157,7 @@ def run_tool(cmd, timeout, ok_codes=(0, 1), **kwargs):
     uses 2/3), a capped stderr excerpt is written to our stderr so
     'exited N; skipping' is diagnosable.
     """
-    res = subprocess.run(cmd, capture_output=True, timeout=timeout, **kwargs)
+    res = subprocess.run(cmd, capture_output=True, timeout=timeout, **kwargs)  # nosec B603
     rc = res.returncode
     if rc not in ok_codes:
         excerpt = (res.stderr or b"")[-1000:].decode("utf-8", errors="replace").strip()

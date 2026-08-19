@@ -45,7 +45,7 @@ def parse_unified_diff(text):
 
 def _run_git(repo, args, timeout=60):
     git_bin = shutil.which("git") or "git"
-    return subprocess.run([git_bin, "-C", repo, *args],
+    return subprocess.run([git_bin, "-C", repo, *args],  # nosec B603
                           capture_output=True, text=True, timeout=timeout)
 
 

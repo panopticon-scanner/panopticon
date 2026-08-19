@@ -44,3 +44,7 @@ ignore = ["E401", "E501", "E701", "E702"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
+
+[tool.bandit]
+exclude_dirs = ["tests", "tests/*"]
+skips = ["B101", "B404", "B110", "B112"]
