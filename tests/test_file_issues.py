@@ -105,12 +105,11 @@ class TestBodyDefang(unittest.TestCase):
     def test_title_filename_suffix_is_defanged(self):
         f = {
             "title": "Some issue",
-            "location": {"file": "src/@mention/injection.py"},
+            "location": {"file": "src/@mention.py"},
         }
         title = file_issues.title_for(f)
         self.assertNotIn("@mention", title)
-        self.assertNotIn("`@mention`", title)  # neutralized
-        self.assertIn("mention", title.lower())
+        self.assertIn("(@\u200bmention.py)", title)
 
 
 class TestRepoRootPortability(unittest.TestCase):
