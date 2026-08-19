@@ -56,17 +56,17 @@ import re, sys
 text = open(sys.argv[1], encoding="utf-8").read()
 entries, cur = [], {}
 for line in text.splitlines():
-    m = re.match(r'\s*- name:\s*"(.+)"\s*$', line)
+    m = re.match(r'\s*- name:\s*"?([^"]+?)"?\s*$', line)
     if m:
         if cur:
             entries.append(cur)
         cur = {"name": m.group(1)}
         continue
-    m = re.match(r'\s*color:\s*"(.+)"\s*$', line)
+    m = re.match(r'\s*color:\s*"?([^"]+?)"?\s*$', line)
     if m and cur:
         cur["color"] = m.group(1)
         continue
-    m = re.match(r'\s*description:\s*"(.+)"\s*$', line)
+    m = re.match(r'\s*description:\s*"?([^"]+?)"?\s*$', line)
     if m and cur:
         cur["description"] = m.group(1)
 if cur:
