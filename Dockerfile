@@ -7,13 +7,17 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 ARG GITLEAKS_VERSION=8.18.4
 ARG GOSEC_VERSION=2.20.0
+ARG SEMGREP_VERSION=1.173.0
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl ca-certificates git gnupg ruby nodejs npm \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Python tools
-RUN pip install --no-cache-dir semgrep bandit bandit-sarif-formatter
+# Python tools. semgrep pinned (#outage 2026-08-18): the rules-corpus pin
+# below is a commit SHA on a live branch, but that pin is only meaningful
+# paired with a known-compatible semgrep build -- an unpinned `pip install`
+# would keep re-validating tomorrow's semgrep release against today's rules.
+RUN pip install --no-cache-dir "semgrep==${SEMGREP_VERSION}" bandit bandit-sarif-formatter
 
 # Ruby (brakeman + bundler-audit)
 RUN gem install --no-document brakeman bundler-audit \
@@ -134,9 +138,23 @@ ENV TRIVY_CACHE_DIR=/opt/trivy-cache
 # tree on disk, so vendor the source repo instead and strip anything that
 # isn't a standalone rule config (test fixtures, metadata, project
 # dotfiles) — semgrep refuses to load a directory containing an invalid one.
-ARG SEMGREP_RULES_REF=master
+#
+# Pinned to a COMMIT, not a branch name (outage 2026-08-18/19): the repo's
+# actual active branch is `develop` (its GitHub default_branch); `master`
+# and `main` are both long-abandoned (frozen since 2020-05-19 and
+# 2022-05-11). A prior fix pinned `--branch master`, believing it named a
+# stable default — instead it silently swapped a live, semgrep-compatible
+# ruleset for a six-year-old snapshot, which broke every build once its
+# rule shapes finally diverged from the semgrep pip package's current
+# schema (exit 7: invalid rule in config). A branch name floats and can
+# rot the same way again, so pin the SHA and bump it by hand when
+# refreshing — see https://github.com/semgrep/semgrep-rules/commits/develop
+ARG SEMGREP_RULES_REF=40b8c63f75dc7c22c8a77482d73bfb864b146f7e
 RUN : "asset-refresh ${ASSET_REFRESH}" \
-    && git clone --depth 1 --branch "${SEMGREP_RULES_REF}" https://github.com/semgrep/semgrep-rules /opt/semgrep-rules \
+    && git init -q /opt/semgrep-rules \
+    && git -C /opt/semgrep-rules remote add origin https://github.com/semgrep/semgrep-rules \
+    && git -C /opt/semgrep-rules fetch --depth 1 origin "${SEMGREP_RULES_REF}" \
+    && git -C /opt/semgrep-rules checkout -q FETCH_HEAD \
     && rm -rf /opt/semgrep-rules/.git \
     && grep -rLE '^rules:' --include='*.yml' --include='*.yaml' /opt/semgrep-rules \
        | xargs -r rm -f \
