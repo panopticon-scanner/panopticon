@@ -56,15 +56,21 @@ class TestSpotBugsAdapter(unittest.TestCase):
       <SourceLine sourcepath="com/example/Servlet.java" start="88"/>
     </Class>
   </BugInstance>
+  <BugInstance type="WEAK_TRUST_MANAGER" priority="3" category="SECURITY">
+    <Class classname="com.example.Trust">
+      <SourceLine sourcepath="com/example/Trust.java" start="100"/>
+    </Class>
+  </BugInstance>
 </BugCollection>
 """
         findings = sb.SpotBugsAdapter().parse(sample, "g1")
-        self.assertEqual(len(findings), 2)
+        self.assertEqual(len(findings), 3)
         self.assertEqual(findings[0]["severity"], "HIGH")
         self.assertEqual(findings[0]["location"]["line_start"], 42)
         self.assertEqual(findings[1]["severity"], "MEDIUM")
         self.assertEqual(findings[1]["location"]["file"], "com/example/Servlet.java")
         self.assertEqual(findings[1]["location"]["line_start"], 88)
+        self.assertEqual(findings[2]["severity"], "LOW")
 
     def test_parse_bug_instance_without_cwe_mapping(self):
         sample = b"""<?xml version="1.0" encoding="UTF-8"?>

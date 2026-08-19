@@ -4,7 +4,10 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill"))
-from jsonschema import validate
+try:
+    from jsonschema import validate
+except ImportError:
+    validate = None
 
 import scripts.tools.pip_audit as pa
 import scripts.tools.npm_audit as na
@@ -305,21 +308,22 @@ class TestAdapterFindingsValidateAgainstSchema(unittest.TestCase):
         }
 
 
-def test_multi_model_fields_in_schemas():
-    with open(os.path.join(REF, "scope-profile-schema.json"), encoding="utf-8") as fh:
-        scope = json.load(fh)
-    assert "depth" in scope["properties"]
-    assert "files" in scope["properties"]
-    lens_items = scope["properties"]["lenses"]["additionalProperties"]["items"]
-    assert "priority" in lens_items["properties"]
-    assert "depth_threshold" in lens_items["properties"]
+class TestMultiModelFields(unittest.TestCase):
+    def test_multi_model_fields_in_schemas(self):
+        with open(os.path.join(REF, "scope-profile-schema.json"), encoding="utf-8") as fh:
+            scope = json.load(fh)
+        self.assertIn("depth", scope["properties"])
+        self.assertIn("files", scope["properties"])
+        lens_items = scope["properties"]["lenses"]["additionalProperties"]["items"]
+        self.assertIn("priority", lens_items["properties"])
+        self.assertIn("depth_threshold", lens_items["properties"])
 
-    with open(os.path.join(REF, "report-schema.json"), encoding="utf-8") as fh:
-        report = json.load(fh)
-    finding_props = report["properties"]["findings"]["items"]["properties"]
-    assert "source_role" in finding_props
-    assert "evidence" in finding_props
-    assert "depth" in finding_props
+        with open(os.path.join(REF, "report-schema.json"), encoding="utf-8") as fh:
+            report = json.load(fh)
+        finding_props = report["properties"]["findings"]["items"]["properties"]
+        self.assertIn("source_role", finding_props)
+        self.assertIn("evidence", finding_props)
+        self.assertIn("depth", finding_props)
 
 
 if __name__ == "__main__":

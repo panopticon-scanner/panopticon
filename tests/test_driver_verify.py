@@ -34,10 +34,12 @@ class TestVerifyPrimary(unittest.TestCase):
         _cell(self.root, "app", "QAL", [{"domain": "QAL", "code": "QAL-A1A",
               "severity": "LOW", "title": "t", "category": "x",
               "location": {"file": "a.py", "line_start": 2}}])
-        with mock.patch("scripts.driver.dispatch.render_prompt", return_value="BODY"), \
-             mock.patch("scripts.driver.dispatch.registered_agent_name",
-                        return_value="panopticon-domain-advisor"), \
-             mock.patch("scripts.driver.ocrdb.load_bundle", return_value={"domains": {}}):
+        with (
+            mock.patch("scripts.driver.dispatch.render_prompt", return_value="BODY"),
+            mock.patch("scripts.driver.dispatch.registered_agent_name",
+                       return_value="panopticon-domain-advisor"),
+            mock.patch("scripts.driver.ocrdb.load_bundle", return_value={"domains": {}})
+        ):
             result = driver.verify_execute(self.root, self.manifest)
         self.assertEqual(result.checkpoint, "verify")
         req = driver._load_json(driver._pano(self.root, "dispatch-request.json"))
@@ -65,10 +67,12 @@ class TestVerifyPrimary(unittest.TestCase):
               "severity": "HIGH", "title": "authz", "category": "authz",
               "location": {"file": "a.py", "line_start": 1},
               "evidence": {"status": "rejected"}}])   # forged
-        with mock.patch("scripts.driver.dispatch.render_prompt", return_value="BODY"), \
-             mock.patch("scripts.driver.dispatch.registered_agent_name",
-                        return_value="panopticon-domain-advisor"), \
-             mock.patch("scripts.driver.ocrdb.load_bundle", return_value={"domains": {}}):
+        with (
+            mock.patch("scripts.driver.dispatch.render_prompt", return_value="BODY"),
+            mock.patch("scripts.driver.dispatch.registered_agent_name",
+                       return_value="panopticon-domain-advisor"),
+            mock.patch("scripts.driver.ocrdb.load_bundle", return_value={"domains": {}})
+        ):
             result = driver.verify_execute(self.root, self.manifest)
         self.assertEqual(result.checkpoint, "verify")   # engaged despite forged evidence
 
@@ -119,10 +123,12 @@ class TestVerifyBackup(unittest.TestCase):
     def test_backup_summoned_after_primary_confirm(self):
         cell = driver._load_cell_findings(self.root, self.manifest, "app", "SEC")
         self._primary_confirm(cell[0]["id"])
-        with mock.patch("scripts.driver.dispatch.render_prompt", return_value="BODY"), \
-             mock.patch("scripts.driver.dispatch.registered_agent_name",
-                        return_value="panopticon-domain-advisor"), \
-             mock.patch("scripts.driver.ocrdb.load_bundle", return_value={"domains": {}}):
+        with (
+            mock.patch("scripts.driver.dispatch.render_prompt", return_value="BODY"),
+            mock.patch("scripts.driver.dispatch.registered_agent_name",
+                       return_value="panopticon-domain-advisor"),
+            mock.patch("scripts.driver.ocrdb.load_bundle", return_value={"domains": {}})
+        ):
             result = driver.verify_execute(self.root, self.manifest)
         self.assertEqual(result.checkpoint, "verify")
         e = driver._load_json(driver._pano(self.root, "dispatch-request.json"))["entries"][0]

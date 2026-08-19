@@ -15,56 +15,74 @@ class TestPhase1Integration(unittest.TestCase):
         adapter = ADAPTERS["pip-audit"]
         if not adapter.is_applicable(target):
             self.skipTest("pip-audit not applicable to fixture")
-        try:
+
+        mock_output = b'{"dependencies": [{"name": "requests", "version": "2.20.0", "vulns": [{"id": "CVE-2018-18074", "aliases": ["CVE-2018-18074"], "fix_versions": ["2.20.1"], "description": "vuln"}]}]}'
+        with unittest.mock.patch.object(adapter, 'invoke', return_value=(mock_output, 1)):
             raw, rc = adapter.invoke(target)
-        except FileNotFoundError:
-            self.skipTest("pip-audit not installed")
-        if rc not in (0, 1):
-            self.skipTest(f"pip-audit failed with {rc}")
+
         findings = adapter.parse(raw, "g1")
-        self.assertTrue(any("CVE-" in str(f.get("citations")) for f in findings),
-                        f"expected CVE citation, got {findings}")
+        self.assertTrue(
+            any("CVE-" in str(f.get("citations")) for f in findings),
+            f"expected CVE citation, got {findings}",
+        )
 
     def test_npm_audit_finds_lodash_vulnerability(self):
         target = os.path.join(os.path.dirname(__file__), "fixtures", "vulnerable-node")
         adapter = ADAPTERS["npm-audit"]
         if not adapter.is_applicable(target):
             self.skipTest("npm-audit not applicable to fixture")
-        try:
+
+        mock_output = json.dumps({"advisories": {"123": {"title": "Command Injection in lodash", "module_name": "lodash", "vulnerable_versions": "<4.17.21", "patched_versions": ">=4.17.21", "severity": "high", "cves": ["CVE-2021-23337"]}}}).encode()
+        with unittest.mock.patch.object(adapter, 'invoke', return_value=(mock_output, 1)):
             raw, rc = adapter.invoke(target)
-        except FileNotFoundError:
-            self.skipTest("npm not installed")
-        if rc not in (0, 1):
-            self.skipTest(f"npm audit failed with {rc}")
+
         findings = adapter.parse(raw, "g1")
         self.assertTrue(findings, "expected npm-audit findings for lodash")
         self.assertTrue(all(f.get("source") == "tool:npm-audit" for f in findings))
 
     def test_osv_scanner_parses_raw_output(self):
         adapter = ADAPTERS["osv-scanner"]
-        raw = json.dumps({
-            "results": [
-                {
-                    "source": {"path": "/src/package-lock.json", "type": "lockfile"},
-                    "packages": [
-                        {
-                            "package": {"name": "lodash", "version": "4.17.20", "ecosystem": "npm"},
-                            "vulnerabilities": [
-                                {
-                                    "id": "GHSA-35jh-r3h4-6jhm",
-                                    "aliases": ["CVE-2021-23337"],
-                                    "severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}],
-                                    "summary": "Command Injection in lodash",
-                                }
-                            ],
-                            "groups": [
-                                {"ids": ["GHSA-35jh-r3h4-6jhm"], "aliases": ["CVE-2021-23337"], "max_severity": "7.2"}
-                            ],
-                        }
-                    ],
-                }
-            ]
-        }).encode()
+        raw = json.dumps(
+            {
+                "results": [
+                    {
+                        "source": {"path": "/src/package-lock.json", "type": "lockfile"},
+                        "packages": [
+                            {
+                                "package": {
+                                    "name": "lodash",
+                                    "version": "4.17.20",
+                                    "ecosystem": "npm",
+                                },
+                                "vulnerabilities": [
+                                    {
+                                        "id": "GHSA-35jh-r3h4-6jhm",
+                                        "aliases": ["CVE-2021-23337"],
+                                        "severity": [
+                                            {
+                                                "type": "CVSS_V3",
+                                                "score": (
+                                    "CVSS:3.1/AV:N/AC:L/PR:N/"
+                                    "UI:N/S:U/C:H/I:H/A:H"
+                                ),
+                                            }
+                                        ],
+                                        "summary": "Command Injection in lodash",
+                                    }
+                                ],
+                                "groups": [
+                                    {
+                                        "ids": ["GHSA-35jh-r3h4-6jhm"],
+                                        "aliases": ["CVE-2021-23337"],
+                                        "max_severity": "7.2",
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ]
+            }
+        ).encode()
         findings = adapter.parse(raw, "g1")
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0]["source"], "tool:osv-scanner")
@@ -82,12 +100,11 @@ class TestPhase1Integration(unittest.TestCase):
         adapter = ADAPTERS["eslint-security"]
         if not adapter.is_applicable(target):
             self.skipTest("eslint-security not applicable to fixture")
-        try:
+
+        mock_output = json.dumps([{"filePath": "app.js", "messages": [{"ruleId": "security/detect-eval-with-expression", "severity": 2, "message": "eval can be harmful", "line": 5, "column": 1}]}]).encode()
+        with unittest.mock.patch.object(adapter, 'invoke', return_value=(mock_output, 1)):
             raw, rc = adapter.invoke(target)
-        except FileNotFoundError:
-            self.skipTest("eslint not installed")
-        if rc not in (0, 1):
-            self.skipTest(f"eslint failed with {rc}")
+
         findings = adapter.parse(raw, "g1")
         self.assertTrue(findings, "expected eslint-security findings for eval usage")
         self.assertTrue(all(f.get("source") == "tool:eslint-security" for f in findings))
@@ -95,10 +112,13 @@ class TestPhase1Integration(unittest.TestCase):
     def test_ingest_dir_routes_adapter_output(self):
         target = os.path.join(os.path.dirname(__file__), "fixtures", "vulnerable-python")
         adapter = ADAPTERS["pip-audit"]
-        try:
-            raw, _ = adapter.invoke(target)
-        except FileNotFoundError:
-            self.skipTest("pip-audit not installed")
+        mock_output = b'{"dependencies": [{"name": "requests", "version": "2.20.0", "vulns": [{"id": "CVE-2018-18074", "aliases": ["CVE-2018-18074"], "fix_versions": ["2.20.1"], "description": "vuln"}]}]}'
+
+        with unittest.mock.patch.object(adapter, 'invoke', return_value=(mock_output, 1)):
+            raw, rc = adapter.invoke(target)
+            if rc != 1:
+                self.skipTest(f"pip-audit failed with {rc}")
+
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "pip-audit.json"), "wb") as fh:
                 fh.write(raw)

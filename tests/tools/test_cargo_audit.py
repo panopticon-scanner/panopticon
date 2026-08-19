@@ -34,6 +34,10 @@ class TestCargoAuditAdapter(unittest.TestCase):
         with mock.patch("os.path.exists", side_effect=lambda p: p.endswith("Cargo.toml")):
             self.assertTrue(ca.CargoAuditAdapter().is_applicable("/tmp/fake"))
 
+    def test_is_applicable_when_cargo_toml_absent(self):
+        with mock.patch("os.path.exists", return_value=False):
+            self.assertFalse(ca.CargoAuditAdapter().is_applicable("/tmp/fake"))
+
     def test_parse_includes_provenance(self):
         findings = ca.CargoAuditAdapter().parse(CARGO_AUDIT_SAMPLE, "g1")
         self.assertTrue(findings)

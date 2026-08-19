@@ -298,3 +298,14 @@ class TestPrWorktree(unittest.TestCase):
             class R: returncode = 1; stdout = ""; stderr = "not a worktree"
             return R()
         diff_map.release_worktree("/tmp/gone", runner=runner)  # must not raise
+
+class TestDiffMapFailures(unittest.TestCase):
+    def test_hunk_map_fallback_parser_and_failures(self):
+        # coverage gap filler
+        import diff_map as dm
+        res = dm.diff_anchors(".", "nonexistent-branch-12345")
+        self.assertIsNone(res.get("base_commit"))
+
+        hm = dm.hunk_map(".", "nonexistent-base")
+        self.assertEqual(hm, {})
+

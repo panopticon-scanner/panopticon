@@ -99,4 +99,4 @@ class TestX0XReport(unittest.TestCase):
         findings = [_f("COD-X0X", "COD", "LOW", "dup block", "a.py", 1, "f1"),
                     _f("SEC-X0X", "SEC", "HIGH", "hardcoded id", "b.tsx", 5, "f2",
                        refs=["CWE-639"])]
-        jsonschema.validate(x0x.build_report(findings, meta, run_id="run-xyz"), schema)
+        self.assertIsNone(jsonschema.validate(x0x.build_report(findings, meta, run_id="run-xyz"), schema))

@@ -5,14 +5,16 @@ import unittest
 from unittest import mock
 
 import setup_flow
+import shutil
 
 
-def _repo(with_committed=False):
+def _repo(test_case, with_committed=False):
     d = os.path.realpath(tempfile.mkdtemp())
     os.makedirs(os.path.join(d, "src", "checkout"))
     with open(os.path.join(d, "src", "checkout", "pay.py"), "w") as fh:
         fh.write("x = 1\n")
     os.makedirs(os.path.join(d, ".panopticon"))
+    test_case.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
     if with_committed:
         with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
             fh.write("groups:\n  Checkout:\n    match: ['src/checkout/**']\n    panels: [SEC]\n")
@@ -25,7 +27,7 @@ class TestSetupFlow(unittest.TestCase):
             return fh.read()
 
     def test_provision_seeds_gitignore_and_config(self):
-        d = _repo()
+        d = _repo(self)
         res = setup_flow.provision(d)
         self.assertTrue(os.path.isfile(os.path.join(d, ".panopticon", "config.json")))
         with open(os.path.join(d, ".gitignore"), encoding="utf-8") as fh:
@@ -36,7 +38,7 @@ class TestSetupFlow(unittest.TestCase):
         # #1135: a repo that already blanket-ignores .panopticon/ must NOT have
         # its .gitignore rewritten -- no in-place migration to .panopticon/*, no
         # !.panopticon/ re-exposing the directory.
-        d = _repo()
+        d = _repo(self)
         with open(os.path.join(d, ".gitignore"), "w") as fh:
             fh.write("node_modules/\n.panopticon/\n")
         res = setup_flow.provision(d)
@@ -48,7 +50,7 @@ class TestSetupFlow(unittest.TestCase):
         self.assertIn("git add -f", res.get("gitignore_note", ""))
 
     def test_provision_fresh_repo_adds_committable_block(self):
-        d = _repo()  # no .gitignore
+        d = _repo(self)  # no .gitignore
         res = setup_flow.provision(d)
         gi = self._gitignore(d)
         self.assertIn(".panopticon/*", gi)
@@ -58,7 +60,7 @@ class TestSetupFlow(unittest.TestCase):
     def test_provision_appends_negations_to_star_form(self):
         # .panopticon/* already present (committable-compatible), negations
         # missing -> append them (pure append), never rewrite the existing line.
-        d = _repo()
+        d = _repo(self)
         with open(os.path.join(d, ".gitignore"), "w") as fh:
             fh.write(".panopticon/*\n")
         res = setup_flow.provision(d)
@@ -68,7 +70,7 @@ class TestSetupFlow(unittest.TestCase):
         self.assertTrue(res["groups_yml_committable"])
 
     def test_provision_gitignore_idempotent_second_run_noop(self):
-        d = _repo()
+        d = _repo(self)
         setup_flow.provision(d)
         after_first = self._gitignore(d)
         res2 = setup_flow.provision(d)
@@ -76,13 +78,13 @@ class TestSetupFlow(unittest.TestCase):
         self.assertEqual(self._gitignore(d), after_first)   # byte-identical
 
     def test_committed_matrix_preserves_order(self):
-        d = _repo(with_committed=True)
+        d = _repo(self, with_committed=True)
         cm = setup_flow.committed_matrix(d)
         self.assertEqual(cm["Checkout"]["match"], ["src/checkout/**"])
         self.assertEqual(cm["Checkout"]["panels"], ["SEC"])
 
     def test_ingest_writes_draft_with_affinity_floor(self):
-        d = _repo()
+        d = _repo(self)
         proposal = {"groups": [{"capability": "Checkout",
                                 "match": ["src/checkout/**"], "tests": []}]}
         pp = os.path.join(d, ".panopticon", "setup-proposal.json")
@@ -94,7 +96,7 @@ class TestSetupFlow(unittest.TestCase):
         self.assertFalse(os.path.isfile(os.path.join(d, ".panopticon", "groups.yml")))
 
     def test_ingest_malformed_proposal_fails_no_draft(self):
-        d = _repo()
+        d = _repo(self)
         pp = os.path.join(d, ".panopticon", "setup-proposal.json")
         with open(pp, "w") as fh:
             json.dump({"groups": [{"capability": "", "match": []}]}, fh)
@@ -104,13 +106,13 @@ class TestSetupFlow(unittest.TestCase):
         self.assertFalse(os.path.isfile(os.path.join(d, ".panopticon", "groups.yml.draft")))
 
     def test_ingest_missing_proposal_fails_no_draft(self):
-        d = _repo()
+        d = _repo(self)
         res = setup_flow.ingest_proposal(d, os.path.join(d, ".panopticon", "nope.json"))
         self.assertFalse(res["ok"])
         self.assertFalse(os.path.isfile(os.path.join(d, ".panopticon", "groups.yml.draft")))
 
     def test_scan_brief_includes_vocabulary_hints(self):
-        d = _repo()
+        d = _repo(self)
         vocab = {"names": ["Auth"], "hints": {"Auth": ["**/auth/**", "**/login/**"]}}
         path = setup_flow.render_scan_brief(d, vocab)
         with open(path, encoding="utf-8") as fh:
@@ -134,7 +136,7 @@ class TestSetupFlow(unittest.TestCase):
             self.assertIn("pyproject.toml", summary)
 
     def test_readiness_returns_checks(self):
-        d = _repo()
+        d = _repo(self)
         os.makedirs(os.path.join(d, ".git"))
         checks = setup_flow.readiness(d, host="claude",
                                       runner=lambda *a, **k: type("R", (), {"returncode": 1})())
@@ -146,7 +148,7 @@ class TestSetupFlow(unittest.TestCase):
         # #5.0-15: enforced-shells must verify the driver's scout/domain_panel/
         # domain_advisor shells, NOT the retired panel_review/lens_sweep.
         import dispatch
-        d = _repo()
+        d = _repo(self)
         with mock.patch.object(dispatch, "_is_registered", return_value=False):
             checks = setup_flow.readiness(
                 d, host="claude",
@@ -160,7 +162,7 @@ class TestSetupFlow(unittest.TestCase):
 
     def test_readiness_generic_host_enforced_shells_informational(self):
         # #5.0-15: the generic host runs unenforced -> informational (None), not FAIL.
-        d = _repo()
+        d = _repo(self)
         checks = setup_flow.readiness(
             d, host="generic",
             runner=lambda *a, **k: type("R", (), {"returncode": 0})())

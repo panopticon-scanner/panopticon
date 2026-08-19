@@ -6,6 +6,10 @@ import scripts.tools.base as base
 
 
 class TestBase(unittest.TestCase):
+    def test_run_tool_rejects_unsafe_args_or_env(self):
+        with self.assertRaises(Exception):
+            base.run_tool(["tool", ";", "rm", "-rf", "/"], env={"LD_PRELOAD": "malicious.so"})
+
     def test_normalize_severity_maps_common_values(self):
         self.assertEqual(base.normalize_severity("critical"), "CRITICAL")
         self.assertEqual(base.normalize_severity("high"), "HIGH")

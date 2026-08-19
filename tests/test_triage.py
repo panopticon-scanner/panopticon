@@ -49,7 +49,7 @@ class TestLedger(unittest.TestCase):
 
 class TestValidate(unittest.TestCase):
     def test_valid_fix_row_passes(self):
-        triage.validate(fix_row())  # must not raise
+        self.assertIsNone(triage.validate(fix_row()))
 
     def test_fix_requires_integer_rank(self):
         with self.assertRaisesRegex(ValueError, "rank"):

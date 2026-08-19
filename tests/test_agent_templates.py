@@ -125,7 +125,8 @@ class TestScopeProfileDomains(unittest.TestCase):
     def _scout_body(self):
         p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                          "skill", "agents", "scout.md")
-        return open(p).read()
+        with open(p, encoding="utf-8") as f:
+            return f.read()
 
     def test_scout_template_emits_domains(self):
         body = self._scout_body()

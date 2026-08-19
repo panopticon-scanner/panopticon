@@ -26,8 +26,8 @@ def _minimal_report(findings=None):
                     "status": "advisor_confirmed",
                     "verified_by": "agent:advisor",
                     "reasoning": "verified",
-                    "citation_quality": "partial"
-                }
+                    "citation_quality": "partial",
+                },
             }
         ]
     return {
@@ -62,8 +62,10 @@ def _minimal_report(findings=None):
 
 class TestHtmlReport(unittest.TestCase):
     def test_escape_escapes_html(self):
-        self.assertEqual(hr._escape("<script>alert('x')</script>"),
-                         "&lt;script&gt;alert(&#x27;x&#x27;)&lt;/script&gt;")
+        self.assertEqual(
+            hr._escape("<script>alert('x')</script>"),
+            "&lt;script&gt;alert(&#x27;x&#x27;)&lt;/script&gt;",
+        )
 
     def test_html_doc_is_complete(self):
         doc = hr._html_doc("Test Report", "<p>hello</p>")
@@ -131,9 +133,15 @@ class TestHtmlReport(unittest.TestCase):
         # renderer (run-4 self-scan C12: type confusion). A string cvss is
         # skipped; a mixed epss list still uses its valid dict element.
         finding = {
-            "id": "X-1", "title": "t", "severity": "HIGH", "confidence": "POSSIBLE",
-            "panel": "security", "category": "general", "references": [],
-            "location": {"file": "a.py", "line_start": 1}, "description": "d",
+            "id": "X-1",
+            "title": "t",
+            "severity": "HIGH",
+            "confidence": "POSSIBLE",
+            "panel": "security",
+            "category": "general",
+            "references": [],
+            "location": {"file": "a.py", "line_start": 1},
+            "description": "d",
             "cvss": "9.8",  # string, not a dict
             "citations": {"epss": ["not-a-dict", {"score": 0.4}]},
         }
@@ -191,8 +199,8 @@ class TestHtmlReport(unittest.TestCase):
         report = _minimal_report()
         out = hr.render(report)
         self.assertIn("Group heatmap", out)
-        self.assertIn("App", out)          # the group name is the row label
-        self.assertIn("heat-cell", out)    # a group x panel cell rendered
+        self.assertIn("App", out)  # the group name is the row label
+        self.assertIn("heat-cell", out)  # a group x panel cell rendered
         self.assertIn("heat-total", out)
 
     def test_heatmap_grid_buckets_by_group_and_panel(self):
@@ -228,23 +236,52 @@ class TestHtmlReport(unittest.TestCase):
         self.assertEqual(paths, ["a.py", "b.py"])
 
     def test_fingerprint_ignores_line_number(self):
-        a = {"panel": "security", "category": "injection", "location": {"file": "app.py", "line_start": 10},
-             "title": "SQLi", "description": "bad"}
+        a = {
+            "panel": "security",
+            "category": "injection",
+            "location": {"file": "app.py", "line_start": 10},
+            "title": "SQLi",
+            "description": "bad",
+        }
         b = dict(a)
         b["location"] = {"file": "app.py", "line_start": 20}
         self.assertEqual(hr._fingerprint(a), hr._fingerprint(b))
 
     def test_compare_shows_new_and_resolved(self):
-        base = _minimal_report(findings=[
-            {"id": "SEC-001", "title": "SQL injection", "severity": "HIGH", "confidence": "CERTAIN",
-             "panel": "security", "category": "injection", "location": {"file": "app.py", "line_start": 10},
-             "description": "x", "impact": "", "remediation": "", "references": []},
-        ])
-        head = _minimal_report(findings=[
-            {"id": "SEC-002", "title": "XSS", "severity": "HIGH", "confidence": "CERTAIN",
-             "panel": "security", "category": "xss", "location": {"file": "app.py", "line_start": 15},
-             "description": "y", "impact": "", "remediation": "", "references": []},
-        ])
+        base = _minimal_report(
+            findings=[
+                {
+                    "id": "SEC-001",
+                    "title": "SQL injection",
+                    "severity": "HIGH",
+                    "confidence": "CERTAIN",
+                    "panel": "security",
+                    "category": "injection",
+                    "location": {"file": "app.py", "line_start": 10},
+                    "description": "x",
+                    "impact": "",
+                    "remediation": "",
+                    "references": [],
+                },
+            ]
+        )
+        head = _minimal_report(
+            findings=[
+                {
+                    "id": "SEC-002",
+                    "title": "XSS",
+                    "severity": "HIGH",
+                    "confidence": "CERTAIN",
+                    "panel": "security",
+                    "category": "xss",
+                    "location": {"file": "app.py", "line_start": 15},
+                    "description": "y",
+                    "impact": "",
+                    "remediation": "",
+                    "references": [],
+                },
+            ]
+        )
         out = hr.render(head, compare_report=base)
         self.assertIn("class='delta-card delta-new'", out)
         self.assertIn("class='delta-card delta-resolved'", out)
@@ -255,11 +292,23 @@ class TestHtmlReport(unittest.TestCase):
 
     def test_compare_has_filter_buttons(self):
         base = _minimal_report(findings=[])
-        head = _minimal_report(findings=[
-            {"id": "SEC-002", "title": "XSS", "severity": "HIGH", "confidence": "CERTAIN",
-             "panel": "security", "category": "xss", "location": {"file": "app.py", "line_start": 15},
-             "description": "y", "impact": "", "remediation": "", "references": []},
-        ])
+        head = _minimal_report(
+            findings=[
+                {
+                    "id": "SEC-002",
+                    "title": "XSS",
+                    "severity": "HIGH",
+                    "confidence": "CERTAIN",
+                    "panel": "security",
+                    "category": "xss",
+                    "location": {"file": "app.py", "line_start": 15},
+                    "description": "y",
+                    "impact": "",
+                    "remediation": "",
+                    "references": [],
+                },
+            ]
+        )
         out = hr.render(head, compare_report=base)
         self.assertIn("data-compare-filter", out)
         self.assertIn("Show all", out)
@@ -267,9 +316,17 @@ class TestHtmlReport(unittest.TestCase):
 
     def test_compare_duplicate_fingerprints(self):
         finding = {
-            "id": "SEC-001", "title": "SQL injection", "severity": "HIGH", "confidence": "CERTAIN",
-            "panel": "security", "category": "injection", "location": {"file": "app.py", "line_start": 10},
-            "description": "dup", "impact": "", "remediation": "", "references": [],
+            "id": "SEC-001",
+            "title": "SQL injection",
+            "severity": "HIGH",
+            "confidence": "CERTAIN",
+            "panel": "security",
+            "category": "injection",
+            "location": {"file": "app.py", "line_start": 10},
+            "description": "dup",
+            "impact": "",
+            "remediation": "",
+            "references": [],
         }
         base = _minimal_report(findings=[finding, dict(finding)])
         head = _minimal_report(findings=[finding])
@@ -283,25 +340,57 @@ class TestHtmlReport(unittest.TestCase):
         self.assertIn("unchanged</div><div class='delta-value'>1</div>", out)
 
     def test_compare_severity_changed(self):
-        base = _minimal_report(findings=[
-            {"id": "SEC-001", "title": "SQL injection", "severity": "HIGH", "confidence": "CERTAIN",
-             "panel": "security", "category": "injection", "location": {"file": "app.py", "line_start": 10},
-             "description": "x", "impact": "", "remediation": "", "references": []},
-        ])
-        head = _minimal_report(findings=[
-            {"id": "SEC-001", "title": "SQL injection", "severity": "MEDIUM", "confidence": "CERTAIN",
-             "panel": "security", "category": "injection", "location": {"file": "app.py", "line_start": 10},
-             "description": "x", "impact": "", "remediation": "", "references": []},
-        ])
+        base = _minimal_report(
+            findings=[
+                {
+                    "id": "SEC-001",
+                    "title": "SQL injection",
+                    "severity": "HIGH",
+                    "confidence": "CERTAIN",
+                    "panel": "security",
+                    "category": "injection",
+                    "location": {"file": "app.py", "line_start": 10},
+                    "description": "x",
+                    "impact": "",
+                    "remediation": "",
+                    "references": [],
+                },
+            ]
+        )
+        head = _minimal_report(
+            findings=[
+                {
+                    "id": "SEC-001",
+                    "title": "SQL injection",
+                    "severity": "MEDIUM",
+                    "confidence": "CERTAIN",
+                    "panel": "security",
+                    "category": "injection",
+                    "location": {"file": "app.py", "line_start": 10},
+                    "description": "x",
+                    "impact": "",
+                    "remediation": "",
+                    "references": [],
+                },
+            ]
+        )
         out = hr.render(head, compare_report=base)
         self.assertIn("severity changed", out)
         self.assertIn("severity changed</div><div class='delta-value'>1</div>", out)
 
     def test_compare_unchanged(self):
         finding = {
-            "id": "SEC-001", "title": "SQL injection", "severity": "HIGH", "confidence": "CERTAIN",
-            "panel": "security", "category": "injection", "location": {"file": "app.py", "line_start": 10},
-            "description": "x", "impact": "", "remediation": "", "references": [],
+            "id": "SEC-001",
+            "title": "SQL injection",
+            "severity": "HIGH",
+            "confidence": "CERTAIN",
+            "panel": "security",
+            "category": "injection",
+            "location": {"file": "app.py", "line_start": 10},
+            "description": "x",
+            "impact": "",
+            "remediation": "",
+            "references": [],
         }
         base = _minimal_report(findings=[finding])
         head = _minimal_report(findings=[dict(finding)])
@@ -326,33 +415,39 @@ class TestHtmlReport(unittest.TestCase):
             "references": [],
         }
         if level in ("medium", "complex"):
-            base.update({
-                "impact": "Data exfiltration or unauthorized access.",
-                "remediation": "Use parameterized queries.",
-                "references": ["https://cwe.mitre.org/data/definitions/89.html"],
-            })
+            base.update(
+                {
+                    "impact": "Data exfiltration or unauthorized access.",
+                    "remediation": "Use parameterized queries.",
+                    "references": ["https://cwe.mitre.org/data/definitions/89.html"],
+                }
+            )
         if level == "complex":
-            base.update({
-                "description": (
-                    "User input used directly in query. The tainted value flows from "
-                    "the request handler into the database call without validation."
-                ),
-                "references": [
-                    "https://cwe.mitre.org/data/definitions/89.html",
-                    "https://owasp.org/Top10/A03_2021-Injection/",
-                ],
-                "citations": {
-                    "cwe": [{"id": "CWE-89"}],
-                    "owasp": ["A03:2021"],
-                },
-            })
+            base.update(
+                {
+                    "description": (
+                        "User input used directly in query. The tainted value flows from "
+                        "the request handler into the database call without validation."
+                    ),
+                    "references": [
+                        "https://cwe.mitre.org/data/definitions/89.html",
+                        "https://owasp.org/Top10/A03_2021-Injection/",
+                    ],
+                    "citations": {
+                        "cwe": [{"id": "CWE-89"}],
+                        "owasp": ["A03:2021"],
+                    },
+                }
+            )
         return base
 
     def _assert_delta_counts(self, out, new=0, resolved=0, unchanged=0, severity_changed=0):
         self.assertIn(f"new</div><div class='delta-value'>{new}</div>", out)
         self.assertIn(f"resolved</div><div class='delta-value'>{resolved}</div>", out)
         self.assertIn(f"unchanged</div><div class='delta-value'>{unchanged}</div>", out)
-        self.assertIn(f"severity changed</div><div class='delta-value'>{severity_changed}</div>", out)
+        self.assertIn(
+            f"severity changed</div><div class='delta-value'>{severity_changed}</div>", out
+        )
 
     def test_compare_scenario_matrix(self):
         """Exercise compare hashing across complexity levels and change scenarios.
@@ -402,17 +497,29 @@ class TestHtmlReport(unittest.TestCase):
 
     def test_finding_card_renders_provenance(self):
         finding = {
-            "id": "SEC-001", "title": "SQL injection", "severity": "HIGH", "confidence": "CERTAIN",
-            "panel": "security", "category": "injection", "location": {"file": "app.py", "line_start": 10},
-            "description": "x", "impact": "", "remediation": "", "references": [],
+            "id": "SEC-001",
+            "title": "SQL injection",
+            "severity": "HIGH",
+            "confidence": "CERTAIN",
+            "panel": "security",
+            "category": "injection",
+            "location": {"file": "app.py", "line_start": 10},
+            "description": "x",
+            "impact": "",
+            "remediation": "",
+            "references": [],
             "provenance": {
-                "discovered_by": "tool:brakeman", "confirmation_status": "TOOL",
-                "model": None, "model_version": None,
+                "discovered_by": "tool:brakeman",
+                "confirmation_status": "TOOL",
+                "model": None,
+                "model_version": None,
             },
             "evidence": {
-                "status": "advisor_confirmed", "verified_by": "tool:brakeman",
-                "reasoning": "verified", "citation_quality": "partial"
-            }
+                "status": "advisor_confirmed",
+                "verified_by": "tool:brakeman",
+                "reasoning": "verified",
+                "citation_quality": "partial",
+            },
         }
         report = _minimal_report(findings=[finding])
         out = hr.render(report)
@@ -421,17 +528,29 @@ class TestHtmlReport(unittest.TestCase):
 
     def test_unverified_findings_render_separately(self):
         finding = {
-            "id": "SEC-002", "title": "Unverified", "severity": "INFO", "confidence": "NOTE",
-            "panel": "security", "category": "general", "location": {"file": "app.py", "line_start": 11},
-            "description": "x", "impact": "", "remediation": "", "references": [],
+            "id": "SEC-002",
+            "title": "Unverified",
+            "severity": "INFO",
+            "confidence": "NOTE",
+            "panel": "security",
+            "category": "general",
+            "location": {"file": "app.py", "line_start": 11},
+            "description": "x",
+            "impact": "",
+            "remediation": "",
+            "references": [],
             "provenance": {
-                "discovered_by": "agent:lens_sweep", "confirmation_status": "NEEDS_MORE_INFO",
-                "model": "kimi-k2.7-coding", "model_version": "v1",
+                "discovered_by": "agent:lens_sweep",
+                "confirmation_status": "NEEDS_MORE_INFO",
+                "model": "kimi-k2.7-coding",
+                "model_version": "v1",
             },
             "evidence": {
-                "status": "needs_more_info", "verified_by": "agent:lens_sweep",
-                "reasoning": "need more info", "citation_quality": "none"
-            }
+                "status": "needs_more_info",
+                "verified_by": "agent:lens_sweep",
+                "reasoning": "need more info",
+                "citation_quality": "none",
+            },
         }
         report = _minimal_report(findings=[finding])
         out = hr.render(report)
@@ -444,18 +563,29 @@ class TestHtmlReport(unittest.TestCase):
         # section, not the primary tabbed Findings section that reads as
         # reviewed/trustworthy.
         finding = {
-            "id": "SEC-003", "title": "possible hardcoded password", "severity": "HIGH",
-            "confidence": "CERTAIN", "panel": "security", "category": "secrets",
+            "id": "SEC-003",
+            "title": "possible hardcoded password",
+            "severity": "HIGH",
+            "confidence": "CERTAIN",
+            "panel": "security",
+            "category": "secrets",
             "location": {"file": "app.py", "line_start": 12},
-            "description": "x", "impact": "", "remediation": "", "references": [],
+            "description": "x",
+            "impact": "",
+            "remediation": "",
+            "references": [],
             "provenance": {
-                "discovered_by": "tool:bandit", "confirmation_status": "TOOL",
-                "model": None, "model_version": None,
+                "discovered_by": "tool:bandit",
+                "confirmation_status": "TOOL",
+                "model": None,
+                "model_version": None,
             },
             "evidence": {
-                "status": "tool_reported", "verified_by": "tool:bandit",
-                "reasoning": "Reported by static-analysis tool", "citation_quality": "none"
-            }
+                "status": "tool_reported",
+                "verified_by": "tool:bandit",
+                "reasoning": "Reported by static-analysis tool",
+                "citation_quality": "none",
+            },
         }
         report = _minimal_report(findings=[finding])
         out = hr.render(report)
@@ -464,17 +594,29 @@ class TestHtmlReport(unittest.TestCase):
 
     def test_provenance_needs_more_info_class_is_hyphenated(self):
         finding = {
-            "id": "SEC-002", "title": "Unverified", "severity": "INFO", "confidence": "NOTE",
-            "panel": "security", "category": "general", "location": {"file": "app.py", "line_start": 11},
-            "description": "x", "impact": "", "remediation": "", "references": [],
+            "id": "SEC-002",
+            "title": "Unverified",
+            "severity": "INFO",
+            "confidence": "NOTE",
+            "panel": "security",
+            "category": "general",
+            "location": {"file": "app.py", "line_start": 11},
+            "description": "x",
+            "impact": "",
+            "remediation": "",
+            "references": [],
             "provenance": {
-                "discovered_by": "agent:lens_sweep", "confirmation_status": "NEEDS_MORE_INFO",
-                "model": "kimi-k2.7-coding", "model_version": "v1",
+                "discovered_by": "agent:lens_sweep",
+                "confirmation_status": "NEEDS_MORE_INFO",
+                "model": "kimi-k2.7-coding",
+                "model_version": "v1",
             },
             "evidence": {
-                "status": "needs_more_info", "verified_by": "agent:lens_sweep",
-                "reasoning": "need more info", "citation_quality": "none"
-            }
+                "status": "needs_more_info",
+                "verified_by": "agent:lens_sweep",
+                "reasoning": "need more info",
+                "citation_quality": "none",
+            },
         }
         report = _minimal_report(findings=[finding])
         out = hr.render(report)
@@ -493,8 +635,11 @@ class TestHtmlReport(unittest.TestCase):
     def test_header_shows_coverage_line(self):
         report = _minimal_report()
         report["summary"]["evidence_stats"] = {
-            "advisor_confirmed": 2, "tool_confirmed": 1, "unverified": 5,
-            "tool_reported": 3}
+            "advisor_confirmed": 2,
+            "tool_confirmed": 1,
+            "unverified": 5,
+            "tool_reported": 3,
+        }
         report["summary"]["gate_policy"] = "confirmed_only"
         report["meta"]["coverage"] = {"verdicts": {"queued": 3, "cut": 4}}
         html = hr.render(report)
@@ -513,43 +658,54 @@ class TestHtmlReport(unittest.TestCase):
 
 class TestChartAggregations(unittest.TestCase):
     def test_severity_counts_empty(self):
-        self.assertEqual(hr._severity_counts([]),
-                         {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0})
+        self.assertEqual(
+            hr._severity_counts([]), {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0}
+        )
 
     def test_severity_counts_groups(self):
         findings = [
-            {"severity": "HIGH"}, {"severity": "HIGH"},
-            {"severity": "MEDIUM"}, {"severity": "INFO"},
+            {"severity": "HIGH"},
+            {"severity": "HIGH"},
+            {"severity": "MEDIUM"},
+            {"severity": "INFO"},
         ]
-        self.assertEqual(hr._severity_counts(findings),
-                         {"CRITICAL": 0, "HIGH": 2, "MEDIUM": 1, "LOW": 0, "INFO": 1})
+        self.assertEqual(
+            hr._severity_counts(findings),
+            {"CRITICAL": 0, "HIGH": 2, "MEDIUM": 1, "LOW": 0, "INFO": 1},
+        )
 
     def test_panel_counts_defaults_to_code(self):
-        self.assertEqual(hr._panel_counts([]),
-                         {"code": 0, "test": 0, "security": 0,
-                          "architecture": 0, "database": 0, "redteam": 0})
+        self.assertEqual(
+            hr._panel_counts([]),
+            {"code": 0, "test": 0, "security": 0, "architecture": 0, "database": 0, "redteam": 0},
+        )
 
     def test_panel_counts_groups(self):
         findings = [
-            {"panel": "security"}, {"panel": "security"}, {"panel": "test"},
+            {"panel": "security"},
+            {"panel": "security"},
+            {"panel": "test"},
         ]
-        self.assertEqual(hr._panel_counts(findings),
-                         {"code": 0, "test": 1, "security": 2,
-                          "architecture": 0, "database": 0, "redteam": 0})
+        self.assertEqual(
+            hr._panel_counts(findings),
+            {"code": 0, "test": 1, "security": 2, "architecture": 0, "database": 0, "redteam": 0},
+        )
 
     def test_top_category_counts_limit_and_other(self):
         findings = [
-            {"category": "injection"}, {"category": "injection"},
-            {"category": "xss"}, {"category": "xss"},
-            {"category": "auth"}, {"category": "config"},
+            {"category": "injection"},
+            {"category": "injection"},
+            {"category": "xss"},
+            {"category": "xss"},
+            {"category": "auth"},
+            {"category": "config"},
         ]
         result = hr._top_category_counts(findings, limit=2)
         self.assertEqual(result, [("injection", 2), ("xss", 2), ("Other", 2)])
 
     def test_top_category_counts_no_other_when_within_limit(self):
         findings = [{"category": "a"}, {"category": "b"}]
-        self.assertEqual(hr._top_category_counts(findings, limit=3),
-                         [("a", 1), ("b", 1)])
+        self.assertEqual(hr._top_category_counts(findings, limit=3), [("a", 1), ("b", 1)])
 
 
 class TestDashboardCharts(unittest.TestCase):
@@ -578,8 +734,10 @@ class TestDashboardCharts(unittest.TestCase):
         findings = [
             {"category": cat, "severity": "HIGH"}
             for cat in [
-                "injection", "injection",
-                "xss", "xss",
+                "injection",
+                "injection",
+                "xss",
+                "xss",
                 "auth",
                 "config",
                 "crypto",
@@ -606,15 +764,24 @@ class TestDashboardCharts(unittest.TestCase):
         self.assertIn(">HIGH<", out)
         self.assertTrue("chart-bar sev-high" in out and "width: 0.0%" in out)
 
-
     def test_rejected_badge_has_distinct_style(self):
         finding = {
-            "id": "SEC-003", "title": "Discarded", "severity": "INFO", "confidence": "NOTE",
-            "panel": "security", "category": "general", "location": {"file": "app.py", "line_start": 12},
-            "description": "x", "impact": "", "remediation": "", "references": [],
+            "id": "SEC-003",
+            "title": "Discarded",
+            "severity": "INFO",
+            "confidence": "NOTE",
+            "panel": "security",
+            "category": "general",
+            "location": {"file": "app.py", "line_start": 12},
+            "description": "x",
+            "impact": "",
+            "remediation": "",
+            "references": [],
             "provenance": {
-                "discovered_by": "agent:lens_sweep", "confirmation_status": "REJECTED",
-                "model": "kimi-k2.7-coding", "model_version": "v1",
+                "discovered_by": "agent:lens_sweep",
+                "confirmation_status": "REJECTED",
+                "model": "kimi-k2.7-coding",
+                "model_version": "v1",
             },
         }
         report = _minimal_report(findings=[finding])
@@ -627,8 +794,11 @@ class TestEvidencePartition(unittest.TestCase):
     def test_unverified_section_keys_on_evidence(self):
         report = _minimal_report()
         report["findings"][0]["evidence"] = {
-            "status": "needs_more_info", "verified_by": "agent:advisor",
-            "reasoning": "need config", "citation_quality": "none"}
+            "status": "needs_more_info",
+            "verified_by": "agent:advisor",
+            "reasoning": "need config",
+            "citation_quality": "none",
+        }
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "r.html")
             hr.write_html(report, path)
@@ -641,19 +811,32 @@ class TestCoverageHonesty(unittest.TestCase):
     """#490: the HTML must not launder an uncertified/INCONCLUSIVE run."""
 
     def _report(self, **summary):
-        base = {"overall_grade": "B", "risk_level": "MEDIUM", "gate": "PASS",
-                "coverage_certified": True}
+        base = {
+            "overall_grade": "B",
+            "risk_level": "MEDIUM",
+            "gate": "PASS",
+            "coverage_certified": True,
+        }
         base.update(summary)
-        return {"meta": {"target": "t", "coverage": {}}, "summary": base,
-                "findings": [], "groups": []}
+        return {
+            "meta": {"target": "t", "coverage": {}},
+            "summary": base,
+            "findings": [],
+            "groups": [],
+        }
 
     def test_inconclusive_gate_gets_distinct_style(self):
         out = hr.render(self._report(gate="INCONCLUSIVE", coverage_certified=False))
-        self.assertIn("gate-inconclusive", out)      # not the benign gate-off slate
+        self.assertIn("gate-inconclusive", out)  # not the benign gate-off slate
 
     def test_uncertified_run_shows_banner_and_provisional_grade(self):
-        out = hr.render(self._report(gate="INCONCLUSIVE", coverage_certified=False,
-                                     coverage_note="tool layer incomplete: semgrep absent"))
+        out = hr.render(
+            self._report(
+                gate="INCONCLUSIVE",
+                coverage_certified=False,
+                coverage_note="tool layer incomplete: semgrep absent",
+            )
+        )
         self.assertIn("NOT CERTIFIED", out)
         self.assertIn("tool layer incomplete: semgrep absent", out)
         self.assertIn("(provisional)", out)

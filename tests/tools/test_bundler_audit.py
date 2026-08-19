@@ -39,6 +39,10 @@ class TestBundlerAuditAdapter(unittest.TestCase):
         with mock.patch("os.path.exists", side_effect=lambda p: p.endswith("Gemfile.lock")):
             self.assertTrue(ba.BundlerAuditAdapter().is_applicable("/tmp/fake"))
 
+    def test_is_applicable_when_gemfile_lock_absent(self):
+        with mock.patch("os.path.exists", return_value=False):
+            self.assertFalse(ba.BundlerAuditAdapter().is_applicable("/tmp/fake"))
+
     def test_parse_includes_provenance(self):
         findings = ba.BundlerAuditAdapter().parse(BUNDLE_AUDIT_SAMPLE, "g1")
         self.assertTrue(findings)

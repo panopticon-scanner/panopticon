@@ -34,7 +34,7 @@ def test_real_advisor_verdict_without_run_id_validates():
         "references": ["app/db.py:42"],
         "citations": {"cwe": ["CWE-89"], "owasp": ["A03:2021"], "cve": []},
     }
-    jsonschema.validate(verdict, schema)   # must not raise
+    assert jsonschema.validate(verdict, schema) is None
 
 def test_report_finding_has_override_and_correction_fields():
     fprops = _load("report-schema.json")["properties"]["findings"]["items"]["properties"]

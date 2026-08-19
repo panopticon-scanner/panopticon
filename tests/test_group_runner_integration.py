@@ -63,3 +63,45 @@ class TestFanOutIntegration(unittest.TestCase):
             self.assertEqual(pending, [plan[-1]])
             cov = gr.fan_out_coverage(plan)
             self.assertEqual(cov["groups_partial"], ["g2"])
+
+    def test_e2e_write_guard_hook(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as d:
+            plan = _plan(d)
+            allowlist_path = os.path.join(d, ".panopticon", "write-allowlist.json")
+            settings_path = os.path.join(d, ".claude", "settings.local.json")
+
+            # Install the hook to set up the allowlist
+            wg.install(plan, settings_path=settings_path, allowlist_path=allowlist_path)
+
+            hook_script = os.path.abspath(wg.__file__)
+
+            # Helper to run the hook with a payload
+            def run_hook(tool_name, file_path):
+                payload = {
+                    "tool_name": tool_name,
+                    "tool_input": {"file_path": file_path} if file_path else {}
+                }
+                env = os.environ.copy()
+                env["PANOPTICON_WRITE_ALLOWLIST"] = allowlist_path
+                proc = subprocess.run(
+                    [sys.executable, hook_script],
+                    input=json.dumps(payload),
+                    text=True,
+                    capture_output=True,
+                    env=env
+                )
+                return proc.stdout.strip()
+
+            # Test 1: In-scope write
+            stdout = run_hook("Write", plan[0]["out_file"])
+            self.assertEqual(stdout, "")  # No output means allowed
+
+            # Test 2: Out-of-scope write
+            stdout = run_hook("Write", os.path.join(d, "skill/scripts/synthesize.py"))
+            self.assertIn("deny", stdout)
+            self.assertIn("outside the fan-out allowlist", stdout)
+
+            # Test 3: Non-write tool
+            stdout = run_hook("Read", plan[0]["out_file"])
+            self.assertEqual(stdout, "")
