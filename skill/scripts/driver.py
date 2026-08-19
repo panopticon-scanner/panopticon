@@ -1309,15 +1309,17 @@ def scan_execute(review_root, manifest):
     """Provision + render the scan brief -> setup-scan checkpoint (vocab present);
     or flat-seed + readiness + a fallback-complete marker (vocab absent, Task 3)."""
     host = manifest.get("host", "claude")
-    setup_flow.provision(review_root)
+    prov = setup_flow.provision(review_root)
+    note = prov.get("gitignore_note")   # #1135: groups.yml needs `git add -f`
     vocab, present = setup_flow.load_bundled_vocabulary(manifest.get("vocabulary_path"))
     if not present:
-        return _scan_fallback(review_root, manifest, host)   # Task 3
+        return _scan_fallback(review_root, manifest, host, note=note)   # Task 3
     brief_path = setup_flow.render_scan_brief(review_root, vocab)
     entry = _setup_scan_entry(review_root, _read_text(brief_path))
     req = write_dispatch_request(review_root, manifest["run_id"], "scan", None, [entry])
+    msg = "setup-scan checkpoint" + ((" — " + note) if note else "")
     return PhaseResult(kind="checkpoint", checkpoint="scan", group=None,
-                       dispatch_request=req, message="setup-scan checkpoint")
+                       dispatch_request=req, message=msg)
 
 
 def ingest_done(review_root, manifest):
@@ -1353,7 +1355,7 @@ def _clear_setup_artifacts(review_root):
             pass
 
 
-def _scan_fallback(review_root, manifest, host):
+def _scan_fallback(review_root, manifest, host, note=None):
     """Vocab-absent path (parity with orchestrator.run_setup): flat top-dir seed
     + readiness gate, then a fallback-complete marker so both setup phases'
     done-predicates are satisfied -> run_engine completes without a checkpoint
@@ -1368,6 +1370,8 @@ def _scan_fallback(review_root, manifest, host):
         "gaps": gaps, "run_id": manifest["run_id"]})
     msg = ("setup: vocab-absent fallback — flat seed %s; readiness %s"
            % (path, "OK" if not gaps else "gaps: " + ", ".join(gaps)))
+    if note:   # #1135: surface the "groups.yml needs `git add -f`" note
+        msg += " — " + note
     return PhaseResult(kind="advanced", message=msg)
 
 

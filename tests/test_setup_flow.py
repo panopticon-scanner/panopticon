@@ -20,6 +20,10 @@ def _repo(with_committed=False):
 
 
 class TestSetupFlow(unittest.TestCase):
+    def _gitignore(self, repo):
+        with open(os.path.join(repo, ".gitignore"), encoding="utf-8") as fh:
+            return fh.read()
+
     def test_provision_seeds_gitignore_and_config(self):
         d = _repo()
         res = setup_flow.provision(d)
@@ -27,6 +31,49 @@ class TestSetupFlow(unittest.TestCase):
         with open(os.path.join(d, ".gitignore"), encoding="utf-8") as fh:
             self.assertIn(".panopticon/*", fh.read())
         self.assertTrue(res["config_created"])
+
+    def test_provision_leaves_blanket_panopticon_ignore_untouched(self):
+        # #1135: a repo that already blanket-ignores .panopticon/ must NOT have
+        # its .gitignore rewritten -- no in-place migration to .panopticon/*, no
+        # !.panopticon/ re-exposing the directory.
+        d = _repo()
+        with open(os.path.join(d, ".gitignore"), "w") as fh:
+            fh.write("node_modules/\n.panopticon/\n")
+        res = setup_flow.provision(d)
+        gi = self._gitignore(d)
+        self.assertIn(".panopticon/", gi)
+        self.assertNotIn(".panopticon/*", gi)   # not migrated
+        self.assertNotIn("!.panopticon/", gi)   # dir not re-exposed
+        self.assertFalse(res["groups_yml_committable"])
+        self.assertIn("git add -f", res.get("gitignore_note", ""))
+
+    def test_provision_fresh_repo_adds_committable_block(self):
+        d = _repo()  # no .gitignore
+        res = setup_flow.provision(d)
+        gi = self._gitignore(d)
+        self.assertIn(".panopticon/*", gi)
+        self.assertIn("!.panopticon/groups.yml", gi)
+        self.assertTrue(res["groups_yml_committable"])
+
+    def test_provision_appends_negations_to_star_form(self):
+        # .panopticon/* already present (committable-compatible), negations
+        # missing -> append them (pure append), never rewrite the existing line.
+        d = _repo()
+        with open(os.path.join(d, ".gitignore"), "w") as fh:
+            fh.write(".panopticon/*\n")
+        res = setup_flow.provision(d)
+        gi = self._gitignore(d)
+        self.assertEqual(gi.count(".panopticon/*"), 1)   # not duplicated
+        self.assertIn("!.panopticon/groups.yml", gi)
+        self.assertTrue(res["groups_yml_committable"])
+
+    def test_provision_gitignore_idempotent_second_run_noop(self):
+        d = _repo()
+        setup_flow.provision(d)
+        after_first = self._gitignore(d)
+        res2 = setup_flow.provision(d)
+        self.assertEqual(res2["gitignore_added"], [])
+        self.assertEqual(self._gitignore(d), after_first)   # byte-identical
 
     def test_committed_matrix_preserves_order(self):
         d = _repo(with_committed=True)

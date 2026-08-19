@@ -15,12 +15,23 @@ import plan_contract  # noqa: E402
 import discovery  # noqa: E402  (P6.5 Slice A: discovery primitives, moved off orchestrator)
 
 
-SETUP_GITIGNORE_ENTRIES = [
+# #1135: the committable block ignores run artifacts under .panopticon/ while
+# keeping groups.yml trackable. Applied ONLY to a repo that does not already
+# ignore the .panopticon DIRECTORY outright -- see _ensure_gitignore.
+_PANOPTICON_COMMITTABLE_ENTRIES = [
     ".panopticon/*",
     "!.panopticon/",
     "!.panopticon/groups.yml",
-    ".claude/settings.local.json",
 ]
+_ALWAYS_IGNORE_ENTRIES = [".claude/settings.local.json"]
+# Un-negatable blanket directory ignores: making groups.yml committable under
+# any of these would require REWRITING the line (git cannot re-include a file
+# whose parent directory is excluded). We leave them untouched (#1135). The
+# `.panopticon/*` form is NOT here -- it is committable-compatible, so missing
+# negations are simply appended.
+_PANOPTICON_DIR_BLANKET = {
+    ".panopticon", ".panopticon/", "/.panopticon", "/.panopticon/",
+}
 
 
 def _seed_groups_manifest(repo):
@@ -53,26 +64,31 @@ seed_flat_manifest = _seed_groups_manifest
 
 
 def _ensure_gitignore(repo):
-    """#485(2): make sure run artifacts and the local hook settings never get
-    committed. Appends only the MISSING entries; idempotent."""
+    """#485(2)/#1135: make sure run artifacts and the local hook settings never
+    get committed, WITHOUT ever rewriting existing .gitignore content -- only
+    missing entries are appended.
+
+    Returns (added, groups_yml_committable). If the repo already blanket-ignores
+    the .panopticon DIRECTORY (``_PANOPTICON_DIR_BLANKET``), that ignore is left
+    exactly as-is: the committable ``.panopticon/*`` + negation block is NOT
+    applied (applying it used to migrate the line in place -- a spurious
+    working-tree modification that also re-exposed the directory, #1135). There
+    groups.yml stays ignored -- still readable by the driver, committable once
+    with ``git add -f``. A fresh repo (or one already using the
+    committable-compatible ``.panopticon/*`` form) gets the full block; any
+    already-present entry is skipped so re-runs are true no-ops."""
     gi = os.path.join(repo, ".gitignore")
     try:
         with open(gi, encoding="utf-8") as fh:
             existing = fh.read()
     except OSError:
         existing = ""
-    lines = existing.splitlines()
-    migrated = False
-    for index, line in enumerate(lines):
-        if line.strip() == ".panopticon/":
-            lines[index] = ".panopticon/*"
-            migrated = True
-    if migrated:
-        existing = "\n".join(lines) + ("\n" if lines else "")
-        with open(gi, "w", encoding="utf-8") as fh:
-            fh.write(existing)
     have = {ln.strip() for ln in existing.splitlines()}
-    added = [e for e in SETUP_GITIGNORE_ENTRIES if e not in have]
+    dir_blanket = bool(have & _PANOPTICON_DIR_BLANKET)
+    wanted = list(_ALWAYS_IGNORE_ENTRIES)
+    if not dir_blanket:
+        wanted = _PANOPTICON_COMMITTABLE_ENTRIES + wanted
+    added = [e for e in wanted if e not in have]
     if added:
         with open(gi, "a", encoding="utf-8") as fh:
             if existing and not existing.endswith("\n"):
@@ -80,7 +96,9 @@ def _ensure_gitignore(repo):
             fh.write("# panopticon run artifacts (--setup #485)\n")
             for e in added:
                 fh.write(e + "\n")
-    return added
+    groups_yml_committable = (not dir_blanket) or (
+        "!.panopticon/groups.yml" in have)
+    return added, groups_yml_committable
 
 
 def _seed_config(repo):
@@ -270,9 +288,19 @@ matrix_catalog = discovery._matrix_catalog
 
 def provision(repo):
     """Scaffold .gitignore entries + config.json (idempotent). Returns a summary."""
-    added = _ensure_gitignore(repo)
+    added, groups_yml_committable = _ensure_gitignore(repo)
     cfg, created = _seed_config(repo)
-    return {"gitignore_added": added, "config_path": cfg, "config_created": created}
+    summary = {"gitignore_added": added, "config_path": cfg,
+               "config_created": created,
+               "groups_yml_committable": groups_yml_committable}
+    if not groups_yml_committable:
+        # #1135: we left an existing blanket .panopticon ignore untouched, so
+        # groups.yml is not trackable until the user force-adds it once.
+        summary["gitignore_note"] = (
+            "existing .gitignore already ignores the .panopticon/ directory; left "
+            "it untouched (#1135). Commit the capability manifest with "
+            "`git add -f .panopticon/groups.yml`.")
+    return summary
 
 
 def load_bundled_vocabulary(vocabulary_path=None):
