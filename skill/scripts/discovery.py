@@ -222,7 +222,8 @@ def collect_changed_files(repo, base=None):
             p = p.strip()
             if p:
                 changed.add(p)
-    except Exception:
+    except Exception as e:
+        print(f"Warning: git diff failed: {e}")
         return None
     # Include new untracked files so a branch with only added files isn't empty.
     try:
@@ -754,7 +755,7 @@ def discover_repo_files(repo, include_fixtures=False, pruned_fixtures=None,
         for dn in dirnames:
             if _is_excluded_dir(dn):
                 continue
-            child = (rel_dir + "/" + dn) if rel_dir else dn
+            child = f"{rel_dir}/{dn}" if rel_dir else dn
             if dn.startswith(".") and not _on_allowed_dotdir_path(child):
                 continue
             if not include_fixtures and _is_fixture_dir(child):
@@ -764,7 +765,7 @@ def discover_repo_files(repo, include_fixtures=False, pruned_fixtures=None,
             kept.append(dn)
         dirnames[:] = kept
         for fn in filenames:
-            rel = (rel_dir + "/" + fn) if rel_dir else fn
+            rel = f"{rel_dir}/{fn}" if rel_dir else fn
             top = rel.split("/", 1)[0]
             # Files under a dot-dir top are surfaced only inside an allowlisted subtree.
             if top.startswith(".") and not _on_allowed_dotdir_path(rel):

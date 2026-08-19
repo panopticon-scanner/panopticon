@@ -2,6 +2,7 @@
 """Citation enrichment for panopticon findings: CWE validation, OWASP
 derivation, reduced-SSVC decisioning, and opt-in EPSS lookup. Stdlib-only.
 """
+import logging
 import json
 import os
 import re
@@ -175,7 +176,8 @@ def epss_lookup(cves, cache_path, opener=None):
             out[cve] = entry
             cache[cve] = entry
             dirty = True
-        except Exception:  # noqa: BLE001 - lookup is best-effort by design
+        except Exception as e:  # noqa: BLE001 - lookup is best-effort by design
+            logging.warning("EPSS network failure or error for %s: %s", cve, e)
             continue
     if dirty:
         _save_cache(cache_path, cache)

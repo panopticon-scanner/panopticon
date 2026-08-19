@@ -23,7 +23,7 @@ def _as_domain_set(name, field, raw, errors):
         errors.append(f"group {name}: {field} must be a list")
         return out
     for d in raw:
-        if d not in DOMAINS:
+        if not isinstance(d, str) or d not in DOMAINS:
             errors.append(f"group {name}: {field} {d!r} is not a known domain")
         else:
             out.add(d)
@@ -33,7 +33,11 @@ def _as_domain_set(name, field, raw, errors):
 def parse_groups(doc):
     """Return (groups, errors). `groups` maps name -> normalized group dict."""
     groups, errors = {}, []
-    for name, raw in ((doc or {}).get("groups") or {}).items():
+    groups_dict = (doc or {}).get("groups") or {}
+    if not isinstance(groups_dict, dict):
+        errors.append("groups must be a mapping/object")
+        groups_dict = {}
+    for name, raw in groups_dict.items():
         if not isinstance(name, str) or ".." in name or not _GROUP_NAME_RE.match(name):
             errors.append("group name %r is invalid: must match "
                           "[A-Za-z0-9][A-Za-z0-9_.-]{0,63} with no path separators, "

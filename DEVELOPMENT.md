@@ -269,18 +269,6 @@ History:
   model policy: scout/lens=haiku, panel=sonnet, advisor=opus. SKILL.md
   description is trigger-only; Host dispatch section maps the per-host
   mechanisms (research: `docs/superpowers/specs/2026-08-03-host-portability-research.md`).
-- **2.0.0** — static-analysis upgrade: standards citations (CWE/OWASP/SSVC/EPSS) + the Docker
-  tool container.
-- **2.1.0** — bug-fix round: must-fixes surfaced by the build's review gates and the
-  live real-tool smoke.
-- **2.2.0** — accumulated bug-fix round from the self-review + an internal-app dogfood: repo-root
-  clamp (CWE-22), docker-run timeout, catalog tolerance, SARIF path-normalization + per-result
-  tolerance, cross-source reinforce (2-member tool+agent), citations hardening (case-insensitive
-  ids, CWE-95, EPSS size-cap/UA), DoS guards, bandit noise floor, id-uniqueness + panel label,
-  `--max-per-group` guard, docstrings, and test-coverage for the non-deterministic seams.
-- **3.0.0** — Kimi port: introduces architecture, database, and redteam panels;
-  replaces the fixed 9-lens catalog with a flexible lens model; rewrites orchestration for the
-  Kimi Code agent platform; major version bump reflecting breaking changes to the skill contract.
 - **4.0.0** — epistemics core: two-axis severity × evidence model.
   Severity is never mutated; evidence.status (tool_confirmed/advisor_confirmed/
   corroborated/needs_more_info/unverified/rejected) is the pipeline's verdict.
@@ -299,6 +287,9 @@ History:
   under `--fail-on low` on tool say-so alone. See "Key design decisions" above
   for the current posture; `--gate-unverified` is unchanged as the opt-in that
   restores every-non-rejected-finding-gates behavior.
+- **3.0.0** — Kimi port: introduces architecture, database, and redteam panels;
+  replaces the fixed 9-lens catalog with a flexible lens model; rewrites orchestration for the
+  Kimi Code agent platform; major version bump reflecting breaking changes to the skill contract.
 - **2.3.0** — cross-dogfood round from a 61-panel run against a real 3-repo estate. Four
   fixes: (1) **cross-panel corroboration** — `synthesize` now runs a distinct agent-vs-agent pass
   (`cross_panel_corroboration`, keyed on file + line-proximity across DISTINCT panels, not category)
@@ -338,6 +329,15 @@ History:
   narrower batch (CRITICAL→HIGH→broad-MEDIUM→coverage-MEDIUM). We stopped at B by decision: all known
   MEDIUM+ are fixed and the code/security surfaces are clean; the residual LOW/INFO are logged below.
   Chasing empirical A/B round-by-round against our own reviewer does not obviously terminate.
+- **2.2.0** — accumulated bug-fix round from the self-review + an internal-app dogfood: repo-root
+  clamp (CWE-22), docker-run timeout, catalog tolerance, SARIF path-normalization + per-result
+  tolerance, cross-source reinforce (2-member tool+agent), citations hardening (case-insensitive
+  ids, CWE-95, EPSS size-cap/UA), DoS guards, bandit noise floor, id-uniqueness + panel label,
+  `--max-per-group` guard, docstrings, and test-coverage for the non-deterministic seams.
+- **2.1.0** — bug-fix round: must-fixes surfaced by the build's review gates and the
+  live real-tool smoke.
+- **2.0.0** — static-analysis upgrade: standards citations (CWE/OWASP/SSVC/EPSS) + the Docker
+  tool container.
 
 ### B-floor residuals (LOW/INFO from self-scan round 4 — future minors)
 - Schema validation is advisory-only: an invalid report still writes + prints (by design; revisit if a
