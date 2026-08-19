@@ -1,3 +1,4 @@
+import contextlib
 import io
 import json
 import os
@@ -231,7 +232,6 @@ class TestAdapterDispatch(unittest.TestCase):
         # failure, not a clean run. Fail closed: announce it, write NO file, and
         # drop it from the produced set so write_manifest lands it in `missing`
         # (-> INCONCLUSIVE) instead of certifying it as ran-clean.
-        import contextlib, io
         class FakeAdapter:
             name = "fake"
             def is_applicable(self, target): return True
@@ -363,7 +363,7 @@ class TestContainment(unittest.TestCase):
 
     def test_nvd_api_key_never_forwarded(self):
         for cmd in self._calls(["dependency-check"],
-                               env={"NVD_API_KEY": "sekrit"}):
+                               env={"NVD_API_KEY": "dummy"}):
             self.assertNotIn("-e", cmd)
             self.assertNotIn("NVD_API_KEY", cmd)
 

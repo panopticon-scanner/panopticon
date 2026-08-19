@@ -33,7 +33,7 @@ class TestDiscoveryRepoScanParity(unittest.TestCase):
 
     def _repo(self):
         d = tempfile.mkdtemp()
-        self.addCleanup(lambda: subprocess.run(["rm", "-rf", d], check=False))
+        self.addCleanup(lambda: __import__("shutil").rmtree(d, ignore_errors=True))
         g = ["git", "-C", d]
         subprocess.run(g + ["init", "-q"], check=True)
         subprocess.run(g + ["config", "user.name", "Test"], check=True)
@@ -690,8 +690,8 @@ class TestPanelPriority(unittest.TestCase):
 
     def test_compute_group_panels_redteam_mode_ordered(self):
         panels = orch.compute_group_panels(["app.py", "tests/test_app.py"], "redteam")
-        assert "redteam" in panels and "security" not in panels
-        assert panels == [p for p in orch.PANEL_PRIORITY if p in panels]
+        if "redteam" not in panels or "security" in panels: raise AssertionError()
+        if panels != [p for p in orch.PANEL_PRIORITY if p in panels]: raise AssertionError()
 
     def test_panels_in_priority_order_puts_unknown_last(self):
         assert orch.panels_in_priority_order(
@@ -793,6 +793,22 @@ class TestArtifactOutputGuard(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as outside:
             os.symlink(outside, os.path.join(d, ".panopticon"))
             self.assertEqual(orch.main(["--repo", d, "--repo-scan"]), 2)
+            self.assertEqual(orch.main(["--repo", d, "--repo-scan", "--out", os.path.join(d, ".panopticon", "out.json")]), 2)
+
+    def test_scope_changed_fails_when_not_git_repo(self):
+        with tempfile.TemporaryDirectory() as d:
+            _touch(d, "src/app.py")
+            # d is not a git repo, so collect_changed_files returns None
+            self.assertEqual(orch.main(["--repo", d, "--repo-scan", "--scope-changed"]), 2)
+
+    def test_scope_files_fails_with_bad_base(self):
+        with tempfile.TemporaryDirectory() as d:
+            _touch(d, "src/app.py")
+            _init_repo(d)
+            _git(d, "add", ".")
+            _git(d, "commit", "-q", "-m", "init")
+            # bad base -> resolve_base_or_die returns None -> return 2
+            self.assertEqual(orch.main(["--repo", d, "--repo-scan", "--scope-files", "src/app.py", "--base", "nope"]), 2)
 
 
 class TestChangedFilesRenameParity(unittest.TestCase):
@@ -966,7 +982,7 @@ def test_repo_scan_scope_file_accepts_dotslash_and_absolute(tmp_path):
 
 
 def test_repo_scan_scope_file_includes_sibling_related_test(tmp_path):
-    # related_tests()'s filtering (discovery.py:969) actually pulls a real
+    # related_tests()'s filtering (discovery.py) actually pulls a real
     # co-located sibling test file into a --scope-file scope -- the sibling
     # case: test_candidates("src/checkout/pay.py") generates "src/checkout/
     # test_pay.py" as its first same-directory candidate (before falling
@@ -1203,8 +1219,7 @@ def test_repo_scan_scope_changed_bad_base_exits_2_no_artifact(tmp_path):
     import discovery as orchestrator
     repo = _repo_with_matrix(tmp_path)
     out = repo / ".panopticon" / "groups.json"
-    assert orchestrator.main(["--repo-scan","--scope-changed","--base","nope",
-                              str(repo),"--out",str(out)]) == 2
+    assert orchestrator.main(["--repo-scan","--scope-changed","--base","nope", str(repo), "--out", str(out)]) == 2
     assert not (repo/".panopticon"/"diff-hunks.json").exists()
 
 
@@ -1306,5 +1321,3 @@ def test_write_diff_hunks_schema_version_and_atomic(tmp_path):
     assert data["files_changed"] == 0
 
 
-if __name__ == "__main__":
-    unittest.main()

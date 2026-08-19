@@ -8,6 +8,7 @@ longer flipped to INCONCLUSIVE just because a scanner fired.
 Style mirrors test_driver_verify.py / TestVerifyMatrixEndToEnd: drives state on
 disk and runs a REAL synthesize.py subprocess via driver.synthesize_execute.
 """
+
 import json
 import os
 import shutil
@@ -22,16 +23,18 @@ RUN_ID = "RID"
 
 
 def _semgrep_sarif(results):
-    return {"runs": [{"tool": {"driver": {"name": "semgrep", "rules": []}},
-                      "results": results}]}
+    return {"runs": [{"tool": {"driver": {"name": "semgrep", "rules": []}}, "results": results}]}
 
 
 def _result(rule, uri, line, level="error", text=None):
-    return {"ruleId": rule, "level": level,
-            "message": {"text": text or rule},
-            "locations": [{"physicalLocation": {
-                "artifactLocation": {"uri": uri},
-                "region": {"startLine": line}}}]}
+    return {
+        "ruleId": rule,
+        "level": level,
+        "message": {"text": text or rule},
+        "locations": [
+            {"physicalLocation": {"artifactLocation": {"uri": uri}, "region": {"startLine": line}}}
+        ],
+    }
 
 
 class _ToolVerifyBase(unittest.TestCase):
@@ -40,35 +43,42 @@ class _ToolVerifyBase(unittest.TestCase):
         self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
         os.makedirs(os.path.join(d, "src"))
         with open(os.path.join(d, "src", "app.py"), "w") as fh:
-            fh.write("import os\nx = 1\ny = 2\nz = 3\npw = 'secret'\n")
+            fh.write("import os\nx = 1\ny = 2\nz = 3\npw = 'dummy'\n")
         os.makedirs(driver._pano(d, "tools"))
         with open(driver._pano(d, "tools", "semgrep.sarif"), "w") as fh:
             json.dump(_semgrep_sarif(results), fh)
-        driver._write_json(driver._pano(d, "tools-ran.json"),
-                           {"ran": True, "run_id": RUN_ID})
-        driver._write_json(driver._pano(d, "groups.json"),
-                           {"groups": [{"name": "app", "files": ["src/app.py"]}]})
-        driver._write_json(driver._pano(d, "coverage-app.json"),
-                           {"group": "app", "floor": floor or [],
-                            "effective": floor or [], "run_id": RUN_ID})
+        driver._write_json(driver._pano(d, "tools-ran.json"), {"ran": True, "run_id": RUN_ID})
+        driver._write_json(
+            driver._pano(d, "groups.json"), {"groups": [{"name": "app", "files": ["src/app.py"]}]}
+        )
+        driver._write_json(
+            driver._pano(d, "coverage-app.json"),
+            {"group": "app", "floor": floor or [], "effective": floor or [], "run_id": RUN_ID},
+        )
         if agent_findings:
-            driver._write_json(driver._pano(d, "findings-app-SEC.json"), {
-                "findings": agent_findings,
-                "_panopticon": {"run_id": RUN_ID, "role": "domain_panel",
-                                "domain": "SEC", "group": "app"}})
+            driver._write_json(
+                driver._pano(d, "findings-app-SEC.json"),
+                {
+                    "findings": agent_findings,
+                    "_panopticon": {
+                        "run_id": RUN_ID,
+                        "role": "domain_panel",
+                        "domain": "SEC",
+                        "group": "app",
+                    },
+                },
+            )
         return d
 
     def _manifest(self, **flags):
         f = {"fail_on": "high"}
         f.update(flags)
-        return {"run_id": RUN_ID, "host": "claude", "security_mode": "standard",
-                "flags": f}
+        return {"run_id": RUN_ID, "host": "claude", "security_mode": "standard", "flags": f}
 
     def _bundle(self):
         # verify_execute loads the ocrdb bundle for the (empty) cell rounds; the
         # tool round never touches it. Stub it out for speed/isolation.
-        return mock.patch("scripts.driver.ocrdb.load_bundle",
-                          return_value={"domains": {}})
+        return mock.patch("scripts.driver.ocrdb.load_bundle", return_value={"domains": {}})
 
 
 class TestToolQueueParity(_ToolVerifyBase):
@@ -78,15 +88,15 @@ class TestToolQueueParity(_ToolVerifyBase):
     def _report_tool_pairs(self, d, manifest):
         driver.synthesize_execute(d, manifest)
         report = driver._load_json(driver._pano(d, "report.json"))
-        return {(f["fingerprint"], f["id"]) for f in report["findings"]
-                if evidence.is_tool_sourced(f)}
+        return {
+            (f["fingerprint"], f["id"]) for f in report["findings"] if evidence.is_tool_sourced(f)
+        }
 
     def test_queue_ids_and_ids_match_synthesize(self):
-        d = self._repo([_result("r1", "src/app.py", 1),
-                        _result("r2", "src/app.py", 9)])
+        d = self._repo([_result("r1", "src/app.py", 1), _result("r2", "src/app.py", 9)])
         m = self._manifest()
         driver_pairs = {(qid, f["id"]) for qid, f in driver._tool_verify_queue(d, m)}
-        self.assertTrue(driver_pairs)                       # non-empty
+        self.assertTrue(driver_pairs)  # non-empty
         # queue_id == exported fingerprint, and the finding id round-trips too.
         self.assertEqual(driver_pairs, self._report_tool_pairs(d, m))
 
@@ -100,9 +110,17 @@ class TestToolQueueParity(_ToolVerifyBase):
         # this stays byte-identical.
         d = self._repo(
             [_result("r1", "src/app.py", 1), _result("r1", "src/app.py", 5)],
-            agent_findings=[{"domain": "SEC", "code": "SEC-A1A", "severity": "LOW",
-                             "title": "authz gap", "category": "authz",
-                             "location": {"file": "src/app.py", "line_start": 5}}])
+            agent_findings=[
+                {
+                    "domain": "SEC",
+                    "code": "SEC-A1A",
+                    "severity": "LOW",
+                    "title": "authz gap",
+                    "category": "authz",
+                    "location": {"file": "src/app.py", "line_start": 5},
+                }
+            ],
+        )
         m = self._manifest()
         queue = driver._tool_verify_queue(d, m)
         driver_pairs = {(qid, f["id"]) for qid, f in queue}
@@ -113,8 +131,7 @@ class TestToolQueueParity(_ToolVerifyBase):
 
     def test_empty_queue_when_tools_did_not_run(self):
         d = self._repo([_result("r1", "src/app.py", 1)])
-        driver._write_json(driver._pano(d, "tools-ran.json"),
-                           {"ran": False, "run_id": RUN_ID})
+        driver._write_json(driver._pano(d, "tools-ran.json"), {"ran": False, "run_id": RUN_ID})
         self.assertEqual(driver._tool_verify_queue(d, self._manifest()), [])
 
 
@@ -127,14 +144,15 @@ class TestToolVerifyDispatch(_ToolVerifyBase):
             result = driver.verify_execute(d, m)
         self.assertEqual((result.checkpoint, result.group), ("verify", "tools"))
         entry = driver._load_json(driver._pano(d, "dispatch-request.json"))["entries"][0]
-        self.assertEqual(entry["agent"], "panopticon-advisor")   # advisor.md shell
+        self.assertEqual(entry["agent"], "panopticon-advisor")  # advisor.md shell
         self.assertTrue(entry["enforced"])
-        self.assertEqual(entry["delivery"], "return_json")       # host persists
-        self.assertEqual(os.path.basename(entry["out_file"]), "%s.json" % qid)
-        self.assertEqual(os.path.dirname(entry["out_file"]),
-                         os.path.abspath(driver._pano(d, "verdicts")))
+        self.assertEqual(entry["delivery"], "return_json")  # host persists
+        self.assertEqual(os.path.basename(entry["out_file"]), f"{qid}.json")
+        self.assertEqual(
+            os.path.dirname(entry["out_file"]), os.path.abspath(driver._pano(d, "verdicts"))
+        )
         self.assertEqual(entry["out_file"], os.path.abspath(entry["out_file"]))
-        self.assertIn("Repo root:", entry["prompt"])             # advisor root pin
+        self.assertIn("Repo root:", entry["prompt"])  # advisor root pin
 
     def test_generic_host_unenforced_entry(self):
         d = self._repo([_result("r1", "src/app.py", 1, level="note")])
@@ -163,8 +181,9 @@ class TestToolVerifyEndToEnd(_ToolVerifyBase):
 
     def _persist(self, out_file, verdict, finding_id):
         with open(out_file, "w") as fh:
-            json.dump({"finding_id": finding_id, "verdict": verdict,
-                       "reasoning": "adjudicated"}, fh)
+            json.dump(
+                {"finding_id": finding_id, "verdict": verdict, "reasoning": "adjudicated"}, fh
+            )
 
     def test_no_verdict_leaves_tool_finding_unanswered_inconclusive(self):
         d = self._repo([_result("r1", "src/app.py", 1, level="note")])
@@ -172,7 +191,7 @@ class TestToolVerifyEndToEnd(_ToolVerifyBase):
         with self._bundle():
             result = driver.verify_execute(d, m)
             self.assertEqual(result.checkpoint, "verify")
-            self.assertFalse(driver.verify_done(d, m))          # verdict owed
+            self.assertFalse(driver.verify_done(d, m))  # verdict owed
         driver.synthesize_execute(d, m)
         report = driver._load_json(driver._pano(d, "report.json"))
         self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
@@ -202,35 +221,43 @@ class TestToolVerifyEndToEnd(_ToolVerifyBase):
 
 class TestToolVerifyResume(_ToolVerifyBase):
     def test_existing_verdict_not_redispatched_and_verify_done_waits(self):
-        d = self._repo([_result("r1", "src/app.py", 1, level="note"),
-                        _result("r2", "app/db.py", 2, level="note")])
+        d = self._repo(
+            [
+                _result("r1", "src/app.py", 1, level="note"),
+                _result("r2", "app/db.py", 2, level="note"),
+            ]
+        )
         m = self._manifest()
         queue = driver._tool_verify_queue(d, m)
         self.assertEqual(len(queue), 2)
-        self.assertFalse(driver.verify_done(d, m))              # both owed
+        self.assertFalse(driver.verify_done(d, m))  # both owed
 
         # answer exactly one
         qid0, f0 = queue[0]
         os.makedirs(driver._pano(d, "verdicts"), exist_ok=True)
         with open(driver._tool_verdict_out_file(d, qid0), "w") as fh:
-            json.dump({"finding_id": f0["id"], "verdict": "REJECTED",
-                       "reasoning": "not reachable"}, fh)
-        self.assertFalse(driver.verify_done(d, m))              # one still owed
+            json.dump(
+                {"finding_id": f0["id"], "verdict": "REJECTED", "reasoning": "not reachable"}, fh
+            )
+        self.assertFalse(driver.verify_done(d, m))  # one still owed
 
         # re-dispatch names ONLY the still-undone entry
         with self._bundle():
             result = driver.verify_execute(d, m)
         self.assertEqual(result.checkpoint, "verify")
-        outs = [os.path.basename(e["out_file"]) for e in
-                driver._load_json(driver._pano(d, "dispatch-request.json"))["entries"]]
-        self.assertEqual(outs, ["%s.json" % queue[1][0]])
-        self.assertNotIn("%s.json" % qid0, outs)
+        outs = [
+            os.path.basename(e["out_file"])
+            for e in driver._load_json(driver._pano(d, "dispatch-request.json"))["entries"]
+        ]
+        self.assertEqual(outs, [f"{queue[1][0]}.json"])
+        self.assertNotIn(f"{qid0}.json", outs)
 
         # answer the second -> verify phase drains
         qid1, f1 = queue[1]
         with open(driver._tool_verdict_out_file(d, qid1), "w") as fh:
-            json.dump({"finding_id": f1["id"], "verdict": "CONFIRMED",
-                       "reasoning": "reachable"}, fh)
+            json.dump(
+                {"finding_id": f1["id"], "verdict": "CONFIRMED", "reasoning": "reachable"}, fh
+            )
         self.assertTrue(driver.verify_done(d, m))
         with self._bundle():
             self.assertEqual(driver.verify_execute(d, m).kind, "advanced")
@@ -259,6 +286,7 @@ class TestSynthesizeFixtureParityWiring(_ToolVerifyBase):
             with open(cmd[cmd.index("--out") + 1], "w") as fh:
                 json.dump({"findings": []}, fh)
             return mock.Mock(returncode=0, stdout="", stderr="")
+
         d = self._repo([_result("r1", "src/app.py", 1)])
         with mock.patch("scripts.driver.subprocess.run", side_effect=fake_run):
             driver.synthesize_execute(d, manifest)
@@ -305,15 +333,13 @@ class TestRedteamFixtureDecouple(_ToolVerifyBase):
         self.assertFalse(driver._tools_include_fixtures(self._redteam()))
 
     def test_tools_include_fixtures_true_only_with_explicit_flag(self):
-        self.assertTrue(
-            driver._tools_include_fixtures(self._redteam(include_fixtures=True)))
+        self.assertTrue(driver._tools_include_fixtures(self._redteam(include_fixtures=True)))
 
     def test_redteam_prunes_fixture_finding_from_verify_queue(self):
         self.assertNotIn(self._FIXTURE_URI, self._queue_uris(self._redteam()))
 
     def test_explicit_flag_keeps_fixture_finding_in_redteam_queue(self):
-        self.assertIn(self._FIXTURE_URI,
-                      self._queue_uris(self._redteam(include_fixtures=True)))
+        self.assertIn(self._FIXTURE_URI, self._queue_uris(self._redteam(include_fixtures=True)))
 
 
 if __name__ == "__main__":

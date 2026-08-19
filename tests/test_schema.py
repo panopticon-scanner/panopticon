@@ -173,7 +173,7 @@ class TestReportSchema(unittest.TestCase):
             }
         ]
 
-        groups_meta = {}
+        groups_meta = []
         target = "test-target"
 
         # Call build_report with minimal inputs

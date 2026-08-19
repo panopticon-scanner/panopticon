@@ -14,6 +14,14 @@ import evidence
 
 
 class TestDispatchPlan(unittest.TestCase):
+    def _register_reviewer_shells(self):
+        reg = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, reg, ignore_errors=True)
+        for name in ("panopticon-panel-review.md", "panopticon-lens-sweep.md"):
+            with open(os.path.join(reg, name), "w") as fh:
+                fh.write("---\nname: %s\n---\nbody\n" % name[:-3])
+        return reg
+
     def _profile(self, depth="standard"):
         return {
             "group": "test_repo",
@@ -97,6 +105,12 @@ class TestDispatchPlan(unittest.TestCase):
             finally:
                 os.chdir(prev)
             self.assertTrue(ok)
+            try:
+                os.chdir(elsewhere)
+                ok2, _ = wg.decide("Write", os.path.join(run_root, "unauthorized.txt"), allow)
+            finally:
+                os.chdir(prev)
+            self.assertFalse(ok2)
 
     def test_standard_emits_panel_review_and_two_sweeps(self):
         plan = dispatch.build_plan(self._profile("standard"), host="kimi")
@@ -289,11 +303,7 @@ class TestDispatchPlan(unittest.TestCase):
         # relative to the test process's cwd -- the repo root, since this
         # test does not chdir. Same registration pattern as
         # test_main_unwritable_out_directory_returns_one.
-        reg = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, reg, ignore_errors=True)
-        for name in ("panopticon-panel-review.md", "panopticon-lens-sweep.md"):
-            with open(os.path.join(reg, name), "w") as fh:
-                fh.write("---\nname: %s\n---\nbody\n" % name[:-3])
+        reg = self._register_reviewer_shells()
         try:
             groups_path = self._groups(profile)
             rc = dispatch.main([profile_path, "--host", "kimi", "--out", out_path,
@@ -360,14 +370,10 @@ class TestDispatchPlan(unittest.TestCase):
         # fully enforced and the #275 gate is a deterministic no-op here,
         # regardless of ambient host detection or real registrations on the
         # machine running the test (a bare CI runner has neither).
-        reg = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, reg, ignore_errors=True)
-        for name in ("panopticon-panel-review.md", "panopticon-lens-sweep.md"):
-            with open(os.path.join(reg, name), "w") as fh:
-                fh.write("---\nname: %s\n---\nbody\n" % name[:-3])
+        reg = self._register_reviewer_shells()
         try:
             # Use a path under /dev/null which cannot be created as a directory.
-            out_path = "/dev/null/cannot-create/findings.json"
+            out_path = os.path.join(os.devnull, "cannot-create", "findings.json")
             groups_path = self._groups(profile)
             stderr = io.StringIO()
             with contextlib.redirect_stderr(stderr):

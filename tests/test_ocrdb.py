@@ -1,4 +1,5 @@
 """Tests for OCRDb domain catalog loading, validation, and domain-to-panel mapping."""
+
 import json
 import os
 import tempfile
@@ -10,7 +11,7 @@ import scripts.ocrdb as ocrdb
 class TestOcrdb(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.bundle = ocrdb.load_bundle()   # the vendored 0.3.1 file
+        cls.bundle = ocrdb.load_bundle()  # the vendored 0.3.1 file
 
     def test_vendored_bundle_loads_with_ten_domains(self):
         self.assertIsNotNone(self.bundle, "vendored ocrdb-0.3.1.json must load")
@@ -45,8 +46,7 @@ class TestOcrdb(unittest.TestCase):
     def test_domain_to_panel_covers_ten_domains(self):
         # every bundle domain maps to a panel; "ZZZ" is the #1034 domainless
         # sentinel (UNKNOWN_DOMAIN_FALLBACK), not a real bundle domain.
-        self.assertEqual(set(ocrdb.DOMAIN_TO_PANEL) - {"ZZZ"},
-                         set(self.bundle["domains"]))
+        self.assertEqual(set(ocrdb.DOMAIN_TO_PANEL) - {"ZZZ"}, set(self.bundle["domains"]))
         expected_mappings = {
             "SEC": "security",
             "COD": "code",
@@ -89,7 +89,9 @@ class TestOcrdb(unittest.TestCase):
             "domains": {
                 "SEC": "not-a-dict",
                 "COD": {"entries": "not-a-dict"},
-                "DAT": {"entries": {"DAT-1": "not-a-dict", "DAT-2": None, "DAT-3": {"name": "valid"}}}
+                "DAT": {
+                    "entries": {"DAT-1": "not-a-dict", "DAT-2": None, "DAT-3": {"name": "valid"}}
+                },
             }
         }
         self.assertEqual(ocrdb.domain_menu(malformed_bundle, "SEC"), [])
@@ -109,14 +111,21 @@ class TestDomainMenuSeverity(unittest.TestCase):
     fabricating 'MEDIUM' for a bundle entry that omits default_severity."""
 
     def test_menu_flags_assumed_severity(self):
-        bundle = {"domains": {"XXX": {"entries": {
-            "XXX-A1A": {"name": "no-sev"},                       # no default_severity
-            "XXX-A1B": {"name": "has-sev", "default_severity": "HIGH"}}}}}
+        bundle = {
+            "domains": {
+                "XXX": {
+                    "entries": {
+                        "XXX-A1A": {"name": "no-sev"},  # no default_severity
+                        "XXX-A1B": {"name": "has-sev", "default_severity": "HIGH"},
+                    }
+                }
+            }
+        }
         menu = {e["code"]: e for e in ocrdb.domain_menu(bundle, "XXX")}
         self.assertEqual(menu["XXX-A1A"]["severity"], "MEDIUM")
         self.assertTrue(menu["XXX-A1A"]["severity_assumed"])
         self.assertEqual(menu["XXX-A1B"]["severity"], "HIGH")
-        self.assertNotIn("severity_assumed", menu["XXX-A1B"])   # real severity
+        self.assertNotIn("severity_assumed", menu["XXX-A1B"])  # real severity
         # default_severity() stays None for the absent case (the two agree)
         self.assertIsNone(ocrdb.default_severity(bundle, "XXX-A1A"))
 
@@ -134,7 +143,7 @@ class TestDomainCriteria(unittest.TestCase):
     def test_real_bundle_has_criteria_across_domains(self):
         b = ocrdb.load_bundle()
         total = sum(len(ocrdb.domain_criteria(b, d)) for d in b["domains"])
-        self.assertGreater(total, 100)   # 114 in 0.3.1, every domain represented
+        self.assertGreater(total, 100)  # 114 in 0.3.1, every domain represented
         for d in b["domains"]:
             for c in ocrdb.domain_criteria(b, d):
                 self.assertEqual(set(c), {"code", "name", "criteria"})
@@ -142,11 +151,18 @@ class TestDomainCriteria(unittest.TestCase):
                 self.assertTrue(c["code"].startswith(d + "-"))
 
     def test_gated_on_presence(self):
-        bundle = {"domains": {"XXX": {"entries": {
-            "XXX-A1A": {"name": "has", "criteria": "must X"},
-            "XXX-A1B": {"name": "none"}}}}}
+        bundle = {
+            "domains": {
+                "XXX": {
+                    "entries": {
+                        "XXX-A1A": {"name": "has", "criteria": "must X"},
+                        "XXX-A1B": {"name": "none"},
+                    }
+                }
+            }
+        }
         crit = ocrdb.domain_criteria(bundle, "XXX")
-        self.assertEqual([c["code"] for c in crit], ["XXX-A1A"])   # A1B omitted
+        self.assertEqual([c["code"] for c in crit], ["XXX-A1A"])  # A1B omitted
 
     def test_empty_on_bad_or_criteria_less(self):
         self.assertEqual(ocrdb.domain_criteria(None, "SEC"), [])

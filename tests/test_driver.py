@@ -105,7 +105,7 @@ class TestWriteDispatchRequest(unittest.TestCase):
             path = driver.write_dispatch_request(root, "RID", "scout", "Auth", entries)
             self.assertTrue(path.endswith(".panopticon/dispatch-request.json"))
             self.assertEqual(path, os.path.abspath(path))
-            with open(path) as fh:
+            with open(path, encoding="utf-8") as fh:
                 req = json.load(fh)
             self.assertEqual(req["checkpoint"], "scout")
             self.assertEqual(req["run_id"], "RID")
@@ -621,9 +621,7 @@ class TestToolsPhase(unittest.TestCase):
         self.assertTrue(driver._load_json(driver._pano(self.root, "tools-ran.json"))["skipped"])
 
 
-class TestVerifyNoop(unittest.TestCase):
-    # verify_* stays a wired no-op in P4 (P5 wires advisor + score_gate); review_*
-    # was the P3 no-op here but is now the real cell fan-out (see TestCellFanOut).
+class TestVerifyCreatesDir(unittest.TestCase):
     def setUp(self):
         self._t = tempfile.TemporaryDirectory()
         self.root = os.path.realpath(self._t.name)
@@ -631,7 +629,7 @@ class TestVerifyNoop(unittest.TestCase):
         self.addCleanup(self._t.cleanup)
         self.manifest = {"run_id": "R"}
 
-    def test_verify_noop_creates_verdicts_dir(self):
+    def test_verify_execute_creates_verdicts_dir(self):
         driver.verify_execute(self.root, self.manifest)
         self.assertTrue(os.path.isdir(driver._pano(self.root, "verdicts")))
         self.assertTrue(driver.verify_done(self.root, self.manifest))

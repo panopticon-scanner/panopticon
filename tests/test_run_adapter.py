@@ -4,10 +4,9 @@ import sys
 import unittest
 from contextlib import redirect_stderr
 
-ROOT = os.path.join(os.path.dirname(__file__), os.pardir)
-sys.path.insert(0, os.path.join(ROOT, "skill"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill"))
 
-import scripts._run_adapter as ra  # noqa: E402
+import scripts._run_adapter as ra
 
 
 class _Raises:

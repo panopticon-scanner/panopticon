@@ -17,8 +17,7 @@ class TestDecide(unittest.TestCase):
         self.allow = {os.path.realpath(".panopticon/findings-g1-code-panel_review.json")}
 
     def test_write_to_allowed_out_file_is_permitted(self):
-        ok, _ = wg.decide("Write",
-                          ".panopticon/findings-g1-code-panel_review.json", self.allow)
+        ok, _ = wg.decide("Write", ".panopticon/findings-g1-code-panel_review.json", self.allow)
         self.assertTrue(ok)
 
     def test_write_outside_allowlist_is_blocked(self):
@@ -27,8 +26,7 @@ class TestDecide(unittest.TestCase):
         self.assertIn("outside", reason.lower())
 
     def test_write_to_sibling_findings_not_in_plan_is_blocked(self):
-        ok, _ = wg.decide("Edit",
-                          ".panopticon/findings-g9-code-panel_review.json", self.allow)
+        ok, _ = wg.decide("Edit", ".panopticon/findings-g9-code-panel_review.json", self.allow)
         self.assertFalse(ok)
 
     def test_non_write_tool_is_permitted(self):
@@ -67,9 +65,9 @@ class TestDecide(unittest.TestCase):
         real_dir = os.path.join(d, "real-elsewhere")
         os.makedirs(real_dir)
         linked_dir = os.path.join(d, "pan")
-        os.symlink(real_dir, linked_dir)                    # pan -> real-elsewhere
+        os.symlink(real_dir, linked_dir)  # pan -> real-elsewhere
         target = os.path.join(linked_dir, "findings-g1.json")
-        allow = {os.path.abspath(target)}                   # allowlist built from the STRING path
+        allow = {os.path.abspath(target)}  # allowlist built from the STRING path
         ok, reason = wg.decide("Write", target, allow)
         self.assertFalse(ok)
         self.assertIn("outside", reason.lower())
@@ -122,26 +120,21 @@ class TestCwdIndependence(unittest.TestCase):
             os.chdir(prev)
 
     def test_absolute_out_file_authorizes_write_from_a_different_cwd(self):
-        with tempfile.TemporaryDirectory() as run_root, \
-                tempfile.TemporaryDirectory() as elsewhere:
-            target = os.path.join(run_root, ".panopticon",
-                                  "findings-g1-code-panel_review.json")
+        with tempfile.TemporaryDirectory() as run_root, tempfile.TemporaryDirectory() as elsewhere:
+            target = os.path.join(run_root, ".panopticon", "findings-g1-code-panel_review.json")
             allow = wg.allowlist_from_plan([{"out_file": target}])  # install-time
-            with self._in(elsewhere):                               # subagent cwd
+            with self._in(elsewhere):  # subagent cwd
                 ok, _ = wg.decide("Write", target, allow)
             self.assertTrue(ok)
 
     def test_relative_write_from_wrong_cwd_is_denied(self):
         # Documents WHY the plan must carry the absolute path: the same relative
         # name resolved from a different cwd is a different realpath -> denied.
-        with tempfile.TemporaryDirectory() as run_root, \
-                tempfile.TemporaryDirectory() as elsewhere:
-            target = os.path.join(run_root, ".panopticon",
-                                  "findings-g1-code-panel_review.json")
+        with tempfile.TemporaryDirectory() as run_root, tempfile.TemporaryDirectory() as elsewhere:
+            target = os.path.join(run_root, ".panopticon", "findings-g1-code-panel_review.json")
             allow = wg.allowlist_from_plan([{"out_file": target}])
             with self._in(elsewhere):
-                ok, _ = wg.decide(
-                    "Write", ".panopticon/findings-g1-code-panel_review.json", allow)
+                ok, _ = wg.decide("Write", ".panopticon/findings-g1-code-panel_review.json", allow)
             self.assertFalse(ok)
 
     def test_absolute_out_file_with_spaces_round_trips(self):
@@ -149,8 +142,7 @@ class TestCwdIndependence(unittest.TestCase):
         with tempfile.TemporaryDirectory() as base:
             run_root = os.path.join(base, "Mini Vault")
             os.makedirs(os.path.join(run_root, ".panopticon"))
-            target = os.path.join(run_root, ".panopticon",
-                                  "findings-g1-code-panel_review.json")
+            target = os.path.join(run_root, ".panopticon", "findings-g1-code-panel_review.json")
             allow = wg.allowlist_from_plan([{"out_file": target}])
             ok, _ = wg.decide("Write", target, allow)
             self.assertTrue(ok)
@@ -160,8 +152,9 @@ class TestAllowlistFromPlan(unittest.TestCase):
     def test_collects_out_files_absolute(self):
         plan = [{"out_file": ".panopticon/a.json"}, {"out_file": ".panopticon/b.json"}]
         al = wg.allowlist_from_plan(plan)
-        self.assertEqual(al, {os.path.realpath(".panopticon/a.json"),
-                              os.path.realpath(".panopticon/b.json")})
+        self.assertEqual(
+            al, {os.path.realpath(".panopticon/a.json"), os.path.realpath(".panopticon/b.json")}
+        )
 
     def test_skips_non_string_out_file(self):
         plan = [{"out_file": ".panopticon/a.json"}, {"out_file": 123}, {"out_file": None}]
@@ -193,8 +186,7 @@ class TestMain(unittest.TestCase):
                         content = allowlist_paths
                     else:
                         content = json.dumps([os.path.abspath(p) for p in allowlist_paths])
-                    with open(".panopticon/write-allowlist.json", "w",
-                              encoding="utf-8") as fh:
+                    with open(".panopticon/write-allowlist.json", "w", encoding="utf-8") as fh:
                         fh.write(content)
                 buf = io.StringIO()
                 with mock.patch("sys.stdin", io.StringIO(payload_str)):
@@ -205,8 +197,9 @@ class TestMain(unittest.TestCase):
                 os.chdir(old_cwd)
 
     def test_write_outside_allowlist_emits_deny(self):
-        payload = json.dumps({"tool_name": "Write",
-                               "tool_input": {"file_path": "skill/scripts/synthesize.py"}})
+        payload = json.dumps(
+            {"tool_name": "Write", "tool_input": {"file_path": "skill/scripts/synthesize.py"}}
+        )
         rc, out = self._run_main(payload, allowlist_paths=[".panopticon/findings-g1-x.json"])
         self.assertEqual(rc, 0)
         data = json.loads(out)
@@ -214,8 +207,9 @@ class TestMain(unittest.TestCase):
         self.assertEqual(data["hookSpecificOutput"]["permissionDecision"], "deny")
 
     def test_write_in_allowlist_emits_no_deny(self):
-        payload = json.dumps({"tool_name": "Write",
-                               "tool_input": {"file_path": ".panopticon/findings-g1-x.json"}})
+        payload = json.dumps(
+            {"tool_name": "Write", "tool_input": {"file_path": ".panopticon/findings-g1-x.json"}}
+        )
         rc, out = self._run_main(payload, allowlist_paths=[".panopticon/findings-g1-x.json"])
         self.assertEqual(rc, 0)
         self.assertEqual(out, "")
@@ -231,26 +225,21 @@ class TestMain(unittest.TestCase):
         self.assertEqual(out, "")
 
     def test_missing_allowlist_file_denies_write(self):
-        payload = json.dumps({"tool_name": "Write",
-                               "tool_input": {"file_path": "anything.py"}})
+        payload = json.dumps({"tool_name": "Write", "tool_input": {"file_path": "anything.py"}})
         rc, out = self._run_main(payload, allowlist_paths=None)
         self.assertEqual(rc, 0)
-        self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecision"],
-                         "deny")
+        self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecision"], "deny")
 
     def test_non_list_allowlist_content_denies_write(self):
-        payload = json.dumps({"tool_name": "Write",
-                               "tool_input": {"file_path": "anything.py"}})
+        payload = json.dumps({"tool_name": "Write", "tool_input": {"file_path": "anything.py"}})
         rc, out = self._run_main(payload, allowlist_paths="null")
         self.assertEqual(rc, 0)
-        self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecision"],
-                 "deny")
+        self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecision"], "deny")
 
     def test_non_string_file_path_payload_denies_without_crashing(self):
         # #768: end-to-end — a Write payload with a non-string file_path must
         # emit a deny (rc 0, deny JSON), never raise out of main().
-        payload = json.dumps({"tool_name": "Write",
-                               "tool_input": {"file_path": 123}})
+        payload = json.dumps({"tool_name": "Write", "tool_input": {"file_path": 123}})
         rc, out = self._run_main(payload, allowlist_paths=[".panopticon/findings-g1-x.json"])
         self.assertEqual(rc, 0)
         data = json.loads(out)
@@ -268,8 +257,8 @@ class TestInstallUninstall(unittest.TestCase):
             wg.install(plan, settings, al)
             with open(settings, encoding="utf-8") as fh:
                 saved = json.load(fh)
-            self.assertEqual(saved["env"], {"X": "1"})            # preserved
-            self.assertIn("PreToolUse", saved["hooks"])           # registered
+            self.assertEqual(saved["env"], {"X": "1"})  # preserved
+            self.assertIn("PreToolUse", saved["hooks"])  # registered
             with open(al, encoding="utf-8") as fh:
                 self.assertEqual(json.load(fh), [os.path.realpath(".panopticon/f.json")])
 
@@ -314,15 +303,14 @@ class TestInstallUninstall(unittest.TestCase):
         # An unrelated PreToolUse hook must survive both install and uninstall.
         with tempfile.TemporaryDirectory() as d:
             settings = os.path.join(d, "settings.local.json")
-            other = {"matcher": "Bash", "hooks": [{"type": "command",
-                                                   "command": "echo other"}]}
+            other = {"matcher": "Bash", "hooks": [{"type": "command", "command": "echo other"}]}
             with open(settings, "w", encoding="utf-8") as fh:
                 json.dump({"hooks": {"PreToolUse": [other]}}, fh)
             al = os.path.join(d, "allow.json")
             wg.install([{"out_file": ".panopticon/f.json"}], settings, al)
             with open(settings, encoding="utf-8") as fh:
                 saved = json.load(fh)
-            self.assertIn(other, saved["hooks"]["PreToolUse"])   # survived install
+            self.assertIn(other, saved["hooks"]["PreToolUse"])  # survived install
             self.assertEqual(len(saved["hooks"]["PreToolUse"]), 2)
             wg.uninstall(settings, al)
             with open(settings, encoding="utf-8") as fh:
@@ -332,8 +320,7 @@ class TestInstallUninstall(unittest.TestCase):
     def test_uninstall_tolerates_absent_files(self):
         with tempfile.TemporaryDirectory() as d:
             # neither settings nor allowlist exist -> must not raise
-            wg.uninstall(os.path.join(d, "nope.json"),
-                         os.path.join(d, "gone.json"))
+            wg.uninstall(os.path.join(d, "nope.json"), os.path.join(d, "gone.json"))
 
 
 class TestHookCmdSelfLocating(unittest.TestCase):

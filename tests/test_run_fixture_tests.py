@@ -147,7 +147,7 @@ class TestCheckFixturesInjection(unittest.TestCase):
         def fake_run(cmd, capture_output=False, text=False, timeout=None):
             captured["cmd"] = cmd
             # Echo back PRESENT for each positional path (args after the $0 "sh")
-            paths = cmd[cmd.index("sh", 5) + 1:]
+            paths = cmd[cmd.index("-c") + 3:]
             out = "\n".join("PRESENT:%s" % p for p in paths)
             return mock.Mock(stdout=out, returncode=0)
 

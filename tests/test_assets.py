@@ -25,3 +25,8 @@ class TestAssets(unittest.TestCase):
         text = self._read("reference/security-checklists.md")
         for lang in ["Ruby", "Python", "JavaScript", "Java", "Go"]:
             self.assertIn(lang, text)
+        self.assertNotIn("Brainfuck", text)
+
+    def test_read_missing_file_raises(self):
+        with self.assertRaises(FileNotFoundError):
+            self._read("agents/does_not_exist.md")
