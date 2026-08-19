@@ -41,7 +41,7 @@ above the threshold), `--out PATH`, `--tools` (require tool scan), `--no-tools` 
 `--epss` (enrich CVE citations), `--gate-unverified` (unverified findings drive grades/gate),
 `--max-verify N` (cap the verify queue; PR-scale delta reviews queue EVERY finding incl. tool claims
 -- a 25-file PR queued 108 advisors -- so size N ~ 2x the changed-file count unless you want the
-full sweep), `--base <ref|sha>` (explicit delta base for `-c`/`--pr`/`--file`), `--diff-context N`
+full sweep), `--base <ref|sha>` (explicit delta base for `-c`/`--pr`/`--files`), `--diff-context N`
 (default 5; on-diff tolerance in lines), `--gate-scope {on-diff,all}` (default `on-diff` for delta
 reviews; scopes the gate to on-diff × gate-eligible findings), `--include-fixtures` (keep tool
 findings under test-fixture corpora; default prunes them in every mode — incl. redteam, #1055 — for
@@ -49,8 +49,8 @@ parity with the review-side prune; pass to opt in), `--tools-exclude GLOB` (drop
 path matches GLOB; repeatable, for additional non-fixture paths), `--doc-paths GLOB` (doc-tree globs
 for the planning-doc severity policy; in standard mode, non-secret code findings under doc trees are
 soft-downgraded to INFO -- secrets keep severity, redteam bypasses entirely, and every downgrade is
-disclosed at `meta.coverage.doc_policy`). `--base` on `--file` makes it an explicit delta request —
-plain `--file` (no `--base`) is a normal whole-file review and emits no delta artifact.
+disclosed at `meta.coverage.doc_policy`). `--base` on `--files` makes it an explicit delta request —
+plain `--files` (no `--base`) is a normal whole-file review and emits no delta artifact.
 
 ## Driver run-loop (5.0)
 
