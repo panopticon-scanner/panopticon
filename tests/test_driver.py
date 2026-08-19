@@ -1995,6 +1995,21 @@ class TestDriverSetup(unittest.TestCase):
         self.assertTrue(entry["out_file"].endswith("setup-proposal.json"))
         self.assertTrue(os.path.isfile(driver._pano(d, "setup-scan-brief.md")))
 
+    def test_scan_leaves_blanket_gitignore_and_notes_forced_add(self):
+        # #1135: a repo already blanket-ignoring .panopticon/ keeps its
+        # .gitignore untouched (no migration to /*), and the scan surfaces that
+        # groups.yml must be `git add -f`-ed.
+        d = self._repo()
+        with open(os.path.join(d, ".gitignore"), "w") as fh:
+            fh.write(".panopticon/\n")
+        args = driver.build_parser().parse_args(["setup", d])
+        status = driver.run_setup_flow(args)
+        self.assertIn("git add -f", status["message"])
+        with open(os.path.join(d, ".gitignore"), encoding="utf-8") as fh:
+            gi = fh.read()
+        self.assertIn(".panopticon/", gi)
+        self.assertNotIn(".panopticon/*", gi)   # not migrated in place
+
     def test_ingest_writes_draft_then_completes(self):
         d = self._repo()
         args = driver.build_parser().parse_args(["setup", d])
