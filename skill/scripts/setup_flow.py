@@ -10,6 +10,8 @@ import re
 import subprocess
 import sys
 
+import yaml
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import plan_contract  # noqa: E402
 import discovery  # noqa: E402  (P6.5 Slice A: discovery primitives, moved off orchestrator)
@@ -192,18 +194,22 @@ def _check_host_shells(host, runner):
 
 
 def _check_groups_manifest(repo):
+    path = os.path.join(repo, ".panopticon", "groups.yml")
+    if not os.path.exists(path):
+        return ("groups-manifest", None,
+                "no committable manifest yet -- --setup seeds one; "
+                "files fall back to ._N chunks until you commit it")
     try:
-        catalog = discovery._matrix_catalog(repo) or {}
-    except Exception:
-        catalog = {}
-    if catalog:
-        empty = [name for name, g in catalog.items() if not g.get("match")]
-        return ("groups-manifest", not empty,
-                "%d group(s)" % len(catalog) if not empty else
-                "group(s) with no match patterns: %s" % ", ".join(map(str, empty)))
-    return ("groups-manifest", None,
-            "no committable manifest yet -- --setup seeds one; "
-            "files fall back to ._N chunks until you commit it")
+        with open(path, encoding="utf-8") as fh:
+            yaml.safe_load(fh)
+    except (OSError, yaml.YAMLError) as exc:
+        return ("groups-manifest", False,
+                "corrupt groups.yml manifest: %s" % exc)
+    catalog = discovery._matrix_catalog(repo) or {}
+    empty = [name for name, g in catalog.items() if not g.get("match")]
+    return ("groups-manifest", not empty,
+            "%d group(s)" % len(catalog) if not empty else
+            "group(s) with no match patterns: %s" % ", ".join(map(str, empty)))
 
 
 def setup_readiness(repo, host=None, runner=subprocess.run, environ=None):

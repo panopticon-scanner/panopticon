@@ -21,6 +21,15 @@ def _repo(test_case, with_committed=False):
     return d
 
 
+def test_check_groups_manifest_reports_corrupt_yaml(tmp_path):
+    (tmp_path / ".panopticon").mkdir()
+    (tmp_path / ".panopticon" / "groups.yml").write_text("not: [valid yaml: [")
+    name, ok, detail = setup_flow._check_groups_manifest(str(tmp_path))
+    assert name == "groups-manifest"
+    assert ok is False
+    assert "corrupt" in detail.lower() or "parse" in detail.lower()
+
+
 class TestSetupFlow(unittest.TestCase):
     def _gitignore(self, repo):
         with open(os.path.join(repo, ".gitignore"), encoding="utf-8") as fh:
