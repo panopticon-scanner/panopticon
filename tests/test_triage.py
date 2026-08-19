@@ -1,5 +1,8 @@
 import json, os, sys, tempfile, unittest
 from unittest import mock
+
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "scripts"))
 import triage
 
@@ -313,6 +316,14 @@ class TestGhEnv(unittest.TestCase):
             return mock.Mock(returncode=0, stdout="ok", stderr="")
         triage.gh(["gh", "api", "x"], runner=fake)
         self.assertEqual(len(calls), 1)     # signature unchanged for fakes
+
+
+def test_gh_env_raises_on_corrupt_config(tmp_path):
+    cfg = tmp_path / ".panopticon" / "config.json"
+    cfg.parent.mkdir()
+    cfg.write_text("{ not valid json")
+    with pytest.raises(ValueError, match="corrupt"):
+        triage.gh_env(str(cfg))
 
 
 if __name__ == "__main__":
