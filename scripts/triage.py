@@ -158,19 +158,25 @@ def gh_env(config_path=None):
     spawn uses the DECLARED account instead of whatever ambient credential the
     shell happens to carry (the thebeamishsociety wrong-account incident:
     default cred lacked push, the 404 was swallowed). Returns None (= inherit
-    the ambient environment, backward compatible) when the config or field is
-    absent/invalid.
+    the ambient environment, backward compatible) when the config is missing
+    or the field is absent/null. Raises on corrupt/unreadable config or
+    non-string gh_config_dir values so we fail closed rather than silently
+    inherit the wrong credential (#1101).
     """
     if config_path is None:
         config_path = CONFIG_PATH   # late-bound so tests/patches can retarget
     try:
         with open(config_path, encoding="utf-8") as fh:
             cfg = json.load(fh)
-    except (OSError, ValueError):
+    except FileNotFoundError:
         return None
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"corrupt or unreadable panopticon config ({config_path}): {exc}") from exc
     d = cfg.get("gh_config_dir") if isinstance(cfg, dict) else None
-    if not isinstance(d, str) or not d:
+    if d is None:
         return None
+    if not isinstance(d, str) or not d:
+        raise ValueError(f"invalid gh_config_dir in {config_path!r}: expected string, got {d!r}")
     env = dict(os.environ)
     env["GH_CONFIG_DIR"] = os.path.expanduser(d)
     return env
