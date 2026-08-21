@@ -80,23 +80,31 @@ class TestEslintSecurityAdapter(unittest.TestCase):
         findings = es.EslintSecurityAdapter().parse(sample, "g1")
         self.assertEqual(len(findings), 0)
 
-    def test_parse_maps_severity_one_to_medium(self):
-        sample = json.dumps([
-            {
-                "filePath": "/src/app.js",
-                "messages": [
-                    {
-                        "ruleId": "security/detect-object-injection",
-                        "severity": 1,
-                        "line": 5,
-                        "message": "object injection"
-                    }
-                ]
-            }
-        ]).encode()
-        findings = es.EslintSecurityAdapter().parse(sample, "g1")
-        self.assertEqual(len(findings), 1)
-        self.assertEqual(findings[0]["severity"], "MEDIUM")
+    def _one(self, rule, eslint_severity):
+        return json.dumps([{
+            "filePath": "/src/app.js",
+            "messages": [{"ruleId": rule, "severity": eslint_severity,
+                          "line": 5, "message": "m"}],
+        }]).encode()
+
+    def test_severity_is_rule_derived_not_eslint_level(self):
+        # #1118: invoke() forces every rule to eslint 'error' (level 2), so the
+        # level carries no severity signal -- severity comes from RULE_SEVERITY.
+        # A HIGH-mapped rule stays HIGH even if eslint reports level 1 ...
+        f = es.EslintSecurityAdapter().parse(
+            self._one("security/detect-eval-with-expression", 1), "g1")
+        self.assertEqual(f[0]["severity"], "HIGH")
+        # ... and a MEDIUM-mapped rule stays MEDIUM even at level 2 (previously
+        # every level-2 message was emitted HIGH -- the dead branch, #1118).
+        f = es.EslintSecurityAdapter().parse(
+            self._one("security/detect-object-injection", 2), "g1")
+        self.assertEqual(f[0]["severity"], "MEDIUM")
+
+    def test_every_enabled_rule_has_an_explicit_severity(self):
+        # no enabled rule may fall through to the default -- keeps the CWE and
+        # severity maps in lockstep as rules are added (#1118).
+        for rule in es.RULE_CWE:
+            self.assertIn(rule, es.RULE_SEVERITY, rule)
 
     def test_parse_handles_empty_results(self):
         findings = es.EslintSecurityAdapter().parse(json.dumps([]).encode(), "g1")
