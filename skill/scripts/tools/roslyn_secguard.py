@@ -53,6 +53,13 @@ _ROSLYN_CWE = {
 }
 
 
+# Directories that never hold the application's own project. Pruned from the
+# build-target search so a vendored/sample/generated project cannot be picked
+# over the app's real solution (#1119).
+_ROSLYN_VENDOR_DIRS = {".git", "node_modules", "bin", "obj", "packages",
+                       "vendor", "third_party", "thirdparty", "examples", "samples"}
+
+
 class RoslynSecGuardAdapter:
     name = "roslyn-secguard"
     prefix = "RS"
@@ -69,18 +76,27 @@ class RoslynSecGuardAdapter:
     def _build_target(self, target: str) -> str:
         sln_files = []
         csproj_files = []
-        for root, _dirs, files in os.walk(target):
+        for root, dirs, files in os.walk(target):
+            dirs[:] = [d for d in dirs if d not in _ROSLYN_VENDOR_DIRS]
             for file in files:
                 full_path = os.path.join(root, file)
                 if file.endswith(".sln"):
                     sln_files.append(full_path)
                 elif file.endswith(".csproj"):
                     csproj_files.append(full_path)
-        if sln_files:
-            return sorted(sln_files)[0]
-        if csproj_files:
-            return sorted(csproj_files)[0]
-        return target
+        # Prefer a solution over a bare project; within each, the target closest
+        # to the repo root, breaking ties deterministically by path. A nested
+        # vendored/sample project can no longer sort ahead of the app's own
+        # root-level solution the way `sorted(...)[0]` allowed (#1119).
+        candidates = sln_files or csproj_files
+        if not candidates:
+            return target
+        chosen = min(candidates, key=lambda p: (os.path.relpath(p, target).count(os.sep), p))
+        if len(candidates) > 1:
+            print("roslyn-secguard: %d build targets found; analyzing %s"
+                  % (len(candidates), os.path.relpath(chosen, target)),
+                  file=sys.stderr)
+        return chosen
 
     def invoke(self, target: str) -> tuple[bytes, int]:
         # Build the target with the SecurityCodeScan analyzer and output SARIF.

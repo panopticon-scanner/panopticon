@@ -198,6 +198,29 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
             open(sln, "w").close()
             self.assertEqual(adapter._build_target(d), sln)
 
+    def test_build_target_prefers_root_over_deeper_and_vendored(self):
+        # #1119: the app's root solution must win even when a nested project
+        # sorts first alphabetically, and a vendored/sample project must never
+        # be selected. Old `sorted(...)[0]` would have picked aaa/a.sln.
+        adapter = rs.RoslynSecGuardAdapter()
+        with tempfile.TemporaryDirectory() as d:
+            root_sln = os.path.join(d, "zApp.sln")   # sorts LAST, but is at root
+            os.makedirs(os.path.join(d, "aaa"))
+            os.makedirs(os.path.join(d, "examples", "demo"))
+            open(root_sln, "w").close()
+            open(os.path.join(d, "aaa", "a.sln"), "w").close()          # deeper
+            open(os.path.join(d, "examples", "demo", "a.sln"), "w").close()  # pruned
+            self.assertEqual(adapter._build_target(d), root_sln)
+
+    def test_build_target_never_selects_a_vendored_only_project(self):
+        # a candidate that exists ONLY under a pruned dir is not selectable;
+        # falls back to the target dir rather than analyzing a dependency.
+        adapter = rs.RoslynSecGuardAdapter()
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "node_modules", "pkg"))
+            open(os.path.join(d, "node_modules", "pkg", "x.csproj"), "w").close()
+            self.assertEqual(adapter._build_target(d), d)
+
     def test_invoke_builds_in_temp_copy(self):
         adapter = rs.RoslynSecGuardAdapter()
         calls = []
