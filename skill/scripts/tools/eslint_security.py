@@ -21,6 +21,27 @@ RULE_CWE = {
 }
 
 
+# Per-rule severity by impact class (#1118). invoke() forces every rule to
+# eslint 'error' level purely to ENABLE it, so the eslint level carries no
+# severity signal -- severity is derived here from what each rule detects:
+# direct code/command execution -> HIGH; traversal, XSS/CSRF, DoS, weak-crypto,
+# and the heuristic (false-positive-prone) checks -> MEDIUM. This is the
+# calibration surface; adjust the assignments here.
+RULE_SEVERITY = {
+    "security/detect-eval-with-expression": "HIGH",       # arbitrary code execution
+    "security/detect-non-literal-require": "HIGH",        # arbitrary module load -> code exec
+    "security/detect-child-process": "HIGH",              # command execution
+    "security/detect-non-literal-fs-filename": "MEDIUM",  # path traversal
+    "security/detect-unsafe-regex": "MEDIUM",             # ReDoS
+    "security/detect-buffer-noassert": "MEDIUM",          # out-of-bounds buffer access
+    "security/detect-disable-mustache-escape": "MEDIUM",  # XSS
+    "security/detect-no-csrf-before-method-override": "MEDIUM",  # CSRF
+    "security/detect-object-injection": "MEDIUM",         # heuristic, FP-prone
+    "security/detect-possible-timing-attacks": "MEDIUM",  # heuristic, FP-prone
+    "security/detect-pseudoRandomBytes": "MEDIUM",        # weak randomness
+}
+
+
 class EslintSecurityAdapter:
     name = "eslint-security"
     prefix = "ESS"
@@ -98,7 +119,7 @@ class EslintSecurityAdapter:
                 out.append(make_finding(
                     self, n, group,
                     title=msg.get("message", rule),
-                    severity="HIGH" if msg.get("severity") == 2 else "MEDIUM",
+                    severity=RULE_SEVERITY.get(rule, "MEDIUM"),
                     category="code_security",
                     location={"file": rel, "line_start": msg.get("line", 1)},
                     description=f"eslint-plugin-security rule {rule} triggered.",
