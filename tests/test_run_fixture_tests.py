@@ -103,6 +103,41 @@ class TestRunTests(unittest.TestCase):
         self.assertNotIn("-k", cmd)
         self.assertIn("/opt/panopticon/tests/tools", cmd)
 
+    def test_run_tests_is_bounded_by_timeout(self):
+        with mock.patch.object(rft.subprocess, "run", return_value=_Res(0)) as m:
+            rft.run_tests("tag")
+        self.assertEqual(m.call_args.kwargs.get("timeout"), rft.TEST_TIMEOUT)  # #1114
+
+    def test_run_tests_timeout_returns_124(self):
+        with mock.patch.object(rft.subprocess, "run",
+                               side_effect=rft.subprocess.TimeoutExpired("cmd", rft.TEST_TIMEOUT)):
+            self.assertEqual(rft.run_tests("tag"), 124)  # bounded, not an infinite hang
+
+
+class TestDockerTimeouts(unittest.TestCase):
+    """#1113: docker probes and the image build must all be time-bounded."""
+
+    def test_docker_available_probe_carries_timeout(self):
+        with mock.patch.object(rft.subprocess, "run", return_value=_Res(0)) as m:
+            rft.docker_available()
+        self.assertEqual(m.call_args.kwargs.get("timeout"), rft.PROBE_TIMEOUT)
+
+    def test_image_exists_probe_carries_timeout(self):
+        with mock.patch.object(rft.subprocess, "run", return_value=_Res(0)) as m:
+            rft.image_exists("tag")
+        self.assertEqual(m.call_args.kwargs.get("timeout"), rft.PROBE_TIMEOUT)
+
+    def test_build_image_carries_timeout(self):
+        with mock.patch.object(rft.subprocess, "run", return_value=_Res(0)) as m:
+            rft.build_image("tag")
+        self.assertEqual(m.call_args.kwargs.get("timeout"), rft.BUILD_TIMEOUT)
+
+    def test_probe_timeout_is_unavailable_not_crash(self):
+        with mock.patch.object(rft.subprocess, "run",
+                               side_effect=rft.subprocess.TimeoutExpired("cmd", rft.PROBE_TIMEOUT)):
+            self.assertFalse(rft.docker_available())
+            self.assertFalse(rft.image_exists("tag"))
+
 
 class TestMain(unittest.TestCase):
     def _manifest(self, d):
