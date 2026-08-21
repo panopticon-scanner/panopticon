@@ -275,6 +275,31 @@ class TestGhRetry(unittest.TestCase):
         self.assertEqual(runner.call_index, 5)  # all 5 attempts made
         self.assertEqual(sleep_calls, [60, 120, 180, 240])  # sleeps before attempts 2-5
 
+    def test_timeout_engages_retry_then_succeeds(self):
+        # #1103: a hung gh must engage the retry/backoff, not block forever.
+        sleep_calls = []
+        calls = {"n": 0}
+        def runner(argv, **kw):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise triage.subprocess.TimeoutExpired(argv, triage.GH_TIMEOUT)
+            return type("R", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
+        result = triage.gh(["gh", "test"], runner=runner, sleep=sleep_calls.append)
+        self.assertEqual(result, "ok")
+        self.assertEqual(calls["n"], 2)      # retried after the timeout
+        self.assertEqual(sleep_calls, [60])  # backed off once
+
+    def test_persistent_timeout_raises_after_retries(self):
+        def runner(argv, **kw):
+            raise triage.subprocess.TimeoutExpired(argv, triage.GH_TIMEOUT)
+        with self.assertRaises(RuntimeError):
+            triage.gh(["gh", "test"], runner=runner, sleep=lambda s: None)
+
+    def test_default_runner_carries_timeout(self):
+        # #1103: the real runner bakes in the hard timeout.
+        self.assertEqual(triage.default_gh_runner().keywords.get("timeout"),
+                         triage.GH_TIMEOUT)
+
 
 class TestGhEnv(unittest.TestCase):
     """#486: config-declared gh account selection."""
