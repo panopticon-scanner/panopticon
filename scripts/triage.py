@@ -182,18 +182,36 @@ def gh_env(config_path=None):
     return env
 
 
+# Hard bound on each gh invocation so a hung gh (interactive auth prompt on a
+# misconfigured GH_CONFIG_DIR, a stalled TLS handshake, a GitHub outage) engages
+# the retry/backoff below instead of blocking the unattended pipeline (#1103).
+GH_TIMEOUT = 120
+
+
 def default_gh_runner():
-    """subprocess.run partial carrying the config-declared env (#486). Kept as
-    a factory so gh_env is re-read per call site construction -- tests inject
-    their own runner and never hit this."""
-    return functools.partial(subprocess.run, env=gh_env())
+    """subprocess.run partial carrying the config-declared env (#486) and a hard
+    timeout (#1103). Kept as a factory so gh_env is re-read per call site
+    construction -- tests inject their own runner and never hit this."""
+    return functools.partial(subprocess.run, env=gh_env(), timeout=GH_TIMEOUT)
 
 
 def gh(argv, runner=None, sleep=time.sleep):
     if runner is None:
         runner = default_gh_runner()
     for attempt in range(1, 6):
-        r = runner(argv, capture_output=True, text=True)
+        try:
+            r = runner(argv, capture_output=True, text=True)
+        except subprocess.TimeoutExpired:
+            # The finding's core: without a timeout the retry logic never engages
+            # because subprocess.run never returns. Now a hang is a retryable
+            # failure -- back off and retry, else give up loudly (#1103).
+            if attempt < 5:
+                backoff = 60 * attempt
+                print("gh timed out (attempt %d); backing off %ds"
+                      % (attempt, backoff), file=sys.stderr, flush=True)
+                sleep(backoff)
+                continue
+            raise RuntimeError("%s timed out after retries" % " ".join(argv[:4]))
         if r.returncode == 0:
             return r.stdout
         err = (r.stderr or "").strip()
