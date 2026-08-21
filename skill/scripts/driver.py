@@ -150,13 +150,32 @@ def _ensure_run_symlinks(review_root):
         pass
 
 
+def _prompt_safe(text):
+    """Neutralize characters that could break prompt-line structure so a hostile
+    filename cannot inject bullet lines into a reviewer's prompt (#1190 AGT-A1A).
+    C0/C1 control chars, DEL, and the Unicode line/paragraph separators are
+    rendered as inert \\xNN / \\uNNNN escapes; ordinary characters (including
+    non-ASCII) pass through unchanged, so legitimate paths are untouched."""
+    out = []
+    for ch in text:
+        o = ord(ch)
+        if o < 0x20 or o == 0x7f or 0x80 <= o <= 0x9f or o in (0x2028, 0x2029):
+            out.append("\\x%02x" % o if o < 0x100 else "\\u%04x" % o)
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def _abs_file_list(review_root, files):
     """Bullet list of files absolutized against review_root (#975): the reviewer
     subagent inherits the HOST's cwd, not review_root/the --pr worktree, so a
     bare-relative path resolves against the wrong tree. File-list specific — do
-    NOT route tests or other bullet lists through this; they stay repo-relative."""
+    NOT route tests or other bullet lists through this; they stay repo-relative.
+    Paths are prompt-sanitized (#1190) so a control char in a filename cannot
+    inject prompt lines."""
     return "\n".join(
-        "- " + os.path.abspath(os.path.join(review_root, f)) for f in files
+        "- " + _prompt_safe(os.path.abspath(os.path.join(review_root, f)))
+        for f in files
     ) or "- (no files)"
 
 
