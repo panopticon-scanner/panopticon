@@ -185,6 +185,29 @@ class TestCreateEmptyStdout(unittest.TestCase):
             url = file_issues.create("t", "b", ["self-scan"], dry=False)
         self.assertIsNone(url)  # gave up after retries; run continues, no exception
 
+    def test_create_passes_timeout_to_gh(self):
+        # #1104: the network `gh issue create` call must be bounded.
+        captured = {}
+        def _run(cmd, **kw):
+            captured.update(kw)
+            return _completed(0, "https://gh/issues/1")
+        with mock.patch.object(file_issues.subprocess, "run", side_effect=_run), \
+             mock.patch.object(file_issues.time, "sleep"):
+            url = file_issues.create("t", "b", ["self-scan"], dry=False)
+        self.assertEqual(url, "https://gh/issues/1")
+        self.assertEqual(captured.get("timeout"), file_issues.GH_CREATE_TIMEOUT)
+
+    def test_persistent_timeout_returns_none_without_hanging(self):
+        # A hung gh is retried, then abandoned (un-ledgered, resumable) -- bounded,
+        # never an infinite block (#1104).
+        def _run(cmd, **kw):
+            raise file_issues.subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+        with mock.patch.object(file_issues.subprocess, "run", side_effect=_run), \
+             mock.patch.object(file_issues.time, "sleep") as slept:
+            url = file_issues.create("t", "b", ["self-scan"], dry=False)
+        self.assertIsNone(url)
+        slept.assert_called()
+
 
 def test_body_fingerprint_and_id_are_backtick_safe():
     f = {

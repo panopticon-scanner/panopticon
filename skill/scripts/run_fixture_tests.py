@@ -14,6 +14,13 @@ DOCKERFILE = REPO_ROOT / "Dockerfile.fixtures"
 MANIFEST = REPO_ROOT / "tests" / "fixtures" / "manifest.json"
 DEFAULT_IMAGE = "panopticon-fixtures:latest"
 
+# Hard bounds so a wedged docker daemon, a stalled image build (e.g. a network
+# fetch stuck inside Dockerfile.fixtures), or a hung scanner cannot block the
+# fixture-test pipeline indefinitely (#1113, #1114).
+PROBE_TIMEOUT = 30     # docker version / image inspect probes
+BUILD_TIMEOUT = 1800   # docker build (image build can be slow)
+TEST_TIMEOUT = 1800    # dockerized pytest suite
+
 
 def run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
     print("+", " ".join(cmd), flush=True)
@@ -29,9 +36,10 @@ def docker_available() -> bool:
         result = subprocess.run(  # nosec B603
             [_docker_bin(), "version"],
             capture_output=True,
+            timeout=PROBE_TIMEOUT,
         )
         return result.returncode == 0
-    except (FileNotFoundError, OSError):
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         return False
 
 
@@ -40,9 +48,10 @@ def image_exists(tag: str) -> bool:
         result = subprocess.run(  # nosec B603
             [_docker_bin(), "image", "inspect", tag],
             capture_output=True,
+            timeout=PROBE_TIMEOUT,
         )
         return result.returncode == 0
-    except (FileNotFoundError, OSError):
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         return False
 
 
@@ -52,7 +61,7 @@ def build_image(tag: str) -> None:
         "-f", str(DOCKERFILE),
         "-t", tag,
         str(REPO_ROOT),
-    ])
+    ], timeout=BUILD_TIMEOUT)
 
 
 def check_fixtures(tag: str, fixtures: list[dict]) -> tuple[list[str], list[str]]:
@@ -132,7 +141,12 @@ def run_tests(tag: str, test: str | None = None) -> int:
         tag,
         *pytest_args,
     ]
-    result = subprocess.run(cmd)  # nosec B603
+    try:
+        result = subprocess.run(cmd, timeout=TEST_TIMEOUT)  # nosec B603
+    except subprocess.TimeoutExpired:
+        print("fixture test run timed out after %ds; aborting" % TEST_TIMEOUT,
+              file=sys.stderr, flush=True)
+        return 124
     return result.returncode
 
 

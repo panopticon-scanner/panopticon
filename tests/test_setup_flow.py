@@ -178,6 +178,29 @@ class TestSetupFlow(unittest.TestCase):
         es = next(c for c in checks if c[0] == "enforced-shells")
         self.assertIsNone(es[1])
 
+    def test_readiness_probes_carry_timeout(self):
+        # #1106: every docker/codex readiness probe must be bounded.
+        d = _repo(self)
+        os.makedirs(os.path.join(d, ".git"))
+        seen = []
+        def runner(cmd, **kw):
+            seen.append(kw.get("timeout"))
+            return type("R", (), {"returncode": 0})()
+        setup_flow.readiness(d, host="codex", runner=runner)  # docker + codex probes
+        self.assertTrue(seen)
+        self.assertTrue(all(t == setup_flow._PROBE_TIMEOUT for t in seen), seen)
+
+    def test_readiness_hung_probe_is_failed_check_not_crash(self):
+        # A probe that times out (or a missing binary) becomes a failed check,
+        # never an unhandled exception that freezes the preflight (#1106).
+        d = _repo(self)
+        os.makedirs(os.path.join(d, ".git"))
+        def runner(cmd, **kw):
+            raise setup_flow.subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+        checks = {c[0]: c[1] for c in setup_flow.readiness(
+            d, host="claude", runner=runner)}
+        self.assertFalse(checks["docker"])
+
 
 if __name__ == "__main__":
     unittest.main()

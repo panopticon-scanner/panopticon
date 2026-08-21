@@ -288,6 +288,12 @@ def key_for(f, rejected):
     )
 
 
+# Hard bound on the network `gh issue create` call so a hung gh (network
+# partition, GitHub slowness, auth prompt) cannot block the filing run
+# indefinitely (#1104). A timeout is treated as a retryable failed attempt.
+GH_CREATE_TIMEOUT = 60
+
+
 def create(title, body, labels, dry, throttle=0.0, env=None):
     if dry:
         print("\n" + "=" * 78)
@@ -300,10 +306,25 @@ def create(title, body, labels, dry, throttle=0.0, env=None):
         env = triage.gh_env()
     gh_bin = shutil.which("gh") or "gh"
     for attempt in range(1, 6):
-        r = subprocess.run([gh_bin, "issue", "create", "--title", title,  # nosec B603
-                            "--body", body, "--label", ",".join(labels)],
-                           capture_output=True, text=True,
-                           env=env)
+        try:
+            r = subprocess.run([gh_bin, "issue", "create", "--title", title,  # nosec B603
+                                "--body", body, "--label", ",".join(labels)],
+                               capture_output=True, text=True,
+                               env=env, timeout=GH_CREATE_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            # A hung gh must not block the run indefinitely (#1104): back off
+            # and retry, else leave un-ledgered for a later resume like the
+            # empty-stdout path below, rather than halting the whole run.
+            if attempt < 5:
+                backoff = 60 * attempt
+                print("gh create timed out after %ds (attempt %d); backing off %ds"
+                      % (GH_CREATE_TIMEOUT, attempt, backoff),
+                      file=sys.stderr, flush=True)
+                time.sleep(backoff)
+                continue
+            print("FAILED (gh create timed out): %s" % title,
+                  file=sys.stderr, flush=True)
+            return None
         if r.returncode == 0:
             out = r.stdout.strip().splitlines()
             if out:

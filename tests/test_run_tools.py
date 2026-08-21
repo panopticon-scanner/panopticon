@@ -33,6 +33,20 @@ class TestRunTools(unittest.TestCase):
         # because the panopticon-tools image isn't built -> unavailable.
         self.assertFalse(rt.docker_available(runner=lambda cmd, **kw: _FakeResult(returncode=1)))
 
+    def test_docker_available_probe_carries_timeout(self):
+        # #1112: the gating probe must be bounded so a wedged daemon can't hang.
+        seen = {}
+        def runner(cmd, **kw):
+            seen.update(kw)
+            return _FakeResult(returncode=0)
+        rt.docker_available(runner=runner)
+        self.assertEqual(seen.get("timeout"), rt.DOCKER_PROBE_TIMEOUT)
+
+    def test_docker_unavailable_when_probe_times_out(self):
+        def runner(cmd, **kw):
+            raise rt.subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+        self.assertFalse(rt.docker_available(runner=runner))  # bounded, no hang
+
     def test_recommendable_tools_is_the_selectable_universe(self):
         # #1053: the scout must recommend tools only from the set run_tools can
         # actually select/run -- the base SARIF tools + LANG_TOOL SAST + the
