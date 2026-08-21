@@ -116,16 +116,29 @@ def _seed_config(repo):
     return path, True
 
 
+# Hard bound on each readiness probe so an installed-but-hung tool (Docker
+# Desktop stuck starting, a wedged daemon socket, a stalled codex CLI) cannot
+# freeze the preflight (#1106). A timeout or a missing binary yields None, which
+# the getattr(..., "returncode", 1) checks below read as a failed probe.
+_PROBE_TIMEOUT = 30
+
+
+def _probe(runner, cmd):
+    try:
+        return runner(cmd, capture_output=True, text=True, timeout=_PROBE_TIMEOUT)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+
+
 def _check_docker(runner):
     checks = []
-    r = runner(["docker", "version"], capture_output=True, text=True)
+    r = _probe(runner, ["docker", "version"])
     docker_ok = getattr(r, "returncode", 1) == 0
     checks.append(("docker", docker_ok,
                    "ok" if docker_ok else
                    "docker unavailable -- install/start Docker or run with --no-tools"))
     if docker_ok:
-        r2 = runner(["docker", "image", "inspect", "panopticon-tools"],
-                    capture_output=True, text=True)
+        r2 = _probe(runner, ["docker", "image", "inspect", "panopticon-tools"])
         img_ok = getattr(r2, "returncode", 1) == 0
         checks.append(("tools-image", img_ok,
                        "ok" if img_ok else
@@ -167,7 +180,7 @@ def _check_host_shells(host, runner):
     resolved_host = host or dispatch._detect_host()
     checks = []
     if resolved_host == "codex":
-        codex = runner(["codex", "--version"], capture_output=True, text=True)
+        codex = _probe(runner, ["codex", "--version"])
         codex_ok = getattr(codex, "returncode", 1) == 0
         checks.append(("codex-cli", codex_ok,
                        "ok" if codex_ok else

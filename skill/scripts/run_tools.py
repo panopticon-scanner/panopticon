@@ -54,6 +54,9 @@ def recommendable_tools():
 # Max seconds to let a single docker-run tool invocation run before it's killed;
 # prevents a hung tool from blocking the whole batch (CD-007).
 TOOL_TIMEOUT = 900
+# The gating docker probe runs before any tool; bound it so a wedged daemon
+# socket cannot hang the whole scan pipeline (#1112).
+DOCKER_PROBE_TIMEOUT = 30
 
 
 def validate_output_dir(target, out_dir):
@@ -77,7 +80,8 @@ def docker_available(image="panopticon-tools", runner=None):
     runner = runner or subprocess.run
     try:
         res = runner(["docker", "image", "inspect", image],
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     timeout=DOCKER_PROBE_TIMEOUT)
         return getattr(res, "returncode", 1) == 0
     except Exception:  # noqa: BLE001
         return False

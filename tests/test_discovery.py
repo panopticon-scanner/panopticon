@@ -1152,7 +1152,7 @@ def test_setup_readiness_scalar_match_only_reports_gap_not_ok(tmp_path):
     (tmp_path / ".panopticon" / "groups.yml").write_text(
         "groups:\n  Bad:\n    match: src/bad/**\n")   # scalar, not a list
 
-    def ok_runner(argv, capture_output, text):
+    def ok_runner(argv, capture_output, text, timeout=None):
         class R: returncode = 0; stdout = ""; stderr = ""
         return R()
 
