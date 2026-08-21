@@ -97,6 +97,35 @@ class TestVerifyPrimary(unittest.TestCase):
         with mock.patch("scripts.driver.ocrdb.load_bundle", return_value={"domains": {}}):
             self.assertTrue(driver.verify_done(self.root, self.manifest))
 
+    def test_verify_done_false_when_bundle_stamp_mismatches(self):
+        # #1192 AGT-C1A: _verify_cell_done binds a verdict bundle to its cell by
+        # run_id+domain+group+stage. A bundle carrying a foreign/forged stamp
+        # (stale run, wrong cell/stage) must NOT satisfy completion -- the cell
+        # stays not-done and re-dispatches, so a cross-run bundle cannot stand in
+        # for a real same-run verdict. (Happy-path sibling proves a matching
+        # stamp DOES verify, so a False here isolates to the stamp check.)
+        _cell(self.root, "app", "SEC", [{"domain": "SEC", "code": "SEC-A1A",
+              "severity": "HIGH", "title": "t", "category": "authz",
+              "location": {"file": "a.py", "line_start": 1}}])
+        cell = driver._load_cell_findings(self.root, self.manifest, "app", "SEC")
+        vd = os.path.join(self.root, ".panopticon", "verdicts")
+        os.makedirs(vd, exist_ok=True)
+        good = {"run_id": "RID", "role": "domain_advisor",
+                "domain": "SEC", "group": "app", "stage": "primary"}
+        for bad in ({**good, "run_id": "STALE"},   # foreign run
+                    {**good, "domain": "QAL"},      # wrong domain
+                    {**good, "group": "other"},     # wrong group
+                    {**good, "stage": "backup"}):   # wrong stage
+            with open(os.path.join(vd, "verdicts-app-SEC.json"), "w") as fh:
+                json.dump({"verdicts": [{"finding_id": cell[0]["id"],
+                                         "verdict": "CONFIRMED"}],
+                           "_panopticon": bad}, fh)
+            with mock.patch("scripts.driver.ocrdb.load_bundle",
+                            return_value={"domains": {}}):
+                self.assertFalse(
+                    driver.verify_done(self.root, self.manifest),
+                    "bundle with mismatched stamp %r must not verify" % bad)
+
 
 class TestVerifyBackup(unittest.TestCase):
     def setUp(self):
