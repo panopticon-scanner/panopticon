@@ -233,7 +233,7 @@
           "status": "active"
         },
         "AGT-B1A": {
-          "criteria": "Qualifies when a mediation/enforcement mechanism EXISTS but fails to cover a class of invocations \u2014 a coverage gap in the control itself (e.g. a write-guard that gates Write/Edit but not Bash). Axis: an existing-but-incomplete control is always B1A; where NO control mediates the action, route by what is absent \u2014 missing human approval on a destructive action is B1B, absent scope bounds on a write-capable tool is B1C, and an over-broad grant of tools beyond the task is B1D. A control that runs but mis-parses an undocumented input shape is instead ARC-F2C.",
+          "criteria": "Qualifies when a mediation/enforcement mechanism EXISTS but fails to cover a class of invocations \u2014 a coverage gap in the control itself (e.g. a write-guard that gates Write/Edit but not Bash). Axis: an existing-but-incomplete control is always B1A; where NO control mediates the action, route by what is absent \u2014 missing human approval on a destructive action is B1B, absent scope bounds on a write-capable tool is B1C, and an over-broad grant of tools beyond the task is B1D. A control that runs but mis-parses an undocumented input shape is instead ARC-F2C. Severity is graded by the CAPABILITY of the ungated invocation class, not the mere existence of the gap: HIGH when that class can write, execute, or exfiltrate (an ungated Bash/Edit/Write, or any path to un-adjudicated egress); MEDIUM when the ungated class is read-only and its output is adjudicated \u2014 e.g. a review scope-fence constraining Read/Grep/Glob only, with no write/exec/egress channel \u2014 especially where the gap is disclosed.",
           "cwe": [
             "CWE-863",
             "CWE-284"
@@ -2972,7 +2972,7 @@
           "categories": {
             "1": "locale-aware-formatting"
           },
-          "name": "plural-format"
+          "name": "locale-formatting"
         },
         "C": {
           "categories": {
@@ -4612,6 +4612,9 @@
             "corpus"
           ],
           "recurrence": 2,
+          "see_also": [
+            "SEC-C1F"
+          ],
           "status": "active"
         },
         "SEC-C1D": {
@@ -4642,6 +4645,25 @@
             "corpus"
           ],
           "recurrence": 1,
+          "status": "active"
+        },
+        "SEC-C1F": {
+          "criteria": "Qualifies when the caller is authorized for the operation but the code never verifies the caller owns the specific object/record it acts on (OWASP API1 BOLA, CWE-639/566) \u2014 a per-record ownership comparison is missing. Distinct from SEC-C1C missing-function-level-authorization (CWE-862/285), which is whether the caller may invoke the operation at all; the fixes differ (a per-record ownership check vs a route/function guard). A finding citing both should be split, one to each.",
+          "cwe": [
+            "CWE-639",
+            "CWE-566"
+          ],
+          "default_severity": "HIGH",
+          "examples": [
+            "BursarBuddy BB-0002: a profile endpoint authenticates the session but never compares the session id to the requested id, so any user reads another user's PII. Proof: proofs/test_bb_0002_profile_idor.py (passing)."
+          ],
+          "name": "missing-object-level-authorization",
+          "provenance": [
+            "proof-backed"
+          ],
+          "see_also": [
+            "SEC-C1C"
+          ],
           "status": "active"
         },
         "SEC-C2A": {
@@ -4679,6 +4701,24 @@
           "recurrence": 2,
           "see_also": [
             "SEC-C2A"
+          ],
+          "status": "active"
+        },
+        "SEC-C2C": {
+          "criteria": "Qualifies when an observable response discrepancy (status code, message, or timing) lets an attacker classify whether an identifier (email, username) exists \u2014 CWE-203/204/205. The response oracle is the defect, independent of any brute-force protection (SEC-C2A) on the same endpoint.",
+          "cwe": [
+            "CWE-203",
+            "CWE-204",
+            "CWE-205"
+          ],
+          "default_severity": "MEDIUM",
+          "examples": [
+            "BursarBuddy BB-0003: login returns 404 \"No account found with that email\" versus 401 \"Incorrect password\", classifying any address in one request. Proof: proofs/test_bb_0003_user_enumeration.py (passing).",
+            "BursarBuddy BB-0004: signup returns 409 \"That email is already registered\" versus 201, the same oracle on a different route. Proof: proofs/test_bb_0004_signup_enumeration.py (passing)."
+          ],
+          "name": "user-enumeration-via-response-discrepancy",
+          "provenance": [
+            "proof-backed"
           ],
           "status": "active"
         },
@@ -6444,5 +6484,5 @@
   },
   "license": "CC BY-SA 4.0",
   "schema_version": "1.0",
-  "version": "0.3.1"
+  "version": "0.4.1"
 }

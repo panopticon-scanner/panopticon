@@ -372,6 +372,9 @@ def run_plan(plan, root, schema=DEFAULT_SCHEMA, instructions=DEFAULT_INSTRUCTION
     for entry in plan:
         validate_entry(entry, root)
     pending = group_runner.pending_entries(plan)
+    problems = group_runner.verify_plan_entries(plan)
+    if problems:
+        raise ValueError("plan verification failed: %s" % "; ".join(problems))
     if not pending:
         return {"planned": len(plan), "skipped": len(plan), "completed": 0,
                 "failed": []}

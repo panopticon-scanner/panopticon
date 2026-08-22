@@ -1432,7 +1432,7 @@ class TestReviewMatrixEndToEnd(unittest.TestCase):
         report = driver._load_json(driver._pano(d, "report.json"))
         codes = [f.get("code") for f in report.get("findings", [])]
         self.assertTrue(any(c and c.startswith("COD") for c in codes))
-        self.assertEqual(report["meta"]["ocrdb_version"], "0.3.1")
+        self.assertEqual(report["meta"]["ocrdb_version"], "0.4.1")
 
 
 class TestVerifyMatrixEndToEnd(unittest.TestCase):
