@@ -102,11 +102,20 @@ def hunk_map(repo, base):
             full = os.path.join(repo, rel)
             if os.path.islink(full):
                 continue
+            # #1260: resolve symlinks (including intermediate directory symlinks)
+            # and refuse to count any path that escapes the repository.
+            real_full = os.path.realpath(full)
+            real_repo = os.path.realpath(repo)
+            try:
+                if os.path.commonpath([real_full, real_repo]) != real_repo:
+                    continue
+            except ValueError:
+                continue
             try:
                 # #1083: count newlines in bounded chunks so an untracked file
                 # with few/no newlines (a huge blob) can't be buffered wholesale.
                 # Matches `sum(1 for _ in fh)`: a final newline-less line counts.
-                with open(full, "rb") as fh:
+                with open(real_full, "rb") as fh:
                     n = 0
                     last = b""
                     while True:

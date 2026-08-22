@@ -362,3 +362,26 @@ class TestDiffMapFailures(unittest.TestCase):
         hm = dm.hunk_map(".", "nonexistent-base")
         self.assertEqual(hm, {})
 
+    def test_hunk_map_skips_untracked_symlink_outside_repo(self):
+        # #1260: untracked-file line count must not follow symlinks outside repo.
+        with tempfile.TemporaryDirectory() as outside_dir:
+            outside = os.path.join(outside_dir, "outside_target.txt")
+            with open(outside, "w", encoding="utf-8") as fh:
+                fh.write("1\n2\n3\n4\n5\n")
+            with tempfile.TemporaryDirectory() as d:
+                _git(d, "init", "-q")
+                _git(d, "config", "user.name", "T")
+                _git(d, "config", "user.email", "t@example.com")
+                with open(os.path.join(d, "committed.txt"), "w", encoding="utf-8") as fh:
+                    fh.write("line\n")
+                _git(d, "add", "committed.txt")
+                _git(d, "commit", "-qm", "init")
+                with open(os.path.join(d, "safe.txt"), "w", encoding="utf-8") as fh:
+                    fh.write("a\nb\nc\n")
+                os.symlink(outside, os.path.join(d, "link.txt"))
+                hm = diff_map.hunk_map(d, "HEAD")
+                self.assertIn("safe.txt", hm)
+                self.assertEqual(hm["safe.txt"], [(1, 3)])
+                self.assertNotIn("link.txt", hm)
+                self.assertNotIn("outside_target.txt", hm)
+
