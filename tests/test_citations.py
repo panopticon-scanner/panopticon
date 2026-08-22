@@ -123,7 +123,9 @@ class _FakeResp:
 
     def read(self, amt=None):
         self.last_read_size = amt
-        return self._b
+        if amt is None or amt < 0:
+            return self._b
+        return self._b[:amt]
 
     def __enter__(self):
         return self
@@ -199,6 +201,19 @@ class TestEpss(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             out = cit.epss_lookup(["cve-2023-1234"], os.path.join(d, "c.json"), opener=opener)
             self.assertIn("CVE-2023-1234", out)  # canonical upper-case key
+
+    def test_fake_resp_honors_amt(self):
+        # Regression for #1204: _FakeResp.read(amt) must return up to amt bytes,
+        # mirroring urllib.response. The old implementation always returned the
+        # whole buffer, masking the EPSS response-cap behavior.
+        payload = {"data": [{"cve": "CVE-2023-1234", "epss": "0.1"}]}
+        resp = _FakeResp(payload)
+        full = resp.read()
+        encoded = json.dumps(payload).encode()
+        self.assertEqual(full, encoded)
+        self.assertEqual(resp.read(5), encoded[:5])
+        self.assertEqual(resp.read(0), b"")
+        self.assertEqual(resp.last_read_size, 0)
 
     def test_request_capped_read_and_user_agent(self):
         holder = {}
