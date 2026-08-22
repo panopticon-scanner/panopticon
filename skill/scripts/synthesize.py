@@ -204,8 +204,13 @@ def load_findings(paths):
                           % (forbidden, f.get("id", "?"), path), file=sys.stderr)
                     f.pop(forbidden, None)
             nf = normalize_finding(f)
-            if not ID_RE.match(nf.get("id") or ""):
-                nf["id"] = evidence_mod.matrix_finding_id(nf)
+            # #1109: never trust an agent-supplied `id`. A well-formed but crafted
+            # or colliding id would otherwise be kept verbatim and could inherit an
+            # unrelated CONFIRMED verdict via match_verdict_by_id (a fake finding
+            # made gate-eligible with no advisor). Always content-derive it; the
+            # driver's _load_cell_findings regenerates identically so the advisor's
+            # finding_id echo still binds.
+            nf["id"] = evidence_mod.matrix_finding_id(nf)
             if group is not None:
                 nf["_group"] = group
             out.append(nf)

@@ -111,4 +111,8 @@ class TestX0XEmissionEndToEnd(unittest.TestCase):
             self.assertEqual(c["domain"], "ARC")
             self.assertEqual(c["fallback_code"], "ARC-X0X")
             self.assertEqual(c["proposed_name"], "ungated-fixture-provisioning")
-            self.assertEqual(c["occurrences"][0]["finding_id"], "AR-001")
+            # #1109: the occurrence id is the finding's CONTENT-derived id, not the
+            # agent-supplied "AR-001" -- content-derived and ARC-domain-scoped.
+            fid = c["occurrences"][0]["finding_id"]
+            self.assertNotEqual(fid, "AR-001")
+            self.assertRegex(fid, r"^ARC-\d{3,}$")
