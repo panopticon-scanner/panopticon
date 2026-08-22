@@ -1,4 +1,6 @@
 import json
+import os
+import tempfile
 import unittest
 from unittest import mock
 
@@ -87,6 +89,31 @@ class TestDependencyCheckAdapter(unittest.TestCase):
                         stdout, rc = adapter.invoke("/tmp/fake")
         self.assertEqual(stdout, b"{\"report\": true}")
         self.assertEqual(rc, 7)
+
+
+class TestDependencyCheckIsApplicable(unittest.TestCase):
+    def test_applicable_when_pom_xml_present(self):
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, "pom.xml"), "w").close()
+            self.assertTrue(dc.DependencyCheckAdapter().is_applicable(d))
+
+    def test_applicable_when_build_gradle_present(self):
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, "build.gradle"), "w").close()
+            self.assertTrue(dc.DependencyCheckAdapter().is_applicable(d))
+
+    def test_applicable_when_build_gradle_kts_present(self):
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, "build.gradle.kts"), "w").close()
+            self.assertTrue(dc.DependencyCheckAdapter().is_applicable(d))
+
+    def test_not_applicable_without_java_build_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, "package.json"), "w").close()
+            self.assertFalse(dc.DependencyCheckAdapter().is_applicable(d))
+
+    def test_not_applicable_when_target_missing(self):
+        self.assertFalse(dc.DependencyCheckAdapter().is_applicable("/nonexistent/path"))
 
 
 if __name__ == "__main__":
