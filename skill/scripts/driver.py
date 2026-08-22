@@ -251,16 +251,30 @@ def load_committed_groups(review_root):
     return copy.deepcopy(groups), list(errors)
 
 
-def _run_child(cmd, review_root, phase):
+# Hard bound per phase so a wedged discovery/synthesize or a hung tool runner
+# cannot block the whole (resumable, CI-automatable) driver indefinitely (#1094).
+# discovery/synthesize are fast; the tools phase is a generous backstop above
+# run_tools' own per-tool TOOL_TIMEOUT=900 -- it catches a wedged run_tools
+# harness, not a single slow scanner.
+_CHILD_TIMEOUTS = {"discovery": 600, "tools": 7200, "synthesize": 600}
+_CHILD_TIMEOUT_DEFAULT = 600
+
+
+def _run_child(cmd, review_root, phase, timeout=None):
     """subprocess.run for a deterministic phase, converting a spawn-level OSError
-    (ENOENT on the interpreter, EMFILE, a bad cwd, ...) into a DriverError so
-    run()'s handler yields a clean status:error instead of a raw traceback
-    (#1033; #1021/5.0-14 covered only the --pr acquire path). Returns the
-    CompletedProcess on a normal spawn — a non-zero exit is the caller's to
-    interpret, not a spawn error."""
+    (ENOENT on the interpreter, EMFILE, a bad cwd, ...) or a phase timeout into a
+    DriverError so run()'s handler yields a clean status:error instead of a raw
+    traceback or an unbounded hang (#1033; #1094; #1021/5.0-14 covered only the
+    --pr acquire path). Returns the CompletedProcess on a normal spawn — a
+    non-zero exit is the caller's to interpret, not a spawn error."""
+    if timeout is None:
+        timeout = _CHILD_TIMEOUTS.get(phase, _CHILD_TIMEOUT_DEFAULT)
     try:
         return subprocess.run(cmd, cwd=review_root, capture_output=True,  # nosec B603
-                              text=True, env=_child_env())
+                              text=True, env=_child_env(), timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise DriverError("%s: %s timed out after %ss"
+                          % (phase, cmd[1] if len(cmd) > 1 else cmd[0], timeout))
     except OSError as exc:
         raise DriverError("%s: could not spawn %s: %s"
                           % (phase, cmd[1] if len(cmd) > 1 else cmd[0], exc))

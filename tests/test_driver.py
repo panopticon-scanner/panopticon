@@ -78,6 +78,29 @@ class TestRunEngine(unittest.TestCase):
             driver.run_engine("/root", {}, [stuck], max_steps=5)
 
 
+class TestRunChildTimeout(unittest.TestCase):
+    """#1094: the discovery/tools/synthesize spawn point is time-bounded, and a
+    phase timeout is a clean DriverError (status:error), not an unbounded hang."""
+
+    def test_passes_phase_timeout(self):
+        seen = {}
+        def fake_run(cmd, **kw):
+            seen.update(kw)
+            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        with mock.patch("scripts.driver.subprocess.run", side_effect=fake_run), \
+             mock.patch("scripts.driver._child_env", return_value={}):
+            driver._run_child(["python", "discovery.py"], "/tmp", "discovery")
+        self.assertEqual(seen.get("timeout"), driver._CHILD_TIMEOUTS["discovery"])
+
+    def test_timeout_becomes_driver_error(self):
+        def fake_run(cmd, **kw):
+            raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+        with mock.patch("scripts.driver.subprocess.run", side_effect=fake_run), \
+             mock.patch("scripts.driver._child_env", return_value={}):
+            with self.assertRaises(driver.DriverError):
+                driver._run_child(["python", "tools.py"], "/tmp", "tools")
+
+
 class TestEmitStatus(unittest.TestCase):
     def test_error_status_returns_exit_1(self):
         buf = io.StringIO()
