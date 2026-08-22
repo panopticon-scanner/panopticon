@@ -187,9 +187,29 @@ def _load_json(path):
         return None
 
 
+def _open_w_nofollow(path):
+    """Open `path` for writing, refusing to follow a symlink at the final path
+    component. A target repo (untrusted under redteam) can pre-commit a
+    `.panopticon` artifact path as a symlink to a file the invoking user can
+    write (a dotfile, authorized_keys, ...); plain open() would follow it and
+    clobber that target. O_NOFOLLOW makes the open fail on a symlink; we then
+    replace the link with a fresh regular file instead of writing through it
+    (#1095 -- mirrors run_manifest's exclusive-create precedent)."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags, 0o644)
+    except OSError:
+        if os.path.islink(path):
+            os.unlink(path)                       # neutralize the link, never follow it
+            fd = os.open(path, flags, 0o644)
+        else:
+            raise
+    return os.fdopen(fd, "w", encoding="utf-8")
+
+
 def _write_json(path, data):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as fh:
+    with _open_w_nofollow(path) as fh:
         json.dump(data, fh, indent=2, sort_keys=True)
     return path
 
@@ -406,7 +426,7 @@ def write_dispatch_request(review_root, run_id, checkpoint, group, entries):
                "group": group, "entries": list(entries)}
     path = _pano(review_root, "dispatch-request.json")
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as fh:
+    with _open_w_nofollow(path) as fh:
         json.dump(request, fh, indent=2)
     return os.path.abspath(path)
 
@@ -902,18 +922,32 @@ def _cell_backup_findings(review_root, manifest, group, domain):
     return out
 
 
-def _backup_scope_files(files, scope):
+def _confined_to_root(review_root, path):
+    """True iff the claim path resolves lexically inside review_root. An absolute
+    path or a `../`-escape resolves outside and is rejected (#1096) -- the claim's
+    location.file is LLM/panel-supplied (steerable by injection planted in the
+    reviewed repo), so it must not be able to point a downstream advisor at files
+    outside the review tree."""
+    if not isinstance(path, str) or not path:
+        return False
+    root = os.path.abspath(review_root)
+    full = os.path.abspath(os.path.join(root, path))
+    return full == root or full.startswith(root + os.sep)
+
+
+def _backup_scope_files(review_root, files, scope):
     """The files a backup advisor needs: the ones its scoped (advisor-confirmed,
     >= F_b) claims cite -- not the whole cell. The domain-advisor is claim-driven
     and its Read/Grep/Glob are unconfined, so a narrow list preserves coverage
     while dropping the whole-cell re-read cost (#1029). Falls back to the full
-    group `files` if ANY scoped claim lacks a resolvable location.file -- a
-    backup must never refute blind."""
+    group `files` if ANY scoped claim lacks a resolvable location.file, or names
+    one that escapes review_root (absolute/`../` -- untrusted, #1096) -- a backup
+    must never refute blind, and never read outside the tree."""
     located = []
     for f in scope:
         loc = f.get("location") if isinstance(f, dict) else None
         path = loc.get("file") if isinstance(loc, dict) else None
-        if not path:
+        if not path or not _confined_to_root(review_root, path):
             return list(files)
         if path not in located:
             located.append(path)
@@ -934,7 +968,7 @@ def _verify_backup_execute(review_root, manifest, host, bundle):
             # #1029: the backup re-reads only its scoped claims' files, not the
             # whole group -- coverage-preserving (claim-driven, unconfined reads).
             entries = [_verify_entry(review_root, manifest, group, d,
-                                     _backup_scope_files(files, c), c,
+                                     _backup_scope_files(review_root, files, c), c,
                                      host, bundle, "backup") for d, c in pending]
             req = write_dispatch_request(review_root, manifest["run_id"], "verify",
                                          group, entries)
@@ -1167,7 +1201,7 @@ def capture_tree_baseline(review_root, runner=subprocess.run):
     except (subprocess.SubprocessError, OSError):
         return None
     os.makedirs(os.path.dirname(baseline), exist_ok=True)
-    with open(baseline, "w", encoding="utf-8") as fh:
+    with _open_w_nofollow(baseline) as fh:
         fh.write(proc.stdout)
     return baseline
 

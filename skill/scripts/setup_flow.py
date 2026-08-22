@@ -45,20 +45,27 @@ def _seed_groups_manifest(repo):
     if os.path.isfile(path):
         names = list((discovery.load_catalog(repo) or {}).keys())
         return path, False, names
+    import groups_schema  # noqa: E402
     files = discovery.discover_repo_files(repo)
     tops = sorted({p.split("/", 1)[0] for p in files
                    if "/" in p and not p.startswith(".")})
+    # #1108: a top-level directory name is untrusted target content -- it may
+    # legally contain ':', '#', quotes, even embedded newlines. Build the
+    # manifest as a data structure, drop any name the schema rejects (injection
+    # chars, '..', control chars), and serialize via yaml.safe_dump. Never
+    # hand-format untrusted names into YAML text: the emitted file is the
+    # authoritative routing config consumed in this same setup run.
+    candidate = {t: {"match": ["%s/**" % t]} for t in tops}
+    parsed, _errors = groups_schema.parse_groups({"groups": candidate})
+    valid = {name: {"match": candidate[name]["match"]} for name in parsed}
+    body = yaml.safe_dump({"groups": valid}, sort_keys=True,
+                          default_flow_style=False, allow_unicode=True)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    lines = ["# panopticon groups catalog -- seeded by --setup (#485).",
-             "# gitignore-flavored globs; first matching group wins; edit and commit.",
-             "groups:"]
-    for t in tops:
-        lines.append("  %s:" % t)
-        lines.append("    match:")
-        lines.append("      - %s/**" % t)
+    header = ("# panopticon groups catalog -- seeded by --setup (#485).\n"
+              "# gitignore-flavored globs; first matching group wins; edit and commit.\n")
     with open(path, "w", encoding="utf-8") as fh:
-        fh.write("\n".join(lines) + "\n")
-    return path, True, tops
+        fh.write(header + body)
+    return path, True, list(valid)
 
 
 seed_groups_manifest = _seed_groups_manifest

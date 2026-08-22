@@ -202,5 +202,31 @@ class TestSetupFlow(unittest.TestCase):
         self.assertFalse(checks["docker"])
 
 
+class TestSeedGroupsManifestInjection(unittest.TestCase):
+    """#1108: hostile top-level directory names must not inject YAML structure
+    into the seeded groups.yml -- the seeder validates via the schema and
+    serializes with yaml.safe_dump instead of hand-formatting untrusted text."""
+
+    def test_injection_dir_names_are_dropped_and_file_parses(self):
+        import yaml as _yaml
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        # a benign dir plus two hostile top-level names: a YAML metacharacter
+        # (':') and an embedded newline -- both legal on POSIX, both would break
+        # or inject under naive "%s:" text-templating.
+        for sub, fname in (("app", "main.py"), ("ev:il", "f.py"), ("ev\nil", "g.py")):
+            os.makedirs(os.path.join(d, sub))
+            with open(os.path.join(d, sub, fname), "w") as fh:
+                fh.write("x = 1\n")
+        os.makedirs(os.path.join(d, ".panopticon"), exist_ok=True)
+        path, created, names = setup_flow._seed_groups_manifest(d)
+        self.assertTrue(created)
+        with open(path, encoding="utf-8") as fh:
+            doc = _yaml.safe_load(fh.read())          # parses cleanly -> no injection
+        self.assertEqual(set(doc["groups"]), {"app"})  # hostile names dropped
+        self.assertEqual(doc["groups"]["app"]["match"], ["app/**"])
+        self.assertEqual(names, ["app"])
+
+
 if __name__ == "__main__":
     unittest.main()

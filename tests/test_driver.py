@@ -854,6 +854,34 @@ class TestSynthesizePhase(unittest.TestCase):
         self.assertNotIn("--diff-context", run.call_args.args[0])
 
 
+class TestArtifactWriteSymlinkSafety(unittest.TestCase):
+    """#1095: a `.panopticon` artifact path pre-committed as a symlink must not
+    be followed -- the link's target (an outside file the invoking user can
+    write) is never clobbered; the artifact lands as a fresh regular file."""
+
+    def test_write_json_does_not_follow_symlink(self):
+        with tempfile.TemporaryDirectory() as d:
+            victim = os.path.join(d, "victim.txt")
+            with open(victim, "w") as fh:
+                fh.write("SECRET")
+            artifact = os.path.join(d, "coverage-app.json")
+            os.symlink(victim, artifact)          # hostile pre-committed symlink
+            driver._write_json(artifact, {"ok": True})
+            with open(victim) as fh:
+                self.assertEqual(fh.read(), "SECRET")   # target untouched
+            self.assertFalse(os.path.islink(artifact))  # link replaced by a real file
+            with open(artifact) as fh:
+                self.assertEqual(json.load(fh), {"ok": True})
+
+    def test_write_json_rewrites_regular_file_normally(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "a.json")
+            driver._write_json(p, {"n": 1})
+            driver._write_json(p, {"n": 2})       # idempotent re-write still works
+            with open(p) as fh:
+                self.assertEqual(json.load(fh), {"n": 2})
+
+
 class TestValidatePhase(unittest.TestCase):
     def _git_repo(self):
         import shutil as _sh
@@ -2416,7 +2444,7 @@ class TestVerifyBackupNarrowing(unittest.TestCase):
         scope = [{"location": {"file": "src/a.py", "line_start": 3}},
                  {"location": {"file": "src/b.py", "line_start": 9}}]
         self.assertEqual(
-            driver._backup_scope_files(["src/a.py", "src/b.py", "src/c.py"], scope),
+            driver._backup_scope_files("/repo", ["src/a.py", "src/b.py", "src/c.py"], scope),
             ["src/a.py", "src/b.py"])   # c.py (uncited) dropped
 
     def test_backup_scope_files_dedups_preserving_order(self):
@@ -2424,7 +2452,7 @@ class TestVerifyBackupNarrowing(unittest.TestCase):
                  {"location": {"file": "src/a.py"}},
                  {"location": {"file": "src/b.py"}}]
         self.assertEqual(
-            driver._backup_scope_files(["src/a.py", "src/b.py"], scope),
+            driver._backup_scope_files("/repo", ["src/a.py", "src/b.py"], scope),
             ["src/a.py", "src/b.py"])
 
     def test_backup_scope_files_falls_back_when_location_missing(self):
@@ -2434,7 +2462,24 @@ class TestVerifyBackupNarrowing(unittest.TestCase):
         for bad in ({"location": {"file": ""}}, {"location": None}, {},
                     {"location": {}}):
             scope = [{"location": {"file": "src/a.py"}}, bad]
-            self.assertEqual(driver._backup_scope_files(full, scope), full)
+            self.assertEqual(driver._backup_scope_files("/repo", full, scope), full)
+
+    def test_backup_scope_files_falls_back_on_escaping_claim_path(self):
+        # #1096: an LLM/panel-supplied location.file that escapes review_root
+        # (absolute or ../) must NOT reach the advisor's file list -- it forces
+        # the safe full-group fallback, never an out-of-tree read.
+        full = ["src/a.py", "src/b.py"]
+        for evil in ("/etc/passwd", "../../../etc/shadow",
+                     "src/../../outside.py"):
+            scope = [{"location": {"file": "src/a.py"}},
+                     {"location": {"file": evil}}]
+            self.assertEqual(
+                driver._backup_scope_files("/repo", full, scope), full, evil)
+        # a confined relative path is still used verbatim
+        self.assertEqual(
+            driver._backup_scope_files(
+                "/repo", full, [{"location": {"file": "src/a.py"}}]),
+            ["src/a.py"])
 
     def _manifest(self):
         return {"run_id": self.RUN_ID, "host": "claude",
