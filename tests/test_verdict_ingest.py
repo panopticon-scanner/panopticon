@@ -53,67 +53,62 @@ class TestLoadVerdicts(unittest.TestCase):
         self.assertEqual(evidence.load_verdicts("/nonexistent/dir"), {})
         self.assertEqual(evidence.load_verdicts(None), {})
 
-    def test_loads_fenced_verdict(self):
-        # Advisors routinely wrap their JSON output in a markdown fence (see
-        # agents/advisor.md's own output example) -> must not be treated as
-        # malformed, or a CONFIRMED verdict silently degrades to unverified.
+    def test_fenced_verdict_is_unloadable(self):
+        # #1193: single-verdict files are parsed strictly; a markdown fence
+        # around the JSON makes the file unloadable.
         with tempfile.TemporaryDirectory() as d:
             _write(d, QID_1 + ".json",
                    "```json\n"
                    '{"finding_id": "SEC-001", "verdict": "CONFIRMED", "reasoning": "r"}\n'
                    "```")
-            out = evidence.load_verdicts(d)
-        self.assertEqual(set(out), {QID_1})
-        self.assertEqual(out[QID_1]["verdict"], "CONFIRMED")
+            out, unloadable = evidence.load_verdicts_detailed(d)
+        self.assertEqual(set(out), set())
+        self.assertEqual([u["file"] for u in unloadable], [QID_1 + ".json"])
 
-    def test_loads_verdict_wrapped_in_prose(self):
+    def test_verdict_wrapped_in_prose_is_unloadable(self):
+        # #1193: surrounding prose is no longer extracted from single-verdict files.
         with tempfile.TemporaryDirectory() as d:
             _write(d, QID_1 + ".json",
                    "Here is my verdict: "
                    '{"finding_id": "SEC-001", "verdict": "CONFIRMED", "reasoning": "r"} '
                    "Let me know if you need anything else.")
-            out = evidence.load_verdicts(d)
-        self.assertEqual(set(out), {QID_1})
-        self.assertEqual(out[QID_1]["verdict"], "CONFIRMED")
+            out, unloadable = evidence.load_verdicts_detailed(d)
+        self.assertEqual(set(out), set())
+        self.assertEqual([u["file"] for u in unloadable], [QID_1 + ".json"])
 
-    def test_prose_with_trailing_brace_extracts_first_object(self):
-        # #1058: a stray brace AFTER the JSON (a config example, a template) made
-        # the greedy {.*} span run to the last }, swallowing the trailing prose
-        # brace and breaking the parse. The balanced scanner takes the first
-        # well-formed object.
+    def test_prose_with_trailing_brace_is_unloadable(self):
+        # #1193: strict parsing; stray braces in prose make the file unloadable.
         with tempfile.TemporaryDirectory() as d:
             _write(d, QID_1 + ".json",
                    "Verdict below.\n"
                    '{"finding_id": "SEC-001", "verdict": "CONFIRMED", "reasoning": "r"}\n'
                    "Then set {threshold} in your config.")
-            out = evidence.load_verdicts(d)
-        self.assertEqual(set(out), {QID_1})
-        self.assertEqual(out[QID_1]["verdict"], "CONFIRMED")
+            out, unloadable = evidence.load_verdicts_detailed(d)
+        self.assertEqual(set(out), set())
+        self.assertEqual([u["file"] for u in unloadable], [QID_1 + ".json"])
 
-    def test_prose_with_leading_nonjson_brace_extracts_real_object(self):
-        # #1058: a non-JSON brace BEFORE the object ({see note}) made the greedy
-        # span start too early. The scanner rejects the unparseable {see note}
-        # and advances to the real object.
+    def test_prose_with_leading_nonjson_brace_is_unloadable(self):
+        # #1193: strict parsing; leading non-JSON braces make the file unloadable.
         with tempfile.TemporaryDirectory() as d:
             _write(d, QID_1 + ".json",
                    "Per the rubric {see note above}, here is the result: "
                    '{"finding_id": "SEC-001", "verdict": "REJECTED", "reasoning": "r"}')
-            out = evidence.load_verdicts(d)
-        self.assertEqual(set(out), {QID_1})
-        self.assertEqual(out[QID_1]["verdict"], "REJECTED")
+            out, unloadable = evidence.load_verdicts_detailed(d)
+        self.assertEqual(set(out), set())
+        self.assertEqual([u["file"] for u in unloadable], [QID_1 + ".json"])
 
-    def test_nested_json_object_in_prose(self):
-        # #1058: a real verdict nests (citations{}); the scanner must balance
-        # braces, not stop at the first inner }.
+    def test_nested_json_object_in_prose_is_unloadable(self):
+        # #1193: strict parsing; trailing prose makes the file unloadable even
+        # when the embedded object itself is well-formed JSON.
         with tempfile.TemporaryDirectory() as d:
             _write(d, QID_1 + ".json",
                    "Here you go: "
                    '{"finding_id": "SEC-001", "verdict": "CONFIRMED", '
                    '"reasoning": "r", "citations": {"cwe": ["CWE-89"]}}'
                    " -- done.")
-            out = evidence.load_verdicts(d)
-        self.assertEqual(set(out), {QID_1})
-        self.assertEqual(out[QID_1]["citations"], {"cwe": ["CWE-89"]})
+            out, unloadable = evidence.load_verdicts_detailed(d)
+        self.assertEqual(set(out), set())
+        self.assertEqual([u["file"] for u in unloadable], [QID_1 + ".json"])
 
     def test_detailed_reports_unloadable_instead_of_dropping(self):
         # #938: a corrupt / invalid verdict file must be surfaced, not silently
@@ -132,9 +127,8 @@ class TestLoadVerdicts(unittest.TestCase):
 
     def test_unescaped_internal_quote_is_reported_not_dropped(self):
         # The exact field failure (#938): an advisor return with an unescaped "
-        # inside `reasoning` breaks json.load AND load_json_tolerant's object
-        # search, so the verdict is lost. It must land in `unloadable`, never
-        # in the verdicts dict.
+        # inside `reasoning` breaks json.load, so the verdict is lost. It must
+        # land in `unloadable`, never in the verdicts dict.
         with tempfile.TemporaryDirectory() as d:
             _write(d, QID_1 + ".json",
                    '{"finding_id": "SEC-001", "verdict": "REJECTED", '
@@ -142,6 +136,17 @@ class TestLoadVerdicts(unittest.TestCase):
             out, unloadable = evidence.load_verdicts_detailed(d)
         self.assertEqual(out, {})
         self.assertEqual([u["file"] for u in unloadable], [QID_1 + ".json"])
+
+    def test_missing_finding_id_is_unloadable(self):
+        # #1193: a verdict without a finding_id echo can never count as done,
+        # matching match_verdict's echo enforcement.
+        with tempfile.TemporaryDirectory() as d:
+            _write(d, QID_1 + ".json",
+                   {"verdict": "CONFIRMED", "reasoning": "r"})
+            out, unloadable = evidence.load_verdicts_detailed(d)
+        self.assertEqual(out, {})
+        self.assertEqual([u["file"] for u in unloadable], [QID_1 + ".json"])
+        self.assertEqual(unloadable[0]["reason"], "missing/empty finding_id echo")
 
     def test_load_verdicts_is_wrapper_over_detailed(self):
         with tempfile.TemporaryDirectory() as d:

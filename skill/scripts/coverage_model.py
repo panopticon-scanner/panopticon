@@ -19,26 +19,21 @@ GLOBAL_FLOOR = frozenset({"COD", "DAT", "TST", "ARC"})
 NON_EXCLUDABLE = frozenset({"SEC"})
 
 
-# #5.0-19: the universal-tier floor is GATED per group on OBSERVABLE surface
+# #5.0-19: the universal-tier floor is GATED per group on OBSERVABLE file
 # signals rather than injected unconditionally. BursarBuddy calibration
 # (2026-08-16): DAT/TST/ARC on surfaceless groups produced 59 of 97 noise
 # findings and caught ZERO answer-key vulns, because a testless / db-free /
 # single-module group has nothing for those panels to review. COD stays
-# universal (code is always present). The gate keys on FILE signals first,
-# falling back to the scout's reported surfaces -- NOT the scout's discretionary
-# domain request -- so an under-reporting scout still cannot suppress a floor
-# domain whose surface objectively exists (files present), preserving the
-# #5.0-11 guarantee while dropping the cells that only manufacture noise. A
-# scout that DID request the domain gets it via scout_added regardless, so the
-# floor only ever matters for domains the scout omitted.
+# universal (code is always present). The gate keys ONLY on objective file
+# signals -- scout-asserted ScopeProfile fields (surfaces / has_tests) are
+# intentionally NOT consulted here (#1193). A scout that wants a domain it did
+# not objectively surface still gets it via scout_added in effective_panels, so
+# coverage can widen but never narrow below observable signals.
 _DB_FILE_HINTS = ("schema.prisma", ".prisma", ".sql", "migration", "/models/",
                   "/model/", "schema", "entity", "entities", ".orm", "seed",
                   "repository", "database", "/db.")
-_DB_SURFACES = frozenset({"db_sql", "database", "persistence", "orm", "sql"})
 _TEST_FILE_HINTS = (".test.", ".spec.", "_test.", "_spec.", "/__tests__/",
                     "/tests/", "/test/", ".feature", "conftest", "test_")
-_TEST_SURFACES = frozenset({"tests", "testing", "test"})
-_ARCH_SURFACES = frozenset({"architecture", "arch"})
 
 
 def _any_hint(files, hints):
@@ -51,35 +46,29 @@ def _any_hint(files, hints):
 
 def applicable_global_floor(files, scout, global_floor=GLOBAL_FLOOR):
     """Subset of `global_floor` whose review surface is objectively present for
-    this group (#5.0-19). COD is universal; DAT/TST/ARC gate on deterministic
-    file signals, falling back to the scout's reported surfaces, so a group with
-    no persistence / no tests / no cross-module structure does not spend a cell
-    finding nothing. Pure; the return is always a subset of `global_floor` (a
-    caller passing a reduced floor, e.g. tests, gets a reduced result).
+    this group (#5.0-19, #1193). COD is universal; DAT/TST/ARC gate ONLY on
+    deterministic file signals. Scout-asserted ScopeProfile fields are ignored
+    here so a mis-reporting scout cannot suppress a floor domain whose surface
+    objectively exists (files present), and a scout-requested domain that is not
+    objectively surfaced is still available via scout_added in effective_panels.
+    Pure; the return is always a subset of `global_floor`.
 
     - COD: always (kept whenever it is in `global_floor`).
-    - DAT: any db/schema/model/migration/seed file, or a db-ish scout surface.
-    - TST: any test-file signal, a scout `has_tests`/`tests`, or a test surface.
+    - DAT: any db/schema/model/migration/seed file.
+    - TST: any test-file signal.
     - ARC: the group spans >= 2 distinct file directories (real cross-module
-      structure) or the scout reported an architecture surface.
+      structure).
     """
     files = list(files or [])
-    scout = scout or {}
-    surfaces = {str(s).lower() for s in (scout.get("surfaces") or [])}
     keep = set()
     if "COD" in global_floor:
         keep.add("COD")
-    if "DAT" in global_floor and (_any_hint(files, _DB_FILE_HINTS)
-                                  or surfaces & _DB_SURFACES):
+    if "DAT" in global_floor and _any_hint(files, _DB_FILE_HINTS):
         keep.add("DAT")
-    if "TST" in global_floor and (_any_hint(files, _TEST_FILE_HINTS)
-                                  or bool(scout.get("has_tests"))
-                                  or bool(scout.get("tests"))
-                                  or surfaces & _TEST_SURFACES):
+    if "TST" in global_floor and _any_hint(files, _TEST_FILE_HINTS):
         keep.add("TST")
     distinct_dirs = {os.path.dirname(str(f)) for f in files}
-    if "ARC" in global_floor and (len(distinct_dirs) >= 2
-                                  or surfaces & _ARCH_SURFACES):
+    if "ARC" in global_floor and len(distinct_dirs) >= 2:
         keep.add("ARC")
     return frozenset(keep & set(global_floor))
 
