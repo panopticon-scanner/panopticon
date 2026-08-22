@@ -323,6 +323,36 @@ class TestInstallUninstall(unittest.TestCase):
             wg.uninstall(os.path.join(d, "nope.json"), os.path.join(d, "gone.json"))
 
 
+class TestLoadFailLoud(unittest.TestCase):
+    """#1098: _load must distinguish an ABSENT settings file (fine -> {}) from a
+    PRESENT-but-unreadable/corrupt one (refuse), so install() can never silently
+    overwrite it and destroy the user's permissions.allow/deny and hooks."""
+
+    def test_absent_settings_returns_empty(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(wg._load(os.path.join(d, "settings.local.json")), {})
+
+    def test_corrupt_settings_refuses(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "settings.local.json")
+            with open(p, "w") as fh:
+                fh.write("{not valid json")
+            with self.assertRaises(RuntimeError):
+                wg._load(p)
+
+    def test_install_will_not_clobber_corrupt_settings(self):
+        with tempfile.TemporaryDirectory() as d:
+            sp = os.path.join(d, "settings.local.json")
+            with open(sp, "w") as fh:
+                fh.write("{broken")
+            before = open(sp).read()
+            with self.assertRaises(RuntimeError):
+                wg.install([{"out_file": os.path.join(d, "o.json")}],
+                           settings_path=sp,
+                           allowlist_path=os.path.join(d, "allow.json"))
+            self.assertEqual(open(sp).read(), before)   # left untouched, not overwritten
+
+
 class TestHookCmdSelfLocating(unittest.TestCase):
     def test_hook_cmd_is_absolute_and_quoted(self):
         # #495: a literal repo-relative command only worked for the self-scan

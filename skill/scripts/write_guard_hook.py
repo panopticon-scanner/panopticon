@@ -132,8 +132,16 @@ def _load(settings_path):
     try:
         with open(settings_path, encoding="utf-8") as fh:
             return json.load(fh)
-    except (OSError, ValueError):
-        return {}
+    except FileNotFoundError:
+        return {}                       # absent is fine -> a fresh settings file
+    except (OSError, ValueError) as exc:
+        # #1098: present but unreadable/corrupt. Returning {} let install()
+        # unconditionally re-serialize a minimal file, DESTROYING the user's
+        # permissions.allow/deny and unrelated hooks (a fail-open that can widen
+        # session policy). Refuse instead so install() never overwrites a file it
+        # could not read.
+        raise RuntimeError(
+            "refusing to overwrite unreadable %s: %s" % (settings_path, exc)) from exc
 
 
 def install(plan, settings_path=".claude/settings.local.json",
