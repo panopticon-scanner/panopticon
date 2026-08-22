@@ -25,6 +25,8 @@ import os
 import subprocess
 import sys
 
+from scripts.run_tools import recommendable_tools
+
 # Directories a tool must be able to WRITE, not merely read. Keep the reason
 # attached: a bare path list invites someone to "tidy" it back to a+rX.
 REQUIRED_WRITABLE = {
@@ -35,6 +37,85 @@ REQUIRED_WRITABLE = {
         "tools lazily create dotfiles under $HOME at scan time — semgrep's "
         "~/.semgrep, dotnet's ~/.dotnet first-run sentinel (#455)"),
 }
+
+
+def _validate_probe_registry(probes):
+    """Ensure the probe set stays locked to the adapter registry."""
+    expected = set(recommendable_tools())
+    actual = set(probes)
+    missing = expected - actual
+    extra = actual - expected
+    if missing or extra:
+        raise RuntimeError(
+            "smoke_adapters PROBES drift from recommendable_tools(): "
+            "missing=%s extra=%s" % (sorted(missing), sorted(extra))
+        )
+
+
+PROBE_TIMEOUT = 180
+
+_ROSLYN_PROBE_SOURCE = """using System.Diagnostics;
+class P {
+    static void Main() {
+        Process.Start("id");
+    }
+}
+"""
+
+
+def check_roslyn_secguard_build(runner=subprocess.run):
+    """Run a minimal C# build with the baked SecurityCodeScan analyzer and
+    require SARIF output containing an SCS finding. Mirrors the real adapter's
+    build path; a plain `dotnet --version` probe cannot catch a missing or
+    miswired analyzer (#1110)."""
+    import json
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        proj_dir = os.path.join(d, "p")
+        os.makedirs(proj_dir)
+        csproj = os.path.join(proj_dir, "p.csproj")
+        with open(csproj, "w", encoding="utf-8") as fh:
+            fh.write(
+                '<Project Sdk="Microsoft.NET.Sdk">\n'
+                '  <PropertyGroup>\n'
+                '    <OutputType>Exe</OutputType>\n'
+                '    <TargetFramework>net8.0</TargetFramework>\n'
+                '  </PropertyGroup>\n'
+                '</Project>\n'
+            )
+        program = os.path.join(proj_dir, "Program.cs")
+        with open(program, "w", encoding="utf-8") as fh:
+            fh.write(_ROSLYN_PROBE_SOURCE)
+        sarif = os.path.join(d, "out.sarif")
+        cmd = [
+            "dotnet", "build", csproj,
+            "-p:TreatWarningsAsErrors=false",
+            "-p:ErrorLog=" + sarif + ",version=2.1",
+        ]
+        try:
+            runner(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                   timeout=PROBE_TIMEOUT)
+        except FileNotFoundError:
+            return False, "roslyn-secguard build: dotnet not found"
+        except subprocess.TimeoutExpired:
+            return False, "roslyn-secguard build: no response in %ds" % PROBE_TIMEOUT
+        except OSError as e:
+            return False, "roslyn-secguard build: failed to exec dotnet (%s)" % (
+                e.strerror or repr(e))
+        if not os.path.exists(sarif):
+            return False, "roslyn-secguard build: no SARIF output produced"
+        with open(sarif, "r", encoding="utf-8") as fh:
+            try:
+                data = json.load(fh)
+            except ValueError as e:
+                return False, "roslyn-secguard build: SARIF is not valid JSON (%s)" % e
+        for run in data.get("runs", []):
+            for result in run.get("results", []):
+                rule_id = result.get("ruleId", "")
+                if rule_id.startswith("SCS"):
+                    return True, ""
+        return False, "roslyn-secguard build: no SecurityCodeScan (SCS) findings in SARIF"
+
 
 # Cheap liveness probes. Each must exit 0 quickly as the scanner user; a
 # non-zero exit or a timeout means the tool cannot run in this image at all.
@@ -51,13 +132,14 @@ PROBES = {
     "brakeman": ["brakeman", "--version"],
     "bundler-audit": ["bundle-audit", "version"],
     "pip-audit": ["pip-audit", "--version"],
-    "eslint": ["eslint", "--version"],
     "spotbugs": ["/opt/spotbugs/bin/spotbugs", "-version"],
     "dependency-check": ["/opt/dependency-check/bin/dependency-check.sh", "--version"],
-    "dotnet": ["dotnet", "--version"],
+    "npm-audit": ["npm", "--version"],
+    "eslint-security": ["eslint", "--version"],
+    "roslyn-secguard": check_roslyn_secguard_build,
 }
 
-PROBE_TIMEOUT = 180
+_validate_probe_registry(PROBES)
 
 # The direct end-to-end gate for the #455 regression. A `semgrep --version`
 # probe and a writable-$HOME assertion are both PROXIES: version never creates
@@ -169,7 +251,11 @@ def main():
             failures.append(msg)
 
     for name in sorted(PROBES):
-        ok, msg = run_probe(name, PROBES[name])
+        probe = PROBES[name]
+        if callable(probe):
+            ok, msg = probe()
+        else:
+            ok, msg = run_probe(name, probe)
         if not ok:
             failures.append(msg)
 
