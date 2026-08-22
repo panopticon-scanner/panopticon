@@ -156,7 +156,7 @@ it's used automatically when present, `--no-tools` to skip.
 3. Register it in `skill/scripts/tools/__init__.py` under `ADAPTERS`.
 4. Add unit tests in `tests/tools/test_<tool_name>.py`.
 5. If the tool needs installation, add it to `Dockerfile`.
-6. Run `python3 -m pytest tests/tools/ tests/test_ingest_tools.py tests/test_run_tools.py -v`.
+6. Run `python3 -m pytest tests/tools/ tests/test_ingest_tools.py tests/test_run_tools_*.py -v`.
 
 ## Local scanner fixture suite
 

@@ -1,3 +1,11 @@
+"""Tests for scripts.synthesize.
+
+TECH DEBT (#1223): this file is a ~5900-line monolith that covers finding
+synthesis, plan generation, file integrity checks, evidence linking, and many
+helper functions. Splitting it would improve maintainability, but the tests are
+stable and the file is intentionally left intact per project policy — only
+document the monolith as accepted tech debt here.
+"""
 import contextlib
 import io
 import os
