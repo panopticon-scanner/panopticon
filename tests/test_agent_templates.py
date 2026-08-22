@@ -147,7 +147,7 @@ class TestDomainPanelRenders(unittest.TestCase):
         mapping = {"domain": "SEC", "group": "Auth", "file_list": "- a.py",
                    "tests": "- t.py", "security_mode": "standard",
                    "menu": "SEC-A1A os-command-injection (HIGH)", "run_id": "R",
-                   "out_file": "/abs/findings-Auth-SEC.json"}
+                   "tool_hits": "", "out_file": "/abs/findings-Auth-SEC.json"}
         out = dispatch.render_prompt("domain-panel.md", mapping, "claude")
         self.assertIn("`SEC` domain reviewer", out)
         self.assertIn("SEC-A1A", out)
