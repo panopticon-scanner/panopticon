@@ -230,73 +230,73 @@ def _write_completed(label, tool, res, out_path):
 
 def _stream_and_write(label, tool, proc, out_path):
     """Stream stdout from a Popen-like object with an explicit byte cap."""
-    spool = tempfile.SpooledTemporaryFile(max_size=1024 * 1024)
-    truncated = False
-    try:
-        while True:
-            chunk = proc.stdout.read(64 * 1024)
-            if not chunk:
-                break
-            room = MAX_TOOL_OUTPUT_BYTES - spool.tell()
-            if room <= 0:
-                truncated = True
-                # Drain remaining stdout without storing it.
-                while proc.stdout.read(64 * 1024):
-                    pass
-                break
-            if len(chunk) > room:
-                spool.write(chunk[:room])
-                truncated = True
-                while proc.stdout.read(64 * 1024):
-                    pass
-                break
-            spool.write(chunk)
-        stderr = proc.stderr.read()
-        rc = proc.wait(timeout=TOOL_TIMEOUT)
-    finally:
+    with tempfile.SpooledTemporaryFile(max_size=1024 * 1024) as spool:
+        truncated = False
         try:
-            proc.stdout.close()
-        except Exception:
-            pass
-        try:
-            proc.stderr.close()
-        except Exception:
-            pass
-        if proc.poll() is None:
+            while True:
+                chunk = proc.stdout.read(64 * 1024)
+                if not chunk:
+                    break
+                room = MAX_TOOL_OUTPUT_BYTES - spool.tell()
+                if room <= 0:
+                    truncated = True
+                    # Drain remaining stdout without storing it.
+                    while proc.stdout.read(64 * 1024):
+                        pass
+                    break
+                if len(chunk) > room:
+                    spool.write(chunk[:room])
+                    truncated = True
+                    while proc.stdout.read(64 * 1024):
+                        pass
+                    break
+                spool.write(chunk)
+            stderr = proc.stderr.read()
+            rc = proc.wait(timeout=TOOL_TIMEOUT)
+        finally:
             try:
-                proc.kill()
+                proc.stdout.close()
             except Exception:
                 pass
+            try:
+                proc.stderr.close()
+            except Exception:
+                pass
+            if proc.poll() is None:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
 
-    if rc not in (0, 1):
-        excerpt = (stderr or b"")[-500:].decode("utf-8", errors="replace").strip()
-        print("%s %s exited %s; skipping%s" % (
-            label, tool, rc,
-            (" — " + excerpt) if excerpt else ""), file=sys.stderr)
-        return None
+        if rc not in (0, 1):
+            excerpt = (stderr or b"")[-500:].decode("utf-8", errors="replace").strip()
+            print("%s %s exited %s; skipping%s" % (
+                label, tool, rc,
+                (" — " + excerpt) if excerpt else ""), file=sys.stderr)
+            return None
 
-    if spool.tell() == 0:
-        print("%s %s produced no output on a selected target; recording as "
-              "missing (fail-closed, #1051)" % (label, tool), file=sys.stderr)
-        return None
+        if spool.tell() == 0:
+            print("%s %s produced no output on a selected target; recording as "
+                  "missing (fail-closed, #1051)" % (label, tool), file=sys.stderr)
+            return None
 
-    if truncated:
-        marker = (
-            "\n\n[TRUNCATED by panopticon: output exceeded %d byte limit; "
-            "only the first %d bytes were retained]\n" % (
-                MAX_TOOL_OUTPUT_BYTES, MAX_TOOL_OUTPUT_BYTES)
-        ).encode("utf-8")
-        print("%s %s output exceeded %d byte limit; truncated and retained "
-              "with marker" % (label, tool, MAX_TOOL_OUTPUT_BYTES),
-              file=sys.stderr)
-        # Write only up to the cap, then append the marker in place of the tail.
+        if truncated:
+            marker = (
+                "\n\n[TRUNCATED by panopticon: output exceeded %d byte limit; "
+                "only the first %d bytes were retained]\n" % (
+                    MAX_TOOL_OUTPUT_BYTES, MAX_TOOL_OUTPUT_BYTES)
+            ).encode("utf-8")
+            print("%s %s output exceeded %d byte limit; truncated and retained "
+                  "with marker" % (label, tool, MAX_TOOL_OUTPUT_BYTES),
+                  file=sys.stderr)
+            # Write only up to the cap, then append the marker in place of the tail.
+            spool.seek(0)
+            payload = spool.read(MAX_TOOL_OUTPUT_BYTES)
+            payload += marker
+            return _atomic_write(out_path, payload)
+
         spool.seek(0)
-        payload = spool.read(MAX_TOOL_OUTPUT_BYTES)
-        payload += marker
-        return _atomic_write(out_path, payload)
-
-    spool.seek(0)
-    return _atomic_write(out_path, spool.read())
+        return _atomic_write(out_path, spool.read())
 
 
 def _atomic_write(out_path, data):
