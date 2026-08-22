@@ -18,8 +18,8 @@ Both were invisible to CI, which never executed the image. Both are caught
 here in about a second.
 
 Exit 0 when every check passes; exit 1 with a report naming each failure.
-Stdlib only, no third-party imports — this must run before anything else is
-proven to work.
+Stdlib plus project-local imports only — no third-party dependencies. This must
+run before anything else is proven to work.
 """
 import os
 import subprocess
