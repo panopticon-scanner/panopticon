@@ -1547,6 +1547,83 @@ class TestGroupTag(unittest.TestCase):
         # _group scrubbed from emitted findings
         self.assertNotIn("_group", report["findings"][0])
 
+
+class TestGroupParentRollup(unittest.TestCase):
+    """Task 6: report group view rolls subgroups up to their parent
+    (group -> subgroup -> file drill-down), byte-identical for flat groups."""
+
+    def test_subgroups_roll_up_to_parent(self):
+        findings = [
+            _make_finding(
+                id="CD-001", severity="HIGH", panel="code",
+                location={"file": "src/ui/admin/a.py", "line_start": 1},
+                _group="UI:Admin",
+            ),
+            _make_finding(
+                id="CD-002", severity="MEDIUM", panel="code",
+                location={"file": "src/ui/components/b.py", "line_start": 1},
+                _group="UI:Components",
+            ),
+        ]
+        groups_meta = [
+            {"name": "UI:Admin", "files": ["src/ui/admin/a.py"], "parent": "UI"},
+            {"name": "UI:Components", "files": ["src/ui/components/b.py"], "parent": "UI"},
+        ]
+        report = syn.build_report(
+            findings, groups_meta, "src", None, DEFAULT_TIMESTAMP,
+            gate_unverified=True,
+        )
+        names = [g["name"] for g in report["groups"]]
+        self.assertEqual(names, ["UI"])
+        ui = report["groups"][0]
+        # worst of D (HIGH -> Admin) and C (MEDIUM -> Components)
+        self.assertEqual(ui["panel_grades"]["code"], "D")
+        sub_names = {s["name"] for s in ui["subgroups"]}
+        self.assertEqual(sub_names, {"UI:Admin", "UI:Components"})
+        admin = next(s for s in ui["subgroups"] if s["name"] == "UI:Admin")
+        components = next(s for s in ui["subgroups"] if s["name"] == "UI:Components")
+        self.assertEqual(admin["panel_grades"]["code"], "D")
+        self.assertEqual(components["panel_grades"]["code"], "C")
+        self.assertEqual(admin["files"], ["src/ui/admin/a.py"])
+        self.assertEqual(components["files"], ["src/ui/components/b.py"])
+        # both subgroups' files are reachable for file-level drill-down
+        self.assertIn("src/ui/admin/a.py", ui["files"])
+        self.assertIn("src/ui/components/b.py", ui["files"])
+        # overall letter/gate still computed over ALL gate-eligible findings,
+        # unaffected by the group-level roll-up (both findings are eligible
+        # under gate_unverified, so overall reflects the HIGH -> "D")
+        self.assertEqual(report["summary"]["overall_grade"], "D")
+        self.assertEqual(report["summary"]["gate"], "OFF")
+
+    def test_flat_self_parented_groups_report_unchanged(self):
+        # A flat groups.yml (no subgroups): every group self-parents, and the
+        # report's group view must be exactly today's shape -- no "subgroups"
+        # key, same fields, same values.
+        findings = [_make_finding(severity="HIGH", panel="code")]
+        groups_meta = [{"name": "g1", "files": ["a.py"]}]
+        report = syn.build_report(
+            findings, groups_meta, "src", "high", DEFAULT_TIMESTAMP,
+        )
+        self.assertEqual(len(report["groups"]), 1)
+        g = report["groups"][0]
+        self.assertEqual(g["name"], "g1")
+        self.assertEqual(g["files"], ["a.py"])
+        self.assertEqual(set(g), {"name", "files", "panel_grades", "key_findings"})
+        self.assertEqual(g["panel_grades"]["code"], "A")
+
+    def test_flat_groups_with_explicit_self_parent_unchanged(self):
+        # Same as above but with an explicit parent==name (as discovery now
+        # always writes) -- must still take the leaf/self-parented shape.
+        findings = [_make_finding(severity="HIGH", panel="code")]
+        groups_meta = [{"name": "g1", "files": ["a.py"], "parent": "g1"}]
+        report = syn.build_report(
+            findings, groups_meta, "src", "high", DEFAULT_TIMESTAMP,
+        )
+        self.assertEqual(len(report["groups"]), 1)
+        g = report["groups"][0]
+        self.assertEqual(g["name"], "g1")
+        self.assertNotIn("subgroups", g)
+
     def test_load_findings_tags_group_from_filename(self):
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "findings-mygroup-code.json")

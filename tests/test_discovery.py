@@ -677,6 +677,138 @@ class TestCatalogMatchGroups(unittest.TestCase):
             self.assertTrue(all(g["name"].startswith("._") for g in out["groups"]))
             self.assertNotIn("ungrouped_files", out)
 
+    def test_exclude_paths_pruned_before_grouping_and_disclosed(self):
+        # Task 4 (#1136): a committed top-level `exclude_paths:` glob prunes
+        # matching files BEFORE catalog_groups/assign_by_catalog runs, so they
+        # land in NEITHER a named group NOR the ._N leftover chunk -- and the
+        # prune is disclosed (globs + count), never silently dropped.
+        # (Uses paths NOT already pruned by the unrelated fixture-dir heuristic
+        # -- docs/secret/** would otherwise match the `docs` group's `*.md`,
+        # vendor/** would otherwise fall to a ._N leftover -- to prove this is
+        # exclude_paths doing the work, not #434's fixture pruning.)
+        with tempfile.TemporaryDirectory() as d:
+            self._setup(d)
+            _touch(d, "docs/secret/leak.md")
+            _touch(d, "vendor/dep.py")
+            with open(os.path.join(d, ".panopticon", "groups.yml"), "w", encoding="utf-8") as fh:
+                fh.write(self.CATALOG + "exclude_paths: ['docs/secret/**', 'vendor/**']\n")
+            out, _err = self._run_scan(d)
+            all_files = [f for g in out["groups"] for f in g["files"]]
+            self.assertNotIn("docs/secret/leak.md", all_files)
+            self.assertNotIn("vendor/dep.py", all_files)
+            self.assertNotIn("docs/secret/leak.md", out.get("ungrouped_files", []))
+            self.assertNotIn("vendor/dep.py", out.get("ungrouped_files", []))
+            self.assertEqual(sorted(out["exclude_paths"]), ["docs/secret/**", "vendor/**"])
+            self.assertEqual(out["excluded_count"], 2)
+
+    def test_exclude_paths_absent_is_zero_behavior_change(self):
+        # Back-compat: no `exclude_paths:` key -> no disclosure fields, and
+        # the previously-covered "orphan" leftover behavior is untouched.
+        with tempfile.TemporaryDirectory() as d:
+            self._setup(d)
+            out, _err = self._run_scan(d)
+            self.assertNotIn("exclude_paths", out)
+            self.assertNotIn("excluded_count", out)
+            self.assertEqual(out["ungrouped_files"], ["orphan/loner.py"])
+
+
+class TestGroupObjParent(unittest.TestCase):
+    """Task 7: every group `discovery` emits carries a `parent` field, so
+    `groups.json` records it for Task 6's synthesize roll-up. Back-compat:
+    a leaf/leftover group self-parents (parent == name)."""
+
+    def test_group_obj_defaults_to_self_parent(self):
+        g = orch._group_obj("leaf", ["a.py"], "standard")
+        self.assertEqual(g["parent"], "leaf")
+
+    def test_group_obj_uses_explicit_parent(self):
+        g = orch._group_obj("UI:Admin", ["a.py"], "standard", parent="UI")
+        self.assertEqual(g["parent"], "UI")
+
+    def test_catalog_groups_subgroup_carries_parent(self):
+        # Mimics _matrix_catalog's parse_groups-shaped output for a
+        # `UI: {Admin: {match: [...]}}` subgroup, alongside a flat leaf.
+        catalog = {
+            "UI:Admin": {"match": ["ui/admin/**"], "tests": [], "floor": set(),
+                         "exclude": set(), "parent": "UI"},
+            "docs": {"match": ["*.md"], "tests": [], "floor": set(),
+                    "exclude": set(), "parent": "docs"},
+        }
+        files = ["ui/admin/panel.py", "README.md", "orphan.py"]
+        groups, leftovers = orch.catalog_groups(files, catalog, 15, "standard")
+        by_name = {g["name"]: g for g in groups}
+        self.assertEqual(by_name["UI:Admin"]["parent"], "UI")
+        # leaf group self-parents
+        self.assertEqual(by_name["docs"]["parent"], "docs")
+        # leftover ._N chunk self-parents
+        leftover_groups = [g for g in groups if g["name"].startswith("._")]
+        self.assertEqual(len(leftover_groups), 1)
+        self.assertEqual(leftover_groups[0]["parent"], leftover_groups[0]["name"])
+        self.assertEqual(leftovers, ["orphan.py"])
+
+    def test_catalog_groups_oversize_subgroup_chunks_keep_parent(self):
+        catalog = {
+            "UI:Admin": {"match": ["ui/admin/**"], "tests": [], "floor": set(),
+                         "exclude": set(), "parent": "UI"},
+        }
+        files = ["ui/admin/m%02d.py" % i for i in range(20)]
+        groups, _leftovers = orch.catalog_groups(files, catalog, 15, "standard")
+        names = sorted(g["name"] for g in groups)
+        self.assertEqual(names, ["UI:Admin_1", "UI:Admin_2"])
+        self.assertTrue(all(g["parent"] == "UI" for g in groups))
+
+
+class TestCommonsCatalog(unittest.TestCase):
+    """Task 5 (#499): a curated Commons vocabulary (Docs/CI/Build/Config/Deps)
+    names committed-unmatched leftover files before the true residual falls
+    to `._N`. Committed groups always win -- Commons only ever sees
+    leftovers."""
+
+    def test_commons_names_leftovers_before_dot_n(self):
+        catalog = {"App": {"match": ["src/**"]}}
+        groups, leftovers = orch.catalog_groups(
+            ["src/app.py", "README.md", "Dockerfile", "weird.xyz"],
+            catalog, max_per_group=50, security_mode="standard")
+        names = {g["name"] for g in groups}
+        self.assertIn("Docs", names)   # README.md -> Docs
+        self.assertIn("Build", names)  # Dockerfile -> Build
+        self.assertTrue(any(n.startswith("._") for n in names))  # weird.xyz -> residual
+        self.assertIn("src/app.py",
+                       next(g["files"] for g in groups if g["name"] == "App"))
+        # weird.xyz is the true residual -- disclosed, not silently absorbed.
+        self.assertEqual(leftovers, ["weird.xyz"])
+
+    def test_committed_group_wins_over_commons(self):
+        # A committed `src/**` group claims src/app.py -- Commons never sees it.
+        catalog = {"App": {"match": ["src/**"]}}
+        groups, _leftovers = orch.catalog_groups(
+            ["src/app.py"], catalog, max_per_group=50, security_mode="standard")
+        names = {g["name"] for g in groups}
+        self.assertEqual(names, {"App"})
+
+    def test_commons_group_self_parents(self):
+        groups, _leftovers = orch.catalog_groups(
+            ["README.md"], {}, max_per_group=50, security_mode="standard")
+        by_name = {g["name"]: g for g in groups}
+        self.assertEqual(by_name["Docs"]["parent"], "Docs")
+
+    def test_commons_never_collides_with_committed_group_name(self):
+        # A committed group named `Docs` (a Commons category name a user may
+        # plausibly author) must NOT be re-emitted by the Commons pass: two
+        # groups named `Docs` would write to the SAME findings-Docs-<domain>.json
+        # (silent clobber) and produce a duplicate report node. Committed wins;
+        # the leftover README falls to the committed `Docs` group's `match`, and
+        # Commons is suppressed for that name entirely -> exactly one `Docs`.
+        catalog = {"Docs": {"match": ["docs/**", "README.md"]}}
+        groups, _leftovers = orch.catalog_groups(
+            ["docs/guide.md", "README.md"],
+            catalog, max_per_group=50, security_mode="standard")
+        docs_groups = [g for g in groups if g["name"] == "Docs"]
+        self.assertEqual(len(docs_groups), 1)              # no duplicate node
+        self.assertEqual(sorted(docs_groups[0]["files"]),
+                         ["README.md", "docs/guide.md"])   # committed group owns both
+        self.assertEqual(docs_groups[0]["parent"], "Docs")  # committed leaf, not Commons
+
 
 class TestPanelPriority(unittest.TestCase):
     def test_compute_group_panels_emits_priority_order(self):
@@ -885,6 +1017,14 @@ class TestGroupsFormatReconciliation(unittest.TestCase):
         assigned, leftovers = orch.assign_by_catalog(files, mapping)
         self.assertEqual(assigned, {"src": ["src/a.py"], "tests": ["tests/b.py"]})
         self.assertEqual(leftovers, ["docs/c.md"])
+
+    def test_tests_globs_claim_files_into_their_group(self):
+        catalog = {"Auth": {"match": ["src/auth/**"], "tests": ["tests/auth/**"]}}
+        assigned, leftovers = orch.assign_by_catalog(
+            ["src/auth/login.py", "tests/auth/test_login.py", "misc/x.py"], catalog)
+        self.assertIn("src/auth/login.py", assigned["Auth"])
+        self.assertIn("tests/auth/test_login.py", assigned["Auth"])   # was a leftover before
+        self.assertEqual(leftovers, ["misc/x.py"])
 
 
 def _repo_with_matrix(tmp_path):
@@ -1255,6 +1395,65 @@ def test_repo_scan_scope_files_without_base_emits_no_diff_hunks(tmp_path):
     files = sorted(f for g in groups for f in g["files"])
     assert files == ["src/checkout/pay.py"]
     assert not (repo/".panopticon"/"diff-hunks.json").exists()
+
+
+def _repo_with_exclude(tmp_path):
+    """Repo whose committed groups.yml carries `exclude_paths: ['vendor/**']`,
+    with a vendored file a delta scope would otherwise pick up."""
+    import subprocess, os
+    repo = tmp_path
+    (repo / ".panopticon").mkdir(parents=True)
+    for p in ["src/checkout/pay.py", "vendor/dep.py"]:
+        os.makedirs(os.path.dirname(repo / p), exist_ok=True)
+        (repo / p).write_text("x=1\n")
+    (repo / ".panopticon" / "groups.yml").write_text(
+        "groups:\n"
+        "  Checkout:\n    match: ['src/checkout/**']\n    panels: [SEC]\n"
+        "exclude_paths: ['vendor/**']\n")
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-qm", "x"], cwd=repo, check=True)
+    return repo
+
+
+def test_repo_scan_scope_files_applies_exclude_paths(tmp_path):
+    # #1136 delta-path parity: --scope-files rebuilds the file set from the
+    # user's explicit list, NOT from the exclude-pruned `allf`. A vendored file
+    # named in the delta must still be pruned by committed exclude_paths (never
+    # grouped/reviewed), and the disclosed count must reflect the delta set (1),
+    # not the whole-repo count.
+    import discovery as orchestrator, json
+    repo = _repo_with_exclude(tmp_path)
+    out = repo / ".panopticon" / "groups.json"
+    rc = orchestrator.main(["--repo", str(repo), "--repo-scan", "--scope-files",
+                            "src/checkout/pay.py", "vendor/dep.py",
+                            "--out", str(out)])
+    assert rc == 0
+    doc = json.loads(out.read_text())
+    files = sorted(f for g in doc["groups"] for f in g["files"])
+    assert files == ["src/checkout/pay.py"]            # vendor/dep.py pruned
+    assert doc["exclude_paths"] == ["vendor/**"]
+    assert doc["excluded_count"] == 1                  # delta count, not whole-repo
+
+
+def test_repo_scan_scope_changed_applies_exclude_paths(tmp_path):
+    # Same parity guard on the --scope-changed path (rebuilds from git-diff
+    # output). A changed vendored file must not slip past exclude_paths.
+    import discovery as orchestrator, json, subprocess
+    repo = _repo_with_exclude(tmp_path)
+    (repo / "src/checkout/pay.py").write_text("x=2\n")
+    (repo / "vendor/dep.py").write_text("y=2\n")
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-aqm", "c2"], cwd=repo, check=True)
+    out = repo / ".panopticon" / "groups.json"
+    rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
+                            str(repo), "--out", str(out)])
+    assert rc == 0
+    doc = json.loads(out.read_text())
+    files = sorted(f for g in doc["groups"] for f in g["files"])
+    assert files == ["src/checkout/pay.py"]            # vendor/dep.py pruned
+    assert doc["excluded_count"] == 1
 
 
 def test_repo_scan_scope_changed_pr_base_resolves_origin_only_base(tmp_path):

@@ -334,11 +334,14 @@ def assign_by_catalog(files, catalog):
     are files no group matched — the coverage gap the caller must disclose.
     """
     # Precompile each group's patterns once so regexes are not rebuilt per file.
+    # `tests:` globs are compiled alongside `match:` so a test file matching
+    # either lands in that group and is credited toward coverage (#1137).
     matchable = []
     for name, g in catalog.items():
-        if g.get("match"):
+        pats = list(g.get("match") or []) + list(g.get("tests") or [])
+        if pats:
             compiled = []
-            for pat in g["match"]:
+            for pat in pats:
                 negate = pat.startswith("!")
                 compiled.append((negate, _glob_to_re(pat[1:] if negate else pat)))
             matchable.append((name, compiled))
@@ -795,8 +798,15 @@ def _compute_depth(files, panels, security_mode):
         return "standard"
     return "shallow"
 
-def _group_obj(name, files, security_mode):
-    """Build one group entry: panels, surfaces, and depth for a file set."""
+def _group_obj(name, files, security_mode, parent=None):
+    """Build one group entry: panels, surfaces, depth, and parent for a file set.
+
+    `parent` is the review-unit this group rolls up to (Task 6's synthesize
+    consumes it): a subgroup passes its catalog-declared parent name; a leaf
+    or leftover chunk defaults to self-parenting (``parent or name``), so a
+    flat groups.yml (all leaves) yields ``parent == name`` for every group --
+    an additive field for existing groups.json consumers.
+    """
     panels = compute_group_panels(files, security_mode)
     return {
         "name": name,
@@ -804,28 +814,78 @@ def _group_obj(name, files, security_mode):
         "surfaces": compute_group_surfaces(files),
         "panels": panels,
         "depth": _compute_depth(files, panels, security_mode),
+        "parent": parent or name,
     }
+
+_COMMONS_CATALOG_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "data", "commons_catalog.yml")
+
+@functools.lru_cache(maxsize=1)
+def _commons_catalog():
+    """The curated Commons vocabulary (5.1 starter, #499): near-universal
+    Docs/CI/Build/Config/Deps file groups loaded once from
+    ``skill/data/commons_catalog.yml`` as a plain ``{name: {"match": [...]}}``
+    mapping -- fed straight to ``assign_by_catalog`` exactly like a committed
+    catalog. NOT routed through ``groups_schema.parse_groups``: this is
+    shipped, tested data, not committed user input, so it needs only
+    each entry's `match`."""
+    with open(_COMMONS_CATALOG_PATH, encoding="utf-8") as fh:
+        doc = yaml.safe_load(fh) or {}
+    return doc.get("groups") or {}
+
+def _emit_named_groups(named, max_per_group, security_mode, parent_lookup=None):
+    """Chunk+wrap each ``{name: files}`` catalog assignment into
+    ``_group_obj``(s), keeping the ``<name>_<i>`` oversize-chunk naming.
+    ``parent_lookup(name)``, when given, supplies a subgroup's declared
+    parent; omitted (Commons/self-parenting catalogs), ``_group_obj``
+    defaults to self-parenting."""
+    groups = []
+    for name, fs in named.items():
+        parent = parent_lookup(name) if parent_lookup else None
+        chunks = chunk_files(fs, max_per_group)
+        if len(chunks) == 1:
+            groups.append(_group_obj(name, chunks[0], security_mode, parent=parent))
+        else:
+            groups.extend(_group_obj("%s_%d" % (name, i + 1), c, security_mode,
+                                     parent=parent)
+                          for i, c in enumerate(chunks))
+    return groups
 
 def catalog_groups(files, catalog, max_per_group, security_mode):
     """Build stable, catalog-named groups for --repo-scan (#499).
 
     Files are assigned by ``assign_by_catalog``; a matched group larger than
-    ``max_per_group`` splits into ``<name>_<i>`` chunks, and leftover files
-    keep the legacy ``._N`` chunk naming. Returns ``(groups, leftovers)``;
-    callers must surface ``leftovers`` (the coverage gap), never drop it.
+    ``max_per_group`` splits into ``<name>_<i>`` chunks. Committed-catalog
+    leftovers then fall through the curated Commons vocabulary (5.1, #499:
+    Docs/CI/Build/Config/Deps) via the SAME ``assign_by_catalog`` -- committed
+    groups always win, Commons only ever sees leftovers. Only the true
+    residual keeps the legacy ``._N`` chunk naming. Returns
+    ``(groups, residual)``; callers must surface ``residual`` (the coverage
+    gap), never drop it.
+
+    Each named group carries the committed catalog entry's `parent` (self for
+    a leaf, the subgroup's parent name for e.g. `UI:Admin`); a chunk split off
+    an oversize group keeps that same parent. Commons-named groups and `._N`
+    residual chunks have no catalog entry and self-parent via `_group_obj`'s
+    default.
+
+    Commons must never re-emit a committed group's name: two groups sharing a
+    name would write to the SAME ``findings-<group>-<domain>.json`` (one cell's
+    findings silently clobber the other's) and produce a duplicate report node.
+    Committed groups always win, so any Commons category the committed catalog
+    already defines (e.g. an authored ``Docs`` group) is dropped before Commons
+    ever runs.
     """
     named, leftovers = assign_by_catalog(files, catalog)
-    groups = []
-    for name, fs in named.items():
-        chunks = chunk_files(fs, max_per_group)
-        if len(chunks) == 1:
-            groups.append(_group_obj(name, chunks[0], security_mode))
-        else:
-            groups.extend(_group_obj("%s_%d" % (name, i + 1), c, security_mode)
-                          for i, c in enumerate(chunks))
+    groups = _emit_named_groups(named, max_per_group, security_mode,
+                                parent_lookup=lambda n: catalog[n].get("parent"))
+    commons = {n: g for n, g in _commons_catalog().items() if n not in catalog}
+    commons_named, residual = assign_by_catalog(leftovers, commons)
+    groups.extend(_emit_named_groups(commons_named, max_per_group, security_mode))
     groups.extend(_group_obj("._%d" % (i + 1), c, security_mode)
-                  for i, c in enumerate(chunk_files(leftovers, max_per_group)))
-    return groups, leftovers
+                  for i, c in enumerate(chunk_files(residual, max_per_group)))
+    return groups, residual
 
 def build_result(repo, mode, target, facet, impl, tests,
                  max_per_group=DEFAULT_MAX_PER_GROUP, group_files=None,
@@ -912,6 +972,25 @@ def _matrix_catalog(repo):
         print("committed groups.yml: %s" % e, file=sys.stderr)
     return groups
 
+def _committed_exclude_paths(repo):
+    """Committed top-level `exclude_paths:` globs from `.panopticon/groups.yml`
+    (Task 4, #1136), mirroring `_matrix_catalog`'s read: a missing/unreadable/
+    malformed groups.yml is non-fatal here -- ``[]`` (no pruning), never a
+    hard failure. Errors are disclosed (stderr) via `parse_exclude_paths`."""
+    path = os.path.join(repo, ".panopticon", "groups.yml")
+    if not os.path.isfile(path):
+        return []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh) or {}
+    except (OSError, yaml.YAMLError) as e:
+        print("groups.yml unreadable: %s" % e, file=sys.stderr)
+        return []
+    globs, errs = groups_schema.parse_exclude_paths(doc if isinstance(doc, dict) else {})
+    for e in errs:
+        print("committed groups.yml: %s" % e, file=sys.stderr)
+    return globs
+
 def _norm_scope_path(repo, p):
     """Normalize a --scope-file/--scope-files path to the repo-relative spelling
     discover_repo_files keys on (#5.0-17): relativize an absolute path under
@@ -980,6 +1059,26 @@ def main(argv=None):
                                include_fixtures=(args.security == "redteam"),
                                pruned_fixtures=pruned_fixtures,
                                info=info)
+    # Task 4 (#1136): committed top-level `exclude_paths:` globs prune matching
+    # files BEFORE any grouping (build_result's default chunking, --scope-*
+    # narrowing, and catalog_groups/assign_by_catalog all consume `allf` from
+    # this point on) -- excluded files land in NEITHER a group NOR a leftover.
+    # Absent `exclude_paths`, `exclude_globs` is [] and `_apply_exclude` is a
+    # no-op (byte-identical back-compat).
+    exclude_globs = _committed_exclude_paths(repo)
+    _exclude_re = [_glob_to_re(g) for g in exclude_globs]
+
+    def _apply_exclude(fs):
+        """Split ``fs`` into (kept, excluded) by the committed exclude_paths
+        globs; identity (no exclusions) when none are committed."""
+        if not _exclude_re:
+            return fs, []
+        kept, dropped = [], []
+        for f in fs:
+            (dropped if any(rx.match(f) for rx in _exclude_re) else kept).append(f)
+        return kept, dropped
+
+    allf, excluded_files = _apply_exclude(allf)
     impl, tests = partition_test_files(allf)
     # Group impl AND real test sources so tests aren't silently dropped (only
     # their __pycache__ artifacts used to reach a group); counts stay impl-only.
@@ -1026,11 +1125,20 @@ def main(argv=None):
                   file=sys.stderr)
             return 2
         scoped = prune_fixture_files(changed, args.security == "redteam")
+        # Delta-path parity (#1136): --scope-changed rebuilds `scoped` from
+        # git-diff output, which never passed through the whole-repo exclude
+        # filter above. Re-apply so committed exclude_paths hold under delta
+        # review too, and re-derive excluded_files so the disclosure reflects
+        # what was actually pruned from the changed set (not the whole-repo
+        # count). --scope-dir/-file/-group derive `scoped` from the already-
+        # pruned `allf`, so they keep the whole-repo excluded_files as-is.
+        scoped, excluded_files = _apply_exclude(scoped)
         _delta = (base, source)
     elif args.scope_files:
         scoped = prune_fixture_files(
             [_norm_scope_path(repo, f) for f in args.scope_files],   # #5.0-17
             args.security == "redteam")
+        scoped, excluded_files = _apply_exclude(scoped)   # delta-path parity (#1136)
         _delta = None
         if args.base:
             res = resolve_base_or_die(repo, args.base, None)
@@ -1080,6 +1188,14 @@ def main(argv=None):
               "scan; use --security redteam to include them"
               % (args.security, len(pruned_fixtures),
                  ", ".join(sorted(pruned_fixtures))), file=sys.stderr)
+    if exclude_globs:
+        # Task 4 (#1136): disclose the committed exclude_paths prune — never
+        # silently drop. Omitted entirely when exclude_paths is absent (back-
+        # compat: zero-behavior-change means zero-output-change too).
+        result["exclude_paths"] = exclude_globs
+        result["excluded_count"] = len(excluded_files)
+        print("exclude_paths: pruned %d file(s) matching %s before grouping"
+              % (len(excluded_files), ", ".join(exclude_globs)), file=sys.stderr)
 
     if "schema_version" not in result:
         result["schema_version"] = 1
