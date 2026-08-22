@@ -1,5 +1,6 @@
 import unittest
 from unittest import mock
+from xml.etree.ElementTree import ParseError
 
 import scripts.tools.spotbugs as sb
 
@@ -86,6 +87,28 @@ class TestSpotBugsAdapter(unittest.TestCase):
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0]["title"], "UNKNOWN_CUSTOM_BUG_TYPE")
         self.assertNotIn("citations", findings[0])
+
+    def test_parse_bug_instance_without_source_line(self):
+        # SpotBugs sometimes omits SourceLine entirely; the adapter must still
+        # emit a finding with a sensible default location (#1196).
+        sample = b"""<?xml version="1.0" encoding="UTF-8"?>
+<BugCollection version="4.8.6" sequence="0" timestamp="0" analysisTimestamp="0" release="">
+  <BugInstance type="COMMAND_INJECTION" priority="1" category="SECURITY">
+    <Class classname="com.example.App"/>
+  </BugInstance>
+</BugCollection>
+"""
+        findings = sb.SpotBugsAdapter().parse(sample, "g1")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["location"]["file"], "")
+        self.assertEqual(findings[0]["location"]["line_start"], 1)
+        self.assertIn("CWE-78", findings[0]["citations"]["cwe"])
+
+    def test_parse_malformed_xml_raises(self):
+        # Malformed tool output should surface as a parse error rather than be
+        # silently swallowed (#1196).
+        with self.assertRaises(ParseError):
+            sb.SpotBugsAdapter().parse(b"<not-xml", "g1")
 
 
 if __name__ == "__main__":

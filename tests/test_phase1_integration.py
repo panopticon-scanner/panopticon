@@ -11,8 +11,8 @@ class TestPhase1Integration(unittest.TestCase):
     def test_pip_audit_finds_requests_cve(self):
         target = os.path.join(os.path.dirname(__file__), "fixtures", "vulnerable-python")
         adapter = ADAPTERS["pip-audit"]
-        if not adapter.is_applicable(target):
-            self.skipTest("pip-audit not applicable to fixture")
+        # is_applicable is intentionally not exercised here: invoke() is mocked,
+        # so we are testing parse() behavior against deterministic output (#1196).
 
         mock_output = b'{"dependencies": [{"name": "requests", "version": "2.20.0", "vulns": [{"id": "CVE-2018-18074", "aliases": ["CVE-2018-18074"], "fix_versions": ["2.20.1"], "description": "vuln"}]}]}'
         with unittest.mock.patch.object(adapter, 'invoke', return_value=(mock_output, 1)):
@@ -27,8 +27,8 @@ class TestPhase1Integration(unittest.TestCase):
     def test_npm_audit_finds_lodash_vulnerability(self):
         target = os.path.join(os.path.dirname(__file__), "fixtures", "vulnerable-node")
         adapter = ADAPTERS["npm-audit"]
-        if not adapter.is_applicable(target):
-            self.skipTest("npm-audit not applicable to fixture")
+        # is_applicable is intentionally not exercised here: invoke() is mocked,
+        # so we are testing parse() behavior against deterministic output (#1196).
 
         mock_output = json.dumps({"advisories": {"123": {"title": "Command Injection in lodash", "module_name": "lodash", "vulnerable_versions": "<4.17.21", "patched_versions": ">=4.17.21", "severity": "high", "cves": ["CVE-2021-23337"]}}}).encode()
         with unittest.mock.patch.object(adapter, 'invoke', return_value=(mock_output, 1)):
@@ -96,8 +96,8 @@ class TestPhase1Integration(unittest.TestCase):
     def test_eslint_security_finds_eval(self):
         target = os.path.join(os.path.dirname(__file__), "fixtures", "insecure-js")
         adapter = ADAPTERS["eslint-security"]
-        if not adapter.is_applicable(target):
-            self.skipTest("eslint-security not applicable to fixture")
+        # is_applicable is intentionally not exercised here: invoke() is mocked,
+        # so we are testing parse() behavior against deterministic output (#1196).
 
         mock_output = json.dumps([{"filePath": "app.js", "messages": [{"ruleId": "security/detect-eval-with-expression", "severity": 2, "message": "eval can be harmful", "line": 5, "column": 1}]}]).encode()
         with unittest.mock.patch.object(adapter, 'invoke', return_value=(mock_output, 1)):
