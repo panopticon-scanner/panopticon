@@ -44,21 +44,10 @@ jobs:
           set -euo pipefail
           api="/orgs/${OWNER}/packages/container/panopticon-tools/versions?per_page=100"
           if ! resp=$(gh api "${api}" 2>err.txt); then
-            echo "::error::Could not query the panopticon-tools package ($(cat err.txt))."
-            exit 1
+            .github/scripts/image-freshness.sh "" "${MAX_AGE_DAYS}"
+            exit 0
           fi
           updated=$(printf '%s' "${resp}" | jq -r \
             '[.[] | select(.metadata.container.tags[]? == "latest")]
              | sort_by(.updated_at) | last | .updated_at // empty')
-          if [ -z "${updated}" ]; then
-            echo "::error::No :latest-tagged panopticon-tools image exists -- the nightly docker-publish build has never succeeded."
-            exit 1
-          fi
-          now=$(date -u +%s)
-          built=$(date -u -d "${updated}" +%s)
-          age_days=$(( (now - built) / 86400 ))
-          echo "panopticon-tools:latest last published ${updated} (${age_days}d ago)"
-          if [ "${age_days}" -gt "${MAX_AGE_DAYS}" ]; then
-            echo "::error::panopticon-tools:latest is ${age_days}d old (> ${MAX_AGE_DAYS}d): the nightly docker-publish build is failing or its schedule is disabled. Check the 'Publish panopticon-tools image' workflow."
-            exit 1
-          fi
+          .github/scripts/image-freshness.sh "${updated}" "${MAX_AGE_DAYS}"
