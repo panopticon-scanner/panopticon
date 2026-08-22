@@ -1,8 +1,4 @@
 # tests/test_coverage_model.py
-import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "skill", "scripts"))
 import coverage_model as cov
 
 # The existing cases isolate the core (floor|scout)-exclude logic by passing
