@@ -25,6 +25,31 @@ class TestDetectLanguages(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             self.assertEqual(rt.detect_languages(d), [])
 
+    def test_foreign_lang_in_vendored_tree_not_detected(self):
+        # #1138: a Python project with a vendored/generated/sample .go file must
+        # NOT detect Go (and so must NOT select gosec) — that stray file would
+        # otherwise inflate the toolset with a tool that produces nothing, reading
+        # as a "selected-but-unproduced" tool-coverage gap that can disable the gate.
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "pkg"))
+            open(os.path.join(d, "pkg", "app.py"), "w").close()
+            for sub in ("vendor", "testdata", "examples", "third_party", "docs"):
+                os.makedirs(os.path.join(d, sub))
+                open(os.path.join(d, sub, "dep.go"), "w").close()
+            langs = rt.detect_languages(d)
+            self.assertIn("python", langs)
+            self.assertNotIn("go", langs)                  # all .go under pruned trees
+            self.assertNotIn("gosec", rt.select_tools(langs, has_deps=False))
+
+    def test_real_test_suite_still_detected(self):
+        # Conservative prune: a genuine test suite under tests/ IS legitimate
+        # language surface and must still be detected (we prune vendor/generated,
+        # not tests/).
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "tests"))
+            open(os.path.join(d, "tests", "test_app.py"), "w").close()
+            self.assertIn("python", rt.detect_languages(d))
+
     def test_run_tools_skips_when_output_exceeds_cap(self):
         huge = b"x" * (rt.MAX_TOOL_OUTPUT_BYTES + 10)
         fake = _FakeResult(returncode=0, stdout=huge)
