@@ -1,3 +1,11 @@
+"""Integration tests for scripts.driver.
+
+TECH DEBT (#1196): this file is a ~2800-line monolith that covers the run
+engine, phase orchestration, checkpointing, artifact persistence, and many
+helper functions. Splitting it would improve maintainability, but the tests are
+stable and the file is intentionally left intact per project policy — only
+document the monolith as accepted tech debt here.
+"""
 import contextlib
 import io
 import json

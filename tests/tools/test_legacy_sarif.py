@@ -109,6 +109,42 @@ class TestLegacySarifAdapter(unittest.TestCase):
         self.assertIn("-s", argv)
         self.assertIn("B101,B404,B110,B112", argv)
 
+    def test_parse_malformed_json_raises(self):
+        adapter = legacy.LegacySarifAdapter("semgrep")
+        with self.assertRaises(json.JSONDecodeError):
+            adapter.parse(b"{not valid sarif", "g1")
+
+    def test_parse_empty_runs_returns_empty(self):
+        adapter = legacy.LegacySarifAdapter("semgrep")
+        findings = adapter.parse(json.dumps({"runs": []}).encode(), "g1")
+        self.assertEqual(findings, [])
+
+    def test_parse_empty_results_returns_empty(self):
+        adapter = legacy.LegacySarifAdapter("semgrep")
+        sarif = {"runs": [{"tool": {"driver": {"name": "semgrep", "rules": []}},
+                           "results": []}]}
+        findings = adapter.parse(json.dumps(sarif).encode(), "g1")
+        self.assertEqual(findings, [])
+
+    def test_parse_missing_result_fields_returns_finding(self):
+        # SARIF results with minimal fields should still produce a finding,
+        # defaulting severity and tolerating absent locations (#1196).
+        adapter = legacy.LegacySarifAdapter("semgrep")
+        sarif = {"runs": [{"tool": {"driver": {"name": "semgrep", "rules": []}},
+                           "results": [{"ruleId": "bare-rule"}]}]}
+        findings = adapter.parse(json.dumps(sarif).encode(), "g1")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["severity"], "MEDIUM")
+        self.assertEqual(findings[0]["location"], {})
+
+    def test_parse_unknown_level_defaults_to_info(self):
+        adapter = legacy.LegacySarifAdapter("semgrep")
+        sarif = {"runs": [{"tool": {"driver": {"name": "semgrep", "rules": []}},
+                           "results": [{"ruleId": "weird", "level": "banana"}]}]}
+        findings = adapter.parse(json.dumps(sarif).encode(), "g1")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["severity"], "INFO")
+
 
 if __name__ == "__main__":
     unittest.main()

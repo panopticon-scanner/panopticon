@@ -50,3 +50,19 @@ class TestDepthPlanner(unittest.TestCase):
 
     def test_panel_not_in_profile_returns_empty(self):
         self.assertEqual(dp.plan_lenses(self._profile("deep"), "architecture"), [])
+
+    def test_invalid_depth_defaults_to_standard_limit(self):
+        # Unknown depth values fall back to DEPTH_LIMIT=2 and rank=0, so only
+        # shallow-threshold lenses qualify (#1196).
+        planned = dp.plan_lenses(self._profile("nonexistent"), "code")
+        self.assertEqual(planned, ["structure", "style"])
+
+    def test_empty_lens_list_returns_empty(self):
+        profile = self._profile("deep")
+        profile["lenses"]["code"] = []
+        self.assertEqual(dp.plan_lenses(profile, "code"), [])
+
+    def test_missing_lenses_key_returns_empty(self):
+        profile = self._profile("deep")
+        del profile["lenses"]
+        self.assertEqual(dp.plan_lenses(profile, "code"), [])
