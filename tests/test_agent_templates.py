@@ -147,7 +147,8 @@ class TestDomainPanelRenders(unittest.TestCase):
         mapping = {"domain": "SEC", "group": "Auth", "file_list": "- a.py",
                    "tests": "- t.py", "security_mode": "standard",
                    "menu": "SEC-A1A os-command-injection (HIGH)", "run_id": "R",
-                   "out_file": "/abs/findings-Auth-SEC.json"}
+                   "criteria": "SEC-A1A os-command-injection — Qualifies when …",
+                   "tool_hits": "", "out_file": "/abs/findings-Auth-SEC.json"}
         out = dispatch.render_prompt("domain-panel.md", mapping, "claude")
         self.assertIn("`SEC` domain reviewer", out)
         self.assertIn("SEC-A1A", out)
@@ -157,6 +158,20 @@ class TestDomainPanelRenders(unittest.TestCase):
         self.assertIn("/abs/findings-Auth-SEC.json", out)
         self.assertEqual(dispatch.registered_agent_name("domain-panel.md"),
                          "panopticon-domain-panel")
+
+    def test_renders_criteria_lens(self):
+        # #1071 (COD-C3B): the reviewer must see the SAME {criteria} pass/fail
+        # lens the advisor grades against, so it doesn't pick a code blind to the
+        # criteria the verify phase will hold it to (systematic first-pass miscoding).
+        mapping = {"domain": "SEC", "group": "Auth", "file_list": "- a.py",
+                   "tests": "- t.py", "security_mode": "standard",
+                   "menu": "SEC-A1A os-command-injection (HIGH)", "run_id": "R",
+                   "criteria": "SEC-A1A — CRITERIA-SENTINEL — met only when …",
+                   "tool_hits": "", "out_file": "/abs/findings-Auth-SEC.json"}
+        out = dispatch.render_prompt("domain-panel.md", mapping, "claude")
+        self.assertIn("## Grading criteria", out)
+        self.assertIn("grade against the criteria, not the one-line name", out)
+        self.assertIn("CRITERIA-SENTINEL", out)     # the criteria block is actually injected
 
 
 class TestDomainPanelSingleWriteInstruction(unittest.TestCase):
