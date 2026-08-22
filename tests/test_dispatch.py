@@ -201,6 +201,29 @@ class TestDispatchPlan(unittest.TestCase):
                                         "depth": "standard"}]}, fh)
             self.assertEqual(dispatch.load_group_files(path, "test_repo"), ["app.py"])
 
+    def test_load_group_assignment_rejects_missing_depth(self):
+        profile = self._profile(depth="deep")
+        groups = self._groups(profile)
+        # Remove depth
+        with open(groups, encoding="utf-8") as fh:
+            data = json.load(fh)
+        data["groups"][0].pop("depth")
+        with open(groups, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        with self.assertRaisesRegex(ValueError, "malformed or missing depth"):
+            dispatch.load_group_assignment(groups, profile["group"])
+
+    def test_load_group_assignment_rejects_invalid_depth(self):
+        profile = self._profile(depth="deep")
+        groups = self._groups(profile)
+        with open(groups, encoding="utf-8") as fh:
+            data = json.load(fh)
+        data["groups"][0]["depth"] = "not-a-depth"
+        with open(groups, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        with self.assertRaisesRegex(ValueError, "malformed or missing depth"):
+            dispatch.load_group_assignment(groups, profile["group"])
+
     def test_scout_cannot_drop_authoritative_panel(self):
         profile = self._profile()
         profile["panels"] = ["code"]

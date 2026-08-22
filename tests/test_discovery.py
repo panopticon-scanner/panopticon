@@ -10,6 +10,8 @@ import types
 import unittest
 from unittest import mock
 
+import pytest
+
 SCRIPTS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                        "skill", "scripts")
 
@@ -1533,3 +1535,27 @@ def test_collect_changed_files_default_branch_fallback():
         with patch('discovery._on_allowed_dotdir_path', return_value=True), patch('os.path.isfile', return_value=True):
             res = discovery.collect_changed_files("/tmp/x", base=None)
         assert res == ["file1.py"]
+
+
+def test_matrix_catalog_fails_loud_on_broken_yaml(tmp_path):
+    (tmp_path / ".panopticon").mkdir()
+    (tmp_path / ".panopticon" / "groups.yml").write_text(
+        "groups:\n  Bad:\n    match: [unclosed\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="groups.yml unreadable"):
+        discovery._matrix_catalog(str(tmp_path))
+
+
+def test_load_catalog_fails_loud_on_broken_yaml(tmp_path):
+    (tmp_path / ".panopticon").mkdir()
+    (tmp_path / ".panopticon" / "groups.yml").write_text(
+        "groups:\n  Bad: [\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="catalog parse error"):
+        discovery.load_catalog(str(tmp_path))
+
+
+def test_repo_scan_fails_loud_on_broken_groups_yml(tmp_path):
+    (tmp_path / ".panopticon").mkdir()
+    (tmp_path / ".panopticon" / "groups.yml").write_text(
+        "groups:\n  Bad:\n    match: [unclosed\n", encoding="utf-8")
+    rc = discovery.main(["--repo", str(tmp_path), "--repo-scan"])
+    assert rc != 0

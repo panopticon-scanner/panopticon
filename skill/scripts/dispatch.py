@@ -374,6 +374,10 @@ def load_group_assignment(groups_path, group_name):
     panels = assignment.get("panels")
     if not isinstance(panels, list) or not all(isinstance(panel, str) for panel in panels):
         raise ValueError("group %r has malformed panels" % group_name)
+    depth = assignment.get("depth")
+    if not isinstance(depth, str) or depth not in plan_contract.DEPTH_ORDER:
+        raise ValueError("group %r has malformed or missing depth" % group_name)
+    assignment["depth"] = depth
     assignment["security_mode"] = data.get("security_mode", "standard")
     return assignment
 
