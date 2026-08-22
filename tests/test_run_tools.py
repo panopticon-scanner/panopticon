@@ -208,6 +208,44 @@ class TestRunTools(unittest.TestCase):
             paths = rt.run_tools(d, ["semgrep", "gitleaks"], os.path.join(d, "out"), runner=runner)
             self.assertEqual(len(paths), 1)                  # gitleaks still ran
 
+    def test_run_tools_truncates_oversized_output_with_marker(self):
+        """#1111: oversized stdout must truncate, not OOM-buffer or silently skip."""
+        huge = b"x" * (rt.MAX_TOOL_OUTPUT_BYTES + 100000)
+
+        class _FakeStream:
+            def __init__(self, data):
+                self._data = data
+            def read(self, n=-1):
+                if not self._data:
+                    return b""
+                if n < 0:
+                    chunk, self._data = self._data, b""
+                    return chunk
+                chunk, self._data = self._data[:n], self._data[n:]
+                return chunk
+
+        class _FakePopen:
+            def __init__(self, data):
+                self.stdout = _FakeStream(data)
+                self.stderr = _FakeStream(b"")
+                self._rc = 0
+            def wait(self, timeout=None):
+                return self._rc
+            def poll(self):
+                return self._rc
+
+        def runner(cmd, **kw):
+            return _FakePopen(huge)
+
+        with tempfile.TemporaryDirectory() as d:
+            out_dir = os.path.join(d, "out")
+            paths = rt.run_tools(d, ["semgrep"], out_dir, runner=runner)
+            self.assertEqual(len(paths), 1)
+            with open(paths[0], "rb") as fh:
+                written = fh.read()
+            self.assertLess(len(written), len(huge))
+            self.assertIn(b"TRUNCATED", written)
+
 
 class TestAdapterDispatch(unittest.TestCase):
     def test_select_adapters_by_ecosystem(self):

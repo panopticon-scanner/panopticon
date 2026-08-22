@@ -182,61 +182,140 @@ MAX_TOOL_OUTPUT_BYTES = 50 * 1024 * 1024
 def _capture_run(label, tool, docker, out_path, runner):
     """Run one docker tool/adapter invocation and land its stdout at out_path.
 
-    The single home for the run/rc-check/write/warn-on-empty/timeout sequence
-    both run_tools branches share. rc 1 is accepted (== findings for most
-    scanners); other exits print a capped stderr excerpt so 'exited N;
-    skipping' is diagnosable. Returns out_path on success, None on skip.
+    Streams stdout into a bounded sink so adversarial/large target output does
+    not accumulate unbounded in orchestrator memory (#1111). On exceeding the
+    byte cap the output is truncated with a marker and a stderr notice, but the
+    file is still written so the tool is recorded as produced rather than
+    silently skipped.
     """
     try:
         os.remove(out_path)
     except OSError:
         pass
     try:
-        res = runner(docker, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                     timeout=TOOL_TIMEOUT)
-        if getattr(res, "returncode", 1) not in (0, 1):  # 1 == findings for many tools
-            excerpt = (getattr(res, "stderr", b"") or b"")[-500:].decode(
-                "utf-8", errors="replace").strip()
-            print("%s %s exited %s; skipping%s" % (
-                label, tool, res.returncode,
-                (" — " + excerpt) if excerpt else ""), file=sys.stderr)
-            return None
-        out_bytes = res.stdout or b""
-        if len(out_bytes) > MAX_TOOL_OUTPUT_BYTES:
-            print("%s %s output exceeded %d byte limit; skipping" % (
-                label, tool, MAX_TOOL_OUTPUT_BYTES), file=sys.stderr)
-            return None
-        if not out_bytes.strip():
-            # #1051: empty output on a selected target is a silent failure, not a
-            # clean no-findings run (every scanner/adapter emits a JSON/SARIF
-            # envelope when it finds nothing). Fail closed: write NO file and
-            # skip, so write_manifest lands this tool in `missing` -> synthesize's
-            # #1031 gate reads INCONCLUSIVE, never a certified success. The stale
-            # file (if any) was already removed at the top of this function.
-            print("%s %s produced no output on a selected target; recording as "
-                  "missing (fail-closed, #1051)" % (label, tool), file=sys.stderr)
-            return None
-        fd, temp_path = tempfile.mkstemp(
-            prefix=".%s-" % os.path.basename(out_path),
-            dir=os.path.dirname(out_path) or ".")
-        try:
-            with os.fdopen(fd, "wb") as fh:
-                fh.write(out_bytes)
-                fh.flush()
-                os.fsync(fh.fileno())
-            os.replace(temp_path, out_path)
-        finally:
-            try:
-                os.remove(temp_path)
-            except OSError:
-                pass
-        return out_path
+        proc = runner(docker, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                      timeout=TOOL_TIMEOUT)
+        # Backward compat: tests may inject a CompletedProcess-like runner.
+        if hasattr(proc, "stdout") and isinstance(proc.stdout, (bytes, type(None))):
+            return _write_completed(label, tool, proc, out_path)
+        return _stream_and_write(label, tool, proc, out_path)
     except subprocess.TimeoutExpired:
         print("%s %s timed out after %ss; skipping" % (label, tool, TOOL_TIMEOUT),
               file=sys.stderr)
     except Exception as e:  # noqa: BLE001
         print("%s %s failed: %s; skipping" % (label, tool, e), file=sys.stderr)
     return None
+
+
+def _write_completed(label, tool, res, out_path):
+    """Legacy path for runner callables that return a CompletedProcess."""
+    if getattr(res, "returncode", 1) not in (0, 1):
+        excerpt = (getattr(res, "stderr", b"") or b"")[-500:].decode(
+            "utf-8", errors="replace").strip()
+        print("%s %s exited %s; skipping%s" % (
+            label, tool, res.returncode,
+            (" — " + excerpt) if excerpt else ""), file=sys.stderr)
+        return None
+    out_bytes = res.stdout or b""
+    if len(out_bytes) > MAX_TOOL_OUTPUT_BYTES:
+        print("%s %s output exceeded %d byte limit; skipping" % (
+            label, tool, MAX_TOOL_OUTPUT_BYTES), file=sys.stderr)
+        return None
+    if not out_bytes.strip():
+        print("%s %s produced no output on a selected target; recording as "
+              "missing (fail-closed, #1051)" % (label, tool), file=sys.stderr)
+        return None
+    return _atomic_write(out_path, out_bytes)
+
+
+def _stream_and_write(label, tool, proc, out_path):
+    """Stream stdout from a Popen-like object with an explicit byte cap."""
+    spool = tempfile.SpooledTemporaryFile(max_size=1024 * 1024)
+    truncated = False
+    try:
+        while True:
+            chunk = proc.stdout.read(64 * 1024)
+            if not chunk:
+                break
+            room = MAX_TOOL_OUTPUT_BYTES - spool.tell()
+            if room <= 0:
+                truncated = True
+                # Drain remaining stdout without storing it.
+                while proc.stdout.read(64 * 1024):
+                    pass
+                break
+            if len(chunk) > room:
+                spool.write(chunk[:room])
+                truncated = True
+                while proc.stdout.read(64 * 1024):
+                    pass
+                break
+            spool.write(chunk)
+        stderr = proc.stderr.read()
+        rc = proc.wait(timeout=TOOL_TIMEOUT)
+    finally:
+        try:
+            proc.stdout.close()
+        except Exception:
+            pass
+        try:
+            proc.stderr.close()
+        except Exception:
+            pass
+        if proc.poll() is None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+    if rc not in (0, 1):
+        excerpt = (stderr or b"")[-500:].decode("utf-8", errors="replace").strip()
+        print("%s %s exited %s; skipping%s" % (
+            label, tool, rc,
+            (" — " + excerpt) if excerpt else ""), file=sys.stderr)
+        return None
+
+    if spool.tell() == 0:
+        print("%s %s produced no output on a selected target; recording as "
+              "missing (fail-closed, #1051)" % (label, tool), file=sys.stderr)
+        return None
+
+    if truncated:
+        marker = (
+            "\n\n[TRUNCATED by panopticon: output exceeded %d byte limit; "
+            "only the first %d bytes were retained]\n" % (
+                MAX_TOOL_OUTPUT_BYTES, MAX_TOOL_OUTPUT_BYTES)
+        ).encode("utf-8")
+        print("%s %s output exceeded %d byte limit; truncated and retained "
+              "with marker" % (label, tool, MAX_TOOL_OUTPUT_BYTES),
+              file=sys.stderr)
+        # Write only up to the cap, then append the marker in place of the tail.
+        spool.seek(0)
+        payload = spool.read(MAX_TOOL_OUTPUT_BYTES)
+        payload += marker
+        return _atomic_write(out_path, payload)
+
+    spool.seek(0)
+    return _atomic_write(out_path, spool.read())
+
+
+def _atomic_write(out_path, data):
+    """Atomically replace out_path with data."""
+    fd, temp_path = tempfile.mkstemp(
+        prefix=".%s-" % os.path.basename(out_path),
+        dir=os.path.dirname(out_path) or ".")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temp_path, out_path)
+    finally:
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
+    return out_path
 
 
 def run_tools(target, tools, out_dir, image="panopticon-tools", runner=None, online=False):
