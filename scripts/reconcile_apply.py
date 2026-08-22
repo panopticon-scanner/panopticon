@@ -18,6 +18,7 @@ import re
 import subprocess  # noqa: F401 -- patch target for the dry-run zero-subprocess guard test
 import sys
 import time
+import warnings
 
 import file_issues
 import triage
@@ -77,6 +78,14 @@ def recover_linkage_from_github(label="self-scan", runner=None):
         raise RuntimeError("gh issue list failed (exit %d): %s" % (
             r.returncode, (r.stderr or "").strip()))
     issues = json.loads(r.stdout)
+    if len(issues) >= 1000:
+        warnings.warn(
+            "recover_linkage_from_github: gh issue list returned %d issues, "
+            "which equals the --limit cap; results may be truncated. "
+            "Increase --limit or narrow labels to ensure complete recovery." % len(issues),
+            UserWarning,
+            stacklevel=2,
+        )
     linkage = {}
     for issue in issues:
         body = issue.get("body") or ""

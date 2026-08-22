@@ -146,5 +146,12 @@ class TestLegacySarifAdapter(unittest.TestCase):
         self.assertEqual(findings[0]["severity"], "INFO")
 
 
+class TestLegacySarifIsApplicable(unittest.TestCase):
+    def test_is_always_applicable(self):
+        adapter = legacy.LegacySarifAdapter("semgrep")
+        self.assertTrue(adapter.is_applicable("/any/path"))
+        self.assertTrue(adapter.is_applicable("/another/path"))
+
+
 if __name__ == "__main__":
     unittest.main()

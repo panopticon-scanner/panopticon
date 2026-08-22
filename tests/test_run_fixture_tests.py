@@ -130,6 +130,23 @@ class TestDockerTimeouts(unittest.TestCase):
             rft.build_image("tag")
         self.assertEqual(m.call_args.kwargs.get("timeout"), rft.BUILD_TIMEOUT)
 
+    def test_build_image_uses_dockerfile_and_repo_root(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo_root = Path(d)
+            dockerfile = repo_root / "Dockerfile.fixtures"
+            dockerfile.write_text("FROM scratch\n")
+            with mock.patch.object(rft, "REPO_ROOT", repo_root), \
+                    mock.patch.object(rft, "DOCKERFILE", dockerfile), \
+                    mock.patch.object(rft, "_docker_bin", return_value="podman"), \
+                    mock.patch.object(rft.subprocess, "run", return_value=_Res(0)) as m:
+                rft.build_image("mytag")
+        cmd = m.call_args.args[0]
+        self.assertEqual(cmd[0], "podman")
+        self.assertEqual(cmd[1], "build")
+        self.assertEqual(cmd[cmd.index("-f") + 1], str(dockerfile))
+        self.assertEqual(cmd[cmd.index("-t") + 1], "mytag")
+        self.assertIn(str(repo_root), cmd)
+
     def test_probe_timeout_is_unavailable_not_crash(self):
         with mock.patch.object(rft.subprocess, "run",
                                side_effect=rft.subprocess.TimeoutExpired("cmd", rft.PROBE_TIMEOUT)):
