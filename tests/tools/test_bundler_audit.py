@@ -65,6 +65,45 @@ class TestBundlerAuditAdapter(unittest.TestCase):
             capture_output=True, timeout=300, cwd="/tmp/fake",
         )
 
+    def test_parse_incomplete_block_returns_no_findings(self):
+        # The regex requires all mandatory fields; a truncated block must not
+        # produce a partial/malformed finding (#1196).
+        text = b"Name: actionpack\nVersion: 5.2.4.3\n"
+        findings = ba.BundlerAuditAdapter().parse(text, "g1")
+        self.assertEqual(findings, [])
+
+    def test_parse_block_without_cve_has_empty_citations(self):
+        # A CVE value that does not start with 'CVE-' yields an empty citations
+        # list, which make_finding omits entirely (#1196).
+        text = b"""
+Name: actionpack
+Version: 5.2.4.3
+CVE: RESERVED
+GHSA: GHSA-8727-m6gj-c7p7
+Criticality: High
+URL: https://example.com
+Title: Possible Strong Parameters Bypass
+Solution: upgrade
+"""
+        findings = ba.BundlerAuditAdapter().parse(text, "g1")
+        self.assertEqual(len(findings), 1)
+        self.assertNotIn("citations", findings[0])
+        self.assertEqual(findings[0]["tool_evidence"]["rule_id"], "RESERVED")
+
+    def test_parse_unknown_criticality_normalizes_to_info(self):
+        text = b"""
+Name: actionpack
+Version: 5.2.4.3
+CVE: CVE-2020-8164
+Criticality: BANANA
+URL: https://example.com
+Title: Possible Strong Parameters Bypass
+Solution: upgrade
+"""
+        findings = ba.BundlerAuditAdapter().parse(text, "g1")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["severity"], "INFO")
+
 
 if __name__ == "__main__":
     unittest.main()

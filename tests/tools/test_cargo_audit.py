@@ -128,6 +128,44 @@ class TestCargoAuditAdapter(unittest.TestCase):
         findings = ca.CargoAuditAdapter().parse(sample, "g1")
         self.assertEqual(findings[0]["severity"], "CRITICAL")
 
+    def test_parse_dict_cvss_field_uses_score_bucket(self):
+        # Exercises the isinstance(cvss, dict) branch: a dict with numeric
+        # score should be bucketed by cvss_bucket, not default to HIGH (#1196).
+        sample = json.dumps({
+            "vulnerabilities": {"list": [{
+                "advisory": {
+                    "id": "RUSTSEC-2021-0074",
+                    "title": "Info leak in baz crate",
+                    "cvss": {"score": 5.5},
+                    "url": "https://rustsec.org/advisories/RUSTSEC-2021-0074",
+                },
+                "package": {"name": "baz", "version": "0.2.0"},
+                "versions": {"patched": ["0.2.1"]},
+            }]}
+        }).encode()
+        findings = ca.CargoAuditAdapter().parse(sample, "g1")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["severity"], "MEDIUM")
+
+    def test_parse_dict_cvss_missing_score_defaults_to_low(self):
+        # A dict-shaped cvss without an explicit score defaults to 0, which
+        # cvss_bucket maps to LOW (#1196).
+        sample = json.dumps({
+            "vulnerabilities": {"list": [{
+                "advisory": {
+                    "id": "RUSTSEC-2021-0075",
+                    "title": "Issue in qux crate",
+                    "cvss": {},
+                    "url": "https://rustsec.org/advisories/RUSTSEC-2021-0075",
+                },
+                "package": {"name": "qux", "version": "0.3.0"},
+                "versions": {"patched": ["0.3.1"]},
+            }]}
+        }).encode()
+        findings = ca.CargoAuditAdapter().parse(sample, "g1")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["severity"], "LOW")
+
 
 if __name__ == "__main__":
     unittest.main()
