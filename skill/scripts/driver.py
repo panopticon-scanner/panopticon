@@ -718,8 +718,11 @@ def _load_cell_findings(review_root, manifest, group, domain):
         for k in synthesize.AGENT_FORBIDDEN_FIELDS:
             raw.pop(k, None)
         nf = synthesize.normalize_finding(raw)
-        if not synthesize.ID_RE.match(nf.get("id") or ""):
-            nf["id"] = evidence.matrix_finding_id(nf)
+        # #1109: never trust an agent-supplied id -- always content-derive it, so
+        # a crafted/colliding well-formed id can't bind a downstream verdict to
+        # the wrong finding. Kept in lockstep with synthesize.load_findings so the
+        # advisor's finding_id echo still binds at synthesis.
+        nf["id"] = evidence.matrix_finding_id(nf)
         out.append(nf)
     return out
 

@@ -57,7 +57,7 @@ class TestMatrixFindingId(unittest.TestCase):
         fid = evidence.matrix_finding_id(_f(domain=["S", "E", "C"]))
         self.assertTrue(fid.startswith("GEN-") and ID_RE.match(fid))
 
-    def test_load_findings_fills_missing_id_and_keeps_valid_one(self):
+    def test_load_findings_always_content_derives_id(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "findings-app-SEC.json"
             p.write_text(
@@ -87,8 +87,28 @@ class TestMatrixFindingId(unittest.TestCase):
                 )
             )
             out = synthesize.load_findings([str(p)])
+            # #1109: agent-supplied ids are never trusted -- both are
+            # content-derived and schema-valid, and the supplied "SEC-001" is
+            # replaced, not kept.
             self.assertTrue(ID_RE.match(out[0]["id"]))
-            self.assertEqual(out[1]["id"], "SEC-001")
+            self.assertTrue(ID_RE.match(out[1]["id"]))
+            self.assertNotEqual(out[1]["id"], "SEC-001")
+
+    def test_crafted_agent_id_is_replaced_not_trusted(self):
+        # #1109: a well-formed but crafted/colliding agent-supplied id must be
+        # discarded and replaced with the content-derived one, so it cannot
+        # inherit a foreign CONFIRMED verdict via match_verdict_by_id.
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "findings-app-SEC.json"
+            p.write_text(json.dumps({"findings": [{
+                "id": "SEC-999",   # crafted to collide with another run's finding
+                "domain": "SEC", "code": "SEC-A1A", "severity": "HIGH",
+                "title": "real defect", "category": "authz",
+                "location": {"file": "app/auth.py", "line_start": 5},
+            }]}))
+            out = synthesize.load_findings([str(p)])
+            self.assertNotEqual(out[0]["id"], "SEC-999")
+            self.assertTrue(ID_RE.match(out[0]["id"]))
 
     def test_matrix_report_has_no_id_schema_error(self):
         with tempfile.TemporaryDirectory() as d:

@@ -1020,8 +1020,10 @@ class TestReport(unittest.TestCase):
             self.assertEqual(rc, 0)  # gate default OFF
             with open(out) as _fh:
                 report = json.load(_fh)
-            ids = {f["id"] for f in report["findings"]}
-            self.assertEqual(ids, {"SE-001"})
+            # LOW filtered out, CRITICAL kept (assert on title -- ids are now
+            # content-derived, #1109).
+            self.assertEqual(len(report["findings"]), 1)
+            self.assertEqual(report["findings"][0]["title"], "crit")
 
     def _tools_dir_with_sarif(self, d):
         # A semgrep SARIF with three results: real code (kept), a fixture-corpus
@@ -1446,7 +1448,7 @@ class TestReconciliation(unittest.TestCase):
             self.assertEqual(rc, 0)
             with open(out) as _fh:
                 report = json.load(_fh)
-            self.assertTrue(any(f["id"] == "SE-001" for f in report["findings"]))
+            self.assertTrue(any(f["title"] == "crit" for f in report["findings"]))
 
     def test_validate_returns_errors_and_warnings(self):
         report = syn.build_report(
@@ -2826,9 +2828,14 @@ class TestTwoPassCli(unittest.TestCase):
             vd = os.path.join(d, ".panopticon", "verdicts")
             os.makedirs(vd)
             qid = syn.finding_fingerprint(finding)
+            # #1109: the verdict must echo the finding's CONTENT-derived id (what
+            # load_findings assigns), not any agent-supplied id -- mirrors the
+            # advisor echoing the driver-assigned id in production.
+            expected_fid = evidence_mod.matrix_finding_id(syn.normalize_finding(finding))
             with open(os.path.join(vd, "%s.json" % qid), "w") as fh:
                 json.dump(
-                    {"finding_id": "AG-001", "verdict": "CONFIRMED", "reasoning": "verified"}, fh
+                    {"finding_id": expected_fid, "verdict": "CONFIRMED",
+                     "reasoning": "verified"}, fh
                 )
             out = os.path.join(d, "report.json")
             rc = syn.main(["--verdicts-dir", vd, "--fail-on", "high", "--out", out, fp])
@@ -3284,7 +3291,12 @@ class TestEvidenceIntegrity(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             loaded = syn.load_findings([self._agent_file(d, [forged])])
         entries, _ = evidence_mod.build_verify_queue(loaded)
-        self.assertEqual([e["finding"]["id"] for e in entries], ["AG-003"])
+        # forged finding is still queued (not dropped) -- but its supplied id is
+        # replaced with a content-derived one, so it can't bind a foreign verdict
+        # (#1109).
+        self.assertEqual(len(entries), 1)
+        self.assertNotEqual(entries[0]["finding"]["id"], "AG-003")
+        self.assertTrue(syn.ID_RE.match(entries[0]["finding"]["id"]))
 
     def test_real_tool_findings_keep_their_source(self):
         # ingest_tools output is not agent-authored and must be untouched.
