@@ -51,7 +51,6 @@ RUN arch="$(dpkg --print-architecture)" \
     && chmod +x /usr/local/bin/osv-scanner
 
 # gitleaks (architecture-aware: amd64->x64, arm64->arm64)
-ARG GITLEAKS_VERSION=8.18.4
 ARG GITLEAKS_SHA256_X64=ba6dbb656933921c775ee5a2d1c13a91046e7952e9d919f9bac4cec61d628e7d
 ARG GITLEAKS_SHA256_ARM64=bf5f7f466ebfade1296c8bd32cf7d3f592c2aa78836aa9980ffbe2cadca7a861
 RUN arch="$(dpkg --print-architecture)" \
@@ -69,7 +68,6 @@ RUN curl -sfL https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --d
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # gosec (architecture-aware)
-ARG GOSEC_VERSION=2.20.0
 ARG GOSEC_SHA256_AMD64=2d056644cf265f194efaf98b80d459004c03db7b367fbc3fe7fb345773df684e
 ARG GOSEC_SHA256_ARM64=a0c554e23ad088b544d40ca63039362ed2687fb576a33c1019951dbd3edcd716
 RUN arch="$(dpkg --print-architecture)" \

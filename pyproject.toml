@@ -37,6 +37,8 @@ Issues = "https://github.com/panopticon-scanner/panopticon/issues"
 
 [tool.ruff]
 target-version = "py311"
+force-exclude = true
+extend-exclude = ["Dockerfile"]
 [tool.ruff.lint]
 select = ["E", "F", "W"]
 ignore = ["E401", "E501", "E701", "E702"]
