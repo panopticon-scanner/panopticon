@@ -7,13 +7,11 @@ contract, CLI flow -- is pinned without Docker.
 """
 import json
 import os
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill"))
 import scripts.run_fixture_tests as rft
 
 

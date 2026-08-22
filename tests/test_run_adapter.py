@@ -1,10 +1,7 @@
 import io
-import os
-import sys
 import unittest
 from contextlib import redirect_stderr
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill"))
 
 import scripts._run_adapter as ra
 

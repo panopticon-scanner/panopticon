@@ -1,9 +1,7 @@
 import os
-import sys
 import json
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill"))
 import scripts.evidence as evidence
 
 ev = evidence

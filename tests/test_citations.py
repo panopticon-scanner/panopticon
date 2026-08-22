@@ -1,12 +1,10 @@
 from unittest import mock
 import json
 import os
-import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill", "scripts"))
-import citations as cit
+import scripts.citations as cit
 
 
 class TestCatalog(unittest.TestCase):

@@ -1,5 +1,5 @@
 import json
-import synthesize as syn
+import scripts.synthesize as syn
 
 def _cell_file(tmp_path, group, domain, sev, line=1, verdict=None):
     fp = tmp_path / ("findings-%s-%s.json" % (group, domain))

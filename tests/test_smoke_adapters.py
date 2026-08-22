@@ -1,10 +1,7 @@
-import os
 import subprocess
-import sys
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "skill", "scripts"))
-import smoke_adapters as sa
+import scripts.smoke_adapters as sa
 from scripts.run_tools import recommendable_tools
 from scripts.smoke_adapters import PROBES
 

@@ -3,14 +3,12 @@ import io
 import json
 import os
 import shutil
-import sys
 import tempfile
 import unittest
 from unittest import mock
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill", "scripts"))
-import dispatch
-import evidence
+import scripts.dispatch as dispatch
+import scripts.evidence as evidence
 
 
 class TestDispatchPlan(unittest.TestCase):

@@ -1,12 +1,10 @@
 import json
 import os
-import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "skill", "scripts"))
-import ocrdb
-import synthesize
+import scripts.ocrdb as ocrdb
+import scripts.synthesize as synthesize
 
 
 def _bundle():

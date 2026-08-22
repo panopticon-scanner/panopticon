@@ -1,5 +1,5 @@
 # tests/test_coverage_model.py
-import coverage_model as cov
+import scripts.coverage_model as cov
 
 # The existing cases isolate the core (floor|scout)-exclude logic by passing
 # global_floor=set(); the global-floor injection is exercised separately below.

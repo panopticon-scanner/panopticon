@@ -1,9 +1,6 @@
 import math
-import os
-import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "skill", "scripts"))
-import score_gate as sg
+import scripts.score_gate as sg
 
 
 def _f(sev, conf="POSSIBLE", status="unverified"):

@@ -1,7 +1,6 @@
 import contextlib
 import io
 import os
-import sys
 import json
 import tempfile
 import unittest
@@ -13,7 +12,6 @@ DEFAULT_TIMESTAMP = "2026-07-23T00:00:00Z"
 
 
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill"))
 import scripts.synthesize as syn  # noqa: E402
 import scripts.ocrdb as ocrdb  # noqa: E402
 

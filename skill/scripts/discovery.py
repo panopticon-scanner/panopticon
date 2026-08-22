@@ -22,8 +22,14 @@ import sys
 import uuid
 import yaml
 
+# This script is invoked as a standalone CLI entrypoint (``python
+# skill/scripts/discovery.py --repo-scan``) from ``driver.py``. Because
+# ``skill/scripts/`` has no ``__init__.py``, relative imports are unavailable,
+# so we add the sibling directory to ``sys.path``. A structural fix (making
+# ``skill/scripts/`` a package and invoking ``python -m skill.scripts.discovery``)
+# requires changes to off-limits ``driver.py``; accepted as tech debt (#1201).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import diff_map  # noqa: E402 (sibling on sys.path, same pattern as dispatch.py)
+import diff_map  # noqa: E402
 import groups_schema  # noqa: E402
 import plan_contract  # noqa: E402
 

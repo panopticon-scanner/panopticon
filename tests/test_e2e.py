@@ -8,7 +8,6 @@ import unittest
 ROOT = os.path.join(os.path.dirname(__file__), os.pardir)
 SCRIPTS = os.path.join(ROOT, "skill", "scripts")
 
-sys.path.insert(0, os.path.join(ROOT, "skill"))
 
 
 class TestEndToEnd(unittest.TestCase):

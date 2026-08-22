@@ -6,11 +6,9 @@ now flags; defaults preserve run-2 behavior. Also pins the section parser.
 """
 import os
 import shutil
-import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "scripts"))
 import file_fixmes
 
 

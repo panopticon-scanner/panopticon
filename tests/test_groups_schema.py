@@ -1,7 +1,7 @@
 # tests/test_groups_schema.py
 import unittest
 
-import groups_schema as gs
+import scripts.groups_schema as gs
 
 
 class TestGroupsSchema(unittest.TestCase):
