@@ -26,6 +26,7 @@ env:
 # emulation takes hours and would do so on every daily rebuild. See #461.
 jobs:
   build:
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
