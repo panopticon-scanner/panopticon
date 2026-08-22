@@ -103,8 +103,20 @@ def hunk_map(repo, base):
             if os.path.islink(full):
                 continue
             try:
+                # #1083: count newlines in bounded chunks so an untracked file
+                # with few/no newlines (a huge blob) can't be buffered wholesale.
+                # Matches `sum(1 for _ in fh)`: a final newline-less line counts.
                 with open(full, "rb") as fh:
-                    n = sum(1 for _ in fh)
+                    n = 0
+                    last = b""
+                    while True:
+                        chunk = fh.read(65536)
+                        if not chunk:
+                            break
+                        n += chunk.count(b"\n")
+                        last = chunk
+                    if last and not last.endswith(b"\n"):
+                        n += 1
             except OSError:
                 continue
             result[rel] = [(1, max(n, 1))]
@@ -211,6 +223,12 @@ def _worktree_dir(repo, pr_number):
                                          "panopticon-pr-%d-%s" % (pr_number, key)))
 
 
+# Hard bound on the --pr worktree git/gh calls so a hung fetch/API/teardown
+# (network partition, stalled TLS, a held git lock) cannot block the run
+# indefinitely (#1081, #1082). Generous -- a shallow PR fetch is the slowest.
+_PR_TIMEOUT = 180
+
+
 def acquire_pr(pr_number, repo=".", runner=subprocess.run):
     """Fetch a PR head into a DETERMINISTIC throwaway worktree and return its
     base branch. Idempotent: if the deterministic worktree already exists and
@@ -222,7 +240,11 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
     blast radius). Raises RuntimeError (loud) on any step's failure.
     """
     def _run(argv):
-        r = runner(argv, capture_output=True, text=True)
+        try:
+            r = runner(argv, capture_output=True, text=True, timeout=_PR_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("panopticon --pr: `%s` timed out after %ss"
+                               % (" ".join(argv), _PR_TIMEOUT))
         if r.returncode != 0:
             raise RuntimeError("panopticon --pr: `%s` failed: %s"
                                % (" ".join(argv), (r.stderr or "").strip()))
@@ -242,7 +264,7 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
     # split token rather than a fixed-width slice (verified against real
     # `git worktree list` output, not assumed from the porcelain format).
     listing = runner(["git", "-C", repo, "worktree", "list"],
-                     capture_output=True, text=True)
+                     capture_output=True, text=True, timeout=_PR_TIMEOUT)
     def _sync_groups(wt_path):
         src = os.path.join(repo, ".panopticon", "groups.yml")
         if os.path.isfile(src):
@@ -277,6 +299,6 @@ def release_worktree(path, repo=".", runner=subprocess.run):
     """Remove a worktree; tolerant if it is already gone."""
     try:
         runner(["git", "-C", repo, "worktree", "remove", "--force", path],
-               capture_output=True, text=True)
-    except Exception:
+               capture_output=True, text=True, timeout=_PR_TIMEOUT)
+    except Exception:      # incl. TimeoutExpired -> a hung teardown is tolerated (#1082)
         pass
