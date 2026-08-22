@@ -1,7 +1,7 @@
 # Panopticon — Development Notes
 
 Ruthless, standards-cited code review skill; Claude Code first-class, Kimi Code
-supported, other SKILL.md hosts degraded-sequential. This file is the durable
+and OpenAI Codex CLI supported, other SKILL.md hosts degraded-sequential. This file is the durable
 design record that travels with the skill (installed dir / OneDrive), so future
 work has context without the original spec/plan docs.
 
