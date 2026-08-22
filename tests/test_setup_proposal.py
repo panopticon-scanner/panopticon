@@ -376,5 +376,36 @@ class TestMergeAdditive(unittest.TestCase):
         self.assertNotEqual(id(merged["Auth"]["panels"]), committed_panels_id)
 
 
+class TestValidateProposalCaps(unittest.TestCase):
+    """#1107: an untrusted proposal is bounded before it reaches assemble()'s
+    collision merge -- group count, per-group match/tests counts, entry length."""
+
+    def _errs(self, groups):
+        return sp.validate_proposal({"groups": groups})
+
+    def test_too_many_groups_rejected(self):
+        groups = [{"capability": "custom:g%d" % i, "match": ["a"]}
+                  for i in range(sp._MAX_GROUPS + 1)]
+        self.assertTrue(any("too many groups" in e for e in self._errs(groups)))
+
+    def test_too_many_match_entries_rejected(self):
+        g = {"capability": "custom:g",
+             "match": ["m%d" % i for i in range(sp._MAX_GROUP_ENTRIES + 1)]}
+        self.assertTrue(any("too many match entries" in e for e in self._errs([g])))
+
+    def test_too_many_tests_entries_rejected(self):
+        g = {"capability": "custom:g", "match": ["a"],
+             "tests": ["t%d" % i for i in range(sp._MAX_GROUP_ENTRIES + 1)]}
+        self.assertTrue(any("too many tests entries" in e for e in self._errs([g])))
+
+    def test_overlong_entry_rejected(self):
+        g = {"capability": "custom:g", "match": ["x" * (sp._MAX_ENTRY_LEN + 1)]}
+        self.assertTrue(any("exceeds" in e for e in self._errs([g])))
+
+    def test_within_caps_is_valid(self):
+        g = {"capability": "custom:g", "match": ["src/**"], "tests": ["t/**"]}
+        self.assertEqual(self._errs([g]), [])
+
+
 if __name__ == "__main__":
     unittest.main()
