@@ -62,7 +62,7 @@ RUN arch="$(dpkg --print-architecture)" \
     && rm /tmp/gitleaks.tar.gz
 
 # trivy (official apt repo — robust, arch-aware)
-RUN curl -sfL https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor -o /usr/share/keyrings/trivy.gpg \
+RUN curl -sfL --connect-timeout 5 --max-time 60 https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor -o /usr/share/keyrings/trivy.gpg \
     && echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" > /etc/apt/sources.list.d/trivy.list \
     && apt-get update && apt-get install -y --no-install-recommends trivy \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
@@ -89,7 +89,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends default-jdk unz
 
 # SpotBugs + FindSecBugs plugin
 ARG SPOTBUGS_VERSION=4.8.6
-RUN curl -sfL "https://github.com/spotbugs/spotbugs/releases/download/${SPOTBUGS_VERSION}/spotbugs-${SPOTBUGS_VERSION}.tgz" \
+RUN curl -sfL --connect-timeout 5 --max-time 60 "https://github.com/spotbugs/spotbugs/releases/download/${SPOTBUGS_VERSION}/spotbugs-${SPOTBUGS_VERSION}.tgz" \
         | tar -xz -C /opt \
     && ln -s "/opt/spotbugs-${SPOTBUGS_VERSION}" /opt/spotbugs \
     && chmod +x /opt/spotbugs/bin/spotbugs
@@ -103,7 +103,7 @@ ARG FINDSECBUGS_VERSION=1.13.0
 # ARGs (the new digest is the jar's .sha256, or `sha256sum` of the artifact).
 ARG FINDSECBUGS_SHA256=c239763a8c327b5fb653a34dece6398578bf435b9a32c212bb8e1abe701368a5
 RUN mkdir -p /opt/spotbugs/plugin \
-    && curl -sfL "https://repo1.maven.org/maven2/com/h3xstream/findsecbugs/findsecbugs-plugin/${FINDSECBUGS_VERSION}/findsecbugs-plugin-${FINDSECBUGS_VERSION}.jar" \
+    && curl -sfL --connect-timeout 5 --max-time 60 "https://repo1.maven.org/maven2/com/h3xstream/findsecbugs/findsecbugs-plugin/${FINDSECBUGS_VERSION}/findsecbugs-plugin-${FINDSECBUGS_VERSION}.jar" \
         -o /opt/spotbugs/plugin/findsecbugs-plugin.jar \
     && echo "${FINDSECBUGS_SHA256}  /opt/spotbugs/plugin/findsecbugs-plugin.jar" | sha256sum -c -
 
@@ -120,11 +120,11 @@ RUN curl -sfL --connect-timeout 5 --max-time 120 "https://github.com/jeremylong/
 ENV CARGO_HOME=/usr/local/cargo
 ENV RUSTUP_HOME=/usr/local/rustup
 ENV PATH="/usr/local/cargo/bin:${PATH}"
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+RUN timeout 180 curl --proto '=https' --tlsv1.2 -sSf --connect-timeout 5 --max-time 60 https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
 RUN cargo install cargo-audit --version ${CARGO_AUDIT_VERSION}
 
 # .NET SDK (system-wide so the scanner user can invoke dotnet)
-RUN curl -sfL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 8.0 --install-dir /usr/share/dotnet
+RUN timeout 180 curl -sfL --connect-timeout 5 --max-time 60 https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 8.0 --install-dir /usr/share/dotnet
 RUN ln -s /usr/share/dotnet/dotnet /usr/bin/dotnet
 ENV DOTNET_ROOT=/usr/share/dotnet
 ENV PATH="/usr/share/dotnet:${PATH}"
@@ -192,7 +192,7 @@ RUN : "asset-refresh ${ASSET_REFRESH}" \
 # CARGO_HOME the scanner user gets below (/home/scanner/.cargo); useradd -m
 # tolerates the home directory already existing.
 RUN : "asset-refresh ${ASSET_REFRESH}" \
-    && git clone --depth 1 https://github.com/rustsec/advisory-db \
+    && timeout 60 git clone --depth 1 https://github.com/rustsec/advisory-db \
        /home/scanner/.cargo/advisory-db \
     && rm -rf /home/scanner/.cargo/advisory-db/.git \
     && chmod -R a+rX /home/scanner/.cargo
