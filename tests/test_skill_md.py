@@ -7,12 +7,19 @@ ROOT = os.path.join(os.path.dirname(__file__), os.pardir, "skill")
 
 class TestSkillMd(unittest.TestCase):
     def setUp(self):
-        with open(os.path.join(ROOT, "SKILL.md"), encoding="utf-8") as fh:
+        # 5.0 doc split: SKILL.md keeps the skill frontmatter + a brief overview;
+        # the full user guide, driver spec, and schema contracts live in
+        # docs/PANOPTICON.md. Body-content tests read the guide; frontmatter tests
+        # read SKILL.md directly.
+        with open(os.path.join(ROOT, os.pardir, "docs", "PANOPTICON.md"), encoding="utf-8") as fh:
             self.text = fh.read()
+        skill_path = os.path.join(os.path.dirname(__file__), os.pardir, "skill", "SKILL.md")
+        with open(skill_path, encoding="utf-8") as fh:
+            self.skill_md = fh.read()
 
     def test_has_frontmatter_name(self):
-        self.assertTrue(self.text.startswith("---"))
-        self.assertRegex(self.text, r"(?m)^name:\s*panopticon\s*$")
+        self.assertTrue(self.skill_md.startswith("---"))
+        self.assertRegex(self.skill_md, r"(?m)^name:\s*panopticon\s*$")
 
     def test_references_scripts_and_agents(self):
         # 5.0: orchestrator.py is retired (Slice A); driver.py is the
@@ -45,7 +52,7 @@ class TestSkillMd(unittest.TestCase):
         self.assertIn("meta.coverage.verdicts.unloadable", self.text)
 
     def test_description_is_trigger_only_and_host_neutral(self):
-        m = re.search(r"(?m)^description:\s*(.+)$", self.text)
+        m = re.search(r"(?m)^description:\s*(.+)$", self.skill_md)
         self.assertIsNotNone(m)
         desc = m.group(1)
         self.assertTrue(desc.startswith("Use when"), desc)
@@ -196,7 +203,7 @@ class TestDeltaDocs(unittest.TestCase):
     disposable PR worktree) — not the pre-redirect HEAD~1/--files framing."""
 
     def setUp(self):
-        with open(os.path.join(ROOT, "SKILL.md"), encoding="utf-8") as fh:
+        with open(os.path.join(ROOT, os.pardir, "docs", "PANOPTICON.md"), encoding="utf-8") as fh:
             self.skill = fh.read()
         with open(os.path.join(ROOT, os.pardir, "README.md"), encoding="utf-8") as fh:
             self.readme = fh.read()
@@ -283,7 +290,7 @@ class TestIntegrityResidualDocs(unittest.TestCase):
     documented in the run-loop section and is what this re-anchors to."""
 
     def test_skill_instructs_malformed_selfwrite_redispatch(self):
-        with open(os.path.join(ROOT, "SKILL.md"), encoding="utf-8") as fh:
+        with open(os.path.join(ROOT, os.pardir, "docs", "PANOPTICON.md"), encoding="utf-8") as fh:
             skill = fh.read()
         self.assertIn("_cell_done", skill)
         self.assertIn("_verify_cell_done", skill)
@@ -292,7 +299,7 @@ class TestIntegrityResidualDocs(unittest.TestCase):
 
 class TestDocPolicyDocs(unittest.TestCase):
     def test_skill_documents_doc_severity_policy(self):
-        with open(os.path.join(ROOT, "SKILL.md"), encoding="utf-8") as fh:
+        with open(os.path.join(ROOT, os.pardir, "docs", "PANOPTICON.md"), encoding="utf-8") as fh:
             skill = fh.read()
         self.assertIn("--doc-paths", skill)
         self.assertIn("meta.coverage.doc_policy", skill)
@@ -304,13 +311,13 @@ class TestSetupDocs(unittest.TestCase):
         # implemented by the now-retired orchestrator.py and never existed on
         # driver.py's CLI -- `driver setup` (a subcommand) with its own
         # readiness gate is the only setup mode there is now.
-        with open(os.path.join(ROOT, "SKILL.md"), encoding="utf-8") as fh:
+        with open(os.path.join(ROOT, os.pardir, "docs", "PANOPTICON.md"), encoding="utf-8") as fh:
             skill = fh.read()
         self.assertIn("driver setup", skill)
         self.assertIn("readiness gate", skill)
 
     def test_skill_documents_driver_setup(self):
-        with open(os.path.join(ROOT, "SKILL.md"), encoding="utf-8") as fh:
+        with open(os.path.join(ROOT, os.pardir, "docs", "PANOPTICON.md"), encoding="utf-8") as fh:
             skill = fh.read()
         self.assertIn("driver setup", skill)
         self.assertIn("groups.yml.draft", skill)
@@ -321,7 +328,7 @@ class TestInstalledFlowDocs(unittest.TestCase):
     repo-root cwd rule survives it."""
 
     def test_preamble_states_substitution_contract(self):
-        with open(os.path.join(ROOT, "SKILL.md"), encoding="utf-8") as fh:
+        with open(os.path.join(ROOT, os.pardir, "docs", "PANOPTICON.md"), encoding="utf-8") as fh:
             skill = fh.read()
         self.assertIn("Installed-flow substitution", skill)
         self.assertIn("INSTALL DIRECTORY", skill)
@@ -337,7 +344,7 @@ class TestCodexHostDocs(unittest.TestCase):
     what this re-anchors to instead of the retired fan-out mechanism)."""
 
     def test_codex_documented_as_generic_fallback_with_legacy_registration(self):
-        with open(os.path.join(ROOT, "SKILL.md"), encoding="utf-8") as fh:
+        with open(os.path.join(ROOT, os.pardir, "docs", "PANOPTICON.md"), encoding="utf-8") as fh:
             skill = fh.read()
         self.assertIn("--emit-host-agents", skill)
         self.assertIn("codex", skill.lower())
@@ -347,13 +354,13 @@ class TestCodexHostDocs(unittest.TestCase):
 
 class TestGuardFailClosedDocs(unittest.TestCase):
     def test_skill_documents_fail_closed_guard(self):
-        with open(os.path.join(ROOT, "SKILL.md"), encoding="utf-8") as fh:
+        with open(os.path.join(ROOT, os.pardir, "docs", "PANOPTICON.md"), encoding="utf-8") as fh:
             self.assertIn("fail-closed while registered", fh.read())
 
 
 class TestReviewRootDocs(unittest.TestCase):
     def test_skill_documents_read_side_rooting(self):
-        with open(os.path.join(ROOT, "SKILL.md"), encoding="utf-8") as fh:
+        with open(os.path.join(ROOT, os.pardir, "docs", "PANOPTICON.md"), encoding="utf-8") as fh:
             skill = fh.read()
         self.assertIn("Repo root:", skill)
         self.assertIn("#975", skill)

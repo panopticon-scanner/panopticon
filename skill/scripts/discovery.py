@@ -366,10 +366,14 @@ def _parse_catalog_yaml(text):
 
         groups:
           <Group>:
-            patterns:
-              - <glob>            # or: patterns: [<glob>, ...]
+            match:
+              - <glob>            # or: match: [<glob>, ...]
             facets:
               <Facet>: [<kw>, ...]  # or block list under the facet name
+
+    ``patterns:`` is accepted as a legacy alias for ``match:``; the modern
+    schema keys (``match``, ``tests``, ``panels``, ``exclude``) are handled by
+    the primary YAML-aware loader in ``load_catalog``.
     """
     groups = {}
     group = None      # current group name

@@ -62,6 +62,57 @@ gating honest.
   precision 1.0, perfect decoy discrimination, all controls firing on a real
   hostile target.
 
+## 4.3.2 — 4.x freeze closer
+
+- Added `meta.cost` dispatch ledger — `{phase, role, model, count}` rows derived
+  from scout profiles, dispatch-plan union, and verify queue, plus a `tokens`
+  slot reserved for host-reported usage.
+- Fixed a ledger bug: `dispatch.build_plan` stamped `security_mode` on
+  `lens_sweep` but omitted it from `panel_review`, so `plan_contract` rejected
+  every plan with a panel and synthesize silently dropped all fan-out rows.
+
+## 4.3.1 — External review point release
+
+- Path-variant clustering: `evidence.norm_path` is the single owner of finding-path
+  normalization so prefix/backslash dressing cannot split clusters.
+- Delta discovery uses `--find-renames` for rename-semantics parity with
+  `diff_map.hunk_map`.
+- Un-loadable verdicts count as a gate-relevant coverage gap: a PASS with lost
+  verdicts reads `INCONCLUSIVE`.
+
+## 4.3.0 — 4.x series wrap
+
+- Codex host support: `codex` model profiles, `--emit-host-agents codex`, and
+  codex-runner wiring.
+- Added `meta.integrity.empty_dispatch_plans` to the certification gate.
+
+## 4.2.0 — Tool-policy enforcement
+
+- Uniform read-only/return-JSON role contracts for every reviewer role.
+- `--emit-host-agents` generates registered enforcement shells (claude/kimi
+  dialects) from host-neutral templates.
+- Per-role `enforced` plan entries dispatched via `subagent_type`;
+  `meta.coverage.tool_policy_mode` records the runtime posture.
+- Added clean-tree check in the validate step.
+
+## 4.1.0 — Claude Code port
+
+- Deterministic rendered prompts: dispatch-plan entries carry `prompt`, and
+  `--render-advisor` renders verify-queue entries.
+- Agent templates get host-neutral frontmatter (`tool_policy` as data);
+  advisory-by-prompt on raw-prompt hosts.
+- Explicit host selection (`--host`) with fixed env fallback (`CLAUDECODE`).
+
+## 4.0.0 — Epistemics core
+
+- Two-axis severity × evidence model: severity is never mutated; evidence.status
+  is the pipeline verdict.
+- Verification moved out of synthesize into an orchestrator-dispatched verify
+  phase (`--emit-verify-queue` → advisor fan-out → `--verdicts-dir`).
+- Gate/grades key on confirmed evidence by default, with `--gate-unverified` opt-in.
+- Reinforced (tool+agent) findings gate as `tool_confirmed`; legacy confidence
+  bumps removed.
+
 ## 3.0.0 — Multi-model reviewer dispatch
 
 - Added role-based dispatch layer: `scout`, `lens_sweep`, `panel_review`, `advisor`.
@@ -76,4 +127,4 @@ gating honest.
 
 ## Earlier releases
 
-See [DEVELOPMENT.md](DEVELOPMENT.md) for the detailed 4.x and earlier version history.
+See [DEVELOPMENT.md](DEVELOPMENT.md) for the detailed pre-3.x version history.
