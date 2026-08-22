@@ -5,6 +5,15 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "skill", "scripts"))
 import smoke_adapters as sa
+from scripts.run_tools import recommendable_tools
+from scripts.smoke_adapters import PROBES
+
+
+class TestSmokeAdaptersParity(unittest.TestCase):
+    """#1115 residual: PROBES must stay locked to the adapter registry."""
+
+    def test_probe_keys_match_recommendable_tools(self):
+        self.assertSetEqual(set(recommendable_tools()), set(PROBES))
 
 
 def _runner(returncode=0, stdout=b"", stderr=b""):
