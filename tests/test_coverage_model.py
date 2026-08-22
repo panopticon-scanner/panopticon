@@ -161,3 +161,18 @@ def test_applicable_floor_same_dir_pair_drops_arc():
     # two files in one directory is not cross-module structure
     got = cov.applicable_global_floor(["x.ts", "y.ts"], {"surfaces": []})
     if not (got == frozenset({"COD"})): raise AssertionError()
+
+def test_sec_is_non_excludable():
+    # #1084: a committed exclude cannot silence SEC -- a scout-added SEC survives
+    # `exclude: [SEC]`, and the ignored attempt is disclosed, never silent.
+    eff, disc = cov.effective_panels(set(), {"SEC"}, {"SEC"}, global_floor=set())
+    if not (eff == {"SEC"}): raise AssertionError()                  # SEC kept despite exclude
+    if not (disc["exclude_rejected"] == ["SEC"]): raise AssertionError()
+    if not (disc["excluded"] == []): raise AssertionError()          # SEC not counted as excluded
+
+def test_non_sec_exclude_still_applies_alongside_rejected_sec():
+    # excluding SEC is ignored, but excluding another domain (OPS) still works
+    eff, disc = cov.effective_panels(set(), {"SEC", "OPS"}, {"SEC", "OPS"}, global_floor=set())
+    if not (eff == {"SEC"}): raise AssertionError()                  # SEC kept, OPS excluded
+    if not (disc["excluded"] == ["OPS"]): raise AssertionError()
+    if not (disc["exclude_rejected"] == ["SEC"]): raise AssertionError()
