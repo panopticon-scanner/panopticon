@@ -158,6 +158,51 @@ class TestRecoverLinkage(unittest.TestCase):
             reconcile_apply.recover_linkage_from_github(runner=runner)
         self.assertIn("API rate limit exceeded", str(ctx.exception))
 
+    def test_uses_limit_1000_in_gh_issue_list(self):
+        calls = []
+
+        def runner(argv, capture_output, text):
+            calls.append(argv)
+            return FakeCompleted(json.dumps([]))
+
+        reconcile_apply.recover_linkage_from_github(runner=runner)
+        self.assertIn("--limit", calls[0])
+        self.assertEqual(calls[0][calls[0].index("--limit") + 1], "1000")
+
+    def test_processes_up_to_1000_issues(self):
+        issues = [
+            {"number": i, "labels": [{"name": "self-scan"}],
+             "body": "**Location:** `f%d.py`\n\n---\n\n"
+                     "**Fingerprint:** `%016x` — stable.\n"
+                     "**Finding id in report:** `F-%d`\n" % (i, i, i)}
+            for i in range(1000)
+        ]
+
+        def runner(argv, capture_output, text):
+            return FakeCompleted(json.dumps(issues))
+
+        with self.assertWarns(UserWarning):
+            linkage = reconcile_apply.recover_linkage_from_github(runner=runner)
+        self.assertEqual(len(linkage), 1000)
+        self.assertIn("0000000000000000|F-0|f0.py|finding", linkage)
+        self.assertIn("00000000000003e7|F-999|f999.py|finding", linkage)
+
+    def test_warns_when_results_may_be_truncated(self):
+        """A full 1000-result page equals the request limit and may be truncated."""
+        issues = [
+            {"number": i, "labels": [{"name": "self-scan"}],
+             "body": "**Location:** `f.py`\n\n---\n\n"
+                     "**Fingerprint:** `%016x` — stable.\n"
+                     "**Finding id in report:** `F-1`\n" % i}
+            for i in range(1000)
+        ]
+
+        def runner(argv, capture_output, text):
+            return FakeCompleted(json.dumps(issues))
+
+        with self.assertWarns(UserWarning):
+            reconcile_apply.recover_linkage_from_github(runner=runner)
+
 
 class TestPlanActions(unittest.TestCase):
     def _diff(self):

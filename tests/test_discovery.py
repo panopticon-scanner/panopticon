@@ -1640,3 +1640,23 @@ def test_git_helpers_convert_timeout_to_assertion_error(tmp_path):
             _git(tmp_path, "x")
         with pytest.raises(AssertionError, match="git subprocess timed out"):
             _git_output(tmp_path, "x")
+
+
+class TestWorktreeDirty(unittest.TestCase):
+    """Direct coverage for _worktree_dirty's clean/dirty states (#1220)."""
+
+    def test_clean_worktree_is_not_dirty(self):
+        repo = make_git_repo(test_case=self, files={"a.py": "pass\n"})
+        self.assertFalse(discovery._worktree_dirty(repo))
+
+    def test_uncommitted_modification_is_dirty(self):
+        repo = make_git_repo(test_case=self, files={"a.py": "pass\n"})
+        with open(os.path.join(repo, "a.py"), "w", encoding="utf-8") as fh:
+            fh.write("changed\n")
+        self.assertTrue(discovery._worktree_dirty(repo))
+
+    def test_untracked_file_is_dirty(self):
+        repo = make_git_repo(test_case=self, files={"a.py": "pass\n"})
+        with open(os.path.join(repo, "b.py"), "w", encoding="utf-8") as fh:
+            fh.write("new\n")
+        self.assertTrue(discovery._worktree_dirty(repo))

@@ -1323,7 +1323,10 @@ class TestCliAndSummary(unittest.TestCase):
             with open(paths[0]) as _fh:
                 main_doc = json.load(_fh)
             self.assertIn("parts", main_doc["meta"])
-            part_findings_count = sum(len(json.load(open(p))["findings"]) for p in paths[1:])
+            part_findings_count = 0
+            for p in paths[1:]:
+                with open(p) as fh:
+                    part_findings_count += len(json.load(fh)["findings"])
             self.assertEqual(len(main_doc["findings"]) + part_findings_count, n_before)
             self.assertEqual(len(report["findings"]), n_before)  # caller not mutated
 

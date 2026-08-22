@@ -6,6 +6,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import scripts.run_tools as rt
 import scripts._run_adapter as ra
@@ -268,11 +269,8 @@ class TestAdapterDispatch(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as d:
             out_dir = os.path.join(d, "out")
-            rt.ADAPTERS["fake"] = FakeAdapter()
-            try:
+            with mock.patch.dict(rt.ADAPTERS, {"fake": FakeAdapter()}, clear=False):
                 rt.run_tools(d, ["fake"], out_dir, image="panopticon-tools", runner=runner)
-            finally:
-                rt.ADAPTERS.pop("fake", None)
             self.assertEqual(len(calls), 1)
             self.assertIn("/opt/panopticon/scripts/_run_adapter.py", calls[0])
             self.assertIn("fake", calls[0])
@@ -292,12 +290,9 @@ class TestAdapterDispatch(unittest.TestCase):
             return fake
         with tempfile.TemporaryDirectory() as d:
             out = os.path.join(d, "out")
-            rt.ADAPTERS["fake"] = FakeAdapter()
-            try:
+            with mock.patch.dict(rt.ADAPTERS, {"fake": FakeAdapter()}, clear=False):
                 with contextlib.redirect_stderr(io.StringIO()) as err:
                     paths = rt.run_tools(d, ["fake"], out, runner=runner)
-            finally:
-                rt.ADAPTERS.pop("fake", None)
             self.assertIn("produced no output", err.getvalue())
             self.assertEqual(paths, [])                                   # not produced
             self.assertFalse(os.path.exists(os.path.join(out, "fake.json")))  # no empty file
@@ -312,11 +307,8 @@ class TestAdapterDispatch(unittest.TestCase):
         fake = _FakeResult(returncode=0, stdout=b'', stderr=b'')
         with tempfile.TemporaryDirectory() as d:
             out = os.path.join(d, "out")
-            rt.ADAPTERS["fake"] = FakeAdapter()
-            try:
+            with mock.patch.dict(rt.ADAPTERS, {"fake": FakeAdapter()}, clear=False):
                 written = rt.run_tools(d, ["fake"], out, runner=lambda cmd, **kw: fake)
-            finally:
-                rt.ADAPTERS.pop("fake", None)
             payload = rt.write_manifest(
                 os.path.join(d, "m.json"), ["fake"], written)
             self.assertEqual(payload["produced"], [])
@@ -347,6 +339,12 @@ class TestAdapterDispatch(unittest.TestCase):
             self.assertIn("pip-audit", chosen)
             self.assertIn("npm-audit", chosen)
 
+    def test_phase1_adapter_registry_not_leaked(self):
+        # Regression: phase-1 adapter tests must restore rt.ADAPTERS.
+        original = dict(rt.ADAPTERS)
+        self.test_run_tools_dispatches_phase1_adapter_via_docker_helper()
+        self.assertEqual(dict(rt.ADAPTERS), original)
+
 
 class TestRunAdapterHelper(unittest.TestCase):
     def test_main_runs_named_adapter_and_returns_rc(self):
@@ -354,8 +352,7 @@ class TestRunAdapterHelper(unittest.TestCase):
             name = "fake"
             def invoke(self, target): return (b'{"ok":true}', 0)
 
-        ra.ADAPTERS["fake"] = FakeAdapter()
-        try:
+        with mock.patch.dict(ra.ADAPTERS, {"fake": FakeAdapter()}, clear=False):
             stdout = io.BytesIO()
             class FakeOut:
                 buffer = stdout
@@ -367,8 +364,6 @@ class TestRunAdapterHelper(unittest.TestCase):
                 sys.stdout = old_stdout
             self.assertEqual(rc, 0)
             self.assertEqual(stdout.getvalue(), b'{"ok":true}')
-        finally:
-            ra.ADAPTERS.pop("fake", None)
 
     def test_main_fails_closed_on_unregistered_adapter(self):
         # #1051: an unregistered adapter must exit non-zero (was 0 == "ran clean")
@@ -382,12 +377,15 @@ class TestRunAdapterHelper(unittest.TestCase):
             def invoke(self, target):
                 raise RuntimeError("boom")
 
-        ra.ADAPTERS["crash"] = CrashingAdapter()
-        try:
+        with mock.patch.dict(ra.ADAPTERS, {"crash": CrashingAdapter()}, clear=False):
             rc = ra.main(["_run_adapter.py", "crash", "/tmp/target"])
             self.assertEqual(rc, ra.FAIL_RC)
-        finally:
-            ra.ADAPTERS.pop("crash", None)
+
+    def test_adapter_helper_registry_not_leaked(self):
+        # Regression: _run_adapter helper tests must restore ra.ADAPTERS.
+        original = dict(ra.ADAPTERS)
+        self.test_main_runs_named_adapter_and_returns_rc()
+        self.assertEqual(dict(ra.ADAPTERS), original)
 
 
 class TestContainment(unittest.TestCase):
@@ -396,14 +394,10 @@ class TestContainment(unittest.TestCase):
         fake = _FakeResult(returncode=0, stdout=b'{"runs":[]}', stderr=b'')
         def runner(cmd, **kw):
             calls.append(cmd); return fake
-        old = dict(os.environ)
-        os.environ.update(env or {})
-        try:
+        with mock.patch.dict(os.environ, env or {}, clear=True):
             with tempfile.TemporaryDirectory() as d:
                 rt.run_tools(d, tools, os.path.join(d, "out"),
                              runner=runner, online=online)
-        finally:
-            os.environ.clear(); os.environ.update(old)
         return calls
 
     def test_every_dispatch_has_network_none(self):
@@ -442,6 +436,12 @@ class TestContainment(unittest.TestCase):
         self.assertEqual(rt.filter_online(chosen, online=False),
                          ["semgrep", "gosec"])
         self.assertEqual(rt.filter_online(chosen, online=True), chosen)
+
+    def test_calls_helper_does_not_leak_environ(self):
+        # Regression: _calls must restore os.environ after patching.
+        original = dict(os.environ)
+        self.test_nvd_api_key_never_forwarded()
+        self.assertEqual(dict(os.environ), original)
 
 
 class TestDetectLanguages(unittest.TestCase):
