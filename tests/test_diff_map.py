@@ -3,6 +3,7 @@ import os, unittest, subprocess, tempfile, shutil
 from unittest import mock
 
 import scripts.diff_map as diff_map
+from tools.git_repo import make_git_repo
 
 
 def _git(d, *a):
@@ -55,17 +56,14 @@ class TestParse(unittest.TestCase):
 
 
 def _make_repo(test_case):
-    d = tempfile.mkdtemp()
-    test_case.addCleanup(__import__("shutil").rmtree, d, ignore_errors=True)
-    subprocess.run(["git", "init", "-q", d], check=True)
-    _git(d, "config", "user.email", "t@e.com")
-    _git(d, "config", "user.name", "T")
-    with open(os.path.join(d, "a.py"), "w", encoding="utf-8") as fh:
-        fh.write("\n".join("line%d" % i for i in range(1, 11)) + "\n")
-    _git(d, "add", ".")
-    _git(d, "commit", "-qm", "init")
-    _git(d, "branch", "-M", "main")
-    return d
+    return make_git_repo(
+        test_case=test_case,
+        files={"a.py": "\n".join("line%d" % i for i in range(1, 11)) + "\n"},
+        branch="main",
+        user_email="t@e.com",
+        user_name="T",
+        realpath=False,
+    )
 
 
 class TestHunkMap(unittest.TestCase):

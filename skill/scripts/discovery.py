@@ -339,27 +339,19 @@ def assign_by_catalog(files, catalog):
     maps group name -> sorted files (empty groups omitted) and ``leftovers``
     are files no group matched — the coverage gap the caller must disclose.
     """
-    # Precompile each group's patterns once so regexes are not rebuilt per file.
-    # `tests:` globs are compiled alongside `match:` so a test file matching
+    # `tests:` globs are evaluated alongside `match:` so a test file matching
     # either lands in that group and is credited toward coverage (#1137).
+    # Reuse match_patterns for gitignore-style last-match-wins semantics.
     matchable = []
     for name, g in catalog.items():
         pats = list(g.get("match") or []) + list(g.get("tests") or [])
         if pats:
-            compiled = []
-            for pat in pats:
-                negate = pat.startswith("!")
-                compiled.append((negate, _glob_to_re(pat[1:] if negate else pat)))
-            matchable.append((name, compiled))
+            matchable.append((name, pats))
     assigned = {name: [] for name, _ in matchable}
     leftovers = []
     for f in files:
-        for name, compiled in matchable:
-            matched = False
-            for negate, rx in compiled:
-                if rx.match(f):
-                    matched = not negate
-            if matched:
+        for name, pats in matchable:
+            if match_patterns(f, pats):
                 assigned[name].append(f)
                 break
         else:
