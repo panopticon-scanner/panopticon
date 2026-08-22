@@ -161,3 +161,25 @@ def parse_groups(doc):
             leaf["parent"] = name
             groups[flat_id] = leaf
     return groups, errors
+
+
+def parse_exclude_paths(doc):
+    """Return (globs, errors) for a top-level `exclude_paths:` list.
+
+    `globs` is a list of non-empty string path-globs; `([], [])` when the key
+    is absent. A non-list value is an error (globs == []). Non-string or
+    empty-string entries are errors individually; the valid string entries
+    are still kept.
+    """
+    errors = []
+    raw = (doc or {}).get("exclude_paths")
+    if raw is None:
+        return [], errors
+    if not isinstance(raw, list):
+        errors.append("exclude_paths must be a list")
+        return [], errors
+    invalid = [x for x in raw if not isinstance(x, str) or not x.strip()]
+    if invalid:
+        errors.append("exclude_paths entries must be non-empty strings")
+    globs = [x for x in raw if isinstance(x, str) and x.strip()]
+    return globs, errors

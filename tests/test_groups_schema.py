@@ -131,5 +131,16 @@ def test_flat_groups_yaml_backcompat():
     assert errs == [] and g["A"]["parent"] == "A" and g["A"]["tests"] == ["t/**"]
 
 
+def test_exclude_paths_valid_and_absent():
+    assert gs.parse_exclude_paths({"exclude_paths": ["tests/fixtures/**", "vendor/**"]}) == (["tests/fixtures/**", "vendor/**"], [])
+    assert gs.parse_exclude_paths({}) == ([], [])
+
+def test_exclude_paths_invalid_types():
+    globs, errs = gs.parse_exclude_paths({"exclude_paths": ["ok", 3, ""]})
+    assert errs and globs == ["ok"]
+    _g, errs2 = gs.parse_exclude_paths({"exclude_paths": "not-a-list"})
+    assert errs2
+
+
 if __name__ == "__main__":
     unittest.main()
