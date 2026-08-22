@@ -13,7 +13,8 @@ import re
 import scripts.evidence as evidence
 
 __all__ = ["entry_is_done", "pending_entries", "fan_out_coverage",
-           "verdict_is_done", "pending_verdicts", "resume_stats"]
+           "verdict_is_done", "pending_verdicts", "resume_stats",
+           "verify_plan_entries"]
 
 
 def entry_is_done(out_file, entry=None):
@@ -225,3 +226,22 @@ def verify_out_file_hashes(ingested_paths, hashes_path=None):
         if digest != recorded[rp]:
             mismatched.append(str(p))
     return checked, sorted(mismatched)
+
+
+def verify_plan_entries(plan, host=None, agents_dir=None):
+    """Re-verify pending reviewer entries against live registration.
+
+    The emission-time enforcement flag cannot see an on-disk edit made AFTER
+    emission (an enforced:true -> false flip or lost registration). Before
+    fan-out, call dispatch.verify_plan on the non-codex subset of pending
+    entries so a removed registration is caught (#1087).
+    """
+    import scripts.dispatch as dispatch
+    entries = pending_entries(plan)
+    reviewer = [
+        e for e in entries
+        if isinstance(e, dict) and e.get("execution") != "codex_exec"
+    ]
+    if not reviewer:
+        return []
+    return dispatch.verify_plan(reviewer, host=host, agents_dir=agents_dir)
