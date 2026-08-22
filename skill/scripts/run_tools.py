@@ -91,7 +91,18 @@ _LANG_EXTS = {".py": "python", ".go": "go",
               ".js": "javascript", ".jsx": "javascript",
               ".ts": "typescript", ".tsx": "typescript"}
 _DETECT_PRUNE = {".git", ".venv", "venv", "node_modules", "__pycache__",
-                 ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", "tmp"}
+                 ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", "tmp",
+                 # #1138: vendored / generated / sample trees carry foreign-language
+                 # files that are NOT the project's own source. A single stray file
+                 # here used to trigger that language's SAST tool (e.g. a vendored
+                 # .go making gosec run on a Python repo), which then produced
+                 # nothing and read as a "selected-but-unproduced" tool-coverage
+                 # gap. Prune the dirs where a foreign-language file is definitively
+                 # not project source; conservatively leave tests/ alone (a real
+                 # test suite IS legitimate language surface).
+                 "vendor", "third_party", "third-party", "testdata", "fixtures",
+                 "examples", "example", "dist", "build", "target", "site-packages",
+                 "docs"}
 
 
 def detect_languages(target):
