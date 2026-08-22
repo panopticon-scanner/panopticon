@@ -758,6 +758,41 @@ class TestGroupObjParent(unittest.TestCase):
         self.assertTrue(all(g["parent"] == "UI" for g in groups))
 
 
+class TestCommonsCatalog(unittest.TestCase):
+    """Task 5 (#499): a curated Commons vocabulary (Docs/CI/Build/Config/Deps)
+    names committed-unmatched leftover files before the true residual falls
+    to `._N`. Committed groups always win -- Commons only ever sees
+    leftovers."""
+
+    def test_commons_names_leftovers_before_dot_n(self):
+        catalog = {"App": {"match": ["src/**"]}}
+        groups, leftovers = orch.catalog_groups(
+            ["src/app.py", "README.md", "Dockerfile", "weird.xyz"],
+            catalog, max_per_group=50, security_mode="standard")
+        names = {g["name"] for g in groups}
+        self.assertIn("Docs", names)   # README.md -> Docs
+        self.assertIn("Build", names)  # Dockerfile -> Build
+        self.assertTrue(any(n.startswith("._") for n in names))  # weird.xyz -> residual
+        self.assertIn("src/app.py",
+                       next(g["files"] for g in groups if g["name"] == "App"))
+        # weird.xyz is the true residual -- disclosed, not silently absorbed.
+        self.assertEqual(leftovers, ["weird.xyz"])
+
+    def test_committed_group_wins_over_commons(self):
+        # A committed `src/**` group claims src/app.py -- Commons never sees it.
+        catalog = {"App": {"match": ["src/**"]}}
+        groups, _leftovers = orch.catalog_groups(
+            ["src/app.py"], catalog, max_per_group=50, security_mode="standard")
+        names = {g["name"] for g in groups}
+        self.assertEqual(names, {"App"})
+
+    def test_commons_group_self_parents(self):
+        groups, _leftovers = orch.catalog_groups(
+            ["README.md"], {}, max_per_group=50, security_mode="standard")
+        by_name = {g["name"]: g for g in groups}
+        self.assertEqual(by_name["Docs"]["parent"], "Docs")
+
+
 class TestPanelPriority(unittest.TestCase):
     def test_compute_group_panels_emits_priority_order(self):
         # Whatever panels are present, they must appear in PANEL_PRIORITY order.

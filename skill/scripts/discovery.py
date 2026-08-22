@@ -817,23 +817,32 @@ def _group_obj(name, files, security_mode, parent=None):
         "parent": parent or name,
     }
 
-def catalog_groups(files, catalog, max_per_group, security_mode):
-    """Build stable, catalog-named groups for --repo-scan (#499).
+_COMMONS_CATALOG_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "data", "commons_catalog.yml")
 
-    Files are assigned by ``assign_by_catalog``; a matched group larger than
-    ``max_per_group`` splits into ``<name>_<i>`` chunks, and leftover files
-    keep the legacy ``._N`` chunk naming. Returns ``(groups, leftovers)``;
-    callers must surface ``leftovers`` (the coverage gap), never drop it.
+@functools.lru_cache(maxsize=1)
+def _commons_catalog():
+    """The curated Commons vocabulary (5.1 starter, #499): near-universal
+    Docs/CI/Build/Config/Deps file groups loaded once from
+    ``skill/data/commons_catalog.yml`` as a plain ``{name: {"match": [...]}}``
+    mapping -- fed straight to ``assign_by_catalog`` exactly like a committed
+    catalog. NOT routed through ``groups_schema.parse_groups``: this is
+    shipped, tested data, not committed user input, so it needs only
+    each entry's `match`."""
+    with open(_COMMONS_CATALOG_PATH, encoding="utf-8") as fh:
+        doc = yaml.safe_load(fh) or {}
+    return doc.get("groups") or {}
 
-    Each named group carries the committed catalog entry's `parent` (self for
-    a leaf, the subgroup's parent name for e.g. `UI:Admin`); a chunk split off
-    an oversize group keeps that same parent. `._N` leftover chunks have no
-    catalog entry and self-parent via `_group_obj`'s default.
-    """
-    named, leftovers = assign_by_catalog(files, catalog)
+def _emit_named_groups(named, max_per_group, security_mode, parent_lookup=None):
+    """Chunk+wrap each ``{name: files}`` catalog assignment into
+    ``_group_obj``(s), keeping the ``<name>_<i>`` oversize-chunk naming.
+    ``parent_lookup(name)``, when given, supplies a subgroup's declared
+    parent; omitted (Commons/self-parenting catalogs), ``_group_obj``
+    defaults to self-parenting."""
     groups = []
     for name, fs in named.items():
-        parent = catalog[name].get("parent")
+        parent = parent_lookup(name) if parent_lookup else None
         chunks = chunk_files(fs, max_per_group)
         if len(chunks) == 1:
             groups.append(_group_obj(name, chunks[0], security_mode, parent=parent))
@@ -841,9 +850,34 @@ def catalog_groups(files, catalog, max_per_group, security_mode):
             groups.extend(_group_obj("%s_%d" % (name, i + 1), c, security_mode,
                                      parent=parent)
                           for i, c in enumerate(chunks))
+    return groups
+
+def catalog_groups(files, catalog, max_per_group, security_mode):
+    """Build stable, catalog-named groups for --repo-scan (#499).
+
+    Files are assigned by ``assign_by_catalog``; a matched group larger than
+    ``max_per_group`` splits into ``<name>_<i>`` chunks. Committed-catalog
+    leftovers then fall through the curated Commons vocabulary (5.1, #499:
+    Docs/CI/Build/Config/Deps) via the SAME ``assign_by_catalog`` -- committed
+    groups always win, Commons only ever sees leftovers. Only the true
+    residual keeps the legacy ``._N`` chunk naming. Returns
+    ``(groups, residual)``; callers must surface ``residual`` (the coverage
+    gap), never drop it.
+
+    Each named group carries the committed catalog entry's `parent` (self for
+    a leaf, the subgroup's parent name for e.g. `UI:Admin`); a chunk split off
+    an oversize group keeps that same parent. Commons-named groups and `._N`
+    residual chunks have no catalog entry and self-parent via `_group_obj`'s
+    default.
+    """
+    named, leftovers = assign_by_catalog(files, catalog)
+    groups = _emit_named_groups(named, max_per_group, security_mode,
+                                parent_lookup=lambda n: catalog[n].get("parent"))
+    commons_named, residual = assign_by_catalog(leftovers, _commons_catalog())
+    groups.extend(_emit_named_groups(commons_named, max_per_group, security_mode))
     groups.extend(_group_obj("._%d" % (i + 1), c, security_mode)
-                  for i, c in enumerate(chunk_files(leftovers, max_per_group)))
-    return groups, leftovers
+                  for i, c in enumerate(chunk_files(residual, max_per_group)))
+    return groups, residual
 
 def build_result(repo, mode, target, facet, impl, tests,
                  max_per_group=DEFAULT_MAX_PER_GROUP, group_files=None,
