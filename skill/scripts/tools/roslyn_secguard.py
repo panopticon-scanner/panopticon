@@ -1,5 +1,6 @@
 """Roslyn Security Guard / SecurityCodeScan adapter for C# security findings."""
 from __future__ import annotations
+import json
 import os
 import shutil
 import sys
@@ -58,6 +59,51 @@ _ROSLYN_CWE = {
 # over the app's real solution (#1119).
 _ROSLYN_VENDOR_DIRS = {".git", "node_modules", "bin", "obj", "packages",
                        "vendor", "third_party", "thirdparty", "examples", "samples"}
+
+
+def _rebase_sarif_uris(raw, tmp):
+    """Rewrite SARIF artifactLocation/resultFile URIs from the ephemeral build
+    copy (`tmp`) to repo-relative paths, so findings report a stable path and the
+    host-local `/tmp/roslyn-XXX/` prefix never leaks (#1116). invoke() builds in a
+    temp copy, so MSBuild's ErrorLog roots every uri there; _location only strips
+    the `file://` scheme, not the tmp prefix. Best-effort: unparseable SARIF or a
+    uri outside `tmp` is returned unchanged."""
+    try:
+        data = parse_json_bytes(raw)
+    except Exception:  # noqa: BLE001 - tolerant: leave unparseable SARIF untouched
+        return raw
+    if not isinstance(data, dict):
+        return raw
+    bases = {tmp, os.path.realpath(tmp)}
+
+    def _rel(uri):
+        if not isinstance(uri, str) or not uri:
+            return uri
+        p = uri[7:] if uri.startswith("file://") else uri
+        cand = os.path.realpath(p) if os.path.isabs(p) else p
+        for base in bases:
+            if cand == base:
+                return ""
+            if cand.startswith(base + os.sep):
+                return os.path.relpath(cand, base)
+        return uri
+
+    for run in data.get("runs") or []:
+        if not isinstance(run, dict):
+            continue
+        for res in run.get("results") or []:
+            if not isinstance(res, dict):
+                continue
+            for loc in res.get("locations") or []:
+                if not isinstance(loc, dict):
+                    continue
+                art = (loc.get("physicalLocation") or {}).get("artifactLocation")
+                if isinstance(art, dict) and "uri" in art:
+                    art["uri"] = _rel(art["uri"])
+                rf = loc.get("resultFile")
+                if isinstance(rf, dict) and "uri" in rf:
+                    rf["uri"] = _rel(rf["uri"])
+    return json.dumps(data).encode("utf-8")
 
 
 class RoslynSecGuardAdapter:
@@ -120,7 +166,8 @@ class RoslynSecGuardAdapter:
             _stdout, rc = run_tool(cmd, timeout=600)
             if os.path.exists(sarif):
                 with open(sarif, "rb") as fh:
-                    return fh.read(), rc
+                    # #1116: rebase tmp-rooted uris to repo-relative before ingest
+                    return _rebase_sarif_uris(fh.read(), tmp), rc
             return b"{}", rc
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
