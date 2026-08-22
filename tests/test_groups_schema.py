@@ -1,9 +1,6 @@
 # tests/test_groups_schema.py
-import os
-import sys
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "skill", "scripts"))
 import groups_schema as gs
 
 
