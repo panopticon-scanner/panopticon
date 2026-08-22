@@ -1,5 +1,5 @@
 # tests/test_diff_map.py
-import os, unittest, subprocess, tempfile
+import os, unittest, subprocess, tempfile, shutil
 from unittest import mock
 
 import diff_map
@@ -384,4 +384,32 @@ class TestDiffMapFailures(unittest.TestCase):
                 self.assertEqual(hm["safe.txt"], [(1, 3)])
                 self.assertNotIn("link.txt", hm)
                 self.assertNotIn("outside_target.txt", hm)
+
+    def test_hunk_map_raises_on_ls_files_failure(self):
+        # #1257: a failed `git ls-files` must not silently drop untracked files.
+        with tempfile.TemporaryDirectory() as d:
+            _git(d, "init", "-q")
+            _git(d, "config", "user.name", "T")
+            _git(d, "config", "user.email", "t@example.com")
+            with open(os.path.join(d, "committed.txt"), "w", encoding="utf-8") as fh:
+                fh.write("line\n")
+            _git(d, "add", "committed.txt")
+            _git(d, "commit", "-qm", "init")
+
+            def fake_run_git(repo, args, timeout=60):
+                if args[:2] == ["merge-base", "HEAD"]:
+                    class R: returncode = 0; stdout = "HEAD\n"; stderr = ""
+                    return R()
+                if len(args) > 4 and args[4] == "diff":
+                    class R: returncode = 0; stdout = ""; stderr = ""
+                    return R()
+                if args[:2] == ["ls-files", "--others"]:
+                    class R: returncode = 1; stdout = ""; stderr = "mock ls-files failure"
+                    return R()
+                return subprocess.run([shutil.which("git") or "git", "-C", repo, *args],
+                                      capture_output=True, text=True, timeout=timeout)
+
+            with mock.patch.object(diff_map, "_run_git", side_effect=fake_run_git):
+                with self.assertRaisesRegex(RuntimeError, "git ls-files failed"):
+                    diff_map.hunk_map(d, "HEAD")
 
