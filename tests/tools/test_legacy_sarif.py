@@ -1,7 +1,7 @@
 import json
 import subprocess
 import unittest
-from unittest.mock import patch
+from unittest import mock
 
 import scripts.tools.legacy_sarif as legacy
 from scripts.tools import ADAPTERS
@@ -46,7 +46,7 @@ class TestLegacySarifAdapter(unittest.TestCase):
     def test_invoke_runs_tool_command(self):
         adapter = legacy.LegacySarifAdapter("bandit")
         mock_stdout = json.dumps(SARIF).encode("utf-8")
-        with patch.object(subprocess, "run") as mock_run:
+        with mock.patch("scripts.tools.base.subprocess.run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess(
                 args=[], returncode=1, stdout=mock_stdout, stderr=b""
             )
@@ -60,7 +60,7 @@ class TestLegacySarifAdapter(unittest.TestCase):
 
     def test_invoke_runs_gosec_in_target_directory(self):
         adapter = legacy.LegacySarifAdapter("gosec")
-        with patch.object(subprocess, "run") as mock_run:
+        with mock.patch("scripts.tools.base.subprocess.run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess(
                 args=[], returncode=0, stdout=b"{}", stderr=b""
             )
