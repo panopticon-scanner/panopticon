@@ -84,7 +84,7 @@ From inside a repo you want to review:
 kimi /panopticon
 ```
 
-Or point it at a file, directory, PR, or changeset (see `skill/SKILL.md` → Modes
+Or point it at a file, directory, PR, or changeset (see `docs/PANOPTICON.md` → Modes
 for the full flag list):
 
 ```bash
@@ -100,7 +100,8 @@ kimi /panopticon --pr 217              # review PR 217 in an isolated worktree
 | Path | Purpose |
 |------|---------|
 | `skill/` | The installable skill surface — symlink THIS directory into your agent's skills dir |
-| `skill/SKILL.md` | Skill entry point and driver run-loop spec |
+| `skill/SKILL.md` | Skill entry point (frontmatter + quick reference) |
+| `docs/PANOPTICON.md` | Full user guide, driver run-loop spec, and schema contracts |
 | `skill/scripts/` | Runnable Python modules (driver, discovery, synthesizer, dispatch, tools) |
 | `skill/agents/` | Custom agent definitions (`scout`, `panel-review`, `lens-sweep`, `advisor`) |
 | `skill/reference/` | Schemas, CWE catalog, security checklists, example group profiles |
