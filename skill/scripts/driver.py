@@ -765,7 +765,8 @@ def _cell_entry(review_root, manifest, group, domain, files, tests, host, bundle
     prompt = dispatch.render_prompt("domain-panel.md", {
         "domain": domain, "group": group, "file_list": file_list,
         "tests": test_list, "security_mode": manifest.get("security_mode", "standard"),
-        "menu": _render_menu(bundle, domain), "run_id": manifest["run_id"],
+        "menu": _render_menu(bundle, domain),
+        "criteria": _render_criteria(bundle, domain), "run_id": manifest["run_id"],
         "tool_hits": _tool_hits_for_cell(review_root, manifest, domain, files),
         "out_file": out_file}, host)
     enforced = host == "claude"
