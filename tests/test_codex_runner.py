@@ -1,11 +1,9 @@
 import json
 import os
 import subprocess
-import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill"))
 import scripts.codex_runner as cr
 import scripts.dispatch as dispatch
 import scripts.group_runner as gr

@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-import setup_flow
+import scripts.setup_flow as setup_flow
 import shutil
 
 

@@ -8,11 +8,9 @@ this test is what makes drift impossible rather than merely discouraged.
 """
 import os
 import re
-import sys
 import tomllib
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill"))
 from scripts._version import __version__  # noqa: E402
 
 ROOT = os.path.join(os.path.dirname(__file__), os.pardir)

@@ -1,5 +1,4 @@
-import contextlib, io, os, sys, json, tempfile, unittest
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill"))
+import contextlib, io, os, json, tempfile, unittest
 import scripts.ingest_tools as it
 
 SARIF = {

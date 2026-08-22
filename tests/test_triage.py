@@ -1,9 +1,8 @@
-import json, os, sys, tempfile, unittest
+import json, os, tempfile, unittest
 from unittest import mock
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "scripts"))
 import triage
 
 

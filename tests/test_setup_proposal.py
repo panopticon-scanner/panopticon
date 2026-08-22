@@ -1,12 +1,10 @@
 import os
-import sys
 import tempfile
 import unittest
 import yaml
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "skill", "scripts"))
-import groups_schema  # noqa: E402
-import setup_proposal as sp  # noqa: E402
+import scripts.groups_schema as groups_schema  # noqa: E402
+import scripts.setup_proposal as sp  # noqa: E402
 
 DATA = os.path.join(os.path.dirname(__file__), "..", "skill", "data")
 VOCAB = os.path.join(DATA, "capability_vocabulary.yml")

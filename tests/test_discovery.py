@@ -15,9 +15,9 @@ import pytest
 SCRIPTS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                        "skill", "scripts")
 
-import discovery  # noqa: E402
-import discovery as orch  # noqa: E402  (P6.5 Slice A: orchestrator.py retired)
-import setup_flow  # noqa: E402
+import scripts.discovery as discovery  # noqa: E402
+import scripts.discovery as orch  # noqa: E402  (P6.5 Slice A: orchestrator.py retired)
+import scripts.setup_flow as setup_flow  # noqa: E402
 
 orchestrator = orch
 

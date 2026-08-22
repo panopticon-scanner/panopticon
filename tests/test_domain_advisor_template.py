@@ -1,4 +1,4 @@
-import dispatch
+import scripts.dispatch as dispatch
 
 
 def test_domain_advisor_is_scoped_write():

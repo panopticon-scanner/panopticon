@@ -2,7 +2,7 @@
 import os, unittest, subprocess, tempfile, shutil
 from unittest import mock
 
-import diff_map
+import scripts.diff_map as diff_map
 
 
 def _git(d, *a):

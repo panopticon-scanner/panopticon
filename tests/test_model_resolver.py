@@ -2,13 +2,11 @@ import builtins
 import contextlib
 import io
 import os
-import sys
 import unittest
 from unittest import mock
 from unittest.mock import patch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill", "scripts"))
-import model_resolver as mr
+import scripts.model_resolver as mr
 
 
 class TestModelResolver(unittest.TestCase):

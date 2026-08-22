@@ -1,12 +1,10 @@
 import os
 import subprocess
-import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill", "scripts"))
-from discovery import build_result
-import dispatch
+from scripts.discovery import build_result
+import scripts.dispatch as dispatch
 
 
 class TestDispatchIntegration(unittest.TestCase):
