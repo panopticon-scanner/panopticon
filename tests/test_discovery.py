@@ -15,7 +15,6 @@ import pytest
 SCRIPTS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                        "skill", "scripts")
 
-sys.path.insert(0, SCRIPTS)
 import discovery  # noqa: E402
 import discovery as orch  # noqa: E402  (P6.5 Slice A: orchestrator.py retired)
 import setup_flow  # noqa: E402

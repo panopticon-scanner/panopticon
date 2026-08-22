@@ -76,4 +76,4 @@ gating honest.
 
 ## Earlier releases
 
-See [DEVELOPMENT.md](DEVELOPMENT.md) for the detailed version history through 2.2.1.
+See [DEVELOPMENT.md](DEVELOPMENT.md) for the detailed 4.x and earlier version history.
