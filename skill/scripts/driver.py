@@ -1625,6 +1625,18 @@ def _error_status(message):
             "dispatch_request": None, "advanced": [], "message": message}
 
 
+def _foreign_manifest(manifest, review_root):
+    """#1093: True if a loaded run-manifest was NOT written by a prior run in
+    THIS tree. build_manifest stamps `review_root` as this-machine abspath, so a
+    manifest whose stamped review_root differs is not a legitimate resume state --
+    most likely a target repo that committed its own `.panopticon/run-manifest.json`
+    to preset attacker-chosen flags (e.g. flags.tools:false to skip the scan, or
+    flags.fail_on to force gate:PASS). Such a manifest must be discarded and
+    rebuilt from the real CLI args, never trusted as run config."""
+    return (isinstance(manifest, dict)
+            and manifest.get("review_root") != os.path.abspath(review_root))
+
+
 def run(args, runner=subprocess.run, phases=PHASES):
     # #5.0-14: resolving the review root can fail loudly for a --pr run (gh
     # auth/network, a bad PR number, worktree acquisition) — keep it inside the
@@ -1659,6 +1671,14 @@ def run(args, runner=subprocess.run, phases=PHASES):
         _clear_run_artifacts(review_root)   # §5.1: resolve the tag before the manifest goes
         run_manifest.reset_run(review_root)
     manifest = run_manifest.load_manifest(review_root)
+    if _foreign_manifest(manifest, review_root):
+        # #1093: a target-committed run-manifest.json (foreign review_root) could
+        # preset flags to skip tools / force gate:PASS. Drop it and rebuild from
+        # the real CLI args, exactly like a corrupt manifest below.
+        print("driver: ignoring foreign run-manifest.json (stamped review_root "
+              "%r != %r)" % (manifest.get("review_root"), os.path.abspath(review_root)),
+              file=sys.stderr, flush=True)
+        manifest = None
     if manifest is None:
         # I1: no manifest means no prior run should count — clear any stale
         # derived artifacts so done()-predicates never resume on another run's

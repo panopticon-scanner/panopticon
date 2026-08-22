@@ -101,6 +101,23 @@ class TestRunChildTimeout(unittest.TestCase):
                 driver._run_child(["python", "tools.py"], "/tmp", "tools")
 
 
+class TestForeignManifest(unittest.TestCase):
+    """#1093: a run-manifest whose stamped review_root isn't this tree (a target
+    that committed its own .panopticon/run-manifest.json to preset flags) must be
+    treated as foreign so run() rebuilds from the real CLI args, never trusting
+    attacker-chosen flags.tools/fail_on."""
+
+    def test_detects_foreign_and_accepts_native(self):
+        rr = os.path.join(tempfile.gettempdir(), "review-native")
+        native = os.path.abspath(rr)
+        self.assertFalse(driver._foreign_manifest(None, rr))            # no manifest
+        self.assertFalse(driver._foreign_manifest({"review_root": native}, rr))
+        self.assertTrue(driver._foreign_manifest({"review_root": "/evil/tree"}, rr))
+        self.assertTrue(driver._foreign_manifest({}, rr))              # unstamped -> foreign
+        self.assertTrue(driver._foreign_manifest(
+            {"review_root": native, "flags": {"tools": False}}, "/somewhere/else"))
+
+
 class TestEmitStatus(unittest.TestCase):
     def test_error_status_returns_exit_1(self):
         buf = io.StringIO()
