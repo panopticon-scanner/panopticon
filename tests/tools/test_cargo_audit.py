@@ -61,6 +61,19 @@ class TestCargoAuditAdapter(unittest.TestCase):
             capture_output=True, timeout=300, cwd="/tmp/fake",
         )
 
+    def test_invoke_rc_2_prints_stderr_and_returns_failure(self):
+        import contextlib, io
+        fake_run = mock.Mock(return_value=mock.Mock(
+            stdout=b"audit error output", stderr=b"cargo audit failed", returncode=2))
+        buf = io.StringIO()
+        with mock.patch("scripts.tools.base.subprocess.run", fake_run), \
+             contextlib.redirect_stderr(buf):
+            stdout, rc = ca.CargoAuditAdapter().invoke("/tmp/fake")
+        self.assertEqual(rc, 2)
+        self.assertEqual(stdout, b"audit error output")
+        self.assertIn("tool cargo exited 2", buf.getvalue())
+        self.assertIn("cargo audit failed", buf.getvalue())
+
     def test_cvss_v3_score_scope_unchanged_known_vector(self):
         # AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H - a textbook "network, no auth,
         # full CIA impact" vector. NVD's published base score is 9.8; the

@@ -224,6 +224,21 @@ class TestStaticPyproject(unittest.TestCase):
         self.assertNotIn(target, captured["cmd"])
         self.assertIn("requests==2.25.1", captured["reqs"])
 
+    def test_invoke_reports_nonzero_exit(self):
+        import contextlib, io
+        adapter = pa.PipAuditAdapter()
+        fake_run = mock.Mock(return_value=mock.Mock(
+            stdout=b"audit output", stderr=b"pip-audit failed", returncode=2))
+        buf = io.StringIO()
+        with mock.patch("scripts.tools.base.subprocess.run", fake_run), \
+             mock.patch("scripts.tools.pip_audit.glob.glob", return_value=["/tmp/fake/requirements.txt"]), \
+             contextlib.redirect_stderr(buf):
+            stdout, rc = adapter.invoke("/tmp/fake")
+        self.assertEqual(stdout, b"audit output")
+        self.assertEqual(rc, 2)
+        self.assertIn("tool pip-audit exited 2", buf.getvalue())
+        self.assertIn("pip-audit failed", buf.getvalue())
+
     def test_invoke_dynamic_pyproject_returns_empty_without_running(self):
         target = self._target(PYPROJECT_DYNAMIC)
         with mock.patch.object(pa, "run_tool") as rt_mock:

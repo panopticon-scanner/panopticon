@@ -77,6 +77,17 @@ class TestDependencyCheckAdapter(unittest.TestCase):
         self.assertEqual(stdout, b"")
         self.assertNotEqual(rc, 0)
 
+    def test_invoke_returns_report_with_nonzero_exit(self):
+        adapter = dc.DependencyCheckAdapter()
+        fake_run = mock.Mock(return_value=(b"", 7))
+        with mock.patch("scripts.tools.dependency_check.run_tool", fake_run):
+            with mock.patch("scripts.tools.dependency_check.os.path.exists", return_value=True):
+                with mock.patch("builtins.open", mock.mock_open(read_data=b"{\"report\": true}")):
+                    with mock.patch("shutil.rmtree"):
+                        stdout, rc = adapter.invoke("/tmp/fake")
+        self.assertEqual(stdout, b"{\"report\": true}")
+        self.assertEqual(rc, 7)
+
 
 if __name__ == "__main__":
     unittest.main()

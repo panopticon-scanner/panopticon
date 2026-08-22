@@ -129,6 +129,20 @@ class TestOsvScannerAdapter(unittest.TestCase):
             timeout=300,
         )
 
+    def test_invoke_reports_nonzero_exit(self):
+        import contextlib, io
+        adapter = osv.OsvScannerAdapter()
+        fake_run = mock.Mock(return_value=mock.Mock(
+            stdout=b"scan output", stderr=b"no lockfiles found", returncode=2))
+        buf = io.StringIO()
+        with mock.patch("scripts.tools.base.subprocess.run", fake_run), \
+             contextlib.redirect_stderr(buf):
+            stdout, rc = adapter.invoke("/tmp/fake")
+        self.assertEqual(stdout, b"scan output")
+        self.assertEqual(rc, 2)
+        self.assertIn("tool osv-scanner exited 2", buf.getvalue())
+        self.assertIn("no lockfiles found", buf.getvalue())
+
     def test_parse_tolerates_malformed_entries(self):
         sample = json.dumps({
             "results": [

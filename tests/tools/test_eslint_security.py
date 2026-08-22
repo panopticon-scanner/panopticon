@@ -160,6 +160,22 @@ class TestEslintSecurityAdapter(unittest.TestCase):
         self.assertEqual(kwargs["capture_output"], True)
         self.assertEqual(kwargs["timeout"], 300)
 
+    def test_invoke_reports_nonzero_exit(self):
+        import contextlib, io
+        adapter = es.EslintSecurityAdapter()
+        fake_run = mock.Mock(return_value=mock.Mock(
+            stdout=b"[]", stderr=b"eslint config error", returncode=2))
+        buf = io.StringIO()
+        with mock.patch("scripts.tools.base.subprocess.run", fake_run), \
+             mock.patch.object(es.EslintSecurityAdapter, "_lintable_sources",
+                               return_value=["x.js"]), \
+             contextlib.redirect_stderr(buf):
+            stdout, rc = adapter.invoke("/tmp/fake")
+        self.assertEqual(stdout, b"[]")
+        self.assertEqual(rc, 2)
+        self.assertIn("tool eslint exited 2", buf.getvalue())
+        self.assertIn("eslint config error", buf.getvalue())
+
     def test_invoke_enables_all_rule_cwe_rules(self):
         adapter = es.EslintSecurityAdapter()
         fake_run = mock.Mock(return_value=mock.Mock(stdout=b"[]", returncode=0))

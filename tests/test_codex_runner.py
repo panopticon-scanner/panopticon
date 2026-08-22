@@ -136,6 +136,35 @@ class TestCodexExecution(unittest.TestCase):
             with open(entry["out_file"], encoding="utf-8") as fh:
                 self.assertEqual(fh.read(), "sentinel")
 
+    def test_subprocess_failure_raises_runtimeerror(self):
+        with tempfile.TemporaryDirectory() as root:
+            open(os.path.join(root, "app.py"), "w").close()
+            entry = dispatch.build_plan(
+                self._profile(), host="codex", codex_exec=True,
+                root=root, run_id="run-123")[0]
+
+            def fake_runner(command, **kwargs):
+                return subprocess.CompletedProcess(command, 1, "", "codex crashed")
+
+            with self.assertRaisesRegex(RuntimeError, "codex exec exited 1"):
+                cr.run_entry(entry, root, runner=fake_runner)
+
+    def test_malformed_output_raises_runtimeerror(self):
+        with tempfile.TemporaryDirectory() as root:
+            open(os.path.join(root, "app.py"), "w").close()
+            entry = dispatch.build_plan(
+                self._profile(), host="codex", codex_exec=True,
+                root=root, run_id="run-123")[0]
+
+            def fake_runner(command, **kwargs):
+                output = command[command.index("--output-last-message") + 1]
+                with open(output, "w", encoding="utf-8") as fh:
+                    fh.write("not json")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            with self.assertRaisesRegex(RuntimeError, "invalid JSON"):
+                cr.run_entry(entry, root, runner=fake_runner)
+
     def test_response_location_cannot_escape_target(self):
         with tempfile.TemporaryDirectory() as root:
             entry = dispatch.build_plan(
