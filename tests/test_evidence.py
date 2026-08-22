@@ -166,8 +166,11 @@ class TestToolReported(unittest.TestCase):
                                    "skill", "reference", "report-schema.json")
         with open(schema_path, encoding="utf-8") as fh:
             schema = json.load(fh)
-        text = json.dumps(schema)
-        self.assertIn("tool_reported", text)
+        status_enum = (
+            schema["properties"]["findings"]["items"]["properties"]["evidence"]
+            ["properties"]["status"]["enum"]
+        )
+        self.assertIn("tool_reported", status_enum)
 
 
 class TestFingerprintMoved(unittest.TestCase):

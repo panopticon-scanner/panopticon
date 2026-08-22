@@ -1,60 +1,103 @@
 import os
 import unittest
 
+import yaml
+
 
 ROOT = os.path.join(os.path.dirname(__file__), os.pardir)
 WORKFLOW = os.path.join(ROOT, ".github", "workflows", "security.yml")
 
 
 class TestSecurityWorkflowTrustBoundary(unittest.TestCase):
-    def _text(self):
+    def _workflow(self):
         with open(WORKFLOW, encoding="utf-8") as fh:
-            return fh.read()
+            return yaml.safe_load(fh)
+
+    def _checkout_steps(self, workflow):
+        return [
+            step
+            for job in workflow.get("jobs", {}).values()
+            for step in job.get("steps", [])
+            if str(step.get("uses", "")).startswith("actions/checkout")
+        ]
+
+    def _run_text(self, workflow):
+        return "\n".join(
+            step.get("run", "")
+            for job in workflow.get("jobs", {}).values()
+            for step in job.get("steps", [])
+            if "run" in step
+        )
 
     def test_controller_and_target_are_separate_checkouts(self):
-        text = self._text()
-        self.assertIn("pull_request_target:", text)
-        self.assertIn("path: controller", text)
-        self.assertIn("github.event.pull_request.base.sha", text)
-        self.assertIn("path: target", text)
-        self.assertIn("github.event.pull_request.head.repo.full_name", text)
-        self.assertIn("github.event.pull_request.head.sha", text)
-        self.assertGreaterEqual(text.count("persist-credentials: false"), 2)
+        wf = self._workflow()
+        # PyYAML 1.1 parses the unquoted `on:` key as the boolean True.
+        on = wf.get(True, {})
+        triggers = on if isinstance(on, list) else list(on.keys())
+        self.assertIn("pull_request_target", triggers)
+
+        checkouts = self._checkout_steps(wf)
+        paths = [step.get("with", {}).get("path") for step in checkouts]
+        self.assertIn("controller", paths)
+        self.assertIn("target", paths)
+
+        for step in checkouts:
+            self.assertIs(
+                step.get("with", {}).get("persist-credentials"), False
+            )
+
+        controller = next(
+            s for s in checkouts if s.get("with", {}).get("path") == "controller"
+        )
+        target = next(
+            s for s in checkouts if s.get("with", {}).get("path") == "target"
+        )
+        self.assertIn(
+            "github.event.pull_request.base.sha",
+            controller.get("with", {}).get("ref", ""),
+        )
+        self.assertIn(
+            "github.event.pull_request.head.repo.full_name",
+            target.get("with", {}).get("repository", ""),
+        )
+        self.assertIn(
+            "github.event.pull_request.head.sha",
+            target.get("with", {}).get("ref", ""),
+        )
 
     def test_fork_isolation_routing_guard(self):
-        # Both triggers exist so the required `scan` check always reports, but
-        # the job `if` routes each PR to exactly one: forks -> target (tamper-
-        # proof base workflow), same-repo -> pull_request (no double run).
-        text = self._text()
-        self.assertIn("pull_request_target:", text)
-        self.assertIn("pull_request:", text)
-        self.assertIn("if:", text)
-        # fork branch: pull_request_target only when head repo != this repo
-        self.assertIn("github.event_name == 'pull_request_target' &&", text)
-        self.assertIn("head.repo.full_name != github.repository", text)
-        # same-repo branch: pull_request only when head repo == this repo
-        self.assertIn("github.event_name == 'pull_request' &&", text)
-        self.assertIn("head.repo.full_name == github.repository", text)
+        wf = self._workflow()
+        # PyYAML 1.1 parses the unquoted `on:` key as the boolean True.
+        on = wf.get(True, {})
+        triggers = on if isinstance(on, list) else list(on.keys())
+        self.assertIn("pull_request_target", triggers)
+        self.assertIn("pull_request", triggers)
+
+        job_if = wf["jobs"]["scan"].get("if", "")
+        self.assertIn("github.event_name == 'pull_request_target' &&", job_if)
+        self.assertIn("head.repo.full_name != github.repository", job_if)
+        self.assertIn("github.event_name == 'pull_request' &&", job_if)
+        self.assertIn("head.repo.full_name == github.repository", job_if)
 
     def test_only_trusted_controller_runs_gate_and_scanners(self):
-        text = self._text()
-        self.assertIn("python controller/skill/scripts/run_tools.py", text)
-        self.assertIn("python controller/skill/scripts/security_gate.py", text)
-        self.assertNotIn("python skill/scripts/run_tools.py", text)
-        self.assertNotIn("import scripts.ingest_tools as it", text)
+        runs = self._run_text(self._workflow())
+        self.assertIn("python controller/skill/scripts/run_tools.py", runs)
+        self.assertIn("python controller/skill/scripts/security_gate.py", runs)
+        self.assertNotIn("python skill/scripts/run_tools.py", runs)
+        self.assertNotIn("import scripts.ingest_tools as it", runs)
 
     def test_pr_dockerfile_is_never_built(self):
-        text = self._text()
-        self.assertIn("docker build -t panopticon-tools controller", text)
-        self.assertNotIn("docker build -t panopticon-tools .", text)
+        runs = self._run_text(self._workflow())
+        self.assertIn("docker build -t panopticon-tools controller", runs)
+        self.assertNotIn("docker build -t panopticon-tools .", runs)
 
     def test_scanner_manifest_is_required(self):
-        text = self._text()
-        self.assertIn('--manifest "$manifest"', text)
-        self.assertIn('--tools-dir "$RUNNER_TEMP/panopticon-tools-output"', text)
+        runs = self._run_text(self._workflow())
+        self.assertIn('--manifest "$manifest"', runs)
+        self.assertIn('--tools-dir "$RUNNER_TEMP/panopticon-tools-output"', runs)
 
     def test_no_untrusted_github_context_in_run_scripts(self):
-        text = self._text()
+        runs = self._run_text(self._workflow())
         untrusted_contexts = [
             "${{ github.event.pull_request.title }}",
             "${{ github.event.pull_request.body }}",
@@ -64,7 +107,7 @@ class TestSecurityWorkflowTrustBoundary(unittest.TestCase):
             "${{ github.event.head_commit.message }}",
         ]
         for ctx in untrusted_contexts:
-            self.assertNotIn(ctx, text)
+            self.assertNotIn(ctx, runs)
 
 
 if __name__ == "__main__":
