@@ -1,12 +1,10 @@
 import json
 import os
-import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill", "scripts"))
-import ingest_tools as it
-from tools import ADAPTERS
+import scripts.ingest_tools as it
+from scripts.tools import ADAPTERS
 
 
 class TestPhase1Integration(unittest.TestCase):
