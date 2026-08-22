@@ -792,6 +792,23 @@ class TestCommonsCatalog(unittest.TestCase):
         by_name = {g["name"]: g for g in groups}
         self.assertEqual(by_name["Docs"]["parent"], "Docs")
 
+    def test_commons_never_collides_with_committed_group_name(self):
+        # A committed group named `Docs` (a Commons category name a user may
+        # plausibly author) must NOT be re-emitted by the Commons pass: two
+        # groups named `Docs` would write to the SAME findings-Docs-<domain>.json
+        # (silent clobber) and produce a duplicate report node. Committed wins;
+        # the leftover README falls to the committed `Docs` group's `match`, and
+        # Commons is suppressed for that name entirely -> exactly one `Docs`.
+        catalog = {"Docs": {"match": ["docs/**", "README.md"]}}
+        groups, _leftovers = orch.catalog_groups(
+            ["docs/guide.md", "README.md"],
+            catalog, max_per_group=50, security_mode="standard")
+        docs_groups = [g for g in groups if g["name"] == "Docs"]
+        self.assertEqual(len(docs_groups), 1)              # no duplicate node
+        self.assertEqual(sorted(docs_groups[0]["files"]),
+                         ["README.md", "docs/guide.md"])   # committed group owns both
+        self.assertEqual(docs_groups[0]["parent"], "Docs")  # committed leaf, not Commons
+
 
 class TestPanelPriority(unittest.TestCase):
     def test_compute_group_panels_emits_priority_order(self):
@@ -1378,6 +1395,65 @@ def test_repo_scan_scope_files_without_base_emits_no_diff_hunks(tmp_path):
     files = sorted(f for g in groups for f in g["files"])
     assert files == ["src/checkout/pay.py"]
     assert not (repo/".panopticon"/"diff-hunks.json").exists()
+
+
+def _repo_with_exclude(tmp_path):
+    """Repo whose committed groups.yml carries `exclude_paths: ['vendor/**']`,
+    with a vendored file a delta scope would otherwise pick up."""
+    import subprocess, os
+    repo = tmp_path
+    (repo / ".panopticon").mkdir(parents=True)
+    for p in ["src/checkout/pay.py", "vendor/dep.py"]:
+        os.makedirs(os.path.dirname(repo / p), exist_ok=True)
+        (repo / p).write_text("x=1\n")
+    (repo / ".panopticon" / "groups.yml").write_text(
+        "groups:\n"
+        "  Checkout:\n    match: ['src/checkout/**']\n    panels: [SEC]\n"
+        "exclude_paths: ['vendor/**']\n")
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-qm", "x"], cwd=repo, check=True)
+    return repo
+
+
+def test_repo_scan_scope_files_applies_exclude_paths(tmp_path):
+    # #1136 delta-path parity: --scope-files rebuilds the file set from the
+    # user's explicit list, NOT from the exclude-pruned `allf`. A vendored file
+    # named in the delta must still be pruned by committed exclude_paths (never
+    # grouped/reviewed), and the disclosed count must reflect the delta set (1),
+    # not the whole-repo count.
+    import discovery as orchestrator, json
+    repo = _repo_with_exclude(tmp_path)
+    out = repo / ".panopticon" / "groups.json"
+    rc = orchestrator.main(["--repo", str(repo), "--repo-scan", "--scope-files",
+                            "src/checkout/pay.py", "vendor/dep.py",
+                            "--out", str(out)])
+    assert rc == 0
+    doc = json.loads(out.read_text())
+    files = sorted(f for g in doc["groups"] for f in g["files"])
+    assert files == ["src/checkout/pay.py"]            # vendor/dep.py pruned
+    assert doc["exclude_paths"] == ["vendor/**"]
+    assert doc["excluded_count"] == 1                  # delta count, not whole-repo
+
+
+def test_repo_scan_scope_changed_applies_exclude_paths(tmp_path):
+    # Same parity guard on the --scope-changed path (rebuilds from git-diff
+    # output). A changed vendored file must not slip past exclude_paths.
+    import discovery as orchestrator, json, subprocess
+    repo = _repo_with_exclude(tmp_path)
+    (repo / "src/checkout/pay.py").write_text("x=2\n")
+    (repo / "vendor/dep.py").write_text("y=2\n")
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-aqm", "c2"], cwd=repo, check=True)
+    out = repo / ".panopticon" / "groups.json"
+    rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
+                            str(repo), "--out", str(out)])
+    assert rc == 0
+    doc = json.loads(out.read_text())
+    files = sorted(f for g in doc["groups"] for f in g["files"])
+    assert files == ["src/checkout/pay.py"]            # vendor/dep.py pruned
+    assert doc["excluded_count"] == 1
 
 
 def test_repo_scan_scope_changed_pr_base_resolves_origin_only_base(tmp_path):

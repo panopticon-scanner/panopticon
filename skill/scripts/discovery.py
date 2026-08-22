@@ -869,11 +869,19 @@ def catalog_groups(files, catalog, max_per_group, security_mode):
     an oversize group keeps that same parent. Commons-named groups and `._N`
     residual chunks have no catalog entry and self-parent via `_group_obj`'s
     default.
+
+    Commons must never re-emit a committed group's name: two groups sharing a
+    name would write to the SAME ``findings-<group>-<domain>.json`` (one cell's
+    findings silently clobber the other's) and produce a duplicate report node.
+    Committed groups always win, so any Commons category the committed catalog
+    already defines (e.g. an authored ``Docs`` group) is dropped before Commons
+    ever runs.
     """
     named, leftovers = assign_by_catalog(files, catalog)
     groups = _emit_named_groups(named, max_per_group, security_mode,
                                 parent_lookup=lambda n: catalog[n].get("parent"))
-    commons_named, residual = assign_by_catalog(leftovers, _commons_catalog())
+    commons = {n: g for n, g in _commons_catalog().items() if n not in catalog}
+    commons_named, residual = assign_by_catalog(leftovers, commons)
     groups.extend(_emit_named_groups(commons_named, max_per_group, security_mode))
     groups.extend(_group_obj("._%d" % (i + 1), c, security_mode)
                   for i, c in enumerate(chunk_files(residual, max_per_group)))
@@ -1055,16 +1063,22 @@ def main(argv=None):
     # files BEFORE any grouping (build_result's default chunking, --scope-*
     # narrowing, and catalog_groups/assign_by_catalog all consume `allf` from
     # this point on) -- excluded files land in NEITHER a group NOR a leftover.
-    # Absent `exclude_paths`, `exclude_globs` is [] and this is a no-op
-    # (byte-identical back-compat).
+    # Absent `exclude_paths`, `exclude_globs` is [] and `_apply_exclude` is a
+    # no-op (byte-identical back-compat).
     exclude_globs = _committed_exclude_paths(repo)
-    excluded_files = []
-    if exclude_globs:
-        _exclude_re = [_glob_to_re(g) for g in exclude_globs]
-        kept, excluded_files = [], []
-        for f in allf:
-            (excluded_files if any(rx.match(f) for rx in _exclude_re) else kept).append(f)
-        allf = kept
+    _exclude_re = [_glob_to_re(g) for g in exclude_globs]
+
+    def _apply_exclude(fs):
+        """Split ``fs`` into (kept, excluded) by the committed exclude_paths
+        globs; identity (no exclusions) when none are committed."""
+        if not _exclude_re:
+            return fs, []
+        kept, dropped = [], []
+        for f in fs:
+            (dropped if any(rx.match(f) for rx in _exclude_re) else kept).append(f)
+        return kept, dropped
+
+    allf, excluded_files = _apply_exclude(allf)
     impl, tests = partition_test_files(allf)
     # Group impl AND real test sources so tests aren't silently dropped (only
     # their __pycache__ artifacts used to reach a group); counts stay impl-only.
@@ -1111,11 +1125,20 @@ def main(argv=None):
                   file=sys.stderr)
             return 2
         scoped = prune_fixture_files(changed, args.security == "redteam")
+        # Delta-path parity (#1136): --scope-changed rebuilds `scoped` from
+        # git-diff output, which never passed through the whole-repo exclude
+        # filter above. Re-apply so committed exclude_paths hold under delta
+        # review too, and re-derive excluded_files so the disclosure reflects
+        # what was actually pruned from the changed set (not the whole-repo
+        # count). --scope-dir/-file/-group derive `scoped` from the already-
+        # pruned `allf`, so they keep the whole-repo excluded_files as-is.
+        scoped, excluded_files = _apply_exclude(scoped)
         _delta = (base, source)
     elif args.scope_files:
         scoped = prune_fixture_files(
             [_norm_scope_path(repo, f) for f in args.scope_files],   # #5.0-17
             args.security == "redteam")
+        scoped, excluded_files = _apply_exclude(scoped)   # delta-path parity (#1136)
         _delta = None
         if args.base:
             res = resolve_base_or_die(repo, args.base, None)
