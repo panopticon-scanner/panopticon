@@ -40,17 +40,27 @@ RUN pip install --no-cache-dir "pip-audit==${PIP_AUDIT_VERSION}"
 
 # OSV scanner (static Go binary)
 ARG OSV_SCANNER_VERSION=1.8.2
+ARG OSV_SCANNER_SHA256_AMD64=558dbed2194d05ce00d8f8c27dcb49d763eb9db3bc7e30a1bf9b6b86062ccede
+ARG OSV_SCANNER_SHA256_ARM64=9e72c15c7239d7810f556a97d5a37d4fc9de440404c05393d4ee994e2ccc51f2
 RUN arch="$(dpkg --print-architecture)" \
-    && case "$arch" in amd64) osv="amd64" ;; arm64) osv="arm64" ;; *) osv="${arch}" ;; esac \
-    && curl -sfL "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_${osv}" \
-        -o /usr/local/bin/osv-scanner \
+    && case "$arch" in amd64) osv="amd64"; sha256="${OSV_SCANNER_SHA256_AMD64}" ;; arm64) osv="arm64"; sha256="${OSV_SCANNER_SHA256_ARM64}" ;; *) echo "unsupported arch: $arch" >&2; exit 1 ;; esac \
+    && curl -sfL --connect-timeout 5 --max-time 60 "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_${osv}" \
+        -o /tmp/osv-scanner \
+    && echo "${sha256}  /tmp/osv-scanner" | sha256sum -c - \
+    && mv /tmp/osv-scanner /usr/local/bin/osv-scanner \
     && chmod +x /usr/local/bin/osv-scanner
 
 # gitleaks (architecture-aware: amd64->x64, arm64->arm64)
+ARG GITLEAKS_VERSION=8.18.4
+ARG GITLEAKS_SHA256_X64=ba6dbb656933921c775ee5a2d1c13a91046e7952e9d919f9bac4cec61d628e7d
+ARG GITLEAKS_SHA256_ARM64=bf5f7f466ebfade1296c8bd32cf7d3f592c2aa78836aa9980ffbe2cadca7a861
 RUN arch="$(dpkg --print-architecture)" \
-    && case "$arch" in amd64) gl="x64" ;; arm64) gl="arm64" ;; *) gl="$arch" ;; esac \
-    && curl -sfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_${gl}.tar.gz" \
-        | tar -xz -C /usr/local/bin gitleaks
+    && case "$arch" in amd64) gl="x64"; sha256="${GITLEAKS_SHA256_X64}" ;; arm64) gl="arm64"; sha256="${GITLEAKS_SHA256_ARM64}" ;; *) echo "unsupported arch: $arch" >&2; exit 1 ;; esac \
+    && curl -sfL --connect-timeout 5 --max-time 60 "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_${gl}.tar.gz" \
+        -o /tmp/gitleaks.tar.gz \
+    && echo "${sha256}  /tmp/gitleaks.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/gitleaks.tar.gz -C /usr/local/bin gitleaks \
+    && rm /tmp/gitleaks.tar.gz
 
 # trivy (official apt repo — robust, arch-aware)
 RUN curl -sfL https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor -o /usr/share/keyrings/trivy.gpg \
@@ -59,9 +69,16 @@ RUN curl -sfL https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --d
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # gosec (architecture-aware)
+ARG GOSEC_VERSION=2.20.0
+ARG GOSEC_SHA256_AMD64=2d056644cf265f194efaf98b80d459004c03db7b367fbc3fe7fb345773df684e
+ARG GOSEC_SHA256_ARM64=a0c554e23ad088b544d40ca63039362ed2687fb576a33c1019951dbd3edcd716
 RUN arch="$(dpkg --print-architecture)" \
-    && curl -sfL "https://github.com/securego/gosec/releases/download/v${GOSEC_VERSION}/gosec_${GOSEC_VERSION}_linux_${arch}.tar.gz" \
-        | tar -xz -C /usr/local/bin gosec
+    && case "$arch" in amd64) sha256="${GOSEC_SHA256_AMD64}" ;; arm64) sha256="${GOSEC_SHA256_ARM64}" ;; *) echo "unsupported arch: $arch" >&2; exit 1 ;; esac \
+    && curl -sfL --connect-timeout 5 --max-time 60 "https://github.com/securego/gosec/releases/download/v${GOSEC_VERSION}/gosec_${GOSEC_VERSION}_linux_${arch}.tar.gz" \
+        -o /tmp/gosec.tar.gz \
+    && echo "${sha256}  /tmp/gosec.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/gosec.tar.gz -C /usr/local/bin gosec \
+    && rm /tmp/gosec.tar.gz
 
 # Copy panopticon adapter dispatcher into the image so Docker-based runs can
 # invoke Phase 1 adapters without relying on the target repo providing it.
@@ -94,8 +111,10 @@ RUN mkdir -p /opt/spotbugs/plugin \
 
 # OWASP dependency-check
 ARG DEPENDENCY_CHECK_VERSION=10.0.3
-RUN curl -sfL "https://github.com/jeremylong/DependencyCheck/releases/download/v${DEPENDENCY_CHECK_VERSION}/dependency-check-${DEPENDENCY_CHECK_VERSION}-release.zip" \
+ARG DEPENDENCY_CHECK_SHA256=5263fbafb15010823364274b83e9a2219b654d00a557d92941c37736d4076ba4
+RUN curl -sfL --connect-timeout 5 --max-time 120 "https://github.com/jeremylong/DependencyCheck/releases/download/v${DEPENDENCY_CHECK_VERSION}/dependency-check-${DEPENDENCY_CHECK_VERSION}-release.zip" \
         -o /tmp/dc.zip \
+    && echo "${DEPENDENCY_CHECK_SHA256}  /tmp/dc.zip" | sha256sum -c - \
     && unzip -q /tmp/dc.zip -d /opt \
     && rm /tmp/dc.zip
 
