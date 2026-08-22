@@ -9,6 +9,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from tools.git_repo import make_git_repo
+
 import scripts.driver as driver
 import scripts.ocrdb as ocrdb
 
@@ -956,17 +958,14 @@ class TestArtifactWriteSymlinkSafety(unittest.TestCase):
 
 class TestValidatePhase(unittest.TestCase):
     def _git_repo(self):
-        import shutil as _sh
-        d = os.path.realpath(tempfile.mkdtemp())
-        self.addCleanup(lambda: _sh.rmtree(d, ignore_errors=True))
-        subprocess.run(["git", "init", "-q", d], check=True)
-        subprocess.run(["git", "-C", d, "config", "user.email", "t@t"], check=True)
-        subprocess.run(["git", "-C", d, "config", "user.name", "t"], check=True)
-        open(os.path.join(d, "a.py"), "w").close()
-        subprocess.run(["git", "-C", d, "add", "-A"], check=True)
-        subprocess.run(["git", "-C", d, "commit", "-qm", "init"], check=True)
-        os.makedirs(os.path.join(d, ".panopticon"))
-        return d
+        return make_git_repo(
+            test_case=self,
+            files={"a.py": None},
+            panopticon=True,
+            branch=None,
+            user_email="t@t",
+            user_name="t",
+        )
 
     def test_clean_tree_advances(self):
         d = self._git_repo()
@@ -1109,28 +1108,14 @@ import scripts.run_manifest as run_manifest  # noqa: E402
 
 class TestDriverCLIAndEndToEnd(unittest.TestCase):
     def _repo(self):
-        import shutil as _sh
-        d = os.path.realpath(tempfile.mkdtemp())
-        self.addCleanup(lambda: _sh.rmtree(d, ignore_errors=True))
-        g = ["git", "-C", d]
-        subprocess.run(["git", "init", "-q", d], check=True)
-        subprocess.run(g + ["config", "user.email", "t@t"], check=True)
-        subprocess.run(g + ["config", "user.name", "t"], check=True)
-        os.makedirs(os.path.join(d, "src"))
-        with open(os.path.join(d, "src", "app.py"), "w") as fh:
-            fh.write("def f():\n    return 1\n")
-        os.makedirs(os.path.join(d, ".panopticon"))
-        with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
-            fh.write("groups:\n  Core:\n    match: ['src/**']\n    panels: [COD]\n")
-        subprocess.run(g + ["add", "-A"], check=True)
-        subprocess.run(g + ["commit", "-qm", "init"], check=True)
-        # Pin the branch to `main` so it is deterministic regardless of the
-        # runner's git `init.defaultBranch` (CI defaults to `master`). The --pr
-        # test mocks a gh pr_base of "main"; resolve_base(pr_base="main") does
-        # NOT fall through to master (the #947 loud-fail for a given-but-
-        # unresolvable base), so the repo must actually carry a `main` ref.
-        subprocess.run(g + ["branch", "-M", "main"], check=True)
-        return d
+        return make_git_repo(
+            test_case=self,
+            files={"src/app.py": "def f():\n    return 1\n"},
+            groups_yml="groups:\n  Core:\n    match: ['src/**']\n    panels: [COD]\n",
+            branch="main",
+            user_email="t@t",
+            user_name="t",
+        )
 
     def _args(self, target, *extra):
         return driver.build_parser().parse_args(["run", target, *extra])
@@ -1369,26 +1354,21 @@ class TestReviewMatrixEndToEnd(unittest.TestCase):
     synthesize -> a real report.json with (domain, code) findings."""
 
     def _repo(self):
-        import shutil as _sh
-        d = os.path.realpath(tempfile.mkdtemp())
-        self.addCleanup(lambda: _sh.rmtree(d, ignore_errors=True))
-        g = ["git", "-C", d]
-        subprocess.run(["git", "init", "-q", d], check=True)
-        subprocess.run(g + ["config", "user.email", "t@t"], check=True)
-        subprocess.run(g + ["config", "user.name", "t"], check=True)
-        os.makedirs(os.path.join(d, "src"))
-        with open(os.path.join(d, "src", "app.py"), "w") as fh:
-            fh.write("def f():\n    return 1\n")
-        os.makedirs(os.path.join(d, ".panopticon"))
-        with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
-            # #5.0-11: GLOBAL_FLOOR folds ARC/COD/DAT/TST into every group's
-            # effective panel set; exclude the three non-COD floor members so
-            # this fixture keeps its original single-cell (COD-only) shape.
-            fh.write("groups:\n  Core:\n    match: ['src/**']\n"
-                     "    panels: [COD]\n    exclude: [ARC, DAT, TST]\n")
-        subprocess.run(g + ["add", "-A"], check=True)
-        subprocess.run(g + ["commit", "-qm", "init"], check=True)
-        return d
+        # #5.0-11: GLOBAL_FLOOR folds ARC/COD/DAT/TST into every group's
+        # effective panel set; exclude the three non-COD floor members so
+        # this fixture keeps its original single-cell (COD-only) shape.
+        return make_git_repo(
+            test_case=self,
+            files={"src/app.py": "def f():\n    return 1\n"},
+            groups_yml=("groups:\n"
+                        "  Core:\n"
+                        "    match: ['src/**']\n"
+                        "    panels: [COD]\n"
+                        "    exclude: [ARC, DAT, TST]\n"),
+            branch=None,
+            user_email="t@t",
+            user_name="t",
+        )
 
     def _args(self, d):
         # --no-tools: this fixture services scout + review checkpoints only; with
@@ -2095,20 +2075,13 @@ class TestDriverDeltaEndToEnd(unittest.TestCase):
 
 class TestDriverSetup(unittest.TestCase):
     def _repo(self):
-        import shutil as _sh
-        d = os.path.realpath(tempfile.mkdtemp())
-        self.addCleanup(lambda: _sh.rmtree(d, ignore_errors=True))
-        g = ["git", "-C", d]
-        subprocess.run(["git", "init", "-q", d], check=True)
-        subprocess.run(g + ["config", "user.email", "t@t"], check=True)
-        subprocess.run(g + ["config", "user.name", "t"], check=True)
-        os.makedirs(os.path.join(d, "src", "checkout"))
-        with open(os.path.join(d, "src", "checkout", "pay.py"), "w") as fh:
-            fh.write("x = 1\n")
-        subprocess.run(g + ["add", "-A"], check=True)
-        subprocess.run(g + ["commit", "-qm", "init"], check=True)
-        subprocess.run(g + ["branch", "-M", "main"], check=True)
-        return d
+        return make_git_repo(
+            test_case=self,
+            files={"src/checkout/pay.py": "x = 1\n"},
+            branch="main",
+            user_email="t@t",
+            user_name="t",
+        )
 
     def test_setup_verb_parses(self):
         args = driver.build_parser().parse_args(["setup", "."])

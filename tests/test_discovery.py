@@ -11,6 +11,7 @@ import unittest
 from unittest import mock
 
 import pytest
+from tools.git_repo import make_git_repo
 
 SCRIPTS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                        "skill", "scripts")
@@ -33,22 +34,18 @@ class TestDiscoveryRepoScanParity(unittest.TestCase):
     matrix core)."""
 
     def _repo(self):
-        d = tempfile.mkdtemp()
-        self.addCleanup(lambda: __import__("shutil").rmtree(d, ignore_errors=True))
-        g = ["git", "-C", d]
-        subprocess.run(g + ["init", "-q"], check=True)
-        subprocess.run(g + ["config", "user.name", "Test"], check=True)
-        subprocess.run(g + ["config", "user.email", "test@example.com"], check=True)
-        os.makedirs(os.path.join(d, "src", "checkout"))
-        with open(os.path.join(d, "src", "checkout", "pay.py"), "w", encoding="utf-8") as fh:
-            fh.write("# pay\n")
-        os.makedirs(os.path.join(d, ".panopticon"))
-        with open(os.path.join(d, ".panopticon", "groups.yml"), "w", encoding="utf-8") as fh:
-            fh.write("groups:\n  Checkout:\n    match: ['src/checkout/**']\n    panels: [SEC]\n")
-        subprocess.run(g + ["add", "-A"], check=True)
-        subprocess.run(g + ["commit", "-qm", "init"], check=True)
-        subprocess.run(g + ["branch", "-M", "main"], check=True)
-        return d
+        return make_git_repo(
+            test_case=self,
+            files={"src/checkout/pay.py": "# pay\n"},
+            groups_yml=("groups:\n"
+                        "  Checkout:\n"
+                        "    match: ['src/checkout/**']\n"
+                        "    panels: [SEC]\n"),
+            branch="main",
+            user_name="Test",
+            user_email="test@example.com",
+            realpath=False,
+        )
 
     def test_repo_scan_writes_groups_json(self):
         d = self._repo()
@@ -227,20 +224,31 @@ def _run_scan_helper(d, *extra):
     return rc, data, err.getvalue()
 
 
+def _run_scan(d, *extra):
+    """Run a repo-scan and return the parsed JSON (asserts rc == 0)."""
+    rc, data, _err = _run_scan_helper(d, *extra)
+    assert rc == 0
+    return data
+
+
+def _run_scan_with_err(d, *extra):
+    """Run a repo-scan and return ``(data, stderr)`` (asserts rc == 0)."""
+    rc, data, err = _run_scan_helper(d, *extra)
+    assert rc == 0
+    return data, err
+
+
+def _grouped(out):
+    """Flatten all grouped files from a repo-scan output."""
+    return [f for g in out["groups"] for f in g["files"]]
+
+
 class TestRepoScanDiscovery(unittest.TestCase):
     """Discovery-gap regressions for --repo-scan: noise exclusion, targeted
     dotdir inclusion (.github/workflows), and real test-file surfacing."""
 
     def _touch(self, root, rel, content=""):
         _touch(root, rel, content)
-
-    def _run_scan(self, d, *extra):
-        rc, data, _err = _run_scan_helper(d, *extra)
-        self.assertEqual(rc, 0)
-        return data
-
-    def _grouped(self, out):
-        return [f for g in out["groups"] for f in g["files"]]
 
     def test_nondelta_scan_removes_stale_diff_hunks(self):
         # #5.0-07: a whole-repo (non-delta) scan must drop a stale diff-hunks.json
@@ -271,8 +279,8 @@ class TestRepoScanDiscovery(unittest.TestCase):
             self._touch(d, "htmlcov/index.html")
             self._touch(d, "pkg.egg-info/PKG-INFO")
             self._touch(d, "src/__pycache__/app.cpython-311.pyc")
-            out = self._run_scan(d)
-            grouped = self._grouped(out)
+            out = _run_scan(d)
+            grouped = _grouped(out)
             self.assertIn("src/app.py", grouped)
             for noisy in [
                 "tmp/audit-x/copy.py",
@@ -291,8 +299,8 @@ class TestRepoScanDiscovery(unittest.TestCase):
             self._touch(d, "src/app.py")
             self._touch(d, ".github/workflows/ci.yml")
             self._touch(d, ".github/workflows/release.yaml")
-            out = self._run_scan(d)
-            grouped = self._grouped(out)
+            out = _run_scan(d)
+            grouped = _grouped(out)
             self.assertIn(".github/workflows/ci.yml", grouped)
             self.assertIn(".github/workflows/release.yaml", grouped)
 
@@ -301,8 +309,8 @@ class TestRepoScanDiscovery(unittest.TestCase):
             self._touch(d, "src/foo.py")
             self._touch(d, "tests/test_foo.py")
             self._touch(d, "tests/__pycache__/test_foo.cpython-311.pyc")
-            out = self._run_scan(d)
-            grouped = self._grouped(out)
+            out = _run_scan(d)
+            grouped = _grouped(out)
             self.assertIn("tests/test_foo.py", grouped)          # real test surfaced in a group
             self.assertIn("tests/test_foo.py", out["tests"])     # still tracked in tests list
             self.assertNotIn(
@@ -318,8 +326,8 @@ class TestRepoScanDiscovery(unittest.TestCase):
             self._touch(d, ".github/CODEOWNERS")
             self._touch(d, ".github/ISSUE_TEMPLATE/bug.md")
             self._touch(d, ".hidden/secret.py")
-            out = self._run_scan(d)
-            grouped = self._grouped(out)
+            out = _run_scan(d)
+            grouped = _grouped(out)
             for hidden in [
                 ".git/config",
                 ".github/CODEOWNERS",
@@ -344,22 +352,14 @@ class TestFixtureExclusion(unittest.TestCase):
         "src/__fixtures__/token.js",
     ]
 
-    def _run_scan(self, d, *extra):
-        rc, data, err = _run_scan_helper(d, *extra)
-        self.assertEqual(rc, 0)
-        return data, err
-
-    def _grouped(self, out):
-        return [f for g in out["groups"] for f in g["files"]]
-
     def test_standard_scan_prunes_fixture_corpora_and_discloses(self):
         with tempfile.TemporaryDirectory() as d:
             _touch(d, "src/app.py")
             _touch(d, "tests/test_app.py")
             for rel in self._FIXTURE_LAYOUT:
                 _touch(d, rel)
-            out, err = self._run_scan(d)
-            grouped = self._grouped(out)
+            out, err = _run_scan_with_err(d)
+            grouped = _grouped(out)
             self.assertIn("src/app.py", grouped)
             self.assertIn("tests/test_app.py", grouped)  # real tests stay
             for rel in self._FIXTURE_LAYOUT:
@@ -379,8 +379,8 @@ class TestFixtureExclusion(unittest.TestCase):
             _touch(d, "src/app.py")
             for rel in self._FIXTURE_LAYOUT:
                 _touch(d, rel)
-            out, err = self._run_scan(d, "--security", "redteam")
-            grouped = self._grouped(out)
+            out, err = _run_scan_with_err(d, "--security", "redteam")
+            grouped = _grouped(out)
             for rel in self._FIXTURE_LAYOUT:
                 self.assertIn(rel, grouped, rel)
             self.assertNotIn("excluded", out)
@@ -393,8 +393,8 @@ class TestFixtureExclusion(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             _touch(d, "src/fixtures/loader.py")
             _touch(d, "fixtures/catalog.py")
-            out, _ = self._run_scan(d)
-            grouped = self._grouped(out)
+            out, _ = _run_scan_with_err(d)
+            grouped = _grouped(out)
             self.assertIn("src/fixtures/loader.py", grouped)
             self.assertIn("fixtures/catalog.py", grouped)
             self.assertNotIn("excluded", out)
@@ -402,7 +402,7 @@ class TestFixtureExclusion(unittest.TestCase):
     def test_no_disclosure_when_nothing_pruned(self):
         with tempfile.TemporaryDirectory() as d:
             _touch(d, "src/app.py")
-            out, err = self._run_scan(d)
+            out, err = _run_scan_with_err(d)
             self.assertNotIn("excluded", out)
             self.assertNotIn("fixture exclusion", err)
 
@@ -440,14 +440,6 @@ class TestGitAwareDiscovery(unittest.TestCase):
     def _touch(self, root, rel, content=""):
         _touch(root, rel, content)
 
-    def _run_scan(self, d, *extra):
-        rc, data, err = _run_scan_helper(d, *extra)
-        self.assertEqual(rc, 0)
-        return data, err
-
-    def _grouped(self, out):
-        return [f for g in out["groups"] for f in g["files"]]
-
     def test_gitignored_paths_are_excluded(self):
         with tempfile.TemporaryDirectory() as d:
             _touch(d, "src/app.py")
@@ -458,8 +450,8 @@ class TestGitAwareDiscovery(unittest.TestCase):
             _touch(d, "storage/data.txt")       # runtime data, ignored
             _touch(d, "storage/blob.enc")
             self._touch(d, ".env", "SECRET=1")       # ignored credential
-            out, _ = self._run_scan(d)
-            grouped = self._grouped(out)
+            out, _ = _run_scan_with_err(d)
+            grouped = _grouped(out)
             self.assertIn("src/app.py", grouped)
             for noise in ["storage/data.txt", "storage/blob.enc", ".env"]:
                 self.assertNotIn(noise, grouped, noise)
@@ -473,8 +465,8 @@ class TestGitAwareDiscovery(unittest.TestCase):
             _git(d, "add", ".")
             _git(d, "commit", "-q", "-m", "init")
             self._touch(d, "src/brand_new.py")
-            out, _ = self._run_scan(d)
-            self.assertIn("src/brand_new.py", self._grouped(out))
+            out, _ = _run_scan_with_err(d)
+            self.assertIn("src/brand_new.py", _grouped(out))
 
     def test_git_paths_are_nul_safe(self):
         with tempfile.TemporaryDirectory() as d:
@@ -484,8 +476,8 @@ class TestGitAwareDiscovery(unittest.TestCase):
             _init_repo(d)
             _git(d, "add", ".")
             _git(d, "commit", "-q", "-m", "init")
-            out, _ = self._run_scan(d)
-            grouped = self._grouped(out)
+            out, _ = _run_scan_with_err(d)
+            grouped = _grouped(out)
             for name in names:
                 self.assertIn(name, grouped)
 
@@ -498,8 +490,8 @@ class TestGitAwareDiscovery(unittest.TestCase):
             _init_repo(repo)
             _git(repo, "add", ".")
             _git(repo, "commit", "-q", "-m", "init")
-            out, _ = self._run_scan(repo)
-            self.assertNotIn("external.txt", self._grouped(out))
+            out, _ = _run_scan_with_err(repo)
+            self.assertNotIn("external.txt", _grouped(out))
 
     def test_tracked_noise_dirs_still_excluded(self):
         # A repo that TRACKS node_modules still shouldn't review it.
@@ -509,8 +501,8 @@ class TestGitAwareDiscovery(unittest.TestCase):
             _init_repo(d)
             _git(d, "add", "-f", ".")
             _git(d, "commit", "-q", "-m", "init")
-            out, _ = self._run_scan(d)
-            self.assertNotIn("node_modules/pkg/index.js", self._grouped(out))
+            out, _ = _run_scan_with_err(d)
+            self.assertNotIn("node_modules/pkg/index.js", _grouped(out))
 
     def test_fixture_corpora_pruned_from_git_listing(self):
         # tests/fixtures IS tracked in real targets — the #434 exclusion must
@@ -521,12 +513,12 @@ class TestGitAwareDiscovery(unittest.TestCase):
             _init_repo(d)
             _git(d, "add", ".")
             _git(d, "commit", "-q", "-m", "init")
-            out, err = self._run_scan(d)
-            self.assertNotIn("tests/fixtures/vuln/main.rs", self._grouped(out))
+            out, err = _run_scan_with_err(d)
+            self.assertNotIn("tests/fixtures/vuln/main.rs", _grouped(out))
             self.assertEqual(out["excluded"]["fixture_dirs"], ["tests/fixtures"])
             self.assertIn("fixture exclusion", err)
-            out2, _ = self._run_scan(d, "--security", "redteam")
-            self.assertIn("tests/fixtures/vuln/main.rs", self._grouped(out2))
+            out2, _ = _run_scan_with_err(d, "--security", "redteam")
+            self.assertIn("tests/fixtures/vuln/main.rs", _grouped(out2))
 
     def test_nested_git_paths_never_reviewable(self):
         # A gitlink / nested-repo .git entry is never a reviewable file (#500
@@ -540,8 +532,8 @@ class TestGitAwareDiscovery(unittest.TestCase):
     def test_non_git_target_falls_back_to_walk(self):
         with tempfile.TemporaryDirectory() as d:
             self._touch(d, "src/app.py")
-            out, _ = self._run_scan(d)
-            self.assertIn("src/app.py", self._grouped(out))
+            out, _ = _run_scan_with_err(d)
+            self.assertIn("src/app.py", _grouped(out))
             self.assertEqual(out["discovery"]["method"], "walk")
 
 
@@ -622,15 +614,10 @@ class TestCatalogMatchGroups(unittest.TestCase):
         with open(os.path.join(d, ".panopticon", "groups.yml"), "w", encoding="utf-8") as fh:
             fh.write(self.CATALOG)
 
-    def _run_scan(self, d):
-        rc, data, err = _run_scan_helper(d)
-        self.assertEqual(rc, 0)
-        return data, err
-
     def test_files_assigned_to_stable_named_groups(self):
         with tempfile.TemporaryDirectory() as d:
             self._setup(d)
-            out, err = self._run_scan(d)
+            out, err = _run_scan_with_err(d)
             by_name = {g["name"]: g["files"] for g in out["groups"]}
             self.assertEqual(by_name["pipeline"], ["skill/scripts/run.py"])
             self.assertEqual(by_name["adapters"], ["skill/scripts/tools/pip.py"])
@@ -648,7 +635,7 @@ class TestCatalogMatchGroups(unittest.TestCase):
         # groups must land in the FIRST (catalog order), exactly once.
         with tempfile.TemporaryDirectory() as d:
             self._setup(d)
-            out, _ = self._run_scan(d)
+            out, _ = _run_scan_with_err(d)
             all_files = [f for g in out["groups"] for f in g["files"]]
             self.assertEqual(len(all_files), len(set(all_files)))
 
@@ -661,7 +648,7 @@ class TestCatalogMatchGroups(unittest.TestCase):
             os.makedirs(os.path.join(d, ".panopticon"))
             with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
                 fh.write("groups:\n  pkg:\n    match: ['pkg/**']\n")
-            out, _ = self._run_scan(d)
+            out, _ = _run_scan_with_err(d)
             names = [g["name"] for g in out["groups"]]
             self.assertEqual(names, ["pkg_1", "pkg_2"])
             self.assertEqual(sum(len(g["files"]) for g in out["groups"]), 20)
@@ -674,7 +661,7 @@ class TestCatalogMatchGroups(unittest.TestCase):
             os.makedirs(os.path.join(d, ".panopticon"))
             with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
                 fh.write("groups:\n  Products:\n    patterns: ['**/product*']\n")
-            out, _ = self._run_scan(d)
+            out, _ = _run_scan_with_err(d)
             self.assertTrue(all(g["name"].startswith("._") for g in out["groups"]))
             self.assertNotIn("ungrouped_files", out)
 
@@ -693,7 +680,7 @@ class TestCatalogMatchGroups(unittest.TestCase):
             _touch(d, "vendor/dep.py")
             with open(os.path.join(d, ".panopticon", "groups.yml"), "w", encoding="utf-8") as fh:
                 fh.write(self.CATALOG + "exclude_paths: ['docs/secret/**', 'vendor/**']\n")
-            out, _err = self._run_scan(d)
+            out, _err = _run_scan_with_err(d)
             all_files = [f for g in out["groups"] for f in g["files"]]
             self.assertNotIn("docs/secret/leak.md", all_files)
             self.assertNotIn("vendor/dep.py", all_files)
@@ -707,7 +694,7 @@ class TestCatalogMatchGroups(unittest.TestCase):
         # the previously-covered "orphan" leftover behavior is untouched.
         with tempfile.TemporaryDirectory() as d:
             self._setup(d)
-            out, _err = self._run_scan(d)
+            out, _err = _run_scan_with_err(d)
             self.assertNotIn("exclude_paths", out)
             self.assertNotIn("excluded_count", out)
             self.assertEqual(out["ungrouped_files"], ["orphan/loner.py"])
@@ -1026,6 +1013,47 @@ class TestGroupsFormatReconciliation(unittest.TestCase):
         self.assertIn("src/auth/login.py", assigned["Auth"])
         self.assertIn("tests/auth/test_login.py", assigned["Auth"])   # was a leftover before
         self.assertEqual(leftovers, ["misc/x.py"])
+
+
+class TestAssignByCatalog(unittest.TestCase):
+    """Direct coverage for assign_by_catalog's gitignore-style semantics."""
+
+    def test_negation_and_last_match_wins_inside_group(self):
+        # A broad claim followed by a negation should exclude the negated path,
+        # and a later re-claim should override the negation.
+        catalog = {
+            "Scripts": {
+                "match": [
+                    "skill/scripts/**",
+                    "!skill/scripts/tools/**",
+                    "skill/scripts/tools/pip.py",
+                ]
+            }
+        }
+        assigned, leftovers = orch.assign_by_catalog(
+            ["skill/scripts/run.py", "skill/scripts/tools/pip.py",
+             "skill/scripts/tools/other.py"], catalog)
+        self.assertEqual(assigned, {"Scripts": [
+            "skill/scripts/run.py",
+            "skill/scripts/tools/pip.py",
+        ]})
+        self.assertEqual(leftovers, ["skill/scripts/tools/other.py"])
+
+    def test_first_matching_group_wins_across_groups(self):
+        catalog = {
+            "First": {"match": ["src/**"]},
+            "Second": {"match": ["src/app.py"]},
+        }
+        assigned, leftovers = orch.assign_by_catalog(["src/app.py"], catalog)
+        self.assertEqual(assigned, {"First": ["src/app.py"]})
+        self.assertEqual(leftovers, [])
+
+    def test_tests_patterns_are_evaluated_with_match_patterns(self):
+        catalog = {"Core": {"match": ["src/core/**"], "tests": ["!src/core/old/**"]}}
+        assigned, leftovers = orch.assign_by_catalog(
+            ["src/core/new.py", "src/core/old/legacy.py"], catalog)
+        self.assertEqual(assigned, {"Core": ["src/core/new.py"]})
+        self.assertEqual(leftovers, ["src/core/old/legacy.py"])
 
 
 def _repo_with_matrix(tmp_path):
