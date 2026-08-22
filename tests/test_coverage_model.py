@@ -14,6 +14,13 @@ def test_scout_widens_the_middle():
     eff, _ = cov.effective_panels({"SEC"}, {"ACC"}, set(), global_floor=set())
     if not (eff == {"SEC", "ACC"}): raise AssertionError()
 
+def test_scout_added_widens_coverage_without_objective_signal():
+    # #1193: a scout-requested domain still reaches effective_panels even when
+    # applicable_global_floor drops it for lack of objective file signals.
+    eff, disc = cov.effective_panels(set(), {"TST"}, set(), global_floor=set())
+    if not (eff == {"TST"}): raise AssertionError()
+    if not (disc["scout_added"] == ["TST"]): raise AssertionError()
+
 def test_exclude_forces_off_and_is_disclosed():
     eff, disc = cov.effective_panels({"SEC"}, {"OPS"}, {"OPS"}, global_floor=set())
     if not (eff == {"SEC"}): raise AssertionError()                 # OPS excluded despite scout adding it
@@ -100,20 +107,21 @@ def test_applicable_floor_keeps_dat_on_db_file():
                                       {"surfaces": []})
     if "DAT" not in got: raise AssertionError()
 
-def test_applicable_floor_keeps_dat_on_scout_db_surface():
-    # no db-named file, but the scout saw a persistence surface
-    got = cov.applicable_global_floor(["src/app/api/x/route.ts"],
-                                      {"surfaces": ["db_sql"]})
-    if "DAT" not in got: raise AssertionError()
-
 def test_applicable_floor_keeps_tst_on_test_file():
     got = cov.applicable_global_floor(["src/x.ts", "src/x.test.ts"],
                                       {"surfaces": []})
     if "TST" not in got: raise AssertionError()
 
-def test_applicable_floor_keeps_tst_on_scout_has_tests():
+def test_applicable_floor_scout_db_surface_does_not_keep_dat():
+    # #1193: scout-asserted surfaces are not trusted to gate the global floor.
+    got = cov.applicable_global_floor(["src/app/api/x/route.ts"],
+                                      {"surfaces": ["db_sql"]})
+    if not ("DAT" not in got): raise AssertionError()
+
+def test_applicable_floor_scout_has_tests_does_not_keep_tst():
+    # #1193: scout-asserted has_tests is not trusted to gate the global floor.
     got = cov.applicable_global_floor(["src/x.ts"], {"has_tests": True})
-    if "TST" not in got: raise AssertionError()
+    if not ("TST" not in got): raise AssertionError()
 
 def test_applicable_floor_no_tests_drops_tst():
     # the dominant calibration win: a testless group spends no TST cell
@@ -126,10 +134,11 @@ def test_applicable_floor_keeps_arc_on_multi_directory():
         ["src/app/api/x/route.ts", "src/lib/session.ts"], {"surfaces": []})
     if "ARC" not in got: raise AssertionError()
 
-def test_applicable_floor_keeps_arc_on_scout_arch_surface():
+def test_applicable_floor_scout_arch_surface_does_not_keep_arc():
+    # #1193: scout-asserted surfaces are not trusted to gate the global floor.
     got = cov.applicable_global_floor(["README.md", "package.json"],
                                       {"surfaces": ["architecture"]})
-    if "ARC" not in got: raise AssertionError()
+    if not ("ARC" not in got): raise AssertionError()
 
 def test_applicable_floor_single_dir_no_arch_drops_arc():
     got = cov.applicable_global_floor(["src/app/layout.tsx", "src/app/page.tsx"],

@@ -432,17 +432,17 @@ def load_verdicts_detailed(verdicts_dir):
 
     Returns (verdicts, unloadable). ``verdicts`` is keyed by queue_id (filename
     stem); ``unloadable`` is a list of {"file": name, "reason": str} for every
-    ``*.json`` that failed to parse or lacked a valid verdict key.
+    ``*.json`` that failed to parse, was malformed, or lacked a valid verdict key
+    or finding_id echo.
 
-    Tolerant by design: unreadable/malformed files and files without a valid
-    verdict key are skipped (never raises). Advisors routinely wrap their JSON
-    output in a markdown fence (see agents/advisor.md's own output example) or
-    add surrounding prose, so parsing goes through load_json_tolerant rather
-    than a strict json.load. But load_json_tolerant cannot repair arbitrary
-    unescaped quotes inside a string value, so a malformed advisor return would
-    previously vanish with only a stderr note -- hiding a lost verdict from
-    meta.coverage. Callers surface ``unloadable`` in the report so a corrupt
-    verdict is visible, not silently dropped (#938).
+    Single-verdict files are parsed strictly with ``json.load`` (#1193): a
+    markdown fence or surrounding prose makes the file unloadable, so an LLM
+    that failed to follow the output contract cannot bypass the echo-check by
+    accident. The echo-check itself (match_verdict) already requires a
+    ``finding_id``; load_verdicts_detailed now enforces the same requirement at
+    load time so a verdict without a finding_id can never be treated as "done".
+    Callers surface ``unloadable`` in the report so a corrupt verdict is visible,
+    not silently dropped (#938).
 
     A verdict BUNDLE ({"verdicts": [...], "_panopticon": {...}}, the P5 per-cell
     flow) is a different file shape, not a legacy single-verdict file, and is
@@ -455,7 +455,7 @@ def load_verdicts_detailed(verdicts_dir):
     for name, path in _iter_verdict_files(verdicts_dir):
         try:
             with open(path, encoding="utf-8") as fh:
-                data = load_json_tolerant(fh.read())
+                data = json.load(fh)
         except (OSError, ValueError) as e:
             print("evidence: skipping malformed verdict %s: %s" % (name, e),
                   file=sys.stderr)
@@ -471,6 +471,11 @@ def load_verdicts_detailed(verdicts_dir):
             print("evidence: skipping verdict %s: missing/invalid verdict key" % name,
                   file=sys.stderr)
             unloadable.append({"file": name, "reason": "missing/invalid verdict key"})
+            continue
+        if not data.get("finding_id"):
+            print("evidence: skipping verdict %s: missing/empty finding_id echo" % name,
+                  file=sys.stderr)
+            unloadable.append({"file": name, "reason": "missing/empty finding_id echo"})
             continue
         out[name[:-len(".json")]] = data
     return out, unloadable

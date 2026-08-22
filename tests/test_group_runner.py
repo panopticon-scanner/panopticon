@@ -123,17 +123,19 @@ class TestVerifyResume(unittest.TestCase):
     def test_verdict_is_done_matches_load_verdicts(self):
         with tempfile.TemporaryDirectory() as d:
             vdir = self._vd(d, "q1", '{"finding_id":"F","verdict":"CONFIRMED"}')
-            self._vd(d, "q2", '```json\n{"verdict":"REJECTED"}\n```')  # fenced, still valid
+            self._vd(d, "q2", '```json\n{"verdict":"REJECTED"}\n```')  # fenced -> strict parse rejects
             self._vd(d, "q3", '{"finding_id":"F"}')                    # no verdict -> not done
             self._vd(d, "q4", '{ truncated')                           # unparseable -> not done
+            self._vd(d, "q5", '{"verdict":"CONFIRMED"}')               # missing finding_id -> not done
             self.assertTrue(gr.verdict_is_done("q1", vdir))
-            self.assertTrue(gr.verdict_is_done("q2", vdir))
+            self.assertFalse(gr.verdict_is_done("q2", vdir))
             self.assertFalse(gr.verdict_is_done("q3", vdir))
             self.assertFalse(gr.verdict_is_done("q4", vdir))
+            self.assertFalse(gr.verdict_is_done("q5", vdir))
             self.assertFalse(gr.verdict_is_done("nope", vdir))
             self.assertFalse(gr.verdict_is_done("q1", None))
             # consistency: done-set == load_verdicts keys
-            self.assertEqual({"q1", "q2"}, set(ev.load_verdicts(vdir)))
+            self.assertEqual({"q1"}, set(ev.load_verdicts(vdir)))
 
     def test_pending_verdicts_is_the_resume_set(self):
         with tempfile.TemporaryDirectory() as d:
@@ -165,7 +167,7 @@ class TestVerifyResume(unittest.TestCase):
             with open(done_out, "w") as fh:
                 fh.write('{"findings":[]}')
             plan = [{"out_file": done_out}, {"out_file": os.path.join(d, "missing.json")}]
-            vdir = self._vd(d, "q1", '{"verdict":"CONFIRMED"}')
+            vdir = self._vd(d, "q1", '{"finding_id":"F","verdict":"CONFIRMED"}')
             queue = {"entries": [{"queue_id": "q1"}, {"queue_id": "q2"}]}
             st = gr.resume_stats(plan, queue, vdir)
             self.assertEqual(st["fan_out"], {"total": 2, "done": 1, "pending": 1})
