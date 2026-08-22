@@ -367,6 +367,29 @@ class TestScsOnlyFilter(unittest.TestCase):
         self.assertEqual(found[0]["tool_evidence"]["rule_id"], "SCS0002")
 
 
+class TestRoslynSecGuardIsApplicable(unittest.TestCase):
+    def test_applicable_when_csproj_present(self):
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, "App.csproj"), "w").close()
+            self.assertTrue(rs.RoslynSecGuardAdapter().is_applicable(d))
+
+    def test_applicable_when_sln_present(self):
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, "App.sln"), "w").close()
+            self.assertTrue(rs.RoslynSecGuardAdapter().is_applicable(d))
+
+    def test_not_applicable_without_dotnet_project_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, "Program.py"), "w").close()
+            self.assertFalse(rs.RoslynSecGuardAdapter().is_applicable(d))
+
+    def test_not_applicable_when_target_is_not_a_directory(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "App.csproj")
+            open(path, "w").close()
+            self.assertFalse(rs.RoslynSecGuardAdapter().is_applicable(path))
+
+
 if __name__ == "__main__":
     unittest.main()
 

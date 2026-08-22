@@ -3,6 +3,8 @@ import io
 import json
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -371,3 +373,68 @@ class TestHookCmdSelfLocating(unittest.TestCase):
             with mock.patch("os.getcwd", return_value=sub_dir):
                 resolved = wg._resolve_allowlist_path()
                 self.assertEqual(os.path.abspath(resolved), os.path.abspath(allow_path))
+
+
+class TestWriteGuardHookLive(unittest.TestCase):
+    """Subprocess-based integration tests for the write-guard hook.
+
+    These exercise the same paths as ``TestMain`` but through the actual
+    ``python skill/scripts/write_guard_hook.py`` invocation used in production,
+    verifying that stdin/stdout plumbing and return-code behavior work end-to-end.
+    """
+
+    def _run_hook(self, payload, allowlist_paths=None):
+        """Run the hook script as a subprocess in a fresh temp directory.
+
+        ``allowlist_paths`` is a list of paths (relative to the temp dir) to
+        write into ``.panopticon/write-allowlist.json``.
+        """
+        script = os.path.abspath(wg.__file__)
+        with tempfile.TemporaryDirectory() as d:
+            # Resolve symlinks in the temp dir so the paths we write into the
+            # allowlist match the realpath() computation the hook performs.
+            real_d = os.path.realpath(d)
+            if allowlist_paths is not None:
+                os.makedirs(os.path.join(real_d, ".panopticon"), exist_ok=True)
+                allowlist = [os.path.realpath(os.path.join(real_d, p)) for p in allowlist_paths]
+                with open(os.path.join(real_d, ".panopticon", "write-allowlist.json"), "w", encoding="utf-8") as fh:
+                    json.dump(allowlist, fh)
+            return subprocess.run(
+                [sys.executable, script],
+                input=payload,
+                capture_output=True,
+                text=True,
+                cwd=real_d,
+            )
+
+    def test_allowed_write_exits_cleanly_with_empty_stdout(self):
+        payload = json.dumps(
+            {"tool_name": "Write", "tool_input": {"file_path": ".panopticon/findings-g1-x.json"}}
+        )
+        proc = self._run_hook(payload, allowlist_paths=[".panopticon/findings-g1-x.json"])
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(proc.stdout, "")
+        self.assertEqual(proc.stderr, "")
+
+    def test_denied_write_returns_deny_json(self):
+        payload = json.dumps(
+            {"tool_name": "Write", "tool_input": {"file_path": "skill/scripts/synthesize.py"}}
+        )
+        proc = self._run_hook(payload, allowlist_paths=[".panopticon/findings-g1-x.json"])
+        self.assertEqual(proc.returncode, 0)
+        data = json.loads(proc.stdout)
+        self.assertEqual(data["hookSpecificOutput"]["hookEventName"], "PreToolUse")
+        self.assertEqual(data["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertEqual(proc.stderr, "")
+
+    def test_malformed_payload_is_tolerated(self):
+        proc = self._run_hook("{ not json", allowlist_paths=[".panopticon/findings-g1-x.json"])
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(proc.stdout, "")
+        self.assertEqual(proc.stderr, "")
+
+    def test_non_dict_payload_is_tolerated(self):
+        proc = self._run_hook("[1, 2, 3]", allowlist_paths=[".panopticon/findings-g1-x.json"])
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(proc.stdout, "")
+        self.assertEqual(proc.stderr, "")

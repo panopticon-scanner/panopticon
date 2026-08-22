@@ -2,6 +2,8 @@ import json
 import os
 import unittest
 
+import jsonschema
+
 import scripts.x0x_report as x0x
 
 
@@ -85,10 +87,6 @@ class TestX0XReport(unittest.TestCase):
             x0x.build_report([], {}, run_id=None)["generated_by"]["run_id"], "unknown")
 
     def test_conforms_to_schema(self):
-        try:
-            import jsonschema
-        except ImportError:
-            self.skipTest("jsonschema not installed")
         schema_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             "skill", "reference", "x0x-report-schema.json")

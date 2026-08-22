@@ -1,3 +1,11 @@
+"""Tests for scripts.synthesize.
+
+TECH DEBT (#1223): this file is a ~5900-line monolith that covers finding
+synthesis, plan generation, file integrity checks, evidence linking, and many
+helper functions. Splitting it would improve maintainability, but the tests are
+stable and the file is intentionally left intact per project policy — only
+document the monolith as accepted tech debt here.
+"""
 import contextlib
 import io
 import os
@@ -249,7 +257,6 @@ class TestLoad(unittest.TestCase):
         self.assertEqual(syn.load_json_tolerant(body), {"findings": [{"severity": "LOW"}]})
 
     def test_load_findings_skips_invalid_json_and_continues(self):
-        import contextlib, io
 
         with tempfile.TemporaryDirectory() as d:
             bad = os.path.join(d, "findings-g-code.json")
@@ -276,7 +283,6 @@ class TestLoad(unittest.TestCase):
             self.assertEqual(len(out), 1)  # good file still processed
 
     def test_load_findings_skips_non_list_findings_key(self):
-        import contextlib, io
 
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "findings-g-code.json")
@@ -299,7 +305,6 @@ class TestLoad(unittest.TestCase):
         # `evidence: {"status": "rejected"}` (factor 0.0) would let a finding
         # duck the matrix's F_p/F_b verification gate entirely. All five are
         # stripped in load_findings, before any derivation runs.
-        import contextlib, io
 
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "findings-g-code.json")
@@ -852,7 +857,6 @@ class TestReport(unittest.TestCase):
                     fh,
                 )
             out = os.path.join(d, "report.json")
-            import io, contextlib
 
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
@@ -895,7 +899,6 @@ class TestReport(unittest.TestCase):
                     fh,
                 )
             out = os.path.join(d, "report.json")
-            import io, contextlib
 
             buf = io.StringIO()
             with _chdir(d), contextlib.redirect_stdout(buf):
@@ -936,7 +939,6 @@ class TestReport(unittest.TestCase):
                     fh,
                 )
             out = os.path.join(d, "report.json")
-            import io, contextlib
 
             buf = io.StringIO()
             with _chdir(d), contextlib.redirect_stdout(buf):
@@ -1010,7 +1012,6 @@ class TestReport(unittest.TestCase):
             with open(p, "w") as fh:
                 json.dump({"findings": findings}, fh)
             out = os.path.join(d, "report.json")
-            import io, contextlib
 
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
@@ -1085,7 +1086,6 @@ class TestReport(unittest.TestCase):
         # #693: --tools-exclude must reach ingest_dir from the CLI. Plus the
         # standard-mode default fixture prune (tool-path parity with #434) and
         # its --include-fixtures (redteam) escape hatch, all wired through main().
-        import io, contextlib
 
         with tempfile.TemporaryDirectory() as d:
             tdir = self._tools_dir_with_sarif(d)
@@ -1144,7 +1144,6 @@ class TestReport(unittest.TestCase):
                     fh,
                 )
             out = os.path.join(d, "report.json")
-            import io, contextlib
 
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
@@ -1177,7 +1176,6 @@ class TestReport(unittest.TestCase):
         with open(hunks, "w") as fh:
             json.dump({"base": "main", "base_source": "pr-base", "hunks": {"a.py": [[1, 5]]}}, fh)
         out = os.path.join(d, "report.json")
-        import io, contextlib
 
         errbuf = io.StringIO()
         with (
@@ -1281,9 +1279,6 @@ class TestCliAndSummary(unittest.TestCase):
                     fh,
                 )
             out = os.path.join(d, "report.json")
-            import io
-            import contextlib
-
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
                 rc = syn.main(
@@ -1323,7 +1318,10 @@ class TestCliAndSummary(unittest.TestCase):
             with open(paths[0]) as _fh:
                 main_doc = json.load(_fh)
             self.assertIn("parts", main_doc["meta"])
-            part_findings_count = sum(len(json.load(open(p))["findings"]) for p in paths[1:])
+            part_findings_count = 0
+            for p in paths[1:]:
+                with open(p) as fh:
+                    part_findings_count += len(json.load(fh)["findings"])
             self.assertEqual(len(main_doc["findings"]) + part_findings_count, n_before)
             self.assertEqual(len(report["findings"]), n_before)  # caller not mutated
 
@@ -1372,7 +1370,6 @@ class TestCliAndSummary(unittest.TestCase):
                     fh,
                 )
             out = os.path.join(d, "report.json")
-            import io, contextlib
 
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
@@ -1431,7 +1428,6 @@ class TestReconciliation(unittest.TestCase):
                     fh,
                 )
             out = os.path.join(d, "report.json")
-            import io, contextlib
 
             buf = io.StringIO()
             # Isolate cwd: main() discovers .panopticon/scout-*.json relative
@@ -1678,7 +1674,6 @@ class TestPipelineCitations(unittest.TestCase):
                     fh,
                 )
             out = os.path.join(d, "report.json")
-            import io, contextlib
 
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
@@ -1886,7 +1881,6 @@ class TestToolsDirIntegration(unittest.TestCase):
                     fh,
                 )
             out = os.path.join(d, "report.json")
-            import io, contextlib
 
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
@@ -5049,7 +5043,6 @@ class TestScoutToolDisclosure(unittest.TestCase):
     (scout_profiles_seen > 0 with scout_requested [])."""
 
     def test_scout_declining_tools_is_disclosed(self):
-        import io, contextlib
 
         with tempfile.TemporaryDirectory() as d, _chdir(d):
             os.makedirs(".panopticon")
@@ -5071,7 +5064,6 @@ class TestScoutToolDisclosure(unittest.TestCase):
             self.assertEqual(cov["scout_requested"], [])
 
     def test_no_scout_profiles_no_disclosure(self):
-        import io, contextlib
 
         with tempfile.TemporaryDirectory() as d, _chdir(d):
             fp = os.path.join(d, "findings-g1-code.json")
@@ -5194,7 +5186,6 @@ class TestDocSeverityPolicy(unittest.TestCase):
         self.assertEqual(res["downgraded"], 0)
 
     def test_main_wires_policy_and_discloses(self):
-        import io, contextlib
 
         with tempfile.TemporaryDirectory() as d, _chdir(d):
             fp = os.path.join(d, "findings-g1-code.json")
