@@ -722,17 +722,20 @@ def _kimi_subagent_type(entry, reg_dir=None, verify=False):
 
     `enforced` is a snapshot taken by build_plan when the plan was written, and
     a plan is a persisted artifact re-read by a later invocation — registration
-    can be removed in between. With `verify=True` the flag is re-checked
-    against `reg_dir` at emit time, because a stale `enforced: true` would
-    claim host-enforced tool restrictions that no longer exist.
+    can be removed in between. With `verify=True` a stale `enforced: true`
+    whose shell is no longer registered fails closed rather than silently
+    downgrading to an unenforced profile, because the snapshot would claim
+    host-enforced tool restrictions that no longer exist.
     """
     if entry.get("enforced"):
         if verify and not _is_registered(reg_dir, ROLE_FILES.get(entry.get("role"), "")):
-            print("dispatch: %s no longer registered in %s; "
-                  "downgrading to an unenforced profile"
-                  % (entry.get("agent"), reg_dir), file=sys.stderr)
-        else:
-            return entry.get("agent")
+            raise ValueError(
+                "dispatch: enforced reviewer role %r (agent %r) has no "
+                "registered shell in %r. The plan claims enforced:true but the "
+                "enforcement shell is missing. Register enforcement shells first: "
+                "python3 skill/scripts/dispatch.py --emit-host-agents kimi"
+                % (entry.get("role"), entry.get("agent"), reg_dir))
+        return entry.get("agent")
     return _KIMI_UNENFORCED_PROFILE.get(entry.get("role"), "coder")
 
 
@@ -832,8 +835,9 @@ def _gate_unenforced(plan, allow, reg_dir=None):
     carries `enforced: true`, but registration can be removed before the plan
     is turned into a swarm manifest in a later invocation. Such an entry is
     folded into `unenforced` too, so the gate refuses / warns / acks on the
-    ACTUAL emit-time posture rather than a stale snapshot -- matching the live
-    downgrade emit_kimi_swarm(verify_registration=True) performs anyway.
+    ACTUAL emit-time posture rather than a stale snapshot.  The downstream
+    emit_kimi_swarm(verify_registration=True) call fails closed rather than
+    silently downgrading.
 
     Shared by the plan-emit path and --emit-kimi-swarm (#275/I3) so the two
     cannot drift apart the way disclosure and enforcement did before this.
