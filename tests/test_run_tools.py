@@ -162,7 +162,8 @@ class TestRunTools(unittest.TestCase):
             ad = EslintSecurityAdapter()
             self.assertFalse(ad.is_applicable(d))
             os.makedirs(os.path.join(d, "tests", "fixtures"))
-            open(os.path.join(d, "tests", "fixtures", "app.js"), "w").write("//")
+            with open(os.path.join(d, "tests", "fixtures", "app.js"), "w") as fh:
+                fh.write("//")
             self.assertTrue(ad.is_applicable(d))
             files = ad.applicable_files(d)
             self.assertEqual(len(files), 1)
