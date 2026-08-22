@@ -675,6 +675,36 @@ class TestVerifyCreatesDir(unittest.TestCase):
         self.assertTrue(driver.verify_done(self.root, self.manifest))
 
 
+class TestCommittedGroupsFailLoud(unittest.TestCase):
+    """#1091/#1092: on a RESUME (groups.json present -> discovery done, so its
+    own load_committed_groups gate never re-runs) a missing or corrupt groups.yml
+    must fail loud in coverage/review, not silently drop the committed floor/tests."""
+
+    def _root(self, groups_yml=None):
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        os.makedirs(driver._pano(d))
+        driver._write_json(driver._pano(d, "groups.json"),
+                           {"groups": [{"name": "app", "files": ["a.py"]}]})
+        if groups_yml is not None:
+            with open(driver._pano(d, "groups.yml"), "w") as fh:
+                fh.write(groups_yml)
+        return d
+
+    def test_coverage_raises_on_missing_groups_yml(self):
+        d = self._root(groups_yml=None)   # groups.yml gone after discovery
+        m = {"run_id": "R", "host": "claude", "security_mode": "standard"}
+        with self.assertRaises(driver.DriverError):
+            driver.coverage_execute(d, m)
+
+    def test_review_raises_on_corrupt_groups_yml(self):
+        d = self._root(groups_yml="groups: [broken\n")   # invalid YAML shape
+        m = {"run_id": "R", "host": "claude", "security_mode": "standard"}
+        with mock.patch("scripts.driver.ocrdb.load_bundle", return_value={"domains": {}}):
+            with self.assertRaises(driver.DriverError):
+                driver.review_execute(d, m)
+
+
 class TestCellFanOut(unittest.TestCase):
     def setUp(self):
         self._t = tempfile.TemporaryDirectory()
@@ -684,6 +714,8 @@ class TestCellFanOut(unittest.TestCase):
         self.manifest = {"run_id": "R", "security_mode": "standard", "host": "claude"}
         driver._write_json(driver._pano(self.root, "groups.json"),
                            {"groups": [{"name": "Auth", "files": ["a.py"]}]})
+        with open(driver._pano(self.root, "groups.yml"), "w") as fh:
+            fh.write("groups:\n  Auth:\n    match: ['a.py']\n")   # #1092 healthy resume
         driver._write_json(driver._pano(self.root, "coverage-Auth.json"),
                            {"group": "Auth", "effective": ["SEC", "DAT"], "run_id": "R"})
 
@@ -1424,6 +1456,8 @@ class TestVerifyMatrixEndToEnd(unittest.TestCase):
         os.makedirs(os.path.join(d, ".panopticon"))
         driver._write_json(driver._pano(d, "groups.json"),
                            {"groups": [{"name": "app", "files": ["src/app.py"]}]})
+        with open(driver._pano(d, "groups.yml"), "w") as fh:
+            fh.write("groups:\n  app:\n    match: ['src/**']\n")   # #1092 healthy resume
         driver._write_json(driver._pano(d, "coverage-app.json"),
                            {"group": "app", "floor": floor, "effective": floor,
                             "run_id": self.RUN_ID})
@@ -1542,6 +1576,8 @@ class TestDriverRunLoopEndToEnd(unittest.TestCase):
         os.makedirs(os.path.join(d, ".panopticon"))
         driver._write_json(driver._pano(d, "groups.json"),
                            {"groups": [{"name": "app", "files": ["src/app.py"]}]})
+        with open(driver._pano(d, "groups.yml"), "w") as fh:
+            fh.write("groups:\n  app:\n    match: ['src/**']\n")   # #1092 healthy resume
         driver._write_json(driver._pano(d, "coverage-app.json"),
                            {"group": "app", "floor": floor, "effective": floor,
                             "run_id": self.RUN_ID})
@@ -1625,6 +1661,8 @@ class TestDriverRunLoopEndToEnd(unittest.TestCase):
         os.makedirs(os.path.join(d, ".panopticon"))
         driver._write_json(driver._pano(d, "groups.json"),
                            {"groups": [{"name": "app", "files": ["src/app.py"]}]})
+        with open(driver._pano(d, "groups.yml"), "w") as fh:
+            fh.write("groups:\n  app:\n    match: ['src/**']\n")   # #1091 healthy resume
         manifest = self._manifest()
 
         result = driver.coverage_execute(d, manifest)
@@ -2371,6 +2409,8 @@ class TestDriverIntegrityWiring(unittest.TestCase):
         os.makedirs(os.path.join(d, ".panopticon"))
         driver._write_json(driver._pano(d, "groups.json"),
                            {"groups": [{"name": "app", "files": ["src/app.py"]}]})
+        with open(driver._pano(d, "groups.yml"), "w") as fh:
+            fh.write("groups:\n  app:\n    match: ['src/**']\n")   # #1092 healthy resume
         driver._write_json(driver._pano(d, "coverage-app.json"),
                            {"group": "app", "floor": effective,
                             "effective": effective, "run_id": self.RUN_ID})

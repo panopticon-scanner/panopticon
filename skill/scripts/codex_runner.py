@@ -163,11 +163,22 @@ def validate_envelope(data, entry, root):
     return data
 
 
+_jsonschema_missing_warned = False
+
+
 def validate_schema(data, schema_path):
     """Validate against the bundled schema when jsonschema is installed."""
     try:
         import jsonschema
     except ImportError:
+        # #1088: never SILENTLY skip schema validation of untrusted Codex output.
+        # Warn once so the operator knows the check is disengaged for this run.
+        global _jsonschema_missing_warned
+        if not _jsonschema_missing_warned:
+            _jsonschema_missing_warned = True
+            print("codex_runner: jsonschema not installed; skipping findings-schema "
+                  "validation of Codex output (install jsonschema to enforce it)",
+                  file=sys.stderr, flush=True)
         return
     with open(schema_path, encoding="utf-8") as fh:
         schema = json.load(fh)
