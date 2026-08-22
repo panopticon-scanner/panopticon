@@ -2,72 +2,134 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "PanopticonFindingsEnvelope",
   "type": "object",
-  "required": ["findings"],
+  "required": ["findings", "_panopticon"],
   "additionalProperties": false,
   "properties": {
     "findings": {
       "type": "array",
       "items": {
-        "type": "object",
-        "required": [
-          "id",
-          "severity",
-          "panel",
-          "category",
-          "location",
-          "title",
-          "description",
-          "impact",
-          "remediation",
-          "references",
-          "source_role",
-          "depth",
-          "provenance",
-          "citations"
-        ],
-        "properties": {
-          "id": {"type": "string", "pattern": "^[A-Z]{2,8}-[0-9]{3,}$"},
-          "severity": {
-            "type": "string",
-            "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
-          },
-          "panel": {
-            "type": "string",
-            "enum": ["code", "test", "security", "architecture", "database", "redteam"]
-          },
-          "lens": {"type": "string"},
-          "category": {"type": "string"},
-          "location": {
-            "type": "object",
-            "required": ["file", "line_start"],
-            "properties": {
-              "file": {"type": "string"},
-              "line_start": {"type": "integer", "minimum": 1},
-              "line_end": {"type": "integer", "minimum": 1},
-              "function": {"type": ["string", "null"]}
-            }
-          },
-          "title": {"type": "string"},
-          "description": {"type": "string"},
-          "impact": {"type": "string"},
-          "remediation": {"type": "string"},
-          "references": {"type": "array", "items": {"type": "string"}},
-          "source_role": {"type": "string", "enum": ["panel_review", "lens_sweep", "domain_panel", "domain_advisor"]},
-          "depth": {"type": "string", "enum": ["shallow", "standard", "deep"]},
-          "provenance": {"type": "object"},
-          "citations": {"type": "object"},
-          "cvss": {"type": "object"},
-          "exploit_scenario": {"type": "string"}
-        }
+        "oneOf": [
+          {"$ref": "#/definitions/legacyPanelFinding"},
+          {"$ref": "#/definitions/domainRoleFinding"}
+        ]
       }
     },
     "_panopticon": {
       "type": "object",
-      "description": "Cell-identity block (run_id/domain/group/stage) written by the matrix reviewer; REQUIRED by the driver, so the envelope must permit it under additionalProperties:false (#5.0-05)."
+      "description": "Cell-identity block (run_id/domain/group/stage) written by the matrix reviewer; REQUIRED by the driver, so the envelope must permit it under additionalProperties:false (#5.0-05).",
+      "required": ["run_id", "role"],
+      "properties": {
+        "run_id": {"type": "string"},
+        "role": {"type": "string"},
+        "domain": {"type": "string"},
+        "group": {"type": "string"}
+      }
     },
     "schema_version": {
       "type": "integer",
       "description": "Format/schema version of the findings envelope (P1 contract)."
+    }
+  },
+  "definitions": {
+    "legacyPanelFinding": {
+      "type": "object",
+      "required": [
+        "id",
+        "severity",
+        "panel",
+        "category",
+        "location",
+        "title",
+        "description",
+        "impact",
+        "remediation",
+        "references",
+        "source_role",
+        "depth",
+        "provenance",
+        "citations"
+      ],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[A-Z]{2,8}-[0-9]{3,}$"},
+        "severity": {
+          "type": "string",
+          "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
+        },
+        "panel": {
+          "type": "string",
+          "enum": ["code", "test", "security", "architecture", "database", "redteam"]
+        },
+        "lens": {"type": "string"},
+        "category": {"type": "string"},
+        "location": {
+          "type": "object",
+          "required": ["file", "line_start"],
+          "properties": {
+            "file": {"type": "string"},
+            "line_start": {"type": "integer", "minimum": 1},
+            "line_end": {"type": "integer", "minimum": 1},
+            "function": {"type": ["string", "null"]}
+          }
+        },
+        "title": {"type": "string"},
+        "description": {"type": "string"},
+        "impact": {"type": "string"},
+        "remediation": {"type": "string"},
+        "references": {"type": "array", "items": {"type": "string"}},
+        "source_role": {"type": "string", "enum": ["panel_review", "lens_sweep"]},
+        "depth": {"type": "string", "enum": ["shallow", "standard", "deep"]},
+        "provenance": {"type": "object"},
+        "citations": {"type": "object"},
+        "cvss": {"type": "object"},
+        "exploit_scenario": {"type": "string"}
+      }
+    },
+    "domainRoleFinding": {
+      "type": "object",
+      "required": [
+        "domain",
+        "code",
+        "severity",
+        "title",
+        "description",
+        "location",
+        "source_role"
+      ],
+      "properties": {
+        "domain": {"type": "string"},
+        "code": {"type": "string"},
+        "severity": {
+          "type": "string",
+          "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
+        },
+        "severity_override": {
+          "type": "object",
+          "required": ["from", "to", "reason"],
+          "properties": {
+            "from": {"type": "string"},
+            "to": {"type": "string"},
+            "reason": {"type": "string"}
+          }
+        },
+        "category": {"type": "string"},
+        "location": {
+          "type": "object",
+          "required": ["file", "line_start"],
+          "properties": {
+            "file": {"type": "string"},
+            "line_start": {"type": "integer", "minimum": 1},
+            "line_end": {"type": "integer", "minimum": 1},
+            "function": {"type": ["string", "null"]}
+          }
+        },
+        "title": {"type": "string"},
+        "description": {"type": "string"},
+        "source_role": {"type": "string", "enum": ["domain_panel", "domain_advisor"]},
+        "references": {"type": "array", "items": {"type": "string"}},
+        "citations": {"type": "object"},
+        "cvss": {"type": "object"},
+        "exploit_scenario": {"type": "string"}
+      }
     }
   }
 }
