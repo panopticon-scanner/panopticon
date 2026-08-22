@@ -104,7 +104,10 @@ class TestCodexExecution(unittest.TestCase):
                 self.assertIn(os.path.join(root, "app.py"), kwargs["input"])
                 output = command[command.index("--output-last-message") + 1]
                 with open(output, "w", encoding="utf-8") as fh:
-                    json.dump({"findings": [self._valid_finding()]}, fh)
+                    json.dump({
+                        "findings": [self._valid_finding()],
+                        "_panopticon": {"run_id": "run-123", "role": "panel_review"},
+                    }, fh)
                 return subprocess.CompletedProcess(command, 0, "", "")
 
             written = cr.run_entry(entry, root, runner=fake_runner)
