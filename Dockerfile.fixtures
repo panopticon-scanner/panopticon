@@ -23,15 +23,32 @@ RUN cargo install cargo-audit --version 0.22.2
 
 WORKDIR /opt/panopticon-fixtures
 
-# Clone public fixtures at build time.
-ARG RAILS_GOAT_REF=main
-RUN git clone --depth 1 --branch ${RAILS_GOAT_REF} https://github.com/OWASP/railsgoat.git
+# Clone public fixtures at build time, pinned to immutable commit SHAs. A mutable
+# `--branch` ref (these were `main`) can silently change the vendored vulnerable
+# corpus under us — a supply-chain risk for a fixtures image whose whole purpose is
+# a KNOWN set of planted vulnerabilities (#1252, SEC-E2C). Fetch-by-SHA mirrors the
+# semgrep-rules pin above (see the /opt/semgrep-rules block). To bump a fixture:
+# resolve the new commit (`git ls-remote <url> <ref>`) and update the SHA below.
+ARG RAILS_GOAT_SHA=0222f7da3406ba3ab637bc6d24ae9366b5f0a680
+RUN git init -q railsgoat \
+    && git -C railsgoat remote add origin https://github.com/OWASP/railsgoat.git \
+    && git -C railsgoat fetch -q --depth 1 origin ${RAILS_GOAT_SHA} \
+    && git -C railsgoat checkout -q FETCH_HEAD                          # OWASP/railsgoat @ main 2026-08-23
 
-ARG WEB_GOAT_REF=v2023.8
-RUN git clone --depth 1 --branch ${WEB_GOAT_REF} https://github.com/WebGoat/WebGoat.git
+ARG WEB_GOAT_SHA=5357a65e054976cd7d79b81ef3906ded050ed921
+RUN git init -q WebGoat \
+    && git -C WebGoat remote add origin https://github.com/WebGoat/WebGoat.git \
+    && git -C WebGoat fetch -q --depth 1 origin ${WEB_GOAT_SHA} \
+    && git -C WebGoat checkout -q FETCH_HEAD                            # WebGoat/WebGoat v2023.8
 
-ARG ASP_GOAT_REF=main
-RUN git clone --depth 1 --branch ${ASP_GOAT_REF} https://github.com/Soham7-dev/AspGoat.git
+# AspGoat is only published as a personal fork; SHA-pinning removes the mutable-ref
+# drift risk, but the fork provenance itself is an accepted risk — replace with an
+# upstream/vendored source if one becomes available.
+ARG ASP_GOAT_SHA=db3153f5dae036a9d67e12be22548299855c6b40
+RUN git init -q AspGoat \
+    && git -C AspGoat remote add origin https://github.com/Soham7-dev/AspGoat.git \
+    && git -C AspGoat fetch -q --depth 1 origin ${ASP_GOAT_SHA} \
+    && git -C AspGoat checkout -q FETCH_HEAD                            # Soham7-dev/AspGoat @ main 2026-08-23
 
 # Prepare fixture dependencies when possible; static-analysis tests tolerate missing deps.
 RUN cd /opt/panopticon-fixtures/railsgoat && (bundle install || echo "railsgoat bundle install skipped")
