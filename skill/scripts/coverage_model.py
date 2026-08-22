@@ -11,6 +11,12 @@ import os
 # so without this the flagship review silently skipped COD/DAT/TST/ARC on every
 # group. Still subject to a per-group exclude (a docs-only group may opt out).
 GLOBAL_FLOOR = frozenset({"COD", "DAT", "TST", "ARC"})
+# #1084: domains a committed groups.yml `exclude` can never silence. SEC is
+# non-excludable so a target can't commit `exclude: [SEC]` to exempt its own
+# code from security review. Deliberately NOT added to GLOBAL_FLOOR (that would
+# reintroduce the #5.0-19 surfaceless-group noise) -- SEC still runs only where
+# the floor or scout put it, but once there it cannot be excluded away.
+NON_EXCLUDABLE = frozenset({"SEC"})
 
 
 # #5.0-19: the universal-tier floor is GATED per group on OBSERVABLE surface
@@ -88,7 +94,11 @@ def effective_panels(floor, scout_added, exclude, global_floor=GLOBAL_FLOOR):
     into the declared floor so it is forced on AND disclosed (#5.0-11).
     """
     floor = set(floor) | set(global_floor)
-    scout_added, exclude = set(scout_added), set(exclude)
+    scout_added = set(scout_added)
+    raw_exclude = set(exclude)
+    # #1084: a non-excludable domain (SEC) is dropped from the exclude set, so a
+    # committed `exclude: [SEC]` can never remove it from what actually runs.
+    exclude = raw_exclude - NON_EXCLUDABLE
     effective = (floor | scout_added) - exclude
     # NB: "floor" is the DECLARED floor (not netted against exclude); `effective`
     # is what actually runs. In a validation-forbidden floor∩exclude overlap a
@@ -98,4 +108,8 @@ def effective_panels(floor, scout_added, exclude, global_floor=GLOBAL_FLOOR):
         "scout_added": sorted(scout_added - exclude),
         "excluded": sorted(exclude),
     }
+    rejected = sorted(raw_exclude & NON_EXCLUDABLE)
+    if rejected:
+        # surface the attempted-but-ignored exclusion so it's never silent (#1084)
+        disclosure["exclude_rejected"] = rejected
     return effective, disclosure
