@@ -677,6 +677,40 @@ class TestCatalogMatchGroups(unittest.TestCase):
             self.assertTrue(all(g["name"].startswith("._") for g in out["groups"]))
             self.assertNotIn("ungrouped_files", out)
 
+    def test_exclude_paths_pruned_before_grouping_and_disclosed(self):
+        # Task 4 (#1136): a committed top-level `exclude_paths:` glob prunes
+        # matching files BEFORE catalog_groups/assign_by_catalog runs, so they
+        # land in NEITHER a named group NOR the ._N leftover chunk -- and the
+        # prune is disclosed (globs + count), never silently dropped.
+        # (Uses paths NOT already pruned by the unrelated fixture-dir heuristic
+        # -- docs/secret/** would otherwise match the `docs` group's `*.md`,
+        # vendor/** would otherwise fall to a ._N leftover -- to prove this is
+        # exclude_paths doing the work, not #434's fixture pruning.)
+        with tempfile.TemporaryDirectory() as d:
+            self._setup(d)
+            _touch(d, "docs/secret/leak.md")
+            _touch(d, "vendor/dep.py")
+            with open(os.path.join(d, ".panopticon", "groups.yml"), "w", encoding="utf-8") as fh:
+                fh.write(self.CATALOG + "exclude_paths: ['docs/secret/**', 'vendor/**']\n")
+            out, _err = self._run_scan(d)
+            all_files = [f for g in out["groups"] for f in g["files"]]
+            self.assertNotIn("docs/secret/leak.md", all_files)
+            self.assertNotIn("vendor/dep.py", all_files)
+            self.assertNotIn("docs/secret/leak.md", out.get("ungrouped_files", []))
+            self.assertNotIn("vendor/dep.py", out.get("ungrouped_files", []))
+            self.assertEqual(sorted(out["exclude_paths"]), ["docs/secret/**", "vendor/**"])
+            self.assertEqual(out["excluded_count"], 2)
+
+    def test_exclude_paths_absent_is_zero_behavior_change(self):
+        # Back-compat: no `exclude_paths:` key -> no disclosure fields, and
+        # the previously-covered "orphan" leftover behavior is untouched.
+        with tempfile.TemporaryDirectory() as d:
+            self._setup(d)
+            out, _err = self._run_scan(d)
+            self.assertNotIn("exclude_paths", out)
+            self.assertNotIn("excluded_count", out)
+            self.assertEqual(out["ungrouped_files"], ["orphan/loner.py"])
+
 
 class TestGroupObjParent(unittest.TestCase):
     """Task 7: every group `discovery` emits carries a `parent` field, so

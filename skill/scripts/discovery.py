@@ -930,6 +930,25 @@ def _matrix_catalog(repo):
         print("committed groups.yml: %s" % e, file=sys.stderr)
     return groups
 
+def _committed_exclude_paths(repo):
+    """Committed top-level `exclude_paths:` globs from `.panopticon/groups.yml`
+    (Task 4, #1136), mirroring `_matrix_catalog`'s read: a missing/unreadable/
+    malformed groups.yml is non-fatal here -- ``[]`` (no pruning), never a
+    hard failure. Errors are disclosed (stderr) via `parse_exclude_paths`."""
+    path = os.path.join(repo, ".panopticon", "groups.yml")
+    if not os.path.isfile(path):
+        return []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh) or {}
+    except (OSError, yaml.YAMLError) as e:
+        print("groups.yml unreadable: %s" % e, file=sys.stderr)
+        return []
+    globs, errs = groups_schema.parse_exclude_paths(doc if isinstance(doc, dict) else {})
+    for e in errs:
+        print("committed groups.yml: %s" % e, file=sys.stderr)
+    return globs
+
 def _norm_scope_path(repo, p):
     """Normalize a --scope-file/--scope-files path to the repo-relative spelling
     discover_repo_files keys on (#5.0-17): relativize an absolute path under
@@ -998,6 +1017,20 @@ def main(argv=None):
                                include_fixtures=(args.security == "redteam"),
                                pruned_fixtures=pruned_fixtures,
                                info=info)
+    # Task 4 (#1136): committed top-level `exclude_paths:` globs prune matching
+    # files BEFORE any grouping (build_result's default chunking, --scope-*
+    # narrowing, and catalog_groups/assign_by_catalog all consume `allf` from
+    # this point on) -- excluded files land in NEITHER a group NOR a leftover.
+    # Absent `exclude_paths`, `exclude_globs` is [] and this is a no-op
+    # (byte-identical back-compat).
+    exclude_globs = _committed_exclude_paths(repo)
+    excluded_files = []
+    if exclude_globs:
+        _exclude_re = [_glob_to_re(g) for g in exclude_globs]
+        kept, excluded_files = [], []
+        for f in allf:
+            (excluded_files if any(rx.match(f) for rx in _exclude_re) else kept).append(f)
+        allf = kept
     impl, tests = partition_test_files(allf)
     # Group impl AND real test sources so tests aren't silently dropped (only
     # their __pycache__ artifacts used to reach a group); counts stay impl-only.
@@ -1098,6 +1131,14 @@ def main(argv=None):
               "scan; use --security redteam to include them"
               % (args.security, len(pruned_fixtures),
                  ", ".join(sorted(pruned_fixtures))), file=sys.stderr)
+    if exclude_globs:
+        # Task 4 (#1136): disclose the committed exclude_paths prune — never
+        # silently drop. Omitted entirely when exclude_paths is absent (back-
+        # compat: zero-behavior-change means zero-output-change too).
+        result["exclude_paths"] = exclude_globs
+        result["excluded_count"] = len(excluded_files)
+        print("exclude_paths: pruned %d file(s) matching %s before grouping"
+              % (len(excluded_files), ", ".join(exclude_globs)), file=sys.stderr)
 
     if "schema_version" not in result:
         result["schema_version"] = 1
