@@ -267,6 +267,39 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
         self.assertTrue(kwargs.get("capture_output"))
 
 
+class TestRebaseSarifUris(unittest.TestCase):
+    """#1116: SARIF uris rooted at the ephemeral build copy (tmp) are rewritten
+    to repo-relative, so /tmp/roslyn-XXX/ never leaks into location.file and
+    findings match files by a stable path (delta gate scoping, dedup)."""
+
+    def _run(self, locations):
+        with tempfile.TemporaryDirectory(prefix="roslyn-") as tmp:
+            raw = json.dumps({"runs": [{"results": [{"locations": locations(tmp)}]}]}).encode()
+            return json.loads(rs._rebase_sarif_uris(raw, tmp))
+
+    def test_v2_artifact_location_rebased(self):
+        out = self._run(lambda tmp: [{"physicalLocation": {"artifactLocation": {
+            "uri": "file://" + os.path.join(os.path.realpath(tmp), "MyApp", "Foo.cs")}}}])
+        got = out["runs"][0]["results"][0]["locations"][0][
+            "physicalLocation"]["artifactLocation"]["uri"]
+        self.assertEqual(got, os.path.join("MyApp", "Foo.cs"))
+
+    def test_v1_result_file_rebased(self):
+        out = self._run(lambda tmp: [{"resultFile": {
+            "uri": "file://" + os.path.join(os.path.realpath(tmp), "a.cs")}}])
+        self.assertEqual(
+            out["runs"][0]["results"][0]["locations"][0]["resultFile"]["uri"], "a.cs")
+
+    def test_uri_outside_tmp_left_unchanged(self):
+        out = self._run(lambda tmp: [{"physicalLocation": {"artifactLocation": {
+            "uri": "src/App.cs"}}}])
+        self.assertEqual(out["runs"][0]["results"][0]["locations"][0][
+            "physicalLocation"]["artifactLocation"]["uri"], "src/App.cs")
+
+    def test_unparseable_returned_unchanged(self):
+        self.assertEqual(rs._rebase_sarif_uris(b"{not json", "/tmp/x"), b"{not json")
+
+
 class TestSafeCopytree(unittest.TestCase):
     def _tree(self, d):
         os.makedirs(os.path.join(d, "src", "sub"))
