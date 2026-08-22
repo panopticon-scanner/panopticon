@@ -678,6 +678,86 @@ def _render_criteria(bundle, domain):
         "against the menu one-liners above)" % domain)
 
 
+# --- #1131 tool-aware review (SEC-first PoC) ---------------------------------
+# Hand a review cell the static-analysis tool findings that already landed in
+# its files, as a "don't re-derive" MAP (never an answer key): the reviewer
+# skips re-deriving them and instead escalates any deeper issue a tool can't
+# reach. SEC-only for now — every tool finding is panel:"security", so SEC needs
+# no rule->domain routing, just file->group (which the cell's `files` already
+# give us); other domains need a rule/CWE->domain index (deferred). The
+# independent tool-verify round is untouched; this is purely a prompt input.
+_TOOL_HIT_DOMAINS = frozenset({"SEC"})
+_TOOL_HITS_CAP = 40
+
+
+@functools.lru_cache(maxsize=None)
+def _ingested_tool_findings(review_root, include_fixtures):
+    """All normalized tool findings for this run, memoized per (review_root,
+    include_fixtures). Mirrors the driver's tool-verify ingest (same
+    include_fixtures) so the review-time map reflects the SAME findings the
+    independent tool-verify round adjudicates. Returns () when the tools dir is
+    absent or ingest fails — the map is advisory and must never break a review."""
+    tools_dir = _pano(review_root, "tools")
+    if not os.path.isdir(tools_dir):
+        return ()
+    try:
+        findings, _disp = ingest_tools.ingest_dir_detailed(
+            tools_dir, None, include_fixtures=include_fixtures)
+    except Exception:  # noqa: BLE001 - advisory input; never break review on it
+        return ()
+    return tuple(findings)
+
+
+def _format_tool_hits(hits):
+    """Render a cell's already-reported tool findings as a 'don't re-derive'
+    map. Empty string when there are none, so the prompt section vanishes for
+    cells/domains with no hits."""
+    if not hits:
+        return ""
+    lines = []
+    for h in hits[:_TOOL_HITS_CAP]:
+        loc = h.get("location") or {}
+        f = loc.get("file") or "?"
+        ln = loc.get("line_start")
+        where = "%s:%s" % (f, ln) if ln else f
+        rule = (h.get("tool_evidence") or {}).get("rule_id") or h.get("category") or "?"
+        title = " ".join(str(h.get("title") or "").split())
+        lines.append("- %s · %s · %s · %s"
+                     % (where, rule, h.get("severity") or "?", title))
+    extra = len(hits) - _TOOL_HITS_CAP
+    if extra > 0:
+        lines.append("- …and %d more tool finding(s) in these files." % extra)
+    return (
+        "## Tool findings already reported in your files\n\n"
+        "Static-analysis tools already flagged the items below in the files you're "
+        "reviewing, and they are verified independently — do **not** re-file them as "
+        "your own findings. Your two jobs:\n\n"
+        "1. **Skip re-deriving these.** Spend your attention on what tools cannot see.\n"
+        "2. **Escalate when there is more.** If a hit exposes a deeper issue a tool "
+        "cannot reach — the root cause, cross-file blast radius, a real exploit path, "
+        "or a systemic pattern — file THAT finding and cite the `rule_id` it builds "
+        "on. A bare restatement of a tool hit is not a finding.\n\n"
+        + "\n".join(lines) + "\n\n"
+    )
+
+
+def _tool_hits_for_cell(review_root, manifest, domain, files):
+    """The 'don't re-derive' tool-hit map (#1131) for one review cell, or '' when
+    the domain is out of PoC scope or no tool hit lands in the cell's files."""
+    if domain not in _TOOL_HIT_DOMAINS:
+        return ""
+    wanted = set(files or ())
+    if not wanted:
+        return ""
+    findings = _ingested_tool_findings(review_root,
+                                       _tools_include_fixtures(manifest))
+    hits = [f for f in findings
+            if ((f.get("location") or {}).get("file")) in wanted]
+    hits.sort(key=lambda h: (str((h.get("location") or {}).get("file") or ""),
+                             (h.get("location") or {}).get("line_start") or 0))
+    return _format_tool_hits(hits)
+
+
 def _cell_entry(review_root, manifest, group, domain, files, tests, host, bundle):
     file_list = _abs_file_list(review_root, files)
     test_list = "\n".join("- " + t for t in tests) or "- (no tests)"
@@ -687,6 +767,7 @@ def _cell_entry(review_root, manifest, group, domain, files, tests, host, bundle
         "tests": test_list, "security_mode": manifest.get("security_mode", "standard"),
         "menu": _render_menu(bundle, domain),
         "criteria": _render_criteria(bundle, domain), "run_id": manifest["run_id"],
+        "tool_hits": _tool_hits_for_cell(review_root, manifest, domain, files),
         "out_file": out_file}, host)
     enforced = host == "claude"
     return {"id": "review-%s-%s" % (group, domain),

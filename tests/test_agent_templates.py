@@ -148,7 +148,7 @@ class TestDomainPanelRenders(unittest.TestCase):
                    "tests": "- t.py", "security_mode": "standard",
                    "menu": "SEC-A1A os-command-injection (HIGH)", "run_id": "R",
                    "criteria": "SEC-A1A os-command-injection — Qualifies when …",
-                   "out_file": "/abs/findings-Auth-SEC.json"}
+                   "tool_hits": "", "out_file": "/abs/findings-Auth-SEC.json"}
         out = dispatch.render_prompt("domain-panel.md", mapping, "claude")
         self.assertIn("`SEC` domain reviewer", out)
         self.assertIn("SEC-A1A", out)
@@ -167,7 +167,7 @@ class TestDomainPanelRenders(unittest.TestCase):
                    "tests": "- t.py", "security_mode": "standard",
                    "menu": "SEC-A1A os-command-injection (HIGH)", "run_id": "R",
                    "criteria": "SEC-A1A — CRITERIA-SENTINEL — met only when …",
-                   "out_file": "/abs/findings-Auth-SEC.json"}
+                   "tool_hits": "", "out_file": "/abs/findings-Auth-SEC.json"}
         out = dispatch.render_prompt("domain-panel.md", mapping, "claude")
         self.assertIn("## Grading criteria", out)
         self.assertIn("grade against the criteria, not the one-line name", out)
