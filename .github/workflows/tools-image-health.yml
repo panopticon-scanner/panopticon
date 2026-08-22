@@ -35,19 +35,20 @@ jobs:
       packages: read
     env:
       MAX_AGE_DAYS: "3"   # nightly build; >3 days old means ~3 missed rebuilds
+      IMAGE_NAME: ${{ github.event.repository.name }}-tools
     steps:
-      - name: Assert panopticon-tools:latest is fresh
+      - name: Assert ${{ github.event.repository.name }}-tools:latest is fresh
         env:
           GH_TOKEN: ${{ github.token }}
           OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
-          api="/orgs/${OWNER}/packages/container/panopticon-tools/versions?per_page=100"
+          api="/orgs/${OWNER}/packages/container/${IMAGE_NAME}/versions?per_page=100"
           if ! resp=$(gh api "${api}" 2>err.txt); then
-            .github/scripts/image-freshness.sh "" "${MAX_AGE_DAYS}"
+            .github/scripts/image-freshness.sh "" "${MAX_AGE_DAYS}" "${IMAGE_NAME}"
             exit 0
           fi
           updated=$(printf '%s' "${resp}" | jq -r \
             '[.[] | select(.metadata.container.tags[]? == "latest")]
              | sort_by(.updated_at) | last | .updated_at // empty')
-          .github/scripts/image-freshness.sh "${updated}" "${MAX_AGE_DAYS}"
+          .github/scripts/image-freshness.sh "${updated}" "${MAX_AGE_DAYS}" "${IMAGE_NAME}"
