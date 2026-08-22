@@ -22,10 +22,44 @@ import scripts.setup_flow as setup_flow  # noqa: E402
 
 orchestrator = orch
 
+GIT_TIMEOUT = 30
+SCRIPT_TIMEOUT = 120
+
 
 def _run(script, *args, cwd=None):
-    return subprocess.run([sys.executable, os.path.join(SCRIPTS, script), *args],
-                          cwd=cwd, capture_output=True, text=True)
+    try:
+        return subprocess.run(
+            [sys.executable, os.path.join(SCRIPTS, script), *args],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=SCRIPT_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AssertionError(
+            f"script subprocess timed out after {SCRIPT_TIMEOUT}s: {exc.cmd}"
+        ) from exc
+
+
+def _git_output(repo, *args):
+    """Run a git command in *repo* and return its stdout text.
+
+    Converts TimeoutExpired to AssertionError so tests fail loudly with the
+    command that hung instead of leaking a raw TimeoutExpired.
+    """
+    try:
+        return subprocess.run(
+            ["git", *args],
+            cwd=str(repo),
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT,
+        ).stdout
+    except subprocess.TimeoutExpired as exc:
+        raise AssertionError(
+            f"git subprocess timed out after {GIT_TIMEOUT}s: {exc.cmd}"
+        ) from exc
 
 
 class TestDiscoveryRepoScanParity(unittest.TestCase):
@@ -422,11 +456,30 @@ class TestFixtureExclusion(unittest.TestCase):
 
 
 def _git(d, *args):
-    subprocess.run(["git", "-C", d, *args], check=True, capture_output=True)
+    try:
+        subprocess.run(
+            ["git", "-C", d, *args],
+            check=True,
+            capture_output=True,
+            timeout=GIT_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AssertionError(
+            f"git subprocess timed out after {GIT_TIMEOUT}s: {exc.cmd}"
+        ) from exc
 
 
 def _init_repo(d):
-    subprocess.run(["git", "init", "-q", d], check=True)
+    try:
+        subprocess.run(
+            ["git", "init", "-q", d],
+            check=True,
+            timeout=GIT_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AssertionError(
+            f"git subprocess timed out after {GIT_TIMEOUT}s: {exc.cmd}"
+        ) from exc
     _git(d, "config", "user.email", "t@e.com")
     _git(d, "config", "user.name", "Test")
 
@@ -1057,7 +1110,7 @@ class TestAssignByCatalog(unittest.TestCase):
 
 
 def _repo_with_matrix(tmp_path):
-    import subprocess, os
+    import os
     repo = tmp_path
     (repo / ".panopticon").mkdir(parents=True)
     for p in ["src/auth/login.py", "src/checkout/pay.py", "src/checkout/cart.py",
@@ -1068,10 +1121,10 @@ def _repo_with_matrix(tmp_path):
         "groups:\n"
         "  Auth:\n    match: ['src/auth/**']\n    panels: [SEC]\n"
         "  Checkout:\n    match: ['src/checkout/**']\n    panels: [SEC, DAT]\n")
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
-    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
-                    "commit", "-qm", "x"], cwd=repo, check=True)
+    _git(repo, "init", "-q")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "-qm", "x")
     return repo
 
 
@@ -1162,9 +1215,9 @@ def test_repo_scan_scope_file_includes_sibling_related_test(tmp_path):
     import discovery as orchestrator, json
     repo = _repo_with_matrix(tmp_path)
     (repo / "src" / "checkout" / "test_pay.py").write_text("def test_x():\n    pass\n")
-    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
-    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
-                    "commit", "-qm", "add sibling test"], cwd=repo, check=True)
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "-qm", "add sibling test")
     out = repo / "groups.json"
     orchestrator.main(["--repo-scan", "--scope-file", "src/checkout/pay.py",
                        str(repo), "--out", str(out)])
@@ -1225,7 +1278,6 @@ def _repo_with_scalar_match_group(tmp_path):
     """groups.yml with a SCALAR `match:` group ("Bad") ahead of a
     well-formed one ("Auth") -- the worst-case catalog order for the
     char-split bug (Bad, if corrupted, would shadow every later group)."""
-    import subprocess
     repo = tmp_path
     (repo / ".panopticon").mkdir(parents=True)
     for p in ["src/auth/login.py", "src/bad/thing.py"]:
@@ -1235,10 +1287,10 @@ def _repo_with_scalar_match_group(tmp_path):
         "groups:\n"
         "  Bad:\n    match: src/bad/**\n"           # scalar -- NOT a list
         "  Auth:\n    match: ['src/auth/**']\n")
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
-    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
-                    "commit", "-qm", "x"], cwd=repo, check=True)
+    _git(repo, "init", "-q")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "-qm", "x")
     return repo
 
 
@@ -1367,12 +1419,11 @@ def test_repo_scan_scope_dir_no_tracked_files_errors(tmp_path, capsys):
 # synthesize's on-diff gate has a hunk map to scope findings against.
 
 def test_repo_scan_scope_changed_restricts_and_emits_diff_hunks(tmp_path):
-    import discovery as orchestrator, json, subprocess
+    import discovery as orchestrator, json
     repo = _repo_with_matrix(tmp_path)   # commits Auth + Checkout matrix + files
     # create a new commit changing one checkout file
     (repo / "src/checkout/pay.py").write_text("x=2\n")
-    subprocess.run(["git","-c","user.email=t@t","-c","user.name=t","commit","-aqm","c2"],
-                   cwd=repo, check=True)
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-aqm", "c2")
     out = repo / ".panopticon" / "groups.json"
     rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
                             str(repo), "--out", str(out)])
@@ -1393,11 +1444,10 @@ def test_repo_scan_scope_changed_bad_base_exits_2_no_artifact(tmp_path):
 
 
 def test_repo_scan_scope_files_with_base_emits_diff_hunks(tmp_path):
-    import discovery as orchestrator, json, subprocess
+    import discovery as orchestrator, json
     repo = _repo_with_matrix(tmp_path)
     (repo / "src/checkout/pay.py").write_text("x=2\n")
-    subprocess.run(["git","-c","user.email=t@t","-c","user.name=t","commit","-aqm","c2"],
-                   cwd=repo, check=True)
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-aqm", "c2")
     out = repo / ".panopticon" / "groups.json"
     # --repo (not the positional target) precedes --scope-files here -- nargs="+"
     # would otherwise greedily swallow a trailing positional target (same
@@ -1429,7 +1479,7 @@ def test_repo_scan_scope_files_without_base_emits_no_diff_hunks(tmp_path):
 def _repo_with_exclude(tmp_path):
     """Repo whose committed groups.yml carries `exclude_paths: ['vendor/**']`,
     with a vendored file a delta scope would otherwise pick up."""
-    import subprocess, os
+    import os
     repo = tmp_path
     (repo / ".panopticon").mkdir(parents=True)
     for p in ["src/checkout/pay.py", "vendor/dep.py"]:
@@ -1439,10 +1489,10 @@ def _repo_with_exclude(tmp_path):
         "groups:\n"
         "  Checkout:\n    match: ['src/checkout/**']\n    panels: [SEC]\n"
         "exclude_paths: ['vendor/**']\n")
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
-    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
-                    "commit", "-qm", "x"], cwd=repo, check=True)
+    _git(repo, "init", "-q")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "-qm", "x")
     return repo
 
 
@@ -1469,12 +1519,11 @@ def test_repo_scan_scope_files_applies_exclude_paths(tmp_path):
 def test_repo_scan_scope_changed_applies_exclude_paths(tmp_path):
     # Same parity guard on the --scope-changed path (rebuilds from git-diff
     # output). A changed vendored file must not slip past exclude_paths.
-    import discovery as orchestrator, json, subprocess
+    import discovery as orchestrator, json
     repo = _repo_with_exclude(tmp_path)
     (repo / "src/checkout/pay.py").write_text("x=2\n")
     (repo / "vendor/dep.py").write_text("y=2\n")
-    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
-                    "commit", "-aqm", "c2"], cwd=repo, check=True)
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-aqm", "c2")
     out = repo / ".panopticon" / "groups.json"
     rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
                             str(repo), "--out", str(out)])
@@ -1493,24 +1542,18 @@ def test_repo_scan_scope_changed_pr_base_resolves_origin_only_base(tmp_path):
     # only the PR head). Under the OLD code path (the base threaded as an explicit
     # --base main) resolve_base would treat "main" as explicit, fail to resolve
     # it, and return 2 with no artifact. With --pr-base it resolves to origin/main.
-    import discovery as orchestrator, json, subprocess
+    import discovery as orchestrator, json
     repo = _repo_with_matrix(tmp_path)   # commits Auth + Checkout matrix + files
-    base_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo,
-                              capture_output=True, text=True,
-                              check=True).stdout.strip()
+    base_sha = _git_output(repo, "rev-parse", "HEAD").strip()
     # Base lives ONLY as a remote-tracking ref; rename the local default branch
     # away so no local `main` (or `master`) can satisfy an explicit resolve.
-    subprocess.run(["git", "update-ref", "refs/remotes/origin/main", base_sha],
-                   cwd=repo, check=True)
-    subprocess.run(["git", "branch", "-m", "work"], cwd=repo, check=True)
+    _git(repo, "update-ref", "refs/remotes/origin/main", base_sha)
+    _git(repo, "branch", "-m", "work")
     # A committed change on top of the origin/main base so there IS a delta.
     (repo / "src/checkout/pay.py").write_text("x=2\n")
-    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
-                    "commit", "-aqm", "c2"], cwd=repo, check=True)
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-aqm", "c2")
     # Sanity: no local `main` branch exists (only origin/main).
-    branches = subprocess.run(["git", "branch", "--format=%(refname:short)"],
-                              cwd=repo, capture_output=True, text=True,
-                              check=True).stdout.split()
+    branches = _git_output(repo, "branch", "--format=%(refname:short)").split()
     assert "main" not in branches
 
     out = repo / ".panopticon" / "groups.json"
@@ -1586,3 +1629,14 @@ def test_repo_scan_fails_loud_on_broken_groups_yml(tmp_path):
         "groups:\n  Bad:\n    match: [unclosed\n", encoding="utf-8")
     rc = discovery.main(["--repo", str(tmp_path), "--repo-scan"])
     assert rc != 0
+
+
+def test_git_helpers_convert_timeout_to_assertion_error(tmp_path):
+    """TimeoutExpired from a hung git subprocess must become AssertionError."""
+    from unittest.mock import patch
+    with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(
+            cmd=["git", "x"], timeout=GIT_TIMEOUT)):
+        with pytest.raises(AssertionError, match="git subprocess timed out"):
+            _git(tmp_path, "x")
+        with pytest.raises(AssertionError, match="git subprocess timed out"):
+            _git_output(tmp_path, "x")

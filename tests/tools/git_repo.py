@@ -10,8 +10,21 @@ import subprocess
 import tempfile
 
 
+GIT_TIMEOUT = 30
+
+
 def _git(repo, *args):
-    subprocess.run(["git", "-C", repo, *args], check=True, capture_output=True)
+    try:
+        subprocess.run(
+            ["git", "-C", repo, *args],
+            check=True,
+            capture_output=True,
+            timeout=GIT_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AssertionError(
+            f"git subprocess timed out after {GIT_TIMEOUT}s: {exc.cmd}"
+        ) from exc
 
 
 def make_git_repo(
@@ -61,7 +74,17 @@ def make_git_repo(
     if test_case is not None:
         test_case.addCleanup(shutil.rmtree, repo, ignore_errors=True)
 
-    subprocess.run(["git", "init", "-q", repo], check=True, capture_output=True)
+    try:
+        subprocess.run(
+            ["git", "init", "-q", repo],
+            check=True,
+            capture_output=True,
+            timeout=GIT_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AssertionError(
+            f"git subprocess timed out after {GIT_TIMEOUT}s: {exc.cmd}"
+        ) from exc
     _git(repo, "config", "user.email", user_email)
     _git(repo, "config", "user.name", user_name)
 

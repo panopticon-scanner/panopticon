@@ -8,6 +8,16 @@ import unittest
 ROOT = os.path.join(os.path.dirname(__file__), os.pardir)
 SCRIPTS = os.path.join(ROOT, "skill", "scripts")
 
+SCRIPT_TIMEOUT = 120
+
+
+def _run_script(cmd, **kw):
+    try:
+        return subprocess.run(cmd, timeout=SCRIPT_TIMEOUT, **kw)
+    except subprocess.TimeoutExpired as exc:
+        raise AssertionError(
+            f"script subprocess timed out after {SCRIPT_TIMEOUT}s: {exc.cmd}"
+        ) from exc
 
 
 class TestEndToEnd(unittest.TestCase):
@@ -18,7 +28,7 @@ class TestEndToEnd(unittest.TestCase):
             # 1. resolve target (P6.5 Slice A: orchestrator.py --directory
             # retired; discovery.py --repo-scan is the sole surviving mode --
             # same groups.json shape, driven the way driver.py drives it)
-            r = subprocess.run(
+            r = _run_script(
                 [sys.executable, os.path.join(SCRIPTS, "discovery.py"),
                  "--repo-scan", d],
                 capture_output=True, text=True)
@@ -43,7 +53,7 @@ class TestEndToEnd(unittest.TestCase):
             # subprocess launched from the repo root would pick up THIS
             # repo's own leftover self-scan dispatch-plan-*.json artifacts
             # and reconcile this test's findings file against them.
-            r2 = subprocess.run(
+            r2 = _run_script(
                 [sys.executable, os.path.join(SCRIPTS, "synthesize.py"),
                  "--target", "src", "--groups", gj, "--out", out, fp],
                 capture_output=True, text=True, cwd=d)
@@ -56,7 +66,7 @@ class TestEndToEnd(unittest.TestCase):
             self.assertEqual(report["summary"]["overall_grade"], "A")
             self.assertEqual(report["summary"]["evidence_stats"]["unverified"], 1)
             # opting unverified findings into the gate restores the old behavior
-            r3 = subprocess.run(
+            r3 = _run_script(
                 [sys.executable, os.path.join(SCRIPTS, "synthesize.py"),
                  "--target", "src", "--groups", gj, "--gate-unverified",
                  "--out", out, fp],
@@ -74,7 +84,7 @@ class TestX0XEmissionEndToEnd(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             os.makedirs(os.path.join(d, "src"))
             open(os.path.join(d, "src", "app.py"), "w").close()
-            r = subprocess.run(
+            r = _run_script(
                 [sys.executable, os.path.join(SCRIPTS, "discovery.py"),
                  "--repo-scan", d], capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stderr)
@@ -95,7 +105,7 @@ class TestX0XEmissionEndToEnd(unittest.TestCase):
             with open(gj, "w") as fh:
                 json.dump(groups, fh)
             out = os.path.join(d, ".panopticon", "report.json")
-            r2 = subprocess.run(
+            r2 = _run_script(
                 [sys.executable, os.path.join(SCRIPTS, "synthesize.py"),
                  "--target", "src", "--groups", gj, "--run-id", "RID-123",
                  "--out", out, fp],
