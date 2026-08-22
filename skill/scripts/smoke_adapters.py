@@ -56,8 +56,8 @@ PROBE_TIMEOUT = 180
 
 _ROSLYN_PROBE_SOURCE = """using System.Diagnostics;
 class P {
-    static void Main() {
-        Process.Start("id");
+    static void Main(string[] args) {
+        Process.Start(args[0]);
     }
 }
 """
