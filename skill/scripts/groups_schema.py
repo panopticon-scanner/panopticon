@@ -2,6 +2,14 @@
 
 Extends the 4.x groups.yml (match-only) with the matrix fields. Pure: takes an
 already-loaded dict, returns (groups, errors). No file I/O. See spec §3.
+
+5.1 adds one level of subgrouping: a top-level group body is either a LEAF
+(contains a reserved field: match/tests/panels/exclude) or a PARENT (its keys
+are subgroup names, each itself a leaf). `parse_groups` flattens both shapes
+into a single dict keyed by review-unit id: a leaf `Foo` -> id "Foo", and a
+subgroup `Bar` under parent `Baz` -> id "Baz:Bar". Every value carries an
+explicit `parent` field (self for a leaf, the parent's name for a subgroup).
+Subgroups cannot themselves be parents ("one nesting level only").
 """
 import re
 
@@ -12,7 +20,14 @@ DOMAINS = frozenset(
 # reviewer prompts, so a name from a (possibly hostile) committed groups.yml must
 # be a strict token — no path separators, '..', leading dot, control chars, or
 # trailing newline, which would escape .panopticon or inject into the task text.
+# ':' is deliberately excluded from the allowed charset: it is reserved as the
+# internal flat-id delimiter between a parent and its subgroup, never part of
+# an authored name.
 _GROUP_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
+
+# A group body is a leaf iff it contains any of these fields; otherwise its
+# keys are taken to be subgroup names (a parent).
+RESERVED = frozenset({"match", "tests", "panels", "exclude"})
 
 
 def _as_domain_set(name, field, raw, errors):
@@ -30,52 +45,119 @@ def _as_domain_set(name, field, raw, errors):
     return out
 
 
+def _invalid_name(name):
+    return not isinstance(name, str) or ".." in name or not _GROUP_NAME_RE.match(name)
+
+
+def _name_error(name):
+    return ("group name %r is invalid: must match "
+            "[A-Za-z0-9][A-Za-z0-9_.-]{0,63} with no path separators, "
+            "'..', or control characters (#5.0-02)" % (name,))
+
+
+def _parse_leaf(name, raw, errors):
+    """Parse a single leaf group body -> {match, tests, floor, exclude}.
+
+    `name` is used only to label error messages (may be a flat id like
+    "UI:Admin" for a subgroup). `raw` is assumed to already be a dict.
+    """
+    raw_match = raw.get("match")
+    if not isinstance(raw_match, list) or not raw_match:
+        errors.append(f"group {name}: match must be a non-empty list")
+        match = []
+    else:
+        invalid_match = [x for x in raw_match if not isinstance(x, str) or not x.strip()]
+        if invalid_match:
+            errors.append(f"group {name}: match entries must be non-empty strings")
+        match = [x for x in raw_match if isinstance(x, str) and x.strip()]
+    raw_tests = raw.get("tests")
+    if raw_tests is None:
+        tests = []
+    elif not isinstance(raw_tests, list):
+        errors.append(f"group {name}: tests must be a list")
+        tests = []
+    else:
+        invalid_tests = [x for x in raw_tests if not isinstance(x, str) or not x.strip()]
+        if invalid_tests:
+            errors.append(f"group {name}: tests entries must be non-empty strings")
+        tests = [x for x in raw_tests if isinstance(x, str) and x.strip()]
+    floor = _as_domain_set(name, "panels", raw.get("panels"), errors)
+    exclude = _as_domain_set(name, "exclude", raw.get("exclude"), errors)
+    for d in sorted(floor & exclude):
+        errors.append(f"group {name}: {d} is in both floor and exclude")
+    return {
+        "match": match,
+        "tests": tests,
+        "floor": floor,
+        "exclude": exclude,
+    }
+
+
 def parse_groups(doc):
-    """Return (groups, errors). `groups` maps name -> normalized group dict."""
+    """Return (groups, errors). `groups` maps a flat review-unit id -> a
+    normalized group dict with keys match/tests/floor/exclude/parent.
+
+    A top-level name whose body is a leaf yields id == name, parent == name.
+    A top-level name whose body is a parent (keys are subgroup names, each a
+    leaf) yields, for each subgroup `sub`, id "name:sub" with parent == name.
+    """
     groups, errors = {}, []
     groups_dict = (doc or {}).get("groups") or {}
     if not isinstance(groups_dict, dict):
         errors.append("groups must be a mapping/object")
         groups_dict = {}
     for name, raw in groups_dict.items():
-        if not isinstance(name, str) or ".." in name or not _GROUP_NAME_RE.match(name):
-            errors.append("group name %r is invalid: must match "
-                          "[A-Za-z0-9][A-Za-z0-9_.-]{0,63} with no path separators, "
-                          "'..', or control characters (#5.0-02)" % (name,))
+        if _invalid_name(name):
+            errors.append(_name_error(name))
             continue
-        if raw is None:
+
+        raw_was_none = raw is None
+        raw_was_non_dict = raw is not None and not isinstance(raw, dict)
+        if raw_was_none:
             raw = {}
-        elif not isinstance(raw, dict):
+        elif raw_was_non_dict:
             errors.append(f"group {name}: definition must be a mapping")
             raw = {}
-        raw_match = raw.get("match")
-        if not isinstance(raw_match, list) or not raw_match:
-            errors.append(f"group {name}: match must be a non-empty list")
-            match = []
-        else:
-            invalid_match = [x for x in raw_match if not isinstance(x, str) or not x.strip()]
-            if invalid_match:
-                errors.append(f"group {name}: match entries must be non-empty strings")
-            match = [x for x in raw_match if isinstance(x, str) and x.strip()]
-        raw_tests = raw.get("tests")
-        if raw_tests is None:
-            tests = []
-        elif not isinstance(raw_tests, list):
-            errors.append(f"group {name}: tests must be a list")
-            tests = []
-        else:
-            invalid_tests = [x for x in raw_tests if not isinstance(x, str) or not x.strip()]
-            if invalid_tests:
-                errors.append(f"group {name}: tests entries must be non-empty strings")
-            tests = [x for x in raw_tests if isinstance(x, str) and x.strip()]
-        floor = _as_domain_set(name, "panels", raw.get("panels"), errors)
-        exclude = _as_domain_set(name, "exclude", raw.get("exclude"), errors)
-        for d in sorted(floor & exclude):
-            errors.append(f"group {name}: {d} is in both floor and exclude")
-        groups[name] = {
-            "match": match,
-            "tests": tests,
-            "floor": floor,
-            "exclude": exclude,
-        }
+
+        if not raw_was_none and not raw_was_non_dict and not raw:
+            # Authored as a literal empty mapping `{}` — always an error,
+            # whether at leaf position or here at the top level.
+            errors.append(f"group {name}: definition must not be empty")
+            continue
+
+        # None / non-dict bodies are coerced above to {} and, for back-compat
+        # with the pre-subgroup schema, always parsed as a (defaults-only,
+        # erroring) leaf rather than as an empty parent.
+        if raw_was_none or raw_was_non_dict or (RESERVED & set(raw)):
+            leaf = _parse_leaf(name, raw, errors)
+            leaf["parent"] = name
+            groups[name] = leaf
+            continue
+
+        # Parent: keys are subgroup names, each itself required to be a leaf.
+        for sub, sub_raw in raw.items():
+            if _invalid_name(sub):
+                errors.append(_name_error(sub))
+                continue
+            flat_id = f"{name}:{sub}"
+
+            sub_was_none = sub_raw is None
+            sub_was_non_dict = sub_raw is not None and not isinstance(sub_raw, dict)
+            if sub_was_none:
+                sub_raw = {}
+            elif sub_was_non_dict:
+                errors.append(f"group {flat_id}: definition must be a mapping")
+                sub_raw = {}
+
+            if not sub_raw:
+                errors.append(f"group {flat_id}: definition must not be empty")
+                continue
+
+            if not (RESERVED & set(sub_raw)):
+                errors.append(f"group {flat_id}: subgroups cannot nest")
+                continue
+
+            leaf = _parse_leaf(flat_id, sub_raw, errors)
+            leaf["parent"] = name
+            groups[flat_id] = leaf
     return groups, errors

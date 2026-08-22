@@ -94,5 +94,42 @@ class TestGroupsSchema(unittest.TestCase):
         self.assertEqual(groups["G"]["tests"], ["t/**"])
 
 
+def test_leaf_is_self_parent():
+    g, errs = gs.parse_groups({"groups": {"Auth": {"match": ["src/auth/**"], "panels": ["SEC"]}}})
+    assert errs == []
+    assert g["Auth"]["parent"] == "Auth"
+    assert g["Auth"]["match"] == ["src/auth/**"]
+    assert g["Auth"]["floor"] == {"SEC"}
+
+def test_parent_expands_to_flat_subgroup_ids():
+    doc = {"groups": {"UI": {
+        "Admin": {"match": ["src/ui/admin/**"], "exclude": ["DAT"]},
+        "Components": {"match": ["src/ui/components/**"]}}}}
+    g, errs = gs.parse_groups(doc)
+    assert errs == []
+    assert set(g) == {"UI:Admin", "UI:Components"}
+    assert g["UI:Admin"]["parent"] == "UI"
+    assert g["UI:Admin"]["exclude"] == {"DAT"}
+    assert g["UI:Components"]["parent"] == "UI"
+
+def test_empty_body_is_error():
+    _g, errs = gs.parse_groups({"groups": {"X": {}}})
+    assert any("X" in e for e in errs)
+
+def test_subgroups_cannot_nest():
+    doc = {"groups": {"UI": {"Admin": {"Deep": {"match": ["a"]}}}}}
+    _g, errs = gs.parse_groups(doc)
+    assert any("nest" in e.lower() for e in errs)
+
+def test_colon_in_authored_name_rejected():
+    _g, errs = gs.parse_groups({"groups": {"UI:Admin": {"match": ["a"]}}})
+    assert any("invalid" in e.lower() for e in errs)
+
+def test_flat_groups_yaml_backcompat():
+    # existing leaf-only doc: same normalized shape + parent=self
+    g, errs = gs.parse_groups({"groups": {"A": {"match": ["a/**"], "tests": ["t/**"]}}})
+    assert errs == [] and g["A"]["parent"] == "A" and g["A"]["tests"] == ["t/**"]
+
+
 if __name__ == "__main__":
     unittest.main()
