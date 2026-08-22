@@ -522,18 +522,18 @@ class TestDispatchPlan(unittest.TestCase):
         self.assertEqual(by_role["scout"], "explore")
         self.assertEqual(by_role["advisor"], "plan")
 
-    def test_emit_kimi_swarm_downgrades_a_stale_enforced_entry(self):
+    def test_emit_kimi_swarm_fail_closed_on_stale_enforced_entry(self):
         # `enforced` is a snapshot from plan-build time; registration can be
-        # gone by the time the persisted plan is turned into a manifest.
+        # gone by the time the persisted plan is turned into a manifest.  The
+        # library must fail closed rather than downgrade to an unenforced
+        # 'coder' profile.
         plan = [{"role": "panel_review", "agent": "panopticon-panel-review",
                  "enforced": True, "model": {"model": "secondary"},
                  "prompt": "p"}]
         with tempfile.TemporaryDirectory() as empty_dir:
-            with contextlib.redirect_stderr(io.StringIO()) as err:
-                swarm = dispatch.emit_kimi_swarm(
+            with self.assertRaisesRegex(ValueError, "enforced.*registered shell"):
+                dispatch.emit_kimi_swarm(
                     plan, agents_dir=empty_dir, verify_registration=True)
-        self.assertEqual(swarm["batches"][0]["subagent_type"], "coder")
-        self.assertIn("no longer registered", err.getvalue())
 
     def test_emit_kimi_swarm_rejects_a_malformed_plan(self):
         with self.assertRaises(ValueError):
@@ -1068,8 +1068,9 @@ class TestUnenforcedGate(unittest.TestCase):
         # #649: a plan built while the shell WAS registered carries
         # enforced:true, but the registration dir has since been emptied. The
         # CLI gate must consult live registration (via --agents-dir), not the
-        # stored flag, and refuse-by-default / warn+ack -- not silently
-        # downgrade to an unenforced 'coder' profile with rc 0 and no ack.
+        # stored flag, and refuse-by-default.  Even with --allow-unenforced,
+        # emit must fail closed rather than silently downgrade to an
+        # unenforced 'coder' profile with rc 0 and no ack.
         plan = [{"role": "panel_review", "agent": "panopticon-panel-review",
                  "enforced": True, "model": {"model": "secondary"},
                  "prompt": "p", "out_file": ".panopticon/f.json"}]
@@ -1096,14 +1097,17 @@ class TestUnenforcedGate(unittest.TestCase):
 
         try:
             os.chdir(d)
-            rc_allowed = dispatch.main(["--emit-kimi-swarm", plan_path,
-                                        "--out", out_path, "--agents-dir", empty_reg,
-                                        "--allow-unenforced"])
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                rc_allowed = dispatch.main(["--emit-kimi-swarm", plan_path,
+                                            "--out", out_path, "--agents-dir", empty_reg,
+                                            "--allow-unenforced"])
         finally:
             os.chdir(cwd)
-        self.assertEqual(rc_allowed, 0)
-        self.assertTrue(os.path.exists(out_path))
-        self.assertTrue(os.path.exists(ack_path))     # ack IS recorded now
+        self.assertNotEqual(rc_allowed, 0)            # fail-closed even when allowed
+        self.assertFalse(os.path.exists(out_path))
+        self.assertFalse(os.path.exists(ack_path))
+        self.assertIn("registered shell", stderr.getvalue())
 
     def test_emit_kimi_swarm_stale_enforced_true_passes_when_still_registered(self):
         # Control: same enforced:true plan, but the shell IS still registered in
