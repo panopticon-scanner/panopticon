@@ -147,6 +147,43 @@ class TestSecurityGate(unittest.TestCase):
         self.assertEqual(failures, [])
         self.assertEqual(len(high), 100)  # 1000 / 10 = 100 error/high findings
 
+    def test_manifest_not_object_raises(self):
+        with tempfile.TemporaryDirectory() as root:
+            _, manifest = self._write(root, "not-a-dict")
+            with self.assertRaisesRegex(ValueError, "scanner manifest is not an object"):
+                gate.load_manifest(manifest)
+
+    def test_manifest_missing_selected_raises(self):
+        # Missing `selected` means the list-validation check fires first.
+        with tempfile.TemporaryDirectory() as root:
+            _, manifest = self._write(root, {"produced": [], "missing": []})
+            with self.assertRaisesRegex(ValueError, "scanner manifest lists are malformed"):
+                gate.load_manifest(manifest)
+
+    def test_manifest_malformed_lists_raises(self):
+        with tempfile.TemporaryDirectory() as root:
+            _, manifest = self._write(
+                root, {"selected": "semgrep", "produced": [], "missing": []})
+            with self.assertRaisesRegex(ValueError, "scanner manifest lists are malformed"):
+                gate.load_manifest(manifest)
+
+    def test_manifest_missing_file_raises(self):
+        with tempfile.TemporaryDirectory() as root:
+            missing = os.path.join(root, "missing-manifest.json")
+            with self.assertRaisesRegex(ValueError, "cannot read scanner manifest"):
+                gate.load_manifest(missing)
+
+    def test_missing_tools_dir_fails_coverage(self):
+        # A missing tools directory yields no dispositions, so every selected
+        # scanner is reported as missing output (#1196).
+        with tempfile.TemporaryDirectory() as root:
+            _, manifest = self._write(
+                root, {"selected": ["semgrep"], "produced": ["semgrep"], "missing": []},
+                _sarif())
+            missing_tools = os.path.join(root, "no-such-tools")
+            _, _, failures, _ = gate.evaluate(missing_tools, manifest)
+        self.assertEqual(failures, ["semgrep: no output"])
+
 
 if __name__ == "__main__":
     unittest.main()
