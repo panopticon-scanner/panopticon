@@ -13,7 +13,7 @@ try:
 except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
     import _version
 
-BUNDLE_VERSION = "0.3.1"
+BUNDLE_VERSION = "0.4.1"
 _BUNDLE_NAME = "ocrdb-%s.json" % BUNDLE_VERSION
 
 # The 10 OCRDb domains -> the legacy 6-panel axis (evidence.PANELS), so a
@@ -34,7 +34,7 @@ DOMAIN_TO_PANEL = {
 UNKNOWN_DOMAIN_FALLBACK = "ZZZ-X0X"
 
 # #1034: severity used for a bundle entry that omits default_severity. None in
-# the pinned 0.3.1 bundle omit it, so this is latent — but any future entry that
+# the pinned 0.4.1 bundle omit it, so this is latent — but any future entry that
 # does gets this assumed level plus a `severity_assumed` flag, never a silent
 # fabrication.
 _MENU_SEVERITY_WHEN_ABSENT = "MEDIUM"

@@ -11,11 +11,11 @@ import scripts.ocrdb as ocrdb
 class TestOcrdb(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.bundle = ocrdb.load_bundle()  # the vendored 0.3.1 file
+        cls.bundle = ocrdb.load_bundle()  # the vendored 0.4.1 file
 
     def test_vendored_bundle_loads_with_ten_domains(self):
-        self.assertIsNotNone(self.bundle, "vendored ocrdb-0.3.1.json must load")
-        self.assertEqual(self.bundle["version"], "0.3.1")
+        self.assertIsNotNone(self.bundle, "vendored ocrdb-0.4.1.json must load")
+        self.assertEqual(self.bundle["version"], "0.4.1")
         self.assertEqual(len(self.bundle["domains"]), 10)
 
     def test_domain_menu_returns_sorted_entries(self):
@@ -143,7 +143,7 @@ class TestDomainCriteria(unittest.TestCase):
     def test_real_bundle_has_criteria_across_domains(self):
         b = ocrdb.load_bundle()
         total = sum(len(ocrdb.domain_criteria(b, d)) for d in b["domains"])
-        self.assertGreater(total, 100)  # 114 in 0.3.1, every domain represented
+        self.assertGreater(total, 100)  # 116 in 0.4.1, every domain represented
         for d in b["domains"]:
             for c in ocrdb.domain_criteria(b, d):
                 self.assertEqual(set(c), {"code", "name", "criteria"})
