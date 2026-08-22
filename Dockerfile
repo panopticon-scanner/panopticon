@@ -8,6 +8,15 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG GITLEAKS_VERSION=8.18.4
 ARG GOSEC_VERSION=2.20.0
 ARG SEMGREP_VERSION=1.173.0
+ARG BANDIT_VERSION=1.9.4
+ARG BANDIT_SARIF_FORMATTER_VERSION=1.1.1
+ARG BRAKEMAN_VERSION=8.0.6
+ARG BUNDLER_AUDIT_VERSION=0.9.3
+ARG ESLINT_VERSION=10.9.0
+ARG ESLINT_PLUGIN_SECURITY_VERSION=4.0.1
+ARG ESLINT_FORMATTER_SARIF_VERSION=3.1.0
+ARG PIP_AUDIT_VERSION=2.10.1
+ARG CARGO_AUDIT_VERSION=0.22.2
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl ca-certificates git gnupg ruby nodejs npm \
@@ -17,17 +26,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # below is a commit SHA on a live branch, but that pin is only meaningful
 # paired with a known-compatible semgrep build -- an unpinned `pip install`
 # would keep re-validating tomorrow's semgrep release against today's rules.
-RUN pip install --no-cache-dir "semgrep==${SEMGREP_VERSION}" bandit bandit-sarif-formatter
+RUN pip install --no-cache-dir "semgrep==${SEMGREP_VERSION}" "bandit==${BANDIT_VERSION}" "bandit-sarif-formatter==${BANDIT_SARIF_FORMATTER_VERSION}"
 
 # Ruby (brakeman + bundler-audit)
-RUN gem install --no-document brakeman bundler-audit \
+RUN gem install --no-document "brakeman:${BRAKEMAN_VERSION}" "bundler-audit:${BUNDLER_AUDIT_VERSION}" \
     && bundle-audit update
 
 # Node (eslint + security plugin)
-RUN npm install -g eslint eslint-plugin-security @microsoft/eslint-formatter-sarif
+RUN npm install -g "eslint@${ESLINT_VERSION}" "eslint-plugin-security@${ESLINT_PLUGIN_SECURITY_VERSION}" "@microsoft/eslint-formatter-sarif@${ESLINT_FORMATTER_SARIF_VERSION}"
 
 # Python dependency audit
-RUN pip install --no-cache-dir pip-audit
+RUN pip install --no-cache-dir "pip-audit==${PIP_AUDIT_VERSION}"
 
 # OSV scanner (static Go binary)
 ARG OSV_SCANNER_VERSION=1.8.2
@@ -95,7 +104,7 @@ ENV CARGO_HOME=/usr/local/cargo
 ENV RUSTUP_HOME=/usr/local/rustup
 ENV PATH="/usr/local/cargo/bin:${PATH}"
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-RUN cargo install cargo-audit
+RUN cargo install cargo-audit --version ${CARGO_AUDIT_VERSION}
 
 # .NET SDK (system-wide so the scanner user can invoke dotnet)
 RUN curl -sfL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 8.0 --install-dir /usr/share/dotnet
