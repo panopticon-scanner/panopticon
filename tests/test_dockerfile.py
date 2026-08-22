@@ -9,6 +9,11 @@ def _read_dockerfile() -> str:
         return fh.read()
 
 
+def _read_dockerfile_fixtures() -> str:
+    with open(os.path.join(ROOT, "Dockerfile.fixtures"), encoding="utf-8") as fh:
+        return fh.read()
+
+
 class TestDockerfile(unittest.TestCase):
     def test_bundles_core_tools(self):
         text = _read_dockerfile().lower()
@@ -80,3 +85,16 @@ class TestOfflineAssets(unittest.TestCase):
 
     def test_dockerfile_has_asset_refresh_arg(self):
         self.assertIn("ARG ASSET_REFRESH", self.text)
+
+
+class TestDockerfileFixtures(unittest.TestCase):
+    def test_bundles_fixture_clone_refs_and_rust_build(self):
+        text = _read_dockerfile_fixtures()
+        for marker in [
+            "ARG RAILS_GOAT_REF",
+            "ARG WEB_GOAT_REF",
+            "ARG ASP_GOAT_REF",
+            "COPY tests/fixtures/vulnerable-rust",
+            "cargo build",
+        ]:
+            self.assertIn(marker, text, marker)
