@@ -19,10 +19,13 @@ class TestPhase1Integration(unittest.TestCase):
             raw, rc = adapter.invoke(target)
 
         findings = adapter.parse(raw, "g1")
-        self.assertTrue(
-            any("CVE-" in str(f.get("citations")) for f in findings),
-            f"expected CVE citation, got {findings}",
-        )
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["id"], "PA-001")
+        self.assertEqual(findings[0]["source"], "tool:pip-audit")
+        self.assertEqual(findings[0]["severity"], "MEDIUM")
+        self.assertEqual(findings[0]["citations"]["cve"], ["CVE-2018-18074"])
+        self.assertEqual(findings[0]["location"]["file"], "requirements.txt")
+        self.assertEqual(findings[0]["tool_evidence"]["package_name"], "requests")
 
     def test_npm_audit_finds_lodash_vulnerability(self):
         target = os.path.join(os.path.dirname(__file__), "fixtures", "vulnerable-node")
@@ -35,8 +38,12 @@ class TestPhase1Integration(unittest.TestCase):
             raw, rc = adapter.invoke(target)
 
         findings = adapter.parse(raw, "g1")
-        self.assertTrue(findings, "expected npm-audit findings for lodash")
-        self.assertTrue(all(f.get("source") == "tool:npm-audit" for f in findings))
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["source"], "tool:npm-audit")
+        self.assertEqual(findings[0]["severity"], "HIGH")
+        self.assertEqual(findings[0]["citations"]["cve"], ["CVE-2021-23337"])
+        self.assertEqual(findings[0]["location"]["file"], "package-lock.json")
+        self.assertEqual(findings[0]["title"], "lodash <4.17.21: Command Injection in lodash")
 
     def test_osv_scanner_parses_raw_output(self):
         adapter = ADAPTERS["osv-scanner"]
@@ -104,8 +111,13 @@ class TestPhase1Integration(unittest.TestCase):
             raw, rc = adapter.invoke(target)
 
         findings = adapter.parse(raw, "g1")
-        self.assertTrue(findings, "expected eslint-security findings for eval usage")
-        self.assertTrue(all(f.get("source") == "tool:eslint-security" for f in findings))
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["source"], "tool:eslint-security")
+        self.assertEqual(findings[0]["severity"], "HIGH")
+        self.assertEqual(findings[0]["category"], "code_security")
+        self.assertEqual(findings[0]["location"]["file"], "app.js")
+        self.assertEqual(findings[0]["location"]["line_start"], 5)
+        self.assertEqual(findings[0]["citations"]["cwe"], ["CWE-95"])
 
     def test_ingest_dir_routes_adapter_output(self):
         target = os.path.join(os.path.dirname(__file__), "fixtures", "vulnerable-python")
@@ -125,8 +137,10 @@ class TestPhase1Integration(unittest.TestCase):
             # tests/fixtures/ and the default fixture prune would drop it. Pass
             # include_fixtures to keep it (we are testing routing, not the prune).
             findings = it.ingest_dir(d, "g1", include_fixtures=True)
-            self.assertTrue(findings)
-            self.assertTrue(all(f.get("source") == "tool:pip-audit" for f in findings))
+            self.assertEqual(len(findings), 1)
+            self.assertEqual(findings[0]["source"], "tool:pip-audit")
+            self.assertEqual(findings[0]["citations"]["cve"], ["CVE-2018-18074"])
+            self.assertEqual(findings[0]["severity"], "MEDIUM")
 
 
 if __name__ == "__main__":

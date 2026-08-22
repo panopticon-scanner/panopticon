@@ -22,7 +22,15 @@ class TestJavaIntegration(unittest.TestCase):
         raw, rc = adapter.invoke(target)
         self.assertIn(rc, (0, 1), f"spotbugs errored (rc {rc}) on WebGoat")
         findings = adapter.parse(raw, "g1")
-        self.assertTrue(findings, "expected SpotBugs findings against WebGoat")
+        self.assertGreaterEqual(len(findings), 1)
+        self.assertTrue(
+            any(
+                f.get("source") == "tool:spotbugs"
+                and f.get("category") == "jvm_security"
+                for f in findings
+            ),
+            "expected a SpotBugs/FindSecBugs finding with the expected shape",
+        )
 
     def test_dependency_check_finds_webgoat_vulns(self):
         target = self._target("WebGoat")
@@ -34,13 +42,14 @@ class TestJavaIntegration(unittest.TestCase):
         raw, rc = adapter.invoke(target)
         self.assertIn(rc, (0, 1), f"dependency-check errored (rc {rc}) on WebGoat")
         findings = adapter.parse(raw, "g1")
-        self.assertTrue(findings, "expected dependency-check findings")
+        self.assertGreaterEqual(len(findings), 1)
         self.assertTrue(
             any(
-                any(c.startswith("CVE-") for c in (f.get("citations") or {}).get("cve", []))
+                f.get("source") == "tool:dependency-check"
+                and any(c.startswith("CVE-") for c in (f.get("citations") or {}).get("cve", []))
                 for f in findings
             ),
-            "expected CVE citations",
+            "expected dependency-check findings with CVE citations",
         )
 
 
