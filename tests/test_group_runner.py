@@ -7,6 +7,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill"))
 import scripts.group_runner as gr
 import scripts.evidence as ev
+import scripts.dispatch as dispatch
 
 
 class TestEntryIsDone(unittest.TestCase):
@@ -202,3 +203,44 @@ class TestOutFileContentHashes(unittest.TestCase):
             ["x.json"], hashes_path="/nonexistent/h.json")
         self.assertIsNone(checked)
         self.assertEqual(mismatched, [])
+
+
+class TestVerifyPlanEntries(unittest.TestCase):
+    def _plan(self, enforced=True):
+        return [{
+            "role": "panel_review",
+            "agent": "panopticon-panel-review",
+            "enforced": enforced,
+            "panel": "security",
+            "lens": None,
+            "files": ["app.py"],
+            "group": "test_repo",
+            "depth": "standard",
+            "security_mode": "standard",
+            "lenses": [],
+            "out_file": os.path.join(tempfile.mkdtemp(), "out.json"),
+            "prompt": "review",
+            "run_id": "abc123",
+            "scope_bound": True,
+        }]
+
+    def test_enforced_without_registration_is_caught(self):
+        plan = self._plan(enforced=True)
+        problems = gr.verify_plan_entries(plan, host="claude", agents_dir=tempfile.mkdtemp())
+        self.assertTrue(problems)
+        self.assertIn("enforced:true but no registered shell", " ".join(problems))
+
+    def test_enforced_with_registration_is_ok(self):
+        reg = tempfile.mkdtemp()
+        with open(os.path.join(reg, "panopticon-panel-review.md"), "w") as fh:
+            fh.write("---\nname: test\n---\nbody\n")
+        plan = self._plan(enforced=True)
+        problems = gr.verify_plan_entries(plan, host="claude", agents_dir=reg)
+        self.assertFalse(problems)
+
+    def test_codex_exec_entries_are_exempt(self):
+        plan = self._plan(enforced=True)
+        plan[0]["execution"] = "codex_exec"
+        plan[0]["delivery"] = "return_json"
+        problems = gr.verify_plan_entries(plan, host="claude", agents_dir=tempfile.mkdtemp())
+        self.assertFalse(problems)
