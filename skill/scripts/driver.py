@@ -512,7 +512,12 @@ def coverage_execute(review_root, manifest):
     group's coverage as the floor widened by the scout's valid domains. Returns
     after one unit of work; the engine re-selects coverage until every group has
     a coverage file. Re-emits only the still-missing scouts on resume."""
-    matrix, _errors = load_committed_groups(review_root)
+    matrix, errors = load_committed_groups(review_root)
+    if errors:
+        # #1091: fail loud like discovery_execute -- a missing/corrupt groups.yml
+        # on a RESUME (discovery is already done, so its gate never re-runs) would
+        # otherwise silently yield matrix={}, dropping the committed floor/exclude.
+        raise DriverError("coverage: " + "; ".join(errors))
     host = manifest.get("host", "claude")
     groups = _discovered_groups(review_root)
     # #1056: scouts are independent and there is exactly one per group, so a
@@ -846,7 +851,11 @@ def review_execute(review_root, manifest):
     host = manifest.get("host", "claude")
     bundle = _load_ocrdb_bundle()
     # group tests come from the committed matrix (parse_groups tests field)
-    matrix, _errors = load_committed_groups(review_root)
+    matrix, errors = load_committed_groups(review_root)
+    if errors:
+        # #1092: same resume-reachable gap as coverage -- a corrupt groups.yml
+        # would silently drop every group's committed tests from the prompts.
+        raise DriverError("review: " + "; ".join(errors))
     for group, files in _discovered_groups(review_root):
         domains = _effective_domains(review_root, group)
         pending = [d for d in domains if not _cell_done(review_root, manifest, group, d)]

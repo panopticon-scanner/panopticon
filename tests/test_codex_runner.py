@@ -201,6 +201,25 @@ class TestCodexExecution(unittest.TestCase):
                 cr.run_plan(bad, root)
 
 
+class TestSchemaValidationWarning(unittest.TestCase):
+    """#1088: validate_schema must not SILENTLY skip when jsonschema is absent."""
+
+    def test_warns_when_jsonschema_missing(self):
+        import builtins, io, contextlib
+        from unittest import mock
+        real = builtins.__import__
+        def fake(name, *a, **k):
+            if name == "jsonschema":
+                raise ImportError("simulated missing jsonschema")
+            return real(name, *a, **k)
+        cr._jsonschema_missing_warned = False
+        buf = io.StringIO()
+        with mock.patch("builtins.__import__", side_effect=fake), \
+             contextlib.redirect_stderr(buf):
+            cr.validate_schema({"x": 1}, "unused-path")   # hits the ImportError branch
+        self.assertIn("jsonschema not installed", buf.getvalue())
+
+
 class TestCodexAdvisors(unittest.TestCase):
     def _verdict(self, finding_id="SEC-001", run_id="run-test"):
         return {"run_id": run_id, "finding_id": finding_id,
