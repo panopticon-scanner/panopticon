@@ -284,6 +284,20 @@ class TestPrWorktree(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             diff_map.acquire_pr(999, repo=".", runner=runner)
 
+    def test_acquire_raises_loudly_on_invalid_gh_json(self):
+        def runner(argv, **kw):
+            class R: returncode = 0; stdout = "not json"; stderr = ""
+            return R()
+        with self.assertRaisesRegex(RuntimeError, "invalid JSON"):
+            diff_map.acquire_pr(7, repo=".", runner=runner)
+
+    def test_acquire_raises_loudly_on_missing_baseRefName(self):
+        def runner(argv, **kw):
+            class R: returncode = 0; stdout = '{"number": 7}'; stderr = ""
+            return R()
+        with self.assertRaisesRegex(RuntimeError, "missing baseRefName"):
+            diff_map.acquire_pr(7, repo=".", runner=runner)
+
     def test_acquire_rejects_symlink_worktree(self):
         def runner(argv, **kw):
             if argv[:3] == ["gh", "pr", "view"]:

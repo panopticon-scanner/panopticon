@@ -251,9 +251,16 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
         return r.stdout
 
     view = _run(["gh", "pr", "view", str(pr_number), "--json", "baseRefName"])
-    base = (_json.loads(view) or {}).get("baseRefName")
-    if not base:
-        raise RuntimeError("panopticon --pr: could not read base branch for PR %d" % pr_number)
+    try:
+        pr_info = _json.loads(view)
+    except ValueError as exc:
+        raise RuntimeError("panopticon --pr: `gh pr view` returned invalid JSON for PR %d: %s"
+                           % (pr_number, exc)) from exc
+    if not isinstance(pr_info, dict) or not isinstance(pr_info.get("baseRefName"), str) \
+            or not pr_info["baseRefName"]:
+        raise RuntimeError("panopticon --pr: `gh pr view` output missing baseRefName for PR %d"
+                           % pr_number)
+    base = pr_info["baseRefName"]
 
     wt = _worktree_dir(repo, pr_number)
     if os.path.islink(wt):
