@@ -678,6 +678,52 @@ class TestCatalogMatchGroups(unittest.TestCase):
             self.assertNotIn("ungrouped_files", out)
 
 
+class TestGroupObjParent(unittest.TestCase):
+    """Task 7: every group `discovery` emits carries a `parent` field, so
+    `groups.json` records it for Task 6's synthesize roll-up. Back-compat:
+    a leaf/leftover group self-parents (parent == name)."""
+
+    def test_group_obj_defaults_to_self_parent(self):
+        g = orch._group_obj("leaf", ["a.py"], "standard")
+        self.assertEqual(g["parent"], "leaf")
+
+    def test_group_obj_uses_explicit_parent(self):
+        g = orch._group_obj("UI:Admin", ["a.py"], "standard", parent="UI")
+        self.assertEqual(g["parent"], "UI")
+
+    def test_catalog_groups_subgroup_carries_parent(self):
+        # Mimics _matrix_catalog's parse_groups-shaped output for a
+        # `UI: {Admin: {match: [...]}}` subgroup, alongside a flat leaf.
+        catalog = {
+            "UI:Admin": {"match": ["ui/admin/**"], "tests": [], "floor": set(),
+                         "exclude": set(), "parent": "UI"},
+            "docs": {"match": ["*.md"], "tests": [], "floor": set(),
+                    "exclude": set(), "parent": "docs"},
+        }
+        files = ["ui/admin/panel.py", "README.md", "orphan.py"]
+        groups, leftovers = orch.catalog_groups(files, catalog, 15, "standard")
+        by_name = {g["name"]: g for g in groups}
+        self.assertEqual(by_name["UI:Admin"]["parent"], "UI")
+        # leaf group self-parents
+        self.assertEqual(by_name["docs"]["parent"], "docs")
+        # leftover ._N chunk self-parents
+        leftover_groups = [g for g in groups if g["name"].startswith("._")]
+        self.assertEqual(len(leftover_groups), 1)
+        self.assertEqual(leftover_groups[0]["parent"], leftover_groups[0]["name"])
+        self.assertEqual(leftovers, ["orphan.py"])
+
+    def test_catalog_groups_oversize_subgroup_chunks_keep_parent(self):
+        catalog = {
+            "UI:Admin": {"match": ["ui/admin/**"], "tests": [], "floor": set(),
+                         "exclude": set(), "parent": "UI"},
+        }
+        files = ["ui/admin/m%02d.py" % i for i in range(20)]
+        groups, _leftovers = orch.catalog_groups(files, catalog, 15, "standard")
+        names = sorted(g["name"] for g in groups)
+        self.assertEqual(names, ["UI:Admin_1", "UI:Admin_2"])
+        self.assertTrue(all(g["parent"] == "UI" for g in groups))
+
+
 class TestPanelPriority(unittest.TestCase):
     def test_compute_group_panels_emits_priority_order(self):
         # Whatever panels are present, they must appear in PANEL_PRIORITY order.

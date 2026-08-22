@@ -798,8 +798,15 @@ def _compute_depth(files, panels, security_mode):
         return "standard"
     return "shallow"
 
-def _group_obj(name, files, security_mode):
-    """Build one group entry: panels, surfaces, and depth for a file set."""
+def _group_obj(name, files, security_mode, parent=None):
+    """Build one group entry: panels, surfaces, depth, and parent for a file set.
+
+    `parent` is the review-unit this group rolls up to (Task 6's synthesize
+    consumes it): a subgroup passes its catalog-declared parent name; a leaf
+    or leftover chunk defaults to self-parenting (``parent or name``), so a
+    flat groups.yml (all leaves) yields ``parent == name`` for every group --
+    an additive field for existing groups.json consumers.
+    """
     panels = compute_group_panels(files, security_mode)
     return {
         "name": name,
@@ -807,6 +814,7 @@ def _group_obj(name, files, security_mode):
         "surfaces": compute_group_surfaces(files),
         "panels": panels,
         "depth": _compute_depth(files, panels, security_mode),
+        "parent": parent or name,
     }
 
 def catalog_groups(files, catalog, max_per_group, security_mode):
@@ -816,15 +824,22 @@ def catalog_groups(files, catalog, max_per_group, security_mode):
     ``max_per_group`` splits into ``<name>_<i>`` chunks, and leftover files
     keep the legacy ``._N`` chunk naming. Returns ``(groups, leftovers)``;
     callers must surface ``leftovers`` (the coverage gap), never drop it.
+
+    Each named group carries the committed catalog entry's `parent` (self for
+    a leaf, the subgroup's parent name for e.g. `UI:Admin`); a chunk split off
+    an oversize group keeps that same parent. `._N` leftover chunks have no
+    catalog entry and self-parent via `_group_obj`'s default.
     """
     named, leftovers = assign_by_catalog(files, catalog)
     groups = []
     for name, fs in named.items():
+        parent = catalog[name].get("parent")
         chunks = chunk_files(fs, max_per_group)
         if len(chunks) == 1:
-            groups.append(_group_obj(name, chunks[0], security_mode))
+            groups.append(_group_obj(name, chunks[0], security_mode, parent=parent))
         else:
-            groups.extend(_group_obj("%s_%d" % (name, i + 1), c, security_mode)
+            groups.extend(_group_obj("%s_%d" % (name, i + 1), c, security_mode,
+                                     parent=parent)
                           for i, c in enumerate(chunks))
     groups.extend(_group_obj("._%d" % (i + 1), c, security_mode)
                   for i, c in enumerate(chunk_files(leftovers, max_per_group)))
