@@ -1,0 +1,23 @@
+# Panopticon Commons catalog -- 5.1 curated starter (groups-subgroups-scoping,
+# #499). Near-universal, cross-cutting file groups (Docs/CI/Build/Config/Deps)
+# that discovery.catalog_groups checks AFTER the committed .panopticon/
+# groups.yml catalog: committed groups always win, Commons only ever sees
+# genuine leftovers, and the true residual still chunks `._N`. A curated
+# starter, not an empirical pass across the target pool (that's a tracked
+# follow-up) -- order + globs are the curation surface.
+#
+# Loaded by discovery._commons_catalog() as a plain {name: {"match": [...]}}
+# mapping fed straight to assign_by_catalog -- NOT routed through
+# groups_schema.parse_groups (this is shipped/tested data, not committed
+# user input).
+groups:
+  Docs:
+    match: ["README*", "LICENSE*", "CHANGELOG*", "CONTRIBUTING*", "docs/**", "*.md"]
+  CI:
+    match: [".github/workflows/**", ".gitlab-ci.yml", ".circleci/**", "azure-pipelines*", "Jenkinsfile", ".travis.yml"]
+  Build:
+    match: ["Dockerfile*", "Makefile", "*.mk", "package.json", "pyproject.toml", "setup.py", "setup.cfg", "Cargo.toml", "go.mod", "build.gradle*", "pom.xml", "CMakeLists.txt"]
+  Config:
+    match: [".gitignore", ".editorconfig", ".pre-commit-config.yaml", "*.cfg", "*.ini", ".env.example"]
+  Deps:
+    match: ["package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "Cargo.lock", "go.sum", "requirements*.txt", "Gemfile.lock"]

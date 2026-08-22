@@ -1435,6 +1435,74 @@ def driver_cost_counts(pano_dir, verdicts_dir, tools_ran):
             "tool_scan": len(tools_ran) if tools_ran else 0}
 
 
+def _parent_of(g):
+    """Resolve a groups_meta entry's parent review-unit.
+
+    Real groups.json (discovery's `_group_obj`, Task 7) always carries an
+    explicit ``parent`` (subgroup -> its parent name; leaf -> self). Older/
+    hand-built groups_meta (tests, or a pre-5.1 groups.json) may omit the
+    key entirely, so fall back to splitting the flat id on its first ``:``
+    -- authored group/subgroup names never contain ``:`` (#5.0-02 anti-escape
+    holds), so `id.split(":", 1)[0]` is a safe, documented default that
+    self-parents any plain (non-subgroup) name.
+    """
+    return g.get("parent") or g["name"].split(":", 1)[0]
+
+
+def _roll_up_to_parent(group_objs, groups_meta, by_panel):
+    """Group the report's per-flat-id unit objects by parent for presentation.
+
+    A leaf group (flat id == its own parent, i.e. an ordinary un-nested
+    groups.yml entry) passes through unchanged -- this is today's shape,
+    keeping a flat groups.yml's report byte-identical. A genuine subgroup
+    (flat id != parent, e.g. "UI:Admin" under parent "UI") is folded into a
+    parent node: the parent's grade is `_worst_grade` over its subgroups'
+    grades (per panel), its files are the union of its subgroups' files, and
+    it lists its subgroups verbatim -- each keeping its own files/panel_grades/
+    key_findings -- so group -> subgroup -> file drill-down stays intact.
+    Purely a presentation regrouping: does not touch any finding, and is
+    computed after grade()/gate-eligibility, so it cannot affect the overall
+    letter/gate.
+    """
+    parents = [_parent_of(g) for g in groups_meta]
+    rolled = []
+    nodes_by_parent = {}
+    for unit, parent in zip(group_objs, parents):
+        if unit["name"] == parent:
+            # Leaf / self-parented: unmodified, today's shape.
+            rolled.append(unit)
+            continue
+        node = nodes_by_parent.get(parent)
+        if node is None:
+            node = {"name": parent, "_subunits": []}
+            nodes_by_parent[parent] = node
+            rolled.append(node)
+        node["_subunits"].append(unit)
+
+    for node in rolled:
+        subs = node.pop("_subunits", None)
+        if subs is None:
+            continue
+        files = []
+        seen_files = set()
+        for u in subs:
+            for fpath in u["files"]:
+                if fpath not in seen_files:
+                    seen_files.add(fpath)
+                    files.append(fpath)
+        key_findings = []
+        for u in subs:
+            for kf in u["key_findings"]:
+                if kf not in key_findings:
+                    key_findings.append(kf)
+        node["files"] = files
+        node["panel_grades"] = {p: _worst_grade([u["panel_grades"][p] for u in subs])
+                                 for p in by_panel}
+        node["key_findings"] = key_findings[:5]
+        node["subgroups"] = subs
+    return rolled
+
+
 def build_report(findings, groups_meta, target, fail_on, timestamp, review_type="repo",
                  security_mode="standard", verdicts=None, gate_unverified=False,
                  max_verify=None, verdicts_supplied=False, tool_policy_mode=None,
@@ -1631,6 +1699,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
             "key_findings": [f.get("title", "") for f in gfind
                              if f["severity"] in ("CRITICAL", "HIGH")][:5],
         })
+    group_objs = _roll_up_to_parent(group_objs, groups_meta, by_panel)
 
     overall = _worst_grade([grade(by_panel[p]) for p in by_panel])
     for f in findings:
