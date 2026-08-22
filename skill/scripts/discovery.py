@@ -436,7 +436,10 @@ def _to_list(val):
     return list(val)
 
 def load_catalog(repo):
-    """Load file group catalog from .panopticon/groups.yml or parse YAML fallback."""
+    """Load file group catalog from .panopticon/groups.yml.
+
+    A missing file returns {}; YAML/OSError/ValueError is re-raised as
+    ValueError so callers fail loud on a broken catalog."""
     path = os.path.join(repo, ".panopticon", "groups.yml")
     if not os.path.isfile(path):
         return {}
@@ -463,9 +466,8 @@ def load_catalog(repo):
             return out
         except ImportError:
             return _parse_catalog_yaml(text)
-    except Exception as e:
-        print("catalog parse error: %s" % e, file=sys.stderr)
-        return {}
+    except (OSError, yaml.YAMLError, ValueError) as e:
+        raise ValueError("catalog parse error: %s" % e) from e
 
 @functools.lru_cache(maxsize=None)
 def _repo_realpath(repo):
@@ -954,8 +956,8 @@ def _matrix_catalog(repo):
     """The committed matrix as parse_groups-NORMALIZED groups for --repo-scan /
     readiness: {name: {match: [...], tests, floor, exclude}} with `match`
     VALIDATED (a scalar/invalid match normalizes to [] -- never char-split).
-    Errors are disclosed (stderr), not fatal (the driver's load_committed_groups
-    gates fatally upstream). Empty {} when no groups.yml is committed."""
+    A missing file returns {}; a YAML/OSError is raised as ValueError so the
+    caller fails loud instead of silently degrading to an empty catalog."""
     path = os.path.join(repo, ".panopticon", "groups.yml")
     if not os.path.isfile(path):
         return {}
@@ -965,8 +967,7 @@ def _matrix_catalog(repo):
         with open(path, encoding="utf-8") as fh:
             doc = yaml.safe_load(fh) or {}
     except (OSError, yaml.YAMLError) as e:
-        print("groups.yml unreadable: %s" % e, file=sys.stderr)
-        return {}
+        raise ValueError("groups.yml unreadable: %s" % e) from e
     groups, errs = groups_schema.parse_groups(doc if isinstance(doc, dict) else {})
     for e in errs:
         print("committed groups.yml: %s" % e, file=sys.stderr)
@@ -1085,7 +1086,11 @@ def main(argv=None):
     result = build_result(repo, "repo", ".", None, impl, tests, args.max_per_group,
                           group_files=impl + tests, security_mode=args.security)
     result["discovery"] = {"method": info.get("method")}
-    catalog = _matrix_catalog(repo)   # SEC-3: parse_groups-validated matrix read
+    try:
+        catalog = _matrix_catalog(repo)   # SEC-3: parse_groups-validated matrix read
+    except ValueError as exc:
+        print("panopticon: %s" % exc, file=sys.stderr)
+        return 1
     # P6.2: --scope-file/--scope-dir/--scope-group narrow the discovered
     # universe to a target BEFORE the same matrix assignment below runs --
     # a scope filter, not a new mode. No scope arg -> scoped stays None ->
