@@ -8,6 +8,15 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG GITLEAKS_VERSION=8.18.4
 ARG GOSEC_VERSION=2.20.0
 ARG SEMGREP_VERSION=1.173.0
+ARG BANDIT_VERSION=1.9.4
+ARG BANDIT_SARIF_FORMATTER_VERSION=1.1.1
+ARG BRAKEMAN_VERSION=8.0.6
+ARG BUNDLER_AUDIT_VERSION=0.9.3
+ARG ESLINT_VERSION=10.9.0
+ARG ESLINT_PLUGIN_SECURITY_VERSION=4.0.1
+ARG ESLINT_FORMATTER_SARIF_VERSION=3.1.0
+ARG PIP_AUDIT_VERSION=2.10.1
+ARG CARGO_AUDIT_VERSION=0.22.2
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl ca-certificates git gnupg ruby nodejs npm \
@@ -17,42 +26,57 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # below is a commit SHA on a live branch, but that pin is only meaningful
 # paired with a known-compatible semgrep build -- an unpinned `pip install`
 # would keep re-validating tomorrow's semgrep release against today's rules.
-RUN pip install --no-cache-dir "semgrep==${SEMGREP_VERSION}" bandit bandit-sarif-formatter
+RUN pip install --no-cache-dir "semgrep==${SEMGREP_VERSION}" "bandit==${BANDIT_VERSION}" "bandit-sarif-formatter==${BANDIT_SARIF_FORMATTER_VERSION}"
 
 # Ruby (brakeman + bundler-audit)
-RUN gem install --no-document brakeman bundler-audit \
+RUN gem install --no-document "brakeman:${BRAKEMAN_VERSION}" "bundler-audit:${BUNDLER_AUDIT_VERSION}" \
     && bundle-audit update
 
 # Node (eslint + security plugin)
-RUN npm install -g eslint eslint-plugin-security @microsoft/eslint-formatter-sarif
+RUN npm install -g "eslint@${ESLINT_VERSION}" "eslint-plugin-security@${ESLINT_PLUGIN_SECURITY_VERSION}" "@microsoft/eslint-formatter-sarif@${ESLINT_FORMATTER_SARIF_VERSION}"
 
 # Python dependency audit
-RUN pip install --no-cache-dir pip-audit
+RUN pip install --no-cache-dir "pip-audit==${PIP_AUDIT_VERSION}"
 
 # OSV scanner (static Go binary)
 ARG OSV_SCANNER_VERSION=1.8.2
+ARG OSV_SCANNER_SHA256_AMD64=558dbed2194d05ce00d8f8c27dcb49d763eb9db3bc7e30a1bf9b6b86062ccede
+ARG OSV_SCANNER_SHA256_ARM64=9e72c15c7239d7810f556a97d5a37d4fc9de440404c05393d4ee994e2ccc51f2
 RUN arch="$(dpkg --print-architecture)" \
-    && case "$arch" in amd64) osv="amd64" ;; arm64) osv="arm64" ;; *) osv="${arch}" ;; esac \
-    && curl -sfL "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_${osv}" \
-        -o /usr/local/bin/osv-scanner \
+    && case "$arch" in amd64) osv="amd64"; sha256="${OSV_SCANNER_SHA256_AMD64}" ;; arm64) osv="arm64"; sha256="${OSV_SCANNER_SHA256_ARM64}" ;; *) echo "unsupported arch: $arch" >&2; exit 1 ;; esac \
+    && curl -sfL --connect-timeout 5 --max-time 60 "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_${osv}" \
+        -o /tmp/osv-scanner \
+    && echo "${sha256}  /tmp/osv-scanner" | sha256sum -c - \
+    && mv /tmp/osv-scanner /usr/local/bin/osv-scanner \
     && chmod +x /usr/local/bin/osv-scanner
 
 # gitleaks (architecture-aware: amd64->x64, arm64->arm64)
+ARG GITLEAKS_SHA256_X64=ba6dbb656933921c775ee5a2d1c13a91046e7952e9d919f9bac4cec61d628e7d
+ARG GITLEAKS_SHA256_ARM64=bf5f7f466ebfade1296c8bd32cf7d3f592c2aa78836aa9980ffbe2cadca7a861
 RUN arch="$(dpkg --print-architecture)" \
-    && case "$arch" in amd64) gl="x64" ;; arm64) gl="arm64" ;; *) gl="$arch" ;; esac \
-    && curl -sfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_${gl}.tar.gz" \
-        | tar -xz -C /usr/local/bin gitleaks
+    && case "$arch" in amd64) gl="x64"; sha256="${GITLEAKS_SHA256_X64}" ;; arm64) gl="arm64"; sha256="${GITLEAKS_SHA256_ARM64}" ;; *) echo "unsupported arch: $arch" >&2; exit 1 ;; esac \
+    && curl -sfL --connect-timeout 5 --max-time 60 "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_${gl}.tar.gz" \
+        -o /tmp/gitleaks.tar.gz \
+    && echo "${sha256}  /tmp/gitleaks.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/gitleaks.tar.gz -C /usr/local/bin gitleaks \
+    && rm /tmp/gitleaks.tar.gz
 
 # trivy (official apt repo — robust, arch-aware)
-RUN curl -sfL https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor -o /usr/share/keyrings/trivy.gpg \
+RUN curl -sfL --connect-timeout 5 --max-time 60 https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor -o /usr/share/keyrings/trivy.gpg \
     && echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" > /etc/apt/sources.list.d/trivy.list \
     && apt-get update && apt-get install -y --no-install-recommends trivy \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # gosec (architecture-aware)
+ARG GOSEC_SHA256_AMD64=2d056644cf265f194efaf98b80d459004c03db7b367fbc3fe7fb345773df684e
+ARG GOSEC_SHA256_ARM64=a0c554e23ad088b544d40ca63039362ed2687fb576a33c1019951dbd3edcd716
 RUN arch="$(dpkg --print-architecture)" \
-    && curl -sfL "https://github.com/securego/gosec/releases/download/v${GOSEC_VERSION}/gosec_${GOSEC_VERSION}_linux_${arch}.tar.gz" \
-        | tar -xz -C /usr/local/bin gosec
+    && case "$arch" in amd64) sha256="${GOSEC_SHA256_AMD64}" ;; arm64) sha256="${GOSEC_SHA256_ARM64}" ;; *) echo "unsupported arch: $arch" >&2; exit 1 ;; esac \
+    && curl -sfL --connect-timeout 5 --max-time 60 "https://github.com/securego/gosec/releases/download/v${GOSEC_VERSION}/gosec_${GOSEC_VERSION}_linux_${arch}.tar.gz" \
+        -o /tmp/gosec.tar.gz \
+    && echo "${sha256}  /tmp/gosec.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/gosec.tar.gz -C /usr/local/bin gosec \
+    && rm /tmp/gosec.tar.gz
 
 # Copy panopticon adapter dispatcher into the image so Docker-based runs can
 # invoke Phase 1 adapters without relying on the target repo providing it.
@@ -65,7 +89,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends default-jdk unz
 
 # SpotBugs + FindSecBugs plugin
 ARG SPOTBUGS_VERSION=4.8.6
-RUN curl -sfL "https://github.com/spotbugs/spotbugs/releases/download/${SPOTBUGS_VERSION}/spotbugs-${SPOTBUGS_VERSION}.tgz" \
+RUN curl -sfL --connect-timeout 5 --max-time 60 "https://github.com/spotbugs/spotbugs/releases/download/${SPOTBUGS_VERSION}/spotbugs-${SPOTBUGS_VERSION}.tgz" \
         | tar -xz -C /opt \
     && ln -s "/opt/spotbugs-${SPOTBUGS_VERSION}" /opt/spotbugs \
     && chmod +x /opt/spotbugs/bin/spotbugs
@@ -79,14 +103,16 @@ ARG FINDSECBUGS_VERSION=1.13.0
 # ARGs (the new digest is the jar's .sha256, or `sha256sum` of the artifact).
 ARG FINDSECBUGS_SHA256=c239763a8c327b5fb653a34dece6398578bf435b9a32c212bb8e1abe701368a5
 RUN mkdir -p /opt/spotbugs/plugin \
-    && curl -sfL "https://repo1.maven.org/maven2/com/h3xstream/findsecbugs/findsecbugs-plugin/${FINDSECBUGS_VERSION}/findsecbugs-plugin-${FINDSECBUGS_VERSION}.jar" \
+    && curl -sfL --connect-timeout 5 --max-time 60 "https://repo1.maven.org/maven2/com/h3xstream/findsecbugs/findsecbugs-plugin/${FINDSECBUGS_VERSION}/findsecbugs-plugin-${FINDSECBUGS_VERSION}.jar" \
         -o /opt/spotbugs/plugin/findsecbugs-plugin.jar \
     && echo "${FINDSECBUGS_SHA256}  /opt/spotbugs/plugin/findsecbugs-plugin.jar" | sha256sum -c -
 
 # OWASP dependency-check
 ARG DEPENDENCY_CHECK_VERSION=10.0.3
-RUN curl -sfL "https://github.com/jeremylong/DependencyCheck/releases/download/v${DEPENDENCY_CHECK_VERSION}/dependency-check-${DEPENDENCY_CHECK_VERSION}-release.zip" \
+ARG DEPENDENCY_CHECK_SHA256=5263fbafb15010823364274b83e9a2219b654d00a557d92941c37736d4076ba4
+RUN curl -sfL --connect-timeout 5 --max-time 120 "https://github.com/jeremylong/DependencyCheck/releases/download/v${DEPENDENCY_CHECK_VERSION}/dependency-check-${DEPENDENCY_CHECK_VERSION}-release.zip" \
         -o /tmp/dc.zip \
+    && echo "${DEPENDENCY_CHECK_SHA256}  /tmp/dc.zip" | sha256sum -c - \
     && unzip -q /tmp/dc.zip -d /opt \
     && rm /tmp/dc.zip
 
@@ -94,11 +120,11 @@ RUN curl -sfL "https://github.com/jeremylong/DependencyCheck/releases/download/v
 ENV CARGO_HOME=/usr/local/cargo
 ENV RUSTUP_HOME=/usr/local/rustup
 ENV PATH="/usr/local/cargo/bin:${PATH}"
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-RUN cargo install cargo-audit
+RUN timeout 180 curl --proto '=https' --tlsv1.2 -sSf --connect-timeout 5 --max-time 60 https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+RUN cargo install cargo-audit --version ${CARGO_AUDIT_VERSION}
 
 # .NET SDK (system-wide so the scanner user can invoke dotnet)
-RUN curl -sfL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 8.0 --install-dir /usr/share/dotnet
+RUN timeout 180 curl -sfL --connect-timeout 5 --max-time 60 https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 8.0 --install-dir /usr/share/dotnet
 RUN ln -s /usr/share/dotnet/dotnet /usr/bin/dotnet
 ENV DOTNET_ROOT=/usr/share/dotnet
 ENV PATH="/usr/share/dotnet:${PATH}"
@@ -166,7 +192,7 @@ RUN : "asset-refresh ${ASSET_REFRESH}" \
 # CARGO_HOME the scanner user gets below (/home/scanner/.cargo); useradd -m
 # tolerates the home directory already existing.
 RUN : "asset-refresh ${ASSET_REFRESH}" \
-    && git clone --depth 1 https://github.com/rustsec/advisory-db \
+    && timeout 60 git clone --depth 1 https://github.com/rustsec/advisory-db \
        /home/scanner/.cargo/advisory-db \
     && rm -rf /home/scanner/.cargo/advisory-db/.git \
     && chmod -R a+rX /home/scanner/.cargo
