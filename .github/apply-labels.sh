@@ -12,7 +12,7 @@ set -euo pipefail
 DRY_RUN=0
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
 
-CATALOG="$(dirname "$0")/labels.yml"
+CATALOG="${CATALOG:-$(dirname "$0")/labels.yml}"
 [[ -f "$CATALOG" ]] || { echo "label catalog not found: $CATALOG" >&2; exit 1; }
 command -v gh >/dev/null || { echo "gh CLI not found" >&2; exit 1; }
 
@@ -66,9 +66,9 @@ for line in text.splitlines():
     if m and cur:
         cur["color"] = m.group(1)
         continue
-    m = re.match(r'\s*description:\s*"?([^"]+?)"?\s*$', line)
+    m = re.match(r'\s*description:\s*"?((?:[^"\\]|\\.)*?)"?\s*$', line)
     if m and cur:
-        cur["description"] = m.group(1)
+        cur["description"] = m.group(1).replace('\\"', '"')
 if cur:
     entries.append(cur)
 for e in entries:
