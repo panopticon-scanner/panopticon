@@ -10,11 +10,11 @@ import types
 SCRIPTS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                        "skill", "scripts")
 
+from tools.git_repo import make_git_repo  # noqa: E402
+
 import scripts.discovery as discovery  # noqa: E402
 import scripts.discovery as orch  # noqa: E402
 import scripts.setup_flow as setup_flow  # noqa: E402
-
-from tools.git_repo import make_git_repo  # noqa: E402
 
 orchestrator = orch
 
