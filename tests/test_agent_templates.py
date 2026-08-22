@@ -56,8 +56,9 @@ class TestTemplateFrontmatter(unittest.TestCase):
 
     def test_kimi_dialect_fields_are_gone(self):
         for role_file in ROLES:
-            raw = open(os.path.join(dispatch.TEMPLATE_DIR, role_file),
-                       encoding="utf-8").read()
+            with open(os.path.join(dispatch.TEMPLATE_DIR, role_file),
+                      encoding="utf-8") as fh:
+                raw = fh.read()
             self.assertNotIn("model_preference", raw, role_file)
             self.assertNotIn("disallowedTools", raw, role_file)
 
