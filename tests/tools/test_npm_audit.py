@@ -101,6 +101,20 @@ class TestNpmAuditAdapter(unittest.TestCase):
             timeout=300,
         )
 
+    def test_invoke_reports_nonzero_exit(self):
+        import contextlib, io
+        adapter = na.NpmAuditAdapter()
+        fake_run = mock.Mock(return_value=mock.Mock(
+            stdout=b"audit output", stderr=b"npm audit failed", returncode=2))
+        buf = io.StringIO()
+        with mock.patch("scripts.tools.base.subprocess.run", fake_run), \
+             contextlib.redirect_stderr(buf):
+            stdout, rc = adapter.invoke("/tmp/fake")
+        self.assertEqual(stdout, b"audit output")
+        self.assertEqual(rc, 2)
+        self.assertIn("tool npm exited 2", buf.getvalue())
+        self.assertIn("npm audit failed", buf.getvalue())
+
     def test_parse_v2_produces_finding(self):
         sample = json.dumps({
             "auditReportVersion": 2,
