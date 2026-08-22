@@ -110,6 +110,15 @@ def load_affinity(path, vocabulary):
     return affinity, errors
 
 
+# #1107: an untrusted proposal (a target repo can ship
+# .panopticon/setup-proposal.json) must not drive assemble()'s collision merge
+# with pathological structure. These bound the group count, per-group match/tests
+# counts, and single-entry length so the O(n) list-membership merge stays cheap.
+_MAX_GROUPS = 500
+_MAX_GROUP_ENTRIES = 1000       # match or tests entries in one group
+_MAX_ENTRY_LEN = 4096           # a single match glob / test path / capability name
+
+
 def validate_proposal(proposal):
     """Return a list of human-readable errors (empty = valid)."""
     if not isinstance(proposal, dict):
@@ -119,6 +128,8 @@ def validate_proposal(proposal):
     groups = proposal.get("groups")
     if not isinstance(groups, list) or not groups:
         return ["proposal: 'groups' must be a non-empty list"]
+    if len(groups) > _MAX_GROUPS:
+        return ["proposal: too many groups (%d > %d)" % (len(groups), _MAX_GROUPS)]
     errors = []
     for i, g in enumerate(groups):
         if not isinstance(g, dict):
@@ -128,6 +139,9 @@ def validate_proposal(proposal):
         label = cap if isinstance(cap, str) and cap else "#%d" % i
         if not cap or not isinstance(cap, str):
             errors.append("proposal group %s: missing/empty capability" % label)
+        elif len(cap) > _MAX_ENTRY_LEN:
+            errors.append("proposal group %s: capability name exceeds %d chars"
+                          % (label, _MAX_ENTRY_LEN))
         # Guard: after stripping custom: prefix, name must not be empty
         if isinstance(cap, str) and cap and _group_name(cap) == "":
             errors.append("proposal group %s: custom: prefix cannot be empty" % label)
@@ -135,10 +149,22 @@ def validate_proposal(proposal):
         if (not isinstance(match, list) or not match
                 or not all(isinstance(m, str) for m in match)):
             errors.append("proposal group %s: match must be a non-empty list of strings" % label)
+        elif len(match) > _MAX_GROUP_ENTRIES:
+            errors.append("proposal group %s: too many match entries (%d > %d)"
+                          % (label, len(match), _MAX_GROUP_ENTRIES))
+        elif any(len(m) > _MAX_ENTRY_LEN for m in match):
+            errors.append("proposal group %s: a match entry exceeds %d chars"
+                          % (label, _MAX_ENTRY_LEN))
         tests = g.get("tests")
         if tests is not None and (not isinstance(tests, list)
                                   or not all(isinstance(t, str) for t in tests)):
             errors.append("proposal group %s: tests must be a list of strings" % label)
+        elif isinstance(tests, list) and len(tests) > _MAX_GROUP_ENTRIES:
+            errors.append("proposal group %s: too many tests entries (%d > %d)"
+                          % (label, len(tests), _MAX_GROUP_ENTRIES))
+        elif isinstance(tests, list) and any(len(t) > _MAX_ENTRY_LEN for t in tests):
+            errors.append("proposal group %s: a tests entry exceeds %d chars"
+                          % (label, _MAX_ENTRY_LEN))
     return errors
 
 

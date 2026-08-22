@@ -342,6 +342,11 @@ def load_bundled_vocabulary(vocabulary_path=None):
     return vocab, True
 
 
+# #1107: hard cap on the untrusted proposal file (a scanned repo can ship
+# .panopticon/setup-proposal.json directly). Bounds the bytes read before parse.
+_MAX_PROPOSAL_BYTES = 1_048_576   # 1 MiB -- far above any legitimate proposal
+
+
 def ingest_proposal(repo=".", proposal_path=None):
     """Ingest a setup-scan proposal -> assemble (affinity floors) -> additive-merge
     vs committed groups.yml -> write .panopticon/groups.yml.draft. Returns a
@@ -359,6 +364,10 @@ def ingest_proposal(repo=".", proposal_path=None):
     proposal_path = proposal_path or os.path.join(
         plan_contract.artifact_root(repo), "setup-proposal.json")
     try:
+        if os.path.getsize(proposal_path) > _MAX_PROPOSAL_BYTES:
+            return {"ok": False, "errors": [
+                "proposal %s exceeds the %d-byte cap -- refusing to ingest"
+                % (proposal_path, _MAX_PROPOSAL_BYTES)]}
         with open(proposal_path, encoding="utf-8") as fh:
             proposal = json.load(fh)
     except (OSError, ValueError) as e:

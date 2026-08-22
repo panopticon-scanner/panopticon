@@ -89,6 +89,12 @@ class TestHunkMap(unittest.TestCase):
         self.assertIn("a.py", m)
         self.assertTrue(any(s <= 3 <= e for (s, e) in m["a.py"]))
         self.assertEqual(m["b.py"], [(1, 2)])
+        # #1083: a no-trailing-newline untracked file still counts its last line
+        # (the chunked newline count matches `sum(1 for _ in fh)`).
+        with open(os.path.join(d, "c.py"), "w", encoding="utf-8") as fh:
+            fh.write("x\ny\nz")   # 3 lines, no trailing newline
+        m2 = diff_map.hunk_map(d, "main")
+        self.assertEqual(m2["c.py"], [(1, 3)])
 
     def test_missing_base_returns_empty(self):
         self.assertEqual(diff_map.hunk_map(self._repo(), "no-such-ref"), {})
@@ -298,6 +304,39 @@ class TestPrWorktree(unittest.TestCase):
             class R: returncode = 1; stdout = ""; stderr = "not a worktree"
             return R()
         diff_map.release_worktree("/tmp/gone", runner=runner)  # must not raise
+
+    def test_acquire_pr_calls_carry_timeout(self):
+        # #1081: every git/gh call in acquire_pr is time-bounded.
+        seen = []
+        def runner(argv, **kw):
+            seen.append(kw.get("timeout"))
+            out = ""
+            if argv[:3] == ["gh", "pr", "view"]:
+                out = '{"baseRefName": "main"}'
+            elif "rev-parse" in argv:
+                out = "deadbeef\n"
+            class R: returncode = 0; stdout = out; stderr = ""
+            return R()
+        with mock.patch.object(diff_map, "_worktree_dir", return_value="/tmp/wt-pr7"):
+            diff_map.acquire_pr(7, repo=".", runner=runner)
+        self.assertTrue(seen)
+        self.assertTrue(all(t == diff_map._PR_TIMEOUT for t in seen), seen)
+
+    def test_acquire_pr_timeout_raises_runtimeerror(self):
+        def runner(argv, **kw):
+            raise subprocess.TimeoutExpired(argv, kw.get("timeout"))
+        with self.assertRaises(RuntimeError):
+            diff_map.acquire_pr(7, repo=".", runner=runner)   # bounded, loud
+
+    def test_release_passes_timeout_and_tolerates_hang(self):
+        # #1082: release_worktree bounds the git call and a hung teardown is tolerated.
+        seen = []
+        def runner(argv, **kw):
+            seen.append(kw.get("timeout"))
+            raise subprocess.TimeoutExpired(argv, kw.get("timeout"))
+        diff_map.release_worktree("/tmp/x", runner=runner)   # must not raise
+        self.assertEqual(seen, [diff_map._PR_TIMEOUT])
+
 
 class TestDiffMapFailures(unittest.TestCase):
     def test_hunk_map_fallback_parser_and_failures(self):

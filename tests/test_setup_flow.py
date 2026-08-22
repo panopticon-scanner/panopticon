@@ -120,6 +120,17 @@ class TestSetupFlow(unittest.TestCase):
         self.assertFalse(res["ok"])
         self.assertFalse(os.path.isfile(os.path.join(d, ".panopticon", "groups.yml.draft")))
 
+    def test_ingest_oversized_proposal_refused(self):
+        # #1107: a target-shipped proposal over the byte cap is refused before parse
+        d = _repo(self)
+        pp = os.path.join(d, ".panopticon", "setup-proposal.json")
+        with open(pp, "w") as fh:
+            fh.write("[" + "0," * 600000 + "0]")   # > 1 MiB of JSON
+        res = setup_flow.ingest_proposal(d, pp)
+        self.assertFalse(res["ok"])
+        self.assertTrue(any("exceeds" in e for e in res["errors"]))
+        self.assertFalse(os.path.isfile(os.path.join(d, ".panopticon", "groups.yml.draft")))
+
     def test_scan_brief_includes_vocabulary_hints(self):
         d = _repo(self)
         vocab = {"names": ["Auth"], "hints": {"Auth": ["**/auth/**", "**/login/**"]}}
