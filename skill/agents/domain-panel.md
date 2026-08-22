@@ -27,7 +27,7 @@ Review the listed files through the **`{domain}`** domain lens, grading against 
 
 Pick the **most specific** matching code for each finding. If nothing in the menu fits, use the domain fallback `{domain}-X0X` and say why in the description (this is the catalog-gap signal).
 
-## Severity bar
+{tool_hits}## Severity bar
 
 Set `severity` to what the concrete case actually warrants — a code's
 `default_severity` is a starting point, not a verdict. Reserve **CRITICAL** for
