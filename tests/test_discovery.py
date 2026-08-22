@@ -886,6 +886,14 @@ class TestGroupsFormatReconciliation(unittest.TestCase):
         self.assertEqual(assigned, {"src": ["src/a.py"], "tests": ["tests/b.py"]})
         self.assertEqual(leftovers, ["docs/c.md"])
 
+    def test_tests_globs_claim_files_into_their_group(self):
+        catalog = {"Auth": {"match": ["src/auth/**"], "tests": ["tests/auth/**"]}}
+        assigned, leftovers = orch.assign_by_catalog(
+            ["src/auth/login.py", "tests/auth/test_login.py", "misc/x.py"], catalog)
+        self.assertIn("src/auth/login.py", assigned["Auth"])
+        self.assertIn("tests/auth/test_login.py", assigned["Auth"])   # was a leftover before
+        self.assertEqual(leftovers, ["misc/x.py"])
+
 
 def _repo_with_matrix(tmp_path):
     import subprocess, os

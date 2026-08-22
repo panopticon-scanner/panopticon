@@ -334,11 +334,14 @@ def assign_by_catalog(files, catalog):
     are files no group matched — the coverage gap the caller must disclose.
     """
     # Precompile each group's patterns once so regexes are not rebuilt per file.
+    # `tests:` globs are compiled alongside `match:` so a test file matching
+    # either lands in that group and is credited toward coverage (#1137).
     matchable = []
     for name, g in catalog.items():
-        if g.get("match"):
+        pats = list(g.get("match") or []) + list(g.get("tests") or [])
+        if pats:
             compiled = []
-            for pat in g["match"]:
+            for pat in pats:
                 negate = pat.startswith("!")
                 compiled.append((negate, _glob_to_re(pat[1:] if negate else pat)))
             matchable.append((name, compiled))
