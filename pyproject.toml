@@ -37,6 +37,8 @@ Issues = "https://github.com/panopticon-scanner/panopticon/issues"
 
 [tool.ruff]
 target-version = "py311"
+extend-exclude = ["*.json"]
+force-exclude = true
 [tool.ruff.lint]
 select = ["E", "F", "W"]
 ignore = ["E401", "E501", "E701", "E702"]

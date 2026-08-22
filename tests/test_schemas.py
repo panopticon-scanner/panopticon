@@ -5,9 +5,10 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "skill"))
 try:
-    from jsonschema import validate
+    from jsonschema import validate, ValidationError
 except ImportError:
     validate = None
+    ValidationError = Exception
 
 import scripts.tools.pip_audit as pa
 import scripts.tools.npm_audit as na
@@ -57,8 +58,16 @@ class TestSchemas(unittest.TestCase):
     def test_findings_envelope_schema(self):
         schema = self._load("findings-envelope-schema.json")
         self.assertEqual(schema["title"], "PanopticonFindingsEnvelope")
-        self.assertEqual(schema["required"], ["findings"])
+        self.assertEqual(schema["required"], ["findings", "_panopticon"])
         self.assertFalse(schema["additionalProperties"])
+        # oneOf is used to allow both legacy and domain-role findings
+        items = schema["properties"]["findings"]["items"]
+        self.assertIn("oneOf", items)
+        refs = {ref["$ref"] for ref in items["oneOf"]}
+        self.assertEqual(
+            refs,
+            {"#/definitions/legacyPanelFinding", "#/definitions/domainRoleFinding"},
+        )
 
     def test_report_schema_source_role_includes_matrix_roles(self):
         # #5.0-05: the 5.0 matrix reviewers emit source_role domain_panel /
@@ -67,21 +76,82 @@ class TestSchemas(unittest.TestCase):
         src = schema["properties"]["findings"]["items"]["properties"]["source_role"]
         self.assertLessEqual({"domain_panel", "domain_advisor"}, set(src["enum"]))
 
-    def test_findings_envelope_accepts_matrix_finding_and_panopticon(self):
-        # #5.0-05: a conformant matrix cell (domain_panel source_role + the
-        # REQUIRED _panopticon block) must validate against the shipped envelope.
+    def test_findings_envelope_accepts_legacy_panel_review(self):
+        # Legacy panel_review / lens_sweep envelope still validates.
         schema = self._load("findings-envelope-schema.json")
         finding = {
             "id": "SEC-001", "severity": "HIGH", "panel": "security",
             "category": "injection",
             "location": {"file": "src/app.py", "line_start": 10},
             "title": "t", "description": "d", "impact": "i", "remediation": "r",
-            "references": [], "source_role": "domain_panel", "depth": "standard",
+            "references": [], "source_role": "panel_review", "depth": "standard",
             "provenance": {}, "citations": {},
         }
         envelope = {"findings": [finding],
-                    "_panopticon": {"run_id": "R", "domain": "SEC", "group": "g"},
+                    "_panopticon": {"run_id": "R", "role": "panel_review"},
                     "schema_version": 1}
+        validate(instance=envelope, schema=schema)  # must not raise
+
+    def test_findings_envelope_accepts_domain_panel(self):
+        # #5.0-05 / #1099: a conformant matrix cell (domain_panel source_role +
+        # the REQUIRED _panopticon block) must validate against the shipped envelope.
+        schema = self._load("findings-envelope-schema.json")
+        finding = {
+            "domain": "SEC", "code": "SEC-INJ-001", "severity": "HIGH",
+            "category": "injection",
+            "location": {"file": "src/app.py", "line_start": 10, "line_end": 12},
+            "title": "SQL injection", "description": "d",
+            "source_role": "domain_panel",
+            "citations": {},
+        }
+        envelope = {
+            "findings": [finding],
+            "_panopticon": {"run_id": "R", "role": "domain_panel",
+                            "domain": "SEC", "group": "g1"},
+            "schema_version": 1,
+        }
+        validate(instance=envelope, schema=schema)  # must not raise
+
+    def test_findings_envelope_rejects_domain_panel_without_required(self):
+        # #1099: domain_panel findings must carry domain/code/source_role.
+        schema = self._load("findings-envelope-schema.json")
+        bad = {
+            "findings": [{"severity": "HIGH", "title": "t",
+                          "description": "d",
+                          "location": {"file": "src/app.py", "line_start": 10}}],
+            "_panopticon": {"run_id": "R", "role": "domain_panel",
+                            "domain": "SEC", "group": "g1"},
+            "schema_version": 1,
+        }
+        with self.assertRaises(ValidationError):
+            validate(instance=bad, schema=schema)
+
+    def test_findings_envelope_rejects_missing_panopticon_block(self):
+        # #1099: the _panopticon block is REQUIRED by the envelope schema.
+        schema = self._load("findings-envelope-schema.json")
+        bad = {
+            "findings": [{"severity": "HIGH", "title": "t",
+                          "description": "d",
+                          "location": {"file": "src/app.py", "line_start": 10}}],
+            "schema_version": 1,
+        }
+        with self.assertRaises(ValidationError):
+            validate(instance=bad, schema=schema)
+
+    def test_findings_envelope_accepts_domain_advisor(self):
+        schema = self._load("findings-envelope-schema.json")
+        finding = {
+            "domain": "SEC", "code": "SEC-ADV-001", "severity": "MEDIUM",
+            "location": {"file": "src/app.py", "line_start": 10},
+            "title": "t", "description": "d",
+            "source_role": "domain_advisor",
+        }
+        envelope = {
+            "findings": [finding],
+            "_panopticon": {"run_id": "R", "role": "domain_advisor",
+                            "domain": "SEC", "group": "g1"},
+            "schema_version": 1,
+        }
         validate(instance=envelope, schema=schema)  # must not raise
 
     def test_advisor_verdict_schema_accepts_schema_version(self):

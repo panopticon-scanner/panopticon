@@ -16,7 +16,7 @@
     },
     "_panopticon": {
       "type": "object",
-      "description": "Cell-identity block (run_id/domain/group/stage) written by the matrix reviewer; REQUIRED by the driver, so the envelope must permit it under additionalProperties:false (#5.0-05).",
+      "description": "Cell-identity block (run_id/role/domain/group) written by the matrix reviewer; REQUIRED by the driver, so the envelope must permit it under additionalProperties:false (#5.0-05).",
       "required": ["run_id", "role"],
       "properties": {
         "run_id": {"type": "string"},
