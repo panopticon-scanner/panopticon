@@ -1196,8 +1196,18 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
                 break
         self.assertEqual(status["status"], "complete")
         self.assertTrue(os.path.isfile(driver._pano(d, "report.json")))
-        # idempotent: a completed run stays complete
-        self.assertEqual(driver.run(args)["status"], "complete")
+        # #1: re-invoking a COMPLETED run refuses (never silently returns a
+        # possibly-stale report as though it were fresh) and names --reset; the
+        # durable report stays on disk.
+        redo = driver.run(args)
+        self.assertEqual(redo["status"], "error")
+        self.assertIn("already complete", redo["message"])
+        self.assertIn("--reset", redo["message"])
+        self.assertTrue(os.path.isfile(driver._pano(d, "report.json")))
+        # --reset starts a new run: back to the first checkpoint, not an error
+        self.assertEqual(
+            driver.run(self._args(d, "--no-tools", "--reset"))["status"],
+            "checkpoint")
 
     def test_resume_reemits_same_checkpoint_before_dispatch(self):
         d = self._repo()

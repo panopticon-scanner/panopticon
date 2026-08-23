@@ -1798,6 +1798,19 @@ def run(args, runner=subprocess.run, phases=PHASES):
         if conflicts:
             return _error_status("flag drift (use --reset to start over): "
                                  + "; ".join(conflicts))
+    # #1: a bare re-invocation of an ALREADY-complete run matches every manifest
+    # field (conflicting_flags treats a None incoming value as no-conflict), so it
+    # would advance straight to "complete" and hand back a possibly-stale report as
+    # though it were a fresh scan -- the worst failure mode for a review tool.
+    # Refuse loudly and name --reset instead; the durable report stays on disk.
+    # (Guarded by `not args.reset`: a --reset run just cleared its derived
+    # artifacts, so it can never be already-complete at this point.)
+    if not args.reset and _first_not_done(phases, review_root, manifest) is None:
+        report = _pano(review_root, "report.json")
+        loc = report if os.path.exists(report) else review_root
+        return _error_status(
+            "run already complete (report at %s) -- use `--reset` to start a new "
+            "run" % loc)
     # §5.1: point runs/latest at the active run folder now that the manifest (hence
     # the tag) is established — so the pointer exists throughout the run, not just
     # after synthesize writes the report.
