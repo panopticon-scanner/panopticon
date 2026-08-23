@@ -2216,6 +2216,11 @@ def main(argv=None):
     ap.add_argument("--out", default=None)
     ap.add_argument("--run-id", default=None,
                     help="driver run-manifest run_id -> X0X generated_by.run_id")
+    ap.add_argument("--run-dir", default=None,
+                    help="directory holding THIS run's artifacts (tools-manifest, "
+                         "scout-*, coverage-*, dispatch plans, verify-queue, "
+                         "unenforced-ack). Defaults to dirname(--groups); flat "
+                         ".panopticon only for legacy non-run-folder invocations.")
     ap.add_argument("--html-out", metavar="PATH", default=None,
                     help="Write HTML report to PATH")
     ap.add_argument("--compare", metavar="JSON", nargs=2, default=None,
@@ -2312,6 +2317,24 @@ def main(argv=None):
     if security_mode is None:
         security_mode = "standard"
 
+    # #17/#16: run-scoped artifacts (tools-manifest, scout-*, coverage-*, dispatch
+    # plans, verify-queue, unenforced-ack) live in the run directory next to
+    # groups.json — NOT flat .panopticon under 5.1 per-run folders. Reading them
+    # flat certified tool coverage against a PREVIOUS run's manifest (#17) and
+    # zeroed the scout coverage (#16). Resolve every run artifact under run_dir.
+    run_dir = args.run_dir or (os.path.dirname(groups_path) if groups_path else "") \
+        or ".panopticon"
+    if args.run_id and run_dir == ".panopticon":
+        # #17 fail-open guard: a 5.1 run (--run-id set) that fell back to flat
+        # .panopticon has no run folder, so it would read a PRIOR run's stale
+        # artifacts. Make the drift LOUD — never silent. (The schema_version
+        # assertion at the manifest read still FATALs on a stale pre-5.1 manifest,
+        # so certification cannot silently certify against one either.)
+        print("WARNING (#17): --run-id set but no run directory resolved "
+              "(--run-dir/--groups); falling back to flat .panopticon, which under "
+              "5.1 holds no run artifacts. Pass --groups <run-folder>/groups.json.",
+              file=sys.stderr)
+
     from datetime import datetime, timezone
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     out = args.out or os.path.join(".panopticon", "report-%s.json" % ts.replace(":", ""))
@@ -2343,7 +2366,7 @@ def main(argv=None):
     # `missing`, not the scout's advisory list. Tolerant read: a corrupt/absent
     # manifest just falls back to the 4.x scout-derived gate.
     tool_manifest = None
-    _tm_path = os.path.join(".panopticon", "tools-manifest.json")
+    _tm_path = os.path.join(run_dir, "tools-manifest.json")
     if os.path.isfile(_tm_path):
         try:
             with open(_tm_path, encoding="utf-8") as fh:
@@ -2351,6 +2374,19 @@ def main(argv=None):
             tool_manifest = _tm if isinstance(_tm, dict) else None
         except (OSError, ValueError):
             tool_manifest = None
+    if tool_manifest is not None:
+        # #17: never certify against a foreign/stale manifest. A 5.1 manifest
+        # carries schema_version; its run_id (when the runner stamps it) must
+        # match this run. Either mismatch is a loud error, not a silent fallback.
+        if "schema_version" not in tool_manifest:
+            sys.exit("FATAL (#17): tools-manifest at %s lacks schema_version — it "
+                     "looks like a pre-5.1 flat manifest from another run; refusing "
+                     "to certify against it. Re-run the tools phase." % _tm_path)
+        _mrid = tool_manifest.get("run_id")
+        if args.run_id and _mrid and _mrid != args.run_id:
+            sys.exit("FATAL (#17): tools-manifest run_id %r != this run %r (at %s) — "
+                     "refusing to certify against another run's manifest."
+                     % (_mrid, args.run_id, _tm_path))
     catalog = citations.load_cwe_catalog()
     citations.enrich_citations(findings, catalog, epss_enabled=args.epss,
                                cache_path=os.path.join(".panopticon", "epss-cache.json"))
@@ -2369,7 +2405,7 @@ def main(argv=None):
         import copy
         prepared, _ = prepare_for_queue(copy.deepcopy(findings))
         queue, cut = evidence_mod.build_verify_queue(prepared, args.max_verify)
-        qpath = os.path.join(".panopticon", "verify-queue.json")
+        qpath = os.path.join(run_dir, "verify-queue.json")
         if queue:
             evidence_mod.write_verify_queue(queue, cut, qpath)
             print("verify queue: %d entries (%d cut by --max-verify) -> %s"
@@ -2408,7 +2444,7 @@ def main(argv=None):
     # "reconciled, nothing wrong" -- an empty unexpected/missing pair means
     # nothing on its own (see meta.integrity below).
     _plan_lists, plans_seen, invalid_plans = load_dispatch_plans_detailed(
-        groups_path=groups_path, root=os.getcwd())
+        panopticon_dir=run_dir, groups_path=groups_path, root=os.getcwd())
     _plan = [e for plan in _plan_lists for e in plan]
     out_of_scope = out_of_scope_findings(args.files, _plan)
     if out_of_scope and out_of_scope["count"]:
@@ -2433,7 +2469,7 @@ def main(argv=None):
                                             key=lambda kv: (kv[0][0], kv[0][1] or ""))]
     _queue = None
     invalid_verify_queue = None
-    queue_path = os.path.join(".panopticon", "verify-queue.json")
+    queue_path = os.path.join(run_dir, "verify-queue.json")
     if os.path.isfile(queue_path):
         try:
             with open(queue_path, encoding="utf-8") as fh:
@@ -2448,7 +2484,7 @@ def main(argv=None):
     resume = group_runner.resume_stats(_plan, _queue, args.verdicts_dir,
                                        _verdicts=verdicts)
     unexpected, missing = reconcile_findings_files(_plan, args.files)
-    _ack = read_unenforced_ack()
+    _ack = read_unenforced_ack(os.path.join(run_dir, "unenforced-ack.json"))
     # #493 R2: an ack with no run binding over-reports risk forever -- a
     # stale ack from an earlier --allow-unenforced run would mark a fully
     # enforced run acknowledged. The ack now carries plan_sha256 (canonical
@@ -2490,7 +2526,7 @@ def main(argv=None):
         integrity["write_guard_covers_bash"] = _ack.get("write_guard_covers_bash", False)
     scout_requested = set()
     scout_profiles_seen = 0
-    for sp in glob.glob(os.path.join(".panopticon", "scout-*.json")):
+    for sp in glob.glob(os.path.join(run_dir, "scout-*.json")):
         try:
             with open(sp, encoding="utf-8") as fh:
                 sd = json.load(fh)
@@ -2514,7 +2550,7 @@ def main(argv=None):
     # same way groups.json/scout-*.json are auto-discovered above -- fed to
     # audit_floor_cells in build_report along with args.files (the "ingested
     # paths", reconcile_findings_files' own term for this same list).
-    coverages = load_coverage_files()
+    coverages = load_coverage_files(run_dir)
 
     # meta.cost (#1030): on the 5.0 driver path, count every dispatch class from
     # its own on-disk artifact. The legacy cost_fan_out role filter only sees

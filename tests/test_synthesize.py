@@ -5121,6 +5121,85 @@ class TestWriteReportDiscardedSplit(unittest.TestCase):
             with contextlib.redirect_stderr(err):
                 syn.write_report(report, out, max_bytes=8000)
             self.assertIn("report base is", err.getvalue())   # loud, not silent floor
+class TestRunDirArtifactResolution(unittest.TestCase):
+    """#17/#16: under 5.1 per-run folders synthesize must resolve run artifacts
+    (scout-*, tools-manifest, ...) from dirname(--groups), NOT flat .panopticon.
+    Reading them flat zeroed scout coverage (#16) and certified tool coverage
+    against a stale/foreign manifest (#17)."""
+
+    def _layout(self, d, manifest=None):
+        run_dir = os.path.join(d, ".panopticon", "runs", "tag")
+        os.makedirs(run_dir)
+        with open(os.path.join(run_dir, "groups.json"), "w") as fh:
+            json.dump({"groups": [{"name": "g1", "files": []},
+                                   {"name": "g2", "files": []}]}, fh)
+        for g in ("g1", "g2"):
+            with open(os.path.join(run_dir, "scout-%s.json" % g), "w") as fh:
+                json.dump({"group": g, "tools": ["semgrep"], "panels": ["code"]}, fh)
+        tm = manifest if manifest is not None else {
+            "schema_version": 1, "run_id": "rid-1", "selected": ["semgrep"],
+            "produced": ["semgrep"], "missing": [], "excluded_scope": []}
+        with open(os.path.join(run_dir, "tools-manifest.json"), "w") as fh:
+            json.dump(tm, fh)
+        fp = os.path.join(d, "findings-g1-code.json")
+        with open(fp, "w") as fh:
+            json.dump({"findings": []}, fh)
+        return os.path.join(run_dir, "groups.json"), fp
+
+    def _run(self, groups, fp, out):
+        return syn.main(["--target", "src", "--groups", groups,
+                         "--run-id", "rid-1", "--out", out, fp])
+
+    def test_scouts_resolved_from_run_dir_not_flat(self):
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            groups, fp = self._layout(d)
+            # a STALE flat manifest (pre-5.1, no schema_version) the OLD code read;
+            # the fix must ignore it — if it read flat here the schema assertion
+            # below would fire and this test would fail loudly.
+            os.makedirs(".panopticon", exist_ok=True)
+            with open(os.path.join(".panopticon", "tools-manifest.json"), "w") as fh:
+                json.dump({"selected": ["bandit"], "produced": ["bandit"]}, fh)
+            out = os.path.join(d, "r.json")
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                rc = self._run(groups, fp, out)
+            self.assertEqual(rc, 0)
+            cov = json.load(open(out))["meta"]["coverage"]
+            self.assertEqual(cov["scout_profiles_seen"], 2)   # old flat glob => 0
+            self.assertIn("semgrep", cov["scout_requested"])
+
+    def test_foreign_run_id_manifest_is_a_loud_error(self):
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            groups, fp = self._layout(d, manifest={
+                "schema_version": 1, "run_id": "SOME-OTHER-RUN",
+                "selected": [], "produced": [], "missing": []})
+            out = os.path.join(d, "r.json")
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    self._run(groups, fp, out)
+
+    def test_pre_5_1_schemaless_manifest_in_run_dir_is_a_loud_error(self):
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            groups, fp = self._layout(d, manifest={
+                "selected": ["bandit"], "produced": ["bandit"]})   # no schema_version
+            out = os.path.join(d, "r.json")
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    self._run(groups, fp, out)
+
+    def test_run_id_without_run_dir_warns_loudly(self):
+        # #17 fail-open guard: a 5.1 run (--run-id) that falls back to flat
+        # .panopticon must say so loudly rather than silently read stale artifacts.
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            os.makedirs(".panopticon")
+            fp = os.path.join(d, "findings-g1-code.json")
+            with open(fp, "w") as fh:
+                json.dump({"findings": []}, fh)
+            out = os.path.join(d, "r.json")
+            err = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                rc = syn.main(["--target", "src", "--run-id", "rid-1", "--out", out, fp])
+            self.assertEqual(rc, 0)
+            self.assertIn("no run directory resolved", err.getvalue())
 
 
 class TestOutOfScope(unittest.TestCase):
