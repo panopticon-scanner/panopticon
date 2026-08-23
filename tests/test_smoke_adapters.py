@@ -1,3 +1,4 @@
+import json
 import subprocess
 import unittest
 
@@ -91,6 +92,83 @@ class TestCheckSemgrepScan(unittest.TestCase):
         self.assertEqual(seen["argv"][:2], ["semgrep", "scan"])
         self.assertIn("--sarif", seen["argv"])
         self.assertTrue(seen["argv"][-1].endswith("probe.py"))   # the fixture
+
+
+def _roslyn_runner(rule_id=None, returncode=0, bad_json=False, no_file=False):
+    """Return a runner that fakes `dotnetarium-scs` by writing the SARIF file
+    the probe expects at the `--export=` path."""
+    def run(argv, **kwargs):
+        # argv layout: ["dotnetarium-scs", csproj, "--export=<sarif>", ...]
+        export_arg = argv[2]
+        sarif = export_arg.split("=", 1)[1]
+        if no_file:
+            return subprocess.CompletedProcess(argv, returncode, b"", b"")
+        results = []
+        if rule_id is not None:
+            results.append({"ruleId": rule_id})
+        data = {"version": "2.1.0", "runs": [{"results": results}]}
+        payload = b"not json" if bad_json else json.dumps(data).encode("utf-8")
+        with open(sarif, "wb") as fh:
+            fh.write(payload)
+        return subprocess.CompletedProcess(argv, returncode, b"", b"")
+    return run
+
+
+class TestCheckRoslynSecGuardBuild(unittest.TestCase):
+    def test_scs_finding_passes(self):
+        ok, msg = sa.check_roslyn_secguard_build(
+            runner=_roslyn_runner(rule_id="SCS0001"))
+        self.assertTrue(ok, msg)
+
+    def test_no_sarif_output_fails(self):
+        ok, msg = sa.check_roslyn_secguard_build(
+            runner=_roslyn_runner(rule_id="SCS0001", no_file=True))
+        self.assertFalse(ok)
+        self.assertIn("no SARIF output produced", msg)
+
+    def test_invalid_sarif_json_fails(self):
+        ok, msg = sa.check_roslyn_secguard_build(
+            runner=_roslyn_runner(bad_json=True))
+        self.assertFalse(ok)
+        self.assertIn("not valid JSON", msg)
+
+    def test_no_scs_findings_fails(self):
+        ok, msg = sa.check_roslyn_secguard_build(
+            runner=_roslyn_runner(rule_id="CS0001"))
+        self.assertFalse(ok)
+        self.assertIn("no SecurityCodeScan", msg)
+
+    def test_binary_missing_fails(self):
+        def run(argv, **kwargs):
+            raise FileNotFoundError()
+        ok, msg = sa.check_roslyn_secguard_build(runner=run)
+        self.assertFalse(ok)
+        self.assertIn("not found", msg)
+
+    def test_timeout_fails(self):
+        def run(argv, **kwargs):
+            raise subprocess.TimeoutExpired(argv, sa.PROBE_TIMEOUT)
+        ok, msg = sa.check_roslyn_secguard_build(runner=run)
+        self.assertFalse(ok)
+        self.assertIn("no response", msg)
+
+    def test_os_error_fails(self):
+        def run(argv, **kwargs):
+            raise OSError(8, "Exec format error")
+        ok, msg = sa.check_roslyn_secguard_build(runner=run)
+        self.assertFalse(ok)
+        self.assertIn("failed to exec", msg)
+
+    def test_uses_the_real_scanner_argv(self):
+        seen = {}
+        def run(argv, **kwargs):
+            seen["argv"] = argv
+            return _roslyn_runner(rule_id="SCS0001")(argv, **kwargs)
+        sa.check_roslyn_secguard_build(runner=run)
+        self.assertEqual(seen["argv"][:1], ["dotnetarium-scs"])
+        self.assertTrue(any(a.startswith("--export=") for a in seen["argv"]))
+        self.assertIn("--ignore-msbuild-errors", seen["argv"])
+        self.assertIn("--no-banner", seen["argv"])
 
 
 if __name__ == "__main__":

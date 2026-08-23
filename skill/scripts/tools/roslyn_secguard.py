@@ -145,7 +145,7 @@ class RoslynSecGuardAdapter:
         return chosen
 
     def invoke(self, target: str) -> tuple[bytes, int]:
-        # Build the target with the SecurityCodeScan analyzer and output SARIF.
+        # Run the target through the DotnetariumSCS standalone scanner and output SARIF.
         # The project is copied to a temporary directory so read-only mounts and
         # stale incremental build state do not break analysis.
         tmp = tempfile.mkdtemp(prefix="roslyn-")
@@ -253,7 +253,7 @@ class RoslynSecGuardAdapter:
                         location=location,
                         description=message or "No description provided.",
                         impact="Potential security issue in C# code.",
-                        remediation="Review the SecurityCodeScan rule and refactor.",
+                        remediation="Review the DotnetariumSCS (SCS) rule and refactor.",
                         citations={"cwe": as_list(cwe)},
                         tool_evidence=omit_none({"rule_id": rule_id}),
                     )
