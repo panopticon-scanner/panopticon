@@ -65,12 +65,19 @@ class TestOfflineAssets(unittest.TestCase):
                        "advisory-db",                  # rustsec clone
                        "--download-offline-databases", # osv
                        "/opt/odc-data",                # dependency-check
-                       "/opt/nuget-packages",          # SCS offline feed
-                       "fallbackPackageFolders"]:      # nuget.config wiring
+                       "dotnetarium-scs"]:             # C# security scanner
             self.assertIn(marker, self.text)
 
-    def test_nvd_key_is_buildkit_secret_not_env(self):
-        self.assertIn("--mount=type=secret,id=nvd_api_key", self.text)
+    def test_nvd_db_from_pinned_cache_image_not_synced_at_build(self):
+        # The NVD database is COPY'd from the cron-published cache image (the
+        # "Refresh NVD data cache" workflow), not synced at build — so no build
+        # hits the NVD API or needs a secret.
+        self.assertIn("ARG NVD_DATA_REF", self.text)
+        self.assertIn("AS nvd-data", self.text)
+        self.assertIn("COPY --from=nvd-data /opt/odc-data /opt/odc-data", self.text)
+        # the old build-time sync and its secret mount are gone
+        self.assertNotIn("--mount=type=secret,id=nvd_api_key", self.text)
+        self.assertNotIn("--updateonly", self.text)
         self.assertNotIn("ENV NVD_API_KEY", self.text)
 
     def test_publish_cadence_and_tags(self):

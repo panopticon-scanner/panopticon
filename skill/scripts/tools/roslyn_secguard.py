@@ -1,4 +1,4 @@
-"""Roslyn Security Guard / SecurityCodeScan adapter for C# security findings."""
+"""Roslyn Security Guard / DotnetariumSCS adapter for C# security findings."""
 from __future__ import annotations
 import json
 import os
@@ -65,7 +65,7 @@ def _rebase_sarif_uris(raw, tmp):
     """Rewrite SARIF artifactLocation/resultFile URIs from the ephemeral build
     copy (`tmp`) to repo-relative paths, so findings report a stable path and the
     host-local `/tmp/roslyn-XXX/` prefix never leaks (#1116). invoke() builds in a
-    temp copy, so MSBuild's ErrorLog roots every uri there; _location only strips
+    temp copy, so the standalone scanner roots every URI there; _location only strips
     the `file://` scheme, not the tmp prefix. Best-effort: unparseable SARIF or a
     uri outside `tmp` is returned unchanged."""
     try:
@@ -145,7 +145,7 @@ class RoslynSecGuardAdapter:
         return chosen
 
     def invoke(self, target: str) -> tuple[bytes, int]:
-        # Build the target with the SecurityCodeScan analyzer and output SARIF.
+        # Run the target through the DotnetariumSCS standalone scanner and output SARIF.
         # The project is copied to a temporary directory so read-only mounts and
         # stale incremental build state do not break analysis.
         tmp = tempfile.mkdtemp(prefix="roslyn-")
@@ -159,9 +159,10 @@ class RoslynSecGuardAdapter:
 
             sarif = os.path.join(tmp, "out.sarif")
             cmd = [
-                "dotnet", "build", tmp_target,
-                "-p:TreatWarningsAsErrors=false",
-                "-p:ErrorLog=" + sarif + ",version=2.1",
+                "dotnetarium-scs", tmp_target,
+                "--export=" + sarif,
+                "--ignore-msbuild-errors",
+                "--no-banner",
             ]
             _stdout, rc = run_tool(cmd, timeout=600)
             if os.path.exists(sarif):
@@ -197,7 +198,7 @@ class RoslynSecGuardAdapter:
         """Return the message text from a SARIF result.
 
         SARIF allows ``message`` to be either a plain string or a dict with a
-        ``text`` property. Some tools (including older SecurityCodeScan builds)
+        ``text`` property. Some tools (including older DotnetariumSCS builds)
         emit the string form, so handle both.
         """
         message = result.get("message", default)
@@ -223,7 +224,7 @@ class RoslynSecGuardAdapter:
             for result in results:
                 try:
                     rule_id = result.get("ruleId", "")
-                    # Only SecurityCodeScan rules are findings. Compiler/restore
+                    # Only DotnetariumSCS (SCS) rules are findings. Compiler/restore
                     # diagnostics (CS####, NU####, MSB####) are dropped: they are
                     # noise from offline builds and can quote file content into
                     # the report (the #86 exfiltration channel).
@@ -252,7 +253,7 @@ class RoslynSecGuardAdapter:
                         location=location,
                         description=message or "No description provided.",
                         impact="Potential security issue in C# code.",
-                        remediation="Review the SecurityCodeScan rule and refactor.",
+                        remediation="Review the DotnetariumSCS (SCS) rule and refactor.",
                         citations={"cwe": as_list(cwe)},
                         tool_evidence=omit_none({"rule_id": rule_id}),
                     )

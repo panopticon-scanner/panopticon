@@ -24,6 +24,7 @@ env:
 jobs:
   scan:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     # Route each PR to exactly one trigger: forks via pull_request_target,
     # same-repo branches via pull_request; push always runs.
     if: >-
@@ -81,6 +82,7 @@ jobs:
           if docker pull ${{ env.IMAGE }}; then
             docker tag ${{ env.IMAGE }} panopticon-tools
           else
+            echo "::warning::Pre-built panopticon-tools image not available from GHCR; falling back to a local build. The security scan will run on a degraded, secretless image (NVD API key and some offline assets may be missing)."
             echo "Pre-built image not found; building from trusted controller checkout."
             docker build -t panopticon-tools controller
           fi

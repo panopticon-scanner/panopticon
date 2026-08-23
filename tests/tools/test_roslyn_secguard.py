@@ -39,7 +39,7 @@ ROSLYN_SAMPLE_V1 = json.dumps({
     }]
 }).encode()
 
-# SecurityCodeScan can emit ``message`` as a plain string rather than a dict.
+# DotnetariumSCS can emit ``message`` as a plain string rather than a dict.
 ROSLYN_SAMPLE_STRING_MESSAGE = json.dumps({
     "runs": [{
         "results": [{
@@ -259,10 +259,11 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
 
         cmd = calls[0][0]
         kwargs = calls[0][1]
-        self.assertEqual(cmd[0], "dotnet")
-        self.assertEqual(cmd[1], "build")
-        self.assertTrue(cmd[2].startswith(copied_dst[0]))
-        self.assertTrue(any(arg.startswith("-p:ErrorLog=") for arg in cmd))
+        self.assertEqual(cmd[0], "dotnetarium-scs")
+        self.assertTrue(cmd[1].startswith(copied_dst[0]))
+        self.assertTrue(any(arg.startswith("--export=") for arg in cmd))
+        self.assertIn("--ignore-msbuild-errors", cmd)
+        self.assertIn("--no-banner", cmd)
         self.assertEqual(kwargs.get("timeout"), 600)
         self.assertTrue(kwargs.get("capture_output"))
 

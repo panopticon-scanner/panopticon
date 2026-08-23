@@ -1,6 +1,18 @@
 # panopticon-tools: bundled static-analysis tools for grounded code review.
 # Build:  docker build -t panopticon-tools .
 # Run:    docker run --rm -v "$PWD":/src:ro panopticon-tools <tool> ...
+# NVD database comes from the cron-published, version-keyed cache image (the
+# "Refresh NVD data cache" workflow) — so no build hits the NVD API or needs a
+# secret. docker-publish overrides NVD_DATA_REF with an @sha256 digest so each
+# publish is content-pinned; the default moving tag serves the PR gate and local
+# builds. Keep the default tag's version in sync with DEPENDENCY_CHECK_VERSION;
+# rebuild the cache by running the "Refresh NVD data cache" workflow.
+ARG NVD_DATA_REF=ghcr.io/panopticon-scanner/panopticon-tools-nvd:dc-10.0.3
+# DL3006: the version tag lives inside NVD_DATA_REF (docker-publish pins a @sha256
+# digest), so hadolint cannot see it statically.
+# hadolint ignore=DL3006
+FROM ${NVD_DATA_REF} AS nvd-data
+
 FROM python:3.12-slim@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -30,15 +42,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # below is a commit SHA on a live branch, but that pin is only meaningful
 # paired with a known-compatible semgrep build -- an unpinned `pip install`
 # would keep re-validating tomorrow's semgrep release against today's rules.
-RUN pip install --no-cache-dir "semgrep==${SEMGREP_VERSION}" "bandit==${BANDIT_VERSION}" "bandit-sarif-formatter==${BANDIT_SARIF_FORMATTER_VERSION}"
+RUN pip install --timeout=300 --no-cache-dir "semgrep==${SEMGREP_VERSION}" "bandit==${BANDIT_VERSION}" "bandit-sarif-formatter==${BANDIT_SARIF_FORMATTER_VERSION}"
 
 # Ruby (brakeman + bundler-audit)
-RUN gem install --no-document "brakeman:${BRAKEMAN_VERSION}" "bundler-audit:${BUNDLER_AUDIT_VERSION}" \
+RUN timeout 300 gem install --no-document "brakeman:${BRAKEMAN_VERSION}" "bundler-audit:${BUNDLER_AUDIT_VERSION}" \
     && bundle-audit update
 
 # Node (eslint + security plugin) + Python dependency audit
-RUN npm install -g "eslint@${ESLINT_VERSION}" "eslint-plugin-security@${ESLINT_PLUGIN_SECURITY_VERSION}" "@microsoft/eslint-formatter-sarif@${ESLINT_FORMATTER_SARIF_VERSION}" \
-    && pip install --no-cache-dir "pip-audit==${PIP_AUDIT_VERSION}"
+RUN npm install --fetch-timeout=600000 -g "eslint@${ESLINT_VERSION}" "eslint-plugin-security@${ESLINT_PLUGIN_SECURITY_VERSION}" "@microsoft/eslint-formatter-sarif@${ESLINT_FORMATTER_SARIF_VERSION}" \
+    && pip install --timeout=300 --no-cache-dir "pip-audit==${PIP_AUDIT_VERSION}"
 
 # OSV scanner (static Go binary)
 ARG OSV_SCANNER_VERSION=1.8.2
@@ -125,7 +137,7 @@ ENV CARGO_HOME=/usr/local/cargo
 ENV RUSTUP_HOME=/usr/local/rustup
 ENV PATH="/usr/local/cargo/bin:${PATH}"
 RUN timeout 180 curl --proto '=https' --tlsv1.2 -sSf --connect-timeout 5 --max-time 60 https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-RUN cargo install cargo-audit --version ${CARGO_AUDIT_VERSION}
+RUN timeout 600 cargo install cargo-audit --version ${CARGO_AUDIT_VERSION}
 
 # .NET SDK (system-wide so the scanner user can invoke dotnet)
 RUN timeout 180 curl -sfL --connect-timeout 5 --max-time 60 https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 8.0 --install-dir /usr/share/dotnet
@@ -133,17 +145,14 @@ RUN ln -s /usr/share/dotnet/dotnet /usr/bin/dotnet
 ENV DOTNET_ROOT=/usr/share/dotnet
 ENV PATH="/usr/share/dotnet:${PATH}"
 
-# SecurityCodeScan Roslyn analyzer - applied to all C# projects built under /src
-# via MSBuild's parent-directory Directory.Build.props discovery.
-RUN printf '%s\n' \
-    '<Project>' \
-    '  <ItemGroup>' \
-    '    <PackageReference Include="AdaskoTheBeAsT.SecurityCodeScan.VS2022" Version="5.6.7.31">' \
-    '      <PrivateAssets>all</PrivateAssets>' \
-    '      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>' \
-    '    </PackageReference>' \
-    '  </ItemGroup>' \
-    '</Project>' > /Directory.Build.props
+# DotnetariumSCS standalone C# security scanner. Replaces the SecurityCodeScan
+# NuGet analyzer, which no longer emits findings on .NET 8 (the build was
+# failing the smoke test with "no SCS findings in SARIF"). DotnetariumSCS is a
+# SecurityCodeScan-compatible fork that works on .NET 8 and emits the same
+# SCS* rule IDs in SARIF 2.1 format, so the adapter parse logic is unchanged.
+ARG DOTNETARIUM_SCS_VERSION=1.1.0
+ENV DOTNET_CLI_TELEMETRY_OPTOUT=1
+RUN dotnet tool install --tool-path /usr/local/bin dotnetarium-scs --version ${DOTNETARIUM_SCS_VERSION}
 
 # ---- Offline scan assets (P1: zero scan-time egress; spec 2026-08-04) ----
 # Cache boundary: everything ABOVE this ARG stays layer-cached across daily
@@ -185,7 +194,7 @@ ARG SEMGREP_RULES_REF=40b8c63f75dc7c22c8a77482d73bfb864b146f7e
 RUN : "asset-refresh ${ASSET_REFRESH}" \
     && git init -q /opt/semgrep-rules \
     && git -C /opt/semgrep-rules remote add origin https://github.com/semgrep/semgrep-rules \
-    && git -C /opt/semgrep-rules fetch --depth 1 origin "${SEMGREP_RULES_REF}" \
+    && timeout 120 git -C /opt/semgrep-rules -c http.lowSpeedLimit=1024 -c http.lowSpeedTime=30 fetch --depth 1 origin "${SEMGREP_RULES_REF}" \
     && git -C /opt/semgrep-rules checkout -q FETCH_HEAD \
     && rm -rf /opt/semgrep-rules/.git \
     && grep -rLE '^rules:' --include='*.yml' --include='*.yaml' /opt/semgrep-rules \
@@ -239,41 +248,11 @@ RUN set -euo pipefail \
     && rm -rf /tmp/osv-warm \
     && chmod -R a+rX /opt/osv-db
 
-# dependency-check NVD data (BuildKit secret; build works without it, just
-# slower — the NVD API rate-limits unauthenticated callers hard enough that
-# a full sync can take the better part of an hour, so the update is bounded
-# and allowed to fail or partial-fill rather than hang a scheduled build).
-RUN --mount=type=secret,id=nvd_api_key \
-    set -euo pipefail \
-    && : "asset-refresh ${ASSET_REFRESH}" \
-    && mkdir -p /opt/odc-data \
-    && if [ -f /run/secrets/nvd_api_key ]; then KEY="$(cat /run/secrets/nvd_api_key 2>/dev/null)"; else KEY=""; fi \
-    && if ! timeout 600 /opt/dependency-check/bin/dependency-check.sh --updateonly \
-           --data /opt/odc-data ${KEY:+--nvdApiKey "$KEY"}; then :; fi \
-    && chmod -R a+rX /opt/odc-data
-
-# SecurityCodeScan offline NuGet feed: warm a package folder via a throwaway
-# project (the root /Directory.Build.props injects the analyzer reference),
-# then pin restore to it via fallbackPackageFolders.
-# `cd /tmp/warm` is a scoped transient build dir removed in the same layer, not an
-# image-wide working directory — a WORKDIR would wrongly persist it.
-# hadolint ignore=DL3003
-RUN set -euo pipefail \
-    && : "asset-refresh ${ASSET_REFRESH}" \
-    && mkdir -p /tmp/warm && cd /tmp/warm \
-    && dotnet new classlib -o warmproj --no-restore \
-    && dotnet restore warmproj --packages /opt/nuget-packages \
-    && cd / && rm -rf /tmp/warm \
-    && chmod -R a+rX /opt/nuget-packages
-RUN printf '%s\n' \
-    '<?xml version="1.0" encoding="utf-8"?>' \
-    '<configuration>' \
-    '  <packageSources><clear /></packageSources>' \
-    '  <fallbackPackageFolders>' \
-    '    <add key="baked" value="/opt/nuget-packages" />' \
-    '  </fallbackPackageFolders>' \
-    '</configuration>' > /nuget.config \
-    && chmod a+r /nuget.config
+# dependency-check NVD database: copied from the pinned cache stage (NVD_DATA_REF,
+# top of file) — no NVD API call, no secret, no per-build sync. The later
+# `chown -R scanner:scanner /opt/odc-data` gives dependency-check the read-write
+# access it needs on odc.mv.db.
+COPY --from=nvd-data /opt/odc-data /opt/odc-data
 
 RUN useradd -m -u 1000 scanner \
     && chown scanner:scanner /home/scanner \

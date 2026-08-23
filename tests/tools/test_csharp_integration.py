@@ -28,7 +28,7 @@ class TestCSharpIntegration(unittest.TestCase):
         raw, rc = adapter.invoke(target)
         self.assertIn(rc, (0, 1), f"roslyn-secguard errored (rc {rc}) on AspGoat")
         findings = adapter.parse(raw, "g1")
-        self.assertTrue(findings, "expected SecurityCodeScan findings against AspGoat")
+        self.assertTrue(findings, "expected DotnetariumSCS (SCS) findings against AspGoat")
 
 
 if __name__ == "__main__":

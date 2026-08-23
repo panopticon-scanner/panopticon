@@ -54,20 +54,25 @@ def _validate_probe_registry(probes):
 
 PROBE_TIMEOUT = 180
 
-_ROSLYN_PROBE_SOURCE = """using System.Diagnostics;
+_ROSLYN_PROBE_SOURCE = """using System;
+using System.Diagnostics;
 class P {
     static void Main(string[] args) {
-        Process.Start(args[0]);
+        var input = Console.ReadLine();
+        var p = new Process();
+        p.StartInfo.FileName = "exportLegacy.exe";
+        p.StartInfo.Arguments = " -user " + input + " -role user";
+        p.Start();
     }
 }
 """
 
 
 def check_roslyn_secguard_build(runner=subprocess.run):
-    """Run a minimal C# build with the baked SecurityCodeScan analyzer and
-    require SARIF output containing an SCS finding. Mirrors the real adapter's
-    build path; a plain `dotnet --version` probe cannot catch a missing or
-    miswired analyzer (#1110)."""
+    """Run a minimal C# project through the baked DotnetariumSCS standalone
+    tool and require SARIF output containing an SCS finding. Mirrors the real
+    adapter's invocation path; a plain `dotnet --version` probe cannot catch a
+    missing or miswired scanner (#1110)."""
     import json
     import tempfile
     with tempfile.TemporaryDirectory() as d:
@@ -88,19 +93,20 @@ def check_roslyn_secguard_build(runner=subprocess.run):
             fh.write(_ROSLYN_PROBE_SOURCE)
         sarif = os.path.join(d, "out.sarif")
         cmd = [
-            "dotnet", "build", csproj,
-            "-p:TreatWarningsAsErrors=false",
-            "-p:ErrorLog=" + sarif + ",version=2.1",
+            "dotnetarium-scs", csproj,
+            "--export=" + sarif,
+            "--ignore-msbuild-errors",
+            "--no-banner",
         ]
         try:
             runner(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                    timeout=PROBE_TIMEOUT)
         except FileNotFoundError:
-            return False, "roslyn-secguard build: dotnet not found"
+            return False, "roslyn-secguard build: dotnetarium-scs not found"
         except subprocess.TimeoutExpired:
             return False, "roslyn-secguard build: no response in %ds" % PROBE_TIMEOUT
         except OSError as e:
-            return False, "roslyn-secguard build: failed to exec dotnet (%s)" % (
+            return False, "roslyn-secguard build: failed to exec dotnetarium-scs (%s)" % (
                 e.strerror or repr(e))
         if not os.path.exists(sarif):
             return False, "roslyn-secguard build: no SARIF output produced"
@@ -114,7 +120,7 @@ def check_roslyn_secguard_build(runner=subprocess.run):
                 rule_id = result.get("ruleId", "")
                 if rule_id.startswith("SCS"):
                     return True, ""
-        return False, "roslyn-secguard build: no SecurityCodeScan (SCS) findings in SARIF"
+        return False, "roslyn-secguard build: no DotnetariumSCS (SCS) findings in SARIF"
 
 
 # Cheap liveness probes. Each must exit 0 quickly as the scanner user; a
