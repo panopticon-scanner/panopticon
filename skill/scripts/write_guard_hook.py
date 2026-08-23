@@ -144,44 +144,80 @@ def _load(settings_path):
             "refusing to overwrite unreadable %s: %s" % (settings_path, exc)) from exc
 
 
-def install(plan, settings_path=".claude/settings.local.json",
-            allowlist_path=".panopticon/write-allowlist.json"):
-    allow_dir = os.path.dirname(allowlist_path) or "."
-    os.makedirs(allow_dir, exist_ok=True)
-    tmp_allow = allowlist_path + ".tmp"
-    with open(tmp_allow, "w", encoding="utf-8") as fh:
-        json.dump(sorted(allowlist_from_plan(plan)), fh)
+def _read_allowlist(allowlist_path):
+    """The current on-disk allowlist as a set of paths; empty when absent or
+    malformed. (The hook itself fails closed on a malformed file, so treating it
+    as empty HERE only affects the union arithmetic, never enforcement.)"""
+    try:
+        with open(allowlist_path, encoding="utf-8") as fh:
+            loaded = json.load(fh)
+    except (OSError, ValueError):
+        return set()
+    if not isinstance(loaded, list):
+        return set()
+    return {p for p in loaded if isinstance(p, str)}
+
+
+def _atomic_write_json(path, data, indent=None):
+    parent = os.path.dirname(path) or "."
+    os.makedirs(parent, exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=indent)
         fh.flush()
         os.fsync(fh.fileno())
-    os.replace(tmp_allow, allowlist_path)
+    os.replace(tmp, path)
 
+
+def _write_hook_entry(settings_path):
     settings = _load(settings_path)
     hooks = settings.setdefault("hooks", {})
     pre = [h for h in hooks.get("PreToolUse", []) if h != _HOOK_ENTRY]
     pre.append(_HOOK_ENTRY)
     hooks["PreToolUse"] = pre
-    set_dir = os.path.dirname(settings_path) or "."
-    os.makedirs(set_dir, exist_ok=True)
-    tmp_set = settings_path + ".tmp"
-    with open(tmp_set, "w", encoding="utf-8") as fh:
-        json.dump(settings, fh, indent=2)
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp_set, settings_path)
+    _atomic_write_json(settings_path, settings, indent=2)
+
+
+def _remove_hook_entry(settings_path):
+    settings = _load(settings_path)
+    hooks = settings.get("hooks", {})
+    if "PreToolUse" not in hooks:
+        return
+    hooks["PreToolUse"] = [h for h in hooks["PreToolUse"] if h != _HOOK_ENTRY]
+    if not hooks["PreToolUse"]:
+        del hooks["PreToolUse"]
+    if not hooks:
+        settings.pop("hooks", None)
+    _atomic_write_json(settings_path, settings, indent=2)
+
+
+def install(plan, settings_path=".claude/settings.local.json",
+            allowlist_path=".panopticon/write-allowlist.json"):
+    # #11: UNION with any existing allowlist rather than REPLACING it wholesale.
+    # A re-arm while a prior fan-out is still in flight (an overlapping/nested
+    # install) used to overwrite the allowlist with only the new set, silently
+    # revoking every still-running agent whose out_file wasn't in it (run-6: cost
+    # 8 findings). Unioning keeps prior grants live. out_files are unique per cell
+    # (findings-<group>-<domain>.json), so a paired uninstall(plan=...) can later
+    # drop exactly this call's paths without disturbing another fan-out's.
+    added = allowlist_from_plan(plan)
+    _atomic_write_json(allowlist_path, sorted(_read_allowlist(allowlist_path) | added))
+    _write_hook_entry(settings_path)
+    return added
 
 
 def uninstall(settings_path=".claude/settings.local.json",
-              allowlist_path=".panopticon/write-allowlist.json"):
-    settings = _load(settings_path)
-    hooks = settings.get("hooks", {})
-    if "PreToolUse" in hooks:
-        hooks["PreToolUse"] = [h for h in hooks["PreToolUse"] if h != _HOOK_ENTRY]
-        if not hooks["PreToolUse"]:
-            del hooks["PreToolUse"]
-        if not hooks:
-            settings.pop("hooks", None)
-        with open(settings_path, "w", encoding="utf-8") as fh:
-            json.dump(settings, fh, indent=2)
+              allowlist_path=".panopticon/write-allowlist.json", *, plan=None):
+    # #11: with `plan` given, remove ONLY that fan-out's paths (scoped teardown)
+    # and keep the guard armed while any OTHER fan-out's paths remain -- so
+    # tearing down one fan-out never revokes a concurrent one. With no `plan`
+    # (the legacy default), tear the whole guard down.
+    if plan is not None:
+        remaining = _read_allowlist(allowlist_path) - allowlist_from_plan(plan)
+        if remaining:
+            _atomic_write_json(allowlist_path, sorted(remaining))
+            return   # other fan-outs still armed -> keep the hook entry + file
+    _remove_hook_entry(settings_path)
     try:
         os.remove(allowlist_path)
     except OSError:

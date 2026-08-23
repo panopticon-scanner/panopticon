@@ -322,6 +322,43 @@ class TestInstallUninstall(unittest.TestCase):
             # neither settings nor allowlist exist -> must not raise
             wg.uninstall(os.path.join(d, "nope.json"), os.path.join(d, "gone.json"))
 
+    def test_reinstall_unions_allowlist_never_revokes_in_flight(self):
+        # #11: a re-arm during an in-flight fan-out must UNION, not replace -- the
+        # first fan-out's out_files stay writable while the second's are added
+        # (the run-6 leak: a per-group re-arm silently revoked prior agents).
+        with tempfile.TemporaryDirectory() as d:
+            settings = os.path.join(d, "settings.local.json")
+            al = os.path.join(d, "allow.json")
+            wg.install([{"out_file": ".panopticon/a.json"}], settings, al)
+            wg.install([{"out_file": ".panopticon/b.json"}], settings, al)
+            with open(al, encoding="utf-8") as fh:
+                self.assertEqual(sorted(json.load(fh)),
+                                 sorted([os.path.realpath(".panopticon/a.json"),
+                                         os.path.realpath(".panopticon/b.json")]))
+            with open(settings, encoding="utf-8") as fh:      # still one hook entry
+                self.assertEqual(len(json.load(fh)["hooks"]["PreToolUse"]), 1)
+
+    def test_scoped_uninstall_keeps_other_fan_out_armed(self):
+        # #11: uninstall(plan=A) drops only A's paths and leaves the guard armed
+        # for B; a final uninstall(plan=B) tears everything down.
+        with tempfile.TemporaryDirectory() as d:
+            settings = os.path.join(d, "settings.local.json")
+            al = os.path.join(d, "allow.json")
+            plan_a = [{"out_file": ".panopticon/a.json"}]
+            plan_b = [{"out_file": ".panopticon/b.json"}]
+            wg.install(plan_a, settings, al)
+            wg.install(plan_b, settings, al)
+            wg.uninstall(settings, al, plan=plan_a)
+            with open(al, encoding="utf-8") as fh:            # B still armed
+                self.assertEqual(json.load(fh),
+                                 [os.path.realpath(".panopticon/b.json")])
+            with open(settings, encoding="utf-8") as fh:
+                self.assertIn("PreToolUse", json.load(fh)["hooks"])
+            wg.uninstall(settings, al, plan=plan_b)           # last fan-out gone
+            self.assertFalse(os.path.exists(al))
+            with open(settings, encoding="utf-8") as fh:
+                self.assertNotIn("PreToolUse", json.load(fh).get("hooks", {}))
+
 
 class TestLoadFailLoud(unittest.TestCase):
     """#1098: _load must distinguish an ABSENT settings file (fine -> {}) from a
