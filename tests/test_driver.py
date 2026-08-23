@@ -569,6 +569,36 @@ class TestCoveragePhase(unittest.TestCase):
             driver._write_json(driver._pano(self.root, "scout-Auth.json"), bad)
             with self.assertRaises(driver.DriverError):
                 driver.coverage_execute(self.root, self.manifest)
+    def test_review_batches_all_pending_cells_across_groups(self):
+        # #5: every pending (domain, group) cell across ALL groups goes out in ONE
+        # review checkpoint (group=None), not one round trip per group (run-6: 26
+        # groups = 26 sequential trips while the host runs ~20 agents at once).
+        self._groups_json([{"name": "Auth", "files": ["a.py"]},
+                           {"name": "Api", "files": ["b.py"]}])
+        self._groups_yml("groups:\n"
+                         "  Auth:\n    match: ['a.py']\n    panels: [SEC]\n"
+                         "  Api:\n    match: ['b.py']\n    panels: [SEC]\n")
+        for g in ("Auth", "Api"):
+            driver._write_json(driver._pano(self.root, "scout-%s.json" % g),
+                               {"group": g, "domains": ["SEC"]})
+        # coverage computes one group per call (engine re-selects) -- drive it to
+        # completion so BOTH groups have coverage before review runs.
+        for _ in range(10):
+            if driver.coverage_done(self.root, self.manifest):
+                break
+            driver.coverage_execute(self.root, self.manifest)
+        self.assertTrue(driver.coverage_done(self.root, self.manifest))
+        with mock.patch("scripts.driver.dispatch.render_prompt", return_value="B"), \
+             mock.patch("scripts.driver.dispatch.registered_agent_name",
+                        return_value="panopticon-domain-panel"):
+            r = driver.review_execute(self.root, self.manifest)
+        self.assertEqual(r.kind, "checkpoint")
+        self.assertEqual(r.checkpoint, "review")
+        self.assertIsNone(r.group)                        # batched, not per-group
+        req = driver.load_dispatch_request(self.root)
+        groups_in_batch = {e["id"][len("review-"):].rsplit("-", 1)[0]
+                           for e in req["entries"]}
+        self.assertEqual(groups_in_batch, {"Auth", "Api"})   # both groups, ONE checkpoint
 
     def test_surfaced_group_retains_full_global_floor(self):
         # #5.0-19: a group whose files/scout show db, tests, and cross-module
@@ -1510,13 +1540,15 @@ class TestReviewMatrixEndToEnd(unittest.TestCase):
         elif status.get("checkpoint") == "review":
             req = driver._load_json(driver._pano(d, "dispatch-request.json"))
             for e in req["entries"]:
-                dom = e["id"].rsplit("-", 1)[-1]
+                # #5: review cells are batched (group=None on the request); each
+                # entry is self-describing -- id == "review-<group>-<domain>".
+                grp, dom = e["id"][len("review-"):].rsplit("-", 1)
                 driver._write_json(e["out_file"], {
                     "findings": [{"title": "t", "severity": "LOW",
                                   "domain": dom, "code": dom + "-X0X",
                                   "location": {"file": "src/app.py", "line": 1}}],
                     "_panopticon": {"run_id": run_id, "role": "domain_panel",
-                                    "domain": dom, "group": req["group"]}})
+                                    "domain": dom, "group": grp}})
 
     def test_review_matrix_reaches_report_with_coded_findings(self):
         d = self._repo()
@@ -1873,7 +1905,7 @@ class TestDriverSingleScopeEndToEnd(unittest.TestCase):
         # review checkpoint -- self-write cell findings, scoped to Checkout's files
         r = driver.review_execute(d, manifest)
         self.assertEqual(r.checkpoint, "review")
-        self.assertEqual(r.group, "Checkout")
+        self.assertIsNone(r.group)                          # #5: review cells batched, group=None
         req = driver.load_dispatch_request(d)
         for e in req["entries"]:
             self.assertNotIn("write_mode", e)               # unified self-write shape
