@@ -7,19 +7,11 @@ USER root
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# Ruby runtime + Bundler for RailsGoat and OpenJDK for WebGoat.
+# OpenJDK for WebGoat. Ruby, Node.js/npm, and .NET 8.0 are already provided
+# by the panopticon-tools base image.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ruby ruby-dev build-essential libsqlite3-dev \
         openjdk-21-jdk-headless \
-    && apt-get clean && rm -rf /var/lib/apt/lists/* \
-    && gem install bundler --no-document
-
-# .NET SDK for AspGoat.
-RUN curl -sfL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 8.0
-ENV PATH="/root/.dotnet:${PATH}"
-
-# cargo-audit for the hand-rolled Rust fixture (Rust toolchain already in base image).
-RUN cargo install cargo-audit --version 0.22.2
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/panopticon-fixtures
 

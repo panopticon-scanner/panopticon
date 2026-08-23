@@ -94,7 +94,7 @@ class TestSecurityWorkflowTrustBoundary(unittest.TestCase):
     def test_scanner_manifest_is_required(self):
         runs = self._run_text(self._workflow())
         self.assertIn('--manifest "$manifest"', runs)
-        self.assertIn('--tools-dir "$RUNNER_TEMP/panopticon-tools-output"', runs)
+        self.assertIn('--tools-dir "$RUNNER_TEMP/${{ env.TOOLS_OUT }}"', runs)
 
     def test_no_untrusted_github_context_in_run_scripts(self):
         runs = self._run_text(self._workflow())

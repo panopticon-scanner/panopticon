@@ -10,6 +10,7 @@ import types
 SCRIPTS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                        "skill", "scripts")
 
+from _test_helpers import touch  # noqa: E402
 from tools.git_repo import make_git_repo  # noqa: E402
 
 import scripts.discovery as discovery  # noqa: E402
@@ -74,13 +75,6 @@ def git_output(repo, *args):
         raise AssertionError(
             f"git subprocess timed out after {GIT_TIMEOUT}s: {exc.cmd}"
         ) from exc
-
-
-def touch(root, rel, content=""):
-    full = os.path.join(root, rel)
-    os.makedirs(os.path.dirname(full), exist_ok=True)
-    with open(full, "w", encoding="utf-8") as fh:
-        fh.write(content)
 
 
 def run_scan_helper(d, *extra):
