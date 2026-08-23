@@ -30,15 +30,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # below is a commit SHA on a live branch, but that pin is only meaningful
 # paired with a known-compatible semgrep build -- an unpinned `pip install`
 # would keep re-validating tomorrow's semgrep release against today's rules.
-RUN pip install --no-cache-dir "semgrep==${SEMGREP_VERSION}" "bandit==${BANDIT_VERSION}" "bandit-sarif-formatter==${BANDIT_SARIF_FORMATTER_VERSION}"
+RUN pip install --timeout=300 --no-cache-dir "semgrep==${SEMGREP_VERSION}" "bandit==${BANDIT_VERSION}" "bandit-sarif-formatter==${BANDIT_SARIF_FORMATTER_VERSION}"
 
 # Ruby (brakeman + bundler-audit)
-RUN gem install --no-document "brakeman:${BRAKEMAN_VERSION}" "bundler-audit:${BUNDLER_AUDIT_VERSION}" \
+RUN timeout 300 gem install --no-document "brakeman:${BRAKEMAN_VERSION}" "bundler-audit:${BUNDLER_AUDIT_VERSION}" \
     && bundle-audit update
 
 # Node (eslint + security plugin) + Python dependency audit
-RUN npm install -g "eslint@${ESLINT_VERSION}" "eslint-plugin-security@${ESLINT_PLUGIN_SECURITY_VERSION}" "@microsoft/eslint-formatter-sarif@${ESLINT_FORMATTER_SARIF_VERSION}" \
-    && pip install --no-cache-dir "pip-audit==${PIP_AUDIT_VERSION}"
+RUN npm install --fetch-timeout=600000 -g "eslint@${ESLINT_VERSION}" "eslint-plugin-security@${ESLINT_PLUGIN_SECURITY_VERSION}" "@microsoft/eslint-formatter-sarif@${ESLINT_FORMATTER_SARIF_VERSION}" \
+    && pip install --timeout=300 --no-cache-dir "pip-audit==${PIP_AUDIT_VERSION}"
 
 # OSV scanner (static Go binary)
 ARG OSV_SCANNER_VERSION=1.8.2
@@ -125,7 +125,7 @@ ENV CARGO_HOME=/usr/local/cargo
 ENV RUSTUP_HOME=/usr/local/rustup
 ENV PATH="/usr/local/cargo/bin:${PATH}"
 RUN timeout 180 curl --proto '=https' --tlsv1.2 -sSf --connect-timeout 5 --max-time 60 https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-RUN cargo install cargo-audit --version ${CARGO_AUDIT_VERSION}
+RUN timeout 600 cargo install cargo-audit --version ${CARGO_AUDIT_VERSION}
 
 # .NET SDK (system-wide so the scanner user can invoke dotnet)
 RUN timeout 180 curl -sfL --connect-timeout 5 --max-time 60 https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 8.0 --install-dir /usr/share/dotnet
@@ -185,7 +185,7 @@ ARG SEMGREP_RULES_REF=40b8c63f75dc7c22c8a77482d73bfb864b146f7e
 RUN : "asset-refresh ${ASSET_REFRESH}" \
     && git init -q /opt/semgrep-rules \
     && git -C /opt/semgrep-rules remote add origin https://github.com/semgrep/semgrep-rules \
-    && git -C /opt/semgrep-rules fetch --depth 1 origin "${SEMGREP_RULES_REF}" \
+    && timeout 120 git -C /opt/semgrep-rules -c http.lowSpeedLimit=1024 -c http.lowSpeedTime=30 fetch --depth 1 origin "${SEMGREP_RULES_REF}" \
     && git -C /opt/semgrep-rules checkout -q FETCH_HEAD \
     && rm -rf /opt/semgrep-rules/.git \
     && grep -rLE '^rules:' --include='*.yml' --include='*.yaml' /opt/semgrep-rules \
