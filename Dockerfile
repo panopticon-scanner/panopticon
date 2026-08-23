@@ -8,6 +8,9 @@
 # builds. Keep the default tag's version in sync with DEPENDENCY_CHECK_VERSION;
 # rebuild the cache by running the "Refresh NVD data cache" workflow.
 ARG NVD_DATA_REF=ghcr.io/panopticon-scanner/panopticon-tools-nvd:dc-10.0.3
+# DL3006: the version tag lives inside NVD_DATA_REF (docker-publish pins a @sha256
+# digest), so hadolint cannot see it statically.
+# hadolint ignore=DL3006
 FROM ${NVD_DATA_REF} AS nvd-data
 
 FROM python:3.12-slim@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a
