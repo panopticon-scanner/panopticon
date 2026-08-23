@@ -1,4 +1,5 @@
 import os
+import re
 import unittest
 
 ROOT = os.path.join(os.path.dirname(__file__), os.pardir)
@@ -91,10 +92,23 @@ class TestDockerfileFixtures(unittest.TestCase):
     def test_bundles_fixture_clone_refs_and_rust_build(self):
         text = _read_dockerfile_fixtures()
         for marker in [
-            "ARG RAILS_GOAT_REF",
-            "ARG WEB_GOAT_REF",
-            "ARG ASP_GOAT_REF",
+            "ARG RAILS_GOAT_SHA",
+            "ARG WEB_GOAT_SHA",
+            "ARG ASP_GOAT_SHA",
             "COPY tests/fixtures/vulnerable-rust",
             "cargo build",
         ]:
             self.assertIn(marker, text, marker)
+
+    def test_fixture_refs_are_pinned_shas_not_mutable_branches(self):
+        # #1252 (SEC-E2C): the goat fixtures must be pinned to immutable commit
+        # SHAs, never a mutable branch like `main` — a moving ref could swap the
+        # vendored vulnerable corpus under us. Guards against re-introducing a
+        # `--branch <name>` clone.
+        text = _read_dockerfile_fixtures()
+        self.assertNotIn("clone --branch", text)    # no `git clone --branch <ref>` mutable clone
+        for arg in ("RAILS_GOAT_SHA", "WEB_GOAT_SHA", "ASP_GOAT_SHA"):
+            m = re.search(r"ARG %s=([0-9a-f]+)" % arg, text)
+            self.assertIsNotNone(m, "%s not found" % arg)
+            self.assertRegex(m.group(1), r"^[0-9a-f]{40}$",
+                             "%s must be a full 40-hex commit SHA, not a ref" % arg)
