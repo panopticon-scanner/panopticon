@@ -120,7 +120,7 @@ def check_roslyn_secguard_build(runner=subprocess.run):
                 rule_id = result.get("ruleId", "")
                 if rule_id.startswith("SCS"):
                     return True, ""
-        return False, "roslyn-secguard build: no SecurityCodeScan (SCS) findings in SARIF"
+        return False, "roslyn-secguard build: no DotnetariumSCS (SCS) findings in SARIF"
 
 
 # Cheap liveness probes. Each must exit 0 quickly as the scanner user; a
