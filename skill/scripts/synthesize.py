@@ -2060,31 +2060,62 @@ def write_report(report, out_path, max_bytes=800000):
     """Write report to JSON file, splitting into parts if size exceeds max_bytes.
     Writes all files atomically using staging temp files (#1124).
     """
-    blob = json.dumps(report, indent=2)
     out_dir = os.path.dirname(os.path.abspath(out_path)) or "."
     os.makedirs(out_dir, exist_ok=True)
+    stem, ext = os.path.splitext(out_path)
+
+    # #15: discarded_claims carries every rejected claim's full advisor prose and
+    # grows with the REJECTED set — precisely when verification works well. Left
+    # inline it blew base_bytes past max_bytes and floored chunk_limit to 1000, so
+    # every finding became its own part (417 files on run-6). When the report won't
+    # fit one file, write discarded to a sibling artifact and keep a pointer+count.
+    discarded_sibling = None
+    if len(json.dumps(report, indent=2).encode("utf-8")) > max_bytes and report.get("discarded_claims"):
+        _disc = report.get("discarded_claims") or []
+        report = dict(report)
+        report["meta"] = dict(report.get("meta") or {})
+        _dpath = "%s-discarded%s" % (stem, ext)
+        report["meta"]["discarded_claims_file"] = os.path.basename(_dpath)
+        report["meta"]["discarded_claims_count"] = len(_disc)
+        report["discarded_claims"] = []
+        discarded_sibling = (_dpath, {"discarded_claims": _disc})
+
+    blob = json.dumps(report, indent=2)
     findings = list(report.get("findings") or [])
     if len(blob.encode("utf-8")) <= max_bytes or len(findings) <= 1:
-        tmp = os.path.join(out_dir, ".report-%s.tmp" % uuid.uuid4().hex)
-        try:
-            with open(tmp, "w", encoding="utf-8") as fh:
-                fh.write(blob)
-            os.replace(tmp, out_path)
-        finally:
-            if os.path.exists(tmp):
-                try:
-                    os.remove(tmp)
-                except OSError:
-                    pass
-        return [out_path]
-
-    stem, ext = os.path.splitext(out_path)
+        targets = [(out_path, blob)]
+        if discarded_sibling:
+            targets.append((discarded_sibling[0], json.dumps(discarded_sibling[1], indent=2)))
+        for _fp, _txt in targets:
+            tmp = os.path.join(out_dir, ".report-%s.tmp" % uuid.uuid4().hex)
+            try:
+                with open(tmp, "w", encoding="utf-8") as fh:
+                    fh.write(_txt)
+                os.replace(tmp, _fp)
+            finally:
+                if os.path.exists(tmp):
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        pass
+        return [t[0] for t in targets]
     main_report = dict(report)
     main_report["meta"] = dict(report.get("meta") or {})
 
     empty_doc = dict(report)
     empty_doc["findings"] = []
     base_bytes = len(json.dumps(empty_doc, indent=2).encode("utf-8"))
+    if base_bytes >= max_bytes:
+        # #15: even with findings removed (discarded_claims already split to a
+        # sibling), the base exceeds the budget, so chunk_limit floors to 1000 and
+        # findings pack ~1/part. Disclose it LOUDLY rather than silently floor; the
+        # per-part sanity check below flags the degenerate output too. In practice
+        # this only fires for a genuinely bloated meta or a deliberately tiny
+        # max_bytes — the real run-6 cause (inline discarded_claims) is gone.
+        print("WARNING (#15): report base is %d bytes >= max_bytes %d — findings "
+              "will floor to ~1/part; discarded_claims already split out, so "
+              "investigate meta bloat if this is a production report."
+              % (base_bytes, max_bytes), file=sys.stderr)
     chunk_limit = max(1000, max_bytes - base_bytes - 500)
 
     chunks = []
@@ -2103,6 +2134,14 @@ def write_report(report, out_path, max_bytes=800000):
         half = max(1, len(findings) // 2)
         chunks = [findings[:half], findings[half:]]
 
+    if len(findings) >= 20 and len(chunks) * 2 > len(findings):
+        # #15: a mean under 2 findings/part on a large report is the chunk-limit
+        # pathology signature. The base_bytes guard above catches the extreme case;
+        # this warns on the merely-degenerate one.
+        print("WARNING (#15): %d findings split into %d parts (~%.1f/part) — "
+              "possible chunk-limit pathology." % (len(findings), len(chunks),
+              len(findings) / max(1, len(chunks))), file=sys.stderr)
+
     part_files = []
     part_paths = []
     for idx in range(1, len(chunks)):
@@ -2116,6 +2155,8 @@ def write_report(report, out_path, max_bytes=800000):
     all_targets = [(out_path, main_report)]
     for idx in range(1, len(chunks)):
         all_targets.append((part_paths[idx - 1], {"findings": chunks[idx]}))
+    if discarded_sibling:
+        all_targets.append(discarded_sibling)
 
     temp_files = []
     try:

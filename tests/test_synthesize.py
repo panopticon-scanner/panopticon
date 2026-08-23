@@ -5080,6 +5080,47 @@ class TestScoutToolDisclosure(unittest.TestCase):
             self.assertEqual(report["meta"]["coverage"]["scout_profiles_seen"], 0)
 
 
+class TestWriteReportDiscardedSplit(unittest.TestCase):
+    """#15: a large discarded_claims set (unbounded in the REJECTED count, which
+    grows when verification works well) must not floor chunk_limit into one finding
+    per part (417 files on run-6). It's written to a sibling artifact instead."""
+
+    def _report(self, n_findings, n_discarded):
+        return {
+            "meta": {"coverage": {}},
+            "findings": [{"id": "F%d" % i, "severity": "LOW", "desc": "d" * 250}
+                         for i in range(n_findings)],
+            "discarded_claims": [{"id": "D%d" % i, "reason": "x" * 400}
+                                 for i in range(n_discarded)],
+        }
+
+    def test_large_discarded_split_to_sibling_bounded_parts(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "report.json")
+            report = self._report(n_findings=60, n_discarded=200)   # ~80KB discarded
+            with contextlib.redirect_stderr(io.StringIO()):
+                written = syn.write_report(report, out, max_bytes=8000)
+            disc = os.path.join(d, "report-discarded.json")
+            self.assertIn(disc, written)
+            self.assertTrue(os.path.isfile(disc))
+            main = json.load(open(out))
+            self.assertEqual(main.get("discarded_claims"), [])
+            self.assertEqual(main["meta"]["discarded_claims_count"], 200)
+            self.assertEqual(main["meta"]["discarded_claims_file"], "report-discarded.json")
+            self.assertEqual(len(json.load(open(disc))["discarded_claims"]), 200)
+            parts = [p for p in written if "_part" in p]
+            self.assertGreater(len(parts), 0)     # findings still needed splitting
+            self.assertLess(len(parts), 30)       # bounded — old bug: ~60 parts
+
+    def test_base_over_max_is_loud_not_silent(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "report.json")
+            report = {"meta": {"bloat": "y" * 20000},
+                      "findings": [{"id": "F%d" % i, "desc": "d" * 250} for i in range(5)]}
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                syn.write_report(report, out, max_bytes=8000)
+            self.assertIn("report base is", err.getvalue())   # loud, not silent floor
 class TestRunDirArtifactResolution(unittest.TestCase):
     """#17/#16: under 5.1 per-run folders synthesize must resolve run artifacts
     (scout-*, tools-manifest, ...) from dirname(--groups), NOT flat .panopticon.
