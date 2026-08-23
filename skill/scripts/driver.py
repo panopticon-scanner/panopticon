@@ -610,6 +610,7 @@ def tools_execute(review_root, manifest):
     # actually resolved, not the scout's advisory tool list.
     cmd = [sys.executable, _script("run_tools.py"), "--target", review_root,
            "--out", out_dir, "--deps",
+           "--run-id", manifest.get("run_id") or "",   # #17: manifest self-identifies
            "--manifest", _pano(review_root, "tools-manifest.json")]
     proc = _run_child(cmd, review_root, "tools")
     produced = os.path.isdir(out_dir) and bool(os.listdir(out_dir))

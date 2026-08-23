@@ -377,7 +377,7 @@ def run_tools(target, tools, out_dir, image="panopticon-tools", runner=None, onl
     return written
 
 
-def write_manifest(path, selected, written, excluded_scope=()):
+def write_manifest(path, selected, written, excluded_scope=(), run_id=None):
     """Write the exact selected/produced scanner set for coverage gating.
 
     `excluded_scope` names adapters that were applicable but whose entire
@@ -387,7 +387,7 @@ def write_manifest(path, selected, written, excluded_scope=()):
     """
     selected = list(dict.fromkeys(str(tool) for tool in selected))
     produced = sorted({os.path.splitext(os.path.basename(p))[0] for p in written})
-    payload = {"schema_version": 1,
+    payload = {"schema_version": 1, "run_id": run_id,
                "selected": selected, "produced": produced,
                "missing": sorted(set(selected) - set(produced)),
                "excluded_scope": sorted(dict.fromkeys(str(t) for t in excluded_scope))}
@@ -409,6 +409,9 @@ def main(argv=None):
     ap.add_argument("--online", action="store_true", help="allow pip-audit/npm-audit to reach their advisory APIs")
     ap.add_argument("--manifest", default=None,
                     help="Write selected/produced scanner coverage JSON")
+    ap.add_argument("--run-id", default=None,
+                    help="Stamp this run's id into the manifest so synthesize can "
+                         "refuse to certify against another run's manifest (#17)")
     ap.add_argument("--exclude", action="append", default=[],
                     help="Path glob whose files are out of gate scope; an "
                          "adapter applicable only to excluded files is disclosed "
@@ -438,7 +441,8 @@ def main(argv=None):
     effective = filter_online(chosen, a.online)
     paths = run_tools(a.target, effective, a.out, online=a.online)
     if a.manifest:
-        write_manifest(a.manifest, effective, paths, excluded_scope=excluded_scope)
+        write_manifest(a.manifest, effective, paths, excluded_scope=excluded_scope,
+                       run_id=a.run_id)
     print("\n".join(paths))
     return 0
 
