@@ -1,6 +1,15 @@
 # panopticon-tools: bundled static-analysis tools for grounded code review.
 # Build:  docker build -t panopticon-tools .
 # Run:    docker run --rm -v "$PWD":/src:ro panopticon-tools <tool> ...
+# NVD database comes from the cron-published, version-keyed cache image (the
+# "Refresh NVD data cache" workflow) — so no build hits the NVD API or needs a
+# secret. docker-publish overrides NVD_DATA_REF with an @sha256 digest so each
+# publish is content-pinned; the default moving tag serves the PR gate and local
+# builds. Keep the default tag's version in sync with DEPENDENCY_CHECK_VERSION;
+# rebuild the cache by running the "Refresh NVD data cache" workflow.
+ARG NVD_DATA_REF=ghcr.io/panopticon-scanner/panopticon-tools-nvd:dc-10.0.3
+FROM ${NVD_DATA_REF} AS nvd-data
+
 FROM python:3.12-slim@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -236,18 +245,11 @@ RUN set -euo pipefail \
     && rm -rf /tmp/osv-warm \
     && chmod -R a+rX /opt/osv-db
 
-# dependency-check NVD data (BuildKit secret; build works without it, just
-# slower — the NVD API rate-limits unauthenticated callers hard enough that
-# a full sync can take the better part of an hour, so the update is bounded
-# and allowed to fail or partial-fill rather than hang a scheduled build).
-RUN --mount=type=secret,id=nvd_api_key \
-    set -euo pipefail \
-    && : "asset-refresh ${ASSET_REFRESH}" \
-    && mkdir -p /opt/odc-data \
-    && if [ -f /run/secrets/nvd_api_key ]; then KEY="$(cat /run/secrets/nvd_api_key 2>/dev/null)"; else KEY=""; fi \
-    && if ! timeout 600 /opt/dependency-check/bin/dependency-check.sh --updateonly \
-           --data /opt/odc-data ${KEY:+--nvdApiKey "$KEY"}; then :; fi \
-    && chmod -R a+rX /opt/odc-data
+# dependency-check NVD database: copied from the pinned cache stage (NVD_DATA_REF,
+# top of file) — no NVD API call, no secret, no per-build sync. The later
+# `chown -R scanner:scanner /opt/odc-data` gives dependency-check the read-write
+# access it needs on odc.mv.db.
+COPY --from=nvd-data /opt/odc-data /opt/odc-data
 
 RUN useradd -m -u 1000 scanner \
     && chown scanner:scanner /home/scanner \
