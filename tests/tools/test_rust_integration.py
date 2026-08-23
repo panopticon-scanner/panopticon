@@ -1,34 +1,26 @@
-import os
 import shutil
 import subprocess
 import unittest
 
-from scripts.tools import ADAPTERS
-from conftest import FIXTURE_ROOT
-
-OK_SCAN_EXIT_CODES = (0, 1)  # 0 = clean exit, 1 = findings detected
+from _test_helpers import assert_adapter_finds
+from .conftest import OK_SCAN_EXIT_CODES
 
 
 class TestRustIntegration(unittest.TestCase):
     def test_cargo_audit_finds_rustsec_advisories(self):
         if not shutil.which("cargo"):
             self.skipTest("cargo not installed")
-        proc = subprocess.run(["cargo", "audit", "--version"], capture_output=True, text=True)
+        proc = subprocess.run(["cargo", "audit", "--version"],
+                              capture_output=True, text=True)
         if proc.returncode != 0:
             self.skipTest("cargo-audit subcommand not installed")
-        target = os.path.join(FIXTURE_ROOT, "vulnerable-rust")
-        adapter = ADAPTERS["cargo-audit"]  # KeyError on de-registration
-        if not os.path.isdir(target):
-            self.skipTest("vulnerable-rust fixture not present")
-        self.assertTrue(adapter.is_applicable(target),
-                        "cargo-audit should apply to vulnerable-rust")
-        raw, rc = adapter.invoke(target)
-        self.assertIn(rc, OK_SCAN_EXIT_CODES, f"cargo-audit failed with {rc}")
-        findings = adapter.parse(raw, "g1")
-        self.assertTrue(findings, "expected cargo-audit findings")
+        findings = assert_adapter_finds(
+            self, "cargo-audit", "vulnerable-rust", ok_codes=OK_SCAN_EXIT_CODES
+        )
         self.assertTrue(
             any(
-                any(r.startswith("RUSTSEC-") for r in (f.get("citations") or {}).get("rustsec", []))
+                any(r.startswith("RUSTSEC-")
+                    for r in (f.get("citations") or {}).get("rustsec", []))
                 for f in findings
             ),
             "expected RUSTSEC citations",

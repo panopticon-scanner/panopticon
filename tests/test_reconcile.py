@@ -87,10 +87,13 @@ class TestBuildDiff(unittest.TestCase):
         report = reconcile.load_report(os.path.join(FIXTURES, name))
         return reconcile.iter_records(report)
 
+    def _diff(self, name_a, name_b):
+        return reconcile.build_diff(
+            self._records(name_a), self._records(name_b), name_a, name_b
+        )
+
     def test_cohorts_by_recomputed_fingerprint(self):
-        r2 = self._records("run2.json")
-        r3 = self._records("run3.json")
-        diff = reconcile.build_diff(r2, r3, "run2.json", "run3.json")
+        diff = self._diff("run2.json", "run3.json")
         recurring_ids = {rec["id"] for entry in diff["recurring"]
                          for rec in entry["run2"]}
         self.assertEqual(recurring_ids, {"F-TOOL-1", "F-AGENT-1", "R-REJ-1"})
@@ -115,18 +118,14 @@ class TestBuildDiff(unittest.TestCase):
         self.assertEqual(new_ids, {"F-NEW-1"})
 
     def test_flags_degenerate_collision_within_one_side(self):
-        r2 = self._records("run2.json")
-        r3 = self._records("run3.json")
-        diff = reconcile.build_diff(r2, r3, "run2.json", "run3.json")
+        diff = self._diff("run2.json", "run3.json")
         collided = [d for d in diff["meta"]["degenerate_fingerprints"]
                    if d["run"] == "run2"]
         self.assertEqual(len(collided), 1)
         self.assertEqual(sorted(collided[0]["ids"]), ["F-DUP-1", "F-DUP-2"])
 
     def test_no_kind_change_when_both_sides_are_findings(self):
-        r2 = self._records("run2.json")
-        r3 = self._records("run3.json")
-        diff = reconcile.build_diff(r2, r3, "run2.json", "run3.json")
+        diff = self._diff("run2.json", "run3.json")
         entry = next(e for e in diff["recurring"]
                     for rec in e["run2"] if rec["id"] == "F-TOOL-1")
         self.assertFalse(entry["kind_changed"])
@@ -144,11 +143,9 @@ class TestBuildDiff(unittest.TestCase):
         self.assertTrue(entry["kind_changed"])
 
     def test_meta_run_counts(self):
-        r2 = self._records("run2.json")
-        r3 = self._records("run3.json")
-        diff = reconcile.build_diff(r2, r3, "run2.json", "run3.json")
-        self.assertEqual(diff["meta"]["run2_count"], len(r2))
-        self.assertEqual(diff["meta"]["run3_count"], len(r3))
+        diff = self._diff("run2.json", "run3.json")
+        self.assertEqual(diff["meta"]["run2_count"], len(self._records("run2.json")))
+        self.assertEqual(diff["meta"]["run3_count"], len(self._records("run3.json")))
         self.assertEqual(diff["meta"]["run2_report"], "run2.json")
 
     def test_meta_group_counts_and_no_close_guard_in_normal_case(self):
@@ -157,9 +154,7 @@ class TestBuildDiff(unittest.TestCase):
         # are entirely empty findings, so they hash identically), so "closed"
         # has 2 groups (F-GONE-1, F-GONE-2) and "ambiguous" has 1 group (the
         # F-DUP collision).
-        r2 = self._records("run2.json")
-        r3 = self._records("run3.json")
-        diff = reconcile.build_diff(r2, r3, "run2.json", "run3.json")
+        diff = self._diff("run2.json", "run3.json")
         self.assertEqual(diff["meta"]["counts"],
                          {"recurring": 3, "closed": 2, "ambiguous": 1, "new": 1})
         # F2: run2 and run3 file sets overlap normally here -- no guard fires.
