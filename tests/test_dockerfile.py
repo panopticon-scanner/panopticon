@@ -65,8 +65,7 @@ class TestOfflineAssets(unittest.TestCase):
                        "advisory-db",                  # rustsec clone
                        "--download-offline-databases", # osv
                        "/opt/odc-data",                # dependency-check
-                       "/opt/nuget-packages",          # SCS offline feed
-                       "fallbackPackageFolders"]:      # nuget.config wiring
+                       "dotnetarium-scs"]:             # C# security scanner
             self.assertIn(marker, self.text)
 
     def test_nvd_key_is_buildkit_secret_not_env(self):

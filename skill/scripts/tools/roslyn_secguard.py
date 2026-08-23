@@ -159,9 +159,10 @@ class RoslynSecGuardAdapter:
 
             sarif = os.path.join(tmp, "out.sarif")
             cmd = [
-                "dotnet", "build", tmp_target,
-                "-p:TreatWarningsAsErrors=false",
-                "-p:ErrorLog=" + sarif + ",version=2.1",
+                "dotnetarium-scs", tmp_target,
+                "--export=" + sarif,
+                "--ignore-msbuild-errors",
+                "--no-banner",
             ]
             _stdout, rc = run_tool(cmd, timeout=600)
             if os.path.exists(sarif):
