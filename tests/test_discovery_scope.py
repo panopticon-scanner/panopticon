@@ -201,6 +201,61 @@ def test_repo_scan_scope_changed_applies_exclude_paths(tmp_path):
     assert doc["excluded_count"] == 1
 
 
+def _repo_with_fixture_corpus(tmp_path, exclude_paths=True):
+    import os
+    repo = tmp_path
+    (repo / ".panopticon").mkdir(parents=True)
+    for p in ["src/real.py", "tests/fixtures/vuln/app.py"]:
+        os.makedirs(os.path.dirname(repo / p), exist_ok=True)
+        (repo / p).write_text("x=1\n")
+    yml = "groups:\n  Real:\n    match: ['src/**']\n    panels: [SEC]\n"
+    if exclude_paths:
+        yml += "exclude_paths: ['tests/fixtures/**']\n"
+    (repo / ".panopticon" / "groups.yml").write_text(yml)
+    git_cmd(repo, "init", "-q")
+    git_cmd(repo, "add", "-A")
+    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x")
+    return repo
+
+
+def test_redteam_exclude_paths_prunes_fixture_corpus_before_grouping(tmp_path):
+    # #8c regression: redteam mode keeps test-fixture corpora in scope by design
+    # (a red team wants the attack surface), so a self-scan of deliberately-
+    # vulnerable fixtures leaks noise. A committed top-level `exclude_paths:` must
+    # override that inclusion and drop the corpus BEFORE grouping -- so no review
+    # cell of ANY domain sees it (SEC included, which per-group `exclude:` cannot
+    # silence -- #1084). Run-6 leaked 16 illusory HIGHs precisely because the
+    # committed config reached for the `exclude:`-sink, not `exclude_paths:`.
+    import discovery as orchestrator
+    repo = _repo_with_fixture_corpus(tmp_path, exclude_paths=True)
+    out = repo / ".panopticon" / "groups.json"
+    rc = orchestrator.main(["--repo", str(repo), "--repo-scan",
+                            "--security", "redteam", "--out", str(out)])
+    assert rc == 0
+    doc = json.loads(out.read_text())
+    files = sorted(f for g in doc["groups"] for f in g["files"])
+    assert files == ["src/real.py"]                       # fixture corpus pruned
+    assert "tests/fixtures/vuln/app.py" not in files
+    assert doc["exclude_paths"] == ["tests/fixtures/**"]
+    assert doc["excluded_count"] == 1
+
+
+def test_redteam_without_exclude_paths_keeps_fixture_corpus(tmp_path):
+    # Control proving exclude_paths did the work above, not #434 fixture pruning:
+    # in redteam mode WITHOUT exclude_paths the fixture corpus IS grouped (the
+    # #434 prune is standard-mode-only), which is exactly the run-6 leak vector.
+    import discovery as orchestrator
+    repo = _repo_with_fixture_corpus(tmp_path, exclude_paths=False)
+    out = repo / ".panopticon" / "groups.json"
+    rc = orchestrator.main(["--repo", str(repo), "--repo-scan",
+                            "--security", "redteam", "--out", str(out)])
+    assert rc == 0
+    doc = json.loads(out.read_text())
+    files = sorted(f for g in doc["groups"] for f in g["files"])
+    assert "tests/fixtures/vuln/app.py" in files           # kept -> the leak vector
+    assert "exclude_paths" not in doc
+
+
 def test_repo_scan_scope_changed_pr_base_resolves_origin_only_base(tmp_path):
     # Finding B (B1 regression lock): the gh-detected PR base must flow through
     # the --pr-base channel so resolve_base applies its origin/<base> preference

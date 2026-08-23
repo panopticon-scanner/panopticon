@@ -76,6 +76,16 @@ A malformed self-write fails its done-predicate (`_cell_done` / `_verify_cell_do
 
 Setup writes a **draft**: review `.panopticon/groups.yml.draft`, move it to `.panopticon/groups.yml`, and commit it (setup never overwrites a committed file). A repo with no capability vocabulary falls back to a flat top-dir seed + a readiness gate and completes without a checkpoint. `driver setup --reset` clears the setup artifacts and starts over.
 
+**Two ways to narrow scope in `groups.yml` — pick the right one.** A per-group `exclude: [DOMAIN, …]` is a *domain* filter: it drops named review domains for that group, but **SEC is non-excludable** (#1084) — `exclude: [SEC]` on a group is *overridden* so a target can't opt its own code out of security review (the override is disclosed as `exclude_rejected` in that group's `coverage-<group>.json` and printed loudly to stderr). To drop *paths* entirely — e.g. a deliberately-vulnerable test-fixture corpus that redteam mode would otherwise keep in scope — use the **top-level `exclude_paths:`** list of gitignore-flavored globs (sibling to `groups:`). `exclude_paths` prunes matching files *before* grouping, so they land in **no** review cell of **any** domain (SEC included) and in no tool scan. Prefer it over an `exclude:`-everything sink group:
+
+```yaml
+groups:
+  Auth:
+    match: ['src/auth/**']
+exclude_paths:
+  - tests/fixtures/**   # deliberately-vulnerable corpora: reviewed by nobody
+```
+
 ## Output
 Terminal markdown summary + JSON artifact at `--out`. CI gate key: `summary.gate` (`PASS` / `FAIL` / `OFF` / `INCONCLUSIVE`). `INCONCLUSIVE` means gate-relevant coverage did not complete (a high-value panel ran partial, a scout-requested tool produced no output, or an integrity check fired — an undeclared or content-substituted findings file, which on the driver path is caught by the driver's own `dispatch-plan-driver.json` (declares every review cell → `reconcile_findings_files`) and its `out-file-hashes.json` fan-out snapshot (per-cell sha256 → `verify_out_file_hashes`)) — treat it as NOT certified, distinct from a real `FAIL`. `summary.coverage_certified` and `meta.coverage.divergence` carry the detail; `main` exits `1` on FAIL, `2` on INCONCLUSIVE, `0` otherwise. Exit `2` is also argparse's usage-error code; a genuine INCONCLUSIVE run still writes a full report artifact, whereas a usage error does not, so disambiguate the two by checking whether the report exists. Consumers should key certification on `summary.gate` and `summary.coverage_certified`, not on `overall_grade` alone — a tool-only coverage gap yields `INCONCLUSIVE` with a real grade still attached. When `meta.coverage.resume` shows pending work in either phase, the terminal summary also prints a `**Resume:**` line (fan-out/verify done vs. total) directly under the Grade/Gate line; a fully-complete or resume-absent run prints no such line, so a resumed run never reads as a fresh full scan.
 
