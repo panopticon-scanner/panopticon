@@ -1,0 +1,134 @@
+name: Refresh NVD data cache
+
+# Pre-syncs the OWASP dependency-check NVD database once per day (keyed, in this
+# trusted scheduled context) and publishes it as a "data image" — a FROM scratch
+# image whose only content is /opt/odc-data. The tools-image build then does
+#   COPY --from=ghcr.io/<owner>/<repo>-tools-nvd:dc-<DC_VERSION> /opt/odc-data /opt/odc-data
+# instead of running `dependency-check --updateonly`, so NO build (daily publish,
+# PR gate, or local) hits the NVD API or needs the NVD_API_KEY. This also removes
+# the NVD_API_KEY from every PR-triggered build (the secret-exposure regression).
+#
+# The tag is keyed to DEPENDENCY_CHECK_VERSION: the H2 database schema is version-
+# specific, so the dependency-check that PRODUCES the DB and the one that CONSUMES
+# it must match. On a version bump the cache is primed before the tools build
+# needs it (push trigger below); the daily run keeps the current version fresh.
+#
+# ToS: NVD/CVE data is US-government public domain; caching (one controlled keyed
+# sync/day) is the pattern NIST intends, and OWASP attribution already ships in the
+# tools image. This reduces load on NVD vs. every build re-syncing.
+
+on:
+  schedule:
+    - cron: "0 4 * * *"      # 04:00 UTC — ahead of the 06:00 tools-image publish
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile                          # re-prime when DEPENDENCY_CHECK_VERSION bumps
+      - .github/workflows/nvd-cache.yml
+
+concurrency:
+  group: nvd-cache
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  NVD_IMAGE: ${{ github.repository }}-tools-nvd
+
+jobs:
+  refresh:
+    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Read dependency-check version from the Dockerfile
+        id: dc
+        run: |
+          set -euo pipefail
+          ver="$(grep -E '^ARG DEPENDENCY_CHECK_VERSION=' Dockerfile | head -1 | cut -d= -f2)"
+          sha="$(grep -E '^ARG DEPENDENCY_CHECK_SHA256=' Dockerfile | head -1 | cut -d= -f2)"
+          # constrain to expected shapes so a tampered ARG can't inject downstream
+          echo "$ver" | grep -Eq '^[0-9][0-9.]*$' || { echo "::error::unexpected DEPENDENCY_CHECK_VERSION '$ver'"; exit 1; }
+          echo "$sha" | grep -Eq '^[0-9a-f]{64}$'  || { echo "::error::unexpected DEPENDENCY_CHECK_SHA256"; exit 1; }
+          {
+            echo "version=$ver"
+            echo "sha256=$sha"
+            echo "date=$(date -u +%F)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Decide whether to sync
+        id: decide
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DC_VERSION: ${{ steps.dc.outputs.version }}
+        run: |
+          set -euo pipefail
+          tag="${REGISTRY}/${NVD_IMAGE}:dc-${DC_VERSION}"
+          if [ "$EVENT_NAME" != "push" ]; then
+            echo "sync=true" >> "$GITHUB_OUTPUT"
+            echo "scheduled/manual run -> refresh"
+          elif docker manifest inspect "$tag" >/dev/null 2>&1; then
+            echo "sync=false" >> "$GITHUB_OUTPUT"
+            echo "cache $tag already exists -> skip (the daily run keeps it fresh)"
+          else
+            echo "sync=true" >> "$GITHUB_OUTPUT"
+            echo "no cache for dc-${DC_VERSION} yet -> prime it"
+          fi
+
+      - name: Sync NVD database (keyed)
+        if: steps.decide.outputs.sync == 'true'
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+          DC_VERSION: ${{ steps.dc.outputs.version }}
+          DC_SHA256: ${{ steps.dc.outputs.sha256 }}
+        run: |
+          set -uo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends default-jre-headless unzip
+          curl -sfL --connect-timeout 5 --max-time 180 \
+            "https://github.com/jeremylong/DependencyCheck/releases/download/v${DC_VERSION}/dependency-check-${DC_VERSION}-release.zip" \
+            -o dc.zip
+          echo "${DC_SHA256}  dc.zip" | sha256sum -c -
+          unzip -q dc.zip     # -> ./dependency-check/
+          mkdir -p odc-data
+          timeout 3000 ./dependency-check/bin/dependency-check.sh --updateonly \
+            --data odc-data ${NVD_API_KEY:+--nvdApiKey "$NVD_API_KEY"} \
+            || echo "::warning::updateonly returned non-zero (per-record errors are tolerated; verifying the DB below)"
+          chmod -R a+rX odc-data
+          test -f odc-data/odc.mv.db || { echo "::error::NVD database (odc.mv.db) was not produced"; exit 1; }
+          size="$(stat -c%s odc-data/odc.mv.db)"
+          echo "odc.mv.db: $((size / 1024 / 1024)) MiB"
+          [ "$size" -gt 104857600 ] || { echo "::error::NVD DB only $((size / 1024 / 1024)) MiB — sync likely incomplete"; exit 1; }
+
+      - name: Set up Docker Buildx
+        if: steps.decide.outputs.sync == 'true'
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Build and push the NVD data image (multi-arch, files only)
+        if: steps.decide.outputs.sync == 'true'
+        env:
+          DC_VERSION: ${{ steps.dc.outputs.version }}
+          DC_DATE: ${{ steps.dc.outputs.date }}
+        run: |
+          set -euo pipefail
+          printf 'FROM scratch\nCOPY odc-data /opt/odc-data\n' > nvd-data.Dockerfile
+          img="${REGISTRY}/${NVD_IMAGE}"
+          docker buildx build --push \
+            --platform linux/amd64,linux/arm64 \
+            -f nvd-data.Dockerfile \
+            -t "${img}:dc-${DC_VERSION}" \
+            -t "${img}:dc-${DC_VERSION}-${DC_DATE}" \
+            .
+          echo "pushed ${img}:dc-${DC_VERSION} (and :dc-${DC_VERSION}-${DC_DATE})"
