@@ -22,7 +22,9 @@ Use `AskUserQuestion` when the target is ambiguous. `driver run [target]` is the
 `--full` (force all panels), `--security {standard,redteam}` (default standard), `--fail-on
 {critical,high,medium,low}`, `--severity {all,medium,high,critical}` (report only findings at or
 above the threshold), `--out PATH`, `--tools` (require tool scan), `--no-tools` (skip tool scan),
-`--epss` (enrich CVE citations), `--gate-unverified` (unverified findings drive grades/gate),
+`--reset` (discard the current run's working artifacts and start a NEW run — keeps every durable
+tag-named report on disk, only reclaims `.panopticon/runs/<tag>/` and the run-manifest, so it is safe
+to run on a finished review), `--epss` (enrich CVE citations), `--gate-unverified` (unverified findings drive grades/gate),
 `--max-verify N` (cap the verify queue; PR-scale delta reviews queue EVERY finding incl. tool claims
 -- a 25-file PR queued 108 advisors -- so size N ~ 2x the changed-file count unless you want the
 full sweep), `--base <ref|sha>` (explicit delta base for `-c`/`--pr`/`--files`), `--diff-context N`
@@ -44,7 +46,7 @@ The 5.0 driver (`skill/scripts/driver.py`) runs every mode from Modes above — 
 
 Loop:
 1. Run `python3 skill/scripts/driver.py run <target> --host claude [flags]` from the TARGET repo root. It advances to the first not-done phase and prints one status JSON line: `complete`, `error`, or `checkpoint`.
-2. `complete` → done; the report is at `.panopticon/report.json` — a symlink to the latest run's durable, top-level `.panopticon/<tag>-report.json` (gate = `summary.gate`; see Per-run folders under Output). `error` → stop and surface `message`.
+2. `complete` → done; the report is at `.panopticon/report.json` — a symlink to the latest run's durable, top-level `.panopticon/<tag>-report.json` (gate = `summary.gate`; see Per-run folders under Output). Re-invoking `driver run` on an **already-complete** run does NOT silently re-return that report — it **refuses** with an `error` naming `--reset` (#1), so a possibly-stale report is never mistaken for a fresh scan; pass `--reset` to start a new run (the old report stays on disk). `error` → stop and surface `message`.
 3. `checkpoint` → read `.panopticon/dispatch-request.json` (via `driver.load_dispatch_request`). It carries `entries` (host-agnostic: `id`/`agent`/`enforced`/`model`/`prompt`/`out_file`) — each entry is a unit of work to dispatch: a per-group scout, or a `(domain, group)` review/verify cell. Then **re-invoke `driver run`** (step 1) — the cursor is recomputed from disk every invocation, so the loop resumes identically after a crash/compaction, and each phase re-emits only its still-pending cells.
 
 Phases run in order — `discovery` → `coverage` → `tools` → `review` → `verify` → `synthesize` → `validate`:
