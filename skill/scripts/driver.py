@@ -575,7 +575,7 @@ def coverage_execute(review_root, manifest):
         effective, disclosure = coverage_model.effective_panels(
             floor, scout_added, spec.get("exclude", set()),
             global_floor=gated_floor)
-        _write_json(_pano(review_root, "coverage-%s.json" % group), {
+        cov = {
             "schema_version": 1,
             "group": group,
             "floor": disclosure["floor"],
@@ -587,7 +587,24 @@ def coverage_execute(review_root, manifest):
             "effective": sorted(effective),
             "scout_file": os.path.abspath(scout_path),
             "run_id": manifest["run_id"],
-        })
+        }
+        # #8c/#7: a committed `exclude` naming a NON_EXCLUDABLE domain (SEC,
+        # #1084) is OVERRIDDEN -- effective_panels discloses it as
+        # `exclude_rejected`, but the coverage-write used to DROP that key. So an
+        # operator who reached for a fixture-corpus `exclude:`-sink got a SILENT
+        # SEC panel on deliberately-vulnerable code, and 16 illusory HIGHs
+        # reached the gate (run-6). Persist the override AND warn loudly: to drop
+        # a path corpus entirely (fixtures included, SEC included), use top-level
+        # `exclude_paths:`, which prunes before grouping so no domain reviews it.
+        rejected = disclosure.get("exclude_rejected")
+        if rejected:
+            cov["exclude_rejected"] = rejected
+            print("coverage: group %s exclude %s was OVERRIDDEN (non-excludable) "
+                  "-- these domains still run. To drop paths entirely (e.g. a "
+                  "fixture corpus), use top-level `exclude_paths:` in groups.yml, "
+                  "not per-group `exclude:`." % (group, ", ".join(rejected)),
+                  file=sys.stderr)
+        _write_json(_pano(review_root, "coverage-%s.json" % group), cov)
         return PhaseResult(kind="advanced",
                            message="coverage: group %s (floor+scout)" % group)
     return PhaseResult(kind="advanced", message="coverage: complete")
@@ -1798,6 +1815,19 @@ def run(args, runner=subprocess.run, phases=PHASES):
         if conflicts:
             return _error_status("flag drift (use --reset to start over): "
                                  + "; ".join(conflicts))
+    # #1: a bare re-invocation of an ALREADY-complete run matches every manifest
+    # field (conflicting_flags treats a None incoming value as no-conflict), so it
+    # would advance straight to "complete" and hand back a possibly-stale report as
+    # though it were a fresh scan -- the worst failure mode for a review tool.
+    # Refuse loudly and name --reset instead; the durable report stays on disk.
+    # (Guarded by `not args.reset`: a --reset run just cleared its derived
+    # artifacts, so it can never be already-complete at this point.)
+    if not args.reset and _first_not_done(phases, review_root, manifest) is None:
+        report = _pano(review_root, "report.json")
+        loc = report if os.path.exists(report) else review_root
+        return _error_status(
+            "run already complete (report at %s) -- use `--reset` to start a new "
+            "run" % loc)
     # §5.1: point runs/latest at the active run folder now that the manifest (hence
     # the tag) is established — so the pointer exists throughout the run, not just
     # after synthesize writes the report.

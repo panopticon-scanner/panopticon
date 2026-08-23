@@ -479,6 +479,46 @@ class TestCoveragePhase(unittest.TestCase):
         self.assertEqual(cov["scout_added"], [])              # bridge deferred to P4
         self.assertTrue(cov["scout_file"].endswith("scout-Auth.json"))
 
+    def test_persists_and_warns_exclude_rejected_for_non_excludable(self):
+        # #8c/#7: a committed `exclude` naming SEC (NON_EXCLUDABLE, #1084) is
+        # OVERRIDDEN -- the SEC panel still runs wherever floor/scout put it. A
+        # redteam scout profiling deliberately-vulnerable fixtures requests SEC,
+        # so the fixture-sink's `exclude: [SEC]` is rejected and SEC reviews the
+        # corpus anyway. The coverage-write used to DROP that override signal, so
+        # run-6's 16 illusory HIGHs reached the gate unannounced. Persist it as
+        # `exclude_rejected` AND warn loudly, steering the operator to top-level
+        # `exclude_paths:` (which prunes before grouping so no domain reviews it).
+        self._groups_json([{"name": "Fixtures", "files": ["tests/fixtures/x.py"]}])
+        self._groups_yml("groups:\n  Fixtures:\n    match: ['tests/fixtures/**']\n"
+                         "    exclude: [SEC]\n")
+        driver._write_json(driver._pano(self.root, "scout-Fixtures.json"),
+                           {"group": "Fixtures", "domains": ["SEC"]})
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            driver.coverage_execute(self.root, self.manifest)
+        cov = driver._load_json(driver._pano(self.root, "coverage-Fixtures.json"))
+        self.assertEqual(cov["exclude_rejected"], ["SEC"])
+        self.assertNotIn("SEC", cov["excluded"])    # override -> not a real exclusion
+        self.assertIn("SEC", cov["effective"])       # SEC still RUNS -> the leak disclosed
+        msg = err.getvalue()
+        self.assertIn("exclude_paths", msg)          # steer to the right tool
+        self.assertIn("Fixtures", msg)               # names the offending group
+
+    def test_no_exclude_rejected_key_when_nothing_overridden(self):
+        # Back-compat: an excludable domain (OPS) is honored, so no override
+        # signal is emitted and the coverage doc keeps its prior shape.
+        self._groups_json([{"name": "Auth", "files": ["a.py"]}])
+        self._groups_yml("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n"
+                         "    exclude: [OPS]\n")
+        driver._write_json(driver._pano(self.root, "scout-Auth.json"),
+                           {"group": "Auth", "panels": ["code"]})
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            driver.coverage_execute(self.root, self.manifest)
+        cov = driver._load_json(driver._pano(self.root, "coverage-Auth.json"))
+        self.assertNotIn("exclude_rejected", cov)
+        self.assertNotIn("exclude_paths", err.getvalue())
+
     def test_surfaced_group_retains_full_global_floor(self):
         # #5.0-19: a group whose files/scout show db, tests, and cross-module
         # structure keeps the whole universal floor -- the gate drops cells only
@@ -1196,8 +1236,18 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
                 break
         self.assertEqual(status["status"], "complete")
         self.assertTrue(os.path.isfile(driver._pano(d, "report.json")))
-        # idempotent: a completed run stays complete
-        self.assertEqual(driver.run(args)["status"], "complete")
+        # #1: re-invoking a COMPLETED run refuses (never silently returns a
+        # possibly-stale report as though it were fresh) and names --reset; the
+        # durable report stays on disk.
+        redo = driver.run(args)
+        self.assertEqual(redo["status"], "error")
+        self.assertIn("already complete", redo["message"])
+        self.assertIn("--reset", redo["message"])
+        self.assertTrue(os.path.isfile(driver._pano(d, "report.json")))
+        # --reset starts a new run: back to the first checkpoint, not an error
+        self.assertEqual(
+            driver.run(self._args(d, "--no-tools", "--reset"))["status"],
+            "checkpoint")
 
     def test_resume_reemits_same_checkpoint_before_dispatch(self):
         d = self._repo()
