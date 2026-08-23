@@ -64,6 +64,20 @@ jobs:
         id: cadence
         run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve NVD data image digest (content-pin the cache)
+        id: nvd
+        env:
+          NVD_IMAGE: ${{ env.REGISTRY }}/${{ github.repository }}-tools-nvd
+        run: |
+          set -euo pipefail
+          ver="$(grep -E '^ARG DEPENDENCY_CHECK_VERSION=' Dockerfile | head -1 | cut -d= -f2)"
+          echo "$ver" | grep -Eq '^[0-9][0-9.]*$' || { echo "::error::unexpected DEPENDENCY_CHECK_VERSION '$ver'"; exit 1; }
+          tag="${NVD_IMAGE}:dc-${ver}"
+          digest="$(docker buildx imagetools inspect "$tag" --format '{{.Manifest.Digest}}' 2>/dev/null)" \
+            || { echo "::error::NVD cache $tag not found — run the 'Refresh NVD data cache' workflow to prime dc-${ver}, then re-run this build"; exit 1; }
+          echo "ref=${NVD_IMAGE}@${digest}" >> "$GITHUB_OUTPUT"
+          echo "pinned NVD data -> ${NVD_IMAGE}@${digest}"
+
       - name: Extract labels
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
@@ -81,8 +95,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ env.PLATFORM_PAIR }}
           build-args: |
             ASSET_REFRESH=${{ steps.cadence.outputs.date }}
-          secrets: |
-            nvd_api_key=${{ secrets.NVD_API_KEY }}
+            NVD_DATA_REF=${{ steps.nvd.outputs.ref }}
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
 
       - name: Export digest
