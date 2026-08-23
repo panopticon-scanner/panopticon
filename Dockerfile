@@ -133,17 +133,14 @@ RUN ln -s /usr/share/dotnet/dotnet /usr/bin/dotnet
 ENV DOTNET_ROOT=/usr/share/dotnet
 ENV PATH="/usr/share/dotnet:${PATH}"
 
-# SecurityCodeScan Roslyn analyzer - applied to all C# projects built under /src
-# via MSBuild's parent-directory Directory.Build.props discovery.
-RUN printf '%s\n' \
-    '<Project>' \
-    '  <ItemGroup>' \
-    '    <PackageReference Include="AdaskoTheBeAsT.SecurityCodeScan.VS2022" Version="5.6.7.31">' \
-    '      <PrivateAssets>all</PrivateAssets>' \
-    '      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>' \
-    '    </PackageReference>' \
-    '  </ItemGroup>' \
-    '</Project>' > /Directory.Build.props
+# DotnetariumSCS standalone C# security scanner. Replaces the SecurityCodeScan
+# NuGet analyzer, which no longer emits findings on .NET 8 (the build was
+# failing the smoke test with "no SCS findings in SARIF"). DotnetariumSCS is a
+# SecurityCodeScan-compatible fork that works on .NET 8 and emits the same
+# SCS* rule IDs in SARIF 2.1 format, so the adapter parse logic is unchanged.
+ARG DOTNETARIUM_SCS_VERSION=1.1.0
+ENV DOTNET_CLI_TELEMETRY_OPTOUT=1
+RUN dotnet tool install --tool-path /usr/local/bin dotnetarium-scs --version ${DOTNETARIUM_SCS_VERSION}
 
 # ---- Offline scan assets (P1: zero scan-time egress; spec 2026-08-04) ----
 # Cache boundary: everything ABOVE this ARG stays layer-cached across daily
@@ -251,29 +248,6 @@ RUN --mount=type=secret,id=nvd_api_key \
     && if ! timeout 600 /opt/dependency-check/bin/dependency-check.sh --updateonly \
            --data /opt/odc-data ${KEY:+--nvdApiKey "$KEY"}; then :; fi \
     && chmod -R a+rX /opt/odc-data
-
-# SecurityCodeScan offline NuGet feed: warm a package folder via a throwaway
-# project (the root /Directory.Build.props injects the analyzer reference),
-# then pin restore to it via fallbackPackageFolders.
-# `cd /tmp/warm` is a scoped transient build dir removed in the same layer, not an
-# image-wide working directory — a WORKDIR would wrongly persist it.
-# hadolint ignore=DL3003
-RUN set -euo pipefail \
-    && : "asset-refresh ${ASSET_REFRESH}" \
-    && mkdir -p /tmp/warm && cd /tmp/warm \
-    && dotnet new classlib -o warmproj --no-restore \
-    && dotnet restore warmproj --packages /opt/nuget-packages \
-    && cd / && rm -rf /tmp/warm \
-    && chmod -R a+rX /opt/nuget-packages
-RUN printf '%s\n' \
-    '<?xml version="1.0" encoding="utf-8"?>' \
-    '<configuration>' \
-    '  <packageSources><clear /></packageSources>' \
-    '  <fallbackPackageFolders>' \
-    '    <add key="baked" value="/opt/nuget-packages" />' \
-    '  </fallbackPackageFolders>' \
-    '</configuration>' > /nuget.config \
-    && chmod a+r /nuget.config
 
 RUN useradd -m -u 1000 scanner \
     && chown scanner:scanner /home/scanner \
