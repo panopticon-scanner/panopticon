@@ -39,7 +39,7 @@ ROSLYN_SAMPLE_V1 = json.dumps({
     }]
 }).encode()
 
-# SecurityCodeScan can emit ``message`` as a plain string rather than a dict.
+# DotnetariumSCS can emit ``message`` as a plain string rather than a dict.
 ROSLYN_SAMPLE_STRING_MESSAGE = json.dumps({
     "runs": [{
         "results": [{
