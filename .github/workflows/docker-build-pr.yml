@@ -23,4 +23,6 @@ jobs:
           hadolint Dockerfile
 
       - name: Build Dockerfile
-        run: docker build -f Dockerfile .
+        run: docker build --secret id=nvd_api_key,env=NVD_API_KEY -f Dockerfile .
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
