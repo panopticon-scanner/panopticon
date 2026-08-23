@@ -1037,18 +1037,31 @@ def review_execute(review_root, manifest):
         # #1092: same resume-reachable gap as coverage -- a corrupt groups.yml
         # would silently drop every group's committed tests from the prompts.
         raise DriverError("review: " + "; ".join(errors))
+    # #5: batch EVERY pending review cell across ALL groups into one checkpoint
+    # (like the scout fan-out, #1056) instead of one group per round trip -- run-6
+    # serialized 26 groups into 26 sequential trips while the host can dispatch
+    # ~20 agents at once. group=None marks a batch; each entry is self-describing
+    # (group+domain in its id/out_file), and the host installs the write-guard
+    # from the full entry set, so the fail-closed allowlist still covers every cell
+    # (_write_driver_plan above already declared them all for reconcile).
+    all_entries, ngroups = [], 0
     for group, files in _discovered_groups(review_root):
         domains = _effective_domains(review_root, group)
         pending = [d for d in domains if not _cell_done(review_root, manifest, group, d)]
         if not pending:
             continue
+        ngroups += 1
         tests = sorted((matrix.get(group) or {}).get("tests") or [])
-        entries = [_cell_entry(review_root, manifest, group, d, files, tests, host, bundle)
-                   for d in pending]
-        req = write_dispatch_request(review_root, manifest["run_id"], "review", group, entries)
-        return PhaseResult(kind="checkpoint", checkpoint="review", group=group,
+        all_entries.extend(
+            _cell_entry(review_root, manifest, group, d, files, tests, host, bundle)
+            for d in pending)
+    if all_entries:
+        req = write_dispatch_request(review_root, manifest["run_id"], "review",
+                                     None, all_entries)
+        return PhaseResult(kind="checkpoint", checkpoint="review", group=None,
                            dispatch_request=req,
-                           message="review: %d cell(s) for group %s" % (len(entries), group))
+                           message="review: %d cell(s) across %d group(s)"
+                                   % (len(all_entries), ngroups))
     return PhaseResult(kind="advanced", message="review: all cells complete")
 
 
@@ -1060,8 +1073,12 @@ def verify_execute(review_root, manifest):
     os.makedirs(_pano(review_root, "verdicts"), exist_ok=True)
     host = manifest.get("host", "claude")
     bundle = _load_ocrdb_bundle()
-    # PRIMARY round: one advisor per engaged (>= F_p), not-yet-verified cell,
-    # streamed per group (first group with pending work emits, like review_execute).
+    # PRIMARY round: one advisor per engaged (>= F_p), not-yet-verified cell.
+    # #5: batch every pending primary advisor across ALL groups into one
+    # checkpoint (like review + scout), instead of one group per round trip. The
+    # BACKUP and TOOL rounds below stay sequential -- they depend on the primary
+    # verdicts being complete first (verify_done gates them on all-primary-done).
+    all_entries, ngroups = [], 0
     for group, files in _discovered_groups(review_root):
         pending = []
         for domain in _effective_domains(review_root, group):
@@ -1072,14 +1089,17 @@ def verify_execute(review_root, manifest):
                 continue
             pending.append((domain, cell))
         if pending:
-            entries = [_verify_entry(review_root, manifest, group, d, files, c,
-                                     host, bundle, "primary") for d, c in pending]
-            req = write_dispatch_request(review_root, manifest["run_id"], "verify",
-                                         group, entries)
-            return PhaseResult(kind="checkpoint", checkpoint="verify", group=group,
-                               dispatch_request=req,
-                               message="verify: %d primary advisor(s) for group %s"
-                               % (len(entries), group))
+            ngroups += 1
+            all_entries.extend(
+                _verify_entry(review_root, manifest, group, d, files, c,
+                              host, bundle, "primary") for d, c in pending)
+    if all_entries:
+        req = write_dispatch_request(review_root, manifest["run_id"], "verify",
+                                     None, all_entries)
+        return PhaseResult(kind="checkpoint", checkpoint="verify", group=None,
+                           dispatch_request=req,
+                           message="verify: %d primary advisor(s) across %d group(s)"
+                           % (len(all_entries), ngroups))
     # BACKUP round (Task 4 fills this branch).
     backup = _verify_backup_execute(review_root, manifest, host, bundle)
     if backup is not None:
