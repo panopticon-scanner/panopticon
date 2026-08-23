@@ -101,6 +101,7 @@ jobs:
 
   merge:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: build
     permissions:
       contents: read
@@ -147,6 +148,14 @@ jobs:
           docker buildx imagetools create \
             $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
             $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
+
+      - name: Prune untagged package versions
+        uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5.0.0
+        with:
+          package-name: ${{ github.event.repository.name }}-tools
+          package-type: container
+          min-versions-to-keep: 10
+          delete-only-untagged-versions: true
 
       - name: Inspect and capture digest
         id: inspect

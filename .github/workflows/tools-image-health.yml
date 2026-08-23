@@ -6,6 +6,8 @@ name: panopticon-tools image health
 on:
   push:
     branches: [main]
+  schedule:
+    - cron: "30 6 * * *"
   workflow_dispatch:
 
 permissions:
@@ -17,6 +19,7 @@ jobs:
     # disabled it. Idempotent -- a no-op when already enabled. An API call, never
     # a commit, so there is no keep-alive commit noise on main.
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       actions: write
     steps:
@@ -31,6 +34,7 @@ jobs:
     # the case the keep-alive can't catch, where the schedule is enabled but the
     # nightly build has been silently failing (the #1026 stale-semgrep class).
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       packages: read
     env:
