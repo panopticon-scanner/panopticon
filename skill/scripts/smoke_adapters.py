@@ -102,11 +102,11 @@ def check_roslyn_secguard_build(runner=subprocess.run):
             runner(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                    timeout=PROBE_TIMEOUT)
         except FileNotFoundError:
-            return False, "roslyn-secguard build: dotnet not found"
+            return False, "roslyn-secguard build: dotnetarium-scs not found"
         except subprocess.TimeoutExpired:
             return False, "roslyn-secguard build: no response in %ds" % PROBE_TIMEOUT
         except OSError as e:
-            return False, "roslyn-secguard build: failed to exec dotnet (%s)" % (
+            return False, "roslyn-secguard build: failed to exec dotnetarium-scs (%s)" % (
                 e.strerror or repr(e))
         if not os.path.exists(sarif):
             return False, "roslyn-secguard build: no SARIF output produced"
