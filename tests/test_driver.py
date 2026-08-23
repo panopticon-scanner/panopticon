@@ -518,6 +518,57 @@ class TestCoveragePhase(unittest.TestCase):
         cov = driver._load_json(driver._pano(self.root, "coverage-Auth.json"))
         self.assertNotIn("exclude_rejected", cov)
         self.assertNotIn("exclude_paths", err.getvalue())
+    def test_schema_invalid_scout_lenses_is_rediscpatched(self):
+        # #3: a scout returning `lenses` as panel->object (run-6 bug) parses as
+        # JSON but is structurally invalid. The driver must reject it at the
+        # return-persist accept boundary -- discard the garbage and re-dispatch --
+        # not consume it into coverage (where it later crashes lens spawning).
+        self._groups_json([{"name": "Auth", "files": ["a.py"]}])
+        self._groups_yml("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n")
+        driver._write_json(driver._pano(self.root, "scout-Auth.json"),
+                           {"group": "Auth", "domains": ["SEC"],
+                            "lenses": {"code": {"name": "x", "spawn": True}}})
+        err = io.StringIO()
+        with mock.patch("scripts.driver.dispatch.render_prompt", return_value="B"), \
+             mock.patch("scripts.driver.dispatch.registered_agent_name",
+                        return_value="panopticon-scout"), \
+             contextlib.redirect_stderr(err):
+            result = driver.coverage_execute(self.root, self.manifest)
+        self.assertEqual(result.kind, "checkpoint")
+        self.assertEqual(result.checkpoint, "scout")
+        self.assertFalse(os.path.exists(driver._pano(self.root, "scout-Auth.json")))
+        self.assertFalse(os.path.exists(driver._pano(self.root, "coverage-Auth.json")))
+        self.assertIn("lenses", err.getvalue())
+
+    def test_valid_scout_lenses_array_is_accepted(self):
+        # The correct panel->array shape passes and coverage computes normally.
+        self._groups_json([{"name": "Auth", "files": ["a.py"]}])
+        self._groups_yml("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n")
+        driver._write_json(driver._pano(self.root, "scout-Auth.json"),
+                           {"group": "Auth", "domains": ["SEC"],
+                            "lenses": {"code": [{"name": "x", "spawn": True}]}})
+        result = driver.coverage_execute(self.root, self.manifest)
+        self.assertEqual(result.kind, "advanced")
+        self.assertTrue(os.path.isfile(driver._pano(self.root, "coverage-Auth.json")))
+
+    def test_repeated_invalid_scout_fails_loud_after_cap(self):
+        # A deterministically-broken host that keeps returning garbage must fail
+        # loud after the retry cap, never re-dispatch forever.
+        self._groups_json([{"name": "Auth", "files": ["a.py"]}])
+        self._groups_yml("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n")
+        bad = {"group": "Auth", "lenses": {"code": {"name": "x", "spawn": True}}}
+        with mock.patch("scripts.driver.dispatch.render_prompt", return_value="B"), \
+             mock.patch("scripts.driver.dispatch.registered_agent_name",
+                        return_value="panopticon-scout"), \
+             contextlib.redirect_stderr(io.StringIO()):
+            for _ in range(driver._MAX_SCOUT_ATTEMPTS - 1):
+                driver._write_json(driver._pano(self.root, "scout-Auth.json"), bad)
+                self.assertEqual(
+                    driver.coverage_execute(self.root, self.manifest).kind,
+                    "checkpoint")
+            driver._write_json(driver._pano(self.root, "scout-Auth.json"), bad)
+            with self.assertRaises(driver.DriverError):
+                driver.coverage_execute(self.root, self.manifest)
 
     def test_surfaced_group_retains_full_global_floor(self):
         # #5.0-19: a group whose files/scout show db, tests, and cross-module
@@ -600,17 +651,30 @@ class TestCoverageBridge(unittest.TestCase):
         cov = driver._load_json(driver._pano(self.root, "coverage-Auth.json"))
         self.assertNotIn("DAT", cov["effective"])              # exclude wins
 
-    def test_non_dict_scout_raises_driver_error(self):
-        # #5.0-12: a scout returning a JSON ARRAY (not an object) must fail loud
-        # at the checkpoint, not crash `.get` with an uncaught AttributeError.
+    def test_non_dict_scout_rediscpatched_then_fails_loud(self):
+        # #5.0-12 + #3: a scout returning a JSON ARRAY (not an object) must never
+        # crash `.get` with an uncaught AttributeError. It is now rejected at the
+        # return-persist accept boundary and re-dispatched (uniformly with any
+        # other shape error); a host that keeps returning a non-object fails loud
+        # after the retry cap, never loops.
         driver._write_json(driver._pano(self.root, "groups.json"),
                            {"groups": [{"name": "Auth", "files": ["a.py"]}]})
         with open(driver._pano(self.root, "groups.yml"), "w") as fh:
             fh.write("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n")
-        with open(driver._pano(self.root, "scout-Auth.json"), "w") as fh:
-            fh.write('["SEC", "DAT"]')          # a list, not an object
-        with self.assertRaises(driver.DriverError):
-            driver.coverage_execute(self.root, self.manifest)
+        with mock.patch("scripts.driver.dispatch.render_prompt", return_value="B"), \
+             mock.patch("scripts.driver.dispatch.registered_agent_name",
+                        return_value="panopticon-scout"), \
+             contextlib.redirect_stderr(io.StringIO()):
+            for _ in range(driver._MAX_SCOUT_ATTEMPTS - 1):
+                with open(driver._pano(self.root, "scout-Auth.json"), "w") as fh:
+                    fh.write('["SEC", "DAT"]')      # a list, not an object
+                self.assertEqual(
+                    driver.coverage_execute(self.root, self.manifest).kind,
+                    "checkpoint")
+            with open(driver._pano(self.root, "scout-Auth.json"), "w") as fh:
+                fh.write('["SEC", "DAT"]')
+            with self.assertRaises(driver.DriverError):
+                driver.coverage_execute(self.root, self.manifest)
 
     def test_chunk_inherits_parent_committed_floor(self):
         # #5.0-10: a >15-file group split into Auth_1/Auth_2 chunks must inherit

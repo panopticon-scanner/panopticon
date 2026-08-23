@@ -507,6 +507,61 @@ def _chunk_parent(name):
     return head if head and tail.isdigit() else None
 
 
+# #3: bound the return-persist re-dispatch loop so a deterministically-broken
+# host fails loud instead of re-dispatching the same garbage forever.
+_MAX_SCOUT_ATTEMPTS = 3
+
+
+def _scout_shape_errors(scout):
+    """Load-bearing structural checks on a returned ScopeProfile -- a
+    dependency-free subset of `scope-profile-schema.json` (jsonschema is an
+    OPTIONAL, test-only dep, so the driver can't lean on it at runtime). Checks
+    only the invariants the coverage/dispatch path actually indexes; returns []
+    when the shape is safe to consume, else human-readable errors.
+
+    The one that bit run-6: `lenses` must be an object of panel -> ARRAY. Two of
+    26 scouts returned panel -> object; that parses as JSON, slips past the dict
+    gate below, and only blows up later as an uncaught ValueError inside
+    `dispatch._panel_lenses` (or an AttributeError in `depth_planner.plan_lenses`)
+    -- a mid-dispatch crash instead of a clean re-dispatch."""
+    if not isinstance(scout, dict):
+        return ["not a JSON object"]
+    errs = []
+    for field in ("domains", "languages", "surfaces", "files", "tools"):
+        v = scout.get(field)
+        if v is not None and not isinstance(v, list):
+            errs.append("`%s` must be an array" % field)
+    lenses = scout.get("lenses")
+    if lenses is not None:
+        if not isinstance(lenses, dict):
+            errs.append("`lenses` must be an object of panel -> array")
+        else:
+            for panel, arr in lenses.items():
+                if not isinstance(arr, list):
+                    errs.append("`lenses.%s` must be an array (got %s)"
+                                % (panel, type(arr).__name__))
+                    continue
+                for i, lens in enumerate(arr):
+                    if not (isinstance(lens, dict)
+                            and "name" in lens and "spawn" in lens):
+                        errs.append("`lenses.%s[%d]` must be an object with "
+                                    "name+spawn" % (panel, i))
+    return errs
+
+
+def _bump_scout_attempts(review_root, group):
+    """Persisted per-group re-dispatch counter that bounds #3's retry loop.
+    Lives alongside the scout outputs, so --reset clears it with them."""
+    path = _pano(review_root, "scout-attempts.json")
+    data = _load_json(path) if _json_parses(path) else {}
+    if not isinstance(data, dict):
+        data = {}
+    n = int(data.get(group, 0)) + 1
+    data[group] = n
+    _write_json(path, data)
+    return n
+
+
 def coverage_execute(review_root, manifest):
     """Emit ALL pending scouts in one checkpoint (#1056), then compute each
     group's coverage as the floor widened by the scout's valid domains. Returns
@@ -526,10 +581,36 @@ def coverage_execute(review_root, manifest):
     # round-trips. Emit EVERY pending scout in one checkpoint so the host
     # dispatches them concurrently; on a crash/resume this re-emits only the
     # scouts that still have no output (durable state = the entries' out_files).
-    pending_scouts = [
-        (g, f) for g, f in groups
-        if not _json_parses(_pano(review_root, "coverage-%s.json" % g))
-        and not _json_parses(_pano(review_root, "scout-%s.json" % g))]
+    pending_scouts = []
+    for g, f in groups:
+        if _json_parses(_pano(review_root, "coverage-%s.json" % g)):
+            continue
+        sp = _pano(review_root, "scout-%s.json" % g)
+        if not _json_parses(sp):
+            pending_scouts.append((g, f))          # no output yet
+            continue
+        # #3: a scout that PARSES as JSON but has the wrong shape (run-6: 2/26
+        # returned `lenses` as panel->object instead of panel->array) would slip
+        # past the dict gate in the coverage loop below and corrupt lens spawning
+        # downstream. Validate the load-bearing structure at the return-persist
+        # accept boundary; on a mismatch, DISCARD the garbage and re-dispatch that
+        # one scout. Cap the retries so a deterministically-broken host fails loud.
+        errs = _scout_shape_errors(_load_json(sp))
+        if errs:
+            n = _bump_scout_attempts(review_root, g)
+            print("scout output for group %s failed shape validation "
+                  "(attempt %d/%d): %s"
+                  % (g, n, _MAX_SCOUT_ATTEMPTS, "; ".join(errs)),
+                  file=sys.stderr, flush=True)
+            if n >= _MAX_SCOUT_ATTEMPTS:
+                raise DriverError(
+                    "scout for group %s returned schema-invalid output %d times "
+                    "(fix the agent or `--reset`): %s" % (g, n, "; ".join(errs)))
+            try:
+                os.remove(sp)                       # discard -> re-dispatch fresh
+            except OSError:
+                pass
+            pending_scouts.append((g, f))
     if pending_scouts:
         entries = [_scout_entry(review_root, manifest, g, f, host)
                    for g, f in pending_scouts]
