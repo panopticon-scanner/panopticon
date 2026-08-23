@@ -18,6 +18,10 @@ ARG ESLINT_FORMATTER_SARIF_VERSION=3.1.0
 ARG PIP_AUDIT_VERSION=2.10.1
 ARG CARGO_AUDIT_VERSION=0.22.2
 
+# Distro apt packages are intentionally unpinned: they carry security updates, and
+# pinning exact versions breaks the build when the mirror rotates them off. The
+# security TOOL binaries are pinned by checksum instead (see the ARG pins above).
+# hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl ca-certificates git gnupg ruby nodejs npm \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
@@ -32,11 +36,9 @@ RUN pip install --no-cache-dir "semgrep==${SEMGREP_VERSION}" "bandit==${BANDIT_V
 RUN gem install --no-document "brakeman:${BRAKEMAN_VERSION}" "bundler-audit:${BUNDLER_AUDIT_VERSION}" \
     && bundle-audit update
 
-# Node (eslint + security plugin)
-RUN npm install -g "eslint@${ESLINT_VERSION}" "eslint-plugin-security@${ESLINT_PLUGIN_SECURITY_VERSION}" "@microsoft/eslint-formatter-sarif@${ESLINT_FORMATTER_SARIF_VERSION}"
-
-# Python dependency audit
-RUN pip install --no-cache-dir "pip-audit==${PIP_AUDIT_VERSION}"
+# Node (eslint + security plugin) + Python dependency audit
+RUN npm install -g "eslint@${ESLINT_VERSION}" "eslint-plugin-security@${ESLINT_PLUGIN_SECURITY_VERSION}" "@microsoft/eslint-formatter-sarif@${ESLINT_FORMATTER_SARIF_VERSION}" \
+    && pip install --no-cache-dir "pip-audit==${PIP_AUDIT_VERSION}"
 
 # OSV scanner (static Go binary)
 ARG OSV_SCANNER_VERSION=1.8.2
@@ -61,7 +63,8 @@ RUN arch="$(dpkg --print-architecture)" \
     && tar -xzf /tmp/gitleaks.tar.gz -C /usr/local/bin gitleaks \
     && rm /tmp/gitleaks.tar.gz
 
-# trivy (official apt repo — robust, arch-aware)
+# trivy (official apt repo — robust, arch-aware); apt package unpinned, see the base apt note above.
+# hadolint ignore=DL3008
 RUN curl -sfL --connect-timeout 5 --max-time 60 https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor -o /usr/share/keyrings/trivy.gpg \
     && echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" > /etc/apt/sources.list.d/trivy.list \
     && apt-get update && apt-get install -y --no-install-recommends trivy \
@@ -83,7 +86,8 @@ RUN arch="$(dpkg --print-architecture)" \
 COPY skill/scripts /opt/panopticon/scripts
 ENV PYTHONPATH=/opt/panopticon
 
-# OpenJDK (needed by SpotBugs and dependency-check)
+# OpenJDK (needed by SpotBugs and dependency-check); apt packages unpinned, see the base apt note above.
+# hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends default-jdk unzip build-essential \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
@@ -228,7 +232,7 @@ RUN set -euo pipefail \
     && printf 'requests==2.31.0\n' > /tmp/osv-warm/requirements.txt \
     && if ! osv-scanner --experimental-offline --experimental-download-offline-databases \
            --format json --recursive /tmp/osv-warm >/dev/null 2>&1; then :; fi \
-    && if [ ! -s /opt/osv-db/osv-scanner/npm/all.zip -o ! -s /opt/osv-db/osv-scanner/PyPI/all.zip ]; then \
+    && if [ ! -s /opt/osv-db/osv-scanner/npm/all.zip ] || [ ! -s /opt/osv-db/osv-scanner/PyPI/all.zip ]; then \
          if ! osv-scanner scan source --offline --download-offline-databases \
            --format json --recursive /tmp/osv-warm >/dev/null 2>&1; then :; fi; \
        fi \
@@ -251,6 +255,9 @@ RUN --mount=type=secret,id=nvd_api_key \
 # SecurityCodeScan offline NuGet feed: warm a package folder via a throwaway
 # project (the root /Directory.Build.props injects the analyzer reference),
 # then pin restore to it via fallbackPackageFolders.
+# `cd /tmp/warm` is a scoped transient build dir removed in the same layer, not an
+# image-wide working directory — a WORKDIR would wrongly persist it.
+# hadolint ignore=DL3003
 RUN set -euo pipefail \
     && : "asset-refresh ${ASSET_REFRESH}" \
     && mkdir -p /tmp/warm && cd /tmp/warm \
