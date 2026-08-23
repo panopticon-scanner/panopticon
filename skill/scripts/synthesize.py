@@ -2283,6 +2283,16 @@ def main(argv=None):
     # zeroed the scout coverage (#16). Resolve every run artifact under run_dir.
     run_dir = args.run_dir or (os.path.dirname(groups_path) if groups_path else "") \
         or ".panopticon"
+    if args.run_id and run_dir == ".panopticon":
+        # #17 fail-open guard: a 5.1 run (--run-id set) that fell back to flat
+        # .panopticon has no run folder, so it would read a PRIOR run's stale
+        # artifacts. Make the drift LOUD — never silent. (The schema_version
+        # assertion at the manifest read still FATALs on a stale pre-5.1 manifest,
+        # so certification cannot silently certify against one either.)
+        print("WARNING (#17): --run-id set but no run directory resolved "
+              "(--run-dir/--groups); falling back to flat .panopticon, which under "
+              "5.1 holds no run artifacts. Pass --groups <run-folder>/groups.json.",
+              file=sys.stderr)
 
     from datetime import datetime, timezone
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

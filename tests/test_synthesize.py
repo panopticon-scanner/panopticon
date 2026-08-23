@@ -5145,6 +5145,21 @@ class TestRunDirArtifactResolution(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     self._run(groups, fp, out)
 
+    def test_run_id_without_run_dir_warns_loudly(self):
+        # #17 fail-open guard: a 5.1 run (--run-id) that falls back to flat
+        # .panopticon must say so loudly rather than silently read stale artifacts.
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            os.makedirs(".panopticon")
+            fp = os.path.join(d, "findings-g1-code.json")
+            with open(fp, "w") as fh:
+                json.dump({"findings": []}, fh)
+            out = os.path.join(d, "r.json")
+            err = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                rc = syn.main(["--target", "src", "--run-id", "rid-1", "--out", out, fp])
+            self.assertEqual(rc, 0)
+            self.assertIn("no run directory resolved", err.getvalue())
+
 
 class TestOutOfScope(unittest.TestCase):
     """#441: report-side disclosure when a reviewer's finding cites a file
