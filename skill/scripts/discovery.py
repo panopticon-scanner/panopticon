@@ -288,6 +288,20 @@ def _glob_to_re(pat):
     # segments are semantically redundant, so fold each run down to one.
     pat = re.sub(r"(?:\*\*/)+", "**/", pat)
     pat = re.sub(r"\*\*\*+", "**", pat)
+    # #run7 SEC-H4A: the `**`-collapse above only tames adjacent `**` runs. A
+    # SINGLE-`*` pattern like `a*a*...Z` compiles to `a[^/]*a[^/]*...Z` -- the
+    # classic (.*a)+ catastrophic-backtracking shape (empirically >5s on a
+    # moderate filename), unaffected by the collapse. Atomic groups can't fix it
+    # (a glob `*` MUST backtrack so a trailing literal can match), so bound
+    # complexity AFTER the collapse: a legitimate glob has a handful of wildcards,
+    # so an over-long / over-wildcarded pattern is hostile or degenerate --
+    # disclose it and compile to a never-matching regex rather than hang discovery
+    # (which reads groups.yml from the untrusted redteam target, BEFORE dispatch).
+    if len(pat) > 256 or pat.count("*") > 20:
+        print("discovery: ignoring over-complex glob pattern "
+              "(len=%d, wildcards=%d): %r"
+              % (len(pat), pat.count("*"), pat[:80]), file=sys.stderr)
+        return re.compile(r"(?!)")   # matches nothing
     anchored = "/" in pat[:-1] if pat.endswith("/") else "/" in pat
     if pat.startswith("/"):
         pat = pat[1:]

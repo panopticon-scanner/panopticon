@@ -24,6 +24,20 @@ class TestGroupsSchema(unittest.TestCase):
         self.assertEqual(groups["G"]["floor"], set())
         self.assertEqual(groups["G"]["exclude"], set())
 
+    def test_parse_groups_accepts_legacy_list_form(self):
+        # #run7 ARC-D2B: a list-valued `groups:` must normalize to a catalog, not
+        # silently become {} -- which dropped every committed group to Commons/._N
+        # on the --repo-scan reader (_matrix_catalog) path.
+        doc = {"groups": [
+            {"name": "Auth", "match": ["src/auth/**"], "panels": ["SEC"]},
+            {"name": "Api", "match": ["src/api/**"]},
+            {"name": None, "match": ["x"]},          # nameless entry ignored, no crash
+        ]}
+        groups, errors = gs.parse_groups(doc)
+        self.assertEqual(errors, [])
+        self.assertEqual(set(groups), {"Auth", "Api"})
+        self.assertEqual(groups["Auth"]["match"], ["src/auth/**"])
+
     def test_unknown_domain_is_error(self):
         doc = {"groups": {"G": {"match": ["a/**"], "panels": ["ZZZ"]}}}
         _g, errors = gs.parse_groups(doc)

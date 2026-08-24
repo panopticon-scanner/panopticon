@@ -103,6 +103,14 @@ def parse_groups(doc):
     """
     groups, errors = {}, []
     groups_dict = (doc or {}).get("groups") or {}
+    # #run7 ARC-D2B: accept the legacy list form `groups: [{name: ..., ...}]`.
+    # load_catalog and _committed_matrix already normalize it, but _matrix_catalog
+    # (the reader main() uses for --repo-scan grouping) went straight to
+    # parse_groups, so a list-valued groups.yml silently became {} here and EVERY
+    # committed group was dropped to Commons/._N. Normalize once in the owner.
+    if isinstance(groups_dict, list):
+        groups_dict = {g.get("name"): g for g in groups_dict
+                       if isinstance(g, dict) and g.get("name")}
     if not isinstance(groups_dict, dict):
         errors.append("groups must be a mapping/object")
         groups_dict = {}
