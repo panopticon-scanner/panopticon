@@ -108,6 +108,12 @@ class TestOcrdb(unittest.TestCase):
         self.assertEqual(ocrdb.domain_criteria(malformed_bundle, "COD"), [])
         self.assertEqual(ocrdb.domain_criteria(malformed_bundle, "DAT"), [])
         self.assertIsNone(ocrdb.default_severity(malformed_bundle, "DAT-1"))
+        # #run7 TST-A2D: validate_code funnels through the same _safe_get_dict
+        # unwrap -- exercise it on the malformed bundle too (empty-domain entries
+        # -> False; a present entry key -> True, regardless of its value shape).
+        self.assertFalse(ocrdb.validate_code(malformed_bundle, "SEC-A1A"))
+        self.assertFalse(ocrdb.validate_code(malformed_bundle, "COD-1"))
+        self.assertTrue(ocrdb.validate_code(malformed_bundle, "DAT-3"))
 
 
 class TestDomainMenuSeverity(unittest.TestCase):

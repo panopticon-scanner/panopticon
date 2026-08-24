@@ -53,6 +53,25 @@ class TestVersionSingleSourcing(unittest.TestCase):
                             "citations.py hardcodes a User-Agent version")
         self.assertIn("__version__", src)
 
+    def test_verify_queue_payload_uses_the_constant(self):
+        # #run7 TST-A2A: _version.py names the verify-queue payload as a consumer,
+        # but only report-meta + citations UA were guarded. The one payload-version
+        # check elsewhere asserts a hardcoded "5.0.1" literal, so a regression that
+        # hardcoded the literal in evidence.py would pass until the next bump.
+        import json
+        import tempfile
+        import scripts.evidence as evidence
+        entries, cut = evidence.build_verify_queue(
+            [{"id": "F1", "title": "t", "severity": "HIGH",
+              "confidence": "POSSIBLE", "panel": "code", "category": "x",
+              "location": {"file": "a.py", "line_start": 1}}])
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "verify-queue.json")
+            evidence.write_verify_queue(entries, cut, path)
+            with open(path, encoding="utf-8") as fh:
+                payload = json.load(fh)
+        self.assertEqual(payload["version"], __version__)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -242,6 +242,11 @@ class TestSchemaValidationWarning(unittest.TestCase):
             if name == "jsonschema":
                 raise ImportError("simulated missing jsonschema")
             return real(name, *a, **k)
+        # #run7 TST-D1A: restore the module-global warn-once flag so this test
+        # can't leak state into a future warn-once test (the rest of the suite
+        # mutates ambient state via mock.patch, never a bare assignment).
+        self.addCleanup(setattr, cr, "_jsonschema_missing_warned",
+                        cr._jsonschema_missing_warned)
         cr._jsonschema_missing_warned = False
         buf = io.StringIO()
         with mock.patch("builtins.__import__", side_effect=fake), \

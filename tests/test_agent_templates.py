@@ -1,3 +1,4 @@
+import glob
 import os
 import unittest
 
@@ -6,6 +7,17 @@ import scripts.dispatch as dispatch
 
 ROLES = ["scout.md", "panel-review.md", "lens-sweep.md", "advisor.md", "setup-scan.md",
          "domain-panel.md", "domain-advisor.md"]
+
+
+class TestRolesParity(unittest.TestCase):
+    def test_ROLES_matches_the_agents_directory(self):
+        # #run7 ARC-A4C: ROLES is a hand-maintained shadow of skill/agents/*.md.
+        # A template added/renamed/removed would silently gain/lose all the
+        # untrusted-preamble + tool-policy + frontmatter coverage below while the
+        # suite stayed green. Enforce parity (cf. #1337 label-catalog parity).
+        on_disk = {os.path.basename(p)
+                   for p in glob.glob(os.path.join(dispatch.TEMPLATE_DIR, "*.md"))}
+        self.assertEqual(set(ROLES), on_disk)
 
 
 class TestUntrustedContentPreamble(unittest.TestCase):

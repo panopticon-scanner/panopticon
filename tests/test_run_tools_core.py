@@ -173,6 +173,7 @@ class TestRunTools(unittest.TestCase):
             expected = [docker_bin, "run", "--rm", "--network", "none",
                         "-v", "%s:/src:ro" % os.path.abspath(d),
                         "panopticon-tools"] + rt.TOOL_CMD["semgrep"]
+            self.assertEqual(len(calls), 1)        # #run7 COD-A2C: clear fail if runner never fired
             self.assertEqual(calls[0], expected)   # exact argv: flags, :ro mount, image, per-tool cmd
             with open(os.path.join(out_dir, "semgrep.sarif"), "rb") as fh:
                 self.assertEqual(fh.read(), fake.stdout)  # runner stdout bytes persisted verbatim

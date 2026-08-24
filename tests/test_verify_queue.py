@@ -31,6 +31,13 @@ class TestTriagePriority(unittest.TestCase):
 
 
 class TestBuildVerifyQueue(unittest.TestCase):
+    def test_empty_findings_yields_empty_queue(self):
+        # #run7 TST-A2D: the empty-input boundary was never exercised (35 call
+        # sites, none with []). Must be ([], 0) -- no unguarded entries[0], the
+        # cut stays 0, the collision counter starts empty.
+        self.assertEqual(evidence.build_verify_queue([]), ([], 0))
+        self.assertEqual(evidence.build_verify_queue([], max_verify=3), ([], 0))
+
     def test_tool_and_agentic_findings_both_queued(self):
         # P2 (#446): tool-sourced findings are claims like any other now --
         # they queue for advisor verification instead of being excluded.
@@ -129,6 +136,7 @@ class TestWriteVerifyQueue(unittest.TestCase):
                 payload = json.load(fh)
         self.assertEqual(payload["version"], "5.0.1")
         self.assertEqual(payload["cut_by_max_verify"], 0)
+        self.assertEqual(len(payload["entries"]), 1)   # #run7 TST-B3A: count diff, not IndexError
         self.assertEqual(payload["entries"][0]["queue_id"],
                          evidence.finding_fingerprint(f))
         self.assertNotIn("_group", payload["entries"][0]["finding"])

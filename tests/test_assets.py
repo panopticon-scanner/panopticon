@@ -10,9 +10,13 @@ class TestAssets(unittest.TestCase):
             return fh.read()
 
     def test_lenses_cover_all_nine(self):
+        # #run7 TST-B1B: assert the real lens IDENTIFIERS. "quality"/"design"
+        # were weak substrings that also occur in "assertion quality"/"schema
+        # design", so the check passed even if the test_quality/test_design lens
+        # headings were renamed/removed -- decoupled from what it claims to test.
         text = self._read("prompts/lenses.md")
-        for lens in ["structure", "correctness", "style", "coverage", "quality",
-                     "design", "known_vulns", "injection", "novel"]:
+        for lens in ["structure", "correctness", "style", "coverage", "test_quality",
+                     "test_design", "known_vulns", "injection", "novel"]:
             self.assertIn(lens, text, lens)
 
     def test_scout_defines_surfaces_and_output(self):

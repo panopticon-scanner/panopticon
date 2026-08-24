@@ -1,5 +1,6 @@
 import json, os
 import jsonschema
+import pytest
 REF = os.path.join(os.path.dirname(__file__), os.pardir, "skill", "reference")
 
 def _load(name):
@@ -35,6 +36,24 @@ def test_real_advisor_verdict_without_run_id_validates():
         "citations": {"cwe": ["CWE-89"], "owasp": ["A03:2021"], "cve": []},
     }
     assert jsonschema.validate(verdict, schema) is None
+
+def test_verdict_schema_rejects_invalid_input():
+    # #run7 TST-A2D: the advisor-verdict schema was only ever validated
+    # POSITIVELY. Prove it has teeth -- an out-of-enum verdict and a missing
+    # required field must both be REJECTED (else a silent loosening -- widened
+    # enum, emptied `required`, additionalProperties flipped -- goes unnoticed).
+    schema = _load("advisor-verdict-schema.json")
+    base = {
+        "finding_id": "SEC-001", "verdict": "CONFIRMED", "confidence": "LIKELY",
+        "reasoning": "r", "explored": ["a.py"], "references": ["a.py:1"],
+        "citations": {"cwe": [], "owasp": [], "cve": []},
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(dict(base, verdict="MAYBE"), schema)   # out-of-enum
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({k: v for k, v in base.items() if k != "verdict"},
+                            schema)                                 # missing required
+
 
 def test_report_finding_has_override_and_correction_fields():
     fprops = _load("report-schema.json")["properties"]["findings"]["items"]["properties"]

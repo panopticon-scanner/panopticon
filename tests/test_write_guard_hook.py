@@ -405,12 +405,14 @@ class TestLoadFailLoud(unittest.TestCase):
             sp = os.path.join(d, "settings.local.json")
             with open(sp, "w") as fh:
                 fh.write("{broken")
-            before = open(sp).read()
+            with open(sp, encoding="utf-8") as fh:   # #run7 TST-D1B: no leaked handles
+                before = fh.read()
             with self.assertRaises(RuntimeError):
                 wg.install([{"out_file": os.path.join(d, "o.json")}],
                            settings_path=sp,
                            allowlist_path=os.path.join(d, "allow.json"))
-            self.assertEqual(open(sp).read(), before)   # left untouched, not overwritten
+            with open(sp, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), before)   # left untouched, not overwritten
 
 
 class TestHookCmdSelfLocating(unittest.TestCase):
@@ -465,6 +467,7 @@ class TestWriteGuardHookLive(unittest.TestCase):
                 capture_output=True,
                 text=True,
                 cwd=real_d,
+                timeout=30,   # #run7 OPS-A1A/TST-G3B: bound the hook subprocess
             )
 
     def test_allowed_write_exits_cleanly_with_empty_stdout(self):

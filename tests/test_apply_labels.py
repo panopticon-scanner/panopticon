@@ -13,7 +13,7 @@ class TestApplyLabels(unittest.TestCase):
             ["bash", SCRIPT, "--dry-run"],
             cwd=REPO_ROOT,
             env={**os.environ, "CATALOG": FIXTURE},
-            capture_output=True, text=True)
+            capture_output=True, text=True, timeout=60)   # #run7 TST-G3B: bound the shell-out
         self.assertEqual(proc.returncode, 0, proc.stderr)
         out = proc.stdout
         self.assertIn("severity:critical", out)
@@ -27,7 +27,7 @@ class TestApplyLabels(unittest.TestCase):
             ["bash", SCRIPT, "--dry-run"],
             cwd=REPO_ROOT,
             env={**os.environ, "CATALOG": FIXTURE},
-            capture_output=True, text=True)
+            capture_output=True, text=True, timeout=60)   # #run7 TST-G3B: bound the shell-out
         self.assertEqual(proc.returncode, 0, proc.stderr)
         # The embedded quote must survive regex parsing, not be split/dropped.
         self.assertIn('Impact if true: high, including "quoted" text', proc.stdout)

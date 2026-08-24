@@ -57,7 +57,10 @@ class TestResolveBaseOriginFallback(unittest.TestCase):
                 pass
             r = R()
             ref = argv[-1]
-            r.returncode = 0 if ref.rstrip("^{commit}") in refs else 1
+            # #run7 COD-C2D: removesuffix strips the literal suffix; rstrip would
+            # strip the CHAR SET {^,{,c,o,m,i,t,}} and over-trim a ref that ends
+            # (pre-suffix) in one of those chars (e.g. "test" -> "tes").
+            r.returncode = 0 if ref.removesuffix("^{commit}") in refs else 1
             r.stdout = "abc\n" if r.returncode == 0 else ""
             return r
         return run

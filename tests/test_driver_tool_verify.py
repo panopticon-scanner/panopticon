@@ -177,7 +177,9 @@ class TestToolVerifyDispatch(_ToolVerifyBase):
         m = self._manifest()
         m["flags"] = {"max_verify": 3}
         queue = driver._tool_verify_queue(d, m)
-        self.assertLessEqual(len(queue), 3)
+        # #run7 TST-G3F: 10 distinct tool results, no agent findings, cap 3 ->
+        # the queue is EXACTLY 3. assertLessEqual passed vacuously on 0/1/2 too.
+        self.assertEqual(len(queue), 3)
 
     def test_default_uncapped_so_tool_findings_are_not_starved(self):
         # #18: with no max_verify in the manifest, the tool-verify queue must be
