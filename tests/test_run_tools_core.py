@@ -165,6 +165,39 @@ class TestRunTools(unittest.TestCase):
             with open(os.path.join(out_dir, "semgrep.sarif"), "rb") as fh:
                 self.assertEqual(fh.read(), fake.stdout)  # runner stdout bytes persisted verbatim
 
+    def test_bandit_pins_ini_when_target_has_bandit_config(self):
+        # #run7: bandit auto-discovers nested .bandit files (e.g. git worktrees)
+        # and ERRORS ("Multiple .bandit files found") -> empty output, silently
+        # unproduced -> certification blocked. Pin the target's own config with
+        # --ini to bypass discovery, ONLY when the target actually has one.
+        calls = []
+        fake = _FakeResult(returncode=0, stdout=b'{"runs":[]}', stderr=b'')
+
+        def runner(cmd, **kw):
+            calls.append(cmd)
+            return fake
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, ".bandit"), "w").close()
+            rt.run_tools(d, ["bandit"], os.path.join(d, "out"),
+                         image="panopticon-tools", runner=runner)
+            self.assertIn("--ini", calls[0])
+            i = calls[0].index("--ini")
+            self.assertEqual(calls[0][i + 1], "/src/.bandit")   # container-side config path
+
+    def test_bandit_no_ini_when_target_has_no_bandit_config(self):
+        calls = []
+        fake = _FakeResult(returncode=0, stdout=b'{"runs":[]}', stderr=b'')
+
+        def runner(cmd, **kw):
+            calls.append(cmd)
+            return fake
+        with tempfile.TemporaryDirectory() as d:   # no .bandit -> bandit's defaults
+            rt.run_tools(d, ["bandit"], os.path.join(d, "out"),
+                         image="panopticon-tools", runner=runner)
+            self.assertNotIn("--ini", calls[0])
+            self.assertEqual(calls[0][-len(rt.TOOL_CMD["bandit"]):],
+                             rt.TOOL_CMD["bandit"])   # unchanged argv
+
     def test_run_tools_continues_after_one_tool_fails(self):
         def runner(cmd, **kw):
             if "semgrep" in cmd: raise OSError("boom")

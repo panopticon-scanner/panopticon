@@ -142,22 +142,23 @@ class TestEslintSecurityAdapter(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             self.assertFalse(es.EslintSecurityAdapter().is_applicable(d))
 
-    def test_invoke_runs_eslint_security(self):
+    def test_invoke_runs_eslint_with_generated_flat_config(self):
+        # #run7: eslint 10 loads plugins via a flat config, not `--plugin`.
         adapter = es.EslintSecurityAdapter()
         fake_run = mock.Mock(return_value=mock.Mock(stdout=b"[]", returncode=0))
         with mock.patch("scripts.tools.base.subprocess.run", fake_run), \
              mock.patch.object(es.EslintSecurityAdapter, "_lintable_sources",
                                return_value=["x.js"]):
             stdout, rc = adapter.invoke("/tmp/fake")
-        self.assertEqual(stdout, b"[]")
-        self.assertEqual(rc, 0)
-        args, kwargs = fake_run.call_args
-        self.assertEqual(args[0][0], "eslint")
-        self.assertIn("--no-config-lookup", args[0])
-        self.assertIn("security", args[0])
-        self.assertIn("--format", args[0])
-        self.assertIn("json", args[0])
-        self.assertEqual(kwargs["capture_output"], True)
+        self.assertEqual((stdout, rc), (b"[]", 0))
+        cmd, kwargs = fake_run.call_args[0][0], fake_run.call_args[1]
+        self.assertEqual(cmd[0], "eslint")
+        self.assertIn("--config", cmd)
+        self.assertTrue(cmd[cmd.index("--config") + 1].endswith("eslint.config.mjs"))
+        self.assertIn("--no-config-lookup", cmd)   # target's own config never executed
+        self.assertIn("--format", cmd)
+        self.assertIn("json", cmd)
+        self.assertEqual(cmd[-1], os.path.abspath("/tmp/fake"))
         self.assertEqual(kwargs["timeout"], 300)
 
     def test_invoke_reports_nonzero_exit(self):
@@ -176,68 +177,25 @@ class TestEslintSecurityAdapter(unittest.TestCase):
         self.assertIn("tool eslint exited 2", buf.getvalue())
         self.assertIn("eslint config error", buf.getvalue())
 
-    def test_invoke_enables_all_rule_cwe_rules(self):
-        adapter = es.EslintSecurityAdapter()
-        fake_run = mock.Mock(return_value=mock.Mock(stdout=b"[]", returncode=0))
-        with mock.patch("scripts.tools.base.subprocess.run", fake_run), \
-             mock.patch.object(es.EslintSecurityAdapter, "_lintable_sources",
-                               return_value=["x.js"]):
-            adapter.invoke("/tmp/fake")
-        args, _ = fake_run.call_args
-        cmd = args[0]
+    def test_flat_config_imports_plugin_and_enables_all_rules(self):
+        cfg = es._flat_config()
+        self.assertIn("import security from", cfg)
+        # explicit .js entry -- ESM cannot import a bare directory (#run7)
+        self.assertRegex(cfg, r'import security from "[^"]+\.js"')
         for rule in es.RULE_CWE:
-            self.assertIn("--rule", cmd)
-            self.assertIn(f"{rule}: error", cmd)
+            self.assertIn('"%s": "error"' % rule, cfg)   # every mapped rule ON
 
-    def test_invoke_pins_cwd_away_from_scanned_target(self):
-        # eslint resolves plugins relative to the child process's cwd, not
-        # the linted path on argv. If cwd stays inside the scanned target, a
-        # hostile node_modules/eslint-plugin-security shipped by that target
-        # would be loaded and executed ahead of the trusted global plugin
-        # (#83). cwd must be pinned to a directory that can never contain a
-        # scanned target's own node_modules.
-        adapter = es.EslintSecurityAdapter()
-        fake_run = mock.Mock(return_value=mock.Mock(stdout=b"[]", returncode=0))
-        with mock.patch("scripts.tools.base.subprocess.run", fake_run), \
-             mock.patch.object(es.EslintSecurityAdapter, "_lintable_sources",
-                               return_value=["x.js"]):
-            adapter.invoke("/tmp/fake-target")
-        _args, kwargs = fake_run.call_args
-        expected_cwd = os.path.dirname(os.path.abspath(es.__file__))
-        self.assertEqual(kwargs.get("cwd"), expected_cwd)
-        self.assertNotEqual(kwargs.get("cwd"), "/tmp/fake-target")
-
-    def test_invoke_sets_node_path_exclusively_ignoring_inherited(self):
-        # #715: an inherited NODE_PATH must never be prepended. Node searches
-        # NODE_PATH left-to-right, so a hostile inherited /evil/node_modules
-        # would shadow the trusted eslint-plugin-security. The adapter must set
-        # NODE_PATH to the trusted global dir ALONE.
-        adapter = es.EslintSecurityAdapter()
-        fake_run = mock.Mock(return_value=mock.Mock(stdout=b"[]", returncode=0))
-        with mock.patch("scripts.tools.base.subprocess.run", fake_run), \
-             mock.patch.object(es.EslintSecurityAdapter, "_lintable_sources",
-                               return_value=["x.js"]), \
-             mock.patch.dict(os.environ, {"NODE_PATH": "/evil/node_modules"}), \
-             mock.patch("os.path.isdir",
-                        side_effect=lambda p: p == "/usr/local/lib/node_modules"):
-            adapter.invoke("/tmp/fake-target")
-        _args, kwargs = fake_run.call_args
-        self.assertEqual(kwargs["env"].get("NODE_PATH"), "/usr/local/lib/node_modules")
-        self.assertNotIn("/evil", kwargs["env"].get("NODE_PATH", ""))
-
-    def test_invoke_drops_inherited_node_path_when_no_global_dir(self):
-        # If neither trusted global dir exists, the inherited value must still
-        # be dropped rather than left to leak in.
-        adapter = es.EslintSecurityAdapter()
-        fake_run = mock.Mock(return_value=mock.Mock(stdout=b"[]", returncode=0))
-        with mock.patch("scripts.tools.base.subprocess.run", fake_run), \
-             mock.patch.object(es.EslintSecurityAdapter, "_lintable_sources",
-                               return_value=["x.js"]), \
-             mock.patch.dict(os.environ, {"NODE_PATH": "/evil/node_modules"}), \
-             mock.patch("os.path.isdir", return_value=False):
-            adapter.invoke("/tmp/fake-target")
-        _args, kwargs = fake_run.call_args
-        self.assertNotIn("NODE_PATH", kwargs["env"])
+    def test_plugin_entry_is_absolute_trusted_path(self):
+        # #83/#715: the plugin must be the TRUSTED global one, never a hostile
+        # copy in the scanned target's node_modules. Importing by ABSOLUTE path
+        # in the flat config makes plugin resolution independent of cwd/NODE_PATH,
+        # so nothing the target ships can shadow it.
+        with mock.patch("os.path.isfile",
+                        side_effect=lambda p: p.startswith("/usr/local/lib/node_modules")):
+            entry = es._plugin_entry()
+        self.assertEqual(
+            entry, "/usr/local/lib/node_modules/eslint-plugin-security/index.js")
+        self.assertTrue(os.path.isabs(entry))
 
     def test_invoke_passes_absolute_target_path(self):
         # Once cwd is pinned away from the target, the linted path on argv
