@@ -54,6 +54,22 @@ class TestFindSecBugsIntegrity(unittest.TestCase):
                       self.text)
         self.assertNotIn("remotecontent?filepath=", self.text)
 
+    def test_all_fetched_binaries_are_checksum_verified(self):
+        # #run7 TST-A2A: the checksum regression previously covered only
+        # FindSecBugs; osv-scanner/gitleaks/gosec/dependency-check verify their
+        # downloads too but had ZERO test, so dropping any `sha256sum -c` or SHA
+        # pin passed the suite untouched. Lock all of them in (arch-split and
+        # single-SHA shapes both).
+        for artifact, sha_re in (
+                ("/tmp/osv-scanner", r"OSV_SCANNER_SHA256_(AMD64|ARM64)=[0-9a-f]{64}"),
+                ("/tmp/gitleaks.tar.gz", r"GITLEAKS_SHA256_(X64|ARM64)=[0-9a-f]{64}"),
+                ("/tmp/gosec.tar.gz", r"GOSEC_SHA256_(AMD64|ARM64)=[0-9a-f]{64}"),
+                ("/tmp/dc.zip", r"DEPENDENCY_CHECK_SHA256=[0-9a-f]{64}")):
+            self.assertRegex(self.text, sha_re, "no pinned SHA256 for %s" % artifact)
+            self.assertRegex(
+                self.text, artifact.replace(".", r"\.") + r'"\s*\|\s*sha256sum -c',
+                "%s is not sha256sum-verified" % artifact)
+
 
 class TestOfflineAssets(unittest.TestCase):
     def setUp(self):

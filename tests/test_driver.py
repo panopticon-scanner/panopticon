@@ -211,6 +211,18 @@ class TestResolveReviewRoot(unittest.TestCase):
         self.assertEqual(pr_base, "main")
         acq.assert_called_once()
 
+    def test_git_probe_timeout_falls_back_not_raises(self):
+        # #run7 OPS-A1A: a hung git rev-parse (wedged index.lock, credential
+        # prompt, hung network FS) must fall back to the target, never block or
+        # raise. run()'s outer handler doesn't catch SubprocessError, so an
+        # un-caught TimeoutExpired would escape as a traceback.
+        d = self._git_repo()
+        def wedged(cmd, **kw):
+            raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+        root, wt, pr_base = driver.resolve_review_root(d, runner=wedged)
+        self.assertEqual(root, d)          # fell back to the target dir, no hang
+        self.assertIsNone(wt)
+
 
 class TestDiscoveryPhase(unittest.TestCase):
     def setUp(self):
@@ -1243,6 +1255,43 @@ class TestFinalizeWorktree(unittest.TestCase):
         with mock.patch.object(driver.diff_map, "release_worktree") as rel:
             driver._finalize_worktree(target, {"run_id": "R", "worktree": None})
         rel.assert_not_called()
+
+    def test_failed_report_surface_keeps_worktree_not_silent(self):
+        # #run7 OPS-E1A: if the report can't be copied to the caller's tree, the
+        # worktree (the only other copy) must NOT be released -- that would be
+        # silent, unrecoverable data loss while run() still returns complete.
+        import io, contextlib
+        worktree, target = self._dir(), self._dir()
+        manifest = {"run_id": "R", "worktree": worktree, "target": target}
+        tag = driver.run_manifest.run_tag(manifest)
+        driver._write_json(
+            os.path.join(worktree, ".panopticon", f"{tag}-report.json"),
+            {"summary": {"gate": "PASS"}})
+        err = io.StringIO()
+        with mock.patch.object(driver.diff_map, "release_worktree") as rel, \
+             mock.patch("scripts.driver.shutil.copyfile",
+                        side_effect=OSError("disk full")), \
+             contextlib.redirect_stderr(err):
+            driver._finalize_worktree(worktree, manifest)
+        rel.assert_not_called()                        # worktree KEPT, not destroyed
+        self.assertIn("KEEPING the worktree", err.getvalue())
+
+    def test_surfaces_all_report_parts_not_just_part2(self):
+        # #run7 OPS-E1A: a split report (run-7 produced 4 parts + discarded) must
+        # surface EVERY tag-named part, not just part2.
+        worktree, target = self._dir(), self._dir()
+        manifest = {"run_id": "R", "worktree": worktree, "target": target}
+        tag = driver.run_manifest.run_tag(manifest)
+        for part in ("report.json", "report_part2.json", "report_part3.json",
+                     "report_part4.json", "report-discarded.json"):
+            driver._write_json(
+                os.path.join(worktree, ".panopticon", f"{tag}-{part}"), {"p": part})
+        with mock.patch.object(driver.diff_map, "release_worktree"):
+            driver._finalize_worktree(worktree, manifest)
+        for part in ("report_part3.json", "report_part4.json", "report-discarded.json"):
+            self.assertTrue(
+                os.path.isfile(os.path.join(target, ".panopticon", f"{tag}-{part}")),
+                "%s not surfaced" % part)
 
 
 import scripts.run_manifest as run_manifest  # noqa: E402
@@ -2395,6 +2444,27 @@ class TestDriverSetup(unittest.TestCase):
         # a real re-scan happened (brief re-rendered under the fresh run)
         self.assertTrue(os.path.isfile(driver._pano(d, "setup-scan-brief.md")))
 
+    def test_foreign_setup_manifest_is_discarded_and_rebuilt(self):
+        # #run7 AGT-C1A: a target-committed setup-manifest stamped with a foreign
+        # review_root (presetting a hostile vocabulary_path) must be discarded and
+        # rebuilt from args, mirroring the run-manifest #1093 guard.
+        import io, contextlib
+        d = self._repo()
+        os.makedirs(driver._pano(d), exist_ok=True)
+        driver._write_json(driver._pano(d, "setup-manifest.json"),
+                           {"schema_version": 1, "run_id": "FOREIGN",
+                            "review_root": "/somewhere/else",
+                            "vocabulary_path": "/etc/hostile-vocab.yml",
+                            "host": "claude"})
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            driver.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
+        m = driver.load_setup_manifest(d)
+        self.assertNotEqual(m["review_root"], "/somewhere/else")   # re-stamped to THIS tree
+        self.assertNotEqual(m["run_id"], "FOREIGN")                # rebuilt, not reused
+        self.assertIsNone(m["vocabulary_path"])                    # hostile path dropped
+        self.assertIn("ignoring foreign setup-manifest", err.getvalue())
+
     def test_reset_preserves_committed_groups_yml(self):
         d = self._repo()
         os.makedirs(driver._pano(d), exist_ok=True)
@@ -2687,6 +2757,23 @@ class TestVerifyBackupNarrowing(unittest.TestCase):
             driver._backup_scope_files(
                 "/repo", full, [{"location": {"file": "src/a.py"}}]),
             ["src/a.py"])
+
+    def test_confined_to_root_rejects_symlink_escape(self):
+        # #run7 ARC-F2A: a committed in-tree symlink whose lexical path is inside
+        # the tree but RESOLVES outside (src/evil -> /etc/passwd) passed the old
+        # abspath check; realpath now catches it. A legit path -- including one not
+        # yet written -- still confines.
+        with tempfile.TemporaryDirectory() as outside, \
+             tempfile.TemporaryDirectory() as root:
+            root = os.path.realpath(root)
+            secret = os.path.join(os.path.realpath(outside), "secret.txt")
+            open(secret, "w").close()
+            os.makedirs(os.path.join(root, "src"))
+            os.symlink(secret, os.path.join(root, "src", "evil"))
+            self.assertFalse(driver._confined_to_root(root, "src/evil"))    # escapes
+            open(os.path.join(root, "src", "real.py"), "w").close()
+            self.assertTrue(driver._confined_to_root(root, "src/real.py"))  # in-tree
+            self.assertTrue(driver._confined_to_root(root, "src/new.py"))   # not-yet-written
 
     def _manifest(self):
         return {"run_id": self.RUN_ID, "host": "claude",

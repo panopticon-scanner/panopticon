@@ -207,19 +207,30 @@ def snapshot_out_files(plan, out_path=None):
 def verify_out_file_hashes(ingested_paths, hashes_path=None):
     """Compare ingested findings files against the fan-out-time snapshot.
 
-    Returns (checked, mismatched) where mismatched lists the ORIGINAL path
-    strings whose current bytes no longer hash to the recorded value.
-    (None, []) when no snapshot exists -- an ordinary non-fan-out run.
+    Returns ``(checked, mismatched, snapshot_unreadable)``:
+      - ``mismatched`` lists the ORIGINAL path strings whose current bytes no
+        longer hash to the recorded value.
+      - ``snapshot_unreadable`` is True when the snapshot file EXISTS but cannot
+        be read as a non-empty dict. #run7 #1208: snapshot_out_files only writes
+        the file when it has entries, so a present-but-corrupt/empty file is NOT a
+        legitimate "no snapshot" -- it is a detected tamper/corruption and must
+        FAIL the gate, not silently read as ``(None, [])`` (an attacker who
+        substitutes a findings file could otherwise also truncate the snapshot to
+        erase the evidence, and integrity stayed green).
+      - ``(None, [], False)`` when the file is genuinely ABSENT -- an ordinary
+        non-fan-out run.
     """
     if hashes_path is None:
         hashes_path = os.path.join(".panopticon", "out-file-hashes.json")
+    if not os.path.isfile(hashes_path):
+        return None, [], False               # genuinely absent -> no snapshot
     try:
         with open(hashes_path, encoding="utf-8") as fh:
             recorded = json.load(fh)
     except (OSError, ValueError):
-        return None, []
+        return None, [], True                # present but unreadable -> tamper
     if not isinstance(recorded, dict) or not recorded:
-        return None, []
+        return None, [], True                # present but malformed/empty -> tamper
     checked = 0
     mismatched = []
     for p in ingested_paths or []:
@@ -234,7 +245,7 @@ def verify_out_file_hashes(ingested_paths, hashes_path=None):
             continue
         if digest != recorded[rp]:
             mismatched.append(str(p))
-    return checked, sorted(mismatched)
+    return checked, sorted(mismatched), False
 
 
 def verify_plan_entries(plan, host=None, agents_dir=None):

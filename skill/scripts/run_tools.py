@@ -83,7 +83,16 @@ def docker_available(image="panopticon-tools", runner=None):
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                      timeout=DOCKER_PROBE_TIMEOUT)
         return getattr(res, "returncode", 1) == 0
-    except Exception:  # noqa: BLE001
+    except FileNotFoundError:
+        # docker binary genuinely absent -- the one benign case; stay quiet.
+        return False
+    except Exception as e:  # noqa: BLE001
+        # A wedged daemon (TimeoutExpired), socket permission denial, broken
+        # pipe, etc. are real faults, not "no docker here". Swallowing them
+        # silently let the whole tool-scan phase no-op while the run reported
+        # success (OPS-E1A). Return False (skip) but say WHY on stderr.
+        print("docker probe for image %r failed: %s: %s"
+              % (image, type(e).__name__, e), file=sys.stderr)
         return False
 
 
@@ -424,7 +433,11 @@ def main(argv=None):
     excluded_scope = []
     if a.tools is not None:
         if a.exclude:
-            matched_adapters = [ADAPTERS[t] for t in a.tools if t in ADAPTERS]
+            # partition_by_exclusion iterates adapters.items(), so it needs a
+            # DICT (as select_adapters returns below) -- a list here raised an
+            # uncaught AttributeError, crashing the whole CLI before any scan on
+            # the documented `--tools ... --exclude ...` combination (COD-X0X).
+            matched_adapters = {t: ADAPTERS[t] for t in a.tools if t in ADAPTERS}
             required_names, excluded_scope = partition_by_exclusion(
                 matched_adapters, a.target, a.exclude)
             chosen = required_names + [t for t in a.tools if t not in ADAPTERS]
