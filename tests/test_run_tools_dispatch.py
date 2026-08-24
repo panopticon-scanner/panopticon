@@ -12,6 +12,22 @@ from run_tools_test_helpers import _FakeResult
 
 
 class TestAdapterDispatch(unittest.TestCase):
+    def test_main_tools_with_exclude_does_not_crash(self):
+        # COD-X0X: `--tools ... --exclude ...` built a LIST of adapters and passed
+        # it to partition_by_exclusion, which iterates .items() -> AttributeError
+        # crashed the whole CLI before any scan. The combination is operator-facing
+        # (documented in --exclude help), so it must resolve cleanly.
+        class FakeAdapter:
+            def applicable_files(self, target):
+                return []
+        with mock.patch.dict(rt.ADAPTERS, {"faketool": FakeAdapter()}, clear=False), \
+             mock.patch("scripts.run_tools.docker_available", return_value=True), \
+             mock.patch("scripts.run_tools.run_tools", return_value={}), \
+             contextlib.redirect_stderr(io.StringIO()):
+            rc = rt.main(["--tools", "faketool", "--exclude", "tests/fixtures/*",
+                          "--target", ".", "--out", "/tmp/pano-x0x"])
+        self.assertEqual(rc, 0)
+
     def test_select_adapters_by_ecosystem(self):
         with tempfile.TemporaryDirectory() as d:
             open(os.path.join(d, "requirements.txt"), "w").close()

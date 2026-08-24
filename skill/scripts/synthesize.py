@@ -203,6 +203,20 @@ def load_findings(paths):
                     print("synthesize: stripped self-asserted %r from %s in %s"
                           % (forbidden, f.get("id", "?"), path), file=sys.stderr)
                     f.pop(forbidden, None)
+            # #run7 COD-X0X: provenance verification sub-fields are agent-self-
+            # assertable but render as an authoritative "confirmed" (green) badge
+            # in the HTML report -- a reviewer cannot confirm its own finding.
+            # Strip them here; apply_verdict re-writes them later from a REAL
+            # advisor verdict, so nothing trustworthy is lost.
+            prov = f.get("provenance")
+            if isinstance(prov, dict):
+                for k in ("confirmation_status", "confirmed_by",
+                          "confirmation_reasoning"):
+                    if k in prov:
+                        print("synthesize: stripped self-asserted provenance.%s "
+                              "from %s in %s" % (k, f.get("id", "?"), path),
+                              file=sys.stderr)
+                        prov.pop(k, None)
             nf = normalize_finding(f)
             # #1109: never trust an agent-supplied `id`. A well-formed but crafted
             # or colliding id would otherwise be kept verbatim and could inherit an
@@ -2189,15 +2203,46 @@ def _derive_html_path(json_path):
 
 
 def _read_json_report(path):
-    """Load a JSON report for --compare; None (with a printed error) on failure."""
+    """Load a JSON report for --compare, MERGING meta.parts continuation files.
+
+    #run7 ARC-D1A: a large report is split into `<stem>_partN.json` with the
+    part list in meta.parts (write_report); a bare json.load here returned only
+    the main file, so --compare silently dropped every part2+ finding and the
+    new/resolved/severity-changed counts were wrong with no warning. Merge the
+    parts' findings + discarded_claims (reusing reconcile's #1122 path
+    confinement) while KEEPING the main report's meta/summary for the compare
+    view. A referenced part that can't be read fails LOUD (None), never a silent
+    partial compare. None (with a printed error) on any failure."""
+    import scripts.reconcile as reconcile
     try:
         with open(path, encoding="utf-8") as fh:
-            return json.load(fh)
+            report = json.load(fh)
     except OSError as e:
         print("ERROR: cannot read %s: %s" % (path, e), file=sys.stderr)
+        return None
     except ValueError as e:
         print("ERROR: invalid JSON in %s: %s" % (path, e), file=sys.stderr)
-    return None
+        return None
+    parts = (report.get("meta") or {}).get("parts") or []
+    if parts:
+        base_dir = os.path.dirname(os.path.abspath(path))
+        findings = list(report.get("findings") or [])
+        discarded = list(report.get("discarded_claims") or [])
+        for part in parts:
+            try:
+                ppath = reconcile._resolve_part_path(base_dir, part)
+                with open(ppath, encoding="utf-8") as fh:
+                    pdata = json.load(fh)
+            except (OSError, ValueError) as e:
+                print("ERROR: --compare report %s references part %r that could not "
+                      "be read (%s); the comparison would be incomplete"
+                      % (path, part, e), file=sys.stderr)
+                return None
+            findings.extend(pdata.get("findings") or [])
+            discarded.extend(pdata.get("discarded_claims") or [])
+        report["findings"] = findings
+        report["discarded_claims"] = discarded
+    return report
 
 
 def main(argv=None):

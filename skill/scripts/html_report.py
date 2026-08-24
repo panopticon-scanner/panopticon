@@ -113,7 +113,8 @@ button, .tab { font-family: var(--ui); }
 .finding-body dd { margin-left: 0; color: var(--ink2); line-height: 1.6; }
 .chip { display: inline-block; background: var(--chip); color: var(--ink2); border-radius: 3px; padding: .12rem .45rem; font-family: var(--mono); font-size: 11px; margin-right: .3rem; }
 .prov-status, .prov-source, .prov-model, .cit-quality { display: inline-block; border-radius: 3px; padding: .12rem .45rem; font-family: var(--mono); font-size: 10px; margin-right: .3rem; font-weight: 700; text-transform: uppercase; }
-.prov-status { background: #1f6f48; color: #faf8f2; }
+.prov-status { background: #4e6375; color: #faf8f2; }
+.prov-status.prov-confirmed { background: #1f6f48; color: #faf8f2; }
 .prov-status.prov-needs-more-info { background: #b98d28; color: #131418; }
 .prov-status.prov-unverified { background: #4e6375; color: #faf8f2; }
 .prov-status.prov-rejected { background: #7d2f2a; color: #faf8f2; }
