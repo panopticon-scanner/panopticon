@@ -109,7 +109,6 @@ class TestChangedFilesRenameParity(unittest.TestCase):
 
 
 def test_repo_scan_scope_changed_restricts_and_emits_diff_hunks(tmp_path):
-    import discovery as orchestrator
     repo = repo_with_matrix(tmp_path)   # commits Auth + Checkout matrix + files
     # create a new commit changing one checkout file
     (repo / "src/checkout/pay.py").write_text("x=2\n")
@@ -126,7 +125,6 @@ def test_repo_scan_scope_changed_restricts_and_emits_diff_hunks(tmp_path):
 
 
 def test_repo_scan_scope_changed_bad_base_exits_2_no_artifact(tmp_path):
-    import discovery as orchestrator
     repo = repo_with_matrix(tmp_path)
     out = repo / ".panopticon" / "groups.json"
     assert orchestrator.main(["--repo-scan","--scope-changed","--base","nope", str(repo), "--out", str(out)]) == 2
@@ -134,7 +132,6 @@ def test_repo_scan_scope_changed_bad_base_exits_2_no_artifact(tmp_path):
 
 
 def test_repo_scan_scope_files_with_base_emits_diff_hunks(tmp_path):
-    import discovery as orchestrator
     repo = repo_with_matrix(tmp_path)
     (repo / "src/checkout/pay.py").write_text("x=2\n")
     git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-aqm", "c2")
@@ -154,7 +151,6 @@ def test_repo_scan_scope_files_with_base_emits_diff_hunks(tmp_path):
 
 
 def test_repo_scan_scope_files_without_base_emits_no_diff_hunks(tmp_path):
-    import discovery as orchestrator
     repo = repo_with_matrix(tmp_path)
     out = repo / ".panopticon" / "groups.json"
     rc = orchestrator.main(["--repo", str(repo), "--repo-scan", "--scope-files",
@@ -172,7 +168,6 @@ def test_repo_scan_scope_files_applies_exclude_paths(tmp_path):
     # named in the delta must still be pruned by committed exclude_paths (never
     # grouped/reviewed), and the disclosed count must reflect the delta set (1),
     # not the whole-repo count.
-    import discovery as orchestrator
     repo = repo_with_exclude(tmp_path)
     out = repo / ".panopticon" / "groups.json"
     rc = orchestrator.main(["--repo", str(repo), "--repo-scan", "--scope-files",
@@ -189,7 +184,6 @@ def test_repo_scan_scope_files_applies_exclude_paths(tmp_path):
 def test_repo_scan_scope_changed_applies_exclude_paths(tmp_path):
     # Same parity guard on the --scope-changed path (rebuilds from git-diff
     # output). A changed vendored file must not slip past exclude_paths.
-    import discovery as orchestrator
     repo = repo_with_exclude(tmp_path)
     (repo / "src/checkout/pay.py").write_text("x=2\n")
     (repo / "vendor/dep.py").write_text("y=2\n")
@@ -229,7 +223,6 @@ def test_redteam_exclude_paths_prunes_fixture_corpus_before_grouping(tmp_path):
     # cell of ANY domain sees it (SEC included, which per-group `exclude:` cannot
     # silence -- #1084). Run-6 leaked 16 illusory HIGHs precisely because the
     # committed config reached for the `exclude:`-sink, not `exclude_paths:`.
-    import discovery as orchestrator
     repo = _repo_with_fixture_corpus(tmp_path, exclude_paths=True)
     out = repo / ".panopticon" / "groups.json"
     rc = orchestrator.main(["--repo", str(repo), "--repo-scan",
@@ -247,7 +240,6 @@ def test_redteam_without_exclude_paths_keeps_fixture_corpus(tmp_path):
     # Control proving exclude_paths did the work above, not #434 fixture pruning:
     # in redteam mode WITHOUT exclude_paths the fixture corpus IS grouped (the
     # #434 prune is standard-mode-only), which is exactly the run-6 leak vector.
-    import discovery as orchestrator
     repo = _repo_with_fixture_corpus(tmp_path, exclude_paths=False)
     out = repo / ".panopticon" / "groups.json"
     rc = orchestrator.main(["--repo", str(repo), "--repo-scan",
@@ -267,7 +259,6 @@ def test_repo_scan_scope_changed_pr_base_resolves_origin_only_base(tmp_path):
     # only the PR head). Under the OLD code path (the base threaded as an explicit
     # --base main) resolve_base would treat "main" as explicit, fail to resolve
     # it, and return 2 with no artifact. With --pr-base it resolves to origin/main.
-    import discovery as orchestrator
     repo = repo_with_matrix(tmp_path)   # commits Auth + Checkout matrix + files
     base_sha = git_output(repo, "rev-parse", "HEAD").strip()
     # Base lives ONLY as a remote-tracking ref; rename the local default branch
@@ -297,7 +288,6 @@ def test_repo_scan_scope_changed_explicit_base_ignores_pr_base(tmp_path):
     # --base (explicit user override) still takes precedence over --pr-base and
     # never falls through: a bad explicit base fails loudly even when a valid
     # --pr-base is present (resolve_base's explicit-never-fallthrough contract).
-    import discovery as orchestrator
     repo = repo_with_matrix(tmp_path)
     out = repo / ".panopticon" / "groups.json"
     rc = orchestrator.main(["--repo-scan", "--scope-changed",

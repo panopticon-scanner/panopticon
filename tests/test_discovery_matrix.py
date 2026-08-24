@@ -10,14 +10,14 @@ from discovery_test_helpers import (
     setup_flow, GIT_TIMEOUT,
 )
 
-import discovery  # noqa: E402
+import scripts.discovery as discovery  # noqa: E402
+orchestrator = discovery   # #run7 COD-X0X: one module identity
 
 
 def test_repo_scan_reads_matrix_via_parse_groups(tmp_path, monkeypatch):
     # A matrix groups.yml (match/panels) drives --repo-scan grouping identically
     # whether read by load_catalog or _committed_matrix, since assign_by_catalog
     # keys on `match`. Guards the SEC-3 migration: no grouping regression.
-    import discovery as orchestrator
     repo = tmp_path
     (repo / ".panopticon").mkdir()
     (repo / "src").mkdir(); (repo / "src" / "a.py").write_text("x=1\n")
@@ -31,7 +31,6 @@ def test_repo_scan_reads_matrix_via_parse_groups(tmp_path, monkeypatch):
 
 
 def test_repo_scan_scalar_match_disclosed_not_silently_coerced(tmp_path, capsys):
-    import discovery as orchestrator
     (tmp_path / ".panopticon").mkdir()
     (tmp_path / ".panopticon" / "groups.yml").write_text(
         "groups:\n  Bad:\n    match: 'src/**'\n")   # scalar, not a list
@@ -41,7 +40,6 @@ def test_repo_scan_scalar_match_disclosed_not_silently_coerced(tmp_path, capsys)
 
 
 def test_repo_scan_scope_group_restricts_to_named_group(tmp_path):
-    import discovery as orchestrator
     repo = repo_with_matrix(tmp_path)
     out = repo / "groups.json"
     orchestrator.main(["--repo-scan", "--scope-group", "Checkout",
@@ -54,7 +52,6 @@ def test_repo_scan_scope_group_restricts_to_named_group(tmp_path):
 
 
 def test_repo_scan_scope_file_restricts_to_file_and_its_group(tmp_path):
-    import discovery as orchestrator
     repo = repo_with_matrix(tmp_path)
     out = repo / "groups.json"
     orchestrator.main(["--repo-scan", "--scope-file", "src/checkout/pay.py",
@@ -68,7 +65,6 @@ def test_repo_scan_scope_file_restricts_to_file_and_its_group(tmp_path):
 def test_repo_scan_scope_file_accepts_dotslash_and_absolute(tmp_path):
     # #5.0-17: `-f ./src/checkout/pay.py` and `-f <abs>` must normalize to the
     # discovered repo-relative path, not hard-fail 'not found among discovered'.
-    import discovery as orchestrator, os
     for spelling in ("./src/checkout/pay.py",):
         repo = repo_with_matrix(tmp_path / spelling.replace("/", "_").replace(".", "d"))
         out = repo / "groups.json"
@@ -97,7 +93,6 @@ def test_repo_scan_scope_file_includes_sibling_related_test(tmp_path):
     # it surfaces alongside the impl file. Complements
     # test_repo_scan_scope_file_restricts_to_file_and_its_group's negative
     # case ("no related tests here").
-    import discovery as orchestrator
     repo = repo_with_matrix(tmp_path)
     (repo / "src" / "checkout" / "test_pay.py").write_text("def test_x():\n    pass\n")
     git_cmd(repo, "add", "-A")
@@ -113,7 +108,6 @@ def test_repo_scan_scope_file_includes_sibling_related_test(tmp_path):
 
 
 def test_repo_scan_scope_dir_restricts_to_directory(tmp_path):
-    import discovery as orchestrator
     repo = repo_with_matrix(tmp_path)
     out = repo / "groups.json"
     orchestrator.main(["--repo-scan", "--scope-dir", "src/checkout",
@@ -125,7 +119,6 @@ def test_repo_scan_scope_dir_restricts_to_directory(tmp_path):
 
 
 def test_repo_scan_scope_group_unknown_name_errors(tmp_path, capsys):
-    import discovery as orchestrator
     repo = repo_with_matrix(tmp_path)
     out = repo / "groups.json"
     rc = orchestrator.main(["--repo-scan", "--scope-group", "Nope",
@@ -139,7 +132,6 @@ def test_repo_scan_scope_dir_no_catalog_match_falls_back_to_leftover(tmp_path):
     # A scoped file with no `match` coverage still surfaces via the ._N
     # leftover chunk naming AND is disclosed in ungrouped_files -- the same
     # coverage-honesty contract the unscoped --repo-scan path guarantees.
-    import discovery as orchestrator
     repo = repo_with_matrix(tmp_path)
     out = repo / "groups.json"
     orchestrator.main(["--repo-scan", "--scope-dir", "src/misc",
@@ -161,7 +153,6 @@ def test_repo_scan_scope_dir_no_catalog_match_falls_back_to_leftover(tmp_path):
 
 
 def test_matrix_catalog_normalizes_scalar_match_to_empty_list(tmp_path, capsys):
-    import discovery as orchestrator
     (tmp_path / ".panopticon").mkdir()
     (tmp_path / ".panopticon" / "groups.yml").write_text(
         "groups:\n  Bad:\n    match: 'src/auth/**'\n")   # scalar, not a list
@@ -172,7 +163,6 @@ def test_matrix_catalog_normalizes_scalar_match_to_empty_list(tmp_path, capsys):
 
 
 def test_matrix_catalog_empty_when_no_groups_yml(tmp_path):
-    import discovery as orchestrator
     assert orchestrator._matrix_catalog(str(tmp_path)) == {}
 
 
@@ -181,7 +171,6 @@ def test_repo_scan_bare_scalar_match_group_does_not_swallow_whole_repo(tmp_path)
     # the entire repo into one group. Its own target file falls to the
     # leftover ._N chunk (disclosed via ungrouped_files); the well-formed
     # group ("Auth") groups its file normally, unaffected.
-    import discovery as orchestrator
     repo = repo_with_scalar_match_group(tmp_path)
     out = repo / "groups.json"
     orchestrator.main(["--repo-scan", str(repo), "--out", str(out)])
@@ -198,7 +187,6 @@ def test_repo_scan_scope_group_scalar_match_does_not_claim_whole_repo(tmp_path):
     # Scoping directly to the corrupted group must NOT fall back to "every
     # file in the repo" (the old char-split bug) -- a well-formed OTHER
     # group's files must never leak into this scope.
-    import discovery as orchestrator
     repo = repo_with_scalar_match_group(tmp_path)
     out = repo / "groups.json"
     orchestrator.main(["--repo-scan", "--scope-group", "Bad",
@@ -213,7 +201,6 @@ def test_repo_scan_bare_well_formed_matrix_groups_unchanged(tmp_path):
     # Guard: a well-formed matrix groups IDENTICALLY before/after the SEC-3
     # fix -- assign_by_catalog keys only on `match`, which parse_groups
     # returns unchanged for valid input.
-    import discovery as orchestrator
     repo = repo_with_matrix(tmp_path)
     out = repo / "groups.json"
     orchestrator.main(["--repo-scan", str(repo), "--out", str(out)])
@@ -258,7 +245,6 @@ def test_setup_readiness_scalar_match_only_reports_gap_not_ok(tmp_path):
 
 
 def test_repo_scan_scope_file_untracked_target_errors(tmp_path, capsys):
-    import discovery as orchestrator
     repo = repo_with_matrix(tmp_path)
     out = repo / "groups.json"
     rc = orchestrator.main(["--repo-scan", "--scope-file", "src/ghost.py",
@@ -269,7 +255,6 @@ def test_repo_scan_scope_file_untracked_target_errors(tmp_path, capsys):
 
 
 def test_repo_scan_scope_dir_no_tracked_files_errors(tmp_path, capsys):
-    import discovery as orchestrator
     repo = repo_with_matrix(tmp_path)
     out = repo / "groups.json"
     rc = orchestrator.main(["--repo-scan", "--scope-dir", "no/such/dir",
@@ -291,13 +276,13 @@ def test_write_diff_hunks_schema_version_and_atomic(tmp_path):
 
 def test_collect_changed_files_default_branch_fallback():
     from unittest.mock import patch, MagicMock
-    with patch('discovery._git') as mock_git:
+    with patch('scripts.discovery._git') as mock_git:
         mock_git.side_effect = [
             Exception("not main"),  # fails on main
             MagicMock(stdout="fake_master_hash\n"), # succeeds on master
             MagicMock(stdout="file1.py\n"), MagicMock(stdout="")
         ]
-        with patch('discovery._on_allowed_dotdir_path', return_value=True), patch('os.path.isfile', return_value=True):
+        with patch('scripts.discovery._on_allowed_dotdir_path', return_value=True), patch('os.path.isfile', return_value=True):
             res = discovery.collect_changed_files("/tmp/x", base=None)
         assert res == ["file1.py"]
 
