@@ -53,6 +53,18 @@ DISPATCH_PLAN_GLOB = "dispatch-plan*.json"
 # OTHER dispatch-plan*.json stays on the panel validator, untouched.
 DRIVER_DISPATCH_PLAN = "dispatch-plan-driver.json"
 
+# Format version of the report DOCUMENT itself (the meta/summary/groups/findings
+# envelope), stamped top-level like every sibling artifact (findings-envelope,
+# x0x-report, tool-manifest, dispatch-request ...). Distinct from meta.version
+# (the panopticon release) and meta.ocrdb_version (the code bundle): the report
+# envelope evolves on its own clock -- 5.1 added meta.cost/meta.integrity/
+# summary.health/summary.delta with no change to the finding shape. Bump this
+# only on a report-envelope format change. Absent (legacy pre-5.1 reports) reads
+# as version 0. #run7 DAT-F2A: gives the cross-run readers (reconcile.load_report,
+# the html compare view, per-run-folder A/B) a discriminator before per-run
+# folders make cross-version report reads routine.
+REPORT_SCHEMA_VERSION = 1
+
 # evidence_mod owns the canonical severity and panel scales (#688's aliasing
 # rationale: local copies of shared definitions drift).
 SEV_ORDER = evidence_mod.SEV_ORDER
@@ -1789,6 +1801,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                    verdicts_unanswered=(unanswered if verdicts_supplied else 0),
                    missing_floor=len(cell_audit["missing_floor"]))
     return {
+        "schema_version": REPORT_SCHEMA_VERSION,
         "meta": {
             "target": target,
             "review_type": review_type,

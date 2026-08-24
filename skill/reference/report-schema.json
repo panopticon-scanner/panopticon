@@ -10,6 +10,10 @@
     "cross_panel"
   ],
   "properties": {
+    "schema_version": {
+      "type": "integer",
+      "description": "Format version of the report DOCUMENT envelope (meta/summary/groups/findings), independent of meta.version (the panopticon release) and meta.ocrdb_version. Optional for back-compat: legacy pre-5.1 reports omit it and read as version 0. #run7 DAT-F2A."
+    },
     "meta": {
       "type": "object",
       "required": [
