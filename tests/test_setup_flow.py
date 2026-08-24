@@ -38,10 +38,17 @@ class TestSetupFlow(unittest.TestCase):
     def test_provision_seeds_gitignore_and_config(self):
         d = _repo(self)
         res = setup_flow.provision(d)
-        self.assertTrue(os.path.isfile(os.path.join(d, ".panopticon", "config.json")))
+        cfg_path = os.path.join(d, ".panopticon", "config.json")
+        self.assertTrue(os.path.isfile(cfg_path))
         with open(os.path.join(d, ".gitignore"), encoding="utf-8") as fh:
             self.assertIn(".panopticon/*", fh.read())
         self.assertTrue(res["config_created"])
+        # #run7 TST-B1C: assert the seeded CONTENT, not just existence -- the
+        # gh_config_dir=null (inherit-ambient) default is the contract driver
+        # reads, and a regression to the wrong shape would pass an existence-only
+        # check.
+        with open(cfg_path, encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh), {"gh_config_dir": None})
 
     def test_provision_leaves_blanket_panopticon_ignore_untouched(self):
         # #1135: a repo that already blanket-ignores .panopticon/ must NOT have
@@ -101,8 +108,20 @@ class TestSetupFlow(unittest.TestCase):
             json.dump(proposal, fh)
         res = setup_flow.ingest_proposal(d, pp)
         self.assertTrue(res["ok"])
-        self.assertTrue(os.path.isfile(os.path.join(d, ".panopticon", "groups.yml.draft")))
+        draft = os.path.join(d, ".panopticon", "groups.yml.draft")
+        self.assertTrue(os.path.isfile(draft))
         self.assertFalse(os.path.isfile(os.path.join(d, ".panopticon", "groups.yml")))
+        # #run7 TST-B1A: assert the affinity FLOOR the test is named for actually
+        # lands in the draft -- Checkout -> [SEC, ACC] per capability_affinity.yml.
+        # The old test checked only ok/draft-exists, so an empty-panels regression
+        # (the exact failure the setup-scan floor guards against) stayed green.
+        import yaml as _yaml
+        with open(draft, encoding="utf-8") as fh:
+            drafted = _yaml.safe_load(fh)
+        self.assertEqual(drafted["groups"]["Checkout"]["panels"], ["SEC", "ACC"])
+        floor_sources = {g["name"]: g["floor_source"]
+                         for g in res["disclosure"]["groups"]}
+        self.assertEqual(floor_sources["Checkout"], "affinity")
 
     def test_ingest_malformed_proposal_fails_no_draft(self):
         d = _repo(self)
