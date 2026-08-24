@@ -2557,10 +2557,16 @@ def main(argv=None):
     # the retired panel_review/lens_sweep roles, so the driver's review cells,
     # verify rounds, and tool scan were absent from the ledger. driver_cost is
     # None off the driver path (no dispatch-plan-driver.json), so cost_dispatches
-    # keeps the exact 4.x shape. Paths are cwd-relative — synthesize runs from
-    # the review root, like the scout/coverage reads above.
+    # keeps the exact 4.x shape. #21: resolve the plan + verdicts under `run_dir`
+    # like every other run artifact. The 5.1 per-run-folder migration threaded
+    # run_dir through the scout/coverage/manifest reads above but MISSED this one
+    # (the plan lives at run_dir/dispatch-plan-driver.json, not flat .panopticon),
+    # leaving a now-false "cwd-relative" comment -- so driver_cost was silently
+    # None on EVERY 5.1 run and cost_dispatches fell back to the empty 4.x shape,
+    # falsifying meta.cost (run-7: reported scout=24/advisor=581 vs ~298 real
+    # dispatches).
     driver_cost = driver_cost_counts(
-        ".panopticon", args.verdicts_dir, tools_ran)
+        run_dir, args.verdicts_dir, tools_ran)
 
     diff_hunks = load_diff_hunks(args.diff_hunks) if args.diff_hunks else None
     if args.diff_hunks and not args.fail_on:
