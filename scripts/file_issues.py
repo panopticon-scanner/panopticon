@@ -12,13 +12,15 @@ Usage:  python3 .panopticon/file_issues.py [--dry-run] [--limit N]
 import argparse
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
 import time
 
 import triage
+from sanitize import repo_root, repo_relative, scrub, defang
+
+__all__ = ["repo_root", "repo_relative", "scrub", "defang"]
 
 # Defaults describe run 2 (the first filed self-scan). Each subsequent scan —
 # the cadence is a fresh self-scan every Saturday — passes its own --report,
@@ -147,85 +149,6 @@ def body_for(f, rejected=False, report=REPORT, report_url=REPORT_URL,
 
 
 REPO_SLUG = "panopticon-scanner/panopticon"
-_REPO_ROOT_CACHE = None
-
-
-def _detect_repo_root():
-    """Absolute repo root (trailing '/') detected dynamically, not hardcoded.
-
-    A machine-specific absolute path was baked into source (#602); on any other
-    machine scrub() silently no-opped (str.replace found no match), quietly
-    leaking local paths into public, permanent issues rather than crashing.
-    Prefer the git worktree root; fall back to cwd (the pipeline runs from the
-    repo root by contract)."""
-    try:
-        r = subprocess.run(["git", "rev-parse", "--show-toplevel"],  # nosec
-                           capture_output=True, text=True, timeout=10)
-        if r.returncode == 0 and r.stdout.strip():
-            return r.stdout.strip().rstrip("/") + "/"
-    except (subprocess.SubprocessError, OSError):
-        pass
-    return os.getcwd().rstrip("/") + "/"
-
-
-def repo_root():
-    """Cached dynamic repo root (see _detect_repo_root)."""
-    global _REPO_ROOT_CACHE
-    if _REPO_ROOT_CACHE is None:
-        _REPO_ROOT_CACHE = _detect_repo_root()
-    return _REPO_ROOT_CACHE
-
-
-def repo_relative(path):
-    """Strip the repo-root prefix so a location is portable and matches what
-    scrub() writes into issue bodies. The single source of the cross-run key's
-    location component (#607/#488): keying on the raw path meant an absolute
-    location produced a ledger key that the scrubbed (relative) issue body
-    could never reconstruct, so recover_linkage_from_github lost those entries.
-    An already-relative path passes through unchanged."""
-    root = repo_root()
-    p = str(path or "")
-    return p[len(root):] if p.startswith(root) else p
-
-
-def scrub(text):
-    """Reviewers cite absolute local paths; issues are public and permanent."""
-    root = repo_root()
-    scrubbed = str(text).replace(root, "")
-    return re.sub(r"(?<![\w/-])%s(?![\w/-])" % re.escape(root.rstrip("/")),
-                  "the repo root", scrubbed)
-
-
-_MENTION_RE = re.compile(r"@(?=[A-Za-z0-9._-])")
-_ISSUEREF_RE = re.compile(r"(?<![\w])#(?=\d)")
-_AUTOLINK_RE = re.compile(r"<([a-zA-Z][a-zA-Z0-9+.-]*://[^>]+)>")
-
-
-def defang(text):
-    """Make attacker-influenced finding text inert in a PUBLIC GitHub issue.
-
-    Finding fields quote scanned-repo content -- paths, code, even embedded
-    prompt-injection payloads -- and body_for()/title_for() drop them into
-    Markdown that an authenticated bot posts to public issues. Break the
-    constructs GitHub *activates* -- @mentions (auto-ping / social-engineering),
-    `#NNN` issue autolinks (cross-issue spam), inline and reference links/images
-    `[text](url)` / `![alt](url)` / `[text][ref]` / `[ref]: url`, and autolinks
-    `<http://...>` or bare URLs -- with a zero-width space, and strip C0/C1
-    control bytes (terminal escapes reaching anyone reading via gh/CLI). Text
-    stays readable; the active syntax no longer fires. This is the security
-    defang, distinct from scrub() (which only strips local paths for privacy)."""
-    s = str(text or "")
-    s = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]", "", s)  # ctrl; keep \t \n
-    s = _MENTION_RE.sub("@\u200b", s)
-    s = _ISSUEREF_RE.sub("#\u200b", s)
-    s = s.replace("](", "]\u200b(")
-    s = s.replace("][", "]\u200b[")
-    s = s.replace("]:", "]\u200b:")
-    s = s.replace("![", "!\u200b[")
-    s = _AUTOLINK_RE.sub(lambda m: "<\u200b" + m.group(1) + ">", s)
-    s = re.sub(r"\bhttps://", "h\u200bttps://", s)
-    s = re.sub(r"\bhttp://", "h\u200bttp://", s)
-    return s
 
 
 LEDGER = ".panopticon/filed-issues.json"
