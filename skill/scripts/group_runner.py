@@ -61,7 +61,16 @@ _OUTFILE_RE = re.compile(
 def _group_panel(entry):
     if not isinstance(entry, dict):
         return None, None
-    group, panel = entry.get("group"), entry.get("panel")
+    # The 5.1 driver's plan entries carry `group` + `domain` (the review axis is
+    # the domain, one cell per (group, domain)); the 4.x panel-review entries
+    # carried `group` + `panel`. Accept either so fan_out_coverage sees driver
+    # cells -- without this the driver's whole plan fell through to the regex
+    # below, which only matches the 4.x `findings-<group>-<panel>-...` shape (a
+    # panel name + trailing segment), never the driver's `findings-<group>-
+    # <domain>.json`, so meta.coverage.fan_out.planned/executed came back {} on
+    # every 5.1 run (#run7).
+    group = entry.get("group")
+    panel = entry.get("panel") or entry.get("domain")
     if group and panel:
         return group, panel
     m = _OUTFILE_RE.match(os.path.basename(entry.get("out_file", "")))
