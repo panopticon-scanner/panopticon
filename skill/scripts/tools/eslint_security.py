@@ -1,8 +1,46 @@
 """eslint-plugin-security adapter for JS/TS security anti-patterns."""
 from __future__ import annotations
 import os
+import shutil
+import tempfile
 from .base import make_finding, omit_none, parse_json_bytes, run_tool
 from .sarif_utils import norm_uri
+
+# Global node_modules locations in the tools image, in priority order.
+_GLOBAL_NODE_DIRS = ("/usr/local/lib/node_modules", "/usr/lib/node_modules")
+
+
+def _plugin_entry() -> str:
+    """Absolute ESM entry file for eslint-plugin-security in the tools image.
+
+    #run7: eslint 10 resolves plugins relative to the LINTED files, not the
+    global install, and ignores NODE_PATH; ESM also cannot import a bare
+    directory. So a flat config must import the explicit index.js by absolute
+    path -- the old `--plugin security` CLI form failed with "Cannot find module
+    'eslint-plugin-security'" and produced empty output (selected-but-unproduced,
+    which silently blocked coverage certification)."""
+    for d in _GLOBAL_NODE_DIRS:
+        entry = os.path.join(d, "eslint-plugin-security", "index.js")
+        if os.path.isfile(entry):
+            return entry
+    return "eslint-plugin-security/index.js"   # last resort; still explicit .js for ESM
+
+
+def _flat_config() -> str:
+    """A minimal eslint flat config (ESM) that loads eslint-plugin-security and
+    turns every mapped rule ON at error level. The eslint level is used only to
+    ENABLE the rule; severity is derived in parse() from RULE_SEVERITY."""
+    rules = ",\n      ".join('"%s": "error"' % r for r in RULE_CWE)
+    return (
+        'import security from "%s";\n'
+        'export default [\n'
+        '  {\n'
+        '    plugins: { security },\n'
+        '    languageOptions: { ecmaVersion: "latest" },\n'
+        '    rules: {\n      %s\n    }\n'
+        '  }\n'
+        '];\n' % (_plugin_entry(), rules)
+    )
 
 
 # CWE mappings for eslint-plugin-security rules (best-effort).
@@ -89,21 +127,24 @@ class EslintSecurityAdapter:
         # is honestly skipped.
         if not self._lintable_sources(target):
             return b"[]", 0
-        cmd = [
-            "eslint", "--no-config-lookup", "--parser-options", "ecmaVersion:latest",
-            "--plugin", "security",
-        ]
-        for rule in RULE_CWE:
-            cmd.extend(["--rule", f"{rule}: error"])
-        cmd.extend(["--format", "json", os.path.abspath(target)])
-        env = os.environ.copy()
-        env.pop("NODE_PATH", None)
-        for global_node in ["/usr/local/lib/node_modules", "/usr/lib/node_modules"]:
-            if os.path.isdir(global_node):
-                env["NODE_PATH"] = global_node
-                break
-        trusted_cwd = os.path.dirname(os.path.abspath(__file__))
-        return run_tool(cmd, timeout=300, env=env, cwd=trusted_cwd, ok_codes=(0, 1))
+        # #run7: generate an eslint 9/10 flat config that imports the plugin by
+        # explicit path (see _plugin_entry) and run it. The config lives in a
+        # container-writable temp dir because the /src mount is read-only.
+        cfg_dir = tempfile.mkdtemp(prefix="eslint-cfg-")
+        cfg_path = os.path.join(cfg_dir, "eslint.config.mjs")
+        with open(cfg_path, "w", encoding="utf-8") as fh:
+            fh.write(_flat_config())
+        # --config pins OUR generated config and --no-config-lookup stops eslint
+        # from also discovering + EXECUTING the scanned target's own
+        # eslint.config.js (arbitrary JS -> RCE). The plugin is imported by
+        # ABSOLUTE path in that config, so no cwd- or NODE_PATH-relative
+        # resolution can be hijacked by a hostile target node_modules (#83/#715).
+        cmd = ["eslint", "--config", cfg_path, "--no-config-lookup",
+               "--format", "json", os.path.abspath(target)]
+        try:
+            return run_tool(cmd, timeout=300, ok_codes=(0, 1))
+        finally:
+            shutil.rmtree(cfg_dir, ignore_errors=True)
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
         data = parse_json_bytes(raw)
