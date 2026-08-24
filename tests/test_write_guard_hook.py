@@ -214,6 +214,29 @@ class TestMain(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(out, "")
 
+    def test_notebookedit_uses_notebook_path_not_file_path(self):
+        # #run7 ARC-F2C: NotebookEdit's target is `notebook_path`. An allowlisted
+        # notebook passes; one outside the fence is denied.
+        allow = [".panopticon/findings-g1-x.ipynb"]
+        ok = json.dumps({"tool_name": "NotebookEdit",
+                         "tool_input": {"notebook_path": ".panopticon/findings-g1-x.ipynb"}})
+        self.assertEqual(self._run_main(ok, allowlist_paths=allow), (0, ""))   # allowed
+        bad = json.dumps({"tool_name": "NotebookEdit",
+                          "tool_input": {"notebook_path": "skill/scripts/driver.py"}})
+        _rc, out = self._run_main(bad, allowlist_paths=allow)
+        self.assertEqual(
+            json.loads(out)["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_notebookedit_decoy_file_path_does_not_bypass_allowlist(self):
+        # #run7 ARC-F2C: a decoy allowlisted `file_path` must NOT let an
+        # out-of-fence `notebook_path` write slip through (the real bypass).
+        payload = json.dumps({"tool_name": "NotebookEdit",
+                              "tool_input": {"file_path": ".panopticon/findings-g1-x.ipynb",
+                                             "notebook_path": "skill/scripts/driver.py"}})
+        _rc, out = self._run_main(payload, allowlist_paths=[".panopticon/findings-g1-x.ipynb"])
+        self.assertEqual(
+            json.loads(out)["hookSpecificOutput"]["permissionDecision"], "deny")
+
     def test_malformed_syntax_stdin_is_tolerated(self):
         rc, out = self._run_main("{ not json", allowlist_paths="[]")
         self.assertEqual(rc, 0)
