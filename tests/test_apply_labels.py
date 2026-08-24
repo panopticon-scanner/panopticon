@@ -2,7 +2,8 @@ import os
 import subprocess
 import unittest
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from conftest import REPO_ROOT   # #run7 TST-G1B: shared path anchor
+
 SCRIPT = os.path.join(REPO_ROOT, ".github", "apply-labels.sh")
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "labels.yml")
 
