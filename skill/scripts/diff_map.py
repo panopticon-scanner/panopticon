@@ -66,8 +66,13 @@ def hunk_map(repo, base):
     the delta gate vacuously (#5.0-08)."""
     try:
         mb = _run_git(repo, ["merge-base", "HEAD", base])
-    except Exception:
-        return {}
+    except Exception as e:
+        # #run7 OPS-E1A: an INFRA failure here (git missing, timeout) must fail
+        # LOUD like the diff/ls-files steps below -- not silently return {} and
+        # let the delta gate pass vacuously (#5.0-08), the exact hazard one call
+        # later. A genuinely unresolvable base is the SEPARATE returncode-based {}
+        # contract just below (an upstream loud-fail already guards it).
+        raise DiffMapError("git merge-base HEAD..%s failed: %s" % (base, e))
     if mb.returncode != 0 or not mb.stdout.strip():
         return {}
     base_sha = mb.stdout.strip()
@@ -279,8 +284,11 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
     # widths vary with the longest path, so match on the first whitespace-
     # split token rather than a fixed-width slice (verified against real
     # `git worktree list` output, not assumed from the porcelain format).
-    listing = runner(["git", "-C", repo, "worktree", "list"],
-                     capture_output=True, text=True, timeout=_PR_TIMEOUT)
+    # #run7 QAL-C2D: route through _run so a stalled `git worktree list` raises
+    # RuntimeError (which driver.run's #5.0-14 handler catches) instead of leaking
+    # a raw TimeoutExpired as an uncaught traceback, and so a non-zero listing
+    # fails loud rather than silently falling through to the create path.
+    listing_out = _run(["git", "-C", repo, "worktree", "list"])
     def _sync_groups(wt_path):
         src = os.path.join(repo, ".panopticon", "groups.yml")
         if os.path.isfile(src):
@@ -289,9 +297,8 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
                 shutil.copy2(src, dst)
 
-    if listing.returncode == 0 and any(
-            line.split()[:1] == [wt]
-            for line in listing.stdout.splitlines() if line.strip()):
+    if any(line.split()[:1] == [wt]
+           for line in listing_out.splitlines() if line.strip()):
         head_sha = _run(["git", "-C", wt, "rev-parse", "HEAD"]).strip()
         _sync_groups(wt)
         return {"worktree": wt, "base": base, "head_sha": head_sha}   # reuse (resume)

@@ -119,6 +119,18 @@ class TestHunkMap(unittest.TestCase):
             with self.assertRaises(diff_map.DiffMapError):
                 diff_map.hunk_map(".", "main")
 
+    def test_merge_base_infra_failure_raises_not_empty(self):
+        # #run7 OPS-E1A: an INFRA failure on merge-base (git missing/timeout) must
+        # raise DiffMapError like the diff step, not silently return {} and pass
+        # the delta gate vacuously. (A genuinely unresolvable base still -> {}.)
+        def raising(repo, args, timeout=60):
+            if args[0] == "merge-base":
+                raise FileNotFoundError("git not found")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch.object(diff_map, "_run_git", side_effect=raising):
+            with self.assertRaises(diff_map.DiffMapError):
+                diff_map.hunk_map(".", "main")
+
     def test_diff_flags_are_pinned(self):
         # #5.0-08: pin mnemonicPrefix/quotepath/prefixes so a user's gitconfig
         # can't reshape the `+++ b/<path>` headers parse_unified_diff keys on.
@@ -339,6 +351,20 @@ class TestPrWorktree(unittest.TestCase):
             raise subprocess.TimeoutExpired(argv, kw.get("timeout"))
         with self.assertRaises(RuntimeError):
             diff_map.acquire_pr(7, repo=".", runner=runner)   # bounded, loud
+
+    def test_worktree_list_timeout_raises_runtimeerror(self):
+        # #run7 QAL-C2D: a stalled `git worktree list` must raise RuntimeError
+        # (which driver.run's #5.0-14 handler catches), not leak a raw
+        # TimeoutExpired as an uncaught traceback.
+        def runner(argv, **kw):
+            if argv[:2] == ["gh", "pr"]:
+                return mock.Mock(returncode=0, stdout='{"baseRefName": "main"}',
+                                 stderr="")
+            if "worktree" in argv and "list" in argv:
+                raise subprocess.TimeoutExpired(argv, kw.get("timeout"))
+            return mock.Mock(returncode=0, stdout="", stderr="")
+        with self.assertRaises(RuntimeError):
+            diff_map.acquire_pr(7, repo=".", runner=runner)
 
     def test_release_passes_timeout_and_tolerates_hang(self):
         # #1082: release_worktree bounds the git call and a hung teardown is tolerated.
