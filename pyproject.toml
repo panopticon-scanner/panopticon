@@ -13,6 +13,13 @@ dependencies = [
     # The driver and synthesize load YAML (groups.yml, model-profiles.yml,
     # capability_*.yml); previously undeclared (#5.0-01).
     "pyyaml>=6.0.3",
+    # #run7 ARC-F2E: jsonschema gates untrusted Codex/agent JSON before it is
+    # published as a trusted artifact (codex_runner.validate_schema,
+    # discovery/model_resolver/score_gate schema checks). It was declared ONLY in
+    # the dev/test extras, so a bare `pip install panopticon` left every schema
+    # validator FAILING OPEN (warn-once, then publish unchecked). It is a runtime
+    # dependency, not a test tool.
+    "jsonschema>=4.26.0",
 ]
 authors = [
     {name = "The Panopticon Authors"},
@@ -24,12 +31,10 @@ dev = [
     "pytest>=9.1.1",
     "pytest-xdist>=3.8.0",
     "ruff>=0.16.3",
-    "jsonschema>=4.26.0",
 ]
 test = [
     "pytest>=9.1.1",
     "pytest-xdist>=3.8.0",
-    "jsonschema>=4.26.0",
 ]
 
 [project.urls]
