@@ -35,10 +35,12 @@ class TestDepth(unittest.TestCase):
 
     def test_security_panel_is_standard(self):
         result = orchestrator.build_result(".", "repo", ".", None, ["app/views.py"], [], 15, security_mode="standard")
+        self.assertTrue(result["groups"], "build_result produced no groups")  # #run7 TST-B3A
         self.assertEqual(result["groups"][0]["depth"], "standard")
 
     def test_redteam_is_deep(self):
         result = orchestrator.build_result(".", "repo", ".", None, ["app/auth.py"], [], 15, security_mode="redteam")
+        self.assertTrue(result["groups"], "build_result produced no groups")  # #run7 TST-B3A
         self.assertEqual(result["groups"][0]["depth"], "deep")
 
 

@@ -89,7 +89,10 @@ def test_applicable_floor_keeps_dat_on_all_db_file_hints():
         else:
             fname = f"src/sub/{hint}"
         got = cov.applicable_global_floor([fname], {"surfaces": []})
-        if not ("DAT" in got, f"Hint {hint} on {fname} failed to trigger DAT"): raise AssertionError()
+        # #run7 TST-B2A: `not (cond, "msg")` is a truthy 2-tuple -> the assertion
+        # never fired; this calibration-invariant test asserted NOTHING.
+        if "DAT" not in got:
+            raise AssertionError(f"Hint {hint} on {fname} failed to trigger DAT")
 
 def test_applicable_floor_keeps_tst_on_all_test_file_hints():
     for hint in cov._TEST_FILE_HINTS:
@@ -100,7 +103,8 @@ def test_applicable_floor_keeps_tst_on_all_test_file_hints():
         else:
             fname = f"src/sub/{hint}"
         got = cov.applicable_global_floor([fname], {"surfaces": []})
-        if not ("TST" in got, f"Hint {hint} on {fname} failed to trigger TST"): raise AssertionError()
+        if "TST" not in got:   # #run7 TST-B2A: was a vacuous truthy-tuple assert
+            raise AssertionError(f"Hint {hint} on {fname} failed to trigger TST")
 
 def test_applicable_floor_keeps_dat_on_db_file():
     got = cov.applicable_global_floor(["prisma/schema.prisma", "src/lib/db.ts"],
