@@ -179,12 +179,15 @@ def load_ledger(path=LEDGER):
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
             return normalize_ledger(data)
-    except (OSError, ValueError):
+    except (OSError, ValueError) as e:
+        print("WARNING: ledger %s is unreadable/corrupt (%s); treating as empty"
+              % (path, e), file=sys.stderr)
         return {}
 
 
 def record(ledger, key, url, path=LEDGER):
     ledger[key] = url
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(ledger, fh, indent=1, sort_keys=True)
