@@ -140,6 +140,15 @@ class TestScopeProfileDomains(unittest.TestCase):
             self.assertIn("`%s`" % dom, body)
         self.assertNotIn("`QAL`/`AGT`/`OPS`/`ACC`/`LNG`", body)
 
+    def test_scout_sec_trigger_covers_supply_chain_surface(self):
+        # #run7 SEC-G2A: the SEC trigger must widen on the CI/CD / Docker /
+        # dependency surface, or SEC's E1-E3 supply-chain codes never run on a
+        # CI/CD-only group (there is no deterministic SEC floor to backstop it).
+        body = self._scout_body()
+        sec_line = next(ln for ln in body.splitlines()
+                        if ln.strip().startswith("- `SEC`"))
+        self.assertRegex(sec_line.lower(), r"ci/cd|dockerfile|supply-chain|dependency")
+
 
 class TestDomainPanelRenders(unittest.TestCase):
     def test_renders_with_full_mapping(self):
