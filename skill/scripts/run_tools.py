@@ -355,6 +355,19 @@ def run_tools(target, tools, out_dir, image="panopticon-tools", runner=None, onl
         # Legacy SARIF path (kept for backward compatibility).
         cmd = TOOL_CMD.get(tool)
         if cmd:
+            cmd = list(cmd)   # never mutate the shared TOOL_CMD entry
+            # #run7: bandit AUTO-DISCOVERS .bandit config files by walking the
+            # scanned tree. A nested checkout (a git worktree, a vendored repo)
+            # with its own .bandit makes bandit ERROR ("Multiple .bandit files
+            # found - ... choose one with --ini") and emit EMPTY output -- a
+            # selected-but-unproduced tool that silently blocked coverage
+            # certification on a worktree-heavy checkout (run-7). Pin the target's
+            # own .bandit with --ini to bypass discovery; it still honors that
+            # config's own excludes (incl. .worktrees/.git), so a clean single-
+            # config repo is byte-unchanged. Only when the target actually has a
+            # .bandit -- otherwise bandit runs with its built-in defaults.
+            if tool == "bandit" and os.path.isfile(os.path.join(target, ".bandit")):
+                cmd = cmd[:1] + ["--ini", "/src/.bandit"] + cmd[1:]
             out_path = os.path.join(out_dir, "%s.sarif" % tool)
             docker = [docker_bin, "run", "--rm", "--network", "none",
                       "-v", "%s:/src:ro" % os.path.abspath(target), image] + cmd
