@@ -94,7 +94,17 @@ def main():
         return 0  # tolerant: a well-formed-but-unexpected-shape payload never blocks
     tool_name = payload.get("tool_name", "")
     tool_input = payload.get("tool_input")
-    file_path = tool_input.get("file_path", "") if isinstance(tool_input, dict) else ""
+    # #run7 ARC-F2C: NotebookEdit keys its target as `notebook_path`, NOT
+    # `file_path`. Reading file_path uniformly checked NotebookEdit against the
+    # wrong (empty) path -- benign fail-closed for an ordinary notebook edit, but
+    # a decoy payload {file_path: <allowlisted>, notebook_path: <outside>} would be
+    # ALLOWED while the write lands outside the fence. Extract the tool's own key
+    # and do NOT fall back to file_path for NotebookEdit.
+    if isinstance(tool_input, dict):
+        path_key = "notebook_path" if tool_name == "NotebookEdit" else "file_path"
+        file_path = tool_input.get(path_key, "")
+    else:
+        file_path = ""
     if tool_name not in _WRITE_TOOLS:
         return 0
     try:
