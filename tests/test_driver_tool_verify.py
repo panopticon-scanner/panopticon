@@ -179,6 +179,21 @@ class TestToolVerifyDispatch(_ToolVerifyBase):
         queue = driver._tool_verify_queue(d, m)
         self.assertLessEqual(len(queue), 3)
 
+    def test_default_uncapped_so_tool_findings_are_not_starved(self):
+        # #18: with no max_verify in the manifest, the tool-verify queue must be
+        # UNCAPPED -- parity with synthesize's --max-verify default of None, not a
+        # hardcoded 100. run-7: the 100 default (on the COMBINED queue, filtered to
+        # tool-sourced only afterward) let findings crowd out tool findings, so 30
+        # of 36 never got an advisor and tool_confirmed:0 was an artifact. 101 tool
+        # findings, no cap -> all 101 queue; the old 100 default would drop one.
+        results = [_result("r%d" % i, "src/app%d.py" % i, i + 1, level="warning")
+                   for i in range(101)]
+        d = self._repo(results)
+        m = self._manifest()                       # no max_verify flag
+        self.assertNotIn("max_verify", m["flags"])
+        queue = driver._tool_verify_queue(d, m)
+        self.assertEqual(len(queue), 101)          # old hardcoded 100 would truncate
+
 
 class TestToolVerifyEndToEnd(_ToolVerifyBase):
     """The money test: without a verdict a tool finding forces INCONCLUSIVE
