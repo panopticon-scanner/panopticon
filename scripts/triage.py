@@ -10,12 +10,15 @@ Usage:  python3 scripts/triage.py setup
         python3 scripts/triage.py apply [--dry-run] [--throttle S]
 """
 import argparse
+import datetime
 import functools
 import json
 import os
 import subprocess
 import sys
 import time
+
+from sanitize import defang, scrub
 
 LEDGER = ".panopticon/triage-ledger.jsonl"
 MILESTONE = "Remediation 1"
@@ -82,6 +85,11 @@ def validate(row):
     triaged_at = row.get("triaged_at")
     if not isinstance(triaged_at, str) or not triaged_at.strip() or not triaged_at.endswith("Z"):
         problems.append("triaged_at must be a UTC ISO-8601 Z timestamp")
+    else:
+        try:
+            datetime.datetime.fromisoformat(triaged_at[:-1] + "+00:00")
+        except ValueError:
+            problems.append("triaged_at must be a UTC ISO-8601 Z timestamp")
     v = row.get("verdict")
     if v == "fix" and not isinstance(row.get("rank"), int):
         problems.append("fix needs an integer rank")
@@ -113,9 +121,9 @@ def comment_for(row):
         "defer": "**Triage: deferred** — parked, out of the current "
                  "remediation arc",
     }[v]
-    lines = [head, "", row["rationale"]]
+    lines = [head, "", scrub(defang(row["rationale"]))]
     if row.get("spot_check"):
-        lines += ["", "**Spot-check:** %s" % row["spot_check"]]
+        lines += ["", "**Spot-check:** %s" % scrub(defang(row["spot_check"]))]
     lines += ["", "---",
               "*Remediation triage (batch %s) — spec: `%s`*"
               % (row["batch"], SPEC)]
