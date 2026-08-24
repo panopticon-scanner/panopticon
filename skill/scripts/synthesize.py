@@ -27,6 +27,7 @@ import scripts.html_report as html_report
 import scripts.ingest_tools as ingest_tools
 import scripts.ocrdb as ocrdb
 import scripts.plan_contract as plan_contract
+import scripts.redact as redact
 import scripts.score_gate as score_gate
 import scripts.x0x_report as x0x_report
 from scripts.tools import EXECUTES_TARGET_BUILD
@@ -2075,6 +2076,27 @@ def render_summary(report):
     return "\n".join(lines)
 
 
+def redact_report_secrets(report):
+    """#run7 SEC-B2C: mask unambiguous secret formats (GitHub/OpenAI/AWS/Slack/
+    Google tokens, PEM private keys) in every finding and discarded-claim body
+    BEFORE the report reaches any shareable artifact -- report.json, the split
+    parts, report.json.html, and the X0X candidates all read from this one dict.
+
+    Reviewers are instructed to write [REDACTED], but a credential one of them
+    quoted-but-didn't-redact would otherwise flow verbatim into the pipeline's
+    final, shareable output surface. Defense-in-depth backstop layered on the
+    prompt-level instruction; single-sourced with the driver's tool-output
+    redaction via scripts.redact so the two can never drift. Mutates `report`
+    in place and returns it. The anchored patterns mask well-formed secrets, not
+    prose that merely mentions a token format, so finding text is preserved."""
+    report["findings"] = [redact.redact_tree(f)
+                          for f in report.get("findings") or []]
+    if report.get("discarded_claims"):
+        report["discarded_claims"] = [
+            redact.redact_tree(f) for f in report["discarded_claims"]]
+    return report
+
+
 def write_report(report, out_path, max_bytes=800000):
     """Write report to JSON file, splitting into parts if size exceeds max_bytes.
     Writes all files atomically using staging temp files (#1124).
@@ -2686,6 +2708,7 @@ def main(argv=None):
                           ingested_paths=args.files,
                           driver_cost=driver_cost,
                           tool_manifest=tool_manifest)
+    redact_report_secrets(report)   # #run7 SEC-B2C: before any shareable artifact
     errors, warnings = validate_report(report)
     attach_schema_status(report, errors)
     for w in warnings:

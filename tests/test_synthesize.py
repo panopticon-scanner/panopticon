@@ -5151,6 +5151,34 @@ class TestScoutToolDisclosure(unittest.TestCase):
             self.assertEqual(report["meta"]["coverage"]["scout_profiles_seen"], 0)
 
 
+class TestReportSecretRedaction(unittest.TestCase):
+    """#run7 SEC-B2C: secrets a reviewer quoted-but-didn't-redact must be masked
+    before the report reaches any shareable artifact (report.json/html/x0x)."""
+
+    def test_redacts_findings_and_discarded_claims(self):
+        secret = "ghp_" + "Z" * 36
+        report = {
+            "findings": [{"id": "F1", "severity": "HIGH", "line_start": 3,
+                          "description": "leaked %s here" % secret,
+                          "references": ["see %s" % secret]}],
+            "discarded_claims": [{"id": "D1", "reason": "quoted %s" % secret}],
+        }
+        syn.redact_report_secrets(report)
+        blob = json.dumps(report)
+        self.assertNotIn(secret, blob)
+        self.assertIn("[REDACTED_TOKEN]", report["findings"][0]["description"])
+        self.assertIn("[REDACTED_TOKEN]", report["findings"][0]["references"][0])
+        self.assertIn("[REDACTED_TOKEN]", report["discarded_claims"][0]["reason"])
+        # structured scalars survive
+        self.assertEqual(report["findings"][0]["severity"], "HIGH")
+        self.assertEqual(report["findings"][0]["line_start"], 3)
+
+    def test_no_findings_or_discarded_is_safe(self):
+        r = {"findings": []}
+        syn.redact_report_secrets(r)
+        self.assertEqual(r["findings"], [])
+
+
 class TestSevOrdinal(unittest.TestCase):
     def test_sev_ordinal_derived_from_shared_order(self):
         # #run7 QAL-D1B: _SEV_ORDINAL must be DERIVED from evidence.SEV_ORDER,
