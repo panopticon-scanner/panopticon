@@ -46,7 +46,7 @@ RUN pip install --timeout=300 --no-cache-dir "semgrep==${SEMGREP_VERSION}" "band
 
 # Ruby (brakeman + bundler-audit)
 RUN timeout 300 gem install --no-document "brakeman:${BRAKEMAN_VERSION}" "bundler-audit:${BUNDLER_AUDIT_VERSION}" \
-    && bundle-audit update
+    && timeout 120 bundle-audit update
 
 # Node (eslint + security plugin) + Python dependency audit
 RUN npm install --fetch-timeout=600000 -g "eslint@${ESLINT_VERSION}" "eslint-plugin-security@${ESLINT_PLUGIN_SECURITY_VERSION}" "@microsoft/eslint-formatter-sarif@${ESLINT_FORMATTER_SARIF_VERSION}" \
@@ -218,7 +218,7 @@ RUN : "asset-refresh ${ASSET_REFRESH}" \
 # /home/scanner, so the scanner user gets the refreshed DB, not the stale
 # toolchain-layer snapshot.
 RUN : "asset-refresh ${ASSET_REFRESH}" \
-    && bundle-audit update \
+    && timeout 120 bundle-audit update \
     && chmod -R a+rX /root/.local/share/ruby-advisory-db
 
 # OSV offline databases: npm + PyPI, the ecosystems covered by the fixture
@@ -239,10 +239,10 @@ RUN set -euo pipefail \
        ' "dependencies":{"lodash":{"version":"4.17.15"}}}' \
        > /tmp/osv-warm/package-lock.json \
     && printf 'requests==2.31.0\n' > /tmp/osv-warm/requirements.txt \
-    && if ! osv-scanner --experimental-offline --experimental-download-offline-databases \
+    && if ! timeout 300 osv-scanner --experimental-offline --experimental-download-offline-databases \
            --format json --recursive /tmp/osv-warm >/dev/null 2>&1; then :; fi \
     && if [ ! -s /opt/osv-db/osv-scanner/npm/all.zip ] || [ ! -s /opt/osv-db/osv-scanner/PyPI/all.zip ]; then \
-         if ! osv-scanner scan source --offline --download-offline-databases \
+         if ! timeout 300 osv-scanner scan source --offline --download-offline-databases \
            --format json --recursive /tmp/osv-warm >/dev/null 2>&1; then :; fi; \
        fi \
     && rm -rf /tmp/osv-warm \
