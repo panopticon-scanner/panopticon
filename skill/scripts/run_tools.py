@@ -248,6 +248,14 @@ def _write_completed(label, tool, res, out_path):
     return _atomic_write(out_path, out_bytes)
 
 
+def _drain(stream):
+    """Read and discard the rest of a stream past the byte cap so the child is
+    never left blocked on a full pipe. #run7 QAL-D1A: shared by both truncation
+    branches in _stream_and_write (previously an inline duplicate)."""
+    while stream.read(64 * 1024):
+        pass
+
+
 def _stream_and_write(label, tool, proc, out_path):
     """Stream stdout from a Popen-like object with an explicit byte cap."""
     with tempfile.SpooledTemporaryFile(max_size=1024 * 1024) as spool:
@@ -260,15 +268,12 @@ def _stream_and_write(label, tool, proc, out_path):
                 room = MAX_TOOL_OUTPUT_BYTES - spool.tell()
                 if room <= 0:
                     truncated = True
-                    # Drain remaining stdout without storing it.
-                    while proc.stdout.read(64 * 1024):
-                        pass
+                    _drain(proc.stdout)   # discard remaining stdout, unstored
                     break
                 if len(chunk) > room:
                     spool.write(chunk[:room])
                     truncated = True
-                    while proc.stdout.read(64 * 1024):
-                        pass
+                    _drain(proc.stdout)
                     break
                 spool.write(chunk)
             stderr = proc.stderr.read()

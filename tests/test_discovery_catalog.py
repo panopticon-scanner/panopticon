@@ -40,6 +40,20 @@ class TestGlobSemantics(unittest.TestCase):
         self.assertFalse(rx.match("a/" * 19 + "file.py"))
         self.assertTrue(self._m(path, ["*/" * 20 + "file.py"]))
 
+    def test_catastrophic_single_star_pattern_is_capped(self):
+        # #run7 SEC-H4A: `a*a*...Z` compiles to `a[^/]*a[^/]*...Z` -- the (.*a)+
+        # ReDoS shape, UNaffected by the **-collapse. An over-wildcarded pattern
+        # (from an untrusted target groups.yml) is rejected to a never-matching
+        # regex instead of hanging discovery before any dispatch.
+        import time
+        rx = orchestrator._glob_to_re("a*" * 30 + "Z")
+        start = time.monotonic()
+        self.assertIsNone(rx.match("a" * 40))            # never-match, no hang
+        self.assertLess(time.monotonic() - start, 1.0)   # would be >5s unbounded
+        # a normal glob with a handful of wildcards is unaffected
+        self.assertTrue(
+            orchestrator._glob_to_re("tests/fixtures/**").match("tests/fixtures/x.py"))
+
     def test_no_slash_matches_basename_at_any_depth(self):
         self.assertTrue(self._m("README.md", ["*.md"]))
         self.assertTrue(self._m("docs/deep/notes.md", ["*.md"]))

@@ -1,8 +1,12 @@
 """Read access to the vendored OCRDb domain catalog — the 5.0 review-matrix
 finding-code source. Pure: loads the pinned bundle and answers domain-menu /
 code-validation queries. Tolerant degrade-to-None when the bundle is absent (the
-review then runs code-less = 4.x behavior); a present-but-malformed bundle is a
-LOUD ValueError, never a silent no-code run. Mirrors citations.load_cwe_catalog.
+review then runs code-less = 4.x behavior); a present bundle whose top-level
+STRUCTURE is malformed (not a dict / missing the 'domains' map) is a LOUD
+ValueError, never a silent no-code run. Individual malformed sub-entries (a
+non-dict domain or code entry) degrade gracefully -- they are skipped, so one
+corrupt entry can't kill a whole review (see #run7 ARC-F2D). Mirrors
+citations.load_cwe_catalog.
 See docs/superpowers/specs/2026-08-15-panopticon-5.0-review-matrix-design.md §4.
 """
 import json
@@ -67,14 +71,22 @@ def _safe_get_dict(mapping, key):
     return val if isinstance(val, dict) else {}
 
 
+def _entries_for(bundle, domain):
+    """The `entries` map for one domain -- {} for a None/non-dict bundle or a
+    missing/malformed domain. #run7 QAL-D1A: single-sources the three-step
+    domains->domain->entries unwrap that was copy-pasted verbatim across
+    domain_menu/domain_criteria/validate_code/default_severity."""
+    doms = _safe_get_dict(bundle, "domains")
+    dom = _safe_get_dict(doms, domain)
+    return _safe_get_dict(dom, "entries")
+
+
 def domain_menu(bundle, domain):
     """The domain's entries as [{code, name, severity, cwe}], sorted by code.
     [] for an unknown domain or a None/non-dict bundle."""
     if not isinstance(bundle, dict):
         return []
-    doms = _safe_get_dict(bundle, "domains")
-    dom = _safe_get_dict(doms, domain)
-    entries = _safe_get_dict(dom, "entries")
+    entries = _entries_for(bundle, domain)
     menu = []
     for code in sorted(entries):
         entry = entries[code]
@@ -100,9 +112,7 @@ def domain_criteria(bundle, domain):
     one-liner."""
     if not isinstance(bundle, dict):
         return []
-    doms = _safe_get_dict(bundle, "domains")
-    dom = _safe_get_dict(doms, domain)
-    entries = _safe_get_dict(dom, "entries")
+    entries = _entries_for(bundle, domain)
     out = []
     for code in sorted(entries):
         entry = entries[code]
@@ -131,10 +141,7 @@ def validate_code(bundle, code):
     dom = domain_of(code)
     if not dom:
         return False
-    doms = _safe_get_dict(bundle, "domains")
-    dom_obj = _safe_get_dict(doms, dom)
-    entries = _safe_get_dict(dom_obj, "entries")
-    return code in entries
+    return code in _entries_for(bundle, dom)
 
 
 def domain_fallback(domain):
@@ -150,10 +157,7 @@ def default_severity(bundle, code):
     dom = domain_of(code)
     if not dom:
         return None
-    doms = _safe_get_dict(bundle, "domains")
-    dom_obj = _safe_get_dict(doms, dom)
-    entries = _safe_get_dict(dom_obj, "entries")
-    entry = entries.get(code)
+    entry = _entries_for(bundle, dom).get(code)
     if not isinstance(entry, dict):
         return None
     return entry.get("default_severity")
