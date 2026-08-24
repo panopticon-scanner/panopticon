@@ -2,10 +2,12 @@
 import json
 import os
 import shutil
+import subprocess as sp
 import tempfile
 import unittest
 
 import scripts.run_tools as rt
+from scripts.tools.eslint_security import EslintSecurityAdapter  # #run7 TST-G2A
 
 from run_tools_test_helpers import _FakeResult
 
@@ -46,7 +48,6 @@ class TestRunTools(unittest.TestCase):
         self.assertNotIn("brakeman", tools)
 
     def test_run_tools_passes_exact_timeout_and_survives_timeout(self):
-        import subprocess as sp
         seen = {}
         def runner(cmd, **kw):
             seen['timeout'] = kw.get('timeout')
@@ -133,7 +134,6 @@ class TestRunTools(unittest.TestCase):
             self.assertNotIn("eslint-security", payload["selected"])
 
     def test_eslint_applicable_files_drives_is_applicable(self):
-        from scripts.tools.eslint_security import EslintSecurityAdapter
         with tempfile.TemporaryDirectory() as d:
             ad = EslintSecurityAdapter()
             self.assertFalse(ad.is_applicable(d))

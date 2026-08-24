@@ -1,7 +1,7 @@
 import os
 import unittest
 
-ROOT = os.path.join(os.path.dirname(__file__), os.pardir, "skill")
+from conftest import SKILL_ROOT as ROOT   # #run7 TST-G1B/QAL-D1B: shared path anchor
 
 
 class TestAssets(unittest.TestCase):

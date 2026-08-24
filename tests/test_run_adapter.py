@@ -1,6 +1,7 @@
 import io
 import unittest
 from contextlib import redirect_stderr
+from unittest import mock
 
 
 import scripts._run_adapter as ra
@@ -31,8 +32,12 @@ class TestRunAdapterFailClosed(unittest.TestCase):
     # "ran clean".
 
     def _with_adapter(self, name, adapter):
-        ra.ADAPTERS[name] = adapter
-        self.addCleanup(lambda: ra.ADAPTERS.pop(name, None))
+        # #run7 TST-D1A: patch.dict restores the prior mapping on cleanup; the old
+        # `pop(name, None)` DELETED the key even if it had pre-existed (a latent
+        # harness bug if a synthetic name ever collided with a real adapter).
+        p = mock.patch.dict(ra.ADAPTERS, {name: adapter}, clear=False)
+        p.start()
+        self.addCleanup(p.stop)
 
     def test_crash_returns_nonzero(self):
         self._with_adapter("boom", _Raises())

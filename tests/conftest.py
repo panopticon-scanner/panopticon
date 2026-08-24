@@ -13,6 +13,12 @@ import sys
 _TESTS = os.path.dirname(os.path.abspath(__file__))
 _REPO = os.path.dirname(_TESTS)
 FIXTURE_ROOT = os.environ.get("FIXTURE_ROOT", os.path.join(_TESTS, "fixtures"))
+
+# Public path anchors (#run7 TST-G1B): tests that need the repo or skill root
+# previously each re-derived it via nested dirname(__file__) / os.pardir. Import
+# these instead: `from conftest import REPO_ROOT` / `SKILL_ROOT`.
+REPO_ROOT = _REPO
+SKILL_ROOT = os.path.join(_REPO, "skill")
 for _p in reversed((_TESTS,
                     os.path.join(_REPO, "skill"),
                     os.path.join(_REPO, "skill", "scripts"),

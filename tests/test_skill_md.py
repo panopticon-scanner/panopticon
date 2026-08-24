@@ -2,7 +2,25 @@ import os
 import re
 import unittest
 
-ROOT = os.path.join(os.path.dirname(__file__), os.pardir, "skill")
+from conftest import SKILL_ROOT as ROOT   # #run7 TST-G1B: shared path anchor
+
+# #run7 QAL-D1C: the PANOPTICON.md guide was re-opened inline in 10 places.
+_DOC_PATH = os.path.join(ROOT, os.pardir, "docs", "PANOPTICON.md")
+
+
+def _read_doc():
+    with open(_DOC_PATH, encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _section(text, start, end):
+    """Slice `text` between two heading markers, asserting BOTH exist first so a
+    renamed marker fails loudly instead of raising an opaque IndexError (missing
+    start) or silently over-scoping to the rest of the doc (missing end, a
+    false-pass). #run7 ARC-A2B/TST-B3A."""
+    assert start in text, "section marker not found: %r" % (start,)
+    assert end in text, "section marker not found: %r" % (end,)
+    return text.split(start, 1)[1].split(end, 1)[0]
 
 
 class TestSkillMd(unittest.TestCase):
@@ -11,8 +29,7 @@ class TestSkillMd(unittest.TestCase):
         # the full user guide, driver spec, and schema contracts live in
         # docs/PANOPTICON.md. Body-content tests read the guide; frontmatter tests
         # read SKILL.md directly.
-        with open(os.path.join(ROOT, os.pardir, "docs", "PANOPTICON.md"), encoding="utf-8") as fh:
-            self.text = fh.read()
+        self.text = _read_doc()
         skill_path = os.path.join(os.path.dirname(__file__), os.pardir, "skill", "SKILL.md")
         with open(skill_path, encoding="utf-8") as fh:
             self.skill_md = fh.read()
@@ -66,7 +83,7 @@ class TestSkillMd(unittest.TestCase):
         # accepts claude|generic; Kimi/Codex are named as the generic path's
         # examples, not as separate --host values.
         self.assertNotIn("## Host dispatch", self.text)
-        loop = self.text.split("## Driver run-loop")[1].split("## Output")[0]
+        loop = _section(self.text, "## Driver run-loop", "## Output")
         for host in ("Claude", "Kimi", "generic"):
             self.assertIn(host, loop, host)
 
@@ -126,8 +143,8 @@ class TestSkillMd(unittest.TestCase):
         # 5.0: the tool scan is a driver PHASE (`tools`), not a numbered
         # manual-pipeline step -- re-anchored to the phase's own prose in
         # the driver run-loop, bounded by the next phase's backtick marker.
-        loop = self.text.split("## Driver run-loop")[1].split("## Driver setup")[0]
-        tools = loop.split("`tools`**")[1].split("`review`**")[0]
+        loop = _section(self.text, "## Driver run-loop", "## Driver setup")
+        tools = _section(loop, "`tools`**", "`review`**")
         self.assertNotIn("optional", tools.lower())
         self.assertIn("run_tools.py", tools)
         self.assertIn("--no-tools", tools)
@@ -138,7 +155,7 @@ class TestSkillMd(unittest.TestCase):
         # the tool scan is a driver PHASE now, wired into the driver's own
         # synthesize invocation -- re-anchored from the deleted `## Pipeline`
         # to the driver run-loop section.
-        loop = self.text.split("## Driver run-loop")[1].split("## Output")[0]
+        loop = _section(self.text, "## Driver run-loop", "## Output")
         self.assertIn("--tools-dir .panopticon/tools", loop)
 
     def test_documents_default_tool_path_fixture_prune(self):
@@ -152,7 +169,7 @@ class TestSkillMd(unittest.TestCase):
 
     def test_has_driver_run_loop_section(self):
         self.assertIn("## Driver run-loop", self.text)
-        loop = self.text.split("## Driver run-loop")[1].split("## Output")[0]
+        loop = _section(self.text, "## Driver run-loop", "## Output")
         # the controller loop + status protocol
         self.assertIn("driver.py run", loop)
         for word in ("checkpoint", "dispatch-request.json", "re-invoke", "complete"):
@@ -166,7 +183,7 @@ class TestSkillMd(unittest.TestCase):
         # The scout checkpoint is read-only + return-persist (the scout agent
         # can't self-write), distinct from the review/verify self-write
         # fan-out documented elsewhere in the same section.
-        loop = self.text.split("## Driver run-loop")[1].split("## Output")[0]
+        loop = _section(self.text, "## Driver run-loop", "## Output")
         self.assertIn("scout", loop)
         self.assertIn("ScopeProfile", loop)
         self.assertTrue("returns" in loop.lower() or "returned" in loop.lower(), loop)
@@ -184,7 +201,7 @@ class TestReadmeQuickStart(unittest.TestCase):
     def _quick_start(self):
         # Scoped to the Quick start section: elsewhere `run_tools.py --target .`
         # is a legitimate internal tool invocation, not skill-invocation syntax.
-        return self.text.split("## Quick start")[1].split("## Repository layout")[0]
+        return _section(self.text, "## Quick start", "## Repository layout")
 
     def test_no_nonexistent_mode_or_target_flags(self):
         qs = self._quick_start()
@@ -203,8 +220,7 @@ class TestDeltaDocs(unittest.TestCase):
     disposable PR worktree) — not the pre-redirect HEAD~1/--files framing."""
 
     def setUp(self):
-        with open(os.path.join(ROOT, os.pardir, "docs", "PANOPTICON.md"), encoding="utf-8") as fh:
-            self.skill = fh.read()
+        self.skill = _read_doc()
         with open(os.path.join(ROOT, os.pardir, "README.md"), encoding="utf-8") as fh:
             self.readme = fh.read()
 
@@ -236,7 +252,7 @@ class TestDeltaDocs(unittest.TestCase):
     def test_readme_quick_start_shows_pr_and_base(self):
         # Reuse TestReadmeQuickStart's Quick start boundary — the brief's
         # `.split("## ")[1]` split does not match this README's layout.
-        qs = self.readme.split("## Quick start")[1].split("## Repository layout")[0]
+        qs = _section(self.readme, "## Quick start", "## Repository layout")
         self.assertIn("--pr", qs)
         self.assertIn("--base", qs)
 
@@ -292,8 +308,7 @@ class TestIntegrityResidualDocs(unittest.TestCase):
     documented in the run-loop section and is what this re-anchors to."""
 
     def test_skill_instructs_malformed_selfwrite_redispatch(self):
-        with open(os.path.join(ROOT, os.pardir, "docs", "PANOPTICON.md"), encoding="utf-8") as fh:
-            skill = fh.read()
+        skill = _read_doc()
         self.assertIn("_cell_done", skill)
         self.assertIn("_verify_cell_done", skill)
         self.assertIn("re-dispatched", skill)
@@ -301,8 +316,7 @@ class TestIntegrityResidualDocs(unittest.TestCase):
 
 class TestDocPolicyDocs(unittest.TestCase):
     def test_skill_documents_doc_severity_policy(self):
-        with open(os.path.join(ROOT, os.pardir, "docs", "PANOPTICON.md"), encoding="utf-8") as fh:
-            skill = fh.read()
+        skill = _read_doc()
         self.assertIn("--doc-paths", skill)
         self.assertIn("meta.coverage.doc_policy", skill)
 
@@ -313,14 +327,12 @@ class TestSetupDocs(unittest.TestCase):
         # implemented by the now-retired orchestrator.py and never existed on
         # driver.py's CLI -- `driver setup` (a subcommand) with its own
         # readiness gate is the only setup mode there is now.
-        with open(os.path.join(ROOT, os.pardir, "docs", "PANOPTICON.md"), encoding="utf-8") as fh:
-            skill = fh.read()
+        skill = _read_doc()
         self.assertIn("driver setup", skill)
         self.assertIn("readiness gate", skill)
 
     def test_skill_documents_driver_setup(self):
-        with open(os.path.join(ROOT, os.pardir, "docs", "PANOPTICON.md"), encoding="utf-8") as fh:
-            skill = fh.read()
+        skill = _read_doc()
         self.assertIn("driver setup", skill)
         self.assertIn("groups.yml.draft", skill)
 
@@ -330,8 +342,7 @@ class TestInstalledFlowDocs(unittest.TestCase):
     repo-root cwd rule survives it."""
 
     def test_preamble_states_substitution_contract(self):
-        with open(os.path.join(ROOT, os.pardir, "docs", "PANOPTICON.md"), encoding="utf-8") as fh:
-            skill = fh.read()
+        skill = _read_doc()
         self.assertIn("Installed-flow substitution", skill)
         self.assertIn("INSTALL DIRECTORY", skill)
         self.assertIn("TARGET repo root", skill)
@@ -346,8 +357,7 @@ class TestCodexHostDocs(unittest.TestCase):
     what this re-anchors to instead of the retired fan-out mechanism)."""
 
     def test_codex_documented_as_generic_fallback_with_legacy_registration(self):
-        with open(os.path.join(ROOT, os.pardir, "docs", "PANOPTICON.md"), encoding="utf-8") as fh:
-            skill = fh.read()
+        skill = _read_doc()
         self.assertIn("--emit-host-agents", skill)
         self.assertIn("codex", skill.lower())
         self.assertIn("kimi", skill.lower())
@@ -356,13 +366,11 @@ class TestCodexHostDocs(unittest.TestCase):
 
 class TestGuardFailClosedDocs(unittest.TestCase):
     def test_skill_documents_fail_closed_guard(self):
-        with open(os.path.join(ROOT, os.pardir, "docs", "PANOPTICON.md"), encoding="utf-8") as fh:
-            self.assertIn("fail-closed while registered", fh.read())
+        self.assertIn("fail-closed while registered", _read_doc())
 
 
 class TestReviewRootDocs(unittest.TestCase):
     def test_skill_documents_read_side_rooting(self):
-        with open(os.path.join(ROOT, os.pardir, "docs", "PANOPTICON.md"), encoding="utf-8") as fh:
-            skill = fh.read()
+        skill = _read_doc()
         self.assertIn("Repo root:", skill)
         self.assertIn("#975", skill)

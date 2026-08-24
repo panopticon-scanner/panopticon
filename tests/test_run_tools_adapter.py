@@ -1,6 +1,6 @@
 """Tests for the _run_adapter helper script."""
+import contextlib
 import io
-import sys
 import unittest
 from unittest import mock
 
@@ -17,12 +17,10 @@ class TestRunAdapterHelper(unittest.TestCase):
             stdout = io.BytesIO()
             class FakeOut:
                 buffer = stdout
-            old_stdout = sys.stdout
-            sys.stdout = FakeOut()
-            try:
+            # #run7 TST-D1A: exception-safe stdout capture via redirect_stdout
+            # (works with any object; _run_adapter writes to sys.stdout.buffer).
+            with contextlib.redirect_stdout(FakeOut()):
                 rc = ra.main(["_run_adapter.py", "fake", "/tmp/target"])
-            finally:
-                sys.stdout = old_stdout
             self.assertEqual(rc, 0)
             self.assertEqual(stdout.getvalue(), b'{"ok":true}')
 
