@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.tools import ADAPTERS, ONLINE_ONLY
@@ -199,6 +200,20 @@ def filter_online(chosen, online):
 MAX_TOOL_OUTPUT_BYTES = 50 * 1024 * 1024
 
 
+def _popen_runner(cmd, stdout=None, stderr=None, timeout=None):
+    """The default PRODUCTION runner (#1111 / run7 COD-A2A).
+
+    Returns a live subprocess.Popen so _capture_run streams the child's stdout
+    through _stream_and_write's bounded sink -- the memory guard #1111 advertised
+    but never reached, because the old default (subprocess.run) buffers the ENTIRE
+    output in memory before returning and thus always took the drop path. `timeout`
+    is accepted for call-signature parity with the subprocess.run seam but is NOT
+    honored here: Popen has no timeout=, so the wall-clock bound is enforced by
+    _stream_and_write's watchdog instead (which also bounds a hung streaming read,
+    something a single subprocess.run timeout could not do mid-buffer)."""
+    return subprocess.Popen(cmd, stdout=stdout, stderr=stderr)
+
+
 def _capture_run(label, tool, docker, out_path, runner):
     """Run one docker tool/adapter invocation and land its stdout at out_path.
 
@@ -256,72 +271,105 @@ def _drain(stream):
         pass
 
 
-def _stream_and_write(label, tool, proc, out_path):
-    """Stream stdout from a Popen-like object with an explicit byte cap."""
-    with tempfile.SpooledTemporaryFile(max_size=1024 * 1024) as spool:
-        truncated = False
+def _stream_and_write(label, tool, proc, out_path, timeout=TOOL_TIMEOUT):
+    """Stream stdout from a Popen-like object with an explicit byte cap AND a
+    wall-clock deadline.
+
+    The byte cap keeps a large/adversarial target's output from accumulating in
+    memory (#1111). The deadline is enforced by a watchdog that kills the child
+    at `timeout`: a Popen has no ``timeout=`` of its own, so without it a hung or
+    trickle-slow tool would block the streaming ``read()`` (or the post-cap
+    ``_drain`` of an infinite producer) forever -- restoring the bound that the
+    old buffered ``subprocess.run(timeout=...)`` path provided (#run7 COD-A2A)."""
+    timed_out = {"hit": False}
+
+    def _watchdog():
+        # Kill the child so the blocking read()/drain unblocks at EOF.
+        timed_out["hit"] = True
         try:
-            while True:
-                chunk = proc.stdout.read(64 * 1024)
-                if not chunk:
-                    break
-                room = MAX_TOOL_OUTPUT_BYTES - spool.tell()
-                if room <= 0:
-                    truncated = True
-                    _drain(proc.stdout)   # discard remaining stdout, unstored
-                    break
-                if len(chunk) > room:
-                    spool.write(chunk[:room])
-                    truncated = True
-                    _drain(proc.stdout)
-                    break
-                spool.write(chunk)
-            stderr = proc.stderr.read()
-            rc = proc.wait(timeout=TOOL_TIMEOUT)
-        finally:
+            proc.kill()
+        except Exception:
+            pass
+
+    timer = threading.Timer(timeout, _watchdog)
+    timer.daemon = True
+    timer.start()
+    try:
+        with tempfile.SpooledTemporaryFile(max_size=1024 * 1024) as spool:
+            truncated = False
             try:
-                proc.stdout.close()
-            except Exception:
-                pass
-            try:
-                proc.stderr.close()
-            except Exception:
-                pass
-            if proc.poll() is None:
+                while True:
+                    chunk = proc.stdout.read(64 * 1024)
+                    if not chunk:
+                        break
+                    room = MAX_TOOL_OUTPUT_BYTES - spool.tell()
+                    if room <= 0:
+                        truncated = True
+                        _drain(proc.stdout)   # discard remaining stdout, unstored
+                        break
+                    if len(chunk) > room:
+                        spool.write(chunk[:room])
+                        truncated = True
+                        _drain(proc.stdout)
+                        break
+                    spool.write(chunk)
+                stderr = proc.stderr.read()
+                # The watchdog guarantees the child terminates, so wait() is bounded.
+                rc = proc.wait()
+            finally:
                 try:
-                    proc.kill()
+                    proc.stdout.close()
                 except Exception:
                     pass
+                try:
+                    proc.stderr.close()
+                except Exception:
+                    pass
+                if proc.poll() is None:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
 
-        if rc not in (0, 1):
-            excerpt = (stderr or b"")[-500:].decode("utf-8", errors="replace").strip()
-            print("%s %s exited %s; skipping%s" % (
-                label, tool, rc,
-                (" — " + excerpt) if excerpt else ""), file=sys.stderr)
-            return None
+            # A watchdog kill lands rc < 0 (signal). Only treat it as a timeout
+            # when the child did NOT finish cleanly first -- else a tool that
+            # completed a hair before the deadline (rc 0/1) would be misreported.
+            if timed_out["hit"] and rc not in (0, 1):
+                print("%s %s timed out after %ss; skipping" % (label, tool, timeout),
+                      file=sys.stderr)
+                return None
 
-        if spool.tell() == 0:
-            print("%s %s produced no output on a selected target; recording as "
-                  "missing (fail-closed, #1051)" % (label, tool), file=sys.stderr)
-            return None
+            if rc not in (0, 1):
+                excerpt = (stderr or b"")[-500:].decode("utf-8", errors="replace").strip()
+                print("%s %s exited %s; skipping%s" % (
+                    label, tool, rc,
+                    (" — " + excerpt) if excerpt else ""), file=sys.stderr)
+                return None
 
-        if truncated:
-            marker = (
-                "\n\n[TRUNCATED by panopticon: output exceeded %d byte limit; "
-                "only the first %d bytes were retained]\n" % (
-                    MAX_TOOL_OUTPUT_BYTES, MAX_TOOL_OUTPUT_BYTES)
-            ).encode("utf-8")
-            print("%s %s output exceeded %d byte limit; truncated and retained "
-                  "with marker" % (label, tool, MAX_TOOL_OUTPUT_BYTES),
-                  file=sys.stderr)
-            # Write only up to the cap, then append the marker in place of the tail.
+            if spool.tell() == 0:
+                print("%s %s produced no output on a selected target; recording as "
+                      "missing (fail-closed, #1051)" % (label, tool), file=sys.stderr)
+                return None
+
+            if truncated:
+                marker = (
+                    "\n\n[TRUNCATED by panopticon: output exceeded %d byte limit; "
+                    "only the first %d bytes were retained]\n" % (
+                        MAX_TOOL_OUTPUT_BYTES, MAX_TOOL_OUTPUT_BYTES)
+                ).encode("utf-8")
+                print("%s %s output exceeded %d byte limit; truncated and retained "
+                      "with marker" % (label, tool, MAX_TOOL_OUTPUT_BYTES),
+                      file=sys.stderr)
+                # Write only up to the cap, then append the marker for the tail.
+                spool.seek(0)
+                payload = spool.read(MAX_TOOL_OUTPUT_BYTES)
+                payload += marker
+                return _atomic_write(out_path, payload)
+
             spool.seek(0)
-            payload = spool.read(MAX_TOOL_OUTPUT_BYTES)
-            payload += marker
-            return _atomic_write(out_path, payload)
-
-        spool.seek(0)
-        return _atomic_write(out_path, spool.read())
+            return _atomic_write(out_path, spool.read())
+    finally:
+        timer.cancel()
 
 
 def _atomic_write(out_path, data):
@@ -350,7 +398,7 @@ def run_tools(target, tools, out_dir, image="panopticon-tools", runner=None, onl
     adapters are dispatched through ``scripts/_run_adapter.py`` inside the
     container so the same fat image is used for local and CI runs.
     """
-    runner = runner or subprocess.run
+    runner = runner or _popen_runner   # #run7 COD-A2A: stream by default, don't buffer-then-drop
     validate_output_dir(target, out_dir)
     os.makedirs(out_dir, exist_ok=True)
     tools = filter_online(tools, online)
