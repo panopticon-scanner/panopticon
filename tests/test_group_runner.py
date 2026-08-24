@@ -88,6 +88,37 @@ class TestFanOutCoverage(unittest.TestCase):
             self.assertEqual(cov["groups_complete"], [])
             self.assertEqual(cov["groups_partial"], ["g3"])
 
+    def _driver_entry(self, d, group, domain, done):
+        # 5.1 driver cell: group+domain, out_file findings-<group>-<domain>.json
+        out = os.path.join(d, "findings-%s-%s.json" % (group, domain))
+        if done:
+            with open(out, "w") as fh:
+                json.dump({"findings": []}, fh)
+        return {"enforced": True, "out_file": out, "group": group, "domain": domain}
+
+    def test_driver_domain_cells_counted_by_domain_axis(self):
+        # #run7: the 5.1 driver plan entries carry group+domain (NOT the 4.x
+        # group+panel), and their out_file is findings-<group>-<domain>.json with
+        # no trailing panel segment -- so _group_panel returned (None, None) for
+        # every driver cell and meta.coverage.fan_out came back {} on every 5.1 run.
+        with tempfile.TemporaryDirectory() as d:
+            plan = [
+                self._driver_entry(d, "Auth", "SEC", True),
+                self._driver_entry(d, "Auth", "COD", True),
+                self._driver_entry(d, "Api", "SEC", False),   # not run
+            ]
+            cov = gr.fan_out_coverage(plan)
+            self.assertEqual(cov["planned"], {"SEC": 2, "COD": 1})   # keyed by domain
+            self.assertEqual(cov["executed"], {"SEC": 1, "COD": 1})
+            self.assertEqual(cov["groups_complete"], ["Auth"])
+            self.assertEqual(cov["groups_partial"], ["Api"])
+
+    def test_group_panel_accepts_driver_domain_shape(self):
+        self.assertEqual(
+            gr._group_panel({"group": "Auth", "domain": "SEC",
+                             "out_file": "/x/findings-Auth-SEC.json"}),
+            ("Auth", "SEC"))
+
     def test_unresolvable_entry_is_skipped_not_fatal(self):
         # An entry with no group/panel keys and an out_file that doesn't match
         # the findings-{group}-{panel}- pattern is skipped, not crashed on.
