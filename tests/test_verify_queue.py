@@ -151,6 +151,11 @@ class TestQueueIdentity(unittest.TestCase):
         f.update(over)
         return f
 
+    def _line_by_qid(self, order):
+        # #run7 QAL-D1C: shared by the two order-independence collision tests.
+        return {e["queue_id"]: e["finding"]["location"]["line_start"]
+                for e in evidence.build_verify_queue(order)[0]}
+
     def test_queue_id_is_the_fingerprint(self):
         f = self._f("A")
         entries, _ = evidence.build_verify_queue([f])
@@ -213,12 +218,8 @@ class TestQueueIdentity(unittest.TestCase):
         fp = evidence.finding_fingerprint(a)
         expected = {fp: 1, fp + "-1": 99}
 
-        def _mapping(order):
-            return {e["queue_id"]: e["finding"]["location"]["line_start"]
-                    for e in evidence.build_verify_queue(order)[0]}
-
-        self.assertEqual(_mapping([a, b]), expected)
-        self.assertEqual(_mapping([b, a]), expected)
+        self.assertEqual(self._line_by_qid([a, b]), expected)
+        self.assertEqual(self._line_by_qid([b, a]), expected)
 
     def test_collision_suffix_assignment_is_order_independent_no_id(self):
         # Same reachable scenario, but via the OTHER way two findings share
@@ -233,12 +234,8 @@ class TestQueueIdentity(unittest.TestCase):
         fp = evidence.finding_fingerprint(a)
         expected = {fp: 1, fp + "-1": 99}
 
-        def _mapping(order):
-            return {e["queue_id"]: e["finding"]["location"]["line_start"]
-                    for e in evidence.build_verify_queue(order)[0]}
-
-        self.assertEqual(_mapping([a, b]), expected)
-        self.assertEqual(_mapping([b, a]), expected)
+        self.assertEqual(self._line_by_qid([a, b]), expected)
+        self.assertEqual(self._line_by_qid([b, a]), expected)
 
 
 class TestBothPassesAgree(unittest.TestCase):

@@ -2,9 +2,13 @@ import json
 import os
 import tempfile
 import unittest
+from unittest import mock   # #run7 QAL-F1B: plain `import unittest` does NOT bind unittest.mock
 
 import scripts.ingest_tools as it
 from scripts.tools import ADAPTERS
+
+# #run7 QAL-D1B: the raw pip-audit fixture output, previously duplicated verbatim.
+_PIP_AUDIT_OUTPUT = b'{"dependencies": [{"name": "requests", "version": "2.20.0", "vulns": [{"id": "CVE-2018-18074", "aliases": ["CVE-2018-18074"], "fix_versions": ["2.20.1"], "description": "vuln"}]}]}'
 
 
 class TestPhase1Integration(unittest.TestCase):
@@ -14,8 +18,8 @@ class TestPhase1Integration(unittest.TestCase):
         # is_applicable is intentionally not exercised here: invoke() is mocked,
         # so we are testing parse() behavior against deterministic output (#1196).
 
-        mock_output = b'{"dependencies": [{"name": "requests", "version": "2.20.0", "vulns": [{"id": "CVE-2018-18074", "aliases": ["CVE-2018-18074"], "fix_versions": ["2.20.1"], "description": "vuln"}]}]}'
-        with unittest.mock.patch.object(adapter, 'invoke', return_value=(mock_output, 1)):
+        mock_output = _PIP_AUDIT_OUTPUT
+        with mock.patch.object(adapter, 'invoke', return_value=(mock_output, 1)):
             raw, rc = adapter.invoke(target)
 
         findings = adapter.parse(raw, "g1")
@@ -34,7 +38,7 @@ class TestPhase1Integration(unittest.TestCase):
         # so we are testing parse() behavior against deterministic output (#1196).
 
         mock_output = json.dumps({"advisories": {"123": {"title": "Command Injection in lodash", "module_name": "lodash", "vulnerable_versions": "<4.17.21", "patched_versions": ">=4.17.21", "severity": "high", "cves": ["CVE-2021-23337"]}}}).encode()
-        with unittest.mock.patch.object(adapter, 'invoke', return_value=(mock_output, 1)):
+        with mock.patch.object(adapter, 'invoke', return_value=(mock_output, 1)):
             raw, rc = adapter.invoke(target)
 
         findings = adapter.parse(raw, "g1")
@@ -107,7 +111,7 @@ class TestPhase1Integration(unittest.TestCase):
         # so we are testing parse() behavior against deterministic output (#1196).
 
         mock_output = json.dumps([{"filePath": "app.js", "messages": [{"ruleId": "security/detect-eval-with-expression", "severity": 2, "message": "eval can be harmful", "line": 5, "column": 1}]}]).encode()
-        with unittest.mock.patch.object(adapter, 'invoke', return_value=(mock_output, 1)):
+        with mock.patch.object(adapter, 'invoke', return_value=(mock_output, 1)):
             raw, rc = adapter.invoke(target)
 
         findings = adapter.parse(raw, "g1")
@@ -122,9 +126,9 @@ class TestPhase1Integration(unittest.TestCase):
     def test_ingest_dir_routes_adapter_output(self):
         target = os.path.join(os.path.dirname(__file__), "fixtures", "vulnerable-python")
         adapter = ADAPTERS["pip-audit"]
-        mock_output = b'{"dependencies": [{"name": "requests", "version": "2.20.0", "vulns": [{"id": "CVE-2018-18074", "aliases": ["CVE-2018-18074"], "fix_versions": ["2.20.1"], "description": "vuln"}]}]}'
+        mock_output = _PIP_AUDIT_OUTPUT
 
-        with unittest.mock.patch.object(adapter, 'invoke', return_value=(mock_output, 1)):
+        with mock.patch.object(adapter, 'invoke', return_value=(mock_output, 1)):
             raw, rc = adapter.invoke(target)
             if rc != 1:
                 self.skipTest(f"pip-audit failed with {rc}")
