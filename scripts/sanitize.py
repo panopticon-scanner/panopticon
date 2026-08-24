@@ -58,6 +58,6 @@ def defang(text):
     s = s.replace("]:", "]\u200b:")
     s = s.replace("![", "!\u200b[")
     s = _AUTOLINK_RE.sub(lambda m: "<\u200b" + m.group(1) + ">", s)
-    s = re.sub(r"\bhttps://", "h\u200btps://", s)
-    s = re.sub(r"\bhttp://", "h\u200btp://", s)
+    s = re.sub(r"\bhttps://", "h\u200bttps://", s)
+    s = re.sub(r"\bhttp://", "h\u200bttp://", s)
     return s
