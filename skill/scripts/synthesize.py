@@ -1751,6 +1751,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                         or integrity.get("duplicate_out_files")
                         or integrity.get("mislabeled_findings_files")
                         or integrity.get("content_mismatched_files")
+                        or integrity.get("content_snapshot_unreadable")
                         or integrity.get("empty_dispatch_plans")
                         or integrity.get("invalid_dispatch_plans")
                         or integrity.get("invalid_verify_queue"))
@@ -2501,12 +2502,19 @@ def main(argv=None):
                   "reporting unenforced_acknowledged: false", file=sys.stderr)
     # #493 R4: after-the-fact content check -- when the orchestrator recorded
     # out-file hashes at fan-out end, verify the ingested bytes still match.
-    content_checked, content_mismatched = group_runner.verify_out_file_hashes(args.files)
+    content_checked, content_mismatched, content_snapshot_unreadable = \
+        group_runner.verify_out_file_hashes(args.files)
     if content_mismatched:
         print("synthesize: %d findings file(s) changed AFTER the fan-out "
               "snapshot (content substitution?): %s"
               % (len(content_mismatched), ", ".join(content_mismatched)),
               file=sys.stderr)
+    if content_snapshot_unreadable:
+        # #run7 #1208: a present-but-corrupt out-file-hashes.json is a tamper
+        # signal, not a missing snapshot -- fail closed rather than silently pass.
+        print("synthesize: the fan-out out-file-hashes.json snapshot EXISTS but is "
+              "unreadable/corrupt -- treating as tamper (fail-closed), not a missing "
+              "snapshot; integrity is NOT certified.", file=sys.stderr)
     integrity = {"unexpected_findings_files": unexpected,
                  "missing_planned_files": missing,
                  "duplicate_out_files": duplicate_out_files(_plan),
@@ -2515,6 +2523,7 @@ def main(argv=None):
                  "ack_stale": ack_stale,
                  "content_hashes_checked": content_checked,
                  "content_mismatched_files": content_mismatched,
+                 "content_snapshot_unreadable": content_snapshot_unreadable,
                  "empty_dispatch_plans": sum(1 for plan in _plan_lists if not plan),
                  "invalid_dispatch_plans": invalid_plans,
                  "invalid_verify_queue": invalid_verify_queue,
