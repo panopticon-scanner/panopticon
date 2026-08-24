@@ -1182,6 +1182,13 @@ def _backup_scope_files(review_root, files, scope):
 
 
 def _verify_backup_execute(review_root, manifest, host, bundle):
+    # #20: batch every pending BACKUP advisor across ALL groups into one
+    # checkpoint (group=None), like review + verify-primary (#5). The backup
+    # round is sequenced AFTER primary completes (verify_execute returns primary
+    # checkpoints until none remain), but WITHIN the round the cells are
+    # independent -- streaming one group per checkpoint just serialized 19 round
+    # trips against a 20-wide host (run-7).
+    all_entries, ngroups = [], 0
     for group, files in _discovered_groups(review_root):
         pending = []
         for domain in _effective_domains(review_root, group):
@@ -1192,17 +1199,20 @@ def _verify_backup_execute(review_root, manifest, host, bundle):
                 continue
             pending.append((domain, scope))
         if pending:
+            ngroups += 1
             # #1029: the backup re-reads only its scoped claims' files, not the
             # whole group -- coverage-preserving (claim-driven, unconfined reads).
-            entries = [_verify_entry(review_root, manifest, group, d,
-                                     _backup_scope_files(review_root, files, c), c,
-                                     host, bundle, "backup") for d, c in pending]
-            req = write_dispatch_request(review_root, manifest["run_id"], "verify",
-                                         group, entries)
-            return PhaseResult(kind="checkpoint", checkpoint="verify", group=group,
-                               dispatch_request=req,
-                               message="verify: %d backup advisor(s) for group %s"
-                               % (len(entries), group))
+            all_entries.extend(
+                _verify_entry(review_root, manifest, group, d,
+                              _backup_scope_files(review_root, files, c), c,
+                              host, bundle, "backup") for d, c in pending)
+    if all_entries:
+        req = write_dispatch_request(review_root, manifest["run_id"], "verify",
+                                     None, all_entries)
+        return PhaseResult(kind="checkpoint", checkpoint="verify", group=None,
+                           dispatch_request=req,
+                           message="verify: %d backup advisor(s) across %d group(s)"
+                           % (len(all_entries), ngroups))
     return None
 
 

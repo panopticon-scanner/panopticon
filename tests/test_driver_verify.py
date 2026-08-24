@@ -164,6 +164,43 @@ class TestVerifyBackup(unittest.TestCase):
         self.assertTrue(e["out_file"].endswith("verdicts-app-SEC-backup.json"))
         self.assertNotIn("write_mode", e)
 
+    def test_backup_round_batches_all_groups_in_one_checkpoint(self):
+        # #20: the backup round must batch every pending backup cell across ALL
+        # groups into one checkpoint (group=None), like review + verify-primary --
+        # not one round trip per group (run-7: 19 backup groups serialized).
+        root = self.root
+        _write(root, "groups.json", {"groups": [{"name": "app", "files": ["a.py"]},
+                                                 {"name": "api", "files": ["b.py"]}]})
+        _write(root, "coverage-api.json", {"effective": ["SEC"]})
+        _cell(root, "api", "SEC", [{"domain": "SEC", "code": "SEC-A1A",
+              "severity": "CRITICAL", "title": "t", "category": "authz",
+              "location": {"file": "b.py", "line_start": 1}}])
+        # primary CONFIRMED for BOTH cells so the primary round is complete and
+        # verify_execute proceeds to the (batched) backup round.
+        os.makedirs(os.path.join(root, ".panopticon", "verdicts"), exist_ok=True)
+        for g in ("app", "api"):
+            cell = driver._load_cell_findings(root, self.manifest, g, "SEC")
+            with open(os.path.join(root, ".panopticon", "verdicts",
+                                   "verdicts-%s-SEC.json" % g), "w") as fh:
+                json.dump({"verdicts": [{"finding_id": cell[0]["id"],
+                                         "verdict": "CONFIRMED"}],
+                           "_panopticon": {"run_id": "RID", "role": "domain_advisor",
+                                           "domain": "SEC", "group": g,
+                                           "stage": "primary"}}, fh)
+        with (
+            mock.patch("scripts.driver.dispatch.render_prompt", return_value="BODY"),
+            mock.patch("scripts.driver.dispatch.registered_agent_name",
+                       return_value="panopticon-domain-advisor"),
+            mock.patch("scripts.driver.ocrdb.load_bundle", return_value={"domains": {}})
+        ):
+            result = driver.verify_execute(root, self.manifest)
+        self.assertEqual(result.checkpoint, "verify")
+        self.assertIsNone(result.group)                 # batched, not per-group
+        entries = driver._load_json(driver._pano(root, "dispatch-request.json"))["entries"]
+        self.assertTrue(all(e["out_file"].endswith("-backup.json") for e in entries))
+        groups = {os.path.basename(e["out_file"]).split("-")[1] for e in entries}
+        self.assertEqual(groups, {"app", "api"})        # both groups, ONE checkpoint
+
     def test_rejected_category_never_summons_backup(self):
         cell = driver._load_cell_findings(self.root, self.manifest, "app", "SEC")
         os.makedirs(os.path.join(self.root, ".panopticon", "verdicts"), exist_ok=True)
