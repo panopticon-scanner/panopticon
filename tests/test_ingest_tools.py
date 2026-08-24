@@ -48,6 +48,22 @@ class TestIngest(unittest.TestCase):
             self.assertIn("custom.json", stderr.getvalue())
             self.assertIn("no adapter registered", stderr.getvalue())
 
+    def test_ingest_dir_detailed_rejects_oversized_file(self):
+        # #run7 OPS-D1A: a *.sarif/*.json above the byte cap is failed-closed,
+        # not slurped whole into memory. (cap patched small to keep the test cheap)
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "semgrep.sarif"), "wb") as fh:
+                fh.write(b"x" * 400)
+            stderr = io.StringIO()
+            with mock.patch.object(it, "MAX_TOOL_OUTPUT_BYTES", 100):
+                with contextlib.redirect_stderr(stderr):
+                    findings, disp = it.ingest_dir_detailed(d, "g1")
+        self.assertEqual(findings, [])
+        self.assertEqual(disp["semgrep"]["status"], "failed")
+        self.assertIn("oversize", disp["semgrep"]["reason"])
+        self.assertIn("exceeds", stderr.getvalue())
+
     def test_sarif_uri_normalized_to_repo_relative(self):
         sarif = {"runs":[{"tool":{"driver":{"name":"semgrep","rules":[]}},
             "results":[{"ruleId":"r","level":"warning","message":{"text":"m"},

@@ -282,12 +282,22 @@ class TestCitationQuality(unittest.TestCase):
         self.assertEqual(f["citation_quality"], "none")
 
     def test_category_mapping(self):
-        f = {"category": "injection", "citations": {}}
+        # sql_injection is the SQL-specific lens -> CWE-89 (still a valid override)
+        f = {"category": "sql_injection", "citations": {}}
         cit.enrich_citations([f], self.catalog)
         self.assertEqual(f["citation_quality"], "minimal")
         self.assertIn("CWE-89", [c["id"] for c in f["citations"]["cwe"]])
         self.assertTrue(all(c.get("derived") for c in f["citations"]["cwe"]))
         self.assertTrue(all(c.get("verified") is False for c in f["citations"]["cwe"]))
+
+    def test_generic_injection_does_not_derive_sql_cwe(self):
+        # #run7 COD-C3B: the GENERIC "injection" lens must NOT be tagged the
+        # SQL-specific CWE-89 (over-specification for command/LDAP/template/...
+        # injection). It has no in-catalog generic parent, so it derives nothing.
+        f = {"category": "injection", "citations": {}}
+        cit.enrich_citations([f], self.catalog)
+        derived = [c["id"] for c in f.get("citations", {}).get("cwe", [])]
+        self.assertNotIn("CWE-89", derived)
 
     def test_real_cwe_is_partial_not_minimal(self):
         f = {"citations": {"cwe": ["CWE-89"]}}
