@@ -298,16 +298,6 @@ def _top_category_counts(findings, limit=8):
     return top
 
 
-def _normalize_path(path):
-    """Strip leading ./ and normalize separators for stable matching."""
-    if not path:
-        return ""
-    p = str(path).replace(os.sep, "/")
-    while p.startswith("./"):
-        p = p[2:]
-    return p
-
-
 def _fingerprint(finding):
     """Stable fingerprint that ignores line numbers so moved issues match.
 
@@ -321,7 +311,11 @@ def _fingerprint(finding):
     parts = [
         finding.get("panel", ""),
         finding.get("category", ""),
-        _normalize_path(loc.get("file", "")),
+        # #run7 QAL-D1C: use the shared evidence.norm_path -- the old private
+        # copy did str.replace(os.sep, "/"), a dead no-op on POSIX that left a
+        # Windows-authored "a\b" path un-normalized and diverging from every
+        # other pipeline key. norm_path folds backslashes and strips "./".
+        evidence.norm_path(loc.get("file", "")),
         finding.get("title", ""),
         finding.get("description", ""),
     ]
