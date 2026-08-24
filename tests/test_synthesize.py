@@ -5151,6 +5151,45 @@ class TestScoutToolDisclosure(unittest.TestCase):
             self.assertEqual(report["meta"]["coverage"]["scout_profiles_seen"], 0)
 
 
+class TestReportSecretRedaction(unittest.TestCase):
+    """#run7 SEC-B2C: secrets a reviewer quoted-but-didn't-redact must be masked
+    before the report reaches any shareable artifact (report.json/html/x0x)."""
+
+    def test_redacts_findings_and_discarded_claims(self):
+        secret = "ghp_" + "Z" * 36
+        report = {
+            "findings": [{"id": "F1", "severity": "HIGH", "line_start": 3,
+                          "description": "leaked %s here" % secret,
+                          "references": ["see %s" % secret]}],
+            "discarded_claims": [{"id": "D1", "reason": "quoted %s" % secret}],
+        }
+        syn.redact_report_secrets(report)
+        blob = json.dumps(report)
+        self.assertNotIn(secret, blob)
+        self.assertIn("[REDACTED_TOKEN]", report["findings"][0]["description"])
+        self.assertIn("[REDACTED_TOKEN]", report["findings"][0]["references"][0])
+        self.assertIn("[REDACTED_TOKEN]", report["discarded_claims"][0]["reason"])
+        # structured scalars survive
+        self.assertEqual(report["findings"][0]["severity"], "HIGH")
+        self.assertEqual(report["findings"][0]["line_start"], 3)
+
+    def test_no_findings_or_discarded_is_safe(self):
+        r = {"findings": []}
+        syn.redact_report_secrets(r)
+        self.assertEqual(r["findings"], [])
+
+
+class TestSevOrdinal(unittest.TestCase):
+    def test_sev_ordinal_derived_from_shared_order(self):
+        # #run7 QAL-D1B: _SEV_ORDINAL must be DERIVED from evidence.SEV_ORDER,
+        # not a hand-literal that silently desyncs on a reorder/add/remove.
+        import scripts.evidence as ev
+        self.assertEqual(syn._SEV_ORDINAL,
+                         {s: i for i, s in enumerate(reversed(ev.SEV_ORDER))})
+        self.assertLess(syn._SEV_ORDINAL["LOW"], syn._SEV_ORDINAL["HIGH"])
+        self.assertEqual(syn._SEV_ORDINAL["INFO"], 0)
+
+
 class TestWriteReportDiscardedSplit(unittest.TestCase):
     """#15: a large discarded_claims set (unbounded in the REJECTED count, which
     grows when verification works well) must not floor chunk_limit into one finding
@@ -5182,6 +5221,31 @@ class TestWriteReportDiscardedSplit(unittest.TestCase):
             parts = [p for p in written if "_part" in p]
             self.assertGreater(len(parts), 0)     # findings still needed splitting
             self.assertLess(len(parts), 30)       # bounded — old bug: ~60 parts
+
+    def test_sibling_replace_failure_leaves_no_dangling_main_report(self):
+        # #run7 COD-F1A: the small-report branch used to commit the MAIN report
+        # (with meta.discarded_claims_file set) before the sibling, so a failed
+        # sibling write left the main report pointing at a file that never
+        # existed. Committing the pointed-to sibling first means a sibling
+        # failure aborts before the main is written -- no dangling pointer.
+        real_replace = os.replace
+
+        def flaky(src, dst):
+            if "discarded" in os.path.basename(dst):
+                raise OSError("boom writing sibling")
+            return real_replace(src, dst)
+
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "report.json")
+            # 1 finding but a big discarded set -> sibling split + small branch.
+            report = self._report(n_findings=1, n_discarded=200)
+            with mock.patch("os.replace", side_effect=flaky):
+                with self.assertRaises(OSError):
+                    syn.write_report(report, out, max_bytes=2000)
+            self.assertFalse(os.path.exists(out))            # main never committed
+            self.assertFalse(os.path.exists(
+                os.path.join(d, "report-discarded.json")))    # sibling not left
+            self.assertEqual(os.listdir(d), [])               # no stray temps
 
     def test_base_over_max_is_loud_not_silent(self):
         with tempfile.TemporaryDirectory() as d:

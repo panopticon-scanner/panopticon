@@ -203,6 +203,21 @@ class TestRecoverLinkage(unittest.TestCase):
         with self.assertWarns(UserWarning):
             reconcile_apply.recover_linkage_from_github(runner=runner)
 
+    def test_recovers_path_containing_colon(self):
+        issues = [
+            {"number": 505, "labels": [{"name": "self-scan"}],
+             "body": "**Location:** `src/Foo:Bar.cs:42`\n\n"
+                     "---\n\n"
+                     "**Fingerprint:** `abc123defabc1234` — stable.\n"
+                     "**Finding id in report:** `NOV-COLON`\n"},
+        ]
+
+        def runner(argv, capture_output, text):
+            return FakeCompleted(json.dumps(issues))
+
+        linkage = reconcile_apply.recover_linkage_from_github(runner=runner)
+        self.assertIn("abc123defabc1234|NOV-COLON|src/Foo:Bar.cs|finding", linkage)
+
 
 class TestPlanActions(unittest.TestCase):
     def _diff(self):

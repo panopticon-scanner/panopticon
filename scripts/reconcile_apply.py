@@ -50,7 +50,7 @@ ISSUE_REPO_URL = f"https://github.com/{file_issues.REPO_SLUG}/issues/%s"
 
 FP_RE = re.compile(r"\*\*Fingerprint:\*\* `([0-9a-f]+)`")
 ID_RE = re.compile(r"\*\*Finding id in report:\*\* `([^`]+)`")
-LOC_RE = re.compile(r"\*\*Location:\*\* `([^`:]+)(?::\d+)?`")
+LOC_RE = re.compile(r"\*\*Location:\*\* `([^`]+?)(?::\d+)?`")
 
 
 def recover_linkage_from_github(label="self-scan", runner=None):

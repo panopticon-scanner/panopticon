@@ -3,6 +3,7 @@ from unittest import mock
 
 import pytest
 
+import sanitize
 import triage
 
 
@@ -128,9 +129,11 @@ class TestMutations(unittest.TestCase):
                       rationale="Testing @everyone and <script>alert(1)</script> injection",
                       spot_check="advisor: checked @channel [link](https://example.com)")
         comment = triage.comment_for(row)
-        self.assertIn("@everyone", comment)
+        self.assertIn("@\u200beveryone", comment)
         self.assertIn("<script>alert(1)</script>", comment)
-        self.assertIn("@channel", comment)
+        self.assertIn("@\u200bchannel", comment)
+        self.assertIn("]\u200b(", comment)
+        self.assertIn("h\u200bttps://", comment)
 
 
 class TestStale(unittest.TestCase):
@@ -348,6 +351,33 @@ def test_gh_env_raises_on_corrupt_config(tmp_path):
     cfg.write_text("{ not valid json")
     with pytest.raises(ValueError, match="corrupt"):
         triage.gh_env(str(cfg))
+
+
+class TestCommentSanitization(unittest.TestCase):
+    def test_comment_for_scrubs_and_defangs_rationale(self):
+        root = sanitize.repo_root()
+        row = fix_row(
+            verdict="reject",
+            rank=None,
+            spot_check="advisor: checked",
+            rationale="See %ssrc/x.py and ping @maintainer" % root)
+        comment = triage.comment_for(row)
+        self.assertNotIn(root, comment)
+        self.assertIn("src/x.py", comment)
+        self.assertNotIn("@maintainer", comment)
+
+
+class TestValidateTimestamp(unittest.TestCase):
+    def test_valid_utc_iso8601_passes(self):
+        self.assertIsNone(triage.validate(fix_row()))
+
+    def test_invalid_timestamp_rejected(self):
+        with self.assertRaises(ValueError):
+            triage.validate(fix_row(triaged_at="not-a-dateZ"))
+
+    def test_missing_trailing_z_rejected(self):
+        with self.assertRaises(ValueError):
+            triage.validate(fix_row(triaged_at="2026-08-04T23:00:00"))
 
 
 if __name__ == "__main__":

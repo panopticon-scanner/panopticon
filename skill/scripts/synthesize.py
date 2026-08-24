@@ -27,6 +27,7 @@ import scripts.html_report as html_report
 import scripts.ingest_tools as ingest_tools
 import scripts.ocrdb as ocrdb
 import scripts.plan_contract as plan_contract
+import scripts.redact as redact
 import scripts.score_gate as score_gate
 import scripts.x0x_report as x0x_report
 from scripts.tools import EXECUTES_TARGET_BUILD
@@ -278,7 +279,11 @@ def validate_finding_codes(findings, bundle):
             "domainless": domainless, "code_domain_mismatch": mismatch}
 
 
-_SEV_ORDINAL = {"INFO": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
+# #run7 QAL-D1B: derive the ascending severity ordinal from the shared
+# evidence.SEV_ORDER (descending) rather than re-encoding it as a hand-literal --
+# a reorder/add/remove there now stays in sync automatically instead of silently
+# desyncing meta.coverage.ocrdb.overrides.
+_SEV_ORDINAL = {s: i for i, s in enumerate(reversed(SEV_ORDER))}
 
 
 def apply_verdict_quality(findings, matched, bundle):
@@ -2071,6 +2076,27 @@ def render_summary(report):
     return "\n".join(lines)
 
 
+def redact_report_secrets(report):
+    """#run7 SEC-B2C: mask unambiguous secret formats (GitHub/OpenAI/AWS/Slack/
+    Google tokens, PEM private keys) in every finding and discarded-claim body
+    BEFORE the report reaches any shareable artifact -- report.json, the split
+    parts, report.json.html, and the X0X candidates all read from this one dict.
+
+    Reviewers are instructed to write [REDACTED], but a credential one of them
+    quoted-but-didn't-redact would otherwise flow verbatim into the pipeline's
+    final, shareable output surface. Defense-in-depth backstop layered on the
+    prompt-level instruction; single-sourced with the driver's tool-output
+    redaction via scripts.redact so the two can never drift. Mutates `report`
+    in place and returns it. The anchored patterns mask well-formed secrets, not
+    prose that merely mentions a token format, so finding text is preserved."""
+    report["findings"] = [redact.redact_tree(f)
+                          for f in report.get("findings") or []]
+    if report.get("discarded_claims"):
+        report["discarded_claims"] = [
+            redact.redact_tree(f) for f in report["discarded_claims"]]
+    return report
+
+
 def write_report(report, out_path, max_bytes=800000):
     """Write report to JSON file, splitting into parts if size exceeds max_bytes.
     Writes all files atomically using staging temp files (#1124).
@@ -2098,16 +2124,26 @@ def write_report(report, out_path, max_bytes=800000):
     blob = json.dumps(report, indent=2)
     findings = list(report.get("findings") or [])
     if len(blob.encode("utf-8")) <= max_bytes or len(findings) <= 1:
+        # #run7 COD-F1A: stage ALL temps first, then os.replace them, committing
+        # the pointed-to discarded sibling BEFORE the main report (the pointer).
+        # The old per-target write+replace loop committed the main report first,
+        # so a failed sibling write left the main report pointing at a
+        # discarded_claims_file that never existed (a dangling pointer). This
+        # mirrors the chunked branch's write-all-then-replace discipline.
         targets = [(out_path, blob)]
         if discarded_sibling:
             targets.append((discarded_sibling[0], json.dumps(discarded_sibling[1], indent=2)))
-        for _fp, _txt in targets:
-            tmp = os.path.join(out_dir, ".report-%s.tmp" % uuid.uuid4().hex)
-            try:
+        temp_files = []
+        try:
+            for _fp, _txt in targets:
+                tmp = os.path.join(out_dir, ".report-%s.tmp" % uuid.uuid4().hex)
                 with open(tmp, "w", encoding="utf-8") as fh:
                     fh.write(_txt)
+                temp_files.append((tmp, _fp))
+            for tmp, _fp in reversed(temp_files):   # sibling first, main last
                 os.replace(tmp, _fp)
-            finally:
+        finally:
+            for tmp, _ in temp_files:
                 if os.path.exists(tmp):
                     try:
                         os.remove(tmp)
@@ -2183,7 +2219,11 @@ def write_report(report, out_path, max_bytes=800000):
                 json.dump(content, fh, indent=2)
             temp_files.append((tmp_p, final_path))
 
-        for tmp_p, final_path in temp_files:
+        # #run7 COD-F1A: commit the main report LAST -- its meta.parts and
+        # meta.discarded_claims_file only go live after every part + sibling they
+        # point at already exists on disk, so a mid-replace failure can never
+        # leave the main report referencing a missing artifact.
+        for tmp_p, final_path in reversed(temp_files):
             os.replace(tmp_p, final_path)
     finally:
         for tmp_p, _ in temp_files:
@@ -2668,6 +2708,7 @@ def main(argv=None):
                           ingested_paths=args.files,
                           driver_cost=driver_cost,
                           tool_manifest=tool_manifest)
+    redact_report_secrets(report)   # #run7 SEC-B2C: before any shareable artifact
     errors, warnings = validate_report(report)
     attach_schema_status(report, errors)
     for w in warnings:

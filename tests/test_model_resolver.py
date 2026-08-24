@@ -10,6 +10,16 @@ import scripts.model_resolver as mr
 
 
 class TestModelResolver(unittest.TestCase):
+    def test_hardcoded_fallback_unknown_role_on_known_hosts(self):
+        # #run7 TST-A2C: the per-host default arm for an UNKNOWN role was
+        # untested -- every other test uses a role present in the lookup dict.
+        self.assertEqual(mr._hardcoded_fallback("kimi", "banana")["model"], "primary")
+        self.assertEqual(mr._hardcoded_fallback("claude", "banana")["model"], "sonnet")
+        self.assertEqual(mr._hardcoded_fallback("codex", "banana")["model"],
+                         "gpt-5.6-terra")
+        # an unknown HOST still resolves to None (inherit session), never kimi
+        self.assertIsNone(mr._hardcoded_fallback("bogus", "banana")["model"])
+
     def test_kimi_defaults(self):
         cfg = mr.resolve_model("kimi", "lens_sweep")
         self.assertEqual(cfg["model"], "primary")

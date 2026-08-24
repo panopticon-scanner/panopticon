@@ -29,6 +29,7 @@ from scripts.tools.sarif_utils import (
     _rules_index,
     sarif_to_findings,
 )
+from scripts.run_tools import MAX_TOOL_OUTPUT_BYTES  # #run7 OPS-D1A: shared cap
 
 # Re-export shared SARIF helpers so existing callers/tests keep working.
 __all__ = [
@@ -58,7 +59,10 @@ def _filter_parsed_findings(parsed, include_fixtures, exclude_globs):
     fx_count = 0
     gl_count = 0
     for f in parsed:
-        fpath = str((f.get("location") or {}).get("file", ""))
+        # #run7 QAL-D1A: normalize os.sep -> "/" before matching, mirroring
+        # run_tools._is_excluded, so an exclude_glob behaves identically on both
+        # the ingest and the scan path (a no-op on POSIX; correct on Windows).
+        fpath = str((f.get("location") or {}).get("file", "")).replace(os.sep, "/")
         if not include_fixtures and _is_fixture_path(fpath):
             fx_count += 1
         elif exclude_globs and any(fnmatch.fnmatch(fpath, g) for g in exclude_globs):
@@ -109,13 +113,25 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
                                   "reason": "no registered adapter"}
             continue
         try:
+            # #run7 OPS-D1A: bound the read. This is a general entry point that
+            # can be pointed at an arbitrary directory; the capped-writer feeds it
+            # normally, but an oversized (or maliciously large) *.sarif/*.json
+            # would otherwise be slurped whole into memory. Read one byte past the
+            # cap to detect the overflow, then fail-closed on that file.
             with open(path, "rb") as fh:
-                raw = fh.read()
+                raw = fh.read(MAX_TOOL_OUTPUT_BYTES + 1)
         except OSError as e:
             print("ingest skip %s: %s" % (path, e), file=sys.stderr)
             dispositions[tool] = {"status": "failed", "findings": 0,
                                   "reason": "unparseable: %s"
                                   % (str(e).splitlines() or [""])[0]}
+            continue
+        if len(raw) > MAX_TOOL_OUTPUT_BYTES:
+            print("ingest skip %s: output exceeds the %d-byte cap"
+                  % (path, MAX_TOOL_OUTPUT_BYTES), file=sys.stderr)
+            dispositions[tool] = {"status": "failed", "findings": 0,
+                                  "reason": "oversize: exceeds %d-byte cap"
+                                  % MAX_TOOL_OUTPUT_BYTES}
             continue
         if not raw.strip():
             print("ingest skip %s: empty output file" % path, file=sys.stderr)

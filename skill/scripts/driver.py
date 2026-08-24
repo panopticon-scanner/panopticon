@@ -13,7 +13,6 @@ import functools
 import glob as _glob
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -38,6 +37,7 @@ import scripts.groups_schema as groups_schema  # noqa: E402
 import scripts.ingest_tools as ingest_tools  # noqa: E402
 import scripts.ocrdb as ocrdb  # noqa: E402
 import scripts.plan_contract as plan_contract  # noqa: E402
+import scripts.redact as redact  # noqa: E402
 import scripts.run_tools as run_tools  # noqa: E402
 import scripts.run_manifest as run_manifest  # noqa: E402
 import scripts.score_gate as score_gate  # noqa: E402
@@ -50,20 +50,9 @@ _SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 def _redact_output(text):
-    if not text:
-        return ""
-    redacted = re.sub(r"(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{16,}", "[REDACTED_TOKEN]", str(text))
-    redacted = re.sub(r"(?:sk-[A-Za-z0-9_-]{16,})", "[REDACTED_KEY]", redacted)
-    redacted = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._-]{16,}", r"\1[REDACTED]", redacted)
-    # #run7 SEC-B2C: broaden beyond gh*/sk-/Bearer -- these unambiguous secret
-    # formats otherwise leak verbatim into DriverError -> status.message.
-    redacted = re.sub(r"AKIA[0-9A-Z]{16}", "[REDACTED_AWS_KEY]", redacted)       # AWS access-key id
-    redacted = re.sub(r"xox[baprs]-[A-Za-z0-9-]{10,}", "[REDACTED_SLACK_TOKEN]", redacted)
-    redacted = re.sub(r"AIza[0-9A-Za-z_-]{35}", "[REDACTED_GOOGLE_KEY]", redacted)  # Google API key
-    redacted = re.sub(
-        r"-----BEGIN[A-Z ]*PRIVATE KEY-----.*?-----END[A-Z ]*PRIVATE KEY-----",
-        "[REDACTED_PRIVATE_KEY]", redacted, flags=re.DOTALL)                     # PEM block
-    return redacted
+    # #run7 SEC-B2C: the patterns live in scripts.redact, single-sourced with
+    # synthesize's report-body redaction so the two can never drift.
+    return redact.redact(text)
 
 
 class DriverError(Exception):
