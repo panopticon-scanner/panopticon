@@ -5187,6 +5187,50 @@ class TestRunDirArtifactResolution(unittest.TestCase):
             self.assertEqual(cov["scout_profiles_seen"], 2)   # old flat glob => 0
             self.assertIn("semgrep", cov["scout_requested"])
 
+    def test_driver_cost_ledger_resolved_from_run_dir_not_flat(self):
+        # #21: the driver cost ledger (dispatch-plan-driver.json + verdicts/) must
+        # resolve under run_dir like every other 5.1 artifact. Read flat, the plan
+        # is absent -> driver_cost_counts returns None -> cost_dispatches falls back
+        # to the empty 4.x shape, silently falsifying meta.cost on EVERY 5.1 run.
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            run_dir = os.path.join(d, ".panopticon", "runs", "tag")
+            os.makedirs(os.path.join(run_dir, "verdicts"))
+            with open(os.path.join(run_dir, "groups.json"), "w") as fh:
+                json.dump({"groups": [{"name": "g1", "files": []},
+                                      {"name": "g2", "files": []}]}, fh)
+            for g in ("g1", "g2"):
+                with open(os.path.join(run_dir, "scout-%s.json" % g), "w") as fh:
+                    json.dump({"group": g, "panels": ["code"]}, fh)
+            with open(os.path.join(run_dir, "tools-manifest.json"), "w") as fh:
+                json.dump({"schema_version": 1, "run_id": "rid-1",
+                           "selected": [], "produced": [], "missing": []}, fh)
+            fcod = os.path.join(d, "findings-g1-COD.json")
+            fsec = os.path.join(d, "findings-g2-SEC.json")
+            for f in (fcod, fsec):
+                with open(f, "w") as fh:
+                    json.dump({"findings": []}, fh)
+            with open(os.path.join(run_dir, "dispatch-plan-driver.json"), "w") as fh:
+                json.dump([{"group": "g1", "domain": "COD", "out_file": fcod},
+                           {"group": "g2", "domain": "SEC", "out_file": fsec}], fh)
+            with open(os.path.join(run_dir, "verdicts", "verdicts-g1-COD.json"), "w") as fh:
+                json.dump({"verdicts": []}, fh)   # one primary bundle
+            # a STALE flat plan the OLD code would have read -- the fix must ignore it
+            os.makedirs(".panopticon", exist_ok=True)
+            with open(os.path.join(".panopticon", "dispatch-plan-driver.json"), "w") as fh:
+                json.dump([{"group": "STALE", "domain": "X", "out_file": "x"}], fh)
+            out = os.path.join(d, "r.json")
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                rc = syn.main(["--target", "src",
+                               "--groups", os.path.join(run_dir, "groups.json"),
+                               "--run-id", "rid-1", "--out", out, fcod, fsec])
+            self.assertEqual(rc, 0)
+            rows = json.load(open(out))["meta"]["cost"]["dispatches"]
+            by_role = {r["role"]: r["count"] for r in rows}
+            # driver-path shape from the run_dir plan -- NOT the legacy None fallback
+            self.assertEqual(by_role.get("domain_panel"), 2)     # 2 plan cells
+            self.assertEqual(by_role.get("domain_advisor"), 1)   # 1 primary verify bundle
+            self.assertNotIn("advisor", by_role)                 # legacy shape would have this
+
     def test_foreign_run_id_manifest_is_a_loud_error(self):
         with tempfile.TemporaryDirectory() as d, _chdir(d):
             groups, fp = self._layout(d, manifest={
