@@ -33,6 +33,11 @@ _ALWAYS_IGNORE_ENTRIES = [".claude/settings.local.json"]
 # negations are simply appended.
 _PANOPTICON_DIR_BLANKET = {
     ".panopticon", ".panopticon/", "/.panopticon", "/.panopticon/",
+    # #run7 ARC-A2B: a `**/`-prefixed blanket also excludes the directory, so
+    # git cannot re-include groups.yml out of it -- treat it as un-negatable too
+    # (else provision() would append a committable block that can't take effect
+    # and spuriously rewrites .gitignore).
+    "**/.panopticon", "**/.panopticon/",
 }
 
 
@@ -63,7 +68,17 @@ def _seed_groups_manifest(repo):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     header = ("# panopticon groups catalog -- seeded by --setup (#485).\n"
               "# gitignore-flavored globs; first matching group wins; edit and commit.\n")
-    with open(path, "w", encoding="utf-8") as fh:
+    # #run7 COD-F1B: create atomically. The isfile() guard above is a fast path,
+    # not a lock -- O_EXCL closes the check-then-truncate TOCTOU so a concurrent
+    # seed can never clobber a manifest that appeared after the check. A racing
+    # loser observes FileExistsError and reports the existing manifest (created
+    # False) rather than overwriting it.
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except FileExistsError:
+        names = list((discovery.load_catalog(repo) or {}).keys())
+        return path, False, names
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(header + body)
     return path, True, list(valid)
 
@@ -202,6 +217,15 @@ def _check_host_shells(host, runner):
     else:
         reg_dir = dispatch._registration_dir(resolved_host, None)
         _driver_roles = ("scout", "domain_panel", "domain_advisor")
+        # #run7 ARC-A4C: this is a hand-maintained shadow of the ACTIVE driver
+        # roles. If a role is renamed/removed in dispatch.ROLE_FILES, the filter
+        # below would silently drop its shell from the readiness check. Trip
+        # loudly instead so the drift is caught at the source.
+        _unknown_roles = [r for r in _driver_roles if r not in dispatch.ROLE_FILES]
+        if _unknown_roles:
+            raise RuntimeError(
+                "setup_flow._driver_roles out of sync with dispatch.ROLE_FILES: %s"
+                % ", ".join(_unknown_roles))
         missing_shells = [role for role, rf in sorted(dispatch.ROLE_FILES.items())
                           if role in _driver_roles
                           and not dispatch._is_registered(reg_dir, rf, resolved_host)]
