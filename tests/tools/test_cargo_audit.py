@@ -31,9 +31,17 @@ class TestCargoAuditAdapter(unittest.TestCase):
         self.assertEqual(f["tool_evidence"]["package_name"], "foo")
         self.assertEqual(f["severity"], "HIGH")
 
-    def test_is_applicable_when_cargo_toml_present(self):
-        with mock.patch("os.path.exists", side_effect=lambda p: p.endswith("Cargo.toml")):
+    def test_is_applicable_when_cargo_lock_present(self):
+        # #run7 COD-C2A: applicability keys on Cargo.lock (what `cargo audit
+        # --no-fetch` actually reads), not Cargo.toml.
+        with mock.patch("os.path.exists", side_effect=lambda p: p.endswith("Cargo.lock")):
             self.assertTrue(ca.CargoAuditAdapter().is_applicable("/tmp/fake"))
+
+    def test_not_applicable_with_only_cargo_toml(self):
+        # a Cargo.toml-only (library) repo has no lockfile -> not applicable
+        # (osv-scanner still covers it); avoids a "selected but unproduced" gap.
+        with mock.patch("os.path.exists", side_effect=lambda p: p.endswith("Cargo.toml")):
+            self.assertFalse(ca.CargoAuditAdapter().is_applicable("/tmp/fake"))
 
     def test_is_applicable_when_cargo_toml_absent(self):
         with mock.patch("os.path.exists", return_value=False):

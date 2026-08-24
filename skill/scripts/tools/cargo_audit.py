@@ -54,7 +54,13 @@ class CargoAuditAdapter:
     prefix = "CA"
 
     def is_applicable(self, target: str) -> bool:
-        return os.path.exists(os.path.join(target, "Cargo.toml"))
+        # #run7 COD-C2A: `cargo audit --no-fetch` reads a RESOLVED Cargo.lock and
+        # cannot generate one (parse() even hardcodes location=Cargo.lock). A
+        # Cargo.toml-only library repo was marked applicable, then failed at
+        # invoke -> "selected but unproduced" coverage loss. Gate on the lockfile
+        # (mirrors bundler-audit/Gemfile.lock); osv-scanner still covers
+        # Cargo.toml-only repos, so nothing is lost by narrowing here.
+        return os.path.exists(os.path.join(target, "Cargo.lock"))
 
     def invoke(self, target: str) -> tuple[bytes, int]:
         cmd = ["cargo", "audit", "--no-fetch", "--format", "json"]

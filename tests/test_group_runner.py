@@ -218,21 +218,39 @@ class TestOutFileContentHashes(unittest.TestCase):
             plan = [{"out_file": out}]
             recorded = gr.snapshot_out_files(plan, out_path=hashes_path)
             self.assertEqual(len(recorded), 1)
-            checked, mismatched = gr.verify_out_file_hashes(
+            checked, mismatched, unreadable = gr.verify_out_file_hashes(
                 [out], hashes_path=hashes_path)
-            self.assertEqual((checked, mismatched), (1, []))
+            self.assertEqual((checked, mismatched, unreadable), (1, [], False))
             with open(out, "w") as fh:                    # substitute content
                 _json.dump({"findings": [{"id": "EVIL-1"}]}, fh)
-            checked, mismatched = gr.verify_out_file_hashes(
+            checked, mismatched, unreadable = gr.verify_out_file_hashes(
                 [out], hashes_path=hashes_path)
             self.assertEqual(checked, 1)
             self.assertEqual(mismatched, [out])
+            self.assertFalse(unreadable)
 
     def test_no_snapshot_reads_as_not_measured(self):
-        checked, mismatched = gr.verify_out_file_hashes(
+        checked, mismatched, unreadable = gr.verify_out_file_hashes(
             ["x.json"], hashes_path="/nonexistent/h.json")
         self.assertIsNone(checked)
         self.assertEqual(mismatched, [])
+        self.assertFalse(unreadable)               # genuinely absent, not tamper
+
+    def test_corrupt_snapshot_is_a_detected_tamper_not_no_snapshot(self):
+        # #run7 #1208: snapshot_out_files only writes when non-empty, so a
+        # PRESENT-but-corrupt hashes file is a tamper signal, not "no snapshot" --
+        # an attacker who substitutes a findings file could otherwise truncate the
+        # snapshot to erase the evidence and keep integrity green.
+        import tempfile, os
+        with tempfile.TemporaryDirectory() as d:
+            for payload in ("{ this is not json", "[]", "{}", "null"):
+                hp = os.path.join(d, "out-file-hashes.json")
+                with open(hp, "w") as fh:
+                    fh.write(payload)
+                checked, mismatched, unreadable = gr.verify_out_file_hashes(
+                    ["x.json"], hashes_path=hp)
+                self.assertTrue(unreadable, payload)   # present+corrupt -> tamper
+                self.assertIsNone(checked)
 
 
 class TestVerifyPlanEntries(unittest.TestCase):

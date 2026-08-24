@@ -12,6 +12,10 @@ class TestOcrdb(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.bundle = ocrdb.load_bundle()  # the vendored 0.4.1 file
+        # #run7 TST-E1A: fail clearly here if the vendored bundle didn't load,
+        # instead of letting earlier (alphabetically-ordered) tests trip over a
+        # None bundle with a confusing IndexError/TypeError.
+        assert cls.bundle is not None, "vendored ocrdb bundle failed to load"
 
     def test_vendored_bundle_loads_with_ten_domains(self):
         self.assertIsNotNone(self.bundle, "vendored ocrdb-0.4.1.json must load")
