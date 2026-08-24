@@ -1272,7 +1272,16 @@ def _tool_verify_queue(review_root, manifest):
         findings.append(synthesize.normalize_finding(tf))
     prepared, _integration = synthesize.prepare_for_queue(findings)
     flags = manifest.get("flags") or {}
-    max_verify = flags.get("max_verify", 100)
+    # #18: match synthesize's --max-verify DEFAULT (None = uncapped), not a
+    # hardcoded 100. build_verify_queue caps the COMBINED queue and this method
+    # only then filters to tool-sourced entries -- so a 100 cap, with agent
+    # findings sorting first, STARVES tool findings (run-7: synthesize queued 36
+    # tool findings, this dispatched only 6, leaving 30 permanently unanswered and
+    # making tool_confirmed:0 an artifact, not a measurement). The docstring above
+    # promises this queue is "computed EXACTLY as synthesize will" -- so it must
+    # take the same default. (The manifest never carries max_verify today, so this
+    # is uncapped in practice; if it ever does, it matches synthesize by key.)
+    max_verify = flags.get("max_verify")
     queue, _cut = evidence.build_verify_queue(prepared, max_verify=max_verify)
     return [(e["queue_id"], e["finding"]) for e in queue
             if evidence.is_tool_sourced(e["finding"])]
