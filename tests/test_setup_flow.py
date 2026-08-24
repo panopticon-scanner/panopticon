@@ -229,6 +229,82 @@ class TestSetupFlow(unittest.TestCase):
             d, host="claude", runner=runner)}
         self.assertFalse(checks["docker"])
 
+    def test_readiness_docker_ok_but_tools_image_absent(self):
+        # #run7 TST-A2F: the common "Docker installed but the panopticon-tools
+        # image isn't built" state (docker ok, tools-image absent) had no
+        # coverage -- every prior runner returned one fixed rc for all commands.
+        d = _repo(self)
+        os.makedirs(os.path.join(d, ".git"))
+        def runner(cmd, **kw):
+            rc = 1 if cmd[:3] == ["docker", "image", "inspect"] else 0
+            return type("R", (), {"returncode": rc})()
+        checks = {c[0]: (c[1], c[2]) for c in setup_flow.readiness(
+            d, host="generic", runner=runner)}
+        self.assertTrue(checks["docker"][0])
+        self.assertFalse(checks["tools-image"][0])
+        self.assertIn("image absent", checks["tools-image"][1])
+
+    def test_readiness_driver_roles_parity_guard_trips_on_drift(self):
+        # #run7 ARC-A4C: _driver_roles is a hand-maintained shadow of the active
+        # dispatch.ROLE_FILES roles. If a role is renamed/removed there, readiness
+        # must fail loudly rather than silently drop that shell from the check.
+        import dispatch
+        d = _repo(self)
+        shrunk = {k: v for k, v in dispatch.ROLE_FILES.items()
+                  if k != "domain_advisor"}
+        with mock.patch.object(dispatch, "ROLE_FILES", shrunk):
+            with self.assertRaises(RuntimeError):
+                setup_flow.readiness(
+                    d, host="claude",
+                    runner=lambda *a, **k: type("R", (), {"returncode": 0})())
+
+    def test_ingest_missing_bundled_data_fails_no_draft(self):
+        # #run7 TST-A2B: the bundled-vocabulary-missing branch (a broken install)
+        # was unreachable in tests -- drive it via a bogus data path.
+        d = _repo(self)
+        pp = os.path.join(d, ".panopticon", "setup-proposal.json")
+        with open(pp, "w") as fh:
+            json.dump({"groups": [{"capability": "Checkout",
+                                   "match": ["src/**"]}]}, fh)
+        with mock.patch.object(setup_flow, "_VOCAB_PATH", "/nonexistent/vocab.yml"):
+            res = setup_flow.ingest_proposal(d, pp)
+        self.assertFalse(res["ok"])
+        self.assertTrue(any("missing" in e for e in res["errors"]))
+        self.assertFalse(os.path.isfile(
+            os.path.join(d, ".panopticon", "groups.yml.draft")))
+
+    def test_ingest_malformed_bundled_vocab_fails_no_draft(self):
+        # #run7 TST-A2B: the vocab/affinity load-error branch (verr/aerr) -- a
+        # present-but-corrupt bundle must fail loudly with a data error, no draft.
+        d = _repo(self)
+        bad = os.path.join(d, "bad_vocab.yml")
+        with open(bad, "w") as fh:
+            fh.write("capabilities: not-a-list\n")   # load_vocabulary -> error
+        pp = os.path.join(d, ".panopticon", "setup-proposal.json")
+        with open(pp, "w") as fh:
+            json.dump({"groups": [{"capability": "Checkout",
+                                   "match": ["src/**"]}]}, fh)
+        with mock.patch.object(setup_flow, "_VOCAB_PATH", bad):
+            res = setup_flow.ingest_proposal(d, pp)
+        self.assertFalse(res["ok"])
+        self.assertTrue(any("data error" in e for e in res["errors"]))
+        self.assertFalse(os.path.isfile(
+            os.path.join(d, ".panopticon", "groups.yml.draft")))
+
+    def test_provision_treats_globstar_panopticon_ignore_as_blanket(self):
+        # #run7 ARC-A2B: a `**/`-prefixed blanket ignore also excludes the
+        # .panopticon directory, so git can't re-include groups.yml out of it.
+        # Provision must leave it untouched (not append a committable block that
+        # can't take effect) and report groups.yml not committable.
+        d = _repo(self)
+        with open(os.path.join(d, ".gitignore"), "w") as fh:
+            fh.write("node_modules/\n**/.panopticon/\n")
+        res = setup_flow.provision(d)
+        gi = self._gitignore(d)
+        self.assertNotIn(".panopticon/*", gi)   # not migrated
+        self.assertNotIn("!.panopticon/", gi)   # dir not re-exposed
+        self.assertFalse(res["groups_yml_committable"])
+
 
 class TestSeedGroupsManifestInjection(unittest.TestCase):
     """#1108: hostile top-level directory names must not inject YAML structure
@@ -254,6 +330,32 @@ class TestSeedGroupsManifestInjection(unittest.TestCase):
         self.assertEqual(set(doc["groups"]), {"app"})  # hostile names dropped
         self.assertEqual(doc["groups"]["app"]["match"], ["app/**"])
         self.assertEqual(names, ["app"])
+
+    def test_atomic_create_never_clobbers_a_racing_manifest(self):
+        # #run7 COD-F1B: the top-of-function isfile() guard is a fast path, not a
+        # lock. If a manifest appears AFTER that check (a concurrent seed), the
+        # O_EXCL create must refuse to truncate it -- created=False, bytes intact.
+        # Simulate the race by masking ONLY the manifest path on the fast-path
+        # check so execution falls through to the atomic create against a file
+        # that already exists on disk.
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        os.makedirs(os.path.join(d, "app"))
+        with open(os.path.join(d, "app", "main.py"), "w") as fh:
+            fh.write("x = 1\n")
+        os.makedirs(os.path.join(d, ".panopticon"))
+        path = os.path.join(d, ".panopticon", "groups.yml")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("groups:\n  Winner:\n    match: ['src/**']\n")
+        real_isfile = os.path.isfile
+        target = os.path.realpath(path)
+        def masked(p):
+            return False if os.path.realpath(p) == target else real_isfile(p)
+        with mock.patch("os.path.isfile", side_effect=masked):
+            _p, created, _names = setup_flow._seed_groups_manifest(d)
+        self.assertFalse(created)
+        with open(path, encoding="utf-8") as fh:
+            self.assertIn("Winner", fh.read())   # existing manifest not clobbered
 
 
 if __name__ == "__main__":

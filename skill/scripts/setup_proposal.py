@@ -119,6 +119,37 @@ _MAX_GROUP_ENTRIES = 1000       # match or tests entries in one group
 _MAX_ENTRY_LEN = 4096           # a single match glob / test path / capability name
 
 
+def _validate_str_list(group_label, field, values, required):
+    """Shared shape/caps check for a proposal group's `match`/`tests` list
+    (#run7 QAL-D1A: the two fields validated with near-verbatim duplicated code).
+
+    Returns a list of errors (empty = ok). `required` toggles the non-empty
+    requirement (and the corresponding message); an absent optional field
+    (`values is None`, required=False) is skipped. Enforces the #1107 caps
+    on entry count and single-entry length.
+    """
+    errors = []
+    if values is None and not required:
+        return errors
+    if required:
+        ok_shape = (isinstance(values, list) and values
+                    and all(isinstance(v, str) for v in values))
+        noun = "a non-empty list of strings"
+    else:
+        ok_shape = isinstance(values, list) and all(isinstance(v, str) for v in values)
+        noun = "a list of strings"
+    if not ok_shape:
+        errors.append("proposal group %s: %s must be %s" % (group_label, field, noun))
+        return errors
+    if len(values) > _MAX_GROUP_ENTRIES:
+        errors.append("proposal group %s: too many %s entries (%d > %d)"
+                      % (group_label, field, len(values), _MAX_GROUP_ENTRIES))
+    elif any(len(v) > _MAX_ENTRY_LEN for v in values):
+        errors.append("proposal group %s: a %s entry exceeds %d chars"
+                      % (group_label, field, _MAX_ENTRY_LEN))
+    return errors
+
+
 def validate_proposal(proposal):
     """Return a list of human-readable errors (empty = valid)."""
     if not isinstance(proposal, dict):
@@ -145,26 +176,8 @@ def validate_proposal(proposal):
         # Guard: after stripping custom: prefix, name must not be empty
         if isinstance(cap, str) and cap and _group_name(cap) == "":
             errors.append("proposal group %s: custom: prefix cannot be empty" % label)
-        match = g.get("match")
-        if (not isinstance(match, list) or not match
-                or not all(isinstance(m, str) for m in match)):
-            errors.append("proposal group %s: match must be a non-empty list of strings" % label)
-        elif len(match) > _MAX_GROUP_ENTRIES:
-            errors.append("proposal group %s: too many match entries (%d > %d)"
-                          % (label, len(match), _MAX_GROUP_ENTRIES))
-        elif any(len(m) > _MAX_ENTRY_LEN for m in match):
-            errors.append("proposal group %s: a match entry exceeds %d chars"
-                          % (label, _MAX_ENTRY_LEN))
-        tests = g.get("tests")
-        if tests is not None and (not isinstance(tests, list)
-                                  or not all(isinstance(t, str) for t in tests)):
-            errors.append("proposal group %s: tests must be a list of strings" % label)
-        elif isinstance(tests, list) and len(tests) > _MAX_GROUP_ENTRIES:
-            errors.append("proposal group %s: too many tests entries (%d > %d)"
-                          % (label, len(tests), _MAX_GROUP_ENTRIES))
-        elif isinstance(tests, list) and any(len(t) > _MAX_ENTRY_LEN for t in tests):
-            errors.append("proposal group %s: a tests entry exceeds %d chars"
-                          % (label, _MAX_ENTRY_LEN))
+        errors.extend(_validate_str_list(label, "match", g.get("match"), required=True))
+        errors.extend(_validate_str_list(label, "tests", g.get("tests"), required=False))
     return errors
 
 
@@ -191,12 +204,31 @@ def assemble(proposal, vocabulary, affinity):
     if errors:
         return None, {"groups": [], "errors": errors}
     known = set(vocabulary.get("names") or [])
+    # #run7 COD-C2D: a known capability that differs from its vocab spelling only
+    # by surrounding whitespace or letter case (`"Auth "`, `"auth"`) must not be
+    # misread as custom -- doing so silently DISCARDS its calibrated affinity
+    # floor (a security downgrade). Canonicalize non-custom names through a
+    # case/space-folded index to the exact vocab name before the floor lookup.
+    canon = {n.casefold(): n for n in known}
     out = {}
     disclosure = {"groups": [], "errors": [], "collisions": []}
     for g in proposal["groups"]:
         cap = g["capability"]
-        name = _group_name(cap)
-        is_custom = cap.startswith("custom:") or cap not in known
+        normalized = None
+        if cap.startswith("custom:"):
+            name = _group_name(cap)
+            is_custom = True
+        else:
+            canonical = canon.get(cap.strip().casefold())
+            if canonical is None:
+                name = cap
+                is_custom = True
+            else:
+                if canonical != cap:
+                    normalized = {"from": cap, "to": canonical}
+                cap = canonical           # use the exact vocab name downstream
+                name = canonical
+                is_custom = False
         # Determine floor_source: distinguish known-but-missing from custom/unknown
         if is_custom:
             floor = []
@@ -243,6 +275,9 @@ def assemble(proposal, vocabulary, affinity):
                 "name": name, "capability": cap, "custom": is_custom,
                 "floor": floor,
                 "floor_source": floor_source,
+                # #run7 COD-C2D: record the case/whitespace fixup so the
+                # canonicalization is visible in the disclosure, never silent.
+                "normalized": normalized,
             })
     parsed, perrors = groups_schema.parse_groups({"groups": out})
     if perrors:
