@@ -24,13 +24,13 @@ WORKDIR /opt/panopticon-fixtures
 ARG RAILS_GOAT_SHA=0222f7da3406ba3ab637bc6d24ae9366b5f0a680
 RUN git init -q railsgoat \
     && git -C railsgoat remote add origin https://github.com/OWASP/railsgoat.git \
-    && git -C railsgoat fetch -q --depth 1 origin ${RAILS_GOAT_SHA} \
+    && timeout 120 git -C railsgoat fetch -q --depth 1 origin ${RAILS_GOAT_SHA} \
     && git -C railsgoat checkout -q FETCH_HEAD                          # OWASP/railsgoat @ main 2026-08-23
 
 ARG WEB_GOAT_SHA=5357a65e054976cd7d79b81ef3906ded050ed921
 RUN git init -q WebGoat \
     && git -C WebGoat remote add origin https://github.com/WebGoat/WebGoat.git \
-    && git -C WebGoat fetch -q --depth 1 origin ${WEB_GOAT_SHA} \
+    && timeout 120 git -C WebGoat fetch -q --depth 1 origin ${WEB_GOAT_SHA} \
     && git -C WebGoat checkout -q FETCH_HEAD                            # WebGoat/WebGoat v2023.8
 
 # AspGoat is only published as a personal fork; SHA-pinning removes the mutable-ref
@@ -39,7 +39,7 @@ RUN git init -q WebGoat \
 ARG ASP_GOAT_SHA=db3153f5dae036a9d67e12be22548299855c6b40
 RUN git init -q AspGoat \
     && git -C AspGoat remote add origin https://github.com/Soham7-dev/AspGoat.git \
-    && git -C AspGoat fetch -q --depth 1 origin ${ASP_GOAT_SHA} \
+    && timeout 120 git -C AspGoat fetch -q --depth 1 origin ${ASP_GOAT_SHA} \
     && git -C AspGoat checkout -q FETCH_HEAD                            # Soham7-dev/AspGoat @ main 2026-08-23
 
 # Prepare fixture dependencies when possible; static-analysis tests tolerate missing deps.

@@ -56,6 +56,18 @@ class TestBodyProvenance(unittest.TestCase):
         self.assertIn("**Location:** `skill/scripts/run_tools.py:42`", body)
 
 
+class TestBodyIdentityGuard(unittest.TestCase):
+    def test_body_for_raises_on_missing_round_trip_identity(self):
+        # #run7 COD-C3A: an empty fingerprint/id renders as empty backticks and
+        # silently breaks reconcile's round-trip recovery -- must fail loud.
+        file_issues.body_for(FINDING)   # complete identity -> no raise
+        for bad in ({**FINDING, "fingerprint": ""},
+                    {**FINDING, "id": ""},
+                    {k: v for k, v in FINDING.items() if k != "id"}):
+            with self.assertRaises(ValueError):
+                file_issues.body_for(bad)
+
+
 class TestBodyDefang(unittest.TestCase):
     """Attacker-influenced finding text (from scanned repos, incl. quoted
     injection payloads) is posted to PUBLIC issues: @mentions, links and issue

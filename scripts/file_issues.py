@@ -77,6 +77,16 @@ def body_for(f, rejected=False, report=REPORT, report_url=REPORT_URL,
     loc = f.get("location") or {}
     ev = f.get("evidence") or {}
     prov = f.get("provenance") or {}
+    # #run7 COD-C3A: fingerprint + id are the report<->issue round-trip identity
+    # (reconcile_apply's FP_RE/ID_RE require a non-empty capture). Rendering an
+    # empty value as empty backticks silently breaks recovery -- the issue drops
+    # out of the recovered ledger. Fail loud instead of filing an unrecoverable
+    # issue. (The normal synthesize path always stamps both, so this only fires on
+    # a malformed / hand-built report.)
+    if not (f.get("fingerprint") and f.get("id")):
+        raise ValueError(
+            "cannot file issue %r: missing round-trip identity (fingerprint=%r "
+            "id=%r)" % (f.get("title") or "?", f.get("fingerprint"), f.get("id")))
     L = []
     if rejected:
         L.append("> **An advisor refuted this claim.** It is filed for the audit "
