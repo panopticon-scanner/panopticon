@@ -245,6 +245,18 @@ class TestHtmlReport(unittest.TestCase):
         b["location"] = {"file": "app.py", "line_start": 20}
         self.assertEqual(hr._fingerprint(a), hr._fingerprint(b))
 
+    def test_fingerprint_normalizes_backslash_path(self):
+        # #run7 QAL-D1C: the same file spelled with "\" in one report and "/" in
+        # the other must fingerprint identically (was a dead os.sep no-op on
+        # POSIX -> new+resolved instead of unchanged). evidence.norm_path folds
+        # backslashes for every other pipeline key; the compare view now agrees.
+        win = {"panel": "security", "category": "injection",
+               "location": {"file": "src\\app\\pay.py", "line_start": 1},
+               "title": "SQLi", "description": "bad"}
+        nix = dict(win)
+        nix["location"] = {"file": "src/app/pay.py", "line_start": 1}
+        self.assertEqual(hr._fingerprint(win), hr._fingerprint(nix))
+
     def test_compare_shows_new_and_resolved(self):
         base = _minimal_report(
             findings=[

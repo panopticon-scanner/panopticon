@@ -229,6 +229,40 @@ class TestAssemble(unittest.TestCase):
         groups, _disc = sp.assemble(proposal, self.vocab, self.affinity)
         self.assertEqual(groups["Telemetry"]["panels"], [])
 
+    def test_capability_case_and_whitespace_canonicalized_keeps_floor(self):
+        # #run7 COD-C2D: a known capability differing only by case or surrounding
+        # whitespace must canonicalize to its vocab spelling and KEEP its
+        # calibrated affinity floor, never be misrouted to scout-only (a silent
+        # security downgrade).
+        for variant in ("auth", "AUTH", "Auth ", "  Auth"):
+            proposal = self._p([{"capability": variant, "match": ["src/auth/**"]}])
+            groups, disc = sp.assemble(proposal, self.vocab, self.affinity)
+            self.assertIsNotNone(groups, variant)
+            self.assertIn("Auth", groups, variant)                 # canonical name
+            self.assertEqual(groups["Auth"]["panels"], ["SEC"], variant)  # floor kept
+            entry = disc["groups"][0]
+            self.assertFalse(entry["custom"], variant)
+            self.assertEqual(entry["floor_source"], "affinity", variant)
+            self.assertEqual(entry["normalized"], {"from": variant, "to": "Auth"})
+
+    def test_exact_case_capability_records_no_normalization(self):
+        # #run7 COD-C2D: an already-canonical name carries normalized=None.
+        proposal = self._p([{"capability": "Auth", "match": ["src/auth/**"]}])
+        _g, disc = sp.assemble(proposal, self.vocab, self.affinity)
+        self.assertIsNone(disc["groups"][0]["normalized"])
+
+    def test_case_variants_of_same_capability_collide_into_one_group(self):
+        # #run7 COD-C2D: two spellings of one vocab capability canonicalize to the
+        # same name and merge (not two scout-only groups).
+        proposal = self._p([
+            {"capability": "Auth", "match": ["src/auth/**"]},
+            {"capability": "auth", "match": ["src/oauth/**"]},
+        ])
+        groups, disc = sp.assemble(proposal, self.vocab, self.affinity)
+        self.assertEqual(set(groups), {"Auth"})
+        self.assertEqual(groups["Auth"]["match"], ["src/auth/**", "src/oauth/**"])
+        self.assertTrue(disc["collisions"])
+
     def test_malformed_proposal_returns_none_and_errors(self):
         for bad in ({"groups": "nope"}, {"groups": []},
                     {"groups": [{"capability": "Auth", "match": []}]},
@@ -403,6 +437,21 @@ class TestValidateProposalCaps(unittest.TestCase):
     def test_within_caps_is_valid(self):
         g = {"capability": "custom:g", "match": ["src/**"], "tests": ["t/**"]}
         self.assertEqual(self._errs([g]), [])
+
+    def test_non_integer_schema_version_rejected(self):
+        # #run7 TST-A2D: the schema_version type guard (an untrusted-input branch)
+        # had no coverage -- a non-int must be rejected.
+        errs = sp.validate_proposal(
+            {"schema_version": "1", "groups": [{"capability": "custom:g",
+                                                "match": ["a"]}]})
+        self.assertTrue(any("schema_version must be an integer" in e for e in errs))
+
+    def test_integer_schema_version_accepted(self):
+        # #run7 TST-A2D: a present, valid integer schema_version validates clean.
+        errs = sp.validate_proposal(
+            {"schema_version": 1, "groups": [{"capability": "custom:g",
+                                              "match": ["a"]}]})
+        self.assertEqual(errs, [])
 
 
 if __name__ == "__main__":

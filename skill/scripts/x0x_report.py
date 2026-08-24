@@ -61,8 +61,14 @@ def _occurrence(finding):
 
 
 def _domain(finding):
-    return (finding.get("domain")
-            or (str(finding.get("code", "")).split("-")[0] or "ZZZ"))
+    dom = (finding.get("domain")
+           or (str(finding.get("code", "")).split("-")[0] or "ZZZ"))
+    # #run7 COD-C2D: OCRDb domains/codes are uppercase by convention, but the
+    # value flows in verbatim from synthesize (no case-fold upstream). Fold it so
+    # "SEC" and "sec" cluster into ONE candidate instead of splitting on the key
+    # (the title half is already lowercased). Also normalizes the emitted
+    # candidate's `domain`, which reuses this value.
+    return str(dom).upper()
 
 
 def build_candidates(findings):

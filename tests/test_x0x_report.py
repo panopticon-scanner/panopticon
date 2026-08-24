@@ -38,6 +38,22 @@ class TestX0XReport(unittest.TestCase):
         self.assertEqual({o["finding_id"] for o in sec["occurrences"]}, {"f1", "f2"})
         self.assertEqual(sec["severity"], "CRITICAL")   # the most severe finding leads
 
+    def test_domain_case_folded_so_variants_cluster_together(self):
+        # #run7 COD-C2D: the domain flows in verbatim (no case-fold upstream)
+        # while the title half of the cluster key is lowercased. "SEC" vs "sec"
+        # must cluster into ONE candidate, not split -- and the emitted domain
+        # must be the canonical upper form.
+        findings = [
+            _f("SEC-X0X", "SEC", "HIGH", "hardcoded id", "a.tsx", 1, "f1"),
+            _f("sec-X0X", "sec", "LOW", "hardcoded id", "b.tsx", 2, "f2"),
+        ]
+        cands = x0x.build_candidates(findings)
+        self.assertEqual(len(cands), 1)
+        self.assertEqual(cands[0]["domain"], "SEC")
+        self.assertEqual(cands[0]["recurrence"], 2)
+        self.assertEqual({o["finding_id"] for o in cands[0]["occurrences"]},
+                         {"f1", "f2"})
+
     def test_candidate_fields_and_slug_and_cwe_scrape(self):
         f = _f("ARC-X0X", "ARC", "MEDIUM", "Ungated Fixture Provisioning", "x.py",
                3, "f1", desc="runs on every start", refs=["see CWE-400 and CWE-522"])

@@ -24,7 +24,13 @@ CWE_RE = re.compile(r"^CWE-\d+$", re.IGNORECASE)
 SSVC_MODEL = "deployer-reduced"
 
 CATEGORY_CWE_OVERRIDES = {
-    "injection": "CWE-89",
+    # #run7 COD-C3B: "injection" is the GENERIC injection lens (dispatch.py) --
+    # mapping it to CWE-89 (SQL Injection) silently over-specified every non-SQL
+    # injection finding (command/LDAP/template/...). The correct generic parent
+    # is CWE-74, which is not in cwe-catalog.json, and _derive_cwe_from_category
+    # only emits an in-catalog id -- so dropping the entry (letting the finding
+    # fall through with no wrong derived CWE) is the fix. SQL-specific findings
+    # still map via the explicit "sql_injection" key below.
     "xss": "CWE-79",
     "auth": "CWE-287",
     "crypto": "CWE-327",
