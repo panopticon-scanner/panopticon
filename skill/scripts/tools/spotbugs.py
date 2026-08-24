@@ -30,16 +30,28 @@ class SpotBugsAdapter:
     name = "spotbugs"
     prefix = "SB"
 
+    @staticmethod
+    def _classes_dir(target: str):
+        for rel in (("target", "classes"), ("build", "classes")):
+            d = os.path.join(target, *rel)
+            if os.path.isdir(d):
+                return d
+        return None
+
     def is_applicable(self, target: str) -> bool:
+        # #run7 COD-C2A: SpotBugs/FindSecBugs analyzes JVM BYTECODE (.class), not
+        # source. A build-manifest repo with no compiled output (the common
+        # read-only static-analysis case) was marked applicable, then invoke ran
+        # against a dir with zero .class files -> empty XML / "selected but
+        # unproduced". Require a manifest AND a compiled classes dir. (Without a
+        # build step Java coverage is impossible; gating applicability is the
+        # honest fix rather than pretending to cover un-built repos.)
         markers = ["pom.xml", "build.gradle", "build.gradle.kts"]
-        return any(os.path.exists(os.path.join(target, m)) for m in markers)
+        has_manifest = any(os.path.exists(os.path.join(target, m)) for m in markers)
+        return has_manifest and self._classes_dir(target) is not None
 
     def invoke(self, target: str) -> tuple[bytes, int]:
-        classes = os.path.join(target, "target", "classes")
-        if not os.path.isdir(classes):
-            classes = os.path.join(target, "build", "classes")
-        if not os.path.isdir(classes):
-            classes = target
+        classes = self._classes_dir(target) or target
         spotbugs_home = os.environ.get("SPOTBUGS_HOME", "/opt/spotbugs")
         plugin_jar = os.path.join(spotbugs_home, "plugin", "findsecbugs-plugin.jar")
         cmd = [
@@ -61,8 +73,21 @@ class SpotBugsAdapter:
             priority = bug.get("priority", "3")
             severity = _PRIORITY_TO_SEVERITY.get(priority, "MEDIUM")
             source = bug.find(".//SourceLine")
-            file_path = source.get("sourcepath", "") if source is not None else ""
-            line = source.get("start") if source is not None else 1
+            sourcepath = source.get("sourcepath", "") if source is not None else ""
+            if sourcepath:
+                file_path = sourcepath
+                line = source.get("start")
+            else:
+                # #run7 COD-C3A: no <SourceLine> -> derive the file from the
+                # BugInstance's <Class classname> (com.example.App ->
+                # com/example/App.java) so a real finding stays matchable by the
+                # delta/--pr gate instead of carrying an empty, unscopable
+                # location.file. (We KEEP the finding -- #1196 -- unlike the
+                # SCS/#476 drop policy, which discarded compiler-diagnostic noise.)
+                cls = bug.find(".//Class")
+                classname = cls.get("classname", "") if cls is not None else ""
+                file_path = (classname.replace(".", "/") + ".java") if classname else ""
+                line = 1
             cwe = _SPOTBUGS_CWE.get(btype)
             out.append(make_finding(
                 self, n, group,

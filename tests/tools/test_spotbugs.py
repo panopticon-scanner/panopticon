@@ -1,3 +1,4 @@
+import os
 import unittest
 from unittest import mock
 from xml.etree.ElementTree import ParseError
@@ -26,9 +27,18 @@ class TestSpotBugsAdapter(unittest.TestCase):
         self.assertEqual(f["location"]["line_start"], 42)
         self.assertIn("CWE-89", f["citations"]["cwe"])
 
-    def test_is_applicable_when_pom_present(self):
-        with mock.patch("os.path.exists", side_effect=lambda p: p.endswith("pom.xml")):
+    def test_is_applicable_when_pom_and_compiled_classes_present(self):
+        # #run7 COD-C2A: SpotBugs needs compiled bytecode, so applicability
+        # requires a manifest AND a target/classes (or build/classes) dir.
+        with mock.patch("os.path.exists", side_effect=lambda p: p.endswith("pom.xml")), \
+             mock.patch("os.path.isdir",
+                        side_effect=lambda p: p.endswith(os.path.join("target", "classes"))):
             self.assertTrue(sb.SpotBugsAdapter().is_applicable("/tmp/fake"))
+
+    def test_not_applicable_with_manifest_but_no_compiled_classes(self):
+        with mock.patch("os.path.exists", side_effect=lambda p: p.endswith("pom.xml")), \
+             mock.patch("os.path.isdir", return_value=False):
+            self.assertFalse(sb.SpotBugsAdapter().is_applicable("/tmp/fake"))
 
     def test_is_applicable_false_without_pom(self):
         with mock.patch("os.path.exists", return_value=False):
@@ -90,7 +100,9 @@ class TestSpotBugsAdapter(unittest.TestCase):
 
     def test_parse_bug_instance_without_source_line(self):
         # SpotBugs sometimes omits SourceLine entirely; the adapter must still
-        # emit a finding with a sensible default location (#1196).
+        # emit a finding (#1196), and #run7 COD-C3A: derive location.file from the
+        # <Class classname> so it stays matchable by the delta/--pr gate instead
+        # of an empty, unscopable path.
         sample = b"""<?xml version="1.0" encoding="UTF-8"?>
 <BugCollection version="4.8.6" sequence="0" timestamp="0" analysisTimestamp="0" release="">
   <BugInstance type="COMMAND_INJECTION" priority="1" category="SECURITY">
@@ -100,7 +112,7 @@ class TestSpotBugsAdapter(unittest.TestCase):
 """
         findings = sb.SpotBugsAdapter().parse(sample, "g1")
         self.assertEqual(len(findings), 1)
-        self.assertEqual(findings[0]["location"]["file"], "")
+        self.assertEqual(findings[0]["location"]["file"], "com/example/App.java")
         self.assertEqual(findings[0]["location"]["line_start"], 1)
         self.assertIn("CWE-78", findings[0]["citations"]["cwe"])
 
