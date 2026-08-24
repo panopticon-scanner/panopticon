@@ -11,7 +11,7 @@ class TestImageFreshness(unittest.TestCase):
     def _run(self, updated_at, max_age_days):
         return subprocess.run(
             ["bash", SCRIPT, updated_at, str(max_age_days)],
-            capture_output=True, text=True)
+            capture_output=True, text=True, timeout=30)   # #run7 TST-G3B: bound the shell-out
 
     def test_fresh_image_emits_ok(self):
         recent = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)).isoformat()

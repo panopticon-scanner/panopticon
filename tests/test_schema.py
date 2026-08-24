@@ -14,6 +14,15 @@ except ImportError:  # pragma: no cover
     jsonschema = None
 
 
+def test_jsonschema_is_installed():
+    # #run7 TST-F1B: jsonschema is a declared test/dev dependency; assert it is
+    # importable so the @skipIf(jsonschema is None) guards below can never
+    # SILENTLY zero out schema-conformance coverage in a conformant run.
+    import importlib.util
+    assert importlib.util.find_spec("jsonschema") is not None, \
+        "jsonschema (a declared test dependency) is not installed"
+
+
 def _minimal_report():
     return {
         "meta": {

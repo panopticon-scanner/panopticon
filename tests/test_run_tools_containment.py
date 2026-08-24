@@ -47,6 +47,7 @@ class TestContainment(unittest.TestCase):
 
     def test_roslyn_never_gets_network_even_online(self):
         calls = self._calls(["roslyn-secguard"], online=True)
+        self.assertEqual(len(calls), 1)               # #run7 COD-A2C: clear fail if roslyn was skipped
         self.assertIn("--network", calls[0])          # clear failure, not ValueError (#781)
         i = calls[0].index("--network")
         self.assertLess(i + 1, len(calls[0]), "--network has no value argument")
