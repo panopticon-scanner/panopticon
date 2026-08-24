@@ -1,3 +1,6 @@
 [bandit]
-exclude = /tests,tests
+# #run7: also exclude nested checkouts/VCS so a self-scan run from a dev checkout
+# with git worktrees doesn't scan (or duplicate-find in) the worktree copies.
+# bandit is not .gitignore-aware, so unlike semgrep/trivy it walks .worktrees/.git.
+exclude = /tests,tests,/.worktrees,.worktrees,/.git,.git
 skips = B101,B404,B110,B112
