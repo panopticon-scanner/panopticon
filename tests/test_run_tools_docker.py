@@ -33,3 +33,23 @@ class TestRunTools(unittest.TestCase):
         def runner(cmd, **kw):
             raise rt.subprocess.TimeoutExpired(cmd, kw.get("timeout"))
         self.assertFalse(rt.docker_available(runner=runner))  # bounded, no hang
+
+    def test_docker_probe_fault_is_diagnosed_not_silent(self):
+        # OPS-E1A: a real fault (wedged daemon, permission denial) must not be
+        # swallowed silently -- print WHY on stderr before returning False, so the
+        # whole tool-scan phase no-op is diagnosable instead of masquerading as
+        # "no docker here". The genuinely-absent binary (FileNotFoundError) stays quiet.
+        import io, contextlib
+        def wedged(cmd, **kw):
+            raise rt.subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertFalse(rt.docker_available(runner=wedged))
+        self.assertIn("docker probe", err.getvalue())
+
+        def missing(cmd, **kw):
+            raise FileNotFoundError("docker not installed")
+        quiet = io.StringIO()
+        with contextlib.redirect_stderr(quiet):
+            self.assertFalse(rt.docker_available(runner=missing))
+        self.assertEqual(quiet.getvalue(), "")   # benign absent binary -> no noise
