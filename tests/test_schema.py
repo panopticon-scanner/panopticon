@@ -125,6 +125,25 @@ class TestReportSchema(unittest.TestCase):
         self.assertIn("citation_quality", finding)
         self.assertEqual(finding["provenance"]["confirmation_status"], "UNVERIFIED")
 
+    def test_report_schema_version_stamped_and_optional(self):
+        # #run7 DAT-F2A: build_report stamps a report-ENVELOPE format version
+        # (distinct from meta.version / meta.ocrdb_version) so cross-run readers
+        # (reconcile.load_report, the html compare view, per-run-folder A/B) can
+        # discriminate formats. It is OPTIONAL in the schema: a legacy pre-5.1
+        # report (no stamp) must still validate, since the reconciler reads
+        # historical reports across runs.
+        import scripts.synthesize as syn
+        with open(SCHEMA_PATH, encoding="utf-8") as fh:
+            schema = json.load(fh)
+        self.assertIsInstance(syn.REPORT_SCHEMA_VERSION, int)
+        built = build_report([], [{"name": "g1", "files": ["a.py"]}],
+                             "t", "high", "2026-01-01T00:00:00Z")
+        self.assertEqual(built["schema_version"], syn.REPORT_SCHEMA_VERSION)
+        jsonschema.validate(built, schema)                       # stamped -> valid
+        legacy = _minimal_report()
+        legacy.pop("schema_version", None)                       # pre-5.1 shape
+        jsonschema.validate(legacy, schema)                      # absent -> still valid
+
     def test_minimal_report_has_required_top_level_keys(self):
         report = _minimal_report()
         for key in ("meta", "summary", "groups", "findings", "cross_panel"):
