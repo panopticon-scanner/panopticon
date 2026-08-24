@@ -55,6 +55,14 @@ def _redact_output(text):
     redacted = re.sub(r"(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{16,}", "[REDACTED_TOKEN]", str(text))
     redacted = re.sub(r"(?:sk-[A-Za-z0-9_-]{16,})", "[REDACTED_KEY]", redacted)
     redacted = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._-]{16,}", r"\1[REDACTED]", redacted)
+    # #run7 SEC-B2C: broaden beyond gh*/sk-/Bearer -- these unambiguous secret
+    # formats otherwise leak verbatim into DriverError -> status.message.
+    redacted = re.sub(r"AKIA[0-9A-Z]{16}", "[REDACTED_AWS_KEY]", redacted)       # AWS access-key id
+    redacted = re.sub(r"xox[baprs]-[A-Za-z0-9-]{10,}", "[REDACTED_SLACK_TOKEN]", redacted)
+    redacted = re.sub(r"AIza[0-9A-Za-z_-]{35}", "[REDACTED_GOOGLE_KEY]", redacted)  # Google API key
+    redacted = re.sub(
+        r"-----BEGIN[A-Z ]*PRIVATE KEY-----.*?-----END[A-Z ]*PRIVATE KEY-----",
+        "[REDACTED_PRIVATE_KEY]", redacted, flags=re.DOTALL)                     # PEM block
     return redacted
 
 

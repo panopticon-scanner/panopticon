@@ -224,6 +224,25 @@ class TestResolveReviewRoot(unittest.TestCase):
         self.assertIsNone(wt)
 
 
+class TestRedactOutput(unittest.TestCase):
+    def test_redacts_common_secret_formats(self):
+        # #run7 SEC-B2C: secrets in child stdout/stderr must be scrubbed before
+        # they reach DriverError -> status.message. Beyond gh*/sk-/Bearer.
+        for secret, marker in (
+                ("AKIA" + "A" * 16, "[REDACTED_AWS_KEY]"),
+                ("xoxb-123456789012-abcdefghijkl", "[REDACTED_SLACK_TOKEN]"),
+                ("AIza" + "a" * 35, "[REDACTED_GOOGLE_KEY]"),
+                ("ghp_" + "a" * 20, "[REDACTED_TOKEN]")):
+            out = driver._redact_output("boom: " + secret + " tail")
+            self.assertNotIn(secret, out)
+            self.assertIn(marker, out)
+        pem = ("-----BEGIN RSA PRIVATE KEY-----\nMIIBsomekey\n"
+               "-----END RSA PRIVATE KEY-----")
+        red = driver._redact_output("failed: " + pem)
+        self.assertIn("[REDACTED_PRIVATE_KEY]", red)
+        self.assertNotIn("MIIBsomekey", red)
+
+
 class TestDiscoveryPhase(unittest.TestCase):
     def setUp(self):
         self._t = tempfile.TemporaryDirectory()
