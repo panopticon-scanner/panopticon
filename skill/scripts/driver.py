@@ -345,11 +345,18 @@ def resolve_review_root(target, base=None, pr=None, runner=subprocess.run):
     target = os.path.abspath(target)
     start = target if os.path.isdir(target) else os.path.dirname(target)
     try:
+        # #run7 OPS-A1A: bound the probe. This runs at the very start of EVERY
+        # `driver run`/`setup`, before any phase timeout; a wedged index.lock,
+        # fsmonitor/watchman hook, credential prompt, or hung network FS would
+        # otherwise block the whole resumable driver indefinitely. Catch the
+        # timeout locally -- run()'s outer handler doesn't cover SubprocessError,
+        # so it would escape as an uncaught traceback -- and fall through to the
+        # existing non-git return.
         proc = runner(["git", "-C", start, "rev-parse", "--show-toplevel"],
-                      capture_output=True, text=True)
+                      capture_output=True, text=True, timeout=15)
         if proc.returncode == 0 and proc.stdout.strip():
             return os.path.realpath(proc.stdout.strip()), None, None
-    except OSError:
+    except (OSError, subprocess.SubprocessError):
         pass
     return (start if os.path.isdir(start) else target), None, None
 
@@ -1150,15 +1157,22 @@ def _cell_backup_findings(review_root, manifest, group, domain):
 
 
 def _confined_to_root(review_root, path):
-    """True iff the claim path resolves lexically inside review_root. An absolute
-    path or a `../`-escape resolves outside and is rejected (#1096) -- the claim's
+    """True iff the claim path resolves inside review_root. An absolute path or a
+    `../`-escape resolves outside and is rejected (#1096) -- the claim's
     location.file is LLM/panel-supplied (steerable by injection planted in the
     reviewed repo), so it must not be able to point a downstream advisor at files
-    outside the review tree."""
+    outside the review tree.
+
+    #run7 ARC-F2A: resolve SYMLINKS (realpath), not just `..`/join (abspath). A
+    committed in-tree symlink whose lexical path starts with root+sep (e.g.
+    `src/evil -> /etc/passwd`) passed the old abspath check, then the backup
+    advisor's unconfined Read followed it out of the repo. realpath on a
+    non-existent tail resolves the existing prefix and appends the rest lexically,
+    so a legitimate not-yet-written path still confines correctly."""
     if not isinstance(path, str) or not path:
         return False
-    root = os.path.abspath(review_root)
-    full = os.path.abspath(os.path.join(root, path))
+    root = os.path.realpath(review_root)
+    full = os.path.realpath(os.path.join(root, path))
     return full == root or full.startswith(root + os.sep)
 
 
@@ -1542,16 +1556,25 @@ def _finalize_worktree(review_root, manifest):
     # split part + html) so the caller's report is complete and self-consistent even
     # when split, then re-link report.json there. Falls back to a flat report.json
     # copy if there is no tag (no manifest — should not happen post-run).
-    names = ([f"{tag}-report.json", f"{tag}-report_part2.json",
-              f"{tag}-report.json.html"] if tag else ["report.json"])
+    # #run7 OPS-E1A: surface EVERY durable tag-named artifact, not just part2 --
+    # a split report (run-7 produced 4 parts + discarded + x0x) otherwise loses
+    # part3+ on worktree release.
+    if tag:
+        names = sorted(os.path.basename(p) for p in
+                       _glob.glob(os.path.join(src_dir, f"{tag}-report*.json")))
+        names.append(f"{tag}-report.json.html")
+    else:
+        names = ["report.json"]
+    failed = []
     for name in names:
         src, dst = os.path.join(src_dir, name), os.path.join(dst_dir, name)
-        if os.path.realpath(src) != os.path.realpath(dst) and os.path.isfile(src):
-            try:
-                os.makedirs(dst_dir, exist_ok=True)
-                shutil.copyfile(src, dst)
-            except OSError:
-                pass
+        if os.path.realpath(src) == os.path.realpath(dst) or not os.path.isfile(src):
+            continue
+        try:
+            os.makedirs(dst_dir, exist_ok=True)
+            shutil.copyfile(src, dst)
+        except OSError as e:
+            failed.append((name, e))   # #run7 OPS-E1A: no longer silently swallowed
     if tag and os.path.isfile(os.path.join(dst_dir, f"{tag}-report.json")):
         try:
             _relink(os.path.join(dst_dir, "report.json"), f"{tag}-report.json")
@@ -1560,6 +1583,18 @@ def _finalize_worktree(review_root, manifest):
                         f"{tag}-report.json.html")
         except OSError:
             pass
+    # #run7 OPS-E1A: the worktree is the ONLY other copy of the report. If ANY
+    # artifact failed to surface, releasing it (git worktree remove --force) would
+    # destroy the deliverable irrecoverably while run() still returns
+    # status:complete. Keep the worktree and fail LOUD instead of silent loss.
+    if failed:
+        detail = "; ".join("%s (%s)" % (n, e) for n, e in failed)
+        print("driver: FAILED to surface %d report artifact(s) to %s: %s -- KEEPING "
+              "the worktree %s so the deliverable is recoverable (copy the report out, "
+              "then `git -C %s worktree remove --force %s`)."
+              % (len(failed), dst_dir, detail, worktree, target, worktree),
+              file=sys.stderr, flush=True)
+        return
     diff_map.release_worktree(worktree, repo=target)
 
 
@@ -1701,8 +1736,21 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES):
         _clear_setup_artifacts(review_root)               # Task 3
     _drop_stale_fallback_marker(review_root)
     manifest = load_setup_manifest(review_root)
+    if manifest is not None and _foreign_manifest(manifest, review_root):
+        # #run7 AGT-C1A: a target repo can force-commit its own
+        # .panopticon/setup-manifest.json (gitignored but `git add -f`-able) to
+        # preset an attacker-chosen `vocabulary_path` -- which setup_flow reads and
+        # embeds verbatim into the classifier scan brief -- or `host`. Mirror the
+        # run-manifest guard (#1093): a manifest whose stamped review_root isn't
+        # THIS tree is not a legitimate resume state; discard and rebuild from args.
+        print("driver: ignoring foreign setup-manifest.json (stamped review_root "
+              "%r != %r)" % (manifest.get("review_root"),
+                             os.path.abspath(review_root)),
+              file=sys.stderr, flush=True)
+        manifest = None
     if manifest is None:
         manifest = {"schema_version": 1, "run_id": run_manifest.new_run_id(),
+                    "review_root": os.path.abspath(review_root),
                     "target": os.path.abspath(args.target),
                     "host": args.host or _DEFAULTS["host"],
                     "vocabulary_path": None}
