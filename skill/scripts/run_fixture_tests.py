@@ -108,7 +108,12 @@ def check_fixtures(tag: str, fixtures: list[dict]) -> tuple[list[str], list[str]
     # (consistent with run_tools.py's timeouts; run-4 self-scan C15).
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)  # nosec B603
-    except (subprocess.SubprocessError, OSError):
+    except (subprocess.SubprocessError, OSError) as e:
+        # #run7 OPS-E1A: a crashed/timed-out docker probe was silently treated
+        # as "all fixtures absent" -- give the operator a signal so a broken
+        # daemon isn't mistaken for genuinely-missing baked fixtures.
+        print("check_fixtures: docker probe failed (%s); treating all baked "
+              "fixtures as missing" % e, file=sys.stderr)
         result = None
     present_paths = []
     missing_paths = set()
@@ -119,6 +124,9 @@ def check_fixtures(tag: str, fixtures: list[dict]) -> tuple[list[str], list[str]
             elif line.startswith("MISSING:"):
                 missing_paths.add(line.split(":", 1)[1])
     else:
+        if result is not None:   # ran but rc != 0 -> also worth an operator note
+            print("check_fixtures: docker probe exited %s; treating all baked "
+                  "fixtures as missing" % result.returncode, file=sys.stderr)
         missing_paths.update(paths)
     path_to_name = {f["path"]: f["name"] for f in baked}
     present += [path_to_name[p] for p in present_paths if p in path_to_name]

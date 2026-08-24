@@ -119,6 +119,16 @@ class TestFanOutCoverage(unittest.TestCase):
                              "out_file": "/x/findings-Auth-SEC.json"}),
             ("Auth", "SEC"))
 
+    def test_group_panel_regex_fallback_when_no_structured_fields(self):
+        # #run7 TST-A2C: the legacy 4.x fallback branch -- an entry with NO
+        # group/panel/domain keys is resolved purely from the
+        # findings-<group>-<panel>- filename. Every other test supplies the
+        # structured fields, so this success branch was never exercised.
+        self.assertEqual(
+            gr._group_panel({"role": "panel_review",
+                             "out_file": "/x/findings-g1-code-panel_review.json"}),
+            ("g1", "code"))
+
     def test_unresolvable_entry_is_skipped_not_fatal(self):
         # An entry with no group/panel keys and an out_file that doesn't match
         # the findings-{group}-{panel}- pattern is skipped, not crashed on.
