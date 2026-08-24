@@ -24,6 +24,18 @@ class TestRunTools(unittest.TestCase):
         self.assertNotIn("eslint", rec)                    # retired bare eslint
         self.assertNotIn("pytest", rec)                    # never an adapter
 
+    def test_recommendable_tools_all_resolve_to_a_registry(self):
+        # #run7 ARC-A4C: every recommendable name must resolve to a real
+        # invocation -- a legacy TOOL_CMD entry or an ADAPTERS entry. A name in
+        # neither would silently fall through run_tools' dispatch loop and
+        # surface only as a manifest `missing` entry (fail-closed but with no
+        # diagnostic). Trip loudly here so a future rename/typo is caught.
+        from scripts.tools import ADAPTERS
+        from scripts.tools.legacy_sarif import TOOL_CMD
+        resolvable = set(TOOL_CMD) | set(ADAPTERS)
+        unresolved = [t for t in rt.recommendable_tools() if t not in resolvable]
+        self.assertEqual(unresolved, [], unresolved)
+
     def test_select_tools(self):
         tools = rt.select_tools(["python", "go"], has_deps=True)
         self.assertIn("semgrep", tools)
