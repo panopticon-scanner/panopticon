@@ -146,55 +146,45 @@ class FakeRun:
             stdout="", stderr="")
 
 
-def repo_with_matrix(tmp_path):
-    import os
-    repo = tmp_path
+def _git_repo(repo, files, groups_yml):
+    """#run7 QAL-D1C: shared scaffold for the fixture repos below -- create the
+    files under `repo`, write .panopticon/groups.yml, git init + one commit.
+    Fixtures differ only in `files` (the file map) and `groups_yml` (the body)."""
     (repo / ".panopticon").mkdir(parents=True)
-    for p in ["src/auth/login.py", "src/checkout/pay.py", "src/checkout/cart.py",
-              "src/misc/other.py"]:
+    for p in files:
         os.makedirs(os.path.dirname(repo / p), exist_ok=True)
         (repo / p).write_text("x=1\n")
-    (repo / ".panopticon" / "groups.yml").write_text(
+    (repo / ".panopticon" / "groups.yml").write_text(groups_yml)
+    git_cmd(repo, "init", "-q")
+    git_cmd(repo, "add", "-A")
+    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t",
+            "commit", "-qm", "x")
+    return repo
+
+
+def repo_with_matrix(tmp_path):
+    return _git_repo(
+        tmp_path,
+        ["src/auth/login.py", "src/checkout/pay.py", "src/checkout/cart.py",
+         "src/misc/other.py"],
         "groups:\n"
         "  Auth:\n    match: ['src/auth/**']\n    panels: [SEC]\n"
         "  Checkout:\n    match: ['src/checkout/**']\n    panels: [SEC, DAT]\n")
-    git_cmd(repo, "init", "-q")
-    git_cmd(repo, "add", "-A")
-    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t",
-            "commit", "-qm", "x")
-    return repo
 
 
 def repo_with_scalar_match_group(tmp_path):
-    repo = tmp_path
-    (repo / ".panopticon").mkdir(parents=True)
-    for p in ["src/auth/login.py", "src/bad/thing.py"]:
-        os.makedirs(os.path.dirname(repo / p), exist_ok=True)
-        (repo / p).write_text("x=1\n")
-    (repo / ".panopticon" / "groups.yml").write_text(
+    return _git_repo(
+        tmp_path,
+        ["src/auth/login.py", "src/bad/thing.py"],
         "groups:\n"
         "  Bad:\n    match: src/bad/**\n"
         "  Auth:\n    match: ['src/auth/**']\n")
-    git_cmd(repo, "init", "-q")
-    git_cmd(repo, "add", "-A")
-    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t",
-            "commit", "-qm", "x")
-    return repo
 
 
 def repo_with_exclude(tmp_path):
-    import os
-    repo = tmp_path
-    (repo / ".panopticon").mkdir(parents=True)
-    for p in ["src/checkout/pay.py", "vendor/dep.py"]:
-        os.makedirs(os.path.dirname(repo / p), exist_ok=True)
-        (repo / p).write_text("x=1\n")
-    (repo / ".panopticon" / "groups.yml").write_text(
+    return _git_repo(
+        tmp_path,
+        ["src/checkout/pay.py", "vendor/dep.py"],
         "groups:\n"
         "  Checkout:\n    match: ['src/checkout/**']\n    panels: [SEC]\n"
         "exclude_paths: ['vendor/**']\n")
-    git_cmd(repo, "init", "-q")
-    git_cmd(repo, "add", "-A")
-    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t",
-            "commit", "-qm", "x")
-    return repo
