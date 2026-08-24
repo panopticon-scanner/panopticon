@@ -2210,6 +2210,57 @@ class TestCrossPanelCorroboration(unittest.TestCase):
         self.assertIn("corroborated_by", fprops)
 
 
+class TestCompareParts(unittest.TestCase):
+    def test_read_json_report_merges_meta_parts(self):
+        # #run7 ARC-D1A: --compare must merge split-report continuation parts, not
+        # silently drop every part2+ finding.
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "r_part2.json"), "w") as fh:
+                json.dump({"findings": [{"id": "F2"}],
+                           "discarded_claims": [{"id": "D2"}]}, fh)
+            main = os.path.join(d, "r.json")
+            with open(main, "w") as fh:
+                json.dump({"meta": {"parts": ["r_part2.json"]},
+                           "summary": {"gate": "PASS"},
+                           "findings": [{"id": "F1"}], "discarded_claims": []}, fh)
+            rep = syn._read_json_report(main)
+        self.assertEqual([f["id"] for f in rep["findings"]], ["F1", "F2"])
+        self.assertEqual([x["id"] for x in rep["discarded_claims"]], ["D2"])
+        self.assertEqual(rep["summary"]["gate"], "PASS")   # main meta/summary kept
+
+    def test_read_json_report_missing_part_fails_loud(self):
+        with tempfile.TemporaryDirectory() as d:
+            main = os.path.join(d, "r.json")
+            with open(main, "w") as fh:
+                json.dump({"meta": {"parts": ["missing_part2.json"]},
+                           "findings": []}, fh)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self.assertIsNone(syn._read_json_report(main))  # not a silent partial
+            self.assertIn("incomplete", err.getvalue())
+
+
+class TestLoadFindingsProvenanceScrub(unittest.TestCase):
+    def test_self_asserted_confirmation_status_is_stripped(self):
+        # #run7 COD-X0X: an agent's self-reported provenance.confirmation_status
+        # renders as an authoritative confirmed badge -- strip it at load (a real
+        # verdict re-sets it via apply_verdict). Non-verification provenance stays.
+        with tempfile.TemporaryDirectory() as d:
+            fp = os.path.join(d, "findings-g-code.json")
+            with open(fp, "w") as fh:
+                json.dump({"findings": [{
+                    "title": "x", "severity": "LOW", "panel": "code",
+                    "category": "s", "location": {"file": "a.py", "line_start": 1},
+                    "provenance": {"confirmation_status": "CONFIRMED",
+                                   "confirmed_by": "agent:self", "model": "m"}}]}, fh)
+            with contextlib.redirect_stderr(io.StringIO()):
+                out = syn.load_findings([fp])
+        prov = out[0].get("provenance") or {}
+        self.assertNotIn("confirmation_status", prov)
+        self.assertNotIn("confirmed_by", prov)
+        self.assertEqual(prov.get("model"), "m")   # non-verification provenance kept
+
+
 class TestHtmlOut(unittest.TestCase):
     def test_html_out_writes_file(self):
         with tempfile.TemporaryDirectory() as d:
