@@ -1,4 +1,7 @@
+import contextlib
+import io
 import os
+import tempfile
 import types
 import unittest
 from unittest import mock
@@ -121,6 +124,13 @@ class TestBodyDefang(unittest.TestCase):
         self.assertNotIn("@mention", title)
         self.assertIn("(@\u200bmention.py)", title)
 
+    def test_defang_url_schemes_insert_zero_width_space(self):
+        """Regression: defang() must insert a zero-width space after the
+        leading 'h' in http(s) URLs so they are not rendered as clickable
+        links in public GitHub issues."""
+        self.assertIn("h\u200bttps://", file_issues.defang("https://example.com"))
+        self.assertIn("h\u200bttp://", file_issues.defang("http://example.com"))
+
 
 class TestRepoRootPortability(unittest.TestCase):
     """#602: REPO_ROOT was a hardcoded machine-specific absolute path; on any
@@ -234,6 +244,26 @@ def test_body_fingerprint_and_id_are_backtick_safe():
     assert "`abc`def`" not in body
     assert "`SEC-001`inject`" not in body
     assert "CWE-079`x" not in body
+
+
+class TestLedgerSafety(unittest.TestCase):
+    def test_record_creates_parent_directory(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "nested", "dir", "ledger.json")
+            file_issues.record({}, "k", "url", path=path)
+            self.assertTrue(os.path.isfile(path))
+            self.assertEqual(file_issues.load_ledger(path=path), {"k": "url"})
+
+    def test_load_ledger_warns_on_corrupt_json(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "ledger.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("{not json")
+            buf = io.StringIO()
+            with contextlib.redirect_stderr(buf):
+                result = file_issues.load_ledger(path=path)
+            self.assertEqual(result, {})
+            self.assertIn("corrupt", buf.getvalue().lower())
 
 
 if __name__ == "__main__":

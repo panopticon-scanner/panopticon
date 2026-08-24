@@ -5,8 +5,11 @@ module's subprocess (and path constants) so the orchestration logic -- manifest
 handling, fixture presence bookkeeping, the #664 argv-not-interpolated
 contract, CLI flow -- is pinned without Docker.
 """
+import contextlib
+import io
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -75,6 +78,31 @@ class TestCheckFixtures(unittest.TestCase):
         self.assertNotIn("/opt/f/rust", cmd[script_idx])
         self.assertEqual(cmd[script_idx + 1], "sh")
         self.assertEqual(cmd[script_idx + 2:], ["/opt/f/rust", "/opt/f/node"])
+
+    def test_docker_probe_failure_logs_and_marks_all_baked_missing(self):
+        # #run7 OPS-E1A: a crashed/errored docker probe must surface an operator
+        # signal, not be silently treated as "all baked fixtures absent".
+        fixtures = [{"name": "rust", "path": "/opt/f/rust", "baked": True},
+                    {"name": "node", "path": "/opt/f/node", "baked": True}]
+        stderr = io.StringIO()
+        with mock.patch.object(rft.subprocess, "run",
+                               side_effect=subprocess.SubprocessError("boom")):
+            with contextlib.redirect_stderr(stderr):
+                present, missing = rft.check_fixtures("tag", fixtures)
+        self.assertEqual(present, [])
+        self.assertEqual(sorted(missing), ["node", "rust"])
+        self.assertIn("docker probe failed", stderr.getvalue())
+
+    def test_docker_probe_nonzero_exit_logs_and_marks_missing(self):
+        # #run7 OPS-E1A: rc != 0 (ran but failed) also warns, not silent.
+        fixtures = [{"name": "rust", "path": "/opt/f/rust", "baked": True}]
+        stderr = io.StringIO()
+        with mock.patch.object(rft.subprocess, "run", return_value=_Res(2)):
+            with contextlib.redirect_stderr(stderr):
+                present, missing = rft.check_fixtures("tag", fixtures)
+        self.assertEqual(present, [])
+        self.assertEqual(missing, ["rust"])
+        self.assertIn("exited 2", stderr.getvalue())
 
     def test_no_baked_paths_skips_docker_entirely(self):
         with mock.patch.object(rft.subprocess, "run") as m:
