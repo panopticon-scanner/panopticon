@@ -155,6 +155,23 @@ class TestSetupFlow(unittest.TestCase):
             self.assertIn("package.json", summary)
             self.assertIn("pyproject.toml", summary)
 
+    def test_sanitize_spine_token_neutralizes_adversarial_input(self):
+        # #run7 TST-A2D: _sanitize_spine_token (#1120 prompt-injection defense for
+        # untrusted repo dir names embedded in the scan brief) had NO adversarial
+        # coverage. Lock the invariants: control chars + backticks are stripped;
+        # whitespace/quote survivors are repr()-escaped so a crafted dir name
+        # can't break out of its brief line.
+        san = setup_flow._sanitize_spine_token
+        self.assertEqual(san("ab`c"), "abc")                 # backtick stripped
+        self.assertNotIn("`", san("`rm -rf /`"))
+        self.assertEqual(san("a\x00b\x1fc\x7f"), "abc")      # control bytes stripped
+        self.assertNotIn("\n", san("line1\nIGNORE PREVIOUS"))  # newline stripped
+        self.assertNotIn("\t", san("a\tb"))
+        self.assertEqual(san("two words"), repr("two words"))  # space -> repr()
+        self.assertEqual(san('say "hi"'), repr('say "hi"'))    # quotes -> repr()
+        self.assertEqual(san("it's"), repr("it's"))
+        self.assertEqual(san("src"), "src")                  # clean token untouched
+
     def test_readiness_returns_checks(self):
         d = _repo(self)
         os.makedirs(os.path.join(d, ".git"))
