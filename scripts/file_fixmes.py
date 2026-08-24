@@ -90,7 +90,7 @@ def body_for(f, doc=DOC, doc_url=DOC_URL, run_label=RUN_LABEL, run_date=RUN_DATE
         "*Filed from panopticon's %s self-scan (%s, `tool_policy_mode: enforced`).*"
     ) % (run_label, run_date)
     return "\n".join([
-        file_issues.defang(f["body"]),
+        file_issues.scrub(file_issues.defang(f["body"])),
         "",
         "---",
         "",
@@ -138,7 +138,9 @@ def main():
         title = file_issues.defang("%s — %s" % (f["id"], f["title"]))
         body = body_for(f, doc=a.doc, doc_url=a.doc_url,
                         run_label=a.run_label, run_date=a.run_date)
-        url = create(title, body, f["labels"] or ["self-scan"],
+        url = create(file_issues.scrub(title),
+                     file_issues.scrub(body),
+                     f["labels"] or ["self-scan"],
                      a.dry_run, a.throttle, env=env)
         if url:
             file_issues.record(ledger, f["id"], url, LEDGER)

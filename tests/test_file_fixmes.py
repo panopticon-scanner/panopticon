@@ -73,5 +73,23 @@ class TestBodyProvenance(unittest.TestCase):
         self.assertNotIn("run-2 self-scan (2026-08-04", body)
 
 
+class TestScrubbing(unittest.TestCase):
+    def test_title_and_body_scrub_repo_root(self):
+        """SEC-B2C: absolute local paths in FIXME text must not reach public issues."""
+        root = file_fixmes.file_issues.repo_root()
+        f = {
+            "id": "FIXME-99",
+            "title": "Broken on %ssrc/main.py" % root,
+            "labels": ["bug"],
+            "body": "Crash happens under %ssrc/main.py when loaded." % root,
+        }
+        body = file_fixmes.body_for(f)
+        self.assertNotIn(root, body)
+        self.assertIn("src/main.py", body)
+        title = file_fixmes.file_issues.scrub(
+            file_fixmes.file_issues.defang("%s — %s" % (f["id"], f["title"])))
+        self.assertNotIn(root, title)
+
+
 if __name__ == "__main__":
     unittest.main()
