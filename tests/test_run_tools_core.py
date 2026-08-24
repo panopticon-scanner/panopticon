@@ -1,10 +1,15 @@
 """Core run_tools tests: selection, manifest, partitioning, output handling."""
+import contextlib
+import io
 import json
 import os
 import shutil
 import subprocess as sp
+import sys
 import tempfile
+import threading
 import unittest
+from unittest import mock
 
 import scripts.run_tools as rt
 from scripts.tools.eslint_security import EslintSecurityAdapter  # #run7 TST-G2A
@@ -256,3 +261,75 @@ class TestRunTools(unittest.TestCase):
                 written = fh.read()
             self.assertLess(len(written), len(huge))
             self.assertIn(b"TRUNCATED", written)
+
+
+class TestStreamingRunnerAndDeadline(unittest.TestCase):
+    """#run7 COD-A2A / #1111: production must STREAM tool output through the
+    bounded sink (not buffer it whole and drop), and the streaming read must be
+    bounded by a wall-clock deadline the way subprocess.run's timeout was."""
+
+    def test_default_runner_streams_not_buffers(self):
+        # With no runner injected, run_tools uses the streaming _popen_runner
+        # (a live Popen), NOT subprocess.run (which buffered all output in memory
+        # and always took the drop path -- the #1111 guard was unreachable).
+        seen = {}
+
+        def fake_capture(label, tool, docker, out_path, runner):
+            seen["runner"] = runner
+            return None
+
+        with mock.patch.object(rt, "_capture_run", side_effect=fake_capture):
+            with tempfile.TemporaryDirectory() as d:
+                rt.run_tools(d, ["semgrep"], os.path.join(d, "out"))
+        self.assertIs(seen["runner"], rt._popen_runner)
+        self.assertIsNot(seen["runner"], sp.run)
+
+    def test_popen_runner_streams_real_subprocess_to_disk(self):
+        # The default runner returns a real Popen whose stdout _capture_run
+        # routes to _stream_and_write (proc.stdout is a stream, not bytes).
+        proc = rt._popen_runner(
+            [sys.executable, "-c", "import sys; sys.stdout.write('hello-stream')"],
+            stdout=sp.PIPE, stderr=sp.PIPE)
+        self.assertIsInstance(proc, sp.Popen)
+        self.assertNotIsInstance(proc.stdout, (bytes, type(None)))   # streaming route
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "o.sarif")
+            written = rt._stream_and_write("tool", "py", proc, out)
+            self.assertEqual(written, out)
+            with open(out, "rb") as fh:
+                self.assertEqual(fh.read(), b"hello-stream")
+
+    def test_watchdog_kills_hung_tool_and_skips(self):
+        # A tool whose stdout.read() BLOCKS (hang) must be killed at the deadline
+        # and skipped -- the bound subprocess.run's timeout used to give, now
+        # enforced during the streaming read.
+        released = threading.Event()
+
+        class _HangStdout:
+            def read(self, n=-1):
+                released.wait(5)      # unblocks only when kill() releases it
+                return b""            # then EOF
+            def close(self):
+                pass
+
+        class _HangProc:
+            def __init__(self):
+                self.stdout = _HangStdout()
+                self.stderr = io.BytesIO(b"")
+                self._rc = None
+            def wait(self, timeout=None):
+                return -9             # SIGKILL
+            def poll(self):
+                return self._rc
+            def kill(self):
+                self._rc = -9
+                released.set()
+
+        proc = _HangProc()
+        err = io.StringIO()
+        with tempfile.TemporaryDirectory() as d, contextlib.redirect_stderr(err):
+            out = rt._stream_and_write("tool", "hang", proc,
+                                       os.path.join(d, "o.sarif"), timeout=0.3)
+        self.assertIsNone(out)                       # hung tool skipped, not hung forever
+        self.assertIn("timed out", err.getvalue())
+        self.assertTrue(released.is_set())           # the watchdog actually fired
