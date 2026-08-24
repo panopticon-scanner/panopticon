@@ -11,8 +11,10 @@ work has context without the original spec/plan docs.
 A **discovery → scout → fan-out → synthesis** pipeline. It profiles a target with a
 cheap "scout", builds a risk-tuned plan, and fans out rendered role prompts in
 parallel via the host's agent mechanism (Agent tool on Claude Code, AgentSwarm
-on Kimi). Each panel is reviewed by the `panel-review` agent (`agents/panel-review.md`)
-through one of six panels: **code**, **test**, **security**, **architecture**, **database**, and **redteam**.
+on Kimi). Each `(domain, group)` matrix cell is reviewed by the `domain-panel` agent
+(`agents/domain-panel.md`); its verifier is `domain-advisor`. (The 4.x `panel-review.md` /
+`lens-sweep.md` templates are retired back-compat — `driver run` no longer dispatches them.)
+Review spans six panels: **code**, **test**, **security**, **architecture**, **database**, and **redteam**.
 Optionally, findings are grounded with real static-analysis tools from a Docker
 container. It synthesizes everything into a `CodeReviewReport` (terminal markdown
 summary + JSON artifact) with standards citations and CI gating.
@@ -50,11 +52,11 @@ summary + JSON artifact) with standards citations and CI gating.
   eslint. Build once: `docker build -t panopticon-tools <this dir>`.
 - `skill/reference/` — `report-schema.json`, `scope-profile-schema.json`, `cwe-catalog.json`
   (curated CWE→OWASP map), `security-checklists.md`, `code-review-groups.example.yml`.
-- `skill/agents/` — host-neutral role prompt templates: `scout.md`, `lens-sweep.md`, `panel-review.md`, `advisor.md`.
+- `skill/agents/` — host-neutral role prompt templates: `scout.md`, `domain-panel.md`, `domain-advisor.md`, `advisor.md` (the 4.x `lens-sweep.md` / `panel-review.md` remain only as retired back-compat).
 - `skill/prompts/` — `lenses.md` (per-panel lens catalog).
 
 ## Key design decisions (don't relitigate without reason)
-- **Fan out via rendered prompts** dispatched by the host's agent mechanism (`scout`, `panel-review`, `lens-sweep`, `advisor`).
+- **Fan out via rendered prompts** dispatched by the host's agent mechanism (`scout`, `domain-panel`, `domain-advisor`, `advisor`).
   The six panels (code/test/security/architecture/database/redteam) are selected per group
   by `compute_group_panels`; lenses are spawned only when the scout flags a surface.
 - **Grade = worst-severity A–F rollup** (F if any CRITICAL … A if none). Deliberate for a
