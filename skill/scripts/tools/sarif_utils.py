@@ -6,6 +6,7 @@ and scripts.tools.legacy_sarif. It is stdlib-only.
 import json
 import os
 import re
+import sys
 
 from scripts.provenance import tool_provenance
 from .base import new_finding_id
@@ -159,7 +160,8 @@ def sarif_to_findings(sarif, tool_name, group, prefix, start=1):
                 finding["provenance"] = tool_provenance(tool_name, reasoning=res.get("ruleId"))
                 if cites:
                     finding["citations"] = cites
-            except Exception:  # noqa: BLE001 - tolerant by design: skip only this result
+            except Exception as exc:  # noqa: BLE001 - tolerant by design: skip only this result
+                print(f"sarif_utils: skipping result {res.get('ruleId', res.get('rule', {}).get('id'))}: {exc!r}", file=sys.stderr)
                 continue
             out.append(finding)
             n += 1

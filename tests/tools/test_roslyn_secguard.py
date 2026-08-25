@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import os
 import tempfile
@@ -112,6 +114,22 @@ MIXED_SARIF = json.dumps({
     ]}]
 }).encode()
 
+ROSLYN_SAMPLE_MALFORMED_SIBLING = json.dumps({
+    "runs": [{"results": [
+        {"ruleId": "SCS0002",
+         "message": {"text": "SQL injection"},
+         "locations": [{"physicalLocation": {
+             "artifactLocation": {"uri": "a.cs"},
+             "region": {"startLine": 3}}}]},
+        # ruleId is not a string, so rule_id.startswith("SCS") raises mid-parse.
+        {"ruleId": None,
+         "message": {"text": "malformed result"},
+         "locations": [{"physicalLocation": {
+             "artifactLocation": {"uri": "b.cs"},
+             "region": {"startLine": 1}}}]},
+    ]}]
+}).encode()
+
 
 class TestRoslynSecGuardAdapter(unittest.TestCase):
     def test_parse_produces_finding(self):
@@ -188,6 +206,16 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
         self.assertTrue(findings)
         self.assertEqual(findings[0]["provenance"]["discovered_by"], "tool:roslyn-secguard")
         self.assertEqual(findings[0]["provenance"]["confirmation_status"], "TOOL")
+
+    def test_parse_malformed_result_logs_diagnostic_and_keeps_siblings(self):
+        # OPS-E1A / SEC-G2B: a per-result parse exception must be visible on stderr
+        # and must not discard already-parsed siblings.
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            findings = rs.RoslynSecGuardAdapter().parse(ROSLYN_SAMPLE_MALFORMED_SIBLING, "g1")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["tool_evidence"]["rule_id"], "SCS0002")
+        self.assertIn("roslyn-secguard: skipping result None:", stderr.getvalue())
 
     def test_build_target_prefers_solution(self):
         adapter = rs.RoslynSecGuardAdapter()

@@ -257,7 +257,8 @@ class RoslynSecGuardAdapter:
                         citations={"cwe": as_list(cwe)},
                         tool_evidence=omit_none({"rule_id": rule_id}),
                     )
-                except Exception:  # noqa: BLE001 - tolerant by design: skip only this result
+                except Exception as exc:  # noqa: BLE001 - tolerant by design: skip only this result
+                    print(f"roslyn-secguard: skipping result {result.get('ruleId', 'unknown')}: {exc!r}", file=sys.stderr)
                     continue
                 out.append(finding)
                 n += 1

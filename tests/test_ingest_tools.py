@@ -99,8 +99,11 @@ class TestIngest(unittest.TestCase):
                "locations":[{"physicalLocation": "not-a-dict"}]}
         sarif = {"runs":[{"tool":{"driver":{"name":"semgrep","rules":[]}},
                  "results":[good, bad]}]}
-        out = it.sarif_to_findings(sarif, "semgrep", "g1", "SG")
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            out = it.sarif_to_findings(sarif, "semgrep", "g1", "SG")
         self.assertEqual(len(out), 1)      # good survives; bad is skipped, not fatal
+        self.assertIn("sarif_utils: skipping result bad:", stderr.getvalue())
 
     def test_ingest_dir_logs_skipped_file_to_stderr(self):
         with tempfile.TemporaryDirectory() as d:
