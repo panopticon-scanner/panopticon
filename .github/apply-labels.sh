@@ -50,29 +50,24 @@ if [[ "$DRY_RUN" == "0" ]]; then
 fi
 
 # Parse the constrained catalog shape (name/color/description triples) with
-# stdlib python — no PyYAML dependency, matching the project's stdlib-only rule.
+# PyYAML, which is already a runtime dependency declared in pyproject.toml.
 python3 - "$CATALOG" <<'PY' | while IFS=$'\t' read -r name color desc; do
-import re, sys
-text = open(sys.argv[1], encoding="utf-8").read()
-entries, cur = [], {}
-for line in text.splitlines():
-    m = re.match(r'\s*- name:\s*"?([^"]+?)"?\s*$', line)
-    if m:
-        if cur:
-            entries.append(cur)
-        cur = {"name": m.group(1)}
-        continue
-    m = re.match(r'\s*color:\s*"?([^"]+?)"?\s*$', line)
-    if m and cur:
-        cur["color"] = m.group(1)
-        continue
-    m = re.match(r'\s*description:\s*"?((?:[^"\\]|\\.)*?)"?\s*$', line)
-    if m and cur:
-        cur["description"] = m.group(1).replace('\\"', '"')
-if cur:
-    entries.append(cur)
-for e in entries:
-    print("\t".join([e["name"], e.get("color", "ededed"), e.get("description", "")]))
+import sys
+import yaml
+with open(sys.argv[1], encoding="utf-8") as fh:
+    labels = yaml.safe_load(fh)
+# The catalog may be either a flat list or a dict of category -> list.
+if isinstance(labels, list):
+    entries = labels
+else:
+    entries = [entry for category in labels.values() for entry in category]
+for entry in entries:
+    description = entry.get("description", "").replace("\n", " ").strip()
+    print("\t".join([
+        entry["name"],
+        entry.get("color", "ededed"),
+        description,
+    ]))
 PY
   if [[ "$DRY_RUN" == "1" ]]; then
     echo "would apply: $name ($color) — $desc"
