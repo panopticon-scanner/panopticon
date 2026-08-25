@@ -1,15 +1,15 @@
 """Pluggable static-analysis tool adapters for panopticon."""
-from scripts.tools.pip_audit import PipAuditAdapter
-from scripts.tools.npm_audit import NpmAuditAdapter
-from scripts.tools.osv_scanner import OsvScannerAdapter
-from scripts.tools.eslint_security import EslintSecurityAdapter
-from scripts.tools.legacy_sarif import LegacySarifAdapter
-from scripts.tools.brakeman import BrakemanAdapter
-from scripts.tools.bundler_audit import BundlerAuditAdapter
-from scripts.tools.spotbugs import SpotBugsAdapter
-from scripts.tools.dependency_check import DependencyCheckAdapter
-from scripts.tools.cargo_audit import CargoAuditAdapter
-from scripts.tools.roslyn_secguard import RoslynSecGuardAdapter
+from .pip_audit import PipAuditAdapter
+from .npm_audit import NpmAuditAdapter
+from .osv_scanner import OsvScannerAdapter
+from .eslint_security import EslintSecurityAdapter
+from .legacy_sarif import LegacySarifAdapter
+from .brakeman import BrakemanAdapter
+from .bundler_audit import BundlerAuditAdapter
+from .spotbugs import SpotBugsAdapter
+from .dependency_check import DependencyCheckAdapter
+from .cargo_audit import CargoAuditAdapter
+from .roslyn_secguard import RoslynSecGuardAdapter
 
 ADAPTERS = {
     "pip-audit": PipAuditAdapter(),

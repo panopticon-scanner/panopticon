@@ -3,11 +3,10 @@ from __future__ import annotations
 import json
 import os
 import re
-import sys
 import subprocess
+import sys
 from typing import Any, Protocol
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
 from scripts.provenance import tool_provenance
 
 

@@ -6,9 +6,7 @@ and scripts.tools.legacy_sarif. It is stdlib-only.
 import json
 import os
 import re
-import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
 from scripts.provenance import tool_provenance
 from .base import new_finding_id
 
