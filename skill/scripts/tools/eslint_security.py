@@ -86,18 +86,22 @@ _HEURISTIC_RULES = frozenset({
 })
 
 
+def _iter_source_files(target):
+    """Yield JS/TS source files under *target*, pruning node_modules."""
+    for root, dirs, files in os.walk(target):
+        dirs[:] = [d for d in dirs if d != "node_modules"]
+        for f in files:
+            if f.endswith((".js", ".ts", ".jsx", ".tsx")):
+                yield os.path.join(root, f)
+
+
 class EslintSecurityAdapter:
     name = "eslint-security"
     prefix = "ESS"
 
     def applicable_files(self, target: str) -> list[str]:
         """The concrete files that make this adapter applicable."""
-        matched: list[str] = []
-        for root, dirs, files in os.walk(target):
-            dirs[:] = [d for d in dirs if d != "node_modules"]
-            for f in files:
-                if f.endswith((".js", ".ts", ".jsx", ".tsx")):
-                    matched.append(os.path.join(root, f))
+        matched = list(_iter_source_files(target))
         pkg = os.path.join(target, "package.json")
         if os.path.isfile(pkg):
             matched.append(pkg)
@@ -106,12 +110,7 @@ class EslintSecurityAdapter:
     def is_applicable(self, target: str) -> bool:
         if os.path.isfile(os.path.join(target, "package.json")):
             return True
-        for root, dirs, files in os.walk(target):
-            dirs[:] = [d for d in dirs if d != "node_modules"]
-            for f in files:
-                if f.endswith((".js", ".ts", ".jsx", ".tsx")):
-                    return True
-        return False
+        return any(_iter_source_files(target))
 
     def _lintable_sources(self, target: str) -> list[str]:
         """The actual source files eslint would lint: applicable_files minus the

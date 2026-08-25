@@ -1,5 +1,6 @@
 import json
 import os
+import tempfile
 import unittest
 
 try:
@@ -392,6 +393,25 @@ class TestMultiModelFields(unittest.TestCase):
         self.assertIn("source_role", finding_props)
         self.assertIn("evidence", finding_props)
         self.assertIn("depth", finding_props)
+
+
+class TestEslintSecurityAdapter(unittest.TestCase):
+    def test_is_applicable_walks_tree_exactly_once_without_package_json(self):
+        # QAL-D1A: applicable_files() and is_applicable() used to duplicate the
+        # JS/TS tree walk. When no package.json fast-path applies, is_applicable()
+        # must traverse the tree exactly once.
+        from unittest import mock
+        adapter = es.EslintSecurityAdapter()
+        walk_calls = []
+
+        def fake_walk(path):
+            walk_calls.append(path)
+            return []
+
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch("os.walk", fake_walk):
+                self.assertFalse(adapter.is_applicable(d))
+        self.assertEqual(len(walk_calls), 1)
 
 
 if __name__ == "__main__":
