@@ -112,9 +112,12 @@ class TestOfflineAssets(unittest.TestCase):
 
     def test_osv_warm_failures_are_visible(self):
         # SEC-E3B: OSV DB warm previously swallowed failures with `>/dev/null`.
-        # Both the primary and fallback commands must surface output on failure.
-        self.assertIn("::warning::OSV primary warm failed; trying fallback", self.text)
-        self.assertIn("::error::OSV offline DB warm failed; image will lack npm/PyPI databases", self.text)
+        # The build must now fail loud if the offline npm/PyPI databases were
+        # not actually produced, and the scanner log must be surfaced.
+        self.assertIn(
+            "::error::OSV offline DB warm did not produce npm/PyPI databases", self.text
+        )
+        self.assertIn("cat /tmp/osv-warm.log >&2", self.text)
         self.assertNotIn(">/dev/null 2>&1", self.text)
 
     def test_publish_cadence_and_tags(self):

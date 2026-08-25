@@ -262,16 +262,15 @@ RUN set -euo pipefail \
        ' "dependencies":{"lodash":{"version":"4.17.15"}}}' \
        > /tmp/osv-warm/package-lock.json \
     && printf 'requests==2.31.0\n' > /tmp/osv-warm/requirements.txt \
-    && if ! timeout 300 osv-scanner --experimental-offline --experimental-download-offline-databases \
-           --format json --recursive /tmp/osv-warm >/tmp/osv-warm.log 2>&1; then \
-           echo "::warning::OSV primary warm failed; trying fallback" >&2; \
-           cat /tmp/osv-warm.log >&2; \
-           if ! timeout 300 osv-scanner scan source --offline --download-offline-databases \
-                  --format json --recursive /tmp/osv-warm >/tmp/osv-warm.log 2>&1; then \
-               echo "::error::OSV offline DB warm failed; image will lack npm/PyPI databases" >&2; \
-               cat /tmp/osv-warm.log >&2; \
-               exit 1; \
-           fi; \
+    # --no-ignore avoids a git-root resolution error for the throwaway /tmp/osv-warm
+    # directory. The scanner exits 1 when it finds vulnerabilities, but we only care
+    # that the offline npm/PyPI databases were actually downloaded into /opt/osv-db.
+    && (timeout 300 osv-scanner --experimental-offline --experimental-download-offline-databases \
+           --no-ignore --format json --recursive /tmp/osv-warm >/tmp/osv-warm.log 2>&1 || true) \
+    && if [ ! -s /opt/osv-db/osv-scanner/npm/all.zip ] || [ ! -s /opt/osv-db/osv-scanner/PyPI/all.zip ]; then \
+         echo "::error::OSV offline DB warm did not produce npm/PyPI databases" >&2; \
+         cat /tmp/osv-warm.log >&2; \
+         exit 1; \
        fi \
     && rm -rf /tmp/osv-warm /tmp/osv-warm.log \
     && chmod -R a+rX /opt/osv-db
