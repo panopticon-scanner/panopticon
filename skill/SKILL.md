@@ -35,7 +35,7 @@ file stays focused on the host-facing contract.
 
 `skill/` in every command means **this skill's install directory** — literally
 `skill/` inside the panopticon repo, or the absolute path you installed it to
-elsewhere (e.g., `~/.claude/skills/panopticon/`). Run every command from the
+elsewhere (e.g., `~/.<agent-config>/skills/panopticon/`). Run every command from the
 **target repo root** regardless — `.panopticon/` artifacts and the write-guard
 resolve against cwd; only the script path substitutes.
 

@@ -27,7 +27,7 @@ gating honest.
   bundle, a `ZZZ-X0X` sentinel for a domainless code, `code_domain_mismatch`
   disclosure, and the `{criteria}` advisor lens — the domain-advisor now grades
   against a code's explicit pass/fail criteria where defined (#1034, #1035).
-- **Config dedup:** `model_resolver` is the single owner of the claude
+- **Config dedup:** `model_resolver` is the single owner of the host
   role→model map; the duplicate `EMIT_MODEL_POLICY` is retired (#1036).
 - **Severity discipline:** an explicit CRITICAL-vs-HIGH bar in the reviewer
   prompt so CRITICAL is earned, not defaulted-to (#1038).

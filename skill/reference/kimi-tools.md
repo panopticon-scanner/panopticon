@@ -17,8 +17,8 @@ files, not per-dispatch parameters. Generate them once:
 python3 skill/scripts/dispatch.py --emit-host-agents kimi
 ```
 
-This writes `panopticon-scout.md`, `panopticon-panel-review.md`,
-`panopticon-lens-sweep.md`, and `panopticon-advisor.md` to
+This writes `panopticon-scout.md`, `panopticon-domain-panel.md`,
+`panopticon-domain-advisor.md`, and `panopticon-advisor.md` to
 `~/.kimi-code/agents/`. Start a fresh Kimi session after registration so the
 new agent types are discoverable.
 
@@ -42,14 +42,14 @@ python3 skill/scripts/discovery.py --repo-scan --repo . --out .panopticon/groups
 # 3. plan (one per group -- give each its own --out file, e.g.
 #    dispatch-plan-<group>.json, so synthesize's dispatch-plan*.json glob
 #    sees every group's plan at steps 5/7 below, not just the last one).
-#    Refuses to write the plan (exit 1) if panel_review/lens_sweep would be
+#    Refuses to write the plan (exit 1) if domain_panel/domain_advisor would be
 #    unenforced -- register the shells above first, or add
 #    --allow-unenforced to accept prompt-advisory tool policy explicitly.
 python3 skill/scripts/dispatch.py .panopticon/scout-<group>.json --host kimi --out .panopticon/dispatch-plan-<group>.json
 
 # 4. fan out (or generate a Kimi swarm manifest) -- carries the same gate:
-#    refuses (exit 1, no manifest written) on an unenforced panel_review/
-#    lens_sweep entry in the plan unless --allow-unenforced is passed here
+#    refuses (exit 1, no manifest written) on an unenforced domain_panel/
+#    domain_advisor entry in the plan unless --allow-unenforced is passed here
 #    too.
 python3 skill/scripts/dispatch.py --emit-kimi-swarm .panopticon/dispatch-plan-<group>.json --out .panopticon/kimi-swarm-<group>.json
 
@@ -71,16 +71,16 @@ python3 skill/scripts/synthesize.py --verdicts-dir .panopticon/verdicts .panopti
   "batches": [
     {
       "tool": "AgentSwarm",
-      "subagent_type": "panopticon-panel-review",
+      "subagent_type": "panopticon-domain-panel",
       "model": "secondary",
-      "description": "panel_review security for group g-security (batch)",
+      "description": "domain_panel security for group g-security (batch)",
       "prompt_template": "{{item}}",
       "items": ["<rendered prompt 1>", "<rendered prompt 2>"],
       "routing": [
-        {"out_file": ".panopticon/findings-g-security-security-panel_review.json",
-         "role": "panel_review", "panel": "security", "lens": null, "group": "g-security"},
-        {"out_file": ".panopticon/findings-g-code-code-panel_review.json",
-         "role": "panel_review", "panel": "code", "lens": null, "group": "g-code"}
+        {"out_file": ".panopticon/findings-g-security-security-domain_panel.json",
+         "role": "domain_panel", "panel": "security", "lens": null, "group": "g-security"},
+        {"out_file": ".panopticon/findings-g-code-code-domain_panel.json",
+         "role": "domain_panel", "panel": "code", "lens": null, "group": "g-code"}
       ]
     }
   ]
@@ -98,8 +98,8 @@ Registered agent files set `model_preference`:
 | Role | Preference |
 |------|------------|
 | `scout` | `primary` |
-| `lens_sweep` | `primary` |
-| `panel_review` | `secondary` |
+| `domain_panel` | `secondary` |
+| `domain_advisor` | `secondary` |
 | `advisor` | `secondary` |
 
 Only `primary` and `secondary` are valid per-dispatch `model` values — a
