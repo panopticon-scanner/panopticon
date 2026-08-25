@@ -48,21 +48,21 @@ _BRAKEMAN_SEVERITY = {
     "Session Setting": "LOW",
     "Basic Auth": "LOW",
     "Unsafe Reflection": "MEDIUM",
+    # #run7 review: additional warning types. These were a guarded `.update()`
+    # whose Command Injection/Unsafe Reflection/Mass Assignment entries were
+    # DEAD -- they re-declared keys above with conflicting values (CRITICAL/HIGH
+    # vs the effective HIGH/MEDIUM), so the map read one severity while resolving
+    # to another. Merged the genuinely-new types in directly; behavior unchanged.
+    # (Escalating Command Injection/Unsafe Reflection is a separate calibration
+    # decision, deliberately not made here.)
+    "SSL Verification Bypass": "MEDIUM",
+    "LDAP Injection": "HIGH",
+    "Weak Hash": "MEDIUM",
+    "Path Traversal": "HIGH",
+    "Insecure Cryptography Algorithm": "HIGH",
+    "Regex Denial of Service": "MEDIUM",
+    "Timing Attack": "LOW",
 }
-_BRAKEMAN_SEVERITY.update({
-    k: v for k, v in {
-        "SSL Verification Bypass": "MEDIUM",
-        "LDAP Injection": "HIGH",
-        "Weak Hash": "MEDIUM",
-        "Path Traversal": "HIGH",
-        "Insecure Cryptography Algorithm": "HIGH",
-        "Regex Denial of Service": "MEDIUM",
-        "Timing Attack": "LOW",
-        "Command Injection": "CRITICAL",
-        "Unsafe Reflection": "HIGH",
-        "Mass Assignment": "MEDIUM",
-    }.items() if k not in _BRAKEMAN_SEVERITY
-})
 
 
 class BrakemanAdapter:

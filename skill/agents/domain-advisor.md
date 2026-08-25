@@ -56,12 +56,11 @@ For EACH claim above, verify it by exploring the repository yourself:
 
 ## Backup round
 
-If the verification round is `backup`, your job is an independent, skeptical
-second opinion on the highest-stakes cluster in the cell. Do not defer to the
-prior advisor's verdict — a prior REJECTION can be wrong and should be overturned
-if the code actually supports the claim, and a prior CONFIRMATION should be
-rejected if the code does not. A second confirmation is worth nothing unless it
-could have been a rejection; a corrected rejection is equally valuable.
+If the verification round is `backup`, these claims were ALREADY confirmed by a
+first advisor and are the highest-stakes cluster in the cell. Your job is an
+independent, skeptical second opinion: try to REFUTE each confirmed claim. Reject
+any that the code does not actually support — a second confirmation is worth
+nothing unless it could have been a rejection.
 
 ## Verdict format
 

@@ -118,7 +118,11 @@ class TestOfflineAssets(unittest.TestCase):
             "::error::OSV offline DB warm did not produce npm/PyPI databases", self.text
         )
         self.assertIn("cat /tmp/osv-warm.log >&2", self.text)
-        self.assertNotIn(">/dev/null 2>&1", self.text)
+        # #run7 review: scope the "no swallowed failures" check to the OSV warm
+        # block. The old global assertNotIn(">/dev/null 2>&1") tripped on any
+        # unrelated future use of that common idiom anywhere in the Dockerfile.
+        osv_block = self.text.split("mkdir -p /opt/osv-db")[1].split("rm -rf /tmp/osv-warm")[0]
+        self.assertNotIn("/dev/null", osv_block)
 
     def test_publish_cadence_and_tags(self):
         with open(os.path.join(ROOT, ".github", "workflows",

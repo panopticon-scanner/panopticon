@@ -31,7 +31,13 @@ class CargoAuditAdapter:
             package = vuln.get("package", {})
             versions = vuln.get("versions", {})
             cvss = advisory.get("cvss")
-            severity = normalize_severity(None)  # INFO when CVSS is absent
+            # #run7 review: floor an unscored (no-CVSS) advisory at LOW, not INFO.
+            # A RustSec advisory is a real vuln even without a CVSS vector; LOW
+            # keeps it a visible finding the reviewing agent can consciously
+            # downgrade, rather than INFO (which reads as dismissed noise). Both
+            # are gate-weight 0, so this changes honesty/visibility, not gating.
+            # (Per-advisory severity overrides are a larger, separate effort.)
+            severity = "LOW"
             if isinstance(cvss, dict):
                 severity = cvss_bucket(cvss.get("score", 0))
             elif isinstance(cvss, str):
