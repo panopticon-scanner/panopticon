@@ -10,6 +10,22 @@ import scripts.reconcile as reconcile
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures", "reconcile")
 
 
+class TestFixtures(unittest.TestCase):
+    """#run7 TST-E1A: the tests below assume a fixed set of fixture files.
+    Fail fast with a clear message if the directory or any expected file is
+    missing, instead of letting a later test trip on a FileNotFoundError."""
+
+    EXPECTED = ("run2.json", "run2_part2.json", "run3.json")
+
+    def test_fixture_directory_and_files_exist(self):
+        self.assertTrue(os.path.isdir(FIXTURES),
+                        "reconcile fixture directory missing: %s" % FIXTURES)
+        for name in self.EXPECTED:
+            path = os.path.join(FIXTURES, name)
+            self.assertTrue(os.path.isfile(path),
+                            "reconcile fixture missing: %s" % path)
+
+
 class TestLoadReport(unittest.TestCase):
     def test_merges_findings_and_discarded_claims_across_parts(self):
         report = reconcile.load_report(os.path.join(FIXTURES, "run2.json"))
@@ -113,6 +129,7 @@ class TestBuildDiff(unittest.TestCase):
         ambiguous_ids = {rec["id"] for entry in diff["ambiguous"]
                          for rec in entry["run2"]}
         self.assertEqual(ambiguous_ids, {"F-DUP-1", "F-DUP-2"})
+        self.assertTrue(diff["ambiguous"])
         self.assertIn("no file recorded", diff["ambiguous"][0]["reason"])
         new_ids = {rec["id"] for entry in diff["new"] for rec in entry["run3"]}
         self.assertEqual(new_ids, {"F-NEW-1"})
@@ -260,6 +277,7 @@ class TestBuildDiffCohorts(unittest.TestCase):
         self.assertIsNone(diff["meta"]["close_guard"])
         self.assertEqual(self._cohort_ids(diff, "ambiguous", "run2"), {"A"})
         self.assertEqual(self._cohort_ids(diff, "closed", "run2"), set())
+        self.assertTrue(diff["ambiguous"])
         entry = next(e for e in diff["ambiguous"] if "A" in {r["id"] for r in e["run2"]})
         self.assertIn("no file recorded", entry["reason"])
 
@@ -273,6 +291,7 @@ class TestBuildDiffCohorts(unittest.TestCase):
             self._f("R3", "auth.py", "security", "not-a-real-issue", "false positive")]})
         diff = reconcile.build_diff(r2, r3, "r2", "r3")
         self.assertEqual(self._cohort_ids(diff, "ambiguous", "run2"), {"A"})
+        self.assertTrue(diff["ambiguous"])
         reason = diff["ambiguous"][0]["reason"]
         self.assertIn("1 rejected claim(s)", reason)
         self.assertNotIn("finding(s)", reason)
@@ -295,6 +314,7 @@ class TestBuildDiffCohorts(unittest.TestCase):
         self.assertEqual(diff["meta"]["close_guard"], "no_file_overlap")
         self.assertEqual(self._cohort_ids(diff, "closed", "run2"), set())
         self.assertEqual(self._cohort_ids(diff, "ambiguous", "run2"), {"A"})
+        self.assertTrue(diff["ambiguous"])
         self.assertIn("share zero paths", diff["ambiguous"][0]["reason"])
 
     def test_degenerate_group_spanning_multiple_coarse_keys_is_ambiguous(self):
@@ -313,6 +333,7 @@ class TestBuildDiffCohorts(unittest.TestCase):
         diff = reconcile.build_diff(r2, r3, "r2", "r3")
         self.assertIsNone(diff["meta"]["close_guard"])
         self.assertEqual(self._cohort_ids(diff, "ambiguous", "run2"), {"A", "B"})
+        self.assertTrue(diff["ambiguous"])
         self.assertIn("multiple coarse keys", diff["ambiguous"][0]["reason"])
 
     def test_new_finding_with_unseen_coarse_key(self):
@@ -391,6 +412,7 @@ class TestRenderSummary(unittest.TestCase):
         diff = reconcile.build_diff(r2, r3, "run2.json", "run3.json")
         text = reconcile.render_summary(diff)
         self.assertIn("## ambiguous (kept open)", text)
+        self.assertTrue(diff["ambiguous"])
         self.assertIn(diff["ambiguous"][0]["fingerprint"], text)
         self.assertIn("no file recorded", text)
 
