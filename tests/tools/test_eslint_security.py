@@ -166,7 +166,7 @@ class TestEslintSecurityAdapter(unittest.TestCase):
                                return_value=["x.js"]):
             stdout, rc = adapter.invoke("/tmp/fake")
         self.assertEqual((stdout, rc), (b"[]", 0))
-        cmd, kwargs = popen_mock.call_args[0][0], popen_mock.call_args[1]
+        cmd = popen_mock.call_args[0][0]
         self.assertEqual(cmd[0], "eslint")
         self.assertIn("--config", cmd)
         self.assertTrue(cmd[cmd.index("--config") + 1].endswith("eslint.config.mjs"))

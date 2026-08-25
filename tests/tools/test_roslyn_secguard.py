@@ -286,7 +286,6 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
             rs._safe_copytree = old_safe_copytree
 
         cmd = calls[0][0]
-        kwargs = calls[0][1]
         self.assertEqual(cmd[0], "dotnetarium-scs")
         self.assertTrue(cmd[1].startswith(copied_dst[0]))
         self.assertTrue(any(arg.startswith("--export=") for arg in cmd))
