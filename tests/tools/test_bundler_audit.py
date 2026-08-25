@@ -124,6 +124,30 @@ class TestBundlerAuditAdapter(unittest.TestCase):
             stdout=mock.ANY, stderr=mock.ANY, cwd="/tmp/fake",
         )
 
+    def test_invoke_falls_back_to_text_when_json_unsupported(self):
+        """Older bundler-audit (< 0.8.0) rejects --format json."""
+        calls = []
+
+        def fake_run_tool(cmd, **kwargs):
+            calls.append(cmd)
+            if "--format" in cmd:
+                return (b"", b"Unknown switches '--format'", 1)
+            return (BUNDLE_AUDIT_SAMPLE, 0)
+
+        with mock.patch("scripts.tools.bundler_audit.run_tool",
+                        side_effect=fake_run_tool):
+            raw, rc = ba.BundlerAuditAdapter().invoke("/tmp/fake")
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(raw, BUNDLE_AUDIT_SAMPLE)
+        self.assertEqual(calls, [
+            ["bundle-audit", "check", "--format", "json", "--no-update"],
+            ["bundle-audit", "check", "--no-update"],
+        ])
+        # Fallback output is still shape-guarded by parse().
+        findings = ba.BundlerAuditAdapter().parse(raw, "g1")
+        self.assertEqual(len(findings), 2)
+
     def test_parse_json_produces_findings(self):
         findings = ba.BundlerAuditAdapter().parse(BUNDLE_AUDIT_JSON_SAMPLE, "g1")
         self.assertEqual(len(findings), 2)

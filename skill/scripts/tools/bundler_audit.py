@@ -26,8 +26,16 @@ class BundlerAuditAdapter:
         return os.path.exists(os.path.join(target, "Gemfile.lock"))
 
     def invoke(self, target: str) -> tuple[bytes, int]:
-        cmd = ["bundle-audit", "check", "--format", "json", "--no-update"]
-        return run_tool(cmd, timeout=300, cwd=target)
+        json_cmd = ["bundle-audit", "check", "--format", "json", "--no-update"]
+        raw, stderr, rc = run_tool(json_cmd, timeout=300, cwd=target,
+                                   capture_stderr=True)
+        # bundler-audit added --format json in 0.8.0. Older gems reject the
+        # switch (Thor prints "Unknown switches '--format'" and exits non-zero).
+        # Fall back to the legacy text output and let parse() shape-guard it.
+        if rc not in (0, 1) or b"Unknown switches" in stderr:
+            return run_tool(["bundle-audit", "check", "--no-update"],
+                            timeout=300, cwd=target)
+        return raw, rc
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
         try:

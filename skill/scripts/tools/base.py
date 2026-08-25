@@ -208,19 +208,23 @@ def _drain(stream):
         pass
 
 
-def run_tool(cmd, timeout, ok_codes=(0, 1), **kwargs):
+def run_tool(cmd, timeout, ok_codes=(0, 1), capture_stderr=False, **kwargs):
     """Run a scanner subprocess, preserving failure diagnostics (F-CAL-1).
 
-    Returns (stdout, returncode) — the adapter invoke() contract. On exit
-    codes outside ok_codes (1 == findings for most scanners; brakeman also
-    uses 2/3), a capped stderr excerpt is written to our stderr so
-    'exited N; skipping' is diagnosable.
+    Returns (stdout, returncode) by default, or (stdout, stderr, returncode)
+    when *capture_stderr* is True. On exit codes outside ok_codes
+    (1 == findings for most scanners; brakeman also uses 2/3), a capped
+    stderr excerpt is written to our stderr so 'exited N; skipping' is
+    diagnosable.
 
     Bounded capture: stdout is streamed into a bounded buffer so
     adversarial/large target output does not accumulate unbounded in memory
     (#1111). When the byte cap is exceeded the child is terminated, the output
     is truncated with a marker, and a stderr notice is emitted. The partial
     output is still returned so the truncation is visible downstream.
+
+    Stderr is drained concurrently so a child that fills the stderr pipe while
+    still writing stdout cannot deadlock the parent (#K2-1).
     """
     popen_kwargs = dict(kwargs)
     popen_kwargs.setdefault("stdout", subprocess.PIPE)
@@ -239,8 +243,25 @@ def run_tool(cmd, timeout, ok_codes=(0, 1), **kwargs):
     timer = threading.Timer(timeout, _watchdog)
     timer.daemon = True
     timer.start()
+
+    stderr_chunks: list[bytes] = []
+
+    def _drain_stderr():
+        try:
+            while True:
+                chunk = proc.stderr.read(64 * 1024)
+                if not chunk:
+                    break
+                stderr_chunks.append(chunk)
+        except Exception:
+            pass
+
+    stderr_thread = threading.Thread(target=_drain_stderr)
+    stderr_thread.daemon = True
+    stderr_thread.start()
+
     try:
-        chunks = []
+        chunks: list[bytes] = []
         collected = 0
         truncated = False
         while True:
@@ -277,18 +298,23 @@ def run_tool(cmd, timeout, ok_codes=(0, 1), **kwargs):
                 "with marker" % (cmd[0], MAX_TOOL_OUTPUT_BYTES),
                 file=sys.stderr,
             )
-            _drain(proc.stderr)
-            rc = proc.wait()
-            return stdout + marker, rc
 
-        stderr = proc.stderr.read()
         rc = proc.wait()
+        stderr_thread.join(timeout=2.0)
+        stderr = b"".join(stderr_chunks)
+
+        if truncated:
+            if capture_stderr:
+                return stdout + marker, stderr, rc
+            return stdout + marker, rc
     finally:
         timer.cancel()
         try:
             proc.stdout.close()
         except Exception:
             pass
+        # Closing stderr wakes the drain thread if it is still blocked.
+        stderr_thread.join(timeout=0.5)
         try:
             proc.stderr.close()
         except Exception:
@@ -306,4 +332,7 @@ def run_tool(cmd, timeout, ok_codes=(0, 1), **kwargs):
         excerpt = (stderr or b"")[-1000:].decode("utf-8", errors="replace").strip()
         details = f": {excerpt}" if excerpt else ""
         print(f"tool {cmd[0]} exited {rc}{details}", file=sys.stderr)
+
+    if capture_stderr:
+        return b"".join(chunks), stderr, rc
     return b"".join(chunks), rc

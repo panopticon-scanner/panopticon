@@ -1,5 +1,9 @@
 import contextlib
 import io
+import os
+import sys
+import tempfile
+import textwrap
 import unittest
 from unittest import mock
 
@@ -138,6 +142,27 @@ class TestRunTool(unittest.TestCase):
         self.assertEqual(len(out), 1024 + len(marker))
         self.assertNotEqual(rc, 0)
         self.assertIn("exceeded 1024 byte limit", err.getvalue())
+
+    def test_concurrent_stdout_stderr_no_deadlock(self):
+        # A child that fills the stderr pipe before writing stdout would
+        # deadlock if run_tool read stdout to EOF before touching stderr.
+        script = textwrap.dedent("""
+            import sys
+            sys.stderr.write('e' * 200000)
+            sys.stderr.flush()
+            sys.stdout.write('done')
+            sys.stdout.flush()
+        """)
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py",
+                                          delete=False) as fh:
+            fh.write(script)
+            path = fh.name
+        try:
+            out, rc = base.run_tool([sys.executable, path], timeout=10)
+            self.assertEqual(rc, 0)
+            self.assertIn(b"done", out)
+        finally:
+            os.unlink(path)
 
     def test_strip_ansi_removes_csi_sequences(self):
         self.assertEqual(base.strip_ansi(b"\x1b[32mhi\x1b[0m"), b"hi")
