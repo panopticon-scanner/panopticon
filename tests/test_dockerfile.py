@@ -61,12 +61,16 @@ class TestFindSecBugsIntegrity(unittest.TestCase):
         # FindSecBugs; osv-scanner/gitleaks/gosec/dependency-check verify their
         # downloads too but had ZERO test, so dropping any `sha256sum -c` or SHA
         # pin passed the suite untouched. Lock all of them in (arch-split and
-        # single-SHA shapes both).
+        # single-SHA shapes both), plus the rustup/dotnet installers and the
+        # SpotBugs tarball added in Task 5.
         for artifact, sha_re in (
                 ("/tmp/osv-scanner", r"OSV_SCANNER_SHA256_(AMD64|ARM64)=[0-9a-f]{64}"),
                 ("/tmp/gitleaks.tar.gz", r"GITLEAKS_SHA256_(X64|ARM64)=[0-9a-f]{64}"),
                 ("/tmp/gosec.tar.gz", r"GOSEC_SHA256_(AMD64|ARM64)=[0-9a-f]{64}"),
-                ("/tmp/dc.zip", r"DEPENDENCY_CHECK_SHA256=[0-9a-f]{64}")):
+                ("/tmp/dc.zip", r"DEPENDENCY_CHECK_SHA256=[0-9a-f]{64}"),
+                ("/tmp/spotbugs.tgz", r"SPOTBUGS_SHA256=[0-9a-f]{64}"),
+                ("/tmp/rustup-init", r"RUSTUP_INIT_SHA256_(AMD64|ARM64)=[0-9a-f]{64}"),
+                ("/tmp/dotnet-install.sh", r"DOTNET_INSTALL_SHA256=[0-9a-f]{64}")):
             self.assertRegex(self.text, sha_re, "no pinned SHA256 for %s" % artifact)
             self.assertRegex(
                 self.text, artifact.replace(".", r"\.") + r'"\s*\|\s*sha256sum -c',
@@ -97,6 +101,21 @@ class TestOfflineAssets(unittest.TestCase):
         self.assertNotIn("--mount=type=secret,id=nvd_api_key", self.text)
         self.assertNotIn("--updateonly", self.text)
         self.assertNotIn("ENV NVD_API_KEY", self.text)
+
+    def test_nvd_data_ref_default_is_digest(self):
+        # OPS-E1A: the default NVD cache ref must be content-pinned so PR and
+        # local builds do not follow a mutable tag.
+        self.assertRegex(
+            self.text,
+            r"ARG NVD_DATA_REF=.*@sha256:[0-9a-f]{64}"
+        )
+
+    def test_osv_warm_failures_are_visible(self):
+        # SEC-E3B: OSV DB warm previously swallowed failures with `>/dev/null`.
+        # Both the primary and fallback commands must surface output on failure.
+        self.assertIn("::warning::OSV primary warm failed; trying fallback", self.text)
+        self.assertIn("::error::OSV offline DB warm failed; image will lack npm/PyPI databases", self.text)
+        self.assertNotIn(">/dev/null 2>&1", self.text)
 
     def test_publish_cadence_and_tags(self):
         with open(os.path.join(ROOT, ".github", "workflows",

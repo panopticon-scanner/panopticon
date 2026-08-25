@@ -3,11 +3,12 @@
 # Run:    docker run --rm -v "$PWD":/src:ro panopticon-tools <tool> ...
 # NVD database comes from the cron-published, version-keyed cache image (the
 # "Refresh NVD data cache" workflow) — so no build hits the NVD API or needs a
-# secret. docker-publish overrides NVD_DATA_REF with an @sha256 digest so each
-# publish is content-pinned; the default moving tag serves the PR gate and local
-# builds. Keep the default tag's version in sync with DEPENDENCY_CHECK_VERSION;
-# rebuild the cache by running the "Refresh NVD data cache" workflow.
-ARG NVD_DATA_REF=ghcr.io/panopticon-scanner/panopticon-tools-nvd:dc-10.0.3
+# secret. docker-publish resolves the digest of the current dc-* tag and passes
+# it as a build-arg, so each publish is content-pinned. The default below is the
+# current digest for dc-10.0.3; it keeps PR gates and local builds reproducible
+# without needing a registry lookup. Bump it when DEPENDENCY_CHECK_VERSION or
+# the cache image changes.
+ARG NVD_DATA_REF=ghcr.io/panopticon-scanner/panopticon-tools-nvd@sha256:5dae9831d546241017f80ab86553826c8ead7e38ae61e9feb94880274c78fec0
 # DL3006: the version tag lives inside NVD_DATA_REF (docker-publish pins a @sha256
 # digest), so hadolint cannot see it statically.
 # hadolint ignore=DL3006
@@ -105,10 +106,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends default-jdk unz
 
 # SpotBugs + FindSecBugs plugin
 ARG SPOTBUGS_VERSION=4.8.6
+# Pinned SHA-256 of spotbugs-${SPOTBUGS_VERSION}.tgz. The tarball is extracted as
+# an unsandboxed Java analyzer in the image, so a substituted archive would run
+# attacker-controlled code in downstream scans.
+ARG SPOTBUGS_SHA256=b9d4d25e53cd4202b2dc19c549c0ff54f8a72fc76a71a8c40dee94422c67ebea
 RUN curl -sfL --connect-timeout 5 --max-time 60 "https://github.com/spotbugs/spotbugs/releases/download/${SPOTBUGS_VERSION}/spotbugs-${SPOTBUGS_VERSION}.tgz" \
-        | tar -xz -C /opt \
+        -o /tmp/spotbugs.tgz \
+    && echo "${SPOTBUGS_SHA256}  /tmp/spotbugs.tgz" | sha256sum -c - \
+    && tar -xzf /tmp/spotbugs.tgz -C /opt \
     && ln -s "/opt/spotbugs-${SPOTBUGS_VERSION}" /opt/spotbugs \
-    && chmod +x /opt/spotbugs/bin/spotbugs
+    && chmod +x /opt/spotbugs/bin/spotbugs \
+    && rm /tmp/spotbugs.tgz
 ARG FINDSECBUGS_VERSION=1.13.0
 # Pinned SHA-256 of findsecbugs-plugin-${FINDSECBUGS_VERSION}.jar. This jar is
 # loaded as an unsandboxed SpotBugs analyzer plugin (arbitrary bytecode in the
@@ -136,11 +144,26 @@ RUN curl -sfL --connect-timeout 5 --max-time 120 "https://github.com/jeremylong/
 ENV CARGO_HOME=/usr/local/cargo
 ENV RUSTUP_HOME=/usr/local/rustup
 ENV PATH="/usr/local/cargo/bin:${PATH}"
-RUN timeout 180 curl --proto '=https' --tlsv1.2 -sSf --connect-timeout 5 --max-time 60 https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+ARG RUSTUP_INIT_SHA256_AMD64=4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10
+ARG RUSTUP_INIT_SHA256_ARM64=9732d6c5e2a098d3521fca8145d826ae0aaa067ef2385ead08e6feac88fa5792
+RUN arch="$(dpkg --print-architecture)" \
+    && case "$arch" in amd64) ru="x86_64-unknown-linux-gnu"; sha256="${RUSTUP_INIT_SHA256_AMD64}" ;; arm64) ru="aarch64-unknown-linux-gnu"; sha256="${RUSTUP_INIT_SHA256_ARM64}" ;; *) echo "unsupported arch: $arch" >&2; exit 1 ;; esac \
+    && curl -sfL --connect-timeout 5 --max-time 60 "https://static.rust-lang.org/rustup/dist/${ru}/rustup-init" \
+        -o /tmp/rustup-init \
+    && echo "${sha256}  /tmp/rustup-init" | sha256sum -c - \
+    && chmod +x /tmp/rustup-init \
+    && /tmp/rustup-init -y --default-toolchain stable \
+    && rm /tmp/rustup-init
 RUN timeout 600 cargo install cargo-audit --version ${CARGO_AUDIT_VERSION}
 
 # .NET SDK (system-wide so the scanner user can invoke dotnet)
-RUN timeout 180 curl -sfL --connect-timeout 5 --max-time 60 https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 8.0 --install-dir /usr/share/dotnet
+ARG DOTNET_INSTALL_SHA256=082f7685e156738a1b2e2ed8381a621870d4ce8e8c59278034556f05c186eb2e
+RUN curl -sfL --connect-timeout 5 --max-time 60 "https://raw.githubusercontent.com/dotnet/install-scripts/47940ac9fc30a2f2dd19167165d0bb0774625f67/src/dotnet-install.sh" \
+        -o /tmp/dotnet-install.sh \
+    && echo "${DOTNET_INSTALL_SHA256}  /tmp/dotnet-install.sh" | sha256sum -c - \
+    && chmod +x /tmp/dotnet-install.sh \
+    && /tmp/dotnet-install.sh --channel 8.0 --install-dir /usr/share/dotnet \
+    && rm /tmp/dotnet-install.sh
 RUN ln -s /usr/share/dotnet/dotnet /usr/bin/dotnet
 ENV DOTNET_ROOT=/usr/share/dotnet
 ENV PATH="/usr/share/dotnet:${PATH}"
@@ -240,12 +263,17 @@ RUN set -euo pipefail \
        > /tmp/osv-warm/package-lock.json \
     && printf 'requests==2.31.0\n' > /tmp/osv-warm/requirements.txt \
     && if ! timeout 300 osv-scanner --experimental-offline --experimental-download-offline-databases \
-           --format json --recursive /tmp/osv-warm >/dev/null 2>&1; then :; fi \
-    && if [ ! -s /opt/osv-db/osv-scanner/npm/all.zip ] || [ ! -s /opt/osv-db/osv-scanner/PyPI/all.zip ]; then \
-         if ! timeout 300 osv-scanner scan source --offline --download-offline-databases \
-           --format json --recursive /tmp/osv-warm >/dev/null 2>&1; then :; fi; \
+           --format json --recursive /tmp/osv-warm >/tmp/osv-warm.log 2>&1; then \
+           echo "::warning::OSV primary warm failed; trying fallback" >&2; \
+           cat /tmp/osv-warm.log >&2; \
+           if ! timeout 300 osv-scanner scan source --offline --download-offline-databases \
+                  --format json --recursive /tmp/osv-warm >/tmp/osv-warm.log 2>&1; then \
+               echo "::error::OSV offline DB warm failed; image will lack npm/PyPI databases" >&2; \
+               cat /tmp/osv-warm.log >&2; \
+               exit 1; \
+           fi; \
        fi \
-    && rm -rf /tmp/osv-warm \
+    && rm -rf /tmp/osv-warm /tmp/osv-warm.log \
     && chmod -R a+rX /opt/osv-db
 
 # dependency-check NVD database: copied from the pinned cache stage (NVD_DATA_REF,
