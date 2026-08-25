@@ -80,6 +80,12 @@ RULE_SEVERITY = {
 }
 
 
+_HEURISTIC_RULES = frozenset({
+    "security/detect-object-injection",
+    "security/detect-possible-timing-attacks",
+})
+
+
 class EslintSecurityAdapter:
     name = "eslint-security"
     prefix = "ESS"
@@ -161,6 +167,7 @@ class EslintSecurityAdapter:
                     self, n, group,
                     title=msg.get("message", rule),
                     severity=RULE_SEVERITY.get(rule, "MEDIUM"),
+                    confidence="LIKELY" if rule in _HEURISTIC_RULES else "CERTAIN",
                     category="code_security",
                     location={"file": rel, "line_start": msg.get("line", 1)},
                     description=f"eslint-plugin-security rule {rule} triggered.",

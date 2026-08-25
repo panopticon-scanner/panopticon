@@ -87,6 +87,19 @@ class TestEslintSecurityAdapter(unittest.TestCase):
                           "line": 5, "message": "m"}],
         }]).encode()
 
+    def test_heuristic_rules_get_likely_confidence(self):
+        # ARC-A4A run-7: FP-prone heuristic rules should not claim CERTAIN.
+        adapter = es.EslintSecurityAdapter()
+        heuristic_finding = adapter.parse(
+            self._one("security/detect-object-injection", 2), "g1")[0]
+        self.assertEqual(heuristic_finding["confidence"], "LIKELY")
+        timing_finding = adapter.parse(
+            self._one("security/detect-possible-timing-attacks", 2), "g1")[0]
+        self.assertEqual(timing_finding["confidence"], "LIKELY")
+        non_heuristic_finding = adapter.parse(
+            self._one("security/detect-eval-with-expression", 2), "g1")[0]
+        self.assertEqual(non_heuristic_finding["confidence"], "CERTAIN")
+
     def test_severity_is_rule_derived_not_eslint_level(self):
         # #1118: invoke() forces every rule to eslint 'error' (level 2), so the
         # level carries no severity signal -- severity comes from RULE_SEVERITY.
