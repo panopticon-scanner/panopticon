@@ -303,6 +303,37 @@ class TestGhRetry(unittest.TestCase):
                          triage.GH_TIMEOUT)
 
 
+class TestGhRealBoundary(unittest.TestCase):
+    """#run7 TST-A3A: every other gh test injects a fake runner. These two
+    exercises use an actual subprocess.run via default_gh_runner() with a
+    PATH-shimmed fake `gh` executable, so the integration boundary is exercised
+    end-to-end (argv construction, env inheritance, capture, timeout wiring)."""
+
+    def _make_fake_gh(self, tmpdir, script):
+        path = os.path.join(tmpdir, "gh")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("#!/bin/sh\n%s\n" % script)
+        os.chmod(path, 0o755)
+        return path
+
+    def test_default_runner_invokes_real_gh_process(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._make_fake_gh(tmpdir, 'echo "{\\"login\\":\\"fake-user\\"}"')
+            env_path = tmpdir + os.pathsep + os.environ.get("PATH", "")
+            with mock.patch.dict(os.environ, {"PATH": env_path}):
+                result = triage.gh(["gh", "api", "user"])
+            self.assertIn("fake-user", result)
+
+    def test_default_runner_surfaces_nonzero_exit(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._make_fake_gh(tmpdir, 'echo "not found" >&2; exit 1')
+            env_path = tmpdir + os.pathsep + os.environ.get("PATH", "")
+            with mock.patch.dict(os.environ, {"PATH": env_path}):
+                with self.assertRaises(RuntimeError) as ctx:
+                    triage.gh(["gh", "issue", "view", "123"])
+            self.assertIn("not found", str(ctx.exception))
+
+
 class TestGhEnv(unittest.TestCase):
     """#486: config-declared gh account selection."""
 
