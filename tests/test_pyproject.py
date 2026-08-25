@@ -21,4 +21,16 @@ class TestPyproject(unittest.TestCase):
             data = tomllib.load(fh)
         test = set(data["project"]["optional-dependencies"]["test"])
         dev = set(data["project"]["optional-dependencies"]["dev"])
-        self.assertTrue(test.issubset(dev), test - dev)
+        # dev may either inline the test deps or reference the test extra.
+        self_references_test = any(
+            req.startswith("panopticon[test]") for req in dev
+        )
+        self.assertTrue(
+            test.issubset(dev) or self_references_test,
+            f"test deps missing from dev: {test - dev}",
+        )
+        if self_references_test:
+            self.assertTrue(
+                any(req.startswith("ruff") for req in dev),
+                "dev extra must still include ruff when delegating to test extra",
+            )

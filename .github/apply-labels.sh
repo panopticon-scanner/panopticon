@@ -51,6 +51,10 @@ fi
 
 # Parse the constrained catalog shape (name/color/description triples) with
 # PyYAML, which is already a runtime dependency declared in pyproject.toml.
+python3 -c 'import yaml' >/dev/null 2>&1 || {
+  echo "apply-labels: PyYAML is required but not installed" >&2
+  exit 1
+}
 python3 - "$CATALOG" <<'PY' | while IFS=$'\t' read -r name color desc; do
 import sys
 import yaml

@@ -26,7 +26,7 @@ jobs:
           hadolint Dockerfile
 
       - name: Build Dockerfile
-        run: docker build -f Dockerfile .
+        run: docker build -f Dockerfile -t panopticon-tools:latest .
 
       - name: Lint Dockerfile.fixtures
         run: hadolint Dockerfile.fixtures
