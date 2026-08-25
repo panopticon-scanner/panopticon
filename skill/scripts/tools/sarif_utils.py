@@ -8,13 +8,12 @@ import os
 import re
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
 from scripts.provenance import tool_provenance
 from .base import new_finding_id
 
 
 LEVEL_TO_SEV = {"error": "HIGH", "warning": "MEDIUM", "note": "LOW", "none": "INFO"}
-PREFIX = {"semgrep": "SG", "trivy": "TR", "gitleaks": "GL", "bandit": "BN", "gosec": "GS", "eslint": "ES"}
+PREFIX = {"semgrep": "SG", "trivy": "TR", "gitleaks": "GL", "bandit": "BN", "gosec": "GS"}
 CWE_TAG = re.compile(r"(CWE-\d+)", re.IGNORECASE)
 CVE_TAG = re.compile(r"(CVE-\d{4}-\d{4,})", re.IGNORECASE)
 
@@ -32,8 +31,7 @@ CVE_TAG = re.compile(r"(CVE-\d{4}-\d{4,})", re.IGNORECASE)
 NOISE_RULES = {"B101", "B404", "B110", "B112"}
 
 # Test-fixture corpus definition, kept in sync with orchestrator's
-# FIXTURE_DIR_BASENAMES / FIXTURE_PARENT_DIRS / _is_fixture_dir (#434). A shared
-# import is blocked by the two sys.path conventions in the tree (#742), so the
+# FIXTURE_DIR_BASENAMES / FIXTURE_PARENT_DIRS / _is_fixture_dir (#434). The
 # definition is mirrored here; update both places together.
 _FIXTURE_DIR_BASENAMES = frozenset({"testdata", "__fixtures__"})
 _FIXTURE_PARENT_DIRS = frozenset({"tests", "test", "spec"})
@@ -162,7 +160,8 @@ def sarif_to_findings(sarif, tool_name, group, prefix, start=1):
                 finding["provenance"] = tool_provenance(tool_name, reasoning=res.get("ruleId"))
                 if cites:
                     finding["citations"] = cites
-            except Exception:  # noqa: BLE001 - tolerant by design: skip only this result
+            except Exception as exc:  # noqa: BLE001 - tolerant by design: skip only this result
+                print(f"sarif_utils: skipping result {res.get('ruleId', res.get('rule', {}).get('id'))}: {exc!r}", file=sys.stderr)
                 continue
             out.append(finding)
             n += 1

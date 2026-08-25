@@ -2,6 +2,7 @@ import json
 import unittest
 from unittest import mock
 
+from _test_helpers import FakePopen
 import scripts.tools.cargo_audit as ca
 
 CARGO_AUDIT_SAMPLE = json.dumps({
@@ -29,7 +30,26 @@ class TestCargoAuditAdapter(unittest.TestCase):
         f = findings[0]
         self.assertEqual(f["source"], "tool:cargo-audit")
         self.assertEqual(f["tool_evidence"]["package_name"], "foo")
-        self.assertEqual(f["severity"], "HIGH")
+        self.assertEqual(f["severity"], "INFO")
+
+    def test_parse_missing_cvss_defaults_to_info(self):
+        # ARC-D2B / COD-C3B run-7: cargo-audit must fall back to INFO when no
+        # CVSS data is present, matching the other dependency adapters.
+        sample = json.dumps({
+            "vulnerabilities": {"list": [{
+                "advisory": {
+                    "id": "RUSTSEC-2021-0099",
+                    "title": "Unspecified issue in norcvss crate",
+                    "cvss": None,
+                    "url": "https://rustsec.org/advisories/RUSTSEC-2021-0099",
+                },
+                "package": {"name": "norcvss", "version": "0.9.0"},
+                "versions": {"patched": ["0.9.1"]},
+            }]}
+        }).encode()
+        findings = ca.CargoAuditAdapter().parse(sample, "g1")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["severity"], "INFO")
 
     def test_is_applicable_when_cargo_lock_present(self):
         # #run7 COD-C2A: applicability keys on Cargo.lock (what `cargo audit
@@ -60,21 +80,22 @@ class TestCargoAuditAdapter(unittest.TestCase):
         self.assertEqual(findings, [])
 
     def test_invoke_runs_cargo_audit(self):
-        fake_run = mock.Mock(return_value=mock.Mock(stdout=b"", returncode=0))
-        with mock.patch("scripts.tools.base.subprocess.run", fake_run):
+        fake_run = FakePopen(stdout=b"", stderr=b"", returncode=0)
+        with mock.patch("scripts.tools.base.subprocess.Popen",
+                        return_value=fake_run) as popen_mock:
             stdout, rc = ca.CargoAuditAdapter().invoke("/tmp/fake")
         self.assertEqual(rc, 0)
-        fake_run.assert_called_once_with(
+        popen_mock.assert_called_once_with(
             ["cargo", "audit", "--no-fetch", "--format", "json"],
-            capture_output=True, timeout=300, cwd="/tmp/fake",
+            stdout=mock.ANY, stderr=mock.ANY, cwd="/tmp/fake",
         )
 
     def test_invoke_rc_2_prints_stderr_and_returns_failure(self):
         import contextlib, io
-        fake_run = mock.Mock(return_value=mock.Mock(
-            stdout=b"audit error output", stderr=b"cargo audit failed", returncode=2))
+        fake_run = FakePopen(stdout=b"audit error output",
+                             stderr=b"cargo audit failed", returncode=2)
         buf = io.StringIO()
-        with mock.patch("scripts.tools.base.subprocess.run", fake_run), \
+        with mock.patch("scripts.tools.base.subprocess.Popen", return_value=fake_run), \
              contextlib.redirect_stderr(buf):
             stdout, rc = ca.CargoAuditAdapter().invoke("/tmp/fake")
         self.assertEqual(rc, 2)

@@ -1,5 +1,10 @@
 import contextlib, io, os, json, tempfile, unittest
+from unittest.mock import patch
+
 import scripts.ingest_tools as it
+import json as _json
+import scripts.evidence as ev
+import scripts.tools as tools_mod
 
 SARIF = {
   "runs": [{
@@ -65,10 +70,7 @@ class TestIngest(unittest.TestCase):
         self.assertIn("exceeds", stderr.getvalue())
 
     def test_sarif_uri_normalized_to_repo_relative(self):
-        sarif = {"runs":[{"tool":{"driver":{"name":"semgrep","rules":[]}},
-            "results":[{"ruleId":"r","level":"warning","message":{"text":"m"},
-            "locations":[{"physicalLocation":{"artifactLocation":{"uri":"file:///src/db/engine.py"},
-            "region":{"startLine":10}}}]}]}]}
+        sarif = _sarif_fixture("file:///src/db/engine.py")
         out = it.sarif_to_findings(sarif, "semgrep", "g1", "SG")
         self.assertEqual(out[0]["location"]["file"], "db/engine.py")
 
@@ -81,10 +83,8 @@ class TestIngest(unittest.TestCase):
             self.assertEqual(it.ingest_dir(d, "g1"), [])  # skipped, no raise
 
     def test_sarif_bad_result_does_not_drop_siblings(self):
-        good = {"ruleId":"r","level":"warning","message":{"text":"m"},
-                "locations":[{"physicalLocation":{"artifactLocation":{"uri":"a.py"},"region":{"startLine":1}}}]}
-        sarif = {"runs":[{"tool":{"driver":{"name":"semgrep","rules":[]}},
-                 "results":[123, good]}]}   # 123 is a malformed (non-dict) result
+        sarif = _sarif_fixture("a.py")
+        sarif["runs"][0]["results"].insert(0, 123)  # 123 is a malformed (non-dict) result
         out = it.sarif_to_findings(sarif, "semgrep", "g1", "SG")
         self.assertEqual(len(out), 1)      # the good result survives the bad sibling
 
@@ -93,14 +93,15 @@ class TestIngest(unittest.TestCase):
         # "physicalLocation" is a string, not a dict -> .get() raises AttributeError
         # mid-processing. Without a per-result try/except this crashes the whole
         # function, discarding findings already collected for earlier results.
-        good = {"ruleId":"r","level":"warning","message":{"text":"m"},
-                "locations":[{"physicalLocation":{"artifactLocation":{"uri":"a.py"},"region":{"startLine":1}}}]}
+        sarif = _sarif_fixture("a.py")
         bad = {"ruleId":"bad","level":"warning","message":{"text":"m"},
                "locations":[{"physicalLocation": "not-a-dict"}]}
-        sarif = {"runs":[{"tool":{"driver":{"name":"semgrep","rules":[]}},
-                 "results":[good, bad]}]}
-        out = it.sarif_to_findings(sarif, "semgrep", "g1", "SG")
+        sarif["runs"][0]["results"].append(bad)
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            out = it.sarif_to_findings(sarif, "semgrep", "g1", "SG")
         self.assertEqual(len(out), 1)      # good survives; bad is skipped, not fatal
+        self.assertIn("sarif_utils: skipping result bad:", stderr.getvalue())
 
     def test_ingest_dir_logs_skipped_file_to_stderr(self):
         with tempfile.TemporaryDirectory() as d:
@@ -128,12 +129,16 @@ class TestIngest(unittest.TestCase):
             self.assertEqual(it.ingest_dir(d, "g1"), [])   # skipped, no RecursionError
 
     def test_ingest_filters_bandit_b101_and_test_paths(self):
-        sarif = {"runs":[{"tool":{"driver":{"name":"bandit","rules":[]}},
-            "results":[
-              {"ruleId":"B101","level":"note","message":{"text":"assert used"},
-               "locations":[{"physicalLocation":{"artifactLocation":{"uri":"tests/test_x.py"},"region":{"startLine":3}}}]},
-              {"ruleId":"B608","level":"warning","message":{"text":"sql"},
-               "locations":[{"physicalLocation":{"artifactLocation":{"uri":"db/x.py"},"region":{"startLine":9}}}]}]}]}
+        b101 = _sarif_fixture("tests/test_x.py")
+        b101["runs"][0]["tool"]["driver"]["name"] = "bandit"
+        b101["runs"][0]["results"][0].update(
+            {"ruleId": "B101", "level": "note", "message": {"text": "assert used"}})
+        b608 = _sarif_fixture("db/x.py")
+        b608["runs"][0]["tool"]["driver"]["name"] = "bandit"
+        b608["runs"][0]["results"][0].update(
+            {"ruleId": "B608", "level": "warning", "message": {"text": "sql"}})
+        sarif = {"runs": [{"tool": {"driver": {"name": "bandit", "rules": []}},
+                           "results": b101["runs"][0]["results"] + b608["runs"][0]["results"]}]}
         out = it.sarif_to_findings(sarif, "bandit", "g1", "BN")
         ids = [f["category"] for f in out]
         self.assertNotIn("B101", ids)      # assert-noise dropped
@@ -146,7 +151,6 @@ class TestIngest(unittest.TestCase):
         out = it.sarif_to_findings(SARIF, "semgrep", "g1", "SG")
         f = out[0]
         self.assertEqual(f["tool_evidence"]["rule_id"], "sql-injection")
-        import scripts.evidence as ev
         self.assertEqual(ev.tool_rule_id(f), "sql-injection")
 
     def test_noise_rules_suppress_low_value_bandit_but_keep_backstop(self):
@@ -168,10 +172,9 @@ class TestIngest(unittest.TestCase):
 
     def test_ingest_preserves_nonnoise_bandit_under_test_path(self):
         # Non-noise bandit rules (e.g. B608) located in test paths are preserved (#1120)
-        sarif = {"runs": [{"tool": {"driver": {"name": "bandit", "rules": []}},
-            "results": [{"ruleId": "B608", "level": "warning", "message": {"text": "sql"},
-              "locations": [{"physicalLocation": {"artifactLocation": {"uri": "tests/test_x.py"},
-                             "region": {"startLine": 9}}}]}]}]}
+        sarif = _sarif_fixture("tests/test_x.py")
+        sarif["runs"][0]["tool"]["driver"]["name"] = "bandit"
+        sarif["runs"][0]["results"][0]["ruleId"] = "B608"
         findings = it.sarif_to_findings(sarif, "bandit", "g1", "BN")
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0]["category"], "B608")
@@ -189,11 +192,8 @@ class TestIngest(unittest.TestCase):
             self.assertFalse(f["location"]["file"].startswith("file://"))
 
     def test_sarif_message_with_control_chars_collapsed_in_title(self):
-        sarif = {"runs":[{"tool":{"driver":{"name":"semgrep","rules":[]}},
-            "results":[{"ruleId":"r","level":"warning",
-            "message":{"text":"line one\nline\ttwo\r\nline three"},
-            "locations":[{"physicalLocation":{"artifactLocation":{"uri":"a.py"},
-            "region":{"startLine":1}}}]}]}]}
+        sarif = _sarif_fixture("a.py")
+        sarif["runs"][0]["results"][0]["message"]["text"] = "line one\nline\ttwo\r\nline three"
         out = it.sarif_to_findings(sarif, "semgrep", "g1", "SG")
         self.assertEqual(out[0]["title"], "line one line two line three")
 
@@ -226,20 +226,25 @@ class TestNonJsonPrefixTolerance(unittest.TestCase):
     the trim must not behead array-payload tools (eslint emits a top-level list)."""
 
     def test_object_payload_with_progress_prefix_is_ingested(self):
-        sarif = {"runs": [{"tool": {"driver": {"name": "Bandit", "rules": []}},
-                           "results": []}]}
+        sarif = _sarif_fixture("a.py")
+        sarif["runs"][0]["tool"]["driver"]["name"] = "Bandit"
+        sarif["runs"][0]["results"] = []
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "bandit.sarif"), "wb") as fh:
                 fh.write(b"Working... 100% 0:00:00\n" + json.dumps(sarif).encode())
-            out = it.ingest_dir(d, "g1")
-        self.assertEqual(out, [])  # parsed cleanly (no results), not an error
+            findings, disp = it.ingest_dir_detailed(d, "g1")
+        self.assertEqual(findings, [])  # parsed cleanly (no results), not an error
+        self.assertEqual(disp["bandit"]["status"], "empty")
+        self.assertNotIn("not SARIF", disp["bandit"].get("reason", ""))
 
     def test_array_payload_is_not_trimmed(self):
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "eslint-security.json"), "wb") as fh:
                 fh.write(json.dumps([{"filePath": "/src/a.js", "messages": []}]).encode())
-            out = it.ingest_dir(d, "g1")
-        self.assertEqual(out, [])  # array payload reaches the adapter intact
+            findings, disp = it.ingest_dir_detailed(d, "g1")
+        self.assertEqual(findings, [])  # array payload reaches the adapter intact
+        self.assertEqual(disp["eslint-security"]["status"], "empty")
+        self.assertNotIn("not SARIF", disp["eslint-security"].get("reason", ""))
 
 
 def _sarif_fixture(path):
@@ -341,20 +346,19 @@ class TestIngestDispositions(unittest.TestCase):
         return p
 
     def test_ok_empty_and_failed_are_distinguished(self):
-        import json as _json
         with tempfile.TemporaryDirectory() as d:
             # bandit SARIF with one result -> ok
-            sarif = {"runs": [{"tool": {"driver": {"name": "bandit",
-                     "rules": [{"id": "B105"}]}},
-                     "results": [{"ruleId": "B105", "level": "error",
-                     "message": {"text": "x"}, "locations": [{"physicalLocation":
-                     {"artifactLocation": {"uri": "a.py"},
-                      "region": {"startLine": 1}}}]}]}]}
+            sarif = _sarif_fixture("a.py")
+            sarif["runs"][0]["tool"]["driver"]["name"] = "bandit"
+            sarif["runs"][0]["tool"]["driver"]["rules"] = [{"id": "B105"}]
+            sarif["runs"][0]["results"][0].update(
+                {"ruleId": "B105", "level": "error", "message": {"text": "x"}})
             self._write(d, "bandit.sarif", _json.dumps(sarif))
             # valid SARIF, zero results -> empty
-            self._write(d, "gitleaks.sarif", _json.dumps(
-                {"runs": [{"tool": {"driver": {"name": "gitleaks"}},
-                           "results": []}]}))
+            empty = _sarif_fixture("a.py")
+            empty["runs"][0]["tool"]["driver"]["name"] = "gitleaks"
+            empty["runs"][0]["results"] = []
+            self._write(d, "gitleaks.sarif", _json.dumps(empty))
             # 0-byte file -> failed
             self._write(d, "semgrep.sarif", b"")
             # unparseable -> failed
@@ -386,8 +390,6 @@ class TestIngestDispositions(unittest.TestCase):
         # into a hard crash. Registers a real (if fake) adapter into
         # scripts.tools.ADAPTERS rather than mocking ingest_dir_detailed
         # itself, so the real except-handler code under test still runs.
-        from unittest.mock import patch
-        import scripts.tools as tools_mod
 
         class _EmptyMessageAdapter:
             def parse(self, raw, group):

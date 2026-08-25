@@ -1,8 +1,12 @@
+import contextlib
+import io
 import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 
+from _test_helpers import FakePopen
 import scripts.tools.base as tools_base
 import scripts.tools.roslyn_secguard as rs
 
@@ -112,6 +116,22 @@ MIXED_SARIF = json.dumps({
     ]}]
 }).encode()
 
+ROSLYN_SAMPLE_MALFORMED_SIBLING = json.dumps({
+    "runs": [{"results": [
+        {"ruleId": "SCS0002",
+         "message": {"text": "SQL injection"},
+         "locations": [{"physicalLocation": {
+             "artifactLocation": {"uri": "a.cs"},
+             "region": {"startLine": 3}}}]},
+        # ruleId is not a string, so rule_id.startswith("SCS") raises mid-parse.
+        {"ruleId": None,
+         "message": {"text": "malformed result"},
+         "locations": [{"physicalLocation": {
+             "artifactLocation": {"uri": "b.cs"},
+             "region": {"startLine": 1}}}]},
+    ]}]
+}).encode()
+
 
 class TestRoslynSecGuardAdapter(unittest.TestCase):
     def test_parse_produces_finding(self):
@@ -145,6 +165,8 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
         self.assertEqual(findings[0]["severity"], "MEDIUM")
 
     def test_parse_survives_empty_locations_array(self):
+        # ARC-A4A: RoslynSecGuardAdapter.DROP_IF_NO_LOCATION is True, so the
+        # location-less result is dropped while its well-formed sibling survives.
         findings = rs.RoslynSecGuardAdapter().parse(ROSLYN_SAMPLE_EMPTY_LOCATIONS, "g1")
         # The well-formed SCS0002 result survives; the location-less SCS0026
         # result is skipped rather than crashing the whole parse.
@@ -152,15 +174,17 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
         self.assertEqual(findings[0]["tool_evidence"]["rule_id"], "SCS0002")
 
     def test_parse_survives_null_locations(self):
+        # ARC-A4A: null locations are treated like empty under DROP_IF_NO_LOCATION.
         findings = rs.RoslynSecGuardAdapter().parse(ROSLYN_SAMPLE_NULL_LOCATIONS, "g1")
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0]["tool_evidence"]["rule_id"], "SCS0002")
 
     def test_parse_missing_locations_key_drops_like_empty(self):
-        # #476: an OMITTED locations key is the same location-less case as an
-        # empty/null one -- both drop. Previously the omitted form emitted a
-        # placeholder {"file": "", "line_start": 1} finding while the empty
-        # form was dropped, an asymmetry with no basis in SARIF semantics.
+        # #476 / ARC-A4A: an OMITTED locations key is the same location-less case
+        # as an empty/null one -- all drop because DROP_IF_NO_LOCATION is True.
+        # Previously the omitted form emitted a placeholder
+        # {"file": "", "line_start": 1} finding while the empty form was
+        # dropped, an asymmetry with no basis in SARIF semantics.
         findings = rs.RoslynSecGuardAdapter().parse(ROSLYN_SAMPLE_MISSING_LOCATIONS_KEY, "g1")
         self.assertEqual(findings, [])
 
@@ -188,6 +212,16 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
         self.assertTrue(findings)
         self.assertEqual(findings[0]["provenance"]["discovered_by"], "tool:roslyn-secguard")
         self.assertEqual(findings[0]["provenance"]["confirmation_status"], "TOOL")
+
+    def test_parse_malformed_result_logs_diagnostic_and_keeps_siblings(self):
+        # OPS-E1A / SEC-G2B: a per-result parse exception must be visible on stderr
+        # and must not discard already-parsed siblings.
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            findings = rs.RoslynSecGuardAdapter().parse(ROSLYN_SAMPLE_MALFORMED_SIBLING, "g1")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["tool_evidence"]["rule_id"], "SCS0002")
+        self.assertIn("roslyn-secguard: skipping result None:", stderr.getvalue())
 
     def test_build_target_prefers_solution(self):
         adapter = rs.RoslynSecGuardAdapter()
@@ -227,45 +261,31 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
         copied_src = []
         copied_dst = []
 
-        class Result:
-            returncode = 0
-            stdout = b""
-            stderr = b""
+        def fake_safe_copytree(src, dst):
+            copied_src.append(src)
+            copied_dst.append(dst)
+            open(os.path.join(dst, "x.csproj"), "w").close()
+            return 0
 
-        old_run = tools_base.subprocess.run
-        old_safe_copytree = rs._safe_copytree
-        try:
-            def fake_safe_copytree(src, dst):
-                copied_src.append(src)
-                copied_dst.append(dst)
-                open(os.path.join(dst, "x.csproj"), "w").close()
-                return 0
+        def fake_popen(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return FakePopen(stdout=b"{}", stderr=b"", returncode=0)
 
-            def fake_run(cmd, **kwargs):
-                calls.append((cmd, kwargs))
-                return Result()
-
-            rs._safe_copytree = fake_safe_copytree
-            tools_base.subprocess.run = fake_run
+        with mock.patch.object(rs, "_safe_copytree", side_effect=fake_safe_copytree), \
+             mock.patch.object(tools_base.subprocess, "Popen", side_effect=fake_popen):
             with tempfile.TemporaryDirectory() as d:
                 open(os.path.join(d, "x.csproj"), "w").close()
                 raw, rc = adapter.invoke(d)
                 self.assertEqual(raw, b"{}")
                 self.assertEqual(rc, 0)
                 self.assertEqual(copied_src, [d])
-        finally:
-            tools_base.subprocess.run = old_run
-            rs._safe_copytree = old_safe_copytree
 
         cmd = calls[0][0]
-        kwargs = calls[0][1]
         self.assertEqual(cmd[0], "dotnetarium-scs")
         self.assertTrue(cmd[1].startswith(copied_dst[0]))
         self.assertTrue(any(arg.startswith("--export=") for arg in cmd))
         self.assertIn("--ignore-msbuild-errors", cmd)
         self.assertIn("--no-banner", cmd)
-        self.assertEqual(kwargs.get("timeout"), 600)
-        self.assertTrue(kwargs.get("capture_output"))
 
 
 class TestRebaseSarifUris(unittest.TestCase):

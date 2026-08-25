@@ -29,6 +29,7 @@ _PRIORITY_TO_SEVERITY = {
 class SpotBugsAdapter:
     name = "spotbugs"
     prefix = "SB"
+    DROP_IF_NO_LOCATION = False
 
     @staticmethod
     def _classes_dir(target: str):

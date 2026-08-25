@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+from _test_helpers import FakePopen
 import scripts.tools.osv_scanner as osv
 import scripts.tools.base as base
 
@@ -77,8 +78,34 @@ class TestOsvScannerAdapter(unittest.TestCase):
     def test_severity_from_groups_max_severity_cvss(self):
         findings = osv.OsvScannerAdapter().parse(OSV_REAL_SAMPLE, "g1")
         by_id = {f["tool_evidence"]["rule_id"]: f for f in findings}
+        self.assertIn("GHSA-9hjg-9r4m-mvj7", by_id)
+        self.assertIn("GHSA-x84v-xcm2-53pg", by_id)
         self.assertEqual(by_id["GHSA-9hjg-9r4m-mvj7"]["severity"], "MEDIUM")  # 5.3
         self.assertEqual(by_id["GHSA-x84v-xcm2-53pg"]["severity"], "CRITICAL")  # 9.8
+
+    def test_severity_from_vulnerability_cvss_v3_list(self):
+        # ARC-D2B / COD-C3B run-7: when groups[].max_severity is absent, OSV's
+        # vulnerabilities[].severity list of CVSS_V3 vector dicts must be parsed.
+        sample = json.dumps({
+            "results": [{
+                "source": {"path": "/src/package-lock.json"},
+                "packages": [{
+                    "package": {"name": "dep", "version": "1.0.0", "ecosystem": "npm"},
+                    "groups": [],
+                    "vulnerabilities": [{
+                        "id": "GHSA-LIST-ONLY",
+                        "aliases": ["CVE-2024-0001"],
+                        "severity": [{"type": "CVSS_V3",
+                                      "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}],
+                        "summary": "Remote code execution",
+                    }],
+                }],
+            }]
+        }).encode()
+        findings = osv.OsvScannerAdapter().parse(sample, "g1")
+        self.assertEqual(len(findings), 1)
+        self.assertNotEqual(findings[0]["severity"], "INFO")
+        self.assertEqual(findings[0]["severity"], "CRITICAL")
 
     def test_cvss_bucket_boundaries(self):
         self.assertEqual(base.cvss_bucket(9.0), "CRITICAL")
@@ -90,6 +117,7 @@ class TestOsvScannerAdapter(unittest.TestCase):
     def test_parse_uppercases_cve_and_filters_aliases(self):
         findings = osv.OsvScannerAdapter().parse(OSV_REAL_SAMPLE, "g1")
         by_id = {f["tool_evidence"]["rule_id"]: f for f in findings}
+        self.assertIn("GHSA-9hjg-9r4m-mvj7", by_id)
         self.assertEqual(by_id["GHSA-9hjg-9r4m-mvj7"]["citations"]["cve"],
                          ["CVE-2024-47081"])
 
@@ -118,24 +146,25 @@ class TestOsvScannerAdapter(unittest.TestCase):
 
     def test_invoke_runs_osv_scanner_json(self):
         adapter = osv.OsvScannerAdapter()
-        fake_run = mock.Mock(return_value=mock.Mock(stdout=b"{}", returncode=0))
-        with mock.patch("scripts.tools.base.subprocess.run", fake_run):
+        fake_run = FakePopen(stdout=b"{}", stderr=b"", returncode=0)
+        with mock.patch("scripts.tools.base.subprocess.Popen",
+                        return_value=fake_run) as popen_mock:
             stdout, rc = adapter.invoke("/tmp/fake")
         self.assertEqual(stdout, b"{}")
         self.assertEqual(rc, 0)
-        fake_run.assert_called_once_with(
+        popen_mock.assert_called_once_with(
             ["osv-scanner", "--format", "json", "--experimental-offline", "--recursive", "/tmp/fake"],
-            capture_output=True,
-            timeout=300,
+            stdout=mock.ANY,
+            stderr=mock.ANY,
         )
 
     def test_invoke_reports_nonzero_exit(self):
         import contextlib, io
         adapter = osv.OsvScannerAdapter()
-        fake_run = mock.Mock(return_value=mock.Mock(
-            stdout=b"scan output", stderr=b"no lockfiles found", returncode=2))
+        fake_run = FakePopen(stdout=b"scan output", stderr=b"no lockfiles found",
+                             returncode=2)
         buf = io.StringIO()
-        with mock.patch("scripts.tools.base.subprocess.run", fake_run), \
+        with mock.patch("scripts.tools.base.subprocess.Popen", return_value=fake_run), \
              contextlib.redirect_stderr(buf):
             stdout, rc = adapter.invoke("/tmp/fake")
         self.assertEqual(stdout, b"scan output")

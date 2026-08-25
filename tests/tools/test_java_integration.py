@@ -2,7 +2,11 @@ import os
 import unittest
 
 from scripts.tools import ADAPTERS
-from conftest import FIXTURE_ROOT
+from tests.tools.conftest import FIXTURE_ROOT
+
+
+# Guard against a surprising FIXTURE_ROOT value before any test relies on it.
+assert FIXTURE_ROOT.rstrip(os.sep).endswith(os.path.join("tests", "fixtures"))
 
 
 class TestJavaIntegration(unittest.TestCase):

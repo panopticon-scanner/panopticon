@@ -1,3 +1,6 @@
+import contextlib
+import contextvars
+import io
 import json
 import os
 import shutil
@@ -5,7 +8,20 @@ import tempfile
 import unittest
 from unittest import mock
 
+import pytest
+
+from _test_helpers import FakePopen
 import scripts.tools.pip_audit as pa
+
+
+@pytest.fixture(autouse=True)
+def _reset_pip_audit_manifest_path_cv():
+    """Reset the per-invocation manifest path ContextVar around each test."""
+    token = pa._manifest_path_cv.set(None)
+    try:
+        yield
+    finally:
+        pa._manifest_path_cv.reset(token)
 
 PIP_AUDIT_SAMPLE = json.dumps({
     "dependencies": [
@@ -55,16 +71,43 @@ class TestPipAuditAdapter(unittest.TestCase):
 
     def test_parse_uses_actual_manifest_path(self):
         adapter = pa.PipAuditAdapter()
-        adapter._manifest_path = "/tmp/fake/pyproject.toml"
-        findings = adapter.parse(PIP_AUDIT_SAMPLE, "g1")
-        self.assertEqual(len(findings), 1)
-        self.assertEqual(findings[0]["location"]["file"], "/tmp/fake/pyproject.toml")
+        token = pa._manifest_path_cv.set("/tmp/fake/pyproject.toml")
+        try:
+            findings = adapter.parse(PIP_AUDIT_SAMPLE, "g1")
+            self.assertEqual(len(findings), 1)
+            self.assertEqual(findings[0]["location"]["file"], "/tmp/fake/pyproject.toml")
+        finally:
+            pa._manifest_path_cv.reset(token)
 
     def test_parse_defaults_location_file_when_no_manifest(self):
         adapter = pa.PipAuditAdapter()
         findings = adapter.parse(PIP_AUDIT_SAMPLE, "g1")
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0]["location"]["file"], "requirements.txt")
+
+    def test_manifest_path_is_per_invocation_not_singleton_state(self):
+        # Regression: _manifest_path used to be stored on the singleton
+        # instance, so a second invoke could overwrite the value before the
+        # first invoke's output was parsed. To catch that, invoke both targets
+        # before parsing either result. Each target's invoke/parse pair runs in
+        # its own copied execution context so the ContextVar set by invoke is
+        # still the right one when parse is finally called.
+        adapter = pa.PipAuditAdapter()
+
+        def fake_find_requirement(target: str) -> str:
+            return os.path.join(target, "requirements.txt")
+
+        with mock.patch.object(adapter, "_find_requirement", side_effect=fake_find_requirement):
+            with mock.patch.object(pa, "run_tool", return_value=(PIP_AUDIT_SAMPLE, 0)):
+                ctx1 = contextvars.copy_context()
+                ctx2 = contextvars.copy_context()
+                raw1, _ = ctx1.run(adapter.invoke, "/tmp/fake1")
+                raw2, _ = ctx2.run(adapter.invoke, "/tmp/fake2")
+                findings1 = ctx1.run(adapter.parse, raw1, "g1")
+                findings2 = ctx2.run(adapter.parse, raw2, "g2")
+
+        self.assertEqual(findings1[0]["location"]["file"], "/tmp/fake1/requirements.txt")
+        self.assertEqual(findings2[0]["location"]["file"], "/tmp/fake2/requirements.txt")
 
     def test_parse_omits_none_tool_evidence_fields(self):
         sample = json.dumps({
@@ -145,22 +188,24 @@ class TestPipAuditAdapter(unittest.TestCase):
 
     def test_invoke_uses_requirements_txt_when_present(self):
         adapter = pa.PipAuditAdapter()
-        fake_run = mock.Mock(return_value=mock.Mock(stdout=b"[]", returncode=0))
-        with mock.patch("scripts.tools.base.subprocess.run", fake_run):
+        fake_run = FakePopen(stdout=b"[]", stderr=b"", returncode=0)
+        with mock.patch("scripts.tools.base.subprocess.Popen",
+                        return_value=fake_run) as popen_mock:
             with mock.patch("scripts.tools.pip_audit.glob.glob", return_value=["/tmp/fake/requirements.txt"]):
                 stdout, rc = adapter.invoke("/tmp/fake")
         self.assertEqual(stdout, b"[]")
         self.assertEqual(rc, 0)
-        fake_run.assert_called_once_with(
+        popen_mock.assert_called_once_with(
             ["pip-audit", "--format=json", "--desc=on", "--progress-spinner=off", "--requirement", "/tmp/fake/requirements.txt"],
-            capture_output=True,
-            timeout=300,
+            stdout=mock.ANY,
+            stderr=mock.ANY,
         )
 
     def test_invoke_falls_back_to_pyproject_toml(self):
         adapter = pa.PipAuditAdapter()
-        fake_run = mock.Mock(return_value=mock.Mock(stdout=b"[]", returncode=0))
-        with mock.patch("scripts.tools.base.subprocess.run", fake_run):
+        fake_run = FakePopen(stdout=b"[]", stderr=b"", returncode=0)
+        with mock.patch("scripts.tools.base.subprocess.Popen",
+                        return_value=fake_run) as popen_mock:
             with mock.patch("scripts.tools.pip_audit.glob.glob", return_value=[]):
                 with mock.patch("scripts.tools.pip_audit._deps_from_pyproject",
                                return_value=["requests==2.25.1"]):
@@ -168,7 +213,7 @@ class TestPipAuditAdapter(unittest.TestCase):
         self.assertEqual(stdout, b"[]")
         self.assertEqual(rc, 0)
         # Verify that --requirement is used with a temp file, not a positional arg
-        call_args = fake_run.call_args[0][0]
+        call_args = popen_mock.call_args[0][0]
         self.assertIn("--requirement", call_args)
         self.assertNotIn("/tmp/fake", call_args)
 
@@ -227,10 +272,10 @@ class TestStaticPyproject(unittest.TestCase):
     def test_invoke_reports_nonzero_exit(self):
         import contextlib, io
         adapter = pa.PipAuditAdapter()
-        fake_run = mock.Mock(return_value=mock.Mock(
-            stdout=b"audit output", stderr=b"pip-audit failed", returncode=2))
+        fake_run = FakePopen(stdout=b"audit output", stderr=b"pip-audit failed",
+                             returncode=2)
         buf = io.StringIO()
-        with mock.patch("scripts.tools.base.subprocess.run", fake_run), \
+        with mock.patch("scripts.tools.base.subprocess.Popen", return_value=fake_run), \
              mock.patch("scripts.tools.pip_audit.glob.glob", return_value=["/tmp/fake/requirements.txt"]), \
              contextlib.redirect_stderr(buf):
             stdout, rc = adapter.invoke("/tmp/fake")
@@ -241,11 +286,14 @@ class TestStaticPyproject(unittest.TestCase):
 
     def test_invoke_dynamic_pyproject_returns_empty_without_running(self):
         target = self._target(PYPROJECT_DYNAMIC)
-        with mock.patch.object(pa, "run_tool") as rt_mock:
+        buf = io.StringIO()
+        with mock.patch.object(pa, "run_tool") as rt_mock, \
+             contextlib.redirect_stderr(buf):
             raw, rc = pa.PipAuditAdapter().invoke(target)
         rt_mock.assert_not_called()
         self.assertEqual((json.loads(raw), rc),
                          ({"dependencies": [], "fixes": []}, 0))
+        self.assertIn("no static [project.dependencies]", buf.getvalue())
 
     def test_non_utf8_pyproject_returns_none(self):
         deps = pa._deps_from_pyproject(

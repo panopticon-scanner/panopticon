@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+from _test_helpers import FakePopen
 import scripts.tools.eslint_security as es
 from scripts.tools import ADAPTERS
 
@@ -87,6 +88,19 @@ class TestEslintSecurityAdapter(unittest.TestCase):
                           "line": 5, "message": "m"}],
         }]).encode()
 
+    def test_heuristic_rules_get_likely_confidence(self):
+        # ARC-A4A run-7: FP-prone heuristic rules should not claim CERTAIN.
+        adapter = es.EslintSecurityAdapter()
+        heuristic_finding = adapter.parse(
+            self._one("security/detect-object-injection", 2), "g1")[0]
+        self.assertEqual(heuristic_finding["confidence"], "LIKELY")
+        timing_finding = adapter.parse(
+            self._one("security/detect-possible-timing-attacks", 2), "g1")[0]
+        self.assertEqual(timing_finding["confidence"], "LIKELY")
+        non_heuristic_finding = adapter.parse(
+            self._one("security/detect-eval-with-expression", 2), "g1")[0]
+        self.assertEqual(non_heuristic_finding["confidence"], "CERTAIN")
+
     def test_severity_is_rule_derived_not_eslint_level(self):
         # #1118: invoke() forces every rule to eslint 'error' (level 2), so the
         # level carries no severity signal -- severity comes from RULE_SEVERITY.
@@ -145,13 +159,14 @@ class TestEslintSecurityAdapter(unittest.TestCase):
     def test_invoke_runs_eslint_with_generated_flat_config(self):
         # #run7: eslint 10 loads plugins via a flat config, not `--plugin`.
         adapter = es.EslintSecurityAdapter()
-        fake_run = mock.Mock(return_value=mock.Mock(stdout=b"[]", returncode=0))
-        with mock.patch("scripts.tools.base.subprocess.run", fake_run), \
+        fake_run = FakePopen(stdout=b"[]", stderr=b"", returncode=0)
+        with mock.patch("scripts.tools.base.subprocess.Popen",
+                        return_value=fake_run) as popen_mock, \
              mock.patch.object(es.EslintSecurityAdapter, "_lintable_sources",
                                return_value=["x.js"]):
             stdout, rc = adapter.invoke("/tmp/fake")
         self.assertEqual((stdout, rc), (b"[]", 0))
-        cmd, kwargs = fake_run.call_args[0][0], fake_run.call_args[1]
+        cmd = popen_mock.call_args[0][0]
         self.assertEqual(cmd[0], "eslint")
         self.assertIn("--config", cmd)
         self.assertTrue(cmd[cmd.index("--config") + 1].endswith("eslint.config.mjs"))
@@ -159,15 +174,15 @@ class TestEslintSecurityAdapter(unittest.TestCase):
         self.assertIn("--format", cmd)
         self.assertIn("json", cmd)
         self.assertEqual(cmd[-1], os.path.abspath("/tmp/fake"))
-        self.assertEqual(kwargs["timeout"], 300)
 
     def test_invoke_reports_nonzero_exit(self):
         import contextlib, io
         adapter = es.EslintSecurityAdapter()
-        fake_run = mock.Mock(return_value=mock.Mock(
-            stdout=b"[]", stderr=b"eslint config error", returncode=2))
+        fake_run = FakePopen(stdout=b"[]", stderr=b"eslint config error",
+                             returncode=2)
         buf = io.StringIO()
-        with mock.patch("scripts.tools.base.subprocess.run", fake_run), \
+        with mock.patch("scripts.tools.base.subprocess.Popen",
+                        return_value=fake_run), \
              mock.patch.object(es.EslintSecurityAdapter, "_lintable_sources",
                                return_value=["x.js"]), \
              contextlib.redirect_stderr(buf):
@@ -202,12 +217,13 @@ class TestEslintSecurityAdapter(unittest.TestCase):
         # must be absolute so linting still resolves the right directory
         # regardless of the pinned cwd.
         adapter = es.EslintSecurityAdapter()
-        fake_run = mock.Mock(return_value=mock.Mock(stdout=b"[]", returncode=0))
-        with mock.patch("scripts.tools.base.subprocess.run", fake_run), \
+        fake_run = FakePopen(stdout=b"[]", stderr=b"", returncode=0)
+        with mock.patch("scripts.tools.base.subprocess.Popen",
+                        return_value=fake_run) as popen_mock, \
              mock.patch.object(es.EslintSecurityAdapter, "_lintable_sources",
                                return_value=["x.js"]):
             adapter.invoke("relative/target")
-        args, _kwargs = fake_run.call_args
+        args, _kwargs = popen_mock.call_args
         cmd = args[0]
         self.assertEqual(cmd[-1], os.path.abspath("relative/target"))
 
@@ -216,7 +232,7 @@ class TestEslintSecurityAdapter(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             open(os.path.join(d, "package.json"), "w").close()
             fake_run = mock.Mock()
-            with mock.patch("scripts.tools.base.subprocess.run", fake_run):
+            with mock.patch("scripts.tools.base.subprocess.Popen", fake_run):
                 stdout, rc = es.EslintSecurityAdapter().invoke(d)
         self.assertEqual((stdout, rc), (b"[]", 0))
         fake_run.assert_not_called()   # eslint never invoked -> ran-clean empty
@@ -228,7 +244,7 @@ class TestEslintSecurityAdapter(unittest.TestCase):
             open(os.path.join(nm, "index.js"), "w").close()
             open(os.path.join(d, "package.json"), "w").close()
             fake_run = mock.Mock()
-            with mock.patch("scripts.tools.base.subprocess.run", fake_run):
+            with mock.patch("scripts.tools.base.subprocess.Popen", fake_run):
                 stdout, rc = es.EslintSecurityAdapter().invoke(d)
         self.assertEqual((stdout, rc), (b"[]", 0))
         fake_run.assert_not_called()
@@ -236,11 +252,12 @@ class TestEslintSecurityAdapter(unittest.TestCase):
     def test_invoke_runs_eslint_when_real_source_present(self):
         with tempfile.TemporaryDirectory() as d:
             open(os.path.join(d, "app.js"), "w").close()
-            fake_run = mock.Mock(return_value=mock.Mock(stdout=b"[]", returncode=0))
-            with mock.patch("scripts.tools.base.subprocess.run", fake_run):
+            fake_run = FakePopen(stdout=b"[]", stderr=b"", returncode=0)
+            with mock.patch("scripts.tools.base.subprocess.Popen",
+                            return_value=fake_run) as popen_mock:
                 es.EslintSecurityAdapter().invoke(d)
-        fake_run.assert_called_once()   # source present -> eslint really runs
-        self.assertEqual(fake_run.call_args[0][0][0], "eslint")
+        popen_mock.assert_called_once()   # source present -> eslint really runs
+        self.assertEqual(popen_mock.call_args[0][0][0], "eslint")
 
     def test_parse_includes_provenance(self):
         findings = es.EslintSecurityAdapter().parse(ESLINT_SAMPLE, "g1")

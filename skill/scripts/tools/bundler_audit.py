@@ -2,7 +2,8 @@
 from __future__ import annotations
 import os
 import re
-from .base import make_finding, normalize_severity, omit_none, run_tool
+import sys
+from .base import cve_ids, make_finding, normalize_severity, omit_none, parse_json_bytes, run_tool
 
 _BLOCK_RE = re.compile(
     r"Name:\s*(?P<name>[^\n]+)\n"
@@ -25,11 +26,62 @@ class BundlerAuditAdapter:
         return os.path.exists(os.path.join(target, "Gemfile.lock"))
 
     def invoke(self, target: str) -> tuple[bytes, int]:
-        cmd = ["bundle-audit", "check", "--no-update"]
-        return run_tool(cmd, timeout=300, cwd=target)
+        json_cmd = ["bundle-audit", "check", "--format", "json", "--no-update"]
+        raw, stderr, rc = run_tool(json_cmd, timeout=300, cwd=target,
+                                   capture_stderr=True)
+        # bundler-audit added --format json in 0.8.0. Older gems reject the
+        # switch (Thor prints "Unknown switches '--format'" and exits non-zero).
+        # Fall back to the legacy text output and let parse() shape-guard it.
+        if rc not in (0, 1) or b"Unknown switches" in stderr:
+            return run_tool(["bundle-audit", "check", "--no-update"],
+                            timeout=300, cwd=target)
+        return raw, rc
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
-        text = raw.decode("utf-8", errors="replace")
+        try:
+            data = parse_json_bytes(raw)
+        except Exception:
+            data = None
+
+        if isinstance(data, dict) and "results" in data:
+            return self._parse_json(data, group)
+
+        return self._parse_text(raw.decode("utf-8", errors="replace"), group, raw)
+
+    def _parse_json(self, data: dict, group: str) -> list[dict]:
+        out = []
+        n = 1
+        for vuln in data.get("results", []):
+            gem = vuln.get("gem") or {}
+            advisory = vuln.get("advisory") or {}
+            advisory_id = advisory.get("id", "")
+            package_name = gem.get("name", "gem")
+            package_version = gem.get("version", "")
+            title = advisory.get("title", "No description provided.")
+            url = advisory.get("url")
+            patched = advisory.get("patched_versions", [])
+            out.append(make_finding(
+                self, n, group,
+                title=f"{package_name} {package_version}: {title}",
+                severity=normalize_severity(advisory.get("criticality")),
+                category="dependency_vulnerability",
+                location={"file": "Gemfile.lock", "line_start": 1},
+                description=title,
+                impact=f"Vulnerable dependency {package_name}=={package_version} is used.",
+                remediation=f"Upgrade to a fixed version: {', '.join(patched) or 'see advisory'}",
+                references=[url] if url else [],
+                citations={"cve": cve_ids([advisory_id])},
+                tool_evidence=omit_none({
+                    "rule_id": advisory_id or None,
+                    "package_name": package_name,
+                    "vulnerable_versions": package_version or None,
+                    "advisory_url": url,
+                }),
+            ))
+            n += 1
+        return out
+
+    def _parse_text(self, text: str, group: str, raw: bytes) -> list[dict]:
         out = []
         n = 1
         for m in _BLOCK_RE.finditer(text):
@@ -53,4 +105,10 @@ class BundlerAuditAdapter:
                 }),
             ))
             n += 1
+
+        if not out and raw.strip():
+            print(
+                f"bundler-audit: no advisories parsed from non-empty output ({len(raw)} bytes)",
+                file=sys.stderr,
+            )
         return out

@@ -2,6 +2,8 @@ import os
 import re
 import unittest
 
+import yaml
+
 ROOT = os.path.join(os.path.dirname(__file__), os.pardir)
 
 
@@ -99,13 +101,45 @@ class TestOfflineAssets(unittest.TestCase):
     def test_publish_cadence_and_tags(self):
         with open(os.path.join(ROOT, ".github", "workflows",
                                "docker-publish.yml"), encoding="utf-8") as fh:
-            wf = fh.read()
-        self.assertIn('cron: "0 6 * * *"', wf)      # daily asset refresh
-        self.assertIn("workflow_dispatch", wf)
-        self.assertIn("promote_weekly", wf)          # emergency weekly bump
-        self.assertIn("value=daily", wf)
-        self.assertIn("value=weekly", wf)
-        self.assertIn("ASSET_REFRESH", wf)           # cache-bust build-arg
+            wf = yaml.safe_load(fh)
+        # PyYAML 1.1 parses the unquoted `on:` key as the boolean True.
+        on = wf.get(True, {})
+        self.assertEqual(on["schedule"][0]["cron"], "0 6 * * *")
+        self.assertIn("workflow_dispatch", on)
+        promote = on["workflow_dispatch"]["inputs"]["promote_weekly"]
+        self.assertEqual(promote.get("type"), "boolean")
+        self.assertIn("default", promote)
+        self.assertEqual(promote.get("default"), False)
+        self.assertIn(
+            "(github.event_name == 'schedule' && steps.cadence.outputs.weekly == 'true') || inputs.promote_weekly == true",
+            str(wf["jobs"]["merge"]["steps"]),
+        )
+
+        # Negative regression: the weekly tag expression must live in the
+        # metadata-action tags input, not just anywhere in the file.
+        meta_step = next(
+            s for s in wf["jobs"]["merge"]["steps"]
+            if s.get("id") == "meta"
+        )
+        self.assertIn(
+            "(github.event_name == 'schedule' && steps.cadence.outputs.weekly == 'true') || inputs.promote_weekly == true",
+            meta_step["with"]["tags"],
+        )
+        self.assertIn(
+            "type=raw,value=daily,enable={{is_default_branch}}",
+            meta_step["with"]["tags"],
+        )
+
+        # The workflow must pass the computed asset-refresh date into the
+        # build-args so daily rebuilds bust the layers that embed $ASSET_REFRESH.
+        build_step = next(
+            s for s in wf["jobs"]["build"]["steps"]
+            if s.get("id") == "build"
+        )
+        self.assertIn(
+            "ASSET_REFRESH=${{ steps.cadence.outputs.date }}",
+            build_step["with"]["build-args"],
+        )
 
     def test_dockerfile_has_asset_refresh_arg(self):
         self.assertIn("ARG ASSET_REFRESH", self.text)

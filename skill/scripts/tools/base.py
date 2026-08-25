@@ -1,14 +1,20 @@
 """Shared base utilities for tool adapters."""
 from __future__ import annotations
 import json
+import math
 import os
 import re
-import sys
 import subprocess
+import sys
+import threading
 from typing import Any, Protocol
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
 from scripts.provenance import tool_provenance
+
+
+# Adapters may drop results with no actionable location, or synthesize one.
+# Each adapter declares its policy explicitly.
+DROP_IF_NO_LOCATION = False  # default; adapters override if needed
 
 
 def omit_none(mapping: dict[str, Any]) -> dict[str, Any]:
@@ -94,6 +100,49 @@ def cvss_bucket(score: float) -> str:
     return "LOW"
 
 
+_CIA_WEIGHTS = {"N": 0, "L": 0.22, "H": 0.56}
+
+
+def _cvss_v3_score(vector: str) -> float | None:
+    """Calculate CVSS v3.1 base score from a vector string."""
+    try:
+        metrics = dict(part.split(":") for part in vector.replace("CVSS:3.1/", "").replace("CVSS:3.0/", "").split("/"))
+        av = metrics.get("AV", "")
+        ac = metrics.get("AC", "")
+        pr = metrics.get("PR", "")
+        ui = metrics.get("UI", "")
+        s = metrics.get("S", "")
+        c = metrics.get("C", "")
+        i = metrics.get("I", "")
+        a = metrics.get("A", "")
+        if not all([av, ac, pr, ui, s, c, i, a]):
+            return None
+        iss = 1 - ((1 - _CIA_WEIGHTS.get(c, 0)) *
+                   (1 - _CIA_WEIGHTS.get(i, 0)) *
+                   (1 - _CIA_WEIGHTS.get(a, 0)))
+        impact = 7.52 * (iss - 0.029) - 3.25 * (iss - 0.02) ** 15 if s == "C" else 6.42 * iss
+        av_score = {"N": 0.85, "A": 0.62, "L": 0.55, "P": 0.2}.get(av, 0.85)
+        ac_score = {"L": 0.77, "H": 0.44}.get(ac, 0.77)
+        pr_scores = {"N": 0.85, "L": {"U": 0.62, "C": 0.68}, "H": {"U": 0.27, "C": 0.5}}.get(pr, 0.85)
+        pr_score = pr_scores.get(s, 0.85) if isinstance(pr_scores, dict) else pr_scores
+        ui_score = {"N": 0.85, "R": 0.62}.get(ui, 0.85)
+        exploitability = 8.22 * av_score * ac_score * pr_score * ui_score
+        if impact <= 0:
+            score = 0.0
+        elif s == "C":
+            score = min(1.08 * (impact + exploitability), 10.0)
+        else:
+            score = min(impact + exploitability, 10.0)
+        # CVSS v3.1 spec: Roundup(x) = smallest 1-decimal >= x (#475). Without
+        # it every boundary score under-reads (e.g. the textbook 9.8 vector
+        # computed 9.76 -> reported 9.7-ish instead of 9.8), skewing severity
+        # bucketing at HIGH/CRITICAL thresholds. Epsilon per the spec's
+        # reference implementation to dodge float artifacts.
+        return math.ceil(score * 10 - 1e-9) / 10 if score else 0.0
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return None
+
+
 def cve_ids(values: list | None) -> list[str]:
     """Uppercased CVE-* ids from a list of advisory ids/aliases."""
     return [v.upper() for v in values or []
@@ -149,18 +198,141 @@ class ToolAdapter(Protocol):
     def parse(self, raw: bytes, group: str) -> list[dict]:
         ...
 
-def run_tool(cmd, timeout, ok_codes=(0, 1), **kwargs):
+MAX_TOOL_OUTPUT_BYTES = 50 * 1024 * 1024
+
+
+def _drain(stream):
+    """Read and discard the rest of a stream so the child is never left blocked
+    on a full pipe."""
+    while stream.read(64 * 1024):
+        pass
+
+
+def run_tool(cmd, timeout, ok_codes=(0, 1), capture_stderr=False, **kwargs):
     """Run a scanner subprocess, preserving failure diagnostics (F-CAL-1).
 
-    Returns (stdout, returncode) — the adapter invoke() contract. On exit
-    codes outside ok_codes (1 == findings for most scanners; brakeman also
-    uses 2/3), a capped stderr excerpt is written to our stderr so
-    'exited N; skipping' is diagnosable.
+    Returns (stdout, returncode) by default, or (stdout, stderr, returncode)
+    when *capture_stderr* is True. On exit codes outside ok_codes
+    (1 == findings for most scanners; brakeman also uses 2/3), a capped
+    stderr excerpt is written to our stderr so 'exited N; skipping' is
+    diagnosable.
+
+    Bounded capture: stdout is streamed into a bounded buffer so
+    adversarial/large target output does not accumulate unbounded in memory
+    (#1111). When the byte cap is exceeded the child is terminated, the output
+    is truncated with a marker, and a stderr notice is emitted. The partial
+    output is still returned so the truncation is visible downstream.
+
+    Stderr is drained concurrently so a child that fills the stderr pipe while
+    still writing stdout cannot deadlock the parent (#K2-1).
     """
-    res = subprocess.run(cmd, capture_output=True, timeout=timeout, **kwargs)  # nosec B603
-    rc = res.returncode
+    popen_kwargs = dict(kwargs)
+    popen_kwargs.setdefault("stdout", subprocess.PIPE)
+    popen_kwargs.setdefault("stderr", subprocess.PIPE)
+
+    timed_out = {"hit": False}
+
+    def _watchdog():
+        timed_out["hit"] = True
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+    proc = subprocess.Popen(cmd, **popen_kwargs)  # nosec B603
+    timer = threading.Timer(timeout, _watchdog)
+    timer.daemon = True
+    timer.start()
+
+    stderr_chunks: list[bytes] = []
+
+    def _drain_stderr():
+        try:
+            while True:
+                chunk = proc.stderr.read(64 * 1024)
+                if not chunk:
+                    break
+                stderr_chunks.append(chunk)
+        except Exception:
+            pass
+
+    stderr_thread = threading.Thread(target=_drain_stderr)
+    stderr_thread.daemon = True
+    stderr_thread.start()
+
+    try:
+        chunks: list[bytes] = []
+        collected = 0
+        truncated = False
+        while True:
+            chunk = proc.stdout.read(64 * 1024)
+            if not chunk:
+                break
+            room = MAX_TOOL_OUTPUT_BYTES - collected
+            if room <= 0:
+                truncated = True
+                _drain(proc.stdout)
+                break
+            if len(chunk) > room:
+                chunks.append(chunk[:room])
+                collected += room
+                truncated = True
+                _drain(proc.stdout)
+                break
+            chunks.append(chunk)
+            collected += len(chunk)
+
+        if truncated:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            stdout = b"".join(chunks)
+            marker = (
+                "\n\n[TRUNCATED by panopticon: output exceeded %d byte limit; "
+                "only the first %d bytes were retained]\n" % (
+                    MAX_TOOL_OUTPUT_BYTES, MAX_TOOL_OUTPUT_BYTES)
+            ).encode("utf-8")
+            print(
+                "tool %s output exceeded %d byte limit; truncated and retained "
+                "with marker" % (cmd[0], MAX_TOOL_OUTPUT_BYTES),
+                file=sys.stderr,
+            )
+
+        rc = proc.wait()
+        stderr_thread.join(timeout=2.0)
+        stderr = b"".join(stderr_chunks)
+
+        if truncated:
+            if capture_stderr:
+                return stdout + marker, stderr, rc
+            return stdout + marker, rc
+    finally:
+        timer.cancel()
+        try:
+            proc.stdout.close()
+        except Exception:
+            pass
+        # Closing stderr wakes the drain thread if it is still blocked.
+        stderr_thread.join(timeout=0.5)
+        try:
+            proc.stderr.close()
+        except Exception:
+            pass
+        if proc.poll() is None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+    if timed_out["hit"] and rc not in (0, 1):
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
+
     if rc not in ok_codes:
-        excerpt = (res.stderr or b"")[-1000:].decode("utf-8", errors="replace").strip()
+        excerpt = (stderr or b"")[-1000:].decode("utf-8", errors="replace").strip()
         details = f": {excerpt}" if excerpt else ""
         print(f"tool {cmd[0]} exited {rc}{details}", file=sys.stderr)
-    return res.stdout, rc
+
+    if capture_stderr:
+        return b"".join(chunks), stderr, rc
+    return b"".join(chunks), rc

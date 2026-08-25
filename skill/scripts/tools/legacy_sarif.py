@@ -2,8 +2,8 @@
 from __future__ import annotations
 import json
 
-import scripts.tools.sarif_utils as su
-from scripts.tools.base import run_tool
+from . import sarif_utils as su
+from .base import run_tool
 
 
 # Tools that produce SARIF output and are dispatched through this adapter.

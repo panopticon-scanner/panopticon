@@ -109,6 +109,7 @@ def _rebase_sarif_uris(raw, tmp):
 class RoslynSecGuardAdapter:
     name = "roslyn-secguard"
     prefix = "RS"
+    DROP_IF_NO_LOCATION = True
 
     def is_applicable(self, target: str) -> bool:
         if not os.path.isdir(target):
@@ -235,6 +236,7 @@ class RoslynSecGuardAdapter:
                     # previously an omitted key emitted a placeholder-location
                     # finding while an empty list was dropped, an asymmetry
                     # with no basis in SARIF semantics.
+                    # Policy: DROP_IF_NO_LOCATION (see adapter constant).
                     locs = result.get("locations") or []
                     if not locs:
                         continue
@@ -257,7 +259,8 @@ class RoslynSecGuardAdapter:
                         citations={"cwe": as_list(cwe)},
                         tool_evidence=omit_none({"rule_id": rule_id}),
                     )
-                except Exception:  # noqa: BLE001 - tolerant by design: skip only this result
+                except Exception as exc:  # noqa: BLE001 - tolerant by design: skip only this result
+                    print(f"roslyn-secguard: skipping result {result.get('ruleId', 'unknown')}: {exc!r}", file=sys.stderr)
                     continue
                 out.append(finding)
                 n += 1
