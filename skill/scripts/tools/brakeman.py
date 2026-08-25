@@ -50,16 +50,18 @@ _BRAKEMAN_SEVERITY = {
     "Unsafe Reflection": "MEDIUM",
 }
 _BRAKEMAN_SEVERITY.update({
-    "SSL Verification Bypass": "MEDIUM",
-    "LDAP Injection": "HIGH",
-    "Weak Hash": "MEDIUM",
-    "Path Traversal": "HIGH",
-    "Insecure Cryptography Algorithm": "HIGH",
-    "Regex Denial of Service": "MEDIUM",
-    "Timing Attack": "LOW",
-    "Command Injection": "CRITICAL",
-    "Unsafe Reflection": "HIGH",
-    "Mass Assignment": "MEDIUM",
+    k: v for k, v in {
+        "SSL Verification Bypass": "MEDIUM",
+        "LDAP Injection": "HIGH",
+        "Weak Hash": "MEDIUM",
+        "Path Traversal": "HIGH",
+        "Insecure Cryptography Algorithm": "HIGH",
+        "Regex Denial of Service": "MEDIUM",
+        "Timing Attack": "LOW",
+        "Command Injection": "CRITICAL",
+        "Unsafe Reflection": "HIGH",
+        "Mass Assignment": "MEDIUM",
+    }.items() if k not in _BRAKEMAN_SEVERITY
 })
 
 

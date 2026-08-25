@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import unittest
 from unittest import mock
@@ -110,7 +112,7 @@ class TestBrakemanAdapter(unittest.TestCase):
             ("Path Traversal", "HIGH"),
             ("Weak Hash", "MEDIUM"),
             ("Timing Attack", "LOW"),
-            ("Command Injection", "CRITICAL"),
+            ("Command Injection", "HIGH"),
         ):
             payload = json.dumps({
                 "warnings": [{
@@ -125,7 +127,6 @@ class TestBrakemanAdapter(unittest.TestCase):
             self.assertEqual(findings[0]["severity"], expected_sev, wt)
 
     def test_unmapped_warning_type_emits_stderr_and_defaults_medium(self):
-        import contextlib, io
         adapter = br.BrakemanAdapter()
         payload = json.dumps({
             "warnings": [{
