@@ -64,7 +64,7 @@ class OsvScannerAdapter:
                         if isinstance(raw_sev, list):
                             for entry in raw_sev:
                                 if isinstance(entry, dict) and entry.get("type") == "CVSS_V3":
-                                    entry_score = _cvss_v3_score(entry.get("score_vector"))
+                                    entry_score = _cvss_v3_score(entry.get("score") or entry.get("score_vector"))
                                     if entry_score is not None:
                                         severity = cvss_bucket(entry_score)
                                         break

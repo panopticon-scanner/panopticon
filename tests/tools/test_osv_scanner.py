@@ -93,7 +93,7 @@ class TestOsvScannerAdapter(unittest.TestCase):
                         "id": "GHSA-LIST-ONLY",
                         "aliases": ["CVE-2024-0001"],
                         "severity": [{"type": "CVSS_V3",
-                                      "score_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}],
+                                      "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}],
                         "summary": "Remote code execution",
                     }],
                 }],
