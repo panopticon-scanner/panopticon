@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+from _test_helpers import FakePopen
 import scripts.tools.osv_scanner as osv
 import scripts.tools.base as base
 
@@ -142,24 +143,25 @@ class TestOsvScannerAdapter(unittest.TestCase):
 
     def test_invoke_runs_osv_scanner_json(self):
         adapter = osv.OsvScannerAdapter()
-        fake_run = mock.Mock(return_value=mock.Mock(stdout=b"{}", returncode=0))
-        with mock.patch("scripts.tools.base.subprocess.run", fake_run):
+        fake_run = FakePopen(stdout=b"{}", stderr=b"", returncode=0)
+        with mock.patch("scripts.tools.base.subprocess.Popen",
+                        return_value=fake_run) as popen_mock:
             stdout, rc = adapter.invoke("/tmp/fake")
         self.assertEqual(stdout, b"{}")
         self.assertEqual(rc, 0)
-        fake_run.assert_called_once_with(
+        popen_mock.assert_called_once_with(
             ["osv-scanner", "--format", "json", "--experimental-offline", "--recursive", "/tmp/fake"],
-            capture_output=True,
-            timeout=300,
+            stdout=mock.ANY,
+            stderr=mock.ANY,
         )
 
     def test_invoke_reports_nonzero_exit(self):
         import contextlib, io
         adapter = osv.OsvScannerAdapter()
-        fake_run = mock.Mock(return_value=mock.Mock(
-            stdout=b"scan output", stderr=b"no lockfiles found", returncode=2))
+        fake_run = FakePopen(stdout=b"scan output", stderr=b"no lockfiles found",
+                             returncode=2)
         buf = io.StringIO()
-        with mock.patch("scripts.tools.base.subprocess.run", fake_run), \
+        with mock.patch("scripts.tools.base.subprocess.Popen", return_value=fake_run), \
              contextlib.redirect_stderr(buf):
             stdout, rc = adapter.invoke("/tmp/fake")
         self.assertEqual(stdout, b"scan output")

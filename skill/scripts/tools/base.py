@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 from typing import Any, Protocol
 
 from scripts.provenance import tool_provenance
@@ -197,6 +198,16 @@ class ToolAdapter(Protocol):
     def parse(self, raw: bytes, group: str) -> list[dict]:
         ...
 
+MAX_TOOL_OUTPUT_BYTES = 50 * 1024 * 1024
+
+
+def _drain(stream):
+    """Read and discard the rest of a stream so the child is never left blocked
+    on a full pipe."""
+    while stream.read(64 * 1024):
+        pass
+
+
 def run_tool(cmd, timeout, ok_codes=(0, 1), **kwargs):
     """Run a scanner subprocess, preserving failure diagnostics (F-CAL-1).
 
@@ -204,11 +215,95 @@ def run_tool(cmd, timeout, ok_codes=(0, 1), **kwargs):
     codes outside ok_codes (1 == findings for most scanners; brakeman also
     uses 2/3), a capped stderr excerpt is written to our stderr so
     'exited N; skipping' is diagnosable.
+
+    Bounded capture: stdout is streamed into a bounded buffer so
+    adversarial/large target output does not accumulate unbounded in memory
+    (#1111). When the byte cap is exceeded the child is terminated, the output
+    is truncated with a marker, and a stderr notice is emitted. The partial
+    output is still returned so the truncation is visible downstream.
     """
-    res = subprocess.run(cmd, capture_output=True, timeout=timeout, **kwargs)  # nosec B603
-    rc = res.returncode
+    popen_kwargs = dict(kwargs)
+    popen_kwargs.setdefault("stdout", subprocess.PIPE)
+    popen_kwargs.setdefault("stderr", subprocess.PIPE)
+
+    timed_out = {"hit": False}
+
+    def _watchdog():
+        timed_out["hit"] = True
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+    proc = subprocess.Popen(cmd, **popen_kwargs)  # nosec B603
+    timer = threading.Timer(timeout, _watchdog)
+    timer.daemon = True
+    timer.start()
+    try:
+        chunks = []
+        collected = 0
+        truncated = False
+        while True:
+            chunk = proc.stdout.read(64 * 1024)
+            if not chunk:
+                break
+            room = MAX_TOOL_OUTPUT_BYTES - collected
+            if room <= 0:
+                truncated = True
+                _drain(proc.stdout)
+                break
+            if len(chunk) > room:
+                chunks.append(chunk[:room])
+                collected += room
+                truncated = True
+                _drain(proc.stdout)
+                break
+            chunks.append(chunk)
+            collected += len(chunk)
+
+        if truncated:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            stdout = b"".join(chunks)
+            marker = (
+                "\n\n[TRUNCATED by panopticon: output exceeded %d byte limit; "
+                "only the first %d bytes were retained]\n" % (
+                    MAX_TOOL_OUTPUT_BYTES, MAX_TOOL_OUTPUT_BYTES)
+            ).encode("utf-8")
+            print(
+                "tool %s output exceeded %d byte limit; truncated and retained "
+                "with marker" % (cmd[0], MAX_TOOL_OUTPUT_BYTES),
+                file=sys.stderr,
+            )
+            _drain(proc.stderr)
+            rc = proc.wait()
+            return stdout + marker, rc
+
+        stderr = proc.stderr.read()
+        rc = proc.wait()
+    finally:
+        timer.cancel()
+        try:
+            proc.stdout.close()
+        except Exception:
+            pass
+        try:
+            proc.stderr.close()
+        except Exception:
+            pass
+        if proc.poll() is None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+    if timed_out["hit"] and rc not in (0, 1):
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
+
     if rc not in ok_codes:
-        excerpt = (res.stderr or b"")[-1000:].decode("utf-8", errors="replace").strip()
+        excerpt = (stderr or b"")[-1000:].decode("utf-8", errors="replace").strip()
         details = f": {excerpt}" if excerpt else ""
         print(f"tool {cmd[0]} exited {rc}{details}", file=sys.stderr)
-    return res.stdout, rc
+    return b"".join(chunks), rc

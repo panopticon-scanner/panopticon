@@ -3,6 +3,7 @@ import subprocess
 import unittest
 from unittest import mock
 
+from _test_helpers import FakePopen
 import scripts.tools.legacy_sarif as legacy
 from scripts.tools import ADAPTERS
 
@@ -46,26 +47,24 @@ class TestLegacySarifAdapter(unittest.TestCase):
     def test_invoke_runs_tool_command(self):
         adapter = legacy.LegacySarifAdapter("bandit")
         mock_stdout = json.dumps(SARIF).encode("utf-8")
-        with mock.patch("scripts.tools.base.subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=1, stdout=mock_stdout, stderr=b""
-            )
+        with mock.patch("scripts.tools.base.subprocess.Popen") as popen_mock:
+            popen_mock.return_value = FakePopen(
+                stdout=mock_stdout, stderr=b"", returncode=1)
             stdout, rc = adapter.invoke("/some/target")
         self.assertEqual(rc, 1)
         self.assertEqual(stdout, mock_stdout)
-        mock_run.assert_called_once()
-        called_args, called_kwargs = mock_run.call_args
+        popen_mock.assert_called_once()
+        called_args, called_kwargs = popen_mock.call_args
         self.assertEqual(called_kwargs.get("cwd"), None)
         self.assertIn("/some/target", called_args[0])
 
     def test_invoke_runs_gosec_in_target_directory(self):
         adapter = legacy.LegacySarifAdapter("gosec")
-        with mock.patch("scripts.tools.base.subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=0, stdout=b"{}", stderr=b""
-            )
+        with mock.patch("scripts.tools.base.subprocess.Popen") as popen_mock:
+            popen_mock.return_value = FakePopen(
+                stdout=b"{}", stderr=b"", returncode=0)
             adapter.invoke("/go/project")
-        called_args, called_kwargs = mock_run.call_args
+        called_args, called_kwargs = popen_mock.call_args
         self.assertEqual(called_kwargs.get("cwd"), "/go/project")
         self.assertNotIn("/src", called_args[0])
 

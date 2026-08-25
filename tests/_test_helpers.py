@@ -4,6 +4,63 @@ import os
 from conftest import FIXTURE_ROOT  # noqa: E402
 
 
+class FakeStream:
+    """Iterable-chunk fake stdout/stderr for FakePopen."""
+
+    def __init__(self, chunks):
+        if chunks is None:
+            chunks = []
+        elif isinstance(chunks, bytes):
+            chunks = [chunks]
+        self._chunks = list(chunks)
+        self._idx = 0
+
+    def read(self, size=-1):
+        if self._idx >= len(self._chunks):
+            return b""
+        chunk = self._chunks[self._idx]
+        self._idx += 1
+        return chunk
+
+    def close(self):
+        pass
+
+
+class FakePopen:
+    """A Popen-like stand-in for tests that exercise run_tool's bounded
+    capture path. Supports both pre-built ``return_value=FakePopen(...)``
+    patching and ``side_effect=FakePopen`` construction from run_tool's call
+    arguments."""
+
+    def __init__(self, cmd=None, stdout=None, stderr=None, returncode=0,
+                 **kwargs):
+        self.cmd = list(cmd) if cmd else []
+        self._returncode = returncode
+        self._killed = False
+        # run_tool passes subprocess.PIPE for stdout/stderr; ignore those and
+        # let the test provide the byte payload explicitly.
+        self.stdout = FakeStream(stdout if stdout not in (None, -1) else None)
+        self.stderr = FakeStream(stderr if stderr not in (None, -1) else None)
+        self.kwargs = kwargs
+
+    def wait(self, timeout=None):
+        if self._killed and self._returncode == 0:
+            self._returncode = -9
+        return self._returncode
+
+    def kill(self):
+        self._killed = True
+
+    def poll(self):
+        return self._returncode if self._killed else None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        pass
+
+
 def touch(root, rel, content=""):
     """Create a file at ``root/rel`` with optional content."""
     full = os.path.join(root, rel)

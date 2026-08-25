@@ -4,6 +4,7 @@ import json
 import unittest
 from unittest import mock
 
+from _test_helpers import FakePopen
 import scripts.tools.brakeman as br
 
 BRAKEMAN_SAMPLE = json.dumps({
@@ -81,27 +82,29 @@ class TestBrakemanAdapter(unittest.TestCase):
 
     def test_invoke_runs_brakeman_json(self):
         adapter = br.BrakemanAdapter()
-        fake_run = mock.Mock(return_value=mock.Mock(stdout=b"{}", returncode=0))
-        with mock.patch("scripts.tools.base.subprocess.run", fake_run):
+        fake_run = FakePopen(stdout=b"{}", stderr=b"", returncode=0)
+        with mock.patch("scripts.tools.base.subprocess.Popen",
+                        return_value=fake_run) as popen_mock:
             stdout, rc = adapter.invoke("/tmp/fake")
         self.assertEqual(rc, 0)
-        fake_run.assert_called_once_with(
+        popen_mock.assert_called_once_with(
             ["brakeman", "--format", "json", "--quiet", "--run-all-checks", "/tmp/fake"],
-            capture_output=True, timeout=300,
+            stdout=mock.ANY,
+            stderr=mock.ANY,
         )
 
     def test_invoke_remaps_rc_2_and_3_to_success(self):
         adapter = br.BrakemanAdapter()
         for rc_in in (2, 3):
-            fake_run = mock.Mock(return_value=mock.Mock(stdout=b"{}", returncode=rc_in))
-            with mock.patch("scripts.tools.base.subprocess.run", fake_run):
+            fake_run = FakePopen(stdout=b"{}", stderr=b"", returncode=rc_in)
+            with mock.patch("scripts.tools.base.subprocess.Popen", return_value=fake_run):
                 stdout, rc = adapter.invoke("/tmp/fake")
             self.assertEqual(rc, 0, f"rc={rc_in} should be remapped to 0")
 
     def test_invoke_leaves_rc_4_as_failure(self):
         adapter = br.BrakemanAdapter()
-        fake_run = mock.Mock(return_value=mock.Mock(stdout=b"{}", stderr=b"", returncode=4))
-        with mock.patch("scripts.tools.base.subprocess.run", fake_run):
+        fake_run = FakePopen(stdout=b"{}", stderr=b"", returncode=4)
+        with mock.patch("scripts.tools.base.subprocess.Popen", return_value=fake_run):
             stdout, rc = adapter.invoke("/tmp/fake")
         self.assertEqual(rc, 4)
 

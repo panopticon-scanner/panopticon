@@ -5,6 +5,7 @@ import os
 import tempfile
 import unittest
 
+from _test_helpers import FakePopen
 import scripts.tools.base as tools_base
 import scripts.tools.roslyn_secguard as rs
 
@@ -259,12 +260,7 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
         copied_src = []
         copied_dst = []
 
-        class Result:
-            returncode = 0
-            stdout = b""
-            stderr = b""
-
-        old_run = tools_base.subprocess.run
+        old_run = tools_base.subprocess.Popen
         old_safe_copytree = rs._safe_copytree
         try:
             def fake_safe_copytree(src, dst):
@@ -273,12 +269,12 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
                 open(os.path.join(dst, "x.csproj"), "w").close()
                 return 0
 
-            def fake_run(cmd, **kwargs):
+            def fake_popen(cmd, **kwargs):
                 calls.append((cmd, kwargs))
-                return Result()
+                return FakePopen(stdout=b"{}", stderr=b"", returncode=0)
 
             rs._safe_copytree = fake_safe_copytree
-            tools_base.subprocess.run = fake_run
+            tools_base.subprocess.Popen = fake_popen
             with tempfile.TemporaryDirectory() as d:
                 open(os.path.join(d, "x.csproj"), "w").close()
                 raw, rc = adapter.invoke(d)
@@ -286,7 +282,7 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
                 self.assertEqual(rc, 0)
                 self.assertEqual(copied_src, [d])
         finally:
-            tools_base.subprocess.run = old_run
+            tools_base.subprocess.Popen = old_run
             rs._safe_copytree = old_safe_copytree
 
         cmd = calls[0][0]
@@ -296,8 +292,6 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
         self.assertTrue(any(arg.startswith("--export=") for arg in cmd))
         self.assertIn("--ignore-msbuild-errors", cmd)
         self.assertIn("--no-banner", cmd)
-        self.assertEqual(kwargs.get("timeout"), 600)
-        self.assertTrue(kwargs.get("capture_output"))
 
 
 class TestRebaseSarifUris(unittest.TestCase):

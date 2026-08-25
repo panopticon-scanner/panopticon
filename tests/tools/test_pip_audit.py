@@ -8,6 +8,7 @@ from unittest import mock
 
 import pytest
 
+from _test_helpers import FakePopen
 import scripts.tools.pip_audit as pa
 
 
@@ -185,22 +186,24 @@ class TestPipAuditAdapter(unittest.TestCase):
 
     def test_invoke_uses_requirements_txt_when_present(self):
         adapter = pa.PipAuditAdapter()
-        fake_run = mock.Mock(return_value=mock.Mock(stdout=b"[]", returncode=0))
-        with mock.patch("scripts.tools.base.subprocess.run", fake_run):
+        fake_run = FakePopen(stdout=b"[]", stderr=b"", returncode=0)
+        with mock.patch("scripts.tools.base.subprocess.Popen",
+                        return_value=fake_run) as popen_mock:
             with mock.patch("scripts.tools.pip_audit.glob.glob", return_value=["/tmp/fake/requirements.txt"]):
                 stdout, rc = adapter.invoke("/tmp/fake")
         self.assertEqual(stdout, b"[]")
         self.assertEqual(rc, 0)
-        fake_run.assert_called_once_with(
+        popen_mock.assert_called_once_with(
             ["pip-audit", "--format=json", "--desc=on", "--progress-spinner=off", "--requirement", "/tmp/fake/requirements.txt"],
-            capture_output=True,
-            timeout=300,
+            stdout=mock.ANY,
+            stderr=mock.ANY,
         )
 
     def test_invoke_falls_back_to_pyproject_toml(self):
         adapter = pa.PipAuditAdapter()
-        fake_run = mock.Mock(return_value=mock.Mock(stdout=b"[]", returncode=0))
-        with mock.patch("scripts.tools.base.subprocess.run", fake_run):
+        fake_run = FakePopen(stdout=b"[]", stderr=b"", returncode=0)
+        with mock.patch("scripts.tools.base.subprocess.Popen",
+                        return_value=fake_run) as popen_mock:
             with mock.patch("scripts.tools.pip_audit.glob.glob", return_value=[]):
                 with mock.patch("scripts.tools.pip_audit._deps_from_pyproject",
                                return_value=["requests==2.25.1"]):
@@ -208,7 +211,7 @@ class TestPipAuditAdapter(unittest.TestCase):
         self.assertEqual(stdout, b"[]")
         self.assertEqual(rc, 0)
         # Verify that --requirement is used with a temp file, not a positional arg
-        call_args = fake_run.call_args[0][0]
+        call_args = popen_mock.call_args[0][0]
         self.assertIn("--requirement", call_args)
         self.assertNotIn("/tmp/fake", call_args)
 
@@ -267,10 +270,10 @@ class TestStaticPyproject(unittest.TestCase):
     def test_invoke_reports_nonzero_exit(self):
         import contextlib, io
         adapter = pa.PipAuditAdapter()
-        fake_run = mock.Mock(return_value=mock.Mock(
-            stdout=b"audit output", stderr=b"pip-audit failed", returncode=2))
+        fake_run = FakePopen(stdout=b"audit output", stderr=b"pip-audit failed",
+                             returncode=2)
         buf = io.StringIO()
-        with mock.patch("scripts.tools.base.subprocess.run", fake_run), \
+        with mock.patch("scripts.tools.base.subprocess.Popen", return_value=fake_run), \
              mock.patch("scripts.tools.pip_audit.glob.glob", return_value=["/tmp/fake/requirements.txt"]), \
              contextlib.redirect_stderr(buf):
             stdout, rc = adapter.invoke("/tmp/fake")
