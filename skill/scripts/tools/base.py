@@ -11,6 +11,11 @@ from typing import Any, Protocol
 from scripts.provenance import tool_provenance
 
 
+# Adapters may drop results with no actionable location, or synthesize one.
+# Each adapter declares its policy explicitly.
+DROP_IF_NO_LOCATION = False  # default; adapters override if needed
+
+
 def omit_none(mapping: dict[str, Any]) -> dict[str, Any]:
     """Return a copy of *mapping* with keys whose values are None removed."""
     return {k: v for k, v in mapping.items() if v is not None}

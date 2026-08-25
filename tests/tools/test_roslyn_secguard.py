@@ -163,6 +163,8 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
         self.assertEqual(findings[0]["severity"], "MEDIUM")
 
     def test_parse_survives_empty_locations_array(self):
+        # ARC-A4A: RoslynSecGuardAdapter.DROP_IF_NO_LOCATION is True, so the
+        # location-less result is dropped while its well-formed sibling survives.
         findings = rs.RoslynSecGuardAdapter().parse(ROSLYN_SAMPLE_EMPTY_LOCATIONS, "g1")
         # The well-formed SCS0002 result survives; the location-less SCS0026
         # result is skipped rather than crashing the whole parse.
@@ -170,15 +172,17 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
         self.assertEqual(findings[0]["tool_evidence"]["rule_id"], "SCS0002")
 
     def test_parse_survives_null_locations(self):
+        # ARC-A4A: null locations are treated like empty under DROP_IF_NO_LOCATION.
         findings = rs.RoslynSecGuardAdapter().parse(ROSLYN_SAMPLE_NULL_LOCATIONS, "g1")
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0]["tool_evidence"]["rule_id"], "SCS0002")
 
     def test_parse_missing_locations_key_drops_like_empty(self):
-        # #476: an OMITTED locations key is the same location-less case as an
-        # empty/null one -- both drop. Previously the omitted form emitted a
-        # placeholder {"file": "", "line_start": 1} finding while the empty
-        # form was dropped, an asymmetry with no basis in SARIF semantics.
+        # #476 / ARC-A4A: an OMITTED locations key is the same location-less case
+        # as an empty/null one -- all drop because DROP_IF_NO_LOCATION is True.
+        # Previously the omitted form emitted a placeholder
+        # {"file": "", "line_start": 1} finding while the empty form was
+        # dropped, an asymmetry with no basis in SARIF semantics.
         findings = rs.RoslynSecGuardAdapter().parse(ROSLYN_SAMPLE_MISSING_LOCATIONS_KEY, "g1")
         self.assertEqual(findings, [])
 

@@ -5,7 +5,7 @@ import os
 import shutil
 import sys
 import tempfile
-from .base import as_list, make_finding, omit_none, parse_json_bytes, run_tool
+from .base import as_list, DROP_IF_NO_LOCATION, make_finding, omit_none, parse_json_bytes, run_tool
 from .sarif_utils import LEVEL_TO_SEV
 
 
@@ -109,6 +109,7 @@ def _rebase_sarif_uris(raw, tmp):
 class RoslynSecGuardAdapter:
     name = "roslyn-secguard"
     prefix = "RS"
+    DROP_IF_NO_LOCATION = True
 
     def is_applicable(self, target: str) -> bool:
         if not os.path.isdir(target):
@@ -235,6 +236,7 @@ class RoslynSecGuardAdapter:
                     # previously an omitted key emitted a placeholder-location
                     # finding while an empty list was dropped, an asymmetry
                     # with no basis in SARIF semantics.
+                    # Policy: DROP_IF_NO_LOCATION (see adapter constant).
                     locs = result.get("locations") or []
                     if not locs:
                         continue

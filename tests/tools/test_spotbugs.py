@@ -99,8 +99,10 @@ class TestSpotBugsAdapter(unittest.TestCase):
         self.assertNotIn("citations", findings[0])
 
     def test_parse_bug_instance_without_source_line(self):
-        # SpotBugs sometimes omits SourceLine entirely; the adapter must still
-        # emit a finding (#1196), and #run7 COD-C3A: derive location.file from the
+        # ARC-A4A: SpotBugsAdapter.DROP_IF_NO_LOCATION is False, so a finding
+        # with no <SourceLine> is kept with a synthesized path. SpotBugs sometimes
+        # omits SourceLine entirely; the adapter must still emit a finding
+        # (#1196), and #run7 COD-C3A: derive location.file from the
         # <Class classname> so it stays matchable by the delta/--pr gate instead
         # of an empty, unscopable path.
         sample = b"""<?xml version="1.0" encoding="UTF-8"?>

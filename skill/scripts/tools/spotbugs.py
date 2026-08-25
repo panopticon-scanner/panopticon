@@ -7,7 +7,7 @@ try:
 except ImportError:
     import xml.etree.ElementTree as ET  # nosec B405
 
-from .base import as_list, make_finding, omit_none, run_tool
+from .base import as_list, DROP_IF_NO_LOCATION, make_finding, omit_none, run_tool
 
 _SPOTBUGS_CWE = {
     "SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE": "CWE-89",
@@ -29,6 +29,7 @@ _PRIORITY_TO_SEVERITY = {
 class SpotBugsAdapter:
     name = "spotbugs"
     prefix = "SB"
+    DROP_IF_NO_LOCATION = False
 
     @staticmethod
     def _classes_dir(target: str):
