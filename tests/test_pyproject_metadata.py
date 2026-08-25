@@ -27,5 +27,9 @@ def test_jsonschema_is_a_core_runtime_dependency():
     assert any(d.startswith("jsonschema") for d in core), \
         "jsonschema must be a core runtime dependency"
     for name, extra in data["project"].get("optional-dependencies", {}).items():
+        if name in ("test", "dev"):
+            # The test/dev extras intentionally mirror the dependency group for
+            # parity (PEP 735 fallback; see test_pyproject.py).
+            continue
         assert not any(d.startswith("jsonschema") for d in extra), \
             f"jsonschema should not be duplicated in the {name!r} extra once core"

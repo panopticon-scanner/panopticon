@@ -1,14 +1,23 @@
 # panopticon-fixtures: vulnerable-by-design applications for scanner validation.
 # Build:  docker build -f Dockerfile.fixtures -t panopticon-fixtures:latest .
 # Rebuild: docker build --no-cache -f Dockerfile.fixtures -t panopticon-fixtures:$(date +%Y-%m-%d) .
+# DL3006/DL3007: base image is the freshly-built local `panopticon-tools:latest`
+# produced by the docker-build-pr workflow; a static tag is intentional here.
+# hadolint ignore=DL3006,DL3007
 FROM panopticon-tools:latest
 
+# DL3002: this image intentionally runs as root because it installs language
+# toolchains and writes build artifacts during image build. It is for local test use only.
+# hadolint ignore=DL3002
 USER root
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # OpenJDK for WebGoat. Ruby, Node.js/npm, and .NET 8.0 are already provided
-# by the panopticon-tools base image.
+# by the panopticon-tools base image. Distro packages are intentionally unpinned:
+# the fixtures image is for local validation, and pinning JDK versions breaks when
+# the Debian mirror rotates them off.
+# hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends \
         openjdk-21-jdk-headless \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
@@ -43,19 +52,24 @@ RUN git init -q AspGoat \
     && git -C AspGoat checkout -q FETCH_HEAD                            # Soham7-dev/AspGoat @ main 2026-08-23
 
 # Prepare fixture dependencies when possible; static-analysis tests tolerate missing deps.
+# hadolint ignore=DL3003
 RUN cd /opt/panopticon-fixtures/railsgoat && (bundle install || echo "railsgoat bundle install skipped")
+# hadolint ignore=DL3003
 RUN cd /opt/panopticon-fixtures/WebGoat && (./mvnw clean compile -DskipTests || mvn clean compile -DskipTests || echo "WebGoat compile skipped")
+# hadolint ignore=DL3003
 RUN cd /opt/panopticon-fixtures/AspGoat && (dotnet restore && dotnet build --no-restore || echo "AspGoat build skipped")
 
 # Copy the hand-rolled Rust fixture from the repo.
 # The fixture must include a committed Cargo.lock so cargo-audit has a dependency graph to audit.
 COPY tests/fixtures/vulnerable-rust /opt/panopticon-fixtures/vulnerable-rust
+# hadolint ignore=DL3003
 RUN cd /opt/panopticon-fixtures/vulnerable-rust && cargo build
 
 # Note: skill/scripts/ and tests/ are mounted read-only at runtime so the harness
 # always uses the current repo's code; do not COPY them into the image.
 
 # pytest is needed by the integration-test harness that runs inside this image.
+# hadolint ignore=DL3013
 RUN pip install --no-cache-dir pytest
 
 ENV PYTHONPATH=/opt/panopticon

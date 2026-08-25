@@ -2,11 +2,22 @@ severity:
   - name: "severity:critical"
     color: "b60205"
     description: "Impact if true: critical"
-  - name: "severity:high"
-    color: "d93f0b"
-    description: "Impact if true: high, including \"quoted\" text"
 
-evidence:
-  - name: "evidence:advisor-confirmed"
-    color: "0052cc"
-    description: "An advisor verified the claim"
+regression:
+  - name: "normal-label"
+    color: "000000"
+    description: "Normal entry"
+
+  - description: |
+      Multi-line
+      description
+    color: "111111"
+    name: "multi-line-label"
+
+  - color: "222222"
+    name: "reversed-order-label"
+    description: "Reversed field order"
+
+  - name: 'label-with-"quote'
+    color: "333333"
+    description: 'Description with "embedded" quote'

@@ -61,12 +61,16 @@ class TestFindSecBugsIntegrity(unittest.TestCase):
         # FindSecBugs; osv-scanner/gitleaks/gosec/dependency-check verify their
         # downloads too but had ZERO test, so dropping any `sha256sum -c` or SHA
         # pin passed the suite untouched. Lock all of them in (arch-split and
-        # single-SHA shapes both).
+        # single-SHA shapes both), plus the rustup/dotnet installers and the
+        # SpotBugs tarball added in Task 5.
         for artifact, sha_re in (
                 ("/tmp/osv-scanner", r"OSV_SCANNER_SHA256_(AMD64|ARM64)=[0-9a-f]{64}"),
                 ("/tmp/gitleaks.tar.gz", r"GITLEAKS_SHA256_(X64|ARM64)=[0-9a-f]{64}"),
                 ("/tmp/gosec.tar.gz", r"GOSEC_SHA256_(AMD64|ARM64)=[0-9a-f]{64}"),
-                ("/tmp/dc.zip", r"DEPENDENCY_CHECK_SHA256=[0-9a-f]{64}")):
+                ("/tmp/dc.zip", r"DEPENDENCY_CHECK_SHA256=[0-9a-f]{64}"),
+                ("/tmp/spotbugs.tgz", r"SPOTBUGS_SHA256=[0-9a-f]{64}"),
+                ("/tmp/rustup-init", r"RUSTUP_INIT_SHA256_(AMD64|ARM64)=[0-9a-f]{64}"),
+                ("/tmp/dotnet-install.sh", r"DOTNET_INSTALL_SHA256=[0-9a-f]{64}")):
             self.assertRegex(self.text, sha_re, "no pinned SHA256 for %s" % artifact)
             self.assertRegex(
                 self.text, artifact.replace(".", r"\.") + r'"\s*\|\s*sha256sum -c',
@@ -97,6 +101,24 @@ class TestOfflineAssets(unittest.TestCase):
         self.assertNotIn("--mount=type=secret,id=nvd_api_key", self.text)
         self.assertNotIn("--updateonly", self.text)
         self.assertNotIn("ENV NVD_API_KEY", self.text)
+
+    def test_nvd_data_ref_default_is_digest(self):
+        # OPS-E1A: the default NVD cache ref must be content-pinned so PR and
+        # local builds do not follow a mutable tag.
+        self.assertRegex(
+            self.text,
+            r"ARG NVD_DATA_REF=.*@sha256:[0-9a-f]{64}"
+        )
+
+    def test_osv_warm_failures_are_visible(self):
+        # SEC-E3B: OSV DB warm previously swallowed failures with `>/dev/null`.
+        # The build must now fail loud if the offline npm/PyPI databases were
+        # not actually produced, and the scanner log must be surfaced.
+        self.assertIn(
+            "::error::OSV offline DB warm did not produce npm/PyPI databases", self.text
+        )
+        self.assertIn("cat /tmp/osv-warm.log >&2", self.text)
+        self.assertNotIn(">/dev/null 2>&1", self.text)
 
     def test_publish_cadence_and_tags(self):
         with open(os.path.join(ROOT, ".github", "workflows",
@@ -145,6 +167,27 @@ class TestOfflineAssets(unittest.TestCase):
         self.assertIn("ARG ASSET_REFRESH", self.text)
 
 
+class TestDockerBuildPrWorkflow(unittest.TestCase):
+    def setUp(self):
+        with open(os.path.join(ROOT, ".github", "workflows",
+                               "docker-build-pr.yml"), encoding="utf-8") as fh:
+            self.wf = yaml.safe_load(fh)
+
+    def test_expanded_trigger_paths_present(self):
+        on = self.wf.get(True, {})
+        paths = on.get("pull_request", {}).get("paths", [])
+        self.assertIn(".github/workflows/docker-build-pr.yml", paths)
+        self.assertIn("skill/scripts/**", paths)
+
+    def test_dockerfile_fixtures_is_trigger_and_built(self):
+        on = self.wf.get(True, {})
+        paths = on.get("pull_request", {}).get("paths", [])
+        self.assertIn("Dockerfile.fixtures", paths)
+        step_names = " ".join(
+            s.get("name", "") for s in self.wf["jobs"]["build"]["steps"])
+        self.assertIn("Build Dockerfile.fixtures", step_names)
+
+
 class TestDockerfileFixtures(unittest.TestCase):
     def test_bundles_fixture_clone_refs_and_rust_build(self):
         text = _read_dockerfile_fixtures()
@@ -169,3 +212,22 @@ class TestDockerfileFixtures(unittest.TestCase):
             self.assertIsNotNone(m, "%s not found" % arg)
             self.assertRegex(m.group(1), r"^[0-9a-f]{40}$",
                              "%s must be a full 40-hex commit SHA, not a ref" % arg)
+
+
+class TestDockerPublishWorkflow(unittest.TestCase):
+    def setUp(self):
+        with open(os.path.join(ROOT, ".github", "workflows",
+                               "docker-publish.yml"), encoding="utf-8") as fh:
+            self.wf = yaml.safe_load(fh)
+
+    def test_build_job_does_not_request_unused_id_token(self):
+        perms = self.wf["jobs"]["build"]["permissions"]
+        self.assertNotIn("id-token", perms)
+
+    def test_merge_job_retains_id_token_for_attestation(self):
+        perms = self.wf["jobs"]["merge"]["permissions"]
+        self.assertEqual(perms.get("id-token"), "write")
+
+    def test_concurrency_guard_is_configured(self):
+        self.assertIn("concurrency", self.wf)
+        self.assertTrue(self.wf["concurrency"]["group"])

@@ -7,6 +7,8 @@ on:
       - Dockerfile
       - Dockerfile.fixtures
       - .github/workflows/docker-publish.yml
+      - .github/workflows/docker-build-pr.yml
+      - skill/scripts/**
 
 jobs:
   build:
@@ -24,4 +26,10 @@ jobs:
           hadolint Dockerfile
 
       - name: Build Dockerfile
-        run: docker build -f Dockerfile .
+        run: docker build -f Dockerfile -t panopticon-tools:latest .
+
+      - name: Lint Dockerfile.fixtures
+        run: hadolint Dockerfile.fixtures
+
+      - name: Build Dockerfile.fixtures
+        run: docker build -f Dockerfile.fixtures .

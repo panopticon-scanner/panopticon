@@ -76,16 +76,7 @@ jobs:
         run: |
           set -euo pipefail
           tag="${REGISTRY}/${NVD_IMAGE}:dc-${DC_VERSION}"
-          if [ "$EVENT_NAME" != "push" ]; then
-            echo "sync=true" >> "$GITHUB_OUTPUT"
-            echo "scheduled/manual run -> refresh"
-          elif docker manifest inspect "$tag" >/dev/null 2>&1; then
-            echo "sync=false" >> "$GITHUB_OUTPUT"
-            echo "cache $tag already exists -> skip (the daily run keeps it fresh)"
-          else
-            echo "sync=true" >> "$GITHUB_OUTPUT"
-            echo "no cache for dc-${DC_VERSION} yet -> prime it"
-          fi
+          .github/scripts/nvd-cache-decision.sh "$EVENT_NAME" "$tag" >> "$GITHUB_OUTPUT"
 
       - name: Sync NVD database (keyed)
         if: steps.decide.outputs.sync == 'true'
