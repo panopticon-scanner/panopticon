@@ -1,3 +1,4 @@
+import contextvars
 import json
 import os
 import shutil
@@ -84,28 +85,26 @@ class TestPipAuditAdapter(unittest.TestCase):
     def test_manifest_path_is_per_invocation_not_singleton_state(self):
         # Regression: _manifest_path used to be stored on the singleton
         # instance, so a second invoke could overwrite the value before the
-        # first invoke's output was parsed.
-        import contextvars
-
+        # first invoke's output was parsed. To catch that, invoke both targets
+        # before parsing either result. Each target's invoke/parse pair runs in
+        # its own copied execution context so the ContextVar set by invoke is
+        # still the right one when parse is finally called.
         adapter = pa.PipAuditAdapter()
 
         def fake_find_requirement(target: str) -> str:
             return os.path.join(target, "requirements.txt")
 
-        def exercise():
-            with mock.patch.object(adapter, "_find_requirement", side_effect=fake_find_requirement):
-                with mock.patch.object(pa, "run_tool", return_value=(PIP_AUDIT_SAMPLE, 0)):
-                    raw1, _ = adapter.invoke("/tmp/fake1")
-                    findings1 = adapter.parse(raw1, "g1")
-                    self.assertEqual(findings1[0]["location"]["file"], "/tmp/fake1/requirements.txt")
+        with mock.patch.object(adapter, "_find_requirement", side_effect=fake_find_requirement):
+            with mock.patch.object(pa, "run_tool", return_value=(PIP_AUDIT_SAMPLE, 0)):
+                ctx1 = contextvars.copy_context()
+                ctx2 = contextvars.copy_context()
+                raw1, _ = ctx1.run(adapter.invoke, "/tmp/fake1")
+                raw2, _ = ctx2.run(adapter.invoke, "/tmp/fake2")
+                findings1 = ctx1.run(adapter.parse, raw1, "g1")
+                findings2 = ctx2.run(adapter.parse, raw2, "g2")
 
-                    raw2, _ = adapter.invoke("/tmp/fake2")
-                    findings2 = adapter.parse(raw2, "g2")
-                    self.assertEqual(findings2[0]["location"]["file"], "/tmp/fake2/requirements.txt")
-
-        # Run in an isolated context so the ContextVar mutations do not leak
-        # into other tests.
-        contextvars.copy_context().run(exercise)
+        self.assertEqual(findings1[0]["location"]["file"], "/tmp/fake1/requirements.txt")
+        self.assertEqual(findings2[0]["location"]["file"], "/tmp/fake2/requirements.txt")
 
     def test_parse_omits_none_tool_evidence_fields(self):
         sample = json.dumps({
