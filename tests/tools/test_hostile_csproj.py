@@ -112,6 +112,7 @@ class TestHostileCsproj(unittest.TestCase):
             self.skipTest("dotnet not installed on this host")
         self.assertIn(rc, (0, 1))
         findings = adapter.parse(raw, "g")
+        self.assertTrue(findings, "expected SCS findings from the hostile csproj")
         # Every finding is SCS (Task 3 filter); the Exec noise never lands.
         for f in findings:
             self.assertTrue(

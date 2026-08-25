@@ -78,6 +78,8 @@ class TestOsvScannerAdapter(unittest.TestCase):
     def test_severity_from_groups_max_severity_cvss(self):
         findings = osv.OsvScannerAdapter().parse(OSV_REAL_SAMPLE, "g1")
         by_id = {f["tool_evidence"]["rule_id"]: f for f in findings}
+        self.assertIn("GHSA-9hjg-9r4m-mvj7", by_id)
+        self.assertIn("GHSA-x84v-xcm2-53pg", by_id)
         self.assertEqual(by_id["GHSA-9hjg-9r4m-mvj7"]["severity"], "MEDIUM")  # 5.3
         self.assertEqual(by_id["GHSA-x84v-xcm2-53pg"]["severity"], "CRITICAL")  # 9.8
 
@@ -115,6 +117,7 @@ class TestOsvScannerAdapter(unittest.TestCase):
     def test_parse_uppercases_cve_and_filters_aliases(self):
         findings = osv.OsvScannerAdapter().parse(OSV_REAL_SAMPLE, "g1")
         by_id = {f["tool_evidence"]["rule_id"]: f for f in findings}
+        self.assertIn("GHSA-9hjg-9r4m-mvj7", by_id)
         self.assertEqual(by_id["GHSA-9hjg-9r4m-mvj7"]["citations"]["cve"],
                          ["CVE-2024-47081"])
 

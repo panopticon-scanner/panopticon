@@ -2,10 +2,11 @@ import os
 import unittest
 
 from scripts.tools import ADAPTERS
+from tests.tools.conftest import FIXTURE_ROOT
 
-FIXTURE_ROOT = os.environ.get(
-    "FIXTURE_ROOT", os.path.join(os.path.dirname(__file__), "..", "fixtures")
-)
+
+# Guard against a surprising FIXTURE_ROOT value before any test relies on it.
+assert FIXTURE_ROOT.rstrip(os.sep).endswith(os.path.join("tests", "fixtures"))
 
 
 class TestCSharpIntegration(unittest.TestCase):
@@ -28,7 +29,11 @@ class TestCSharpIntegration(unittest.TestCase):
         raw, rc = adapter.invoke(target)
         self.assertIn(rc, (0, 1), f"roslyn-secguard errored (rc {rc}) on AspGoat")
         findings = adapter.parse(raw, "g1")
-        self.assertTrue(findings, "expected DotnetariumSCS (SCS) findings against AspGoat")
+        self.assertTrue(any(
+            f.get("source") == "tool:roslyn-secguard" and
+            f.get("tool_evidence", {}).get("rule_id", "").startswith("SCS")
+            for f in findings
+        ), "expected SCS rule findings")
 
 
 if __name__ == "__main__":

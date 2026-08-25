@@ -1,12 +1,17 @@
 import contextlib
 import io
 import json
+import os
+import shutil
 import unittest
 from unittest import mock
 
 from _test_helpers import FakePopen
 import scripts.tools.brakeman as br
+from tests.tools.conftest import FIXTURE_ROOT
 
+# Hand-built sample used for unit-level parse-shape assertions. It is NOT a
+# real Brakeman scan; for integration coverage see test_railsgoat_fixture_shape.
 BRAKEMAN_SAMPLE = json.dumps({
     "warnings": [
         {
@@ -58,6 +63,39 @@ class TestBrakemanAdapter(unittest.TestCase):
             self.assertEqual(len(findings), 1)
             self.assertEqual(findings[0]["confidence"], expected_conf)
             self.assertIn(expected_cwe, findings[0]["citations"]["cwe"])
+
+    def test_unknown_warning_type_and_confidence_fallbacks(self):
+        adapter = br.BrakemanAdapter()
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            findings = adapter.parse(json.dumps({
+                "warnings": [{
+                    "warning_type": "Mystery Warning",
+                    "message": "Something unmapped",
+                    "file": "app/models/y.rb",
+                    "line": 3,
+                    "confidence": "High",
+                }]
+            }).encode(), "g1")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["severity"], "MEDIUM")
+        self.assertEqual(findings[0]["confidence"], "CERTAIN")
+        self.assertEqual(findings[0].get("citations", {}).get("cwe", []), [])
+        self.assertIn("unmapped warning_type 'Mystery Warning'", buf.getvalue())
+
+        # Unknown confidence normalizes to POSSIBLE regardless of warning_type.
+        findings = adapter.parse(json.dumps({
+            "warnings": [{
+                "warning_type": "SQL Injection",
+                "message": "Known type, odd confidence",
+                "file": "app/models/z.rb",
+                "line": 5,
+                "confidence": "Tentative",
+            }]
+        }).encode(), "g1")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["confidence"], "POSSIBLE")
+        self.assertIn("CWE-89", findings[0]["citations"]["cwe"])
 
     def test_is_applicable_when_rails_files_present(self):
         with mock.patch("os.path.exists", side_effect=lambda p: p.endswith("Gemfile")):
@@ -145,6 +183,31 @@ class TestBrakemanAdapter(unittest.TestCase):
             findings = adapter.parse(payload, "g1")
         self.assertEqual(findings[0]["severity"], "MEDIUM")
         self.assertIn("unmapped warning_type 'Future Mystery Warning'", buf.getvalue())
+
+    def test_railsgoat_fixture_shape(self):
+        """Integration probe against the real RailsGoat fixture when available.
+
+        Skips outside the fixtures image; when present, asserts that parsed
+        findings carry the real Brakeman fields we map from (warning_type,
+        confidence, CWE).
+        """
+        target = os.path.join(FIXTURE_ROOT, "railsgoat")
+        if not os.path.isdir(target):
+            self.skipTest("railsgoat fixture not vendored (run inside the fixtures image)")
+        if not shutil.which("brakeman"):
+            self.skipTest("brakeman not installed on this host")
+        adapter = br.BrakemanAdapter()
+        self.assertTrue(adapter.is_applicable(target),
+                        "brakeman should apply to the railsgoat project")
+        raw, rc = adapter.invoke(target)
+        self.assertIn(rc, (0, 1, 2, 3), f"brakeman errored (rc {rc}) on railsgoat")
+        findings = adapter.parse(raw, "g1")
+        self.assertTrue(findings, "expected brakeman findings against railsgoat")
+        for f in findings:
+            self.assertIn(f["tool_evidence"]["rule_id"], f["title"])
+            self.assertIn(f["confidence"], ("CERTAIN", "LIKELY", "POSSIBLE"))
+            self.assertTrue(f.get("citations", {}).get("cwe"),
+                            "expected at least one CWE citation")
 
 
 if __name__ == "__main__":

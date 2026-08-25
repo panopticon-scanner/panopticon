@@ -11,7 +11,7 @@ class TestRustIntegration(unittest.TestCase):
         if not shutil.which("cargo"):
             self.skipTest("cargo not installed")
         proc = subprocess.run(["cargo", "audit", "--version"],
-                              capture_output=True, text=True)
+                              capture_output=True, text=True, timeout=30)
         if proc.returncode != 0:
             self.skipTest("cargo-audit subcommand not installed")
         findings = assert_adapter_finds(

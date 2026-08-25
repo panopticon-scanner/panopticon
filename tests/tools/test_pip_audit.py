@@ -1,4 +1,6 @@
+import contextlib
 import contextvars
+import io
 import json
 import os
 import shutil
@@ -284,11 +286,14 @@ class TestStaticPyproject(unittest.TestCase):
 
     def test_invoke_dynamic_pyproject_returns_empty_without_running(self):
         target = self._target(PYPROJECT_DYNAMIC)
-        with mock.patch.object(pa, "run_tool") as rt_mock:
+        buf = io.StringIO()
+        with mock.patch.object(pa, "run_tool") as rt_mock, \
+             contextlib.redirect_stderr(buf):
             raw, rc = pa.PipAuditAdapter().invoke(target)
         rt_mock.assert_not_called()
         self.assertEqual((json.loads(raw), rc),
                          ({"dependencies": [], "fixes": []}, 0))
+        self.assertIn("no static [project.dependencies]", buf.getvalue())
 
     def test_non_utf8_pyproject_returns_none(self):
         deps = pa._deps_from_pyproject(
