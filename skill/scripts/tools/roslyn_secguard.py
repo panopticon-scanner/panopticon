@@ -5,7 +5,7 @@ import os
 import shutil
 import sys
 import tempfile
-from .base import as_list, DROP_IF_NO_LOCATION, make_finding, omit_none, parse_json_bytes, run_tool
+from .base import as_list, make_finding, omit_none, parse_json_bytes, run_tool
 from .sarif_utils import LEVEL_TO_SEV
 
 
