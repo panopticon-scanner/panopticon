@@ -29,7 +29,26 @@ class TestCargoAuditAdapter(unittest.TestCase):
         f = findings[0]
         self.assertEqual(f["source"], "tool:cargo-audit")
         self.assertEqual(f["tool_evidence"]["package_name"], "foo")
-        self.assertEqual(f["severity"], "HIGH")
+        self.assertEqual(f["severity"], "INFO")
+
+    def test_parse_missing_cvss_defaults_to_info(self):
+        # ARC-D2B / COD-C3B run-7: cargo-audit must fall back to INFO when no
+        # CVSS data is present, matching the other dependency adapters.
+        sample = json.dumps({
+            "vulnerabilities": {"list": [{
+                "advisory": {
+                    "id": "RUSTSEC-2021-0099",
+                    "title": "Unspecified issue in norcvss crate",
+                    "cvss": None,
+                    "url": "https://rustsec.org/advisories/RUSTSEC-2021-0099",
+                },
+                "package": {"name": "norcvss", "version": "0.9.0"},
+                "versions": {"patched": ["0.9.1"]},
+            }]}
+        }).encode()
+        findings = ca.CargoAuditAdapter().parse(sample, "g1")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["severity"], "INFO")
 
     def test_is_applicable_when_cargo_lock_present(self):
         # #run7 COD-C2A: applicability keys on Cargo.lock (what `cargo audit

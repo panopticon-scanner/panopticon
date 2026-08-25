@@ -1,7 +1,8 @@
 """OSV scanner adapter for cross-ecosystem dependency advisories."""
 from __future__ import annotations
 from .base import (cve_ids, cvss_bucket, has_any_file, make_finding,
-                   normalize_severity, omit_none, parse_json_bytes, run_tool)
+                   normalize_severity, omit_none, parse_json_bytes, run_tool,
+                   _cvss_v3_score)
 from .sarif_utils import _norm_uri
 
 
@@ -58,9 +59,17 @@ class OsvScannerAdapter:
                     if score is not None:
                         severity = cvss_bucket(score)
                     else:
-                        raw_sev = vuln.get("severity")
-                        severity = normalize_severity(
-                            raw_sev if isinstance(raw_sev, str) else None)
+                        raw_sev = vuln.get("severity") or []
+                        severity = None
+                        if isinstance(raw_sev, list):
+                            for entry in raw_sev:
+                                if isinstance(entry, dict) and entry.get("type") == "CVSS_V3":
+                                    entry_score = _cvss_v3_score(entry.get("score_vector"))
+                                    if entry_score is not None:
+                                        severity = cvss_bucket(entry_score)
+                                        break
+                        if severity is None:
+                            severity = normalize_severity(None)
                     out.append(make_finding(
                         self, n, group,
                         title=f"{pkg.get('name')} {pkg.get('version')}: {vuln.get('id', 'vulnerability')}",

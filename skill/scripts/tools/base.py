@@ -1,6 +1,7 @@
 """Shared base utilities for tool adapters."""
 from __future__ import annotations
 import json
+import math
 import os
 import re
 import subprocess
@@ -91,6 +92,49 @@ def cvss_bucket(score: float) -> str:
     if score >= 4.0:
         return "MEDIUM"
     return "LOW"
+
+
+_CIA_WEIGHTS = {"N": 0, "L": 0.22, "H": 0.56}
+
+
+def _cvss_v3_score(vector: str) -> float | None:
+    """Calculate CVSS v3.1 base score from a vector string."""
+    try:
+        metrics = dict(part.split(":") for part in vector.replace("CVSS:3.1/", "").replace("CVSS:3.0/", "").split("/"))
+        av = metrics.get("AV", "")
+        ac = metrics.get("AC", "")
+        pr = metrics.get("PR", "")
+        ui = metrics.get("UI", "")
+        s = metrics.get("S", "")
+        c = metrics.get("C", "")
+        i = metrics.get("I", "")
+        a = metrics.get("A", "")
+        if not all([av, ac, pr, ui, s, c, i, a]):
+            return None
+        iss = 1 - ((1 - _CIA_WEIGHTS.get(c, 0)) *
+                   (1 - _CIA_WEIGHTS.get(i, 0)) *
+                   (1 - _CIA_WEIGHTS.get(a, 0)))
+        impact = 7.52 * (iss - 0.029) - 3.25 * (iss - 0.02) ** 15 if s == "C" else 6.42 * iss
+        av_score = {"N": 0.85, "A": 0.62, "L": 0.55, "P": 0.2}.get(av, 0.85)
+        ac_score = {"L": 0.77, "H": 0.44}.get(ac, 0.77)
+        pr_scores = {"N": 0.85, "L": {"U": 0.62, "C": 0.68}, "H": {"U": 0.27, "C": 0.5}}.get(pr, 0.85)
+        pr_score = pr_scores.get(s, 0.85) if isinstance(pr_scores, dict) else pr_scores
+        ui_score = {"N": 0.85, "R": 0.62}.get(ui, 0.85)
+        exploitability = 8.22 * av_score * ac_score * pr_score * ui_score
+        if impact <= 0:
+            score = 0.0
+        elif s == "C":
+            score = min(1.08 * (impact + exploitability), 10.0)
+        else:
+            score = min(impact + exploitability, 10.0)
+        # CVSS v3.1 spec: Roundup(x) = smallest 1-decimal >= x (#475). Without
+        # it every boundary score under-reads (e.g. the textbook 9.8 vector
+        # computed 9.76 -> reported 9.7-ish instead of 9.8), skewing severity
+        # bucketing at HIGH/CRITICAL thresholds. Epsilon per the spec's
+        # reference implementation to dodge float artifacts.
+        return math.ceil(score * 10 - 1e-9) / 10 if score else 0.0
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return None
 
 
 def cve_ids(values: list | None) -> list[str]:

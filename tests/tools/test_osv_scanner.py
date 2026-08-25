@@ -80,6 +80,30 @@ class TestOsvScannerAdapter(unittest.TestCase):
         self.assertEqual(by_id["GHSA-9hjg-9r4m-mvj7"]["severity"], "MEDIUM")  # 5.3
         self.assertEqual(by_id["GHSA-x84v-xcm2-53pg"]["severity"], "CRITICAL")  # 9.8
 
+    def test_severity_from_vulnerability_cvss_v3_list(self):
+        # ARC-D2B / COD-C3B run-7: when groups[].max_severity is absent, OSV's
+        # vulnerabilities[].severity list of CVSS_V3 vector dicts must be parsed.
+        sample = json.dumps({
+            "results": [{
+                "source": {"path": "/src/package-lock.json"},
+                "packages": [{
+                    "package": {"name": "dep", "version": "1.0.0", "ecosystem": "npm"},
+                    "groups": [],
+                    "vulnerabilities": [{
+                        "id": "GHSA-LIST-ONLY",
+                        "aliases": ["CVE-2024-0001"],
+                        "severity": [{"type": "CVSS_V3",
+                                      "score_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}],
+                        "summary": "Remote code execution",
+                    }],
+                }],
+            }]
+        }).encode()
+        findings = osv.OsvScannerAdapter().parse(sample, "g1")
+        self.assertEqual(len(findings), 1)
+        self.assertNotEqual(findings[0]["severity"], "INFO")
+        self.assertEqual(findings[0]["severity"], "CRITICAL")
+
     def test_cvss_bucket_boundaries(self):
         self.assertEqual(base.cvss_bucket(9.0), "CRITICAL")
         self.assertEqual(base.cvss_bucket(7.0), "HIGH")
