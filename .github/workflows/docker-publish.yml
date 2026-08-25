@@ -20,6 +20,10 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}-tools
 
+concurrency:
+  group: docker-publish
+  cancel-in-progress: false
+
 # Multi-arch is built on NATIVE runners (amd64 + arm64), one job per platform
 # pushing by digest, then a merge job stitches them into a manifest list. This
 # avoids QEMU: the image compiles cargo-audit (Rust) from source, which under
@@ -39,7 +43,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-      id-token: write
 
     steps:
       - name: Checkout repository

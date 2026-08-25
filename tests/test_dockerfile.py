@@ -190,3 +190,22 @@ class TestDockerfileFixtures(unittest.TestCase):
             self.assertIsNotNone(m, "%s not found" % arg)
             self.assertRegex(m.group(1), r"^[0-9a-f]{40}$",
                              "%s must be a full 40-hex commit SHA, not a ref" % arg)
+
+
+class TestDockerPublishWorkflow(unittest.TestCase):
+    def setUp(self):
+        with open(os.path.join(ROOT, ".github", "workflows",
+                               "docker-publish.yml"), encoding="utf-8") as fh:
+            self.wf = yaml.safe_load(fh)
+
+    def test_build_job_does_not_request_unused_id_token(self):
+        perms = self.wf["jobs"]["build"]["permissions"]
+        self.assertNotIn("id-token", perms)
+
+    def test_merge_job_retains_id_token_for_attestation(self):
+        perms = self.wf["jobs"]["merge"]["permissions"]
+        self.assertEqual(perms.get("id-token"), "write")
+
+    def test_concurrency_guard_is_configured(self):
+        self.assertIn("concurrency", self.wf)
+        self.assertTrue(self.wf["concurrency"]["group"])
