@@ -56,6 +56,15 @@ class TestPrefixRegistry(unittest.TestCase):
             "registered legacy adapters relying on the shared TL fallback "
             "prefix: %r — add explicit sarif_utils.PREFIX entries" % unlisted)
 
+    def test_prefix_keys_are_legacy_tools(self):
+        # Every key in sarif_utils.PREFIX must correspond to a legacy SARIF
+        # tool. Stale entries (e.g. the retired bare "eslint" adapter) would
+        # otherwise sit in the registry forever with no consumer.
+        self.assertTrue(
+            set(su.PREFIX).issubset(set(legacy.LEGACY_SARIF_TOOLS)),
+            "PREFIX contains keys not in LEGACY_SARIF_TOOLS: %r"
+            % sorted(set(su.PREFIX) - set(legacy.LEGACY_SARIF_TOOLS)))
+
 
 if __name__ == "__main__":
     unittest.main()
