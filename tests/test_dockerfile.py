@@ -145,6 +145,27 @@ class TestOfflineAssets(unittest.TestCase):
         self.assertIn("ARG ASSET_REFRESH", self.text)
 
 
+class TestDockerBuildPrWorkflow(unittest.TestCase):
+    def setUp(self):
+        with open(os.path.join(ROOT, ".github", "workflows",
+                               "docker-build-pr.yml"), encoding="utf-8") as fh:
+            self.wf = yaml.safe_load(fh)
+
+    def test_expanded_trigger_paths_present(self):
+        on = self.wf.get(True, {})
+        paths = on.get("pull_request", {}).get("paths", [])
+        self.assertIn(".github/workflows/docker-build-pr.yml", paths)
+        self.assertIn("skill/scripts/**", paths)
+
+    def test_dockerfile_fixtures_is_trigger_and_built(self):
+        on = self.wf.get(True, {})
+        paths = on.get("pull_request", {}).get("paths", [])
+        self.assertIn("Dockerfile.fixtures", paths)
+        step_names = " ".join(
+            s.get("name", "") for s in self.wf["jobs"]["build"]["steps"])
+        self.assertIn("Build Dockerfile.fixtures", step_names)
+
+
 class TestDockerfileFixtures(unittest.TestCase):
     def test_bundles_fixture_clone_refs_and_rust_build(self):
         text = _read_dockerfile_fixtures()
