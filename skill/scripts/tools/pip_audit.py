@@ -1,11 +1,14 @@
 """pip-audit adapter for Python dependency CVEs."""
 from __future__ import annotations
+import contextvars
 import glob
 import os
 import sys
 import tempfile
 import tomllib
 from .base import cve_ids, make_finding, normalize_severity, omit_none, parse_json_bytes, run_tool
+
+_manifest_path_cv = contextvars.ContextVar("pip_audit_manifest_path", default=None)
 
 
 def _deps_from_pyproject(target: str) -> list[str] | None:
@@ -31,9 +34,6 @@ class PipAuditAdapter:
     name = "pip-audit"
     prefix = "PA"
 
-    def __init__(self) -> None:
-        self._manifest_path: str | None = None
-
     def is_applicable(self, target: str) -> bool:
         patterns = ["requirements.txt", "requirements*.txt", "pyproject.toml"]
         for pat in patterns:
@@ -54,7 +54,7 @@ class PipAuditAdapter:
         cmd = ["pip-audit", "--format=json", "--desc=on", "--progress-spinner=off"]
         req = self._find_requirement(target)
         if req:
-            self._manifest_path = req
+            _manifest_path_cv.set(req)
             cmd.extend(["--requirement", req])
         else:
             # Never pass the project directory positionally: resolving a
@@ -65,7 +65,7 @@ class PipAuditAdapter:
                       "skipping (osv-scanner covers this target)" % target,
                       file=sys.stderr)
                 return b'{"dependencies": [], "fixes": []}', 0
-            self._manifest_path = os.path.join(target, "pyproject.toml")
+            _manifest_path_cv.set(os.path.join(target, "pyproject.toml"))
             tmp = tempfile.NamedTemporaryFile(
                 "w", suffix=".txt", delete=False)
             try:
@@ -101,7 +101,7 @@ class PipAuditAdapter:
                     title=f"{dep_name} {dep_version}: {vuln.get('id', 'vulnerability')}".strip(),
                     severity=normalize_severity(vuln.get("severity") or "MEDIUM"),
                     category="dependency_vulnerability",
-                    location={"file": self._manifest_path or "requirements.txt", "line_start": 1},
+                    location={"file": _manifest_path_cv.get() or "requirements.txt", "line_start": 1},
                     description=vuln.get("description", "No description provided."),
                     impact=f"Vulnerable dependency {dep_name}=={dep_version} is used.",
                     remediation=f"Upgrade to a fixed version: {', '.join(vuln.get('fix_versions', [])) or 'see advisory'}",

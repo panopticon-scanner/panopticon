@@ -5,7 +5,19 @@ import tempfile
 import unittest
 from unittest import mock
 
+import pytest
+
 import scripts.tools.pip_audit as pa
+
+
+@pytest.fixture(autouse=True)
+def _reset_pip_audit_manifest_path_cv():
+    """Reset the per-invocation manifest path ContextVar around each test."""
+    token = pa._manifest_path_cv.set(None)
+    try:
+        yield
+    finally:
+        pa._manifest_path_cv.reset(token)
 
 PIP_AUDIT_SAMPLE = json.dumps({
     "dependencies": [
@@ -55,16 +67,45 @@ class TestPipAuditAdapter(unittest.TestCase):
 
     def test_parse_uses_actual_manifest_path(self):
         adapter = pa.PipAuditAdapter()
-        adapter._manifest_path = "/tmp/fake/pyproject.toml"
-        findings = adapter.parse(PIP_AUDIT_SAMPLE, "g1")
-        self.assertEqual(len(findings), 1)
-        self.assertEqual(findings[0]["location"]["file"], "/tmp/fake/pyproject.toml")
+        token = pa._manifest_path_cv.set("/tmp/fake/pyproject.toml")
+        try:
+            findings = adapter.parse(PIP_AUDIT_SAMPLE, "g1")
+            self.assertEqual(len(findings), 1)
+            self.assertEqual(findings[0]["location"]["file"], "/tmp/fake/pyproject.toml")
+        finally:
+            pa._manifest_path_cv.reset(token)
 
     def test_parse_defaults_location_file_when_no_manifest(self):
         adapter = pa.PipAuditAdapter()
         findings = adapter.parse(PIP_AUDIT_SAMPLE, "g1")
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0]["location"]["file"], "requirements.txt")
+
+    def test_manifest_path_is_per_invocation_not_singleton_state(self):
+        # Regression: _manifest_path used to be stored on the singleton
+        # instance, so a second invoke could overwrite the value before the
+        # first invoke's output was parsed.
+        import contextvars
+
+        adapter = pa.PipAuditAdapter()
+
+        def fake_find_requirement(target: str) -> str:
+            return os.path.join(target, "requirements.txt")
+
+        def exercise():
+            with mock.patch.object(adapter, "_find_requirement", side_effect=fake_find_requirement):
+                with mock.patch.object(pa, "run_tool", return_value=(PIP_AUDIT_SAMPLE, 0)):
+                    raw1, _ = adapter.invoke("/tmp/fake1")
+                    findings1 = adapter.parse(raw1, "g1")
+                    self.assertEqual(findings1[0]["location"]["file"], "/tmp/fake1/requirements.txt")
+
+                    raw2, _ = adapter.invoke("/tmp/fake2")
+                    findings2 = adapter.parse(raw2, "g2")
+                    self.assertEqual(findings2[0]["location"]["file"], "/tmp/fake2/requirements.txt")
+
+        # Run in an isolated context so the ContextVar mutations do not leak
+        # into other tests.
+        contextvars.copy_context().run(exercise)
 
     def test_parse_omits_none_tool_evidence_fields(self):
         sample = json.dumps({
