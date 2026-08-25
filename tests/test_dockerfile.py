@@ -108,7 +108,8 @@ class TestOfflineAssets(unittest.TestCase):
         self.assertIn("workflow_dispatch", on)
         promote = on["workflow_dispatch"]["inputs"]["promote_weekly"]
         self.assertEqual(promote.get("type"), "boolean")
-        self.assertFalse(promote.get("default", False))
+        self.assertIn("default", promote)
+        self.assertEqual(promote.get("default"), False)
         self.assertIn(
             "(github.event_name == 'schedule' && steps.cadence.outputs.weekly == 'true') || inputs.promote_weekly == true",
             str(wf["jobs"]["merge"]["steps"]),
@@ -123,6 +124,21 @@ class TestOfflineAssets(unittest.TestCase):
         self.assertIn(
             "(github.event_name == 'schedule' && steps.cadence.outputs.weekly == 'true') || inputs.promote_weekly == true",
             meta_step["with"]["tags"],
+        )
+        self.assertIn(
+            "type=raw,value=daily,enable={{is_default_branch}}",
+            meta_step["with"]["tags"],
+        )
+
+        # The workflow must pass the computed asset-refresh date into the
+        # build-args so daily rebuilds bust the layers that embed $ASSET_REFRESH.
+        build_step = next(
+            s for s in wf["jobs"]["build"]["steps"]
+            if s.get("id") == "build"
+        )
+        self.assertIn(
+            "ASSET_REFRESH=${{ steps.cadence.outputs.date }}",
+            build_step["with"]["build-args"],
         )
 
     def test_dockerfile_has_asset_refresh_arg(self):
