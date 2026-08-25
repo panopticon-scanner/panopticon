@@ -303,6 +303,7 @@ class TestBuildDiffCohorts(unittest.TestCase):
         self.assertEqual(diff["meta"]["close_guard"], "empty_run3")
         self.assertEqual(self._cohort_ids(diff, "closed", "run2"), set())
         self.assertEqual(self._cohort_ids(diff, "ambiguous", "run2"), {"A"})
+        self.assertTrue(diff["ambiguous"])   # #run7 review: parity guard before [0] (TST-B3A)
         self.assertIn("zero records", diff["ambiguous"][0]["reason"])
 
     def test_zero_file_overlap_refuses_to_close_anything(self):

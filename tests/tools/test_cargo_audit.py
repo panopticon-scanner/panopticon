@@ -30,11 +30,12 @@ class TestCargoAuditAdapter(unittest.TestCase):
         f = findings[0]
         self.assertEqual(f["source"], "tool:cargo-audit")
         self.assertEqual(f["tool_evidence"]["package_name"], "foo")
-        self.assertEqual(f["severity"], "INFO")
+        self.assertEqual(f["severity"], "LOW")
 
-    def test_parse_missing_cvss_defaults_to_info(self):
-        # ARC-D2B / COD-C3B run-7: cargo-audit must fall back to INFO when no
-        # CVSS data is present, matching the other dependency adapters.
+    def test_parse_missing_cvss_defaults_to_low(self):
+        # #run7 review: an unscored (no-CVSS) cargo advisory floors at LOW, not
+        # INFO -- a real vuln stays a visible finding the agent can downgrade,
+        # not dismissed noise. (Both are gate-weight 0; this is about honesty.)
         sample = json.dumps({
             "vulnerabilities": {"list": [{
                 "advisory": {
@@ -49,7 +50,7 @@ class TestCargoAuditAdapter(unittest.TestCase):
         }).encode()
         findings = ca.CargoAuditAdapter().parse(sample, "g1")
         self.assertEqual(len(findings), 1)
-        self.assertEqual(findings[0]["severity"], "INFO")
+        self.assertEqual(findings[0]["severity"], "LOW")
 
     def test_is_applicable_when_cargo_lock_present(self):
         # #run7 COD-C2A: applicability keys on Cargo.lock (what `cargo audit

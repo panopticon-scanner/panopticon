@@ -144,6 +144,14 @@ RUN curl -sfL --connect-timeout 5 --max-time 120 "https://github.com/jeremylong/
 ENV CARGO_HOME=/usr/local/cargo
 ENV RUSTUP_HOME=/usr/local/rustup
 ENV PATH="/usr/local/cargo/bin:${PATH}"
+# FIXME (#run7 review): these SHAs pin the binary but are fetched from the
+# MOVING `rustup/dist/<triple>/rustup-init` URL, which always serves the LATEST
+# rustup. When rust-lang next ships a rustup release the served binary changes
+# and `sha256sum -c` fails, hard-breaking the next from-scratch Docker build on
+# an unrelated checksum mismatch. Pin like the dotnet installer below (an
+# immutable versioned URL): add `ARG RUSTUP_VERSION=<x.y.z>`, fetch from
+# `rustup/archive/${RUSTUP_VERSION}/<triple>/rustup-init`, and set the SHAs for
+# THAT version (requires looking them up from rust-lang -- do not guess).
 ARG RUSTUP_INIT_SHA256_AMD64=4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10
 ARG RUSTUP_INIT_SHA256_ARM64=9732d6c5e2a098d3521fca8145d826ae0aaa067ef2385ead08e6feac88fa5792
 RUN arch="$(dpkg --print-architecture)" \
@@ -249,8 +257,11 @@ RUN : "asset-refresh ${ASSET_REFRESH}" \
 # adapters (see ONLINE_ONLY in tools/__init__.py). Warm with throwaway
 # lockfiles so --download-offline-databases has an ecosystem to detect,
 # then discard them. This pinned osv-scanner release only recognizes the
-# experimental-prefixed flags; the plain spellings are kept as a fallback
-# for whenever OSV_SCANNER_VERSION next gets bumped past them.
+# experimental-prefixed flags. #run7 review: the plain-flag fallback invocation
+# was removed in favor of a hard fail -- if a future OSV_SCANNER_VERSION bump
+# renames/drops these flags, the warm below produces no npm/PyPI databases and
+# the ::error:: check below fails the build (rather than silently shipping an
+# empty DB). Update the flag spellings here when bumping the version.
 ENV OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY=/opt/osv-db
 RUN set -euo pipefail \
     && : "asset-refresh ${ASSET_REFRESH}" \

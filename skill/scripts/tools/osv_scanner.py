@@ -1,7 +1,7 @@
 """OSV scanner adapter for cross-ecosystem dependency advisories."""
 from __future__ import annotations
 from .base import (cve_ids, cvss_bucket, has_any_file, make_finding,
-                   normalize_severity, omit_none, parse_json_bytes, run_tool,
+                   omit_none, parse_json_bytes, run_tool,
                    _cvss_v3_score)
 from .sarif_utils import _norm_uri
 
@@ -69,7 +69,10 @@ class OsvScannerAdapter:
                                         severity = cvss_bucket(entry_score)
                                         break
                         if severity is None:
-                            severity = normalize_severity(None)
+                            # #run7 review: floor an unscored advisory at LOW, not
+                            # INFO -- a real vuln with no CVSS stays a visible
+                            # finding the agent can downgrade, not dismissed noise.
+                            severity = "LOW"
                     out.append(make_finding(
                         self, n, group,
                         title=f"{pkg.get('name')} {pkg.get('version')}: {vuln.get('id', 'vulnerability')}",
