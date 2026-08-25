@@ -42,7 +42,7 @@ plain `--files` (no `--base`) is a normal whole-file review and emits no delta a
 
 The 5.0 driver (`skill/scripts/driver.py`) runs every mode from Modes above — whole-repo committed-matrix review, `-f`/`-d`/`-g` scope, `-c`/`--pr` delta — as one resumable state machine; the host drives it through its status protocol.
 
-**Installed-flow substitution (#495):** `skill/` in every command below means THIS SKILL'S INSTALL DIRECTORY — literally `skill/` inside the panopticon repo, or the absolute path you installed it to elsewhere (e.g. `~/.claude/skills/panopticon/`). Run every command from the TARGET repo root regardless — `.panopticon/` artifacts and the write-guard resolve against cwd; only the script path substitutes.
+**Installed-flow substitution (#495):** `skill/` in every command below means THIS SKILL'S INSTALL DIRECTORY — literally `skill/` inside the panopticon repo, or the absolute path you installed it to elsewhere (e.g. `~/.<agent-config>/skills/panopticon/`). Run every command from the TARGET repo root regardless — `.panopticon/` artifacts and the write-guard resolve against cwd; only the script path substitutes.
 
 Loop:
 1. Run `python3 skill/scripts/driver.py run <target> --host claude [flags]` from the TARGET repo root. It advances to the first not-done phase and prints one status JSON line: `complete`, `error`, or `checkpoint`.

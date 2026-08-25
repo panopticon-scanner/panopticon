@@ -8,9 +8,9 @@ Panopticon profiles a target codebase, groups files by risk, dispatches speciali
 
 The skill uses the open `SKILL.md` format and works with:
 
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) — first-class: parallel fan-out via the Agent tool
-- [Kimi Code CLI](https://code.kimi.com/) — supported: AgentSwarm raw-prompt dispatch
-- [OpenAI Codex CLI](https://developers.openai.com/codex/cli) — supported: isolated parallel fan-out via `codex exec`
+- Native Agent-tool host — first-class: parallel fan-out via the Agent tool
+- `kimi` CLI — supported: AgentSwarm raw-prompt dispatch
+- `codex` CLI — supported: isolated parallel fan-out via `codex exec`
 - Other agents that read `SKILL.md` files — degraded: sequential dispatch, same prompts
 
 ## Installation
@@ -103,7 +103,7 @@ kimi /panopticon --pr 217              # review PR 217 in an isolated worktree
 | `skill/SKILL.md` | Skill entry point (frontmatter + quick reference) |
 | `docs/PANOPTICON.md` | Full user guide, driver run-loop spec, and schema contracts |
 | `skill/scripts/` | Runnable Python modules (driver, discovery, synthesizer, dispatch, tools) |
-| `skill/agents/` | Custom agent definitions (`scout`, `panel-review`, `lens-sweep`, `advisor`) |
+| `skill/agents/` | Custom agent definitions (`scout`, `domain-panel`, `domain-advisor`, `advisor`) |
 | `skill/reference/` | Schemas, CWE catalog, security checklists, example group profiles |
 | `scripts/` | Project maintenance, issue filing, and triage CLI scripts |
 | `tests/` | pytest suite |

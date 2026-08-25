@@ -1,7 +1,7 @@
 # Panopticon — Development Notes
 
-Ruthless, standards-cited code review skill; Claude Code first-class, Kimi Code
-and OpenAI Codex CLI supported, other SKILL.md hosts degraded-sequential. This file is the durable
+Ruthless, standards-cited code review skill; first-class support for the native
+Agent-tool host, plus portable support for other SKILL.md-compatible agents. This file is the durable
 design record that travels with the skill (installed dir / OneDrive), so future
 work has context without the original spec/plan docs.
 
@@ -10,8 +10,8 @@ work has context without the original spec/plan docs.
 ## What it is
 A **discovery → scout → fan-out → synthesis** pipeline. It profiles a target with a
 cheap "scout", builds a risk-tuned plan, and fans out rendered role prompts in
-parallel via the host's agent mechanism (Agent tool on Claude Code, AgentSwarm
-on Kimi). Each `(domain, group)` matrix cell is reviewed by the `domain-panel` agent
+parallel via the host's agent mechanism (native Agent-tool fan-out, AgentSwarm
+raw-prompt dispatch, or isolated `codex exec`). Each `(domain, group)` matrix cell is reviewed by the `domain-panel` agent
 (`agents/domain-panel.md`); its verifier is `domain-advisor`. (The 4.x `panel-review.md` /
 `lens-sweep.md` templates are retired back-compat — `driver run` no longer dispatches them.)
 Review spans six panels: **code**, **test**, **security**, **architecture**, **database**, and **redteam**.
@@ -49,7 +49,7 @@ summary + JSON artifact) with standards citations and CI gating.
   (the allow/block decision) and `install`/`uninstall` (register/remove the hook + allowlist for the
   fan-out phase, merge-preserving of unrelated settings).
 - `Dockerfile` — `panopticon-tools` image: semgrep, gitleaks, trivy, bandit, brakeman, gosec,
-  eslint. Build once: `docker build -t panopticon-tools <this dir>`.
+  eslint, roslyn-secguard. Build once: `docker build -t panopticon-tools <this dir>`.
 - `skill/reference/` — `report-schema.json`, `scope-profile-schema.json`, `cwe-catalog.json`
   (curated CWE→OWASP map), `security-checklists.md`, `code-review-groups.example.yml`.
 - `skill/agents/` — host-neutral role prompt templates: `scout.md`, `domain-panel.md`, `domain-advisor.md`, `advisor.md` (the 4.x `lens-sweep.md` / `panel-review.md` remain only as retired back-compat).
