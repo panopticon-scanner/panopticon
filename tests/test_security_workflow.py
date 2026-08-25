@@ -105,9 +105,38 @@ class TestSecurityWorkflowTrustBoundary(unittest.TestCase):
             "${{ github.event.issue.body }}",
             "${{ github.event.comment.body }}",
             "${{ github.event.head_commit.message }}",
+            "${{ github.head_ref }}",
+            "${{ github.event.pull_request.head.label }}",
+            "${{ github.event.review.body }}",
+            "${{ github.event.pull_request.head.repo.description }}",
+            "${{ github.event.discussion.body }}",
+            "${{ github.event.pull_request.user.login }}",
+            "${{ github.event.commits[0].message }}",
         ]
         for ctx in untrusted_contexts:
             self.assertNotIn(ctx, runs)
+
+    def test_expanded_untrusted_contexts_are_caught(self):
+        # Positive regression: each newly-added context would be flagged if it
+        # appeared anywhere in a run script.
+        runs = self._run_text(self._workflow())
+        newly_untrusted = [
+            "${{ github.head_ref }}",
+            "${{ github.event.pull_request.head.label }}",
+            "${{ github.event.review.body }}",
+            "${{ github.event.pull_request.head.repo.description }}",
+            "${{ github.event.discussion.body }}",
+            "${{ github.event.pull_request.user.login }}",
+            "${{ github.event.commits[0].message }}",
+        ]
+        for ctx in newly_untrusted:
+            self.assertNotIn(ctx, runs)
+
+    def test_env_context_is_allowed(self):
+        # Negative regression: a benign, non-injectable env context is permitted
+        # and present in run scripts.
+        runs = self._run_text(self._workflow())
+        self.assertIn("${{ env.TOOLS_OUT }}", runs)
 
 
 if __name__ == "__main__":
