@@ -86,7 +86,7 @@
 ### Deferred
 - None
 
-## K5 misc tests (PR pending)
+## K5 misc tests (PR #1393)
 
 ### Addressed
 - TST-E1A `tests/test_reconcile.py:10` — added `TestFixtures` existence check for the reconcile fixture directory and expected files
@@ -98,3 +98,12 @@
 
 ### Deferred
 - None
+
+## Final notes
+
+All Kimi run-7 MEDIUM remediation work is now merged:
+- K1 repo-ops scripts — PR #1385
+- K2 tool adapters + adapter tests — PR #1390
+- K3 CI/Docker/config — PR #1391
+- K4 docs — PR #1392
+- K5 misc test-quality — PR #1393
