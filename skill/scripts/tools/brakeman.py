@@ -1,6 +1,7 @@
 """Brakeman adapter for Ruby on Rails security findings."""
 from __future__ import annotations
 import os
+import sys
 from .base import as_list, make_finding, omit_none, parse_json_bytes, run_tool
 
 
@@ -48,6 +49,18 @@ _BRAKEMAN_SEVERITY = {
     "Basic Auth": "LOW",
     "Unsafe Reflection": "MEDIUM",
 }
+_BRAKEMAN_SEVERITY.update({
+    "SSL Verification Bypass": "MEDIUM",
+    "LDAP Injection": "HIGH",
+    "Weak Hash": "MEDIUM",
+    "Path Traversal": "HIGH",
+    "Insecure Cryptography Algorithm": "HIGH",
+    "Regex Denial of Service": "MEDIUM",
+    "Timing Attack": "LOW",
+    "Command Injection": "CRITICAL",
+    "Unsafe Reflection": "HIGH",
+    "Mass Assignment": "MEDIUM",
+})
 
 
 class BrakemanAdapter:
@@ -82,6 +95,8 @@ class BrakemanAdapter:
         for w in data.get("warnings", []):
             wtype = w.get("warning_type", "")
             cwe = _BRAKEMAN_CWE.get(wtype)
+            if wtype not in _BRAKEMAN_SEVERITY:
+                print(f"brakeman: unmapped warning_type {wtype!r}; using MEDIUM", file=sys.stderr)
             sev = _BRAKEMAN_SEVERITY.get(wtype, "MEDIUM")
             out.append(make_finding(
                 self, n, group,

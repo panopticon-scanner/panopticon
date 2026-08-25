@@ -103,6 +103,45 @@ class TestBrakemanAdapter(unittest.TestCase):
             stdout, rc = adapter.invoke("/tmp/fake")
         self.assertEqual(rc, 4)
 
+    def test_new_warning_type_uses_mapped_severity(self):
+        # COD-C3B run-7: newly mapped warning types must not silently fall back.
+        adapter = br.BrakemanAdapter()
+        for wt, expected_sev in (
+            ("Path Traversal", "HIGH"),
+            ("Weak Hash", "MEDIUM"),
+            ("Timing Attack", "LOW"),
+            ("Command Injection", "CRITICAL"),
+        ):
+            payload = json.dumps({
+                "warnings": [{
+                    "warning_type": wt,
+                    "message": f"Test {wt}",
+                    "file": "app/controllers/x.rb",
+                    "line": 7,
+                    "confidence": "Medium",
+                }]
+            }).encode()
+            findings = adapter.parse(payload, "g1")
+            self.assertEqual(findings[0]["severity"], expected_sev, wt)
+
+    def test_unmapped_warning_type_emits_stderr_and_defaults_medium(self):
+        import contextlib, io
+        adapter = br.BrakemanAdapter()
+        payload = json.dumps({
+            "warnings": [{
+                "warning_type": "Future Mystery Warning",
+                "message": "Something new",
+                "file": "app/models/y.rb",
+                "line": 3,
+                "confidence": "High",
+            }]
+        }).encode()
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            findings = adapter.parse(payload, "g1")
+        self.assertEqual(findings[0]["severity"], "MEDIUM")
+        self.assertIn("unmapped warning_type 'Future Mystery Warning'", buf.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()
