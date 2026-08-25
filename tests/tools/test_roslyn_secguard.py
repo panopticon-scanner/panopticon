@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 from _test_helpers import FakePopen
 import scripts.tools.base as tools_base
@@ -260,30 +261,24 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
         copied_src = []
         copied_dst = []
 
-        old_run = tools_base.subprocess.Popen
-        old_safe_copytree = rs._safe_copytree
-        try:
-            def fake_safe_copytree(src, dst):
-                copied_src.append(src)
-                copied_dst.append(dst)
-                open(os.path.join(dst, "x.csproj"), "w").close()
-                return 0
+        def fake_safe_copytree(src, dst):
+            copied_src.append(src)
+            copied_dst.append(dst)
+            open(os.path.join(dst, "x.csproj"), "w").close()
+            return 0
 
-            def fake_popen(cmd, **kwargs):
-                calls.append((cmd, kwargs))
-                return FakePopen(stdout=b"{}", stderr=b"", returncode=0)
+        def fake_popen(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return FakePopen(stdout=b"{}", stderr=b"", returncode=0)
 
-            rs._safe_copytree = fake_safe_copytree
-            tools_base.subprocess.Popen = fake_popen
+        with mock.patch.object(rs, "_safe_copytree", side_effect=fake_safe_copytree), \
+             mock.patch.object(tools_base.subprocess, "Popen", side_effect=fake_popen):
             with tempfile.TemporaryDirectory() as d:
                 open(os.path.join(d, "x.csproj"), "w").close()
                 raw, rc = adapter.invoke(d)
                 self.assertEqual(raw, b"{}")
                 self.assertEqual(rc, 0)
                 self.assertEqual(copied_src, [d])
-        finally:
-            tools_base.subprocess.Popen = old_run
-            rs._safe_copytree = old_safe_copytree
 
         cmd = calls[0][0]
         self.assertEqual(cmd[0], "dotnetarium-scs")
