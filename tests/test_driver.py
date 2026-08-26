@@ -127,6 +127,53 @@ class TestForeignManifest(unittest.TestCase):
         self.assertTrue(driver._foreign_manifest(
             {"review_root": native, "flags": {"tools": False}}, "/somewhere/else"))
 
+    @staticmethod
+    def _git(root, *a):
+        subprocess.run(["git", "-C", root, *a], check=True, capture_output=True)
+
+    def test_git_tracked_manifest_is_foreign_even_with_matching_stamp(self):
+        # #run8 AGT-C1A: a target that force-commits its .panopticon/run-manifest
+        # can forge a MATCHING review_root stamp (CI checkout paths are public),
+        # so the stamp alone is not enough. A git-TRACKED manifest is foreign
+        # regardless of stamp -- a driver-written one is never committed.
+        with tempfile.TemporaryDirectory() as d:
+            root = os.path.realpath(d)
+            self._git(root, "init", "-q")
+            self._git(root, "config", "user.email", "t@e.com")
+            self._git(root, "config", "user.name", "T")
+            os.makedirs(os.path.join(root, ".panopticon"))
+            mpath = os.path.join(root, ".panopticon", "run-manifest.json")
+            with open(mpath, "w", encoding="utf-8") as fh:
+                json.dump({"review_root": root, "flags": {"tools": False}}, fh)
+            self._git(root, "add", "-f", ".panopticon/run-manifest.json")
+            self._git(root, "commit", "-qm", "forge")
+            # stamp MATCHES this checkout, yet the tracked file gives it away
+            self.assertTrue(driver._foreign_manifest(
+                {"review_root": root, "flags": {"tools": False}}, root, mpath))
+
+    def test_untracked_manifest_with_matching_stamp_is_native(self):
+        # A driver-written resume manifest is gitignored/untracked -> not foreign.
+        with tempfile.TemporaryDirectory() as d:
+            root = os.path.realpath(d)
+            self._git(root, "init", "-q")
+            os.makedirs(os.path.join(root, ".panopticon"))
+            mpath = os.path.join(root, ".panopticon", "run-manifest.json")
+            with open(mpath, "w", encoding="utf-8") as fh:
+                json.dump({"review_root": root}, fh)      # written, never committed
+            self.assertFalse(
+                driver._foreign_manifest({"review_root": root}, root, mpath))
+
+    def test_non_git_target_falls_back_to_stamp_check(self):
+        # No git repo -> _manifest_committed is False, so the stamp check decides.
+        with tempfile.TemporaryDirectory() as d:
+            root = os.path.realpath(d)
+            os.makedirs(os.path.join(root, ".panopticon"))
+            mpath = os.path.join(root, ".panopticon", "run-manifest.json")
+            with open(mpath, "w", encoding="utf-8") as fh:
+                json.dump({"review_root": root}, fh)
+            self.assertFalse(driver._foreign_manifest({"review_root": root}, root, mpath))
+            self.assertTrue(driver._foreign_manifest({"review_root": "/evil"}, root, mpath))
+
 
 class TestEmitStatus(unittest.TestCase):
     def test_error_status_returns_exit_1(self):
@@ -2793,6 +2840,44 @@ class TestVerifyBackupNarrowing(unittest.TestCase):
             open(os.path.join(root, "src", "real.py"), "w").close()
             self.assertTrue(driver._confined_to_root(root, "src/real.py"))  # in-tree
             self.assertTrue(driver._confined_to_root(root, "src/new.py"))   # not-yet-written
+
+    def test_confine_claim_location_redacts_escaping_file(self):
+        # #run8 ARC-F2A: a claim location.file that escapes review_root is
+        # neutralized before it reaches the unconfined advisor; in-tree paths and
+        # other location fields pass through untouched.
+        root = "/repo"
+        esc = driver._confine_claim_location(
+            root, {"file": "../../../.ssh/id_rsa", "line_start": 3})
+        self.assertEqual(esc["file"], driver._REDACTED_CLAIM_PATH)
+        self.assertEqual(esc["line_start"], 3)                 # siblings preserved
+        keep = driver._confine_claim_location(root, {"file": "src/auth.py", "line_start": 9})
+        self.assertEqual(keep["file"], "src/auth.py")
+        self.assertIsNone(driver._confine_claim_location(root, None))   # no location
+        self.assertEqual(driver._confine_claim_location(root, {}), {})  # no file key
+
+    def test_render_findings_confines_location_in_claims(self):
+        # #run8 ARC-F2A: the claims JSON handed to the domain-advisor must carry a
+        # redacted location for an escaping path, in-tree ones verbatim.
+        cell = [
+            {"id": "A-001", "severity": "HIGH", "title": "x",
+             "location": {"file": "../../etc/shadow", "line_start": 1}},
+            {"id": "A-002", "severity": "LOW", "title": "y",
+             "location": {"file": "app/db.py", "line_start": 5}},
+        ]
+        blob = json.loads(driver._render_findings("/repo", cell))
+        self.assertEqual(blob[0]["location"]["file"], driver._REDACTED_CLAIM_PATH)
+        self.assertEqual(blob[1]["location"]["file"], "app/db.py")
+
+    def test_tool_verify_entry_confines_finding_location(self):
+        # #run8 ARC-F2A: _tool_verify_entry embeds the whole tool finding into the
+        # unconfined advisor's claim -- its location.file is confined too.
+        finding = {"id": "T-1", "severity": "HIGH",
+                   "location": {"file": "../../../root/.ssh/id_rsa", "line_start": 2}}
+        with tempfile.TemporaryDirectory() as root:
+            entry = driver._tool_verify_entry(
+                root, {"run_id": "r"}, "q1", finding, "kimi")
+        self.assertIn(driver._REDACTED_CLAIM_PATH, entry["prompt"])
+        self.assertNotIn("id_rsa", entry["prompt"])
 
     def _manifest(self):
         return {"run_id": self.RUN_ID, "host": "claude",
