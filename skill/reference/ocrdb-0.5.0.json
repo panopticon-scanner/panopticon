@@ -929,6 +929,18 @@
           "recurrence": 3,
           "status": "active"
         },
+        "ARC-C1F": {
+          "default_severity": "MEDIUM",
+          "examples": [
+            "A committed generated artifact (engine_traits.json, servicelist.go, an OpenAPI spec) has no CI/build step that regenerates it and fails on a diff against its generator source, so a stale artifact ships silently"
+          ],
+          "name": "generated-artifact-drift-unverified-in-build",
+          "provenance": [
+            "corpus"
+          ],
+          "recurrence": 2,
+          "status": "active"
+        },
         "ARC-C2A": {
           "cwe": [
             "CWE-390"
@@ -4559,11 +4571,24 @@
           "status": "active"
         },
         "SEC-B4C": {
+          "criteria": "Covers a retention window that is either ABSENT or present-but-unconfigurable (a hardcoded / compile-time constant with no config key to set it) \u2014 both leave the operator unable to bound how long personal data is kept. (Widened in 0.5.0 when the CMP-absorb corpus surfaced hardcoded-retention alongside missing-retention.)",
           "default_severity": "LOW",
           "name": "missing-retention-limit",
           "provenance": [
             "prior-art"
           ],
+          "status": "active"
+        },
+        "SEC-B4D": {
+          "default_severity": "LOW",
+          "examples": [
+            "The data model holds a subject's personal data but exposes no self-service path for that subject to exercise access / portability (export their own data in a portable form) or erasure (delete or anonymize), so an access/portability/erasure request has no product path"
+          ],
+          "name": "missing-data-subject-rights-path",
+          "provenance": [
+            "corpus"
+          ],
+          "recurrence": 6,
           "status": "active"
         },
         "SEC-C1A": {
@@ -4776,6 +4801,18 @@
             "Sensitive fund-transfer action executes with no audit logging"
           ],
           "name": "missing-audit-logging-for-sensitive-action",
+          "provenance": [
+            "corpus"
+          ],
+          "recurrence": 2,
+          "status": "active"
+        },
+        "SEC-C4C": {
+          "default_severity": "MEDIUM",
+          "examples": [
+            "Audit records are destroyed or orphaned through the same channel they audit \u2014 a LogEntry.user CASCADE wipes a user's admin-action trail on account deletion, or a bulk-deletion workflow purges Version/Communication/Comment history \u2014 with no append-only or tamper protection. (The log IS written, then destroyed; distinct from SEC-C4B missing-audit-logging.)"
+          ],
+          "name": "audit-trail-not-durable-destroyed-by-deletion",
           "provenance": [
             "corpus"
           ],
@@ -6484,5 +6521,5 @@
   },
   "license": "CC BY-SA 4.0",
   "schema_version": "1.0",
-  "version": "0.4.1"
+  "version": "0.5.0"
 }
