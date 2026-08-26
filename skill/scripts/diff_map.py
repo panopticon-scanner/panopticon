@@ -231,16 +231,66 @@ def _worktree_dir(repo, pr_number):
     /var/folders/..., a symlink into /private/var/...; record the physical
     path so every consumer (guard allowlist, reconcile, cwd-derived paths)
     agrees.
+
+    #run8 COD-X0X: resolve only the tempdir ROOT, never the deterministic leaf.
+    The leaf name (`panopticon-pr-<n>-<hash>`) is fully derivable by anyone with
+    write access to the shared temp dir, so realpath-ing the whole path would
+    silently FOLLOW an attacker-planted symlink at the leaf and hand back its
+    resolved target -- defeating acquire_pr's `os.path.islink(wt)` guard, which
+    would then only ever inspect the (non-symlink) destination. Keeping the leaf
+    unresolved lets that guard see the real, possibly hostile, leaf.
     """
     key = hashlib.sha256(os.path.realpath(repo).encode("utf-8")).hexdigest()[:12]
-    return os.path.realpath(os.path.join(tempfile.gettempdir(),
-                                         "panopticon-pr-%d-%s" % (pr_number, key)))
+    root = os.path.realpath(tempfile.gettempdir())
+    return os.path.join(root, "panopticon-pr-%d-%s" % (pr_number, key))
 
 
 # Hard bound on the --pr worktree git/gh calls so a hung fetch/API/teardown
 # (network partition, stalled TLS, a held git lock) cannot block the run
 # indefinitely (#1081, #1082). Generous -- a shallow PR fetch is the slowest.
 _PR_TIMEOUT = 180
+
+
+def _sync_groups(repo, wt_path):
+    """Copy the operator's `.panopticon/groups.yml` into the PR worktree so the
+    review runs against the operator's grouping, not whatever the PR shipped.
+
+    #run8 SEC-D1C: the worktree holds ATTACKER-CONTROLLED checked-out PR content
+    (`git worktree add --detach wt head_sha`). If the PR commits `.panopticon`
+    (or `.panopticon/groups.yml`) as a SYMLINK -- git tracks symlinks, and
+    `git add -f` defeats the `.panopticon/` gitignore -- then makedirs/copy2
+    would resolve THROUGH it and write groups.yml to an attacker-chosen location
+    outside the worktree (CWE-59 improper link resolution). The worktree ROOT is
+    already symlink-checked in acquire_pr; this closes the same hole one level
+    down. Refuse (loud, consistent with the module's fail-loud contract) if the
+    destination dir/file is a symlink or resolves outside the worktree root.
+    """
+    src = os.path.join(repo, ".panopticon", "groups.yml")
+    if not os.path.isfile(src):
+        return
+    panop_dir = os.path.join(wt_path, ".panopticon")
+    if os.path.islink(panop_dir):
+        raise RuntimeError(
+            "panopticon --pr: refusing to sync groups.yml through symlinked "
+            ".panopticon in PR worktree (%s)" % panop_dir)
+    real_wt = os.path.realpath(wt_path)
+    real_parent = os.path.realpath(panop_dir)   # non-existent tail resolves literally
+    try:
+        contained = os.path.commonpath([real_parent, real_wt]) == real_wt
+    except ValueError:
+        contained = False
+    if not contained:
+        raise RuntimeError(
+            "panopticon --pr: refusing to sync groups.yml outside the worktree "
+            "(destination %s escapes %s)" % (real_parent, real_wt))
+    dst = os.path.join(panop_dir, "groups.yml")
+    if os.path.islink(dst):
+        raise RuntimeError(
+            "panopticon --pr: refusing to write groups.yml through a symlinked "
+            "destination (%s)" % dst)
+    if not os.path.isfile(dst):
+        os.makedirs(panop_dir, exist_ok=True)
+        shutil.copy2(src, dst)
 
 
 def acquire_pr(pr_number, repo=".", runner=subprocess.run):
@@ -289,18 +339,10 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
     # a raw TimeoutExpired as an uncaught traceback, and so a non-zero listing
     # fails loud rather than silently falling through to the create path.
     listing_out = _run(["git", "-C", repo, "worktree", "list"])
-    def _sync_groups(wt_path):
-        src = os.path.join(repo, ".panopticon", "groups.yml")
-        if os.path.isfile(src):
-            dst = os.path.join(wt_path, ".panopticon", "groups.yml")
-            if not os.path.isfile(dst):
-                os.makedirs(os.path.dirname(dst), exist_ok=True)
-                shutil.copy2(src, dst)
-
     if any(line.split()[:1] == [wt]
            for line in listing_out.splitlines() if line.strip()):
         head_sha = _run(["git", "-C", wt, "rev-parse", "HEAD"]).strip()
-        _sync_groups(wt)
+        _sync_groups(repo, wt)
         return {"worktree": wt, "base": base, "head_sha": head_sha}   # reuse (resume)
 
     fetch_ref = "refs/panopticon/pr-%d-%s" % (pr_number, uuid.uuid4().hex)
@@ -314,7 +356,7 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
             _run(["git", "-C", repo, "update-ref", "-d", fetch_ref])
         except RuntimeError:
             pass
-    _sync_groups(wt)
+    _sync_groups(repo, wt)
     return {"worktree": wt, "base": base, "head_sha": head_sha}
 
 

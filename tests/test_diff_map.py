@@ -323,6 +323,41 @@ class TestPrWorktree(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "insecure symlink detected"):
                     diff_map.acquire_pr(7, repo=".", runner=runner)
 
+    def test_worktree_dir_does_not_resolve_leaf_symlink(self):
+        # #run8 COD-X0X: _worktree_dir must NOT realpath its deterministic leaf.
+        # If it did, an attacker-planted symlink at the leaf would be silently
+        # followed and acquire_pr's islink guard (which inspects the returned
+        # path) would only ever see the resolved, non-symlink target.
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(diff_map.tempfile, "gettempdir", return_value=d):
+                wt = diff_map._worktree_dir(".", 7)
+            self.assertEqual(os.path.dirname(wt), os.path.realpath(d))
+            target = os.path.join(d, "attacker")
+            os.makedirs(target)
+            os.symlink(target, wt)                 # plant symlink AT the leaf
+            with mock.patch.object(diff_map.tempfile, "gettempdir", return_value=d):
+                wt_again = diff_map._worktree_dir(".", 7)
+            # deterministic + unresolved: same leaf path, and it IS seen as a link
+            self.assertEqual(wt_again, wt)
+            self.assertTrue(os.path.islink(wt_again))
+
+    def test_acquire_rejects_symlink_worktree_via_real_worktree_dir(self):
+        # #run8 COD-X0X: exercise the REAL _worktree_dir (not a monkeypatched
+        # stub) with an attacker-planted symlink at the deterministic leaf, to
+        # prove acquire_pr's islink guard actually fires on the true code path.
+        def runner(argv, **kw):
+            if argv[:3] == ["gh", "pr", "view"]:
+                return mock.Mock(returncode=0, stdout='{"baseRefName": "main"}', stderr="")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(diff_map.tempfile, "gettempdir", return_value=d):
+                wt = diff_map._worktree_dir(".", 7)
+                target = os.path.join(d, "attacker")
+                os.makedirs(target)
+                os.symlink(target, wt)             # pre-plant the hostile leaf
+                with self.assertRaisesRegex(RuntimeError, "insecure symlink detected"):
+                    diff_map.acquire_pr(7, repo=".", runner=runner)
+
     def test_release_is_tolerant(self):
         def runner(argv, **kw):
             class R: returncode = 1; stdout = ""; stderr = "not a worktree"
@@ -436,4 +471,62 @@ class TestDiffMapFailures(unittest.TestCase):
             with mock.patch.object(diff_map, "_run_git", side_effect=fake_run_git):
                 with self.assertRaisesRegex(RuntimeError, "git ls-files failed"):
                     diff_map.hunk_map(d, "HEAD")
+
+
+class TestSyncGroups(unittest.TestCase):
+    """#run8 SEC-D1C: _sync_groups copies the operator's groups.yml into an
+    attacker-controlled PR worktree and must not follow a symlinked destination
+    out of that worktree (CWE-59)."""
+
+    def _repo_with_groups(self, d):
+        repo = os.path.join(d, "repo")
+        os.makedirs(os.path.join(repo, ".panopticon"))
+        with open(os.path.join(repo, ".panopticon", "groups.yml"), "w",
+                  encoding="utf-8") as fh:
+            fh.write("groups: []\n")
+        return repo
+
+    def test_copies_into_worktree_normally(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo = self._repo_with_groups(d)
+            wt = os.path.join(d, "wt")
+            os.makedirs(wt)
+            diff_map._sync_groups(repo, wt)
+            dst = os.path.join(wt, ".panopticon", "groups.yml")
+            self.assertTrue(os.path.isfile(dst))
+            with open(dst, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), "groups: []\n")
+
+    def test_noop_when_operator_has_no_groups(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo = os.path.join(d, "repo")           # no .panopticon/groups.yml
+            os.makedirs(repo)
+            wt = os.path.join(d, "wt")
+            os.makedirs(wt)
+            diff_map._sync_groups(repo, wt)          # must not raise
+            self.assertFalse(os.path.exists(os.path.join(wt, ".panopticon")))
+
+    def test_rejects_symlinked_panopticon_dir(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo = self._repo_with_groups(d)
+            wt = os.path.join(d, "wt")
+            os.makedirs(wt)
+            escape = os.path.join(d, "escape")       # attacker-chosen destination
+            os.makedirs(escape)
+            os.symlink(escape, os.path.join(wt, ".panopticon"))
+            with self.assertRaisesRegex(RuntimeError, "symlinked .panopticon"):
+                diff_map._sync_groups(repo, wt)
+            # nothing written into the escape target
+            self.assertFalse(os.path.exists(os.path.join(escape, "groups.yml")))
+
+    def test_rejects_symlinked_groups_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo = self._repo_with_groups(d)
+            wt = os.path.join(d, "wt")
+            os.makedirs(os.path.join(wt, ".panopticon"))
+            outside = os.path.join(d, "outside.yml")  # points nowhere yet
+            os.symlink(outside, os.path.join(wt, ".panopticon", "groups.yml"))
+            with self.assertRaisesRegex(RuntimeError, "symlinked destination"):
+                diff_map._sync_groups(repo, wt)
+            self.assertFalse(os.path.exists(outside))
 

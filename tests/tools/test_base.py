@@ -101,6 +101,19 @@ class TestRunTool(unittest.TestCase):
             base.run_tool(["tool"], timeout=5)
         self.assertLess(len(err.getvalue()), 1500)
 
+    def test_stderr_capture_buffer_is_bounded(self):
+        # run-8 COD-A2A: a tool flooding stderr must not accumulate unbounded in
+        # memory — the drain buffer is capped like stdout. Feed many chunks so the
+        # cap engages mid-stream (a real pipe read returns <=64KB per call).
+        chunk = b"e" * (64 * 1024)
+        n = (base.MAX_TOOL_STDERR_BYTES // len(chunk)) + 40
+        fake = FakePopen(stdout=b"{}", stderr=[chunk] * n, returncode=0)
+        with mock.patch("scripts.tools.base.subprocess.Popen", return_value=fake):
+            out, err, rc = base.run_tool(["tool"], timeout=5, capture_stderr=True)
+        self.assertEqual((out, rc), (b"{}", 0))
+        self.assertLessEqual(len(err), base.MAX_TOOL_STDERR_BYTES + len(chunk))
+        self.assertLess(len(err), n * len(chunk))
+
     def test_findings_exit_one_does_not_log(self):
         err = io.StringIO()
         fake = FakePopen(stdout=b"[]", stderr=b"warnings", returncode=1)

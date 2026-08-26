@@ -199,6 +199,11 @@ class ToolAdapter(Protocol):
         ...
 
 MAX_TOOL_OUTPUT_BYTES = 50 * 1024 * 1024
+# #run8 COD-A2A: stderr is only ever excerpted for diagnostics, so its drain
+# buffer is capped far below stdout. A tool flooding stderr while writing stdout
+# can't grow memory unbounded — the drain keeps reading past the cap (no pipe
+# deadlock), it just stops accumulating.
+MAX_TOOL_STDERR_BYTES = 1 * 1024 * 1024
 
 
 def _drain(stream):
@@ -245,14 +250,18 @@ def run_tool(cmd, timeout, ok_codes=(0, 1), capture_stderr=False, **kwargs):
     timer.start()
 
     stderr_chunks: list[bytes] = []
+    stderr_collected = 0
 
     def _drain_stderr():
+        nonlocal stderr_collected
         try:
             while True:
                 chunk = proc.stderr.read(64 * 1024)
                 if not chunk:
                     break
-                stderr_chunks.append(chunk)
+                if stderr_collected < MAX_TOOL_STDERR_BYTES:
+                    stderr_chunks.append(chunk)
+                    stderr_collected += len(chunk)
         except Exception:
             pass
 
