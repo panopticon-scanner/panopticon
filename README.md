@@ -28,7 +28,7 @@ ln -s "$(pwd)/skill" ~/.kimi/skills/panopticon
 Then register the enforcement shells into your Kimi agents directory (one-time; re-run after template changes):
 
 ```bash
-python3 skill/scripts/dispatch.py --emit-host-agents kimi --out <your kimi agents dir>
+python3 skill/scripts/dispatch.py --emit-host-agents kimi --agents-dir <your kimi agents dir>
 ```
 
 Then invoke it with:

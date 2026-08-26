@@ -76,6 +76,15 @@ class TestFindSecBugsIntegrity(unittest.TestCase):
                 self.text, artifact.replace(".", r"\.") + r'"\s*\|\s*sha256sum -c',
                 "%s is not sha256sum-verified" % artifact)
 
+    def test_dotnet_network_steps_are_timeout_bounded(self):
+        # run-8 OPS-A1A: every network step in this file is `timeout`-wrapped so a
+        # hung feed can't stall the build to the 120-min job cap. The two dotnet
+        # steps (SDK download + `dotnet tool install`) were the exceptions.
+        self.assertRegex(self.text, r"timeout \d+ /tmp/dotnet-install\.sh",
+                         "dotnet SDK install has no timeout wrapper")
+        self.assertRegex(self.text, r"timeout \d+ dotnet tool install",
+                         "dotnet tool install has no timeout wrapper")
+
 
 class TestOfflineAssets(unittest.TestCase):
     def setUp(self):
