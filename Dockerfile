@@ -170,7 +170,7 @@ RUN curl -sfL --connect-timeout 5 --max-time 60 "https://raw.githubusercontent.c
         -o /tmp/dotnet-install.sh \
     && echo "${DOTNET_INSTALL_SHA256}  /tmp/dotnet-install.sh" | sha256sum -c - \
     && chmod +x /tmp/dotnet-install.sh \
-    && /tmp/dotnet-install.sh --channel 8.0 --install-dir /usr/share/dotnet \
+    && timeout 600 /tmp/dotnet-install.sh --channel 8.0 --install-dir /usr/share/dotnet \
     && rm /tmp/dotnet-install.sh
 RUN ln -s /usr/share/dotnet/dotnet /usr/bin/dotnet
 ENV DOTNET_ROOT=/usr/share/dotnet
@@ -183,7 +183,7 @@ ENV PATH="/usr/share/dotnet:${PATH}"
 # SCS* rule IDs in SARIF 2.1 format, so the adapter parse logic is unchanged.
 ARG DOTNETARIUM_SCS_VERSION=1.1.0
 ENV DOTNET_CLI_TELEMETRY_OPTOUT=1
-RUN dotnet tool install --tool-path /usr/local/bin dotnetarium-scs --version ${DOTNETARIUM_SCS_VERSION}
+RUN timeout 300 dotnet tool install --tool-path /usr/local/bin dotnetarium-scs --version ${DOTNETARIUM_SCS_VERSION}
 
 # ---- Offline scan assets (P1: zero scan-time egress; spec 2026-08-04) ----
 # Cache boundary: everything ABOVE this ARG stays layer-cached across daily
