@@ -933,11 +933,19 @@ def _verify_cell_done(review_root, manifest, group, domain, stage):
             and meta.get("stage", "primary") == stage)
 
 
-def _render_findings(cell):
-    """The cell's claims as a compact JSON array the advisor adjudicates."""
+def _render_findings(review_root, cell):
+    """The cell's claims as a compact JSON array the advisor adjudicates.
+
+    #run8 ARC-F2A: each claim's `location` is confined to review_root (see
+    _confine_claim_location). The location is panel/LLM-supplied and the
+    advisor's Read/Grep/Glob are unconfined, so an out-of-tree `location.file`
+    embedded verbatim here would steer the advisor to read outside the review
+    tree in BOTH verify rounds -- the prior _confined_to_root guard covered only
+    the derived backup file list, never this channel."""
     slim = [{"id": f["id"], "code": f.get("code"), "severity": f["severity"],
              "title": f["title"], "category": f.get("category"),
-             "location": f.get("location"), "description": f.get("description", "")}
+             "location": _confine_claim_location(review_root, f.get("location")),
+             "description": f.get("description", "")}
             for f in cell]
     return json.dumps(slim, indent=2)
 
@@ -947,7 +955,7 @@ def _verify_entry(review_root, manifest, group, domain, files, cell, host, bundl
     out_file = _verify_out_file(review_root, group, domain, stage)
     prompt = dispatch.render_prompt("domain-advisor.md", {
         "domain": domain, "group": group, "file_list": file_list,
-        "findings": _render_findings(cell), "menu": _render_menu(bundle, domain),
+        "findings": _render_findings(review_root, cell), "menu": _render_menu(bundle, domain),
         "criteria": _render_criteria(bundle, domain),   # #1035
         "run_id": manifest["run_id"], "stage": stage, "out_file": out_file}, host)
     # #975: pin the review root for the advisor too. Unlike the scout/panel file
@@ -1173,6 +1181,30 @@ def _confined_to_root(review_root, path):
     return full == root or full.startswith(root + os.sep)
 
 
+_REDACTED_CLAIM_PATH = "<redacted: location escapes review root>"
+
+
+def _confine_claim_location(review_root, loc):
+    """Return `loc` with an out-of-tree `location.file` neutralized.
+
+    #run8 ARC-F2A: the verify claims JSON handed to the domain/tool advisor
+    carries each finding's `location.file` VERBATIM, and the advisor's
+    Read/Grep/Glob are unconfined -- so a path-traversal or committed-symlink
+    location (e.g. `../../../.ssh/id_rsa`) planted by a redteam target would
+    steer the advisor to read OUTSIDE review_root in every verify round.
+    _confined_to_root already guarded the derived backup file LIST but never this
+    channel. A genuine review finding always cites an in-tree file, so redacting
+    an escaping path both defuses the steer and signals the advisor the location
+    is untrusted. Non-dict/absent locations pass through unchanged."""
+    if not isinstance(loc, dict):
+        return loc
+    path = loc.get("file")
+    if isinstance(path, str) and path and not _confined_to_root(review_root, path):
+        loc = dict(loc)
+        loc["file"] = _REDACTED_CLAIM_PATH
+    return loc
+
+
 def _backup_scope_files(review_root, files, scope):
     """The files a backup advisor needs: the ones its scoped (advisor-confirmed,
     >= F_b) claims cite -- not the whole cell. The domain-advisor is claim-driven
@@ -1343,7 +1375,13 @@ def _tool_verify_entry(review_root, manifest, queue_id, finding, host):
     the driver writes no verify-queue.json, so synthesize's verdict_run_id is None
     and match_verdict binds on the finding_id echo alone."""
     out_file = _tool_verdict_out_file(review_root, queue_id)
-    claim = json.dumps(finding, indent=2, ensure_ascii=False)
+    # #run8 ARC-F2A: confine the tool finding's location too -- _tool_verify_entry
+    # embeds the whole finding dict verbatim into the unconfined advisor's claim.
+    safe_finding = finding
+    if isinstance(finding, dict) and isinstance(finding.get("location"), dict):
+        safe_finding = dict(finding)
+        safe_finding["location"] = _confine_claim_location(review_root, finding["location"])
+    claim = json.dumps(safe_finding, indent=2, ensure_ascii=False)
     prompt = dispatch.render_prompt("advisor.md", {"claim_json": claim}, host)
     prompt = ("Repo root: %s\nEvery relative path in the claim below resolves "
               "against this root -- read files THERE, never in your session's "
@@ -1733,13 +1771,15 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES):
         _clear_setup_artifacts(review_root)               # Task 3
     _drop_stale_fallback_marker(review_root)
     manifest = load_setup_manifest(review_root)
-    if manifest is not None and _foreign_manifest(manifest, review_root):
-        # #run7 AGT-C1A: a target repo can force-commit its own
+    if manifest is not None and _foreign_manifest(
+            manifest, review_root, _setup_manifest_path(review_root)):
+        # #run7/#run8 AGT-C1A: a target repo can force-commit its own
         # .panopticon/setup-manifest.json (gitignored but `git add -f`-able) to
         # preset an attacker-chosen `vocabulary_path` -- which setup_flow reads and
         # embeds verbatim into the classifier scan brief -- or `host`. Mirror the
-        # run-manifest guard (#1093): a manifest whose stamped review_root isn't
-        # THIS tree is not a legitimate resume state; discard and rebuild from args.
+        # run-manifest guard (#1093): a manifest that is git-tracked in this tree,
+        # or whose stamped review_root isn't THIS checkout, is not a legitimate
+        # resume state; discard and rebuild from args.
         print("driver: ignoring foreign setup-manifest.json (stamped review_root "
               "%r != %r)" % (manifest.get("review_root"),
                              os.path.abspath(review_root)),
@@ -1902,16 +1942,52 @@ def _error_status(message):
             "dispatch_request": None, "advanced": [], "message": message}
 
 
-def _foreign_manifest(manifest, review_root):
-    """#1093: True if a loaded run-manifest was NOT written by a prior run in
-    THIS tree. build_manifest stamps `review_root` as this-machine abspath, so a
-    manifest whose stamped review_root differs is not a legitimate resume state --
-    most likely a target repo that committed its own `.panopticon/run-manifest.json`
-    to preset attacker-chosen flags (e.g. flags.tools:false to skip the scan, or
-    flags.fail_on to force gate:PASS). Such a manifest must be discarded and
-    rebuilt from the real CLI args, never trusted as run config."""
-    return (isinstance(manifest, dict)
-            and manifest.get("review_root") != os.path.abspath(review_root))
+def _manifest_committed(review_root, manifest_file):
+    """True if `manifest_file` is TRACKED by git in review_root -- i.e. it was
+    committed INTO the target (an attacker `git add -f`-ing past the
+    `.panopticon/` gitignore), never written by a prior driver run, whose
+    manifest stays gitignored/untracked.
+
+    #run8 AGT-C1A: this is the robust, non-secret foreign-manifest signal. The
+    old review_root-stamp check treated the operator's local checkout path as
+    unguessable, but CI checkout paths ($GITHUB_WORKSPACE, /home/runner/work/...)
+    are public, so an attacker could forge a matching stamp. A committed file
+    cannot be forged into looking untracked. A non-git target, a missing file,
+    or any git error yields False (nothing was committed, so nothing to distrust
+    on this basis; the stamp check still applies)."""
+    if not manifest_file or not os.path.isfile(manifest_file):
+        return False
+    git_bin = shutil.which("git") or "git"
+    try:
+        rel = os.path.relpath(manifest_file, review_root)
+        r = subprocess.run(  # nosec B603
+            [git_bin, "-C", review_root, "ls-files", "--error-unmatch", "--", rel],
+            capture_output=True, text=True, timeout=30,
+            env={"PATH": os.environ.get("PATH", "")})
+    except Exception:
+        return False
+    return r.returncode == 0
+
+
+def _foreign_manifest(manifest, review_root, manifest_file=None):
+    """#1093 / #run8 AGT-C1A: True if a loaded manifest was NOT written by a
+    prior run in THIS tree, so it must be discarded and rebuilt from the real CLI
+    args rather than trusted as run config (a target that force-commits its own
+    `.panopticon/run-manifest.json` could preset flags.tools:false to skip the
+    scan, or flags.fail_on to force gate:PASS).
+
+    Two independent signals, either sufficient:
+      * the manifest FILE is git-tracked in review_root (`_manifest_committed`)
+        -- the primary, non-secret check: a driver-written resume manifest is
+        gitignored/untracked, so a tracked one was committed by the target.
+      * the stamped `review_root` differs from this checkout (the original #1093
+        signal, kept as a fallback for a non-git target where nothing is tracked
+        and for a manifest carried over from another machine)."""
+    if not isinstance(manifest, dict):
+        return False
+    if _manifest_committed(review_root, manifest_file):
+        return True
+    return manifest.get("review_root") != os.path.abspath(review_root)
 
 
 def run(args, runner=subprocess.run, phases=PHASES):
@@ -1948,7 +2024,7 @@ def run(args, runner=subprocess.run, phases=PHASES):
         _clear_run_artifacts(review_root)   # §5.1: resolve the tag before the manifest goes
         run_manifest.reset_run(review_root)
     manifest = run_manifest.load_manifest(review_root)
-    if _foreign_manifest(manifest, review_root):
+    if _foreign_manifest(manifest, review_root, run_manifest.manifest_path(review_root)):
         # #1093: a target-committed run-manifest.json (foreign review_root) could
         # preset flags to skip tools / force gate:PASS. Drop it and rebuild from
         # the real CLI args, exactly like a corrupt manifest below.
