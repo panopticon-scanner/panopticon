@@ -1,6 +1,7 @@
 """Adapter dispatch tests for scripts.run_tools."""
 import contextlib
 import io
+import json
 import os
 import tempfile
 import unittest
@@ -27,6 +28,44 @@ class TestAdapterDispatch(unittest.TestCase):
             rc = rt.main(["--tools", "faketool", "--exclude", "tests/fixtures/*",
                           "--target", ".", "--out", "/tmp/pano-x0x"])
         self.assertEqual(rc, 0)
+
+    def test_docker_unavailable_writes_full_skip_manifest(self):
+        # COD-X0X #1406: when docker is unavailable, main() used to `return 0`
+        # BEFORE the manifest block, silently discarding the --manifest artifact
+        # a caller relies on for coverage gating -- indistinguishable from
+        # --manifest never being passed. It must instead disclose the whole
+        # selected set as `missing` (produced=[]), the way every other skip
+        # surface in this module stays visible.
+        with tempfile.TemporaryDirectory() as d:
+            manifest = os.path.join(d, "cov", "manifest.json")
+            with mock.patch("scripts.run_tools.docker_available", return_value=False), \
+                 mock.patch("scripts.run_tools.run_tools",
+                            side_effect=AssertionError("scan must not run without docker")), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                rc = rt.main(["--tools", "semgrep", "--target", d,
+                              "--out", os.path.join(d, "out"),
+                              "--manifest", manifest, "--run-id", "r8"])
+            self.assertEqual(rc, 0)
+            self.assertTrue(os.path.exists(manifest))   # not silently discarded
+            with open(manifest, encoding="utf-8") as fh:
+                payload = json.load(fh)
+            self.assertEqual(payload["selected"], ["semgrep"])
+            self.assertEqual(payload["produced"], [])
+            self.assertEqual(payload["missing"], ["semgrep"])  # whole scan missing
+            self.assertEqual(payload["run_id"], "r8")
+
+    def test_docker_unavailable_without_manifest_is_a_clean_noop(self):
+        # The docker-absent path stays a clean skip when no manifest was asked
+        # for: exit 0, the scan itself never runs, and nothing is written.
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch("scripts.run_tools.docker_available", return_value=False), \
+                 mock.patch("scripts.run_tools.run_tools",
+                            side_effect=AssertionError("scan must not run without docker")), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                rc = rt.main(["--tools", "semgrep", "--target", d,
+                              "--out", os.path.join(d, "out")])
+            self.assertEqual(rc, 0)
+            self.assertEqual(os.listdir(d), [])   # no artifact written
 
     def test_select_adapters_by_ecosystem(self):
         with tempfile.TemporaryDirectory() as d:
