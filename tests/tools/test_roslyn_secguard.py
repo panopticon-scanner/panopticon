@@ -288,6 +288,26 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
         self.assertIn("--no-banner", cmd)
 
 
+    def test_invoke_fails_closed_on_oversize_sarif(self):
+        # #run8 OPS-D1A: an oversize on-disk SARIF (read_capped_report -> None)
+        # must fail closed to b"{}" rather than being slurped whole into memory.
+        adapter = rs.RoslynSecGuardAdapter()
+
+        def fake_popen(cmd, **kwargs):
+            return FakePopen(stdout=b"", stderr=b"", returncode=0)
+
+        with mock.patch.object(rs, "_safe_copytree", return_value=0), \
+             mock.patch.object(tools_base.subprocess, "Popen", side_effect=fake_popen), \
+             mock.patch("scripts.tools.roslyn_secguard.os.path.exists", return_value=True), \
+             mock.patch("scripts.tools.roslyn_secguard.read_capped_report", return_value=None), \
+             contextlib.redirect_stderr(io.StringIO()):
+            with tempfile.TemporaryDirectory() as d:
+                open(os.path.join(d, "x.csproj"), "w").close()
+                raw, rc = adapter.invoke(d)
+        self.assertEqual(raw, b"{}")
+        self.assertEqual(rc, 0)
+
+
 class TestRebaseSarifUris(unittest.TestCase):
     """#1116: SARIF uris rooted at the ephemeral build copy (tmp) are rewritten
     to repo-relative, so /tmp/roslyn-XXX/ never leaks into location.file and

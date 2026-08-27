@@ -4,7 +4,7 @@ import os
 import shutil
 import tempfile
 from .base import (has_any_file, make_finding, normalize_severity, omit_none,
-                   parse_json_bytes, run_tool)
+                   parse_json_bytes, read_capped_report, run_tool)
 
 
 class DependencyCheckAdapter:
@@ -31,8 +31,12 @@ class DependencyCheckAdapter:
             _stdout, rc = run_tool(cmd, timeout=900)
             out_path = os.path.join(out_dir, "dependency-check-report.json")
             if os.path.exists(out_path):
-                with open(out_path, "rb") as fh:
-                    return fh.read(), rc
+                # #run8 OPS-D1A: the tool writes the report to disk, so this read
+                # bypasses run_tool's stdout cap; bound it and fail closed on an
+                # oversize (attacker-influenced) report rather than slurp it whole.
+                raw = read_capped_report(out_path)
+                if raw is not None:
+                    return raw, rc
             return b"", (rc if rc != 0 else 1)
         finally:
             shutil.rmtree(out_dir, ignore_errors=True)

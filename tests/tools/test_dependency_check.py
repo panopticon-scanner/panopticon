@@ -79,6 +79,19 @@ class TestDependencyCheckAdapter(unittest.TestCase):
         self.assertEqual(stdout, b"")
         self.assertNotEqual(rc, 0)
 
+    def test_invoke_fails_closed_on_oversize_report(self):
+        # #run8 OPS-D1A: an oversize on-disk report (read_capped_report -> None)
+        # must fail closed to (b"", nonzero) instead of being slurped whole.
+        adapter = dc.DependencyCheckAdapter()
+        fake_run = mock.Mock(return_value=(b"", 0))
+        with mock.patch("scripts.tools.dependency_check.run_tool", fake_run), \
+             mock.patch("scripts.tools.dependency_check.os.path.exists", return_value=True), \
+             mock.patch("scripts.tools.dependency_check.read_capped_report", return_value=None), \
+             mock.patch("shutil.rmtree"):
+            stdout, rc = adapter.invoke("/tmp/fake")
+        self.assertEqual(stdout, b"")
+        self.assertNotEqual(rc, 0)
+
     def test_invoke_returns_report_with_nonzero_exit(self):
         adapter = dc.DependencyCheckAdapter()
         fake_run = mock.Mock(return_value=(b"", 7))
