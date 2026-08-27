@@ -524,9 +524,6 @@ def main(argv=None):
                          "as excluded_scope, not required (repeatable). Pass the "
                          "same globs the gate uses.")
     a = ap.parse_args(argv)
-    if not docker_available():
-        print("panopticon-tools image not available; skipping tool scan", file=sys.stderr)
-        return 0
     excluded_scope = []
     if a.tools is not None:
         if a.exclude:
@@ -549,6 +546,21 @@ def main(argv=None):
         languages = a.languages or detect_languages(a.target)
         chosen = select_tools(languages, a.deps) + phase1 + phase2
     effective = filter_online(chosen, a.online)
+    if not docker_available():
+        print("panopticon-tools image not available; skipping tool scan", file=sys.stderr)
+        # Still disclose the skip through the coverage manifest. Without this,
+        # a caller who passed --manifest as its coverage-gating signal cannot
+        # tell 'docker absent, whole scan skipped' from '--manifest never
+        # passed' -- both leave no file. Every OTHER skip surface in this module
+        # stays visible via write_manifest's `missing` list (produced=[] -> the
+        # whole selected set lands in `missing`), so this one must too, rather
+        # than returning success (0) with the artifact silently discarded
+        # (COD-X0X #1406). The selection above is pure filesystem/logic and needs
+        # no docker, so `effective` is a faithful record of what WOULD have run.
+        if a.manifest:
+            write_manifest(a.manifest, effective, [], excluded_scope=excluded_scope,
+                           run_id=a.run_id)
+        return 0
     paths = run_tools(a.target, effective, a.out, online=a.online)
     if a.manifest:
         write_manifest(a.manifest, effective, paths, excluded_scope=excluded_scope,
