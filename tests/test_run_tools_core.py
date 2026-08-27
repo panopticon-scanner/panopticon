@@ -175,9 +175,12 @@ class TestRunTools(unittest.TestCase):
             out_dir = os.path.join(d, "out")
             rt.run_tools(d, ["semgrep"], out_dir, image="panopticon-tools", runner=runner)
             docker_bin = shutil.which("docker") or "docker"
-            expected = [docker_bin, "run", "--rm", "--network", "none",
-                        "-v", "%s:/src:ro" % os.path.abspath(d),
-                        "panopticon-tools"] + rt.TOOL_CMD["semgrep"]
+            # #run8 OPS-D1A: hard resource ceilings sit right after `run --rm`,
+            # before the image, so an adversarial target can't exhaust the runner.
+            expected = ([docker_bin, "run", "--rm"] + rt._resource_limit_flags()
+                        + ["--network", "none",
+                           "-v", "%s:/src:ro" % os.path.abspath(d),
+                           "panopticon-tools"] + rt.TOOL_CMD["semgrep"])
             self.assertEqual(len(calls), 1)        # #run7 COD-A2C: clear fail if runner never fired
             self.assertEqual(calls[0], expected)   # exact argv: flags, :ro mount, image, per-tool cmd
             with open(os.path.join(out_dir, "semgrep.sarif"), "rb") as fh:

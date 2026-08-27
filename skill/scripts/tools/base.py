@@ -345,3 +345,33 @@ def run_tool(cmd, timeout, ok_codes=(0, 1), capture_stderr=False, **kwargs):
     if capture_stderr:
         return b"".join(chunks), stderr, rc
     return b"".join(chunks), rc
+
+
+def read_capped_report(path, cap=MAX_TOOL_OUTPUT_BYTES):
+    """Read a scanner's on-disk report under the same byte ceiling run_tool
+    applies to stdout capture (#run8 OPS-D1A).
+
+    Adapters whose scanner writes its report to a file (dependency-check JSON,
+    roslyn SARIF) bypass run_tool's MAX_TOOL_OUTPUT_BYTES stdout cap entirely --
+    an attacker-influenced report of arbitrary size (a build manifest crafted to
+    emit a huge dependency/CVE set, a project that drives a scanner to a giant
+    SARIF result set) would otherwise be slurped whole into memory. Reads one
+    byte past the cap to detect the overflow, then FAILS CLOSED on an oversize
+    report (returns None) instead of handing back a truncated, half-parsed blob.
+
+    Returns the report bytes on success, or None when the file is missing,
+    unreadable, or exceeds the cap -- the caller substitutes its own empty/
+    failure result so downstream ingest sees "no output" rather than a partial
+    one. Mirrors the on-disk cap ingest_tools.py already applies to *.sarif/*.json
+    it is pointed at."""
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read(cap + 1)
+    except OSError as exc:
+        print("panopticon: cannot read report %s: %s" % (path, exc), file=sys.stderr)
+        return None
+    if len(raw) > cap:
+        print("panopticon: report %s exceeds the %d-byte cap; refusing"
+              % (path, cap), file=sys.stderr)
+        return None
+    return raw

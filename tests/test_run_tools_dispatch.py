@@ -123,3 +123,45 @@ class TestAdapterDispatch(unittest.TestCase):
         original = dict(rt.ADAPTERS)
         self.test_run_tools_dispatches_phase1_adapter_via_docker_helper()
         self.assertEqual(dict(rt.ADAPTERS), original)
+
+    def test_docker_invocations_carry_resource_ceilings(self):
+        # #run8 OPS-D1A: every tool/adapter container must run with hard
+        # memory/CPU/PID ceilings so an adversarial target cannot drive the
+        # container to exhaust the host runner before the wall-clock timeout.
+        # Exercises BOTH the legacy SARIF path (semgrep) and the adapter path.
+        class FakeAdapter:
+            name = "fake"
+            def is_applicable(self, target): return True
+            def invoke(self, target): return (b'{"findings":[]}', 0)
+        fake = _FakeResult(returncode=0, stdout=b'{"findings":[]}', stderr=b'')
+        calls = []
+        def runner(cmd, **kw):
+            calls.append(cmd); return fake
+        with tempfile.TemporaryDirectory() as d:
+            out_dir = os.path.join(d, "out")
+            with mock.patch.dict(rt.ADAPTERS, {"fake": FakeAdapter()}, clear=False):
+                rt.run_tools(d, ["semgrep", "fake"], out_dir,
+                             image="panopticon-tools", runner=runner)
+            self.assertEqual(len(calls), 2)   # legacy + adapter both dispatched
+            for cmd in calls:
+                self.assertIn("--memory", cmd)
+                self.assertIn("--memory-swap", cmd)
+                self.assertIn("--cpus", cmd)
+                self.assertIn("--pids-limit", cmd)
+                # swap pinned equal to memory so an allocation is OOM-killed at
+                # the ceiling rather than spilling into swap.
+                self.assertEqual(cmd[cmd.index("--memory") + 1],
+                                 cmd[cmd.index("--memory-swap") + 1])
+                # docker requires all options BEFORE the image; a ceiling placed
+                # after the image name would be passed to the tool, not enforced.
+                self.assertLess(cmd.index("--pids-limit"),
+                                cmd.index("panopticon-tools"))
+
+    def test_resource_ceiling_flag_can_be_disabled_via_env(self):
+        # An operator on a cgroup that rejects --pids-limit can drop just that
+        # flag by exporting an empty value; the others stay applied.
+        with mock.patch.object(rt, "CONTAINER_PIDS_LIMIT", ""):
+            flags = rt._resource_limit_flags()
+        self.assertNotIn("--pids-limit", flags)
+        self.assertIn("--memory", flags)
+        self.assertIn("--cpus", flags)
