@@ -7,7 +7,7 @@ import scripts.tools.spotbugs as sb
 
 SPOTBUGS_SAMPLE = b"""<?xml version="1.0" encoding="UTF-8"?>
 <BugCollection version="4.8.6" sequence="0" timestamp="0" analysisTimestamp="0" release="">
-  <BugInstance type="SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE" priority="1" category="SECURITY">
+  <BugInstance type="SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE" rank="7" priority="1" category="SECURITY">
     <Class classname="com.example.App">
       <SourceLine sourcepath="com/example/App.java" start="42"/>
     </Class>
@@ -22,7 +22,8 @@ class TestSpotBugsAdapter(unittest.TestCase):
         self.assertEqual(len(findings), 1)
         f = findings[0]
         self.assertEqual(f["source"], "tool:spotbugs")
-        self.assertEqual(f["severity"], "HIGH")
+        self.assertEqual(f["severity"], "HIGH")        # rank 7 -> Scary -> HIGH
+        self.assertEqual(f["confidence"], "CERTAIN")   # priority 1 -> high confidence
         self.assertEqual(f["location"]["file"], "com/example/App.java")
         self.assertEqual(f["location"]["line_start"], 42)
         self.assertIn("CWE-89", f["citations"]["cwe"])
@@ -57,17 +58,17 @@ class TestSpotBugsAdapter(unittest.TestCase):
     def test_parse_multiple_bug_instances(self):
         sample = b"""<?xml version="1.0" encoding="UTF-8"?>
 <BugCollection version="4.8.6" sequence="0" timestamp="0" analysisTimestamp="0" release="">
-  <BugInstance type="SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE" priority="1" category="SECURITY">
+  <BugInstance type="SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE" rank="4" priority="1" category="SECURITY">
     <Class classname="com.example.App">
       <SourceLine sourcepath="com/example/App.java" start="42"/>
     </Class>
   </BugInstance>
-  <BugInstance type="XSS_REQUEST_PARAMETER_TO_SERVLET_WRITER" priority="2" category="SECURITY">
+  <BugInstance type="XSS_REQUEST_PARAMETER_TO_SERVLET_WRITER" rank="11" priority="2" category="SECURITY">
     <Class classname="com.example.Servlet">
       <SourceLine sourcepath="com/example/Servlet.java" start="88"/>
     </Class>
   </BugInstance>
-  <BugInstance type="WEAK_TRUST_MANAGER" priority="3" category="SECURITY">
+  <BugInstance type="WEAK_TRUST_MANAGER" rank="18" priority="3" category="SECURITY">
     <Class classname="com.example.Trust">
       <SourceLine sourcepath="com/example/Trust.java" start="100"/>
     </Class>
@@ -76,12 +77,48 @@ class TestSpotBugsAdapter(unittest.TestCase):
 """
         findings = sb.SpotBugsAdapter().parse(sample, "g1")
         self.assertEqual(len(findings), 3)
-        self.assertEqual(findings[0]["severity"], "HIGH")
+        # severity tracks rank, confidence tracks priority -- independently.
+        self.assertEqual(findings[0]["severity"], "CRITICAL")   # rank 4
+        self.assertEqual(findings[0]["confidence"], "CERTAIN")  # priority 1
         self.assertEqual(findings[0]["location"]["line_start"], 42)
-        self.assertEqual(findings[1]["severity"], "MEDIUM")
+        self.assertEqual(findings[1]["severity"], "MEDIUM")     # rank 11
+        self.assertEqual(findings[1]["confidence"], "LIKELY")   # priority 2
         self.assertEqual(findings[1]["location"]["file"], "com/example/Servlet.java")
         self.assertEqual(findings[1]["location"]["line_start"], 88)
-        self.assertEqual(findings[2]["severity"], "LOW")
+        self.assertEqual(findings[2]["severity"], "LOW")        # rank 18
+        self.assertEqual(findings[2]["confidence"], "POSSIBLE") # priority 3
+
+    def test_severity_and_confidence_are_decoupled(self):
+        # COD-C1A #1408: a high-CONFIDENCE (priority 1) but low-SEVERITY (rank 19)
+        # bug must NOT be relabelled HIGH severity, and a genuinely severe
+        # (rank 1) but less-certain (priority 3) bug must NOT be buried as LOW.
+        sample = b"""<?xml version="1.0" encoding="UTF-8"?>
+<BugCollection version="4.8.6" sequence="0" timestamp="0" analysisTimestamp="0" release="">
+  <BugInstance type="STYLE_NIT" rank="19" priority="1" category="STYLE">
+    <Class classname="com.example.A"><SourceLine sourcepath="com/example/A.java" start="1"/></Class>
+  </BugInstance>
+  <BugInstance type="COMMAND_INJECTION" rank="1" priority="3" category="SECURITY">
+    <Class classname="com.example.B"><SourceLine sourcepath="com/example/B.java" start="2"/></Class>
+  </BugInstance>
+</BugCollection>
+"""
+        a, b = sb.SpotBugsAdapter().parse(sample, "g1")
+        self.assertEqual((a["severity"], a["confidence"]), ("LOW", "CERTAIN"))
+        self.assertEqual((b["severity"], b["confidence"]), ("CRITICAL", "POSSIBLE"))
+
+    def test_missing_rank_and_priority_fall_back_neutrally(self):
+        # No rank -> neutral MEDIUM (never borrow the confidence signal); no
+        # priority -> conservative POSSIBLE, matching the brakeman default.
+        sample = b"""<?xml version="1.0" encoding="UTF-8"?>
+<BugCollection version="4.8.6" sequence="0" timestamp="0" analysisTimestamp="0" release="">
+  <BugInstance type="COMMAND_INJECTION" category="SECURITY">
+    <Class classname="com.example.C"><SourceLine sourcepath="com/example/C.java" start="3"/></Class>
+  </BugInstance>
+</BugCollection>
+"""
+        f = sb.SpotBugsAdapter().parse(sample, "g1")[0]
+        self.assertEqual(f["severity"], "MEDIUM")
+        self.assertEqual(f["confidence"], "POSSIBLE")
 
     def test_parse_bug_instance_without_cwe_mapping(self):
         sample = b"""<?xml version="1.0" encoding="UTF-8"?>

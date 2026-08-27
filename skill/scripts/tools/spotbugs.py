@@ -19,11 +19,42 @@ _SPOTBUGS_CWE = {
     "HARDCODED_KEY": "CWE-798",
 }
 
-_PRIORITY_TO_SEVERITY = {
-    "1": "HIGH",    # SpotBugs high priority / confidence
-    "2": "MEDIUM",  # SpotBugs normal priority
-    "3": "LOW",     # SpotBugs low priority
+# SpotBugs/FindSecBugs exposes TWO orthogonal signals that this adapter used to
+# conflate (COD-C1A #1408):
+#   * <BugInstance rank="1..20"> is the bug's SEVERITY (scariness). SpotBugs
+#     buckets it Scariest(1-4) / Scary(5-9) / Troubling(10-14) / Of Concern
+#     (15-20) -- this is what the Java severity/impact is.
+#   * <BugInstance priority="1..3"> is the analyzer's CONFIDENCE that the match
+#     is real (1=high, 2=normal, 3=low), explicitly NOT severity.
+# Read rank -> severity and priority -> confidence, rather than reading priority
+# as severity and hardcoding confidence, which relabelled a high-confidence
+# low-severity bug as HIGH (and buried a genuinely severe but less-certain bug
+# as LOW/MEDIUM) while discarding the real confidence signal entirely.
+
+# priority -> confidence, matching the brakeman adapter's high/medium/low house
+# style; an absent/unknown priority is conservatively POSSIBLE.
+_PRIORITY_TO_CONFIDENCE = {
+    "1": "CERTAIN",   # SpotBugs high confidence
+    "2": "LIKELY",    # SpotBugs normal confidence
+    "3": "POSSIBLE",  # SpotBugs low confidence
 }
+
+
+def _rank_to_severity(rank: str | None) -> str:
+    """Map a SpotBugs bug rank (1=scariest .. 20=of concern) to our severity
+    scale. An absent or unparseable rank falls to the neutral middle bucket
+    rather than borrowing the (unrelated) confidence signal."""
+    try:
+        r = int(rank)
+    except (TypeError, ValueError):
+        return "MEDIUM"
+    if r <= 4:
+        return "CRITICAL"   # Scariest
+    if r <= 9:
+        return "HIGH"       # Scary
+    if r <= 14:
+        return "MEDIUM"     # Troubling
+    return "LOW"            # Of Concern
 
 
 class SpotBugsAdapter:
@@ -71,8 +102,8 @@ class SpotBugsAdapter:
         n = 1
         for bug in root.findall("BugInstance"):
             btype = bug.get("type", "")
-            priority = bug.get("priority", "3")
-            severity = _PRIORITY_TO_SEVERITY.get(priority, "MEDIUM")
+            severity = _rank_to_severity(bug.get("rank"))
+            confidence = _PRIORITY_TO_CONFIDENCE.get(bug.get("priority", ""), "POSSIBLE")
             source = bug.find(".//SourceLine")
             sourcepath = source.get("sourcepath", "") if source is not None else ""
             if sourcepath:
@@ -94,7 +125,7 @@ class SpotBugsAdapter:
                 self, n, group,
                 title=f"{btype}",
                 severity=severity,
-                confidence="LIKELY",
+                confidence=confidence,
                 category="jvm_security",
                 location={"file": file_path, "line_start": int(line) if line else 1},
                 description=f"SpotBugs/FindSecBugs detected issue type {btype}.",
