@@ -707,6 +707,50 @@ class TestCoveragePhase(unittest.TestCase):
         # surface-gated global floor (#5.0-19) injects only universal COD.
         self.assertEqual(cov["effective"], ["COD"])
 
+    def test_objective_security_surface_forces_sec_without_floor_or_scout(self):
+        # #run8 SEC-G2A: a group whose committed panels: never lists SEC and
+        # whose scout adds no SEC still gets a deterministic SEC review when its
+        # FILES carry an objective security surface (here a dependency manifest +
+        # an auth file). Without this a forgetful or adversarial groups.yml
+        # silently exempts its own code from security review.
+        self._groups_json([{"name": "Api", "files": [
+            "requirements.txt", "src/auth/login.py"]}])
+        self._groups_yml("groups:\n  Api:\n    match: ['**']\n    panels: [COD]\n")
+        driver._write_json(driver._pano(self.root, "scout-Api.json"),
+                           {"group": "Api", "domains": ["COD"]})   # no SEC from scout
+        driver.coverage_execute(self.root, self.manifest)
+        cov = driver._load_json(driver._pano(self.root, "coverage-Api.json"))
+        self.assertIn("SEC", cov["effective"])                 # forced by objective signal
+        self.assertEqual(cov["sec_floor_applied"], ["SEC"])    # disclosed
+        self.assertIn("SEC", cov["floor"])                     # forced-on, not scout_added
+
+    def test_sec_objective_floor_survives_committed_exclude_sec(self):
+        # SEC forced by the objective floor is NON_EXCLUDABLE: a groups.yml that
+        # both omits SEC from panels: AND commits exclude: [SEC] cannot silence
+        # it; the ignored attempt is disclosed and warned.
+        self._groups_json([{"name": "Api", "files": ["Dockerfile", "src/api.py"]}])
+        self._groups_yml("groups:\n  Api:\n    match: ['**']\n    panels: [COD]\n"
+                         "    exclude: [SEC]\n")
+        driver._write_json(driver._pano(self.root, "scout-Api.json"),
+                           {"group": "Api", "domains": []})
+        with contextlib.redirect_stderr(io.StringIO()):
+            driver.coverage_execute(self.root, self.manifest)
+        cov = driver._load_json(driver._pano(self.root, "coverage-Api.json"))
+        self.assertIn("SEC", cov["effective"])
+        self.assertEqual(cov["exclude_rejected"], ["SEC"])
+
+    def test_surfaceless_group_gets_no_sec_floor(self):
+        # #5.0-19 stays honored end-to-end: a group with no objective security
+        # surface spends no SEC cell (the floor widens, it does not blanket).
+        self._groups_json([{"name": "Docs", "files": ["README.md", "docs/intro.md"]}])
+        self._groups_yml("groups:\n  Docs:\n    match: ['**']\n    panels: [COD]\n")
+        driver._write_json(driver._pano(self.root, "scout-Docs.json"),
+                           {"group": "Docs", "domains": []})
+        driver.coverage_execute(self.root, self.manifest)
+        cov = driver._load_json(driver._pano(self.root, "coverage-Docs.json"))
+        self.assertNotIn("SEC", cov["effective"])
+        self.assertEqual(cov["sec_floor_applied"], [])
+
     def test_coverage_done_only_when_all_groups_covered(self):
         self._groups_json([{"name": "A", "files": []}, {"name": "B", "files": []}])
         self._groups_yml("groups:\n  A:\n    match: ['*']\n  B:\n    match: ['*']\n")
