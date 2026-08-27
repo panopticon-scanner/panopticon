@@ -200,5 +200,45 @@ class TestRunTool(unittest.TestCase):
             base.parse_json_bytes(b"not json at all")
 
 
+class TestReadCappedReport(unittest.TestCase):
+    """#run8 OPS-D1A: on-disk scanner reports (dependency-check JSON, roslyn
+    SARIF) bypass run_tool's stdout cap, so read_capped_report re-imposes it."""
+
+    def _write(self, data):
+        fd, path = tempfile.mkstemp()
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        self.addCleanup(os.remove, path)
+        return path
+
+    def test_reads_report_within_cap(self):
+        path = self._write(b'{"ok": true}')
+        self.assertEqual(base.read_capped_report(path, cap=1024), b'{"ok": true}')
+
+    def test_reads_report_exactly_at_cap(self):
+        path = self._write(b"x" * 10)
+        self.assertEqual(base.read_capped_report(path, cap=10), b"x" * 10)
+
+    def test_oversize_report_fails_closed(self):
+        path = self._write(b"x" * 11)
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertIsNone(base.read_capped_report(path, cap=10))
+        self.assertIn("exceeds", err.getvalue())
+
+    def test_does_not_slurp_more_than_cap_into_memory(self):
+        # The read is bounded to cap+1 bytes regardless of the file's true size,
+        # so a pathologically large report can't blow up memory before the check.
+        m = mock.mock_open(read_data=b"y" * 5000)
+        with mock.patch.object(base, "open", m), \
+             contextlib.redirect_stderr(io.StringIO()):
+            self.assertIsNone(base.read_capped_report("big.json", cap=10))
+        m().read.assert_called_once_with(11)   # cap + 1, never the full file
+
+    def test_missing_report_returns_none(self):
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertIsNone(base.read_capped_report("/no/such/report.json"))
+        self.assertIn("cannot read report", err.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

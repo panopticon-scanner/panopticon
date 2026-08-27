@@ -5,7 +5,8 @@ import os
 import shutil
 import sys
 import tempfile
-from .base import as_list, make_finding, omit_none, parse_json_bytes, run_tool
+from .base import (as_list, make_finding, omit_none, parse_json_bytes,
+                   read_capped_report, run_tool)
 from .sarif_utils import LEVEL_TO_SEV
 
 
@@ -167,9 +168,13 @@ class RoslynSecGuardAdapter:
             ]
             _stdout, rc = run_tool(cmd, timeout=600)
             if os.path.exists(sarif):
-                with open(sarif, "rb") as fh:
+                # #run8 OPS-D1A: the scanner writes SARIF to disk, so this read
+                # bypasses run_tool's stdout cap; bound it and fail closed on an
+                # oversize (attacker-influenced) report rather than slurp it whole.
+                raw = read_capped_report(sarif)
+                if raw is not None:
                     # #1116: rebase tmp-rooted uris to repo-relative before ingest
-                    return _rebase_sarif_uris(fh.read(), tmp), rc
+                    return _rebase_sarif_uris(raw, tmp), rc
             return b"{}", rc
         finally:
             shutil.rmtree(tmp, ignore_errors=True)

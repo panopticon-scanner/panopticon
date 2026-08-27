@@ -59,6 +59,36 @@ TOOL_TIMEOUT = 900
 # socket cannot hang the whole scan pipeline (#1112).
 DOCKER_PROBE_TIMEOUT = 30
 
+# #run8 OPS-D1A: bound the blast radius of an adversarial target that drives a
+# scanner to allocate pathologically. TOOL_TIMEOUT bounds wall-clock and
+# MAX_TOOL_OUTPUT_BYTES bounds captured stdout, but NEITHER bounds the
+# in-container memory/CPU/PID footprint while a tool runs -- an OOM inside the
+# container (a recursive archive fed to dependency-check, a pathological input
+# to a SAST parser) can exhaust or destabilize the host/CI runner well before
+# the 900s timeout or the output cap is reached. Every `docker run` gets a hard
+# resource ceiling. Operators can retune via env without a code change; setting
+# a value to the empty string drops that individual flag (e.g. on a cgroup that
+# rejects --pids-limit).
+CONTAINER_MEMORY = os.environ.get("PANOPTICON_TOOL_MEMORY", "6g")
+CONTAINER_CPUS = os.environ.get("PANOPTICON_TOOL_CPUS", "4")
+CONTAINER_PIDS_LIMIT = os.environ.get("PANOPTICON_TOOL_PIDS", "1024")
+
+
+def _resource_limit_flags():
+    """docker-run resource-ceiling flags applied to every tool/adapter container.
+
+    --memory-swap is pinned equal to --memory so an adversarial allocation is
+    OOM-killed at the ceiling rather than spilling into swap and merely dragging
+    the host to a crawl. Any flag whose env override is empty is omitted."""
+    flags = []
+    if CONTAINER_MEMORY:
+        flags += ["--memory", CONTAINER_MEMORY, "--memory-swap", CONTAINER_MEMORY]
+    if CONTAINER_CPUS:
+        flags += ["--cpus", CONTAINER_CPUS]
+    if CONTAINER_PIDS_LIMIT:
+        flags += ["--pids-limit", CONTAINER_PIDS_LIMIT]
+    return flags
+
 
 def validate_output_dir(target, out_dir):
     """Reject default artifact output through a target-controlled symlink."""
@@ -422,8 +452,9 @@ def run_tools(target, tools, out_dir, image="panopticon-tools", runner=None, onl
             if tool == "bandit" and os.path.isfile(os.path.join(target, ".bandit")):
                 cmd = cmd[:1] + ["--ini", "/src/.bandit"] + cmd[1:]
             out_path = os.path.join(out_dir, "%s.sarif" % tool)
-            docker = [docker_bin, "run", "--rm", "--network", "none",
-                      "-v", "%s:/src:ro" % os.path.abspath(target), image] + cmd
+            docker = ([docker_bin, "run", "--rm"] + _resource_limit_flags()
+                      + ["--network", "none",
+                         "-v", "%s:/src:ro" % os.path.abspath(target), image] + cmd)
             done = _capture_run("tool", tool, docker, out_path, runner)
             if done:
                 written.append(done)
@@ -434,7 +465,7 @@ def run_tools(target, tools, out_dir, image="panopticon-tools", runner=None, onl
         if adapter:
             ext = "sarif" if tool in LEGACY_SARIF_TOOLS else "json"
             out_path = os.path.join(out_dir, "%s.%s" % (tool, ext))
-            docker = [docker_bin, "run", "--rm"]
+            docker = [docker_bin, "run", "--rm"] + _resource_limit_flags()
             if tool not in ONLINE_ONLY:
                 docker.extend(["--network", "none"])
             # Mount the checkout's adapter code over the image's baked-in copy
