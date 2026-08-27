@@ -989,6 +989,27 @@ def _matrix_catalog(repo):
         print("committed groups.yml: %s" % e, file=sys.stderr)
     return groups
 
+def _declares_groups(repo):
+    """True iff a committed .panopticon/groups.yml actually declares one or more
+    groups. Lets main() tell "no groups.yml -> adopt-all default" apart from
+    "authored a groups.yml whose entries ALL failed schema validation" -- the
+    latter must fail loud rather than silently degrade to whole-repo default
+    chunking (#run8 COD-B1A). A missing/empty file (or an `exclude_paths`-only
+    file) declares nothing; unreadable YAML is already surfaced loud by
+    `_matrix_catalog`, so it is treated as "declares nothing" here."""
+    path = os.path.join(repo, ".panopticon", "groups.yml")
+    if not os.path.isfile(path):
+        return False
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh) or {}
+    except (OSError, yaml.YAMLError):
+        return False
+    raw = (doc or {}).get("groups")
+    if isinstance(raw, list):   # legacy list form
+        return any(isinstance(g, dict) and g.get("name") for g in raw)
+    return bool(isinstance(raw, dict) and raw)
+
 def _committed_exclude_paths(repo):
     """Committed top-level `exclude_paths:` globs from `.panopticon/groups.yml`
     (Task 4, #1136), mirroring `_matrix_catalog`'s read: a missing/unreadable/
@@ -1106,6 +1127,23 @@ def main(argv=None):
         catalog = _matrix_catalog(repo)   # SEC-3: parse_groups-validated matrix read
     except ValueError as exc:
         print("panopticon: %s" % exc, file=sys.stderr)
+        return 1
+    # #run8 COD-B1A: a committed groups.yml that DECLARES groups but whose
+    # entries all fail schema validation leaves `catalog` with no match-bearing
+    # group. The guard below (`if any(g.get("match") ...)`) would then silently
+    # fall back to whole-repo default chunking, discarding the operator's
+    # committed scoping with only an easy-to-miss stderr line -- corrupt and
+    # absent groups.yml treated alike. Fail loud instead: an authored-but-
+    # unusable catalog is an error, not a request for the default. (A single bad
+    # group among good ones still degrades gracefully -- its files fall to ._N,
+    # disclosed via ungrouped_files -- because a match-bearing group survives.)
+    if _declares_groups(repo) and not any(
+            g.get("match") for g in catalog.values()):
+        print("panopticon: .panopticon/groups.yml declares groups but none "
+              "survived schema validation (see the 'committed groups.yml:' "
+              "errors above); refusing to silently fall back to whole-repo "
+              "default chunking. Fix the groups.yml entries or remove the file.",
+              file=sys.stderr)
         return 1
     # P6.2: --scope-file/--scope-dir/--scope-group narrow the discovered
     # universe to a target BEFORE the same matrix assignment below runs --
