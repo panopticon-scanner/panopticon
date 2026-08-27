@@ -7,7 +7,7 @@ import pytest
 
 from discovery_test_helpers import (
     git_cmd, git_output, repo_with_matrix, repo_with_scalar_match_group,
-    setup_flow, GIT_TIMEOUT,
+    repo_with_only_malformed_group, setup_flow, GIT_TIMEOUT,
 )
 
 import scripts.discovery as discovery  # noqa: E402
@@ -211,6 +211,49 @@ def test_repo_scan_bare_well_formed_matrix_groups_unchanged(tmp_path):
     leftover = [g for g in data["groups"] if g["name"].startswith("._")]
     assert [f for g in leftover for f in g["files"]] == ["src/misc/other.py"]
     assert data["ungrouped_files"] == ["src/misc/other.py"]
+
+
+def test_repo_scan_fails_loud_when_all_declared_groups_malformed(tmp_path, capsys):
+    # #run8 COD-B1A: a committed groups.yml that DECLARES groups but whose
+    # entries ALL fail schema validation must FAIL LOUD -- not silently degrade
+    # to whole-repo default chunking, which would discard the operator's
+    # committed scoping with only an easy-to-miss stderr line as evidence.
+    repo = repo_with_only_malformed_group(tmp_path)
+    out = repo / "groups.json"
+    rc = orchestrator.main(["--repo-scan", str(repo), "--out", str(out)])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "match must be a non-empty list" in err        # per-entry disclosure
+    assert "declares groups but none survived" in err      # the loud refusal
+    assert not out.exists()                                # no degraded catalog written
+
+
+def test_repo_scan_absent_groups_yml_adopts_whole_repo_default(tmp_path):
+    # Counterpart to the above: an ABSENT groups.yml is NOT an error -- it is
+    # the adopt-all default. Corrupt-vs-absent must not be conflated (#run8
+    # COD-B1A distinguishes them via _declares_groups).
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.py").write_text("x=1\n")
+    git_cmd(tmp_path, "init", "-q")
+    git_cmd(tmp_path, "add", "-A")
+    git_cmd(tmp_path, "-c", "user.email=t@t", "-c", "user.name=t",
+            "commit", "-qm", "x")
+    out = tmp_path / "groups.json"
+    rc = orchestrator.main(["--repo-scan", str(tmp_path), "--out", str(out)])
+    assert rc == 0
+    assert out.exists()
+
+
+def test_declares_groups_distinguishes_absent_declared_and_exclude_only(tmp_path):
+    (tmp_path / ".panopticon").mkdir()
+    gy = tmp_path / ".panopticon" / "groups.yml"
+    assert discovery._declares_groups(str(tmp_path)) is False   # absent file
+    gy.write_text("groups:\n  Bad:\n    match: src/**\n")
+    assert discovery._declares_groups(str(tmp_path)) is True    # declares a group
+    gy.write_text("exclude_paths: ['vendor/**']\n")
+    assert discovery._declares_groups(str(tmp_path)) is False   # exclude_paths only
+    gy.write_text("groups: {}\n")
+    assert discovery._declares_groups(str(tmp_path)) is False   # explicit empty mapping
 
 
 def test_setup_readiness_scalar_match_only_reports_gap_not_ok(tmp_path):

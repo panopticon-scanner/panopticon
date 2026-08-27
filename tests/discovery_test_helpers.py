@@ -42,6 +42,7 @@ __all__ = [
     "FakeRun",
     "repo_with_matrix",
     "repo_with_scalar_match_group",
+    "repo_with_only_malformed_group",
     "repo_with_exclude",
 ]
 
@@ -179,6 +180,17 @@ def repo_with_scalar_match_group(tmp_path):
         "groups:\n"
         "  Bad:\n    match: src/bad/**\n"
         "  Auth:\n    match: ['src/auth/**']\n")
+
+
+def repo_with_only_malformed_group(tmp_path):
+    # #run8 COD-B1A: a committed groups.yml whose ONLY group fails schema
+    # validation (scalar match) -> catalog has no match-bearing group. main()
+    # must fail loud, not silently fall back to whole-repo default chunking.
+    return _git_repo(
+        tmp_path,
+        ["src/bad/thing.py"],
+        "groups:\n"
+        "  Bad:\n    match: src/bad/**\n")
 
 
 def repo_with_exclude(tmp_path):

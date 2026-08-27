@@ -3,7 +3,8 @@ import os
 import tempfile
 import unittest
 
-from discovery_test_helpers import orchestrator, touch, run_scan_with_err
+from discovery_test_helpers import (orchestrator, touch, run_scan_with_err,
+                                    run_scan_helper)
 
 
 class TestGlobSemantics(unittest.TestCase):
@@ -136,7 +137,13 @@ class TestCatalogMatchGroups(unittest.TestCase):
             self.assertEqual(names, ["pkg_1", "pkg_2"])
             self.assertEqual(sum(len(g["files"]) for g in out["groups"]), 20)
 
-    def test_catalog_without_match_keys_keeps_legacy_chunking(self):
+    def test_catalog_without_match_keys_fails_loud(self):
+        # #run8 COD-B1A (owner decision 2026-08-26): a committed groups.yml that
+        # DECLARES a group but uses an unknown key (`patterns:` instead of
+        # `match:`) yields no usable match-group. This used to silently discard
+        # the operator's committed catalog and fall back to whole-repo default
+        # chunking; it now FAILS LOUD so a misconfigured/typo'd catalog can't be
+        # ignored with only an easy-to-miss stderr line as evidence.
         with tempfile.TemporaryDirectory() as d:
             full = os.path.join(d, "src", "app.py")
             os.makedirs(os.path.dirname(full), exist_ok=True)
@@ -144,9 +151,10 @@ class TestCatalogMatchGroups(unittest.TestCase):
             os.makedirs(os.path.join(d, ".panopticon"))
             with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
                 fh.write("groups:\n  Products:\n    patterns: ['**/product*']\n")
-            out, _ = run_scan_with_err(d)
-            self.assertTrue(all(g["name"].startswith("._") for g in out["groups"]))
-            self.assertNotIn("ungrouped_files", out)
+            rc, out, err = run_scan_helper(d)
+            self.assertEqual(rc, 1)
+            self.assertIn("declares groups but none survived", err)
+            self.assertEqual(out, {})   # no degraded whole-repo catalog emitted
 
     def test_exclude_paths_pruned_before_grouping_and_disclosed(self):
         # Task 4 (#1136): a committed top-level `exclude_paths:` glob prunes
