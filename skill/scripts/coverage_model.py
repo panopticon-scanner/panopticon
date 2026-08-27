@@ -35,6 +35,30 @@ _DB_FILE_HINTS = ("schema.prisma", ".prisma", ".sql", "migration", "/models/",
 _TEST_FILE_HINTS = (".test.", ".spec.", "_test.", "_spec.", "/__tests__/",
                     "/tests/", "/test/", ".feature", "conftest", "test_")
 
+# #run8 SEC-G2A: objective file signals that force a deterministic SEC review.
+# SEC is deliberately NOT in GLOBAL_FLOOR (a blanket SEC floor reintroduces the
+# #5.0-19 surfaceless-group noise), but a group whose FILES carry a security
+# surface must be security-reviewed even when neither the committed `panels:`
+# nor the scout asked for it -- otherwise a mis-reporting scout, or an
+# adversarial/forgetful groups.yml that never lists SEC, silently exempts its
+# own code from security review (the exact outcome NON_EXCLUDABLE was built to
+# prevent, reached via an unguarded path). Like the global floor this keys ONLY
+# on deterministic signals, never scout-asserted surfaces (#1193). Three
+# categories: the supply-chain surface (SEC E1-E3: CI/CD, container,
+# dependency/build manifests), the db/SQLi surface (reuses _DB_FILE_HINTS), and
+# unambiguous auth/crypto/secrets filename markers.
+_SEC_SUPPLY_CHAIN_HINTS = (
+    ".github/workflows/", ".gitlab-ci", "jenkinsfile", ".circleci",
+    "dockerfile", "docker-compose", ".dockerignore", "/helm/", "/k8s/",
+    "requirements.txt", "package.json", "package-lock", "gemfile", "go.mod",
+    "cargo.toml", "pom.xml", "build.gradle", "pyproject.toml", "poetry.lock",
+)
+_SEC_CODE_HINTS = (
+    "auth", "login", "session", "token", "oauth", "jwt",
+    "crypto", "cipher", "encrypt", "secret", "password", "credential",
+)
+_SEC_FILE_HINTS = _SEC_SUPPLY_CHAIN_HINTS + _SEC_CODE_HINTS + _DB_FILE_HINTS
+
 
 def _any_hint(files, hints):
     for f in files or ():
@@ -73,16 +97,34 @@ def applicable_global_floor(files, scout, global_floor=GLOBAL_FLOOR):
     return frozenset(keep & set(global_floor))
 
 
-def effective_panels(floor, scout_added, exclude, global_floor=GLOBAL_FLOOR):
+def applicable_sec_floor(files):
+    """`frozenset({"SEC"})` when this group carries an OBJECTIVE security surface
+    (see _SEC_FILE_HINTS), else an empty frozenset (#run8 SEC-G2A).
+
+    Keys ONLY on deterministic file signals, never scout-asserted surfaces
+    (#1193), so a mis-reporting or adversarial scout -- or a groups.yml that
+    never lists `panels: [SEC]` -- cannot suppress security review of a group
+    whose surface objectively exists. SEC is NON_EXCLUDABLE, so once floored here
+    it also cannot be excluded away (#1084). Pure; a surfaceless group with none
+    of these signals still spends no SEC cell (#5.0-19 stays honored).
+    """
+    return frozenset({"SEC"}) if _any_hint(files, _SEC_FILE_HINTS) else frozenset()
+
+
+def effective_panels(floor, scout_added, exclude, global_floor=GLOBAL_FLOOR,
+                     signal_floor=frozenset()):
     """Return (effective_set, disclosure_dict).
 
-    effective = (global_floor | floor | scout_added) - exclude. floor ∩ exclude
-    is assumed empty (validated by groups_schema); exclude still wins
-    mechanically here so a bad file degrades safe (a panel is never both run and
-    disclosed-off). The global_floor (universal-tier COD/DAT/TST/ARC) is folded
-    into the declared floor so it is forced on AND disclosed (#5.0-11).
+    effective = (global_floor | signal_floor | floor | scout_added) - exclude.
+    floor ∩ exclude is assumed empty (validated by groups_schema); exclude still
+    wins mechanically here so a bad file degrades safe (a panel is never both run
+    and disclosed-off). The global_floor (universal-tier COD/DAT/TST/ARC) and the
+    signal_floor (objective-signal domains such as SEC via applicable_sec_floor)
+    are folded into the declared floor so they are forced on AND disclosed
+    (#5.0-11, #run8 SEC-G2A). A signal_floor domain that is also NON_EXCLUDABLE
+    (SEC) therefore both force-runs and survives a committed `exclude`.
     """
-    floor = set(floor) | set(global_floor)
+    floor = set(floor) | set(global_floor) | set(signal_floor)
     scout_added = set(scout_added)
     raw_exclude = set(exclude)
     # #1084: a non-excludable domain (SEC) is dropped from the exclude set, so a

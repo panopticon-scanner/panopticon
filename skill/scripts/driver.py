@@ -657,9 +657,17 @@ def coverage_execute(review_root, manifest):
         # scout_added regardless of the gate, so this only drops floor domains
         # the scout omitted AND whose surface is objectively absent.
         gated_floor = coverage_model.applicable_global_floor(files, scout)
+        # #run8 SEC-G2A: SEC has no place in the universal GLOBAL_FLOOR (a blanket
+        # SEC floor reintroduces the #5.0-19 surfaceless noise), but a group whose
+        # OBJECTIVE files carry a security surface -- a supply-chain
+        # manifest/CI/Docker file, a db/SQLi file, or an auth/crypto/secrets file
+        # -- must get a deterministic SEC review even when neither the committed
+        # `panels:` nor the scout asked for it, so a mis-reporting or adversarial
+        # groups.yml cannot silently skip its own security review.
+        sec_floor = coverage_model.applicable_sec_floor(files)
         effective, disclosure = coverage_model.effective_panels(
             floor, scout_added, spec.get("exclude", set()),
-            global_floor=gated_floor)
+            global_floor=gated_floor, signal_floor=sec_floor)
         cov = {
             "schema_version": 1,
             "group": group,
@@ -669,7 +677,8 @@ def coverage_execute(review_root, manifest):
             "scout_invalid": scout_invalid,             # dropped, disclosed
             "global_floor_suppressed": sorted(          # #5.0-19: surface absent
                 coverage_model.GLOBAL_FLOOR - gated_floor),
-            "effective": sorted(effective),
+            "sec_floor_applied": sorted(sec_floor),     # #run8 SEC-G2A: objective
+            "effective": sorted(effective),             # security surface -> SEC forced on
             "scout_file": os.path.abspath(scout_path),
             "run_id": manifest["run_id"],
         }

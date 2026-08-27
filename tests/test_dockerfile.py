@@ -130,7 +130,15 @@ class TestOfflineAssets(unittest.TestCase):
         # #run7 review: scope the "no swallowed failures" check to the OSV warm
         # block. The old global assertNotIn(">/dev/null 2>&1") tripped on any
         # unrelated future use of that common idiom anywhere in the Dockerfile.
-        osv_block = self.text.split("mkdir -p /opt/osv-db")[1].split("rm -rf /tmp/osv-warm")[0]
+        # #run8 TST-B3A: assert both scoping markers exist FIRST, so renaming or
+        # removing one fails as a diagnosable message naming the missing marker
+        # rather than a bare IndexError from split(...)[1] on a one-element list.
+        start_marker, end_marker = "mkdir -p /opt/osv-db", "rm -rf /tmp/osv-warm"
+        self.assertIn(start_marker, self.text,
+                      "OSV-warm block start marker missing from Dockerfile")
+        self.assertIn(end_marker, self.text,
+                      "OSV-warm block end marker missing from Dockerfile")
+        osv_block = self.text.split(start_marker)[1].split(end_marker)[0]
         self.assertNotIn("/dev/null", osv_block)
 
     def test_publish_cadence_and_tags(self):

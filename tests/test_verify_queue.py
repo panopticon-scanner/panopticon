@@ -77,6 +77,7 @@ class TestBuildVerifyQueue(unittest.TestCase):
     def test_entries_reference_original_dicts(self):
         f = _finding("AG-020", "HIGH")
         entries, _ = evidence.build_verify_queue([f])
+        self.assertEqual(len(entries), 1)   # #run8 TST-B3A: count diff, not IndexError
         self.assertIs(entries[0]["finding"], f)
 
     def test_max_verify_cuts_lowest_priority(self):
@@ -103,6 +104,11 @@ class TestBuildVerifyQueue(unittest.TestCase):
         f = _finding("../../evil", "HIGH")
         entries, cut = evidence.build_verify_queue([f])
         self.assertEqual(cut, 0)
+        # #run8 TST-B3A: cut==0 holds for a wholly EMPTY result too (see
+        # test_empty_findings_yields_empty_queue), so it does not establish that
+        # entries is non-empty -- guard the index so an empty-queue regression
+        # fails as a count diff, not a bare IndexError.
+        self.assertEqual(len(entries), 1)
         queue_id = entries[0]["queue_id"]
         self.assertEqual(queue_id, evidence.finding_fingerprint(f))
         self.assertNotIn("/", queue_id)
@@ -159,6 +165,7 @@ class TestQueueIdentity(unittest.TestCase):
     def test_queue_id_is_the_fingerprint(self):
         f = self._f("A")
         entries, _ = evidence.build_verify_queue([f])
+        self.assertEqual(len(entries), 1)   # #run8 TST-B3A: count diff, not IndexError
         self.assertEqual(entries[0]["queue_id"], evidence.finding_fingerprint(f))
 
     def test_tool_findings_are_queued(self):
