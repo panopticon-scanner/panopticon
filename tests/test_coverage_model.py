@@ -185,3 +185,63 @@ def test_non_sec_exclude_still_applies_alongside_rejected_sec():
     if not (eff == {"SEC"}): raise AssertionError()                  # SEC kept, OPS excluded
     if not (disc["excluded"] == ["OPS"]): raise AssertionError()
     if not (disc["exclude_rejected"] == ["SEC"]): raise AssertionError()
+
+
+# --- #run8 SEC-G2A: objective-signal SEC floor -----------------------------
+
+def test_sec_floor_on_supply_chain_surface():
+    # CI/CD, container, and dependency/build manifests each floor SEC (E1-E3).
+    for f in ["requirements.txt", "app/package.json", ".github/workflows/ci.yml",
+              "Dockerfile", "docker-compose.yml", "go.mod", "pom.xml",
+              "Cargo.toml", "Gemfile", "pyproject.toml"]:
+        if cov.applicable_sec_floor([f]) != frozenset({"SEC"}):
+            raise AssertionError(f"{f} failed to floor SEC")
+
+def test_sec_floor_on_db_sqli_surface():
+    # a migrations/ORM-models-only group (raw query builders = the SQLi surface).
+    if cov.applicable_sec_floor(["db/migrations/0001_init.sql"]) != frozenset({"SEC"}):
+        raise AssertionError()
+    if cov.applicable_sec_floor(["src/models/user.py"]) != frozenset({"SEC"}):
+        raise AssertionError()
+
+def test_sec_floor_on_auth_crypto_secrets_markers():
+    for f in ["src/auth/login.py", "lib/session.ts", "crypto/cipher.go",
+              "config/secrets.py", "app/password_reset.rb", "mw/jwt_check.js",
+              "oauth_token.go"]:
+        if cov.applicable_sec_floor([f]) != frozenset({"SEC"}):
+            raise AssertionError(f"{f} failed to floor SEC")
+
+def test_sec_floor_absent_on_surfaceless_group():
+    # #5.0-19 stays honored: a docs-only group with no security surface spends
+    # no SEC cell -- the floor widens coverage, it does not blanket every group.
+    if cov.applicable_sec_floor(["README.md", "docs/intro.md", "LICENSE"]) != frozenset():
+        raise AssertionError()
+
+def test_sec_floor_keys_on_files_not_scout_or_missing():
+    # #1193: applicable_sec_floor takes only files; no scout claim can conjure it,
+    # and empty/None file lists are tolerated (never crash the coverage phase).
+    if cov.applicable_sec_floor([]) != frozenset(): raise AssertionError()
+    if cov.applicable_sec_floor(None) != frozenset(): raise AssertionError()
+
+def test_signal_floor_forces_domain_on_and_discloses_it():
+    # a group whose committed panels never list SEC and whose scout never adds it
+    # still gets SEC when the objective signal floor supplies it.
+    eff, disc = cov.effective_panels(set(), set(), set(),
+                                     global_floor=set(),
+                                     signal_floor=frozenset({"SEC"}))
+    if "SEC" not in eff: raise AssertionError()
+    if "SEC" not in disc["floor"]: raise AssertionError()
+
+def test_signal_floor_sec_survives_committed_exclude():
+    # SEC via the objective floor is NON_EXCLUDABLE: a committed exclude: [SEC]
+    # cannot silence it, and the ignored attempt is disclosed, never silent.
+    eff, disc = cov.effective_panels(set(), set(), {"SEC"},
+                                     global_floor=set(),
+                                     signal_floor=frozenset({"SEC"}))
+    if eff != {"SEC"}: raise AssertionError()
+    if disc["exclude_rejected"] != ["SEC"]: raise AssertionError()
+
+def test_signal_floor_defaults_empty_leaves_existing_callers_unchanged():
+    # the new param is opt-in: a caller passing only global_floor is unaffected.
+    eff, _ = cov.effective_panels({"COD"}, set(), set(), global_floor=set())
+    if eff != {"COD"}: raise AssertionError()
