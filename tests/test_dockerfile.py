@@ -147,7 +147,9 @@ class TestOfflineAssets(unittest.TestCase):
             wf = yaml.safe_load(fh)
         # PyYAML 1.1 parses the unquoted `on:` key as the boolean True.
         on = wf.get(True, {})
-        self.assertEqual(on["schedule"][0]["cron"], "0 6 * * *")
+        sched = on.get("schedule") or []           # run-9 TST-B3A: guard the [0] index
+        self.assertTrue(sched, "workflow has no schedule trigger")
+        self.assertEqual(sched[0]["cron"], "0 6 * * *")
         self.assertIn("workflow_dispatch", on)
         promote = on["workflow_dispatch"]["inputs"]["promote_weekly"]
         self.assertEqual(promote.get("type"), "boolean")
@@ -161,9 +163,10 @@ class TestOfflineAssets(unittest.TestCase):
         # Negative regression: the weekly tag expression must live in the
         # metadata-action tags input, not just anywhere in the file.
         meta_step = next(
-            s for s in wf["jobs"]["merge"]["steps"]
-            if s.get("id") == "meta"
+            (s for s in wf["jobs"]["merge"]["steps"]
+             if s.get("id") == "meta"), None
         )
+        self.assertIsNotNone(meta_step, "no 'meta' step in the merge job")  # TST-B3A
         self.assertIn(
             "(github.event_name == 'schedule' && steps.cadence.outputs.weekly == 'true') || inputs.promote_weekly == true",
             meta_step["with"]["tags"],
@@ -176,9 +179,10 @@ class TestOfflineAssets(unittest.TestCase):
         # The workflow must pass the computed asset-refresh date into the
         # build-args so daily rebuilds bust the layers that embed $ASSET_REFRESH.
         build_step = next(
-            s for s in wf["jobs"]["build"]["steps"]
-            if s.get("id") == "build"
+            (s for s in wf["jobs"]["build"]["steps"]
+             if s.get("id") == "build"), None
         )
+        self.assertIsNotNone(build_step, "no 'build' step in the build job")  # TST-B3A
         self.assertIn(
             "ASSET_REFRESH=${{ steps.cadence.outputs.date }}",
             build_step["with"]["build-args"],
