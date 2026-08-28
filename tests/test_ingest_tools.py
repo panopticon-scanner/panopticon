@@ -336,6 +336,29 @@ class TestFixturePrune(unittest.TestCase):
         self.assertIn("excluded 1 finding", err.getvalue())
         self.assertNotIn("test-fixture corpus", err.getvalue())
 
+    def test_worktree_findings_pruned_unconditionally(self):
+        # run-9 E3: a nested checkout under .worktrees/ is never project source.
+        # Dropped in standard mode AND in redteam (include_fixtures=True) -- the
+        # prune has no opt-out, so a stray worktree can't feed the tool-verify
+        # round the noise run-9 paid 96 advisor dispatches to re-adjudicate.
+        for kw in ({}, {"include_fixtures": True}):
+            with tempfile.TemporaryDirectory() as d:
+                with open(os.path.join(d, "semgrep.sarif"), "w") as fh:
+                    json.dump(_sarif_fixture(
+                        ".worktrees/a2-streaming/tests/__pycache__/x.pyc"), fh)
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    out = it.ingest_dir(d, "g1", **kw)
+                self.assertEqual(out, [], "kw=%r" % kw)
+                self.assertIn("nested checkout / git dir", err.getvalue())
+
+    def test_is_run_artifact_path_matches_top_level_only(self):
+        for p in (".worktrees/x/a.py", ".git/config", ".worktrees/a2/b.pyc"):
+            self.assertTrue(it._is_run_artifact_path(p), p)
+        for p in ("skill/scripts/driver.py", "src/.worktrees/x.py",  # not top-level
+                  "a/.git/b", "worktrees/x.py", ".gitignore"):
+            self.assertFalse(it._is_run_artifact_path(p), p)
+
 
 class TestIngestDispositions(unittest.TestCase):
     def _write(self, d, name, content):
