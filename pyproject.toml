@@ -28,11 +28,11 @@ keywords = ["code-review", "security", "static-analysis", "ai-agent", "skill"]
 
 [project.optional-dependencies]
 test = ["pytest>=9.1.1", "pytest-xdist>=3.8.0", "jsonschema>=4.0"]
-dev = ["panopticon[test]", "ruff>=0.16.3"]
+dev = ["panopticon[test]", "ruff>=0.16.4"]
 
 [dependency-groups]
 test = ["pytest>=9.1.1", "pytest-xdist>=3.8.0", "jsonschema>=4.0"]
-dev = [{include-group = "test"}, "ruff>=0.16.3"]
+dev = [{include-group = "test"}, "ruff>=0.16.4"]
 
 [project.urls]
 Homepage = "https://github.com/panopticon-scanner/panopticon"
