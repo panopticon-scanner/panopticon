@@ -215,6 +215,41 @@ def _json_parses(path):
     return _load_json(path) is not None
 
 
+def _load_return_json(path):
+    """Read a RETURN-PERSIST artifact -- a file whose content an AGENT produced as
+    its reply and the HOST wrote to disk verbatim -- tolerating the markdown fence
+    or prose preamble a chat reply wraps JSON in.
+
+    run-9 showed this is a property of the RETURN channel, not prompt wording: on
+    one model in one session, 233/233 self-write files were clean JSON while 0/25
+    scouts and 94/95 tool advisors came back fence-wrapped, even under an explicit
+    "raw JSON only, no fences" instruction -- because a model's final
+    conversational turn looks like a chat reply and instructions do not reliably
+    suppress the wrapper. So the confirm-it-parses step on a returned file MUST
+    unwrap, or an unparseable-but-recoverable scout reads as "no output" and the
+    run re-dispatches it forever. Uses the same tolerant reader
+    (evidence.load_json_tolerant) the tool-verdict path already relies on.
+
+    Distinct from _load_json, which stays STRICT: it reads artifacts the driver
+    itself writes (groups.json, out-file hashes, run manifests, the derived
+    coverage-*.json), where a markdown fence would signal tampering rather than a
+    chat wrapper and must never be silently accepted. Returns the parsed value, or
+    None when unrecoverable."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            body = fh.read()
+    except OSError:
+        return None
+    try:
+        return evidence.load_json_tolerant(body)
+    except ValueError:
+        return None
+
+
+def _return_json_parses(path):
+    return _load_return_json(path) is not None
+
+
 @functools.lru_cache(maxsize=8)
 def _parse_committed_groups(path, _mtime):
     """Parse + validate groups.yml, memoized on (path, mtime) so a single
@@ -590,7 +625,10 @@ def coverage_execute(review_root, manifest):
         if _json_parses(_pano(review_root, "coverage-%s.json" % g)):
             continue
         sp = _pano(review_root, "scout-%s.json" % g)
-        if not _json_parses(sp):
+        # A scout is a RETURN-PERSIST file: read it tolerantly, or a fence-wrapped
+        # but otherwise-valid profile reads as "no output" and re-dispatches
+        # forever (run-9: 0/25 scouts fenced -> the whole phase silently looped).
+        if not _return_json_parses(sp):
             pending_scouts.append((g, f))          # no output yet
             continue
         # #3: a scout that PARSES as JSON but has the wrong shape (run-6: 2/26
@@ -599,7 +637,8 @@ def coverage_execute(review_root, manifest):
         # downstream. Validate the load-bearing structure at the return-persist
         # accept boundary; on a mismatch, DISCARD the garbage and re-dispatch that
         # one scout. Cap the retries so a deterministically-broken host fails loud.
-        errs = _scout_shape_errors(_load_json(sp))
+        scout = _load_return_json(sp)
+        errs = _scout_shape_errors(scout)
         if errs:
             n = _bump_scout_attempts(review_root, g)
             print("scout output for group %s failed shape validation "
@@ -615,6 +654,12 @@ def coverage_execute(review_root, manifest):
             except OSError:
                 pass
             pending_scouts.append((g, f))
+        else:
+            # Normalize the accepted return-persist file in place: rewrite the
+            # unwrapped JSON so the coverage read below and synthesize's raw
+            # scout-*.json scan both get clean bytes, whatever wrapper the host
+            # wrote. Unwrap AND persist the unwrapped form -- not just parse past.
+            _write_json(sp, scout)
     if pending_scouts:
         entries = [_scout_entry(review_root, manifest, g, f, host)
                    for g, f in pending_scouts]
@@ -634,7 +679,7 @@ def coverage_execute(review_root, manifest):
         # JSON but would slip past `or {}` (a non-empty list is truthy) and crash
         # `.get` with an uncaught AttributeError. Validate the shape at the gate
         # and fail loud (status:error) instead.
-        scout = _load_json(scout_path)
+        scout = _load_return_json(scout_path)
         if not isinstance(scout, dict):
             raise DriverError("scout output for group %s is not a JSON object" % group)
         raw = scout.get("domains") or []

@@ -557,6 +557,49 @@ class TestCoveragePhase(unittest.TestCase):
         self.assertEqual(cov["scout_added"], [])              # bridge deferred to P4
         self.assertTrue(cov["scout_file"].endswith("scout-Auth.json"))
 
+    def test_fence_wrapped_scout_is_accepted_and_normalized(self):
+        # run-9 A1: a scout is a RETURN-PERSIST file, and a model wraps its reply
+        # in a ```json fence (0/25 clean in run-9). The old strict read counted
+        # that as "no output" and re-dispatched forever. It must be unwrapped,
+        # accepted, and normalized in place so the coverage read and synthesize's
+        # raw scout scan both get clean bytes.
+        self._groups_json([{"name": "Auth", "files": ["a.py"]}])
+        self._groups_yml("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n")
+        sp = driver._pano(self.root, "scout-Auth.json")
+        with open(sp, "w", encoding="utf-8") as fh:
+            fh.write('```json\n{"group": "Auth", "panels": ["code"]}\n```\n')
+        result = driver.coverage_execute(self.root, self.manifest)
+        self.assertEqual(result.kind, "advanced")            # accepted, not re-dispatched
+        self.assertTrue(driver._json_parses(
+            driver._pano(self.root, "coverage-Auth.json")))
+        # normalized in place: a STRICT reader now parses it (no fence left on disk)
+        self.assertEqual(driver._load_json(sp)["group"], "Auth")
+
+    def test_prose_preamble_scout_is_recovered(self):
+        # 3/25 run-9 scouts added a prose preamble BEFORE the fence; the tolerant
+        # reader's balanced-brace scan recovers the object regardless.
+        self._groups_json([{"name": "Auth", "files": ["a.py"]}])
+        self._groups_yml("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n")
+        sp = driver._pano(self.root, "scout-Auth.json")
+        with open(sp, "w", encoding="utf-8") as fh:
+            fh.write('Here is the ScopeProfile for Auth:\n\n'
+                     '```json\n{"group": "Auth", "domains": ["COD"]}\n```\n')
+        result = driver.coverage_execute(self.root, self.manifest)
+        self.assertEqual(result.kind, "advanced")
+        self.assertTrue(driver._json_parses(
+            driver._pano(self.root, "coverage-Auth.json")))
+
+    def test_return_channel_tolerant_but_load_json_stays_strict(self):
+        # The unwrap is scoped to the RETURN-PERSIST channel. Driver-internal reads
+        # (_load_json) stay strict so a markdown fence -- which on a driver-written
+        # file means tampering, not a chat wrapper -- can never be silently accepted.
+        p = driver._pano(self.root, "x.json")
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write('```json\n{"a": 1}\n```')
+        self.assertIsNone(driver._load_json(p))                   # strict: rejects the fence
+        self.assertEqual(driver._load_return_json(p), {"a": 1})   # tolerant: unwraps
+        self.assertTrue(driver._return_json_parses(p))
+
     def test_persists_and_warns_exclude_rejected_for_non_excludable(self):
         # #8c/#7: a committed `exclude` naming SEC (NON_EXCLUDABLE, #1084) is
         # OVERRIDDEN -- the SEC panel still runs wherever floor/scout put it. A
