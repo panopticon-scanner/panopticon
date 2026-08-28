@@ -40,17 +40,31 @@ PHASE2_ADAPTERS = {
 BASE_TOOLS = {"semgrep", "gitleaks", "trivy"}
 
 
-def recommendable_tools():
-    """The scanner universe run_tools can actually select and run: the always-on
-    SARIF tools + the language-keyed SAST tools + the Phase-1/Phase-2 adapters.
+def recommendable_tools(languages=None, target=None):
+    """The scanner universe the scout may recommend from.
 
-    This is the ground truth the scout must recommend from (#1053) -- an
-    ungrounded scout invents pytest/pylint/ruff/... (none are adapters), which
-    #1031 could only disclose as requested_unavailable noise after the fact.
-    Excludes the retired bare `eslint` (eslint >=9 can't run on arbitrary
-    targets; JS/TS SAST runs via the eslint-security adapter instead)."""
-    return sorted(BASE_TOOLS | set(LANG_TOOL.values())
-                  | PHASE1_ADAPTERS | PHASE2_ADAPTERS)
+    Ungated (no args) this is the full ground truth run_tools can select (#1053):
+    the always-on SARIF tools + every language-keyed SAST tool + the Phase-1/2
+    adapters. An ungrounded scout would otherwise invent pytest/pylint/ruff/...
+    (none are adapters), which #1031 could only disclose as requested_unavailable
+    noise after the fact. Excludes the retired bare `eslint` (eslint >=9 can't run
+    on arbitrary targets; JS/TS SAST runs via the eslint-security adapter).
+
+    run-9 (E1): a scout handed the FULL universe requests brakeman/gosec/cargo-audit
+    /spotbugs/roslyn-secguard/... on a pure-Python repo -- tools the runner can
+    never select, so each becomes a `requested_unavailable` disclosure. Passing
+    `languages` (from detect_languages) filters the language-keyed SAST to those
+    languages, and `target` filters the adapters to those actually applicable
+    (select_adapters) -- so the scout sees exactly the set the runner would select
+    and cannot manufacture cross-language over-request noise. The always-on SARIF
+    tools stay offered (broadly applicable)."""
+    lang_tools = set(LANG_TOOL.values())
+    if languages is not None:
+        lang_tools = {LANG_TOOL[lang] for lang in languages if lang in LANG_TOOL}
+    adapters = PHASE1_ADAPTERS | PHASE2_ADAPTERS
+    if target is not None:
+        adapters &= set(select_adapters(target).keys())
+    return sorted(BASE_TOOLS | lang_tools | adapters)
 
 # Max seconds to let a single docker-run tool invocation run before it's killed;
 # prevents a hung tool from blocking the whole batch (CD-007).

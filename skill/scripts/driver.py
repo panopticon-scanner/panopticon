@@ -499,7 +499,7 @@ def _discovered_groups(review_root):
             if isinstance(g, dict) and g.get("name")]
 
 
-def _scout_entry(review_root, manifest, group, files, host):
+def _scout_entry(review_root, manifest, group, files, host, registry_tools=None):
     """One host-agnostic scout dispatch entry (spec §4). The scout body +
     tool-policy line come from dispatch.render_prompt; the assignment is
     appended. Enforcement is host-declared (claude registers panopticon-scout)."""
@@ -511,7 +511,12 @@ def _scout_entry(review_root, manifest, group, files, host):
     # pytest/pylint/ruff/... and #1031 can only disclose them as
     # requested_unavailable noise. The list is the single source of truth from
     # run_tools, appended here so it reaches enforced and generic scouts alike.
-    registry = ", ".join(run_tools.recommendable_tools())
+    # run-9 E1: the caller passes a registry already gated to this run's languages
+    # + applicable adapters (so the scout can't over-request cross-language tools);
+    # fall back to the full universe for a direct caller that doesn't gate.
+    if registry_tools is None:
+        registry_tools = run_tools.recommendable_tools()
+    registry = ", ".join(registry_tools)
     prompt = (body
               + "\n\n## Assignment\n\nGroup: %s\nSecurity mode: %s\n\nFiles:\n%s\n"
                 % (group, security, file_list)
@@ -661,7 +666,17 @@ def coverage_execute(review_root, manifest):
             # wrote. Unwrap AND persist the unwrapped form -- not just parse past.
             _write_json(sp, scout)
     if pending_scouts:
-        entries = [_scout_entry(review_root, manifest, g, f, host)
+        # run-9 E1: gate the tool registry the scouts see to THIS repo's detected
+        # languages + applicable adapters, computed once, so no scout over-requests
+        # a cross-language scanner the runner can never select (the
+        # requested_unavailable disclosure noise). Best-effort: any detection error
+        # falls back to the full universe rather than blocking the scout dispatch.
+        try:
+            registry_tools = run_tools.recommendable_tools(
+                languages=run_tools.detect_languages(review_root), target=review_root)
+        except Exception:                       # noqa: BLE001 - never block dispatch
+            registry_tools = None
+        entries = [_scout_entry(review_root, manifest, g, f, host, registry_tools)
                    for g, f in pending_scouts]
         req = write_dispatch_request(review_root, manifest["run_id"],
                                      "scout", None, entries)

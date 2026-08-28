@@ -508,8 +508,14 @@ class TestCoveragePhase(unittest.TestCase):
         # only recommend tools that exist -- deleting the requested_unavailable
         # noise class. The registry is appended by _scout_entry (not the mocked
         # body), so it appears in the dispatched prompt regardless of template.
+        # run-9 E1: the registry is now GATED to the repo's languages + applicable
+        # adapters, so a pure-Python repo offers bandit (python SAST) but NOT gosec
+        # (go SAST) -- the cross-language over-request that made requested_unavailable
+        # noise. A real a.py drives detection.
         self._groups_json([{"name": "Auth", "files": ["a.py"]}])
         self._groups_yml("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n")
+        with open(os.path.join(self.root, "a.py"), "w") as fh:
+            fh.write("import os\n")             # real Python surface -> python detected
         with mock.patch("scripts.driver.dispatch.render_prompt",
                         return_value="SCOUT-BODY"), \
              mock.patch("scripts.driver.dispatch.registered_agent_name",
@@ -518,8 +524,9 @@ class TestCoveragePhase(unittest.TestCase):
         prompt = driver._load_json(
             driver._pano(self.root, "dispatch-request.json"))["entries"][0]["prompt"]
         self.assertIn("Available scanners", prompt)
-        self.assertIn("semgrep", prompt)
-        self.assertIn("eslint-security", prompt)
+        self.assertIn("semgrep", prompt)       # always-on SARIF: survives gating
+        self.assertIn("bandit", prompt)        # python SAST: gated IN by the .py
+        self.assertNotIn("gosec", prompt)      # go SAST: gated OUT (no .go) -- the E1 fix
         self.assertNotIn("pytest", prompt)     # an invented tool never appears
 
     def test_generic_host_scout_entry_not_enforced(self):

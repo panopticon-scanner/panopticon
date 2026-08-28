@@ -31,6 +31,25 @@ class TestRunTools(unittest.TestCase):
         self.assertNotIn("eslint", rec)                    # retired bare eslint
         self.assertNotIn("pytest", rec)                    # never an adapter
 
+    def test_recommendable_tools_gated_by_language_and_applicability(self):
+        # run-9 E1: gating to a language set drops the SAST for absent languages
+        # (gosec on a Python repo), and gating to a target drops adapters not
+        # applicable to it -- so the scout sees the runner's actual set and can't
+        # over-request a cross-language scanner (the requested_unavailable noise).
+        import tempfile
+        gated = rt.recommendable_tools(languages=["python"])
+        self.assertIn("bandit", gated)                     # python SAST kept
+        self.assertNotIn("gosec", gated)                   # go SAST dropped
+        self.assertIn("semgrep", gated)                    # always-on SARIF kept
+        with tempfile.TemporaryDirectory() as d:           # no applicable adapters
+            gt = rt.recommendable_tools(languages=[], target=d)
+            self.assertNotIn("gosec", gt)
+            self.assertNotIn("cargo-audit", gt)            # adapter, not applicable
+            self.assertTrue(rt.BASE_TOOLS <= set(gt))      # always-on remain
+        self.assertEqual(rt.recommendable_tools(),         # ungated default unchanged
+                         sorted(rt.BASE_TOOLS | set(rt.LANG_TOOL.values())
+                                | rt.PHASE1_ADAPTERS | rt.PHASE2_ADAPTERS))
+
     def test_recommendable_tools_all_resolve_to_a_registry(self):
         # #run7 ARC-A4C: every recommendable name must resolve to a real
         # invocation -- a legacy TOOL_CMD entry or an ADAPTERS entry. A name in
