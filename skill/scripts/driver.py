@@ -977,7 +977,39 @@ def _verify_out_file(review_root, group, domain, stage):
                                  "verdicts-%s-%s%s.json" % (group, domain, suffix)))
 
 
-def _verify_cell_done(review_root, manifest, group, domain, stage):
+_MAX_VERIFY_ATTEMPTS = 3
+
+
+def _verify_attempts(review_root, group, domain, stage):
+    path = _pano(review_root, "verify-attempts.json")
+    data = _load_json(path) if _json_parses(path) else {}
+    if not isinstance(data, dict):
+        return 0
+    return int(data.get("%s/%s/%s" % (group, domain, stage), 0))
+
+
+def _bump_verify_attempts(review_root, group, domain, stage):
+    """Persisted per-(group, domain, stage) re-dispatch counter that BOUNDS the A2
+    verdict-reconciliation retry loop, so a systematically-re-coding advisor
+    surfaces as unanswered -> INCONCLUSIVE instead of wedging the run. Lives with
+    the verdicts, so --reset clears it."""
+    path = _pano(review_root, "verify-attempts.json")
+    data = _load_json(path) if _json_parses(path) else {}
+    if not isinstance(data, dict):
+        data = {}
+    key = "%s/%s/%s" % (group, domain, stage)
+    n = int(data.get(key, 0)) + 1
+    data[key] = n
+    _write_json(path, data)
+    return n
+
+
+def _verify_bundle_labeled(review_root, manifest, group, domain, stage):
+    """The verdict bundle exists, parses, and is labeled for THIS cell -- the
+    advisor returned something coherent for it (vs no bundle, or an unloadable /
+    mislabeled one). Separates an A2 reconciliation shortfall, which the bounded
+    budget governs, from a first dispatch or an unloadable return, which keep the
+    existing uncapped re-dispatch."""
     data = _load_json(_verify_out_file(review_root, group, domain, stage))
     if not (isinstance(data, dict) and isinstance(data.get("verdicts"), list)):
         return False
@@ -985,6 +1017,36 @@ def _verify_cell_done(review_root, manifest, group, domain, stage):
     return (meta.get("run_id") == manifest.get("run_id")
             and meta.get("domain") == domain and meta.get("group") == group
             and meta.get("stage", "primary") == stage)
+
+
+def _verify_cell_done(review_root, manifest, group, domain, stage):
+    if not _verify_bundle_labeled(review_root, manifest, group, domain, stage):
+        return False
+    # A2 (run-9): a labeled, parseable bundle is not "done" unless it actually
+    # adjudicated every finding the advisor was handed. An advisor RE-CODED a
+    # cell's findings -- a 4th TST-B1B while dropping a TST-B1A and a TST-B1C -- so
+    # a 10-finding cell came back with 9 verdicts and 2 findings went silently
+    # unadjudicated. The bundle was accepted as done, the cell never re-dispatched,
+    # and the drop surfaced only as a quiet verdicts.unanswered:1 that sank
+    # coverage_certified without naming a cause. Reconcile the verdict finding_ids
+    # against the cell's findings (the exact set _render_findings hands the
+    # advisor, matched on the same str(id) binding synthesis uses).
+    #
+    # PRIMARY only: the backup round adjudicates a severity-gated SUBSET by design,
+    # so requiring 1:1 there would re-dispatch every backup cell forever.
+    if stage != "primary":
+        return True
+    data = _load_json(_verify_out_file(review_root, group, domain, stage))
+    cell = _load_cell_findings(review_root, manifest, group, domain)
+    want = {str(f["id"]) for f in (cell or [])}
+    got = {str(v.get("finding_id")) for v in data["verdicts"]
+           if isinstance(v, dict) and v.get("finding_id") is not None}
+    if want.issubset(got):
+        return True
+    # Incomplete: re-dispatch (a chance to fix a transient re-code), but BOUNDED --
+    # once the budget is spent the gap is real and surfaces as unanswered ->
+    # INCONCLUSIVE at synthesis, honest, rather than wedging the run.
+    return _verify_attempts(review_root, group, domain, stage) >= _MAX_VERIFY_ATTEMPTS
 
 
 def _render_findings(review_root, cell):
@@ -1153,6 +1215,11 @@ def verify_execute(review_root, manifest):
                 continue   # unreviewed, or below-gate: unverified + disclosed at synth
             if _verify_cell_done(review_root, manifest, group, domain, "primary"):
                 continue
+            # A2: a labeled-but-incomplete bundle already on disk means the advisor
+            # returned a short/re-coded verdict set -- charge one attempt against
+            # the bounded budget so an incomplete cell can't re-dispatch forever.
+            if _verify_bundle_labeled(review_root, manifest, group, domain, "primary"):
+                _bump_verify_attempts(review_root, group, domain, "primary")
             pending.append((domain, cell))
         if pending:
             ngroups += 1

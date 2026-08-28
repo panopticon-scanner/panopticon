@@ -126,6 +126,72 @@ class TestVerifyPrimary(unittest.TestCase):
                     driver.verify_done(self.root, self.manifest),
                     "bundle with mismatched stamp %r must not verify" % bad)
 
+    # --- A2 (run-9): 1:1 finding<->verdict reconciliation, bounded re-dispatch ---
+    def _two_finding_cell(self):
+        _cell(self.root, "app", "SEC", [
+            {"domain": "SEC", "code": "SEC-A1A", "severity": "HIGH", "title": "one",
+             "category": "authz", "location": {"file": "a.py", "line_start": 1}},
+            {"domain": "SEC", "code": "SEC-B1A", "severity": "HIGH", "title": "two",
+             "category": "output", "location": {"file": "b.py", "line_start": 2}}])
+        return driver._load_cell_findings(self.root, self.manifest, "app", "SEC")
+
+    def _write_primary_bundle(self, fids):
+        vd = os.path.join(self.root, ".panopticon", "verdicts")
+        os.makedirs(vd, exist_ok=True)
+        with open(os.path.join(vd, "verdicts-app-SEC.json"), "w") as fh:
+            json.dump({"verdicts": [{"finding_id": f, "verdict": "CONFIRMED"} for f in fids],
+                       "_panopticon": {"run_id": "RID", "role": "domain_advisor",
+                                       "domain": "SEC", "group": "app", "stage": "primary"}}, fh)
+
+    def test_incomplete_primary_bundle_reconciles_not_done(self):
+        # A2: a labeled, parseable bundle that adjudicated only 1 of 2 findings is
+        # NOT done -- the dropped finding must re-dispatch, not slip through as a
+        # silent verdicts.unanswered:1 that sinks certification (the run-9 cause).
+        cell = self._two_finding_cell()
+        self._write_primary_bundle([cell[0]["id"]])                    # 1 of 2
+        self.assertFalse(driver._verify_cell_done(
+            self.root, self.manifest, "app", "SEC", "primary"))
+        self._write_primary_bundle([cell[0]["id"], cell[1]["id"]])     # both -> done
+        self.assertTrue(driver._verify_cell_done(
+            self.root, self.manifest, "app", "SEC", "primary"))
+
+    def test_extra_unknown_verdict_does_not_block_done(self):
+        # A phantom extra verdict (surfaces as unknown at synthesis) must not force
+        # re-dispatch as long as every finding IS covered.
+        cell = self._two_finding_cell()
+        self._write_primary_bundle([cell[0]["id"], cell[1]["id"], "phantom"])
+        self.assertTrue(driver._verify_cell_done(
+            self.root, self.manifest, "app", "SEC", "primary"))
+
+    def test_incomplete_bundle_accepted_after_max_attempts(self):
+        # Bounded: once the re-dispatch budget is spent, an incomplete bundle is
+        # accepted so the run PROCEEDS and the gap surfaces as unanswered ->
+        # INCONCLUSIVE, rather than wedging forever on a systematic re-coder.
+        cell = self._two_finding_cell()
+        self._write_primary_bundle([cell[0]["id"]])                    # stays incomplete
+        for _ in range(driver._MAX_VERIFY_ATTEMPTS):
+            self.assertFalse(driver._verify_cell_done(
+                self.root, self.manifest, "app", "SEC", "primary"))
+            driver._bump_verify_attempts(self.root, "app", "SEC", "primary")
+        self.assertTrue(driver._verify_cell_done(                      # budget spent
+            self.root, self.manifest, "app", "SEC", "primary"))
+
+    def test_execute_charges_an_attempt_only_on_redispatch(self):
+        # The bump counts a RE-dispatch (a labeled-but-incomplete bundle already on
+        # disk), never the first dispatch (no bundle yet).
+        cell = self._two_finding_cell()
+        with (
+            mock.patch("scripts.driver.dispatch.render_prompt", return_value="B"),
+            mock.patch("scripts.driver.dispatch.registered_agent_name",
+                       return_value="panopticon-domain-advisor"),
+            mock.patch("scripts.driver.ocrdb.load_bundle", return_value={"domains": {}}),
+        ):
+            driver.verify_execute(self.root, self.manifest)            # first dispatch
+            self.assertEqual(driver._verify_attempts(self.root, "app", "SEC", "primary"), 0)
+            self._write_primary_bundle([cell[0]["id"]])               # incomplete return
+            driver.verify_execute(self.root, self.manifest)           # re-dispatch
+            self.assertEqual(driver._verify_attempts(self.root, "app", "SEC", "primary"), 1)
+
 
 class TestVerifyBackup(unittest.TestCase):
     def setUp(self):
