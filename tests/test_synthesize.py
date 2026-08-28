@@ -2239,6 +2239,33 @@ class TestCompareParts(unittest.TestCase):
                 self.assertIsNone(syn._read_json_report(main))  # not a silent partial
             self.assertIn("incomplete", err.getvalue())
 
+    def test_read_json_report_recovers_discarded_sibling_without_parts(self):
+        # #run9 ARC-D1A: discarded_claims can spill to a <stem>-discarded.json
+        # sibling INDEPENDENTLY of meta.parts, so --compare must follow that pointer
+        # even when there are no parts -- else it drops every rejected claim.
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "r-discarded.json"), "w") as fh:
+                json.dump({"discarded_claims": [{"id": "D1"}, {"id": "D2"}]}, fh)
+            main = os.path.join(d, "r.json")
+            with open(main, "w") as fh:
+                json.dump({"meta": {"discarded_claims_file": "r-discarded.json"},
+                           "summary": {"gate": "PASS"},
+                           "findings": [{"id": "F1"}], "discarded_claims": []}, fh)
+            rep = syn._read_json_report(main)
+        self.assertEqual([f["id"] for f in rep["findings"]], ["F1"])
+        self.assertEqual([x["id"] for x in rep["discarded_claims"]], ["D1", "D2"])
+
+    def test_read_json_report_missing_discarded_sibling_fails_loud(self):
+        with tempfile.TemporaryDirectory() as d:
+            main = os.path.join(d, "r.json")
+            with open(main, "w") as fh:
+                json.dump({"meta": {"discarded_claims_file": "gone.json"},
+                           "findings": []}, fh)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self.assertIsNone(syn._read_json_report(main))   # not a silent partial
+            self.assertIn("incomplete", err.getvalue())
+
 
 class TestLoadFindingsProvenanceScrub(unittest.TestCase):
     def test_self_asserted_confirmation_status_is_stripped(self):

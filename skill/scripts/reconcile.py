@@ -57,6 +57,15 @@ def load_report(path):
             pdata = json.load(fh)
         findings.extend(pdata.get("findings") or [])
         discarded.extend(pdata.get("discarded_claims") or [])
+    # #run9 ARC-D1A: a large report ALSO spills discarded_claims to a
+    # `<stem>-discarded.json` sibling (write_report #15), leaving an empty inline
+    # list + a meta.discarded_claims_file pointer. The meta.parts merge above never
+    # follows that pointer, so recovery silently loses EVERY rejected claim. Merge
+    # the sibling back in, through the same confinement check.
+    disc_file = (report.get("meta") or {}).get("discarded_claims_file")
+    if disc_file:
+        with open(_resolve_part_path(base_dir, disc_file), encoding="utf-8") as fh:
+            discarded.extend(json.load(fh).get("discarded_claims") or [])
     return {"findings": findings, "discarded_claims": discarded}
 
 

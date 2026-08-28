@@ -41,6 +41,23 @@ class TestLoadReport(unittest.TestCase):
         self.assertEqual(len(report["findings"]), 3)
         self.assertEqual(len(report["discarded_claims"]), 1)
 
+    def test_recovers_discarded_claims_from_the_sibling_file(self):
+        # #run9 ARC-D1A: a large report spills discarded_claims to a
+        # <stem>-discarded.json sibling with a meta.discarded_claims_file pointer
+        # (write_report #15), leaving the inline list empty. load_report must follow
+        # the pointer, not silently return zero discarded claims on recovery.
+        with tempfile.TemporaryDirectory() as d:
+            main = os.path.join(d, "report.json")
+            with open(main, "w") as fh:
+                json.dump({"findings": [{"id": "F1"}], "discarded_claims": [],
+                           "meta": {"discarded_claims_file": "report-discarded.json",
+                                    "discarded_claims_count": 2}}, fh)
+            with open(os.path.join(d, "report-discarded.json"), "w") as fh:
+                json.dump({"discarded_claims": [{"id": "D1"}, {"id": "D2"}]}, fh)
+            out = reconcile.load_report(main)
+            self.assertEqual([f["id"] for f in out["findings"]], ["F1"])
+            self.assertEqual([c["id"] for c in out["discarded_claims"]], ["D1", "D2"])
+
     def test_rejects_parts_entry_escaping_report_directory(self):
         with self.assertRaises(ValueError):
             reconcile._resolve_part_path(FIXTURES, "../../etc/passwd")
