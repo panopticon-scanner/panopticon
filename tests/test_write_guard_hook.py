@@ -161,6 +161,21 @@ class TestAllowlistFromPlan(unittest.TestCase):
         al = wg.allowlist_from_plan(plan)
         self.assertEqual(al, {os.path.realpath(".panopticon/a.json")})
 
+    def test_symlinked_panopticon_parent_is_refused(self):
+        # TST-A2B (run-9): allowlist_from_plan raises when an out_file's parent dir
+        # is named .panopticon AND is itself a symlink -- a target could redirect
+        # findings writes by planting that link. The guard existed but no test ever
+        # constructed the triggering plan; this pins it.
+        with tempfile.TemporaryDirectory() as d:
+            real = os.path.join(d, "real-dir")
+            os.mkdir(real)
+            link = os.path.join(d, ".panopticon")
+            os.symlink(real, link)
+            plan = [{"out_file": os.path.join(link, "findings-app-SEC.json")}]
+            with self.assertRaises(ValueError) as cm:
+                wg.allowlist_from_plan(plan)
+            self.assertIn("symlinked .panopticon", str(cm.exception))
+
 
 class TestMain(unittest.TestCase):
     """main() plumbing: stdin -> decide -> stdout, and the tolerant fallbacks."""

@@ -49,6 +49,27 @@ class TestLoadReport(unittest.TestCase):
         with self.assertRaises(ValueError):
             reconcile._resolve_part_path(FIXTURES, "/etc/passwd")
 
+    def test_rejects_parts_entry_escaping_via_symlink(self):
+        # #run9 SEC-D1C: a same-directory symlink passes the lexical normpath check
+        # but resolves OUTSIDE the report dir; the caller's open() would then follow
+        # it, merging an arbitrary file into the report. The realpath re-confinement
+        # must reject it, while a real same-dir part still resolves.
+        with tempfile.TemporaryDirectory() as base:
+            outside = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
+            outside.write(b"{}")
+            outside.close()
+            try:
+                os.symlink(outside.name, os.path.join(base, "part.json"))
+                with self.assertRaises(ValueError):
+                    reconcile._resolve_part_path(base, "part.json")
+                real = os.path.join(base, "ok.json")
+                with open(real, "w") as fh:
+                    fh.write("{}")
+                self.assertEqual(reconcile._resolve_part_path(base, "ok.json"),
+                                 os.path.realpath(real))
+            finally:
+                os.unlink(outside.name)
+
     def test_bare_filename_with_same_dir_part_does_not_raise(self):
         # Regression test: os.path.dirname("run2.json") == "" when the
         # caller passes a bare filename (the normal case when running the
