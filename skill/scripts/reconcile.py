@@ -24,13 +24,26 @@ import scripts.evidence as evidence
 
 
 def _resolve_part_path(base_dir, part):
-    """Resolve and validate a report part continuation path within base_dir (#1122)."""
+    """Resolve and validate a report part continuation path within base_dir (#1122).
+
+    #run9 SEC-D1C: the lexical normpath check confines the STRING, but a
+    same-directory symlink (`base_dir/part` is a link pointing outside base_dir)
+    passes it — normpath does not resolve links — and the caller's open() then
+    follows it, exfiltrating an arbitrary file into the merged report. Re-resolve
+    the real path and re-confine against the real base before returning, and hand
+    back the RESOLVED path so the caller opens the confined target, not the link.
+    """
     part = str(part)
     base_norm = os.path.normpath(base_dir or ".")
     ppath = os.path.normpath(os.path.join(base_norm, part))
     if os.path.isabs(part) or not (ppath == base_norm or ppath.startswith(base_norm + os.sep)):
         raise ValueError("invalid meta.parts entry: %r" % part)
-    return ppath
+    real_base = os.path.realpath(base_norm)
+    real_ppath = os.path.realpath(ppath)
+    if not (real_ppath == real_base or real_ppath.startswith(real_base + os.sep)):
+        raise ValueError(
+            "meta.parts entry escapes the report directory via symlink: %r" % part)
+    return real_ppath
 
 
 def load_report(path):

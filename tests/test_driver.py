@@ -607,6 +607,33 @@ class TestCoveragePhase(unittest.TestCase):
         self.assertEqual(driver._load_return_json(p), {"a": 1})   # tolerant: unwraps
         self.assertTrue(driver._return_json_parses(p))
 
+    def test_write_json_rejects_symlinked_intermediate_panopticon_dir(self):
+        # #run9 SEC-X0X: artifact_root() vets only the top-level .panopticon and
+        # _open_w_nofollow's O_NOFOLLOW only the final file, so a hostile target
+        # could plant an INTERMEDIATE symlink (.panopticon/runs -> /elsewhere) and
+        # the driver's own writes would escape. _confine_artifact_path blocks it,
+        # and nothing lands in the outside dir.
+        with tempfile.TemporaryDirectory() as root, \
+             tempfile.TemporaryDirectory() as outside:
+            os.makedirs(os.path.join(root, ".panopticon"))
+            os.symlink(outside, os.path.join(root, ".panopticon", "runs"))   # planted
+            escaping = os.path.join(root, ".panopticon", "runs", "tag", "x.json")
+            with self.assertRaises(ValueError):
+                driver._write_json(escaping, {"a": 1})
+            self.assertEqual(os.listdir(outside), [])            # nothing escaped
+            ok = os.path.join(root, ".panopticon", "runs2", "y.json")   # normal write works
+            driver._write_json(ok, {"b": 2})
+            self.assertEqual(driver._load_json(ok), {"b": 2})
+
+    def test_confine_allows_the_intentional_latest_symlink(self):
+        # The runs/latest -> <tag> link points WITHIN .panopticon, so a path
+        # through it must NOT be falsely rejected (no regression on per-run folders).
+        with tempfile.TemporaryDirectory() as root:
+            runs = os.path.join(root, ".panopticon", "runs")
+            os.makedirs(os.path.join(runs, "t1"))
+            os.symlink("t1", os.path.join(runs, "latest"))
+            driver._confine_artifact_path(os.path.join(runs, "latest", "z.json"))  # no raise
+
     def test_persists_and_warns_exclude_rejected_for_non_excludable(self):
         # #8c/#7: a committed `exclude` naming SEC (NON_EXCLUDABLE, #1084) is
         # OVERRIDDEN -- the SEC panel still runs wherever floor/scout put it. A
