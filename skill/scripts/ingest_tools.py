@@ -52,24 +52,38 @@ __all__ = [
 ]
 
 
+_RUN_ARTIFACT_DIRS = {".worktrees", ".git"}
+
+
+def _is_run_artifact_path(fpath):
+    """A tool finding whose top-level dir is a NESTED CHECKOUT (.worktrees/) or the
+    git dir (.git/) -- never the project's own reviewable source. run_tools mounts
+    the whole target read-only and the scanners walk it, so a stray nested worktree
+    gets scanned and its findings surface: run-9 (E3) burned tool-advisor
+    dispatches re-adjudicating findings under .worktrees/*/__pycache__/*.pyc that
+    the agentic scan already excludes. This is the tool-path equivalent of that
+    exclusion, and unlike the fixture prune it is UNCONDITIONAL -- a nested checkout
+    is never project source to review, in any security mode."""
+    top = str(fpath).replace(os.sep, "/").lstrip("/").split("/", 1)[0]
+    return top in _RUN_ARTIFACT_DIRS
+
+
 def _filter_parsed_findings(parsed, include_fixtures, exclude_globs):
-    if include_fixtures and not exclude_globs:
-        return parsed, 0, 0
-    kept = []
-    fx_count = 0
-    gl_count = 0
+    kept, fx_count, gl_count, ra_count = [], 0, 0, 0
     for f in parsed:
         # #run7 QAL-D1A: normalize os.sep -> "/" before matching, mirroring
         # run_tools._is_excluded, so an exclude_glob behaves identically on both
         # the ingest and the scan path (a no-op on POSIX; correct on Windows).
         fpath = str((f.get("location") or {}).get("file", "")).replace(os.sep, "/")
-        if not include_fixtures and _is_fixture_path(fpath):
+        if _is_run_artifact_path(fpath):      # run-9 E3: nested checkout / git dir, always drop
+            ra_count += 1
+        elif not include_fixtures and _is_fixture_path(fpath):
             fx_count += 1
         elif exclude_globs and any(fnmatch.fnmatch(fpath, g) for g in exclude_globs):
             gl_count += 1
         else:
             kept.append(f)
-    return kept, fx_count, gl_count
+    return kept, fx_count, gl_count, ra_count
 
 
 def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=False):
@@ -103,6 +117,7 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
     dispositions = {}
     fx_excluded = 0   # dropped by the default fixture-corpus prune
     gl_excluded = 0   # dropped by an explicit exclude_glob
+    ra_excluded = 0   # dropped as a nested checkout / git-dir artifact (run-9 E3)
     for path in sorted(glob.glob(os.path.join(tools_dir, "*.sarif"))
                        + glob.glob(os.path.join(tools_dir, "*.json"))):
         tool = os.path.splitext(os.path.basename(path))[0]
@@ -161,20 +176,25 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
                                   % (str(e).splitlines() or [""])[0]}
             continue
         raw_count = len(parsed)
-        parsed, fx_cnt, gl_cnt = _filter_parsed_findings(parsed, include_fixtures, exclude_globs)
+        parsed, fx_cnt, gl_cnt, ra_cnt = _filter_parsed_findings(
+            parsed, include_fixtures, exclude_globs)
         fx_excluded += fx_cnt
         gl_excluded += gl_cnt
+        ra_excluded += ra_cnt
         out.extend(parsed)
         dispositions[tool] = {"status": "ok" if raw_count else "empty",
                               "findings": raw_count}
-    if fx_excluded or gl_excluded:
+    if fx_excluded or gl_excluded or ra_excluded:
         reasons = []
         if fx_excluded:
             reasons.append("test-fixture corpus")
+        if ra_excluded:
+            reasons.append("nested checkout / git dir")
         if gl_excluded:
             reasons.append(", ".join(exclude_globs))
         print("ingest: excluded %d finding(s) (%s)"
-              % (fx_excluded + gl_excluded, "; ".join(reasons)), file=sys.stderr)
+              % (fx_excluded + gl_excluded + ra_excluded, "; ".join(reasons)),
+              file=sys.stderr)
     return out, dispositions
 
 

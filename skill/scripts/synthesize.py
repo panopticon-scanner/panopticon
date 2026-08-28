@@ -2636,7 +2636,7 @@ def main(argv=None):
     for sp in glob.glob(os.path.join(run_dir, "scout-*.json")):
         try:
             with open(sp, encoding="utf-8") as fh:
-                sd = json.load(fh)
+                sd = load_json_tolerant(fh.read())
         except (OSError, ValueError):  # tolerant by design: never abort a run
             continue
         if not isinstance(sd, dict):

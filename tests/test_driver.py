@@ -508,8 +508,14 @@ class TestCoveragePhase(unittest.TestCase):
         # only recommend tools that exist -- deleting the requested_unavailable
         # noise class. The registry is appended by _scout_entry (not the mocked
         # body), so it appears in the dispatched prompt regardless of template.
+        # run-9 E1: the registry is now GATED to the repo's languages + applicable
+        # adapters, so a pure-Python repo offers bandit (python SAST) but NOT gosec
+        # (go SAST) -- the cross-language over-request that made requested_unavailable
+        # noise. A real a.py drives detection.
         self._groups_json([{"name": "Auth", "files": ["a.py"]}])
         self._groups_yml("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n")
+        with open(os.path.join(self.root, "a.py"), "w") as fh:
+            fh.write("import os\n")             # real Python surface -> python detected
         with mock.patch("scripts.driver.dispatch.render_prompt",
                         return_value="SCOUT-BODY"), \
              mock.patch("scripts.driver.dispatch.registered_agent_name",
@@ -518,8 +524,9 @@ class TestCoveragePhase(unittest.TestCase):
         prompt = driver._load_json(
             driver._pano(self.root, "dispatch-request.json"))["entries"][0]["prompt"]
         self.assertIn("Available scanners", prompt)
-        self.assertIn("semgrep", prompt)
-        self.assertIn("eslint-security", prompt)
+        self.assertIn("semgrep", prompt)       # always-on SARIF: survives gating
+        self.assertIn("bandit", prompt)        # python SAST: gated IN by the .py
+        self.assertNotIn("gosec", prompt)      # go SAST: gated OUT (no .go) -- the E1 fix
         self.assertNotIn("pytest", prompt)     # an invented tool never appears
 
     def test_generic_host_scout_entry_not_enforced(self):
@@ -556,6 +563,49 @@ class TestCoveragePhase(unittest.TestCase):
         self.assertEqual(cov["global_floor_suppressed"], ["ARC", "DAT", "TST"])
         self.assertEqual(cov["scout_added"], [])              # bridge deferred to P4
         self.assertTrue(cov["scout_file"].endswith("scout-Auth.json"))
+
+    def test_fence_wrapped_scout_is_accepted_and_normalized(self):
+        # run-9 A1: a scout is a RETURN-PERSIST file, and a model wraps its reply
+        # in a ```json fence (0/25 clean in run-9). The old strict read counted
+        # that as "no output" and re-dispatched forever. It must be unwrapped,
+        # accepted, and normalized in place so the coverage read and synthesize's
+        # raw scout scan both get clean bytes.
+        self._groups_json([{"name": "Auth", "files": ["a.py"]}])
+        self._groups_yml("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n")
+        sp = driver._pano(self.root, "scout-Auth.json")
+        with open(sp, "w", encoding="utf-8") as fh:
+            fh.write('```json\n{"group": "Auth", "panels": ["code"]}\n```\n')
+        result = driver.coverage_execute(self.root, self.manifest)
+        self.assertEqual(result.kind, "advanced")            # accepted, not re-dispatched
+        self.assertTrue(driver._json_parses(
+            driver._pano(self.root, "coverage-Auth.json")))
+        # normalized in place: a STRICT reader now parses it (no fence left on disk)
+        self.assertEqual(driver._load_json(sp)["group"], "Auth")
+
+    def test_prose_preamble_scout_is_recovered(self):
+        # 3/25 run-9 scouts added a prose preamble BEFORE the fence; the tolerant
+        # reader's balanced-brace scan recovers the object regardless.
+        self._groups_json([{"name": "Auth", "files": ["a.py"]}])
+        self._groups_yml("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n")
+        sp = driver._pano(self.root, "scout-Auth.json")
+        with open(sp, "w", encoding="utf-8") as fh:
+            fh.write('Here is the ScopeProfile for Auth:\n\n'
+                     '```json\n{"group": "Auth", "domains": ["COD"]}\n```\n')
+        result = driver.coverage_execute(self.root, self.manifest)
+        self.assertEqual(result.kind, "advanced")
+        self.assertTrue(driver._json_parses(
+            driver._pano(self.root, "coverage-Auth.json")))
+
+    def test_return_channel_tolerant_but_load_json_stays_strict(self):
+        # The unwrap is scoped to the RETURN-PERSIST channel. Driver-internal reads
+        # (_load_json) stay strict so a markdown fence -- which on a driver-written
+        # file means tampering, not a chat wrapper -- can never be silently accepted.
+        p = driver._pano(self.root, "x.json")
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write('```json\n{"a": 1}\n```')
+        self.assertIsNone(driver._load_json(p))                   # strict: rejects the fence
+        self.assertEqual(driver._load_return_json(p), {"a": 1})   # tolerant: unwraps
+        self.assertTrue(driver._return_json_parses(p))
 
     def test_persists_and_warns_exclude_rejected_for_non_excludable(self):
         # #8c/#7: a committed `exclude` naming SEC (NON_EXCLUDABLE, #1084) is
