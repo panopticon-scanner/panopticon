@@ -161,6 +161,47 @@ class TestAllowlistFromPlan(unittest.TestCase):
         al = wg.allowlist_from_plan(plan)
         self.assertEqual(al, {os.path.realpath(".panopticon/a.json")})
 
+    def test_install_drops_planted_out_of_tree_allowlist_entries(self):
+        # #run10 SEC-C1D: the target repo can ship its own
+        # .panopticon/write-allowlist.json (the path is inside the scanned tree).
+        # install() used to UNION whatever was there, so a planted entry became a
+        # writable target for every agent in the fan-out. Entries outside the
+        # `.panopticon` tree we are installing into must be dropped.
+        with tempfile.TemporaryDirectory() as d:
+            pano = os.path.join(d, ".panopticon")
+            os.makedirs(pano)
+            allow = os.path.join(pano, "write-allowlist.json")
+            planted = os.path.join(d, "skill", "scripts", "driver.py")
+            with open(allow, "w") as fh:
+                json.dump([planted, os.path.expanduser("~/.ssh/authorized_keys")], fh)
+            out_file = os.path.join(pano, "findings-app-SEC.json")
+            settings = os.path.join(d, "settings.json")
+            wg.install([{"out_file": out_file}],
+                       settings_path=settings, allowlist_path=allow)
+            with open(allow) as fh:
+                final = set(json.load(fh))
+            self.assertIn(os.path.realpath(out_file), final)   # our own grant stands
+            self.assertNotIn(planted, final)                   # planted entry dropped
+            self.assertFalse([p for p in final if "authorized_keys" in p])
+
+    def test_install_keeps_a_concurrent_fanouts_in_flight_grant(self):
+        # The #11 property must survive SEC-C1D: a REAL in-flight grant from a
+        # concurrent fan-out is a findings out_file in the same .panopticon tree,
+        # so it is still carried forward and never silently revoked.
+        with tempfile.TemporaryDirectory() as d:
+            pano = os.path.join(d, ".panopticon")
+            os.makedirs(pano)
+            allow = os.path.join(pano, "write-allowlist.json")
+            inflight = os.path.realpath(os.path.join(pano, "findings-other-COD.json"))
+            with open(allow, "w") as fh:
+                json.dump([inflight], fh)
+            settings = os.path.join(d, "settings.json")
+            wg.install([{"out_file": os.path.join(pano, "findings-app-SEC.json")}],
+                       settings_path=settings, allowlist_path=allow)
+            with open(allow) as fh:
+                final = set(json.load(fh))
+            self.assertIn(inflight, final)     # concurrent fan-out stays armed
+
     def test_symlinked_panopticon_parent_is_refused(self):
         # TST-A2B (run-9): allowlist_from_plan raises when an out_file's parent dir
         # is named .panopticon AND is itself a symlink -- a target could redirect
