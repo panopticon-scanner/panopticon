@@ -17,6 +17,7 @@ fixture's real egress. So before running the hostile build we independently
 *verify* the environment is contained -- if any outbound connection succeeds
 the probe refuses to run and fails loudly, rather than trusting the flag."""
 import os
+from _test_helpers import first
 import socket
 import unittest
 
@@ -129,13 +130,13 @@ class TestContainmentGuard(unittest.TestCase):
         decision = _containment_decision(probe_enabled=False,
                                          egress_reachable=_egress)
         self.assertIsNotNone(decision)
-        self.assertEqual(decision[0], "skip")
+        self.assertEqual(first(decision), "skip")
 
     def test_opted_in_but_egress_reachable_refuses(self):
         decision = _containment_decision(probe_enabled=True,
                                          egress_reachable=lambda: True)
         self.assertIsNotNone(decision)
-        self.assertEqual(decision[0], "fail")
+        self.assertEqual(first(decision), "fail")
         self.assertIn("egress", decision[1].lower())
 
     def test_opted_in_and_contained_is_safe(self):

@@ -4,6 +4,27 @@ import os
 from conftest import FIXTURE_ROOT  # noqa: E402
 
 
+# --- TST-B3A: guarded indexing of a parse/build result -----------------------
+# Indexing an adapter's parse result directly (`findings[0]`) turns an
+# empty-list REGRESSION into a bare IndexError: the failure names the test's
+# plumbing, not the invariant that broke. This class has been re-found by three
+# self-scans running (run-8 #1399/#1420, run-9 x3, run-10 x6), so the idiom is
+# centralized here and enforced by test_no_unguarded_parse_index.py.
+
+def first(seq, what="finding"):
+    """seq[0], asserting the sequence is non-empty first, so an empty parse
+    fails as 'expected at least 1 finding, got none' instead of IndexError."""
+    assert len(seq) >= 1, "expected at least 1 %s, got none: %r" % (what, seq)
+    return seq[0]
+
+
+def only(seq, what="finding"):
+    """The SOLE element, asserting exactly one -- use where the test's premise is
+    that the input yields a single result (an extra one is a regression too)."""
+    assert len(seq) == 1, "expected exactly 1 %s, got %d: %r" % (what, len(seq), seq)
+    return seq[0]
+
+
 class FakeStream:
     """Iterable-chunk fake stdout/stderr for FakePopen."""
 
