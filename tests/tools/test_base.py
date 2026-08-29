@@ -68,6 +68,28 @@ class TestBase(unittest.TestCase):
         self.assertEqual(finding["provenance"]["confirmation_status"], "TOOL")
         self.assertEqual(finding["provenance"]["confirmation_reasoning"], "rule-123")
 
+    def test_make_finding_sanitizes_untrusted_title_and_description(self):
+        # #run9 SEC-B1C: adapter title/description are built from scanned-repo text
+        # (package/gem/crate names, tool messages). make_finding must strip control
+        # chars (ANSI escapes / NUL / BEL -> terminal + CWE-117 log injection) and
+        # collapse the title's whitespace -- automatically for every adapter.
+        import types
+        ad = types.SimpleNamespace(prefix="XX", name="demo")
+        f = base.make_finding(
+            ad, 1, "g1",
+            title="evil\x1b[31m pkg\nname\twith   spaces", severity="HIGH",
+            category="deps", location={"file": "a", "line_start": 1},
+            description="line1\x00\x07\nline2\x1b[0m", impact="", remediation="")
+        # title: control chars stripped (the ESC that arms the ANSI code is gone),
+        # whitespace collapsed to single spaces, single line
+        self.assertEqual(f["title"], "evil[31m pkg name with spaces")
+        self.assertNotIn("\x1b", f["title"])
+        self.assertNotIn("\n", f["title"])
+        # description: control chars stripped, line structure preserved
+        self.assertEqual(f["description"], "line1\nline2[0m")
+        for ch in ("\x00", "\x07", "\x1b"):
+            self.assertNotIn(ch, f["description"])
+
 
 class TestRunTool(unittest.TestCase):
     """F-CAL-1: adapter failures must not be undiagnosable — run_tool logs a

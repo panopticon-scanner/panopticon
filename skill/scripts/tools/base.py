@@ -149,6 +149,26 @@ def cve_ids(values: list | None) -> list[str]:
             if isinstance(v, str) and v.upper().startswith("CVE-")]
 
 
+_TOOL_TEXT_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _sanitize_label(value: Any) -> str:
+    """A single-line finding label from UNTRUSTED tool/target text: strip C0/DEL
+    control chars (ANSI escapes / NUL / BEL -> terminal + CWE-117 log injection)
+    and collapse whitespace runs to single spaces -- mirroring sarif_utils' SARIF-
+    title collapse. #run9 SEC-B1C: adapter titles are built straight from
+    scanned-repo strings (package/gem/crate names, dependency filenames, tool
+    messages), so centralizing here makes every make_finding caller safe."""
+    return " ".join(_TOOL_TEXT_CONTROL_RE.sub("", str(value)).split())
+
+
+def _sanitize_body(value: Any) -> str:
+    """Strip C0/DEL control chars from multi-line finding text (description),
+    preserving line structure -- the injection vectors are the control chars, not
+    the newlines. #run9 SEC-B1C."""
+    return _TOOL_TEXT_CONTROL_RE.sub("", str(value))
+
+
 def make_finding(adapter: Any, n: int, group: str, *, title: str, severity: str,
                  category: str, location: dict, description: str, impact: str,
                  remediation: str, references: list | None = None,
@@ -164,14 +184,14 @@ def make_finding(adapter: Any, n: int, group: str, *, title: str, severity: str,
     """
     finding = {
         "id": new_finding_id(adapter.prefix, n),
-        "title": title,
+        "title": _sanitize_label(title),          # #run9 SEC-B1C: untrusted tool/target text
         "severity": severity,
         "confidence": confidence,
         "panel": "security",
         "category": category,
         "source": f"tool:{adapter.name}",
         "location": location,
-        "description": description,
+        "description": _sanitize_body(description),   # #run9 SEC-B1C
         "impact": impact,
         "remediation": remediation,
         "references": references or [],
