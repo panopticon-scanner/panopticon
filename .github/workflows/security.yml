@@ -68,7 +68,11 @@ jobs:
       - name: Install Python deps
         run: |
           python -m pip install --upgrade pip
-          pip install pyyaml jsonschema
+          # #run9 SEC-E2A: pin the gate's OWN deps. This workflow logs into GHCR,
+          # pulls/builds the tools image, and gates merges under
+          # pull_request_target -- it must not float to whatever pyyaml/jsonschema
+          # is latest at run time. Versions track pyproject.toml's floors.
+          pip install pyyaml==6.0.3 jsonschema==4.26.0
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0

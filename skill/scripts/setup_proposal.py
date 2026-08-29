@@ -259,6 +259,22 @@ def assemble(proposal, vocabulary, affinity):
                     merged_tests.append(t)
             out[name]["match"] = merged_match
             out[name]["tests"] = merged_tests
+            # #run9 ARC-D2B: floor/is_custom must be order-INDEPENDENT. A known
+            # capability (e.g. 'Auth', affinity floor ['SEC']) and its OWN custom:
+            # alias ('custom:Auth', empty floor) collide on the same name; keeping
+            # the FIRST occurrence dropped the calibrated floor whenever the custom:
+            # alias was listed first -- a silent security downgrade decided by input
+            # order. If THIS occurrence is the known capability and the group was
+            # recorded as custom (empty floor), upgrade the merged group to the
+            # known floor so the outcome no longer depends on ordering.
+            dgroup = next(d for d in disclosure["groups"] if d["name"] == name)
+            if not is_custom and dgroup["custom"]:
+                out[name]["panels"] = floor
+                dgroup["custom"] = False
+                dgroup["floor"] = floor
+                dgroup["floor_source"] = floor_source
+                if normalized:
+                    dgroup["normalized"] = normalized
             # Record collision (capability that was merged in)
             disclosure["collisions"].append({
                 "name": name, "capability": cap

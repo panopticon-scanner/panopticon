@@ -1,5 +1,3 @@
-import contextlib
-import io
 import os
 import tempfile
 import types
@@ -254,16 +252,23 @@ class TestLedgerSafety(unittest.TestCase):
             self.assertTrue(os.path.isfile(path))
             self.assertEqual(file_issues.load_ledger(path=path), {"k": "url"})
 
-    def test_load_ledger_warns_on_corrupt_json(self):
+    def test_load_ledger_fails_loud_on_corrupt_json(self):
+        # #run9 COD-B1A: a PRESENT but corrupt ledger must NOT be treated as empty
+        # -- doing so reset the dedup state and re-filed every finding as a
+        # duplicate. Fail loud so the operator restores/repairs it.
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "ledger.json")
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write("{not json")
-            buf = io.StringIO()
-            with contextlib.redirect_stderr(buf):
-                result = file_issues.load_ledger(path=path)
-            self.assertEqual(result, {})
-            self.assertIn("corrupt", buf.getvalue().lower())
+            with self.assertRaises(RuntimeError) as cm:
+                file_issues.load_ledger(path=path)
+            self.assertIn("re-file", str(cm.exception))
+
+    def test_load_ledger_missing_file_is_empty_first_run(self):
+        # A MISSING ledger is a legitimate first run -> empty dict, no raise.
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(
+                file_issues.load_ledger(path=os.path.join(d, "nope.json")), {})
 
 
 if __name__ == "__main__":

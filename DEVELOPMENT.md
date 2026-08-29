@@ -144,8 +144,9 @@ summary + JSON artifact) with standards citations and CI gating.
   panel reorder are SP-B policy, not SP-A.
 
 ## Running
-Fresh session → `/panopticon` (`-f file`, `-d dir`, `-g "Group[Facet]"`, `-c` changes,
-`--pr N`, `-e` explore, or whole repo). `--epss` enables EPSS lookups; `--fail-on high`
+Fresh session → `/panopticon` (`-f file`, `-d dir`, `-g <name>` one committed group, `-c`
+changes, `--pr N`, or whole repo — see `docs/PANOPTICON.md` "Modes" for the authoritative
+flag list). `--epss` enables EPSS lookups; `--fail-on high`
 gates CI (keys off `summary.gate` in the JSON). Tool layer: build the image once (above);
 it's used automatically when present, `--no-tools` to skip.
 
