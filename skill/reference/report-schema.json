@@ -362,7 +362,7 @@
                 "object",
                 "null"
               ],
-              "description": "Host-reported token usage; null until a host exposes per-dispatch usage."
+              "description": "Host-reported token usage, read verbatim from <run_dir>/usage.json when the host writes it (#run10 D4). Null when it does not -- never estimated from the dispatch counts."
             }
           },
           "required": [

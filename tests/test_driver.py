@@ -564,6 +564,50 @@ class TestCoveragePhase(unittest.TestCase):
         self.assertEqual(cov["scout_added"], [])              # bridge deferred to P4
         self.assertTrue(cov["scout_file"].endswith("scout-Auth.json"))
 
+    def test_dispatch_entries_carry_an_addressable_prompt_file(self):
+        # #run10 B2: an entry carried its prompt ONLY inline (13.3 KB avg for
+        # review cells), so a controller dispatching 120 cells had to echo ~1.6 MB
+        # it had just read from disk. `prompt_file` is the addressable alternative;
+        # `prompt` stays inline so no host is forced to migrate.
+        self._groups_json([{"name": "Auth", "files": ["a.py"]}])
+        self._groups_yml("groups:\n  Auth:\n    match: ['a.py']\n")
+        with mock.patch("scripts.driver.dispatch.render_prompt",
+                        return_value="SCOUT-BODY-XYZ"), \
+             mock.patch("scripts.driver.dispatch.registered_agent_name",
+                        return_value="panopticon-scout"):
+            driver.coverage_execute(self.root, self.manifest)
+        entry = driver._load_json(
+            driver._pano(self.root, "dispatch-request.json"))["entries"][0]
+        self.assertIn("prompt_file", entry)
+        self.assertEqual(entry["prompt_file"], os.path.abspath(entry["prompt_file"]))
+        with open(entry["prompt_file"], encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), entry["prompt"])   # same text, addressable
+        self.assertIn("SCOUT-BODY-XYZ", entry["prompt"])   # inline still intact
+
+    def test_prompt_file_name_cannot_escape_the_prompts_dir(self):
+        # An entry id embeds an operator-supplied group name; a `/` or `..` in it
+        # must not steer the write out of _prompts/.
+        prompts_dir = os.path.realpath(driver._pano(self.root, "_prompts"))
+        for hostile in ("review-../../etc/passwd-SEC", "a/b/c", "../../../x",
+                        "", "..", "/abs/path"):
+            p = os.path.realpath(driver._prompt_file_path(self.root, hostile))
+            # The invariant is containment, not the absence of dot characters:
+            # separators are stripped, so a residual ".." is just a flat filename.
+            self.assertEqual(os.path.dirname(p), prompts_dir, hostile)
+            self.assertTrue(os.path.basename(p).endswith(".txt"), hostile)
+
+    def test_unwritable_prompts_dir_does_not_block_dispatch(self):
+        # Best-effort by design: this is an ergonomic affordance, never a
+        # dispatch precondition. A failure keeps the inline prompt and proceeds.
+        with mock.patch("scripts.driver._open_w_nofollow",
+                        side_effect=OSError("read-only fs")), \
+             contextlib.redirect_stderr(io.StringIO()) as err:
+            entries = driver._materialize_prompts(
+                self.root, [{"id": "scout-Auth", "prompt": "BODY"}])
+        self.assertNotIn("prompt_file", entries[0])
+        self.assertEqual(entries[0]["prompt"], "BODY")
+        self.assertIn("inline prompt still stands", err.getvalue())
+
     def test_fence_wrapped_scout_is_accepted_and_normalized(self):
         # run-9 A1: a scout is a RETURN-PERSIST file, and a model wraps its reply
         # in a ```json fence (0/25 clean in run-9). The old strict read counted

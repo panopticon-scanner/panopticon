@@ -13,6 +13,7 @@ import functools
 import glob as _glob
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -498,13 +499,67 @@ def emit_status(status, stream=None):
     return 1 if status.get("status") == "error" else 0
 
 
+_PROMPT_FILE_SAFE = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def _prompt_file_path(review_root, entry_id):
+    """Where one entry's prompt is materialized: `_prompts/<entry-id>.txt`.
+
+    The id is sanitized to a single flat filename -- an entry id embeds a group
+    name, which is operator-supplied, so a `/` or `..` in it must not steer the
+    write out of the prompts directory."""
+    safe = _PROMPT_FILE_SAFE.sub("_", str(entry_id)) or "entry"
+    return _pano(review_root, "_prompts", "%s.txt" % safe)
+
+
+def _materialize_prompts(review_root, entries):
+    """Write each entry's prompt to its own file and stamp `prompt_file` on the
+    entry (#run10 B2).
+
+    A dispatch entry carried its prompt ONLY inline, averaging 13.3 KB for review
+    cells and 19.6 KB for verify cells -- so a controller dispatching 120 review
+    cells had to reproduce ~1.6 MB of prompt text it had just read from disk, into
+    its own context. Run-10 worked around this by hand-materializing 4.22 MB of
+    prompts and pointing each agent at its file; that worked, but every host has
+    to reinvent it, and one that doesn't blows its context on the review
+    checkpoint alone.
+
+    `prompt` stays inline (unchanged contract, no host is forced to migrate);
+    `prompt_file` is the addressable alternative. Best-effort: if the prompts
+    directory cannot be written, entries keep their inline prompt and the run
+    proceeds -- this is an ergonomic affordance, never a dispatch precondition."""
+    out = []
+    for entry in entries:
+        entry = dict(entry)
+        prompt = entry.get("prompt")
+        eid = entry.get("id")
+        if isinstance(prompt, str) and prompt and eid:
+            path = _prompt_file_path(review_root, eid)
+            try:
+                _confine_artifact_path(path)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with _open_w_nofollow(path) as fh:
+                    fh.write(prompt)
+                entry["prompt_file"] = os.path.abspath(path)
+            except (OSError, ValueError) as exc:
+                print("driver: could not materialize prompt for %s (%s); the "
+                      "inline prompt still stands" % (eid, exc),
+                      file=sys.stderr, flush=True)
+        out.append(entry)
+    return out
+
+
 def write_dispatch_request(review_root, run_id, checkpoint, group, entries):
     """Write the single per-(group, checkpoint) dispatch-request.json and return
     its ABSOLUTE path. Host-agnostic: entries carry only neutral fields and any
     paths inside them must already be absolute (spec §4). The request is rolling
-    — the durable state is the entries' out_files, not this file."""
+    — the durable state is the entries' out_files, not this file.
+
+    Each entry also gets a `prompt_file` (#run10 B2) — the same text, addressable
+    — so a host can hand an agent a path instead of echoing the whole prompt."""
     if checkpoint not in CHECKPOINT_KINDS:
         raise ValueError("unknown checkpoint kind: %r" % checkpoint)
+    entries = _materialize_prompts(review_root, entries)
     request = {"schema_version": 1, "run_id": run_id, "checkpoint": checkpoint,
                "group": group, "entries": list(entries)}
     path = _pano(review_root, "dispatch-request.json")

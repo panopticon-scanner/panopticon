@@ -1370,6 +1370,33 @@ def classify_findings(findings, hunks, tolerance):
         f["delta"] = diff_map.classify(f, hunks, tolerance, repo_root=repo_root)
 
 
+def load_run_usage(run_dir):
+    """Host-reported dispatch usage for `meta.cost.tokens` (#run10 D4), or None.
+
+    The driver is a subprocess; per-dispatch token usage lives in the HOST's
+    fan-out journal, so the driver structurally cannot observe it and
+    `meta.cost.tokens` sat permanently null -- a release themed *honest
+    instrumentation* under-reporting its own run (run-10 surfaced ~21.05 M
+    subagent tokens the ledger never recorded).
+
+    The fix is a channel, not a guess: a host that knows its usage writes
+    `<run_dir>/usage.json`, and it is surfaced verbatim. Absent or malformed ->
+    None, and the slot stays null exactly as before. We never estimate tokens
+    from counts: a fabricated ledger is worse than an honest gap.
+
+    Shape (all keys optional, host-defined beyond `total`):
+        {"total": 21053000, "by_phase": {"review": 10290000, ...}}
+    """
+    if not run_dir:
+        return None
+    try:
+        with open(os.path.join(run_dir, "usage.json"), encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) and data else None
+
+
 def cost_dispatches(scout_profiles_seen, cost_fan_out, verify_queued,
                     driver_cost=None):
     """Assemble the meta.cost dispatch ledger rows. Pure.
@@ -1543,7 +1570,8 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                  diff_hunks=None, diff_context=5, gate_scope="on-diff",
                  catalog=None, verdict_unloadable=None, cost_fan_out=None,
                  verdict_run_id=None, coverages=None, ingested_paths=None,
-                 verdict_bundles=None, driver_cost=None, tool_manifest=None):
+                 verdict_bundles=None, driver_cost=None, tool_manifest=None,
+                 run_usage=None):
     """Build a CodeReviewReport under the two-axis severity x evidence model.
 
     Severity is never mutated here. Verdicts (from evidence.load_verdicts) are
@@ -1863,7 +1891,10 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                 "dispatches": cost_dispatches(
                     scout_profiles_seen, cost_fan_out,
                     verdict_stats["queued"], driver_cost),
-                "tokens": None,
+                # #run10 D4: host-reported usage when the host wrote usage.json
+                # (see load_run_usage); still null when it did not -- never an
+                # estimate derived from the counts above.
+                "tokens": run_usage,
             },
         },
         "summary": {
@@ -2738,7 +2769,8 @@ def main(argv=None):
                           coverages=coverages,
                           ingested_paths=args.files,
                           driver_cost=driver_cost,
-                          tool_manifest=tool_manifest)
+                          tool_manifest=tool_manifest,
+                          run_usage=load_run_usage(run_dir))
     redact_report_secrets(report)   # #run7 SEC-B2C: before any shareable artifact
     errors, warnings = validate_report(report)
     attach_schema_status(report, errors)
