@@ -10,6 +10,20 @@ from .base import (as_list, make_finding, omit_none, parse_json_bytes,
 from .sarif_utils import LEVEL_TO_SEV
 
 
+# #run9 OPS-D1A: the scanned repo is untrusted under redteam. _safe_copytree
+# duplicates it into a temp dir before scanning; with no ceiling a hostile C#
+# project (a giant generated file, or a huge fan-out of files) can exhaust the
+# build volume. Bound the copy by total bytes and file count. Env-overridable for
+# a legitimately large repo. (Neighbor of run-8 #1415, which capped the container
+# and the report READ but not this host-side copy.)
+_MAX_COPY_BYTES = int(os.environ.get("PANOPTICON_ROSLYN_MAX_COPY_BYTES", 2 * 1024 ** 3))
+_MAX_COPY_FILES = int(os.environ.get("PANOPTICON_ROSLYN_MAX_COPY_FILES", 200_000))
+# #run9 OPS-E1A: rc returned when the scanner produced no usable SARIF -- NOT in
+# run_tool's ok_codes (0, 1), so _capture_run records the tool as missing
+# (-> INCONCLUSIVE) rather than a silent "zero findings" clean result.
+_NO_OUTPUT_RC = 2
+
+
 def _safe_copytree(src, dst):
     """Copy src into dst without dereferencing symlinks.
 
@@ -18,9 +32,15 @@ def _safe_copytree(src, dst):
     /etc/passwd or the mounted scripts dir into the build tree (#86).
     In-tree links are preserved as links. Never follows links while walking,
     so link loops cannot recurse.
+
+    #run9 OPS-D1A: bounded by _MAX_COPY_BYTES / _MAX_COPY_FILES -- an untrusted
+    target that would blow past either raises BEFORE the copy that breaches it,
+    so the adapter fails closed (recorded missing) rather than exhausting disk.
     """
     root = os.path.realpath(src)
     skipped = 0
+    total_bytes = 0
+    total_files = 0
     os.makedirs(dst, exist_ok=True)
     for cur, dirs, files in os.walk(src, followlinks=False):
         rel = os.path.relpath(cur, src)
@@ -38,6 +58,17 @@ def _safe_copytree(src, dst):
                 if name in dirs:
                     dirs.remove(name)   # never walk through a link
             elif name in files:
+                total_files += 1
+                try:
+                    total_bytes += os.path.getsize(s)
+                except OSError:
+                    pass
+                if total_bytes > _MAX_COPY_BYTES or total_files > _MAX_COPY_FILES:
+                    raise ValueError(
+                        "roslyn-secguard: target copy exceeds the cap (%d files / "
+                        "%d bytes > %d / %d) -- refusing to duplicate an untrusted "
+                        "tree this large" % (total_files, total_bytes,
+                                             _MAX_COPY_FILES, _MAX_COPY_BYTES))
                 shutil.copy2(s, d)
     return skipped
 
@@ -175,7 +206,14 @@ class RoslynSecGuardAdapter:
                 if raw is not None:
                     # #1116: rebase tmp-rooted uris to repo-relative before ingest
                     return _rebase_sarif_uris(raw, tmp), rc
-            return b"{}", rc
+            # #run9 OPS-E1A: the scanner exited within ok_codes but produced NO
+            # usable SARIF (absent, or oversize/unreadable). Returning b"{}" with
+            # the tool's own ok rc reports a silent "zero findings" for a scan that
+            # never actually analyzed -- a clean gate on no evidence. Fail closed so
+            # run_tools records the tool as missing (-> INCONCLUSIVE), not clean.
+            print("roslyn-secguard: no usable SARIF at %s (tool rc=%s); "
+                  "recording as failed" % (sarif, rc), file=sys.stderr)
+            return b"", _NO_OUTPUT_RC
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
