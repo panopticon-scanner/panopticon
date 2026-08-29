@@ -133,7 +133,11 @@ class TestLegacySarifAdapter(unittest.TestCase):
         findings = adapter.parse(json.dumps(sarif).encode(), "g1")
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0]["severity"], "MEDIUM")
-        self.assertEqual(findings[0]["location"], {})
+        # #run10 COD-C3A: a location-less result keeps the SAME key shape as a
+        # located one (empty values, not a missing `file` key), so every consumer
+        # that reads location.file sees one shape. Was a bare {}.
+        self.assertEqual(findings[0]["location"], {"file": "", "line_start": None})
+        self.assertIn("file", findings[0]["location"])
 
     def test_parse_unknown_level_defaults_to_info(self):
         adapter = legacy.LegacySarifAdapter("semgrep")

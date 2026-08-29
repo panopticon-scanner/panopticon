@@ -131,6 +131,30 @@ class TestSetupFlow(unittest.TestCase):
         self.assertTrue(any("exceeds" in e for e in res["errors"]))
         self.assertFalse(os.path.isfile(os.path.join(d, ".panopticon", "groups.yml.draft")))
 
+    def test_ingest_cap_bounds_the_read_not_a_prior_stat(self):
+        # #run10 COD-F1B: the cap was os.path.getsize() followed by a SEPARATE
+        # unbounded open()+json.load(), so the bytes actually read were never
+        # bounded -- a stat that under-reports (or a file that grows between the
+        # two calls) got slurped whole. Prove the bound is on the READ: a stat
+        # that lies about the size must not buy an unbounded read.
+        d = _repo(self)
+        pp = os.path.join(d, ".panopticon", "setup-proposal.json")
+        with open(pp, "w") as fh:
+            fh.write("[" + "0," * 600000 + "0]")       # > 1 MiB on disk
+        with mock.patch("scripts.setup_flow.os.path.getsize", return_value=10):
+            res = setup_flow.ingest_proposal(d, pp)    # stat says "tiny"
+        self.assertFalse(res["ok"])                    # still refused, on read size
+        self.assertTrue(any("exceeds" in e for e in res["errors"]))
+
+    def test_ingest_accepts_a_proposal_under_the_cap(self):
+        # The bounded read must not truncate a legitimate proposal.
+        d = _repo(self)
+        pp = os.path.join(d, ".panopticon", "setup-proposal.json")
+        with open(pp, "w") as fh:
+            json.dump({"groups": [{"capability": "Auth", "match": ["src/auth/**"]}]}, fh)
+        res = setup_flow.ingest_proposal(d, pp)
+        self.assertTrue(res["ok"], res.get("errors"))
+
     def test_scan_brief_includes_vocabulary_hints(self):
         d = _repo(self)
         vocab = {"names": ["Auth"], "hints": {"Auth": ["**/auth/**", "**/login/**"]}}

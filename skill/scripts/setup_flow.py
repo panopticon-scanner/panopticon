@@ -388,12 +388,21 @@ def ingest_proposal(repo=".", proposal_path=None):
     proposal_path = proposal_path or os.path.join(
         plan_contract.artifact_root(repo), "setup-proposal.json")
     try:
-        if os.path.getsize(proposal_path) > _MAX_PROPOSAL_BYTES:
+        # #run10 COD-F1B: the cap used to be os.path.getsize() and then a separate
+        # unbounded open()+json.load() -- a stat-then-open pair. The bytes actually
+        # read were never bounded: a proposal that grows (or a path swapped) between
+        # the two calls, or any file whose size cannot be trusted from a stat (a
+        # FIFO/proc-like path reports 0), was slurped whole. The target repo supplies
+        # this file, so bound the READ itself: take cap+1 bytes and refuse if the
+        # extra byte materialized -- the cap is then a property of what we consumed,
+        # not of a prior observation.
+        with open(proposal_path, "rb") as fh:
+            raw = fh.read(_MAX_PROPOSAL_BYTES + 1)
+        if len(raw) > _MAX_PROPOSAL_BYTES:
             return {"ok": False, "errors": [
                 "proposal %s exceeds the %d-byte cap -- refusing to ingest"
                 % (proposal_path, _MAX_PROPOSAL_BYTES)]}
-        with open(proposal_path, encoding="utf-8") as fh:
-            proposal = json.load(fh)
+        proposal = json.loads(raw.decode("utf-8"))
     except (OSError, ValueError) as e:
         return {"ok": False, "errors": [
             "cannot read proposal %s: %s" % (proposal_path, e)]}

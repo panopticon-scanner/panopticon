@@ -603,8 +603,23 @@ def _scout_shape_errors(scout):
     errs = []
     for field in ("domains", "languages", "surfaces", "files", "tools"):
         v = scout.get(field)
-        if v is not None and not isinstance(v, list):
+        if v is None:
+            continue
+        if not isinstance(v, list):
             errs.append("`%s` must be an array" % field)
+            continue
+        # #run10 COD-B2A: checking only that the field IS an array let a nested
+        # or object-valued ELEMENT through -- `{"domains": [["COD"]]}` or
+        # `{"domains": [{"x": 1}]}` passed this gate and then crashed
+        # coverage_execute with an uncaught TypeError (unhashable list) deep in
+        # the set arithmetic, mid-phase, instead of being discarded and
+        # re-dispatched here. These are return-persist values from an LLM, which
+        # this file's own docstrings document as unreliable, so validate the
+        # elements at the accept boundary too.
+        bad = [x for x in v if not isinstance(x, str)]
+        if bad:
+            errs.append("`%s` must contain only strings (got %s)"
+                        % (field, ", ".join(sorted({type(x).__name__ for x in bad}))))
     lenses = scout.get("lenses")
     if lenses is not None:
         if not isinstance(lenses, dict):
