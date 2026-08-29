@@ -32,11 +32,19 @@ class TestSchemas(unittest.TestCase):
         gate = schema["properties"]["summary"]["properties"]["gate"]
         self.assertEqual(set(gate["enum"]), {"PASS", "FAIL", "OFF", "INCONCLUSIVE"})
 
-    def test_scope_profile_required_fields(self):
+    def test_scope_profile_requires_only_what_the_pipeline_routes(self):
+        # #run10 D3: the contract is what 5.x CONSUMES. `domains` is the only
+        # field that changes what gets reviewed; `group` is its identity. The old
+        # required set (languages/surfaces/risk/lenses) compelled every scout to
+        # manufacture output no consumer read -- lenses/depth existed for
+        # dispatch.build_plan's retired lens_sweep/panel_review entries, and
+        # applicable_global_floor deliberately ignores scout surfaces (#1193).
         schema = _load("scope-profile-schema.json")
-        for field in ("group", "languages", "surfaces", "risk", "lenses", "domains"):
-            self.assertIn(field, schema["required"])
-        self.assertNotIn("suggested_lenses", schema["required"])
+        self.assertEqual(sorted(schema["required"]), ["domains", "group"])
+        for dropped in ("languages", "surfaces", "risk", "lenses", "depth",
+                        "has_tests", "size", "facet_scope"):
+            self.assertNotIn(dropped, schema["properties"], dropped)
+            self.assertNotIn(dropped, schema["required"], dropped)
 
     def test_scope_profile_has_tools_field(self):
         schema = _load("scope-profile-schema.json")
@@ -381,11 +389,12 @@ class TestMultiModelFields(unittest.TestCase):
     def test_multi_model_fields_in_schemas(self):
         with open(os.path.join(REF, "scope-profile-schema.json"), encoding="utf-8") as fh:
             scope = json.load(fh)
-        self.assertIn("depth", scope["properties"])
+        # #run10 D3: depth/lenses were removed from the ScopeProfile -- nothing in
+        # 5.x read them (see test_scope_profile_requires_only_what_the_pipeline_
+        # routes). `files` remains as review provenance.
         self.assertIn("files", scope["properties"])
-        lens_items = scope["properties"]["lenses"]["additionalProperties"]["items"]
-        self.assertIn("priority", lens_items["properties"])
-        self.assertIn("depth_threshold", lens_items["properties"])
+        self.assertNotIn("depth", scope["properties"])
+        self.assertNotIn("lenses", scope["properties"])
 
         with open(os.path.join(REF, "report-schema.json"), encoding="utf-8") as fh:
             report = json.load(fh)

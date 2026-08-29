@@ -593,15 +593,16 @@ def _scout_shape_errors(scout):
     only the invariants the coverage/dispatch path actually indexes; returns []
     when the shape is safe to consume, else human-readable errors.
 
-    The one that bit run-6: `lenses` must be an object of panel -> ARRAY. Two of
-    26 scouts returned panel -> object; that parses as JSON, slips past the dict
-    gate below, and only blows up later as an uncaught ValueError inside
-    `dispatch._panel_lenses` (or an AttributeError in `depth_planner.plan_lenses`)
-    -- a mid-dispatch crash instead of a clean re-dispatch."""
+    #run10 D3: validates exactly the fields the scout contract still asks for.
+    The old `lenses` panel->array check (added for run-6) went with the field
+    itself -- it guarded `dispatch._panel_lenses` / `depth_planner.plan_lenses`,
+    which serve the retired lens_sweep/panel_review roles the driver has not
+    dispatched since 5.0. A profile that still carries extra keys validates
+    fine; they are simply never read."""
     if not isinstance(scout, dict):
         return ["not a JSON object"]
     errs = []
-    for field in ("domains", "languages", "surfaces", "files", "tools"):
+    for field in ("domains", "files", "tools"):
         v = scout.get(field)
         if v is None:
             continue
@@ -620,21 +621,6 @@ def _scout_shape_errors(scout):
         if bad:
             errs.append("`%s` must contain only strings (got %s)"
                         % (field, ", ".join(sorted({type(x).__name__ for x in bad}))))
-    lenses = scout.get("lenses")
-    if lenses is not None:
-        if not isinstance(lenses, dict):
-            errs.append("`lenses` must be an object of panel -> array")
-        else:
-            for panel, arr in lenses.items():
-                if not isinstance(arr, list):
-                    errs.append("`lenses.%s` must be an array (got %s)"
-                                % (panel, type(arr).__name__))
-                    continue
-                for i, lens in enumerate(arr):
-                    if not (isinstance(lens, dict)
-                            and "name" in lens and "spawn" in lens):
-                        errs.append("`lenses.%s[%d]` must be an object with "
-                                    "name+spawn" % (panel, i))
     return errs
 
 
