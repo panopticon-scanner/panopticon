@@ -220,6 +220,7 @@ class TestRunTools(unittest.TestCase):
             open(os.path.join(d, ".bandit"), "w").close()
             rt.run_tools(d, ["bandit"], os.path.join(d, "out"),
                          image="panopticon-tools", runner=runner)
+            self.assertEqual(len(calls), 1)          # run-9 TST-B3A: guard calls[0]
             self.assertIn("--ini", calls[0])
             i = calls[0].index("--ini")
             self.assertEqual(calls[0][i + 1], "/src/.bandit")   # container-side config path
@@ -234,6 +235,7 @@ class TestRunTools(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:   # no .bandit -> bandit's defaults
             rt.run_tools(d, ["bandit"], os.path.join(d, "out"),
                          image="panopticon-tools", runner=runner)
+            self.assertEqual(len(calls), 1)          # run-9 TST-B3A: guard calls[0]
             self.assertNotIn("--ini", calls[0])
             self.assertEqual(calls[0][-len(rt.TOOL_CMD["bandit"]):],
                              rt.TOOL_CMD["bandit"])   # unchanged argv

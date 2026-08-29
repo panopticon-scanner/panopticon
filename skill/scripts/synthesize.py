@@ -2276,8 +2276,15 @@ def _read_json_report(path):
     except ValueError as e:
         print("ERROR: invalid JSON in %s: %s" % (path, e), file=sys.stderr)
         return None
-    parts = (report.get("meta") or {}).get("parts") or []
-    if parts:
+    meta = report.get("meta") or {}
+    parts = meta.get("parts") or []
+    # #run9 ARC-D1A: a large report ALSO spills discarded_claims to a
+    # `<stem>-discarded.json` sibling with a meta.discarded_claims_file pointer
+    # (write_report #15) -- independent of the meta.parts findings-chunking, so it
+    # can appear with NO parts. Following only meta.parts silently dropped every
+    # rejected claim from --compare. Merge the sibling too, same confinement.
+    disc_file = meta.get("discarded_claims_file")
+    if parts or disc_file:
         base_dir = os.path.dirname(os.path.abspath(path))
         findings = list(report.get("findings") or [])
         discarded = list(report.get("discarded_claims") or [])
@@ -2293,6 +2300,17 @@ def _read_json_report(path):
                 return None
             findings.extend(pdata.get("findings") or [])
             discarded.extend(pdata.get("discarded_claims") or [])
+        if disc_file:
+            try:
+                dpath = reconcile._resolve_part_path(base_dir, disc_file)
+                with open(dpath, encoding="utf-8") as fh:
+                    ddata = json.load(fh)
+            except (OSError, ValueError) as e:
+                print("ERROR: --compare report %s references discarded_claims_file %r "
+                      "that could not be read (%s); the comparison would be incomplete"
+                      % (path, disc_file, e), file=sys.stderr)
+                return None
+            discarded.extend(ddata.get("discarded_claims") or [])
         report["findings"] = findings
         report["discarded_claims"] = discarded
     return report

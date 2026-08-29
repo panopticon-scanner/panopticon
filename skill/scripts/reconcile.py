@@ -24,13 +24,26 @@ import scripts.evidence as evidence
 
 
 def _resolve_part_path(base_dir, part):
-    """Resolve and validate a report part continuation path within base_dir (#1122)."""
+    """Resolve and validate a report part continuation path within base_dir (#1122).
+
+    #run9 SEC-D1C: the lexical normpath check confines the STRING, but a
+    same-directory symlink (`base_dir/part` is a link pointing outside base_dir)
+    passes it — normpath does not resolve links — and the caller's open() then
+    follows it, exfiltrating an arbitrary file into the merged report. Re-resolve
+    the real path and re-confine against the real base before returning, and hand
+    back the RESOLVED path so the caller opens the confined target, not the link.
+    """
     part = str(part)
     base_norm = os.path.normpath(base_dir or ".")
     ppath = os.path.normpath(os.path.join(base_norm, part))
     if os.path.isabs(part) or not (ppath == base_norm or ppath.startswith(base_norm + os.sep)):
         raise ValueError("invalid meta.parts entry: %r" % part)
-    return ppath
+    real_base = os.path.realpath(base_norm)
+    real_ppath = os.path.realpath(ppath)
+    if not (real_ppath == real_base or real_ppath.startswith(real_base + os.sep)):
+        raise ValueError(
+            "meta.parts entry escapes the report directory via symlink: %r" % part)
+    return real_ppath
 
 
 def load_report(path):
@@ -57,6 +70,15 @@ def load_report(path):
             pdata = json.load(fh)
         findings.extend(pdata.get("findings") or [])
         discarded.extend(pdata.get("discarded_claims") or [])
+    # #run9 ARC-D1A: a large report ALSO spills discarded_claims to a
+    # `<stem>-discarded.json` sibling (write_report #15), leaving an empty inline
+    # list + a meta.discarded_claims_file pointer. The meta.parts merge above never
+    # follows that pointer, so recovery silently loses EVERY rejected claim. Merge
+    # the sibling back in, through the same confinement check.
+    disc_file = (report.get("meta") or {}).get("discarded_claims_file")
+    if disc_file:
+        with open(_resolve_part_path(base_dir, disc_file), encoding="utf-8") as fh:
+            discarded.extend(json.load(fh).get("discarded_claims") or [])
     return {"findings": findings, "discarded_claims": discarded}
 
 

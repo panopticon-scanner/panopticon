@@ -26,6 +26,12 @@ ESLINT_SAMPLE = json.dumps([
 
 
 class TestEslintSecurityAdapter(unittest.TestCase):
+    def _only(self, findings):
+        """The sole parsed finding, guarded so an empty/short parse fails
+        diagnosably (run-9 TST-B3A) instead of as a bare IndexError."""
+        self.assertEqual(len(findings), 1)
+        return findings[0]
+
     def test_parse_produces_finding(self):
         findings = es.EslintSecurityAdapter().parse(ESLINT_SAMPLE, "g1")
         self.assertEqual(len(findings), 1)
@@ -91,14 +97,14 @@ class TestEslintSecurityAdapter(unittest.TestCase):
     def test_heuristic_rules_get_likely_confidence(self):
         # ARC-A4A run-7: FP-prone heuristic rules should not claim CERTAIN.
         adapter = es.EslintSecurityAdapter()
-        heuristic_finding = adapter.parse(
-            self._one("security/detect-object-injection", 2), "g1")[0]
+        heuristic_finding = self._only(adapter.parse(
+            self._one("security/detect-object-injection", 2), "g1"))
         self.assertEqual(heuristic_finding["confidence"], "LIKELY")
-        timing_finding = adapter.parse(
-            self._one("security/detect-possible-timing-attacks", 2), "g1")[0]
+        timing_finding = self._only(adapter.parse(
+            self._one("security/detect-possible-timing-attacks", 2), "g1"))
         self.assertEqual(timing_finding["confidence"], "LIKELY")
-        non_heuristic_finding = adapter.parse(
-            self._one("security/detect-eval-with-expression", 2), "g1")[0]
+        non_heuristic_finding = self._only(adapter.parse(
+            self._one("security/detect-eval-with-expression", 2), "g1"))
         self.assertEqual(non_heuristic_finding["confidence"], "CERTAIN")
 
     def test_severity_is_rule_derived_not_eslint_level(self):
@@ -107,12 +113,12 @@ class TestEslintSecurityAdapter(unittest.TestCase):
         # A HIGH-mapped rule stays HIGH even if eslint reports level 1 ...
         f = es.EslintSecurityAdapter().parse(
             self._one("security/detect-eval-with-expression", 1), "g1")
-        self.assertEqual(f[0]["severity"], "HIGH")
+        self.assertEqual(self._only(f)["severity"], "HIGH")
         # ... and a MEDIUM-mapped rule stays MEDIUM even at level 2 (previously
         # every level-2 message was emitted HIGH -- the dead branch, #1118).
         f = es.EslintSecurityAdapter().parse(
             self._one("security/detect-object-injection", 2), "g1")
-        self.assertEqual(f[0]["severity"], "MEDIUM")
+        self.assertEqual(self._only(f)["severity"], "MEDIUM")
 
     def test_every_enabled_rule_has_an_explicit_severity(self):
         # no enabled rule may fall through to the default -- keeps the CWE and

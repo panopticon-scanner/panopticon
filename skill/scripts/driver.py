@@ -184,6 +184,30 @@ def _load_json(path):
         return None
 
 
+def _confine_artifact_path(path):
+    """Reject a `.panopticon` artifact path whose REAL location escapes the real
+    `.panopticon` via a symlinked component (#run9 SEC-X0X). plan_contract.
+    artifact_root() vets only the TOP-LEVEL `.panopticon` (once, at run start) and
+    _open_w_nofollow's O_NOFOLLOW only the FINAL component, so a hostile target can
+    plant an INTERMEDIATE symlink (`.panopticon/runs -> /elsewhere`) that a write
+    would traverse. Anchor on the path's own `.panopticon` segment and require the
+    realpath (which resolves any symlinked intermediate dir) to stay inside the
+    real root. A planted `runs` link resolves outside and is rejected; a legit
+    not-yet-created path resolves lexically against its real parent and passes, and
+    the intentional `runs/latest` link (which points WITHIN `.panopticon`) passes.
+    A path with no `.panopticon` segment is not an artifact path and is left be."""
+    apath = os.path.abspath(path)
+    parts = apath.split(os.sep)
+    if ".panopticon" not in parts:
+        return
+    root = os.sep.join(parts[:parts.index(".panopticon") + 1]) or os.sep
+    real_root = os.path.realpath(root)
+    real = os.path.realpath(apath)
+    if not (real == real_root or real.startswith(real_root + os.sep)):
+        raise ValueError(
+            "artifact path escapes .panopticon via a symlinked component: %r" % path)
+
+
 def _open_w_nofollow(path):
     """Open `path` for writing, refusing to follow a symlink at the final path
     component. A target repo (untrusted under redteam) can pre-commit a
@@ -191,7 +215,12 @@ def _open_w_nofollow(path):
     write (a dotfile, authorized_keys, ...); plain open() would follow it and
     clobber that target. O_NOFOLLOW makes the open fail on a symlink; we then
     replace the link with a fresh regular file instead of writing through it
-    (#1095 -- mirrors run_manifest's exclusive-create precedent)."""
+    (#1095 -- mirrors run_manifest's exclusive-create precedent).
+
+    #run9 SEC-X0X: O_NOFOLLOW guards only the FINAL component, so confine the whole
+    resolved path to the real `.panopticon` first -- an intermediate symlinked dir
+    (`.panopticon/runs -> /elsewhere`) would otherwise carry this write outside."""
+    _confine_artifact_path(path)
     flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
     try:
         fd = os.open(path, flags, 0o644)
@@ -205,7 +234,8 @@ def _open_w_nofollow(path):
 
 
 def _write_json(path, data):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    _confine_artifact_path(path)              # SEC-X0X: before makedirs, which would
+    os.makedirs(os.path.dirname(path), exist_ok=True)   # otherwise follow a symlinked dir
     with _open_w_nofollow(path) as fh:
         json.dump(data, fh, indent=2, sort_keys=True)
     return path

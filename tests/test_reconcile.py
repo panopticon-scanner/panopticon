@@ -41,6 +41,23 @@ class TestLoadReport(unittest.TestCase):
         self.assertEqual(len(report["findings"]), 3)
         self.assertEqual(len(report["discarded_claims"]), 1)
 
+    def test_recovers_discarded_claims_from_the_sibling_file(self):
+        # #run9 ARC-D1A: a large report spills discarded_claims to a
+        # <stem>-discarded.json sibling with a meta.discarded_claims_file pointer
+        # (write_report #15), leaving the inline list empty. load_report must follow
+        # the pointer, not silently return zero discarded claims on recovery.
+        with tempfile.TemporaryDirectory() as d:
+            main = os.path.join(d, "report.json")
+            with open(main, "w") as fh:
+                json.dump({"findings": [{"id": "F1"}], "discarded_claims": [],
+                           "meta": {"discarded_claims_file": "report-discarded.json",
+                                    "discarded_claims_count": 2}}, fh)
+            with open(os.path.join(d, "report-discarded.json"), "w") as fh:
+                json.dump({"discarded_claims": [{"id": "D1"}, {"id": "D2"}]}, fh)
+            out = reconcile.load_report(main)
+            self.assertEqual([f["id"] for f in out["findings"]], ["F1"])
+            self.assertEqual([c["id"] for c in out["discarded_claims"]], ["D1", "D2"])
+
     def test_rejects_parts_entry_escaping_report_directory(self):
         with self.assertRaises(ValueError):
             reconcile._resolve_part_path(FIXTURES, "../../etc/passwd")
@@ -48,6 +65,27 @@ class TestLoadReport(unittest.TestCase):
     def test_rejects_absolute_path_parts_entry(self):
         with self.assertRaises(ValueError):
             reconcile._resolve_part_path(FIXTURES, "/etc/passwd")
+
+    def test_rejects_parts_entry_escaping_via_symlink(self):
+        # #run9 SEC-D1C: a same-directory symlink passes the lexical normpath check
+        # but resolves OUTSIDE the report dir; the caller's open() would then follow
+        # it, merging an arbitrary file into the report. The realpath re-confinement
+        # must reject it, while a real same-dir part still resolves.
+        with tempfile.TemporaryDirectory() as base:
+            outside = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
+            outside.write(b"{}")
+            outside.close()
+            try:
+                os.symlink(outside.name, os.path.join(base, "part.json"))
+                with self.assertRaises(ValueError):
+                    reconcile._resolve_part_path(base, "part.json")
+                real = os.path.join(base, "ok.json")
+                with open(real, "w") as fh:
+                    fh.write("{}")
+                self.assertEqual(reconcile._resolve_part_path(base, "ok.json"),
+                                 os.path.realpath(real))
+            finally:
+                os.unlink(outside.name)
 
     def test_bare_filename_with_same_dir_part_does_not_raise(self):
         # Regression test: os.path.dirname("run2.json") == "" when the
