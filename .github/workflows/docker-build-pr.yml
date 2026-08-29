@@ -20,7 +20,16 @@ jobs:
 
       - name: Lint Dockerfile
         run: |
-          curl -sL -o /tmp/hadolint https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64
+          # #run10 OPS-A1A: bound + fail-fast this fetch. It was the last
+          # unbounded external download in the repo -- every curl in the
+          # Dockerfile and nvd-cache.yml already carries
+          # --connect-timeout/--max-time, so a hung GitHub release endpoint
+          # stalled this gate to the 360-minute job ceiling instead of failing
+          # in a minute. `-f` also makes an HTTP error a failure rather than
+          # writing an error page to /tmp/hadolint and exec'ing it.
+          curl -sfL --connect-timeout 5 --max-time 60 --retry 3 \
+            -o /tmp/hadolint \
+            https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64
           chmod +x /tmp/hadolint
           sudo mv /tmp/hadolint /usr/local/bin/hadolint
           hadolint Dockerfile

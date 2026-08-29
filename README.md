@@ -65,7 +65,11 @@ python3 skill/scripts/dispatch.py --emit-host-agents codex
 ```
 
 Invoke it with `$panopticon` or select it from `/skills`. Plans built with
-`--host codex` run through the bundled `codex_runner.py` adapter automatically.
+`dispatch.py --host codex` run through the bundled `codex_runner.py` adapter
+automatically. Note the scope: `--host codex` is a **plan-building/agent-emission**
+flag on `dispatch.py`. The 5.x driver itself takes `driver run --host
+claude|generic|gemini` — a Codex run drives the `generic` host path (see
+`docs/PANOPTICON.md`, "Modes").
 
 ### Python Package / CLI (Development & Direct Use)
 

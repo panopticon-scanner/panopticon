@@ -59,6 +59,18 @@ Each finding MUST carry:
 - `category: "prompt-injection"` for any planted-instruction finding
 - `source_role: "domain_panel"`
 
+For a SECURITY/REDTEAM finding, also carry the evidence that makes the severity
+above checkable — the Severity bar asks you to judge unauthenticated RCE,
+auth/authz bypass, injection-with-exfiltration and secret disclosure, and a
+reviewer cannot re-derive that from a title alone:
+- `exploit_scenario`: the concrete path from attacker input to impact — the
+  precondition, the step, the outcome. Redact secrets as `[REDACTED]`.
+- `citations: {"cwe": ["CWE-89", ...]}` when a standard class applies; omit rather
+  than guess an id.
+- `cvss` only when you can justify the vector; omit it rather than invent a score.
+Omit any of these when they genuinely do not apply — an empty exploit_scenario is
+worse than none.
+
 ## Output — write exactly one file
 
 Write your findings to `{out_file}` as a single JSON object with this exact shape. The `_panopticon` block is REQUIRED — the run uses it to identify your cell, and a file that omits it (or carries a wrong `run_id`/`domain`/`group`) is DISCARDED and your cell is treated as not done:
