@@ -271,18 +271,33 @@ def _capture_run(label, tool, docker, out_path, runner):
         os.remove(out_path)
     except OSError:
         pass
+    # #run9 OPS-D1A: give a `docker run` a --cidfile so _stream_and_write can
+    # `docker kill` the real container on a watchdog timeout -- proc.kill() reaches
+    # only the CLI client. The cidfile must NOT pre-exist (docker refuses to start),
+    # so it lives in a fresh temp dir cleaned up here. Inserted right after `run`.
+    docker_bin = cidfile = cid_dir = None
+    if (len(docker) >= 2 and os.path.basename(str(docker[0])) == "docker"
+            and docker[1] == "run"):
+        docker_bin = docker[0]
+        cid_dir = tempfile.mkdtemp(prefix="pano-cid-")
+        cidfile = os.path.join(cid_dir, "cid")
+        docker = docker[:2] + ["--cidfile", cidfile] + docker[2:]
     try:
         proc = runner(docker, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                       timeout=TOOL_TIMEOUT)
         # Backward compat: tests may inject a CompletedProcess-like runner.
         if hasattr(proc, "stdout") and isinstance(proc.stdout, (bytes, type(None))):
             return _write_completed(label, tool, proc, out_path)
-        return _stream_and_write(label, tool, proc, out_path)
+        return _stream_and_write(label, tool, proc, out_path,
+                                 docker_bin=docker_bin, cidfile=cidfile)
     except subprocess.TimeoutExpired:
         print("%s %s timed out after %ss; skipping" % (label, tool, TOOL_TIMEOUT),
               file=sys.stderr)
     except Exception as e:  # noqa: BLE001
         print("%s %s failed: %s; skipping" % (label, tool, e), file=sys.stderr)
+    finally:
+        if cid_dir:
+            shutil.rmtree(cid_dir, ignore_errors=True)
     return None
 
 
@@ -315,7 +330,8 @@ def _drain(stream):
         pass
 
 
-def _stream_and_write(label, tool, proc, out_path, timeout=TOOL_TIMEOUT):
+def _stream_and_write(label, tool, proc, out_path, timeout=TOOL_TIMEOUT,
+                      docker_bin=None, cidfile=None):
     """Stream stdout from a Popen-like object with an explicit byte cap AND a
     wall-clock deadline.
 
@@ -327,13 +343,35 @@ def _stream_and_write(label, tool, proc, out_path, timeout=TOOL_TIMEOUT):
     old buffered ``subprocess.run(timeout=...)`` path provided (#run7 COD-A2A)."""
     timed_out = {"hit": False}
 
+    def _kill_container():
+        # #run9 OPS-D1A: proc.kill() SIGKILLs the `docker run` CLI client, which
+        # cannot forward the signal to the daemon -- the `--rm` container keeps
+        # running (and is never removed). When we recorded its id via --cidfile,
+        # stop it directly. Best-effort: an empty/absent cidfile (container not
+        # started yet) or a docker error is a no-op.
+        if not (docker_bin and cidfile):
+            return
+        try:
+            with open(cidfile, encoding="utf-8") as fh:
+                cid = fh.read().strip()
+        except OSError:
+            return
+        if not cid:
+            return
+        try:
+            subprocess.run([docker_bin, "kill", cid], capture_output=True, timeout=10)
+        except (subprocess.SubprocessError, OSError):
+            pass
+
     def _watchdog():
-        # Kill the child so the blocking read()/drain unblocks at EOF.
+        # Kill the child so the blocking read()/drain unblocks at EOF, and stop the
+        # container it launched (OPS-D1A) so a hung tool leaves nothing running.
         timed_out["hit"] = True
         try:
             proc.kill()
         except Exception:
             pass
+        _kill_container()
 
     timer = threading.Timer(timeout, _watchdog)
     timer.daemon = True
@@ -374,6 +412,7 @@ def _stream_and_write(label, tool, proc, out_path, timeout=TOOL_TIMEOUT):
                         proc.kill()
                     except Exception:
                         pass
+                    _kill_container()      # OPS-D1A: stop the container, not just the client
 
             # A watchdog kill lands rc < 0 (signal). Only treat it as a timeout
             # when the child did NOT finish cleanly first -- else a tool that

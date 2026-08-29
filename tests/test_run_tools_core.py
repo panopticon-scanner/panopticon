@@ -194,16 +194,73 @@ class TestRunTools(unittest.TestCase):
             out_dir = os.path.join(d, "out")
             rt.run_tools(d, ["semgrep"], out_dir, image="panopticon-tools", runner=runner)
             docker_bin = shutil.which("docker") or "docker"
+            self.assertEqual(len(calls), 1)        # #run7 COD-A2C: clear fail if runner never fired
+            cmd0 = calls[0]
+            # #run9 OPS-D1A: a --cidfile is injected right after `run` (dynamic temp
+            # path) so a hung container can be `docker kill`ed on timeout.
+            self.assertEqual(cmd0[:3], [docker_bin, "run", "--cidfile"])
+            self.assertTrue(cmd0[3].endswith(os.sep + "cid"))
             # #run8 OPS-D1A: hard resource ceilings sit right after `run --rm`,
             # before the image, so an adversarial target can't exhaust the runner.
-            expected = ([docker_bin, "run", "--rm"] + rt._resource_limit_flags()
+            self.assertEqual(cmd0[4:], (["--rm"] + rt._resource_limit_flags()
                         + ["--network", "none",
                            "-v", "%s:/src:ro" % os.path.abspath(d),
-                           "panopticon-tools"] + rt.TOOL_CMD["semgrep"])
-            self.assertEqual(len(calls), 1)        # #run7 COD-A2C: clear fail if runner never fired
-            self.assertEqual(calls[0], expected)   # exact argv: flags, :ro mount, image, per-tool cmd
+                           "panopticon-tools"] + rt.TOOL_CMD["semgrep"]))
             with open(os.path.join(out_dir, "semgrep.sarif"), "rb") as fh:
                 self.assertEqual(fh.read(), fake.stdout)  # runner stdout bytes persisted verbatim
+
+    def test_orphaned_container_is_killed_on_cleanup(self):
+        # #run9 OPS-D1A: when the `docker run` CLI proc is still running after the
+        # stream ends, cleanup must `docker kill` the container it launched (via the
+        # --cidfile) -- proc.kill() alone leaves the --rm container running.
+        import types
+        killed = []
+
+        class _Proc:
+            # stdout EOF immediately, but poll() reports the client STILL alive, so
+            # the cleanup branch (proc.kill() + container kill) runs synchronously.
+            stdout = types.SimpleNamespace(read=lambda n=-1: b"", close=lambda: None)
+            stderr = types.SimpleNamespace(read=lambda: b"", close=lambda: None)
+            def kill(self): pass
+            def wait(self): return 0
+            def poll(self): return None
+
+        with tempfile.TemporaryDirectory() as d:
+            cidfile = os.path.join(d, "cid")
+            with open(cidfile, "w") as fh:
+                fh.write("deadbeefcafe\n")
+
+            def fake_docker(cmd, **kw):
+                killed.append(cmd)
+                return _FakeResult(returncode=0, stdout=b"", stderr=b"")
+
+            with mock.patch.object(rt.subprocess, "run", side_effect=fake_docker):
+                rt._stream_and_write("tool", "semgrep", _Proc(),
+                                     os.path.join(d, "out.sarif"),
+                                     timeout=60, docker_bin="docker", cidfile=cidfile)
+        self.assertTrue(
+            any(c[:2] == ["docker", "kill"] and "deadbeefcafe" in c for c in killed),
+            "container was not `docker kill`ed on cleanup: %r" % killed)
+
+    def test_container_kill_noops_without_a_cidfile(self):
+        # No cidfile (non-docker path / container never started) -> no docker kill,
+        # no crash.
+        import types
+        called = []
+
+        class _Proc:
+            stdout = types.SimpleNamespace(read=lambda n=-1: b"", close=lambda: None)
+            stderr = types.SimpleNamespace(read=lambda: b"", close=lambda: None)
+            def kill(self): pass
+            def wait(self): return 0
+            def poll(self): return None
+
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(rt.subprocess, "run",
+                                   side_effect=lambda *a, **k: called.append(a)):
+                rt._stream_and_write("tool", "semgrep", _Proc(),
+                                     os.path.join(d, "out.sarif"), timeout=60)
+        self.assertEqual(called, [])
 
     def test_bandit_pins_ini_when_target_has_bandit_config(self):
         # #run7: bandit auto-discovers nested .bandit files (e.g. git worktrees)

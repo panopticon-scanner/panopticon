@@ -1648,19 +1648,45 @@ def synthesize_execute(review_root, manifest):
     return PhaseResult(kind="advanced", message="synthesize: report.json written")
 
 
+# #run9 OPS-E1A: sentinel written when the run-start baseline probe FAILS
+# (timeout/error/unexpected non-zero) -- distinct from a legitimately non-git
+# target (no baseline at all). _tree_delta turns this into a fail-CLOSED integrity
+# violation at validate, so a DoS'd/hung git probe can no longer silently disable
+# the redteam clean-tree guard by reading as a clean tree that was never verified.
+_TREE_BASELINE_PROBE_FAILED = "#panopticon:baseline-probe-failed\n"
+
+
+def _write_probe_failed_baseline(baseline):
+    os.makedirs(os.path.dirname(baseline), exist_ok=True)
+    with _open_w_nofollow(baseline) as fh:
+        fh.write(_TREE_BASELINE_PROBE_FAILED)
+    return baseline
+
+
 def capture_tree_baseline(review_root, runner=subprocess.run):
-    """Snapshot the clean-tree baseline once (run start). No-op for a non-git
-    target (returns None)."""
+    """Snapshot the clean-tree baseline once (run start). Returns None (no
+    baseline) for a legitimately non-git target -- the guard is N/A. A git-status
+    PROBE FAILURE (timeout/error/unexpected non-zero) is NOT the same as non-git:
+    it records a sentinel (loudly) so validate fails CLOSED rather than silently
+    certifying a tree it never established a reference for (#run9 OPS-E1A)."""
     baseline = _pano(review_root, "tree-baseline.txt")
     if os.path.exists(baseline):
         return baseline
     try:
         proc = runner(["git", "-C", review_root, "status", "--porcelain", "-z"],
                       capture_output=True, text=True, timeout=15)
-        if proc.returncode != 0:
-            return None
-    except (subprocess.SubprocessError, OSError):
-        return None
+    except (subprocess.SubprocessError, OSError) as exc:
+        print("driver: clean-tree baseline probe FAILED (%s); the integrity guard "
+              "will fail closed at validate" % exc, file=sys.stderr, flush=True)
+        return _write_probe_failed_baseline(baseline)
+    if proc.returncode != 0:
+        if "not a git repository" in (proc.stderr or "").lower():
+            return None                              # non-git target: guard is N/A
+        print("driver: clean-tree baseline probe exited %s (%s); the integrity guard "
+              "will fail closed at validate"
+              % (proc.returncode, (proc.stderr or "").strip()[:200]),
+              file=sys.stderr, flush=True)
+        return _write_probe_failed_baseline(baseline)
     os.makedirs(os.path.dirname(baseline), exist_ok=True)
     with _open_w_nofollow(baseline) as fh:
         fh.write(proc.stdout)
@@ -1706,16 +1732,26 @@ def _tree_delta(review_root, runner):
     the old destination-only check silently missed."""
     try:
         with open(_pano(review_root, "tree-baseline.txt"), encoding="utf-8") as fh:
-            baseline = _porcelain_z_records(fh.read())
+            raw = fh.read()
     except OSError:
-        return []
+        return []                                    # no baseline (non-git) -> nothing to compare
+    if raw == _TREE_BASELINE_PROBE_FAILED:
+        # #run9 OPS-E1A: the run-start baseline probe failed, so no clean-tree
+        # reference exists -- the tree CANNOT be certified clean. Fail closed.
+        return ["clean-tree baseline was never captured (git-status probe failed "
+                "at run start); tree integrity cannot be certified"]
+    baseline = _porcelain_z_records(raw)
     try:
         proc = runner(["git", "-C", review_root, "status", "--porcelain", "-z"],
                       capture_output=True, text=True, timeout=15)
         if proc.returncode != 0:
-            return []
-    except (subprocess.SubprocessError, OSError):
-        return []
+            # #run9 OPS-E1A: a baseline exists but the verification probe failed --
+            # we can't confirm the tree is unchanged, so fail closed, never []-clean.
+            return ["clean-tree verification git-status exited %s; tree integrity "
+                    "cannot be certified" % proc.returncode]
+    except (subprocess.SubprocessError, OSError) as exc:
+        return ["clean-tree verification git-status failed (%s); tree integrity "
+                "cannot be certified" % exc]
     new = _porcelain_z_records(proc.stdout) - baseline
     return sorted("%s %s" % (xy, " -> ".join(paths)) for xy, paths in new
                   if any(_outside_panopticon(p) for p in paths))
