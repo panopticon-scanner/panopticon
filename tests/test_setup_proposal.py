@@ -301,6 +301,24 @@ class TestAssemble(unittest.TestCase):
         self.assertEqual(collision["name"], "Auth")
         self.assertEqual(collision["capability"], "custom:Auth")
 
+    def test_custom_alias_before_known_capability_keeps_known_floor(self):
+        # #run9 ARC-D2B: when custom:Auth is listed BEFORE the known Auth, the
+        # merged 'Auth' group must STILL get the known affinity floor (['SEC']).
+        # The outcome must not depend on input order -- the old first-wins merge
+        # silently dropped the calibrated floor (a security downgrade) whenever the
+        # custom alias came first.
+        proposal = self._p([
+            {"capability": "custom:Auth", "match": ["src/oauth/**"], "tests": []},
+            {"capability": "Auth", "match": ["src/auth/**"], "tests": ["tests/auth/**"]}])
+        groups, disc = sp.assemble(proposal, self.vocab, self.affinity)
+        self.assertIn("Auth", groups)
+        self.assertEqual(groups["Auth"]["panels"], ["SEC"])          # known floor, not []
+        self.assertEqual(groups["Auth"]["match"], ["src/oauth/**", "src/auth/**"])
+        auth_entries = [g for g in disc["groups"] if g["name"] == "Auth"]
+        self.assertEqual(len(auth_entries), 1)
+        self.assertFalse(auth_entries[0]["custom"])                  # upgraded to known
+        self.assertEqual(auth_entries[0]["floor"], ["SEC"])
+
     def test_bare_custom_prefix_rejected_in_validation(self):
         # "custom:" with no name after should be rejected
         proposal = self._p([{"capability": "custom:", "match": ["src/**"]}])

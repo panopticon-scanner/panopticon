@@ -179,10 +179,19 @@ def load_ledger(path=LEDGER):
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
             return normalize_ledger(data)
+    except FileNotFoundError:
+        return {}                    # no ledger yet -> legitimate first run
     except (OSError, ValueError) as e:
-        print("WARNING: ledger %s is unreadable/corrupt (%s); treating as empty"
-              % (path, e), file=sys.stderr)
-        return {}
+        # #run9 COD-B1A: a CORRUPT or unreadable (but PRESENT) ledger is NOT an
+        # empty one. Returning {} reset the dedup state, so main()'s
+        # `key_for(f, rej) not in ledger` treated every already-filed finding as
+        # new and RE-FILED it -- mass duplicates. Fail loud so the operator
+        # restores/repairs the ledger; deleting it deliberately (-> FileNotFound
+        # above) is the explicit way to start fresh.
+        raise RuntimeError(
+            "ledger %s is present but unreadable/corrupt (%s); refusing to proceed "
+            "-- treating it as empty would re-file every finding as a duplicate. "
+            "Restore it, or delete it deliberately to start fresh." % (path, e)) from e
 
 
 def record(ledger, key, url, path=LEDGER):
