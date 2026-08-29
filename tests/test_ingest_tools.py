@@ -351,7 +351,7 @@ class TestFixturePrune(unittest.TestCase):
                 with contextlib.redirect_stderr(err):
                     out = it.ingest_dir(d, "g1", **kw)
                 self.assertEqual(out, [], "kw=%r" % kw)
-                self.assertIn("nested checkout / git dir", err.getvalue())
+                self.assertIn("not project source", err.getvalue())
 
     def test_is_run_artifact_path_matches_top_level_only(self):
         for p in (".worktrees/x/a.py", ".git/config", ".worktrees/a2/b.pyc"):
@@ -359,6 +359,35 @@ class TestFixturePrune(unittest.TestCase):
         for p in ("skill/scripts/driver.py", "src/.worktrees/x.py",  # not top-level
                   "a/.git/b", "worktrees/x.py", ".gitignore"):
             self.assertFalse(it._is_run_artifact_path(p), p)
+
+    def test_own_artifacts_and_bytecode_are_not_source(self):
+        # #run10 D1: 16 of 54 rejected tool findings were located in things that
+        # are not project source. `.panopticon/` is the compounding one -- gitleaks
+        # flagged a private-key inside a PREVIOUS run's report-discarded.json, so
+        # each run re-adjudicated the last run's rejections and the noise grew run
+        # over run.
+        for p in (".panopticon/claude-redteam-20260825-report-discarded.json",
+                  ".panopticon/runs/tag/tools/gitleaks.sarif",
+                  "tests/__pycache__/test_redact.cpython-314.pyc",
+                  "skill/scripts/__pycache__/driver.cpython-314.pyc",
+                  "a/b/c.pyc", "x.pyo"):
+            self.assertTrue(it._is_run_artifact_path(p), p)
+        # real source with similar-looking names stays reviewable
+        for p in ("skill/scripts/redact.py", "docs/panopticon.md",
+                  "tests/test_pycache_helper.py", "src/pycache/mod.py"):
+            self.assertFalse(it._is_run_artifact_path(p), p)
+
+    def test_own_artifact_findings_are_pruned_unconditionally(self):
+        for kw in ({}, {"include_fixtures": True}):
+            with tempfile.TemporaryDirectory() as d:
+                with open(os.path.join(d, "gitleaks.sarif"), "w") as fh:
+                    json.dump(_sarif_fixture(
+                        ".panopticon/claude-redteam-20260825-report-discarded.json"), fh)
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    out = it.ingest_dir(d, "g1", **kw)
+                self.assertEqual(out, [], "kw=%r" % kw)
+                self.assertIn("not project source", err.getvalue())
 
 
 class TestIngestDispositions(unittest.TestCase):
