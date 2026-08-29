@@ -202,10 +202,16 @@ class TestRunTools(unittest.TestCase):
             self.assertTrue(cmd0[3].endswith(os.sep + "cid"))
             # #run8 OPS-D1A: hard resource ceilings sit right after `run --rm`,
             # before the image, so an adversarial target can't exhaust the runner.
+            # #run10 SEC-C1A: privilege-drop flags sit with the resource ceilings,
+            # before the image, so an attacker-influenced build cannot use Linux
+            # capabilities or gain new privileges inside the container.
             self.assertEqual(cmd0[4:], (["--rm"] + rt._resource_limit_flags()
+                        + rt._privilege_drop_flags()
                         + ["--network", "none",
                            "-v", "%s:/src:ro" % os.path.abspath(d),
                            "panopticon-tools"] + rt.TOOL_CMD["semgrep"]))
+            self.assertIn("--cap-drop=ALL", cmd0)
+            self.assertIn("--security-opt=no-new-privileges", cmd0)
             with open(os.path.join(out_dir, "semgrep.sarif"), "rb") as fh:
                 self.assertEqual(fh.read(), fake.stdout)  # runner stdout bytes persisted verbatim
 

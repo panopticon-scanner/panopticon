@@ -211,6 +211,18 @@ def test_sec_floor_on_auth_crypto_secrets_markers():
         if cov.applicable_sec_floor([f]) != frozenset({"SEC"}):
             raise AssertionError(f"{f} failed to floor SEC")
 
+def test_sec_floor_on_secret_bearing_files():
+    # #run10 SEC-G2A: the highest-value secret surface is the secret-bearing FILE
+    # itself, and none of these match the auth/secret/password NAME hints -- so a
+    # groups.yml that never lists SEC used to exempt exactly the files most worth
+    # reviewing. Each must force the SEC floor on its own.
+    for f in ["app/.env", "deploy/.env.production", "certs/server.pem",
+              "certs/tls.key", "keys/id_rsa", "config/.npmrc", "home/.netrc",
+              "db/.pgpass", "nginx/htpasswd", "store/prod.jks", "app/keystore.p12",
+              "infra/vault/policy.hcl", "conf/secrets.yaml", "aws/credentials.ini"]:
+        if cov.applicable_sec_floor([f]) != frozenset({"SEC"}):
+            raise AssertionError(f"{f} failed to floor SEC")
+
 def test_sec_floor_absent_on_surfaceless_group():
     # #5.0-19 stays honored: a docs-only group with no security surface spends
     # no SEC cell -- the floor widens coverage, it does not blanket every group.
