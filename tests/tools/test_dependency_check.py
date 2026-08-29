@@ -1,5 +1,6 @@
 import json
 import os
+from _test_helpers import first
 import tempfile
 import unittest
 from unittest import mock
@@ -36,8 +37,8 @@ class TestDependencyCheckAdapter(unittest.TestCase):
     def test_parse_includes_provenance(self):
         findings = dc.DependencyCheckAdapter().parse(DC_SAMPLE, "g1")
         self.assertTrue(findings)
-        self.assertEqual(findings[0]["provenance"]["discovered_by"], "tool:dependency-check")
-        self.assertEqual(findings[0]["provenance"]["confirmation_status"], "TOOL")
+        self.assertEqual(first(findings)["provenance"]["discovered_by"], "tool:dependency-check")
+        self.assertEqual(first(findings)["provenance"]["confirmation_status"], "TOOL")
 
     def test_normalize_cwe_handles_multiple_formats(self):
         adapter = dc.DependencyCheckAdapter()

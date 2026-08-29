@@ -1,5 +1,6 @@
 import os
 import unittest
+from _test_helpers import first, only
 from unittest import mock
 from xml.etree.ElementTree import ParseError
 
@@ -48,8 +49,8 @@ class TestSpotBugsAdapter(unittest.TestCase):
     def test_parse_includes_provenance(self):
         findings = sb.SpotBugsAdapter().parse(SPOTBUGS_SAMPLE, "g1")
         self.assertTrue(findings)
-        self.assertEqual(findings[0]["provenance"]["discovered_by"], "tool:spotbugs")
-        self.assertEqual(findings[0]["provenance"]["confirmation_status"], "TOOL")
+        self.assertEqual(first(findings)["provenance"]["discovered_by"], "tool:spotbugs")
+        self.assertEqual(first(findings)["provenance"]["confirmation_status"], "TOOL")
 
     def test_parse_empty_output_returns_no_findings(self):
         findings = sb.SpotBugsAdapter().parse(b"", "g1")
@@ -116,7 +117,7 @@ class TestSpotBugsAdapter(unittest.TestCase):
   </BugInstance>
 </BugCollection>
 """
-        f = sb.SpotBugsAdapter().parse(sample, "g1")[0]
+        f = only(sb.SpotBugsAdapter().parse(sample, "g1"))
         self.assertEqual(f["severity"], "MEDIUM")
         self.assertEqual(f["confidence"], "POSSIBLE")
 

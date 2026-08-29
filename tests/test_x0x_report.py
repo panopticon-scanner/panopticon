@@ -4,6 +4,7 @@ import unittest
 
 import jsonschema
 
+from _test_helpers import only
 import scripts.x0x_report as x0x
 
 
@@ -57,12 +58,12 @@ class TestX0XReport(unittest.TestCase):
     def test_candidate_fields_and_slug_and_cwe_scrape(self):
         f = _f("ARC-X0X", "ARC", "MEDIUM", "Ungated Fixture Provisioning", "x.py",
                3, "f1", desc="runs on every start", refs=["see CWE-400 and CWE-522"])
-        c = x0x.build_candidates([f])[0]
+        c = only(x0x.build_candidates([f]), "candidate")
         self.assertEqual(c["proposed_name"], "ungated-fixture-provisioning")
         self.assertEqual(c["summary"], "Ungated Fixture Provisioning")
         self.assertEqual(c["description"], "runs on every start")
         self.assertEqual(c["cwe"], ["CWE-400", "CWE-522"])   # scraped from free text
-        self.assertEqual(c["occurrences"][0],
+        self.assertEqual(only(c["occurrences"], "occurrence"),
                          {"file": "x.py", "line_start": 3, "line_end": 5, "finding_id": "f1"})
 
     def test_occurrence_requires_file(self):
@@ -73,7 +74,8 @@ class TestX0XReport(unittest.TestCase):
     def test_domainless_zzz_sentinel(self):
         f = {"code": "ZZZ-X0X", "severity": "MEDIUM", "short_title": "t",
              "id": "z1", "location": {"file": "a.py"}}
-        self.assertEqual(x0x.build_candidates([f])[0]["domain"], "ZZZ")
+        self.assertEqual(
+            only(x0x.build_candidates([f]), "candidate")["domain"], "ZZZ")
 
     def test_build_report_shape_and_required_fields(self):
         meta = {"version": "5.0.1", "ocrdb_version": "0.3.1",

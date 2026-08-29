@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from _test_helpers import FakePopen
+from _test_helpers import FakePopen, first
 import scripts.tools.base as tools_base
 import scripts.tools.roslyn_secguard as rs
 
@@ -162,7 +162,7 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
         # ROSLYN_SAMPLE has no "level" key at all; SARIF's own default for an
         # unspecified level is "warning".
         findings = rs.RoslynSecGuardAdapter().parse(ROSLYN_SAMPLE, "g1")
-        self.assertEqual(findings[0]["severity"], "MEDIUM")
+        self.assertEqual(first(findings)["severity"], "MEDIUM")
 
     def test_parse_survives_empty_locations_array(self):
         # ARC-A4A: RoslynSecGuardAdapter.DROP_IF_NO_LOCATION is True, so the
@@ -210,8 +210,8 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
     def test_parse_includes_provenance(self):
         findings = rs.RoslynSecGuardAdapter().parse(ROSLYN_SAMPLE, "g1")
         self.assertTrue(findings)
-        self.assertEqual(findings[0]["provenance"]["discovered_by"], "tool:roslyn-secguard")
-        self.assertEqual(findings[0]["provenance"]["confirmation_status"], "TOOL")
+        self.assertEqual(first(findings)["provenance"]["discovered_by"], "tool:roslyn-secguard")
+        self.assertEqual(first(findings)["provenance"]["confirmation_status"], "TOOL")
 
     def test_parse_malformed_result_logs_diagnostic_and_keeps_siblings(self):
         # OPS-E1A / SEC-G2B: a per-result parse exception must be visible on stderr
@@ -287,7 +287,7 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
 
         cmd = calls[0][0]
         self.assertEqual(cmd[0], "dotnetarium-scs")
-        self.assertTrue(cmd[1].startswith(copied_dst[0]))
+        self.assertTrue(cmd[1].startswith(first(copied_dst)))
         self.assertTrue(any(arg.startswith("--export=") for arg in cmd))
         self.assertIn("--ignore-msbuild-errors", cmd)
         self.assertIn("--no-banner", cmd)
