@@ -700,16 +700,17 @@ class TestCoveragePhase(unittest.TestCase):
         cov = driver._load_json(driver._pano(self.root, "coverage-Auth.json"))
         self.assertNotIn("exclude_rejected", cov)
         self.assertNotIn("exclude_paths", err.getvalue())
-    def test_schema_invalid_scout_lenses_is_rediscpatched(self):
-        # #3: a scout returning `lenses` as panel->object (run-6 bug) parses as
-        # JSON but is structurally invalid. The driver must reject it at the
-        # return-persist accept boundary -- discard the garbage and re-dispatch --
-        # not consume it into coverage (where it later crashes lens spawning).
+    def test_schema_invalid_scout_is_rediscpatched(self):
+        # #3: a scout that parses as JSON but is structurally invalid must be
+        # rejected at the return-persist accept boundary -- discard the garbage and
+        # re-dispatch -- not consumed into coverage. (#run10 D3: this used to plant
+        # a malformed `lenses` object; lenses left the contract with the retired
+        # lens_sweep role, so the case is now carried by `domains`, the field that
+        # actually routes work.)
         self._groups_json([{"name": "Auth", "files": ["a.py"]}])
         self._groups_yml("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n")
         driver._write_json(driver._pano(self.root, "scout-Auth.json"),
-                           {"group": "Auth", "domains": ["SEC"],
-                            "lenses": {"code": {"name": "x", "spawn": True}}})
+                           {"group": "Auth", "domains": [{"name": "SEC"}]})
         err = io.StringIO()
         with mock.patch("scripts.driver.dispatch.render_prompt", return_value="B"), \
              mock.patch("scripts.driver.dispatch.registered_agent_name",
@@ -720,14 +721,17 @@ class TestCoveragePhase(unittest.TestCase):
         self.assertEqual(result.checkpoint, "scout")
         self.assertFalse(os.path.exists(driver._pano(self.root, "scout-Auth.json")))
         self.assertFalse(os.path.exists(driver._pano(self.root, "coverage-Auth.json")))
-        self.assertIn("lenses", err.getvalue())
+        self.assertIn("domains", err.getvalue())
 
-    def test_valid_scout_lenses_array_is_accepted(self):
-        # The correct panel->array shape passes and coverage computes normally.
+    def test_scout_carrying_legacy_fields_is_still_accepted(self):
+        # #run10 D3: lenses/depth/risk left the contract, but a profile that still
+        # emits them (an older host, a cached prompt) must not be rejected -- they
+        # are simply never read. Forward compatibility, not a new failure mode.
         self._groups_json([{"name": "Auth", "files": ["a.py"]}])
         self._groups_yml("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n")
         driver._write_json(driver._pano(self.root, "scout-Auth.json"),
-                           {"group": "Auth", "domains": ["SEC"],
+                           {"group": "Auth", "domains": ["SEC"], "risk": "high",
+                            "depth": "deep", "languages": ["python"],
                             "lenses": {"code": [{"name": "x", "spawn": True}]}})
         result = driver.coverage_execute(self.root, self.manifest)
         self.assertEqual(result.kind, "advanced")
@@ -738,7 +742,7 @@ class TestCoveragePhase(unittest.TestCase):
         # loud after the retry cap, never re-dispatch forever.
         self._groups_json([{"name": "Auth", "files": ["a.py"]}])
         self._groups_yml("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n")
-        bad = {"group": "Auth", "lenses": {"code": {"name": "x", "spawn": True}}}
+        bad = {"group": "Auth", "domains": [["SEC"]]}   # #run10 D3: was a bad `lenses`
         with mock.patch("scripts.driver.dispatch.render_prompt", return_value="B"), \
              mock.patch("scripts.driver.dispatch.registered_agent_name",
                         return_value="panopticon-scout"), \
