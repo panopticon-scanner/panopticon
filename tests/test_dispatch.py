@@ -2,582 +2,12 @@ import contextlib
 import io
 import json
 import os
-import shutil
 import tempfile
 import unittest
 from unittest import mock
 
 import scripts.dispatch as dispatch
 import scripts.evidence as evidence
-
-
-class TestDispatchPlan(unittest.TestCase):
-    def _register_reviewer_shells(self):
-        reg = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, reg, ignore_errors=True)
-        for name in ("panopticon-panel-review.md", "panopticon-lens-sweep.md"):
-            with open(os.path.join(reg, name), "w") as fh:
-                fh.write("---\nname: %s\n---\nbody\n" % name[:-3])
-        return reg
-
-    def _profile(self, depth="standard"):
-        return {
-            "group": "test_repo",
-            "languages": ["python"],
-            "surfaces": ["http_web"],
-            "risk": "med",
-            "depth": depth,
-            "files": ["app.py"],
-            "lenses": {
-                "security": [
-                    {"name": "known_vulns", "spawn": True, "priority": 1, "depth_threshold": "standard"},
-                    {"name": "injection", "spawn": True, "priority": 2, "depth_threshold": "standard"},
-                    {"name": "novel", "spawn": True, "priority": 3, "depth_threshold": "deep"},
-                ]
-            },
-            "panels": ["security"],
-            "tools": [],
-            "has_deps": False,
-        }
-
-    def _groups(self, profile):
-        fh = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
-        json.dump({"security_mode": profile.get("security_mode", "standard"),
-                   "groups": [{"name": profile["group"],
-                                "files": profile["files"],
-                                "panels": profile["panels"],
-                                "depth": profile["depth"]}]}, fh)
-        fh.close()
-        self.addCleanup(os.unlink, fh.name)
-        return fh.name
-
-    def test_build_plan_emits_panels_in_priority_order(self):
-        profile = {"group": "g", "files": ["a.py"], "depth": "standard",
-                   "panels": ["test", "code", "security", "architecture"]}
-        plan = dispatch.build_plan(profile, host="claude")
-        panel_seq = [e["panel"] for e in plan if e["role"] == "panel_review"]
-        self.assertEqual(panel_seq, ["security", "architecture", "code", "test"])
-
-    def test_build_plan_emits_absolute_out_file_rooted_at_root(self):
-        # #935: out_file must be ABSOLUTE and rooted at the explicit run root,
-        # so a reviewer subagent resolves it identically from any cwd.
-        root = os.path.join(os.sep, "run", "root")
-        plan = dispatch.build_plan(self._profile(), host="kimi", root=root)
-        self.assertTrue(plan)
-        for e in plan:
-            self.assertTrue(os.path.isabs(e["out_file"]), e["out_file"])
-            self.assertEqual(os.path.dirname(e["out_file"]),
-                             os.path.join(root, ".panopticon"))
-            self.assertTrue(os.path.basename(e["out_file"]).startswith("findings-"))
-
-    def test_build_plan_root_defaults_to_cwd(self):
-        plan = dispatch.build_plan(self._profile(), host="kimi")
-        for e in plan:
-            self.assertEqual(os.path.dirname(e["out_file"]),
-                             os.path.join(os.getcwd(), ".panopticon"))
-
-    def test_build_plan_root_with_spaces(self):
-        # The Tapestry workspace root contains a space (#935).
-        root = os.path.join(os.sep, "tmp", "Mini Vault", "work")
-        plan = dispatch.build_plan(self._profile(), host="kimi", root=root)
-        for e in plan:
-            self.assertEqual(os.path.dirname(e["out_file"]),
-                             os.path.join(root, ".panopticon"))
-
-    def test_build_plan_out_file_authorized_by_guard_across_cwd(self):
-        # End-to-end #935: build_plan's absolute out_file, fed to the write-guard
-        # allowlist, authorizes the reviewer's write even when the hook runs from
-        # a DIFFERENT cwd than the run root. This is the actual regression: with
-        # the old repo-relative out_file, allowlist_from_plan (run-root realpath)
-        # and decide (elsewhere realpath) disagreed and the write was denied.
-        import scripts.write_guard_hook as wg
-        with tempfile.TemporaryDirectory() as run_root, \
-                tempfile.TemporaryDirectory() as elsewhere:
-            plan = dispatch.build_plan(self._profile(), host="kimi", root=run_root)
-            allow = wg.allowlist_from_plan(plan)
-            entry = plan[0]
-            prev = os.getcwd()
-            try:
-                os.chdir(elsewhere)
-                ok, _ = wg.decide("Write", entry["out_file"], allow)
-            finally:
-                os.chdir(prev)
-            self.assertTrue(ok)
-            try:
-                os.chdir(elsewhere)
-                ok2, _ = wg.decide("Write", os.path.join(run_root, "unauthorized.txt"), allow)
-            finally:
-                os.chdir(prev)
-            self.assertFalse(ok2)
-
-    def test_standard_emits_panel_review_and_two_sweeps(self):
-        plan = dispatch.build_plan(self._profile("standard"), host="kimi")
-        self.assertEqual(len(plan), 3)
-        roles = [p["role"] for p in plan]
-        self.assertEqual(roles.count("panel_review"), 1)
-        self.assertEqual(roles.count("lens_sweep"), 2)
-
-    def test_deep_emits_panel_review_and_three_sweeps(self):
-        plan = dispatch.build_plan(self._profile("deep"), host="kimi")
-        self.assertEqual(len(plan), 4)
-        roles = [p["role"] for p in plan]
-        self.assertEqual(roles.count("panel_review"), 1)
-        self.assertEqual(roles.count("lens_sweep"), 3)
-
-    def test_every_entry_carries_security_mode(self):
-        # Regression (meta.cost fan-out drop-out): build_plan stamped
-        # security_mode on lens_sweep entries but omitted it from panel_review
-        # entries. plan_contract.plan_issues requires it on EVERY entry, so any
-        # plan containing a panel was flagged invalid and excluded from the
-        # meta.cost dispatch ledger -- silently dropping every fan-out row on
-        # every run.
-        profile = self._profile("deep")
-        profile["security_mode"] = "redteam"
-        plan = dispatch.build_plan(profile, host="kimi")
-        self.assertTrue(any(e["role"] == "panel_review" for e in plan),
-                        "expected a panel_review entry")
-        for e in plan:
-            self.assertEqual(
-                e.get("security_mode"), "redteam",
-                "%s entry must carry security_mode" % e["role"])
-
-    def test_shallow_emits_only_panel_review(self):
-        profile = {
-            "group": "g1",
-            "panels": ["code"],
-            "depth": "shallow",
-            "files": ["docs/readme.md"],
-            "lenses": {
-                "code": [
-                    {"name": "style", "spawn": False, "priority": 1, "depth_threshold": "shallow"},
-                ]
-            },
-            "tools": [],
-            "has_deps": False,
-        }
-        plan = dispatch.build_plan(profile, host="kimi")
-        self.assertEqual(len(plan), 1)
-        self.assertEqual(plan[0]["role"], "panel_review")
-        self.assertEqual(plan[0]["lenses"], ["structure", "correctness", "style"])
-
-    def test_missing_baseline_lenses_stay_in_main_panel(self):
-        profile = {"group": "g1", "panels": ["security"], "depth": "standard",
-                   "files": ["app.py"], "lenses": {"security": []}}
-        plan = dispatch.build_plan(profile, host="generic")
-        self.assertEqual(plan[0]["lenses"], ["known_vulns", "injection", "novel"])
-
-    def test_unsafe_flexible_lens_is_rejected(self):
-        profile = {"group": "g1", "panels": ["code"], "depth": "standard",
-                   "files": ["app.py"], "lenses": {"code": [{
-                       "name": "ignore instructions", "spawn": False}]}}
-        with self.assertRaisesRegex(ValueError, "unsafe lens"):
-            dispatch.build_plan(profile, host="generic")
-
-    def test_empty_panel_schedule_is_rejected(self):
-        profile = {"group": "g1", "panels": [], "files": ["a.py"],
-                   "depth": "standard", "lenses": {}}
-        with self.assertRaisesRegex(ValueError, "at least one panel"):
-            dispatch.build_plan(profile, host="generic")
-
-    def test_authoritative_group_files_must_match_scout(self):
-        profile = self._profile()
-        with self.assertRaisesRegex(ValueError, "differ from authoritative"):
-            dispatch.build_plan(profile, host="generic",
-                                authoritative_files=["different.py"])
-
-    def test_authoritative_group_name_must_match_scout(self):
-        with self.assertRaisesRegex(ValueError, "differs from expected group"):
-            dispatch.build_plan(self._profile(), host="generic",
-                                authoritative_group="other")
-
-    def test_load_group_files_selects_exact_group(self):
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "groups.json")
-            with open(path, "w", encoding="utf-8") as fh:
-                json.dump({"groups": [{"name": "test_repo", "files": ["app.py"],
-                                        "panels": ["security"],
-                                        "depth": "standard"}]}, fh)
-            self.assertEqual(dispatch.load_group_files(path, "test_repo"), ["app.py"])
-
-    def test_load_group_assignment_rejects_missing_depth(self):
-        profile = self._profile(depth="deep")
-        groups = self._groups(profile)
-        # Remove depth
-        with open(groups, encoding="utf-8") as fh:
-            data = json.load(fh)
-        data["groups"][0].pop("depth")
-        with open(groups, "w", encoding="utf-8") as fh:
-            json.dump(data, fh)
-        with self.assertRaisesRegex(ValueError, "malformed or missing depth"):
-            dispatch.load_group_assignment(groups, profile["group"])
-
-    def test_load_group_assignment_rejects_invalid_depth(self):
-        profile = self._profile(depth="deep")
-        groups = self._groups(profile)
-        with open(groups, encoding="utf-8") as fh:
-            data = json.load(fh)
-        data["groups"][0]["depth"] = "not-a-depth"
-        with open(groups, "w", encoding="utf-8") as fh:
-            json.dump(data, fh)
-        with self.assertRaisesRegex(ValueError, "malformed or missing depth"):
-            dispatch.load_group_assignment(groups, profile["group"])
-
-    def test_scout_cannot_drop_authoritative_panel(self):
-        profile = self._profile()
-        profile["panels"] = ["code"]
-        with self.assertRaisesRegex(ValueError, "omits authoritative"):
-            dispatch.build_plan(profile, host="generic",
-                                authoritative_panels=["code", "security"])
-
-    def test_scout_cannot_lower_authoritative_depth(self):
-        profile = self._profile(depth="shallow")
-        with self.assertRaisesRegex(ValueError, "below authoritative"):
-            dispatch.build_plan(profile, host="generic",
-                                authoritative_depth="standard")
-
-    def test_codex_plan_verifies_without_registered_shells(self):
-        plan = dispatch.build_plan(self._profile(), host="codex", scope_bound=True)
-        self.assertEqual(dispatch.verify_plan(plan, host="codex"), [])
-
-    def test_verify_plan_rejects_semantically_empty_plan(self):
-        problems = dispatch.verify_plan([None, "junk"], host="generic")
-        self.assertTrue(problems)
-        self.assertIn("not an object", problems[0])
-
-    def test_strict_verify_detects_scope_tampering(self):
-        assignment = {"name": "test_repo", "files": ["app.py"],
-                      "panels": ["security"], "depth": "standard",
-                      "security_mode": "standard"}
-        plan = dispatch.build_plan(
-            self._profile(), host="codex", authoritative_files=["app.py"],
-            authoritative_group="test_repo", authoritative_panels=["security"],
-            authoritative_depth="standard",
-            authoritative_security_mode="standard", scope_bound=True)
-        plan[0]["files"] = ["other.py"]
-        problems = dispatch.verify_plan(
-            plan, host="codex", authoritative_assignment=assignment, strict=True)
-        self.assertTrue(any("files do not match" in problem for problem in problems))
-
-    def test_strict_verify_detects_output_path_tampering(self):
-        assignment = {"name": "test_repo", "files": ["app.py"],
-                      "panels": ["security"], "depth": "standard",
-                      "security_mode": "standard"}
-        with tempfile.TemporaryDirectory() as root:
-            plan = dispatch.build_plan(
-                self._profile(), host="codex", root=root,
-                authoritative_files=["app.py"], authoritative_group="test_repo",
-                authoritative_panels=["security"], authoritative_depth="standard",
-                authoritative_security_mode="standard", scope_bound=True)
-            plan[0]["out_file"] = os.path.join(root, "outside.json")
-            problems = dispatch.verify_plan(
-                plan, host="codex", authoritative_assignment=assignment,
-                strict=True, root=root)
-        self.assertTrue(any("out_file" in problem for problem in problems))
-
-    def test_panel_review_includes_non_spawned_lenses(self):
-        profile = {
-            "group": "g1",
-            "panels": ["security"],
-            "depth": "standard",
-            "files": ["app.py"],
-            "lenses": {
-                "security": [
-                    {"name": "known_vulns", "spawn": True, "priority": 1, "depth_threshold": "standard"},
-                    {"name": "injection", "spawn": True, "priority": 2, "depth_threshold": "standard"},
-                    {"name": "novel", "spawn": True, "priority": 3, "depth_threshold": "deep"},
-                ]
-            },
-            "tools": [],
-            "has_deps": False,
-        }
-        plan = dispatch.build_plan(profile, host="kimi")
-        panel = [p for p in plan if p["role"] == "panel_review"][0]
-        spawned = [p["lens"] for p in plan if p["role"] == "lens_sweep"]
-        self.assertEqual(panel["lenses"], ["novel"])
-        self.assertNotIn("novel", spawned)
-
-    def test_models_resolved_per_host(self):
-        with tempfile.TemporaryDirectory() as d:
-            plan = dispatch.build_plan(self._profile("standard"), host="claude",
-                                       agents_dir=d)
-        advisor = [p for p in plan if p["role"] == "advisor"]
-        self.assertEqual(len(advisor), 0)
-        panel = [p for p in plan if p["role"] == "panel_review"][0]
-        self.assertEqual(panel["model"]["model"], "sonnet")
-        self.assertEqual(panel["agent"], "panel-review")
-        sweep = [p for p in plan if p["role"] == "lens_sweep"][0]
-        self.assertEqual(sweep["agent"], "lens-sweep")
-
-    def test_main_writes_json_plan(self):
-        profile = self._profile("standard")
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as fh:
-            json.dump(profile, fh)
-            profile_path = fh.name
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as fh:
-            out_path = fh.name
-        # Register both reviewer shells in a temp agents-dir so the plan is
-        # fully enforced and the #275 gate is a deterministic no-op here --
-        # this test's purpose is main()'s plan-write path, not enforcement
-        # gating (TestUnenforcedGate covers that). Without registration, the
-        # unregistered-host gate would either refuse (rc 1) or, with
-        # --allow-unenforced, write a REAL .panopticon/unenforced-ack.json
-        # relative to the test process's cwd -- the repo root, since this
-        # test does not chdir. Same registration pattern as
-        # test_main_unwritable_out_directory_returns_one.
-        reg = self._register_reviewer_shells()
-        try:
-            groups_path = self._groups(profile)
-            rc = dispatch.main([profile_path, "--host", "kimi", "--out", out_path,
-                                "--agents-dir", reg, "--groups", groups_path,
-                                "--group-name", profile["group"]])
-            self.assertEqual(rc, 0)
-            with open(out_path) as fh:
-                plan = json.load(fh)
-            self.assertIsInstance(plan, list)
-            self.assertGreaterEqual(len(plan), 3)
-        finally:
-            os.unlink(profile_path)
-            os.unlink(out_path)
-
-    def test_main_missing_profile_returns_one(self):
-        stderr = io.StringIO()
-        with contextlib.redirect_stderr(stderr):
-            rc = dispatch.main(["does-not-exist.json"])
-        self.assertEqual(rc, 1)
-        self.assertIn("does-not-exist.json", stderr.getvalue())
-
-    def test_main_malformed_profile_returns_one(self):
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as fh:
-            fh.write("{not json")
-            profile_path = fh.name
-        try:
-            stderr = io.StringIO()
-            with contextlib.redirect_stderr(stderr):
-                rc = dispatch.main([profile_path])
-            self.assertEqual(rc, 1)
-            self.assertIn("invalid JSON", stderr.getvalue())
-        finally:
-            os.unlink(profile_path)
-
-    def test_main_template_failure_returns_one_cleanly(self):
-        # build_plan() raises ValueError when a role template can't be found
-        # (e.g. a corrupt/relocated install). main() must catch it and return
-        # 1 with a clean stderr message, matching the sibling error paths --
-        # not propagate a bare traceback.
-        profile = self._profile("standard")
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as fh:
-            json.dump(profile, fh)
-            profile_path = fh.name
-        try:
-            with tempfile.TemporaryDirectory() as empty_template_dir:
-                with mock.patch.object(dispatch, "TEMPLATE_DIR", empty_template_dir):
-                    groups_path = self._groups(profile)
-                    stderr = io.StringIO()
-                    with contextlib.redirect_stderr(stderr):
-                        rc = dispatch.main([profile_path, "--host", "kimi",
-                                            "--groups", groups_path,
-                                            "--group-name", profile["group"]])
-                    self.assertEqual(rc, 1)
-                    self.assertIn("dispatch:", stderr.getvalue())
-        finally:
-            os.unlink(profile_path)
-
-    def test_main_unwritable_out_directory_returns_one(self):
-        profile = self._profile("standard")
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as fh:
-            json.dump(profile, fh)
-            profile_path = fh.name
-        # Register both reviewer shells in a temp agents-dir so the plan is
-        # fully enforced and the #275 gate is a deterministic no-op here,
-        # regardless of ambient host detection or real registrations on the
-        # machine running the test (a bare CI runner has neither).
-        reg = self._register_reviewer_shells()
-        try:
-            # Use a path under /dev/null which cannot be created as a directory.
-            out_path = os.path.join(os.devnull, "cannot-create", "findings.json")
-            groups_path = self._groups(profile)
-            stderr = io.StringIO()
-            with contextlib.redirect_stderr(stderr):
-                rc = dispatch.main([profile_path, "--out", out_path,
-                                    "--agents-dir", reg, "--groups", groups_path,
-                                    "--group-name", profile["group"]])
-            self.assertEqual(rc, 1)
-            self.assertIn("cannot create output directory", stderr.getvalue())
-        finally:
-            os.unlink(profile_path)
-
-    def test_main_refuses_plan_without_authoritative_groups(self):
-        profile = self._profile()
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as fh:
-            json.dump(profile, fh)
-            path = fh.name
-        self.addCleanup(os.unlink, path)
-        # main() falls back to ./.panopticon/groups.json in the CWD, so a stray
-        # groups.json in the invoking directory (e.g. a repo mid-scan) would
-        # flip this to the "--groups requires --group-name" branch. Run from a
-        # clean temp dir so the "no groups.json anywhere" path is exercised.
-        cwd = os.getcwd()
-        with tempfile.TemporaryDirectory() as tmpd:
-            os.chdir(tmpd)
-            try:
-                with contextlib.redirect_stderr(io.StringIO()) as err:
-                    rc = dispatch.main([path, "--host", "codex"])
-            finally:
-                os.chdir(cwd)
-        self.assertEqual(rc, 2)
-        self.assertIn("no authoritative groups.json", err.getvalue())
-
-    def test_emit_kimi_swarm_groups_entries_by_subagent_type(self):
-        plan = [
-            {
-                "role": "panel_review",
-                "agent": "panopticon-panel-review",
-                "enforced": True,
-                "model": {"model": "secondary"},
-                "prompt": "panel prompt 1",
-                "out_file": ".panopticon/findings-g-security-panel_review.json",
-            },
-            {
-                "role": "panel_review",
-                "agent": "panopticon-panel-review",
-                "enforced": True,
-                "model": {"model": "secondary"},
-                "prompt": "panel prompt 2",
-                "out_file": ".panopticon/findings-g-code-panel_review.json",
-            },
-            {
-                "role": "lens_sweep",
-                "agent": "lens-sweep",
-                "enforced": False,
-                "model": {"model": "primary"},
-                "prompt": "lens prompt",
-                "out_file": ".panopticon/findings-g-security-lens_sweep-injection.json",
-            },
-        ]
-        swarm = dispatch.emit_kimi_swarm(plan)
-        batches = swarm["batches"]
-        self.assertEqual(len(batches), 2)
-
-        swarm_batches = [b for b in batches if b.get("tool") == "AgentSwarm"]
-        agent_batches = [b for b in batches if b.get("tool") == "Agent"]
-        self.assertEqual(len(swarm_batches), 1)
-        self.assertEqual(len(agent_batches), 1)
-
-        panel_batch = swarm_batches[0]
-        self.assertEqual(panel_batch["subagent_type"], "panopticon-panel-review")
-        self.assertEqual(panel_batch["model"], "secondary")
-        self.assertEqual(panel_batch["prompt_template"], "{{item}}")
-        self.assertEqual(len(panel_batch["items"]), 2)
-        self.assertEqual(panel_batch["items"][0], "panel prompt 1")
-
-        lens_batch = agent_batches[0]
-        self.assertEqual(lens_batch["subagent_type"], "explore")
-        self.assertEqual(lens_batch["model"], "primary")
-        self.assertEqual(lens_batch["prompt"], "lens prompt")
-
-    def test_emit_kimi_swarm_carries_out_file_routing_per_item(self):
-        # A batch merges entries from different groups, so item order is the
-        # only other link back to out_file — and order is not a contract.
-        plan = [
-            {"role": "panel_review", "agent": "panopticon-panel-review",
-             "enforced": True, "model": {"model": "secondary"},
-             "prompt": "p1", "panel": "security", "group": "g-security",
-             "out_file": ".panopticon/findings-g-security-panel_review.json"},
-            {"role": "panel_review", "agent": "panopticon-panel-review",
-             "enforced": True, "model": {"model": "secondary"},
-             "prompt": "p2", "panel": "code", "group": "g-code",
-             "out_file": ".panopticon/findings-g-code-panel_review.json"},
-            {"role": "lens_sweep", "agent": "lens-sweep", "enforced": False,
-             "model": {"model": "primary"}, "prompt": "l1", "panel": "security",
-             "lens": "injection", "group": "g-security",
-             "out_file": ".panopticon/findings-g-security-lens-injection.json"},
-        ]
-        swarm = dispatch.emit_kimi_swarm(plan)
-        batch = [b for b in swarm["batches"] if b["tool"] == "AgentSwarm"][0]
-        single = [b for b in swarm["batches"] if b["tool"] == "Agent"][0]
-
-        self.assertEqual(len(batch["routing"]), len(batch["items"]))
-        self.assertEqual(
-            [r["out_file"] for r in batch["routing"]],
-            [".panopticon/findings-g-security-panel_review.json",
-             ".panopticon/findings-g-code-panel_review.json"])
-        self.assertEqual([r["group"] for r in batch["routing"]],
-                         ["g-security", "g-code"])
-        # Agent (singleton) batches carry a single routing object.
-        self.assertEqual(single["routing"]["out_file"],
-                         ".panopticon/findings-g-security-lens-injection.json")
-        self.assertEqual(single["routing"]["lens"], "injection")
-
-    def test_emit_kimi_swarm_maps_unenforced_scout_and_advisor(self):
-        plan = [
-            {"role": "scout", "agent": "scout", "enforced": False,
-             "model": {"model": "primary"}, "prompt": "s"},
-            {"role": "advisor", "agent": "advisor", "enforced": False,
-             "model": {"model": "secondary"}, "prompt": "a"},
-        ]
-        by_role = {b["routing"]["role"]: b["subagent_type"]
-                   for b in dispatch.emit_kimi_swarm(plan)["batches"]}
-        self.assertEqual(by_role["scout"], "explore")
-        self.assertEqual(by_role["advisor"], "plan")
-
-    def test_emit_kimi_swarm_fail_closed_on_stale_enforced_entry(self):
-        # `enforced` is a snapshot from plan-build time; registration can be
-        # gone by the time the persisted plan is turned into a manifest.  The
-        # library must fail closed rather than downgrade to an unenforced
-        # 'coder' profile.
-        plan = [{"role": "panel_review", "agent": "panopticon-panel-review",
-                 "enforced": True, "model": {"model": "secondary"},
-                 "prompt": "p"}]
-        with tempfile.TemporaryDirectory() as empty_dir:
-            with self.assertRaisesRegex(ValueError, "enforced.*registered shell"):
-                dispatch.emit_kimi_swarm(
-                    plan, agents_dir=empty_dir, verify_registration=True)
-
-    def test_emit_kimi_swarm_rejects_a_malformed_plan(self):
-        with self.assertRaises(ValueError):
-            dispatch.emit_kimi_swarm({"not": "a list"})
-        with self.assertRaises(ValueError):
-            dispatch.emit_kimi_swarm(["not an object"])
-
-    def test_cli_emit_kimi_swarm_writes_manifest_and_requires_out(self):
-        # plan's panel_review entry is unenforced, so this must run with
-        # --allow-unenforced (I3's gate on --emit-kimi-swarm) -- and, since
-        # that path writes .panopticon/unenforced-ack.json relative to cwd,
-        # this must chdir into the temp dir first (I1's hermeticity rule)
-        # rather than drop a real ack into the repo root.
-        plan = [{"role": "panel_review", "agent": "panopticon-panel-review",
-                 "enforced": False, "model": {"model": "secondary"},
-                 "prompt": "p", "out_file": ".panopticon/f.json"}]
-        with tempfile.TemporaryDirectory() as d:
-            plan_path = os.path.join(d, "dispatch-plan.json")
-            out_path = os.path.join(d, "kimi-swarm.json")
-            with open(plan_path, "w", encoding="utf-8") as fh:
-                json.dump(plan, fh)
-
-            cwd = os.getcwd()
-            try:
-                os.chdir(d)
-                with contextlib.redirect_stderr(io.StringIO()) as err:
-                    self.assertEqual(dispatch.main(["--emit-kimi-swarm", plan_path]), 2)
-                self.assertIn("requires --out", err.getvalue())
-
-                rc = dispatch.main(["--emit-kimi-swarm", plan_path, "--out", out_path,
-                                    "--agents-dir", d, "--allow-unenforced"])
-            finally:
-                os.chdir(cwd)
-            self.assertEqual(rc, 0)
-            with open(out_path, encoding="utf-8") as fh:
-                written = json.load(fh)
-            self.assertEqual(written["batches"][0]["routing"]["out_file"],
-                             ".panopticon/f.json")
-
-            bad_path = os.path.join(d, "bad.json")
-            with open(bad_path, "w", encoding="utf-8") as fh:
-                fh.write("{not json")
-            with contextlib.redirect_stderr(io.StringIO()) as err:
-                self.assertEqual(
-                    dispatch.main(["--emit-kimi-swarm", bad_path, "--out", out_path]), 1)
-            self.assertIn("cannot read plan", err.getvalue())
 
 
 class TestDetectHost(unittest.TestCase):
@@ -633,20 +63,22 @@ class TestDetectHost(unittest.TestCase):
 
 class TestRenderPrompt(unittest.TestCase):
     def _entry_mapping(self):
+        # #run10: retargeted from the retired panel-review.md to the live 5.x
+        # matrix template. render_prompt itself is unchanged and still live.
         return {
-            "panel": "security", "group": "g1",
+            "domain": "SEC", "group": "g1",
             "file_list": "a.py, b.py", "security_mode": "standard",
-            "depth": "standard", "lenses": "- known_vulns\n- novel",
-            "lens": "injection",
-            "out_file": ".panopticon/findings-g1-security-panel_review.json",
+            "tests": "t.py", "menu": "SEC-A1A x", "criteria": "c",
+            "tool_hits": "", "run_id": "R",
+            "out_file": ".panopticon/findings-g1-SEC.json",
         }
 
     def test_rendered_panel_prompt_properties(self):
-        p = dispatch.render_prompt("panel-review.md", self._entry_mapping())
+        p = dispatch.render_prompt("domain-panel.md", self._entry_mapping())
         self.assertNotIn("---\nname:", p)               # frontmatter stripped
-        self.assertIn("security", p)                     # {panel} filled
+        self.assertIn("SEC", p)                          # {domain} filled
         self.assertIn("a.py, b.py", p)                   # {file_list} filled
-        self.assertIn(".panopticon/findings-g1-security-panel_review.json", p)
+        self.assertIn(".panopticon/findings-g1-SEC.json", p)
         # tool-policy line injected, naming allowed and forbidden tools
         self.assertIn("Read", p)
         self.assertIn("must not use", p.lower())
@@ -656,65 +88,26 @@ class TestRenderPrompt(unittest.TestCase):
 
     def test_unfilled_placeholder_fails_fast(self):
         mapping = self._entry_mapping()
-        del mapping["depth"]
+        del mapping["menu"]
         with self.assertRaises(ValueError) as ctx:
-            dispatch.render_prompt("panel-review.md", mapping)
-        self.assertIn("depth", str(ctx.exception))
-        self.assertIn("panel-review.md", str(ctx.exception))
+            dispatch.render_prompt("domain-panel.md", mapping)
+        self.assertIn("menu", str(ctx.exception))
+        self.assertIn("domain-panel.md", str(ctx.exception))
 
     def test_brace_safety_value_containing_placeholder_syntax(self):
         mapping = self._entry_mapping()
-        mapping["file_list"] = "weird-{depth}-name.py"   # value contains {depth}
-        p = dispatch.render_prompt("panel-review.md", mapping)
-        self.assertIn("weird-{depth}-name.py", p)        # survives literally
-
-    def test_build_plan_entries_carry_prompts(self):
-        profile = {"group": "g1", "files": ["a.py"], "depth": "standard",
-                   "panels": ["security"],
-                   "lenses": {"security": [
-                       {"name": "injection", "spawn": True, "priority": 1,
-                        "depth_threshold": "shallow"},
-                       {"name": "novel", "spawn": False, "priority": 2,
-                        "depth_threshold": "standard"}]},
-                   "security_mode": "standard"}
-        with tempfile.TemporaryDirectory() as d:
-            plan = dispatch.build_plan(profile, host="claude", agents_dir=d)
-        self.assertTrue(plan)
-        for entry in plan:
-            self.assertIn("prompt", entry)
-            self.assertNotIn("{file_list}", entry["prompt"])
-        sweep = [e for e in plan if e["role"] == "lens_sweep"][0]
-        self.assertIn("injection", sweep["prompt"])
-
-    def test_codex_plan_returns_json_under_runner_control(self):
-        profile = {"group": "g1", "files": ["a.py"], "depth": "standard",
-                   "panels": ["security"], "lenses": {"security": []}}
-        with tempfile.TemporaryDirectory() as root:
-            plan = dispatch.build_plan(profile, host="codex", codex_exec=True,
-                                       root=root, run_id="run-1")
-        self.assertTrue(plan[0]["enforced"])
-        self.assertEqual(plan[0]["execution"], "codex_exec")
-        self.assertEqual(plan[0]["delivery"], "return_json")
-        self.assertEqual(plan[0]["run_id"], "run-1")
-        self.assertIn("Return ONLY a raw JSON object", plan[0]["prompt"])
-        self.assertIn("read-only sandbox", plan[0]["prompt"])
-        self.assertNotIn("Write your findings", plan[0]["prompt"])
-
+        mapping["file_list"] = "weird-{menu}-name.py"   # value contains {menu}
+        p = dispatch.render_prompt("domain-panel.md", mapping)
+        self.assertIn("weird-{menu}-name.py", p)        # survives literally
 
 class TestRenderGoldens(unittest.TestCase):
     def test_rendered_output_matches_goldens(self):
         base = {"panel": "security", "group": "g1", "file_list": "a.py, b.py",
                 "security_mode": "standard", "depth": "standard",
                 "lenses": "- known_vulns\n- novel", "lens": "injection"}
-        # Distinct out_file per role: panel_review and lens_sweep write to
-        # different files (lens_sweep is read-only and returns its findings
-        # for the orchestrator to write), so their goldens must not share a
-        # mapping.
-        out_files = {
-            "panel-review.md": ".panopticon/findings-g1-security-panel_review.json",
-            "lens-sweep.md": ".panopticon/findings-g1-security-lens_sweep-injection.json",
-            "scout.md": ".panopticon/scout-g1.json",
-        }
+        # #run10: the panel-review / lens-sweep goldens retired with their
+        # templates; scout is the remaining rendered golden.
+        out_files = {"scout.md": ".panopticon/scout-g1.json"}
         gdir = os.path.join(os.path.dirname(__file__), "goldens")
         for role, out_file in out_files.items():
             m = dict(base, out_file=out_file)
@@ -924,235 +317,25 @@ class TestKimiDefaultAgentsDir(unittest.TestCase):
         self.assertEqual(dispatch._registration_dir("kimi", "/custom"), "/custom")
 
 
-class TestEnforcedPlanEntries(unittest.TestCase):
-    def _profile(self):
-        return {"group": "g1", "files": ["a.py"], "depth": "standard",
-                "panels": ["security"], "security_mode": "standard",
-                "lenses": {"security": [
-                    {"name": "injection", "spawn": True, "priority": 1,
-                     "depth_threshold": "shallow"}]}}
-
-    def test_enforced_true_when_registered(self):
-        with tempfile.TemporaryDirectory() as d:
-            dispatch.emit_host_agents("claude", d)
-            plan = dispatch.build_plan(self._profile(), host="claude", agents_dir=d)
-        for e in plan:
-            self.assertTrue(e["enforced"], e["role"])
-        panel = [e for e in plan if e["role"] == "panel_review"][0]
-        self.assertEqual(panel["agent"], "panopticon-panel-review")
-
-    def test_enforced_false_without_registration(self):
-        with tempfile.TemporaryDirectory() as d:
-            plan = dispatch.build_plan(self._profile(), host="claude", agents_dir=d)
-        for e in plan:
-            self.assertFalse(e["enforced"], e["role"])
-        panel = [e for e in plan if e["role"] == "panel_review"][0]
-        self.assertEqual(panel["agent"], "panel-review")  # legacy name preserved
-
-    def test_partial_registration_is_per_role(self):
-        with tempfile.TemporaryDirectory() as d:
-            dispatch.emit_host_agents("claude", d)
-            os.remove(os.path.join(d, "panopticon-lens-sweep.md"))
-            plan = dispatch.build_plan(self._profile(), host="claude", agents_dir=d)
-        by_role = {e["role"]: e for e in plan}
-        self.assertTrue(by_role["panel_review"]["enforced"])
-        self.assertFalse(by_role["lens_sweep"]["enforced"])
-
-    def test_generic_host_never_enforced_by_default(self):
-        plan = dispatch.build_plan(self._profile(), host="generic")
-        for e in plan:
-            self.assertFalse(e["enforced"])
-
-
-class TestUnenforcedGate(unittest.TestCase):
-    PROFILE = {"group": "g", "files": ["a.py"], "depth": "standard", "panels": ["code"]}
-
-    def _run(self, extra_args, agents_dir):
-        # empty agents_dir => unenforced; returns (rc, plan_path, ack_path, cwd used)
-        # NOTE: uses mkdtemp (not a `with TemporaryDirectory()` around the
-        # return) because returning from inside that context manager tears
-        # the directory down before the caller can assert on the returned
-        # paths -- addCleanup keeps it alive until the test finishes.
-        d = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
-        prof = os.path.join(d, "profile.json")
-        with open(prof, "w") as fh:
-            json.dump(self.PROFILE, fh)
-        out = os.path.join(d, "plan.json")
-        groups = os.path.join(d, "groups.json")
-        with open(groups, "w") as fh:
-            json.dump({"security_mode": "standard",
-                       "groups": [{"name": "g", "files": ["a.py"],
-                                   "panels": ["code"],
-                                   "depth": "standard"}]}, fh)
-        cwd = os.getcwd()
-        try:
-            os.chdir(d)
-            rc = dispatch.main([prof, "--host", "claude",
-                                "--agents-dir", agents_dir, "--out", out,
-                                "--groups", groups, "--group-name", "g"] + extra_args)
-        finally:
-            os.chdir(cwd)
-        return rc, out, os.path.join(d, ".panopticon", "unenforced-ack.json")
-
-    def test_unenforced_reviewer_hard_fails_without_flag(self):
-        with tempfile.TemporaryDirectory() as empty:
-            rc, out, ack = self._run([], empty)
-        self.assertNotEqual(rc, 0)
-        self.assertFalse(os.path.exists(out))       # no plan written
-        self.assertFalse(os.path.exists(ack))
-
-    def test_allow_unenforced_writes_plan_and_ack(self):
-        with tempfile.TemporaryDirectory() as empty:
-            rc, out, ack = self._run(["--allow-unenforced"], empty)
-        self.assertEqual(rc, 0)
-        self.assertTrue(os.path.exists(out))
-        with open(ack) as fh:
-            data = json.load(fh)
-        self.assertTrue(data["acknowledged"])
-        self.assertIn("panel_review", data["roles"])
-        # #680: the ack must record that the write-guard does NOT cover Bash in
-        # this mode, so the accepted residual risk is explicit and auditable.
-        self.assertFalse(data["write_guard_covers_bash"])
-        self.assertIn("Bash", data["note"])
-
-    def test_enforced_plan_emits_normally_no_ack(self):
-        with tempfile.TemporaryDirectory() as reg:
-            # register both reviewer shells so the plan is fully enforced
-            for role_file in ("panel-review.md", "lens-sweep.md"):
-                with open(os.path.join(reg, "panopticon-" + role_file), "w") as fh:
-                    fh.write("---\nname: panopticon-%s\n---\nbody\n" % role_file[:-3])
-            rc, out, ack = self._run([], reg)
-        self.assertEqual(rc, 0)
-        self.assertTrue(os.path.exists(out))
-        self.assertFalse(os.path.exists(ack))       # enforced => no ack marker
-
-    def test_emit_kimi_swarm_refuses_unenforced_plan(self):
-        # I3: --emit-kimi-swarm is an emission path too (plan -> dispatchable
-        # manifest) and must carry the same refuse-by-default gate as the
-        # plan-emit path -- it must not be a silent downgrade to unenforced
-        # coder/explore profiles with rc 0.
-        plan = [{"role": "panel_review", "agent": "panopticon-panel-review",
-                 "enforced": False, "model": {"model": "secondary"},
-                 "prompt": "p", "out_file": ".panopticon/f.json"}]
-        d = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
-        plan_path = os.path.join(d, "plan.json")
-        with open(plan_path, "w", encoding="utf-8") as fh:
-            json.dump(plan, fh)
-        out_path = os.path.join(d, "swarm.json")
-        ack_path = os.path.join(d, ".panopticon", "unenforced-ack.json")
-        cwd = os.getcwd()
-        try:
-            os.chdir(d)
-            rc_refused = dispatch.main(["--emit-kimi-swarm", plan_path, "--out", out_path])
-        finally:
-            os.chdir(cwd)
-        self.assertNotEqual(rc_refused, 0)
-        self.assertFalse(os.path.exists(out_path))
-        self.assertFalse(os.path.exists(ack_path))
-
-        try:
-            os.chdir(d)
-            rc_allowed = dispatch.main(["--emit-kimi-swarm", plan_path, "--out", out_path,
-                                        "--allow-unenforced"])
-        finally:
-            os.chdir(cwd)
-        self.assertEqual(rc_allowed, 0)
-        self.assertTrue(os.path.exists(out_path))
-        self.assertTrue(os.path.exists(ack_path))
-
-    def test_emit_kimi_swarm_gates_stale_enforced_true_via_live_registration(self):
-        # #649: a plan built while the shell WAS registered carries
-        # enforced:true, but the registration dir has since been emptied. The
-        # CLI gate must consult live registration (via --agents-dir), not the
-        # stored flag, and refuse-by-default.  Even with --allow-unenforced,
-        # emit must fail closed rather than silently downgrade to an
-        # unenforced 'coder' profile with rc 0 and no ack.
-        plan = [{"role": "panel_review", "agent": "panopticon-panel-review",
-                 "enforced": True, "model": {"model": "secondary"},
-                 "prompt": "p", "out_file": ".panopticon/f.json"}]
-        d = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
-        empty_reg = os.path.join(d, "agents-emptied")  # registration revoked
-        os.makedirs(empty_reg)
-        plan_path = os.path.join(d, "plan.json")
-        with open(plan_path, "w", encoding="utf-8") as fh:
-            json.dump(plan, fh)
-        out_path = os.path.join(d, "swarm.json")
-        ack_path = os.path.join(d, ".panopticon", "unenforced-ack.json")
-        cwd = os.getcwd()
-
-        try:
-            os.chdir(d)
-            rc_refused = dispatch.main(["--emit-kimi-swarm", plan_path,
-                                        "--out", out_path, "--agents-dir", empty_reg])
-        finally:
-            os.chdir(cwd)
-        self.assertNotEqual(rc_refused, 0)            # not a silent rc 0
-        self.assertFalse(os.path.exists(out_path))
-        self.assertFalse(os.path.exists(ack_path))
-
-        try:
-            os.chdir(d)
-            stderr = io.StringIO()
-            with contextlib.redirect_stderr(stderr):
-                rc_allowed = dispatch.main(["--emit-kimi-swarm", plan_path,
-                                            "--out", out_path, "--agents-dir", empty_reg,
-                                            "--allow-unenforced"])
-        finally:
-            os.chdir(cwd)
-        self.assertNotEqual(rc_allowed, 0)            # fail-closed even when allowed
-        self.assertFalse(os.path.exists(out_path))
-        self.assertFalse(os.path.exists(ack_path))
-        self.assertIn("registered shell", stderr.getvalue())
-
-    def test_emit_kimi_swarm_stale_enforced_true_passes_when_still_registered(self):
-        # Control: same enforced:true plan, but the shell IS still registered in
-        # --agents-dir -> no gating, no ack, clean emit.
-        plan = [{"role": "panel_review", "agent": "panopticon-panel-review",
-                 "enforced": True, "model": {"model": "secondary"},
-                 "prompt": "p", "out_file": ".panopticon/f.json"}]
-        d = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
-        reg = os.path.join(d, "agents")
-        os.makedirs(reg)
-        with open(os.path.join(reg, "panopticon-panel-review.md"), "w") as fh:
-            fh.write("---\nname: panopticon-panel-review\n---\nbody\n")
-        plan_path = os.path.join(d, "plan.json")
-        with open(plan_path, "w", encoding="utf-8") as fh:
-            json.dump(plan, fh)
-        out_path = os.path.join(d, "swarm.json")
-        ack_path = os.path.join(d, ".panopticon", "unenforced-ack.json")
-        cwd = os.getcwd()
-        try:
-            os.chdir(d)
-            rc = dispatch.main(["--emit-kimi-swarm", plan_path,
-                                "--out", out_path, "--agents-dir", reg])
-        finally:
-            os.chdir(cwd)
-        self.assertEqual(rc, 0)
-        self.assertTrue(os.path.exists(out_path))
-        self.assertFalse(os.path.exists(ack_path))    # enforced live => no ack
-
-
 class TestEmitHostAgents(unittest.TestCase):
     def test_claude_files_written_for_all_roles(self):
         with tempfile.TemporaryDirectory() as d:
             written = dispatch.emit_host_agents("claude", d)
             names = sorted(os.path.basename(p) for p in written)
-            self.assertEqual(names, ["panopticon-advisor.md", "panopticon-domain-advisor.md",
+            # #run10: the 4.x panel_review/lens_sweep shells retired with their
+            # roles; the registered set is the 5.x matrix + scout + advisor.
+            self.assertEqual(names, ["panopticon-advisor.md",
+                                     "panopticon-domain-advisor.md",
                                      "panopticon-domain-panel.md",
-                                     "panopticon-lens-sweep.md",
-                                     "panopticon-panel-review.md", "panopticon-scout.md"])
+                                     "panopticon-scout.md"])
 
     def test_claude_frontmatter_is_enforcement_shell(self):
         with tempfile.TemporaryDirectory() as d:
             dispatch.emit_host_agents("claude", d)
-            with open(os.path.join(d, "panopticon-panel-review.md"), encoding="utf-8") as fh:
+            with open(os.path.join(d, "panopticon-domain-panel.md"), encoding="utf-8") as fh:
                 text = fh.read()
-            self.assertIn("name: panopticon-panel-review", text)
-            # panel_review holds scoped Write (#436): it self-writes its
+            self.assertIn("name: panopticon-domain-panel", text)
+            # domain_panel holds scoped Write (#436): it self-writes its
             # out_file; the write-guard hook (Tasks 4-5) confines the write.
             self.assertIn("tools: Read, Grep, Glob, Write", text)
             self.assertIn("model: sonnet", text)
@@ -1165,8 +348,7 @@ class TestEmitHostAgents(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             dispatch.emit_host_agents("claude", d)
             for fname, model in (("panopticon-scout.md", "haiku"),
-                                 ("panopticon-lens-sweep.md", "haiku"),
-                                 ("panopticon-panel-review.md", "sonnet"),
+                                                                  ("panopticon-domain-panel.md", "sonnet"),
                                  # #1029: tool-advisor -> haiku; the cell
                                  # domain-advisor (incl. backup) stays opus.
                                  ("panopticon-advisor.md", "haiku"),
@@ -1178,7 +360,7 @@ class TestEmitHostAgents(unittest.TestCase):
     def test_kimi_dialect_has_disallowed_tools(self):
         with tempfile.TemporaryDirectory() as d:
             dispatch.emit_host_agents("kimi", d)
-            with open(os.path.join(d, "panopticon-lens-sweep.md"), encoding="utf-8") as fh:
+            with open(os.path.join(d, "panopticon-domain-panel.md"), encoding="utf-8") as fh:
                 text = fh.read()
             self.assertIn("disallowedTools:", text)
             self.assertIn("- Bash", text)
@@ -1186,11 +368,11 @@ class TestEmitHostAgents(unittest.TestCase):
     def test_codex_toml_agents_are_read_only(self):
         with tempfile.TemporaryDirectory() as d:
             written = dispatch.emit_host_agents("codex", d)
-            self.assertEqual(len(written), 6)
+            self.assertEqual(len(written), 4)   # #run10: 4.x roles retired
             self.assertTrue(all(path.endswith(".toml") for path in written))
-            with open(os.path.join(d, "panopticon-panel-review.toml"), encoding="utf-8") as fh:
+            with open(os.path.join(d, "panopticon-domain-panel.toml"), encoding="utf-8") as fh:
                 text = fh.read()
-            self.assertIn('name = "panopticon-panel-review"', text)
+            self.assertIn('name = "panopticon-domain-panel"', text)
             self.assertIn('model = "gpt-5.6-terra"', text)
             self.assertIn('model_reasoning_effort = "high"', text)
             self.assertIn('sandbox_mode = "read-only"', text)
@@ -1199,7 +381,7 @@ class TestEmitHostAgents(unittest.TestCase):
     def test_kimi_agent_file_includes_model_preference_and_when_to_use(self):
         with tempfile.TemporaryDirectory() as d:
             paths = dispatch.emit_host_agents("kimi", d)
-            self.assertEqual(len(paths), 6)
+            self.assertEqual(len(paths), 4)   # #run10: 4.x roles retired
             for p in paths:
                 with open(p, encoding="utf-8") as fh:
                     content = fh.read()
@@ -1209,13 +391,13 @@ class TestEmitHostAgents(unittest.TestCase):
 
             # role-specific preferences
             scout = os.path.join(d, "panopticon-scout.md")
-            lens_sweep = os.path.join(d, "panopticon-lens-sweep.md")
-            panel_review = os.path.join(d, "panopticon-panel-review.md")
+            domain_advisor = os.path.join(d, "panopticon-domain-advisor.md")
+            panel_review = os.path.join(d, "panopticon-domain-panel.md")
             advisor = os.path.join(d, "panopticon-advisor.md")
             with open(scout, encoding="utf-8") as fh:
                 self.assertIn("model_preference: primary", fh.read())
-            with open(lens_sweep, encoding="utf-8") as fh:
-                self.assertIn("model_preference: primary", fh.read())
+            with open(domain_advisor, encoding="utf-8") as fh:
+                self.assertIn("model_preference:", fh.read())
             with open(panel_review, encoding="utf-8") as fh:
                 self.assertIn("model_preference: secondary", fh.read())
             with open(advisor, encoding="utf-8") as fh:
@@ -1247,9 +429,8 @@ class TestEmitHostAgents(unittest.TestCase):
             self.assertEqual(rc, 0)
             for fname in (
                 "panopticon-scout.md",
-                "panopticon-panel-review.md",
-                "panopticon-lens-sweep.md",
-                "panopticon-advisor.md",
+                "panopticon-domain-panel.md",
+                                "panopticon-advisor.md",
             ):
                 self.assertTrue(
                     os.path.isfile(os.path.join(d, fname)),
@@ -1277,8 +458,8 @@ class TestEmitHostAgents(unittest.TestCase):
 class TestVerifyPlan(unittest.TestCase):
     """#493 R1/R2: dispatch-time plan re-verification + hash-bound ack."""
 
-    def _entry(self, enforced=True, role="panel_review"):
-        return {"role": role, "agent": "panopticon-panel-review",
+    def _entry(self, enforced=True, role="domain_panel"):
+        return {"role": role, "agent": "panopticon-domain-panel",
                 "enforced": enforced, "scope_bound": True,
                 "out_file": ".panopticon/x.json"}
 
@@ -1291,7 +472,7 @@ class TestVerifyPlan(unittest.TestCase):
 
     def test_enforced_entry_with_live_shell_is_clean(self):
         with tempfile.TemporaryDirectory() as d:
-            with open(os.path.join(d, "panopticon-panel-review.md"), "w", encoding="utf-8") as fh:
+            with open(os.path.join(d, "panopticon-domain-panel.md"), "w", encoding="utf-8") as fh:
                 fh.write("x")
             problems = dispatch.verify_plan([self._entry(enforced=True)],
                                             host="claude", agents_dir=d)
@@ -1318,44 +499,3 @@ class TestVerifyPlan(unittest.TestCase):
         self.assertEqual(problems, [])
 
 
-class TestReviewRootPinning(unittest.TestCase):
-    """#975: prompts must pin the review root -- reviewers/advisors inherit
-    the session cwd, and relative paths made them read the wrong checkout
-    (false gate verdicts on the PR-974 release scan)."""
-
-    def _profile(self):
-        return {"group": "g", "files": ["appdir/x.py", "appdir/y.py"],
-                "depth": "standard", "panels": ["code"],
-                "lenses": {"code": [
-                    {"name": "structure", "spawn": True, "priority": 1,
-                     "depth_threshold": "shallow"}]}}
-
-    def test_reviewer_prompts_carry_absolute_worktree_paths(self):
-        root = os.path.join(os.sep, "tmp", "pr-worktree")
-        plan = dispatch.build_plan(self._profile(), host="kimi", root=root)
-        for e in plan:
-            self.assertIn(os.path.join(root, "appdir", "x.py"), e["prompt"])
-            # no bare relative path left in the rendered file list
-            self.assertNotIn(" appdir/x.py", e["prompt"].replace(
-                os.path.join(root, "appdir", "x.py"), ""))
-            # entry["files"] stays repo-relative (out_of_scope/swarm contract)
-            self.assertEqual(e["files"], ["appdir/x.py", "appdir/y.py"])
-
-    def test_advisor_prompts_carry_repo_root_header(self):
-        with tempfile.TemporaryDirectory() as d:
-            queue = {"version": "4.3.2", "run_id": "run-test",
-                     "cut_by_max_verify": 0, "entries": [
-                {"queue_id": "a" * 16, "priority": 1,
-                 "finding": {"id": "X-1", "title": "t", "severity": "HIGH",
-                             "confidence": "POSSIBLE", "panel": "code",
-                             "category": "logic",
-                             "location": {"file": "appdir/x.py", "line_start": 1}}}]}
-            qp = os.path.join(d, "verify-queue.json")
-            with open(qp, "w", encoding="utf-8") as fh:
-                json.dump(queue, fh)
-            out = os.path.join(d, "prompts")
-            written = dispatch.render_advisor_prompts(qp, out)
-            with open(written[0], encoding="utf-8") as fh:
-                text = fh.read()
-        self.assertTrue(text.startswith("Repo root: "))
-        self.assertIn(os.path.abspath(os.getcwd()), text.split("\n")[0])

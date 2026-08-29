@@ -2541,32 +2541,20 @@ class TestInternalFieldCleanup(unittest.TestCase):
 
 
 class TestGroupReMatchesDispatchNames(unittest.TestCase):
-    def test_matches_names_actually_produced_by_dispatch(self):
-        import scripts.dispatch as dispatch
+    def test_matches_names_actually_produced_by_the_driver(self):
+        # #run10: build_plan retired with the 4.x roles, so the producer of
+        # findings filenames is now the driver's review-cell path. GROUP_RE must
+        # still parse the group out of what the pipeline ACTUALLY writes -- that
+        # is the invariant this guards, independent of which module emits it.
+        import scripts.driver as driver
 
-        profile = {
-            "group": "changes_1",
-            "files": ["a.py"],
-            "depth": "standard",
-            "panels": ["security"],
-            "lenses": {
-                "security": [
-                    {
-                        "name": "injection",
-                        "spawn": True,
-                        "priority": 1,
-                        "depth_threshold": "shallow",
-                    }
-                ]
-            },
-        }
-        plan = dispatch.build_plan(profile, host="claude")
-        self.assertTrue(plan)
-        for inv in plan:
-            base = os.path.basename(inv["out_file"])
+        for group, domain in (("changes_1", "SEC"), ("Auth", "COD"),
+                              ("Ungrouped_1", "TST")):
+            base = os.path.basename(
+                driver._pano("/repo", "findings-%s-%s.json" % (group, domain)))
             m = syn.GROUP_RE.match(base)
             self.assertIsNotNone(m, base)
-            self.assertEqual(m.group(1), "changes_1", base)
+            self.assertEqual(m.group(1), group, base)
 
     def test_still_matches_legacy_2x_names(self):
         m = syn.GROUP_RE.match("findings-changes_1-security.json")

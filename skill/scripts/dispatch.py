@@ -7,13 +7,10 @@ import json
 import os
 import re
 import sys
-import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import depth_planner
 import model_resolver
 import plan_contract
-from discovery import panels_in_priority_order
 
 
 TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -93,8 +90,7 @@ def _load_template_cached(path, role_file):
 
 PLACEHOLDER_RE = re.compile(r"\{([a-z_]+)\}")
 
-ROLE_FILES = {"scout": "scout.md", "panel_review": "panel-review.md",
-              "lens_sweep": "lens-sweep.md", "advisor": "advisor.md",
+ROLE_FILES = {"scout": "scout.md", "advisor": "advisor.md",
               "domain_panel": "domain-panel.md",
               "domain_advisor": "domain-advisor.md"}
 CLAUDE_AGENTS_DIR = os.path.join(os.path.expanduser("~"), ".claude", "agents")
@@ -106,15 +102,7 @@ CODEX_AGENTS_DIR = os.path.join(CODEX_HOME, "agents")
 # registered enforcement shell, its tool policy is prompt-advisory only --
 # a general-purpose agent reading untrusted repo content would have full
 # Bash/Edit/Write. main() refuses to emit such a plan by default.
-REVIEWER_ROLES = {"panel_review", "lens_sweep", "domain_panel", "domain_advisor"}
-PANEL_LENSES = {
-    "code": ["structure", "correctness", "style"],
-    "test": ["coverage", "test_quality", "test_design"],
-    "security": ["known_vulns", "injection", "novel"],
-    "architecture": ["architecture"],
-    "database": ["database"],
-    "redteam": ["redteam"],
-}
+REVIEWER_ROLES = {"domain_panel", "domain_advisor"}
 
 _CHARTER = (
     "You are panopticon's `%s` reviewer (a registered enforcement shell).\n"
@@ -236,11 +224,6 @@ def render_prompt(role_file, mapping, host=None):
     single-word lowercase tokens.
     """
     meta, body = load_template(role_file)
-    if role_file in ("panel-review.md", "lens-sweep.md"):
-        mapping = dict(mapping)
-        for key, value in _delivery_fields(
-                host, mapping.get("out_file", ""), role_file).items():
-            mapping.setdefault(key, value)
     tokens = set(PLACEHOLDER_RE.findall(body))
     missing = sorted(t for t in tokens if t not in mapping)
     if missing:
@@ -326,32 +309,6 @@ def _lens_token(value):
     return value
 
 
-def _panel_lenses(scope_profile, panel_name):
-    """Validated scout lenses plus every deterministic baseline lens."""
-    raw = (scope_profile.get("lenses") or {}).get(panel_name, [])
-    if not isinstance(raw, list):
-        raise ValueError("ScopeProfile lenses.%s must be a list" % panel_name)
-    by_name = {}
-    extras = []
-    for lens in raw:
-        if not isinstance(lens, dict):
-            raise ValueError("ScopeProfile lens entries must be objects")
-        item = dict(lens)
-        name = _lens_token(item.get("name"))
-        item["name"] = name
-        if name not in by_name:
-            by_name[name] = item
-            extras.append(name)
-    ordered = []
-    baseline = PANEL_LENSES.get(panel_name, [])
-    for name in baseline:
-        ordered.append(by_name.get(name, {
-            "name": name, "spawn": False, "priority": 99,
-            "depth_threshold": "shallow"}))
-    ordered.extend(by_name[name] for name in extras if name not in baseline)
-    return ordered
-
-
 def load_group_assignment(groups_path, group_name):
     """Load one authoritative group assignment from discovery output."""
     try:
@@ -387,262 +344,10 @@ def load_group_files(groups_path, group_name):
     return load_group_assignment(groups_path, group_name)["files"]
 
 
-def _delivery_fields(host, out_file, role_file, run_id=None, group=None,
-                     panel=None, lens=None):
-    if host == "codex":
-        return {
-            "delivery_contract": (
-                'Return ONLY a raw JSON object `{"findings": [...]}` as your '
-                "final message. Do not write it yourself; the trusted Codex runner "
-                "validates and atomically publishes that response to `%s`." % out_file),
-            "side_effect_boundary": (
-                "Perform NO file writes, GitHub writes, repository mutations, "
-                "dispatches, credential access, or target-code execution. The "
-                "Codex runner enforces a read-only sandbox."),
-        }
-    if run_id is None:
-        delivery = (
-            'Write your findings as a raw JSON object `{"findings": [...]}` to `%s`, '
-            "then return a one-line confirmation as your final message. Write ONLY "
-            "that file — the write-guard hook blocks any other path." % out_file)
-    else:
-        metadata = json.dumps(
-            {"producer": "reviewer_self_write", "run_id": run_id,
-             # #1034: this delivery-contract path is reached only for
-             # panel-review/lens-sweep entries (render_prompt gates the contract
-             # to those two, and build_plan calls _delivery_fields only for
-             # them). domain-panel.md is rendered solely by the driver, so the
-             # old `domain_panel` branch here was dead — removed.
-             "role": ("lens_sweep" if role_file == "lens-sweep.md"
-                      else "panel_review"),
-             "panel": panel, "lens": lens, "group": group},
-            separators=(",", ":"))
-        delivery = (
-            'Write a raw JSON object `{"findings": [...], "_panopticon": %s}` to `%s`, '
-            "then return a one-line confirmation as your final message. Write ONLY "
-            "that file — the write-guard hook blocks any other path."
-            % (metadata, out_file))
-    if role_file == "lens-sweep.md":
-        boundary = "Do not perform GitHub writes, repo mutations, or credential mints."
-    else:
-        boundary = (
-            "Write ONLY your findings file at `%s`. Perform NO GitHub writes, NO "
-            "repo mutations, NO dispatches, NO credential mints, and NO OTHER "
-            "file writes — the write-guard hook enforces this." % out_file)
-    return {"delivery_contract": delivery, "side_effect_boundary": boundary}
-
-
 def _apply_codex_exec(entry, codex_exec, run_id):
     if codex_exec:
         entry.update({"execution": "codex_exec", "delivery": "return_json",
                       "run_id": run_id})
-
-
-def build_plan(scope_profile, host=None, model_overrides=None, agents_dir=None,
-               root=None, codex_exec=False, run_id=None,
-               authoritative_files=None, authoritative_group=None,
-               authoritative_panels=None, authoritative_depth=None,
-               authoritative_security_mode=None,
-               scope_bound=False):
-    """Return a DispatchPlan: list of agent invocations.
-
-    Each invocation entry has:
-    - role: lens_sweep | panel_review
-    - agent: custom agent name (or registered name if enforced)
-    - model: resolved model config dict
-    - panel: panel name
-    - lens: lens name (for lens_sweep; None for panel_review)
-    - files: list of repository-relative file paths to review
-    - group: group name
-    - depth: panel depth
-    - security_mode: security mode (standard | redteam)
-    - enforced: boolean, true if this role is registered in agents_dir
-    - lenses: list of non-spawned lens names (for panel_review)
-    - out_file: ABSOLUTE path where findings JSON should be written
-    - prompt: fully rendered task prompt text
-    - run_id: run identifier string or None
-    - scope_bound: boolean indicating if assignment is bound
-    - scope_sha256: SHA-256 digest of the assignment when scope_bound is True
-    - delivery / execution: optional delivery and execution contracts (e.g. for codex)
-
-    ``out_file`` is rooted at *root* (default: the current working directory,
-    i.e. the run's repo/worktree root) and emitted ABSOLUTE (#935). A reviewer
-    subagent whose cwd differs from the orchestrator's -- common on some hosts,
-    and guaranteed once #449's ``--pr`` worktree is in play -- would otherwise
-    resolve a repo-relative out_file against the wrong root: the write lands in
-    the wrong place and the write-guard (which realpaths its allowlist and the
-    incoming write) denies it with no useful signal. An absolute path resolves
-    identically from any cwd, so the reviewer write, the guard allowlist, and
-    group_runner's done-check all agree on one location.
-    """
-    host = host or _detect_host()
-    # Codex review plans are always executed through the trusted read-only
-    # adapter. Keeping this implicit prevents a `--host codex` plan from
-    # rendering return-JSON prompts that codex_runner then refuses (#4.3.0).
-    codex_exec = host == "codex" or codex_exec
-    if codex_exec and host != "codex":
-        raise ValueError("codex_exec requires host='codex'")
-    run_id = run_id or uuid.uuid4().hex
-    overrides = model_overrides or {}
-    group_name = _artifact_token(scope_profile.get("group", "unknown"), "group")
-    if authoritative_group is not None and group_name != authoritative_group:
-        raise ValueError("ScopeProfile group %r differs from expected group %r"
-                         % (group_name, authoritative_group))
-    files = scope_profile.get("files", [])
-    if not isinstance(files, list) or not all(isinstance(path, str) for path in files):
-        raise ValueError("ScopeProfile files must be a list of strings")
-    if authoritative_files is not None:
-        if len(files) != len(authoritative_files) or set(files) != set(authoritative_files):
-            raise ValueError("ScopeProfile files differ from authoritative group %r"
-                             % group_name)
-        files = list(authoritative_files)
-        scope_bound = True
-    depth = scope_profile.get("depth", "standard")
-    depth_order = plan_contract.DEPTH_ORDER
-    if depth not in depth_order:
-        raise ValueError("ScopeProfile has invalid depth %r" % depth)
-    root = os.path.abspath(root) if root else os.getcwd()
-    artifact_dir = plan_contract.artifact_root(root)
-    plan = []
-    panels = scope_profile.get("panels")
-    if not isinstance(panels, list) or not panels:
-        raise ValueError("ScopeProfile must schedule at least one panel")
-    if authoritative_panels is not None:
-        omitted = sorted(set(authoritative_panels) - set(panels))
-        if omitted:
-            raise ValueError("ScopeProfile omits authoritative panel(s): %s"
-                             % ", ".join(omitted))
-    if (authoritative_depth is not None
-            and depth_order.get(authoritative_depth, 99) > depth_order[depth]):
-        raise ValueError("ScopeProfile depth %r is below authoritative depth %r"
-                         % (depth, authoritative_depth))
-    profile_security = scope_profile.get("security_mode", "standard")
-    if (authoritative_security_mode is not None
-            and profile_security != authoritative_security_mode):
-        raise ValueError("ScopeProfile security_mode %r differs from authoritative %r"
-                         % (profile_security, authoritative_security_mode))
-    scope_sha256 = None
-    if scope_bound:
-        scope_sha256 = plan_contract.assignment_digest({
-            "name": group_name,
-            "files": authoritative_files if authoritative_files is not None else files,
-            "panels": authoritative_panels if authoritative_panels is not None else panels,
-            "depth": authoritative_depth if authoritative_depth is not None else depth,
-            "security_mode": (authoritative_security_mode
-                              if authoritative_security_mode is not None
-                              else profile_security),
-        })
-
-    # Compute registration directory once
-    reg_dir = _registration_dir(host, agents_dir)
-
-    # Pre-compute enforcement status for each role to avoid triple stat calls
-    panel_enforced = codex_exec or _is_registered(
-        reg_dir, ROLE_FILES["panel_review"], host)
-    lens_enforced = codex_exec or _is_registered(
-        reg_dir, ROLE_FILES["lens_sweep"], host)
-    panel_agent = (registered_agent_name(ROLE_FILES["panel_review"])
-                   if panel_enforced else agent_name("panel_review"))
-    lens_agent = (registered_agent_name(ROLE_FILES["lens_sweep"])
-                  if lens_enforced else agent_name("lens_sweep"))
-    files_abs = [os.path.join(root, f) for f in files]
-
-    for panel_name in panels_in_priority_order(panels):
-        panel_name = _artifact_token(panel_name, "panel")
-        if panel_name not in plan_contract.PANELS:
-            raise ValueError("unsupported panel %r" % panel_name)
-        panel_lenses = _panel_lenses(scope_profile, panel_name)
-        planner_profile = dict(scope_profile)
-        planner_profile["lenses"] = dict(scope_profile.get("lenses") or {})
-        planner_profile["lenses"][panel_name] = panel_lenses
-        spawned = depth_planner.plan_lenses(planner_profile, panel_name)
-        spawned_set = set(spawned)
-        non_spawned = [lens["name"] for lens in panel_lenses if lens["name"] not in spawned_set]
-
-        # main panel reviewer
-        panel_out_file = os.path.join(
-            artifact_dir,
-            "findings-%s-%s-panel_review.json" % (group_name, panel_name))
-        # #975: the PROMPT's file list is rendered ABSOLUTE (worktree-rooted).
-        # A dispatched subagent inherits the session cwd, so relative paths
-        # made reviewers read the session-root checkout instead of the PR
-        # worktree -- the read-side mirror of #935. entry["files"] stays
-        # repo-relative (the out_of_scope checker and swarm routing key on it).
-        panel_mapping = {
-            "panel": panel_name, "group": group_name,
-            "file_list": ", ".join(files_abs),
-            "depth": depth,
-            "security_mode": profile_security,
-            "lenses": "\n".join("- %s" % n for n in non_spawned) or "- (all lenses)",
-            "out_file": panel_out_file,
-        }
-        panel_mapping.update(_delivery_fields(
-            host, panel_out_file, "panel-review.md", run_id, group_name,
-            panel_name, None))
-        panel_entry = {
-            "role": "panel_review",
-            "agent": panel_agent,
-            "enforced": panel_enforced,
-            "model": model_resolver.resolve_model(host, "panel_review", overrides),
-            "panel": panel_name,
-            "lens": None,
-            "files": files,
-            "group": group_name,
-            "depth": depth,
-            "security_mode": profile_security,
-            "lenses": non_spawned,
-            "out_file": panel_out_file,
-            "prompt": render_prompt(ROLE_FILES["panel_review"], panel_mapping, host),
-            "run_id": run_id,
-            "scope_bound": scope_bound,
-            "scope_sha256": scope_sha256,
-        }
-        _apply_codex_exec(panel_entry, codex_exec, run_id)
-        plan.append(panel_entry)
-
-        # mechanical lens sweeps
-        for lens_name in spawned:
-            lens_name = _lens_token(lens_name)
-            sweep_out_file = os.path.join(
-                artifact_dir,
-                "findings-%s-%s-lens_sweep-%s.json" % (group_name, panel_name, lens_name))
-            sweep_mapping = {
-                "panel": panel_name, "group": group_name,
-                "file_list": ", ".join(files_abs),
-                "security_mode": scope_profile.get("security_mode", "standard"),
-                "depth": depth, "lens": lens_name,
-                "out_file": sweep_out_file,
-            }
-            sweep_mapping.update(_delivery_fields(
-                host, sweep_out_file, "lens-sweep.md", run_id, group_name,
-                panel_name, lens_name))
-            sweep_entry = {
-                "role": "lens_sweep",
-                "agent": lens_agent,
-                "enforced": lens_enforced,
-                "model": model_resolver.resolve_model(host, "lens_sweep", overrides),
-                "panel": panel_name,
-                "lens": lens_name,
-                "files": files,
-                "group": group_name,
-                "depth": depth,
-                "security_mode": profile_security,
-                "out_file": sweep_out_file,
-                "prompt": render_prompt(ROLE_FILES["lens_sweep"], sweep_mapping, host),
-                "run_id": run_id,
-                "scope_bound": scope_bound,
-                "scope_sha256": scope_sha256,
-            }
-            _apply_codex_exec(sweep_entry, codex_exec, run_id)
-            plan.append(sweep_entry)
-
-    return plan
-
-
-def emit_plan(plan, fh=None):
-    fh = fh or sys.stdout
-    json.dump(plan, fh, indent=2)
-    fh.write("\n")
 
 
 def render_advisor_prompts(queue_path, out_dir):
@@ -707,8 +412,6 @@ def render_advisor_prompts(queue_path, out_dir):
 
 
 _KIMI_UNENFORCED_PROFILE = {
-    "panel_review": "coder",
-    "lens_sweep": "explore",
     "scout": "explore",
     "advisor": "plan",
 }
@@ -763,110 +466,6 @@ def _swarm_description(entry):
         parts.append(lens)
     parts.append("for group %s" % group)
     return " ".join(parts)
-
-
-def emit_kimi_swarm(plan, agents_dir=None, verify_registration=False):
-    """Convert a DispatchPlan into Kimi Agent/AgentSwarm batches.
-
-    Entries with the same (subagent_type, model) are batched via AgentSwarm;
-    singletons become Agent calls. Each entry's fully rendered prompt is
-    passed as the task string, using AgentSwarm's {{item}} placeholder.
-
-    Every batch carries `routing`, index-aligned with `items` (or a single
-    dict for an Agent call): the orchestrator writes each returned result to
-    its entry's `out_file`, and the prompts alone cannot say which is which.
-
-    Pass `verify_registration=True` to re-check each enforced entry against
-    the live registration directory instead of trusting the plan's snapshot.
-    """
-    if not isinstance(plan, list):
-        raise ValueError("dispatch plan must be a list of entries, got %s"
-                         % type(plan).__name__)
-    reg_dir = _registration_dir("kimi", agents_dir) if verify_registration else None
-    grouped = {}
-    for entry in plan:
-        if not isinstance(entry, dict):
-            raise ValueError("dispatch plan entry must be an object, got %r" % (entry,))
-        model_cfg = entry.get("model")
-        if model_cfg is not None and not isinstance(model_cfg, dict):
-            raise ValueError("dispatch plan entry %r: model must be an object"
-                             % entry.get("role"))
-        agent = _kimi_subagent_type(entry, reg_dir, verify_registration)
-        model = (model_cfg or {}).get("model")
-        grouped.setdefault((agent, model), []).append(entry)
-
-    batches = []
-    for (agent, model), entries in grouped.items():
-        if len(entries) == 1:
-            entry = entries[0]
-            batches.append({
-                "tool": "Agent",
-                "subagent_type": agent,
-                "model": model,
-                "description": _swarm_description(entry),
-                "prompt": entry.get("prompt", ""),
-                "routing": _swarm_routing(entry),
-            })
-        else:
-            batches.append({
-                "tool": "AgentSwarm",
-                "subagent_type": agent,
-                "model": model,
-                "description": _swarm_description(entries[0]) + " (batch)",
-                "prompt_template": "{{item}}",
-                "items": [e.get("prompt", "") for e in entries],
-                "routing": [_swarm_routing(e) for e in entries],
-            })
-    return {"batches": batches}
-
-
-def _gate_unenforced(plan, allow, reg_dir=None):
-    """Reviewer roles in `plan` that lack a registered enforcement shell.
-
-    Returns (ok, unenforced): `unenforced` is the sorted set of REVIEWER_ROLES
-    present in `plan` with a falsy `enforced` flag (missing/null reads as
-    unenforced -- fail-safe, same rule as build_plan's own gate); `ok` is True
-    when there is nothing to gate on, or the caller passed `allow`. A non-list
-    `plan` gates on nothing here -- the caller's own JSON/shape validation
-    (e.g. emit_kimi_swarm's ValueError) is responsible for that failure mode.
-
-    When `reg_dir` is given, the stored `enforced` flag is re-verified against
-    live registration (#649): a plan built while a reviewer was registered
-    carries `enforced: true`, but registration can be removed before the plan
-    is turned into a swarm manifest in a later invocation. Such an entry is
-    folded into `unenforced` too, so the gate refuses / warns / acks on the
-    ACTUAL emit-time posture rather than a stale snapshot.  The downstream
-    emit_kimi_swarm(verify_registration=True) call fails closed rather than
-    silently downgrading.
-
-    Shared by the plan-emit path and --emit-kimi-swarm (#275/I3) so the two
-    cannot drift apart the way disclosure and enforcement did before this.
-    """
-    entries = plan if isinstance(plan, list) else []
-    unenforced = set()
-    for e in entries:
-        if not (isinstance(e, dict) and e.get("role") in REVIEWER_ROLES):
-            continue
-        if not e.get("enforced"):
-            unenforced.add(e["role"])
-        elif reg_dir is not None and not _is_registered(
-                reg_dir, ROLE_FILES.get(e["role"], "")):
-            unenforced.add(e["role"])
-    unenforced = sorted(unenforced)
-    return (not unenforced or allow), unenforced
-
-
-def _unenforced_refusal_message(unenforced, context="plan"):
-    action = "emit swarm manifest" if context == "swarm" else "emit plan"
-    return ("dispatch: refusing to %s — unenforced reviewer role(s): %s.\n"
-            "Tool policy would be prompt-advisory only (full Bash/Edit/Write on a "
-            "general-purpose agent reading untrusted repo content).\n"
-            "The write-guard backstops only Write/Edit/NotebookEdit, NOT Bash, so "
-            "it cannot close this gap (#680).\n"
-            "Register enforcement shells first:  python3 skill/scripts/dispatch.py "
-            "--emit-host-agents <host>\n"
-            "Or accept the risk explicitly with --allow-unenforced."
-            % (action, ", ".join(unenforced)))
 
 
 def plan_content_hash(plan):
@@ -933,34 +532,6 @@ def verify_plan(plan, host=None, agents_dir=None, ack=None,
     return problems
 
 
-def _write_unenforced_ack(unenforced, plan=None):
-    """Record an --allow-unenforced acceptance in .panopticon/unenforced-ack.json.
-
-    Records that the write-guard does NOT backstop Bash-based writes in this
-    mode (#680): an unenforced reviewer holds full Bash, and the session-wide
-    write-guard covers only Write/Edit/NotebookEdit, so the operator is
-    accepting that a prompt-injected reviewer could write via the shell with
-    the guard never consulted. The real control is an enforced shell.
-
-    Raises OSError on failure; callers must catch it and fail closed (a
-    write error right before a plan/manifest emission must never surface as
-    a bare traceback -- see the M1 guard)."""
-    os.makedirs(".panopticon", exist_ok=True)
-    with open(os.path.join(".panopticon", "unenforced-ack.json"), "w",
-              encoding="utf-8") as fh:
-        json.dump({"acknowledged": True, "roles": unenforced,
-                   # #493 R2: bind the ack to the exact plan content it
-                   # acknowledged; synthesize treats a non-matching ack as
-                   # stale (reports false + a stderr note).
-                   "plan_sha256": plan_content_hash(plan) if plan is not None else None,
-                   "write_guard_covers_bash": False,
-                   "note": ("unenforced reviewers hold Bash; the write-guard "
-                            "backstops only Write/Edit/NotebookEdit, so a "
-                            "shell-based write bypasses it. Use enforced "
-                            "shells to close this.")},
-                  fh, indent=2)
-
-
 def main(argv=None):
     ap = argparse.ArgumentParser(description="panopticon dispatch planner")
     ap.add_argument("profile", nargs="?", default=None, help="Path to ScopeProfile JSON")
@@ -969,8 +540,6 @@ def main(argv=None):
     ap.add_argument("--out", default=None, help="Write DispatchPlan JSON to this file")
     ap.add_argument("--render-advisor", metavar="QUEUE", default=None,
                     help="Render advisor prompts from a verify-queue JSON into --out DIR")
-    ap.add_argument("--emit-kimi-swarm", metavar="PLAN", default=None,
-                    help="Read a DispatchPlan JSON and emit a Kimi Agent/AgentSwarm manifest to --out")
     ap.add_argument("--emit-host-agents", metavar="HOST",
                     choices=["claude", "kimi", "codex"], default=None)
     ap.add_argument("--verify-plan", metavar="PLAN", action="append", default=None,
@@ -993,8 +562,6 @@ def main(argv=None):
     ap.add_argument("--codex-exec", action="store_true",
                     help="Compatibility alias; --host codex automatically uses the "
                         "trusted read-only codex_exec runner")
-    ap.add_argument("--model-lens-sweep", default=None)
-    ap.add_argument("--model-panel-review", default=None)
     ap.add_argument("--model-advisor", default=None)
     args = ap.parse_args(argv)
 
@@ -1021,49 +588,6 @@ def main(argv=None):
             print("dispatch: %s" % e, file=sys.stderr)
             return 1
         print("rendered %d advisor prompt(s) -> %s" % (len(written), args.out))
-        return 0
-    if args.emit_kimi_swarm:
-        if not args.out:
-            print("dispatch: --emit-kimi-swarm requires --out", file=sys.stderr)
-            return 2
-        try:
-            with open(args.emit_kimi_swarm, encoding="utf-8") as fh:
-                plan = json.load(fh)
-        except (OSError, ValueError) as e:
-            print("dispatch: cannot read plan %s: %s" % (args.emit_kimi_swarm, e), file=sys.stderr)
-            return 1
-        # Gate against LIVE registration, not the plan's stored snapshot (#649):
-        # a plan built with enforced:true whose shells were unregistered since
-        # must refuse / warn+ack here, not silently downgrade inside emit.
-        swarm_reg_dir = _registration_dir("kimi", args.agents_dir)
-        ok, unenforced = _gate_unenforced(plan, args.allow_unenforced, swarm_reg_dir)
-        if unenforced:
-            if not ok:
-                print(_unenforced_refusal_message(unenforced, context="swarm"), file=sys.stderr)
-                return 1
-            print("dispatch: WARNING — emitting swarm manifest with unenforced reviewer role(s): %s "
-                  "(acknowledged via --allow-unenforced)" % ", ".join(unenforced),
-                  file=sys.stderr)
-        try:
-            swarm = emit_kimi_swarm(plan, agents_dir=args.agents_dir,
-                                    verify_registration=True)
-        except ValueError as e:
-            print("dispatch: %s" % e, file=sys.stderr)
-            return 1
-        try:
-            with open(args.out, "w", encoding="utf-8") as fh:
-                json.dump(swarm, fh, indent=2)
-                fh.write("\n")
-        except OSError as e:
-            print("dispatch: cannot write swarm manifest: %s" % e, file=sys.stderr)
-            return 1
-        if unenforced:
-            try:
-                _write_unenforced_ack(unenforced, plan)
-            except OSError as e:
-                print("dispatch: cannot record unenforced ack: %s" % e, file=sys.stderr)
-                return 1
-        print("wrote Kimi swarm manifest (%d batch(es)) -> %s" % (len(swarm["batches"]), args.out))
         return 0
     if args.verify_plan:
         ack = None
@@ -1101,95 +625,10 @@ def main(argv=None):
             if not problems:
                 print("verify-plan: %s: OK (%d entries)" % (pth, len(plan)))
         return 1 if bad else 0
-    if not args.profile:
-        ap.error(
-            "profile is required unless --render-advisor, --emit-host-agents, "
-            "or --emit-kimi-swarm is given"
-        )
-
-    try:
-        with open(args.profile, encoding="utf-8") as fh:
-            profile = json.load(fh)
-    except FileNotFoundError:
-        print("dispatch: profile not found: %s" % args.profile, file=sys.stderr)
-        return 1
-    except json.JSONDecodeError as e:
-        print("dispatch: invalid JSON in profile %s: %s" % (args.profile, e), file=sys.stderr)
-        return 1
-
-    overrides = {}
-    if args.model_lens_sweep:
-        overrides["lens_sweep"] = args.model_lens_sweep
-    if args.model_panel_review:
-        overrides["panel_review"] = args.model_panel_review
-    if args.model_advisor:
-        overrides["advisor"] = args.model_advisor
-
-    authoritative_files = None
-    assignment = None
-    groups_path = args.groups
-    if groups_path is None:
-        default_groups = os.path.join(".panopticon", "groups.json")
-        if os.path.isfile(default_groups):
-            groups_path = default_groups
-    if groups_path is None:
-        print("dispatch: no authoritative groups.json; run discovery with "
-              "--out .panopticon/groups.json and pass --group-name", file=sys.stderr)
-        return 2
-    if not args.group_name:
-        print("dispatch: --groups requires --group-name", file=sys.stderr)
-        return 2
-    try:
-        assignment = load_group_assignment(groups_path, args.group_name)
-        authoritative_files = assignment["files"]
-    except ValueError as e:
-        print("dispatch: %s" % e, file=sys.stderr)
-        return 1
-
-    try:
-        plan = build_plan(profile, host=args.host, model_overrides=overrides,
-                  agents_dir=args.agents_dir, codex_exec=args.codex_exec,
-                  authoritative_files=authoritative_files,
-                  authoritative_group=args.group_name,
-                  authoritative_panels=assignment["panels"],
-                  authoritative_depth=assignment.get("depth"),
-                  authoritative_security_mode=assignment["security_mode"],
-                  scope_bound=groups_path is not None)
-    except ValueError as e:
-        print("dispatch: %s" % e, file=sys.stderr)
-        return 1
-
-    ok, unenforced = _gate_unenforced(plan, args.allow_unenforced)
-    if unenforced:
-        if not ok:
-            print(_unenforced_refusal_message(unenforced), file=sys.stderr)
-            return 1
-        print("dispatch: WARNING — emitting plan with unenforced reviewer role(s): %s "
-              "(acknowledged via --allow-unenforced)" % ", ".join(unenforced),
-              file=sys.stderr)
-
-    if args.out:
-        out_dir = os.path.dirname(os.path.abspath(args.out))
-        try:
-            os.makedirs(out_dir, exist_ok=True)
-        except OSError as e:
-            print("dispatch: cannot create output directory %s: %s" % (out_dir, e), file=sys.stderr)
-            return 1
-        try:
-            with open(args.out, "w", encoding="utf-8") as fh:
-                emit_plan(plan, fh)
-        except OSError as e:
-            print("dispatch: cannot write output file %s: %s" % (args.out, e), file=sys.stderr)
-            return 1
-    else:
-        emit_plan(plan)
-    if unenforced:
-        try:
-            _write_unenforced_ack(unenforced)
-        except OSError as e:
-            print("dispatch: cannot record unenforced ack: %s" % e, file=sys.stderr)
-            return 1
-    return 0
+    ap.error(
+        "nothing to do: pass --render-advisor, --emit-host-agents, "
+        "or --verify-plan"
+    )
 
 
 if __name__ == "__main__":

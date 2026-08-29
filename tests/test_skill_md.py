@@ -291,10 +291,11 @@ class TestScoutDoc(unittest.TestCase):
 class TestReviewerScopeFence(unittest.TestCase):
     """#441: reviewer templates carry the scope fence."""
 
-    def test_panel_and_lens_templates_have_fence(self):
+    def test_reviewer_templates_have_fence(self):
         # #run7 TST-A2A: domain-panel.md is the CURRENT 5.x dispatched reviewer;
         # its fence had zero coverage while two retired templates were checked.
-        for name in ("panel-review.md", "lens-sweep.md", "domain-panel.md"):
+        # #run10: those two retired templates are now deleted.
+        for name in ("domain-panel.md",):
             with open(os.path.join(ROOT, "agents", name), encoding="utf-8") as fh:
                 self.assertIn("Scope fence", fh.read(), name)
 
