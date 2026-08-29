@@ -5727,6 +5727,36 @@ class TestCostLedger(unittest.TestCase):
         self.assertEqual(phases, ["scout", "verify"])
         self.assertEqual(r["meta"]["cost"]["dispatches"][0]["count"], 0)
 
+    def test_tokens_surface_host_reported_usage(self):
+        # #run10 D4: the driver is a subprocess and cannot observe per-dispatch
+        # token usage -- it lives in the HOST's fan-out journal, so meta.cost.tokens
+        # sat permanently null while run-10 burned ~21.05M subagent tokens. A host
+        # that knows its usage writes usage.json; it is surfaced verbatim.
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "usage.json"), "w", encoding="utf-8") as fh:
+                json.dump({"total": 21053000, "by_phase": {"review": 10290000}}, fh)
+            usage = syn.load_run_usage(d)
+        self.assertEqual(usage["total"], 21053000)
+        r = syn.build_report([self._f("A-1", "a.py")], [], "t", "high",
+                             "2026-08-05T00:00:00Z", run_usage=usage)
+        self.assertEqual(r["meta"]["cost"]["tokens"]["total"], 21053000)
+
+    def test_tokens_stay_null_without_host_usage(self):
+        # No usage.json -> null, exactly as before. We never estimate tokens from
+        # the dispatch counts: a fabricated ledger is worse than an honest gap.
+        with tempfile.TemporaryDirectory() as d:
+            self.assertIsNone(syn.load_run_usage(d))                 # absent
+            with open(os.path.join(d, "usage.json"), "w", encoding="utf-8") as fh:
+                fh.write("{not json")
+            self.assertIsNone(syn.load_run_usage(d))                 # malformed
+            with open(os.path.join(d, "usage.json"), "w", encoding="utf-8") as fh:
+                json.dump({}, fh)
+            self.assertIsNone(syn.load_run_usage(d))                 # empty
+        self.assertIsNone(syn.load_run_usage(""))
+        r = syn.build_report([self._f("A-1", "a.py")], [], "t", "high",
+                             "2026-08-05T00:00:00Z")
+        self.assertIsNone(r["meta"]["cost"]["tokens"])
+
     def test_cost_in_report_schema(self):
         import json
 
