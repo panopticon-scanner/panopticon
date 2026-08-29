@@ -79,6 +79,24 @@ class TestSecurityWorkflowTrustBoundary(unittest.TestCase):
         self.assertIn("github.event_name == 'pull_request' &&", job_if)
         self.assertIn("head.repo.full_name == github.repository", job_if)
 
+        # #run9 TST-B1B: the four fragments above can ALL be present in a guard
+        # that is still WRONG -- a mis-parenthesization or a swapped ==/!= would
+        # route a fork through the trusted pull_request arm. Validate the ASSEMBLED
+        # boolean: each route is a parenthesized AND group with the CORRECT
+        # operator, the two are OR-combined, and push is OR-joined at the front.
+        compact = " ".join(job_if.split())
+        self.assertIn(                                  # fork route: FOREIGN head repo
+            "(github.event_name == 'pull_request_target' && "
+            "github.event.pull_request.head.repo.full_name != github.repository)",
+            compact)
+        self.assertIn(                                  # same-repo route: SAME head repo
+            "(github.event_name == 'pull_request' && "
+            "github.event.pull_request.head.repo.full_name == github.repository)",
+            compact)
+        self.assertIn(") || (", compact)                # the two routes are OR-combined
+        self.assertTrue(                                # push always runs, OR-joined first
+            compact.startswith("github.event_name == 'push' || ("))
+
     def test_only_trusted_controller_runs_gate_and_scanners(self):
         runs = self._run_text(self._workflow())
         self.assertIn("python controller/skill/scripts/run_tools.py", runs)
