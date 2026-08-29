@@ -139,7 +139,7 @@ def test_repo_scan_scope_dir_no_catalog_match_falls_back_to_leftover(tmp_path):
     data = json.loads(out.read_text())
     groups = data["groups"]
     assert [g["files"] for g in groups] == [["src/misc/other.py"]]
-    assert groups[0]["name"].startswith("._")
+    assert groups[0]["name"].startswith("Ungrouped_")
     assert data["ungrouped_files"] == ["src/misc/other.py"]
     assert data["counts"]["ungrouped"] == 1
 
@@ -179,7 +179,7 @@ def test_repo_scan_bare_scalar_match_group_does_not_swallow_whole_repo(tmp_path)
     assert by_name.get("Auth") == ["src/auth/login.py"]
     assert "Bad" not in by_name                     # never grouped -- match=[]
     assert data["ungrouped_files"] == ["src/bad/thing.py"]
-    leftover = [g for g in data["groups"] if g["name"].startswith("._")]
+    leftover = [g for g in data["groups"] if g["name"].startswith("Ungrouped_")]
     assert [f for g in leftover for f in g["files"]] == ["src/bad/thing.py"]
 
 
@@ -208,7 +208,7 @@ def test_repo_scan_bare_well_formed_matrix_groups_unchanged(tmp_path):
     by_name = {g["name"]: sorted(g["files"]) for g in data["groups"]}
     assert by_name["Auth"] == ["src/auth/login.py"]
     assert by_name["Checkout"] == ["src/checkout/cart.py", "src/checkout/pay.py"]
-    leftover = [g for g in data["groups"] if g["name"].startswith("._")]
+    leftover = [g for g in data["groups"] if g["name"].startswith("Ungrouped_")]
     assert [f for g in leftover for f in g["files"]] == ["src/misc/other.py"]
     assert data["ungrouped_files"] == ["src/misc/other.py"]
 
