@@ -582,6 +582,33 @@ class TestCoveragePhase(unittest.TestCase):
         # normalized in place: a STRICT reader now parses it (no fence left on disk)
         self.assertEqual(driver._load_json(sp)["group"], "Auth")
 
+    def test_scout_with_non_string_domain_elements_is_rejected(self):
+        # #run10 COD-B2A: the shape gate checked only that `domains` IS an array,
+        # so a nested/object ELEMENT passed and then crashed coverage_execute with
+        # an uncaught TypeError (unhashable list) mid-phase. It must be caught at
+        # the accept boundary and re-dispatched instead.
+        for bad in ([["COD"]], [{"x": 1}], ["COD", 7], [None]):
+            errs = driver._scout_shape_errors({"domains": bad})
+            self.assertTrue(errs, "accepted a bad domains payload: %r" % (bad,))
+            self.assertIn("only strings", " ".join(errs))
+        self.assertEqual(driver._scout_shape_errors({"domains": ["COD", "SEC"]}), [])
+        self.assertEqual(driver._scout_shape_errors({"domains": []}), [])
+        self.assertEqual(driver._scout_shape_errors({}), [])          # absent is fine
+
+    def test_malformed_scout_domains_redispatches_instead_of_crashing(self):
+        # End-to-end: the bad profile is DISCARDED and the scout re-emitted, not
+        # carried into coverage where it would blow up.
+        self._groups_json([{"name": "Auth", "files": ["a.py"]}])
+        self._groups_yml("groups:\n  Auth:\n    match: ['a.py']\n")
+        driver._write_json(driver._pano(self.root, "scout-Auth.json"),
+                           {"group": "Auth", "domains": [["COD"]]})
+        with mock.patch("scripts.driver.dispatch.render_prompt", return_value="B"), \
+             mock.patch("scripts.driver.dispatch.registered_agent_name",
+                        return_value="panopticon-scout"), \
+             contextlib.redirect_stderr(io.StringIO()):
+            result = driver.coverage_execute(self.root, self.manifest)
+        self.assertEqual(result.checkpoint, "scout")      # re-dispatched, no crash
+
     def test_prose_preamble_scout_is_recovered(self):
         # 3/25 run-9 scouts added a prose preamble BEFORE the fence; the tolerant
         # reader's balanced-brace scan recovers the object regardless.

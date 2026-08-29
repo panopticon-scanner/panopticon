@@ -2,7 +2,7 @@ import json
 import unittest
 from unittest import mock
 
-from _test_helpers import FakePopen
+from _test_helpers import FakePopen, first
 import scripts.tools.npm_audit as na
 
 NPM_AUDIT_SAMPLE = json.dumps({
@@ -86,8 +86,8 @@ class TestNpmAuditAdapter(unittest.TestCase):
     def test_parse_includes_provenance(self):
         findings = na.NpmAuditAdapter().parse(NPM_AUDIT_SAMPLE, "g1")
         self.assertTrue(findings)
-        self.assertEqual(findings[0]["provenance"]["discovered_by"], "tool:npm-audit")
-        self.assertEqual(findings[0]["provenance"]["confirmation_status"], "TOOL")
+        self.assertEqual(first(findings)["provenance"]["discovered_by"], "tool:npm-audit")
+        self.assertEqual(first(findings)["provenance"]["confirmation_status"], "TOOL")
 
     def test_invoke_runs_npm_audit_json(self):
         adapter = na.NpmAuditAdapter()
@@ -182,7 +182,7 @@ class TestNpmAuditAdapter(unittest.TestCase):
             }
         }).encode()
         findings = na.NpmAuditAdapter().parse(sample, "g1")
-        self.assertEqual(findings[0]["severity"], "MEDIUM")
+        self.assertEqual(first(findings)["severity"], "MEDIUM")
 
     def test_parse_omits_none_tool_evidence_fields_v1(self):
         sample = json.dumps({

@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from _test_helpers import FakePopen
+from _test_helpers import FakePopen, first
 import scripts.tools.osv_scanner as osv
 import scripts.tools.base as base
 
@@ -141,8 +141,8 @@ class TestOsvScannerAdapter(unittest.TestCase):
     def test_parse_includes_provenance(self):
         findings = osv.OsvScannerAdapter().parse(OSV_REAL_SAMPLE, "g1")
         self.assertTrue(findings)
-        self.assertEqual(findings[0]["provenance"]["discovered_by"], "tool:osv-scanner")
-        self.assertEqual(findings[0]["provenance"]["confirmation_status"], "TOOL")
+        self.assertEqual(first(findings)["provenance"]["discovered_by"], "tool:osv-scanner")
+        self.assertEqual(first(findings)["provenance"]["confirmation_status"], "TOOL")
 
     def test_invoke_runs_osv_scanner_json(self):
         adapter = osv.OsvScannerAdapter()

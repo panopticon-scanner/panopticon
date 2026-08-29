@@ -10,7 +10,7 @@ from unittest import mock
 
 import pytest
 
-from _test_helpers import FakePopen
+from _test_helpers import FakePopen, first
 import scripts.tools.pip_audit as pa
 
 
@@ -106,8 +106,8 @@ class TestPipAuditAdapter(unittest.TestCase):
                 findings1 = ctx1.run(adapter.parse, raw1, "g1")
                 findings2 = ctx2.run(adapter.parse, raw2, "g2")
 
-        self.assertEqual(findings1[0]["location"]["file"], "/tmp/fake1/requirements.txt")
-        self.assertEqual(findings2[0]["location"]["file"], "/tmp/fake2/requirements.txt")
+        self.assertEqual(first(findings1)["location"]["file"], "/tmp/fake1/requirements.txt")
+        self.assertEqual(first(findings2)["location"]["file"], "/tmp/fake2/requirements.txt")
 
     def test_parse_omits_none_tool_evidence_fields(self):
         sample = json.dumps({
@@ -183,8 +183,8 @@ class TestPipAuditAdapter(unittest.TestCase):
     def test_parse_includes_provenance(self):
         findings = pa.PipAuditAdapter().parse(PIP_AUDIT_SAMPLE, "g1")
         self.assertTrue(findings)
-        self.assertEqual(findings[0]["provenance"]["discovered_by"], "tool:pip-audit")
-        self.assertEqual(findings[0]["provenance"]["confirmation_status"], "TOOL")
+        self.assertEqual(first(findings)["provenance"]["discovered_by"], "tool:pip-audit")
+        self.assertEqual(first(findings)["provenance"]["confirmation_status"], "TOOL")
 
     def test_invoke_uses_requirements_txt_when_present(self):
         adapter = pa.PipAuditAdapter()

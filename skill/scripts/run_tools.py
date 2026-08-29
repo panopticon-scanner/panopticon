@@ -88,6 +88,31 @@ CONTAINER_CPUS = os.environ.get("PANOPTICON_TOOL_CPUS", "4")
 CONTAINER_PIDS_LIMIT = os.environ.get("PANOPTICON_TOOL_PIDS", "1024")
 
 
+def _privilege_drop_flags():
+    """Privilege-drop flags applied to every tool/adapter container (#run10
+    SEC-C1A).
+
+    This dispatch path runs attacker-influenced build logic -- a .csproj/.targets
+    can execute arbitrary code through build targets, and the module's own
+    docstring calls the roslyn path 'executes target build logic'. The container
+    had CPU/memory/PID ceilings and `--network none`, but nothing stopped a
+    process inside it from using Linux capabilities or gaining new privileges via
+    a setuid binary.
+
+    --cap-drop=ALL: a scanner needs no capabilities; dropping them removes the
+      whole capability-abuse class (raw sockets, mknod, chroot, ptrace-by-cap).
+    --security-opt=no-new-privileges: a setuid/setgid binary inside the image can
+      no longer raise privileges beyond the starting set.
+
+    NOT applied here: `--read-only`. Scanners legitimately write inside the
+    container (dependency-check unpacks, dotnet/MSBuild builds, tools spill to
+    /tmp), so a read-only rootfs needs a tuned tmpfs per tool and must be
+    validated against a real tool round -- a broken tool round is a worse
+    outcome than this residual. Tracked rather than half-applied.
+    """
+    return ["--cap-drop=ALL", "--security-opt=no-new-privileges"]
+
+
 def _resource_limit_flags():
     """docker-run resource-ceiling flags applied to every tool/adapter container.
 
@@ -506,6 +531,7 @@ def run_tools(target, tools, out_dir, image="panopticon-tools", runner=None, onl
                 cmd = cmd[:1] + ["--ini", "/src/.bandit"] + cmd[1:]
             out_path = os.path.join(out_dir, "%s.sarif" % tool)
             docker = ([docker_bin, "run", "--rm"] + _resource_limit_flags()
+                      + _privilege_drop_flags()
                       + ["--network", "none",
                          "-v", "%s:/src:ro" % os.path.abspath(target), image] + cmd)
             done = _capture_run("tool", tool, docker, out_path, runner)
@@ -518,7 +544,8 @@ def run_tools(target, tools, out_dir, image="panopticon-tools", runner=None, onl
         if adapter:
             ext = "sarif" if tool in LEGACY_SARIF_TOOLS else "json"
             out_path = os.path.join(out_dir, "%s.%s" % (tool, ext))
-            docker = [docker_bin, "run", "--rm"] + _resource_limit_flags()
+            docker = ([docker_bin, "run", "--rm"] + _resource_limit_flags()
+                      + _privilege_drop_flags())
             if tool not in ONLINE_ONLY:
                 docker.extend(["--network", "none"])
             # Mount the checkout's adapter code over the image's baked-in copy

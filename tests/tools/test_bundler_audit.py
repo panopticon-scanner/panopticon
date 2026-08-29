@@ -3,7 +3,7 @@ import sys
 import unittest
 from unittest import mock
 
-from _test_helpers import FakePopen
+from _test_helpers import FakePopen, first
 import scripts.tools.bundler_audit as ba
 
 BUNDLE_AUDIT_SAMPLE = b"""
@@ -104,8 +104,8 @@ class TestBundlerAuditAdapter(unittest.TestCase):
     def test_parse_includes_provenance(self):
         findings = ba.BundlerAuditAdapter().parse(BUNDLE_AUDIT_SAMPLE, "g1")
         self.assertTrue(findings)
-        self.assertEqual(findings[0]["provenance"]["discovered_by"], "tool:bundler-audit")
-        self.assertEqual(findings[0]["provenance"]["confirmation_status"], "TOOL")
+        self.assertEqual(first(findings)["provenance"]["discovered_by"], "tool:bundler-audit")
+        self.assertEqual(first(findings)["provenance"]["confirmation_status"], "TOOL")
 
     def test_parse_empty_findings(self):
         findings = ba.BundlerAuditAdapter().parse(b"", "g1")
@@ -161,7 +161,7 @@ class TestBundlerAuditAdapter(unittest.TestCase):
         self.assertEqual(findings[1]["tool_evidence"]["package_name"], "activestorage")
         self.assertEqual(findings[1]["severity"], "MEDIUM")
         self.assertEqual(findings[1]["citations"]["cve"], ["CVE-2026-33173"])
-        self.assertTrue(findings[0]["remediation"].startswith("Upgrade to a fixed version:"))
+        self.assertTrue(first(findings)["remediation"].startswith("Upgrade to a fixed version:"))
 
     def test_parse_json_empty_results_returns_empty_list(self):
         findings = ba.BundlerAuditAdapter().parse(b'{"results": []}', "g1")

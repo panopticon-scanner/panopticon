@@ -2,6 +2,7 @@ import contextlib, io, os, json, tempfile, unittest
 from unittest.mock import patch
 
 import scripts.ingest_tools as it
+from _test_helpers import first
 import json as _json
 import scripts.evidence as ev
 import scripts.tools as tools_mod
@@ -72,7 +73,7 @@ class TestIngest(unittest.TestCase):
     def test_sarif_uri_normalized_to_repo_relative(self):
         sarif = _sarif_fixture("file:///src/db/engine.py")
         out = it.sarif_to_findings(sarif, "semgrep", "g1", "SG")
-        self.assertEqual(out[0]["location"]["file"], "db/engine.py")
+        self.assertEqual(first(out)["location"]["file"], "db/engine.py")
 
     def test_ingest_dir_tolerant_of_structural_garbage(self):
         with tempfile.TemporaryDirectory() as d:
@@ -149,7 +150,7 @@ class TestIngest(unittest.TestCase):
         # dependency adapters do -- provenance.confirmation_reasoning keeps
         # carrying it only as the back-compat fallback for old artifacts.
         out = it.sarif_to_findings(SARIF, "semgrep", "g1", "SG")
-        f = out[0]
+        f = first(out)
         self.assertEqual(f["tool_evidence"]["rule_id"], "sql-injection")
         self.assertEqual(ev.tool_rule_id(f), "sql-injection")
 
@@ -195,7 +196,7 @@ class TestIngest(unittest.TestCase):
         sarif = _sarif_fixture("a.py")
         sarif["runs"][0]["results"][0]["message"]["text"] = "line one\nline\ttwo\r\nline three"
         out = it.sarif_to_findings(sarif, "semgrep", "g1", "SG")
-        self.assertEqual(out[0]["title"], "line one line two line three")
+        self.assertEqual(first(out)["title"], "line one line two line three")
 
     def test_ingest_tools_and_legacy_adapter_share_sarif_utils(self):
         # The legacy adapter and ingest_tools must both use the shared SARIF
@@ -452,4 +453,4 @@ class TestIngestDispositions(unittest.TestCase):
                 fh.write(ansi + json.dumps(payload).encode())
             findings = it.ingest_dir(d, "g1", include_fixtures=True)
         self.assertTrue(findings)
-        self.assertEqual(findings[0]["citations"]["cve"], ["CVE-0000-0001"])
+        self.assertEqual(first(findings)["citations"]["cve"], ["CVE-0000-0001"])

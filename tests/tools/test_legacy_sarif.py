@@ -2,7 +2,7 @@ import json
 import unittest
 from unittest import mock
 
-from _test_helpers import FakePopen
+from _test_helpers import FakePopen, first
 import scripts.tools.legacy_sarif as legacy
 from scripts.tools import ADAPTERS
 
@@ -55,7 +55,7 @@ class TestLegacySarifAdapter(unittest.TestCase):
         popen_mock.assert_called_once()
         called_args, called_kwargs = popen_mock.call_args
         self.assertEqual(called_kwargs.get("cwd"), None)
-        self.assertIn("/some/target", called_args[0])
+        self.assertIn("/some/target", first(called_args))
 
     def test_invoke_runs_gosec_in_target_directory(self):
         adapter = legacy.LegacySarifAdapter("gosec")
@@ -65,7 +65,7 @@ class TestLegacySarifAdapter(unittest.TestCase):
             adapter.invoke("/go/project")
         called_args, called_kwargs = popen_mock.call_args
         self.assertEqual(called_kwargs.get("cwd"), "/go/project")
-        self.assertNotIn("/src", called_args[0])
+        self.assertNotIn("/src", first(called_args))
 
     def test_invoke_raises_not_implemented_for_unknown_tool(self):
         adapter = legacy.LegacySarifAdapter("unknown")
@@ -133,7 +133,11 @@ class TestLegacySarifAdapter(unittest.TestCase):
         findings = adapter.parse(json.dumps(sarif).encode(), "g1")
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0]["severity"], "MEDIUM")
-        self.assertEqual(findings[0]["location"], {})
+        # #run10 COD-C3A: a location-less result keeps the SAME key shape as a
+        # located one (empty values, not a missing `file` key), so every consumer
+        # that reads location.file sees one shape. Was a bare {}.
+        self.assertEqual(findings[0]["location"], {"file": "", "line_start": None})
+        self.assertIn("file", findings[0]["location"])
 
     def test_parse_unknown_level_defaults_to_info(self):
         adapter = legacy.LegacySarifAdapter("semgrep")

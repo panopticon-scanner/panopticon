@@ -2,7 +2,7 @@ import json
 import unittest
 from unittest import mock
 
-from _test_helpers import FakePopen
+from _test_helpers import FakePopen, first
 import scripts.tools.cargo_audit as ca
 
 CARGO_AUDIT_SAMPLE = json.dumps({
@@ -71,8 +71,8 @@ class TestCargoAuditAdapter(unittest.TestCase):
     def test_parse_includes_provenance(self):
         findings = ca.CargoAuditAdapter().parse(CARGO_AUDIT_SAMPLE, "g1")
         self.assertTrue(findings)
-        self.assertEqual(findings[0]["provenance"]["discovered_by"], "tool:cargo-audit")
-        self.assertEqual(findings[0]["provenance"]["confirmation_status"], "TOOL")
+        self.assertEqual(first(findings)["provenance"]["discovered_by"], "tool:cargo-audit")
+        self.assertEqual(first(findings)["provenance"]["confirmation_status"], "TOOL")
 
     def test_parse_empty_findings(self):
         findings = ca.CargoAuditAdapter().parse(b"{}", "g1")
@@ -156,7 +156,7 @@ class TestCargoAuditAdapter(unittest.TestCase):
             }]}
         }).encode()
         findings = ca.CargoAuditAdapter().parse(sample, "g1")
-        self.assertEqual(findings[0]["severity"], "CRITICAL")
+        self.assertEqual(first(findings)["severity"], "CRITICAL")
 
     def test_parse_dict_cvss_field_uses_score_bucket(self):
         # Exercises the isinstance(cvss, dict) branch: a dict with numeric

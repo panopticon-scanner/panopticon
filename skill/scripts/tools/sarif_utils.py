@@ -118,7 +118,16 @@ def sarif_to_findings(sarif, tool_name, group, prefix, start=1):
             try:
                 level = str(res.get("level", "warning")).lower()
                 sev = LEVEL_TO_SEV.get(level, "INFO")
-                loc = {}
+                # #run10 COD-C3A: a location-less SARIF result is VALID (a
+                # config-wide or project-level finding from semgrep/bandit/trivy/
+                # gitleaks/gosec -- all of which route through this one shared
+                # converter). Emitting a bare {} left the finding with NO `file`
+                # key at all, so every consumer that reads location.file saw a
+                # different shape than the located case. Emit the same keys with
+                # empty values instead: the finding stays reportable and readers
+                # (ingest prune, reconcile's location_file, the delta gate) all
+                # already treat "" as "no file".
+                loc = {"file": "", "line_start": None}
                 locs = res.get("locations") or []
                 if locs:
                     phys = locs[0].get("physicalLocation", {})

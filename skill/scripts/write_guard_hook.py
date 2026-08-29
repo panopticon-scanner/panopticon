@@ -168,6 +168,33 @@ def _read_allowlist(allowlist_path):
     return {p for p in loaded if isinstance(p, str)}
 
 
+def _artifact_roots(paths):
+    """The `.panopticon` directory of each path that has one -- the only place a
+    legitimate findings out_file lives (#run10 SEC-C1D)."""
+    roots = set()
+    for p in paths:
+        parts = str(p).split(os.sep)
+        if ".panopticon" in parts:
+            roots.add(os.sep.join(parts[:parts.index(".panopticon") + 1]))
+    return roots
+
+
+def _confined_to_artifact_roots(existing, added):
+    """`existing` entries that sit under the same `.panopticon` tree as `added`.
+
+    An in-flight grant from a concurrent fan-out is always a findings out_file in
+    that tree, so it survives (the #11 property). A pre-planted entry pointing
+    anywhere else -- a source file, a dotfile in $HOME -- does not, and can no
+    longer buy write access off the back of our install. With no anchor (a plan
+    whose out_files carry no `.panopticon` segment) nothing is carried forward:
+    fail closed rather than trust an unanchored file."""
+    roots = _artifact_roots(added)
+    if not roots:
+        return set()
+    return {p for p in existing
+            if any(str(p) == r or str(p).startswith(r + os.sep) for r in roots)}
+
+
 def _atomic_write_json(path, data, indent=None):
     parent = os.path.dirname(path) or "."
     os.makedirs(parent, exist_ok=True)
@@ -211,7 +238,16 @@ def install(plan, settings_path=".claude/settings.local.json",
     # (findings-<group>-<domain>.json), so a paired uninstall(plan=...) can later
     # drop exactly this call's paths without disturbing another fan-out's.
     added = allowlist_from_plan(plan)
-    _atomic_write_json(allowlist_path, sorted(_read_allowlist(allowlist_path) | added))
+    # #run10 SEC-C1D: the union above trusted whatever was already on disk. A
+    # target repo can ship its own `.panopticon/write-allowlist.json` (the path is
+    # inside the scanned tree), so a planted entry -- `~/.ssh/authorized_keys`, a
+    # source file -- was unioned in and became a WRITABLE target for every agent
+    # in the fan-out. Keep the #11 in-flight property, but only for entries that
+    # could plausibly be a real in-flight grant: a findings out_file lives under
+    # the SAME `.panopticon` tree as the paths we are adding. Anything outside it
+    # was not written by a trusted install and is dropped.
+    carried = _confined_to_artifact_roots(_read_allowlist(allowlist_path), added)
+    _atomic_write_json(allowlist_path, sorted(carried | added))
     _write_hook_entry(settings_path)
     return added
 

@@ -57,7 +57,21 @@ _SEC_CODE_HINTS = (
     "auth", "login", "session", "token", "oauth", "jwt",
     "crypto", "cipher", "encrypt", "secret", "password", "credential",
 )
-_SEC_FILE_HINTS = _SEC_SUPPLY_CHAIN_HINTS + _SEC_CODE_HINTS + _DB_FILE_HINTS
+# #run10 SEC-G2A: the code hints above key on security-relevant *names*, but a
+# group can carry the highest-value secret surface of all -- the secret-bearing
+# FILES themselves -- without any of those words appearing. A `.env`, a private
+# key, an `.npmrc` with a token: none match `auth`/`secret`/`password`, so a
+# groups.yml that never lists SEC exempted exactly the files most worth
+# reviewing. These are extension/exact-name markers, deliberately unambiguous:
+# a false positive costs one SEC cell, a false negative costs the review.
+_SEC_SECRET_FILE_HINTS = (
+    ".env", ".pem", ".key", ".p12", ".pfx", ".jks", ".keystore", ".asc",
+    "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "authorized_keys", "known_hosts",
+    ".npmrc", ".netrc", ".pgpass", "htpasswd", ".htaccess",
+    "secrets.", "credentials.", "keyfile", "vault",
+)
+_SEC_FILE_HINTS = (_SEC_SUPPLY_CHAIN_HINTS + _SEC_CODE_HINTS
+                   + _SEC_SECRET_FILE_HINTS + _DB_FILE_HINTS)
 
 
 def _any_hint(files, hints):
