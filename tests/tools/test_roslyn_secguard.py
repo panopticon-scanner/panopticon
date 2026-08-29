@@ -265,19 +265,24 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
             copied_src.append(src)
             copied_dst.append(dst)
             open(os.path.join(dst, "x.csproj"), "w").close()
+            # Simulate the scanner's SARIF output (Popen is faked, so nothing else
+            # writes out.sarif). #run9 OPS-E1A now fails closed on an ABSENT sarif,
+            # so the happy path must actually produce one.
+            with open(os.path.join(dst, "out.sarif"), "w") as fh:
+                fh.write('{"version": "2.1.0", "runs": []}')
             return 0
 
         def fake_popen(cmd, **kwargs):
             calls.append((cmd, kwargs))
-            return FakePopen(stdout=b"{}", stderr=b"", returncode=0)
+            return FakePopen(stdout=b"", stderr=b"", returncode=0)
 
         with mock.patch.object(rs, "_safe_copytree", side_effect=fake_safe_copytree), \
              mock.patch.object(tools_base.subprocess, "Popen", side_effect=fake_popen):
             with tempfile.TemporaryDirectory() as d:
                 open(os.path.join(d, "x.csproj"), "w").close()
                 raw, rc = adapter.invoke(d)
-                self.assertEqual(raw, b"{}")
                 self.assertEqual(rc, 0)
+                self.assertIn(b"runs", raw)          # the produced SARIF, not the fail path
                 self.assertEqual(copied_src, [d])
 
         cmd = calls[0][0]
@@ -289,8 +294,10 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
 
 
     def test_invoke_fails_closed_on_oversize_sarif(self):
-        # #run8 OPS-D1A: an oversize on-disk SARIF (read_capped_report -> None)
-        # must fail closed to b"{}" rather than being slurped whole into memory.
+        # #run8 OPS-D1A + #run9 OPS-E1A: an oversize on-disk SARIF
+        # (read_capped_report -> None) is NO usable report. It must fail closed to
+        # a MISSING signal (rc not in run_tool's ok_codes), not the old b"{}"/rc 0
+        # -- which read as a silent "zero findings" clean scan (the OPS-E1A bug).
         adapter = rs.RoslynSecGuardAdapter()
 
         def fake_popen(cmd, **kwargs):
@@ -304,8 +311,52 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
             with tempfile.TemporaryDirectory() as d:
                 open(os.path.join(d, "x.csproj"), "w").close()
                 raw, rc = adapter.invoke(d)
-        self.assertEqual(raw, b"{}")
-        self.assertEqual(rc, 0)
+        self.assertEqual(raw, b"")
+        self.assertNotIn(rc, (0, 1))              # recorded missing, not clean
+
+    def test_invoke_fails_closed_when_sarif_absent(self):
+        # #run9 OPS-E1A: the scanner exited ok (rc 0/1) but wrote NO out.sarif --
+        # a scan that never actually analyzed. It must be recorded MISSING, not a
+        # silent "zero findings" clean result.
+        adapter = rs.RoslynSecGuardAdapter()
+
+        def fake_popen(cmd, **kwargs):
+            return FakePopen(stdout=b"", stderr=b"", returncode=0)   # ok rc, no sarif
+
+        with mock.patch.object(rs, "_safe_copytree", return_value=0), \
+             mock.patch.object(tools_base.subprocess, "Popen", side_effect=fake_popen), \
+             contextlib.redirect_stderr(io.StringIO()):
+            with tempfile.TemporaryDirectory() as d:
+                open(os.path.join(d, "x.csproj"), "w").close()
+                raw, rc = adapter.invoke(d)                          # tmp/out.sarif never created
+        self.assertEqual(raw, b"")
+        self.assertNotIn(rc, (0, 1))
+
+    def test_safe_copytree_caps_total_bytes(self):
+        # #run9 OPS-D1A: a target that would blow past the byte cap raises before
+        # the breaching copy, so the adapter fails closed rather than filling disk.
+        with tempfile.TemporaryDirectory() as src, tempfile.TemporaryDirectory() as dst:
+            with open(os.path.join(src, "big.bin"), "wb") as fh:
+                fh.write(b"x" * 5000)
+            with mock.patch.object(rs, "_MAX_COPY_BYTES", 1000):
+                with self.assertRaises(ValueError):
+                    rs._safe_copytree(src, os.path.join(dst, "out"))
+
+    def test_safe_copytree_caps_file_count(self):
+        with tempfile.TemporaryDirectory() as src, tempfile.TemporaryDirectory() as dst:
+            for i in range(5):
+                open(os.path.join(src, "f%d.txt" % i), "w").close()
+            with mock.patch.object(rs, "_MAX_COPY_FILES", 2):
+                with self.assertRaises(ValueError):
+                    rs._safe_copytree(src, os.path.join(dst, "out"))
+
+    def test_safe_copytree_under_cap_copies_normally(self):
+        with tempfile.TemporaryDirectory() as src, tempfile.TemporaryDirectory() as dst:
+            with open(os.path.join(src, "a.txt"), "w") as fh:
+                fh.write("hello")
+            out = os.path.join(dst, "out")
+            rs._safe_copytree(src, out)
+            self.assertTrue(os.path.exists(os.path.join(out, "a.txt")))
 
 
 class TestRebaseSarifUris(unittest.TestCase):
