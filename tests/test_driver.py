@@ -1352,6 +1352,31 @@ class TestValidatePhase(unittest.TestCase):
             result = driver.validate_execute(d, {"run_id": "R", "worktree": None})
             self.assertEqual(result.kind, "advanced")
 
+    def test_baseline_probe_failure_fails_closed(self):
+        # #run9 OPS-E1A: a git-status PROBE FAILURE at run start (timeout/error) is
+        # NOT a non-git target -- it records a sentinel and makes validate fail
+        # CLOSED, never silently certify a tree whose baseline it never captured.
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, ".panopticon"))
+            def boom(*_a, **_k):
+                raise subprocess.TimeoutExpired(cmd="git", timeout=15)
+            buf = io.StringIO()
+            with contextlib.redirect_stderr(buf):
+                driver.capture_tree_baseline(d, runner=boom)
+            self.assertIn("fail closed", buf.getvalue())
+            with self.assertRaises(driver.DriverError):        # sentinel -> fail closed
+                driver.validate_execute(d, {"run_id": "R", "worktree": None})
+
+    def test_validate_probe_failure_fails_closed(self):
+        # A baseline was captured cleanly, but the validate-time git-status probe
+        # fails -- the tree cannot be confirmed unchanged, so fail closed, not clean.
+        d = self._git_repo()
+        driver.capture_tree_baseline(d)
+        def boom(*_a, **_k):
+            raise OSError("git unavailable")
+        with self.assertRaises(driver.DriverError):
+            driver.validate_execute(d, {"run_id": "R", "worktree": None}, runner=boom)
+
     def test_panopticon_prefix_sibling_is_flagged(self):
         # a repo-root file sharing the '.panopticon' prefix WITHOUT a '/' boundary
         # is a reviewer side effect, not an in-.panopticon artifact -> must raise.
