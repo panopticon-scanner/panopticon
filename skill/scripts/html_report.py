@@ -700,8 +700,9 @@ def _group_display_labels(report):
 
     Discovery sometimes emits letterless names like '._1'; derive a directory
     label from the group's files so the heatmap and findings read usefully.
-    A real, letter-bearing name is kept as-is. (The upstream fix is in
-    orchestrator group naming; this is a defensive display fallback.)
+    A real, letter-bearing name is kept as-is. (run-9 A5 fixed the upstream
+    naming -- the residual sink is now `Ungrouped_N` -- so this is a display
+    fallback for ARCHIVED reports written under the old `._N` scheme.)
     """
     labels = {}
     for g in report.get("groups") or []:

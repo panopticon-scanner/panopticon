@@ -108,7 +108,7 @@ class TestCatalogMatchGroups(unittest.TestCase):
             self.assertEqual(sorted(by_name["docs"]), ["README.md", "docs/notes.md"])
             # leftover chunks keep the legacy ._N naming
             self.assertIn("orphan/loner.py",
-                          [f for n, fs in by_name.items() if n.startswith("._")
+                          [f for n, fs in by_name.items() if n.startswith("Ungrouped_")
                            for f in fs])
             self.assertEqual(out["ungrouped_files"], ["orphan/loner.py"])
             self.assertEqual(out["counts"]["ungrouped"], 1)
@@ -219,8 +219,8 @@ class TestGroupObjParent(unittest.TestCase):
         self.assertEqual(by_name["UI:Admin"]["parent"], "UI")
         # leaf group self-parents
         self.assertEqual(by_name["docs"]["parent"], "docs")
-        # leftover ._N chunk self-parents
-        leftover_groups = [g for g in groups if g["name"].startswith("._")]
+        # leftover Ungrouped_N chunk self-parents (run-9 A5: was ._N)
+        leftover_groups = [g for g in groups if g["name"].startswith("Ungrouped_")]
         self.assertEqual(len(leftover_groups), 1)
         self.assertEqual(leftover_groups[0]["parent"], leftover_groups[0]["name"])
         self.assertEqual(leftovers, ["orphan.py"])
@@ -251,7 +251,7 @@ class TestCommonsCatalog(unittest.TestCase):
         names = {g["name"] for g in groups}
         self.assertIn("Docs", names)   # README.md -> Docs
         self.assertIn("Build", names)  # Dockerfile -> Build
-        self.assertTrue(any(n.startswith("._") for n in names))  # weird.xyz -> residual
+        self.assertTrue(any(n.startswith("Ungrouped_") for n in names))  # weird.xyz -> residual
         self.assertIn("src/app.py",
                        next(g["files"] for g in groups if g["name"] == "App"))
         # weird.xyz is the true residual -- disclosed, not silently absorbed.

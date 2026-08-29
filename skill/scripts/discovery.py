@@ -35,6 +35,12 @@ import plan_contract  # noqa: E402
 
 DEFAULT_MAX_PER_GROUP = 15
 
+# run-9 A5: base name for the residual (ungrouped) sink's chunks, `<name>_<i>`.
+# Must NOT start with a dot: the name flows into every derived artifact filename
+# (findings-<group>-<domain>.json, scout-<group>.json, coverage-<group>.json) and
+# a leading dot made them all hidden files.
+UNGROUPED_SINK = "Ungrouped"
+
 PANEL_PRIORITY = ["security", "redteam", "architecture", "database", "code", "test"]
 
 
@@ -901,7 +907,11 @@ def catalog_groups(files, catalog, max_per_group, security_mode):
     commons = {n: g for n, g in _commons_catalog().items() if n not in catalog}
     commons_named, residual = assign_by_catalog(leftovers, commons)
     groups.extend(_emit_named_groups(commons_named, max_per_group, security_mode))
-    groups.extend(_group_obj("._%d" % (i + 1), c, security_mode)
+    # run-9 A5: the residual sink used to be named `._N`. A leading dot made every
+    # derived artifact a hidden dotfile (`findings-._1-ARC.json`, `scout-._1.json`
+    # -- invisible in `ls` and most editor trees) and rendered as a meaningless
+    # group name in the report. `Ungrouped_N` says what it is and stays visible.
+    groups.extend(_group_obj(UNGROUPED_SINK + "_%d" % (i + 1), c, security_mode)
                   for i, c in enumerate(chunk_files(residual, max_per_group)))
     return groups, residual
 
@@ -1234,10 +1244,11 @@ def main(argv=None):
         result["ungrouped_files"] = leftovers
         if leftovers:
             print("catalog coverage: %d file(s) matched no group's `match` "
-                  "patterns and fell back to ._N chunks — see "
+                  "patterns and fell back to %s_N chunks — see "
                   "ungrouped_files; extend .panopticon/groups.yml to cover "
                   "them: %s"
-                  % (len(leftovers), ", ".join(leftovers[:10])
+                  % (len(leftovers), UNGROUPED_SINK,
+                     ", ".join(leftovers[:10])
                      + (" …" if len(leftovers) > 10 else "")),
                   file=sys.stderr)
     if pruned_fixtures:

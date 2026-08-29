@@ -924,7 +924,8 @@ class TestCoverageBridge(unittest.TestCase):
     def test_chunk_parent_parsing(self):
         self.assertEqual(driver._chunk_parent("Auth_1"), "Auth")
         self.assertEqual(driver._chunk_parent("skill_1_2"), "skill_1")
-        self.assertEqual(driver._chunk_parent("._3"), ".")   # leftover chunk
+        self.assertEqual(driver._chunk_parent("._3"), ".")   # legacy leftover chunk
+        self.assertEqual(driver._chunk_parent("Ungrouped_3"), "Ungrouped")  # run-9 A5
         self.assertIsNone(driver._chunk_parent("Auth"))
         self.assertIsNone(driver._chunk_parent("Auth_x"))
 
