@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from _test_helpers import FakePopen
+from _test_helpers import FakePopen, first
 import scripts.tools.eslint_security as es
 from scripts.tools import ADAPTERS
 
@@ -268,8 +268,8 @@ class TestEslintSecurityAdapter(unittest.TestCase):
     def test_parse_includes_provenance(self):
         findings = es.EslintSecurityAdapter().parse(ESLINT_SAMPLE, "g1")
         self.assertTrue(findings)
-        self.assertEqual(findings[0]["provenance"]["discovered_by"], "tool:eslint-security")
-        self.assertEqual(findings[0]["provenance"]["confirmation_status"], "TOOL")
+        self.assertEqual(first(findings)["provenance"]["discovered_by"], "tool:eslint-security")
+        self.assertEqual(first(findings)["provenance"]["confirmation_status"], "TOOL")
 
     def test_adapter_metadata(self):
         adapter = es.EslintSecurityAdapter()

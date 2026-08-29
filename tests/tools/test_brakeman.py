@@ -6,7 +6,7 @@ import shutil
 import unittest
 from unittest import mock
 
-from _test_helpers import FakePopen
+from _test_helpers import FakePopen, first
 import scripts.tools.brakeman as br
 from tests.tools.conftest import FIXTURE_ROOT
 
@@ -109,8 +109,8 @@ class TestBrakemanAdapter(unittest.TestCase):
     def test_parse_includes_provenance(self):
         findings = br.BrakemanAdapter().parse(BRAKEMAN_SAMPLE, "g1")
         self.assertTrue(findings)
-        self.assertEqual(findings[0]["provenance"]["discovered_by"], "tool:brakeman")
-        self.assertEqual(findings[0]["provenance"]["confirmation_status"], "TOOL")
+        self.assertEqual(first(findings)["provenance"]["discovered_by"], "tool:brakeman")
+        self.assertEqual(first(findings)["provenance"]["confirmation_status"], "TOOL")
 
     def test_parse_empty_findings(self):
         findings = br.BrakemanAdapter().parse(b"{}", "g1")
@@ -165,7 +165,7 @@ class TestBrakemanAdapter(unittest.TestCase):
                 }]
             }).encode()
             findings = adapter.parse(payload, "g1")
-            self.assertEqual(findings[0]["severity"], expected_sev, wt)
+            self.assertEqual(first(findings)["severity"], expected_sev, wt)
 
     def test_unmapped_warning_type_emits_stderr_and_defaults_medium(self):
         adapter = br.BrakemanAdapter()
@@ -181,7 +181,7 @@ class TestBrakemanAdapter(unittest.TestCase):
         buf = io.StringIO()
         with contextlib.redirect_stderr(buf):
             findings = adapter.parse(payload, "g1")
-        self.assertEqual(findings[0]["severity"], "MEDIUM")
+        self.assertEqual(first(findings)["severity"], "MEDIUM")
         self.assertIn("unmapped warning_type 'Future Mystery Warning'", buf.getvalue())
 
     def test_railsgoat_fixture_shape(self):
