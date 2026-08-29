@@ -9,8 +9,10 @@ Panopticon profiles a target codebase, groups files by risk, dispatches speciali
 The skill uses the open `SKILL.md` format and works with:
 
 - Native Agent-tool host — first-class: parallel fan-out via the Agent tool
-- `kimi` CLI — supported: AgentSwarm raw-prompt dispatch
-- `codex` CLI — supported: isolated parallel fan-out via `codex exec`
+- `kimi` / `codex` CLIs — **rebuilding for 5.2**: their 4.x fan-out
+  adapters were retired with the `panel_review`/`lens_sweep` roles the 5.x
+  driver no longer dispatches. `--emit-host-agents kimi|codex` still
+  registers the 5.x enforcement shells; the execution adapters return in 5.2.
 - Other agents that read `SKILL.md` files — degraded: sequential dispatch, same prompts
 
 ## Installation
@@ -64,12 +66,11 @@ ln -s "$(pwd)/skill" ~/.agents/skills/panopticon
 python3 skill/scripts/dispatch.py --emit-host-agents codex
 ```
 
-Invoke it with `$panopticon` or select it from `/skills`. Plans built with
-`dispatch.py --host codex` run through the bundled `codex_runner.py` adapter
-automatically. Note the scope: `--host codex` is a **plan-building/agent-emission**
-flag on `dispatch.py`. The 5.x driver itself takes `driver run --host
-claude|generic|gemini` — a Codex run drives the `generic` host path (see
-`docs/PANOPTICON.md`, "Modes").
+Invoke it with `$panopticon` or select it from `/skills`. This registers Codex's
+read-only role profiles for the 5.x roles. **The Codex execution adapter is being
+rebuilt for 5.2** — `codex_runner.py` drove the retired 4.x `panel_review`/
+`lens_sweep` roles and was removed with them. Until then, drive a Codex session
+through `driver run --host generic` (see `docs/PANOPTICON.md`, "Modes").
 
 ### Python Package / CLI (Development & Direct Use)
 

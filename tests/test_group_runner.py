@@ -53,11 +53,11 @@ class TestPendingEntries(unittest.TestCase):
 
 class TestFanOutCoverage(unittest.TestCase):
     def _plan_entry(self, d, group, panel, done):
-        out = os.path.join(d, "findings-%s-%s-panel_review.json" % (group, panel))
+        out = os.path.join(d, "findings-%s-%s-domain_panel.json" % (group, panel))
         if done:
             with open(out, "w") as fh:
                 json.dump({"findings": []}, fh)
-        return {"role": "panel_review", "out_file": out,
+        return {"role": "domain_panel", "out_file": out,
                 "group": group, "panel": panel}
 
     def test_planned_vs_executed_and_group_status(self):
@@ -125,8 +125,8 @@ class TestFanOutCoverage(unittest.TestCase):
         # findings-<group>-<panel>- filename. Every other test supplies the
         # structured fields, so this success branch was never exercised.
         self.assertEqual(
-            gr._group_panel({"role": "panel_review",
-                             "out_file": "/x/findings-g1-code-panel_review.json"}),
+            gr._group_panel({"role": "domain_panel",
+                             "out_file": "/x/findings-g1-code-domain_panel.json"}),
             ("g1", "code"))
 
     def test_unresolvable_entry_is_skipped_not_fatal(self):
@@ -266,8 +266,8 @@ class TestOutFileContentHashes(unittest.TestCase):
 class TestVerifyPlanEntries(unittest.TestCase):
     def _plan(self, enforced=True):
         return [{
-            "role": "panel_review",
-            "agent": "panopticon-panel-review",
+            "role": "domain_panel",
+            "agent": "panopticon-domain-panel",
             "enforced": enforced,
             "panel": "security",
             "lens": None,
@@ -290,7 +290,7 @@ class TestVerifyPlanEntries(unittest.TestCase):
 
     def test_enforced_with_registration_is_ok(self):
         reg = tempfile.mkdtemp()
-        with open(os.path.join(reg, "panopticon-panel-review.md"), "w") as fh:
+        with open(os.path.join(reg, "panopticon-domain-panel.md"), "w") as fh:
             fh.write("---\nname: test\n---\nbody\n")
         plan = self._plan(enforced=True)
         problems = gr.verify_plan_entries(plan, host="claude", agents_dir=reg)

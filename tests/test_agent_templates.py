@@ -5,7 +5,7 @@ import unittest
 import scripts.dispatch as dispatch
 
 
-ROLES = ["scout.md", "panel-review.md", "lens-sweep.md", "advisor.md", "setup-scan.md",
+ROLES = ["scout.md", "advisor.md", "setup-scan.md",
          "domain-panel.md", "domain-advisor.md"]
 
 
@@ -38,16 +38,17 @@ class TestUntrustedContentPreamble(unittest.TestCase):
     def test_finding_roles_route_injections_to_a_finding(self):
         # panel_review / lens_sweep emit findings, so a caught injection must
         # become one (category prompt-injection) rather than a silent miss.
-        for role_file in ("panel-review.md", "lens-sweep.md", "domain-panel.md"):
+        for role_file in ("domain-panel.md",):
             _meta, body = dispatch.load_template(role_file)
             self.assertIn('category: "prompt-injection"', body, role_file)
 
     def test_rendered_prompts_include_the_preamble(self):
         # The preamble must survive rendering, not just live in the file.
-        panel = dispatch.render_prompt("panel-review.md", {
-            "panel": "security", "group": "g1", "file_list": "a.py",
-            "security_mode": "standard", "depth": "deep",
-            "out_file": ".panopticon/f.json", "lenses": "x"})
+        panel = dispatch.render_prompt("domain-panel.md", {
+            "domain": "SEC", "group": "g1", "file_list": "a.py",
+            "security_mode": "standard", "tests": "t.py", "menu": "m",
+            "criteria": "c", "tool_hits": "", "run_id": "R",
+            "out_file": ".panopticon/f.json"})
         self.assertIn("UNTRUSTED DATA", panel)
         advisor = dispatch.render_prompt("advisor.md", {"claim_json": "{}"})
         self.assertIn("UNTRUSTED DATA", advisor)
@@ -79,7 +80,7 @@ class TestTemplateFrontmatter(unittest.TestCase):
         # that Write to the plan's out_file set. Edit/Bash/Agent stay forbidden
         # for every role.
         read_only = {"scout.md", "advisor.md", "setup-scan.md"}
-        scoped_write = {"panel-review.md", "lens-sweep.md", "domain-panel.md",
+        scoped_write = {"domain-panel.md",
                         "domain-advisor.md"}
         self.assertEqual(read_only | scoped_write, set(ROLES))
         for role_file in read_only:
