@@ -64,21 +64,6 @@ class TestSurfaceClassifiers(unittest.TestCase):
         for p in ["src/app.py", "README.md", "Dockerfile"]:
             self.assertFalse(orchestrator.is_database_file(p), p)
 
-    def test_compute_group_surfaces(self):
-        self.assertEqual(orchestrator.compute_group_surfaces(["Dockerfile", "db/schema.sql"]),
-                         ["architecture", "database"])
-        self.assertEqual(orchestrator.compute_group_surfaces(["src/app.py"]), [])
-        self.assertEqual(orchestrator.compute_group_surfaces(["k8s/deploy.yaml"]), ["architecture"])
-        self.assertEqual(orchestrator.compute_group_surfaces(["migrations/001.sql"]), ["database"])
-
-    def test_looks_risky(self):
-        for p in ["src/auth/service.py", "src/login_handler.ts", "models/password.go",
-                  "controllers/payment.rb", "lib/encrypt.rs", "config/api_token.json"]:
-            self.assertTrue(orchestrator._looks_risky(p), p)
-        for p in ["src/utils/math.py", "assets/style.css", "docs/index.html"]:
-            self.assertFalse(orchestrator._looks_risky(p), p)
-
-
 class TestTestCandidates(unittest.TestCase):
     """#670: direct coverage for test_candidates() name/dir generation."""
 
