@@ -1173,50 +1173,69 @@ def duplicate_out_files(plan):
     return sorted(dupes)
 
 
-_FINDINGS_NAME_RE = re.compile(
-    r"^findings-(?P<rest>.+)-(?P<role>panel_review|lens_sweep)"
-    r"(?:-(?P<lens>.+?))?\.json$")
+_FINDINGS_NAME_RE = re.compile(r"^findings-(?P<group>.+)-(?P<domain>[A-Za-z]+)\.json$")
 
 
 def _expected_from_filename(basename):
-    """(panel, role) declared by a reviewer findings filename, or None when the
-    name is not a reviewer findings file or its panel token is unrecognizable.
-    Panels are a fixed hyphen-free set, so the panel is the last token of the
-    `{group}-{panel}` prefix even when the group name contains hyphens."""
+    """(group, domain) declared by a reviewer findings filename, or None when
+    the name is not a reviewer findings file or its trailing token is not a
+    known OCRDb domain. Domains are a fixed hyphen-free set, so the domain is
+    the last token of the `{group}-{domain}` prefix even when the group name
+    contains hyphens.
+
+    #run10: this keyed on the 4.x `-panel_review` / `-lens_sweep-<lens>` suffix
+    until those roles were retired (#1441). The only findings filename the
+    pipeline can produce is driver._cell_entry's `findings-<group>-<domain>.json`
+    (driver.py), which never matched -- so every caller below silently returned
+    "nothing wrong" on every 5.x run. Keyed on the cell shape it now checks the
+    files that actually exist.
+    """
     m = _FINDINGS_NAME_RE.match(basename)
     if not m:
         return None
-    panel = m.group("rest").split("-")[-1]
-    if panel not in VALID_PANELS:
+    domain = m.group("domain")
+    if domain not in groups_schema.DOMAINS:
         return None
-    return panel, m.group("role")
+    return m.group("group"), domain
 
 
 def mislabeled_findings_files(paths):
-    """Reviewer findings files whose CONTENT contradicts the panel/role their
-    filename declares (#937) — a mis-targeted or overwritten write. Flags a
-    file as soon as any finding carries a source_role or panel that clearly
-    disagrees with the filename; absent fields are never second-guessed. This
-    is the byte-identity follow-up SKILL.md step 9 names."""
+    """Reviewer findings files whose CONTENT contradicts the (group, domain)
+    cell their filename declares (#937) — a mis-targeted or overwritten write.
+
+    Flags a file as soon as its `_panopticon` cell stamp, or any finding's
+    own `domain`, clearly disagrees with the filename; absent fields are
+    never second-guessed. This is the byte-identity follow-up SKILL.md
+    step 9 names. Distinct from driver._get_valid_cell_data, which guards the
+    same stamp at review-phase done-detection for the cells the driver itself
+    dispatched: this one screens whatever synthesize was actually handed."""
     bad = []
     for p in paths or []:
         exp = _expected_from_filename(os.path.basename(p))
         if not exp:
             continue
-        panel, role = exp
+        group, domain = exp
         try:
             with open(p, encoding="utf-8") as fh:
                 data = load_json_tolerant(fh.read())
         except (OSError, ValueError):
             continue
-        findings = (data or {}).get("findings") if isinstance(data, dict) else None
+        if not isinstance(data, dict):
+            continue
+        meta = data.get("_panopticon")
+        if isinstance(meta, dict):
+            md, mg = meta.get("domain"), meta.get("group")
+            if (md and md != domain) or (mg and mg != group):
+                bad.append(p)
+                continue
+        findings = data.get("findings")
         if not isinstance(findings, list):
             continue
         for f in findings:
             if not isinstance(f, dict):
                 continue
-            sr, fp = f.get("source_role"), f.get("panel")
-            if (sr and sr != role) or (fp and fp != panel):
+            fd = f.get("domain")
+            if fd and fd != domain:
                 bad.append(p)
                 break
     return sorted(set(bad))
@@ -1397,31 +1416,30 @@ def load_run_usage(run_dir):
     return data if isinstance(data, dict) and data else None
 
 
-def cost_dispatches(scout_profiles_seen, cost_fan_out, verify_queued,
-                    driver_cost=None):
+def cost_dispatches(scout_profiles_seen, verify_queued, driver_cost=None):
     """Assemble the meta.cost dispatch ledger rows. Pure.
 
-    Legacy path (`driver_cost` is None): the 4.x shape -- a scout row, the
-    panel_review/lens_sweep fan-out rows, and a single queued-count advisor
-    row. Byte-identical to the pre-#1030 ledger.
+    Plan-less path (`driver_cost` is None -- synthesize pointed at an artifacts
+    directory with no `dispatch-plan-driver.json`): a scout row and a single
+    queued-count advisor row.
 
     5.0 driver path (`driver_cost` is a dict of per-class counts): one row per
     real dispatch class -- the review domain-panel cells, the verify
     primary/backup domain-advisor rounds, the per-finding tool-advisor round,
-    and the deterministic tool scan. The legacy role filter never saw these
-    (driver review cells are role-less domain cells; verify is cell-batched,
-    not per-finding-queued; the tool scan is not an agent role at all), so they
-    were silently absent from the ledger (#1030).
+    and the deterministic tool scan.
+
+    #run10: the plan-less path also emitted `fan_out` rows counted by filtering
+    plan entries on `role in (panel_review, lens_sweep)`. Driver plan entries
+    carry no `role` at all (driver._driver_plan_entries says so outright), and
+    the 4.x roles that did are retired (#1441), so that filter matched nothing
+    on any run it could still be reached on -- it contributed an always-empty
+    list. Removed rather than left as a permanently-zero ledger section.
     """
     scout = [{"phase": "scout", "role": "scout", "model": None,
               "count": scout_profiles_seen}]
     if driver_cost is None:
-        return (scout
-                + [{"phase": "fan_out", "role": r.get("role"),
-                    "model": r.get("model"), "count": r.get("count", 0)}
-                   for r in (cost_fan_out or [])]
-                + [{"phase": "verify", "role": "advisor", "model": None,
-                    "count": verify_queued}])
+        return scout + [{"phase": "verify", "role": "advisor", "model": None,
+                         "count": verify_queued}]
     # Driver rows carry model=None like the scout/advisor rows above: the count
     # is the load-bearing figure, and per-model/token attribution rides the
     # `tokens` slot (null until a host exposes per-dispatch usage). The verify
@@ -1568,7 +1586,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                  scout_requested=None, scout_profiles_seen=0, out_of_scope=None,
                  doc_policy=None, resume=None, integrity=None,
                  diff_hunks=None, diff_context=5, gate_scope="on-diff",
-                 catalog=None, verdict_unloadable=None, cost_fan_out=None,
+                 catalog=None, verdict_unloadable=None,
                  verdict_run_id=None, coverages=None, ingested_paths=None,
                  verdict_bundles=None, driver_cost=None, tool_manifest=None,
                  run_usage=None):
@@ -1885,12 +1903,11 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
             # driver verdict bundles) — never hand-assembled. On the 5.0 driver
             # path `driver_cost` carries the per-class counts so review cells +
             # verify rounds + the tool scan are all represented (#1030); it is
-            # None on the legacy path, keeping the exact 4.x shape. `tokens`
-            # stays null until a host exposes per-dispatch usage.
+            # None only when there is no driver plan to read. `tokens` stays
+            # null until a host exposes per-dispatch usage.
             "cost": {
                 "dispatches": cost_dispatches(
-                    scout_profiles_seen, cost_fan_out,
-                    verdict_stats["queued"], driver_cost),
+                    scout_profiles_seen, verdict_stats["queued"], driver_cost),
                 # #run10 D4: host-reported usage when the host wrote usage.json
                 # (see load_run_usage); still null when it did not -- never an
                 # estimate derived from the counts above.
@@ -2602,19 +2619,6 @@ def main(argv=None):
               file=sys.stderr)
     tool_policy_mode = derive_tool_policy_mode(plans=_plan_lists)
     fan_out = group_runner.fan_out_coverage(_plan) if _plan else None
-    # meta.cost fan-out rows: reviewer dispatch counts grouped by (role, model)
-    # from the same plan union integrity/coverage read — sorted for the
-    # byte-identical re-run guarantee.
-    _cost_counts = {}
-    for _e in _plan or []:
-        if isinstance(_e, dict) and _e.get("role") in ("panel_review", "lens_sweep"):
-            _m = _e.get("model")
-            _m = _m.get("model") if isinstance(_m, dict) else None
-            _k = (_e["role"], _m)
-            _cost_counts[_k] = _cost_counts.get(_k, 0) + 1
-    cost_fan_out = [{"role": r, "model": m, "count": n}
-                    for (r, m), n in sorted(_cost_counts.items(),
-                                            key=lambda kv: (kv[0][0], kv[0][1] or ""))]
     _queue = None
     invalid_verify_queue = None
     queue_path = os.path.join(run_dir, "verify-queue.json")
@@ -2709,11 +2713,10 @@ def main(argv=None):
     coverages = load_coverage_files(run_dir)
 
     # meta.cost (#1030): on the 5.0 driver path, count every dispatch class from
-    # its own on-disk artifact. The legacy cost_fan_out role filter only sees
-    # the retired panel_review/lens_sweep roles, so the driver's review cells,
-    # verify rounds, and tool scan were absent from the ledger. driver_cost is
-    # None off the driver path (no dispatch-plan-driver.json), so cost_dispatches
-    # keeps the exact 4.x shape. #21: resolve the plan + verdicts under `run_dir`
+    # its own on-disk artifact -- review cells, verify rounds, and the tool scan.
+    # driver_cost is None off the driver path (no dispatch-plan-driver.json), and
+    # cost_dispatches then emits the scout + queued-advisor rows only.
+    # #21: resolve the plan + verdicts under `run_dir`
     # like every other run artifact. The 5.1 per-run-folder migration threaded
     # run_dir through the scout/coverage/manifest reads above but MISSED this one
     # (the plan lives at run_dir/dispatch-plan-driver.json, not flat .panopticon),
@@ -2753,7 +2756,6 @@ def main(argv=None):
                           tools_ran=tools_ran,
                           tool_dispositions=tool_dispositions,
                           fan_out=fan_out,
-                          cost_fan_out=cost_fan_out,
                           scout_requested=sorted(scout_requested),
                           scout_profiles_seen=scout_profiles_seen,
                           out_of_scope=out_of_scope,
