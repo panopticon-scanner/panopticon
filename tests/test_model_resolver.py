@@ -6,7 +6,46 @@ import unittest
 from unittest import mock
 from unittest.mock import patch
 
+import scripts.dispatch as dispatch
 import scripts.model_resolver as mr
+
+
+class TestFallbackMatchesProfiles(unittest.TestCase):
+    """The hardcoded fallback tables must agree with model-profiles.yml.
+
+    #run10: nothing tied them together, and they drifted. The tables carried
+    lens_sweep/panel_review long after #1441 made those unrequestable, while
+    never gaining domain_panel/domain_advisor for kimi or codex -- so with the
+    YAML unreadable, kimi's domain_advisor resolved to primary/131072 instead
+    of the k3/524288 the YAML specifies: the adjudication role quietly demoted
+    to a weaker model with a quarter of the context. Only claude had been kept
+    current (#1036). This pins both directions so the next role change cannot
+    land in one place only.
+    """
+
+    _TABLES = {"kimi": mr._KIMI_FALLBACK, "claude": mr._CLAUDE_FALLBACK,
+               "codex": mr._CODEX_FALLBACK}
+
+    def test_every_live_role_is_in_every_fallback_table(self):
+        for host, table in self._TABLES.items():
+            for role in dispatch.ROLE_FILES:
+                self.assertIn(role, table, "%s fallback is missing %s" % (host, role))
+
+    def test_fallback_tables_carry_no_unrequestable_roles(self):
+        for host, table in self._TABLES.items():
+            extra = set(table) - set(dispatch.ROLE_FILES)
+            self.assertEqual(extra, set(),
+                             "%s fallback has roles nothing can request: %s"
+                             % (host, sorted(extra)))
+
+    def test_fallback_equals_the_profile_for_every_live_role(self):
+        hosts = (mr._profiles().get("hosts") or {})
+        for host, table in self._TABLES.items():
+            for role in dispatch.ROLE_FILES:
+                self.assertEqual(
+                    mr._as_model_dict(hosts[host][role]), table[role],
+                    "%s/%s: model-profiles.yml and the fallback table disagree"
+                    % (host, role))
 
 
 class TestModelResolver(unittest.TestCase):
@@ -21,18 +60,18 @@ class TestModelResolver(unittest.TestCase):
         self.assertIsNone(mr._hardcoded_fallback("bogus", "banana")["model"])
 
     def test_kimi_defaults(self):
-        cfg = mr.resolve_model("kimi", "lens_sweep")
+        cfg = mr.resolve_model("kimi", "scout")
         self.assertEqual(cfg["model"], "primary")
         self.assertEqual(cfg["alias"], "kimi-for-coding")
-        self.assertEqual(cfg["max_output_size"], 8192)
+        self.assertEqual(cfg["max_output_size"], 16384)
         advisor = mr.resolve_model("kimi", "advisor")
         self.assertEqual(advisor["model"], "secondary")
         self.assertEqual(advisor["alias"], "k3")
 
     def test_kimi_roles_resolve_to_primary_secondary(self):
         self.assertEqual(mr.resolve_model("kimi", "scout")["model"], "primary")
-        self.assertEqual(mr.resolve_model("kimi", "lens_sweep")["model"], "primary")
-        self.assertEqual(mr.resolve_model("kimi", "panel_review")["model"], "secondary")
+        self.assertEqual(mr.resolve_model("kimi", "domain_panel")["model"], "secondary")
+        self.assertEqual(mr.resolve_model("kimi", "domain_advisor")["model"], "secondary")
         self.assertEqual(mr.resolve_model("kimi", "advisor")["model"], "secondary")
 
     def test_claude_defaults_preserved(self):
@@ -43,20 +82,20 @@ class TestModelResolver(unittest.TestCase):
         concrete model ids survive every override path.
         """
         self.assertEqual(
-            mr.resolve_model("claude", "panel_review", {"panel_review": "opus"})["model"],
+            mr.resolve_model("claude", "domain_panel", {"domain_panel": "opus"})["model"],
             "opus")
         with patch.dict(os.environ, {"PANOPTICON_MODEL_ADVISOR": "sonnet"},
                         clear=False):
             self.assertEqual(mr.resolve_model("claude", "advisor")["model"], "sonnet")
-        self.assertEqual(mr.registration_model("claude", "panel_review"), "sonnet")
+        self.assertEqual(mr.registration_model("claude", "domain_panel"), "sonnet")
 
     def test_kimi_override_is_normalized_to_a_dispatch_tier(self):
-        # k3 was panel_review's concrete alias before the tiers existed, so
-        # passing it as a --model override is the likely operator mistake.
-        cfg = mr.resolve_model("kimi", "panel_review", {"panel_review": "k3"})
+        # k3 is the reviewer roles' concrete alias, so passing it as a --model
+        # override is the likely operator mistake.
+        cfg = mr.resolve_model("kimi", "domain_panel", {"domain_panel": "k3"})
         self.assertEqual(cfg["model"], "secondary")
         self.assertEqual(cfg["alias"], "k3")
-        cfg_coding = mr.resolve_model("kimi", "panel_review", {"panel_review": "kimi-for-coding"})
+        cfg_coding = mr.resolve_model("kimi", "domain_panel", {"domain_panel": "kimi-for-coding"})
         self.assertEqual(cfg_coding["model"], "primary")
         self.assertEqual(cfg_coding["alias"], "kimi-for-coding")
         with contextlib.redirect_stderr(io.StringIO()) as err:
@@ -73,14 +112,14 @@ class TestModelResolver(unittest.TestCase):
 
     def test_claude_defaults(self):
         self.assertEqual(mr.resolve_model("claude", "scout")["model"], "haiku")
-        self.assertEqual(mr.resolve_model("claude", "lens_sweep")["model"], "haiku")
-        self.assertEqual(mr.resolve_model("claude", "panel_review")["model"], "sonnet")
+        self.assertEqual(mr.resolve_model("claude", "domain_panel")["model"], "sonnet")
+        self.assertEqual(mr.resolve_model("claude", "domain_advisor")["model"], "opus")
         # #1029: the per-finding tool-advisor is narrow single-claim work -> haiku
         self.assertEqual(mr.resolve_model("claude", "advisor")["model"], "haiku")
 
     def test_codex_defaults(self):
         self.assertEqual(mr.resolve_model("codex", "scout")["model"], "gpt-5.6-luna")
-        panel = mr.resolve_model("codex", "panel_review")
+        panel = mr.resolve_model("codex", "domain_panel")
         self.assertEqual(panel["model"], "gpt-5.6-terra")
         self.assertEqual(panel["model_reasoning_effort"], "high")
         advisor = mr.registration_config("codex", "advisor")
@@ -88,7 +127,7 @@ class TestModelResolver(unittest.TestCase):
         self.assertEqual(advisor["model_reasoning_effort"], "high")
 
     def test_unknown_host_falls_back(self):
-        self.assertIsNone(mr.resolve_model("generic", "panel_review")["model"])
+        self.assertIsNone(mr.resolve_model("generic", "domain_panel")["model"])
         self.assertIsNone(mr.resolve_model("someday-host", "scout")["model"])
 
     # Override precedence is host-agnostic, but only Kimi constrains the
@@ -133,7 +172,7 @@ class TestModelResolver(unittest.TestCase):
         self.assertEqual(profiles, {})
         self.assertIn("PyYAML not installed", stderr.getvalue())
         # Fallback still resolves a model.
-        self.assertEqual(mr.resolve_model("kimi", "lens_sweep")["model"], "primary")
+        self.assertEqual(mr.resolve_model("kimi", "scout")["model"], "primary")
 
     def test_unreadable_profiles_warns_and_falls_back(self):
         stderr = io.StringIO()
@@ -142,7 +181,7 @@ class TestModelResolver(unittest.TestCase):
                 profiles = mr._load_profiles()
         self.assertEqual(profiles, {})
         self.assertIn("cannot read model profiles", stderr.getvalue())
-        self.assertEqual(mr.resolve_model("kimi", "lens_sweep")["model"], "primary")
+        self.assertEqual(mr.resolve_model("kimi", "scout")["model"], "primary")
 
     def test_kimi_fallback_still_kimi_flavored(self):
         # With profiles unavailable, kimi host keeps its hardcoded models.
