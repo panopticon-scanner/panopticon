@@ -119,16 +119,6 @@ class TestFanOutCoverage(unittest.TestCase):
                              "out_file": "/x/findings-Auth-SEC.json"}),
             ("Auth", "SEC"))
 
-    def test_group_panel_regex_fallback_when_no_structured_fields(self):
-        # #run7 TST-A2C: the legacy 4.x fallback branch -- an entry with NO
-        # group/panel/domain keys is resolved purely from the
-        # findings-<group>-<panel>- filename. Every other test supplies the
-        # structured fields, so this success branch was never exercised.
-        self.assertEqual(
-            gr._group_panel({"role": "domain_panel",
-                             "out_file": "/x/findings-g1-code-domain_panel.json"}),
-            ("g1", "code"))
-
     def test_unresolvable_entry_is_skipped_not_fatal(self):
         # An entry with no group/panel keys and an out_file that doesn't match
         # the findings-{group}-{panel}- pattern is skipped, not crashed on.
@@ -263,42 +253,3 @@ class TestOutFileContentHashes(unittest.TestCase):
                 self.assertIsNone(checked)
 
 
-class TestVerifyPlanEntries(unittest.TestCase):
-    def _plan(self, enforced=True):
-        return [{
-            "role": "domain_panel",
-            "agent": "panopticon-domain-panel",
-            "enforced": enforced,
-            "panel": "security",
-            "lens": None,
-            "files": ["app.py"],
-            "group": "test_repo",
-            "depth": "standard",
-            "security_mode": "standard",
-            "lenses": [],
-            "out_file": os.path.join(tempfile.mkdtemp(), "out.json"),
-            "prompt": "review",
-            "run_id": "abc123",
-            "scope_bound": True,
-        }]
-
-    def test_enforced_without_registration_is_caught(self):
-        plan = self._plan(enforced=True)
-        problems = gr.verify_plan_entries(plan, host="claude", agents_dir=tempfile.mkdtemp())
-        self.assertTrue(problems)
-        self.assertIn("enforced:true but no registered shell", " ".join(problems))
-
-    def test_enforced_with_registration_is_ok(self):
-        reg = tempfile.mkdtemp()
-        with open(os.path.join(reg, "panopticon-domain-panel.md"), "w") as fh:
-            fh.write("---\nname: test\n---\nbody\n")
-        plan = self._plan(enforced=True)
-        problems = gr.verify_plan_entries(plan, host="claude", agents_dir=reg)
-        self.assertFalse(problems)
-
-    def test_codex_exec_entries_are_exempt(self):
-        plan = self._plan(enforced=True)
-        plan[0]["execution"] = "codex_exec"
-        plan[0]["delivery"] = "return_json"
-        problems = gr.verify_plan_entries(plan, host="claude", agents_dir=tempfile.mkdtemp())
-        self.assertFalse(problems)

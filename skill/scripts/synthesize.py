@@ -48,9 +48,9 @@ DISPATCH_PLAN_GLOB = "dispatch-plan*.json"
 # #5.0-16: the resumable driver emits ONE dedicated plan under this name. It
 # matches DISPATCH_PLAN_GLOB (so reconcile/coverage/snapshot see its out_files)
 # but declares matrix (group, domain) cells -- findings-<group>-<domain>.json --
-# not the 4.x panel-review shape, so load_dispatch_plans_detailed validates it
-# with plan_contract.driver_plan_issues rather than the panel contract. Every
-# OTHER dispatch-plan*.json stays on the panel validator, untouched.
+# not the 4.x panel-review shape. It is the only dispatch plan the pipeline
+# writes, and plan_contract.driver_plan_issues is the only contract left to
+# validate it against; any OTHER dispatch-plan*.json is rejected as stray.
 DRIVER_DISPATCH_PLAN = "dispatch-plan-driver.json"
 
 # Format version of the report DOCUMENT itself (the meta/summary/groups/findings
@@ -1043,44 +1043,14 @@ def _issue_sort(f):
     return (_sev_rank(f), 0 if eligible else 1)
 
 
-def _load_group_assignments(path):
-    """Return authoritative groups keyed by name, or an error string."""
-    try:
-        with open(path, encoding="utf-8") as fh:
-            data = json.load(fh)
-    except (OSError, ValueError) as exc:
-        return {}, "cannot read groups artifact: %s" % exc
-    groups = data.get("groups") if isinstance(data, dict) else None
-    if not isinstance(groups, list):
-        return {}, "groups artifact has no groups list"
-    assignments = {}
-    for group in groups:
-        if not isinstance(group, dict) or not isinstance(group.get("name"), str):
-            return {}, "groups artifact contains malformed group"
-        if group["name"] in assignments:
-            return {}, "groups artifact contains duplicate group %r" % group["name"]
-        if (not isinstance(group.get("files"), list)
-                or not all(isinstance(path, str) and path for path in group["files"])):
-            return {}, "group %r has malformed files" % group["name"]
-        if (not isinstance(group.get("panels"), list)
-                or not all(panel in plan_contract.PANELS for panel in group["panels"])):
-            return {}, "group %r has malformed panels" % group["name"]
-        if group.get("depth") not in plan_contract.DEPTH_ORDER:
-            return {}, "group %r has invalid depth" % group["name"]
-        assignment = dict(group)
-        assignment["security_mode"] = data.get("security_mode", "standard")
-        assignments[group["name"]] = assignment
-    return assignments, None
+def load_dispatch_plans_detailed(panopticon_dir=".panopticon"):
+    """Return (valid plans, files seen, invalid plan diagnostics).
 
-
-def load_dispatch_plans_detailed(panopticon_dir=".panopticon",
-                                 groups_path=None, root=None):
-    """Return (valid plans, files seen, invalid plan diagnostics)."""
+    #run10: dropped `groups_path`/`root`. Both existed only to feed the 4.x
+    panel plan's groups.json cross-validation (assignment_issues/output_issues),
+    retired with the roles it keyed on."""
     plans = []
     invalid = []
-    groups_path = groups_path or os.path.join(panopticon_dir, "groups.json")
-    assignments, groups_error = _load_group_assignments(groups_path)
-    root = root or os.getcwd()
     paths = sorted(glob.glob(os.path.join(panopticon_dir, DISPATCH_PLAN_GLOB)))
     for path in paths:
         try:
@@ -1089,30 +1059,23 @@ def load_dispatch_plans_detailed(panopticon_dir=".panopticon",
         except (OSError, ValueError) as exc:
             invalid.append({"file": path, "reason": "unreadable: %s" % exc})
             continue
-        # #5.0-16: route by filename. The driver's dispatch-plan-driver.json
-        # carries the matrix domain-cell shape (validated by driver_plan_issues);
-        # every other dispatch-plan*.json is a 4.x per-group panel plan validated
-        # by the panel contract. Both, when valid, feed _plan -> reconcile the
-        # same way; a malformed driver plan still lands in `invalid` (=>
-        # invalid_dispatch_plans => INCONCLUSIVE), preserving the semantics.
+        # #5.0-16: route by filename. dispatch-plan-driver.json carries the
+        # matrix domain-cell shape, validated by driver_plan_issues; a malformed
+        # one lands in `invalid` (=> invalid_dispatch_plans => INCONCLUSIVE).
+        #
+        # #run10: every OTHER dispatch-plan*.json used to be validated as a 4.x
+        # per-group panel plan. That contract was keyed on the retired
+        # panel_review/lens_sweep roles, so it rejected every plan the pipeline
+        # can write and accepted only plans nothing can emit -- retired with
+        # them. The branch's OTHER job was to fail closed on a stray
+        # dispatch-plan-*.json dropped into the artifacts dir, and that is kept
+        # explicitly: an unrecognized plan file is still INCONCLUSIVE, never
+        # silently ignored.
         if os.path.basename(path) == DRIVER_DISPATCH_PLAN:
             issues = plan_contract.driver_plan_issues(plan)
         else:
-            issues = plan_contract.plan_issues(plan)
-            issues.extend(plan_contract.output_issues(plan, root))
-            if not issues:
-                groups = {entry["group"] for entry in plan}
-                if len(groups) != 1:
-                    issues.append("plan entries do not name exactly one group")
-                elif groups_error:
-                    issues.append(groups_error)
-                else:
-                    group_name = next(iter(groups))
-                    assignment = assignments.get(group_name)
-                    if assignment is None:
-                        issues.append("group %r is absent from groups.json" % group_name)
-                    else:
-                        issues.extend(plan_contract.assignment_issues(plan, assignment))
+            issues = ["unrecognized dispatch-plan file (expected %s)"
+                      % DRIVER_DISPATCH_PLAN]
         if issues:
             invalid.append({"file": path, "reason": "; ".join(issues)})
             continue
@@ -2592,7 +2555,7 @@ def main(argv=None):
     # "reconciled, nothing wrong" -- an empty unexpected/missing pair means
     # nothing on its own (see meta.integrity below).
     _plan_lists, plans_seen, invalid_plans = load_dispatch_plans_detailed(
-        panopticon_dir=run_dir, groups_path=groups_path, root=os.getcwd())
+        panopticon_dir=run_dir)
     _plan = [e for plan in _plan_lists for e in plan]
     out_of_scope = out_of_scope_findings(args.files, _plan)
     if out_of_scope and out_of_scope["count"]:

@@ -8,13 +8,11 @@ the files on disk). No agent return is trusted — disk is the truth.
 import hashlib
 import json
 import os
-import re
 
 import scripts.evidence as evidence
 
 __all__ = ["entry_is_done", "pending_entries", "fan_out_coverage",
-           "verdict_is_done", "pending_verdicts", "resume_stats",
-           "verify_plan_entries"]
+           "verdict_is_done", "pending_verdicts", "resume_stats"]
 
 
 def entry_is_done(out_file, entry=None):
@@ -54,27 +52,21 @@ def pending_entries(plan):
             if isinstance(e, dict) and not entry_is_done(e.get("out_file"), e)]
 
 
-_OUTFILE_RE = re.compile(
-    r"^findings-(?P<group>.+)-(?P<panel>%s)-" % "|".join(evidence.PANELS))
-
-
 def _group_panel(entry):
+    """The (group, axis) an entry covers -- the axis is its `domain`.
+
+    #run7: the 5.1 driver's entries carry `group` + `domain`, and their
+    out_file is `findings-<group>-<domain>.json`. This used to fall back to a
+    regex over the 4.x `findings-<group>-<panel>-...` filename, which no driver
+    cell ever matched, so meta.coverage.fan_out.planned/executed came back {} on
+    every 5.1 run. #run10: the fallback is gone with the 4.x roles that named
+    those files -- an entry that declares neither is skipped, as before.
+    """
     if not isinstance(entry, dict):
         return None, None
-    # The 5.1 driver's plan entries carry `group` + `domain` (the review axis is
-    # the domain, one cell per (group, domain)); the 4.x panel-review entries
-    # carried `group` + `panel`. Accept either so fan_out_coverage sees driver
-    # cells -- without this the driver's whole plan fell through to the regex
-    # below, which only matches the 4.x `findings-<group>-<panel>-...` shape (a
-    # panel name + trailing segment), never the driver's `findings-<group>-
-    # <domain>.json`, so meta.coverage.fan_out.planned/executed came back {} on
-    # every 5.1 run (#run7).
     group = entry.get("group")
     panel = entry.get("panel") or entry.get("domain")
-    if group and panel:
-        return group, panel
-    m = _OUTFILE_RE.match(os.path.basename(entry.get("out_file", "")))
-    return (m.group("group"), m.group("panel")) if m else (None, None)
+    return (group, panel) if group and panel else (None, None)
 
 
 def fan_out_coverage(plan):
@@ -246,22 +238,3 @@ def verify_out_file_hashes(ingested_paths, hashes_path=None):
         if digest != recorded[rp]:
             mismatched.append(str(p))
     return checked, sorted(mismatched), False
-
-
-def verify_plan_entries(plan, host=None, agents_dir=None):
-    """Re-verify pending reviewer entries against live registration.
-
-    The emission-time enforcement flag cannot see an on-disk edit made AFTER
-    emission (an enforced:true -> false flip or lost registration). Before
-    fan-out, call dispatch.verify_plan on the non-codex subset of pending
-    entries so a removed registration is caught (#1087).
-    """
-    import scripts.dispatch as dispatch
-    entries = pending_entries(plan)
-    reviewer = [
-        e for e in entries
-        if isinstance(e, dict) and e.get("execution") != "codex_exec"
-    ]
-    if not reviewer:
-        return []
-    return dispatch.verify_plan(reviewer, host=host, agents_dir=agents_dir)
