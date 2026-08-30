@@ -2,6 +2,7 @@ import contextlib
 import io
 import json
 import os
+import tempfile
 import shutil
 import unittest
 from unittest import mock
@@ -97,14 +98,56 @@ class TestBrakemanAdapter(unittest.TestCase):
         self.assertEqual(findings[0]["confidence"], "POSSIBLE")
         self.assertIn("CWE-89", findings[0]["citations"]["cwe"])
 
-    def test_is_applicable_when_rails_files_present(self):
-        with mock.patch("os.path.exists", side_effect=lambda p: p.endswith("Gemfile")):
-            self.assertTrue(br.BrakemanAdapter().is_applicable("/tmp/fake"))
+    # --- applicability: brakeman scans RAILS, nothing else ------------------
+    # #calibration-1 (fzf): a bare Gemfile used to be enough. fzf is a Go
+    # program with a Gemfile for its Ruby test harness, so brakeman was
+    # selected, refused to run ("Please supply the path to a Rails
+    # application", exit 4), produced nothing, and its absence GATED the run.
 
-    def test_is_applicable_false_without_rails_files(self):
-        with mock.patch("os.path.exists", return_value=False):
-            with mock.patch("os.path.isdir", return_value=False):
-                self.assertFalse(br.BrakemanAdapter().is_applicable("/tmp/fake"))
+    def _tree(self, d, files=(), dirs=()):
+        for sub in dirs:
+            os.makedirs(os.path.join(d, sub), exist_ok=True)
+        for rel, body in files:
+            path = os.path.join(d, rel)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(body)
+        return d
+
+    def test_rails_config_markers_apply(self):
+        for marker in ("config/routes.rb", "config/application.rb",
+                       "config/environment.rb"):
+            with tempfile.TemporaryDirectory() as d:
+                self._tree(d, files=[(marker, "Rails.application\n")])
+                self.assertTrue(br.BrakemanAdapter().is_applicable(d), marker)
+
+    def test_app_mvc_tree_applies(self):
+        for sub in ("app/controllers", "app/models", "app/views"):
+            with tempfile.TemporaryDirectory() as d:
+                self._tree(d, dirs=[sub])
+                self.assertTrue(br.BrakemanAdapter().is_applicable(d), sub)
+
+    def test_gemfile_applies_only_when_it_depends_on_rails(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._tree(d, files=[("Gemfile", "source 'x'\ngem 'rails', '~> 7.0'\n")])
+            self.assertTrue(br.BrakemanAdapter().is_applicable(d))
+        with tempfile.TemporaryDirectory() as d:
+            # a Ruby TEST HARNESS is not a Rails app -- this is the fzf shape
+            self._tree(d, files=[("Gemfile", "source 'x'\ngem 'rspec'\ngem 'rubocop'\n")])
+            self.assertFalse(br.BrakemanAdapter().is_applicable(d))
+        with tempfile.TemporaryDirectory() as d:
+            self._tree(d, files=[("Gemfile", "# gem 'rails'\ngem 'rake'\n")])
+            self.assertFalse(br.BrakemanAdapter().is_applicable(d),
+                             "a commented-out rails dependency must not count")
+
+    def test_plain_gem_and_empty_tree_do_not_apply(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._tree(d, files=[("mygem.gemspec", "Gem::Specification.new\n")])
+            self.assertFalse(br.BrakemanAdapter().is_applicable(d),
+                             "a plain gem is not a brakeman target")
+        with tempfile.TemporaryDirectory() as d:
+            self.assertFalse(br.BrakemanAdapter().is_applicable(d))
+        self.assertFalse(br.BrakemanAdapter().is_applicable("/nonexistent/path"))
 
     def test_parse_includes_provenance(self):
         findings = br.BrakemanAdapter().parse(BRAKEMAN_SAMPLE, "g1")

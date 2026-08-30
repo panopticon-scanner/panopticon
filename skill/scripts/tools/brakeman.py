@@ -1,6 +1,7 @@
 """Brakeman adapter for Ruby on Rails security findings."""
 from __future__ import annotations
 import os
+import re
 import sys
 from .base import as_list, make_finding, omit_none, parse_json_bytes, run_tool
 
@@ -70,15 +71,49 @@ class BrakemanAdapter:
     prefix = "BK"
 
     def is_applicable(self, target: str) -> bool:
-        markers = ["Gemfile", "config/routes.rb"]
-        if any(os.path.exists(os.path.join(target, m)) for m in markers):
-            return True
-        app_dir = os.path.join(target, "app")
-        if os.path.isdir(app_dir):
-            return True
+        """True only for an actual RAILS app -- brakeman scans nothing else.
+
+        #calibration-1 (fzf): this used to return True for a bare `Gemfile`, an
+        `app/` directory, or any `*.gemspec`. fzf is a Go program that keeps a
+        Gemfile for its Ruby test harness, so brakeman was SELECTED, refused to
+        run ("Please supply the path to a Rails application", exit 4), produced
+        no output, and therefore landed in `tool_manifest.missing` -- which
+        gates. A tool that cannot run on the target must not be selected for it:
+        the resulting `tools_absent` reads as lost coverage when nothing was
+        ever lost.
+
+        Rails markers are the config/ files Rails itself generates, or an
+        `app/` tree with the MVC subdirectories brakeman expects, or a Gemfile
+        that actually depends on rails. A plain Ruby gem or a Ruby test suite
+        is deliberately NOT a brakeman target.
+        """
         if not os.path.isdir(target):
             return False
-        return any(f.endswith(".gemspec") for f in os.listdir(target) if os.path.isfile(os.path.join(target, f)))
+        for marker in ("config/routes.rb", "config/application.rb",
+                       "config/environment.rb"):
+            if os.path.isfile(os.path.join(target, marker)):
+                return True
+        app = os.path.join(target, "app")
+        if any(os.path.isdir(os.path.join(app, sub))
+               for sub in ("controllers", "models", "views")):
+            return True
+        # A Gemfile only counts when it actually pulls in rails.
+        for gemfile in ("Gemfile", "gems.rb"):
+            path = os.path.join(target, gemfile)
+            if not os.path.isfile(path):
+                continue
+            try:
+                with open(path, encoding="utf-8", errors="replace") as fh:
+                    body = fh.read(200_000)
+            except OSError:
+                continue
+            for line in body.splitlines():
+                line = line.strip()
+                if line.startswith("#"):
+                    continue
+                if re.search(r"""\bgem\s+['"]rails['"]""", line):
+                    return True
+        return False
 
     def invoke(self, target: str) -> tuple[bytes, int]:
         cmd = ["brakeman", "--format", "json", "--quiet", "--run-all-checks", target]
