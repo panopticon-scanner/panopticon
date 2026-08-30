@@ -136,20 +136,13 @@ def is_database_file(path):
     """Return True if path matches any database/migration pattern."""
     return any(re.search(p, path) for p in DATABASE_PATTERNS)
 
-def compute_group_surfaces(files):
-    """Return architecture/database surface labels for a group of files.
-
-    These surface labels travel with the group metadata so the scout and the
-    dispatch template can reason about repo-scope / data surfaces without
-    re-deriving them from filenames.
-    """
-    surfaces = set()
-    for f in files:
-        if is_architecture_file(f):
-            surfaces.add("architecture")
-        if is_database_file(f):
-            surfaces.add("database")
-    return sorted(surfaces)
+# #run10: compute_group_surfaces lived here, stamping a `surfaces` label list
+# onto every groups.json entry "so the scout and the dispatch template can
+# reason about repo-scope / data surfaces". Neither ever read it: coverage_model
+# documents at length that the floor deliberately does NOT consult surfaces
+# (#1193), the dispatch templates never referenced it, and #1440 removed
+# `surfaces` from the scout contract too -- leaving a field with a producer and
+# no consumer anywhere in the tree.
 
 def compute_group_panels(files, security_mode="standard"):
     """Return default panel schedule for a group.
@@ -803,27 +796,16 @@ def discover_repo_files(repo, include_fixtures=False, pruned_fixtures=None,
                 out.append(rel)
     return sorted(out)
 
-def _looks_risky(path):
-    """Crude heuristic for risky code surfaces until scout provides them."""
-    lowered = path.lower()
-    return any(k in lowered for k in ("auth", "login", "password", "payment", "pii", "encrypt", "token", "api"))
-
-def _compute_depth(files, panels, security_mode):
-    """Assign shallow/standard/deep based on surfaces, panel mix, and security mode."""
-    if security_mode == "redteam":
-        return "deep"
-    risky_files = any(
-        is_architecture_file(f) or is_database_file(f) or _looks_risky(f)
-        for f in files
-    )
-    if risky_files:
-        return "standard"
-    if any(p in ("security", "redteam", "database") for p in panels):
-        return "standard"
-    return "shallow"
+# #run10: _looks_risky / _compute_depth lived here, stamping a shallow/standard/
+# deep `depth` onto every groups.json entry. Its readers were plan_contract's
+# DEPTH_ORDER checks, dispatch.load_group_assignment and synthesize's
+# _load_group_assignments -- all part of the 4.x plan contract retired in #1444.
+# Nothing reads `depth` now, and the 5.x review axis is the (domain, group) cell,
+# not a per-group depth. is_architecture_file / is_database_file survive: they
+# still feed compute_group_panels.
 
 def _group_obj(name, files, security_mode, parent=None):
-    """Build one group entry: panels, surfaces, depth, and parent for a file set.
+    """Build one group entry: panels and parent for a file set.
 
     `parent` is the review-unit this group rolls up to (Task 6's synthesize
     consumes it): a subgroup passes its catalog-declared parent name; a leaf
@@ -835,9 +817,7 @@ def _group_obj(name, files, security_mode, parent=None):
     return {
         "name": name,
         "files": files,
-        "surfaces": compute_group_surfaces(files),
         "panels": panels,
-        "depth": _compute_depth(files, panels, security_mode),
         "parent": parent or name,
     }
 
