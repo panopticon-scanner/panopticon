@@ -47,20 +47,29 @@ def _profiles():
     return _PROFILES
 
 
+# These mirror skill/reference/model-profiles.yml for every role in
+# dispatch.ROLE_FILES, and test_model_resolver pins that parity: a role present
+# in the YAML but missing here silently resolved to the generic per-host default
+# whenever the YAML could not be read.
+#
+# #run10: the tables carried lens_sweep/panel_review -- roles nothing can request
+# since #1441 -- while MISSING domain_panel/domain_advisor for kimi and codex,
+# the roles that replaced them. Only the claude table had been updated (#1036).
+# So a YAML-less kimi run resolved its domain_advisor to primary/131072 instead
+# of k3/524288: the adjudication role, on a weaker model with a quarter of the
+# context, silently.
 _KIMI_FALLBACK = {
     "scout": {"model": "primary", "alias": "kimi-for-coding",
               "max_context_size": 131072, "max_output_size": 16384},
-    "lens_sweep": {"model": "primary", "alias": "kimi-for-coding",
-                   "max_context_size": 131072, "max_output_size": 8192},
-    "panel_review": {"model": "secondary", "alias": "k3",
-                     "max_context_size": 131072, "max_output_size": 16384},
     "advisor": {"model": "secondary", "alias": "k3",
                 "max_context_size": 524288, "max_output_size": 32768},
+    "domain_panel": {"model": "secondary", "alias": "k3",
+                     "max_context_size": 131072, "max_output_size": 16384},
+    "domain_advisor": {"model": "secondary", "alias": "k3",
+                       "max_context_size": 524288, "max_output_size": 32768},
 }
 _CLAUDE_FALLBACK = {
     "scout": {"model": "haiku"},
-    "lens_sweep": {"model": "haiku"},
-    "panel_review": {"model": "sonnet"},
     "advisor": {"model": "haiku"},   # #1029: per-finding tool-advisor is narrow
     # #1036: the 5.0 matrix roles, moved here so model_resolver is the single
     # owner of the claude role->model map (dispatch's emit path used to keep a
@@ -70,9 +79,9 @@ _CLAUDE_FALLBACK = {
 }
 _CODEX_FALLBACK = {
     "scout": {"model": "gpt-5.6-luna", "model_reasoning_effort": "medium"},
-    "lens_sweep": {"model": "gpt-5.6-luna", "model_reasoning_effort": "medium"},
-    "panel_review": {"model": "gpt-5.6-terra", "model_reasoning_effort": "high"},
     "advisor": {"model": "gpt-5.6", "model_reasoning_effort": "high"},
+    "domain_panel": {"model": "gpt-5.6-terra", "model_reasoning_effort": "high"},
+    "domain_advisor": {"model": "gpt-5.6", "model_reasoning_effort": "high"},
 }
 
 
@@ -209,5 +218,5 @@ def _resolve_raw(host, role, cli_overrides=None):
 
 if __name__ == "__main__":
     host = sys.argv[1] if len(sys.argv) > 1 else "kimi"
-    role = sys.argv[2] if len(sys.argv) > 2 else "panel_review"
+    role = sys.argv[2] if len(sys.argv) > 2 else "domain_panel"
     print(resolve_model(host, role))

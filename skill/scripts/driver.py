@@ -1055,9 +1055,15 @@ def _cell_entry(review_root, manifest, group, domain, files, tests, host, bundle
         "security_checklist": _render_security_checklist(domain),
         "out_file": out_file}, host)
     enforced = host == "claude"
+    # run_id/group/domain restate the cell this entry IS, so a host can check a
+    # findings file's own `_panopticon` stamp against the entry that asked for
+    # it (group_runner.entry_is_done) instead of trusting the path alone. The
+    # same three fields the domain-panel template requires in its output.
     return {"id": "review-%s-%s" % (group, domain),
             "agent": dispatch.registered_agent_name("domain-panel.md") if enforced else None,
-            "enforced": enforced, "model": None, "prompt": prompt, "out_file": out_file}
+            "enforced": enforced, "model": None, "prompt": prompt,
+            "out_file": out_file, "run_id": manifest["run_id"],
+            "group": group, "domain": domain}
 
 
 def _load_cell_findings(review_root, manifest, group, domain):

@@ -38,6 +38,73 @@ class TestEntryIsDone(unittest.TestCase):
             p = self._write(d, "f.json", json.dumps({"notfindings": 1}))
             self.assertFalse(gr.entry_is_done(p))
 
+    # --- #run10: the cell-identity cross-check -----------------------------
+    # This compared `role`/`panel`/`lens` -- keys no 5.x entry carries -- and
+    # only ran when the entry declared `run_id`, which no driver entry did
+    # either. So for every driver entry it compared nothing and agreed, and
+    # resume accepted ANY parseable findings file sitting at the expected path,
+    # including one left by a previous run. driver._cell_entry now declares
+    # run_id/group/domain, and the check compares what the entry declares.
+
+    def _cell(self, d, run_id="R1", group="Auth", domain="SEC", stamp=True,
+              meta=None):
+        body = {"findings": [{"id": "A"}]}
+        if stamp:
+            body["_panopticon"] = meta if meta is not None else {
+                "run_id": run_id, "role": "domain_panel",
+                "group": group, "domain": domain}
+        return self._write(d, "findings-%s-%s.json" % (group, domain),
+                           json.dumps(body))
+
+    def _entry(self, out_file, **kw):
+        e = {"run_id": "R1", "group": "Auth", "domain": "SEC",
+             "out_file": out_file}
+        e.update(kw)
+        return e
+
+    def test_matching_cell_stamp_is_done(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = self._cell(d)
+            self.assertTrue(gr.entry_is_done(p, self._entry(p)))
+
+    def test_stale_run_id_is_not_done(self):
+        # The exact case the dead check was meant to catch: a findings file left
+        # at this cell's path by an EARLIER run must not count as this run's work.
+        with tempfile.TemporaryDirectory() as d:
+            p = self._cell(d, run_id="R0")
+            self.assertFalse(gr.entry_is_done(p, self._entry(p)))
+
+    def test_wrong_cell_stamp_is_not_done(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = self._cell(d, meta={"run_id": "R1", "role": "domain_panel",
+                                    "group": "Auth", "domain": "COD"})
+            self.assertFalse(gr.entry_is_done(p, self._entry(p)))
+
+    def test_unstamped_file_is_not_done_for_a_run_bound_entry(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = self._cell(d, stamp=False)
+            self.assertFalse(gr.entry_is_done(p, self._entry(p)))
+
+    def test_bare_plan_entry_stays_tolerant_of_an_unstamped_file(self):
+        # A driver PLAN entry declares group+domain but no run_id. Requiring a
+        # stamp of it would change what fan_out_coverage's `executed` count
+        # means -- a reporting change, not a resume fix -- so it stays tolerant.
+        with tempfile.TemporaryDirectory() as d:
+            p = self._cell(d, stamp=False)
+            entry = {"group": "Auth", "domain": "SEC", "out_file": p}
+            self.assertTrue(gr.entry_is_done(p, entry))
+
+    def test_bare_plan_entry_still_rejects_a_contradicting_stamp(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = self._cell(d, meta={"group": "Auth", "domain": "COD"})
+            entry = {"group": "Auth", "domain": "SEC", "out_file": p}
+            self.assertFalse(gr.entry_is_done(p, entry))
+
+    def test_entry_declaring_nothing_is_done_on_parse(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = self._cell(d, stamp=False)
+            self.assertTrue(gr.entry_is_done(p, {"out_file": p}))
+
 
 class TestPendingEntries(unittest.TestCase):
     def test_pending_excludes_done_entries(self):
@@ -118,16 +185,6 @@ class TestFanOutCoverage(unittest.TestCase):
             gr._group_panel({"group": "Auth", "domain": "SEC",
                              "out_file": "/x/findings-Auth-SEC.json"}),
             ("Auth", "SEC"))
-
-    def test_group_panel_regex_fallback_when_no_structured_fields(self):
-        # #run7 TST-A2C: the legacy 4.x fallback branch -- an entry with NO
-        # group/panel/domain keys is resolved purely from the
-        # findings-<group>-<panel>- filename. Every other test supplies the
-        # structured fields, so this success branch was never exercised.
-        self.assertEqual(
-            gr._group_panel({"role": "domain_panel",
-                             "out_file": "/x/findings-g1-code-domain_panel.json"}),
-            ("g1", "code"))
 
     def test_unresolvable_entry_is_skipped_not_fatal(self):
         # An entry with no group/panel keys and an out_file that doesn't match
@@ -263,42 +320,3 @@ class TestOutFileContentHashes(unittest.TestCase):
                 self.assertIsNone(checked)
 
 
-class TestVerifyPlanEntries(unittest.TestCase):
-    def _plan(self, enforced=True):
-        return [{
-            "role": "domain_panel",
-            "agent": "panopticon-domain-panel",
-            "enforced": enforced,
-            "panel": "security",
-            "lens": None,
-            "files": ["app.py"],
-            "group": "test_repo",
-            "depth": "standard",
-            "security_mode": "standard",
-            "lenses": [],
-            "out_file": os.path.join(tempfile.mkdtemp(), "out.json"),
-            "prompt": "review",
-            "run_id": "abc123",
-            "scope_bound": True,
-        }]
-
-    def test_enforced_without_registration_is_caught(self):
-        plan = self._plan(enforced=True)
-        problems = gr.verify_plan_entries(plan, host="claude", agents_dir=tempfile.mkdtemp())
-        self.assertTrue(problems)
-        self.assertIn("enforced:true but no registered shell", " ".join(problems))
-
-    def test_enforced_with_registration_is_ok(self):
-        reg = tempfile.mkdtemp()
-        with open(os.path.join(reg, "panopticon-domain-panel.md"), "w") as fh:
-            fh.write("---\nname: test\n---\nbody\n")
-        plan = self._plan(enforced=True)
-        problems = gr.verify_plan_entries(plan, host="claude", agents_dir=reg)
-        self.assertFalse(problems)
-
-    def test_codex_exec_entries_are_exempt(self):
-        plan = self._plan(enforced=True)
-        plan[0]["execution"] = "codex_exec"
-        plan[0]["delivery"] = "return_json"
-        problems = gr.verify_plan_entries(plan, host="claude", agents_dir=tempfile.mkdtemp())
-        self.assertFalse(problems)

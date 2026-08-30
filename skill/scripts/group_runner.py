@@ -8,13 +8,11 @@ the files on disk). No agent return is trusted — disk is the truth.
 import hashlib
 import json
 import os
-import re
 
 import scripts.evidence as evidence
 
 __all__ = ["entry_is_done", "pending_entries", "fan_out_coverage",
-           "verdict_is_done", "pending_verdicts", "resume_stats",
-           "verify_plan_entries"]
+           "verdict_is_done", "pending_verdicts", "resume_stats"]
 
 
 def entry_is_done(out_file, entry=None):
@@ -33,15 +31,32 @@ def entry_is_done(out_file, entry=None):
         return False
     if not (isinstance(data, dict) and isinstance(data.get("findings"), list)):
         return False
-    expected_run = entry.get("run_id") if isinstance(entry, dict) else None
-    if expected_run:
-        meta = data.get("_panopticon")
-        if not isinstance(meta, dict) or meta.get("run_id") != expected_run:
-            return False
-        for key in ("role", "panel", "lens", "group"):
-            if meta.get(key) != entry.get(key):
-                return False
-    return True
+    if not isinstance(entry, dict):
+        return True
+    # Cross-check every cell-identity key the ENTRY declares against the file's
+    # own `_panopticon` stamp, so a findings file left behind by an earlier run
+    # -- or written for a different cell -- is not silently accepted as this
+    # entry's work and skipped on resume.
+    #
+    # #run10: this keyed on `role`/`panel`/`lens`, which no 5.x entry carries,
+    # and only ran at all when the entry declared `run_id`, which none did
+    # either. For every driver entry the whole block was skipped, so resume
+    # accepted any parseable findings file at the expected path. Driver entries
+    # now declare run_id/group/domain (driver._cell_entry), which is what makes
+    # this live; an entry declaring none of them still means "done on parse".
+    declared = [(k, entry.get(k)) for k in ("run_id", "role", "group", "domain")
+                if entry.get(k) is not None]
+    if not declared:
+        return True
+    meta = data.get("_panopticon")
+    if not isinstance(meta, dict):
+        # A stamp is REQUIRED only of an entry that declares its own run_id --
+        # the dispatch-request shape, whose template mandates `_panopticon`.
+        # A bare plan entry (group+domain, no run_id) stays tolerant of an
+        # unstamped file so fan_out_coverage's executed count keeps its
+        # meaning; tightening that is a reporting change, not a resume fix.
+        return entry.get("run_id") is None
+    return all(meta.get(k) == v for k, v in declared)
 
 
 def pending_entries(plan):
@@ -54,27 +69,21 @@ def pending_entries(plan):
             if isinstance(e, dict) and not entry_is_done(e.get("out_file"), e)]
 
 
-_OUTFILE_RE = re.compile(
-    r"^findings-(?P<group>.+)-(?P<panel>%s)-" % "|".join(evidence.PANELS))
-
-
 def _group_panel(entry):
+    """The (group, axis) an entry covers -- the axis is its `domain`.
+
+    #run7: the 5.1 driver's entries carry `group` + `domain`, and their
+    out_file is `findings-<group>-<domain>.json`. This used to fall back to a
+    regex over the 4.x `findings-<group>-<panel>-...` filename, which no driver
+    cell ever matched, so meta.coverage.fan_out.planned/executed came back {} on
+    every 5.1 run. #run10: the fallback is gone with the 4.x roles that named
+    those files -- an entry that declares neither is skipped, as before.
+    """
     if not isinstance(entry, dict):
         return None, None
-    # The 5.1 driver's plan entries carry `group` + `domain` (the review axis is
-    # the domain, one cell per (group, domain)); the 4.x panel-review entries
-    # carried `group` + `panel`. Accept either so fan_out_coverage sees driver
-    # cells -- without this the driver's whole plan fell through to the regex
-    # below, which only matches the 4.x `findings-<group>-<panel>-...` shape (a
-    # panel name + trailing segment), never the driver's `findings-<group>-
-    # <domain>.json`, so meta.coverage.fan_out.planned/executed came back {} on
-    # every 5.1 run (#run7).
     group = entry.get("group")
     panel = entry.get("panel") or entry.get("domain")
-    if group and panel:
-        return group, panel
-    m = _OUTFILE_RE.match(os.path.basename(entry.get("out_file", "")))
-    return (m.group("group"), m.group("panel")) if m else (None, None)
+    return (group, panel) if group and panel else (None, None)
 
 
 def fan_out_coverage(plan):
@@ -246,22 +255,3 @@ def verify_out_file_hashes(ingested_paths, hashes_path=None):
         if digest != recorded[rp]:
             mismatched.append(str(p))
     return checked, sorted(mismatched), False
-
-
-def verify_plan_entries(plan, host=None, agents_dir=None):
-    """Re-verify pending reviewer entries against live registration.
-
-    The emission-time enforcement flag cannot see an on-disk edit made AFTER
-    emission (an enforced:true -> false flip or lost registration). Before
-    fan-out, call dispatch.verify_plan on the non-codex subset of pending
-    entries so a removed registration is caught (#1087).
-    """
-    import scripts.dispatch as dispatch
-    entries = pending_entries(plan)
-    reviewer = [
-        e for e in entries
-        if isinstance(e, dict) and e.get("execution") != "codex_exec"
-    ]
-    if not reviewer:
-        return []
-    return dispatch.verify_plan(reviewer, host=host, agents_dir=agents_dir)
