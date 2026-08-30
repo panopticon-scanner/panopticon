@@ -104,7 +104,7 @@ class TestDecide(unittest.TestCase):
 
 
 class TestCwdIndependence(unittest.TestCase):
-    """#935: with an ABSOLUTE out_file (build_plan now emits these), the guard
+    """#935: with an ABSOLUTE out_file (driver._cell_entry emits these), the guard
     authorizes the reviewer's write regardless of the cwd the hook runs in.
     A relative out_file did not: allowlist_from_plan realpaths against the
     install cwd, decide against the hook's cwd, so a subagent cwd !=
