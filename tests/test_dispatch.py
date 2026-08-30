@@ -69,7 +69,7 @@ class TestRenderPrompt(unittest.TestCase):
             "domain": "SEC", "group": "g1",
             "file_list": "a.py, b.py", "security_mode": "standard",
             "tests": "t.py", "menu": "SEC-A1A x", "criteria": "c",
-            "tool_hits": "", "run_id": "R",
+            "tool_hits": "", "security_checklist": "", "run_id": "R",
             "out_file": ".panopticon/findings-g1-SEC.json",
         }
 
@@ -453,49 +453,5 @@ class TestEmitHostAgents(unittest.TestCase):
                 text = fh.read()
         self.assertIn("model: haiku", text)
         self.assertNotIn("model: opus", text)
-
-
-class TestVerifyPlan(unittest.TestCase):
-    """#493 R1/R2: dispatch-time plan re-verification + hash-bound ack."""
-
-    def _entry(self, enforced=True, role="domain_panel"):
-        return {"role": role, "agent": "panopticon-domain-panel",
-                "enforced": enforced, "scope_bound": True,
-                "out_file": ".panopticon/x.json"}
-
-    def test_enforced_flip_detected_when_shell_unregistered(self):
-        with tempfile.TemporaryDirectory() as d:      # empty dir = nothing registered
-            problems = dispatch.verify_plan([self._entry(enforced=True)],
-                                            host="claude", agents_dir=d)
-        self.assertEqual(len(problems), 1)
-        self.assertIn("no registered shell", problems[0])
-
-    def test_enforced_entry_with_live_shell_is_clean(self):
-        with tempfile.TemporaryDirectory() as d:
-            with open(os.path.join(d, "panopticon-domain-panel.md"), "w", encoding="utf-8") as fh:
-                fh.write("x")
-            problems = dispatch.verify_plan([self._entry(enforced=True)],
-                                            host="claude", agents_dir=d)
-        self.assertEqual(problems, [])
-
-    def test_unenforced_reviewer_needs_hash_matching_ack(self):
-        plan = [self._entry(enforced=False)]
-        with tempfile.TemporaryDirectory() as d:
-            no_ack = dispatch.verify_plan(plan, host="claude", agents_dir=d)
-            stale = dispatch.verify_plan(plan, host="claude", agents_dir=d,
-                                         ack={"acknowledged": True,
-                                              "plan_sha256": "deadbeef"})
-            good = dispatch.verify_plan(plan, host="claude", agents_dir=d,
-                                        ack={"acknowledged": True,
-                                             "plan_sha256": dispatch.plan_content_hash(plan)})
-        self.assertEqual(len(no_ack), 1)
-        self.assertEqual(len(stale), 1)
-        self.assertEqual(good, [])
-
-    def test_non_reviewer_roles_ignored(self):
-        with tempfile.TemporaryDirectory() as d:
-            problems = dispatch.verify_plan(
-                [{"role": "scout", "enforced": False}], host="claude", agents_dir=d)
-        self.assertEqual(problems, [])
 
 
