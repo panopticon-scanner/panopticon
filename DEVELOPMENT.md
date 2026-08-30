@@ -9,12 +9,17 @@ work has context without the original spec/plan docs.
 
 ## What it is
 A **discovery → scout → fan-out → synthesis** pipeline. It profiles a target with a
-cheap "scout", builds a risk-tuned plan, and fans out rendered role prompts in
-parallel via the host's agent mechanism (native Agent-tool fan-out, AgentSwarm
-raw-prompt dispatch, or isolated `codex exec`). Each `(domain, group)` matrix cell is reviewed by the `domain-panel` agent
-(`agents/domain-panel.md`); its verifier is `domain-advisor`. (The 4.x `panel-review.md` /
-`lens-sweep.md` templates are retired back-compat — `driver run` no longer dispatches them.)
-Review spans six panels: **code**, **test**, **security**, **architecture**, **database**, and **redteam**.
+cheap "scout" whose returned `domains` WIDEN a deterministic per-group domain floor
+(`coverage_model.effective_panels`: the committed `GLOBAL_FLOOR` of COD/DAT/TST/ARC
+plus `applicable_sec_floor`, minus any per-group `exclude`), then fans out one
+rendered prompt per resulting `(domain, group)` matrix cell via the host's agent
+mechanism — the Claude Agent-tool/Workflow fan-out, or the portable `--host generic`
+sub-orchestrator. Each cell is reviewed by the `domain-panel` agent
+(`agents/domain-panel.md`); its verifier is `domain-advisor`.
+Review is keyed on the ten OCRDb **domains** (`groups_schema.DOMAINS`: SEC, COD,
+ARC, TST, QAL, AGT, DAT, OPS, ACC, LNG) — a `groups.yml` group's `panels:` key is
+parsed as a domain set. The 4.x six-panel vocabulary (code/test/security/
+architecture/database/redteam) survives only as a reporting axis.
 Optionally, findings are grounded with real static-analysis tools from a Docker
 container. It synthesizes everything into a `CodeReviewReport` (terminal markdown
 summary + JSON artifact) with standards citations and CI gating.
@@ -32,8 +37,10 @@ summary + JSON artifact) with standards citations and CI gating.
   checkpoint; the phase cursor is recomputed from disk every invocation (crash/compaction-resumable).
 - `skill/scripts/synthesize.py` — merge per-panel finding files (+ optional `--tools-dir` tool
   findings) into a validated `CodeReviewReport`: dedupe/reinforce, grade, gate, citations.
-- `skill/scripts/dispatch.py` — DispatchPlan builder + template renderer (host-neutral frontmatter
-  parser, rendered prompts, --render-advisor).
+- `skill/scripts/dispatch.py` — agent-template renderer + host enforcement-shell emitter
+  (host-neutral frontmatter parser, `render_prompt`, `--render-advisor`,
+  `--emit-host-agents`). The 4.x DispatchPlan builder it was named for is retired;
+  the driver builds its own matrix-cell plan.
 - `skill/scripts/model_resolver.py` — role+host → model resolution (profiles yml, env/CLI
   overrides, host-aware fallbacks).
 - `skill/scripts/citations.py` — CWE validation (bundled catalog), OWASP derivation, reduced-SSVC,
@@ -52,13 +59,14 @@ summary + JSON artifact) with standards citations and CI gating.
   eslint, roslyn-secguard. Build once: `docker build -t panopticon-tools <this dir>`.
 - `skill/reference/` — `report-schema.json`, `scope-profile-schema.json`, `cwe-catalog.json`
   (curated CWE→OWASP map), `security-checklists.md`, `code-review-groups.example.yml`.
-- `skill/agents/` — host-neutral role prompt templates: `scout.md`, `domain-panel.md`, `domain-advisor.md`, `advisor.md` (the 4.x `lens-sweep.md` / `panel-review.md` remain only as retired back-compat).
-- `skill/prompts/` — `lenses.md` (per-panel lens catalog).
+- `skill/agents/` — host-neutral role prompt templates: `scout.md`, `setup-scan.md`,
+  `domain-panel.md`, `domain-advisor.md`, `advisor.md`.
 
 ## Key design decisions (don't relitigate without reason)
 - **Fan out via rendered prompts** dispatched by the host's agent mechanism (`scout`, `domain-panel`, `domain-advisor`, `advisor`).
-  The six panels (code/test/security/architecture/database/redteam) are selected per group
-  by `compute_group_panels`; lenses are spawned only when the scout flags a surface.
+  One cell per `(domain, group)`: the domain set is the committed floor widened by the
+  scout's returned `domains` (`coverage_model.effective_panels`). The scout's judgement
+  can only ADD domains, never remove a floor domain — #1193.
 - **Grade = worst-severity A–F rollup** (F if any CRITICAL … A if none). Deliberate for a
   gate; do NOT replace it. Severity + CVSS follow industry scales; the letter grade is ours.
 - **The gate keys on evidence, not just severity.** `evidence.status`
@@ -111,8 +119,8 @@ summary + JSON artifact) with standards citations and CI gating.
   #444, #436).** Every finding used to transit the orchestrator's context twice — inbound as a
   reviewer's returned JSON, outbound as the orchestrator's re-emitted `Write` — so a large plan
   truncated fan-out at whatever entry the context filled up on (measured: one run covered 1 of
-  ~10 groups, invisibly). SP-A flips the contract: each fan-out reviewer (`panel_review`,
-  `lens_sweep`) now holds scoped `Write` and **writes its own `out_file` directly**, returning
+  ~10 groups, invisibly). SP-A flips the contract: each fan-out reviewer (`domain_panel`,
+  `domain_advisor`) holds scoped `Write` and **writes its own `out_file` directly**, returning
   only a short confirmation — findings never re-transit the parent's context, so coverage is
   bounded by how many agents the platform can run, not by context capacity. This is the
   `group_runner` role, defined by a contract (every pending entry's `out_file` written, plus a

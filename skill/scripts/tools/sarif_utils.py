@@ -26,7 +26,7 @@ CVE_TAG = re.compile(r"(CVE-\d{4}-\d{4,})", re.IGNORECASE)
 # security panel + advisor already review command-exec/error-handling with real
 # context. B603 (subprocess-call-untrusted-input) and B607 (partial-exec-path)
 # are deliberately NOT suppressed: they remain a tool-layer backstop for
-# panel-less runs (tool-only / lens-only). Module constant so the suppression
+# tool-only runs (no agentic review cells). Module constant so the suppression
 # list is easy to extend later.
 NOISE_RULES = {"B101", "B404", "B110", "B112"}
 

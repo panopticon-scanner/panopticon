@@ -28,7 +28,7 @@ file stays focused on the host-facing contract.
 
 - `superpowers:writing-plans` — before repo/PR/directory reviews with >15 files
   or >10 changes.
-- `superpowers:subagent-driven-development` — for panel and lens dispatch.
+- `superpowers:subagent-driven-development` — for matrix-cell and advisor dispatch.
 - `superpowers:verification-before-completion` — before returning the report.
 
 ## Installed-flow substitution
