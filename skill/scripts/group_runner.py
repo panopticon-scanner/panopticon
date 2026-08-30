@@ -31,15 +31,32 @@ def entry_is_done(out_file, entry=None):
         return False
     if not (isinstance(data, dict) and isinstance(data.get("findings"), list)):
         return False
-    expected_run = entry.get("run_id") if isinstance(entry, dict) else None
-    if expected_run:
-        meta = data.get("_panopticon")
-        if not isinstance(meta, dict) or meta.get("run_id") != expected_run:
-            return False
-        for key in ("role", "panel", "lens", "group"):
-            if meta.get(key) != entry.get(key):
-                return False
-    return True
+    if not isinstance(entry, dict):
+        return True
+    # Cross-check every cell-identity key the ENTRY declares against the file's
+    # own `_panopticon` stamp, so a findings file left behind by an earlier run
+    # -- or written for a different cell -- is not silently accepted as this
+    # entry's work and skipped on resume.
+    #
+    # #run10: this keyed on `role`/`panel`/`lens`, which no 5.x entry carries,
+    # and only ran at all when the entry declared `run_id`, which none did
+    # either. For every driver entry the whole block was skipped, so resume
+    # accepted any parseable findings file at the expected path. Driver entries
+    # now declare run_id/group/domain (driver._cell_entry), which is what makes
+    # this live; an entry declaring none of them still means "done on parse".
+    declared = [(k, entry.get(k)) for k in ("run_id", "role", "group", "domain")
+                if entry.get(k) is not None]
+    if not declared:
+        return True
+    meta = data.get("_panopticon")
+    if not isinstance(meta, dict):
+        # A stamp is REQUIRED only of an entry that declares its own run_id --
+        # the dispatch-request shape, whose template mandates `_panopticon`.
+        # A bare plan entry (group+domain, no run_id) stays tolerant of an
+        # unstamped file so fan_out_coverage's executed count keeps its
+        # meaning; tightening that is a reporting change, not a resume fix.
+        return entry.get("run_id") is None
+    return all(meta.get(k) == v for k, v in declared)
 
 
 def pending_entries(plan):

@@ -38,6 +38,73 @@ class TestEntryIsDone(unittest.TestCase):
             p = self._write(d, "f.json", json.dumps({"notfindings": 1}))
             self.assertFalse(gr.entry_is_done(p))
 
+    # --- #run10: the cell-identity cross-check -----------------------------
+    # This compared `role`/`panel`/`lens` -- keys no 5.x entry carries -- and
+    # only ran when the entry declared `run_id`, which no driver entry did
+    # either. So for every driver entry it compared nothing and agreed, and
+    # resume accepted ANY parseable findings file sitting at the expected path,
+    # including one left by a previous run. driver._cell_entry now declares
+    # run_id/group/domain, and the check compares what the entry declares.
+
+    def _cell(self, d, run_id="R1", group="Auth", domain="SEC", stamp=True,
+              meta=None):
+        body = {"findings": [{"id": "A"}]}
+        if stamp:
+            body["_panopticon"] = meta if meta is not None else {
+                "run_id": run_id, "role": "domain_panel",
+                "group": group, "domain": domain}
+        return self._write(d, "findings-%s-%s.json" % (group, domain),
+                           json.dumps(body))
+
+    def _entry(self, out_file, **kw):
+        e = {"run_id": "R1", "group": "Auth", "domain": "SEC",
+             "out_file": out_file}
+        e.update(kw)
+        return e
+
+    def test_matching_cell_stamp_is_done(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = self._cell(d)
+            self.assertTrue(gr.entry_is_done(p, self._entry(p)))
+
+    def test_stale_run_id_is_not_done(self):
+        # The exact case the dead check was meant to catch: a findings file left
+        # at this cell's path by an EARLIER run must not count as this run's work.
+        with tempfile.TemporaryDirectory() as d:
+            p = self._cell(d, run_id="R0")
+            self.assertFalse(gr.entry_is_done(p, self._entry(p)))
+
+    def test_wrong_cell_stamp_is_not_done(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = self._cell(d, meta={"run_id": "R1", "role": "domain_panel",
+                                    "group": "Auth", "domain": "COD"})
+            self.assertFalse(gr.entry_is_done(p, self._entry(p)))
+
+    def test_unstamped_file_is_not_done_for_a_run_bound_entry(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = self._cell(d, stamp=False)
+            self.assertFalse(gr.entry_is_done(p, self._entry(p)))
+
+    def test_bare_plan_entry_stays_tolerant_of_an_unstamped_file(self):
+        # A driver PLAN entry declares group+domain but no run_id. Requiring a
+        # stamp of it would change what fan_out_coverage's `executed` count
+        # means -- a reporting change, not a resume fix -- so it stays tolerant.
+        with tempfile.TemporaryDirectory() as d:
+            p = self._cell(d, stamp=False)
+            entry = {"group": "Auth", "domain": "SEC", "out_file": p}
+            self.assertTrue(gr.entry_is_done(p, entry))
+
+    def test_bare_plan_entry_still_rejects_a_contradicting_stamp(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = self._cell(d, meta={"group": "Auth", "domain": "COD"})
+            entry = {"group": "Auth", "domain": "SEC", "out_file": p}
+            self.assertFalse(gr.entry_is_done(p, entry))
+
+    def test_entry_declaring_nothing_is_done_on_parse(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = self._cell(d, stamp=False)
+            self.assertTrue(gr.entry_is_done(p, {"out_file": p}))
+
 
 class TestPendingEntries(unittest.TestCase):
     def test_pending_excludes_done_entries(self):
