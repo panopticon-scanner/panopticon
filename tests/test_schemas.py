@@ -37,7 +37,7 @@ class TestSchemas(unittest.TestCase):
         # field that changes what gets reviewed; `group` is its identity. The old
         # required set (languages/surfaces/risk/lenses) compelled every scout to
         # manufacture output no consumer read -- lenses/depth existed for
-        # dispatch.build_plan's retired lens_sweep/panel_review entries, and
+        # the retired 4.x planner's lens_sweep/panel_review entries, and
         # applicable_global_floor deliberately ignores scout surfaces (#1193).
         schema = _load("scope-profile-schema.json")
         self.assertEqual(sorted(schema["required"]), ["domains", "group"])

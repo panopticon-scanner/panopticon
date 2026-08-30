@@ -643,17 +643,16 @@ _MAX_SCOUT_ATTEMPTS = 3
 
 def _scout_shape_errors(scout):
     """Load-bearing structural checks on a returned ScopeProfile -- a
-    dependency-free subset of `scope-profile-schema.json` (jsonschema is an
-    OPTIONAL, test-only dep, so the driver can't lean on it at runtime). Checks
+    dependency-free subset of `scope-profile-schema.json`. The driver validates
+    by hand rather than importing jsonschema so this check cannot become the
+    thing that makes a scan need a third-party package at runtime. Checks
     only the invariants the coverage/dispatch path actually indexes; returns []
     when the shape is safe to consume, else human-readable errors.
 
     #run10 D3: validates exactly the fields the scout contract still asks for.
     The old `lenses` panel->array check (added for run-6) went with the field
-    itself -- it guarded `dispatch._panel_lenses` / `depth_planner.plan_lenses`,
-    which serve the retired lens_sweep/panel_review roles the driver has not
-    dispatched since 5.0. A profile that still carries extra keys validates
-    fine; they are simply never read."""
+    itself, along with the retired 4.x lens plumbing it guarded. A profile that
+    still carries extra keys validates fine; they are simply never read."""
     if not isinstance(scout, dict):
         return ["not a JSON object"]
     errs = []
@@ -722,10 +721,12 @@ def coverage_execute(review_root, manifest):
         if not _return_json_parses(sp):
             pending_scouts.append((g, f))          # no output yet
             continue
-        # #3: a scout that PARSES as JSON but has the wrong shape (run-6: 2/26
-        # returned `lenses` as panel->object instead of panel->array) would slip
-        # past the dict gate in the coverage loop below and corrupt lens spawning
-        # downstream. Validate the load-bearing structure at the return-persist
+        # #3: a scout that PARSES as JSON but has the wrong shape would slip
+        # past the dict gate in the coverage loop below -- a `domains` value that
+        # is not a list of domain codes silently widens the cell matrix to
+        # nothing, or to garbage cells that fail their own done-predicate. (The
+        # original run-6 instance was `lenses` returned as panel->object; that
+        # field is gone, the failure mode is not.) Validate at the return-persist
         # accept boundary; on a mismatch, DISCARD the garbage and re-dispatch that
         # one scout. Cap the retries so a deterministically-broken host fails loud.
         scout = _load_return_json(sp)

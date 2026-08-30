@@ -10,9 +10,6 @@ EPSS User-Agent) imports the constant rather than restating it.
 Also the single owner for resolving paths to files bundled under
 skill/reference/ — see reference_path() below. Used by citations.py,
 model_resolver.py, and ocrdb.py (#dedup of 3 identical inline spellings).
-A 4th, in codex_runner.py, computes an equivalent-but-differently-normalized
-string (via os.path.dirname twice rather than an os.pardir join) and is left
-inline so its resolved path stays byte-identical.
 """
 import os
 
