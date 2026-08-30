@@ -13,12 +13,15 @@ dependencies = [
     # The driver and synthesize load YAML (groups.yml, model-profiles.yml,
     # capability_*.yml); previously undeclared (#5.0-01).
     "pyyaml>=6.0.3",
-    # #run7 ARC-F2E: jsonschema gates untrusted Codex/agent JSON before it is
-    # published as a trusted artifact (codex_runner.validate_schema,
-    # discovery/model_resolver/score_gate schema checks). It was declared ONLY in
-    # the dev/test extras, so a bare `pip install panopticon` left every schema
-    # validator FAILING OPEN (warn-once, then publish unchecked). It is a runtime
-    # dependency, not a test tool.
+    # #run7 ARC-F2E declared jsonschema a runtime dep to stop schema validators
+    # failing open in a bare `pip install panopticon`. #run10: that rationale no
+    # longer describes the tree. Its named consumer codex_runner.validate_schema
+    # was deleted with the 4.x plumbing (#1441), and discovery/model_resolver/
+    # score_gate never imported jsonschema -- today NO runtime module does, and
+    # driver._scout_shape_errors deliberately hand-rolls a dependency-free
+    # subset instead. Kept declared (removing it is a packaging decision, not a
+    # residue cleanup) but it is currently exercised only by the test suite,
+    # which declares it separately in the test extra and dependency-group.
     "jsonschema>=4.26.0",
 ]
 authors = [

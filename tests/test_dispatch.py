@@ -69,7 +69,7 @@ class TestRenderPrompt(unittest.TestCase):
             "domain": "SEC", "group": "g1",
             "file_list": "a.py, b.py", "security_mode": "standard",
             "tests": "t.py", "menu": "SEC-A1A x", "criteria": "c",
-            "tool_hits": "", "run_id": "R",
+            "tool_hits": "", "security_checklist": "", "run_id": "R",
             "out_file": ".panopticon/findings-g1-SEC.json",
         }
 
@@ -453,5 +453,69 @@ class TestEmitHostAgents(unittest.TestCase):
                 text = fh.read()
         self.assertIn("model: haiku", text)
         self.assertNotIn("model: opus", text)
+
+
+class TestPruneRetiredShells(unittest.TestCase):
+    """Registration was write-only, so retiring a role left a DISPATCHABLE shell
+    behind on every machine that had emitted it. #1441 stopped writing
+    panopticon-panel-review / panopticon-lens-sweep but did not remove them, and
+    re-emitting -- the documented preflight fix for stale registration -- could
+    not clear them either."""
+
+    def _emit(self, host="claude"):
+        d = tempfile.mkdtemp()
+        return d, dispatch.emit_host_agents(host, d)
+
+    def test_retired_shell_is_removed_on_reemit(self):
+        d, _ = self._emit()
+        for stale in ("panopticon-panel-review.md", "panopticon-lens-sweep.md"):
+            with open(os.path.join(d, stale), "w", encoding="utf-8") as fh:
+                fh.write("---\nname: stale\n---\n")
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            written = dispatch.emit_host_agents("claude", d)
+        for stale in ("panopticon-panel-review.md", "panopticon-lens-sweep.md"):
+            self.assertFalse(os.path.exists(os.path.join(d, stale)), stale)
+            self.assertIn(stale, err.getvalue())        # announced, not silent
+        # the live four survive
+        self.assertEqual(sorted(os.path.basename(p) for p in written),
+                         sorted(os.listdir(d)))
+
+    def test_live_shells_survive_and_emission_is_idempotent(self):
+        d, first = self._emit()
+        second = dispatch.emit_host_agents("claude", d)
+        self.assertEqual(sorted(first), sorted(second))
+        self.assertEqual(len(second), len(dispatch.ROLE_FILES))
+
+    def test_foreign_files_are_never_touched(self):
+        # Only the panopticon- namespace, and only this host's suffix.
+        d, _ = self._emit()
+        keep = ["someone-elses.md", "README.md", "panopticon-notes.txt",
+                "panopticon-panel-review.toml"]   # codex suffix, claude emit
+        for name in keep:
+            with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+                fh.write("x")
+        dispatch.emit_host_agents("claude", d)
+        for name in keep:
+            self.assertTrue(os.path.exists(os.path.join(d, name)), name)
+
+    def test_codex_prunes_its_own_suffix(self):
+        d, _ = self._emit(host="codex")
+        stale = os.path.join(d, "panopticon-lens-sweep.toml")
+        with open(stale, "w", encoding="utf-8") as fh:
+            fh.write("name = \"stale\"\n")
+        with contextlib.redirect_stderr(io.StringIO()):
+            dispatch.emit_host_agents("codex", d)
+        self.assertFalse(os.path.exists(stale))
+
+    def test_unremovable_shell_is_reported_not_fatal(self):
+        d, _ = self._emit()
+        stale = os.path.join(d, "panopticon-lens-sweep.md")
+        with open(stale, "w", encoding="utf-8") as fh:
+            fh.write("x")
+        with mock.patch("os.remove", side_effect=OSError("read-only fs")), \
+             contextlib.redirect_stderr(io.StringIO()) as err:
+            written = dispatch.emit_host_agents("claude", d)   # must not raise
+        self.assertEqual(len(written), len(dispatch.ROLE_FILES))
+        self.assertIn("could not remove retired shell", err.getvalue())
 
 

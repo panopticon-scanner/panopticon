@@ -36,8 +36,8 @@ class TestUntrustedContentPreamble(unittest.TestCase):
             self.assertIn("do not comply", low, role_file)
 
     def test_finding_roles_route_injections_to_a_finding(self):
-        # panel_review / lens_sweep emit findings, so a caught injection must
-        # become one (category prompt-injection) rather than a silent miss.
+        # domain_panel emits findings, so a caught injection must become one
+        # (category prompt-injection) rather than a silent miss.
         for role_file in ("domain-panel.md",):
             _meta, body = dispatch.load_template(role_file)
             self.assertIn('category: "prompt-injection"', body, role_file)
@@ -47,7 +47,7 @@ class TestUntrustedContentPreamble(unittest.TestCase):
         panel = dispatch.render_prompt("domain-panel.md", {
             "domain": "SEC", "group": "g1", "file_list": "a.py",
             "security_mode": "standard", "tests": "t.py", "menu": "m",
-            "criteria": "c", "tool_hits": "", "run_id": "R",
+            "criteria": "c", "tool_hits": "", "security_checklist": "", "run_id": "R",
             "out_file": ".panopticon/f.json"})
         self.assertIn("UNTRUSTED DATA", panel)
         advisor = dispatch.render_prompt("advisor.md", {"claim_json": "{}"})
@@ -74,8 +74,8 @@ class TestTemplateFrontmatter(unittest.TestCase):
             self.assertNotIn("disallowedTools", raw, role_file)
 
     def test_tool_policy_least_privilege(self):
-        # scout/advisor/setup-scan are not fan-out roles and stay read-only. panel_review
-        # and lens_sweep (#436, spec Decision 3) hold scoped Write so they can
+        # scout/advisor/setup-scan are not fan-out roles and stay read-only.
+        # domain_panel and domain_advisor (#436, spec Decision 3) hold scoped Write so they can
         # self-write their out_file; the write-guard hook (Tasks 4-5) confines
         # that Write to the plan's out_file set. Edit/Bash/Agent stay forbidden
         # for every role.
@@ -169,7 +169,8 @@ class TestDomainPanelRenders(unittest.TestCase):
                    "tests": "- t.py", "security_mode": "standard",
                    "menu": "SEC-A1A os-command-injection (HIGH)", "run_id": "R",
                    "criteria": "SEC-A1A os-command-injection — Qualifies when …",
-                   "tool_hits": "", "out_file": "/abs/findings-Auth-SEC.json"}
+                   "tool_hits": "", "security_checklist": "",
+                   "out_file": "/abs/findings-Auth-SEC.json"}
         out = dispatch.render_prompt("domain-panel.md", mapping, "claude")
         self.assertIn("`SEC` domain reviewer", out)
         self.assertIn("SEC-A1A", out)
@@ -188,7 +189,8 @@ class TestDomainPanelRenders(unittest.TestCase):
                    "tests": "- t.py", "security_mode": "standard",
                    "menu": "SEC-A1A os-command-injection (HIGH)", "run_id": "R",
                    "criteria": "SEC-A1A — CRITERIA-SENTINEL — met only when …",
-                   "tool_hits": "", "out_file": "/abs/findings-Auth-SEC.json"}
+                   "tool_hits": "", "security_checklist": "",
+                   "out_file": "/abs/findings-Auth-SEC.json"}
         out = dispatch.render_prompt("domain-panel.md", mapping, "claude")
         self.assertIn("## Grading criteria", out)
         self.assertIn("grade against the criteria, not the one-line name", out)
