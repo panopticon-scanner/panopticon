@@ -449,6 +449,69 @@ class TestDiscoveryPhase(unittest.TestCase):
         self.assertIn("--base", cmd)
 
 
+class TestHostUsageCollection(unittest.TestCase):
+    """#calibration-1: meta.cost.tokens is host-supplied, and only lands if the
+    collector runs BETWEEN the last dispatch and synthesize. Leaving that
+    ordering to the operator lost the cost ledger on the first external run."""
+
+    def _manifest(self, **kw):
+        m = {"host": "claude", "run_id": "r1", "created": "2026-08-30T15:37:19Z"}
+        m.update(kw)
+        return m
+
+    def test_collects_before_synthesize_with_an_explicit_window(self):
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch("scripts.driver._run_child") as run:
+            run.return_value = mock.Mock(returncode=0)
+            driver._collect_host_usage(d, self._manifest())
+        cmd = run.call_args[0][0]   # the argv passed to _run_child
+        self.assertIn("collect_usage.py", " ".join(cmd))
+        # --since must be passed explicitly: run-manifest.json is _TOP_LEVEL, so
+        # it is NOT in run_dir and the collector's own lookup would miss it and
+        # bill the whole session transcript to this run.
+        self.assertIn("--since", cmd)
+        self.assertEqual(cmd[cmd.index("--since") + 1], "2026-08-30T15:37:19Z")
+        # --run-dir must be the per-run folder, not top-level .panopticon
+        run_dir = cmd[cmd.index("--run-dir") + 1]
+        self.assertEqual(run_dir,
+                         os.path.dirname(driver._pano(d, "usage.json")))
+
+    def test_non_claude_host_is_skipped(self):
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch("scripts.driver._run_child") as run:
+            self.assertIsNone(
+                driver._collect_host_usage(d, self._manifest(host="generic")))
+        run.assert_not_called()
+
+    def test_existing_usage_is_never_overwritten_on_resume(self):
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch("scripts.driver._run_child") as run:
+            path = driver._pano(d, "usage.json")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write('{"total": 1}')
+            self.assertIsNone(driver._collect_host_usage(d, self._manifest()))
+        run.assert_not_called()
+
+    def test_a_failed_collection_is_never_fatal(self):
+        # An absent number must stay absent -- collection must never fail a run
+        # that has already done all its expensive work.
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch("scripts.driver._run_child",
+                        side_effect=driver.DriverError("boom")), \
+             contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertIsNone(driver._collect_host_usage(d, self._manifest()))
+        self.assertIn("meta.cost.tokens stays null", err.getvalue())
+
+    def test_no_transcript_is_reported_not_raised(self):
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch("scripts.driver._run_child",
+                        return_value=mock.Mock(returncode=1)), \
+             contextlib.redirect_stderr(io.StringIO()) as err:
+            driver._collect_host_usage(d, self._manifest())
+        self.assertIn("produced nothing", err.getvalue())
+
+
 class TestCoveragePhase(unittest.TestCase):
     def setUp(self):
         self._t = tempfile.TemporaryDirectory()

@@ -1677,6 +1677,55 @@ def synthesize_done(review_root, manifest):
     return _json_parses(_report_out(review_root))
 
 
+def _collect_host_usage(review_root, manifest):
+    """Write `<run_dir>/usage.json` just before synthesize, so meta.cost.tokens
+    is populated without the operator having to remember (#calibration-1).
+
+    The D4 channel is host-supplied by design: the driver is a subprocess and
+    cannot see per-dispatch token usage. collect_usage.py reads it out of the
+    Claude host's own transcripts -- but it only lands in the report if it runs
+    BETWEEN the last dispatch and synthesize. On the first external calibration
+    run that ordering was left to the operator, who got it wrong, and the run
+    reported `tokens: null` until synthesize was re-run by hand.
+
+    Best-effort and non-fatal in every direction: a non-claude host, no
+    transcript, a crash, or a timeout all leave usage.json absent, and
+    synthesize's `load_run_usage` then reports null exactly as before. An
+    absent number stays absent -- this must never be able to fail a run, and
+    must never invent a figure.
+    """
+    if manifest.get("host") != "claude":
+        return None          # other hosts write their own usage.json, or none
+    if os.path.isfile(_pano(review_root, "usage.json")):
+        return None          # already collected (resume) -- never overwrite
+    # dirname of a non-top-level artifact IS the per-run folder -- the same
+    # directory synthesize resolves as run_dir (dirname of --groups).
+    run_dir = os.path.dirname(_pano(review_root, "usage.json"))
+    cmd = [sys.executable, _script("collect_usage.py"),
+           "--run-dir", run_dir,
+           "--project-dir", os.path.abspath(review_root)]
+    # Pass the window explicitly. run-manifest.json is a _TOP_LEVEL artifact, so
+    # it does NOT live in run_dir and collect_usage's own manifest lookup would
+    # miss it -- falling back to counting the entire session transcript, which
+    # bills every earlier run in the same session to this one. The driver holds
+    # the manifest, so it is the authoritative source for the start stamp.
+    created = manifest.get("created")
+    if created:
+        cmd += ["--since", created]
+    try:
+        proc = _run_child(cmd, review_root, "usage", timeout=120)
+    except DriverError as exc:
+        print("driver: usage collection skipped (%s); meta.cost.tokens stays null"
+              % exc, file=sys.stderr, flush=True)
+        return None
+    if proc.returncode != 0:
+        # rc 1 is the documented "no transcript found, wrote nothing" path.
+        print("driver: usage collection produced nothing (rc %d); "
+              "meta.cost.tokens stays null" % proc.returncode,
+              file=sys.stderr, flush=True)
+    return proc
+
+
 def synthesize_execute(review_root, manifest):
     # #5.0-16 fallback: guarantee both integrity artifacts exist once, after
     # review and before synthesize, even when the verify phase was vacuously
@@ -1685,6 +1734,7 @@ def synthesize_execute(review_root, manifest):
     # idempotent no-ops when review_execute/verify_execute already wrote them.
     _write_driver_plan(review_root, manifest)
     _snapshot_review_out_files(review_root, manifest)
+    _collect_host_usage(review_root, manifest)
     findings = sorted(_glob.glob(_pano(review_root, "findings-*.json")))
     verdicts_dir = _pano(review_root, "verdicts")
     os.makedirs(verdicts_dir, exist_ok=True)   # empty in P3 (verify is a no-op)

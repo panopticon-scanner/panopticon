@@ -306,6 +306,12 @@ class TestSynthesizeFixtureParityWiring(_ToolVerifyBase):
         captured = {}
 
         def fake_run(cmd, **kw):
+            # synthesize_execute is not the only child it spawns any more -- it
+            # also runs collect_usage.py first (#calibration-1), which has no
+            # --out. Select the synthesize invocation explicitly rather than
+            # assuming the phase spawns exactly one child.
+            if not any("synthesize.py" in str(a) for a in cmd):
+                return mock.Mock(returncode=0, stdout="", stderr="")
             captured["cmd"] = cmd
             with open(_out_path(cmd), "w") as fh:
                 json.dump({"findings": []}, fh)
