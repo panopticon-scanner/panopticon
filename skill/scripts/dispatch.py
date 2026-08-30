@@ -202,7 +202,51 @@ def emit_host_agents(host, out_dir):
             else:
                 fh.write("\n".join(fm) + "\n\n" + charter)
         written.append(path)
+    _prune_retired_shells(host, out_dir, written)
     return written
+
+
+def _prune_retired_shells(host, out_dir, written):
+    """Delete `panopticon-*` shells in out_dir that ROLE_FILES no longer emits.
+
+    Registration used to be write-only, so retiring a role left its shell on
+    every machine that had ever emitted it -- and a registered shell is
+    DISPATCHABLE. After #1441 removed the panel_review/lens_sweep templates,
+    `--emit-host-agents claude` stopped writing those two files but did not
+    remove them, so hosts kept offering `panopticon-panel-review` and
+    `panopticon-lens-sweep` as agent types holding scoped Write, backed by no
+    template in the tree. Re-emitting during run preflight -- the documented fix
+    for stale registration -- could not clear them.
+
+    Scoped deliberately narrowly: only this host's own filename suffix, only the
+    `panopticon-` namespace this module owns, and only names not just written.
+    Anything else in the agents dir belongs to someone else and is never
+    touched. Each removal is announced; a file that cannot be removed is
+    reported and skipped rather than aborting an otherwise-successful emission.
+    """
+    suffix = ".toml" if host == "codex" else ".md"
+    keep = {os.path.basename(p) for p in written}
+    removed = []
+    try:
+        present = sorted(os.listdir(out_dir))
+    except OSError:
+        return removed
+    for name in present:
+        if (not name.startswith("panopticon-") or not name.endswith(suffix)
+                or name in keep):
+            continue
+        victim = os.path.join(out_dir, name)
+        if not os.path.isfile(victim) or os.path.islink(victim):
+            continue
+        try:
+            os.remove(victim)
+        except OSError as exc:
+            print("dispatch: could not remove retired shell %s (%s)"
+                  % (victim, exc), file=sys.stderr)
+            continue
+        removed.append(victim)
+        print("dispatch: removed retired shell %s" % victim, file=sys.stderr)
+    return removed
 
 
 def _tool_policy_line(meta, host=None):
