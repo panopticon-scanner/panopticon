@@ -4431,150 +4431,99 @@ class TestMainExitAndScout(unittest.TestCase):
             self.assertNotIn("e", tools_div)
 
 
-class TestMultigroupPlanReconcile(unittest.TestCase):
-    """C1: the real fan-out workflow writes one dispatch-plan-<group>.json
-    PER GROUP, never a single dispatch-plan.json -- main() must glob all of
-    them (same pattern as derive_tool_policy_mode) or reconcile never runs
-    on the shape it was built for. This is the load-bearing regression test:
-    a single-group main() test would still pass with the old single-file
-    load in place."""
+class TestDriverPlanReconcile(unittest.TestCase):
+    """Reconcile must run over the plan the pipeline ACTUALLY writes, and must
+    fail closed on anything it does not recognise.
 
-    def _setup(self, d, decoy):
-        import scripts.plan_contract as plan_contract
+    #run10: this was TestMultigroupPlanReconcile, whose premise ("the real
+    fan-out writes one dispatch-plan-<group>.json PER GROUP") stopped being
+    true when the driver started writing a single dispatch-plan-driver.json,
+    and whose fixture hand-built the complete 4.x panel contract -- a shape no
+    producer emits. The load-bearing property was never the globbing: it is
+    that an UNDECLARED findings file is caught. That is kept, retargeted onto
+    the driver cell shape, and joined by the stray-plan case below.
+    """
 
+    def _setup(self, d, decoy=False, stray_plan=False):
         pan = os.path.join(d, ".panopticon")
         os.makedirs(pan, exist_ok=True)
-        assignment_g1 = {
-            "name": "g1",
-            "files": ["a.py"],
-            "panels": ["code"],
-            "depth": "standard",
-            "security_mode": "standard",
-        }
-        assignment_g2 = {
-            "name": "g2",
-            "files": ["b.py"],
-            "panels": ["code"],
-            "depth": "standard",
-            "security_mode": "standard",
-        }
-        plan_g1 = [
-            {
-                "role": "panel_review",
-                "agent": "panopticon-panel-review",
-                "enforced": True,
-                "group": "g1",
-                "panel": "code",
-                "lens": None,
-                "run_id": "run-g1",
-                "scope_bound": True,
-                "scope_sha256": plan_contract.assignment_digest(assignment_g1),
-                "files": ["a.py"],
-                "depth": "standard",
-                "security_mode": "standard",
-                "out_file": os.path.join(pan, "findings-g1-code-panel_review.json"),
-            }
-        ]
-        plan_g2 = [
-            {
-                "role": "panel_review",
-                "agent": "panopticon-panel-review",
-                "enforced": True,
-                "group": "g2",
-                "panel": "code",
-                "lens": None,
-                "run_id": "run-g2",
-                "scope_bound": True,
-                "scope_sha256": plan_contract.assignment_digest(assignment_g2),
-                "files": ["b.py"],
-                "depth": "standard",
-                "security_mode": "standard",
-                "out_file": os.path.join(pan, "findings-g2-code-panel_review.json"),
-            }
-        ]
-        with open(os.path.join(pan, "dispatch-plan-g1.json"), "w", encoding="utf-8") as fh:
-            json.dump(plan_g1, fh)
-        with open(os.path.join(pan, "dispatch-plan-g2.json"), "w", encoding="utf-8") as fh:
-            json.dump(plan_g2, fh)
-        with open(os.path.join(pan, "groups.json"), "w", encoding="utf-8") as fh:
-            json.dump({"security_mode": "standard", "groups": [assignment_g1, assignment_g2]}, fh)
-        with open(
-            os.path.join(pan, "findings-g1-code-panel_review.json"), "w", encoding="utf-8"
-        ) as fh:
-            json.dump(
-                {
-                    "findings": [],
-                    "_panopticon": {
-                        "run_id": "run-g1",
-                        "role": "panel_review",
-                        "panel": "code",
-                        "lens": None,
-                        "group": "g1",
-                    },
-                },
-                fh,
-            )
-        with open(
-            os.path.join(pan, "findings-g2-code-panel_review.json"), "w", encoding="utf-8"
-        ) as fh:
-            json.dump(
-                {
-                    "findings": [],
-                    "_panopticon": {
-                        "run_id": "run-g2",
-                        "role": "panel_review",
-                        "panel": "code",
-                        "lens": None,
-                        "group": "g2",
-                    },
-                },
-                fh,
-            )
-        files = [
-            ".panopticon/findings-g1-code-panel_review.json",
-            ".panopticon/findings-g2-code-panel_review.json",
-        ]
+        cells = [("g1", "COD"), ("g2", "COD")]
+        plan = [{"group": g, "domain": dom, "enforced": True,
+                 "out_file": os.path.join(pan, "findings-%s-%s.json" % (g, dom))}
+                for g, dom in cells]
+        with open(os.path.join(pan, syn.DRIVER_DISPATCH_PLAN), "w",
+                  encoding="utf-8") as fh:
+            json.dump(plan, fh)
+        files = []
+        for g, dom in cells:
+            name = "findings-%s-%s.json" % (g, dom)
+            with open(os.path.join(pan, name), "w", encoding="utf-8") as fh:
+                json.dump({"findings": [],
+                           "_panopticon": {"run_id": "run-1", "role": "domain_panel",
+                                           "group": g, "domain": dom}}, fh)
+            files.append(os.path.join(".panopticon", name))
         if decoy:
-            with open(os.path.join(pan, "findings-EVIL.json"), "w", encoding="utf-8") as fh:
+            with open(os.path.join(pan, "findings-EVIL.json"), "w",
+                      encoding="utf-8") as fh:
                 json.dump({"findings": []}, fh)
             files.append(".panopticon/findings-EVIL.json")
+        if stray_plan:
+            # A dispatch-plan-*.json the pipeline never writes.
+            with open(os.path.join(pan, "dispatch-plan-g1.json"), "w",
+                      encoding="utf-8") as fh:
+                json.dump(plan, fh)
         return files
 
-    def test_multigroup_plans_decoy_detected_via_main(self):
+    def _run(self, d, files):
+        with _chdir(d):
+            out_path = os.path.join(".panopticon", "report.json")
+            rc = syn.main(["--target", "t", "--fail-on", "high",
+                           "--out", out_path] + files)
+            with open(out_path, encoding="utf-8") as fh:
+                return rc, json.load(fh)
+
+    def test_driver_plan_reconciles_clean(self):
         with tempfile.TemporaryDirectory() as d:
-            files = self._setup(d, decoy=True)
-            with _chdir(d):
-                out_path = os.path.join(".panopticon", "report.json")
-                rc = syn.main(["--target", "t", "--fail-on", "high", "--out", out_path] + files)
-                with open(out_path, encoding="utf-8") as fh:
-                    report = json.load(fh)
+            rc, report = self._run(d, self._setup(d))
+        self.assertEqual(rc, 0)
+        integ = report["meta"]["integrity"]
+        self.assertEqual(integ["unexpected_findings_files"], [])
+        self.assertEqual(integ["invalid_dispatch_plans"], [])
+        # RETIRED-HAZARD ANCHOR (5.0 P6.5 Slice B, plan-glob under-read):
+        # plans_seen == 1 proves main() found and read the driver plan rather
+        # than skipping reconcile -- see skill/reference/integrity-retirement-p65.md.
+        self.assertEqual(integ["plans_seen"], 1)
+
+    def test_undeclared_findings_file_is_detected(self):
+        with tempfile.TemporaryDirectory() as d:
+            rc, report = self._run(d, self._setup(d, decoy=True))
         self.assertEqual(rc, 2)  # INCONCLUSIVE -> exit 2
         integ = report["meta"]["integrity"]
-        self.assertEqual(integ["unexpected_findings_files"], [".panopticon/findings-EVIL.json"])
+        self.assertEqual(integ["unexpected_findings_files"],
+                         [".panopticon/findings-EVIL.json"])
+        self.assertNotIn(".panopticon/findings-g1-COD.json",
+                         integ["unexpected_findings_files"])
+
+    def test_unrecognized_dispatch_plan_fails_closed(self):
+        # The retired 4.x branch also served as the reject for a stray
+        # dispatch-plan-*.json dropped into the artifacts dir. Deleting it
+        # outright would have made such a file silently ignored, so the
+        # rejection is now explicit -- and tested, which it never was.
+        with tempfile.TemporaryDirectory() as d:
+            rc, report = self._run(d, self._setup(d, stray_plan=True))
+        self.assertEqual(rc, 2)
+        integ = report["meta"]["integrity"]
         self.assertEqual(integ["plans_seen"], 2)
+        reasons = " ".join(x["reason"] for x in integ["invalid_dispatch_plans"])
+        self.assertIn("unrecognized dispatch-plan file", reasons)
+        self.assertIn("dispatch-plan-g1.json",
+                      " ".join(x["file"] for x in integ["invalid_dispatch_plans"]))
         self.assertNotIn(
             ".panopticon/findings-g1-code-panel_review.json", integ["unexpected_findings_files"]
         )
         self.assertNotIn(
             ".panopticon/findings-g2-code-panel_review.json", integ["unexpected_findings_files"]
         )
-
-    def test_multigroup_plans_clean_via_main(self):
-        with tempfile.TemporaryDirectory() as d:
-            files = self._setup(d, decoy=False)
-            with _chdir(d):
-                out_path = os.path.join(".panopticon", "report.json")
-                rc = syn.main(["--target", "t", "--fail-on", "high", "--out", out_path] + files)
-                with open(out_path, encoding="utf-8") as fh:
-                    report = json.load(fh)
-        self.assertEqual(rc, 0)
-        integ = report["meta"]["integrity"]
-        self.assertEqual(integ["unexpected_findings_files"], [])
-        # RETIRED-HAZARD ANCHOR (5.0 P6.5 Slice B, plan-glob under-read):
-        # plans_seen == 2 proves main() globbed BOTH per-group dispatch-plan
-        # files, not just one -- see skill/reference/integrity-retirement-p65.md.
-        self.assertEqual(integ["plans_seen"], 2)
-
 
 class TestRenderSummaryCoverage(unittest.TestCase):
     def test_inconclusive_summary_names_divergence(self):
