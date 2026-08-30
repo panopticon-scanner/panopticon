@@ -117,6 +117,21 @@ class TestPhaseAttribution(unittest.TestCase):
             self.assertEqual(cu.classify_transcript(rev), "review")
             self.assertEqual(cu.classify_transcript(sct), "scout")
 
+    def test_prompt_file_path_decides_the_phase(self):
+        # #run10 B2 hands agents a prompt_file PATH, so a real dispatch prompt
+        # names _prompts/<entry-id>.txt and never mentions the findings file.
+        # On the first real target scan this put 100% of subagent tokens in
+        # `unattributed` -- two of our own features interacting.
+        with tempfile.TemporaryDirectory() as d:
+            for entry, want in (("review-UI_2-COD", "review"),
+                                ("scout-Auth", "scout"),
+                                ("verify-Auth-SEC-primary", "verify")):
+                p = self._agent(d, entry + ".jsonl",
+                                "Read your full instructions from this file:\n"
+                                "/r/.panopticon/runs/tag/_prompts/%s.txt\n"
+                                "Repo root: /r" % entry)
+                self.assertEqual(cu.classify_transcript(p), want, entry)
+
     def test_unrecognised_prompt_is_unattributed_not_guessed(self):
         with tempfile.TemporaryDirectory() as d:
             p = self._agent(d, "x.jsonl", "Summarise the release notes.")
@@ -131,6 +146,46 @@ class TestPhaseAttribution(unittest.TestCase):
                 _rec(usage=_u(o=1), content="I read findings-Api-COD.json"),
             ])
             self.assertEqual(cu.classify_transcript(p), "scout")
+
+
+class TestTranscriptDiscovery(unittest.TestCase):
+    """#run10: the first release counted only the `tasks/` directory."""
+
+    def _session(self, root):
+        proj = os.path.join(root, "-Some-Project")
+        sess = "sess-1"
+        ctl = _write(os.path.join(proj, sess + ".jsonl"), [_rec(usage=_u(o=1))])
+        return proj, sess, ctl
+
+    def test_workflow_agent_transcripts_are_discovered(self):
+        # The documented Claude-host fan-out IS a Workflow, and its agents write
+        # under subagents/workflows/wf_*/. Missing them dropped more tokens than
+        # the collector reported in total on the first real target scan.
+        with tempfile.TemporaryDirectory() as d:
+            proj, sess, ctl = self._session(d)
+            wf = os.path.join(proj, sess, "subagents", "workflows", "wf_abc")
+            _write(os.path.join(wf, "agent-aaa.jsonl"), [_rec(usage=_u(o=5))])
+            _write(os.path.join(wf, "agent-bbb.jsonl"), [_rec(usage=_u(o=6))])
+            found = cu.find_task_transcripts(ctl)
+        self.assertEqual({cu._agent_id(p) for p in found}, {"aaa", "bbb"})
+
+    def test_same_agent_in_two_locations_is_counted_once(self):
+        # subagents/<id>.jsonl and tasks/<id>.output are the SAME agent. Adding
+        # both would double-count the run -- worse than the under-count it fixes.
+        with tempfile.TemporaryDirectory() as d:
+            proj, sess, ctl = self._session(d)
+            _write(os.path.join(proj, sess, "subagents", "dup.jsonl"),
+                   [_rec(usage=_u(o=9))])
+            wf = os.path.join(proj, sess, "subagents", "workflows", "wf_x")
+            _write(os.path.join(wf, "agent-dup.jsonl"), [_rec(usage=_u(o=9))])
+            found = cu.find_task_transcripts(ctl)
+        self.assertEqual(len(found), 1, found)
+        self.assertEqual(cu._agent_id(found[0]), "dup")
+
+    def test_agent_id_strips_prefix_and_suffixes(self):
+        self.assertEqual(cu._agent_id("/x/agent-a1b2.jsonl"), "a1b2")
+        self.assertEqual(cu._agent_id("/x/a1b2.output"), "a1b2")
+        self.assertEqual(cu._agent_id("/x/a1b2.jsonl"), "a1b2")
 
 
 class TestCollect(unittest.TestCase):
