@@ -47,7 +47,7 @@ class TestUntrustedContentPreamble(unittest.TestCase):
         panel = dispatch.render_prompt("domain-panel.md", {
             "domain": "SEC", "group": "g1", "file_list": "a.py",
             "security_mode": "standard", "tests": "t.py", "menu": "m",
-            "criteria": "c", "tool_hits": "", "run_id": "R",
+            "criteria": "c", "tool_hits": "", "security_checklist": "", "run_id": "R",
             "out_file": ".panopticon/f.json"})
         self.assertIn("UNTRUSTED DATA", panel)
         advisor = dispatch.render_prompt("advisor.md", {"claim_json": "{}"})
@@ -169,7 +169,8 @@ class TestDomainPanelRenders(unittest.TestCase):
                    "tests": "- t.py", "security_mode": "standard",
                    "menu": "SEC-A1A os-command-injection (HIGH)", "run_id": "R",
                    "criteria": "SEC-A1A os-command-injection — Qualifies when …",
-                   "tool_hits": "", "out_file": "/abs/findings-Auth-SEC.json"}
+                   "tool_hits": "", "security_checklist": "",
+                   "out_file": "/abs/findings-Auth-SEC.json"}
         out = dispatch.render_prompt("domain-panel.md", mapping, "claude")
         self.assertIn("`SEC` domain reviewer", out)
         self.assertIn("SEC-A1A", out)
@@ -188,7 +189,8 @@ class TestDomainPanelRenders(unittest.TestCase):
                    "tests": "- t.py", "security_mode": "standard",
                    "menu": "SEC-A1A os-command-injection (HIGH)", "run_id": "R",
                    "criteria": "SEC-A1A — CRITERIA-SENTINEL — met only when …",
-                   "tool_hits": "", "out_file": "/abs/findings-Auth-SEC.json"}
+                   "tool_hits": "", "security_checklist": "",
+                   "out_file": "/abs/findings-Auth-SEC.json"}
         out = dispatch.render_prompt("domain-panel.md", mapping, "claude")
         self.assertIn("## Grading criteria", out)
         self.assertIn("grade against the criteria, not the one-line name", out)
