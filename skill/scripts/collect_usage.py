@@ -44,6 +44,11 @@ USAGE_FIELDS = ("input_tokens", "output_tokens",
                 "cache_creation_input_tokens", "cache_read_input_tokens")
 PHASES = ("scout", "review", "verify", "unattributed")
 
+# #run10 B2 hands agents a `prompt_file` PATH instead of an inline prompt, so a
+# real dispatch prompt names `_prompts/<entry-id>.txt` and never mentions the
+# findings file at all. The entry id already encodes the phase, and it is the
+# most reliable signal available -- checked before the artifact names below.
+_PROMPT_ID_RE = re.compile(r"_prompts/(review|scout|verify)[-/]")
 _SCOUT_RE = re.compile(r"\bscout-[^/\\\"'\s]+\.json")
 _FINDINGS_RE = re.compile(r"\bfindings-[^/\\\"'\s]+\.json")
 _VERDICT_RE = re.compile(r"\bverdicts?[-/][^/\\\"'\s]*\.json|/verdicts/")
@@ -67,12 +72,30 @@ def find_controller_transcript(project_dir, home=None):
     return max(files, key=os.path.getmtime) if files else None
 
 
-def find_task_transcripts(controller_transcript, tasks_dir=None):
-    """Subagent transcripts for the controller's session.
+def _agent_id(path):
+    """The agent id a transcript filename encodes, for cross-location dedup."""
+    base = re.sub(r"^agent-", "", os.path.basename(path))
+    return re.sub(r"\.(jsonl|output)$", "", base)
 
-    Claude Code writes them under a per-session `tasks/` directory outside the
-    project tree; `--tasks-dir` overrides discovery for hosts that place it
-    elsewhere.
+
+def find_task_transcripts(controller_transcript, tasks_dir=None):
+    """Every subagent transcript for the controller's session.
+
+    Claude Code writes them in more than one place, and they OVERLAP:
+
+      <tmp>/<slug>/<session>/tasks/<id>.output          direct Agent-tool subagents
+      <project>/<session>/subagents/<id>.jsonl          the SAME agents again
+      <project>/<session>/subagents/workflows/wf_*/
+              agent-<id>.jsonl                          Workflow fan-out agents
+
+    #run10: the first release looked only in `tasks/`, which misses every
+    Workflow agent -- and the documented Claude-host fan-out IS a Workflow. On
+    the first real target scan that silently dropped 109.4M tokens, more than
+    the total it did report. Naively adding `subagents/` would have been worse:
+    those are the same agents as `tasks/`, so the run would have been
+    double-counted instead. Collect from all three and dedup by agent id.
+
+    `--tasks-dir` overrides discovery entirely.
     """
     if tasks_dir:
         return sorted(p for p in glob.glob(os.path.join(tasks_dir, "*"))
@@ -80,14 +103,24 @@ def find_task_transcripts(controller_transcript, tasks_dir=None):
     if not controller_transcript:
         return []
     session = os.path.splitext(os.path.basename(controller_transcript))[0]
-    slug = os.path.basename(os.path.dirname(controller_transcript))
-    hits = []
+    proj = os.path.dirname(controller_transcript)
+    slug = os.path.basename(proj)
+    candidates = []
     for base in glob.glob("/private/tmp/claude-*") + glob.glob("/tmp/claude-*"):
-        d = os.path.join(base, slug, session, "tasks")
-        if os.path.isdir(d):
-            hits.extend(p for p in glob.glob(os.path.join(d, "*"))
-                        if os.path.isfile(p))
-    return sorted(set(hits))
+        candidates.extend(glob.glob(os.path.join(base, slug, session, "tasks", "*")))
+    candidates.extend(glob.glob(os.path.join(
+        proj, session, "subagents", "workflows", "*", "agent-*.jsonl")))
+    candidates.extend(glob.glob(os.path.join(proj, session, "subagents", "*.jsonl")))
+    seen, out = set(), []
+    for cand in candidates:
+        if not os.path.isfile(cand) or cand.endswith(".meta.json"):
+            continue
+        aid = _agent_id(cand)
+        if aid in seen:
+            continue
+        seen.add(aid)
+        out.append(cand)
+    return sorted(out)
 
 
 def _iter_records(path):
@@ -151,6 +184,9 @@ def classify_transcript(path):
     blob = dispatched_prompt(path)
     if not blob:
         return "unattributed"
+    m = _PROMPT_ID_RE.search(blob)
+    if m:
+        return m.group(1)
     if _VERDICT_RE.search(blob):
         return "verify"
     if _SCOUT_RE.search(blob):
