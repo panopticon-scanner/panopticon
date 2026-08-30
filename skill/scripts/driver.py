@@ -1701,9 +1701,17 @@ def _collect_host_usage(review_root, manifest):
     # dirname of a non-top-level artifact IS the per-run folder -- the same
     # directory synthesize resolves as run_dir (dirname of --groups).
     run_dir = os.path.dirname(_pano(review_root, "usage.json"))
+    # --project-dir locates the HOST SESSION's transcript, so it is the directory
+    # the session runs in -- NOT the review root. #calibration-2: these are the
+    # same path for a self-scan (every run 1-10), so passing review_root worked
+    # until the first EXTERNAL target, where it resolved a transcript slug for
+    # the scanned repo, found nothing, and silently reported `tokens: null`
+    # again -- reintroducing exactly the gap this wiring removed. The driver
+    # process is launched from the session cwd (only its children are chdir'd
+    # to review_root), so getcwd() here is that directory.
     cmd = [sys.executable, _script("collect_usage.py"),
            "--run-dir", run_dir,
-           "--project-dir", os.path.abspath(review_root)]
+           "--project-dir", os.getcwd()]
     # Pass the window explicitly. run-manifest.json is a _TOP_LEVEL artifact, so
     # it does NOT live in run_dir and collect_usage's own manifest lookup would
     # miss it -- falling back to counting the entire session transcript, which

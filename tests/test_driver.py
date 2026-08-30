@@ -476,6 +476,21 @@ class TestHostUsageCollection(unittest.TestCase):
         self.assertEqual(run_dir,
                          os.path.dirname(driver._pano(d, "usage.json")))
 
+    def test_project_dir_is_the_session_not_the_review_root(self):
+        # #calibration-2: --project-dir locates the HOST SESSION's transcript.
+        # Passing review_root worked for every self-scan (review_root == session
+        # cwd) and silently collected NOTHING on the first external target,
+        # reintroducing `tokens: null`. It must be the session directory.
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch("scripts.driver._run_child") as run:
+            run.return_value = mock.Mock(returncode=0)
+            driver._collect_host_usage(d, self._manifest())
+        cmd = run.call_args[0][0]
+        project_dir = cmd[cmd.index("--project-dir") + 1]
+        self.assertEqual(project_dir, os.getcwd())
+        self.assertNotEqual(os.path.realpath(project_dir), os.path.realpath(d),
+                            "--project-dir must not be the scanned target")
+
     def test_non_claude_host_is_skipped(self):
         with tempfile.TemporaryDirectory() as d, \
              mock.patch("scripts.driver._run_child") as run:
