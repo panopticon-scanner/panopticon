@@ -64,12 +64,35 @@ def project_slug(path):
     return re.sub(r"[^A-Za-z0-9]", "-", os.path.abspath(path))
 
 
-def find_controller_transcript(project_dir, home=None):
-    """Newest `<home>/.claude/projects/<slug>/*.jsonl`, or None."""
+def find_controller_transcript(project_dir, home=None, since=None):
+    """The session transcript that did THIS run's work, or None.
+
+    #calibration-2: this used to return the newest `*.jsonl` by mtime. A machine
+    running more than one Claude Code session in the same project has several,
+    and the most-recently-TOUCHED file is not necessarily the one that ran the
+    scan -- on express it selected a different session entirely, whose subagent
+    directory was empty, and the collector reported 0 subagent transcripts and a
+    total three orders of magnitude too small.
+
+    With a window, pick the transcript carrying the most usage records inside
+    it: that is a direct answer to "which session was working during this run",
+    rather than a proxy for it. Without one, fall back to newest-by-mtime.
+    """
     home = home or os.path.expanduser("~")
     d = os.path.join(home, ".claude", "projects", project_slug(project_dir))
     files = [p for p in glob.glob(os.path.join(d, "*.jsonl")) if os.path.isfile(p)]
-    return max(files, key=os.path.getmtime) if files else None
+    if not files:
+        return None
+    if not since:
+        return max(files, key=os.path.getmtime)
+    best, best_n = None, -1
+    for path in files:
+        _totals, n, _models = scan(path, since)
+        if n > best_n:
+            best, best_n = path, n
+    # Every candidate was silent in the window (best_n == 0): no session did
+    # this run's work here, so fall back rather than assert an arbitrary one.
+    return best if best_n > 0 else max(files, key=os.path.getmtime)
 
 
 def _agent_id(path):
@@ -218,7 +241,7 @@ def scan(path, since=None):
 
 def collect(run_dir, project_dir, transcript=None, tasks_dir=None, since=None):
     """Assemble the usage document, or None when no transcript is available."""
-    controller = transcript or find_controller_transcript(project_dir)
+    controller = transcript or find_controller_transcript(project_dir, since=since)
     tasks = find_task_transcripts(controller, tasks_dir)
     if not controller and not tasks:
         return None

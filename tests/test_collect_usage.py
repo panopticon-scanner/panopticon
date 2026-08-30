@@ -188,6 +188,54 @@ class TestTranscriptDiscovery(unittest.TestCase):
         self.assertEqual(cu._agent_id("/x/a1b2.jsonl"), "a1b2")
 
 
+class TestControllerSelection(unittest.TestCase):
+    """#calibration-2: a machine running more than one session in the same
+    project has several transcripts, and the most-recently-TOUCHED one is not
+    necessarily the one that ran the scan."""
+
+    def _proj(self, root):
+        d = os.path.join(root, ".claude", "projects",
+                         cu.project_slug("/some/project"))
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def test_picks_the_session_that_worked_in_the_window(self):
+        with tempfile.TemporaryDirectory() as home:
+            d = self._proj(home)
+            # `idle` is touched LAST, so newest-by-mtime would pick it -- but it
+            # did no work inside the window.
+            _write(os.path.join(d, "busy.jsonl"), [
+                _rec(usage=_u(o=10), ts="2026-08-30T20:00:00Z"),
+                _rec(usage=_u(o=10), ts="2026-08-30T20:01:00Z")])
+            idle = _write(os.path.join(d, "idle.jsonl"), [
+                _rec(usage=_u(o=99), ts="2026-08-01T00:00:00Z")])
+            os.utime(idle, (2 << 30, 2 << 30))
+            got = cu.find_controller_transcript(
+                "/some/project", home=home, since="2026-08-30T19:00:00Z")
+        self.assertEqual(os.path.basename(got), "busy.jsonl")
+
+    def test_without_a_window_falls_back_to_newest(self):
+        with tempfile.TemporaryDirectory() as home:
+            d = self._proj(home)
+            _write(os.path.join(d, "old.jsonl"), [_rec(usage=_u(o=1))])
+            new = _write(os.path.join(d, "new.jsonl"), [_rec(usage=_u(o=1))])
+            os.utime(new, (2 << 30, 2 << 30))
+            got = cu.find_controller_transcript("/some/project", home=home)
+        self.assertEqual(os.path.basename(got), "new.jsonl")
+
+    def test_all_silent_in_window_falls_back_rather_than_asserting_one(self):
+        with tempfile.TemporaryDirectory() as home:
+            d = self._proj(home)
+            _write(os.path.join(d, "a.jsonl"),
+                   [_rec(usage=_u(o=1), ts="2026-01-01T00:00:00Z")])
+            b = _write(os.path.join(d, "b.jsonl"),
+                       [_rec(usage=_u(o=1), ts="2026-01-01T00:00:00Z")])
+            os.utime(b, (2 << 30, 2 << 30))
+            got = cu.find_controller_transcript(
+                "/some/project", home=home, since="2026-08-30T00:00:00Z")
+        self.assertEqual(os.path.basename(got), "b.jsonl")
+
+
 class TestCollect(unittest.TestCase):
     def _session(self, d):
         ctl = _write(os.path.join(d, "ctl.jsonl"), [_rec(usage=_u(1, 2, 3, 4))])
