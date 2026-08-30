@@ -59,6 +59,7 @@ Each finding MUST carry:
 - `category: "prompt-injection"` for any planted-instruction finding
 - `source_role: "domain_panel"`
 
+{security_checklist}
 For a SECURITY/REDTEAM finding, also carry the evidence that makes the severity
 above checkable — the Severity bar asks you to judge unauthenticated RCE,
 auth/authz bypass, injection-with-exfiltration and secret disclosure, and a

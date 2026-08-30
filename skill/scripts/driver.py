@@ -44,6 +44,7 @@ import scripts.run_manifest as run_manifest  # noqa: E402
 import scripts.score_gate as score_gate  # noqa: E402
 import scripts.setup_flow as setup_flow  # noqa: E402
 import scripts.synthesize as synthesize  # noqa: E402
+import scripts._version as _version  # noqa: E402
 
 CHECKPOINT_KINDS = ("scout", "review", "verify", "scan")
 
@@ -918,6 +919,31 @@ def _cell_done(review_root, manifest, group, domain):
     return _get_valid_cell_data(review_root, manifest, group, domain) is not None
 
 
+def _render_security_checklist(domain):
+    """The SEC cell's language-specific checklist pointer, or "" (#run10).
+
+    `reference/security-checklists.md` is a real review asset -- per-language
+    banned-construct lists (Rails mass assignment, `pickle.loads`, `dangerouslySetInnerHTML`,
+    ...) that a domain menu code names but does not enumerate. Its ONLY consumer
+    was the 4.x `panel-review.md` template, deleted in #1441, so it silently
+    stopped reaching any reviewer: run-8 through run-10's SEC cells ran without
+    it, and nothing noticed because a keeper test still asserted its contents.
+
+    Handed over as an ABSOLUTE path rather than inlined: the reviewer has Read,
+    the file is ~90 lines it should consult selectively (its own first line says
+    to apply only the languages actually present), and a bare relative path --
+    what the 4.x template used -- does not resolve from the reviewer's cwd.
+    """
+    if domain != "SEC":
+        return ""
+    return (
+        "\n**Language checklists.** Read `%s` and apply the sections for the "
+        "language(s) actually present in your file list, ignoring the rest. It "
+        "enumerates the concrete banned constructs behind several menu codes; "
+        "treat a hit as a candidate finding, still graded against the criteria "
+        "above.\n" % os.path.abspath(_version.reference_path("security-checklists.md")))
+
+
 def _render_menu(bundle, domain):
     lines = ["%s %s (%s)" % (m["code"], m["name"], m["severity"])
              for m in ocrdb.domain_menu(bundle, domain)]
@@ -1026,6 +1052,7 @@ def _cell_entry(review_root, manifest, group, domain, files, tests, host, bundle
         "menu": _render_menu(bundle, domain),
         "criteria": _render_criteria(bundle, domain), "run_id": manifest["run_id"],
         "tool_hits": _tool_hits_for_cell(review_root, manifest, domain, files),
+        "security_checklist": _render_security_checklist(domain),
         "out_file": out_file}, host)
     enforced = host == "claude"
     # run_id/group/domain restate the cell this entry IS, so a host can check a
