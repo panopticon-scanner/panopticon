@@ -121,12 +121,27 @@ class TestOfflineAssets(unittest.TestCase):
 
     def test_osv_warm_failures_are_visible(self):
         # SEC-E3B: OSV DB warm previously swallowed failures with `>/dev/null`.
-        # The build must now fail loud if the offline npm/PyPI databases were
-        # not actually produced, and the scanner log must be surfaced.
+        # The build must fail loud if a declared offline database was not
+        # actually produced, and the scanner log must be surfaced.
         self.assertIn(
-            "::error::OSV offline DB warm did not produce npm/PyPI databases", self.text
+            '::error::OSV offline DB warm did not produce the $eco database', self.text
         )
         self.assertIn("cat /tmp/osv-warm.log >&2", self.text)
+
+    def test_osv_warm_covers_every_applicable_ecosystem(self):
+        # #calibration-1: the warm produced npm + PyPI only -- "the ecosystems
+        # covered by the fixture corpus" -- so osv-scanner could not load a DB
+        # for any other ecosystem, exited 127, produced no output, and SANK
+        # CERTIFICATION on the first real (Go + RubyGems) target. Every
+        # ecosystem OsvScannerAdapter.is_applicable accepts must be warmed, and
+        # each must be verified, or the gap reappears silently on a new target.
+        for manifest in ("package-lock.json", "requirements.txt", "go.mod",
+                         "Gemfile.lock", "Cargo.lock", "pom.xml"):
+            self.assertIn("/tmp/osv-warm/%s" % manifest, self.text, manifest)
+        # ecosystem directory names are osv-scanner's own spelling, verified
+        # against the pinned release -- not guessed
+        for eco in ("npm", "PyPI", "Go", "RubyGems", "crates.io", "Maven"):
+            self.assertIn(eco, self.text, eco)
         # #run7 review: scope the "no swallowed failures" check to the OSV warm
         # block. The old global assertNotIn(">/dev/null 2>&1") tripped on any
         # unrelated future use of that common idiom anywhere in the Dockerfile.
