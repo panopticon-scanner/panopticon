@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
-"""Build a DispatchPlan from a ScopeProfile."""
+"""Agent-template rendering and host enforcement-shell registration.
+
+Renders the host-neutral role templates in `skill/agents/` into dispatch
+prompts (`render_prompt`, `render_advisor_prompts`) and registers the
+host-native enforcement shells (`emit_host_agents`). The 4.x DispatchPlan
+builder this module was named for was retired in #1441; the resumable driver
+builds its own matrix-cell plan and calls `render_prompt` directly.
+"""
 import argparse
 import functools
-import hashlib
 import json
 import os
 import re
@@ -10,7 +16,6 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import model_resolver
-import plan_contract
 
 
 TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -98,11 +103,12 @@ KIMI_AGENTS_DIR = os.path.join(os.path.expanduser("~"), ".kimi-code", "agents")
 CODEX_HOME = os.path.expanduser(os.environ.get("CODEX_HOME", "~/.codex"))
 CODEX_AGENTS_DIR = os.path.join(CODEX_HOME, "agents")
 
-# Roles whose findings gate merge/release decisions (#275). If either lacks a
-# registered enforcement shell, its tool policy is prompt-advisory only --
-# a general-purpose agent reading untrusted repo content would have full
-# Bash/Edit/Write. main() refuses to emit such a plan by default.
-REVIEWER_ROLES = {"domain_panel", "domain_advisor"}
+# #run10: REVIEWER_ROLES lived here -- the roles whose findings gate
+# merge/release decisions (#275), consulted by the plan emitter and verifier to
+# refuse a plan whose reviewers had no registered enforcement shell. Both are
+# retired, and the live owner of that check is setup_flow's `_driver_roles`
+# readiness probe, which carries its own drift guard against ROLE_FILES. A
+# second, unread copy of the set here could only rot out of step with it.
 
 _CHARTER = (
     "You are panopticon's `%s` reviewer (a registered enforcement shell).\n"
@@ -259,12 +265,6 @@ def _detect_host():
     return "generic"
 
 
-def agent_name(role):
-    """Unenforced agent name for a role: its template basename sans '.md'.
-
-    (Replaces a parallel AGENT_NAME dict whose every value was exactly this
-    derivation from ROLE_FILES.)"""
-    return ROLE_FILES[role][:-len(".md")]
 
 
 def _registration_dir(host, agents_dir):
@@ -289,65 +289,14 @@ def _is_registered(reg_dir, role_file, host=None):
         os.path.join(reg_dir, registered_agent_filename(host, role_file)))
 
 
-def _artifact_token(value, label):
-    """Return a filename-safe plan token or reject the untrusted profile."""
-    value = str(value or "")
-    if (not value or value in (".", "..") or os.path.isabs(value)
-            or "/" in value or "\\" in value
-            or any(ord(ch) < 32 or ord(ch) == 127 for ch in value)):
-        raise ValueError("unsafe %s %r: artifact names cannot contain paths or controls"
-                         % (label, value))
-    return value
 
 
-def _lens_token(value):
-    """Return a prompt/filename-safe flexible lens identifier."""
-    value = str(value or "")
-    if not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", value):
-        raise ValueError("unsafe lens %r: use lowercase letters, digits, and underscores"
-                         % value)
-    return value
 
 
-def load_group_assignment(groups_path, group_name):
-    """Load one authoritative group assignment from discovery output."""
-    try:
-        with open(groups_path, encoding="utf-8") as fh:
-            data = json.load(fh)
-    except (OSError, ValueError) as exc:
-        raise ValueError("cannot read groups artifact %s: %s" % (groups_path, exc))
-    groups = data.get("groups") if isinstance(data, dict) else None
-    if not isinstance(groups, list):
-        raise ValueError("groups artifact %s has no groups list" % groups_path)
-    matches = [group for group in groups
-               if isinstance(group, dict) and group.get("name") == group_name]
-    if len(matches) != 1 or not isinstance(matches[0].get("files"), list):
-        raise ValueError("groups artifact must contain exactly one %r group"
-                         % group_name)
-    assignment = dict(matches[0])
-    files = assignment["files"]
-    if not all(isinstance(path, str) and path for path in files):
-        raise ValueError("group %r has malformed files" % group_name)
-    panels = assignment.get("panels")
-    if not isinstance(panels, list) or not all(isinstance(panel, str) for panel in panels):
-        raise ValueError("group %r has malformed panels" % group_name)
-    depth = assignment.get("depth")
-    if not isinstance(depth, str) or depth not in plan_contract.DEPTH_ORDER:
-        raise ValueError("group %r has malformed or missing depth" % group_name)
-    assignment["depth"] = depth
-    assignment["security_mode"] = data.get("security_mode", "standard")
-    return assignment
 
 
-def load_group_files(groups_path, group_name):
-    """Backward-compatible files-only view of an authoritative assignment."""
-    return load_group_assignment(groups_path, group_name)["files"]
 
 
-def _apply_codex_exec(entry, codex_exec, run_id):
-    if codex_exec:
-        entry.update({"execution": "codex_exec", "delivery": "return_json",
-                      "run_id": run_id})
 
 
 def render_advisor_prompts(queue_path, out_dir):
@@ -411,158 +360,38 @@ def render_advisor_prompts(queue_path, out_dir):
     return written
 
 
-_KIMI_UNENFORCED_PROFILE = {
-    "scout": "explore",
-    "advisor": "plan",
-}
 
 
-def _kimi_subagent_type(entry, reg_dir=None, verify=False):
-    """Map a plan entry to a Kimi subagent_type.
-
-    Registered/enforced entries use the panopticon-* shell. Unenforced entries
-    fall back to a built-in Kimi profile so the dispatch is always valid.
-
-    `enforced` is a snapshot taken by build_plan when the plan was written, and
-    a plan is a persisted artifact re-read by a later invocation — registration
-    can be removed in between. With `verify=True` a stale `enforced: true`
-    whose shell is no longer registered fails closed rather than silently
-    downgrading to an unenforced profile, because the snapshot would claim
-    host-enforced tool restrictions that no longer exist.
-    """
-    if entry.get("enforced"):
-        if verify and not _is_registered(reg_dir, ROLE_FILES.get(entry.get("role"), "")):
-            raise ValueError(
-                "dispatch: enforced reviewer role %r (agent %r) has no "
-                "registered shell in %r. The plan claims enforced:true but the "
-                "enforcement shell is missing. Register enforcement shells first: "
-                "python3 skill/scripts/dispatch.py --emit-host-agents kimi"
-                % (entry.get("role"), entry.get("agent"), reg_dir))
-        return entry.get("agent")
-    return _KIMI_UNENFORCED_PROFILE.get(entry.get("role"), "coder")
 
 
-def _swarm_routing(entry):
-    """Where this entry's result must be written, and what produced it.
-
-    AgentSwarm's items[] carries prompts only, so the orchestrator would
-    otherwise have to re-derive the grouping and trust item order to know which
-    out_file each result belongs to. This block is index-aligned with items[]
-    and makes that mapping explicit.
-    """
-    return {"out_file": entry.get("out_file"), "role": entry.get("role"),
-            "panel": entry.get("panel"), "lens": entry.get("lens"),
-            "group": entry.get("group")}
 
 
-def _swarm_description(entry):
-    parts = [entry.get("role", "review")]
-    panel = entry.get("panel")
-    lens = entry.get("lens")
-    group = entry.get("group", "unknown")
-    if panel:
-        parts.append(panel)
-    if lens:
-        parts.append(lens)
-    parts.append("for group %s" % group)
-    return " ".join(parts)
 
 
-def plan_content_hash(plan):
-    """Canonical sha256 of a plan's entry list (#493 R2): formatting- and
-    file-layout-independent, so an ack can bind to the plan CONTENT it
-    acknowledged and synthesize can detect a stale or flipped plan."""
-    return hashlib.sha256(
-        json.dumps(plan, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
 
 
-def verify_plan(plan, host=None, agents_dir=None, ack=None,
-                authoritative_assignment=None, strict=False, root=None):
-    """Dispatch-time plan re-verification (#493 R1).
-
-    The emission-time gate cannot see an on-disk edit made AFTER emission
-    (an "enforced": true->false flip, a role swap). Re-check each reviewer
-    entry against the LIVE registration dir and return a list of violation
-    strings; empty means the plan still holds the posture it was emitted
-    with. An unenforced reviewer entry is a violation UNLESS a matching
-    (hash-bound) ack acknowledges exactly this plan's content.
-    """
-    resolved_host = host or _detect_host()
-    reg_dir = _registration_dir(resolved_host, agents_dir)
-    acked = bool(ack and ack.get("acknowledged")
-                 and ack.get("plan_sha256") == plan_content_hash(plan))
-    if not isinstance(plan, list) or not plan:
-        return ["plan is not a non-empty JSON array"]
-    problems = []
-    if strict:
-        problems.extend(plan_contract.plan_issues(plan))
-        if authoritative_assignment is None:
-            problems.append("no authoritative groups.json assignment supplied")
-        else:
-            problems.extend(plan_contract.assignment_issues(
-                plan, authoritative_assignment))
-        problems.extend(plan_contract.output_issues(plan, root or os.getcwd()))
-        if problems:
-            return problems
-    for i, e in enumerate(plan):
-        if not isinstance(e, dict):
-            problems.append("entry %d is not an object" % i)
-            continue
-        if e.get("role") not in REVIEWER_ROLES:
-            continue
-        if e.get("scope_bound") is not True:
-            problems.append("entry %d (%s): reviewer scope is not bound to groups.json"
-                            % (i, e.get("role")))
-        if e.get("execution") == "codex_exec":
-            if e.get("delivery") != "return_json" or not e.get("run_id"):
-                problems.append(
-                    "entry %d (%s): incomplete codex_exec runner metadata"
-                    % (i, e.get("role")))
-            continue
-        live = _is_registered(reg_dir, ROLE_FILES[e["role"]], resolved_host)
-        if e.get("enforced") and not live:
-            problems.append(
-                "entry %d (%s/%s): enforced:true but no registered shell -- "
-                "on-disk flip or lost registration" % (i, e.get("role"), e.get("agent")))
-        elif not e.get("enforced") and not acked:
-            problems.append(
-                "entry %d (%s): unenforced reviewer with no matching ack "
-                "for THIS plan content" % (i, e.get("role")))
-    return problems
 
 
 def main(argv=None):
+    # #run10: the parser carried a `profile` positional and --verify-plan,
+    # --groups, --group-name, --allow-unenforced, --codex-exec and
+    # --model-advisor. Every one of them served build_plan/emit_plan or the 4.x
+    # plan verifier and was parsed but never read once those were retired;
+    # --allow-unenforced still advertised that it "records the acceptance in
+    # .panopticon/unenforced-ack.json" after the writer was deleted. main()
+    # already errored on anything but the three real actions, so dropping them
+    # is behaviour-preserving.
     ap = argparse.ArgumentParser(description="panopticon dispatch planner")
-    ap.add_argument("profile", nargs="?", default=None, help="Path to ScopeProfile JSON")
     ap.add_argument("--host", default=None,
                     help="Host platform: claude|kimi|codex|generic (any model-profiles.yml host key accepted)")
-    ap.add_argument("--out", default=None, help="Write DispatchPlan JSON to this file")
+    ap.add_argument("--out", default=None,
+                    help="Output directory for --render-advisor")
     ap.add_argument("--render-advisor", metavar="QUEUE", default=None,
                     help="Render advisor prompts from a verify-queue JSON into --out DIR")
     ap.add_argument("--emit-host-agents", metavar="HOST",
                     choices=["claude", "kimi", "codex"], default=None)
-    ap.add_argument("--verify-plan", metavar="PLAN", action="append", default=None,
-                    help="Re-verify emitted plan file(s) against the LIVE "
-                         "registration dir before fan-out (#493): exits 1 on "
-                         "an enforced->unregistered flip or an unenforced "
-                         "reviewer whose ack does not hash-match the plan")
     ap.add_argument("--agents-dir", default=None,
                     help="Directory containing registered agent .md files")
-    ap.add_argument("--groups", default=None,
-                    help="Authoritative groups.json artifact; binds the scout's files "
-                         "to its discovery-assigned group")
-    ap.add_argument("--group-name", default=None,
-                    help="Expected group name from the orchestrator assignment; required "
-                         "with --groups")
-    ap.add_argument("--allow-unenforced", action="store_true",
-                    help="Emit the plan even when reviewer roles lack a registered "
-                         "enforcement shell (tool policy becomes prompt-advisory); "
-                         "records the acceptance in .panopticon/unenforced-ack.json")
-    ap.add_argument("--codex-exec", action="store_true",
-                    help="Compatibility alias; --host codex automatically uses the "
-                        "trusted read-only codex_exec runner")
-    ap.add_argument("--model-advisor", default=None)
     args = ap.parse_args(argv)
 
     if args.emit_host_agents:
@@ -589,46 +418,7 @@ def main(argv=None):
             return 1
         print("rendered %d advisor prompt(s) -> %s" % (len(written), args.out))
         return 0
-    if args.verify_plan:
-        ack = None
-        try:
-            with open(os.path.join(".panopticon", "unenforced-ack.json"),
-                      encoding="utf-8") as fh:
-                ack = json.load(fh)
-        except (OSError, ValueError):
-            ack = None
-        bad = 0
-        groups_path = args.groups or os.path.join(".panopticon", "groups.json")
-        for pth in args.verify_plan:
-            try:
-                with open(pth, encoding="utf-8") as fh:
-                    plan = json.load(fh)
-            except (OSError, ValueError) as e:
-                print("verify-plan: cannot read %s: %s" % (pth, e), file=sys.stderr)
-                bad += 1
-                continue
-            assignment = None
-            if args.group_name:
-                try:
-                    assignment = load_group_assignment(groups_path, args.group_name)
-                except ValueError as e:
-                    print("verify-plan: %s: %s" % (pth, e), file=sys.stderr)
-                    bad += 1
-                    continue
-            problems = verify_plan(
-                plan, host=args.host, agents_dir=args.agents_dir, ack=ack,
-                authoritative_assignment=assignment, strict=True,
-                root=os.path.dirname(os.path.dirname(os.path.abspath(groups_path))))
-            for prob in problems:
-                print("verify-plan: %s: %s" % (pth, prob), file=sys.stderr)
-            bad += len(problems)
-            if not problems:
-                print("verify-plan: %s: OK (%d entries)" % (pth, len(plan)))
-        return 1 if bad else 0
-    ap.error(
-        "nothing to do: pass --render-advisor, --emit-host-agents, "
-        "or --verify-plan"
-    )
+    ap.error("nothing to do: pass --render-advisor or --emit-host-agents")
 
 
 if __name__ == "__main__":
