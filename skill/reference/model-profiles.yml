@@ -5,16 +5,6 @@ hosts:
       alias: kimi-for-coding
       max_context_size: 131072
       max_output_size: 16384
-    lens_sweep:
-      model: primary
-      alias: kimi-for-coding
-      max_context_size: 131072
-      max_output_size: 8192
-    panel_review:
-      model: secondary
-      alias: k3
-      max_context_size: 131072
-      max_output_size: 16384
     advisor:
       model: secondary
       alias: k3
@@ -33,10 +23,6 @@ hosts:
   claude:
     scout:
       model: haiku
-    lens_sweep:
-      model: haiku
-    panel_review:
-      model: sonnet
     advisor:
       model: haiku
     domain_panel:
@@ -47,12 +33,6 @@ hosts:
     scout:
       model: gpt-5.6-luna
       model_reasoning_effort: medium
-    lens_sweep:
-      model: gpt-5.6-luna
-      model_reasoning_effort: medium
-    panel_review:
-      model: gpt-5.6-terra
-      model_reasoning_effort: high
     advisor:
       model: gpt-5.6
       model_reasoning_effort: high
@@ -67,14 +47,6 @@ hosts:
       model: openai/gpt-4o-mini
       max_context_size: 128000
       max_output_size: 4096
-    lens_sweep:
-      model: openai/gpt-4o-mini
-      max_context_size: 128000
-      max_output_size: 4096
-    panel_review:
-      model: anthropic/claude-sonnet
-      max_context_size: 200000
-      max_output_size: 8192
     advisor:
       model: anthropic/claude-opus
       max_context_size: 200000
@@ -87,17 +59,3 @@ hosts:
       model: anthropic/claude-opus
       max_context_size: 200000
       max_output_size: 16384
-
-roles:
-  scout:
-    description: Profiles files and selects depth/lenses
-  lens_sweep:
-    description: Cheap, narrow mechanical lens sweep
-  panel_review:
-    description: Main reviewer for a panel
-  advisor:
-    description: Independent claim verification
-  domain_panel:
-    description: Specialised domain panel reviewer
-  domain_advisor:
-    description: Specialised domain advisor verification
