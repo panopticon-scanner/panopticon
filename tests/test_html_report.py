@@ -633,6 +633,59 @@ class TestHtmlReport(unittest.TestCase):
         self.assertIn("prov-needs-more-info", out)
         self.assertNotIn("prov-needs_more_info", out)
 
+    # --- health in the header (#calibration) -----------------------------
+    # The letter grade is a worst-severity rollup, so it saturates: all four
+    # calibration targets graded D off a single HIGH while health ranged
+    # 0.55-1.51. Health is the field that discriminated, so it belongs in the
+    # header -- and it needs an explainer, because a bare ratio does not say
+    # which direction is good.
+
+    def test_health_badge_in_header(self):
+        report = _minimal_report()
+        report["summary"]["health"] = {"score": 0.94, "total_loc": 68932,
+                                       "weighted_defect": 72954}
+        out = hr.render(report)
+        self.assertIn("badge health", out)
+        self.assertIn("Health: 0.94", out)
+        # it sits with the other header badges, not somewhere further down
+        badges = out.split("<div class='badges'>")[1].split("</div>")[0]
+        self.assertIn("badge health", badges)
+
+    def test_health_explainer_states_the_good_direction(self):
+        report = _minimal_report()
+        report["summary"]["health"] = {"score": 0.94, "total_loc": 68932,
+                                       "weighted_defect": 72954}
+        out = hr.render(report)
+        self.assertIn("health-pop", out)
+        self.assertIn("Higher is better", out)      # the whole point of the popup
+        self.assertIn("never affects the gate", out)  # #1057: health never gates
+        for weight in ("125", "25", "5", "1"):        # the severity weights
+            self.assertIn("&times;%s" % weight, out)
+
+    def test_health_explainer_is_keyboard_reachable(self):
+        # A hover-only affordance is unusable by keyboard; the popover must also
+        # open on focus, and the control must be a real focusable element.
+        report = _minimal_report()
+        report["summary"]["health"] = {"score": 1.0, "total_loc": 10,
+                                       "weighted_defect": 10}
+        out = hr.render(report)
+        self.assertIn(":focus-within", out)
+        self.assertIn("<button type='button' class='health-q'", out)
+        self.assertIn("aria-label=", out)
+
+    def test_no_health_badge_when_score_is_absent(self):
+        # A score of None means no gate-eligible weighted defect -- the ratio is
+        # undefined, so render nothing rather than a misleading "0" or "-".
+        for health in (None, {"score": None, "total_loc": 10, "weighted_defect": 0}):
+            report = _minimal_report()
+            report["summary"]["health"] = health
+            out = hr.render(report)
+            self.assertNotIn("badge health", out)
+            # the CSS rule `.health-pop` is always in the stylesheet; assert the
+            # ELEMENT is not emitted, not that the token never appears
+            self.assertNotIn("<span class='health-pop'", out)
+            self.assertNotIn("health-help'>", out)
+
     def test_dynamic_badge_colors(self):
         report = _minimal_report()
         report["summary"]["gate"] = "FAIL"
