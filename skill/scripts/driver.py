@@ -1709,9 +1709,17 @@ def _collect_host_usage(review_root, manifest):
     # again -- reintroducing exactly the gap this wiring removed. The driver
     # process is launched from the session cwd (only its children are chdir'd
     # to review_root), so getcwd() here is that directory.
+    # #calibration-4 (gotify): getcwd() is only the session dir when the operator
+    # launched the driver FROM it (`driver run <target>`). The equally natural
+    # `cd <target> && driver run .` makes getcwd() the scanned repo again, which
+    # resolves a transcript slug that does not exist -- rc 1, and meta.cost.tokens
+    # silently stays null on a 612M-token run. The driver cannot infer the session
+    # root, so let the operator state it; getcwd() remains the default because it
+    # is right for the documented invocation.
+    session_dir = manifest.get("session_dir") or os.getcwd()
     cmd = [sys.executable, _script("collect_usage.py"),
            "--run-dir", run_dir,
-           "--project-dir", os.getcwd()]
+           "--project-dir", session_dir]
     # Pass the window explicitly. run-manifest.json is a _TOP_LEVEL artifact, so
     # it does NOT live in run_dir and collect_usage's own manifest lookup would
     # miss it -- falling back to counting the entire session transcript, which
@@ -1727,9 +1735,16 @@ def _collect_host_usage(review_root, manifest):
               % exc, file=sys.stderr, flush=True)
         return None
     if proc.returncode != 0:
-        # rc 1 is the documented "no transcript found, wrote nothing" path.
+        # rc 1 is the documented "no transcript found, wrote nothing" path. Name
+        # the directory that was searched and the flag that changes it: the most
+        # likely cause is that it is the scanned repo rather than the session,
+        # and that is not deducible from "produced nothing".
         print("driver: usage collection produced nothing (rc %d); "
-              "meta.cost.tokens stays null" % proc.returncode,
+              "meta.cost.tokens stays null. Searched host transcripts for "
+              "project-dir %s -- if that is the SCANNED REPO rather than the "
+              "directory your host session runs in, re-run with "
+              "--session-dir <session root> (or from that directory)."
+              % (proc.returncode, session_dir),
               file=sys.stderr, flush=True)
     return proc
 
@@ -2273,6 +2288,9 @@ def build_parser():
         tools_group.add_argument("--tools", action="store_true")
         tools_group.add_argument("--no-tools", action="store_true")
         p.add_argument("--include-fixtures", action="store_true")
+        # The directory the HOST SESSION runs in, used only to locate its
+        # transcripts for the cost ledger. Defaults to cwd (#calibration-4).
+        p.add_argument("--session-dir", default=None)
         scope = p.add_mutually_exclusive_group()
         scope.add_argument("-f", "--file", dest="scope_file", default=None)
         scope.add_argument("-d", "--directory", dest="scope_dir", default=None)
@@ -2406,6 +2424,14 @@ def run(args, runner=subprocess.run, phases=PHASES):
         if conflicts:
             return _error_status("flag drift (use --reset to start over): "
                                  + "; ".join(conflicts))
+    # In-memory only, and deliberately NOT a manifest field: it names where the
+    # HOST SESSION runs, which is a property of this invocation rather than of
+    # the run, and it feeds nothing but the cost-ledger transcript lookup. Not
+    # persisted means it is also not an anti-drift key -- resuming from a
+    # different session is normal and must not be reported as drift. A resume
+    # that needs it simply passes it again (#calibration-4).
+    if getattr(args, "session_dir", None):
+        manifest["session_dir"] = os.path.abspath(args.session_dir)
     # #1: a bare re-invocation of an ALREADY-complete run matches every manifest
     # field (conflicting_flags treats a None incoming value as no-conflict), so it
     # would advance straight to "complete" and hand back a possibly-stale report as
