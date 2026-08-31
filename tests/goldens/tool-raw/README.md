@@ -1,8 +1,17 @@
 # Captured tool output (`*.raw`)
 
 One authentic, trimmed payload per registered adapter. `test_normalization_contract.py`
-parses each of these and holds the result to the normalized finding envelope —
-the same envelope `make_finding()` builds and the report schema accepts.
+parses each of these and holds the result to the **NARF finding envelope** — the
+same envelope `make_finding()` builds and the report schema accepts.
+
+**NARF** — Normalized Analysis Result Format, serialized as `.narf.json` — is the
+shape a finding takes once it is ours, whatever produced it: a static analyzer
+through an adapter, a domain panel, or an advisor. SARIF is the closest analogue
+and deliberately the closest name, but SARIF normalizes *analyzer* output, and a
+real run is overwhelmingly *reviewer* output: gotify's report held 131 panel
+findings to 1 tool finding, in one `findings[]` array with one shape. Hence
+"Analysis" and not "Static Analysis" — the S would describe the minority of what
+the format carries. Normalizing something into it is *narfing* it.
 
 ## Why real output, and not hand-written samples
 
