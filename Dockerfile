@@ -19,7 +19,7 @@ FROM python:3.12-slim@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa70
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 ARG GITLEAKS_VERSION=8.18.4
-ARG GOSEC_VERSION=2.20.0
+ARG GOSEC_VERSION=2.29.0
 ARG SEMGREP_VERSION=1.173.0
 ARG BANDIT_VERSION=1.9.4
 ARG BANDIT_SARIF_FORMATTER_VERSION=1.1.1
@@ -83,9 +83,39 @@ RUN curl -sfL --connect-timeout 5 --max-time 60 https://aquasecurity.github.io/t
     && apt-get update && apt-get install -y --no-install-recommends trivy \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# Go toolchain -- REQUIRED BY GOSEC, not optional (#calibration-4, gotify).
+# gosec loads packages through go/packages, which shells out to `go`. Without it
+# every package fails to load and gosec still exits cleanly, writing a
+# well-formed SARIF with zero results and a summary reading `Files: 0`. That
+# lands in `tool_manifest.produced`, satisfies `missing: []`, and CERTIFIES the
+# run -- so a Go target got a scanner that reported success having read nothing.
+# Both Go targets scanned to date (fzf, gotify) had exactly zero gosec coverage
+# while the manifest said gosec ran. Nothing in-house could catch it: Panopticon
+# is Python, so gosec is never selected on a self-scan.
+# Go is pinned to the version gosec itself is built against, NOT the newest
+# release. gosec type-checks through go/packages, and a toolchain newer than the
+# one it vendors x/tools for cannot be read: Go 1.27 + gosec 2.20.0 failed with
+# `internal error: package "errors" without types was imported`, which is the
+# same silent-zero-coverage outcome by another route. Bump these two together.
+ARG GO_VERSION=1.25.14
+ARG GO_SHA256_AMD64=a21ae5633a269bcd7e90cf767e48225633795e99d831742cbf3397064fee7712
+ARG GO_SHA256_ARM64=9bf234ea70ffec9347fdf6b22ce4add51717d3386a38a441e8c8743fceb5eaee
+RUN arch="$(dpkg --print-architecture)" \
+    && case "$arch" in amd64) sha256="${GO_SHA256_AMD64}" ;; arm64) sha256="${GO_SHA256_ARM64}" ;; *) echo "unsupported arch: $arch" >&2; exit 1 ;; esac \
+    && curl -sfL --connect-timeout 5 --max-time 300 "https://go.dev/dl/go${GO_VERSION}.linux-${arch}.tar.gz" \
+        -o /tmp/go.tar.gz \
+    && echo "${sha256}  /tmp/go.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/go.tar.gz -C /usr/local \
+    && rm /tmp/go.tar.gz
+ENV PATH=/usr/local/go/bin:$PATH
+# GOTOOLCHAIN=local stops Go from trying to download a different toolchain named
+# in a target's go.mod -- scans run with no network, so that attempt would fail
+# the whole load and put us right back at `Files: 0`.
+ENV GOTOOLCHAIN=local
+
 # gosec (architecture-aware)
-ARG GOSEC_SHA256_AMD64=2d056644cf265f194efaf98b80d459004c03db7b367fbc3fe7fb345773df684e
-ARG GOSEC_SHA256_ARM64=a0c554e23ad088b544d40ca63039362ed2687fb576a33c1019951dbd3edcd716
+ARG GOSEC_SHA256_AMD64=6431b119741c1f4a50fdfcf94e782e16b9e642afc8c7fa9b5d39d48bf3003095
+ARG GOSEC_SHA256_ARM64=c71244ec8d37488fd479d0d26990968fee03ece48b305d8224ac0c1ebd66e87c
 RUN arch="$(dpkg --print-architecture)" \
     && case "$arch" in amd64) sha256="${GOSEC_SHA256_AMD64}" ;; arm64) sha256="${GOSEC_SHA256_ARM64}" ;; *) echo "unsupported arch: $arch" >&2; exit 1 ;; esac \
     && curl -sfL --connect-timeout 5 --max-time 60 "https://github.com/securego/gosec/releases/download/v${GOSEC_VERSION}/gosec_${GOSEC_VERSION}_linux_${arch}.tar.gz" \
@@ -93,6 +123,26 @@ RUN arch="$(dpkg --print-architecture)" \
     && echo "${sha256}  /tmp/gosec.tar.gz" | sha256sum -c - \
     && tar -xzf /tmp/gosec.tar.gz -C /usr/local/bin gosec \
     && rm /tmp/gosec.tar.gz
+
+# Prove gosec can actually READ Go source, the same way the OSV warm proves each
+# ecosystem database downloaded. A binary that runs is not a scanner that scans:
+# this builds a module with one obvious G101 hardcoded-credential and fails the
+# build unless gosec both loads the package (Files > 0) and reports the issue.
+RUN set -euo pipefail \
+    && mkdir -p /tmp/gosec-verify \
+    && printf 'module verify\n\ngo 1.21\n' > /tmp/gosec-verify/go.mod \
+    && printf 'package verify\n\nvar token = "AKIAIOSFODNN7EXAMPLE_hardcoded_secret_value"\n' \
+       > /tmp/gosec-verify/main.go \
+    # An absolute package path, not `cd &&`: gosec resolves the module from the
+    # path itself, and this keeps the step a single WORKDIR-free command (DL3003).
+    && (gosec -fmt=json -no-fail /tmp/gosec-verify/... > /tmp/gosec-verify.json 2>/tmp/gosec-verify.log || true) \
+    && python3 -c "\
+import json, sys; \
+d = json.load(open('/tmp/gosec-verify.json')); \
+files = int(d.get('Stats', {}).get('files', 0)); \
+issues = len(d.get('Issues') or []); \
+sys.exit(0) if files > 0 and issues > 0 else sys.exit('gosec read %d files / %d issues -- expected >0 of each; the Go toolchain is missing or unusable' % (files, issues))" \
+    && rm -rf /tmp/gosec-verify /tmp/gosec-verify.json /tmp/gosec-verify.log
 
 # Copy panopticon adapter dispatcher into the image so Docker-based runs can
 # invoke Phase 1 adapters without relying on the target repo providing it.
