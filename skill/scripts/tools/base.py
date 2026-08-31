@@ -174,7 +174,16 @@ def make_finding(adapter: Any, n: int, group: str, *, title: str, severity: str,
                  remediation: str, references: list | None = None,
                  citations: dict | None = None, tool_evidence: dict | None = None,
                  confidence: str = "CERTAIN") -> dict:
-    """Assemble the invariant tool-finding envelope every adapter shares.
+    """Assemble the NARF finding envelope every adapter shares.
+
+    NARF -- Normalized Analysis Result Format -- is the shape every finding
+    takes once it is ours, whatever produced it: a static analyzer via an
+    adapter, a domain panel, or an advisor. SARIF is the closest analogue and
+    deliberately the closest name, but SARIF normalizes ANALYZER output, while
+    a real run is overwhelmingly reviewer output -- gotify's report held 131
+    panel findings to 1 tool finding, in one findings[] array with one shape.
+    Hence "Analysis" rather than "Static Analysis": the S would describe the
+    minority of what the format carries. Serialized as `.narf.json`.
 
     Owns the fields downstream stages key on — id, panel, source, _group,
     provenance (reasoning = the tool_evidence rule_id), and the citations rule

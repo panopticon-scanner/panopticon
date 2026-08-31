@@ -105,6 +105,9 @@ _rules_index = rules_index
 
 
 def sarif_to_findings(sarif, tool_name, group, prefix, start=1):
+    # SARIF in, NARF out. This is the second of the two envelope builders (see
+    # make_finding); it emits a deliberately leaner envelope because a SARIF
+    # result's message IS the title, with no separate prose body to carry.
     """Convert SARIF results to panopticon findings with normalized metadata."""
     out = []
     n = start

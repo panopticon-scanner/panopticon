@@ -1,4 +1,7 @@
-"""Every adapter's parse() must yield the normalized finding envelope.
+"""Every adapter's parse() must yield a NARF finding envelope.
+
+NARF -- Normalized Analysis Result Format (`.narf.json`) -- is the shape a
+finding takes once it is ours, whatever produced it. This file is the contract.
 
 Per-adapter test files each assert their own slice of the envelope, which means
 the assertions drift: a new adapter can ship with a thinner check than its
