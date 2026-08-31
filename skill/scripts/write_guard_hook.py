@@ -69,10 +69,37 @@ def _deny_response(reason):
     })
 
 
-def _resolve_allowlist_path():
+def _resolve_allowlist_path(argv_path=None):
+    """Where this hook invocation should read its allowlist from.
+
+    Order: explicit env override, then the absolute path `install()` baked into
+    the registered hook command, then the legacy walk up from CWD.
+
+    #calibration-4 (gotify): the CWD walk alone is only correct when the hook
+    process's CWD is the same tree the allowlist was installed into. That holds
+    for a self-scan and fails for an EXTERNAL target: `install()` run from the
+    target repo writes `<target>/.panopticon/write-allowlist.json`, while the
+    hook runs with the CONTROLLER session's CWD and resolves
+    `<session>/.panopticon/write-allowlist.json` -- a different file, left over
+    from a previous round. Every verdict write was then denied against a stale
+    findings-only allowlist, and 44 advisors that had finished adjudicating lost
+    their work to a guard that was armed on the wrong tree. Same shape as #495
+    (the hook could not locate its own script from a relative path) and #1454
+    (--project-dir was the scanned target, not the session): a path that only
+    resolves when session root and target happen to be one directory. So bind
+    the allowlist into the command absolutely, exactly as #495 did the script.
+
+    The env override stays first: group_runner sets it deliberately for a
+    subprocess, and that is a narrower, more explicit signal than a path baked
+    in at install time."""
     env_path = os.environ.get("PANOPTICON_WRITE_ALLOWLIST")
     if env_path and os.path.isfile(env_path):
         return env_path
+    if argv_path:
+        # Returned even when absent: the guard is fail-closed, and an install
+        # that named a file which then vanished must DENY, never silently fall
+        # back to some other tree's allowlist and allow the wrong writes.
+        return argv_path
     cur = os.path.abspath(os.getcwd())
     while True:
         candidate = os.path.join(cur, ".panopticon", "write-allowlist.json")
@@ -85,7 +112,10 @@ def _resolve_allowlist_path():
     return os.path.join(".panopticon", "write-allowlist.json")
 
 
-def main():
+def main(argv=None):
+    """`argv` is the argument list AFTER the program name. It defaults to the
+    real one; pass [] to exercise a bare invocation with no baked-in allowlist."""
+    args = sys.argv[1:] if argv is None else argv
     try:
         payload = json.load(sys.stdin)
     except ValueError:
@@ -107,8 +137,9 @@ def main():
         file_path = ""
     if tool_name not in _WRITE_TOOLS:
         return 0
+    argv_path = args[0] if args else None
     try:
-        with open(_resolve_allowlist_path(), encoding="utf-8") as fh:
+        with open(_resolve_allowlist_path(argv_path), encoding="utf-8") as fh:
             loaded = json.load(fh)
     except (OSError, ValueError) as exc:
         loaded = None
@@ -136,6 +167,32 @@ _HOOK_CMD = 'python3 "%s"' % os.path.abspath(__file__)
 # settings.local.json written by an earlier version.
 _HOOK_ENTRY = {"matcher": _MATCHER,
                "hooks": [{"type": "command", "command": _HOOK_CMD}]}
+
+
+def _hook_entry(allowlist_path=None):
+    """The PreToolUse entry to register.
+
+    With `allowlist_path`, the absolute allowlist is baked into the command so
+    the hook never has to infer it from its CWD (see _resolve_allowlist_path).
+    Without one, this is the legacy bare entry -- kept identical so a
+    settings.local.json written by an earlier version still compares equal."""
+    if not allowlist_path:
+        return _HOOK_ENTRY
+    cmd = '%s "%s"' % (_HOOK_CMD, os.path.abspath(allowlist_path))
+    return {"matcher": _MATCHER, "hooks": [{"type": "command", "command": cmd}]}
+
+
+def _is_our_entry(entry):
+    """True for any PreToolUse entry that runs THIS module, bare or with an
+    allowlist argument. Removal matches on the script path rather than on dict
+    equality so uninstall still clears an entry written by a different version
+    (or with a different allowlist baked in) instead of orphaning it."""
+    if not isinstance(entry, dict):
+        return False
+    for h in entry.get("hooks", []) or []:
+        if isinstance(h, dict) and os.path.abspath(__file__) in str(h.get("command", "")):
+            return True
+    return False
 
 
 def _load(settings_path):
@@ -206,11 +263,12 @@ def _atomic_write_json(path, data, indent=None):
     os.replace(tmp, path)
 
 
-def _write_hook_entry(settings_path):
+def _write_hook_entry(settings_path, allowlist_path=None):
     settings = _load(settings_path)
     hooks = settings.setdefault("hooks", {})
-    pre = [h for h in hooks.get("PreToolUse", []) if h != _HOOK_ENTRY]
-    pre.append(_HOOK_ENTRY)
+    entry = _hook_entry(allowlist_path)
+    pre = [h for h in hooks.get("PreToolUse", []) if not _is_our_entry(h)]
+    pre.append(entry)
     hooks["PreToolUse"] = pre
     _atomic_write_json(settings_path, settings, indent=2)
 
@@ -220,7 +278,7 @@ def _remove_hook_entry(settings_path):
     hooks = settings.get("hooks", {})
     if "PreToolUse" not in hooks:
         return
-    hooks["PreToolUse"] = [h for h in hooks["PreToolUse"] if h != _HOOK_ENTRY]
+    hooks["PreToolUse"] = [h for h in hooks["PreToolUse"] if not _is_our_entry(h)]
     if not hooks["PreToolUse"]:
         del hooks["PreToolUse"]
     if not hooks:
@@ -248,7 +306,7 @@ def install(plan, settings_path=".claude/settings.local.json",
     # was not written by a trusted install and is dropped.
     carried = _confined_to_artifact_roots(_read_allowlist(allowlist_path), added)
     _atomic_write_json(allowlist_path, sorted(carried | added))
-    _write_hook_entry(settings_path)
+    _write_hook_entry(settings_path, allowlist_path)
     return added
 
 

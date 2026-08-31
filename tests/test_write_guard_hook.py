@@ -247,7 +247,9 @@ class TestMain(unittest.TestCase):
                 buf = io.StringIO()
                 with mock.patch("sys.stdin", io.StringIO(payload_str)):
                     with contextlib.redirect_stdout(buf):
-                        rc = wg.main()
+                        # [] = a bare invocation, so this exercises the
+                        # CWD-walk resolution rather than a baked-in path.
+                        rc = wg.main([])
                 return rc, buf.getvalue()
             finally:
                 os.chdir(old_cwd)
@@ -491,6 +493,112 @@ class TestHookCmdSelfLocating(unittest.TestCase):
             with mock.patch("os.getcwd", return_value=sub_dir):
                 resolved = wg._resolve_allowlist_path()
                 self.assertEqual(os.path.abspath(resolved), os.path.abspath(allow_path))
+
+
+class TestAllowlistBoundAtInstall(unittest.TestCase):
+    """#calibration-4: the allowlist must not be resolved from the hook's CWD.
+
+    install() writes `<cwd>/.panopticon/write-allowlist.json`; the hook used to
+    find its allowlist by walking up from the CWD of whatever process invoked
+    it. Those are the same directory for a self-scan and DIFFERENT for an
+    external target -- the controller session's root is not the scanned repo.
+    On gotify the guard was armed on the target tree while the hook read the
+    session tree's leftover findings-only allowlist, so all 120 verdict writes
+    were denied and 44 advisors that had finished adjudicating lost the work.
+    """
+
+    def test_install_bakes_the_absolute_allowlist_into_the_command(self):
+        with tempfile.TemporaryDirectory() as d:
+            sp = os.path.join(d, "settings.json")
+            ap = os.path.join(d, "sub", ".panopticon", "write-allowlist.json")
+            wg.install([{"out_file": os.path.join(d, "sub", ".panopticon", "f.json")}],
+                       settings_path=sp, allowlist_path=ap)
+            with open(sp, encoding="utf-8") as fh:
+                cmd = json.load(fh)["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+            self.assertIn(os.path.abspath(ap), cmd,
+                          "hook command does not name the allowlist it installed")
+            self.assertIn(os.path.abspath(wg.__file__), cmd)
+
+    def test_hook_reads_the_installed_allowlist_from_a_foreign_cwd(self):
+        # The actual regression: arm the guard for a TARGET tree, then run the
+        # hook from an unrelated CWD that has its own stale .panopticon. The
+        # write must be allowed on the strength of the baked-in path.
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, "target")
+            session = os.path.join(d, "session")
+            out = os.path.join(target, ".panopticon", "runs", "r", "verdicts-a.json")
+            os.makedirs(os.path.dirname(out))
+            ap = os.path.join(target, ".panopticon", "write-allowlist.json")
+            wg.install([{"out_file": out}],
+                       settings_path=os.path.join(d, "s.json"), allowlist_path=ap)
+            # the session tree carries a DIFFERENT allowlist -- the stale
+            # findings-only one that shadowed the real grant on gotify
+            os.makedirs(os.path.join(session, ".panopticon"))
+            with open(os.path.join(session, ".panopticon", "write-allowlist.json"),
+                      "w", encoding="utf-8") as fh:
+                json.dump([os.path.join(target, ".panopticon", "runs", "r", "findings-a.json")], fh)
+            payload = json.dumps({"tool_name": "Write", "tool_input": {"file_path": out}})
+            old = os.getcwd()
+            buf = io.StringIO()
+            try:
+                os.chdir(session)
+                with mock.patch("sys.stdin", io.StringIO(payload)):
+                    with contextlib.redirect_stdout(buf):
+                        rc = wg.main([os.path.abspath(ap)])
+            finally:
+                os.chdir(old)
+            self.assertEqual(rc, 0)
+            self.assertEqual(buf.getvalue(), "",
+                             "write was denied against the foreign CWD's allowlist")
+
+    def test_missing_baked_allowlist_denies_rather_than_falling_back(self):
+        # Fail-closed: an install that named a file which then vanished must
+        # DENY, never quietly resolve some other tree's allowlist and allow the
+        # wrong writes -- which is precisely how the gotify failure stayed
+        # invisible until 44 agents had already burned their work.
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, ".panopticon"))
+            with open(os.path.join(d, ".panopticon", "write-allowlist.json"),
+                      "w", encoding="utf-8") as fh:
+                json.dump([os.path.join(d, "anything.json")], fh)
+            payload = json.dumps({"tool_name": "Write",
+                                  "tool_input": {"file_path": os.path.join(d, "anything.json")}})
+            old, buf = os.getcwd(), io.StringIO()
+            try:
+                os.chdir(d)
+                with mock.patch("sys.stdin", io.StringIO(payload)):
+                    with contextlib.redirect_stdout(buf):
+                        wg.main([os.path.join(d, "gone", "write-allowlist.json")])
+            finally:
+                os.chdir(old)
+            self.assertIn("deny", buf.getvalue())
+
+    def test_uninstall_removes_both_bare_and_bound_entries(self):
+        # Removal matches on the script path, not dict equality, so a settings
+        # file written by either version is cleared instead of orphaned.
+        for bake in (None, "/tmp/x/.panopticon/write-allowlist.json"):
+            with tempfile.TemporaryDirectory() as d:
+                sp = os.path.join(d, "settings.json")
+                wg._write_hook_entry(sp, bake)
+                with open(sp, encoding="utf-8") as fh:
+                    self.assertEqual(len(json.load(fh)["hooks"]["PreToolUse"]), 1)
+                wg.uninstall(settings_path=sp,
+                             allowlist_path=os.path.join(d, "none.json"))
+                with open(sp, encoding="utf-8") as fh:
+                    self.assertNotIn("hooks", json.load(fh))
+
+    def test_reinstall_does_not_duplicate_the_entry(self):
+        with tempfile.TemporaryDirectory() as d:
+            sp = os.path.join(d, "settings.json")
+            ap = os.path.join(d, ".panopticon", "write-allowlist.json")
+            plan = [{"out_file": os.path.join(d, ".panopticon", "f.json")}]
+            wg._write_hook_entry(sp, None)                      # legacy entry first
+            wg.install(plan, settings_path=sp, allowlist_path=ap)
+            wg.install(plan, settings_path=sp, allowlist_path=ap)
+            with open(sp, encoding="utf-8") as fh:
+                pre = json.load(fh)["hooks"]["PreToolUse"]
+            self.assertEqual(len(pre), 1, "stale or duplicate hook entries left behind")
+            self.assertIn(os.path.abspath(ap), pre[0]["hooks"][0]["command"])
 
 
 class TestWriteGuardHookLive(unittest.TestCase):
