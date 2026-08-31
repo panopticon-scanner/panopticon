@@ -1,0 +1,725 @@
+<?xml version='1.0' encoding='utf-8'?>
+<BugCollection version="4.8.6" sequence="0" timestamp="1788198347000" analysisTimestamp="1788199726694" release="">
+  <Project projectName="">
+    <Jar>/opt/panopticon-fixtures/WebGoat/target/classes</Jar>
+    <Plugin id="com.h3xstream.findsecbugs" enabled="true" />
+  </Project>
+  <BugInstance type="COMMAND_INJECTION" priority="2" rank="12" abbrev="SECCI" category="SECURITY">
+    <Class classname="org.dummy.insecure.framework.VulnerableTaskHolder">
+      <SourceLine classname="org.dummy.insecure.framework.VulnerableTaskHolder" start="11" end="75" sourcefile="VulnerableTaskHolder.java" sourcepath="org/dummy/insecure/framework/VulnerableTaskHolder.java" />
+    </Class>
+    <Method classname="org.dummy.insecure.framework.VulnerableTaskHolder" name="readObject" signature="(Ljava/io/ObjectInputStream;)V" isStatic="false">
+      <SourceLine classname="org.dummy.insecure.framework.VulnerableTaskHolder" start="46" end="75" startBytecode="0" endBytecode="423" sourcefile="VulnerableTaskHolder.java" sourcepath="org/dummy/insecure/framework/VulnerableTaskHolder.java" />
+    </Method>
+    <SourceLine classname="org.dummy.insecure.framework.VulnerableTaskHolder" start="65" end="65" startBytecode="150" endBytecode="150" sourcefile="VulnerableTaskHolder.java" sourcepath="org/dummy/insecure/framework/VulnerableTaskHolder.java" />
+    <String value="java/lang/Runtime.exec(Ljava/lang/String;)Ljava/lang/Process;" role="Sink method" />
+    <String value="0" role="Sink parameter" />
+    <String value="org/dummy/insecure/framework/VulnerableTaskHolder.taskAction" role="Unknown source" />
+    <SourceLine classname="org.dummy.insecure.framework.VulnerableTaskHolder" start="65" end="65" startBytecode="147" endBytecode="147" sourcefile="VulnerableTaskHolder.java" sourcepath="org/dummy/insecure/framework/VulnerableTaskHolder.java" />
+  </BugInstance>
+  <BugInstance type="CRLF_INJECTION_LOGS" priority="2" rank="12" abbrev="SECCRLFLOG" category="SECURITY">
+    <Class classname="org.dummy.insecure.framework.VulnerableTaskHolder">
+      <SourceLine classname="org.dummy.insecure.framework.VulnerableTaskHolder" start="11" end="75" sourcefile="VulnerableTaskHolder.java" sourcepath="org/dummy/insecure/framework/VulnerableTaskHolder.java" />
+    </Class>
+    <Method classname="org.dummy.insecure.framework.VulnerableTaskHolder" name="readObject" signature="(Ljava/io/ObjectInputStream;)V" isStatic="false">
+      <SourceLine classname="org.dummy.insecure.framework.VulnerableTaskHolder" start="46" end="75" startBytecode="0" endBytecode="423" sourcefile="VulnerableTaskHolder.java" sourcepath="org/dummy/insecure/framework/VulnerableTaskHolder.java" />
+    </Method>
+    <SourceLine classname="org.dummy.insecure.framework.VulnerableTaskHolder" start="69" end="69" startBytecode="191" endBytecode="191" sourcefile="VulnerableTaskHolder.java" sourcepath="org/dummy/insecure/framework/VulnerableTaskHolder.java" />
+    <String value="org/slf4j/Logger.info(Ljava/lang/String;)V" role="Sink method" />
+    <String value="0" role="Sink parameter" />
+    <String value="java/io/BufferedReader.readLine()Ljava/lang/String;" role="Tainted source" />
+    <SourceLine classname="org.dummy.insecure.framework.VulnerableTaskHolder" start="68" end="68" startBytecode="177" endBytecode="177" sourcefile="VulnerableTaskHolder.java" sourcepath="org/dummy/insecure/framework/VulnerableTaskHolder.java" />
+  </BugInstance>
+  <BugInstance type="DM_DEFAULT_ENCODING" priority="1" rank="19" abbrev="Dm" category="I18N">
+    <Class classname="org.dummy.insecure.framework.VulnerableTaskHolder">
+      <SourceLine classname="org.dummy.insecure.framework.VulnerableTaskHolder" start="11" end="75" sourcefile="VulnerableTaskHolder.java" sourcepath="org/dummy/insecure/framework/VulnerableTaskHolder.java" />
+    </Class>
+    <Method classname="org.dummy.insecure.framework.VulnerableTaskHolder" name="readObject" signature="(Ljava/io/ObjectInputStream;)V" isStatic="false">
+      <SourceLine classname="org.dummy.insecure.framework.VulnerableTaskHolder" start="46" end="75" startBytecode="0" endBytecode="423" sourcefile="VulnerableTaskHolder.java" sourcepath="org/dummy/insecure/framework/VulnerableTaskHolder.java" />
+    </Method>
+    <Method classname="java.io.InputStreamReader" name="&lt;init&gt;" signature="(Ljava/io/InputStream;)V" isStatic="false" role="METHOD_CALLED">
+      <SourceLine classname="java.io.InputStreamReader" start="88" end="91" startBytecode="0" endBytecode="96" sourcefile="InputStreamReader.java" sourcepath="java/io/InputStreamReader.java" />
+    </Method>
+    <SourceLine classname="org.dummy.insecure.framework.VulnerableTaskHolder" start="66" end="66" startBytecode="166" endBytecode="166" sourcefile="VulnerableTaskHolder.java" sourcepath="org/dummy/insecure/framework/VulnerableTaskHolder.java" />
+  </BugInstance>
+  <Errors errors="0" missingClasses="220">
+    <MissingClass>accept</MissingClass>
+    <MissingClass>apply</MissingClass>
+    <MissingClass>applyAsInt</MissingClass>
+    <MissingClass>applyAsLong</MissingClass>
+    <MissingClass>call</MissingClass>
+    <MissingClass>com.auth0.jwk.Jwk</MissingClass>
+    <MissingClass>com.auth0.jwk.JwkException</MissingClass>
+    <MissingClass>com.auth0.jwk.JwkProvider</MissingClass>
+    <MissingClass>com.auth0.jwk.JwkProviderBuilder</MissingClass>
+    <MissingClass>com.auth0.jwt.JWT</MissingClass>
+    <MissingClass>com.auth0.jwt.JWTVerifier</MissingClass>
+    <MissingClass>com.auth0.jwt.algorithms.Algorithm</MissingClass>
+    <MissingClass>com.auth0.jwt.exceptions.JWTVerificationException</MissingClass>
+    <MissingClass>com.auth0.jwt.interfaces.Claim</MissingClass>
+    <MissingClass>com.auth0.jwt.interfaces.DecodedJWT</MissingClass>
+    <MissingClass>com.auth0.jwt.interfaces.Verification</MissingClass>
+    <MissingClass>com.fasterxml.jackson.core.JsonProcessingException</MissingClass>
+    <MissingClass>com.fasterxml.jackson.databind.DeserializationFeature</MissingClass>
+    <MissingClass>com.fasterxml.jackson.databind.ObjectMapper</MissingClass>
+    <MissingClass>com.fasterxml.jackson.databind.ObjectWriter</MissingClass>
+    <MissingClass>com.google.common.collect.EvictingQueue</MissingClass>
+    <MissingClass>com.google.common.collect.Lists</MissingClass>
+    <MissingClass>com.google.common.collect.Maps</MissingClass>
+    <MissingClass>com.nulabinc.zxcvbn.AttackTimes</MissingClass>
+    <MissingClass>com.nulabinc.zxcvbn.AttackTimes$CrackTimeSeconds</MissingClass>
+    <MissingClass>com.nulabinc.zxcvbn.Feedback</MissingClass>
+    <MissingClass>com.nulabinc.zxcvbn.Strength</MissingClass>
+    <MissingClass>com.nulabinc.zxcvbn.Zxcvbn</MissingClass>
+    <MissingClass>com.thoughtworks.xstream.XStream</MissingClass>
+    <MissingClass>compare</MissingClass>
+    <MissingClass>customize</MissingClass>
+    <MissingClass>equals</MissingClass>
+    <MissingClass>get</MissingClass>
+    <MissingClass>hashCode</MissingClass>
+    <MissingClass>io.jsonwebtoken.Claims</MissingClass>
+    <MissingClass>io.jsonwebtoken.ExpiredJwtException</MissingClass>
+    <MissingClass>io.jsonwebtoken.Header</MissingClass>
+    <MissingClass>io.jsonwebtoken.JwsHeader</MissingClass>
+    <MissingClass>io.jsonwebtoken.Jwt</MissingClass>
+    <MissingClass>io.jsonwebtoken.JwtBuilder</MissingClass>
+    <MissingClass>io.jsonwebtoken.JwtException</MissingClass>
+    <MissingClass>io.jsonwebtoken.JwtParser</MissingClass>
+    <MissingClass>io.jsonwebtoken.Jwts</MissingClass>
+    <MissingClass>io.jsonwebtoken.SignatureAlgorithm</MissingClass>
+    <MissingClass>io.jsonwebtoken.SigningKeyResolver</MissingClass>
+    <MissingClass>io.jsonwebtoken.SigningKeyResolverAdapter</MissingClass>
+    <MissingClass>io.jsonwebtoken.impl.TextCodec</MissingClass>
+    <MissingClass>io.undertow.util.Headers</MissingClass>
+    <MissingClass>jakarta.servlet.ServletException</MissingClass>
+    <MissingClass>jakarta.servlet.http.Cookie</MissingClass>
+    <MissingClass>jakarta.servlet.http.HttpServletRequest</MissingClass>
+    <MissingClass>jakarta.servlet.http.HttpServletResponse</MissingClass>
+    <MissingClass>jakarta.servlet.http.HttpSession</MissingClass>
+    <MissingClass>jakarta.xml.bind.JAXBContext</MissingClass>
+    <MissingClass>jakarta.xml.bind.JAXBException</MissingClass>
+    <MissingClass>jakarta.xml.bind.Unmarshaller</MissingClass>
+    <MissingClass>javax.xml.bind.DatatypeConverter</MissingClass>
+    <MissingClass>lombok.Lombok</MissingClass>
+    <MissingClass>makeConcatWithConstants</MissingClass>
+    <MissingClass>mapRow</MissingClass>
+    <MissingClass>org.apache.commons.exec.OS</MissingClass>
+    <MissingClass>org.apache.commons.io.FileUtils</MissingClass>
+    <MissingClass>org.apache.commons.io.FilenameUtils</MissingClass>
+    <MissingClass>org.apache.commons.lang3.ArrayUtils</MissingClass>
+    <MissingClass>org.apache.commons.lang3.RandomStringUtils</MissingClass>
+    <MissingClass>org.apache.commons.lang3.RandomUtils</MissingClass>
+    <MissingClass>org.apache.commons.lang3.StringUtils</MissingClass>
+    <MissingClass>org.apache.commons.lang3.exception.ExceptionUtils</MissingClass>
+    <MissingClass>org.apache.commons.logging.Log</MissingClass>
+    <MissingClass>org.apache.commons.text.StringEscapeUtils</MissingClass>
+    <MissingClass>org.apache.logging.log4j.util.Strings</MissingClass>
+    <MissingClass>org.asciidoctor.Asciidoctor</MissingClass>
+    <MissingClass>org.asciidoctor.Asciidoctor$Factory</MissingClass>
+    <MissingClass>org.asciidoctor.Attributes</MissingClass>
+    <MissingClass>org.asciidoctor.ast.ContentNode</MissingClass>
+    <MissingClass>org.asciidoctor.ast.PhraseNode</MissingClass>
+    <MissingClass>org.asciidoctor.extension.InlineMacroProcessor</MissingClass>
+    <MissingClass>org.asciidoctor.extension.JavaExtensionRegistry</MissingClass>
+    <MissingClass>org.flywaydb.core.Flyway</MissingClass>
+    <MissingClass>org.flywaydb.core.api.configuration.FluentConfiguration</MissingClass>
+    <MissingClass>org.flywaydb.core.api.output.CleanResult</MissingClass>
+    <MissingClass>org.flywaydb.core.api.output.MigrateResult</MissingClass>
+    <MissingClass>org.hsqldb.jdbc.JDBCResultSet</MissingClass>
+    <MissingClass>org.jose4j.jws.JsonWebSignature</MissingClass>
+    <MissingClass>org.jose4j.jwt.JwtClaims</MissingClass>
+    <MissingClass>org.jose4j.jwt.consumer.InvalidJwtException</MissingClass>
+    <MissingClass>org.jose4j.jwt.consumer.JwtConsumer</MissingClass>
+    <MissingClass>org.jose4j.jwt.consumer.JwtConsumerBuilder</MissingClass>
+    <MissingClass>org.jose4j.jwx.CompactSerializer</MissingClass>
+    <MissingClass>org.jose4j.jwx.Headers</MissingClass>
+    <MissingClass>org.jose4j.keys.HmacKey</MissingClass>
+    <MissingClass>org.jose4j.lang.JoseException</MissingClass>
+    <MissingClass>org.jsoup.Jsoup</MissingClass>
+    <MissingClass>org.jsoup.nodes.Document</MissingClass>
+    <MissingClass>org.jsoup.nodes.Element</MissingClass>
+    <MissingClass>org.jsoup.parser.Parser</MissingClass>
+    <MissingClass>org.jsoup.select.Elements</MissingClass>
+    <MissingClass>org.slf4j.Logger</MissingClass>
+    <MissingClass>org.slf4j.LoggerFactory</MissingClass>
+    <MissingClass>org.springframework.beans.BeansException</MissingClass>
+    <MissingClass>org.springframework.boot.Banner</MissingClass>
+    <MissingClass>org.springframework.boot.Banner$Mode</MissingClass>
+    <MissingClass>org.springframework.boot.WebApplicationType</MissingClass>
+    <MissingClass>org.springframework.boot.actuate.web.exchanges.HttpExchange</MissingClass>
+    <MissingClass>org.springframework.boot.actuate.web.exchanges.HttpExchange$Request</MissingClass>
+    <MissingClass>org.springframework.boot.actuate.web.exchanges.HttpExchangeRepository</MissingClass>
+    <MissingClass>org.springframework.boot.autoconfigure.jdbc.DataSourceProperties</MissingClass>
+    <MissingClass>org.springframework.boot.builder.SpringApplicationBuilder</MissingClass>
+    <MissingClass>org.springframework.context.ApplicationContext</MissingClass>
+    <MissingClass>org.springframework.context.ApplicationContextAware</MissingClass>
+    <MissingClass>org.springframework.context.ConfigurableApplicationContext</MissingClass>
+    <MissingClass>org.springframework.context.MessageSource</MissingClass>
+    <MissingClass>org.springframework.context.support.ReloadableResourceBundleMessageSource</MissingClass>
+    <MissingClass>org.springframework.context.support.ReloadableResourceBundleMessageSource$PropertiesHolder</MissingClass>
+    <MissingClass>org.springframework.core.MethodParameter</MissingClass>
+    <MissingClass>org.springframework.core.env.Environment</MissingClass>
+    <MissingClass>org.springframework.core.io.ClassPathResource</MissingClass>
+    <MissingClass>org.springframework.core.io.Resource</MissingClass>
+    <MissingClass>org.springframework.core.io.ResourceLoader</MissingClass>
+    <MissingClass>org.springframework.core.io.support.ResourcePatternResolver</MissingClass>
+    <MissingClass>org.springframework.data.jpa.repository.JpaRepository</MissingClass>
+    <MissingClass>org.springframework.http.HttpEntity</MissingClass>
+    <MissingClass>org.springframework.http.HttpHeaders</MissingClass>
+    <MissingClass>org.springframework.http.HttpMethod</MissingClass>
+    <MissingClass>org.springframework.http.HttpStatus</MissingClass>
+    <MissingClass>org.springframework.http.HttpStatusCode</MissingClass>
+    <MissingClass>org.springframework.http.MediaType</MissingClass>
+    <MissingClass>org.springframework.http.ResponseEntity</MissingClass>
+    <MissingClass>org.springframework.http.ResponseEntity$BodyBuilder</MissingClass>
+    <MissingClass>org.springframework.http.ResponseEntity$HeadersBuilder</MissingClass>
+    <MissingClass>org.springframework.http.converter.json.MappingJacksonValue</MissingClass>
+    <MissingClass>org.springframework.http.server.ServerHttpRequest</MissingClass>
+    <MissingClass>org.springframework.http.server.ServerHttpResponse</MissingClass>
+    <MissingClass>org.springframework.jdbc.core.JdbcTemplate</MissingClass>
+    <MissingClass>org.springframework.jdbc.core.RowMapper</MissingClass>
+    <MissingClass>org.springframework.jdbc.core.namedparam.MapSqlParameterSource</MissingClass>
+    <MissingClass>org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate</MissingClass>
+    <MissingClass>org.springframework.jdbc.core.namedparam.SqlParameterSource</MissingClass>
+    <MissingClass>org.springframework.jdbc.datasource.ConnectionProxy</MissingClass>
+    <MissingClass>org.springframework.jdbc.datasource.DriverManagerDataSource</MissingClass>
+    <MissingClass>org.springframework.security.config.Customizer</MissingClass>
+    <MissingClass>org.springframework.security.config.annotation.authentication.builders.AuthenticationManagerBuilder</MissingClass>
+    <MissingClass>org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration</MissingClass>
+    <MissingClass>org.springframework.security.config.annotation.authentication.configurers.userdetails.DaoAuthenticationConfigurer</MissingClass>
+    <MissingClass>org.springframework.security.config.annotation.web.HttpSecurityBuilder</MissingClass>
+    <MissingClass>org.springframework.security.config.annotation.web.builders.HttpSecurity</MissingClass>
+    <MissingClass>org.springframework.security.config.annotation.web.configurers.AbstractAuthenticationFilterConfigurer</MissingClass>
+    <MissingClass>org.springframework.security.config.annotation.web.configurers.AuthorizeHttpRequestsConfigurer</MissingClass>
+    <MissingClass>org.springframework.security.config.annotation.web.configurers.AuthorizeHttpRequestsConfigurer$AuthorizationManagerRequestMatcherRegistry</MissingClass>
+    <MissingClass>org.springframework.security.config.annotation.web.configurers.AuthorizeHttpRequestsConfigurer$AuthorizedUrl</MissingClass>
+    <MissingClass>org.springframework.security.config.annotation.web.configurers.CsrfConfigurer</MissingClass>
+    <MissingClass>org.springframework.security.config.annotation.web.configurers.ExceptionHandlingConfigurer</MissingClass>
+    <MissingClass>org.springframework.security.config.annotation.web.configurers.FormLoginConfigurer</MissingClass>
+    <MissingClass>org.springframework.security.config.annotation.web.configurers.HeadersConfigurer</MissingClass>
+    <MissingClass>org.springframework.security.config.annotation.web.configurers.LogoutConfigurer</MissingClass>
+    <MissingClass>org.springframework.security.config.annotation.web.configurers.oauth2.client.OAuth2LoginConfigurer</MissingClass>
+    <MissingClass>org.springframework.security.core.Authentication</MissingClass>
+    <MissingClass>org.springframework.security.core.AuthenticationException</MissingClass>
+    <MissingClass>org.springframework.security.core.authority.SimpleGrantedAuthority</MissingClass>
+    <MissingClass>org.springframework.security.core.context.SecurityContext</MissingClass>
+    <MissingClass>org.springframework.security.core.context.SecurityContextHolder</MissingClass>
+    <MissingClass>org.springframework.security.core.token.Sha512DigestUtils</MissingClass>
+    <MissingClass>org.springframework.security.core.userdetails.User</MissingClass>
+    <MissingClass>org.springframework.security.core.userdetails.UserDetails</MissingClass>
+    <MissingClass>org.springframework.security.core.userdetails.UserDetailsService</MissingClass>
+    <MissingClass>org.springframework.security.core.userdetails.UsernameNotFoundException</MissingClass>
+    <MissingClass>org.springframework.security.crypto.codec.Hex</MissingClass>
+    <MissingClass>org.springframework.security.crypto.password.NoOpPasswordEncoder</MissingClass>
+    <MissingClass>org.springframework.security.oauth2.core.user.DefaultOAuth2User</MissingClass>
+    <MissingClass>org.springframework.security.web.AuthenticationEntryPoint</MissingClass>
+    <MissingClass>org.springframework.security.web.SecurityFilterChain</MissingClass>
+    <MissingClass>org.springframework.security.web.authentication.LoginUrlAuthenticationEntryPoint</MissingClass>
+    <MissingClass>org.springframework.ui.Model</MissingClass>
+    <MissingClass>org.springframework.ui.ModelMap</MissingClass>
+    <MissingClass>org.springframework.util.CollectionUtils</MissingClass>
+    <MissingClass>org.springframework.util.FileCopyUtils</MissingClass>
+    <MissingClass>org.springframework.util.FileSystemUtils</MissingClass>
+    <MissingClass>org.springframework.util.MultiValueMap</MissingClass>
+    <MissingClass>org.springframework.util.StringUtils</MissingClass>
+    <MissingClass>org.springframework.validation.BindingResult</MissingClass>
+    <MissingClass>org.springframework.validation.Errors</MissingClass>
+    <MissingClass>org.springframework.validation.Validator</MissingClass>
+    <MissingClass>org.springframework.web.bind.annotation.GetMapping</MissingClass>
+    <MissingClass>org.springframework.web.bind.annotation.PostMapping</MissingClass>
+    <MissingClass>org.springframework.web.bind.annotation.PutMapping</MissingClass>
+    <MissingClass>org.springframework.web.bind.annotation.RequestMapping</MissingClass>
+    <MissingClass>org.springframework.web.client.RestClientException</MissingClass>
+    <MissingClass>org.springframework.web.client.RestTemplate</MissingClass>
+    <MissingClass>org.springframework.web.context.request.RequestContextHolder</MissingClass>
+    <MissingClass>org.springframework.web.context.request.ServletRequestAttributes</MissingClass>
+    <MissingClass>org.springframework.web.multipart.MultipartFile</MissingClass>
+    <MissingClass>org.springframework.web.servlet.HandlerInterceptor</MissingClass>
+    <MissingClass>org.springframework.web.servlet.LocaleResolver</MissingClass>
+    <MissingClass>org.springframework.web.servlet.ModelAndView</MissingClass>
+    <MissingClass>org.springframework.web.servlet.View</MissingClass>
+    <MissingClass>org.springframework.web.servlet.config.annotation.InterceptorRegistration</MissingClass>
+    <MissingClass>org.springframework.web.servlet.config.annotation.InterceptorRegistry</MissingClass>
+    <MissingClass>org.springframework.web.servlet.config.annotation.ResourceHandlerRegistration</MissingClass>
+    <MissingClass>org.springframework.web.servlet.config.annotation.ResourceHandlerRegistry</MissingClass>
+    <MissingClass>org.springframework.web.servlet.config.annotation.ViewControllerRegistration</MissingClass>
+    <MissingClass>org.springframework.web.servlet.config.annotation.ViewControllerRegistry</MissingClass>
+    <MissingClass>org.springframework.web.servlet.config.annotation.WebMvcConfigurer</MissingClass>
+    <MissingClass>org.springframework.web.servlet.i18n.LocaleChangeInterceptor</MissingClass>
+    <MissingClass>org.springframework.web.servlet.i18n.SessionLocaleResolver</MissingClass>
+    <MissingClass>org.springframework.web.servlet.mvc.method.annotation.ResponseBodyAdvice</MissingClass>
+    <MissingClass>org.springframework.web.servlet.view.RedirectView</MissingClass>
+    <MissingClass>org.thymeleaf.IEngineConfiguration</MissingClass>
+    <MissingClass>org.thymeleaf.dialect.IDialect</MissingClass>
+    <MissingClass>org.thymeleaf.extras.springsecurity6.dialect.SpringSecurityDialect</MissingClass>
+    <MissingClass>org.thymeleaf.spring6.ISpringTemplateEngine</MissingClass>
+    <MissingClass>org.thymeleaf.spring6.SpringTemplateEngine</MissingClass>
+    <MissingClass>org.thymeleaf.spring6.templateresolver.SpringResourceTemplateResolver</MissingClass>
+    <MissingClass>org.thymeleaf.spring6.view.ThymeleafViewResolver</MissingClass>
+    <MissingClass>org.thymeleaf.templatemode.TemplateMode</MissingClass>
+    <MissingClass>org.thymeleaf.templateresolver.FileTemplateResolver</MissingClass>
+    <MissingClass>org.thymeleaf.templateresolver.ITemplateResolver</MissingClass>
+    <MissingClass>org.thymeleaf.templateresource.ITemplateResource</MissingClass>
+    <MissingClass>org.thymeleaf.templateresource.StringTemplateResource</MissingClass>
+    <MissingClass>test</MissingClass>
+    <MissingClass>toString</MissingClass>
+  </Errors>
+  <FindBugsSummary timestamp="Mon, 31 Aug 2026 17:45:47 +0000" total_classes="283" referenced_classes="542" total_bugs="283" total_size="6532" num_packages="58" java_version="21.0.12.1" vm_version="21.0.12.1+1-1-deb13u1-Debian" cpu_seconds="14.92" clock_seconds="3.28" peak_mbytes="244.30" alloc_mbytes="768.00" gc_seconds="0.12" priority_2="219" priority_1="64">
+    <PackageStats package="org.dummy.insecure.framework" total_bugs="13" total_types="1" total_size="37" priority_2="12" priority_1="1">
+      <ClassStats class="org.dummy.insecure.framework.VulnerableTaskHolder" sourceFile="VulnerableTaskHolder.java" interface="false" size="37" bugs="13" priority_2="12" priority_1="1" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.container" total_bugs="11" total_types="12" total_size="390" priority_2="8" priority_1="3">
+      <ClassStats class="org.owasp.webgoat.container.AjaxAuthenticationEntryPoint" sourceFile="AjaxAuthenticationEntryPoint.java" interface="false" size="9" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.container.AsciiDoctorTemplateResolver" sourceFile="AsciiDoctorTemplateResolver.java" interface="false" size="72" bugs="1" priority_1="1" />
+      <ClassStats class="org.owasp.webgoat.container.DatabaseConfiguration" sourceFile="DatabaseConfiguration.java" interface="false" size="33" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.container.HammerHead" sourceFile="HammerHead.java" interface="false" size="6" bugs="3" priority_2="2" priority_1="1" />
+      <ClassStats class="org.owasp.webgoat.container.LessonDataSource" sourceFile="LessonDataSource.java" interface="false" size="29" bugs="1" priority_2="1" />
+      <ClassStats class="org.owasp.webgoat.container.LessonTemplateResolver" sourceFile="LessonTemplateResolver.java" interface="false" size="26" bugs="1" priority_2="1" />
+      <ClassStats class="org.owasp.webgoat.container.MvcConfiguration" sourceFile="MvcConfiguration.java" interface="false" size="114" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.container.MvcConfiguration$1" sourceFile="MvcConfiguration.java" interface="false" size="12" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.container.UserInterceptor" sourceFile="UserInterceptor.java" interface="false" size="22" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.container.WebGoat" sourceFile="WebGoat.java" interface="false" size="18" bugs="1" priority_2="1" />
+      <ClassStats class="org.owasp.webgoat.container.WebSecurityConfig" sourceFile="WebSecurityConfig.java" interface="false" size="42" bugs="3" priority_2="2" priority_1="1" />
+      <ClassStats class="org.owasp.webgoat.container.WebWolfRedirect" sourceFile="WebWolfRedirect.java" interface="false" size="7" bugs="1" priority_2="1" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.container.asciidoc" total_bugs="1" total_types="7" total_size="81" priority_1="1">
+      <ClassStats class="org.owasp.webgoat.container.asciidoc.EnvironmentExposure" sourceFile="EnvironmentExposure.java" interface="false" size="9" bugs="1" priority_1="1" />
+      <ClassStats class="org.owasp.webgoat.container.asciidoc.OperatingSystemMacro" sourceFile="OperatingSystemMacro.java" interface="false" size="10" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.container.asciidoc.UsernameMacro" sourceFile="UsernameMacro.java" interface="false" size="13" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.container.asciidoc.WebGoatTmpDirMacro" sourceFile="WebGoatTmpDirMacro.java" interface="false" size="10" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.container.asciidoc.WebGoatVersionMacro" sourceFile="WebGoatVersionMacro.java" interface="false" size="10" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.container.asciidoc.WebWolfMacro" sourceFile="WebWolfMacro.java" interface="false" size="22" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.container.asciidoc.WebWolfRootMacro" sourceFile="WebWolfRootMacro.java" interface="false" size="7" bugs="0" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.container.assignments" total_bugs="1" total_types="6" total_size="130" priority_2="1">
+      <ClassStats class="org.owasp.webgoat.container.assignments.AssignmentEndpoint" sourceFile="AssignmentEndpoint.java" interface="false" size="28" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.container.assignments.AssignmentHints" sourceFile="AssignmentHints.java" interface="true" size="2" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.container.assignments.AssignmentPath" sourceFile="AssignmentPath.java" interface="true" size="4" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.container.assignments.AttackResult" sourceFile="AttackResult.java" interface="false" size="28" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.container.assignments.AttackResult$AttackResultBuilder" sourceFile="AttackResult.java" interface="false" size="45" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.container.assignments.LessonTrackerInterceptor" sourceFile="LessonTrackerInterceptor.java" interface="false" size="23" bugs="1" priority_2="1" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.container.controller" total_bugs="4" total_types="2" total_size="39" priority_2="2" priority_1="2">
+      <ClassStats class="org.owasp.webgoat.container.controller.StartLesson" sourceFile="StartLesson.java" interface="false" size="28" bugs="4" priority_2="2" priority_1="2" />
+      <ClassStats class="org.owasp.webgoat.container.controller.Welcome" sourceFile="Welcome.java" interface="false" size="11" bugs="0" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.container.i18n" total_bugs="0" total_types="3" total_size="47">
+      <ClassStats class="org.owasp.webgoat.container.i18n.Language" sourceFile="Language.java" interface="false" size="7" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.container.i18n.Messages" sourceFile="Messages.java" interface="false" size="10" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.container.i18n.PluginMessages" sourceFile="PluginMessages.java" interface="false" size="30" bugs="0" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.container.lessons" total_bugs="14" total_types="11" total_size="314" priority_2="14">
+      <ClassStats class="org.owasp.webgoat.container.lessons.Assignment" sourceFile="Assignment.java" interface="false" size="31" bugs="4" priority_2="4" />
+      <ClassStats class="org.owasp.webgoat.container.lessons.Category" sourceFile="Category.java" interface="false" size="46" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.container.lessons.CourseConfiguration" sourceFile="CourseConfiguration.java" interface="false" size="72" bugs="2" priority_2="2" />
+      <ClassStats class="org.owasp.webgoat.container.lessons.Hint" sourceFile="Hint.java" interface="false" size="12" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.container.lessons.Initializeable" sourceFile="Initializeable.java" interface="true" size="2" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.container.lessons.Lesson" sourceFile="Lesson.java" interface="false" size="34" bugs="3" priority_2="3" />
+      <ClassStats class="org.owasp.webgoat.container.lessons.LessonConnectionInvocationHandler" sourceFile="LessonConnectionInvocationHandler.java" interface="false" size="15" bugs="2" priority_2="2" />
+      <ClassStats class="org.owasp.webgoat.container.lessons.LessonInfoModel" sourceFile="LessonInfoModel.java" interface="false" size="15" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.container.lessons.LessonMenuItem" sourceFile="LessonMenuItem.java" interface="false" size="48" bugs="2" priority_2="2" />
+      <ClassStats class="org.owasp.webgoat.container.lessons.LessonMenuItemType" sourceFile="LessonMenuItemType.java" interface="false" size="14" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.container.lessons.LessonScanner" sourceFile="LessonScanner.java" interface="false" size="25" bugs="1" priority_2="1" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.container.service" total_bugs="24" total_types="14" total_size="249" priority_2="16" priority_1="8">
+      <ClassStats class="org.owasp.webgoat.container.service.EnvironmentService" sourceFile="EnvironmentService.java" interface="false" size="6" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.container.service.HintService" sourceFile="HintService.java" interface="false" size="17" bugs="1" priority_2="1" />
+      <ClassStats class="org.owasp.webgoat.container.service.LabelDebugService" sourceFile="LabelDebugService.java" interface="false" size="21" bugs="3" priority_2="1" priority_1="2" />
+      <ClassStats class="org.owasp.webgoat.container.service.LabelService" sourceFile="LabelService.java" interface="false" size="14" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.container.service.LessonInfoService" sourceFile="LessonInfoService.java" interface="false" size="7" bugs="2" priority_2="1" priority_1="1" />
+      <ClassStats class="org.owasp.webgoat.container.service.LessonMenuService" sourceFile="LessonMenuService.java" interface="false" size="49" bugs="5" priority_2="4" priority_1="1" />
+      <ClassStats class="org.owasp.webgoat.container.service.LessonProgressService" sourceFile="LessonProgressService.java" interface="false" size="15" bugs="2" priority_2="1" priority_1="1" />
+      <ClassStats class="org.owasp.webgoat.container.service.LessonProgressService$LessonOverview" sourceFile="LessonProgressService.java" interface="false" size="9" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.container.service.LessonTitleService" sourceFile="LessonTitleService.java" interface="false" size="9" bugs="2" priority_2="1" priority_1="1" />
+      <ClassStats class="org.owasp.webgoat.container.service.ReportCardService" sourceFile="ReportCardService.java" interface="false" size="23" bugs="2" priority_2="2" />
+      <ClassStats class="org.owasp.webgoat.container.service.ReportCardService$LessonStatistics" sourceFile="ReportCardService.java" interface="false" size="17" bugs="1" priority_2="1" />
+      <ClassStats class="org.owasp.webgoat.container.service.ReportCardService$ReportCard" sourceFile="ReportCardService.java" interface="false" size="29" bugs="1" priority_2="1" />
+      <ClassStats class="org.owasp.webgoat.container.service.RestartLessonService" sourceFile="RestartLessonService.java" interface="false" size="22" bugs="3" priority_2="2" priority_1="1" />
+      <ClassStats class="org.owasp.webgoat.container.service.SessionService" sourceFile="SessionService.java" interface="false" size="11" bugs="2" priority_2="1" priority_1="1" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.container.session" total_bugs="5" total_types="4" total_size="84" priority_2="5">
+      <ClassStats class="org.owasp.webgoat.container.session.Course" sourceFile="Course.java" interface="false" size="27" bugs="3" priority_2="3" />
+      <ClassStats class="org.owasp.webgoat.container.session.LabelDebugger" sourceFile="LabelDebugger.java" interface="false" size="16" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.container.session.UserSessionData" sourceFile="UserSessionData.java" interface="false" size="18" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.container.session.WebSession" sourceFile="WebSession.java" interface="false" size="23" bugs="2" priority_2="2" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.container.users" total_bugs="5" total_types="12" total_size="307" priority_2="5">
+      <ClassStats class="org.owasp.webgoat.container.users.LessonTracker" sourceFile="LessonTracker.java" interface="false" size="51" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.container.users.RegistrationController" sourceFile="RegistrationController.java" interface="false" size="21" bugs="1" priority_2="1" />
+      <ClassStats class="org.owasp.webgoat.container.users.Scoreboard" sourceFile="Scoreboard.java" interface="false" size="38" bugs="1" priority_2="1" />
+      <ClassStats class="org.owasp.webgoat.container.users.Scoreboard$Ranking" sourceFile="Scoreboard.java" interface="false" size="10" bugs="1" priority_2="1" />
+      <ClassStats class="org.owasp.webgoat.container.users.UserForm" sourceFile="UserForm.java" interface="false" size="20" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.container.users.UserRepository" sourceFile="UserRepository.java" interface="true" size="6" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.container.users.UserService" sourceFile="UserService.java" interface="false" size="31" bugs="2" priority_2="2" />
+      <ClassStats class="org.owasp.webgoat.container.users.UserSession" sourceFile="UserSession.java" interface="false" size="11" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.container.users.UserTracker" sourceFile="UserTracker.java" interface="false" size="59" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.container.users.UserTrackerRepository" sourceFile="UserTrackerRepository.java" interface="true" size="2" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.container.users.UserValidator" sourceFile="UserValidator.java" interface="false" size="13" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.container.users.WebGoatUser" sourceFile="WebGoatUser.java" interface="false" size="45" bugs="0" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.authbypass" total_bugs="0" total_types="3" total_size="71">
+      <ClassStats class="org.owasp.webgoat.lessons.authbypass.AccountVerificationHelper" sourceFile="AccountVerificationHelper.java" interface="false" size="39" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.authbypass.AuthBypass" sourceFile="AuthBypass.java" interface="false" size="7" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.authbypass.VerifyAccount" sourceFile="VerifyAccount.java" interface="false" size="25" bugs="0" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.bypassrestrictions" total_bugs="0" total_types="3" total_size="50">
+      <ClassStats class="org.owasp.webgoat.lessons.bypassrestrictions.BypassRestrictions" sourceFile="BypassRestrictions.java" interface="false" size="7" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.bypassrestrictions.BypassRestrictionsFieldRestrictions" sourceFile="BypassRestrictionsFieldRestrictions.java" interface="false" size="15" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.bypassrestrictions.BypassRestrictionsFrontendValidation" sourceFile="BypassRestrictionsFrontendValidation.java" interface="false" size="28" bugs="0" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.challenges" total_bugs="2" total_types="7" total_size="90" priority_2="1" priority_1="1">
+      <ClassStats class="org.owasp.webgoat.lessons.challenges.ChallengeIntro" sourceFile="ChallengeIntro.java" interface="false" size="7" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.challenges.Email" sourceFile="Email.java" interface="false" size="29" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.challenges.Email$EmailBuilder" sourceFile="Email.java" interface="false" size="15" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.challenges.Flag" sourceFile="Flag.java" interface="false" size="13" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.challenges.FlagController" sourceFile="FlagController.java" interface="false" size="10" bugs="1" priority_2="1" />
+      <ClassStats class="org.owasp.webgoat.lessons.challenges.Flags" sourceFile="Flags.java" interface="false" size="14" bugs="1" priority_1="1" />
+      <ClassStats class="org.owasp.webgoat.lessons.challenges.SolutionConstants" sourceFile="SolutionConstants.java" interface="true" size="2" bugs="0" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.challenges.challenge1" total_bugs="3" total_types="3" total_size="38" priority_2="1" priority_1="2">
+      <ClassStats class="org.owasp.webgoat.lessons.challenges.challenge1.Assignment1" sourceFile="Assignment1.java" interface="false" size="15" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.challenges.challenge1.Challenge1" sourceFile="Challenge1.java" interface="false" size="7" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.challenges.challenge1.ImageServlet" sourceFile="ImageServlet.java" interface="false" size="16" bugs="3" priority_2="1" priority_1="2" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.challenges.challenge5" total_bugs="6" total_types="2" total_size="28" priority_2="5" priority_1="1">
+      <ClassStats class="org.owasp.webgoat.lessons.challenges.challenge5.Assignment5" sourceFile="Assignment5.java" interface="false" size="21" bugs="6" priority_2="5" priority_1="1" />
+      <ClassStats class="org.owasp.webgoat.lessons.challenges.challenge5.Challenge5" sourceFile="Challenge5.java" interface="false" size="7" bugs="0" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.challenges.challenge7" total_bugs="6" total_types="5" total_size="356" priority_2="3" priority_1="3">
+      <ClassStats class="org.owasp.webgoat.lessons.challenges.challenge7.Assignment7" sourceFile="Assignment7.java" interface="false" size="41" bugs="1" priority_2="1" />
+      <ClassStats class="org.owasp.webgoat.lessons.challenges.challenge7.Challenge7" sourceFile="Challenge7.java" interface="false" size="7" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.challenges.challenge7.MD5" sourceFile="MD5.java" interface="false" size="256" bugs="2" priority_1="2" />
+      <ClassStats class="org.owasp.webgoat.lessons.challenges.challenge7.MD5$MD5State" sourceFile="MD5.java" interface="false" size="26" bugs="1" priority_2="1" />
+      <ClassStats class="org.owasp.webgoat.lessons.challenges.challenge7.PasswordResetLink" sourceFile="PasswordResetLink.java" interface="false" size="26" bugs="2" priority_2="1" priority_1="1" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.challenges.challenge8" total_bugs="0" total_types="2" total_size="52">
+      <ClassStats class="org.owasp.webgoat.lessons.challenges.challenge8.Assignment8" sourceFile="Assignment8.java" interface="false" size="45" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.challenges.challenge8.Challenge8" sourceFile="Challenge8.java" interface="false" size="7" bugs="0" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.chromedevtools" total_bugs="0" total_types="3" total_size="25">
+      <ClassStats class="org.owasp.webgoat.lessons.chromedevtools.ChromeDevTools" sourceFile="ChromeDevTools.java" interface="false" size="7" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.chromedevtools.NetworkDummy" sourceFile="NetworkDummy.java" interface="false" size="9" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.chromedevtools.NetworkLesson" sourceFile="NetworkLesson.java" interface="false" size="9" bugs="0" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.cia" total_bugs="1" total_types="2" total_size="27" priority_2="1">
+      <ClassStats class="org.owasp.webgoat.lessons.cia.CIA" sourceFile="CIA.java" interface="false" size="7" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.cia.CIAQuiz" sourceFile="CIAQuiz.java" interface="false" size="20" bugs="1" priority_2="1" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.clientsidefiltering" total_bugs="6" total_types="7" total_size="109" priority_2="6">
+      <ClassStats class="org.owasp.webgoat.lessons.clientsidefiltering.ClientSideFiltering" sourceFile="ClientSideFiltering.java" interface="false" size="7" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.clientsidefiltering.ClientSideFilteringAssignment" sourceFile="ClientSideFilteringAssignment.java" interface="false" size="7" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.clientsidefiltering.ClientSideFilteringFreeAssignment" sourceFile="ClientSideFilteringFreeAssignment.java" interface="false" size="8" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.clientsidefiltering.Salaries" sourceFile="Salaries.java" interface="false" size="48" bugs="4" priority_2="4" />
+      <ClassStats class="org.owasp.webgoat.lessons.clientsidefiltering.ShopEndpoint" sourceFile="ShopEndpoint.java" interface="false" size="19" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.clientsidefiltering.ShopEndpoint$CheckoutCode" sourceFile="ShopEndpoint.java" interface="false" size="10" bugs="1" priority_2="1" />
+      <ClassStats class="org.owasp.webgoat.lessons.clientsidefiltering.ShopEndpoint$CheckoutCodes" sourceFile="ShopEndpoint.java" interface="false" size="10" bugs="1" priority_2="1" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.cryptography" total_bugs="20" total_types="7" total_size="185" priority_2="9" priority_1="11">
+      <ClassStats class="org.owasp.webgoat.lessons.cryptography.CryptoUtil" sourceFile="CryptoUtil.java" interface="false" size="73" bugs="1" priority_1="1" />
+      <ClassStats class="org.owasp.webgoat.lessons.cryptography.Cryptography" sourceFile="Cryptography.java" interface="false" size="7" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.cryptography.EncodingAssignment" sourceFile="EncodingAssignment.java" interface="false" size="20" bugs="3" priority_2="1" priority_1="2" />
+      <ClassStats class="org.owasp.webgoat.lessons.cryptography.HashingAssignment" sourceFile="HashingAssignment.java" interface="false" size="39" bugs="14" priority_2="7" priority_1="7" />
+      <ClassStats class="org.owasp.webgoat.lessons.cryptography.SecureDefaultsAssignment" sourceFile="SecureDefaultsAssignment.java" interface="false" size="11" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.cryptography.SigningAssignment" sourceFile="SigningAssignment.java" interface="false" size="28" bugs="2" priority_2="1" priority_1="1" />
+      <ClassStats class="org.owasp.webgoat.lessons.cryptography.XOREncodingAssignment" sourceFile="XOREncodingAssignment.java" interface="false" size="7" bugs="0" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.csrf" total_bugs="5" total_types="7" total_size="180" priority_2="3" priority_1="2">
+      <ClassStats class="org.owasp.webgoat.lessons.csrf.CSRF" sourceFile="CSRF.java" interface="false" size="7" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.csrf.CSRFConfirmFlag1" sourceFile="CSRFConfirmFlag1.java" interface="false" size="12" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.csrf.CSRFFeedback" sourceFile="CSRFFeedback.java" interface="false" size="41" bugs="1" priority_1="1" />
+      <ClassStats class="org.owasp.webgoat.lessons.csrf.CSRFGetFlag" sourceFile="CSRFGetFlag.java" interface="false" size="34" bugs="4" priority_2="3" priority_1="1" />
+      <ClassStats class="org.owasp.webgoat.lessons.csrf.CSRFLogin" sourceFile="CSRFLogin.java" interface="false" size="18" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.csrf.ForgedReviews" sourceFile="ForgedReviews.java" interface="false" size="46" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.csrf.Review" sourceFile="Review.java" interface="false" size="22" bugs="0" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.deserialization" total_bugs="2" total_types="3" total_size="66" priority_1="2">
+      <ClassStats class="org.owasp.webgoat.lessons.deserialization.InsecureDeserialization" sourceFile="InsecureDeserialization.java" interface="false" size="7" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.deserialization.InsecureDeserializationTask" sourceFile="InsecureDeserializationTask.java" interface="false" size="27" bugs="1" priority_1="1" />
+      <ClassStats class="org.owasp.webgoat.lessons.deserialization.SerializationHelper" sourceFile="SerializationHelper.java" interface="false" size="32" bugs="1" priority_1="1" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.hijacksession" total_bugs="0" total_types="2" total_size="28">
+      <ClassStats class="org.owasp.webgoat.lessons.hijacksession.HijackSession" sourceFile="HijackSession.java" interface="false" size="7" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.hijacksession.HijackSessionAssignment" sourceFile="HijackSessionAssignment.java" interface="false" size="21" bugs="0" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.hijacksession.cas" total_bugs="3" total_types="4" total_size="87" priority_2="2" priority_1="1">
+      <ClassStats class="org.owasp.webgoat.lessons.hijacksession.cas.Authentication" sourceFile="Authentication.java" interface="false" size="29" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.hijacksession.cas.Authentication$AuthenticationBuilder" sourceFile="Authentication.java" interface="false" size="11" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.hijacksession.cas.AuthenticationProvider" sourceFile="AuthenticationProvider.java" interface="true" size="2" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.hijacksession.cas.HijackSessionAuthenticationProvider" sourceFile="HijackSessionAuthenticationProvider.java" interface="false" size="45" bugs="3" priority_2="2" priority_1="1" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.htmltampering" total_bugs="0" total_types="2" total_size="14">
+      <ClassStats class="org.owasp.webgoat.lessons.htmltampering.HtmlTampering" sourceFile="HtmlTampering.java" interface="false" size="7" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.htmltampering.HtmlTamperingTask" sourceFile="HtmlTamperingTask.java" interface="false" size="7" bugs="0" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.httpbasics" total_bugs="0" total_types="3" total_size="28">
+      <ClassStats class="org.owasp.webgoat.lessons.httpbasics.HttpBasics" sourceFile="HttpBasics.java" interface="false" size="7" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.httpbasics.HttpBasicsLesson" sourceFile="HttpBasicsLesson.java" interface="false" size="10" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.httpbasics.HttpBasicsQuiz" sourceFile="HttpBasicsQuiz.java" interface="false" size="11" bugs="0" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.httpproxies" total_bugs="1" total_types="2" total_size="18" priority_1="1">
+      <ClassStats class="org.owasp.webgoat.lessons.httpproxies.HttpBasicsInterceptRequest" sourceFile="HttpBasicsInterceptRequest.java" interface="false" size="11" bugs="1" priority_1="1" />
+      <ClassStats class="org.owasp.webgoat.lessons.httpproxies.HttpProxies" sourceFile="HttpProxies.java" interface="false" size="7" bugs="0" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.idor" total_bugs="2" total_types="8" total_size="225" priority_2="2">
+      <ClassStats class="org.owasp.webgoat.lessons.idor.IDOR" sourceFile="IDOR.java" interface="false" size="7" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.idor.IDORDiffAttributes" sourceFile="IDORDiffAttributes.java" interface="false" size="14" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.idor.IDOREditOtherProfile" sourceFile="IDOREditOtherProfile.java" interface="false" size="43" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.idor.IDORLogin" sourceFile="IDORLogin.java" interface="false" size="28" bugs="2" priority_2="2" />
+      <ClassStats class="org.owasp.webgoat.lessons.idor.IDORViewOtherProfile" sourceFile="IDORViewOtherProfile.java" interface="false" size="19" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.idor.IDORViewOwnProfile" sourceFile="IDORViewOwnProfile.java" interface="false" size="23" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.idor.IDORViewOwnProfileAltUrl" sourceFile="IDORViewOwnProfileAltUrl.java" interface="false" size="21" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.idor.UserProfile" sourceFile="UserProfile.java" interface="false" size="70" bugs="0" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.insecurelogin" total_bugs="0" total_types="2" total_size="16">
+      <ClassStats class="org.owasp.webgoat.lessons.insecurelogin.InsecureLogin" sourceFile="InsecureLogin.java" interface="false" size="7" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.insecurelogin.InsecureLoginTask" sourceFile="InsecureLoginTask.java" interface="false" size="9" bugs="0" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.jwt" total_bugs="5" total_types="6" total_size="210" priority_2="3" priority_1="2">
+      <ClassStats class="org.owasp.webgoat.lessons.jwt.JWT" sourceFile="JWT.java" interface="false" size="7" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.jwt.JWTDecodeEndpoint" sourceFile="JWTDecodeEndpoint.java" interface="false" size="7" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.jwt.JWTQuiz" sourceFile="JWTQuiz.java" interface="false" size="20" bugs="1" priority_2="1" />
+      <ClassStats class="org.owasp.webgoat.lessons.jwt.JWTRefreshEndpoint" sourceFile="JWTRefreshEndpoint.java" interface="false" size="60" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.jwt.JWTSecretKeyEndpoint" sourceFile="JWTSecretKeyEndpoint.java" interface="false" size="36" bugs="4" priority_2="2" priority_1="2" />
+      <ClassStats class="org.owasp.webgoat.lessons.jwt.JWTVotesEndpoint" sourceFile="JWTVotesEndpoint.java" interface="false" size="80" bugs="0" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.jwt.claimmisuse" total_bugs="5" total_types="3" total_size="69" priority_2="5">
+      <ClassStats class="org.owasp.webgoat.lessons.jwt.claimmisuse.JWTHeaderJKUEndpoint" sourceFile="JWTHeaderJKUEndpoint.java" interface="false" size="24" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.jwt.claimmisuse.JWTHeaderKIDEndpoint" sourceFile="JWTHeaderKIDEndpoint.java" interface="false" size="28" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.jwt.claimmisuse.JWTHeaderKIDEndpoint$1" sourceFile="JWTHeaderKIDEndpoint.java" interface="false" size="17" bugs="5" priority_2="5" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.jwt.votes" total_bugs="0" total_types="4" total_size="48">
+      <ClassStats class="org.owasp.webgoat.lessons.jwt.votes.Views" sourceFile="Views.java" interface="false" size="3" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.jwt.votes.Views$GuestView" sourceFile="Views.java" interface="true" size="1" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.jwt.votes.Views$UserView" sourceFile="Views.java" interface="true" size="1" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.jwt.votes.Vote" sourceFile="Vote.java" interface="false" size="43" bugs="0" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.lessontemplate" total_bugs="4" total_types="3" total_size="33" priority_2="4">
+      <ClassStats class="org.owasp.webgoat.lessons.lessontemplate.LessonTemplate" sourceFile="LessonTemplate.java" interface="false" size="7" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.lessontemplate.SampleAttack" sourceFile="SampleAttack.java" interface="false" size="19" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.lessontemplate.SampleAttack$Item" sourceFile="SampleAttack.java" interface="false" size="7" bugs="4" priority_2="4" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.logging" total_bugs="0" total_types="3" total_size="36">
+      <ClassStats class="org.owasp.webgoat.lessons.logging.LogBleedingTask" sourceFile="LogBleedingTask.java" interface="false" size="17" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.logging.LogSpoofing" sourceFile="LogSpoofing.java" interface="false" size="7" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.logging.LogSpoofingTask" sourceFile="LogSpoofingTask.java" interface="false" size="12" bugs="0" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.missingac" total_bugs="3" total_types="8" total_size="151" priority_2="3">
+      <ClassStats class="org.owasp.webgoat.lessons.missingac.DisplayUser" sourceFile="DisplayUser.java" interface="false" size="24" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.missingac.MissingAccessControlUserRepository" sourceFile="MissingAccessControlUserRepository.java" interface="false" size="25" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.missingac.MissingFunctionAC" sourceFile="MissingFunctionAC.java" interface="false" size="9" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.missingac.MissingFunctionACHiddenMenus" sourceFile="MissingFunctionACHiddenMenus.java" interface="false" size="9" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.missingac.MissingFunctionACUsers" sourceFile="MissingFunctionACUsers.java" interface="false" size="40" bugs="1" priority_2="1" />
+      <ClassStats class="org.owasp.webgoat.lessons.missingac.MissingFunctionACYourHash" sourceFile="MissingFunctionACYourHash.java" interface="false" size="10" bugs="1" priority_2="1" />
+      <ClassStats class="org.owasp.webgoat.lessons.missingac.MissingFunctionACYourHashAdmin" sourceFile="MissingFunctionACYourHashAdmin.java" interface="false" size="12" bugs="1" priority_2="1" />
+      <ClassStats class="org.owasp.webgoat.lessons.missingac.User" sourceFile="User.java" interface="false" size="22" bugs="0" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.passwordreset" total_bugs="8" total_types="9" total_size="265" priority_2="8">
+      <ClassStats class="org.owasp.webgoat.lessons.passwordreset.PasswordReset" sourceFile="PasswordReset.java" interface="false" size="7" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.passwordreset.PasswordResetEmail" sourceFile="PasswordResetEmail.java" interface="false" size="29" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.passwordreset.PasswordResetEmail$PasswordResetEmailBuilder" sourceFile="PasswordResetEmail.java" interface="false" size="15" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.passwordreset.QuestionsAssignment" sourceFile="QuestionsAssignment.java" interface="false" size="26" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.passwordreset.ResetLinkAssignment" sourceFile="ResetLinkAssignment.java" interface="false" size="52" bugs="6" priority_2="6" />
+      <ClassStats class="org.owasp.webgoat.lessons.passwordreset.ResetLinkAssignmentForgotPassword" sourceFile="ResetLinkAssignmentForgotPassword.java" interface="false" size="48" bugs="2" priority_2="2" />
+      <ClassStats class="org.owasp.webgoat.lessons.passwordreset.SecurityQuestionAssignment" sourceFile="SecurityQuestionAssignment.java" interface="false" size="32" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.passwordreset.SimpleMailAssignment" sourceFile="SimpleMailAssignment.java" interface="false" size="46" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.passwordreset.TriedQuestions" sourceFile="TriedQuestions.java" interface="false" size="10" bugs="0" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.passwordreset.resetlink" total_bugs="0" total_types="1" total_size="12">
+      <ClassStats class="org.owasp.webgoat.lessons.passwordreset.resetlink.PasswordChangeForm" sourceFile="PasswordChangeForm.java" interface="false" size="12" bugs="0" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.pathtraversal" total_bugs="14" total_types="7" total_size="191" priority_2="12" priority_1="2">
+      <ClassStats class="org.owasp.webgoat.lessons.pathtraversal.PathTraversal" sourceFile="PathTraversal.java" interface="false" size="7" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.pathtraversal.ProfileUpload" sourceFile="ProfileUpload.java" interface="false" size="8" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.pathtraversal.ProfileUploadBase" sourceFile="ProfileUploadBase.java" interface="false" size="71" bugs="6" priority_2="5" priority_1="1" />
+      <ClassStats class="org.owasp.webgoat.lessons.pathtraversal.ProfileUploadFix" sourceFile="ProfileUploadFix.java" interface="false" size="8" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.pathtraversal.ProfileUploadRemoveUserInput" sourceFile="ProfileUploadRemoveUserInput.java" interface="false" size="6" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.pathtraversal.ProfileUploadRetrieval" sourceFile="ProfileUploadRetrieval.java" interface="false" size="54" bugs="5" priority_2="4" priority_1="1" />
+      <ClassStats class="org.owasp.webgoat.lessons.pathtraversal.ProfileZipSlip" sourceFile="ProfileZipSlip.java" interface="false" size="37" bugs="3" priority_2="3" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.securepasswords" total_bugs="2" total_types="2" total_size="53" priority_2="2">
+      <ClassStats class="org.owasp.webgoat.lessons.securepasswords.SecurePasswords" sourceFile="SecurePasswords.java" interface="false" size="7" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.securepasswords.SecurePasswordsAssignment" sourceFile="SecurePasswordsAssignment.java" interface="false" size="46" bugs="2" priority_2="2" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.spoofcookie" total_bugs="0" total_types="2" total_size="56">
+      <ClassStats class="org.owasp.webgoat.lessons.spoofcookie.SpoofCookie" sourceFile="SpoofCookie.java" interface="false" size="7" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.spoofcookie.SpoofCookieAssignment" sourceFile="SpoofCookieAssignment.java" interface="false" size="49" bugs="0" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.spoofcookie.encoders" total_bugs="4" total_types="1" total_size="33" priority_1="4">
+      <ClassStats class="org.owasp.webgoat.lessons.spoofcookie.encoders.EncDec" sourceFile="EncDec.java" interface="false" size="33" bugs="4" priority_1="4" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.sqlinjection.advanced" total_bugs="19" total_types="6" total_size="156" priority_2="17" priority_1="2">
+      <ClassStats class="org.owasp.webgoat.lessons.sqlinjection.advanced.SqlInjectionAdvanced" sourceFile="SqlInjectionAdvanced.java" interface="false" size="7" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.sqlinjection.advanced.SqlInjectionChallenge" sourceFile="SqlInjectionChallenge.java" interface="false" size="39" bugs="7" priority_2="6" priority_1="1" />
+      <ClassStats class="org.owasp.webgoat.lessons.sqlinjection.advanced.SqlInjectionChallengeLogin" sourceFile="SqlInjectionChallengeLogin.java" interface="false" size="19" bugs="4" priority_2="4" />
+      <ClassStats class="org.owasp.webgoat.lessons.sqlinjection.advanced.SqlInjectionLesson6a" sourceFile="SqlInjectionLesson6a.java" interface="false" size="45" bugs="3" priority_2="2" priority_1="1" />
+      <ClassStats class="org.owasp.webgoat.lessons.sqlinjection.advanced.SqlInjectionLesson6b" sourceFile="SqlInjectionLesson6b.java" interface="false" size="26" bugs="4" priority_2="4" />
+      <ClassStats class="org.owasp.webgoat.lessons.sqlinjection.advanced.SqlInjectionQuiz" sourceFile="SqlInjectionQuiz.java" interface="false" size="20" bugs="1" priority_2="1" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.sqlinjection.introduction" total_bugs="44" total_types="10" total_size="404" priority_2="37" priority_1="7">
+      <ClassStats class="org.owasp.webgoat.lessons.sqlinjection.introduction.SqlInjection" sourceFile="SqlInjection.java" interface="false" size="7" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.sqlinjection.introduction.SqlInjectionLesson10" sourceFile="SqlInjectionLesson10.java" interface="false" size="52" bugs="6" priority_2="6" />
+      <ClassStats class="org.owasp.webgoat.lessons.sqlinjection.introduction.SqlInjectionLesson2" sourceFile="SqlInjectionLesson2.java" interface="false" size="21" bugs="5" priority_2="4" priority_1="1" />
+      <ClassStats class="org.owasp.webgoat.lessons.sqlinjection.introduction.SqlInjectionLesson3" sourceFile="SqlInjectionLesson3.java" interface="false" size="28" bugs="4" priority_2="3" priority_1="1" />
+      <ClassStats class="org.owasp.webgoat.lessons.sqlinjection.introduction.SqlInjectionLesson4" sourceFile="SqlInjectionLesson4.java" interface="false" size="24" bugs="2" priority_2="1" priority_1="1" />
+      <ClassStats class="org.owasp.webgoat.lessons.sqlinjection.introduction.SqlInjectionLesson5" sourceFile="SqlInjectionLesson5.java" interface="false" size="41" bugs="6" priority_2="6" />
+      <ClassStats class="org.owasp.webgoat.lessons.sqlinjection.introduction.SqlInjectionLesson5a" sourceFile="SqlInjectionLesson5a.java" interface="false" size="58" bugs="3" priority_2="2" priority_1="1" />
+      <ClassStats class="org.owasp.webgoat.lessons.sqlinjection.introduction.SqlInjectionLesson5b" sourceFile="SqlInjectionLesson5b.java" interface="false" size="55" bugs="5" priority_2="5" />
+      <ClassStats class="org.owasp.webgoat.lessons.sqlinjection.introduction.SqlInjectionLesson8" sourceFile="SqlInjectionLesson8.java" interface="false" size="68" bugs="8" priority_2="6" priority_1="2" />
+      <ClassStats class="org.owasp.webgoat.lessons.sqlinjection.introduction.SqlInjectionLesson9" sourceFile="SqlInjectionLesson9.java" interface="false" size="50" bugs="5" priority_2="4" priority_1="1" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.sqlinjection.mitigation" total_bugs="7" total_types="9" total_size="199" priority_2="7">
+      <ClassStats class="org.owasp.webgoat.lessons.sqlinjection.mitigation.Servers" sourceFile="Servers.java" interface="false" size="29" bugs="2" priority_2="2" />
+      <ClassStats class="org.owasp.webgoat.lessons.sqlinjection.mitigation.Servers$Server" sourceFile="Servers.java" interface="false" size="22" bugs="1" priority_2="1" />
+      <ClassStats class="org.owasp.webgoat.lessons.sqlinjection.mitigation.SqlInjectionLesson10a" sourceFile="SqlInjectionLesson10a.java" interface="false" size="20" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.sqlinjection.mitigation.SqlInjectionLesson10b" sourceFile="SqlInjectionLesson10b.java" interface="false" size="57" bugs="2" priority_2="2" />
+      <ClassStats class="org.owasp.webgoat.lessons.sqlinjection.mitigation.SqlInjectionLesson10b$JavaObjectFromString" sourceFile="SqlInjectionLesson10b.java" interface="false" size="11" bugs="1" priority_2="1" />
+      <ClassStats class="org.owasp.webgoat.lessons.sqlinjection.mitigation.SqlInjectionLesson13" sourceFile="SqlInjectionLesson13.java" interface="false" size="22" bugs="1" priority_2="1" />
+      <ClassStats class="org.owasp.webgoat.lessons.sqlinjection.mitigation.SqlInjectionMitigations" sourceFile="SqlInjectionMitigations.java" interface="false" size="7" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.sqlinjection.mitigation.SqlOnlyInputValidation" sourceFile="SqlOnlyInputValidation.java" interface="false" size="15" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.sqlinjection.mitigation.SqlOnlyInputValidationOnKeywords" sourceFile="SqlOnlyInputValidationOnKeywords.java" interface="false" size="16" bugs="0" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.ssrf" total_bugs="1" total_types="3" total_size="46" priority_1="1">
+      <ClassStats class="org.owasp.webgoat.lessons.ssrf.SSRF" sourceFile="SSRF.java" interface="false" size="7" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.ssrf.SSRFTask1" sourceFile="SSRFTask1.java" interface="false" size="18" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.ssrf.SSRFTask2" sourceFile="SSRFTask2.java" interface="false" size="21" bugs="1" priority_1="1" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.vulnerablecomponents" total_bugs="1" total_types="4" total_size="67" priority_2="1">
+      <ClassStats class="org.owasp.webgoat.lessons.vulnerablecomponents.Contact" sourceFile="Contact.java" interface="true" size="9" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.vulnerablecomponents.ContactImpl" sourceFile="ContactImpl.java" interface="false" size="23" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.vulnerablecomponents.VulnerableComponents" sourceFile="VulnerableComponents.java" interface="false" size="7" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.vulnerablecomponents.VulnerableComponentsLesson" sourceFile="VulnerableComponentsLesson.java" interface="false" size="28" bugs="1" priority_2="1" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.webgoatintroduction" total_bugs="0" total_types="1" total_size="7">
+      <ClassStats class="org.owasp.webgoat.lessons.webgoatintroduction.WebGoatIntroduction" sourceFile="WebGoatIntroduction.java" interface="false" size="7" bugs="0" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.webwolfintroduction" total_bugs="1" total_types="5" total_size="95" priority_1="1">
+      <ClassStats class="org.owasp.webgoat.lessons.webwolfintroduction.Email" sourceFile="Email.java" interface="false" size="25" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.webwolfintroduction.Email$EmailBuilder" sourceFile="Email.java" interface="false" size="13" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.webwolfintroduction.LandingAssignment" sourceFile="LandingAssignment.java" interface="false" size="16" bugs="1" priority_1="1" />
+      <ClassStats class="org.owasp.webgoat.lessons.webwolfintroduction.MailAssignment" sourceFile="MailAssignment.java" interface="false" size="34" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.webwolfintroduction.WebWolfIntroduction" sourceFile="WebWolfIntroduction.java" interface="false" size="7" bugs="0" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.xss" total_bugs="4" total_types="11" total_size="173" priority_2="3" priority_1="1">
+      <ClassStats class="org.owasp.webgoat.lessons.xss.Comment" sourceFile="Comment.java" interface="false" size="18" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.xss.CrossSiteScripting" sourceFile="CrossSiteScripting.java" interface="false" size="7" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.xss.CrossSiteScriptingLesson1" sourceFile="CrossSiteScriptingLesson1.java" interface="false" size="7" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.xss.CrossSiteScriptingLesson3" sourceFile="CrossSiteScriptingLesson3.java" interface="false" size="30" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.xss.CrossSiteScriptingLesson4" sourceFile="CrossSiteScriptingLesson4.java" interface="false" size="15" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.xss.CrossSiteScriptingLesson5a" sourceFile="CrossSiteScriptingLesson5a.java" interface="false" size="38" bugs="2" priority_2="2" />
+      <ClassStats class="org.owasp.webgoat.lessons.xss.CrossSiteScriptingLesson6a" sourceFile="CrossSiteScriptingLesson6a.java" interface="false" size="8" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.xss.CrossSiteScriptingMitigation" sourceFile="CrossSiteScriptingMitigation.java" interface="false" size="7" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.xss.CrossSiteScriptingQuiz" sourceFile="CrossSiteScriptingQuiz.java" interface="false" size="20" bugs="1" priority_2="1" />
+      <ClassStats class="org.owasp.webgoat.lessons.xss.DOMCrossSiteScripting" sourceFile="DOMCrossSiteScripting.java" interface="false" size="14" bugs="1" priority_1="1" />
+      <ClassStats class="org.owasp.webgoat.lessons.xss.DOMCrossSiteScriptingVerifier" sourceFile="DOMCrossSiteScriptingVerifier.java" interface="false" size="9" bugs="0" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.xss.stored" total_bugs="0" total_types="3" total_size="57">
+      <ClassStats class="org.owasp.webgoat.lessons.xss.stored.CrossSiteScriptingStored" sourceFile="CrossSiteScriptingStored.java" interface="false" size="7" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.xss.stored.StoredCrossSiteScriptingVerifier" sourceFile="StoredCrossSiteScriptingVerifier.java" interface="false" size="8" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.xss.stored.StoredXssComments" sourceFile="StoredXssComments.java" interface="false" size="42" bugs="0" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.lessons.xxe" total_bugs="10" total_types="10" total_size="239" priority_2="8" priority_1="2">
+      <ClassStats class="org.owasp.webgoat.lessons.xxe.BlindSendFileAssignment" sourceFile="BlindSendFileAssignment.java" interface="false" size="41" bugs="3" priority_2="3" />
+      <ClassStats class="org.owasp.webgoat.lessons.xxe.Comment" sourceFile="Comment.java" interface="false" size="20" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.xxe.CommentsCache" sourceFile="CommentsCache.java" interface="false" size="56" bugs="2" priority_2="2" />
+      <ClassStats class="org.owasp.webgoat.lessons.xxe.CommentsCache$Comments" sourceFile="CommentsCache.java" interface="false" size="6" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.xxe.CommentsEndpoint" sourceFile="CommentsEndpoint.java" interface="false" size="6" bugs="1" priority_2="1" />
+      <ClassStats class="org.owasp.webgoat.lessons.xxe.ContentTypeAssignment" sourceFile="ContentTypeAssignment.java" interface="false" size="36" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.xxe.Ping" sourceFile="Ping.java" interface="false" size="19" bugs="3" priority_2="2" priority_1="1" />
+      <ClassStats class="org.owasp.webgoat.lessons.xxe.SimpleXXE" sourceFile="SimpleXXE.java" interface="false" size="31" bugs="1" priority_1="1" />
+      <ClassStats class="org.owasp.webgoat.lessons.xxe.User" sourceFile="User.java" interface="false" size="17" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.lessons.xxe.XXE" sourceFile="XXE.java" interface="false" size="7" bugs="0" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.server" total_bugs="0" total_types="2" total_size="26">
+      <ClassStats class="org.owasp.webgoat.server.ParentConfig" sourceFile="ParentConfig.java" interface="false" size="3" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.server.StartWebGoat" sourceFile="StartWebGoat.java" interface="false" size="23" bugs="0" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.webwolf" total_bugs="13" total_types="5" total_size="137" priority_2="11" priority_1="2">
+      <ClassStats class="org.owasp.webgoat.webwolf.FileServer" sourceFile="FileServer.java" interface="false" size="50" bugs="8" priority_2="7" priority_1="1" />
+      <ClassStats class="org.owasp.webgoat.webwolf.FileServer$1UploadedFile" sourceFile="FileServer.java" interface="false" size="14" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.webwolf.MvcConfiguration" sourceFile="MvcConfiguration.java" interface="false" size="25" bugs="2" priority_2="2" />
+      <ClassStats class="org.owasp.webgoat.webwolf.WebSecurityConfig" sourceFile="WebSecurityConfig.java" interface="false" size="43" bugs="3" priority_2="2" priority_1="1" />
+      <ClassStats class="org.owasp.webgoat.webwolf.WebWolf" sourceFile="WebWolf.java" interface="false" size="5" bugs="0" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.webwolf.jwt" total_bugs="0" total_types="3" total_size="144">
+      <ClassStats class="org.owasp.webgoat.webwolf.jwt.JWTController" sourceFile="JWTController.java" interface="false" size="14" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.webwolf.jwt.JWTToken" sourceFile="JWTToken.java" interface="false" size="109" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.webwolf.jwt.JWTToken$JWTTokenBuilder" sourceFile="JWTToken.java" interface="false" size="21" bugs="0" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.webwolf.mailbox" total_bugs="0" total_types="4" total_size="82">
+      <ClassStats class="org.owasp.webgoat.webwolf.mailbox.Email" sourceFile="Email.java" interface="false" size="43" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.webwolf.mailbox.Email$EmailBuilder" sourceFile="Email.java" interface="false" size="17" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.webwolf.mailbox.MailboxController" sourceFile="MailboxController.java" interface="false" size="20" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.webwolf.mailbox.MailboxRepository" sourceFile="MailboxRepository.java" interface="true" size="2" bugs="0" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.webwolf.requests" total_bugs="3" total_types="6" total_size="122" priority_2="2" priority_1="1">
+      <ClassStats class="org.owasp.webgoat.webwolf.requests.LandingPage" sourceFile="LandingPage.java" interface="false" size="11" bugs="1" priority_1="1" />
+      <ClassStats class="org.owasp.webgoat.webwolf.requests.Requests" sourceFile="Requests.java" interface="false" size="38" bugs="1" priority_2="1" />
+      <ClassStats class="org.owasp.webgoat.webwolf.requests.Requests$Tracert" sourceFile="Requests.java" interface="false" size="13" bugs="1" priority_2="1" />
+      <ClassStats class="org.owasp.webgoat.webwolf.requests.WebWolfTraceRepository" sourceFile="WebWolfTraceRepository.java" interface="false" size="27" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.webwolf.requests.WebWolfTraceRepository$Exclusion" sourceFile="WebWolfTraceRepository.java" interface="false" size="19" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.webwolf.requests.WebWolfTraceRepository$MatchingMode" sourceFile="WebWolfTraceRepository.java" interface="false" size="14" bugs="0" />
+    </PackageStats>
+    <PackageStats package="org.owasp.webgoat.webwolf.user" total_bugs="0" total_types="3" total_size="50">
+      <ClassStats class="org.owasp.webgoat.webwolf.user.UserRepository" sourceFile="UserRepository.java" interface="true" size="2" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.webwolf.user.UserService" sourceFile="UserService.java" interface="false" size="17" bugs="0" />
+      <ClassStats class="org.owasp.webgoat.webwolf.user.WebGoatUser" sourceFile="WebGoatUser.java" interface="false" size="31" bugs="0" />
+    </PackageStats>
+    <FindBugsProfile>
+      <ClassProfile name="edu.umd.cs.findbugs.classfile.engine.ClassInfoAnalysisEngine" totalMilliseconds="200" invocations="2079" avgMicrosecondsPerInvocation="96" maxMicrosecondsPerInvocation="7580" standardDeviationMicrosecondsPerInvocation="360" />
+      <ClassProfile name="edu.umd.cs.findbugs.detect.FieldItemSummary" totalMilliseconds="100" invocations="542" avgMicrosecondsPerInvocation="186" maxMicrosecondsPerInvocation="4049" standardDeviationMicrosecondsPerInvocation="454" />
+      <ClassProfile name="com.h3xstream.findsecbugs.taintanalysis.TaintDataflowEngine" totalMilliseconds="98" invocations="1348" avgMicrosecondsPerInvocation="72" maxMicrosecondsPerInvocation="3474" standardDeviationMicrosecondsPerInvocation="161" />
+      <ClassProfile name="edu.umd.cs.findbugs.detect.FindNoSideEffectMethods" totalMilliseconds="95" invocations="542" avgMicrosecondsPerInvocation="175" maxMicrosecondsPerInvocation="9613" standardDeviationMicrosecondsPerInvocation="555" />
+      <ClassProfile name="edu.umd.cs.findbugs.ba.npe.NullDerefAndRedundantComparisonFinder" totalMilliseconds="84" invocations="1344" avgMicrosecondsPerInvocation="62" maxMicrosecondsPerInvocation="3422" standardDeviationMicrosecondsPerInvocation="175" />
+      <ClassProfile name="edu.umd.cs.findbugs.classfile.engine.bcel.TypeDataflowFactory" totalMilliseconds="83" invocations="1383" avgMicrosecondsPerInvocation="60" maxMicrosecondsPerInvocation="3633" standardDeviationMicrosecondsPerInvocation="174" />
+      <ClassProfile name="edu.umd.cs.findbugs.classfile.engine.bcel.IsNullValueDataflowFactory" totalMilliseconds="81" invocations="1348" avgMicrosecondsPerInvocation="60" maxMicrosecondsPerInvocation="3783" standardDeviationMicrosecondsPerInvocation="141" />
+      <ClassProfile name="edu.umd.cs.findbugs.classfile.engine.bcel.CFGFactory" totalMilliseconds="78" invocations="1370" avgMicrosecondsPerInvocation="57" maxMicrosecondsPerInvocation="12960" standardDeviationMicrosecondsPerInvocation="366" />
+      <ClassProfile name="edu.umd.cs.findbugs.classfile.engine.bcel.ValueNumberDataflowFactory" totalMilliseconds="76" invocations="1388" avgMicrosecondsPerInvocation="55" maxMicrosecondsPerInvocation="3999" standardDeviationMicrosecondsPerInvocation="177" />
+      <ClassProfile name="edu.umd.cs.findbugs.OpcodeStack$JumpInfoFactory" totalMilliseconds="69" invocations="2004" avgMicrosecondsPerInvocation="34" maxMicrosecondsPerInvocation="1535" standardDeviationMicrosecondsPerInvocation="87" />
+      <ClassProfile name="edu.umd.cs.findbugs.classfile.engine.bcel.UnconditionalValueDerefDataflowFactory" totalMilliseconds="57" invocations="1347" avgMicrosecondsPerInvocation="42" maxMicrosecondsPerInvocation="1933" standardDeviationMicrosecondsPerInvocation="88" />
+      <ClassProfile name="edu.umd.cs.findbugs.detect.FindRefComparison$SpecialTypeAnalysis" totalMilliseconds="56" invocations="928" avgMicrosecondsPerInvocation="60" maxMicrosecondsPerInvocation="7583" standardDeviationMicrosecondsPerInvocation="270" />
+      <ClassProfile name="edu.umd.cs.findbugs.classfile.engine.ClassDataAnalysisEngine" totalMilliseconds="49" invocations="2102" avgMicrosecondsPerInvocation="23" maxMicrosecondsPerInvocation="4996" standardDeviationMicrosecondsPerInvocation="117" />
+      <ClassProfile name="edu.umd.cs.findbugs.classfile.engine.bcel.JavaClassAnalysisEngine" totalMilliseconds="49" invocations="935" avgMicrosecondsPerInvocation="52" maxMicrosecondsPerInvocation="5600" standardDeviationMicrosecondsPerInvocation="214" />
+      <ClassProfile name="edu.umd.cs.findbugs.detect.NoteDirectlyRelevantTypeQualifiers" totalMilliseconds="40" invocations="542" avgMicrosecondsPerInvocation="73" maxMicrosecondsPerInvocation="5859" standardDeviationMicrosecondsPerInvocation="293" />
+      <ClassProfile name="edu.umd.cs.findbugs.classfile.engine.bcel.MethodGenFactory" totalMilliseconds="38" invocations="1370" avgMicrosecondsPerInvocation="28" maxMicrosecondsPerInvocation="6935" standardDeviationMicrosecondsPerInvocation="194" />
+      <ClassProfile name="edu.umd.cs.findbugs.detect.FindOpenStream" totalMilliseconds="34" invocations="283" avgMicrosecondsPerInvocation="120" maxMicrosecondsPerInvocation="3417" standardDeviationMicrosecondsPerInvocation="347" />
+      <ClassProfile name="edu.umd.cs.findbugs.detect.ConstructorThrow" totalMilliseconds="30" invocations="283" avgMicrosecondsPerInvocation="106" maxMicrosecondsPerInvocation="1126" standardDeviationMicrosecondsPerInvocation="135" />
+      <ClassProfile name="edu.umd.cs.findbugs.detect.UnreadFields" totalMilliseconds="29" invocations="283" avgMicrosecondsPerInvocation="104" maxMicrosecondsPerInvocation="1062" standardDeviationMicrosecondsPerInvocation="135" />
+      <ClassProfile name="edu.umd.cs.findbugs.detect.BuildStringPassthruGraph" totalMilliseconds="29" invocations="542" avgMicrosecondsPerInvocation="53" maxMicrosecondsPerInvocation="6720" standardDeviationMicrosecondsPerInvocation="316" />
+      <ClassProfile name="edu.umd.cs.findbugs.detect.DumbMethods" totalMilliseconds="27" invocations="283" avgMicrosecondsPerInvocation="96" maxMicrosecondsPerInvocation="1277" standardDeviationMicrosecondsPerInvocation="146" />
+      <ClassProfile name="edu.umd.cs.findbugs.detect.CalledMethods" totalMilliseconds="25" invocations="542" avgMicrosecondsPerInvocation="46" maxMicrosecondsPerInvocation="627" standardDeviationMicrosecondsPerInvocation="88" />
+      <ClassProfile name="edu.umd.cs.findbugs.detect.FunctionsThatMightBeMistakenForProcedures" totalMilliseconds="23" invocations="542" avgMicrosecondsPerInvocation="42" maxMicrosecondsPerInvocation="1884" standardDeviationMicrosecondsPerInvocation="135" />
+      <ClassProfile name="edu.umd.cs.findbugs.classfile.engine.bcel.ConstantDataflowFactory" totalMilliseconds="22" invocations="1348" avgMicrosecondsPerInvocation="16" maxMicrosecondsPerInvocation="1050" standardDeviationMicrosecondsPerInvocation="43" />
+      <ClassProfile name="edu.umd.cs.findbugs.detect.CheckRelaxingNullnessAnnotation" totalMilliseconds="21" invocations="283" avgMicrosecondsPerInvocation="77" maxMicrosecondsPerInvocation="3825" standardDeviationMicrosecondsPerInvocation="247" />
+      <ClassProfile name="edu.umd.cs.findbugs.ba.npe.TypeQualifierNullnessAnnotationDatabase" totalMilliseconds="21" invocations="21434" avgMicrosecondsPerInvocation="1" maxMicrosecondsPerInvocation="425" standardDeviationMicrosecondsPerInvocation="5" />
+      <ClassProfile name="edu.umd.cs.findbugs.detect.FindInconsistentSync2" totalMilliseconds="21" invocations="283" avgMicrosecondsPerInvocation="75" maxMicrosecondsPerInvocation="864" standardDeviationMicrosecondsPerInvocation="106" />
+      <ClassProfile name="edu.umd.cs.findbugs.detect.BuildObligationPolicyDatabase" totalMilliseconds="20" invocations="542" avgMicrosecondsPerInvocation="38" maxMicrosecondsPerInvocation="954" standardDeviationMicrosecondsPerInvocation="75" />
+      <ClassProfile name="edu.umd.cs.findbugs.detect.LoadOfKnownNullValue" totalMilliseconds="19" invocations="283" avgMicrosecondsPerInvocation="68" maxMicrosecondsPerInvocation="1067" standardDeviationMicrosecondsPerInvocation="115" />
+      <ClassProfile name="edu.umd.cs.findbugs.detect.FindHEmismatch" totalMilliseconds="19" invocations="283" avgMicrosecondsPerInvocation="68" maxMicrosecondsPerInvocation="5550" standardDeviationMicrosecondsPerInvocation="381" />
+      <ClassProfile name="edu.umd.cs.findbugs.util.TopologicalSort" totalMilliseconds="19" invocations="1747" avgMicrosecondsPerInvocation="11" maxMicrosecondsPerInvocation="489" standardDeviationMicrosecondsPerInvocation="28" />
+      <ClassProfile name="edu.umd.cs.findbugs.detect.OverridingEqualsNotSymmetrical" totalMilliseconds="19" invocations="542" avgMicrosecondsPerInvocation="35" maxMicrosecondsPerInvocation="2304" standardDeviationMicrosecondsPerInvocation="118" />
+      <ClassProfile name="edu.umd.cs.findbugs.detect.FindReturnRef" totalMilliseconds="18" invocations="283" avgMicrosecondsPerInvocation="66" maxMicrosecondsPerInvocation="1302" standardDeviationMicrosecondsPerInvocation="124" />
+      <ClassProfile name="edu.umd.cs.findbugs.DetectorToDetector2Adapter" totalMilliseconds="17" invocations="73508" avgMicrosecondsPerInvocation="0" maxMicrosecondsPerInvocation="88" standardDeviationMicrosecondsPerInvocation="0" />
+      <ClassProfile name="edu.umd.cs.findbugs.detect.ReflectiveClasses" totalMilliseconds="16" invocations="542" avgMicrosecondsPerInvocation="30" maxMicrosecondsPerInvocation="544" standardDeviationMicrosecondsPerInvocation="69" />
+      <ClassProfile name="com.h3xstream.findsecbugs.file.PathTraversalDetector" totalMilliseconds="15" invocations="283" avgMicrosecondsPerInvocation="54" maxMicrosecondsPerInvocation="775" standardDeviationMicrosecondsPerInvocation="91" />
+      <ClassProfile name="edu.umd.cs.findbugs.detect.FindDeadLocalStores" totalMilliseconds="14" invocations="283" avgMicrosecondsPerInvocation="52" maxMicrosecondsPerInvocation="920" standardDeviationMicrosecondsPerInvocation="101" />
+      <ClassProfile name="edu.umd.cs.findbugs.detect.FindUselessObjects" totalMilliseconds="14" invocations="283" avgMicrosecondsPerInvocation="52" maxMicrosecondsPerInvocation="1069" standardDeviationMicrosecondsPerInvocation="104" />
+      <ClassProfile name="edu.umd.cs.findbugs.detect.EqualsOperandShouldHaveClassCompatibleWithThis" totalMilliseconds="14" invocations="542" avgMicrosecondsPerInvocation="26" maxMicrosecondsPerInvocation="5029" standardDeviationMicrosecondsPerInvocation="218" />
+      <ClassProfile name="edu.umd.cs.findbugs.classfile.engine.bcel.ObligationDataflowFactory" totalMilliseconds="14" invocations="179" avgMicrosecondsPerInvocation="80" maxMicrosecondsPerInvocation="9793" standardDeviationMicrosecondsPerInvocation="760" />
+      <ClassProfile name="edu.umd.cs.findbugs.ba.obl.ObligationAnalysis" totalMilliseconds="14" invocations="179" avgMicrosecondsPerInvocation="78" maxMicrosecondsPerInvocation="1195" standardDeviationMicrosecondsPerInvocation="142" />
+      <ClassProfile name="edu.umd.cs.findbugs.detect.FindRefComparison" totalMilliseconds="14" invocations="283" avgMicrosecondsPerInvocation="49" maxMicrosecondsPerInvocation="1214" standardDeviationMicrosecondsPerInvocation="87" />
+      <ClassProfile name="edu.umd.cs.findbugs.detect.MethodReturnCheck" totalMilliseconds="13" invocations="283" avgMicrosecondsPerInvocation="47" maxMicrosecondsPerInvocation="763" standardDeviationMicrosecondsPerInvocation="75" />
+      <ClassProfile name="edu.umd.cs.findbugs.classfile.engine.bcel.LiveLocalStoreDataflowFactory" totalMilliseconds="12" invocations="1272" avgMicrosecondsPerInvocation="10" maxMicrosecondsPerInvocation="545" standardDeviationMicrosecondsPerInvocation="24" />
+      <ClassProfile name="edu.umd.cs.findbugs.classfile.engine.bcel.ValueRangeAnalysisFactory" totalMilliseconds="12" invocations="1370" avgMicrosecondsPerInvocation="9" maxMicrosecondsPerInvocation="1356" standardDeviationMicrosecondsPerInvocation="49" />
+      <ClassProfile name="edu.umd.cs.findbugs.detect.FindUncalledPrivateMethods" totalMilliseconds="12" invocations="283" avgMicrosecondsPerInvocation="42" maxMicrosecondsPerInvocation="2872" standardDeviationMicrosecondsPerInvocation="172" />
+      <ClassProfile name="edu.umd.cs.findbugs.detect.DefaultEncodingDetector" totalMilliseconds="12" invocations="283" avgMicrosecondsPerInvocation="42" maxMicrosecondsPerInvocation="629" standardDeviationMicrosecondsPerInvocation="74" />
+      <ClassProfile name="edu.umd.cs.findbugs.detect.FindUnsatisfiedObligation" totalMilliseconds="11" invocations="283" avgMicrosecondsPerInvocation="41" maxMicrosecondsPerInvocation="1228" standardDeviationMicrosecondsPerInvocation="95" />
+      <ClassProfile name="edu.umd.cs.findbugs.detect.RuntimeExceptionCapture" totalMilliseconds="11" invocations="283" avgMicrosecondsPerInvocation="40" maxMicrosecondsPerInvocation="503" standardDeviationMicrosecondsPerInvocation="63" />
+      <ClassProfile name="com.h3xstream.findsecbugs.password.ConstantPasswordDetector" totalMilliseconds="11" invocations="283" avgMicrosecondsPerInvocation="39" maxMicrosecondsPerInvocation="440" standardDeviationMicrosecondsPerInvocation="49" />
+      <ClassProfile name="edu.umd.cs.findbugs.detect.FindOverridableMethodCall" totalMilliseconds="11" invocations="283" avgMicrosecondsPerInvocation="39" maxMicrosecondsPerInvocation="1315" standardDeviationMicrosecondsPerInvocation="99" />
+      <ClassProfile name="edu.umd.cs.findbugs.detect.ExplicitSerialization" totalMilliseconds="11" invocations="542" avgMicrosecondsPerInvocation="20" maxMicrosecondsPerInvocation="3451" standardDeviationMicrosecondsPerInvocation="169" />
+      <ClassProfile name="edu.umd.cs.findbugs.detect.FindNonShortCircuit" totalMilliseconds="11" invocations="283" avgMicrosecondsPerInvocation="39" maxMicrosecondsPerInvocation="5365" standardDeviationMicrosecondsPerInvocation="317" />
+    </FindBugsProfile>
+  </FindBugsSummary>
+  <ClassFeatures />
+  <History />
+</BugCollection>

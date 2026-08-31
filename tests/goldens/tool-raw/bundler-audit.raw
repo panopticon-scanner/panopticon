@@ -1,0 +1,87 @@
+{
+ "version": "0.9.3",
+ "created_at": "2026-08-31 17:51:00 +0000",
+ "results": [
+  {
+   "type": "unpatched_gem",
+   "gem": {
+    "name": "actionview",
+    "version": "8.0.4"
+   },
+   "advisory": {
+    "path": "/root/.local/share/ruby-advisory-db/gems/actionview/CVE-2026-33168.yml",
+    "id": "CVE-2026-33168",
+    "url": "https://github.com/rails/rails/security/advisories/GHSA-v55j-83pf-r9cq",
+    "title": "Rails has a possible XSS vulnerability in its Action View tag helpers",
+    "date": "2026-03-23",
+    "description": "### Impact\nWhen a blank string is used as an HTML attribute name in Action View tag helpers,\nthe attribute escaping is bypassed, producing malformed HTML.\nA carefully crafted attribute value could then be misinterpreted by the browser as a separate attribute name,\npossibly leading to XSS. Applications that allow users to specify custom HTML attributes are affected.\n\n### Releases\nThe fixed releases are available at the normal locations.\n",
+    "cvss_v2": null,
+    "cvss_v3": null,
+    "cve": "2026-33168",
+    "osvdb": null,
+    "ghsa": "v55j-83pf-r9cq",
+    "unaffected_versions": [],
+    "patched_versions": [
+     "~> 7.2.3, >= 7.2.3.1",
+     "~> 8.0.4, >= 8.0.4.1",
+     ">= 8.1.2.1"
+    ],
+    "criticality": null
+   }
+  },
+  {
+   "type": "unpatched_gem",
+   "gem": {
+    "name": "activestorage",
+    "version": "8.0.4"
+   },
+   "advisory": {
+    "path": "/root/.local/share/ruby-advisory-db/gems/activestorage/CVE-2026-33173.yml",
+    "id": "CVE-2026-33173",
+    "url": "https://github.com/rails/rails/security/advisories/GHSA-qcfx-2mfw-w4cg",
+    "title": "Rails Active Storage has possible content type bypass via metadata in direct uploads",
+    "date": "2026-03-23",
+    "description": "### Impact\nActive Storage's `DirectUploadsController` accepts arbitrary metadata from the client and persists it on the blob.\nBecause internal flags like `identified` and `analyzed` are stored in the same metadata hash,\na malicious direct-upload client could set these flags.\n\n### Releases\nThe fixed releases are available at the normal locations.\n",
+    "cvss_v2": null,
+    "cvss_v3": null,
+    "cve": "2026-33173",
+    "osvdb": null,
+    "ghsa": "qcfx-2mfw-w4cg",
+    "unaffected_versions": [],
+    "patched_versions": [
+     "~> 7.2.3, >= 7.2.3.1",
+     "~> 8.0.4, >= 8.0.4.1",
+     ">= 8.1.2.1"
+    ],
+    "criticality": null
+   }
+  },
+  {
+   "type": "unpatched_gem",
+   "gem": {
+    "name": "activestorage",
+    "version": "8.0.4"
+   },
+   "advisory": {
+    "path": "/root/.local/share/ruby-advisory-db/gems/activestorage/CVE-2026-33174.yml",
+    "id": "CVE-2026-33174",
+    "url": "https://github.com/rails/rails/security/advisories/GHSA-r46p-8f7g-vvvg",
+    "title": "Rails Active Storage has a possible DoS vulnerability when in proxy mode via Range requests",
+    "date": "2026-03-23",
+    "description": "### Impact\nWhen serving files through Active Storage's `Blobs::ProxyController`,\nthe controller loads the entire requested byte range into memory before sending it.\nA request with a large or unbounded Range header (e.g. `bytes=0-`) could cause the server\nto allocate memory proportional to the file size, possibly resulting in a DoS vulnerability through memory exhaustion.\n\n### Releases\nThe fixed releases are available at the normal locations.\n",
+    "cvss_v2": null,
+    "cvss_v3": null,
+    "cve": "2026-33174",
+    "osvdb": null,
+    "ghsa": "r46p-8f7g-vvvg",
+    "unaffected_versions": [],
+    "patched_versions": [
+     "~> 7.2.3, >= 7.2.3.1",
+     "~> 8.0.4, >= 8.0.4.1",
+     ">= 8.1.2.1"
+    ],
+    "criticality": null
+   }
+  }
+ ]
+}

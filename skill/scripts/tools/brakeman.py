@@ -32,6 +32,24 @@ _BRAKEMAN_CWE = {
     "Dangerous Eval": "CWE-94",
     "Command Injection": "CWE-78",
     "Unsafe Reflection": "CWE-470",
+    # Every remaining warning_type _BRAKEMAN_SEVERITY knows about, plus the
+    # types railsgoat actually produces. The fixture asserts a CWE on EVERY
+    # finding, and it was failing: railsgoat's top two types (Weak Hash x5,
+    # Remote Code Execution x4) had a severity but no CWE, so those findings
+    # reached synthesis uncitable -- and citation quality feeds both the report
+    # grade and the OCRDb crosswalk.
+    "Weak Hash": "CWE-328",
+    "Remote Code Execution": "CWE-94",
+    "Unscoped Find": "CWE-639",
+    "Dangerous Send": "CWE-470",
+    "Missing Encryption": "CWE-311",
+    "Format Validation": "CWE-20",
+    "SSL Verification Bypass": "CWE-295",
+    "LDAP Injection": "CWE-90",
+    "Path Traversal": "CWE-22",
+    "Insecure Cryptography Algorithm": "CWE-327",
+    "Regex Denial of Service": "CWE-1333",
+    "Timing Attack": "CWE-208",
 }
 
 
@@ -63,6 +81,12 @@ _BRAKEMAN_SEVERITY = {
     "Insecure Cryptography Algorithm": "HIGH",
     "Regex Denial of Service": "MEDIUM",
     "Timing Attack": "LOW",
+    # Types railsgoat emits that had no severity entry either, so parse() was
+    # warning "unmapped warning_type" and silently defaulting them to MEDIUM.
+    "Unscoped Find": "MEDIUM",
+    "Dangerous Send": "MEDIUM",
+    "Missing Encryption": "MEDIUM",
+    "Format Validation": "LOW",
 }
 
 

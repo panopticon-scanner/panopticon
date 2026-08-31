@@ -1,0 +1,191 @@
+{
+ "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+ "version": "2.1.0",
+ "runs": [
+  {
+   "tool": {
+    "driver": {
+     "name": "gitleaks",
+     "semanticVersion": "v8.0.0",
+     "informationUri": "https://github.com/gitleaks/gitleaks",
+     "rules": [
+      {
+       "id": "adafruit-api-key",
+       "name": "Identified a potential Adafruit API Key, which could lead to unauthorized access to Adafruit services and sensitive data exposure.",
+       "shortDescription": {
+        "text": "(?i)(?:adafruit)(?:[0-9a-z\\-_\\t .]{0,20})(?:[\\s|']|[\\s|\"]){0,3}(?:=|>|:{1,3}=|\\|\\|:|<=|=>|:|\\?=)(?:'|\\\"|\\s|=|\\x60){0,5}([a-z0-9_-]{32})(?:['|\\\"|\\n|\\r|\\s|\\x60|;]|$)"
+       }
+      },
+      {
+       "id": "adobe-client-id",
+       "name": "Detected a pattern that resembles an Adobe OAuth Web Client ID, posing a risk of compromised Adobe integrations and data breaches.",
+       "shortDescription": {
+        "text": "(?i)(?:adobe)(?:[0-9a-z\\-_\\t .]{0,20})(?:[\\s|']|[\\s|\"]){0,3}(?:=|>|:{1,3}=|\\|\\|:|<=|=>|:|\\?=)(?:'|\\\"|\\s|=|\\x60){0,5}([a-f0-9]{32})(?:['|\\\"|\\n|\\r|\\s|\\x60|;]|$)"
+       }
+      },
+      {
+       "id": "adobe-client-secret",
+       "name": "Discovered a potential Adobe Client Secret, which, if exposed, could allow unauthorized Adobe service access and data manipulation.",
+       "shortDescription": {
+        "text": "(?i)\\b((p8e-)(?i)[a-z0-9]{32})(?:['|\\\"|\\n|\\r|\\s|\\x60|;]|$)"
+       }
+      },
+      {
+       "id": "age-secret-key",
+       "name": "Discovered a potential Age encryption tool secret key, risking data decryption and unauthorized access to sensitive information.",
+       "shortDescription": {
+        "text": "AGE-SECRET-KEY-1[QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L]{58}"
+       }
+      },
+      {
+       "id": "airtable-api-key",
+       "name": "Uncovered a possible Airtable API Key, potentially compromising database access and leading to data leakage or alteration.",
+       "shortDescription": {
+        "text": "(?i)(?:airtable)(?:[0-9a-z\\-_\\t .]{0,20})(?:[\\s|']|[\\s|\"]){0,3}(?:=|>|:{1,3}=|\\|\\|:|<=|=>|:|\\?=)(?:'|\\\"|\\s|=|\\x60){0,5}([a-z0-9]{17})(?:['|\\\"|\\n|\\r|\\s|\\x60|;]|$)"
+       }
+      },
+      {
+       "id": "algolia-api-key",
+       "name": "Identified an Algolia API Key, which could result in unauthorized search operations and data exposure on Algolia-managed platforms.",
+       "shortDescription": {
+        "text": "(?i)(?:algolia)(?:[0-9a-z\\-_\\t .]{0,20})(?:[\\s|']|[\\s|\"]){0,3}(?:=|>|:{1,3}=|\\|\\|:|<=|=>|:|\\?=)(?:'|\\\"|\\s|=|\\x60){0,5}([a-z0-9]{32})(?:['|\\\"|\\n|\\r|\\s|\\x60|;]|$)"
+       }
+      },
+      {
+       "id": "alibaba-access-key-id",
+       "name": "Detected an Alibaba Cloud AccessKey ID, posing a risk of unauthorized cloud resource access and potential data compromise.",
+       "shortDescription": {
+        "text": "(?i)\\b((LTAI)(?i)[a-z0-9]{20})(?:['|\\\"|\\n|\\r|\\s|\\x60|;]|$)"
+       }
+      },
+      {
+       "id": "alibaba-secret-key",
+       "name": "Discovered a potential Alibaba Cloud Secret Key, potentially allowing unauthorized operations and data access within Alibaba Cloud.",
+       "shortDescription": {
+        "text": "(?i)(?:alibaba)(?:[0-9a-z\\-_\\t .]{0,20})(?:[\\s|']|[\\s|\"]){0,3}(?:=|>|:{1,3}=|\\|\\|:|<=|=>|:|\\?=)(?:'|\\\"|\\s|=|\\x60){0,5}([a-z0-9]{30})(?:['|\\\"|\\n|\\r|\\s|\\x60|;]|$)"
+       }
+      },
+      {
+       "id": "asana-client-id",
+       "name": "Discovered a potential Asana Client ID, risking unauthorized access to Asana projects and sensitive task information.",
+       "shortDescription": {
+        "text": "(?i)(?:asana)(?:[0-9a-z\\-_\\t .]{0,20})(?:[\\s|']|[\\s|\"]){0,3}(?:=|>|:{1,3}=|\\|\\|:|<=|=>|:|\\?=)(?:'|\\\"|\\s|=|\\x60){0,5}([0-9]{16})(?:['|\\\"|\\n|\\r|\\s|\\x60|;]|$)"
+       }
+      },
+      {
+       "id": "asana-client-secret",
+       "name": "Identified an Asana Client Secret, which could lead to compromised project management integrity and unauthorized access.",
+       "shortDescription": {
+        "text": "(?i)(?:asana)(?:[0-9a-z\\-_\\t .]{0,20})(?:[\\s|']|[\\s|\"]){0,3}(?:=|>|:{1,3}=|\\|\\|:|<=|=>|:|\\?=)(?:'|\\\"|\\s|=|\\x60){0,5}([a-z0-9]{32})(?:['|\\\"|\\n|\\r|\\s|\\x60|;]|$)"
+       }
+      }
+     ]
+    }
+   },
+   "results": [
+    {
+     "message": {
+      "text": "generic-api-key has detected secret for file /mnt/panopticon/.env."
+     },
+     "ruleId": "generic-api-key",
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "/mnt/panopticon/.env"
+        },
+        "region": {
+         "startLine": 1,
+         "startColumn": 5,
+         "endLine": 1,
+         "endColumn": 48,
+         "snippet": {
+          "text": "0e3d1637-5ae1-49ee-8b1c-310e5bfa58d6"
+         }
+        }
+       }
+      }
+     ],
+     "partialFingerprints": {
+      "commitSha": "",
+      "email": "",
+      "author": "",
+      "date": "",
+      "commitMessage": ""
+     },
+     "properties": {
+      "tags": []
+     }
+    },
+    {
+     "message": {
+      "text": "private-key has detected secret for file /mnt/panopticon/.panopticon/claude-redteam-repo-20260825-0b8ee306-report-discarded.json."
+     },
+     "ruleId": "private-key",
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "/mnt/panopticon/.panopticon/claude-redteam-repo-20260825-0b8ee306-report-discarded.json"
+        },
+        "region": {
+         "startLine": 4073,
+         "startColumn": 101,
+         "endLine": 4086,
+         "endColumn": 117,
+         "snippet": {
+          "text": "-----BEGIN RSA PRIVATE KEY-----\\\\nMIIBsomekey\\\\n...') inside the TestRedactOutput.test_redacts_common_secret_formats test method. The test validates that driver._redact_output() properly detects and redacts private keys. The 'key' is deliberately non-functional (contains literal text 'somekey' instead of valid base64) and exists only as test scaffolding. Gitleaks matched the PEM header pattern but this is test data validating a security control, not a real exposed credential. No security risk.\"\n      },\n      \"references\": [],\n      \"impact\": \"\",\n      \"remediation\": \"\",\n      \"short_title\": \"private-key has detected secret for file /src/.worktrees/k3-ci-docker-config/tests/test_driver.py.\",\n      \"occurrences\": 1,\n      \"evidence\": {\n        \"status\": \"rejected\",\n        \"verified_by\": [\n          \"tool:gitleaks\",\n          \"agent:advisor\"\n        ],\n        \"reasoning\": \"Line 239 contains a fake, intentional PEM-format test fixture ('-----BEGIN RSA PRIVATE KEY----"
+         }
+        }
+       }
+      }
+     ],
+     "partialFingerprints": {
+      "commitSha": "",
+      "email": "",
+      "author": "",
+      "date": "",
+      "commitMessage": ""
+     },
+     "properties": {
+      "tags": []
+     }
+    },
+    {
+     "message": {
+      "text": "generic-api-key has detected secret for file /mnt/panopticon/.panopticon/claude-redteam-repo-20260825-0b8ee306-report_part3.json."
+     },
+     "ruleId": "generic-api-key",
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "/mnt/panopticon/.panopticon/claude-redteam-repo-20260825-0b8ee306-report_part3.json"
+        },
+        "region": {
+         "startLine": 3472,
+         "startColumn": 98,
+         "endLine": 3472,
+         "endColumn": 142,
+         "snippet": {
+          "text": "0e3d1637-5ae1-49ee-8b1c-310e5bfa58d6"
+         }
+        }
+       }
+      }
+     ],
+     "partialFingerprints": {
+      "commitSha": "",
+      "email": "",
+      "author": "",
+      "date": "",
+      "commitMessage": ""
+     },
+     "properties": {
+      "tags": []
+     }
+    }
+   ]
+  }
+ ]
+}
