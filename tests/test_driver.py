@@ -537,6 +537,37 @@ class TestHostUsageCollection(unittest.TestCase):
         self.assertIsNone(
             driver.build_parser().parse_args(["run", "."]).session_dir)
 
+    def test_max_per_group_is_threaded_to_discovery(self):
+        # #5.2-prep: discovery.py has had --max-per-group since forever, but the
+        # driver never exposed it, so every run in practice used the 15-file
+        # default. On a mid-size repo that decides whether a scan is possible at
+        # all: solidus (3,622 files) shards into 291 subgroups at 15 and 76 at
+        # 60, and cells are subgroups x domains -- ~4.3B projected tokens versus
+        # ~1.1B.
+        parser = driver.build_parser()
+        self.assertIsNone(parser.parse_args(["run", "."]).max_per_group)
+        self.assertEqual(
+            parser.parse_args(["run", ".", "--max-per-group", "60"]).max_per_group, 60)
+
+        class _Args:
+            tools = no_tools = include_fixtures = False
+            fail_on = severity = gate_scope = diff_context = None
+            max_per_group = 60
+
+        flags = driver._cli_flags(_Args())
+        self.assertEqual(flags["max_per_group"], 60,
+                         "the flag must reach the manifest, or a resume would "
+                         "silently re-chunk with a different cap")
+
+    def test_max_per_group_absent_leaves_discovery_default_alone(self):
+        # Omitting it must not pass the flag at all, so discovery's own default
+        # stays the single source of truth for the value.
+        class _Args:
+            tools = no_tools = include_fixtures = False
+            fail_on = severity = gate_scope = diff_context = max_per_group = None
+
+        self.assertIsNone(driver._cli_flags(_Args())["max_per_group"])
+
     def test_non_claude_host_is_skipped(self):
         with tempfile.TemporaryDirectory() as d, \
              mock.patch("scripts.driver._run_child") as run:

@@ -45,7 +45,7 @@ def run_tag(manifest):
 
 # The flag keys whose drift across re-invocations must be refused (anti-drift).
 _FLAG_KEYS = ("fail_on", "severity", "gate_scope", "diff_context", "tools",
-              "include_fixtures")
+              "include_fixtures", "max_per_group")
 
 
 def manifest_path(review_root):

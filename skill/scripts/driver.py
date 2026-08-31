@@ -384,6 +384,15 @@ def discovery_execute(review_root, manifest):
     _dc = (manifest.get("flags") or {}).get("diff_context")
     if _dc is not None:
         cmd += ["--diff-context", str(_dc)]
+    # Chunk size was reachable only by calling discovery.py directly, so in
+    # practice every run used the 15-file default. On a mid-size repo that is
+    # the difference between a scan and a non-starter: solidus (3,622 files)
+    # sharded into 291 subgroups, and cells are groups x domains, so it
+    # projected past 4B tokens. It is an anti-drift flag because re-chunking
+    # mid-run would silently repartition every cell the run has already done.
+    _mpg = (manifest.get("flags") or {}).get("max_per_group")
+    if _mpg is not None:
+        cmd += ["--max-per-group", str(_mpg)]
     proc = _run_child(cmd, review_root, "discovery")
     if not _json_parses(out):
         raise DriverError(
@@ -2210,7 +2219,8 @@ def _cli_flags(args):
               "gate_scope": getattr(args, "gate_scope", None),
               "diff_context": getattr(args, "diff_context", None),
               "tools": tools,
-              "include_fixtures": True if getattr(args, "include_fixtures", False) else None}
+              "include_fixtures": True if getattr(args, "include_fixtures", False) else None,
+              "max_per_group": getattr(args, "max_per_group", None)}
     return {k: values.get(k) for k in run_manifest._FLAG_KEYS}
 
 
@@ -2291,6 +2301,10 @@ def build_parser():
         # The directory the HOST SESSION runs in, used only to locate its
         # transcripts for the cost ledger. Defaults to cwd (#calibration-4).
         p.add_argument("--session-dir", default=None)
+        # Files per review subgroup. Fewer, larger cells cost less in total
+        # (per-cell overhead is amortized) at the price of a wider lens per
+        # reviewer. Anti-drift: use --reset to change it on an existing run.
+        p.add_argument("--max-per-group", type=int, default=None)
         scope = p.add_mutually_exclusive_group()
         scope.add_argument("-f", "--file", dest="scope_file", default=None)
         scope.add_argument("-d", "--directory", dest="scope_dir", default=None)
