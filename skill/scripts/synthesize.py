@@ -1190,7 +1190,46 @@ def mislabeled_findings_files(paths):
             md, mg = meta.get("domain"), meta.get("group")
             if (md and md != domain) or (mg and mg != group):
                 bad.append(p)
-                continue
+    return sorted(set(bad))
+
+
+def cross_domain_findings(paths):
+    """Findings filed under a domain other than their cell's — REPORTED, never gating.
+
+    #calibration-4 (gotify): #1443 revived this file's integrity check by
+    re-pointing it from the dead 4.x `source_role`/`panel` fields to the 5.x
+    shape, and while doing so also compared each finding's own `domain` to the
+    filename's. Those two comparisons answer different questions. `source_role`
+    and `panel` are PROVENANCE -- who wrote this file -- and their faithful 5.x
+    analogue is the `_panopticon` stamp, which mislabeled_findings_files still
+    checks and still gates on. A finding's `domain` is a CONTENT
+    classification: an ARC reviewer that files a TST finding has not
+    mis-targeted its write, it has stepped outside its lane.
+
+    Treating the second as an integrity failure sank certification on a run
+    whose file integrity was perfect: 0 stamp mismatches across 160 files, and
+    3 cross-domain findings in 2 of them -- every one a `TST-X0X`, the
+    catalog-gap code, filed by a reviewer that saw a testing gap and had no
+    code in its own domain for it. Failing a whole run for that penalises
+    exactly the gap-reporting the X0X schema exists to collect.
+
+    So report it instead. Cross-domain filing is worth seeing -- it is a real
+    signal about panel discipline and about catalog gaps -- but it is evidence
+    about the REVIEW, not about whether the artifacts on disk can be trusted.
+    """
+    out = []
+    for p in paths or []:
+        exp = _expected_from_filename(os.path.basename(p))
+        if not exp:
+            continue
+        _group, domain = exp
+        try:
+            with open(p, encoding="utf-8") as fh:
+                data = load_json_tolerant(fh.read())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
         findings = data.get("findings")
         if not isinstance(findings, list):
             continue
@@ -1199,9 +1238,10 @@ def mislabeled_findings_files(paths):
                 continue
             fd = f.get("domain")
             if fd and fd != domain:
-                bad.append(p)
-                break
-    return sorted(set(bad))
+                out.append({"file": p, "cell_domain": domain,
+                            "finding_domain": fd,
+                            "code": f.get("ocrdb_code") or f.get("code")})
+    return sorted(out, key=lambda r: (r["file"], str(r["finding_domain"]), str(r["code"])))
 
 
 def reconcile_findings_files(plan, ingested_paths):
@@ -1780,6 +1820,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
                               "missing_planned_files": [],
                               "duplicate_out_files": [],
                               "mislabeled_findings_files": [],
+                              "cross_domain_findings": [],
                         "empty_dispatch_plans": 0,
                             "invalid_dispatch_plans": [],
                               "invalid_verify_queue": None,
@@ -2065,9 +2106,23 @@ def render_summary(report):
                         % ", ".join(dupes))
     mislabeled = integ.get("mislabeled_findings_files") or []
     if mislabeled:
-        lines.insert(3, "**Integrity:** MISLABELED FILES — %s (content disagrees with "
-                        "the filename's panel/role; possible mis-targeted write; run "
-                        "not certified)" % ", ".join(mislabeled))
+        lines.insert(3, "**Integrity:** MISLABELED FILES — %s (the `_panopticon` cell "
+                        "stamp disagrees with the filename; possible mis-targeted "
+                        "write; run not certified)" % ", ".join(mislabeled))
+    xdom = integ.get("cross_domain_findings") or []
+    if xdom:
+        # Deliberately not an integrity failure and deliberately not gating:
+        # a reviewer filing outside its lane is a fact about the review, not
+        # about whether the artifacts on disk can be trusted (#calibration-4).
+        by = {}
+        for r in xdom:
+            if isinstance(r, dict):
+                by.setdefault((r.get("cell_domain"), r.get("finding_domain")), 0)
+                by[(r.get("cell_domain"), r.get("finding_domain"))] += 1
+        pairs = ", ".join("%s→%s ×%d" % (a, b, n) for (a, b), n in sorted(by.items()))
+        lines.insert(3, "**Note:** %d cross-domain finding(s) — %s. Reviewers filed "
+                        "outside their cell's domain; often a catalog gap (X0X). "
+                        "Does NOT affect certification." % (len(xdom), pairs))
     delta = s.get("delta")
     if delta:
         on = delta.get("on_diff") or {}
@@ -2659,6 +2714,7 @@ def main(argv=None):
                  "missing_planned_files": missing,
                  "duplicate_out_files": duplicate_out_files(_plan),
                  "mislabeled_findings_files": mislabeled_findings_files(args.files),
+                 "cross_domain_findings": cross_domain_findings(args.files),
                  "unenforced_acknowledged": bool(_ack) and not ack_stale,
                  "ack_stale": ack_stale,
                  "content_hashes_checked": content_checked,
