@@ -55,6 +55,26 @@ h2 { font-size: 18px; font-weight: 600; }
 .sev-low { background: #3d6da8; color: #faf8f2; }
 .sev-info { background: #4e6375; color: #faf8f2; }
 .badge.grade { background: transparent; color: var(--accent); border: 1px solid var(--accent-border); }
+.badge.health { background: transparent; color: var(--muted); border: 1px solid var(--border2); }
+/* Health explainer. CSS-only, and keyed on :focus-within as well as :hover so it
+   is reachable by keyboard -- the badge is the one header field whose meaning is
+   not self-evident (a bare ratio, and the good direction is not obvious). */
+.health-help { position: relative; display: inline-block; }
+.health-help > .health-q { display: inline-block; margin-left: .3rem; width: 1rem; height: 1rem;
+  line-height: 1rem; text-align: center; border-radius: 50%; font-size: .62rem; font-weight: 700;
+  color: var(--muted); border: 1px solid var(--border2); cursor: help; background: transparent;
+  font-family: var(--mono); padding: 0; }
+.health-help > .health-q:focus-visible { outline: 2px solid var(--accent-border); outline-offset: 1px; }
+.health-pop { display: none; position: absolute; z-index: 20; top: calc(100% + .4rem); left: 0;
+  width: min(30rem, 78vw); background: var(--card); color: var(--ink2);
+  border: 1px solid var(--border2); border-radius: 4px; padding: .7rem .8rem;
+  font-size: .74rem; line-height: 1.5; font-weight: 400; text-transform: none;
+  letter-spacing: normal; font-family: inherit; box-shadow: 0 4px 16px rgba(0,0,0,.28); }
+.health-help:hover > .health-pop, .health-help:focus-within > .health-pop { display: block; }
+.health-pop .hp-better { color: var(--ink); font-weight: 700; }
+.health-pop table { border-collapse: collapse; margin: .45rem 0 .1rem; font-family: var(--mono); font-size: .7rem; }
+.health-pop td { padding: .05rem .55rem .05rem 0; color: var(--muted); }
+.health-pop .hp-note { color: var(--faint); margin-top: .5rem; display: block; }
 .badge.gate-pass { background: #1f6f48; color: #faf8f2; }
 .badge.gate-fail { background: #7d2f2a; color: #faf8f2; }
 .badge.gate-off { background: #4e6375; color: #faf8f2; }
@@ -416,6 +436,45 @@ def _render_header(report):
         f"<span class='badge grade'>Grade: {_escape(summary.get('overall_grade') or '-')}{' (provisional)' if summary.get('coverage_certified') is False else ''}</span>",
         f"<span class='badge {_severity_class(summary.get('risk_level', 'INFO'))}'>Risk: {_escape(summary.get('risk_level', '-'))}</span>",
         f"<span class='badge {_gate_class(summary.get('gate', 'OFF'))}'>Gate: {_escape(summary.get('gate', 'OFF'))}</span>",
+    ]
+    # #calibration: health belongs in the header, not buried. The letter grade is
+    # a worst-severity rollup, so it saturates -- across four calibration targets
+    # every one graded D off a single HIGH while health ranged 0.55 to 1.51. The
+    # grade answers "does this gate?"; health answers "how much clean code per
+    # unit of weighted defect?", and only the second discriminated between them.
+    # Deliberately NOT banded: with four targets (all utilities or a library) any
+    # healthy/fair/dense thresholds would be drawn from an unrepresentative
+    # sample. The raw ratio plus its inputs is honest; a label would not be.
+    # Health never touches the gate (#1057) -- this is presentation only.
+    health = summary.get("health")
+    if isinstance(health, dict) and health.get("score") is not None:
+        parts.append(
+            "<span class='health-help'>"
+            "<span class='badge health'>Health: %s</span>"
+            "<button type='button' class='health-q' aria-label='What is the health score?'>?</button>"
+            "<span class='health-pop' role='note'>"
+            "<b>Health</b> is clean code per unit of weighted defect: non-blank "
+            "lines of code divided by a severity-weighted defect footprint. "
+            "<span class='hp-better'>Higher is better.</span> This run: "
+            "%s clean LoC &divide; %s weighted defect = <b>%s</b>."
+            "<table><tr><td>CRITICAL</td><td>&times;125</td>"
+            "<td>HIGH</td><td>&times;25</td><td>MEDIUM</td><td>&times;5</td>"
+            "<td>LOW</td><td>&times;1</td><td>INFO</td><td>&times;0</td></tr></table>"
+            "Each finding contributes its weight multiplied by the lines it spans, "
+            "so a wide CRITICAL costs far more than a one-line LOW."
+            "<span class='hp-note'>Counts gate-eligible findings only &mdash; "
+            "rejected and unverified ones do not drag it down. It is reported "
+            "beside the grade but <b>never affects the gate</b>: the letter grade "
+            "is a worst-severity rollup and stays the pass/fail signal, while "
+            "health shows how localised the damage is. There are deliberately no "
+            "healthy/fair/poor bands yet &mdash; too few measured codebases to "
+            "draw thresholds honestly.</span>"
+            "</span></span>" % (
+                _escape(str(health["score"])),                      # badge
+                _escape("{:,}".format(health.get("total_loc", 0))),
+                _escape("{:,}".format(health.get("weighted_defect", 0))),
+                _escape(str(health["score"]))))                     # popover
+    parts += [
         "</div>",
     ]
     if summary.get("coverage_certified") is False:
