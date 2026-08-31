@@ -1,0 +1,551 @@
+{
+ "version": "2.1.0",
+ "runs": [
+  {
+   "invocations": [
+    {
+     "executionSuccessful": true,
+     "toolExecutionNotifications": [
+      {
+       "descriptor": {
+        "id": "Syntax error"
+       },
+       "level": "warning",
+       "message": {
+        "text": "Syntax error at line /opt/panopticon-fixtures/railsgoat/app/views/sessions/new.html.erb:11:\n When parsing a snippet as Ruby for metavariable-pattern in rule 'opt.semgrep-rules.ruby.rails.security.brakeman.check-reverse-tabnabbing', `do` was unexpected"
+       }
+      },
+      {
+       "descriptor": {
+        "id": "Other syntax error"
+       },
+       "level": "warning",
+       "message": {
+        "text": "Other syntax error at line /opt/panopticon-fixtures/railsgoat/config/database.yml:7:\n (approximate error location; error nearby after) error calling parser: could not find expected ':' character 0 position 0 returned: 0"
+       }
+      },
+      {
+       "descriptor": {
+        "id": "Missing plugin"
+       },
+       "level": "note",
+       "message": {
+        "text": "Missing plugin for rule opt.semgrep-rules.elixir.lang.best-practice.enum_map_join:\n Missing Semgrep extension needed for parsing Elixir target. Try adding `--pro-languages` to your command."
+       }
+      },
+      {
+       "descriptor": {
+        "id": "Missing plugin"
+       },
+       "level": "note",
+       "message": {
+        "text": "Missing plugin for rule opt.semgrep-rules.elixir.lang.best-practice.deprecated_calendar_iso_day_of_week_3:\n Missing Semgrep extension needed for parsing Elixir target. Try adding `--pro-languages` to your command."
+       }
+      },
+      {
+       "descriptor": {
+        "id": "Missing plugin"
+       },
+       "level": "note",
+       "message": {
+        "text": "Missing plugin for rule opt.semgrep-rules.elixir.lang.best-practice.deprecated_bnot_operator:\n Missing Semgrep extension needed for parsing Elixir target. Try adding `--pro-languages` to your command."
+       }
+      },
+      {
+       "descriptor": {
+        "id": "Missing plugin"
+       },
+       "level": "note",
+       "message": {
+        "text": "Missing plugin for rule opt.semgrep-rules.apex.lang.security.ncino.dml.dml-native-statements:\n Missing Semgrep extension needed for parsing Apex target. Try adding `--pro-languages` to your command."
+       }
+      },
+      {
+       "descriptor": {
+        "id": "Missing plugin"
+       },
+       "level": "note",
+       "message": {
+        "text": "Missing plugin for rule opt.semgrep-rules.apex.lang.security.ncino.dml.apex-csrf-constructor:\n Missing Semgrep extension needed for parsing Apex target. Try adding `--pro-languages` to your command."
+       }
+      },
+      {
+       "descriptor": {
+        "id": "Missing plugin"
+       },
+       "level": "note",
+       "message": {
+        "text": "Missing plugin for rule opt.semgrep-rules.apex.lang.security.ncino.endpoints.insecure-http-request:\n Missing Semgrep extension needed for parsing Apex target. Try adding `--pro-languages` to your command."
+       }
+      },
+      {
+       "descriptor": {
+        "id": "Missing plugin"
+       },
+       "level": "note",
+       "message": {
+        "text": "Missing plugin for rule opt.semgrep-rules.apex.lang.best-practice.ncino.urls.absolute-urls:\n Missing Semgrep extension needed for parsing Apex target. Try adding `--pro-languages` to your command."
+       }
+      },
+      {
+       "descriptor": {
+        "id": "Missing plugin"
+       },
+       "level": "note",
+       "message": {
+        "text": "Missing plugin for rule opt.semgrep-rules.apex.lang.security.ncino.endpoints.named-credentials-string-match:\n Missing Semgrep extension needed for parsing Apex target. Try adding `--pro-languages` to your command."
+       }
+      },
+      {
+       "descriptor": {
+        "id": "Missing plugin"
+       },
+       "level": "note",
+       "message": {
+        "text": "Missing plugin for rule opt.semgrep-rules.apex.lang.best-practice.ncino.accessModifiers.global-access-modifiers:\n Missing Semgrep extension needed for parsing Apex target. Try adding `--pro-languages` to your command."
+       }
+      },
+      {
+       "descriptor": {
+        "id": "Missing plugin"
+       },
+       "level": "note",
+       "message": {
+        "text": "Missing plugin for rule opt.semgrep-rules.elixir.lang.best-practice.deprecated_bxor_operator:\n Missing Semgrep extension needed for parsing Elixir target. Try adding `--pro-languages` to your command."
+       }
+      },
+      {
+       "descriptor": {
+        "id": "Missing plugin"
+       },
+       "level": "note",
+       "message": {
+        "text": "Missing plugin for rule opt.semgrep-rules.elixir.lang.best-practice.enum_map_into:\n Missing Semgrep extension needed for parsing Elixir target. Try adding `--pro-languages` to your command."
+       }
+      },
+      {
+       "descriptor": {
+        "id": "Missing plugin"
+       },
+       "level": "note",
+       "message": {
+        "text": "Missing plugin for rule opt.semgrep-rules.elixir.lang.best-practice.deprecated_use_bitwise:\n Missing Semgrep extension needed for parsing Elixir target. Try adding `--pro-languages` to your command."
+       }
+      },
+      {
+       "descriptor": {
+        "id": "Missing plugin"
+       },
+       "level": "note",
+       "message": {
+        "text": "Missing plugin for rule opt.semgrep-rules.elixir.lang.correctness.atom_exhaustion:\n Missing Semgrep extension needed for parsing Elixir target. Try adding `--pro-languages` to your command."
+       }
+      },
+      {
+       "descriptor": {
+        "id": "Missing plugin"
+       },
+       "level": "note",
+       "message": {
+        "text": "Missing plugin for rule opt.semgrep-rules.apex.lang.security.ncino.sharing.specify-sharing-level:\n Missing Semgrep extension needed for parsing Apex target. Try adding `--pro-languages` to your command."
+       }
+      },
+      {
+       "descriptor": {
+        "id": "Missing plugin"
+       },
+       "level": "note",
+       "message": {
+        "text": "Missing plugin for rule opt.semgrep-rules.apex.lang.security.ncino.injection.soql-injection-unescaped-url-param:\n Missing Semgrep extension needed for parsing Apex target. Try adding `--pro-languages` to your command."
+       }
+      },
+      {
+       "descriptor": {
+        "id": "Missing plugin"
+       },
+       "level": "note",
+       "message": {
+        "text": "Missing plugin for rule opt.semgrep-rules.apex.lang.security.ncino.injection.soql-injection-unescaped-param:\n Missing Semgrep extension needed for parsing Apex target. Try adding `--pro-languages` to your command."
+       }
+      },
+      {
+       "descriptor": {
+        "id": "Missing plugin"
+       },
+       "level": "note",
+       "message": {
+        "text": "Missing plugin for rule opt.semgrep-rules.apex.lang.security.ncino.encryption.bad-crypto:\n Missing Semgrep extension needed for parsing Apex target. Try adding `--pro-languages` to your command."
+       }
+      },
+      {
+       "descriptor": {
+        "id": "Missing plugin"
+       },
+       "level": "note",
+       "message": {
+        "text": "Missing plugin for rule opt.semgrep-rules.apex.lang.security.ncino.system.system-debug:\n Missing Semgrep extension needed for parsing Apex target. Try adding `--pro-languages` to your command."
+       }
+      },
+      {
+       "descriptor": {
+        "id": "Missing plugin"
+       },
+       "level": "note",
+       "message": {
+        "text": "Missing plugin for rule opt.semgrep-rules.apex.lang.security.ncino.endpoints.named-credentials-constant-match:\n Missing Semgrep extension needed for parsing Apex target. Try adding `--pro-languages` to your command."
+       }
+      }
+     ]
+    }
+   ],
+   "results": [
+    {
+     "fingerprints": {
+      "matchBasedId/v1": "requires login"
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "/opt/panopticon-fixtures/railsgoat/.github/workflows/ci.yml",
+         "uriBaseId": "%SRCROOT%"
+        },
+        "region": {
+         "endColumn": 32,
+         "endLine": 18,
+         "snippet": {
+          "text": "    - uses: actions/checkout@v4"
+         },
+         "startColumn": 7,
+         "startLine": 18
+        }
+       }
+      }
+     ],
+     "message": {
+      "text": "GitHub Actions step uses a mutable tag or branch reference. Tags and branch names can be silently repointed by the action owner, enabling supply-chain attacks \u2014 as seen in the trivy-action and kics-github-action compromises. Pin the reference to a full 40-character commit SHA instead, e.g. `uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608`."
+     },
+     "properties": {},
+     "ruleId": "opt.semgrep-rules.yaml.github-actions.security.github-actions-mutable-action-tag"
+    },
+    {
+     "fingerprints": {
+      "matchBasedId/v1": "requires login"
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "/opt/panopticon-fixtures/railsgoat/.github/workflows/ci.yml",
+         "uriBaseId": "%SRCROOT%"
+        },
+        "region": {
+         "endColumn": 31,
+         "endLine": 21,
+         "snippet": {
+          "text": "      uses: ruby/setup-ruby@v1"
+         },
+         "startColumn": 7,
+         "startLine": 21
+        }
+       }
+      }
+     ],
+     "message": {
+      "text": "An action sourced from a third-party repository on GitHub is not pinned to a full length commit SHA. Pinning an action to a full length commit SHA is currently the only way to use an action as an immutable release. Pinning to a particular SHA helps mitigate the risk of a bad actor adding a backdoor to the action's repository, as they would need to generate a SHA-1 collision for a valid Git object payload."
+     },
+     "properties": {},
+     "ruleId": "opt.semgrep-rules.yaml.github-actions.security.audit.third-party-action-not-pinned-to-commit-sha"
+    },
+    {
+     "fingerprints": {
+      "matchBasedId/v1": "requires login"
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "/opt/panopticon-fixtures/railsgoat/.github/workflows/ci.yml",
+         "uriBaseId": "%SRCROOT%"
+        },
+        "region": {
+         "endColumn": 31,
+         "endLine": 21,
+         "snippet": {
+          "text": "      uses: ruby/setup-ruby@v1"
+         },
+         "startColumn": 7,
+         "startLine": 21
+        }
+       }
+      }
+     ],
+     "message": {
+      "text": "GitHub Actions step uses a mutable tag or branch reference. Tags and branch names can be silently repointed by the action owner, enabling supply-chain attacks \u2014 as seen in the trivy-action and kics-github-action compromises. Pin the reference to a full 40-character commit SHA instead, e.g. `uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608`."
+     },
+     "properties": {},
+     "ruleId": "opt.semgrep-rules.yaml.github-actions.security.github-actions-mutable-action-tag"
+    }
+   ],
+   "tool": {
+    "driver": {
+     "name": "Semgrep OSS",
+     "rules": [
+      {
+       "defaultConfiguration": {
+        "level": "warning"
+       },
+       "fullDescription": {
+        "text": "LLM API call inside a `while True` loop without a break condition. This creates an unbounded agent loop that may run indefinitely, consuming API credits and resources. Add a break condition, iteration counter, or timeout to prevent runaway execution."
+       },
+       "help": {
+        "markdown": "LLM API call inside a `while True` loop without a break condition. This creates an unbounded agent loop that may run indefinitely, consuming API credits and resources. Add a break condition, iteration counter, or timeout to prevent runaway execution.\n\n<b>References:</b>\n - [https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/](https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/)\n",
+        "text": "LLM API call inside a `while True` loop without a break condition. This creates an unbounded agent loop that may run indefinitely, consuming API credits and resources. Add a break condition, iteration counter, or timeout to prevent runaway execution."
+       },
+       "id": "opt.semgrep-rules.ai.ai-best-practices.agent-unbounded-loop.agent-unbounded-loop-python",
+       "name": "opt.semgrep-rules.ai.ai-best-practices.agent-unbounded-loop.agent-unbounded-loop-python",
+       "properties": {
+        "precision": "very-high",
+        "tags": [
+         "CWE-835: Loop with Unreachable Exit Condition ('Infinite Loop')",
+         "MEDIUM CONFIDENCE",
+         "security"
+        ]
+       },
+       "shortDescription": {
+        "text": "Semgrep Finding: opt.semgrep-rules.ai.ai-best-practices.agent-unbounded-loop.agent-unbounded-loop-python"
+       }
+      },
+      {
+       "defaultConfiguration": {
+        "level": "error"
+       },
+       "fullDescription": {
+        "text": "Invisible or zero-width Unicode character detected in AI coding assistant config file. These characters can be used in \"Rules File Backdoor\" attacks to inject hidden malicious instructions that are invisible to developers but interpreted by AI assistants. Remove all zero-width and bidirectional override characters from this file."
+       },
+       "help": {
+        "markdown": "Invisible or zero-width Unicode character detected in AI coding assistant config file. These characters can be used in \"Rules File Backdoor\" attacks to inject hidden malicious instructions that are invisible to developers but interpreted by AI assistants. Remove all zero-width and bidirectional override characters from this file.\n\n<b>References:</b>\n - [https://www.pillar.security/blog/new-vulnerability-in-github-copilot-and-cursor-how-hackers-can-weaponize-code-agents](https://www.pillar.security/blog/new-vulnerability-in-github-copilot-and-cursor-how-hackers-can-weaponize-code-agents)\n",
+        "text": "Invisible or zero-width Unicode character detected in AI coding assistant config file. These characters can be used in \"Rules File Backdoor\" attacks to inject hidden malicious instructions that are invisible to developers but interpreted by AI assistants. Remove all zero-width and bidirectional override characters from this file."
+       },
+       "id": "opt.semgrep-rules.ai.ai-best-practices.ai-config-hidden-unicode.ai-config-hidden-unicode-generic",
+       "name": "opt.semgrep-rules.ai.ai-best-practices.ai-config-hidden-unicode.ai-config-hidden-unicode-generic",
+       "properties": {
+        "precision": "very-high",
+        "tags": [
+         "CWE-116: Improper Encoding or Escaping of Output",
+         "HIGH CONFIDENCE",
+         "security"
+        ]
+       },
+       "shortDescription": {
+        "text": "Semgrep Finding: opt.semgrep-rules.ai.ai-best-practices.ai-config-hidden-unicode.ai-config-hidden-unicode-generic"
+       }
+      },
+      {
+       "defaultConfiguration": {
+        "level": "error"
+       },
+       "fullDescription": {
+        "text": "Anthropic API key is hardcoded in source code. Use environment variables or a secrets manager instead."
+       },
+       "help": {
+        "markdown": "Anthropic API key is hardcoded in source code. Use environment variables or a secrets manager instead.\n\n<b>References:</b>\n - [https://docs.anthropic.com/en/docs/initial-setup](https://docs.anthropic.com/en/docs/initial-setup)\n",
+        "text": "Anthropic API key is hardcoded in source code. Use environment variables or a secrets manager instead."
+       },
+       "id": "opt.semgrep-rules.ai.ai-best-practices.anthropic-hardcoded-api-key.anthropic-hardcoded-api-key-go",
+       "name": "opt.semgrep-rules.ai.ai-best-practices.anthropic-hardcoded-api-key.anthropic-hardcoded-api-key-go",
+       "properties": {
+        "precision": "very-high",
+        "tags": [
+         "CWE-798: Use of Hard-coded Credentials",
+         "HIGH CONFIDENCE",
+         "security"
+        ]
+       },
+       "shortDescription": {
+        "text": "Semgrep Finding: opt.semgrep-rules.ai.ai-best-practices.anthropic-hardcoded-api-key.anthropic-hardcoded-api-key-go"
+       }
+      },
+      {
+       "defaultConfiguration": {
+        "level": "error"
+       },
+       "fullDescription": {
+        "text": "Anthropic API key is hardcoded in source code. Use environment variables or a secrets manager instead."
+       },
+       "help": {
+        "markdown": "Anthropic API key is hardcoded in source code. Use environment variables or a secrets manager instead.\n\n<b>References:</b>\n - [https://docs.anthropic.com/en/docs/initial-setup](https://docs.anthropic.com/en/docs/initial-setup)\n",
+        "text": "Anthropic API key is hardcoded in source code. Use environment variables or a secrets manager instead."
+       },
+       "id": "opt.semgrep-rules.ai.ai-best-practices.anthropic-hardcoded-api-key.anthropic-hardcoded-api-key-java",
+       "name": "opt.semgrep-rules.ai.ai-best-practices.anthropic-hardcoded-api-key.anthropic-hardcoded-api-key-java",
+       "properties": {
+        "precision": "very-high",
+        "tags": [
+         "CWE-798: Use of Hard-coded Credentials",
+         "HIGH CONFIDENCE",
+         "security"
+        ]
+       },
+       "shortDescription": {
+        "text": "Semgrep Finding: opt.semgrep-rules.ai.ai-best-practices.anthropic-hardcoded-api-key.anthropic-hardcoded-api-key-java"
+       }
+      },
+      {
+       "defaultConfiguration": {
+        "level": "error"
+       },
+       "fullDescription": {
+        "text": "Anthropic API key is hardcoded in source code. Use environment variables or a secrets manager instead."
+       },
+       "help": {
+        "markdown": "Anthropic API key is hardcoded in source code. Use environment variables or a secrets manager instead.\n\n<b>References:</b>\n - [https://docs.anthropic.com/en/docs/initial-setup](https://docs.anthropic.com/en/docs/initial-setup)\n",
+        "text": "Anthropic API key is hardcoded in source code. Use environment variables or a secrets manager instead."
+       },
+       "id": "opt.semgrep-rules.ai.ai-best-practices.anthropic-hardcoded-api-key.anthropic-hardcoded-api-key-javascript",
+       "name": "opt.semgrep-rules.ai.ai-best-practices.anthropic-hardcoded-api-key.anthropic-hardcoded-api-key-javascript",
+       "properties": {
+        "precision": "very-high",
+        "tags": [
+         "CWE-798: Use of Hard-coded Credentials",
+         "HIGH CONFIDENCE",
+         "security"
+        ]
+       },
+       "shortDescription": {
+        "text": "Semgrep Finding: opt.semgrep-rules.ai.ai-best-practices.anthropic-hardcoded-api-key.anthropic-hardcoded-api-key-javascript"
+       }
+      },
+      {
+       "defaultConfiguration": {
+        "level": "error"
+       },
+       "fullDescription": {
+        "text": "Anthropic API key is hardcoded in source code. Use environment variables or a secrets manager instead."
+       },
+       "help": {
+        "markdown": "Anthropic API key is hardcoded in source code. Use environment variables or a secrets manager instead.\n\n<b>References:</b>\n - [https://docs.anthropic.com/en/docs/initial-setup](https://docs.anthropic.com/en/docs/initial-setup)\n",
+        "text": "Anthropic API key is hardcoded in source code. Use environment variables or a secrets manager instead."
+       },
+       "id": "opt.semgrep-rules.ai.ai-best-practices.anthropic-hardcoded-api-key.anthropic-hardcoded-api-key-python",
+       "name": "opt.semgrep-rules.ai.ai-best-practices.anthropic-hardcoded-api-key.anthropic-hardcoded-api-key-python",
+       "properties": {
+        "precision": "very-high",
+        "tags": [
+         "CWE-798: Use of Hard-coded Credentials",
+         "HIGH CONFIDENCE",
+         "security"
+        ]
+       },
+       "shortDescription": {
+        "text": "Semgrep Finding: opt.semgrep-rules.ai.ai-best-practices.anthropic-hardcoded-api-key.anthropic-hardcoded-api-key-python"
+       }
+      },
+      {
+       "defaultConfiguration": {
+        "level": "error"
+       },
+       "fullDescription": {
+        "text": "Anthropic API key is hardcoded in source code. Use environment variables or a secrets manager instead."
+       },
+       "help": {
+        "markdown": "Anthropic API key is hardcoded in source code. Use environment variables or a secrets manager instead.\n\n<b>References:</b>\n - [https://docs.anthropic.com/en/docs/initial-setup](https://docs.anthropic.com/en/docs/initial-setup)\n",
+        "text": "Anthropic API key is hardcoded in source code. Use environment variables or a secrets manager instead."
+       },
+       "id": "opt.semgrep-rules.ai.ai-best-practices.anthropic-hardcoded-api-key.anthropic-hardcoded-api-key-ruby",
+       "name": "opt.semgrep-rules.ai.ai-best-practices.anthropic-hardcoded-api-key.anthropic-hardcoded-api-key-ruby",
+       "properties": {
+        "precision": "very-high",
+        "tags": [
+         "CWE-798: Use of Hard-coded Credentials",
+         "HIGH CONFIDENCE",
+         "security"
+        ]
+       },
+       "shortDescription": {
+        "text": "Semgrep Finding: opt.semgrep-rules.ai.ai-best-practices.anthropic-hardcoded-api-key.anthropic-hardcoded-api-key-ruby"
+       }
+      },
+      {
+       "defaultConfiguration": {
+        "level": "warning"
+       },
+       "fullDescription": {
+        "text": "Anthropic messages.create() called without 'max_tokens' parameter. Setting max_tokens prevents unexpectedly long or expensive responses."
+       },
+       "help": {
+        "markdown": "Anthropic messages.create() called without 'max_tokens' parameter. Setting max_tokens prevents unexpectedly long or expensive responses.\n\n<b>References:</b>\n - [https://docs.anthropic.com/en/api/messages](https://docs.anthropic.com/en/api/messages)\n",
+        "text": "Anthropic messages.create() called without 'max_tokens' parameter. Setting max_tokens prevents unexpectedly long or expensive responses."
+       },
+       "id": "opt.semgrep-rules.ai.ai-best-practices.anthropic-missing-max-tokens.anthropic-missing-max-tokens-javascript",
+       "name": "opt.semgrep-rules.ai.ai-best-practices.anthropic-missing-max-tokens.anthropic-missing-max-tokens-javascript",
+       "properties": {
+        "precision": "very-high",
+        "tags": [
+         "CWE-770: Allocation of Resources Without Limits or Throttling",
+         "HIGH CONFIDENCE",
+         "security"
+        ]
+       },
+       "shortDescription": {
+        "text": "Semgrep Finding: opt.semgrep-rules.ai.ai-best-practices.anthropic-missing-max-tokens.anthropic-missing-max-tokens-javascript"
+       }
+      },
+      {
+       "defaultConfiguration": {
+        "level": "warning"
+       },
+       "fullDescription": {
+        "text": "Anthropic messages.create() called without 'max_tokens' parameter. Setting max_tokens prevents unexpectedly long or expensive responses."
+       },
+       "help": {
+        "markdown": "Anthropic messages.create() called without 'max_tokens' parameter. Setting max_tokens prevents unexpectedly long or expensive responses.\n\n<b>References:</b>\n - [https://docs.anthropic.com/en/api/messages](https://docs.anthropic.com/en/api/messages)\n",
+        "text": "Anthropic messages.create() called without 'max_tokens' parameter. Setting max_tokens prevents unexpectedly long or expensive responses."
+       },
+       "id": "opt.semgrep-rules.ai.ai-best-practices.anthropic-missing-max-tokens.anthropic-missing-max-tokens-python",
+       "name": "opt.semgrep-rules.ai.ai-best-practices.anthropic-missing-max-tokens.anthropic-missing-max-tokens-python",
+       "properties": {
+        "precision": "very-high",
+        "tags": [
+         "CWE-770: Allocation of Resources Without Limits or Throttling",
+         "HIGH CONFIDENCE",
+         "security"
+        ]
+       },
+       "shortDescription": {
+        "text": "Semgrep Finding: opt.semgrep-rules.ai.ai-best-practices.anthropic-missing-max-tokens.anthropic-missing-max-tokens-python"
+       }
+      },
+      {
+       "defaultConfiguration": {
+        "level": "warning"
+       },
+       "fullDescription": {
+        "text": "Anthropic messages.create() called without 'metadata' parameter. Pass a metadata object with a hashed user_id to enable abuse tracking and policy enforcement. See https://docs.anthropic.com/en/api/messages"
+       },
+       "help": {
+        "markdown": "Anthropic messages.create() called without 'metadata' parameter. Pass a metadata object with a hashed user_id to enable abuse tracking and policy enforcement. See https://docs.anthropic.com/en/api/messages\n\n<b>References:</b>\n - [https://docs.anthropic.com/en/api/messages](https://docs.anthropic.com/en/api/messages)\n",
+        "text": "Anthropic messages.create() called without 'metadata' parameter. Pass a metadata object with a hashed user_id to enable abuse tracking and policy enforcement. See https://docs.anthropic.com/en/api/messages"
+       },
+       "id": "opt.semgrep-rules.ai.ai-best-practices.anthropic-missing-metadata-user-id.anthropic-missing-metadata-user-id-javascript",
+       "name": "opt.semgrep-rules.ai.ai-best-practices.anthropic-missing-metadata-user-id.anthropic-missing-metadata-user-id-javascript",
+       "properties": {
+        "precision": "very-high",
+        "tags": [
+         "CWE-778: Insufficient Logging",
+         "HIGH CONFIDENCE",
+         "security"
+        ]
+       },
+       "shortDescription": {
+        "text": "Semgrep Finding: opt.semgrep-rules.ai.ai-best-practices.anthropic-missing-metadata-user-id.anthropic-missing-metadata-user-id-javascript"
+       }
+      }
+     ],
+     "semanticVersion": "1.173.0"
+    }
+   }
+  }
+ ],
+ "$schema": "https://docs.oasis-open.org/sarif/sarif/v2.1.0/os/schemas/sarif-schema-2.1.0.json"
+}

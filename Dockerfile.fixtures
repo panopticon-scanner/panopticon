@@ -54,8 +54,27 @@ RUN git init -q AspGoat \
 # Prepare fixture dependencies when possible; static-analysis tests tolerate missing deps.
 # hadolint ignore=DL3003
 RUN cd /opt/panopticon-fixtures/railsgoat && (bundle install || echo "railsgoat bundle install skipped")
+# `compile` leaves the dependency jars in ~/.m2, OUTSIDE the project tree, and
+# produces no packaged artifact -- so dependency-check scanning the source tree
+# saw exactly ONE dependency (the maven wrapper) and reported zero
+# vulnerabilities, which is indistinguishable from a clean scan. Copying them
+# into target/dependency puts them where a source-tree scan actually looks.
+#
+# Then PRUNE to a bounded subset. The full set is 234 jars, which dependency-check
+# takes ~15 minutes to analyse -- against the adapter's own 900s timeout, so the
+# fixture would fail intermittently on timing alone rather than on anything real.
+# The cap is deterministic (sorted, first N) so the corpus does not shift between
+# builds, and it is well above what the test needs: it asserts that CVEs are
+# found and parsed, not how many.
+ARG WEBGOAT_JAR_CAP=45
 # hadolint ignore=DL3003
-RUN cd /opt/panopticon-fixtures/WebGoat && (./mvnw clean compile -DskipTests || mvn clean compile -DskipTests || echo "WebGoat compile skipped")
+RUN cd /opt/panopticon-fixtures/WebGoat \
+    && (./mvnw clean compile -DskipTests || mvn clean compile -DskipTests || echo "WebGoat compile skipped") \
+    && (./mvnw dependency:copy-dependencies -DskipTests || mvn dependency:copy-dependencies -DskipTests || echo "WebGoat dependency copy skipped") \
+    && if [ -d target/dependency ]; then \
+         find target/dependency -name '*.jar' | sort | tail -n +$((WEBGOAT_JAR_CAP + 1)) | xargs -r rm -f; \
+         echo "WebGoat jars kept: $(find target/dependency -name '*.jar' | wc -l)"; \
+       fi
 # hadolint ignore=DL3003
 RUN cd /opt/panopticon-fixtures/AspGoat && (dotnet restore && dotnet build --no-restore || echo "AspGoat build skipped")
 

@@ -1,0 +1,958 @@
+{
+ "runs": [
+  {
+   "tool": {
+    "driver": {
+     "name": "Bandit",
+     "organization": "PyCQA",
+     "rules": [
+      {
+       "id": "B603",
+       "name": "subprocess_without_shell_equals_true",
+       "properties": {
+        "tags": [
+         "security",
+         "external/cwe/cwe-78"
+        ],
+        "precision": "high"
+       },
+       "helpUri": "https://bandit.readthedocs.io/en/1.9.4/plugins/b603_subprocess_without_shell_equals_true.html"
+      },
+      {
+       "id": "B108",
+       "name": "hardcoded_tmp_directory",
+       "properties": {
+        "tags": [
+         "security",
+         "external/cwe/cwe-377"
+        ],
+        "precision": "medium"
+       },
+       "helpUri": "https://bandit.readthedocs.io/en/1.9.4/plugins/b108_hardcoded_tmp_directory.html"
+      }
+     ],
+     "version": "1.9.4",
+     "semanticVersion": "1.9.4"
+    }
+   },
+   "invocations": [
+    {
+     "executionSuccessful": true,
+     "endTimeUtc": "2026-08-31T17:50:59Z"
+    }
+   ],
+   "properties": {
+    "metrics": {
+     "_totals": {
+      "loc": 14368,
+      "nosec": 4,
+      "skipped_tests": 9,
+      "SEVERITY.UNDEFINED": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.LOW": 6,
+      "CONFIDENCE.LOW": 0,
+      "SEVERITY.MEDIUM": 1,
+      "CONFIDENCE.MEDIUM": 1,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.HIGH": 6
+     },
+     "/mnt/panopticon/.panopticon/runs/_archive-04b33961/dispatch_all_remaining.py": {
+      "loc": 97,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 1,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 1
+     },
+     "/mnt/panopticon/.panopticon/runs/_archive-04b33961/dispatch_review.py": {
+      "loc": 72,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 1,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 1
+     },
+     "/mnt/panopticon/.panopticon/runs/_archive-04b33961/extract_synthesis_cod_prompt.py": {
+      "loc": 17,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/.panopticon/runs/_archive-04b33961/fix_json.py": {
+      "loc": 13,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/.panopticon/runs/_archive-04b33961/generate_verdicts_synthesis_cod.py": {
+      "loc": 132,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/.panopticon/runs/_archive-04b33961/review_orchestrator.py": {
+      "loc": 172,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 2,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 2
+     },
+     "/mnt/panopticon/.panopticon/runs/_archive-04b33961/test_autoexec.py": {
+      "loc": 0,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/.panopticon/runs/_archive-04b33961/test_exec.py": {
+      "loc": 2,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/.panopticon/runs/_archive-04b33961/test_run.py": {
+      "loc": 0,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/.panopticon/scratch/generate_verdicts.py": {
+      "loc": 29,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/scripts/file_fixmes.py": {
+      "loc": 123,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/scripts/file_issues.py": {
+      "loc": 305,
+      "nosec": 0,
+      "skipped_tests": 1,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/scripts/reconcile_apply.py": {
+      "loc": 276,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/scripts/sanitize.py": {
+      "loc": 49,
+      "nosec": 2,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/scripts/triage.py": {
+      "loc": 271,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/_run_adapter.py": {
+      "loc": 30,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/_version.py": {
+      "loc": 19,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/capture_goldens.py": {
+      "loc": 101,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/citations.py": {
+      "loc": 265,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/collect_usage.py": {
+      "loc": 296,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 1,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 1,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/coverage_model.py": {
+      "loc": 98,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/diff_map.py": {
+      "loc": 301,
+      "nosec": 0,
+      "skipped_tests": 1,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/discovery.py": {
+      "loc": 1065,
+      "nosec": 2,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/dispatch.py": {
+      "loc": 360,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/driver.py": {
+      "loc": 1839,
+      "nosec": 0,
+      "skipped_tests": 2,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/evidence.py": {
+      "loc": 504,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/group_runner.py": {
+      "loc": 207,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/groups_schema.py": {
+      "loc": 145,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/html_report.py": {
+      "loc": 871,
+      "nosec": 0,
+      "skipped_tests": 1,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/ingest_tools.py": {
+      "loc": 194,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/model_resolver.py": {
+      "loc": 165,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/ocrdb.py": {
+      "loc": 124,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/plan_contract.py": {
+      "loc": 63,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/provenance.py": {
+      "loc": 12,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/reconcile.py": {
+      "loc": 292,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/redact.py": {
+      "loc": 45,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/run_manifest.py": {
+      "loc": 105,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/run_tools.py": {
+      "loc": 496,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 2,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 2
+     },
+     "/mnt/panopticon/skill/scripts/score_gate.py": {
+      "loc": 49,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/security_gate.py": {
+      "loc": 84,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/setup_flow.py": {
+      "loc": 325,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/setup_proposal.py": {
+      "loc": 288,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/smoke_adapters.py": {
+      "loc": 235,
+      "nosec": 0,
+      "skipped_tests": 1,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/synthesize.py": {
+      "loc": 2220,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/tools/__init__.py": {
+      "loc": 31,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/tools/base.py": {
+      "loc": 314,
+      "nosec": 0,
+      "skipped_tests": 1,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/tools/brakeman.py": {
+      "loc": 145,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/tools/bundler_audit.py": {
+      "loc": 100,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/tools/cargo_audit.py": {
+      "loc": 54,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/tools/dependency_check.py": {
+      "loc": 88,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/tools/eslint_security.py": {
+      "loc": 136,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/tools/legacy_sarif.py": {
+      "loc": 34,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/tools/npm_audit.py": {
+      "loc": 99,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/tools/osv_scanner.py": {
+      "loc": 87,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/tools/pip_audit.py": {
+      "loc": 97,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/tools/roslyn_secguard.py": {
+      "loc": 245,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/tools/sarif_utils.py": {
+      "loc": 122,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/tools/spotbugs.py": {
+      "loc": 99,
+      "nosec": 0,
+      "skipped_tests": 2,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/write_guard_hook.py": {
+      "loc": 245,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     },
+     "/mnt/panopticon/skill/scripts/x0x_report.py": {
+      "loc": 116,
+      "nosec": 0,
+      "skipped_tests": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.HIGH": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.HIGH": 0
+     }
+    }
+   },
+   "results": [
+    {
+     "message": {
+      "text": "subprocess call - check for execution of untrusted input."
+     },
+     "level": "note",
+     "locations": [
+      {
+       "physicalLocation": {
+        "region": {
+         "snippet": {
+          "text": "            proc = subprocess.Popen(\n"
+         },
+         "endColumn": 14,
+         "endLine": 75,
+         "startColumn": 20,
+         "startLine": 74
+        },
+        "artifactLocation": {
+         "uri": "file:///mnt/panopticon/.panopticon/runs/_archive-04b33961/dispatch_all_remaining.py"
+        },
+        "contextRegion": {
+         "snippet": {
+          "text": "            ]\n            proc = subprocess.Popen(\n                cmd,\n                cwd=REPO_ROOT,\n                stdout=fh,\n                stderr=subprocess.STDOUT,\n                text=True,\n            )\n            procs.append((eid, proc, fh, log_path, out_file))\n"
+         },
+         "endLine": 81,
+         "startLine": 73
+        }
+       }
+      }
+     ],
+     "properties": {
+      "issue_confidence": "HIGH",
+      "issue_severity": "LOW"
+     },
+     "ruleId": "B603",
+     "ruleIndex": 0
+    },
+    {
+     "message": {
+      "text": "subprocess call - check for execution of untrusted input."
+     },
+     "level": "note",
+     "locations": [
+      {
+       "physicalLocation": {
+        "region": {
+         "snippet": {
+          "text": "        proc = subprocess.Popen(\n"
+         },
+         "endColumn": 10,
+         "endLine": 48,
+         "startColumn": 16,
+         "startLine": 47
+        },
+        "artifactLocation": {
+         "uri": "file:///mnt/panopticon/.panopticon/runs/_archive-04b33961/dispatch_review.py"
+        },
+        "contextRegion": {
+         "snippet": {
+          "text": "        ]\n        proc = subprocess.Popen(\n            cmd,\n            cwd=REPO_ROOT,\n            stdout=fh,\n            stderr=subprocess.STDOUT,\n            text=True,\n        )\n        procs.append((eid, proc, fh, log_path, out_file))\n"
+         },
+         "endLine": 54,
+         "startLine": 46
+        }
+       }
+      }
+     ],
+     "properties": {
+      "issue_confidence": "HIGH",
+      "issue_severity": "LOW"
+     },
+     "ruleId": "B603",
+     "ruleIndex": 0
+    },
+    {
+     "message": {
+      "text": "subprocess call - check for execution of untrusted input."
+     },
+     "level": "note",
+     "locations": [
+      {
+       "physicalLocation": {
+        "region": {
+         "snippet": {
+          "text": "    return subprocess.Popen(\n"
+         },
+         "endColumn": 6,
+         "endLine": 71,
+         "startColumn": 12,
+         "startLine": 70
+        },
+        "artifactLocation": {
+         "uri": "file:///mnt/panopticon/.panopticon/runs/_archive-04b33961/review_orchestrator.py"
+        },
+        "contextRegion": {
+         "snippet": {
+          "text": "    ]\n    return subprocess.Popen(\n        cmd,\n        cwd=REPO_ROOT,\n        stdout=subprocess.PIPE,\n        stderr=subprocess.PIPE,\n        text=True,\n    )\n\n"
+         },
+         "endLine": 77,
+         "startLine": 69
+        }
+       }
+      }
+     ],
+     "properties": {
+      "issue_confidence": "HIGH",
+      "issue_severity": "LOW"
+     },
+     "ruleId": "B603",
+     "ruleIndex": 0
+    }
+   ]
+  }
+ ],
+ "version": "2.1.0",
+ "$schema": "https://json.schemastore.org/sarif-2.1.0.json"
+}

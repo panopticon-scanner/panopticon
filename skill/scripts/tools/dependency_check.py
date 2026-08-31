@@ -27,6 +27,18 @@ class DependencyCheckAdapter:
                 "--out", out_dir,
                 "--noupdate",
                 "--data", "/opt/odc-data",
+                # Scans run in a no-egress container, but these three analyzers
+                # call out: OSS Index to Sonatype, Node Audit to the npm
+                # registry, RetireJS to its CDN-hosted advisory feed. Each
+                # failure is logged as [ERROR], and dependency-check exits 14
+                # ("one or more fatal errors occurred") no matter how well the
+                # offline NVD scan itself went -- which the adapter's ok_codes
+                # then reject, discarding a complete report. Measured on
+                # WebGoat: rc 14 with them on, rc 0 and 111 CVEs across 42
+                # dependencies with them off.
+                "--disableOssIndex",
+                "--disableNodeAudit",
+                "--disableRetireJS",
             ]
             _stdout, rc = run_tool(cmd, timeout=900)
             out_path = os.path.join(out_dir, "dependency-check-report.json")

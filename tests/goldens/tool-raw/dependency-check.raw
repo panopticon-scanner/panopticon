@@ -1,0 +1,1678 @@
+{
+ "reportSchema": "1.1",
+ "scanInfo": {
+  "engineVersion": "10.0.3",
+  "dataSource": [
+   {
+    "name": "NVD API Last Checked",
+    "timestamp": "2026-08-25T05:24:25Z"
+   },
+   {
+    "name": "NVD API Last Modified",
+    "timestamp": "2026-08-25T05:17:20Z"
+   }
+  ]
+ },
+ "projectInfo": {
+  "name": "panopticon",
+  "reportDate": "2026-08-31T18:08:22.336422387Z",
+  "credits": {
+   "NVD": "This product uses the NVD API but is not endorsed or certified by the NVD. This report contains data retrieved from the National Vulnerability Database: https://nvd.nist.gov",
+   "CISA": "This report may contain data retrieved from the CISA Known Exploited Vulnerability Catalog: https://www.cisa.gov/known-exploited-vulnerabilities-catalog",
+   "NPM": "This report may contain data retrieved from the Github Advisory Database (via NPM Audit API): https://github.com/advisories/",
+   "RETIREJS": "This report may contain data retrieved from the RetireJS community: https://retirejs.github.io/retire.js/",
+   "OSSINDEX": "This report may contain data retrieved from the Sonatype OSS Index: https://ossindex.sonatype.org"
+  }
+ },
+ "dependencies": [
+  {
+   "isVirtual": false,
+   "fileName": "angus-activation-2.0.1.jar",
+   "filePath": "/opt/panopticon-fixtures/WebGoat/target/dependency/angus-activation-2.0.1.jar",
+   "md5": "9a66564224140488f83f645ac32d4169",
+   "sha1": "eaafaf4eb71b400e4136fc3a286f50e34a68ecb7",
+   "sha256": "b226761815868edf8964c1d71e6d2d54ab238c2788507061b4e0633933b4c131",
+   "description": " Implementation",
+   "license": "http://www.eclipse.org/org/documents/edl-v10.php",
+   "evidenceCollected": {
+    "vendorEvidence": [
+     {
+      "type": "vendor",
+      "confidence": "HIGH",
+      "source": "file",
+      "name": "name",
+      "value": "angus-activation"
+     },
+     {
+      "type": "vendor",
+      "confidence": "HIGHEST",
+      "source": "jar",
+      "name": "package name",
+      "value": "activation"
+     },
+     {
+      "type": "vendor",
+      "confidence": "HIGHEST",
+      "source": "jar",
+      "name": "package name",
+      "value": "angus"
+     },
+     {
+      "type": "vendor",
+      "confidence": "HIGHEST",
+      "source": "jar",
+      "name": "package name",
+      "value": "eclipse"
+     },
+     {
+      "type": "vendor",
+      "confidence": "LOW",
+      "source": "Manifest",
+      "name": "bundle-docurl",
+      "value": "https://www.eclipse.org"
+     },
+     {
+      "type": "vendor",
+      "confidence": "MEDIUM",
+      "source": "Manifest",
+      "name": "bundle-symbolicname",
+      "value": "angus-activation"
+     },
+     {
+      "type": "vendor",
+      "confidence": "MEDIUM",
+      "source": "Manifest",
+      "name": "extension-name",
+      "value": "org.eclipse.angus"
+     },
+     {
+      "type": "vendor",
+      "confidence": "LOW",
+      "source": "Manifest",
+      "name": "implementation-build-id",
+      "value": "2.0.1-RELEASE-b350e3d"
+     },
+     {
+      "type": "vendor",
+      "confidence": "HIGH",
+      "source": "Manifest",
+      "name": "Implementation-Vendor",
+      "value": "Eclipse Foundation"
+     },
+     {
+      "type": "vendor",
+      "confidence": "LOW",
+      "source": "Manifest",
+      "name": "provide-capability",
+      "value": "osgi.serviceloader;osgi.serviceloader=\"jakarta.activation.spi.MailcapRegistryProvider\",osgi.serviceloader;osgi.serviceloader=\"jakarta.activation.spi.MimeTypeRegistryProvider\""
+     },
+     {
+      "type": "vendor",
+      "confidence": "LOW",
+      "source": "Manifest",
+      "name": "specification-vendor",
+      "value": "Eclipse Foundation"
+     },
+     {
+      "type": "vendor",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "artifactid",
+      "value": "angus-activation"
+     },
+     {
+      "type": "vendor",
+      "confidence": "HIGHEST",
+      "source": "pom",
+      "name": "groupid",
+      "value": "org.eclipse.angus"
+     },
+     {
+      "type": "vendor",
+      "confidence": "HIGH",
+      "source": "pom",
+      "name": "name",
+      "value": "Angus Activation Registries"
+     },
+     {
+      "type": "vendor",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "parent-artifactid",
+      "value": "angus-activation-project"
+     }
+    ],
+    "productEvidence": [
+     {
+      "type": "product",
+      "confidence": "HIGH",
+      "source": "file",
+      "name": "name",
+      "value": "angus-activation"
+     },
+     {
+      "type": "product",
+      "confidence": "HIGHEST",
+      "source": "jar",
+      "name": "package name",
+      "value": "activation"
+     },
+     {
+      "type": "product",
+      "confidence": "HIGHEST",
+      "source": "jar",
+      "name": "package name",
+      "value": "angus"
+     },
+     {
+      "type": "product",
+      "confidence": "HIGHEST",
+      "source": "jar",
+      "name": "package name",
+      "value": "eclipse"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "Manifest",
+      "name": "bundle-docurl",
+      "value": "https://www.eclipse.org"
+     },
+     {
+      "type": "product",
+      "confidence": "MEDIUM",
+      "source": "Manifest",
+      "name": "Bundle-Name",
+      "value": "Angus Activation Registries"
+     },
+     {
+      "type": "product",
+      "confidence": "MEDIUM",
+      "source": "Manifest",
+      "name": "bundle-symbolicname",
+      "value": "angus-activation"
+     },
+     {
+      "type": "product",
+      "confidence": "MEDIUM",
+      "source": "Manifest",
+      "name": "extension-name",
+      "value": "org.eclipse.angus"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "Manifest",
+      "name": "implementation-build-id",
+      "value": "2.0.1-RELEASE-b350e3d"
+     },
+     {
+      "type": "product",
+      "confidence": "HIGH",
+      "source": "Manifest",
+      "name": "Implementation-Title",
+      "value": "Angus Activation Registries"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "Manifest",
+      "name": "provide-capability",
+      "value": "osgi.serviceloader;osgi.serviceloader=\"jakarta.activation.spi.MailcapRegistryProvider\",osgi.serviceloader;osgi.serviceloader=\"jakarta.activation.spi.MimeTypeRegistryProvider\""
+     },
+     {
+      "type": "product",
+      "confidence": "MEDIUM",
+      "source": "Manifest",
+      "name": "specification-title",
+      "value": "Jakarta Activation Specification"
+     },
+     {
+      "type": "product",
+      "confidence": "HIGHEST",
+      "source": "pom",
+      "name": "artifactid",
+      "value": "angus-activation"
+     },
+     {
+      "type": "product",
+      "confidence": "HIGHEST",
+      "source": "pom",
+      "name": "groupid",
+      "value": "org.eclipse.angus"
+     },
+     {
+      "type": "product",
+      "confidence": "HIGH",
+      "source": "pom",
+      "name": "name",
+      "value": "Angus Activation Registries"
+     },
+     {
+      "type": "product",
+      "confidence": "MEDIUM",
+      "source": "pom",
+      "name": "parent-artifactid",
+      "value": "angus-activation-project"
+     }
+    ],
+    "versionEvidence": [
+     {
+      "type": "version",
+      "confidence": "HIGH",
+      "source": "file",
+      "name": "version",
+      "value": "2.0.1"
+     },
+     {
+      "type": "version",
+      "confidence": "HIGH",
+      "source": "Manifest",
+      "name": "Bundle-Version",
+      "value": "2.0.1"
+     },
+     {
+      "type": "version",
+      "confidence": "HIGHEST",
+      "source": "pom",
+      "name": "version",
+      "value": "2.0.1"
+     }
+    ]
+   },
+   "packages": [
+    {
+     "id": "pkg:maven/org.eclipse.angus/angus-activation@2.0.1",
+     "confidence": "HIGH"
+    }
+   ],
+   "vulnerabilityIds": [
+    {
+     "id": "cpe:2.3:a:eclipse:angus_mail:2.0.1:*:*:*:*:*:*:*",
+     "confidence": "LOW"
+    }
+   ],
+   "vulnerabilities": [
+    {
+     "source": "NVD",
+     "name": "CVE-2025-7962",
+     "severity": "HIGH",
+     "cvssv3": {
+      "baseScore": 7.5,
+      "attackVector": "NETWORK",
+      "attackComplexity": "LOW",
+      "privilegesRequired": "NONE",
+      "userInteraction": "NONE",
+      "scope": "UNCHANGED",
+      "confidentialityImpact": "NONE",
+      "integrityImpact": "HIGH",
+      "availabilityImpact": "NONE",
+      "baseSeverity": "HIGH",
+      "exploitabilityScore": "3.9",
+      "impactScore": "3.6",
+      "version": "3.1"
+     },
+     "cwes": [
+      "CWE-147"
+     ],
+     "description": "In Jakarta Mail versions prior to 2.0.2 it is possible to perform an SMTP Injection by utilizing the\u00a0\\r and \\n UTF-8 characters to separate different messages.",
+     "notes": "",
+     "references": [
+      {
+       "source": "af854a3a-2127-422b-91ae-364da2661108",
+       "url": "http://www.openwall.com/lists/oss-security/2025/09/03/4",
+       "name": "MAILING_LIST,THIRD_PARTY_ADVISORY"
+      },
+      {
+       "source": "emo@eclipse.org",
+       "url": "https://gitlab.eclipse.org/security/cve-assignement/-/issues/67",
+       "name": "ISSUE_TRACKING,THIRD_PARTY_ADVISORY"
+      }
+     ],
+     "vulnerableSoftware": [
+      {
+       "software": {
+        "id": "cpe:2.3:a:eclipse:angus_mail:*:*:*:*:*:*:*:*",
+        "vulnerabilityIdMatched": "true",
+        "versionEndExcluding": "2.0.4"
+       }
+      },
+      {
+       "software": {
+        "id": "cpe:2.3:a:eclipse:jakarta_mail:*:*:*:*:*:*:*:*",
+        "versionEndExcluding": "1.6.8"
+       }
+      },
+      {
+       "software": {
+        "id": "cpe:2.3:a:eclipse:jakarta_mail:*:*:*:*:*:*:*:*",
+        "versionStartIncluding": "2.0.0",
+        "versionEndExcluding": "2.0.2"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "isVirtual": false,
+   "fileName": "assertj-core-3.24.2.jar",
+   "filePath": "/opt/panopticon-fixtures/WebGoat/target/dependency/assertj-core-3.24.2.jar",
+   "md5": "b596a91049e6ce526bc5595c1bebea2c",
+   "sha1": "ebbf338e33f893139459ce5df023115971c2786f",
+   "sha256": "df3d0b348f1fe806bdddcb10fa4ae63c6679e9888d4bc7055f09848517976aa3",
+   "description": "Rich and fluent assertions for testing in Java",
+   "license": "\"Apache License, Version 2.0\";link=\"https://www.apache.org/licenses/LICENSE-2.0.txt\"",
+   "evidenceCollected": {
+    "vendorEvidence": [
+     {
+      "type": "vendor",
+      "confidence": "HIGH",
+      "source": "file",
+      "name": "name",
+      "value": "assertj-core"
+     },
+     {
+      "type": "vendor",
+      "confidence": "HIGHEST",
+      "source": "jar",
+      "name": "package name",
+      "value": "assertions"
+     },
+     {
+      "type": "vendor",
+      "confidence": "HIGHEST",
+      "source": "jar",
+      "name": "package name",
+      "value": "assertj"
+     },
+     {
+      "type": "vendor",
+      "confidence": "HIGHEST",
+      "source": "jar",
+      "name": "package name",
+      "value": "core"
+     },
+     {
+      "type": "vendor",
+      "confidence": "LOW",
+      "source": "Manifest",
+      "name": "bundle-developers",
+      "value": "joel-costigliola;email=\"joel.costigliola at gmail.com\";name=\"Joel Costigliola\";roles=\"Owner,Developer\",scordio;name=\"Stefano Cordio\";roles=Developer,PascalSchumacher;name=\"Pascal Schumacher\";roles=Developer,epeee;name=\"Erhard Pointl\";roles=Developer,croesch;name=\"Christian R\u00f6sch\";roles=Developer,VanRoy;name=\"Julien Roy\";roles=Developer,regis1512;name=\"R\u00e9gis Pouiller\";roles=Developer,fbiville;name=\"Florent Biville\";roles=Developer,Patouche;name=\"Patrick Allain\";roles=Developer"
+     },
+     {
+      "type": "vendor",
+      "confidence": "LOW",
+      "source": "Manifest",
+      "name": "bundle-docurl",
+      "value": "https://assertj.github.io/doc/#assertj-core"
+     },
+     {
+      "type": "vendor",
+      "confidence": "MEDIUM",
+      "source": "Manifest",
+      "name": "bundle-symbolicname",
+      "value": "assertj-core"
+     },
+     {
+      "type": "vendor",
+      "confidence": "LOW",
+      "source": "Manifest",
+      "name": "multi-release",
+      "value": "true"
+     },
+     {
+      "type": "vendor",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "artifactid",
+      "value": "assertj-core"
+     },
+     {
+      "type": "vendor",
+      "confidence": "HIGHEST",
+      "source": "pom",
+      "name": "groupid",
+      "value": "org.assertj"
+     },
+     {
+      "type": "vendor",
+      "confidence": "HIGH",
+      "source": "pom",
+      "name": "name",
+      "value": "AssertJ Core"
+     },
+     {
+      "type": "vendor",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "parent-artifactid",
+      "value": "assertj-parent"
+     },
+     {
+      "type": "vendor",
+      "confidence": "HIGHEST",
+      "source": "pom",
+      "name": "url",
+      "value": "#"
+     }
+    ],
+    "productEvidence": [
+     {
+      "type": "product",
+      "confidence": "HIGH",
+      "source": "file",
+      "name": "name",
+      "value": "assertj-core"
+     },
+     {
+      "type": "product",
+      "confidence": "HIGHEST",
+      "source": "jar",
+      "name": "package name",
+      "value": "assertions"
+     },
+     {
+      "type": "product",
+      "confidence": "HIGHEST",
+      "source": "jar",
+      "name": "package name",
+      "value": "assertj"
+     },
+     {
+      "type": "product",
+      "confidence": "HIGHEST",
+      "source": "jar",
+      "name": "package name",
+      "value": "core"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "Manifest",
+      "name": "bundle-developers",
+      "value": "joel-costigliola;email=\"joel.costigliola at gmail.com\";name=\"Joel Costigliola\";roles=\"Owner,Developer\",scordio;name=\"Stefano Cordio\";roles=Developer,PascalSchumacher;name=\"Pascal Schumacher\";roles=Developer,epeee;name=\"Erhard Pointl\";roles=Developer,croesch;name=\"Christian R\u00f6sch\";roles=Developer,VanRoy;name=\"Julien Roy\";roles=Developer,regis1512;name=\"R\u00e9gis Pouiller\";roles=Developer,fbiville;name=\"Florent Biville\";roles=Developer,Patouche;name=\"Patrick Allain\";roles=Developer"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "Manifest",
+      "name": "bundle-docurl",
+      "value": "https://assertj.github.io/doc/#assertj-core"
+     },
+     {
+      "type": "product",
+      "confidence": "MEDIUM",
+      "source": "Manifest",
+      "name": "Bundle-Name",
+      "value": "AssertJ Core"
+     },
+     {
+      "type": "product",
+      "confidence": "MEDIUM",
+      "source": "Manifest",
+      "name": "bundle-symbolicname",
+      "value": "assertj-core"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "Manifest",
+      "name": "multi-release",
+      "value": "true"
+     },
+     {
+      "type": "product",
+      "confidence": "HIGHEST",
+      "source": "pom",
+      "name": "artifactid",
+      "value": "assertj-core"
+     },
+     {
+      "type": "product",
+      "confidence": "HIGHEST",
+      "source": "pom",
+      "name": "groupid",
+      "value": "org.assertj"
+     },
+     {
+      "type": "product",
+      "confidence": "HIGH",
+      "source": "pom",
+      "name": "name",
+      "value": "AssertJ Core"
+     },
+     {
+      "type": "product",
+      "confidence": "MEDIUM",
+      "source": "pom",
+      "name": "parent-artifactid",
+      "value": "assertj-parent"
+     },
+     {
+      "type": "product",
+      "confidence": "MEDIUM",
+      "source": "pom",
+      "name": "url",
+      "value": "#"
+     }
+    ],
+    "versionEvidence": [
+     {
+      "type": "version",
+      "confidence": "HIGH",
+      "source": "file",
+      "name": "version",
+      "value": "3.24.2"
+     },
+     {
+      "type": "version",
+      "confidence": "HIGH",
+      "source": "Manifest",
+      "name": "Bundle-Version",
+      "value": "3.24.2"
+     },
+     {
+      "type": "version",
+      "confidence": "HIGHEST",
+      "source": "pom",
+      "name": "version",
+      "value": "3.24.2"
+     }
+    ]
+   },
+   "packages": [
+    {
+     "id": "pkg:maven/org.assertj/assertj-core@3.24.2",
+     "confidence": "HIGH"
+    }
+   ],
+   "vulnerabilityIds": [
+    {
+     "id": "cpe:2.3:a:assertj:assertj:3.24.2:*:*:*:*:*:*:*",
+     "confidence": "HIGHEST",
+     "url": "https://nvd.nist.gov/vuln/search/results?form_type=Advanced&results_type=overview&search_type=all&cpe_vendor=cpe%3A%2F%3Aassertj&cpe_product=cpe%3A%2F%3Aassertj%3Aassertj&cpe_version=cpe%3A%2F%3Aassertj%3Aassertj%3A3.24.2"
+    }
+   ],
+   "vulnerabilities": [
+    {
+     "source": "NVD",
+     "name": "CVE-2026-24400",
+     "severity": "CRITICAL",
+     "cvssv3": {
+      "baseScore": 9.1,
+      "attackVector": "NETWORK",
+      "attackComplexity": "LOW",
+      "privilegesRequired": "NONE",
+      "userInteraction": "NONE",
+      "scope": "UNCHANGED",
+      "confidentialityImpact": "HIGH",
+      "integrityImpact": "NONE",
+      "availabilityImpact": "HIGH",
+      "baseSeverity": "CRITICAL",
+      "exploitabilityScore": "3.9",
+      "impactScore": "5.2",
+      "version": "3.1"
+     },
+     "cwes": [
+      "CWE-611"
+     ],
+     "description": "AssertJ provides Fluent testing assertions for Java and the Java Virtual Machine (JVM). Starting in version 1.4.0 and prior to version 3.27.7, an XML External Entity (XXE) vulnerability exists in `org.assertj.core.util.xml.XmlStringPrettyFormatter`: the `toXmlDocument(String)` method initializes `DocumentBuilderFactory` with default settings, without disabling DTDs or external entities. This formatter is used by the `isXmlEqualTo(CharSequence)` assertion for `CharSequence` values. An application is vulnerable only when it uses untrusted XML input with either `isXmlEqualTo(CharSequence)` from `org.assertj.core.api.AbstractCharSequenceAssert` or `xmlPrettyFormat(String)` from `org.assertj.core.util.xml.XmlStringPrettyFormatter`. If untrusted XML input is processed by tone of these methods, an attacker couldnread arbitrary local files via `file://` URIs (e.g., `/etc/passwd`, application configuration files); perform Server-Side Request Forgery (SSRF) via HTTP/HTTPS URIs, and/or cause Denial of Service via \"Billion Laughs\" entity expansion attacks. `isXmlEqualTo(CharSequence)` has been deprecated in favor of XMLUnit in version 3.18.0 and will be removed in version 4.0. Users of affected versions should, in order of preference: replace `isXmlEqualTo(CharSequence)` with XMLUnit, upgrade to version 3.27.7, or avoid using `isXmlEqualTo(CharSequence)` or `XmlStringPrettyFormatter` with untrusted input. `XmlStringPrettyFormatter` has historically been considered a utility for `isXmlEqualTo(CharSequence)` rather than a feature for AssertJ users, so it is deprecated in version 3.27.7 and removed in version 4.0, with no replacement.",
+     "notes": "",
+     "references": [
+      {
+       "source": "security-advisories@github.com",
+       "url": "https://github.com/assertj/assertj/commit/85ca7eb6609bb179c043b85ae7d290523b1ba79a",
+       "name": "PATCH"
+      },
+      {
+       "source": "security-advisories@github.com",
+       "url": "https://github.com/assertj/assertj/security/advisories/GHSA-rqfh-9r24-8c9r",
+       "name": "MITIGATION,VENDOR_ADVISORY"
+      },
+      {
+       "source": "security-advisories@github.com",
+       "url": "https://cheatsheetseries.owasp.org/cheatsheets/XML_External_Entity_Prevention_Cheat_Sheet.html",
+       "name": "TECHNICAL_DESCRIPTION"
+      },
+      {
+       "source": "security-advisories@github.com",
+       "url": "https://github.com/assertj/assertj/releases/tag/assertj-build-3.27.7",
+       "name": "PRODUCT,RELEASE_NOTES"
+      }
+     ],
+     "vulnerableSoftware": [
+      {
+       "software": {
+        "id": "cpe:2.3:a:assertj:assertj:*:*:*:*:*:*:*:*",
+        "vulnerabilityIdMatched": "true",
+        "versionStartIncluding": "1.4.0",
+        "versionEndExcluding": "3.27.7"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "isVirtual": false,
+   "fileName": "commons-fileupload-1.4.jar",
+   "filePath": "/opt/panopticon-fixtures/WebGoat/target/dependency/commons-fileupload-1.4.jar",
+   "md5": "0c3b924dcaaa90c3fb93fe04ae96a35e",
+   "sha1": "f95188e3d372e20e7328706c37ef366e5d7859b0",
+   "sha256": "a4ec02336f49253ea50405698b79232b8c5cbf02cb60df3a674d77a749a1def7",
+   "description": "\n    The Apache Commons FileUpload component provides a simple yet flexible means of adding support for multipart\n    file upload functionality to servlets and web applications.\n  ",
+   "license": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+   "evidenceCollected": {
+    "vendorEvidence": [
+     {
+      "type": "vendor",
+      "confidence": "HIGH",
+      "source": "file",
+      "name": "name",
+      "value": "commons-fileupload"
+     },
+     {
+      "type": "vendor",
+      "confidence": "HIGHEST",
+      "source": "jar",
+      "name": "package name",
+      "value": "apache"
+     },
+     {
+      "type": "vendor",
+      "confidence": "HIGHEST",
+      "source": "jar",
+      "name": "package name",
+      "value": "commons"
+     },
+     {
+      "type": "vendor",
+      "confidence": "HIGHEST",
+      "source": "jar",
+      "name": "package name",
+      "value": "fileupload"
+     },
+     {
+      "type": "vendor",
+      "confidence": "LOW",
+      "source": "Manifest",
+      "name": "bundle-docurl",
+      "value": "http://commons.apache.org/proper/commons-fileupload/"
+     },
+     {
+      "type": "vendor",
+      "confidence": "MEDIUM",
+      "source": "Manifest",
+      "name": "bundle-symbolicname",
+      "value": "org.apache.commons.commons-fileupload"
+     },
+     {
+      "type": "vendor",
+      "confidence": "LOW",
+      "source": "Manifest",
+      "name": "implementation-build",
+      "value": "UNKNOWN@r047f31576411beee69cf75584ae76531cc9ac753; 2018-12-24 07:06:18+0000"
+     },
+     {
+      "type": "vendor",
+      "confidence": "LOW",
+      "source": "Manifest",
+      "name": "implementation-url",
+      "value": "http://commons.apache.org/proper/commons-fileupload/"
+     },
+     {
+      "type": "vendor",
+      "confidence": "HIGH",
+      "source": "Manifest",
+      "name": "Implementation-Vendor",
+      "value": "The Apache Software Foundation"
+     },
+     {
+      "type": "vendor",
+      "confidence": "MEDIUM",
+      "source": "Manifest",
+      "name": "Implementation-Vendor-Id",
+      "value": "org.apache"
+     },
+     {
+      "type": "vendor",
+      "confidence": "LOW",
+      "source": "Manifest",
+      "name": "specification-vendor",
+      "value": "The Apache Software Foundation"
+     },
+     {
+      "type": "vendor",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "artifactid",
+      "value": "commons-fileupload"
+     },
+     {
+      "type": "vendor",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer email",
+      "value": "chtompki@apache.org"
+     },
+     {
+      "type": "vendor",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer email",
+      "value": "dion@apache.org"
+     },
+     {
+      "type": "vendor",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer email",
+      "value": "dlr@finemaltcoding.com"
+     },
+     {
+      "type": "vendor",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer email",
+      "value": "ggregory@apache.org"
+     },
+     {
+      "type": "vendor",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer email",
+      "value": "jason@zenplex.com"
+     },
+     {
+      "type": "vendor",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer email",
+      "value": "jmcnally@collab.net"
+     },
+     {
+      "type": "vendor",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer email",
+      "value": "jochen.wiedmann@gmail.com"
+     },
+     {
+      "type": "vendor",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer email",
+      "value": "martinc@apache.org"
+     },
+     {
+      "type": "vendor",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer email",
+      "value": "rdonkin@apache.org"
+     },
+     {
+      "type": "vendor",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer email",
+      "value": "sean |at| seansullivan |dot| com"
+     },
+     {
+      "type": "vendor",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer email",
+      "value": "simonetripodi@apache.org"
+     },
+     {
+      "type": "vendor",
+      "confidence": "MEDIUM",
+      "source": "pom",
+      "name": "developer id",
+      "value": "chtompki"
+     },
+     {
+      "type": "vendor",
+      "confidence": "MEDIUM",
+      "source": "pom",
+      "name": "developer id",
+      "value": "dion"
+     },
+     {
+      "type": "vendor",
+      "confidence": "MEDIUM",
+      "source": "pom",
+      "name": "developer id",
+      "value": "dlr"
+     },
+     {
+      "type": "vendor",
+      "confidence": "MEDIUM",
+      "source": "pom",
+      "name": "developer id",
+      "value": "ggregory"
+     },
+     {
+      "type": "vendor",
+      "confidence": "MEDIUM",
+      "source": "pom",
+      "name": "developer id",
+      "value": "jmcnally"
+     },
+     {
+      "type": "vendor",
+      "confidence": "MEDIUM",
+      "source": "pom",
+      "name": "developer id",
+      "value": "jochen"
+     },
+     {
+      "type": "vendor",
+      "confidence": "MEDIUM",
+      "source": "pom",
+      "name": "developer id",
+      "value": "jvanzyl"
+     },
+     {
+      "type": "vendor",
+      "confidence": "MEDIUM",
+      "source": "pom",
+      "name": "developer id",
+      "value": "martinc"
+     },
+     {
+      "type": "vendor",
+      "confidence": "MEDIUM",
+      "source": "pom",
+      "name": "developer id",
+      "value": "rdonkin"
+     },
+     {
+      "type": "vendor",
+      "confidence": "MEDIUM",
+      "source": "pom",
+      "name": "developer id",
+      "value": "simonetripodi"
+     },
+     {
+      "type": "vendor",
+      "confidence": "MEDIUM",
+      "source": "pom",
+      "name": "developer id",
+      "value": "sullis"
+     },
+     {
+      "type": "vendor",
+      "confidence": "MEDIUM",
+      "source": "pom",
+      "name": "developer name",
+      "value": "Daniel Rall"
+     },
+     {
+      "type": "vendor",
+      "confidence": "MEDIUM",
+      "source": "pom",
+      "name": "developer name",
+      "value": "dIon Gillard"
+     },
+     {
+      "type": "vendor",
+      "confidence": "MEDIUM",
+      "source": "pom",
+      "name": "developer name",
+      "value": "Gary Gregory"
+     },
+     {
+      "type": "vendor",
+      "confidence": "MEDIUM",
+      "source": "pom",
+      "name": "developer name",
+      "value": "Jason van Zyl"
+     },
+     {
+      "type": "vendor",
+      "confidence": "MEDIUM",
+      "source": "pom",
+      "name": "developer name",
+      "value": "Jochen Wiedmann"
+     },
+     {
+      "type": "vendor",
+      "confidence": "MEDIUM",
+      "source": "pom",
+      "name": "developer name",
+      "value": "John McNally"
+     },
+     {
+      "type": "vendor",
+      "confidence": "MEDIUM",
+      "source": "pom",
+      "name": "developer name",
+      "value": "Martin Cooper"
+     },
+     {
+      "type": "vendor",
+      "confidence": "MEDIUM",
+      "source": "pom",
+      "name": "developer name",
+      "value": "Rob Tompkins"
+     },
+     {
+      "type": "vendor",
+      "confidence": "MEDIUM",
+      "source": "pom",
+      "name": "developer name",
+      "value": "Robert Burrell Donkin"
+     },
+     {
+      "type": "vendor",
+      "confidence": "MEDIUM",
+      "source": "pom",
+      "name": "developer name",
+      "value": "Sean C. Sullivan"
+     },
+     {
+      "type": "vendor",
+      "confidence": "MEDIUM",
+      "source": "pom",
+      "name": "developer name",
+      "value": "Simone Tripodi"
+     },
+     {
+      "type": "vendor",
+      "confidence": "MEDIUM",
+      "source": "pom",
+      "name": "developer org",
+      "value": "Adobe"
+     },
+     {
+      "type": "vendor",
+      "confidence": "MEDIUM",
+      "source": "pom",
+      "name": "developer org",
+      "value": "CollabNet"
+     },
+     {
+      "type": "vendor",
+      "confidence": "MEDIUM",
+      "source": "pom",
+      "name": "developer org",
+      "value": "Multitask Consulting"
+     },
+     {
+      "type": "vendor",
+      "confidence": "MEDIUM",
+      "source": "pom",
+      "name": "developer org",
+      "value": "Yahoo!"
+     },
+     {
+      "type": "vendor",
+      "confidence": "MEDIUM",
+      "source": "pom",
+      "name": "developer org",
+      "value": "Zenplex"
+     },
+     {
+      "type": "vendor",
+      "confidence": "HIGHEST",
+      "source": "pom",
+      "name": "groupid",
+      "value": "commons-fileupload"
+     },
+     {
+      "type": "vendor",
+      "confidence": "HIGH",
+      "source": "pom",
+      "name": "name",
+      "value": "Apache Commons FileUpload"
+     },
+     {
+      "type": "vendor",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "parent-artifactid",
+      "value": "commons-parent"
+     },
+     {
+      "type": "vendor",
+      "confidence": "MEDIUM",
+      "source": "pom",
+      "name": "parent-groupid",
+      "value": "org.apache.commons"
+     },
+     {
+      "type": "vendor",
+      "confidence": "HIGHEST",
+      "source": "pom",
+      "name": "url",
+      "value": "http://commons.apache.org/proper/commons-fileupload/"
+     }
+    ],
+    "productEvidence": [
+     {
+      "type": "product",
+      "confidence": "HIGH",
+      "source": "file",
+      "name": "name",
+      "value": "commons-fileupload"
+     },
+     {
+      "type": "product",
+      "confidence": "HIGHEST",
+      "source": "jar",
+      "name": "package name",
+      "value": "apache"
+     },
+     {
+      "type": "product",
+      "confidence": "HIGHEST",
+      "source": "jar",
+      "name": "package name",
+      "value": "commons"
+     },
+     {
+      "type": "product",
+      "confidence": "HIGHEST",
+      "source": "jar",
+      "name": "package name",
+      "value": "fileupload"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "Manifest",
+      "name": "bundle-docurl",
+      "value": "http://commons.apache.org/proper/commons-fileupload/"
+     },
+     {
+      "type": "product",
+      "confidence": "MEDIUM",
+      "source": "Manifest",
+      "name": "Bundle-Name",
+      "value": "Apache Commons FileUpload"
+     },
+     {
+      "type": "product",
+      "confidence": "MEDIUM",
+      "source": "Manifest",
+      "name": "bundle-symbolicname",
+      "value": "org.apache.commons.commons-fileupload"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "Manifest",
+      "name": "implementation-build",
+      "value": "UNKNOWN@r047f31576411beee69cf75584ae76531cc9ac753; 2018-12-24 07:06:18+0000"
+     },
+     {
+      "type": "product",
+      "confidence": "HIGH",
+      "source": "Manifest",
+      "name": "Implementation-Title",
+      "value": "Apache Commons FileUpload"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "Manifest",
+      "name": "implementation-url",
+      "value": "http://commons.apache.org/proper/commons-fileupload/"
+     },
+     {
+      "type": "product",
+      "confidence": "MEDIUM",
+      "source": "Manifest",
+      "name": "specification-title",
+      "value": "Apache Commons FileUpload"
+     },
+     {
+      "type": "product",
+      "confidence": "HIGHEST",
+      "source": "pom",
+      "name": "artifactid",
+      "value": "commons-fileupload"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer email",
+      "value": "chtompki@apache.org"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer email",
+      "value": "dion@apache.org"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer email",
+      "value": "dlr@finemaltcoding.com"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer email",
+      "value": "ggregory@apache.org"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer email",
+      "value": "jason@zenplex.com"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer email",
+      "value": "jmcnally@collab.net"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer email",
+      "value": "jochen.wiedmann@gmail.com"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer email",
+      "value": "martinc@apache.org"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer email",
+      "value": "rdonkin@apache.org"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer email",
+      "value": "sean |at| seansullivan |dot| com"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer email",
+      "value": "simonetripodi@apache.org"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer id",
+      "value": "chtompki"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer id",
+      "value": "dion"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer id",
+      "value": "dlr"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer id",
+      "value": "ggregory"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer id",
+      "value": "jmcnally"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer id",
+      "value": "jochen"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer id",
+      "value": "jvanzyl"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer id",
+      "value": "martinc"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer id",
+      "value": "rdonkin"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer id",
+      "value": "simonetripodi"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer id",
+      "value": "sullis"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer name",
+      "value": "Daniel Rall"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer name",
+      "value": "dIon Gillard"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer name",
+      "value": "Gary Gregory"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer name",
+      "value": "Jason van Zyl"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer name",
+      "value": "Jochen Wiedmann"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer name",
+      "value": "John McNally"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer name",
+      "value": "Martin Cooper"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer name",
+      "value": "Rob Tompkins"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer name",
+      "value": "Robert Burrell Donkin"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer name",
+      "value": "Sean C. Sullivan"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer name",
+      "value": "Simone Tripodi"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer org",
+      "value": "Adobe"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer org",
+      "value": "CollabNet"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer org",
+      "value": "Multitask Consulting"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer org",
+      "value": "Yahoo!"
+     },
+     {
+      "type": "product",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "developer org",
+      "value": "Zenplex"
+     },
+     {
+      "type": "product",
+      "confidence": "HIGHEST",
+      "source": "pom",
+      "name": "groupid",
+      "value": "commons-fileupload"
+     },
+     {
+      "type": "product",
+      "confidence": "HIGH",
+      "source": "pom",
+      "name": "name",
+      "value": "Apache Commons FileUpload"
+     },
+     {
+      "type": "product",
+      "confidence": "MEDIUM",
+      "source": "pom",
+      "name": "parent-artifactid",
+      "value": "commons-parent"
+     },
+     {
+      "type": "product",
+      "confidence": "MEDIUM",
+      "source": "pom",
+      "name": "parent-groupid",
+      "value": "org.apache.commons"
+     },
+     {
+      "type": "product",
+      "confidence": "MEDIUM",
+      "source": "pom",
+      "name": "url",
+      "value": "http://commons.apache.org/proper/commons-fileupload/"
+     }
+    ],
+    "versionEvidence": [
+     {
+      "type": "version",
+      "confidence": "HIGH",
+      "source": "file",
+      "name": "version",
+      "value": "1.4"
+     },
+     {
+      "type": "version",
+      "confidence": "HIGH",
+      "source": "Manifest",
+      "name": "Implementation-Version",
+      "value": "1.4"
+     },
+     {
+      "type": "version",
+      "confidence": "LOW",
+      "source": "pom",
+      "name": "parent-version",
+      "value": "1.4"
+     },
+     {
+      "type": "version",
+      "confidence": "HIGHEST",
+      "source": "pom",
+      "name": "version",
+      "value": "1.4"
+     }
+    ]
+   },
+   "packages": [
+    {
+     "id": "pkg:maven/commons-fileupload/commons-fileupload@1.4",
+     "confidence": "HIGH"
+    }
+   ],
+   "vulnerabilityIds": [
+    {
+     "id": "cpe:2.3:a:apache:commons_fileupload:1.4:*:*:*:*:*:*:*",
+     "confidence": "HIGHEST",
+     "url": "https://nvd.nist.gov/vuln/search/results?form_type=Advanced&results_type=overview&search_type=all&cpe_vendor=cpe%3A%2F%3Aapache&cpe_product=cpe%3A%2F%3Aapache%3Acommons_fileupload&cpe_version=cpe%3A%2F%3Aapache%3Acommons_fileupload%3A1.4"
+    }
+   ],
+   "vulnerabilities": [
+    {
+     "source": "NVD",
+     "name": "CVE-2023-24998",
+     "severity": "HIGH",
+     "cvssv3": {
+      "baseScore": 7.5,
+      "attackVector": "NETWORK",
+      "attackComplexity": "LOW",
+      "privilegesRequired": "NONE",
+      "userInteraction": "NONE",
+      "scope": "UNCHANGED",
+      "confidentialityImpact": "NONE",
+      "integrityImpact": "NONE",
+      "availabilityImpact": "HIGH",
+      "baseSeverity": "HIGH",
+      "exploitabilityScore": "3.9",
+      "impactScore": "3.6",
+      "version": "3.1"
+     },
+     "cwes": [
+      "CWE-770"
+     ],
+     "description": "Apache Commons FileUpload before 1.5 does not limit the number of request parts to be processed resulting in the possibility of an attacker triggering a DoS with a malicious upload or series of uploads.\n\n\n\n\nNote that, like all of the file upload limits, the\n          new configuration option (FileUploadBase#setFileCountMax) is not\n          enabled by default and must be explicitly configured.",
+     "notes": "",
+     "references": [
+      {
+       "source": "af854a3a-2127-422b-91ae-364da2661108",
+       "url": "https://lists.debian.org/debian-lts-announce/2023/10/msg00020.html",
+       "name": "THIRD_PARTY_ADVISORY"
+      },
+      {
+       "source": "af854a3a-2127-422b-91ae-364da2661108",
+       "url": "https://security.netapp.com/advisory/ntap-20241108-0002/"
+      },
+      {
+       "source": "af854a3a-2127-422b-91ae-364da2661108",
+       "url": "https://www.debian.org/security/2023/dsa-5522",
+       "name": "THIRD_PARTY_ADVISORY"
+      },
+      {
+       "source": "af854a3a-2127-422b-91ae-364da2661108",
+       "url": "https://lists.apache.org/thread/4xl4l09mhwg4vgsk7dxqogcjrobrrdoy",
+       "name": "MAILING_LIST,VENDOR_ADVISORY"
+      },
+      {
+       "source": "af854a3a-2127-422b-91ae-364da2661108",
+       "url": "http://www.openwall.com/lists/oss-security/2023/05/22/1",
+       "name": "MAILING_LIST"
+      },
+      {
+       "source": "security@apache.org",
+       "url": "https://lists.apache.org/thread/4xl4l09mhwg4vgsk7dxqogcjrobrrdoy",
+       "name": "MAILING_LIST,VENDOR_ADVISORY"
+      },
+      {
+       "source": "security@apache.org",
+       "url": "https://security.gentoo.org/glsa/202305-37",
+       "name": "THIRD_PARTY_ADVISORY"
+      },
+      {
+       "source": "security@apache.org",
+       "url": "http://www.openwall.com/lists/oss-security/2023/05/22/1",
+       "name": "MAILING_LIST"
+      },
+      {
+       "source": "af854a3a-2127-422b-91ae-364da2661108",
+       "url": "https://security.gentoo.org/glsa/202305-37",
+       "name": "THIRD_PARTY_ADVISORY"
+      },
+      {
+       "source": "security@apache.org",
+       "url": "https://www.debian.org/security/2023/dsa-5522",
+       "name": "THIRD_PARTY_ADVISORY"
+      },
+      {
+       "source": "security@apache.org",
+       "url": "https://lists.debian.org/debian-lts-announce/2023/10/msg00020.html",
+       "name": "THIRD_PARTY_ADVISORY"
+      },
+      {
+       "source": "af854a3a-2127-422b-91ae-364da2661108",
+       "url": "https://lists.debian.org/debian-lts-announce/2025/07/msg00008.html"
+      },
+      {
+       "source": "af854a3a-2127-422b-91ae-364da2661108",
+       "url": "https://security.netapp.com/advisory/ntap-20230302-0013/"
+      }
+     ],
+     "vulnerableSoftware": [
+      {
+       "software": {
+        "id": "cpe:2.3:a:apache:commons_fileupload:*:*:*:*:*:*:*:*",
+        "vulnerabilityIdMatched": "true",
+        "versionStartIncluding": "1.0",
+        "versionEndExcluding": "1.5"
+       }
+      },
+      {
+       "software": {
+        "id": "cpe:2.3:a:apache:commons_fileupload:1.0:beta:*:*:*:*:*:*"
+       }
+      }
+     ]
+    },
+    {
+     "source": "NVD",
+     "name": "CVE-2025-48976",
+     "severity": "HIGH",
+     "cvssv3": {
+      "baseScore": 7.5,
+      "attackVector": "NETWORK",
+      "attackComplexity": "LOW",
+      "privilegesRequired": "NONE",
+      "userInteraction": "NONE",
+      "scope": "UNCHANGED",
+      "confidentialityImpact": "NONE",
+      "integrityImpact": "NONE",
+      "availabilityImpact": "HIGH",
+      "baseSeverity": "HIGH",
+      "exploitabilityScore": "3.9",
+      "impactScore": "3.6",
+      "version": "3.1"
+     },
+     "cwes": [
+      "CWE-770"
+     ],
+     "description": "Allocation of resources for multipart headers with insufficient limits enabled a DoS vulnerability in Apache Commons FileUpload.\n\nThis issue affects Apache Commons FileUpload: from 1.0 before 1.6; from 2.0.0-M1 before 2.0.0-M4.\n\nUsers are recommended to upgrade to versions 1.6 or 2.0.0-M4, which fix the issue.",
+     "notes": "",
+     "references": [
+      {
+       "source": "af854a3a-2127-422b-91ae-364da2661108",
+       "url": "http://www.openwall.com/lists/oss-security/2025/06/16/4",
+       "name": "MAILING_LIST,THIRD_PARTY_ADVISORY"
+      },
+      {
+       "source": "security@apache.org",
+       "url": "https://lists.apache.org/thread/fbs3wrr3p67vkjcxogqqqqz45pqtso12",
+       "name": "MAILING_LIST,VENDOR_ADVISORY"
+      },
+      {
+       "source": "af854a3a-2127-422b-91ae-364da2661108",
+       "url": "https://lists.debian.org/debian-lts-announce/2025/07/msg00009.html"
+      },
+      {
+       "source": "af854a3a-2127-422b-91ae-364da2661108",
+       "url": "https://lists.debian.org/debian-lts-announce/2025/07/msg00008.html"
+      }
+     ],
+     "vulnerableSoftware": [
+      {
+       "software": {
+        "id": "cpe:2.3:a:apache:commons_fileupload:*:*:*:*:*:*:*:*",
+        "vulnerabilityIdMatched": "true",
+        "versionStartIncluding": "1.0",
+        "versionEndExcluding": "1.6"
+       }
+      },
+      {
+       "software": {
+        "id": "cpe:2.3:a:apache:commons_fileupload:2.0.0:m1:*:*:*:*:*:*"
+       }
+      },
+      {
+       "software": {
+        "id": "cpe:2.3:a:apache:commons_fileupload:2.0.0:m1-rc1:*:*:*:*:*:*"
+       }
+      },
+      {
+       "software": {
+        "id": "cpe:2.3:a:apache:commons_fileupload:2.0.0:m2:*:*:*:*:*:*"
+       }
+      },
+      {
+       "software": {
+        "id": "cpe:2.3:a:apache:commons_fileupload:2.0.0:m2-rc1:*:*:*:*:*:*"
+       }
+      },
+      {
+       "software": {
+        "id": "cpe:2.3:a:apache:commons_fileupload:2.0.0:m3:*:*:*:*:*:*"
+       }
+      },
+      {
+       "software": {
+        "id": "cpe:2.3:a:apache:commons_fileupload:2.0.0:m3-rc1:*:*:*:*:*:*"
+       }
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,66 @@
+[
+ {
+  "filePath": "/src/examples/auth/index.js",
+  "messages": [
+   {
+    "ruleId": "security/detect-object-injection",
+    "severity": 2,
+    "message": "Variable Assigned to Object Injection Sink",
+    "line": 62,
+    "column": 14,
+    "endLine": 62,
+    "endColumn": 25
+   },
+   {
+    "ruleId": "security/detect-possible-timing-attacks",
+    "severity": 2,
+    "message": "Potential timing attack, left side: true",
+    "line": 70,
+    "column": 5,
+    "endLine": 70,
+    "endColumn": 50
+   }
+  ],
+  "suppressedMessages": [],
+  "errorCount": 2,
+  "fatalErrorCount": 0,
+  "warningCount": 0,
+  "fixableErrorCount": 0,
+  "fixableWarningCount": 0,
+  "source": "'use strict'\n\n/**\n * Module dependencies.\n */\n\nvar express = require('../..');\nvar hash = require('pbkdf2-password')()\nvar path = require('node:path');\nvar session = require('express-session');\n\nvar app = module.exports = express();\n\n// config\n\napp.set('view engine', 'ejs');\napp.set('views', path.join(__dirname, 'views'));\n\n// middleware\n\napp.use(express.urlencoded())\napp.use(session({\n  resave: false, // don't save session if unmodified\n  saveUninitialized: false, // don't create session until something stored\n  secret: 'shhhh, very secret'\n}));\n\n// Session-persisted message middleware\n\napp.use(function(req, res, next){\n  var err = req.session.error;\n  var msg = req.session.success;\n  delete req.session.error;\n  delete req.session.success;\n  res.locals.message = '';\n  if (err) res.locals.message = '<p class=\"msg error\">' + err + '</p>';\n  if (msg) res.locals.message = '<p class=\"msg success\">' + msg + '</p>';\n  next();\n});\n\n// placeholder database\n\nvar users = {\n  tj: { name: 'tj' }\n};\n\n// when you create a user, generate a salt\n// and hash the password ('foobar' is the pass here)\n\nhash({ password: 'foobar' }, function (err, pass, salt, hash) {\n  if (err) throw err;\n  // store the salt & hash in the \"db\"\n  users.tj.salt = salt;\n  users.tj.hash = hash;\n});\n\n\n// Authenticate using our plain-object database of doom!\n\nfunction authenticate(name, pass, fn) {\n  if (!module.parent) console.log('authenticating %s:%s', name, pass);\n  var user = users[name];\n  // query the db for the given username\n  if (!user) return fn(null, null)\n  // apply the same algorithm to the POSTed password, applying\n  // the hash against the pass / salt, if there is a match we\n  // found the user\n  hash({ password: pass, salt: user.salt }, function (err, pass, salt, hash) {\n    if (err) return fn(err);\n    if (hash === user.hash) return fn(null, user)\n    fn(null, null)\n  });\n}\n\nfunction restrict(req, res, next) {\n  if (req.session.user) {\n    next();\n  } else {\n    req.session.error = 'Access denied!';\n    res.redirect('/login');\n  }\n}\n\napp.get('/', function(req, res){\n  res.redirect('/login');\n});\n\napp.get('/restricted', restrict, function(req, res){\n  res.send('Wahoo! restricted area, click to <a href=\"/logout\">logout</a>');\n});\n\napp.get('/logout', function(req, res){\n  // destroy the user's session to log them out\n  // will be re-created next request\n  req.session.destroy(function(){\n    res.redirect('/');\n  });\n});\n\napp.get('/login', function(req, res){\n  res.render('login');\n});\n\napp.post('/login', function (req, res, next) {\n  if (!req.body) return res.sendStatus(400)\n  authenticate(req.body.username, req.body.password, function(err, user){\n    if (err) return next(err)\n    if (user) {\n      // Regenerate session when signing in\n      // to prevent fixation\n      req.session.regenerate(function(){\n        // Store the user's primary key\n        // in the session store to be retrieved,\n        // or in this case the entire user object\n        req.session.user = user;\n        req.session.success = 'Authenticated as ' + user.name\n          + ' click to <a href=\"/logout\">logout</a>. '\n          + ' You may now access <a href=\"/restricted\">/restricted</a>.';\n        res.redirect(req.get('Referrer') || '/');\n      });\n    } else {\n      req.session.error = 'Authentication failed, please check your '\n        + ' username and password.'\n        + ' (use \"tj\" and \"foobar\")';\n      res.redirect('/login');\n    }\n  });\n});\n\n/* istanbul ignore next */\nif (!module.parent) {\n  app.listen(3000);\n  console.log('Express started on port 3000');\n}\n",
+  "usedDeprecatedRules": []
+ },
+ {
+  "filePath": "/src/examples/content-negotiation/db.js",
+  "messages": [],
+  "suppressedMessages": [],
+  "errorCount": 0,
+  "fatalErrorCount": 0,
+  "warningCount": 0,
+  "fixableErrorCount": 0,
+  "fixableWarningCount": 0,
+  "usedDeprecatedRules": []
+ },
+ {
+  "filePath": "/src/examples/content-negotiation/index.js",
+  "messages": [
+   {
+    "ruleId": "security/detect-non-literal-require",
+    "severity": 2,
+    "message": "Found non-literal argument in require",
+    "line": 34,
+    "column": 13,
+    "endLine": 34,
+    "endColumn": 26
+   }
+  ],
+  "suppressedMessages": [],
+  "errorCount": 1,
+  "fatalErrorCount": 0,
+  "warningCount": 0,
+  "fixableErrorCount": 0,
+  "fixableWarningCount": 0,
+  "source": "'use strict'\n\nvar express = require('../../');\nvar app = module.exports = express();\nvar users = require('./db');\n\n// so either you can deal with different types of formatting\n// for expected response in index.js\napp.get('/', function(req, res){\n  res.format({\n    html: function(){\n      res.send('<ul>' + users.map(function(user){\n        return '<li>' + user.name + '</li>';\n      }).join('') + '</ul>');\n    },\n\n    text: function(){\n      res.send(users.map(function(user){\n        return ' - ' + user.name + '\\n';\n      }).join(''));\n    },\n\n    json: function(){\n      res.json(users);\n    }\n  });\n});\n\n// or you could write a tiny middleware like\n// this to add a layer of abstraction\n// and make things a bit more declarative:\n\nfunction format(path) {\n  var obj = require(path);\n  return function(req, res){\n    res.format(obj);\n  };\n}\n\napp.get('/users', format('./users'));\n\n/* istanbul ignore next */\nif (!module.parent) {\n  app.listen(3000);\n  console.log('Express started on port 3000');\n}\n",
+  "usedDeprecatedRules": []
+ }
+]

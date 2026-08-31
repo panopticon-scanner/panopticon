@@ -32,6 +32,24 @@ _BRAKEMAN_CWE = {
     "Dangerous Eval": "CWE-94",
     "Command Injection": "CWE-78",
     "Unsafe Reflection": "CWE-470",
+    # Every remaining warning_type _BRAKEMAN_SEVERITY knows about, plus the
+    # types railsgoat actually produces. The fixture asserts a CWE on EVERY
+    # finding, and it was failing: railsgoat's top two types (Weak Hash x5,
+    # Remote Code Execution x4) had a severity but no CWE, so those findings
+    # reached synthesis uncitable -- and citation quality feeds both the report
+    # grade and the OCRDb crosswalk.
+    "Weak Hash": "CWE-328",
+    "Remote Code Execution": "CWE-94",
+    "Unscoped Find": "CWE-639",
+    "Dangerous Send": "CWE-470",
+    "Missing Encryption": "CWE-311",
+    "Format Validation": "CWE-20",
+    "SSL Verification Bypass": "CWE-295",
+    "LDAP Injection": "CWE-90",
+    "Path Traversal": "CWE-22",
+    "Insecure Cryptography Algorithm": "CWE-327",
+    "Regex Denial of Service": "CWE-1333",
+    "Timing Attack": "CWE-208",
 }
 
 
@@ -63,6 +81,12 @@ _BRAKEMAN_SEVERITY = {
     "Insecure Cryptography Algorithm": "HIGH",
     "Regex Denial of Service": "MEDIUM",
     "Timing Attack": "LOW",
+    # Types railsgoat emits that had no severity entry either, so parse() was
+    # warning "unmapped warning_type" and silently defaulting them to MEDIUM.
+    "Unscoped Find": "MEDIUM",
+    "Dangerous Send": "MEDIUM",
+    "Missing Encryption": "MEDIUM",
+    "Format Validation": "LOW",
 }
 
 
@@ -115,8 +139,28 @@ class BrakemanAdapter:
                     return True
         return False
 
+    _RAILS_ROOT_MARKERS = ("config/routes.rb", "config/application.rb",
+                           "config/environment.rb")
+
+    def _is_canonical_rails_root(self, target: str) -> bool:
+        return any(os.path.isfile(os.path.join(target, m))
+                   for m in self._RAILS_ROOT_MARKERS)
+
     def invoke(self, target: str) -> tuple[bytes, int]:
         cmd = ["brakeman", "--format", "json", "--quiet", "--run-all-checks", target]
+        # A Rails ENGINE (or a monorepo of them) has app/controllers and a
+        # rails Gemfile but no config/routes.rb, so brakeman refuses it --
+        # "Please supply the path to a Rails application" -- writes nothing, and
+        # lands in tool_manifest.missing, which GATES. That is the fzf failure
+        # (#1452) recurring on a repo shape is_applicable is right to accept.
+        #
+        # `--force` is exactly the escape hatch brakeman names in that message,
+        # and the coverage is real rather than nominal: on solidus it turns 0
+        # findings into 38, across 160 controllers and 289 models. Only added
+        # when the canonical markers are absent, so a normal Rails app keeps its
+        # default, stricter behaviour.
+        if not self._is_canonical_rails_root(target):
+            cmd.insert(1, "--force")
         stdout, rc = run_tool(cmd, timeout=300, ok_codes=(0, 1, 2, 3))
         # Brakeman exits 2 when warnings are found and 3 when warnings plus minor
         # parsing errors occur. Treat both as successful scans so the output is

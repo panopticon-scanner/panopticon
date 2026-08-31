@@ -1,0 +1,540 @@
+{
+ "results": [
+  {
+   "source": {
+    "path": "/src/go.mod",
+    "type": "lockfile"
+   },
+   "packages": [
+    {
+     "package": {
+      "name": "filippo.io/edwards25519",
+      "version": "1.1.0",
+      "ecosystem": "Go"
+     },
+     "vulnerabilities": [
+      {
+       "modified": "2026-02-20T16:54:58Z",
+       "published": "2026-02-18T22:37:15Z",
+       "schema_version": "1.7.3",
+       "id": "GHSA-fw7p-63qq-7hpr",
+       "aliases": [
+        "CVE-2026-26958",
+        "GO-2026-4503"
+       ],
+       "related": [
+        "CGA-2p5w-8865-7rch"
+       ],
+       "summary": "filippo.io/edwards25519 MultiScalarMult produces invalid results or undefined behavior if receiver is not the identity",
+       "details": "`(*Point).MultiScalarMult` failed to initialize its receiver.\n\nIf the method was called on an initialized point that is not the identity point, MultiScalarMult produced an incorrect result.\n\nIf the method was called on an uninitialized point, the behavior was undefined. In particular, if the receiver was the zero value, MultiScalarMult returned an invalid point that compared Equal to every point.\n\n*Note that MultiScalarMult is a rarely used advanced API. For example, if you only depend on `filippo.io/edwards25519` via `github.com/go-sql-driver/mysql`, **you are not affected**. If you were notified of this issue despite not being affected, consider switching to a vulnerability scanner that is more precise and respectful of your attention, like [govulncheck](https://go.dev/doc/tutorial/govulncheck).*",
+       "affected": [
+        {
+         "package": {
+          "ecosystem": "Go",
+          "name": "filippo.io/edwards25519",
+          "purl": "pkg:golang/filippo.io/edwards25519"
+         },
+         "ranges": [
+          {
+           "type": "SEMVER",
+           "events": [
+            {
+             "introduced": "0"
+            },
+            {
+             "fixed": "1.1.1"
+            }
+           ]
+          }
+         ],
+         "database_specific": {
+          "source": "https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/02/GHSA-fw7p-63qq-7hpr/GHSA-fw7p-63qq-7hpr.json"
+         }
+        }
+       ],
+       "severity": [
+        {
+         "type": "CVSS_V4",
+         "score": "CVSS:4.0/AV:N/AC:H/AT:P/PR:N/UI:N/VC:N/VI:N/VA:L/SC:N/SI:N/SA:N/E:U"
+        }
+       ],
+       "references": [
+        {
+         "type": "WEB",
+         "url": "https://github.com/FiloSottile/edwards25519/security/advisories/GHSA-fw7p-63qq-7hpr"
+        },
+        {
+         "type": "ADVISORY",
+         "url": "https://nvd.nist.gov/vuln/detail/CVE-2026-26958"
+        },
+        {
+         "type": "WEB",
+         "url": "https://github.com/FiloSottile/edwards25519/commit/d1c650afb95fad0742b98d95f2eb2cf031393abb"
+        },
+        {
+         "type": "PACKAGE",
+         "url": "https://github.com/FiloSottile/edwards25519"
+        },
+        {
+         "type": "WEB",
+         "url": "https://github.com/FiloSottile/edwards25519/releases/tag/v1.1.1"
+        }
+       ],
+       "database_specific": {
+        "cwe_ids": [
+         "CWE-665"
+        ],
+        "github_reviewed": true,
+        "github_reviewed_at": "2026-02-18T22:37:15Z",
+        "nvd_published_at": "2026-02-19T23:16:26Z",
+        "severity": "LOW"
+       }
+      }
+     ],
+     "groups": [
+      {
+       "ids": [
+        "GHSA-fw7p-63qq-7hpr"
+       ],
+       "aliases": [
+        "CVE-2026-26958",
+        "GHSA-fw7p-63qq-7hpr",
+        "GO-2026-4503"
+       ],
+       "max_severity": "1.7"
+      }
+     ]
+    },
+    {
+     "package": {
+      "name": "github.com/jackc/pgx/v5",
+      "version": "5.7.6",
+      "ecosystem": "Go"
+     },
+     "vulnerabilities": [
+      {
+       "modified": "2026-04-17T12:29:10Z",
+       "published": "2026-04-07T18:31:36Z",
+       "schema_version": "1.7.5",
+       "id": "GHSA-9jj7-4m8r-rfcm",
+       "aliases": [
+        "CVE-2026-33816",
+        "GO-2026-4772"
+       ],
+       "related": [
+        "CGA-93c9-w6q6-9vf3"
+       ],
+       "summary": "Memory-safety vulnerability in github.com/jackc/pgx/v5.",
+       "details": "Memory-safety vulnerability in github.com/jackc/pgx/v5.",
+       "affected": [
+        {
+         "package": {
+          "ecosystem": "Go",
+          "name": "github.com/jackc/pgx/v5",
+          "purl": "pkg:golang/github.com/jackc/pgx/v5"
+         },
+         "ranges": [
+          {
+           "type": "SEMVER",
+           "events": [
+            {
+             "introduced": "0"
+            },
+            {
+             "fixed": "5.9.0"
+            }
+           ]
+          }
+         ],
+         "database_specific": {
+          "source": "https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-9jj7-4m8r-rfcm/GHSA-9jj7-4m8r-rfcm.json"
+         }
+        }
+       ],
+       "severity": [
+        {
+         "type": "CVSS_V3",
+         "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+        }
+       ],
+       "references": [
+        {
+         "type": "ADVISORY",
+         "url": "https://nvd.nist.gov/vuln/detail/CVE-2026-33816"
+        },
+        {
+         "type": "PACKAGE",
+         "url": "https://github.com/jackc/pgx"
+        },
+        {
+         "type": "WEB",
+         "url": "https://pkg.go.dev/vuln/GO-2026-4772"
+        }
+       ],
+       "database_specific": {
+        "cwe_ids": [
+         "CWE-20"
+        ],
+        "github_reviewed": true,
+        "github_reviewed_at": "2026-04-16T21:31:34Z",
+        "nvd_published_at": "2026-04-07T16:16:24Z",
+        "severity": "CRITICAL"
+       }
+      },
+      {
+       "modified": "2026-06-25T18:56:34Z",
+       "published": "2026-04-22T20:46:51Z",
+       "schema_version": "1.7.5",
+       "id": "GHSA-j88v-2chj-qfwx",
+       "aliases": [
+        "CVE-2026-41889",
+        "GO-2026-5004"
+       ],
+       "related": [
+        "CGA-rrgr-7xqx-rg3q"
+       ],
+       "summary": "pgx: SQL Injection via placeholder confusion with dollar quoted string literals",
+       "details": "### Impact\n\nSQL Injection can occur when:\n\n1. The non-default simple protocol is used.\n2. A dollar quoted string literal is used in the SQL query.\n3. That string literal contains text that would be would be interpreted as a placeholder outside of a string literal.\n4. The value of that placeholder is controllable by the attacker.\n\ne.g.\n\n```go\nattackValue := `$tag$; drop table canary; --`\n_, err = tx.Exec(ctx, `select $tag$ $1 $tag$, $1`, pgx.QueryExecModeSimpleProtocol, attackValue)\n```\n\nThis is unlikely to occur outside of a contrived scenario.\n\n### Patches\n\nThe problem is resolved in v5.9.2.\n\n### Workarounds\n\nDo not use the simple protocol to execute queries matching all the above conditions.",
+       "affected": [
+        {
+         "package": {
+          "ecosystem": "Go",
+          "name": "github.com/jackc/pgx/v5",
+          "purl": "pkg:golang/github.com/jackc/pgx/v5"
+         },
+         "ranges": [
+          {
+           "type": "SEMVER",
+           "events": [
+            {
+             "introduced": "0"
+            },
+            {
+             "fixed": "5.9.2"
+            }
+           ]
+          }
+         ],
+         "database_specific": {
+          "source": "https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-j88v-2chj-qfwx/GHSA-j88v-2chj-qfwx.json"
+         }
+        },
+        {
+         "package": {
+          "ecosystem": "Go",
+          "name": "github.com/jackc/pgx/v4",
+          "purl": "pkg:golang/github.com/jackc/pgx/v4"
+         },
+         "ranges": [
+          {
+           "type": "SEMVER",
+           "events": [
+            {
+             "introduced": "0"
+            },
+            {
+             "last_affected": "4.18.3"
+            }
+           ]
+          }
+         ],
+         "database_specific": {
+          "source": "https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-j88v-2chj-qfwx/GHSA-j88v-2chj-qfwx.json"
+         }
+        },
+        {
+         "package": {
+          "ecosystem": "Go",
+          "name": "github.com/jackc/pgx",
+          "purl": "pkg:golang/github.com/jackc/pgx"
+         },
+         "ranges": [
+          {
+           "type": "SEMVER",
+           "events": [
+            {
+             "introduced": "0"
+            },
+            {
+             "last_affected": "3.6.2"
+            }
+           ]
+          }
+         ],
+         "database_specific": {
+          "source": "https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-j88v-2chj-qfwx/GHSA-j88v-2chj-qfwx.json"
+         }
+        }
+       ],
+       "severity": [
+        {
+         "type": "CVSS_V4",
+         "score": "CVSS:4.0/AV:N/AC:H/AT:P/PR:L/UI:N/VC:N/VI:L/VA:N/SC:N/SI:N/SA:N"
+        }
+       ],
+       "references": [
+        {
+         "type": "WEB",
+         "url": "https://github.com/jackc/pgx/security/advisories/GHSA-j88v-2chj-qfwx"
+        },
+        {
+         "type": "ADVISORY",
+         "url": "https://nvd.nist.gov/vuln/detail/CVE-2026-41889"
+        },
+        {
+         "type": "WEB",
+         "url": "https://github.com/jackc/pgx/commit/60644f84918a8af66d14a4b0d865d4edafd955da"
+        },
+        {
+         "type": "PACKAGE",
+         "url": "https://github.com/jackc/pgx"
+        },
+        {
+         "type": "WEB",
+         "url": "https://github.com/jackc/pgx/releases/tag/v5.9.2"
+        }
+       ],
+       "database_specific": {
+        "cwe_ids": [
+         "CWE-89"
+        ],
+        "github_reviewed": true,
+        "github_reviewed_at": "2026-04-22T20:46:51Z",
+        "nvd_published_at": "2026-05-08T17:16:31Z",
+        "severity": "LOW"
+       }
+      },
+      {
+       "modified": "2026-06-26T20:15:09Z",
+       "published": "2026-04-07T18:31:36Z",
+       "schema_version": "1.7.5",
+       "id": "GHSA-xgrm-4fwx-7qm8",
+       "aliases": [
+        "CVE-2026-33815",
+        "GO-2026-4771"
+       ],
+       "related": [
+        "CGA-7v58-q3h2-qfr7"
+       ],
+       "summary": "pgx contains memory-safety vulnerability",
+       "details": "[pgx](github.com/jackc/pgx/v5) is a pure Go driver and toolkit for PostgreSQL. pgx prior to v5.9.0 contains a memory-safety vulnerability.",
+       "affected": [
+        {
+         "package": {
+          "ecosystem": "Go",
+          "name": "github.com/jackc/pgx/v5",
+          "purl": "pkg:golang/github.com/jackc/pgx/v5"
+         },
+         "ranges": [
+          {
+           "type": "SEMVER",
+           "events": [
+            {
+             "introduced": "0"
+            },
+            {
+             "fixed": "5.9.0"
+            }
+           ]
+          }
+         ],
+         "database_specific": {
+          "source": "https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-xgrm-4fwx-7qm8/GHSA-xgrm-4fwx-7qm8.json"
+         }
+        }
+       ],
+       "severity": [
+        {
+         "type": "CVSS_V3",
+         "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+        }
+       ],
+       "references": [
+        {
+         "type": "ADVISORY",
+         "url": "https://nvd.nist.gov/vuln/detail/CVE-2026-33815"
+        },
+        {
+         "type": "WEB",
+         "url": "https://github.com/jackc/pgx/issues/2519"
+        },
+        {
+         "type": "WEB",
+         "url": "https://github.com/jackc/pgx/issues/2530"
+        },
+        {
+         "type": "WEB",
+         "url": "https://github.com/jackc/pgx/commit/6dbad4cafdb8a4daab7ff79c858c95da4b6109e8"
+        },
+        {
+         "type": "WEB",
+         "url": "https://pkg.go.dev/vuln/GO-2026-4771"
+        },
+        {
+         "type": "PACKAGE",
+         "url": "github.com/jackc/pgx/v5"
+        }
+       ],
+       "database_specific": {
+        "cwe_ids": [],
+        "github_reviewed": true,
+        "github_reviewed_at": "2026-04-10T14:10:46Z",
+        "nvd_published_at": "2026-04-07T16:16:24Z",
+        "severity": "CRITICAL"
+       }
+      }
+     ],
+     "groups": [
+      {
+       "ids": [
+        "GHSA-9jj7-4m8r-rfcm"
+       ],
+       "aliases": [
+        "CVE-2026-33816",
+        "GHSA-9jj7-4m8r-rfcm",
+        "GO-2026-4772"
+       ],
+       "max_severity": "9.8"
+      },
+      {
+       "ids": [
+        "GHSA-j88v-2chj-qfwx"
+       ],
+       "aliases": [
+        "CVE-2026-41889",
+        "GHSA-j88v-2chj-qfwx",
+        "GO-2026-5004"
+       ],
+       "max_severity": "2.3"
+      },
+      {
+       "ids": [
+        "GHSA-xgrm-4fwx-7qm8"
+       ],
+       "aliases": [
+        "CVE-2026-33815",
+        "GHSA-xgrm-4fwx-7qm8",
+        "GO-2026-4771"
+       ],
+       "max_severity": "9.8"
+      }
+     ]
+    },
+    {
+     "package": {
+      "name": "github.com/quic-go/quic-go",
+      "version": "0.59.0",
+      "ecosystem": "Go"
+     },
+     "vulnerabilities": [
+      {
+       "modified": "2026-07-07T20:41:13Z",
+       "published": "2026-06-03T20:59:49Z",
+       "schema_version": "1.7.5",
+       "id": "GHSA-vvgj-x9jq-8cj9",
+       "aliases": [
+        "CVE-2026-40898",
+        "GO-2026-5676"
+       ],
+       "related": [
+        "CGA-54j9-cg2g-pxxm"
+       ],
+       "summary": "quic-go: HTTP/3 QPACK Trailer Expansion Memory Exhaustion ",
+       "details": "## Summary\n\nAn attacker can cause excessive memory allocation in quic-go's HTTP/3 client and server implementations by sending a QPACK-encoded HEADERS frame that decodes into a large trailer field section with many unique field names and/or large values. The implementation builds an `http.Header` for the corresponding `http.Request` or `http.Response`, while only enforcing limits on the size of the QPACK-compressed HEADERS frame, not on the decoded field section. This can lead to memory exhaustion.\n\nThis is very similar to CVE-2025-64702. The difference is that this issue uses HTTP trailers, rather than HTTP headers, as the attack vector.\n\n## Impact\n\nA misbehaving or malicious peer can cause a denial-of-service (DoS) attack against quic-go's HTTP/3 servers or clients by triggering excessive memory allocation, potentially leading to crashes or resource exhaustion. This affects both servers and clients due to symmetric header construction.\n\n## Details\n\nIn HTTP/3, field sections are compressed using QPACK (RFC 9204). Field sections are used for both HTTP headers and trailers. quic-go's HTTP/3 server and client decode the QPACK-encoded HEADERS frame into header fields, then construct an `http.Request` or `http.Response`.\n\n`http3.Server.MaxHeaderBytes` and `http3.Transport.MaxResponseHeaderBytes` limit the encoded HEADERS frame size, with defaults of 1 MB for servers and 10 MB for clients. However, they did not limit the decoded field section size. A maliciously crafted HEADERS frame carrying trailers can expand to about 50x the encoded size using QPACK static table entries with long names and/or values.\n\nRFC 9114 requires endpoints to enforce decoded field section size limits via SETTINGS, which quic-go did not do for trailers.\n\n## The Fix\n\nquic-go now enforces RFC 9114 decoded field section size limits for trailers as well. It incrementally decodes QPACK entries and checks the field section size after each entry, aborting the stream if an entry causes the limit to be exceeded.",
+       "affected": [
+        {
+         "package": {
+          "ecosystem": "Go",
+          "name": "github.com/quic-go/quic-go",
+          "purl": "pkg:golang/github.com/quic-go/quic-go"
+         },
+         "ranges": [
+          {
+           "type": "SEMVER",
+           "events": [
+            {
+             "introduced": "0"
+            },
+            {
+             "fixed": "0.59.1"
+            }
+           ]
+          }
+         ],
+         "database_specific": {
+          "last_known_affected_version_range": "<= 0.59.0",
+          "source": "https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-vvgj-x9jq-8cj9/GHSA-vvgj-x9jq-8cj9.json"
+         }
+        }
+       ],
+       "severity": [
+        {
+         "type": "CVSS_V3",
+         "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L"
+        }
+       ],
+       "references": [
+        {
+         "type": "WEB",
+         "url": "https://github.com/quic-go/quic-go/security/advisories/GHSA-vvgj-x9jq-8cj9"
+        },
+        {
+         "type": "ADVISORY",
+         "url": "https://nvd.nist.gov/vuln/detail/CVE-2026-40898"
+        },
+        {
+         "type": "WEB",
+         "url": "https://github.com/quic-go/quic-go/pull/5642"
+        },
+        {
+         "type": "WEB",
+         "url": "https://github.com/quic-go/quic-go/commit/c56e8c79d1627cc1ed6005b421b4b0adadd83665"
+        },
+        {
+         "type": "ADVISORY",
+         "url": "https://github.com/advisories/GHSA-g754-hx8w-x2g6"
+        },
+        {
+         "type": "PACKAGE",
+         "url": "https://github.com/quic-go/quic-go"
+        },
+        {
+         "type": "WEB",
+         "url": "https://github.com/quic-go/quic-go/releases/tag/v0.59.1"
+        }
+       ],
+       "database_specific": {
+        "cwe_ids": [
+         "CWE-770"
+        ],
+        "github_reviewed": true,
+        "github_reviewed_at": "2026-06-03T20:59:49Z",
+        "nvd_published_at": "2026-06-04T19:16:28Z",
+        "severity": "MODERATE"
+       }
+      }
+     ],
+     "groups": [
+      {
+       "ids": [
+        "GHSA-vvgj-x9jq-8cj9"
+       ],
+       "aliases": [
+        "CVE-2026-40898",
+        "GHSA-vvgj-x9jq-8cj9",
+        "GO-2026-5676"
+       ],
+       "max_severity": "5.3"
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "experimental_config": {
+  "licenses": {
+   "summary": false,
+   "allowlist": null
+  }
+ }
+}
