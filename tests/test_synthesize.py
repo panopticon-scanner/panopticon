@@ -105,6 +105,60 @@ class TestFindingsFileIntegrity(unittest.TestCase):
             self.assertEqual(syn.mislabeled_findings_files([bad]), [bad])
             self.assertEqual(syn.mislabeled_findings_files([wrong_group]), [wrong_group])
 
+    def test_cross_domain_finding_is_not_a_mislabeled_file(self):
+        # #calibration-4 (gotify): the stamp is CORRECT -- the file is exactly
+        # where it belongs -- but one finding is filed under another domain.
+        # That is a reviewer stepping outside its lane, not a mis-targeted
+        # write, and it must not sink certification. On gotify it did: 0 stamp
+        # mismatches across 160 files, 3 cross-domain findings in 2 of them,
+        # and the whole run came back NOT CERTIFIED.
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "findings-ClientDevices-ARC.json")
+            with open(p, "w") as fh:
+                json.dump({"findings": [{"domain": "ARC", "ocrdb_code": "ARC-D1E"},
+                                        {"domain": "TST", "ocrdb_code": "TST-X0X"}],
+                           "_panopticon": {"group": "ClientDevices",
+                                           "domain": "ARC"}}, fh)
+            self.assertEqual(syn.mislabeled_findings_files([p]), [])
+            xd = syn.cross_domain_findings([p])
+            self.assertEqual(len(xd), 1)
+            self.assertEqual(xd[0]["cell_domain"], "ARC")
+            self.assertEqual(xd[0]["finding_domain"], "TST")
+            self.assertEqual(xd[0]["code"], "TST-X0X")
+
+    def test_cross_domain_findings_ignores_in_domain_and_absent(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "findings-g1-SEC.json")
+            with open(p, "w") as fh:
+                json.dump({"findings": [{"domain": "SEC"}, {"title": "no domain"}],
+                           "_panopticon": {"group": "g1", "domain": "SEC"}}, fh)
+            self.assertEqual(syn.cross_domain_findings([p]), [])
+
+    def test_cross_domain_findings_do_not_block_certification(self):
+        # The whole point of the split: reported, never gating. Asserted
+        # against the mislabeled case in the same shape, so this cannot pass
+        # by simply failing to notice either field.
+        def report(**integrity):
+            base = {"unexpected_findings_files": [], "missing_planned_files": [],
+                    "duplicate_out_files": [], "mislabeled_findings_files": [],
+                    "cross_domain_findings": [], "empty_dispatch_plans": 0,
+                    "invalid_dispatch_plans": [], "invalid_verify_queue": None,
+                    "unenforced_acknowledged": False, "plans_seen": 1}
+            base.update(integrity)
+            return syn.build_report([], [], "t", "high", "2026-01-01T00:00:00Z",
+                                    integrity=base)
+
+        xdom = [{"file": "findings-g1-ARC.json", "cell_domain": "ARC",
+                 "finding_domain": "TST", "code": "TST-X0X"}]
+        clean_gate = report()["summary"]["gate"]
+        self.assertEqual(report(cross_domain_findings=xdom)["summary"]["gate"],
+                         clean_gate, "cross-domain findings changed the gate")
+        # the genuine integrity failure still does gate, so the assertion above
+        # is meaningful rather than vacuous
+        self.assertEqual(
+            report(mislabeled_findings_files=["findings-g1-ARC.json"])["summary"]["gate"],
+            "INCONCLUSIVE")
+
     def test_absent_fields_are_not_second_guessed(self):
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "findings-g1-COD.json")
@@ -4657,6 +4711,7 @@ class TestIntegrity(unittest.TestCase):
                 "missing_planned_files": [],
                 "duplicate_out_files": [],
                 "mislabeled_findings_files": [],
+                "cross_domain_findings": [],
                 "empty_dispatch_plans": 0,
                 "invalid_dispatch_plans": [],
                 "invalid_verify_queue": None,
@@ -4677,6 +4732,7 @@ class TestIntegrity(unittest.TestCase):
                 "missing_planned_files": [],
                 "duplicate_out_files": [],
                 "mislabeled_findings_files": [],
+                "cross_domain_findings": [],
                 "empty_dispatch_plans": 0,
                 "invalid_dispatch_plans": [],
                 "invalid_verify_queue": None,
