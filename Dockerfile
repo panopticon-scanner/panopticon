@@ -133,7 +133,9 @@ RUN set -euo pipefail \
     && printf 'module verify\n\ngo 1.21\n' > /tmp/gosec-verify/go.mod \
     && printf 'package verify\n\nvar token = "AKIAIOSFODNN7EXAMPLE_hardcoded_secret_value"\n' \
        > /tmp/gosec-verify/main.go \
-    && (cd /tmp/gosec-verify && gosec -fmt=json -no-fail ./... > /tmp/gosec-verify.json 2>/tmp/gosec-verify.log || true) \
+    # An absolute package path, not `cd &&`: gosec resolves the module from the
+    # path itself, and this keeps the step a single WORKDIR-free command (DL3003).
+    && (gosec -fmt=json -no-fail /tmp/gosec-verify/... > /tmp/gosec-verify.json 2>/tmp/gosec-verify.log || true) \
     && python3 -c "\
 import json, sys; \
 d = json.load(open('/tmp/gosec-verify.json')); \
