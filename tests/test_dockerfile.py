@@ -156,6 +156,59 @@ class TestOfflineAssets(unittest.TestCase):
         osv_block = self.text.split(start_marker)[1].split(end_marker)[0]
         self.assertNotIn("/dev/null", osv_block)
 
+    def test_gosec_has_the_go_toolchain_it_requires(self):
+        # #calibration-4 (gotify): the image shipped the gosec BINARY but no Go
+        # toolchain. gosec loads packages through go/packages, which shells out
+        # to `go`; without it every package fails to load and gosec STILL EXITS
+        # CLEANLY, writing a well-formed SARIF with zero results. That lands in
+        # tool_manifest.produced, satisfies `missing: []`, and certifies the run
+        # -- so a Go target got a scanner that reported success having read
+        # nothing. Both Go targets scanned to date (fzf, gotify) had zero gosec
+        # coverage: 185 real findings between them, silently absent. Worse than
+        # the osv-scanner gap, which at least exited 127 and gated.
+        self.assertIn("ARG GO_VERSION=", self.text, "no pinned Go toolchain")
+        self.assertRegex(self.text, r"go\$\{GO_VERSION\}\.linux-",
+                         "Go toolchain is not fetched from the pinned version")
+        self.assertIn("ENV PATH=/usr/local/go/bin:$PATH", self.text,
+                      "Go toolchain installed but not on PATH")
+        # No network at scan time, so a target's go.mod must never be able to
+        # send Go looking for a different toolchain to download.
+        self.assertIn("ENV GOTOOLCHAIN=local", self.text)
+
+    def test_gosec_is_proven_to_read_go_source_at_build(self):
+        # A binary that runs is not a scanner that scans. The `Files: 0` failure
+        # above is invisible in every signal the run records, so the only place
+        # to catch it is the build: compile a module with one obvious finding
+        # and fail unless gosec both LOADS it and REPORTS the issue. Mirrors the
+        # per-ecosystem OSV warm verification, for the same reason.
+        self.assertIn("/tmp/gosec-verify", self.text,
+                      "no build-time proof that gosec can read Go source")
+        self.assertIn("gosec read %d files / %d issues", self.text,
+                      "gosec verification does not assert on files AND issues")
+        start, end = "mkdir -p /tmp/gosec-verify", "rm -rf /tmp/gosec-verify"
+        self.assertIn(start, self.text, "gosec-verify block start marker missing")
+        self.assertIn(end, self.text, "gosec-verify block end marker missing")
+        block = self.text.split(start)[1].split(end)[0]
+        # The gosec invocation itself may not be silenced -- swallowing its
+        # output is how the original defect stayed invisible for two runs.
+        self.assertNotIn("/dev/null", block)
+
+    def test_gosec_and_go_versions_are_compatible(self):
+        # These two are a PAIR, not independent pins. gosec type-checks through
+        # go/packages and cannot read export data from a toolchain newer than
+        # the one it was built against: Go 1.27 + gosec 2.20.0 failed with
+        # `internal error: package "errors" without types was imported`, which
+        # is the same zero-coverage outcome by another route. Whoever bumps one
+        # must bump the other, so assert both pins are present and explicit.
+        go = re.search(r"ARG GO_VERSION=(\S+)", self.text)
+        gosec = re.search(r"ARG GOSEC_VERSION=(\S+)", self.text)
+        self.assertIsNotNone(go, "GO_VERSION pin missing")
+        self.assertIsNotNone(gosec, "GOSEC_VERSION pin missing")
+        self.assertRegex(go.group(1), r"^\d+\.\d+(\.\d+)?$")
+        self.assertRegex(gosec.group(1), r"^\d+\.\d+(\.\d+)?$")
+        self.assertIn("Bump these two together.", self.text,
+                      "the Go/gosec version coupling is not documented at the pin")
+
     def test_publish_cadence_and_tags(self):
         with open(os.path.join(ROOT, ".github", "workflows",
                                "docker-publish.yml"), encoding="utf-8") as fh:
