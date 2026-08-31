@@ -491,6 +491,52 @@ class TestHostUsageCollection(unittest.TestCase):
         self.assertNotEqual(os.path.realpath(project_dir), os.path.realpath(d),
                             "--project-dir must not be the scanned target")
 
+    def test_session_dir_overrides_cwd_for_project_dir(self):
+        # #calibration-4 (gotify): getcwd() is the session dir only when the
+        # driver was launched FROM it. `cd <target> && driver run .` -- an
+        # equally natural invocation -- makes it the scanned repo, the
+        # transcript slug does not exist, and meta.cost.tokens silently stays
+        # null on a 612M-token run. The operator can now say where the session
+        # is, since the driver cannot deduce it.
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch("scripts.driver._run_child") as run:
+            run.return_value = mock.Mock(returncode=0)
+            driver._collect_host_usage(
+                d, self._manifest(session_dir="/somewhere/session"))
+        cmd = run.call_args[0][0]
+        self.assertEqual(cmd[cmd.index("--project-dir") + 1], "/somewhere/session")
+
+    def test_empty_session_dir_falls_back_to_cwd(self):
+        # A blank value must not win over the default -- it would resolve to a
+        # slug for "" and reproduce the silent-null it exists to prevent.
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch("scripts.driver._run_child") as run:
+            run.return_value = mock.Mock(returncode=0)
+            driver._collect_host_usage(d, self._manifest(session_dir=""))
+        cmd = run.call_args[0][0]
+        self.assertEqual(cmd[cmd.index("--project-dir") + 1], os.getcwd())
+
+    def test_collection_failure_names_the_directory_and_the_flag(self):
+        # "produced nothing (rc 1)" alone does not tell the operator that the
+        # searched directory was the wrong one, which is the likely cause.
+        buf = io.StringIO()
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch("scripts.driver._run_child") as run, \
+             contextlib.redirect_stderr(buf):
+            run.return_value = mock.Mock(returncode=1)
+            driver._collect_host_usage(
+                d, self._manifest(session_dir="/somewhere/session"))
+        err = buf.getvalue()
+        self.assertIn("/somewhere/session", err)
+        self.assertIn("--session-dir", err)
+
+    def test_run_parser_accepts_session_dir(self):
+        args = driver.build_parser().parse_args(
+            ["run", ".", "--session-dir", "/s"])
+        self.assertEqual(args.session_dir, "/s")
+        self.assertIsNone(
+            driver.build_parser().parse_args(["run", "."]).session_dir)
+
     def test_non_claude_host_is_skipped(self):
         with tempfile.TemporaryDirectory() as d, \
              mock.patch("scripts.driver._run_child") as run:
