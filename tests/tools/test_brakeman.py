@@ -168,8 +168,12 @@ class TestBrakemanAdapter(unittest.TestCase):
                         return_value=fake_run) as popen_mock:
             stdout, rc = adapter.invoke("/tmp/fake")
         self.assertEqual(rc, 0)
+        # /tmp/fake carries no config/routes.rb, so it is not a canonical Rails
+        # root and picks up --force -- see
+        # test_force_is_added_only_for_a_non_canonical_rails_root.
         popen_mock.assert_called_once_with(
-            ["brakeman", "--format", "json", "--quiet", "--run-all-checks", "/tmp/fake"],
+            ["brakeman", "--force", "--format", "json", "--quiet",
+             "--run-all-checks", "/tmp/fake"],
             stdout=mock.ANY,
             stderr=mock.ANY,
         )
@@ -226,6 +230,38 @@ class TestBrakemanAdapter(unittest.TestCase):
             findings = adapter.parse(payload, "g1")
         self.assertEqual(first(findings)["severity"], "MEDIUM")
         self.assertIn("unmapped warning_type 'Future Mystery Warning'", buf.getvalue())
+
+    def test_force_is_added_only_for_a_non_canonical_rails_root(self):
+        # A Rails ENGINE has app/controllers and a rails Gemfile but no
+        # config/routes.rb. brakeman refuses it ("Please supply the path to a
+        # Rails application"), writes nothing, and lands in
+        # tool_manifest.missing -- which GATES. That is the fzf failure (#1452)
+        # on a repo shape is_applicable is right to accept. On solidus, --force
+        # turns 0 findings into 38 across 160 controllers and 289 models.
+        adapter = br.BrakemanAdapter()
+        with tempfile.TemporaryDirectory() as d:
+            engine = os.path.join(d, "engine")
+            os.makedirs(os.path.join(engine, "app", "controllers"))
+            captured = {}
+
+            def fake_run(cmd, **kw):
+                captured["cmd"] = cmd
+                return b"{}", 0
+
+            with mock.patch.object(br, "run_tool", side_effect=fake_run):
+                adapter.invoke(engine)
+            self.assertIn("--force", captured["cmd"],
+                          "engine repo did not get --force; brakeman will refuse it")
+
+            app = os.path.join(d, "app-root")
+            os.makedirs(os.path.join(app, "config"))
+            with open(os.path.join(app, "config", "routes.rb"), "w") as fh:
+                fh.write("Rails.application.routes.draw {}\n")
+            with mock.patch.object(br, "run_tool", side_effect=fake_run):
+                adapter.invoke(app)
+            self.assertNotIn("--force", captured["cmd"],
+                             "a canonical Rails app must keep brakeman's default, "
+                             "stricter behaviour")
 
     def test_railsgoat_fixture_shape(self):
         """Integration probe against the real RailsGoat fixture when available.
