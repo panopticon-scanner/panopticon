@@ -263,6 +263,25 @@ class TestBrakemanAdapter(unittest.TestCase):
                              "a canonical Rails app must keep brakeman's default, "
                              "stricter behaviour")
 
+    def test_severity_and_cwe_maps_cover_the_same_warning_types(self):
+        # These two maps are added to independently, and a type present in one
+        # but not the other fails SILENTLY: a missing severity defaults to
+        # MEDIUM with a stderr note, and a missing CWE just drops the citation,
+        # which then costs the finding its citation quality downstream. Both
+        # happened -- railsgoat exposed six such types, then solidus exposed two
+        # more (Denial of Service, Reverse Tabnabbing: 8 of its 38 findings).
+        # Requiring the key sets to match makes a half-addition a test failure
+        # rather than a quiet downgrade.
+        sev, cwe = set(br._BRAKEMAN_SEVERITY), set(br._BRAKEMAN_CWE)
+        self.assertEqual(
+            sev - cwe, set(),
+            "warning types with a severity but no CWE (findings reach synthesis "
+            "uncitable): %s" % sorted(sev - cwe))
+        self.assertEqual(
+            cwe - sev, set(),
+            "warning types with a CWE but no severity (findings silently "
+            "default to MEDIUM): %s" % sorted(cwe - sev))
+
     def test_railsgoat_fixture_shape(self):
         """Integration probe against the real RailsGoat fixture when available.
 

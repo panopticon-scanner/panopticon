@@ -50,6 +50,10 @@ _BRAKEMAN_CWE = {
     "Insecure Cryptography Algorithm": "CWE-327",
     "Regex Denial of Service": "CWE-1333",
     "Timing Attack": "CWE-208",
+    # Found by the first real Ruby target (solidus): 8 of its 38 brakeman
+    # findings, 21%, were landing uncitable on a default MEDIUM.
+    "Denial of Service": "CWE-400",
+    "Reverse Tabnabbing": "CWE-1022",
 }
 
 
@@ -87,6 +91,8 @@ _BRAKEMAN_SEVERITY = {
     "Dangerous Send": "MEDIUM",
     "Missing Encryption": "MEDIUM",
     "Format Validation": "LOW",
+    "Denial of Service": "MEDIUM",
+    "Reverse Tabnabbing": "LOW",
 }
 
 
