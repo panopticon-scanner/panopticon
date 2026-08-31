@@ -1970,6 +1970,25 @@ def validate_report(report):
     return errors, warnings
 
 
+def _health_headline(health):
+    """The health ratio as a headline field, or None when unavailable.
+
+    #calibration: promoted onto the top line beside Grade/Risk/Gate. The letter
+    grade is a worst-severity rollup, so it saturates -- across four calibration
+    targets every one graded D off a single HIGH while health ranged 0.55 to
+    1.51. The grade answers "does this gate?"; health answers "how much clean
+    code per unit of weighted defect?", and only the second told them apart.
+
+    Deliberately unbanded: four targets, all utilities or a library, is not a
+    sample to draw healthy/fair/dense thresholds from. The detailed line below
+    still carries the inputs so the ratio can be checked rather than trusted.
+    Health never touches the gate (#1057); this is presentation only.
+    """
+    if not isinstance(health, dict) or health.get("score") is None:
+        return None
+    return "**Health:** %s" % health["score"]
+
+
 def _render_health(health):
     """One-line health-ratio summary (#1146): score plus the clean-LoC and
     weighted-defect it reconciles from. n/a when there is no weighted defect."""
@@ -1978,8 +1997,14 @@ def _render_health(health):
     loc, wd, score = health.get("total_loc", 0), health.get("weighted_defect", 0), health.get("score")
     if score is None:
         return "**Health:** n/a (no gate-eligible weighted defect; %d clean LoC)" % loc
-    return "**Health:** %s (%d clean LoC / %d weighted defect; higher is healthier)" % (
-        score, loc, wd)
+    # The detail line carries the inputs AND the good direction: the headline
+    # field above is just the ratio, and a bare number does not say which way is
+    # better. Weights are stated so the footprint can be checked, not trusted.
+    return ("**Health:** %s \u2014 %s clean LoC / %s weighted defect; "
+            "HIGHER IS BETTER (weights: CRITICAL x125, HIGH x25, MEDIUM x5, "
+            "LOW x1, INFO x0, each x lines spanned). Gate-eligible findings "
+            "only; never affects the gate." % (
+                score, "{:,}".format(loc), "{:,}".format(wd)))
 
 
 def render_summary(report):
@@ -1989,9 +2014,10 @@ def render_summary(report):
     lines = [
         "# panopticon — %s" % report["meta"]["target"],
         "",
-        "**Grade:** %s  **Risk:** %s  **Gate:** %s" % (
+        "**Grade:** %s  **Risk:** %s  **Gate:** %s%s" % (
             (s["overall_grade"] or ("%s (provisional)" % s.get("provisional_grade"))),
-            s["risk_level"], s["gate"]),
+            s["risk_level"], s["gate"],
+            ("  " + _health_headline(s.get("health"))) if _health_headline(s.get("health")) else ""),
         "",
         "**Findings:** %s" % ", ".join(
             "%s %d" % (k.upper(), v) for k, v in s["stats"].items() if v),
