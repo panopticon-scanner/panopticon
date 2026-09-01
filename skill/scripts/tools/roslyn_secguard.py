@@ -144,13 +144,63 @@ class RoslynSecGuardAdapter:
     DROP_IF_NO_LOCATION = True
 
     def is_applicable(self, target: str) -> bool:
+        """A C# project WITH ITS DEPENDENCIES ALREADY RESTORED.
+
+        #calibration-6 (btcpayserver): a .csproj/.sln alone is not enough.
+        DotnetariumSCS compiles the target through Roslyn, and without restored
+        reference assemblies every single file fails to compile:
+
+            error CS0518: Predefined type 'System.Object' is not defined
+
+        It then writes a well-formed SARIF with `"results": []` and exits 2 --
+        so the adapter discards it, roslyn-secguard lands in
+        `tool_manifest.missing`, and the run is GATED on `tools_absent`. That is
+        the fzf/brakeman shape (#1452) and the gosec shape (#1457) in a third
+        costume: a scanner that cannot read the target, reporting nothing.
+
+        Scans mount the target read-only with `--network none`, so `dotnet
+        restore` can never run during a scan. A freshly cloned C# repo therefore
+        CANNOT be analysed, and selecting the tool only manufactures a gate.
+        btcpayserver has zero project.assets.json, obj/ or bin/.
+
+        The AspGoat fixture passes only because Dockerfile.fixtures runs
+        `dotnet restore && dotnet build` at IMAGE BUILD time, with network. That
+        is what made this look supported for so long: the fixture is restored,
+        every real target is not.
+
+        So require the restore output. A target whose dependencies are already
+        restored (a CI workspace, a developer checkout) still gets scanned; a
+        bare clone is disclosed as inapplicable rather than gating the run.
+        """
         if not os.path.isdir(target):
             return False
-        return any(
+        has_project = any(
             f.endswith(".csproj") or f.endswith(".sln")
             for f in os.listdir(target)
             if os.path.isfile(os.path.join(target, f))
         )
+        if not has_project:
+            return False
+        return self._has_restored_dependencies(target)
+
+    @staticmethod
+    def _has_restored_dependencies(target: str) -> bool:
+        """True when NuGet restore output is present somewhere in the tree.
+
+        `project.assets.json` is the definitive marker -- it is what restore
+        writes and what the compiler reads to resolve reference assemblies.
+
+        NOTE the prune list is deliberately NOT _ROSLYN_VENDOR_DIRS: that set
+        exists for FINDING PROJECT FILES and includes `obj`, which is precisely
+        where restore writes project.assets.json. Reusing it here made the check
+        always return False -- caught by the tests below.
+        """
+        skip = {".git", "node_modules", "packages", ".vs"}
+        for root, dirs, files in os.walk(target):
+            dirs[:] = [d for d in dirs if d not in skip]
+            if "project.assets.json" in files:
+                return True
+        return False
 
     def _build_target(self, target: str) -> str:
         sln_files = []

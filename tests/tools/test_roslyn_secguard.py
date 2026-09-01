@@ -463,11 +463,23 @@ class TestRoslynSecGuardIsApplicable(unittest.TestCase):
     def test_applicable_when_csproj_present(self):
         with tempfile.TemporaryDirectory() as d:
             open(os.path.join(d, "App.csproj"), "w").close()
+            self._restored(d)
             self.assertTrue(rs.RoslynSecGuardAdapter().is_applicable(d))
+
+    def _restored(self, d):
+        # #calibration-6: applicability now requires NuGet restore output as
+        # well as a project file -- without it Roslyn cannot resolve
+        # System.Object, let alone the target's own code. These two tests
+        # encoded the pre-#calibration-6 contract (a bare project file is
+        # enough), which btcpayserver disproved on a real target.
+        obj = os.path.join(d, "obj")
+        os.makedirs(obj, exist_ok=True)
+        open(os.path.join(obj, "project.assets.json"), "w").close()
 
     def test_applicable_when_sln_present(self):
         with tempfile.TemporaryDirectory() as d:
             open(os.path.join(d, "App.sln"), "w").close()
+            self._restored(d)
             self.assertTrue(rs.RoslynSecGuardAdapter().is_applicable(d))
 
     def test_not_applicable_without_dotnet_project_files(self):
@@ -480,6 +492,71 @@ class TestRoslynSecGuardIsApplicable(unittest.TestCase):
             path = os.path.join(d, "App.csproj")
             open(path, "w").close()
             self.assertFalse(rs.RoslynSecGuardAdapter().is_applicable(path))
+
+
+class TestRequiresRestoredDependencies(unittest.TestCase):
+    """#calibration-6: a .csproj alone is not a scannable target.
+
+    DotnetariumSCS compiles through Roslyn. Without restored reference
+    assemblies every file fails with `CS0518: Predefined type 'System.Object'
+    is not defined`, the scanner writes an empty-but-valid SARIF and exits 2,
+    the adapter discards it, and the run is GATED on tools_absent -- the same
+    shape as brakeman on fzf (#1452) and gosec on Go (#1457).
+
+    Scans are `--network none` with a read-only mount, so restore can never
+    happen mid-scan. Selecting the tool on a bare clone only manufactures a gate.
+    """
+
+    def _project(self, d, *, restored):
+        with open(os.path.join(d, "App.csproj"), "w", encoding="utf-8") as fh:
+            fh.write("<Project Sdk=\"Microsoft.NET.Sdk\"></Project>\n")
+        if restored:
+            obj = os.path.join(d, "obj")
+            os.makedirs(obj, exist_ok=True)
+            with open(os.path.join(obj, "project.assets.json"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("{}")
+        return d
+
+    def test_bare_clone_is_not_applicable(self):
+        a = rs.RoslynSecGuardAdapter()
+        with tempfile.TemporaryDirectory() as d:
+            self._project(d, restored=False)
+            self.assertFalse(
+                a.is_applicable(d),
+                "a C# project with no restore output cannot be compiled, so "
+                "selecting it only produces a tools_absent gate")
+
+    def test_restored_project_is_applicable(self):
+        a = rs.RoslynSecGuardAdapter()
+        with tempfile.TemporaryDirectory() as d:
+            self._project(d, restored=True)
+            self.assertTrue(a.is_applicable(d),
+                            "a restored workspace is still a valid target")
+
+    def test_restore_marker_is_found_at_depth(self):
+        # Real solutions nest projects; the marker is per-project, not at root.
+        a = rs.RoslynSecGuardAdapter()
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "App.sln"), "w", encoding="utf-8") as fh:
+                fh.write("Microsoft Visual Studio Solution File\n")
+            deep = os.path.join(d, "src", "Web", "obj")
+            os.makedirs(deep)
+            with open(os.path.join(deep, "project.assets.json"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("{}")
+            self.assertTrue(a.is_applicable(d))
+
+    def test_a_non_csharp_tree_is_still_not_applicable(self):
+        a = rs.RoslynSecGuardAdapter()
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "obj"))
+            with open(os.path.join(d, "obj", "project.assets.json"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("{}")
+            self.assertFalse(a.is_applicable(d),
+                             "restore output without a project is not a C# target")
+
 
 
 if __name__ == "__main__":
