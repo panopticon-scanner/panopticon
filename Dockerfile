@@ -194,19 +194,23 @@ RUN curl -sfL --connect-timeout 5 --max-time 120 "https://github.com/jeremylong/
 ENV CARGO_HOME=/usr/local/cargo
 ENV RUSTUP_HOME=/usr/local/rustup
 ENV PATH="/usr/local/cargo/bin:${PATH}"
-# FIXME (#run7 review): these SHAs pin the binary but are fetched from the
-# MOVING `rustup/dist/<triple>/rustup-init` URL, which always serves the LATEST
-# rustup. When rust-lang next ships a rustup release the served binary changes
-# and `sha256sum -c` fails, hard-breaking the next from-scratch Docker build on
-# an unrelated checksum mismatch. Pin like the dotnet installer below (an
-# immutable versioned URL): add `ARG RUSTUP_VERSION=<x.y.z>`, fetch from
-# `rustup/archive/${RUSTUP_VERSION}/<triple>/rustup-init`, and set the SHAs for
-# THAT version (requires looking them up from rust-lang -- do not guess).
-ARG RUSTUP_INIT_SHA256_AMD64=4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10
-ARG RUSTUP_INIT_SHA256_ARM64=9732d6c5e2a098d3521fca8145d826ae0aaa067ef2385ead08e6feac88fa5792
+# Fetched from the IMMUTABLE `rustup/archive/<version>/<triple>/` URL, not the
+# moving `rustup/dist/<triple>/` one. The #run7 FIXME here predicted the exact
+# failure that came true on 2026-09-01: `dist/` always serves the LATEST rustup,
+# so when rust-lang shipped 1.29.1 the pinned SHA stopped matching and EVERY
+# from-scratch build died on `sha256sum -c` -- a red CI on unrelated PRs, with
+# nothing in the diff to explain it.
+#
+# The archive URL serves one fixed build forever, so the pin is meaningful: a
+# mismatch now means the artifact changed, which is what a checksum is FOR.
+# Bumping means changing RUSTUP_VERSION and both SHAs together; read them from
+# `rustup/archive/<version>/<triple>/rustup-init.sha256` -- do not guess.
+ARG RUSTUP_VERSION=1.29.1
+ARG RUSTUP_INIT_SHA256_AMD64=dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71
+ARG RUSTUP_INIT_SHA256_ARM64=15f6e4ce9f583b929c996c91562bad6d4454f3281de858b02cdfdef615fac433
 RUN arch="$(dpkg --print-architecture)" \
     && case "$arch" in amd64) ru="x86_64-unknown-linux-gnu"; sha256="${RUSTUP_INIT_SHA256_AMD64}" ;; arm64) ru="aarch64-unknown-linux-gnu"; sha256="${RUSTUP_INIT_SHA256_ARM64}" ;; *) echo "unsupported arch: $arch" >&2; exit 1 ;; esac \
-    && curl -sfL --connect-timeout 5 --max-time 60 "https://static.rust-lang.org/rustup/dist/${ru}/rustup-init" \
+    && curl -sfL --connect-timeout 5 --max-time 60 "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${ru}/rustup-init" \
         -o /tmp/rustup-init \
     && echo "${sha256}  /tmp/rustup-init" | sha256sum -c - \
     && chmod +x /tmp/rustup-init \
