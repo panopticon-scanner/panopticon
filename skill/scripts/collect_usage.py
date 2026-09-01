@@ -249,6 +249,8 @@ def collect(run_dir, project_dir, transcript=None, tasks_dir=None, since=None):
     by_phase = {p: _zero() for p in PHASES}
     by_source = {"controller": _zero(), "subagents": _zero()}
     models, sources, agents = {}, [], 0
+    controller_records, subagent_records = 0, 0
+    by_phase_transcripts = {}
 
     if controller:
         t, n, m = scan(controller, since)
@@ -257,6 +259,7 @@ def collect(run_dir, project_dir, transcript=None, tasks_dir=None, since=None):
             models[k] = models.get(k, 0) + v
         sources.append({"path": controller, "kind": "controller",
                         "usage_records": n})
+        controller_records = n
 
     for p in tasks:
         t, n, m = scan(p, since)
@@ -268,6 +271,8 @@ def collect(run_dir, project_dir, transcript=None, tasks_dir=None, since=None):
         for k, v in m.items():
             models[k] = models.get(k, 0) + v
         agents += 1
+        subagent_records += n
+        by_phase_transcripts[phase] = by_phase_transcripts.get(phase, 0) + 1
         sources.append({"path": p, "kind": "subagent", "phase": phase,
                         "usage_records": n})
 
@@ -291,7 +296,29 @@ def collect(run_dir, project_dir, transcript=None, tasks_dir=None, since=None):
         "subagent_transcripts": agents,
         "by_model": models,
         "window_start": since,
-        "sources": sources,
+        # A SUMMARY, not the list. `sources` was one entry per transcript, each
+        # carrying an absolute path: 700 entries / 190 KB on gotify, which is
+        # 99% of meta.cost and ~99% of the whole report base.
+        #
+        # That is not inert weight. synthesize splits a report once its base --
+        # everything BUT the findings -- exceeds max_bytes, so a fat meta.cost
+        # forces a split no matter how few findings there are. A 2-finding
+        # fixture produced an 888 KB base and split into report.json (1 finding)
+        # + report_part2.json (1 finding). Nothing is lost, but every consumer
+        # that reads report.json alone now sees a partial report, and the
+        # trigger has nothing to do with how much was found.
+        #
+        # Solidus, at ~1,300 agents, would carry ~350 KB of paths. The
+        # per-transcript detail was never read by anything; the counts are what
+        # the ledger is for, and the transcripts remain on disk for anyone who
+        # needs to audit the number.
+        "sources": {
+            "controller_transcripts": 1 if controller else 0,
+            "controller_usage_records": controller_records,
+            "subagent_transcripts": agents,
+            "subagent_usage_records": subagent_records,
+            "subagent_transcripts_by_phase": by_phase_transcripts,
+        },
     }
 
 
