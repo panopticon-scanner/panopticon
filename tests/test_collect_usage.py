@@ -303,5 +303,56 @@ class TestEndToEndIntoTheReport(unittest.TestCase):
         self.assertEqual(surfaced["total"], 99)
 
 
+
+
+class TestSourcesIsASummary(unittest.TestCase):
+    """`sources` must stay O(1), not O(transcripts).
+
+    It was one entry per transcript, each with an absolute path: 700 entries and
+    190 KB on gotify -- 99% of meta.cost, and ~99% of the report BASE. synthesize
+    splits a report once its base (everything but the findings) passes max_bytes,
+    so that made the split trigger a function of how many agents ran rather than
+    how much was found: a 2-finding fixture produced an 888 KB base and split
+    into report.json + report_part2.json. Nothing was lost, but a consumer
+    reading report.json alone saw half the findings.
+    """
+
+    def _usage(self, n_subagents):
+        with tempfile.TemporaryDirectory() as d:
+            tasks = os.path.join(d, "tasks")
+            os.makedirs(tasks)
+            rec = json.dumps({"message": {"usage": {"input_tokens": 1,
+                                                    "output_tokens": 1},
+                                          "model": "m"}}) + "\n"
+            ctl = os.path.join(d, "controller.jsonl")
+            with open(ctl, "w", encoding="utf-8") as fh:
+                fh.write(rec)
+            for i in range(n_subagents):
+                with open(os.path.join(tasks, "review-g%d-SEC.jsonl" % i), "w",
+                          encoding="utf-8") as fh:
+                    fh.write(rec)
+            return cu.collect(d, d, transcript=ctl, tasks_dir=tasks)
+
+    def test_sources_does_not_grow_with_transcript_count(self):
+        small = self._usage(3)
+        large = self._usage(300)
+        if small is None or large is None:
+            self.skipTest("collect() found no usage records in the fixture")
+        s_bytes = len(json.dumps(small["sources"]))
+        l_bytes = len(json.dumps(large["sources"]))
+        self.assertLess(
+            l_bytes, s_bytes * 2,
+            "sources grew with transcript count (%d -> %d bytes): it must be a "
+            "summary, or meta.cost drives the report split" % (s_bytes, l_bytes))
+        self.assertLess(l_bytes, 2000, "sources should stay small; got %d bytes" % l_bytes)
+
+    def test_sources_still_reports_the_counts(self):
+        u = self._usage(5)
+        if u is None:
+            self.skipTest("collect() found no usage records in the fixture")
+        self.assertEqual(u["sources"]["subagent_transcripts"], 5)
+        self.assertEqual(u["subagent_transcripts"], 5)
+
+
 if __name__ == "__main__":
     unittest.main()
