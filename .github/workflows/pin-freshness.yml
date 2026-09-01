@@ -1,0 +1,69 @@
+name: pin freshness
+
+# Dependabot covers this repo's pip and github-actions dependencies. It does NOT
+# cover the artifacts the Dockerfile fetches by curl and verifies by SHA256, so
+# those drift by hand.
+#
+# rustup made the cost concrete on 2026-09-01: the fetch used the MOVING
+# `rustup/dist/` URL, so a new upstream release broke `sha256sum -c` and with it
+# every from-scratch build, on PRs that touched nothing related (#1467). Pinning
+# to the immutable archive URL fixed the breakage and INVERTED the failure mode:
+# the build is now stable indefinitely, so drift became silent. A pin that cannot
+# break is a pin nobody remembers to bump.
+#
+# Hence a schedule, not a gate. Nothing here is urgent; the job is visibility.
+on:
+  schedule:
+    - cron: "15 7 * * 1"      # Mondays, after the nightly image work settles
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rustup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write          # scoped to this job: it commits a branch
+      pull-requests: write     # ...and opens the PR
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the pin
+        id: check
+        run: |
+          python3 scripts/bump_pins.py | tee /tmp/pins.txt
+          if grep -q "available (re-run with --write)" /tmp/pins.txt; then
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # bump_pins refuses to write a checksum it has not verified against the
+      # downloaded artifact, so a failure here means "do not pin", not "retry".
+      - name: Apply the bump
+        if: steps.check.outputs.stale == 'true'
+        run: python3 scripts/bump_pins.py --write
+
+      - name: Open a PR
+        if: steps.check.outputs.stale == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="$(sed -n 's/^ARG RUSTUP_VERSION=//p' Dockerfile)"
+          BRANCH="chore/bump-rustup-${VERSION}"
+          # Idempotent: if last week's PR is still open, leave it alone rather
+          # than opening a second one for the same version.
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            echo "branch $BRANCH already exists; nothing to open"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add Dockerfile
+          git commit -m "chore(docker): bump rustup pin to ${VERSION}" \
+            -m "Opened by the pin-freshness workflow. Both SHA256 values were read from upstream's own .sha256 file AND verified against the downloaded artifact before being written -- bump_pins.py refuses to pin an unverified checksum." \
+            -m "Review is still required: this asserts the digests are authentic, not that the new rustup is one we want."
+          git push -u origin "$BRANCH"
+          gh pr create --fill --label dependencies
