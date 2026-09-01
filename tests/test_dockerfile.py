@@ -156,6 +156,30 @@ class TestOfflineAssets(unittest.TestCase):
         osv_block = self.text.split(start_marker)[1].split(end_marker)[0]
         self.assertNotIn("/dev/null", osv_block)
 
+    def test_fetched_artifacts_use_immutable_urls(self):
+        # 2026-09-01: rustup-init was fetched from `rustup/dist/<triple>/`,
+        # which always serves the LATEST rustup. When rust-lang shipped 1.29.1
+        # the pinned SHA stopped matching and every from-scratch build died on
+        # `sha256sum -c` -- red CI on PRs whose diff touched nothing related.
+        # A checksum pin is only meaningful against an immutable artifact: on a
+        # moving URL it is a time bomb, not a guarantee. The #run7 FIXME called
+        # this exact failure a release in advance.
+        # Assert on the FETCH lines, not the whole file: the comment above the
+        # pin names `rustup/dist/` to explain what went wrong, and a blanket
+        # assertNotIn cannot tell prose from a download.
+        fetches = [ln for ln in self.text.splitlines()
+                   if "curl" in ln and "rustup-init" in ln]
+        self.assertTrue(fetches, "no rustup-init fetch found in the Dockerfile")
+        for ln in fetches:
+            self.assertNotIn(
+                "rustup/dist/", ln,
+                "rustup-init must come from the immutable "
+                "rustup/archive/<version>/ URL; rustup/dist/ serves the latest "
+                "build, so the checksum pin breaks on every rustup release")
+            self.assertIn("rustup/archive/${RUSTUP_VERSION}/", ln,
+                          "the rustup fetch should be version-pinned")
+        self.assertRegex(self.text, r"ARG RUSTUP_VERSION=\d+\.\d+\.\d+")
+
     def test_gosec_has_the_go_toolchain_it_requires(self):
         # #calibration-4 (gotify): the image shipped the gosec BINARY but no Go
         # toolchain. gosec loads packages through go/packages, which shells out
