@@ -1154,11 +1154,16 @@ class TestReport(unittest.TestCase):
                         {
                             "ruleId": "r3",
                             "level": "error",
-                            "message": {"text": "vendored"},
+                            "message": {"text": "generated"},
                             "locations": [
                                 {
                                     "physicalLocation": {
-                                        "artifactLocation": {"uri": "vendor/gen.js"},
+                                        # #calibration-5: was `vendor/gen.js`, which
+                                        # ingest now drops unconditionally as a
+                                        # vendored dependency -- so it could no
+                                        # longer stand for "a path only the CLI glob
+                                        # removes", which is what this test is for.
+                                        "artifactLocation": {"uri": "build/gen.js"},
                                         "region": {"startLine": 3},
                                     }
                                 }
@@ -1206,13 +1211,13 @@ class TestReport(unittest.TestCase):
                     return {f["location"]["file"] for f in json.load(fh)["findings"]}
 
             # Default: fixture path pruned automatically; non-fixture paths kept.
-            self.assertEqual(run([]), {"app/db.py", "vendor/gen.js"})
+            self.assertEqual(run([]), {"app/db.py", "build/gen.js"})
             # --tools-exclude drops a NON-fixture path via the CLI glob (#693).
-            self.assertEqual(run(["--tools-exclude", "vendor/*"]), {"app/db.py"})
+            self.assertEqual(run(["--tools-exclude", "build/*"]), {"app/db.py"})
             # --include-fixtures (redteam) keeps the fixture-corpus finding.
             self.assertEqual(
                 run(["--include-fixtures"]),
-                {"app/db.py", "tests/fixtures/vuln.py", "vendor/gen.js"},
+                {"app/db.py", "tests/fixtures/vuln.py", "build/gen.js"},
             )
 
     def test_main_changes_alias_sets_review_type(self):
