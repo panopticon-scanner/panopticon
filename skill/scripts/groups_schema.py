@@ -29,6 +29,20 @@ _GROUP_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
 # keys are taken to be subgroup names (a parent).
 RESERVED = frozenset({"match", "tests", "panels", "exclude"})
 
+# The residual sink's name, mirrored from discovery.UNGROUPED_SINK. This module
+# stays pure (no imports from discovery), so the two are pinned equal by a test
+# rather than by an import.
+RESIDUAL_SINK = "Ungrouped"
+
+# A group that outgrows --max-per-group splits into `<id>_1`, `<id>_2`, ..., and
+# the unmatched residual lands in `Ungrouped_1`, ... . Those names are minted
+# from the SAME flat-id space an author writes in, so an authored `API_1`
+# alongside an authored `API` is indistinguishable from API's first chunk: both
+# emit findings-API_1-<domain>.json and one silently clobbers the other. The
+# ambiguity lives in the name itself, so it is rejected at the source rather
+# than resolved downstream.
+_CHUNK_SUFFIX_RE = re.compile(r"(?P<base>.+)_\d+\Z")
+
 
 def _as_domain_set(name, field, raw, errors):
     out = set()
@@ -91,6 +105,33 @@ def _parse_leaf(name, raw, errors):
         "floor": floor,
         "exclude": exclude,
     }
+
+
+def _reserved_name_errors(groups):
+    """Authored ids that collide with a machine-minted chunk name.
+
+    Operates on FLAT ids, which is what makes it scope-correct for free:
+    `Product:API` chunks to `Product:API_1`, so an authored `Product:API_1`
+    collides while a top-level `API_1` does not.
+    """
+    errors = []
+    for gid in sorted(groups):
+        m = _CHUNK_SUFFIX_RE.match(gid)
+        base = m.group("base") if m else None
+        if base is not None and base in groups:
+            errors.append(
+                f"group {gid}: collides with the chunk names of group {base} "
+                f"(an oversize group splits into {base}_1, {base}_2, ...). Both "
+                f"would write findings-{gid}-<domain>.json and one would "
+                f"silently clobber the other -- rename it")
+        # Top-level only: the residual sink owns `Ungrouped` and its chunks.
+        # A subgroup `Foo:Ungrouped` is namespaced and cannot collide.
+        if ":" not in gid and RESIDUAL_SINK in (gid, base):
+            errors.append(
+                f"group {gid}: {RESIDUAL_SINK!r} and {RESIDUAL_SINK}_<n> are "
+                f"reserved for the unmatched-file sink; a group named this "
+                f"would share a findings file with it -- rename it")
+    return errors
 
 
 def parse_groups(doc):
@@ -168,6 +209,7 @@ def parse_groups(doc):
             leaf = _parse_leaf(flat_id, sub_raw, errors)
             leaf["parent"] = name
             groups[flat_id] = leaf
+    errors.extend(_reserved_name_errors(groups))
     return groups, errors
 
 

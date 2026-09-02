@@ -893,7 +893,30 @@ def catalog_groups(files, catalog, max_per_group, security_mode):
     # group name in the report. `Ungrouped_N` says what it is and stays visible.
     groups.extend(_group_obj(UNGROUPED_SINK + "_%d" % (i + 1), c, security_mode)
                   for i, c in enumerate(chunk_files(residual, max_per_group)))
+    _assert_unique_names(groups)
     return groups, residual
+
+def _assert_unique_names(groups):
+    """Fail loudly if two emitted groups share a name.
+
+    Same hazard the Commons pass already guards against: one name means one
+    ``findings-<group>-<domain>.json``, so a second group writing it silently
+    clobbers the first cell's findings and the report is quietly short a cell.
+    ``groups_schema._reserved_name_errors`` rejects the collisions visible in
+    the committed catalog; this is the backstop for the ones that only exist
+    once chunking has run (a Commons group's chunk name, the residual sink).
+    """
+    seen, dupes = set(), set()
+    for g in groups:
+        if g["name"] in seen:
+            dupes.add(g["name"])
+        seen.add(g["name"])
+    if dupes:
+        raise ValueError(
+            "duplicate group name(s) %s: two groups would write the same "
+            "findings-<group>-<domain>.json and one would silently clobber the "
+            "other. Rename the committed group(s)." % ", ".join(sorted(dupes)))
+
 
 def build_result(repo, mode, target, facet, impl, tests,
                  max_per_group=DEFAULT_MAX_PER_GROUP, group_files=None,
