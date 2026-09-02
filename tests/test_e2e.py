@@ -24,7 +24,11 @@ class TestEndToEnd(unittest.TestCase):
     def test_discovery_then_synthesize(self):
         with tempfile.TemporaryDirectory() as d:
             os.makedirs(os.path.join(d, "src"))
-            open(os.path.join(d, "src", "app.py"), "w").close()
+            # Real content, not an empty file: the letter grade is derived from
+            # the health index, whose numerator is non-blank LoC. An empty
+            # codebase has nothing to measure and correctly gets no grade.
+            with open(os.path.join(d, "src", "app.py"), "w") as _fh:
+                _fh.write("x = 1\n" * 100)
             # 1. resolve target (P6.5 Slice A: orchestrator.py --directory
             # retired; discovery.py --repo-scan is the sole surviving mode --
             # same groups.json shape, driven the way driver.py drives it)
@@ -55,26 +59,33 @@ class TestEndToEnd(unittest.TestCase):
             # and reconcile this test's findings file against them.
             r2 = _run_script(
                 [sys.executable, os.path.join(SCRIPTS, "synthesize.py"),
-                 "--target", "src", "--groups", gj, "--out", out, fp],
+                 # target is the REPO ROOT, matching how driver.py invokes it --
+                 # discovery emits root-relative paths ("src/app.py"), so a
+                 # target of "src" would resolve them to "src/src/app.py" and
+                 # silently measure 0 LoC.
+                 "--target", ".", "--groups", gj, "--out", out, fp],
                 capture_output=True, text=True, cwd=d)
             self.assertEqual(r2.returncode, 0, r2.stderr)
             self.assertIn("Grade:", r2.stdout)
             with open(out) as _fh:
                 report = json.load(_fh)
             # The panel-agent finding carries no verdict, so it is unverified
-            # under the two-axis model and does not move the grade by default.
-            self.assertEqual(report["summary"]["overall_grade"], "A")
+            # under the two-axis model, is not gate-eligible, and contributes no
+            # weighted defect -> health 100 -> S.
+            self.assertEqual(report["summary"]["overall_grade"], "S")
             self.assertEqual(report["summary"]["evidence_stats"]["unverified"], 1)
             # opting unverified findings into the gate restores the old behavior
             r3 = _run_script(
                 [sys.executable, os.path.join(SCRIPTS, "synthesize.py"),
-                 "--target", "src", "--groups", gj, "--gate-unverified",
+                 "--target", ".", "--groups", gj, "--gate-unverified",
                  "--out", out, fp],
                 capture_output=True, text=True, cwd=d)
             self.assertEqual(r3.returncode, 0, r3.stderr)
             with open(out) as _fh:
                 report = json.load(_fh)
-            self.assertEqual(report["summary"]["overall_grade"], "C")
+            # Opting the unverified MEDIUM in makes it gate-eligible: 5 (MEDIUM)
+            # x 1 line = 5 weighted defect against 100 clean LoC -> 95.24 -> A.
+            self.assertEqual(report["summary"]["overall_grade"], "A")
 
 
 class TestX0XEmissionEndToEnd(unittest.TestCase):
