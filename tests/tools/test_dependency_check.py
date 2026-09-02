@@ -105,29 +105,89 @@ class TestDependencyCheckAdapter(unittest.TestCase):
         self.assertEqual(rc, 7)
 
 
+def _tree(d, *paths):
+    """Create empty files at `paths` (relative), making parent dirs."""
+    for rel in paths:
+        full = os.path.join(d, rel)
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        open(full, "w").close()
+
+
 class TestDependencyCheckIsApplicable(unittest.TestCase):
-    def test_applicable_when_pom_xml_present(self):
+    """#1474: a build file proves the LANGUAGE; artifacts prove there is
+    something to scan. dependency-check reads jars, not build manifests."""
+
+    def test_applicable_when_pom_xml_and_a_real_jar_present(self):
         with tempfile.TemporaryDirectory() as d:
-            open(os.path.join(d, "pom.xml"), "w").close()
+            _tree(d, "pom.xml", "target/app-1.0.jar")
             self.assertTrue(dc.DependencyCheckAdapter().is_applicable(d))
 
-    def test_applicable_when_build_gradle_present(self):
+    def test_applicable_when_build_gradle_and_a_real_jar_present(self):
         with tempfile.TemporaryDirectory() as d:
-            open(os.path.join(d, "build.gradle"), "w").close()
+            _tree(d, "build.gradle", "build/libs/app.jar")
             self.assertTrue(dc.DependencyCheckAdapter().is_applicable(d))
 
-    def test_applicable_when_build_gradle_kts_present(self):
+    def test_applicable_when_build_gradle_kts_and_a_real_jar_present(self):
         with tempfile.TemporaryDirectory() as d:
-            open(os.path.join(d, "build.gradle.kts"), "w").close()
+            _tree(d, "build.gradle.kts", "libs/dep.jar")
             self.assertTrue(dc.DependencyCheckAdapter().is_applicable(d))
+
+    def test_war_and_ear_also_count_as_artifacts(self):
+        for artifact in ("build/app.war", "build/app.ear"):
+            with self.subTest(artifact=artifact):
+                with tempfile.TemporaryDirectory() as d:
+                    _tree(d, "pom.xml", artifact)
+                    self.assertTrue(dc.DependencyCheckAdapter().is_applicable(d))
+
+    # --- the bug this exists to prevent -------------------------------------
+
+    def test_bare_clone_with_only_the_gradle_wrapper_is_NOT_applicable(self):
+        # THE #1474 case, measured on antennapod: selected, ran 97 seconds,
+        # scanned exactly one jar -- the wrapper -- returned zero findings, and
+        # certified the run. gradle-wrapper.jar is committed by convention, so
+        # it is present in EVERY bare Gradle clone and proves nothing.
+        with tempfile.TemporaryDirectory() as d:
+            _tree(d, "build.gradle", "gradle/wrapper/gradle-wrapper.jar",
+                  "src/main/java/App.java")
+            self.assertFalse(dc.DependencyCheckAdapter().is_applicable(d))
+
+    def test_maven_wrapper_jar_is_excluded_for_the_same_reason(self):
+        with tempfile.TemporaryDirectory() as d:
+            _tree(d, "pom.xml", ".mvn/wrapper/maven-wrapper.jar")
+            self.assertFalse(dc.DependencyCheckAdapter().is_applicable(d))
+
+    def test_a_wrapper_alongside_a_real_jar_is_still_applicable(self):
+        # The wrapper is ignored, not disqualifying.
+        with tempfile.TemporaryDirectory() as d:
+            _tree(d, "build.gradle", "gradle/wrapper/gradle-wrapper.jar",
+                  "build/libs/app.jar")
+            self.assertTrue(dc.DependencyCheckAdapter().is_applicable(d))
+
+    def test_build_file_with_no_artifacts_at_all_is_not_applicable(self):
+        with tempfile.TemporaryDirectory() as d:
+            _tree(d, "pom.xml", "src/main/java/App.java")
+            self.assertFalse(dc.DependencyCheckAdapter().is_applicable(d))
+
+    # --- unchanged preconditions --------------------------------------------
 
     def test_not_applicable_without_java_build_files(self):
+        # A jar alone is not a JVM project to scan -- both halves are required.
         with tempfile.TemporaryDirectory() as d:
-            open(os.path.join(d, "package.json"), "w").close()
+            _tree(d, "package.json", "vendor/some.jar")
             self.assertFalse(dc.DependencyCheckAdapter().is_applicable(d))
 
     def test_not_applicable_when_target_missing(self):
         self.assertFalse(dc.DependencyCheckAdapter().is_applicable("/nonexistent/path"))
+
+    def test_run_artifact_dirs_are_not_searched_for_artifacts(self):
+        # A jar inside .git/.panopticon/.worktrees is not the project's, so it
+        # must not resurrect the false-clean scan through the back door.
+        for junk in (".git/x.jar", ".panopticon/x.jar", ".worktrees/t/x.jar",
+                     "node_modules/x.jar"):
+            with self.subTest(junk=junk):
+                with tempfile.TemporaryDirectory() as d:
+                    _tree(d, "pom.xml", junk)
+                    self.assertFalse(dc.DependencyCheckAdapter().is_applicable(d))
 
 
 class TestOfflineAnalyzers(unittest.TestCase):
