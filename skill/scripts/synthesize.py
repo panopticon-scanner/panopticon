@@ -876,14 +876,38 @@ def nonblank_loc(target, groups_meta):
     return total
 
 
+HEALTH_FORMULA = "100 * total_loc / (total_loc + weighted_defect)"
+
+
 def health_score(total_loc, weighted):
-    """total_loc / weighted defect footprint (higher = healthier), rounded to 2
-    decimals. None when there is no weighted defect -- the ratio is undefined and
-    'no gate-eligible weighted findings' (the clean case) is better expressed as
-    'not applicable' than as an infinity or a hidden divide-by-zero."""
-    if not weighted:
+    """Bounded health index: the share of the reviewed codebase NOT under
+    severity-weighted defect footprint, as 0-100. Higher = healthier; a repo with
+    no gate-eligible weighted defect scores exactly 100. Rounded to 2 decimals.
+
+    Replaces the original `total_loc / weighted_defect` ratio, which was wrong in
+    three ways at once. It ran BACKWARDS from the intuition a reader brings to a
+    number labelled "health" (the divisor carried the defect); it was unbounded
+    above, so there was no value meaning "perfect"; and it divided by
+    `weighted_defect`, which is 0 for a CLEAN repo -- so the single best possible
+    outcome was the one case that had to return None.
+
+    This form inverts all three. The remaining degenerate case is
+    total_loc == weighted == 0 (nothing reviewed at all), which is a broken run
+    rather than a good one, and still returns None.
+
+    Deliberately NOT `100 - weighted/total_loc`, the obvious inversion: that
+    reads as a percentage but has no floor (a file-scoped run with wide HIGH
+    findings goes negative), and it compresses real spread to nothing. Measured
+    on the six calibration targets it puts every one between 98.20 and 99.58 --
+    1.38 points to separate codebases whose defect density differs 4.3x, leaving
+    gate-F/risk-CRITICAL gotify and the healthiest target 1.25 points apart. The
+    saturating form used here spreads the same six across 35.68-70.45, in the
+    same order.
+    """
+    denom = total_loc + weighted
+    if not denom:
         return None
-    return round(total_loc / weighted, 2)
+    return round(100.0 * total_loc / denom, 2)
 
 
 def health_stats(total_loc, gate_eligible):
@@ -896,6 +920,10 @@ def health_stats(total_loc, gate_eligible):
         "total_loc": total_loc,
         "weighted_defect": weighted,
         "weights": {k.lower(): v for k, v in HEALTH_WEIGHTS.items()},
+        # Stated so a report is self-describing: the score changed shape once
+        # already, and both inputs are emitted, so any reader (or an older
+        # report) can be recomputed against whichever formula it names.
+        "formula": HEALTH_FORMULA,
         "population": "gate_eligible",
     }
 
@@ -2012,40 +2040,43 @@ def validate_report(report):
 
 
 def _health_headline(health):
-    """The health ratio as a headline field, or None when unavailable.
+    """The health index as a headline field, or None when unavailable.
 
     #calibration: promoted onto the top line beside Grade/Risk/Gate. The letter
-    grade is a worst-severity rollup, so it saturates -- across four calibration
-    targets every one graded D off a single HIGH while health ranged 0.55 to
-    1.51. The grade answers "does this gate?"; health answers "how much clean
-    code per unit of weighted defect?", and only the second told them apart.
+    grade is a worst-severity rollup, so it saturates -- across six calibration
+    targets every one graded D or F off the same severity ceiling, while health
+    ranged 35.68 to 70.45. The grade answers "does this gate?"; health answers
+    "how much of this codebase is clean?", and only the second told them apart.
 
-    Deliberately unbanded: four targets, all utilities or a library, is not a
-    sample to draw healthy/fair/dense thresholds from. The detailed line below
-    still carries the inputs so the ratio can be checked rather than trusted.
+    Rendered "N / 100" rather than bare, because the scale is the whole point:
+    the predecessor ratio was unbounded, so a reader had no way to know whether
+    1.75 was good. Deliberately unbanded even so -- six targets, none of them a
+    healthy control, is not a sample to draw healthy/fair/poor thresholds from.
     Health never touches the gate (#1057); this is presentation only.
     """
     if not isinstance(health, dict) or health.get("score") is None:
         return None
-    return "**Health:** %s" % health["score"]
+    return "**Health:** %s / 100" % health["score"]
 
 
 def _render_health(health):
-    """One-line health-ratio summary (#1146): score plus the clean-LoC and
-    weighted-defect it reconciles from. n/a when there is no weighted defect."""
+    """One-line health summary (#1146): score plus the clean-LoC and
+    weighted-defect it reconciles from. n/a only when nothing was reviewed."""
     if not isinstance(health, dict):
         return None
     loc, wd, score = health.get("total_loc", 0), health.get("weighted_defect", 0), health.get("score")
     if score is None:
-        return "**Health:** n/a (no gate-eligible weighted defect; %d clean LoC)" % loc
+        # Both inputs zero: no reviewed file was readable. Distinct from a CLEAN
+        # repo, which now scores 100 rather than falling into this branch.
+        return "**Health:** n/a (no reviewed lines of code to measure against)"
     # The detail line carries the inputs AND the good direction: the headline
-    # field above is just the ratio, and a bare number does not say which way is
-    # better. Weights are stated so the footprint can be checked, not trusted.
-    return ("**Health:** %s \u2014 %s clean LoC / %s weighted defect; "
-            "HIGHER IS BETTER (weights: CRITICAL x125, HIGH x25, MEDIUM x5, "
-            "LOW x1, INFO x0, each x lines spanned). Gate-eligible findings "
-            "only; never affects the gate." % (
-                score, "{:,}".format(loc), "{:,}".format(wd)))
+    # field above is just the number, and a bare number does not say which way
+    # is better. Weights are stated so the footprint can be checked, not trusted.
+    return ("**Health:** %s / 100 \u2014 %s clean LoC against %s weighted "
+            "defect; HIGHER IS BETTER, 100 = no gate-eligible weighted defect "
+            "(weights: CRITICAL x125, HIGH x25, MEDIUM x5, LOW x1, INFO x0, "
+            "each x lines spanned). Gate-eligible findings only; never affects "
+            "the gate." % (score, "{:,}".format(loc), "{:,}".format(wd)))
 
 
 def render_summary(report):

@@ -510,10 +510,13 @@
         },
         "health": {
           "type": "object",
-          "description": "#1146: secondary size-aware health ratio reported ALONGSIDE the max-severity letter (never touches the gate or the letter). score = total_loc / weighted_defect (higher = healthier); null when weighted_defect is 0. Population is the gate-eligible set, same as the letter.",
+          "description": "#1146: secondary size-aware health index reported ALONGSIDE the max-severity letter (never touches the gate or the letter). score = 100 * total_loc / (total_loc + weighted_defect) -- a 0-100 scale where HIGHER is healthier and 100 means no gate-eligible weighted defect; null ONLY when both inputs are 0 (nothing reviewed). Population is the gate-eligible set, same as the letter. Supersedes total_loc / weighted_defect, which ran backwards, was unbounded above, and returned null for a CLEAN repo; both inputs are still emitted, so any report -- including one written under the old formula -- can be recomputed under either.",
           "properties": {
             "score": {
-              "type": ["number", "null"]
+              "type": ["number", "null"],
+              "description": "0-100, higher is healthier. null only when total_loc and weighted_defect are both 0.",
+              "minimum": 0,
+              "maximum": 100
             },
             "total_loc": {
               "type": "integer",
@@ -526,6 +529,10 @@
             "weights": {
               "type": "object",
               "description": "Severity weights used: info 0, low 1, medium 5, high 25, critical 125."
+            },
+            "formula": {
+              "type": "string",
+              "description": "The exact expression used to compute `score`, so a report is self-describing across formula changes."
             },
             "population": {
               "type": "string",

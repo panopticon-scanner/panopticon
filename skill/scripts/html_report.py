@@ -438,25 +438,26 @@ def _render_header(report):
         f"<span class='badge {_gate_class(summary.get('gate', 'OFF'))}'>Gate: {_escape(summary.get('gate', 'OFF'))}</span>",
     ]
     # #calibration: health belongs in the header, not buried. The letter grade is
-    # a worst-severity rollup, so it saturates -- across four calibration targets
-    # every one graded D off a single HIGH while health ranged 0.55 to 1.51. The
-    # grade answers "does this gate?"; health answers "how much clean code per
-    # unit of weighted defect?", and only the second discriminated between them.
-    # Deliberately NOT banded: with four targets (all utilities or a library) any
-    # healthy/fair/dense thresholds would be drawn from an unrepresentative
-    # sample. The raw ratio plus its inputs is honest; a label would not be.
+    # a worst-severity rollup, so it saturates -- across six calibration targets
+    # every one graded D or F off the same ceiling while health ranged 35.68 to
+    # 70.45. The grade answers "does this gate?"; health answers "how much of
+    # this codebase is clean?", and only the second discriminated between them.
+    # Deliberately NOT banded: six targets, none of them a healthy control, is
+    # not a sample to draw healthy/fair/poor thresholds from. The number plus its
+    # inputs is honest; a label would not be.
     # Health never touches the gate (#1057) -- this is presentation only.
     health = summary.get("health")
     if isinstance(health, dict) and health.get("score") is not None:
         parts.append(
             "<span class='health-help'>"
-            "<span class='badge health'>Health: %s</span>"
+            "<span class='badge health'>Health: %s / 100</span>"
             "<button type='button' class='health-q' aria-label='What is the health score?'>?</button>"
             "<span class='health-pop' role='note'>"
-            "<b>Health</b> is clean code per unit of weighted defect: non-blank "
-            "lines of code divided by a severity-weighted defect footprint. "
-            "<span class='hp-better'>Higher is better.</span> This run: "
-            "%s clean LoC &divide; %s weighted defect = <b>%s</b>."
+            "<b>Health</b> is the share of the reviewed codebase not under "
+            "weighted defect footprint, on a 0-100 scale. "
+            "<span class='hp-better'>Higher is better; 100 means no "
+            "gate-eligible weighted defect.</span> This run: "
+            "%s clean LoC against %s weighted defect = <b>%s / 100</b>."
             "<table><tr><td>CRITICAL</td><td>&times;125</td>"
             "<td>HIGH</td><td>&times;25</td><td>MEDIUM</td><td>&times;5</td>"
             "<td>LOW</td><td>&times;1</td><td>INFO</td><td>&times;0</td></tr></table>"
