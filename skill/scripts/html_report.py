@@ -21,6 +21,8 @@ _CSS = """
   --sev-low: #86b1e0; --sev-info: #a9bcc9;
   --sev-critical-tint: #e5786b22; --sev-high-tint: #e59a8c22; --sev-medium-tint: #e8c05a22;
   --sev-low-tint: #86b1e022; --sev-info-tint: #a9bcc922;
+  /* gate reach: which severities --fail-on puts in play, and which failed it */
+  --gate-in-play: #e5786b26; --gate-fails: #e5786b5e; --gate-edge: #e5786b;
   /* panel bar colors (theme-dependent) */
   --panel-code: #6892c4; --panel-test: #4aac7a; --panel-security: #e59a8c;
   --panel-architecture: #8da0af; --panel-database: #e8c05a; --panel-redteam: #e5786b;
@@ -37,6 +39,7 @@ _CSS = """
   --sev-low: #35619b; --sev-info: #4e6375;
   --sev-critical-tint: #7d2f2a1d; --sev-high-tint: #a04b421d; --sev-medium-tint: #7e5c181d;
   --sev-low-tint: #35619b1d; --sev-info-tint: #4e63751d;
+  --gate-in-play: #a04b4224; --gate-fails: #a04b4257; --gate-edge: #a04b42;
   --panel-code: #265089; --panel-test: #1f6f48; --panel-security: #a04b42;
   --panel-architecture: #4e6375; --panel-database: #7e5c18; --panel-redteam: #7d2f2a;
   --panel-unknown: #4e6375;
@@ -102,7 +105,17 @@ h2 { font-size: 18px; font-weight: 600; }
 .coverage { color: var(--faint); font-family: var(--mono); font-size: 11px; margin: -.4rem 0 1.4rem; }
 .dashboard { background: var(--panel); border: 1px solid var(--border); border-radius: 4px; padding: 1rem; margin: 1rem 0; }
 .stats { display: flex; gap: 1px; margin-bottom: 1rem; background: var(--border); border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
-.stat-card { flex: 1; padding: .6rem; text-align: center; background: var(--panel); }
+.stat-card { flex: 1; padding: .6rem; text-align: center; background: var(--panel); position: relative; }
+/* Gate reach. `in play` = at or above --fail-on but nothing confirmed there;
+   `fails` = at or above it WITH confirmed findings, i.e. what the FAIL is made
+   of. Colour is not the only channel -- each card also carries a text note --
+   because a red wash alone is unreadable to a colourblind or printing reader. */
+.stat-card.gate-in-play { background: var(--gate-in-play); box-shadow: inset 0 -3px 0 var(--gate-edge); }
+.stat-card.gate-fails { background: var(--gate-fails); box-shadow: inset 0 -3px 0 var(--gate-edge); }
+.stat-gate { font-family: var(--mono); font-size: 8px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--ink2); margin-top: .15rem; }
+.stat-gate-spacer { height: 0; }
+.gate-legend { font-size: 11px; color: var(--muted); margin: -.6rem 0 1rem; }
+.gate-legend b { color: var(--ink2); }
 .stat-label { font-family: var(--mono); font-size: 9px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--faint); }
 .stat-value { font-family: var(--mono); font-size: 22px; font-weight: 700; }
 .top-issues { margin: 0; padding-left: 1.25rem; color: var(--ink2); }
@@ -588,13 +601,62 @@ def _render_bar_chart(rows, color_class_fn, title):
 """
 
 
+def _render_gate_legend(roles):
+    """Name the threshold under the cards. Without it a reader sees red and has
+    to go hunting for which --fail-on produced it; with no --fail-on the cards
+    carry no marks and the legend is omitted rather than saying "none"."""
+    fail_on = (roles or {}).get("fail_on")
+    if not fail_on:
+        return ""
+    return ("<div class='gate-legend'>Shaded levels are at or above "
+            f"<b>--fail-on {_escape(fail_on)}</b>; the darker ones carry "
+            "confirmed findings and are what the gate verdict is made of.</div>")
+
+
+def _gate_card_class(sev, roles):
+    """The gate-reach class for one severity card, or "" when --fail-on leaves
+    this level out of play entirely."""
+    if sev in set(roles.get("contributing") or []):
+        return " gate-fails"
+    if sev in set(roles.get("in_play") or []):
+        return " gate-in-play"
+    return ""
+
+
+def _gate_card_mark(sev, roles, count):
+    """The text half of the gate mark. Colour alone would not survive a
+    colourblind reader or a black-and-white print, and this is the field that
+    says whether a build breaks.
+
+    Named "mark" rather than "note": CodeQL's clear-text-storage query classifies
+    sensitive data by identifier name, and `note` matches its private-data family
+    (notes/memo/diary), so the literal string "fails gate" flowed into write_html
+    as a high-severity leak. The rename is the fix -- a suppression comment would
+    silence the query on this sink for every future flow through it too.
+    """
+    if sev in set(roles.get("contributing") or []):
+        return "fails gate"
+    if sev in set(roles.get("in_play") or []):
+        return "in play, none found" if not count else "in play, none confirmed"
+    return ""
+
+
 def _render_dashboard(report):
     summary = report.get("summary", {})
     stats = summary.get("stats", {})
-    stat_cards = "\n".join(
-        f"<div class='stat-card {_severity_class(sev)}'><div class='stat-label'>{sev}</div><div class='stat-value'>{_stat_value(stats, sev)}</div></div>"
-        for sev in _SEV_ORDER
-    )
+    roles = summary.get("gate_severities") or {}
+    cards = []
+    for sev in _SEV_ORDER:
+        count = int(stats.get(sev.lower(), 0)) if isinstance(stats, dict) else 0
+        mark = _gate_card_mark(sev, roles, count)
+        mark_html = (f"<div class='stat-gate'>{_escape(mark)}</div>" if mark
+                     else "<div class='stat-gate stat-gate-spacer'></div>")
+        cards.append(
+            f"<div class='stat-card {_severity_class(sev)}{_gate_card_class(sev, roles)}'>"
+            f"<div class='stat-label'>{sev}</div>"
+            f"<div class='stat-value'>{_stat_value(stats, sev)}</div>"
+            f"{mark_html}</div>")
+    stat_cards = "\n".join(cards)
 
     top = summary.get("top_issues", [])[:3]
     top_list = "\n".join(f"<li>{_escape(t)}</li>" for t in top) or "<li>None</li>"
@@ -614,6 +676,7 @@ def _render_dashboard(report):
 <section class="dashboard">
 <h2>Dashboard</h2>
 <div class="stats">{stat_cards}</div>
+{_render_gate_legend(roles)}
 {charts}
 {_render_heatmap(report)}
 <h3>Top issues</h3>

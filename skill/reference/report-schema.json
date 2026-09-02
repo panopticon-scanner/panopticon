@@ -486,6 +486,26 @@
             "active"
           ]
         },
+        "gate_severities": {
+          "type": "object",
+          "description": "The gate's reach across the severity distribution. `in_play` = severities at or above --fail-on (any finding there would FAIL); `contributing` = the subset that actually holds a GATE-ELIGIBLE finding, i.e. what the FAIL is made of. Derived from the gate-eligible set, NOT from summary.stats (which counts the ACTIVE set, including unverified findings that cannot gate) -- so `contributing` is non-empty if and only if gate == FAIL. All three fields are empty/null when no --fail-on was given.",
+          "properties": {
+            "fail_on": {
+              "type": ["string", "null"],
+              "description": "The threshold in force, uppercased; null when no --fail-on was given or it was unrecognised."
+            },
+            "in_play": {
+              "type": "array",
+              "items": {"type": "string"},
+              "description": "Severities at or above the threshold, worst first."
+            },
+            "contributing": {
+              "type": "array",
+              "items": {"type": "string"},
+              "description": "The in-play severities holding at least one gate-eligible finding."
+            }
+          }
+        },
         "evidence_stats_population": {
           "type": "string",
           "description": "Which finding population summary.evidence_stats counts. 'all' = active + discarded (== findings[] + discarded_claims[]).",
