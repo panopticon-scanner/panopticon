@@ -490,30 +490,48 @@ def load_verdicts(verdicts_dir):
     return load_verdicts_detailed(verdicts_dir)[0]
 
 
-def match_verdict(entry, verdicts, run_id=None):
+def match_verdict(entry, verdicts, run_id=None, misrouted=None):
     """Return the verdict for a queue entry, enforcing the finding_id echo.
 
     A missing or mismatched echo means the verdict cannot be bound to the
     queued claim -> treated as malformed (None). Filename routing alone is not
     evidence that an advisor answered the intended finding.
+
+    `misrouted` (optional list): when a verdict FILE exists for this cell but
+    cannot be bound to it, a record is appended describing why.
+
+    #1475: without that list, a rejection here is indistinguishable downstream
+    from a cell no advisor ever answered -- both land in `unanswered`. Run-6
+    lost its certification to exactly one such rejection (the advisor dispatched
+    for SG-006 echoed ESS-036), and the report said only "1 unanswered", which
+    reads as a dispatch that never happened. Diagnosing it took a hand-dig
+    through the raw agent transcript to establish that the advisor HAD run,
+    HAD adjudicated, and had simply mislabelled its answer. The rejection is
+    correct; its invisibility was the defect.
     """
     v = verdicts.get(entry["queue_id"])
     if v is None:
         return None
+
+    def _reject(reason, **extra):
+        print("evidence: verdict %s %s; ignoring" % (entry["queue_id"], reason),
+              file=sys.stderr)
+        if misrouted is not None:
+            rec = {"queue_id": entry["queue_id"], "reason": reason}
+            rec.update(extra)
+            misrouted.append(rec)
+        return None
+
     fid = entry["finding"].get("id")
     echoed = v.get("finding_id")
     if echoed is None:
-        print("evidence: verdict %s has no finding_id echo; ignoring"
-              % entry["queue_id"], file=sys.stderr)
-        return None
+        return _reject("has no finding_id echo", expected=fid, echoed=None)
     if str(echoed) != str(fid):
-        print("evidence: verdict %s echoes finding_id %r, expected %r; ignoring"
-              % (entry["queue_id"], echoed, fid), file=sys.stderr)
-        return None
+        return _reject("echoes finding_id %r, expected %r" % (echoed, fid),
+                       expected=fid, echoed=str(echoed))
     if run_id is not None and v.get("run_id") != run_id:
-        print("evidence: verdict %s has run_id %r, expected %r; ignoring"
-              % (entry["queue_id"], v.get("run_id"), run_id), file=sys.stderr)
-        return None
+        return _reject("has run_id %r, expected %r" % (v.get("run_id"), run_id),
+                       expected_run_id=run_id, run_id=v.get("run_id"))
     return v
 
 
