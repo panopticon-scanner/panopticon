@@ -12,8 +12,55 @@ class DependencyCheckAdapter:
     prefix = "DC"
 
     def is_applicable(self, target: str) -> bool:
+        """A JVM build file AND resolved artifacts to actually analyse.
+
+        #1474, the FOURTH instance of one class after #1452 (osv-scanner had no
+        RubyGems DB), #1457 (gosec had no Go toolchain) and #1469 (roslyn had no
+        restored deps): a scanner selected on a marker that proves the project's
+        LANGUAGE rather than the presence of anything it can read, which then
+        exits 0 with no findings and CERTIFIES the run.
+
+        A build file proves this is a JVM project. It does not prove there is
+        anything to scan -- dependency-check analyses ARTIFACTS (jars on disk),
+        not build manifests, and a bare clone has none because dependencies were
+        never resolved. On antennapod this was selected, ran 97 seconds, scanned
+        exactly one jar (`gradle-wrapper.jar`) and returned zero findings, which
+        landed in `tool_manifest.produced`, satisfied `missing: []`, and
+        certified the run.
+
+        Declining is the correct outcome: a disclosed `requested_unavailable`
+        is non-gating (#1031) and honest, where a silent clean scan is neither.
+        """
         markers = ["pom.xml", "build.gradle", "build.gradle.kts"]
-        return has_any_file(target, *markers)
+        if not has_any_file(target, *markers):
+            return False
+        return self._has_scannable_artifacts(target)
+
+    @staticmethod
+    def _has_scannable_artifacts(target: str) -> bool:
+        """True when a jar/war/ear exists that is NOT just the build wrapper.
+
+        `gradle-wrapper.jar` is committed to source control by convention, so it
+        is present in every bare Gradle clone and is the one artifact that
+        proves nothing. Counting it is exactly the bug: it made a bare tree look
+        scannable. Maven's equivalent wrapper jar is excluded for the same
+        reason.
+
+        Deliberately a whole-tree walk rather than a check for `target/` or
+        `build/`: dependency-check is pointed at the repo root and will find
+        artifacts wherever they were resolved to, including a non-standard
+        output directory or a vendored lib/ tree.
+        """
+        wrappers = {"gradle-wrapper.jar", "maven-wrapper.jar"}
+        skip = {".git", ".panopticon", ".worktrees", "node_modules"}
+        for root, dirs, files in os.walk(target):
+            dirs[:] = [d for d in dirs if d not in skip]
+            for name in files:
+                if name in wrappers:
+                    continue
+                if name.endswith((".jar", ".war", ".ear")):
+                    return True
+        return False
 
     def invoke(self, target: str) -> tuple[bytes, int]:
         out_dir = tempfile.mkdtemp(prefix="dc-")
