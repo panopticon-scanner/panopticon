@@ -6,8 +6,7 @@ import sys
 try:
     import defusedxml.ElementTree as ET
 except ImportError:
-    import sys
-import xml.etree.ElementTree as ET  # nosec B405
+    import xml.etree.ElementTree as ET  # nosec B405
 
 from .base import as_list, make_finding, omit_none, run_tool
 

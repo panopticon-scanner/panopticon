@@ -165,6 +165,33 @@ class TestSpotBugsAdapter(unittest.TestCase):
             sb.SpotBugsAdapter().parse(b"<not-xml", "g1")
 
 
+class TestHardenedXmlParser(unittest.TestCase):
+    def test_defusedxml_is_preferred_over_stdlib(self):
+        # Regression: adding the offline prefix trim mangled the
+        # try/except import, leaving `import xml.etree.ElementTree as ET`
+        # running UNCONDITIONALLY at module level -- so ET was the
+        # unhardened stdlib parser even though defusedxml is installed in
+        # the image. Tool output is untrusted (target-controlled strings),
+        # and the trim makes MORE of it reach the parser, so the hardened
+        # parser matters more after that change, not less.
+        import importlib.util
+        if importlib.util.find_spec("defusedxml") is None:
+            self.skipTest("defusedxml not installed on this host")
+        self.assertIn("defusedxml", sb.ET.__name__,
+                      "spotbugs must parse untrusted XML with defusedxml when "
+                      "it is available; the stdlib parser is the fallback only")
+
+    def test_the_import_is_a_guarded_fallback_not_an_override(self):
+        # Assert the SHAPE, so a future edit cannot silently re-flatten it:
+        # the stdlib import must live inside the except branch.
+        import inspect
+        src = inspect.getsource(sb)
+        head = src[:src.index("from .base import")]
+        self.assertIn("except ImportError:\n    import xml.etree.ElementTree", head,
+                      "the stdlib XML import must stay INSIDE the ImportError "
+                      "fallback, not run unconditionally")
+
+
 class TestOfflineLogPrefix(unittest.TestCase):
     """#calibration-6: spotbugs output is unparseable under `--network none`.
 
