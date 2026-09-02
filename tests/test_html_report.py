@@ -699,6 +699,53 @@ class TestHtmlReport(unittest.TestCase):
             self.assertNotIn("<span class='health-pop'", out)
             self.assertNotIn("health-help'>", out)
 
+    # --- the gate's reach, marked on the severity cards --------------------
+    # A bare distribution does not say which levels can break a build; that
+    # depends on --fail-on, which lives elsewhere in the report. These cards
+    # carry it.
+
+    def _report_with_roles(self, fail_on, in_play, contributing):
+        report = _minimal_report()
+        report["summary"]["stats"] = {"critical": 0, "high": 101, "medium": 296,
+                                      "low": 315, "info": 105}
+        report["summary"]["gate_severities"] = {
+            "fail_on": fail_on, "in_play": in_play, "contributing": contributing}
+        return hr.render(report)
+
+    def test_contributing_level_is_shaded_darker_than_merely_in_play(self):
+        out = self._report_with_roles("HIGH", ["CRITICAL", "HIGH"], ["HIGH"])
+        self.assertIn("gate-fails", out)      # HIGH: carries the failure
+        self.assertIn("gate-in-play", out)    # CRITICAL: in play, count 0
+        # and the two classes must resolve to different backgrounds
+        self.assertIn(".stat-card.gate-fails", out)
+        self.assertIn(".stat-card.gate-in-play", out)
+
+    def test_gate_marks_are_not_colour_only(self):
+        # A red wash is invisible to a colourblind reader and to a printout, and
+        # this is the field that says whether a build breaks.
+        out = self._report_with_roles("HIGH", ["CRITICAL", "HIGH"], ["HIGH"])
+        self.assertIn("fails gate", out)
+        self.assertIn("in play, none found", out)
+
+    def test_the_legend_names_the_threshold(self):
+        out = self._report_with_roles("MEDIUM", ["CRITICAL", "HIGH", "MEDIUM"],
+                                      ["HIGH", "MEDIUM"])
+        self.assertIn("--fail-on MEDIUM", out)
+        self.assertIn("gate-legend", out)
+
+    def test_no_fail_on_leaves_every_card_unmarked(self):
+        out = self._report_with_roles(None, [], [])
+        self.assertNotIn("gate-fails'", out)       # the class is in the CSS ...
+        self.assertNotIn("gate-in-play'", out)     # ... but on no card
+        self.assertNotIn("<div class='gate-legend'", out)
+        self.assertNotIn("fails gate", out)
+
+    def test_a_level_with_findings_but_none_confirmed_is_in_play_not_failing(self):
+        # 101 active HIGHs, none gate-eligible: alarming count, untouched gate.
+        out = self._report_with_roles("HIGH", ["CRITICAL", "HIGH"], [])
+        self.assertIn("in play, none confirmed", out)
+        self.assertNotIn("fails gate", out)
+
     def test_dynamic_badge_colors(self):
         report = _minimal_report()
         report["summary"]["gate"] = "FAIL"

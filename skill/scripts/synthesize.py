@@ -651,6 +651,36 @@ def gate_verdict(findings, fail_on):
     return "PASS"
 
 
+def gate_severity_roles(gate_eligible, fail_on):
+    """Which severities the `--fail-on` threshold puts IN PLAY, and which of
+    those actually carry a gate-eligible finding (i.e. caused the FAIL).
+
+    Three states, matching what gate_verdict() actually reads:
+
+    - not in play  -- below the threshold; nothing at this level can gate.
+    - in play      -- at or above the threshold, but no gate-eligible finding
+                      here. It WOULD have failed the build; it didn't fire.
+    - contributing -- at or above the threshold with >= 1 gate-eligible finding.
+                      These are the levels the FAIL is actually made of.
+
+    Derived from `gate_eligible`, NOT from the reported `stats` (which count the
+    ACTIVE set). The two differ: an unverified HIGH is active but does not gate.
+    Marking off the active counts would paint a level red while the gate passed,
+    which is precisely the lie this display exists to prevent.
+
+    With no `--fail-on`, nothing is in play and the display stays unmarked.
+    """
+    if not fail_on:
+        return {"fail_on": None, "in_play": [], "contributing": []}
+    name = str(fail_on).upper()
+    if name not in SEV_ORDER:
+        return {"fail_on": None, "in_play": [], "contributing": []}
+    in_play = SEV_ORDER[:SEV_ORDER.index(name) + 1]
+    present = {str(f.get("severity", "")).upper() for f in gate_eligible}
+    return {"fail_on": name, "in_play": in_play,
+            "contributing": [sev for sev in in_play if sev in present]}
+
+
 HIGH_VALUE_PANELS = {"security", "redteam", "architecture", "database"}
 
 
@@ -1965,6 +1995,10 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
             # surfaced two unlabeled HIGH counts in one summary).
             "stats": severity_stats(active),
             "stats_population": "active",
+            # Which severities the --fail-on threshold puts in play, and which of
+            # them the FAIL is actually made of. Computed off `gate_eligible`,
+            # NOT off `stats` above -- see gate_severity_roles().
+            "gate_severities": gate_severity_roles(gate_eligible, fail_on),
             # #1146: size-aware health ratio alongside the letter; denominator is
             # the gate-eligible set, numerator the reviewed scope's non-blank LoC.
             "health": health_stats(nonblank_loc(target, groups_meta), gate_eligible),
@@ -2039,6 +2073,44 @@ def validate_report(report):
     return errors, warnings
 
 
+_GATE_ROLE_NOTE = {
+    "contributing": "**FAILS THE GATE**",
+    "in_play": "in play, nothing confirmed here",
+}
+
+
+def _render_severity_block(stats, roles, gate_eligible_stats=None):
+    """The severity distribution with the gate's reach marked on it.
+
+    A bare distribution does not say which levels can actually fail a build --
+    that depends entirely on --fail-on, which lives elsewhere in the report. So
+    each level is annotated with its gate role, and the threshold is named.
+
+    Counts stay the ACTIVE population (unchanged, and what `stats` reports); the
+    ROLES come from the gate-eligible set. Where a level is in play, has active
+    findings, but none of them confirmed, both facts are shown -- that is a level
+    that looks alarming and cannot gate, and hiding either half misleads.
+    """
+    roles = roles or {}
+    contributing = set(roles.get("contributing") or [])
+    in_play = set(roles.get("in_play") or [])
+    fail_on = roles.get("fail_on")
+    head = ("**Findings** (`--fail-on %s`)" % fail_on) if fail_on else "**Findings**"
+    lines = [head, ""]
+    for sev in SEV_ORDER:
+        count = stats.get(sev.lower(), 0)
+        label = "%s: %d" % (sev, count)
+        if sev in contributing:
+            lines.append("- **%s** \u2014 %s" % (label, _GATE_ROLE_NOTE["contributing"]))
+        elif sev in in_play:
+            note = ("in play, none found" if not count
+                    else _GATE_ROLE_NOTE["in_play"])
+            lines.append("- **%s** \u2014 %s" % (label, note))
+        else:
+            lines.append("- %s" % label)
+    return lines
+
+
 def _health_headline(health):
     """The health index as a headline field, or None when unavailable.
 
@@ -2091,8 +2163,7 @@ def render_summary(report):
             s["risk_level"], s["gate"],
             ("  " + _health_headline(s.get("health"))) if _health_headline(s.get("health")) else ""),
         "",
-        "**Findings:** %s" % ", ".join(
-            "%s %d" % (k.upper(), v) for k, v in s["stats"].items() if v),
+    ] + _render_severity_block(s.get("stats") or {}, s.get("gate_severities")) + [
         "",
         "**Evidence:** %s" % ", ".join(
             "%s %d" % (k, v) for k, v in s["evidence_stats"].items() if v),

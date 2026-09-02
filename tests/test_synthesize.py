@@ -2755,6 +2755,103 @@ class TestHealthScore(unittest.TestCase):
         self.assertEqual(syn.nonblank_loc("/no/such/dir", [{"name": "g", "files": ["nope.py"]}]), 0)
 
 
+class TestGateSeverityRoles(unittest.TestCase):
+    """Which severities --fail-on puts in play, and which the FAIL is made of.
+
+    A bare severity distribution does not say which levels can break a build --
+    that depends on --fail-on, which lives elsewhere in the report. These roles
+    put the gate's reach onto the distribution itself.
+    """
+
+    ALL = [{"severity": s} for s in ("HIGH", "MEDIUM", "LOW", "INFO")]
+
+    def test_fail_on_critical_puts_only_critical_in_play(self):
+        roles = syn.gate_severity_roles(self.ALL, "CRITICAL")
+        self.assertEqual(roles["in_play"], ["CRITICAL"])
+        # No CRITICAL findings exist, so it is in play and did NOT fire.
+        self.assertEqual(roles["contributing"], [])
+
+    def test_fail_on_high_marks_high_as_contributing(self):
+        roles = syn.gate_severity_roles(self.ALL, "HIGH")
+        self.assertEqual(roles["in_play"], ["CRITICAL", "HIGH"])
+        self.assertEqual(roles["contributing"], ["HIGH"])
+
+    def test_fail_on_medium_walks_the_threshold_down(self):
+        roles = syn.gate_severity_roles(self.ALL, "MEDIUM")
+        self.assertEqual(roles["in_play"], ["CRITICAL", "HIGH", "MEDIUM"])
+        self.assertEqual(roles["contributing"], ["HIGH", "MEDIUM"])
+
+    def test_no_fail_on_puts_nothing_in_play(self):
+        roles = syn.gate_severity_roles(self.ALL, None)
+        self.assertEqual(roles, {"fail_on": None, "in_play": [], "contributing": []})
+
+    def test_unknown_fail_on_marks_nothing_rather_than_crashing(self):
+        # gate_verdict would raise on this; the display must degrade to unmarked.
+        self.assertEqual(syn.gate_severity_roles(self.ALL, "SEVERE"),
+                         {"fail_on": None, "in_play": [], "contributing": []})
+
+    def test_roles_never_outrank_the_gate_verdict(self):
+        # THE correctness property. Roles come from the gate-eligible set, so a
+        # level can never be painted "contributing" while the gate passes. Feed
+        # both the same list and the two must agree, at every threshold.
+        for pop in ([], [{"severity": "INFO"}], self.ALL,
+                    [{"severity": "CRITICAL"}] + self.ALL):
+            for fail_on in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"):
+                roles = syn.gate_severity_roles(pop, fail_on)
+                verdict = syn.gate_verdict(pop, fail_on)
+                self.assertEqual(bool(roles["contributing"]), verdict == "FAIL",
+                                 "%s @ %s: %r vs %s" % (pop, fail_on, roles, verdict))
+
+
+class TestSeverityBlockRendering(unittest.TestCase):
+    """The distribution as rendered, with the gate's reach marked on it."""
+
+    STATS = {"critical": 0, "high": 101, "medium": 296, "low": 315, "info": 105}
+
+    def _block(self, fail_on, eligible=None):
+        eligible = eligible if eligible is not None else (
+            [{"severity": s} for s in ("HIGH", "MEDIUM", "LOW", "INFO")])
+        return "\n".join(syn._render_severity_block(
+            self.STATS, syn.gate_severity_roles(eligible, fail_on)))
+
+    def test_every_severity_is_listed_with_its_count(self):
+        out = self._block("HIGH")
+        for sev, n in (("CRITICAL", 0), ("HIGH", 101), ("MEDIUM", 296),
+                       ("LOW", 315), ("INFO", 105)):
+            self.assertIn("%s: %d" % (sev, n), out)
+
+    def test_in_play_but_empty_reads_as_in_play_not_as_a_failure(self):
+        out = self._block("CRITICAL")
+        self.assertIn("**CRITICAL: 0** \u2014 in play, none found", out)
+        self.assertNotIn("FAILS THE GATE", out)
+
+    def test_contributing_levels_say_so(self):
+        out = self._block("MEDIUM")
+        self.assertIn("**HIGH: 101** \u2014 **FAILS THE GATE**", out)
+        self.assertIn("**MEDIUM: 296** \u2014 **FAILS THE GATE**", out)
+        # below the threshold -> plain, no marker
+        self.assertIn("- LOW: 315", out)
+        self.assertIn("- INFO: 105", out)
+
+    def test_the_threshold_is_named(self):
+        self.assertIn("`--fail-on MEDIUM`", self._block("MEDIUM"))
+
+    def test_without_fail_on_nothing_is_marked(self):
+        out = self._block(None)
+        self.assertNotIn("FAILS THE GATE", out)
+        self.assertNotIn("in play", out)
+        self.assertNotIn("--fail-on", out)
+        for sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"):
+            self.assertIn("- %s: " % sev, out)
+
+    def test_active_findings_that_cannot_gate_are_marked_in_play_not_failing(self):
+        # 101 active HIGHs, none of them gate-eligible: the count is alarming and
+        # the gate is untouched. Painting it as a failure would be the lie.
+        out = self._block("HIGH", eligible=[])
+        self.assertIn("**HIGH: 101** \u2014 in play, nothing confirmed here", out)
+        self.assertNotIn("FAILS THE GATE", out)
+
+
 class TestEvidenceReport(unittest.TestCase):
     def _report(self, findings, verdicts=None, gate_unverified=False, fail_on="high"):
         return syn.build_report(
@@ -2766,6 +2863,28 @@ class TestEvidenceReport(unittest.TestCase):
             verdicts=verdicts,
             gate_unverified=gate_unverified,
         )
+
+    def test_summary_carries_the_gate_severity_roles(self):
+        # The report must ship the roles, not leave every renderer to re-derive
+        # them from fail_on -- which is how the two would drift apart.
+        report = self._report([_agentic(sev="HIGH")], fail_on="high")
+        roles = report["summary"]["gate_severities"]
+        self.assertEqual(roles["fail_on"], "HIGH")
+        self.assertEqual(roles["in_play"], ["CRITICAL", "HIGH"])
+        # unverified -> not gate-eligible -> in play but NOT contributing, and
+        # the gate agrees.
+        self.assertEqual(roles["contributing"], [])
+        self.assertEqual(report["summary"]["gate"], "PASS")
+
+    def test_gate_severity_roles_follow_confirmation(self):
+        # Same finding, now confirmed: it becomes gate-eligible, the level turns
+        # contributing, and the gate FAILs. The mark tracks the verdict.
+        finding = _agentic(sev="HIGH")
+        verdicts = {syn.finding_fingerprint(finding): {
+            "finding_id": "AG-001", "verdict": "CONFIRMED", "reasoning": "v"}}
+        report = self._report([finding], verdicts=verdicts, fail_on="high")
+        self.assertEqual(report["summary"]["gate_severities"]["contributing"], ["HIGH"])
+        self.assertEqual(report["summary"]["gate"], "FAIL")
 
     def test_unverified_keeps_severity_and_does_not_gate(self):
         report = self._report([_agentic(sev="CRITICAL")])
