@@ -623,10 +623,17 @@ def _gate_card_class(sev, roles):
     return ""
 
 
-def _gate_card_note(sev, roles, count):
+def _gate_card_mark(sev, roles, count):
     """The text half of the gate mark. Colour alone would not survive a
     colourblind reader or a black-and-white print, and this is the field that
-    says whether a build breaks."""
+    says whether a build breaks.
+
+    Named "mark" rather than "note": CodeQL's clear-text-storage query classifies
+    sensitive data by identifier name, and `note` matches its private-data family
+    (notes/memo/diary), so the literal string "fails gate" flowed into write_html
+    as a high-severity leak. The rename is the fix -- a suppression comment would
+    silence the query on this sink for every future flow through it too.
+    """
     if sev in set(roles.get("contributing") or []):
         return "fails gate"
     if sev in set(roles.get("in_play") or []):
@@ -641,14 +648,14 @@ def _render_dashboard(report):
     cards = []
     for sev in _SEV_ORDER:
         count = int(stats.get(sev.lower(), 0)) if isinstance(stats, dict) else 0
-        note = _gate_card_note(sev, roles, count)
-        note_html = (f"<div class='stat-gate'>{_escape(note)}</div>" if note
+        mark = _gate_card_mark(sev, roles, count)
+        mark_html = (f"<div class='stat-gate'>{_escape(mark)}</div>" if mark
                      else "<div class='stat-gate stat-gate-spacer'></div>")
         cards.append(
             f"<div class='stat-card {_severity_class(sev)}{_gate_card_class(sev, roles)}'>"
             f"<div class='stat-label'>{sev}</div>"
             f"<div class='stat-value'>{_stat_value(stats, sev)}</div>"
-            f"{note_html}</div>")
+            f"{mark_html}</div>")
     stat_cards = "\n".join(cards)
 
     top = summary.get("top_issues", [])[:3]
