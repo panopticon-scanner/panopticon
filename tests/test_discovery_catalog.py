@@ -289,6 +289,38 @@ class TestCommonsCatalog(unittest.TestCase):
         self.assertEqual(docs_groups[0]["parent"], "Docs")  # committed leaf, not Commons
 
 
+class TestGroupNameUniqueness(unittest.TestCase):
+    """One group name means one findings-<group>-<domain>.json. Two groups
+    sharing a name means one silently overwrites the other's cell, so the
+    emitted set is checked before it is returned. groups_schema rejects the
+    collisions visible in a committed catalog; this is the backstop for the
+    ones that only appear once chunking has run."""
+
+    def test_emitted_groups_have_unique_names(self):
+        # The real path: a catalog large enough to chunk, plus Commons and a
+        # residual sink, must never mint the same name twice.
+        catalog = {"App": {"match": ["src/**"]}}
+        files = ["src/d%d/f%03d.py" % (i // 10, i) for i in range(60)]
+        files += ["README.md", "Dockerfile", "weird.xyz"]
+        groups, _residual = orchestrator.catalog_groups(
+            files, catalog, max_per_group=16, security_mode="standard")
+        names = [g["name"] for g in groups]
+        self.assertGreater(len(names), 4, "expected chunking to have happened")
+        self.assertEqual(len(names), len(set(names)))
+
+    def test_a_duplicate_name_raises_instead_of_clobbering(self):
+        with self.assertRaises(ValueError) as ctx:
+            orchestrator._assert_unique_names(
+                [{"name": "Docs"}, {"name": "App_1"}, {"name": "Docs"}])
+        msg = str(ctx.exception)
+        self.assertIn("Docs", msg)
+        self.assertNotIn("App_1", msg)   # names the offender, not the innocent
+
+    def test_unique_names_pass_through(self):
+        self.assertIsNone(orchestrator._assert_unique_names(
+            [{"name": "A"}, {"name": "A_1"}, {"name": "B"}]))
+
+
 class TestAssignByCatalog(unittest.TestCase):
     """Direct coverage for assign_by_catalog's gitignore-style semantics."""
 

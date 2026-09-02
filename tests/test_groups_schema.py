@@ -142,6 +142,65 @@ def test_flat_groups_yaml_backcompat():
     assert errs == [] and g["A"]["parent"] == "A" and g["A"]["tests"] == ["t/**"]
 
 
+class TestChunkNameCollision(unittest.TestCase):
+    """A group over --max-per-group splits into `<id>_1`, `<id>_2`, ... and the
+    unmatched residual lands in `Ungrouped_N`. Those names come from the same
+    flat-id space an author writes in, so an authored name can be minted a
+    second time by the chunker -- and two groups with one name share one
+    findings-<group>-<domain>.json, so one cell's findings silently replace the
+    other's. The collision is rejected where it is authored."""
+
+    def _errs(self, doc):
+        return gs.parse_groups(doc)[1]
+
+    def test_authored_name_collides_with_a_siblings_chunk_names(self):
+        errs = self._errs({"groups": {
+            "API": {"match": ["app/api/**"]},
+            "API_1": {"match": ["legacy/**"]}}})
+        self.assertTrue(errs, "API_1 beside API is the chunker's own name")
+        self.assertIn("API_1", errs[0])
+        self.assertIn("silently clobber", errs[0])
+
+    def test_collision_is_caught_inside_a_parent_too(self):
+        # Chunk names are minted from the FLAT id, so the check must see
+        # `Product:API` -> `Product:API_1`, not the bare subgroup name.
+        errs = self._errs({"groups": {"Product": {
+            "API": {"match": ["app/api/**"]},
+            "API_1": {"match": ["legacy/**"]}}}})
+        self.assertTrue(errs)
+        self.assertIn("Product:API_1", errs[0])
+
+    def test_the_residual_sink_name_is_reserved(self):
+        for name in ("Ungrouped", "Ungrouped_2"):
+            with self.subTest(name=name):
+                errs = self._errs({"groups": {name: {"match": ["a/**"]}}})
+                self.assertTrue(errs, "%s shares a findings file with the sink" % name)
+
+    def test_sink_name_is_reserved_only_at_top_level(self):
+        # `Product:Ungrouped` is namespaced -- it chunks to `Product:Ungrouped_1`
+        # and can never collide with the bare `Ungrouped_1` sink.
+        self.assertEqual(self._errs({"groups": {"Product": {
+            "Ungrouped": {"match": ["a/**"]}}}}), [])
+
+    def test_an_underscore_number_name_is_fine_without_the_sibling(self):
+        # The name alone is not the problem; only the pair is. Rejecting every
+        # `Foo_1` would break legitimate catalogs.
+        self.assertEqual(self._errs({"groups": {"API_1": {"match": ["a/**"]}}}), [])
+
+    def test_scoping_does_not_produce_a_false_positive(self):
+        # Top-level `API_1` and subgroup `P:API` occupy different id spaces:
+        # P:API chunks to `P:API_1`, which cannot collide with `API_1`.
+        self.assertEqual(self._errs({"groups": {
+            "API_1": {"match": ["a/**"]},
+            "P": {"API": {"match": ["b/**"]}}}}), [])
+
+    def test_sink_constant_matches_discoverys(self):
+        # groups_schema stays import-pure, so the sink name is duplicated.
+        # Pin them together rather than let them drift apart silently.
+        import scripts.discovery as discovery
+        self.assertEqual(gs.RESIDUAL_SINK, discovery.UNGROUPED_SINK)
+
+
 def test_exclude_paths_valid_and_absent():
     assert gs.parse_exclude_paths({"exclude_paths": ["tests/fixtures/**", "vendor/**"]}) == (["tests/fixtures/**", "vendor/**"], [])
     assert gs.parse_exclude_paths({}) == ([], [])
