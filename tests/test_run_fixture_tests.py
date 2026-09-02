@@ -278,5 +278,51 @@ class TestCheckFixturesInjection(unittest.TestCase):
         self.assertEqual(called["n"], 0)          # no docker invocation
 
 
+
+class TestFixtureRunnerMatchesScanConditions(unittest.TestCase):
+    """#calibration-6: the harness must reproduce how scans actually run.
+
+    Three broken adapters passed this suite because it did not -- gosec read
+    zero files (#1457), roslyn compiled nothing (#1469), and spotbugs emitted
+    log4j DNS noise ahead of its XML, which only happens with no DNS. All three
+    looked healthy against a networked fixture. Measured with the flag added:
+    254 pass and precisely the two genuinely-broken Java scanners fail.
+    """
+
+    @staticmethod
+    def _source():
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(here, "skill", "scripts",
+                               "run_fixture_tests.py"), encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_the_pytest_run_has_no_network(self):
+        self.assertIn('"--network", "none"', self._source(),
+                      "the dockerized fixture suite must run with no network, "
+                      "as real scans do")
+
+    def test_adapter_code_is_mounted_over_the_baked_copy(self):
+        # The Dockerfile does `COPY skill/scripts /opt/panopticon/scripts`, so
+        # `scripts.tools` resolves to the BAKED adapters unless the checkout is
+        # mounted over that exact path. Without it the suite silently tests
+        # whatever the image was built with -- a verified-working spotbugs fix
+        # still showed red here for that reason. run_tools.py already mounts
+        # this way, for the same reason.
+        self.assertIn("skill/scripts:/opt/panopticon/scripts:ro", self._source(),
+                      "mount the checkout's adapters over the image's baked "
+                      "copy, or the fixture suite tests stale code")
+
+    def test_both_guards_are_on_the_pytest_invocation(self):
+        # They only mean something together: no-network without the mount tests
+        # STALE adapters offline; the mount without no-network tests current
+        # adapters in an environment that does not exist.
+        src = self._source()
+        pytest_call = src.rindex("FIXTURE_ROOT=/opt/panopticon-fixtures")
+        start = src.rindex('_docker_bin(), "run"', 0, pytest_call)
+        block = src[start:src.index("]", pytest_call)]
+        self.assertIn('"--network", "none"', block)
+        self.assertIn("skill/scripts:/opt/panopticon/scripts:ro", block)
+
+
 if __name__ == "__main__":
     unittest.main()

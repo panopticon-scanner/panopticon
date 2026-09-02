@@ -130,6 +130,46 @@ class TestDependencyCheckIsApplicable(unittest.TestCase):
         self.assertFalse(dc.DependencyCheckAdapter().is_applicable("/nonexistent/path"))
 
 
+class TestOfflineAnalyzers(unittest.TestCase):
+    """Every analyzer that calls home must be disabled: scans have no network.
+
+    #calibration-6. OSS Index / Node Audit / RetireJS were disabled in #1461
+    because each logged [ERROR] and forced exit 14. The Central Analyzer is
+    worse: offline it does not fail, it HANGS, until the adapter's 900s timeout
+    kills the invocation and the run gets NO report at all. Measured on
+    WebGoat's jars: without --disableCentral exit 124 and 9 error lines; with
+    it, exit 0 and none.
+    """
+
+    def _argv(self):
+        captured = {}
+
+        def fake_run(cmd, **kw):
+            captured["cmd"] = cmd
+            return b"{}", 0
+
+        with mock.patch.object(dc, "run_tool", side_effect=fake_run):
+            dc.DependencyCheckAdapter().invoke("/tmp/x")
+        return captured["cmd"]
+
+    def test_every_call_home_analyzer_is_disabled(self):
+        argv = self._argv()
+        for flag in ("--disableOssIndex", "--disableNodeAudit",
+                     "--disableRetireJS", "--disableCentral"):
+            self.assertIn(flag, argv,
+                          "%s reaches the network; scans run --network none" % flag)
+
+    def test_offline_data_source_is_still_used(self):
+        # Disabling the network analyzers must not disable the SCAN: offline
+        # vulnerability data comes from the baked NVD set, so --data and
+        # --noupdate have to survive.
+        argv = self._argv()
+        self.assertIn("--noupdate", argv)
+        self.assertIn("--data", argv)
+        self.assertIn("/opt/odc-data", argv)
+
+
+
 if __name__ == "__main__":
     unittest.main()
 

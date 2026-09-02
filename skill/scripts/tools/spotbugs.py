@@ -1,6 +1,7 @@
 """SpotBugs + FindSecBugs adapter for Java/Kotlin security findings."""
 from __future__ import annotations
 import os
+import sys
 
 try:
     import defusedxml.ElementTree as ET
@@ -93,8 +94,40 @@ class SpotBugsAdapter:
         ]
         return run_tool(cmd, timeout=600)
 
+    @staticmethod
+    def _trim_to_xml(text: str) -> str:
+        """Drop anything before the XML document.
+
+        #calibration-6: spotbugs runs on a JVM, and scans run `--network none`,
+        so log4j cannot resolve the container hostname and writes
+
+            ERROR Could not determine local host name ... UnknownHostException
+
+        to STDOUT ahead of the report. `ET.fromstring` then dies with
+        `syntax error: line 1, column 0` and the whole Java axis is lost.
+
+        The JSON adapters have had this tolerance since bandit's progress bar
+        (`ingest_tools` trims to the first `{` or `[`), but that trim cannot
+        help an XML payload -- it only looks for JSON start tokens. This is the
+        XML equivalent, and it belongs here rather than in ingest because only
+        this adapter knows its output is XML.
+
+        Deliberately anchored to the document start, not to a `<` anywhere: a
+        prefix line containing a stray angle bracket must not be mistaken for
+        the report.
+        """
+        for marker in ("<?xml", "<BugCollection"):
+            i = text.find(marker)
+            if i > 0:
+                print("spotbugs: stripped %d bytes of non-XML prefix "
+                      "(log noise before the report)" % i, file=sys.stderr)
+                return text[i:]
+            if i == 0:
+                return text
+        return text
+
     def parse(self, raw: bytes, group: str) -> list[dict]:
-        text = raw.decode("utf-8", errors="replace").strip()
+        text = self._trim_to_xml(raw.decode("utf-8", errors="replace").strip())
         if not text:
             return []
         root = ET.fromstring(text)  # nosec B314

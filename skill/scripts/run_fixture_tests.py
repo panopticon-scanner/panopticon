@@ -143,8 +143,25 @@ def run_tests(tag: str, test: str | None = None) -> int:
     pytest_args.extend(test_paths)
     cmd = [
         _docker_bin(), "run", "--rm",
+        # #calibration-6: scans run with NO NETWORK, so the fixture suite must
+        # too -- otherwise it certifies scanners in an environment that does not
+        # exist. Three broken adapters passed here for exactly that reason:
+        # gosec read zero files (#1457), roslyn compiled nothing (#1469), and
+        # spotbugs emitted log4j DNS noise ahead of its XML, which only happens
+        # when there is no DNS. Every one looked healthy against a networked
+        # fixture. Measured: with this flag, 254 pass and precisely the two
+        # genuinely-broken Java scanners fail.
+        "--network", "none",
         "-e", "FIXTURE_ROOT=/opt/panopticon-fixtures",
         "-v", f"{repo}/skill:/opt/panopticon/skill:ro",
+        # ...AND over the image's baked-in copy. The image does
+        # `COPY skill/scripts /opt/panopticon/scripts`, so `scripts.tools`
+        # resolved to the BAKED adapters and a local fix was invisible here --
+        # the suite silently tested whatever the image was built with.
+        # run_tools.py already mounts this way for the same reason
+        # ("fixed adapters silently kept failing because the image carried the
+        # stale code"); the fixture runner did not.
+        "-v", f"{repo}/skill/scripts:/opt/panopticon/scripts:ro",
         "-v", f"{repo}/tests:/opt/panopticon/tests:ro",
         tag,
         *pytest_args,
