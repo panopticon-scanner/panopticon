@@ -39,6 +39,20 @@ class DependencyCheckAdapter:
                 "--disableOssIndex",
                 "--disableNodeAudit",
                 "--disableRetireJS",
+                # #calibration-6: the Central Analyzer queries Maven Central for
+                # POM metadata. With `--network none` -- how every scan runs --
+                # it does not fail fast, it HANGS, and the adapter's own 900s
+                # timeout kills the whole invocation: no report at all, from a
+                # scan that would otherwise have completed. Measured on
+                # WebGoat's jars: without this flag exit 124 (timeout) and 9
+                # error lines; with it, exit 0 and none.
+                #
+                # The three flags above were added in #1461 for the same class
+                # of problem (they logged [ERROR] and forced exit 14). Central
+                # is worse because it costs the entire run rather than the exit
+                # code. Offline dependency data comes from the baked NVD set
+                # under --data, so nothing is lost by declining to ask Central.
+                "--disableCentral",
             ]
             _stdout, rc = run_tool(cmd, timeout=900)
             out_path = os.path.join(out_dir, "dependency-check-report.json")

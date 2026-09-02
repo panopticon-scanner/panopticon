@@ -1,3 +1,5 @@
+import contextlib
+import io
 import os
 import unittest
 from _test_helpers import first, only
@@ -161,6 +163,66 @@ class TestSpotBugsAdapter(unittest.TestCase):
         # silently swallowed (#1196).
         with self.assertRaises(ParseError):
             sb.SpotBugsAdapter().parse(b"<not-xml", "g1")
+
+
+class TestOfflineLogPrefix(unittest.TestCase):
+    """#calibration-6: spotbugs output is unparseable under `--network none`.
+
+    spotbugs runs on a JVM. With no DNS it cannot resolve the container
+    hostname, so log4j writes `ERROR Could not determine local host name ...
+    UnknownHostException` to STDOUT ahead of the report, and `ET.fromstring`
+    dies with `syntax error: line 1, column 0` -- losing the entire Java axis.
+
+    Measured: online the XML starts at byte 0 and parses; offline it does not.
+    The fixture suite passed only because it ran WITH network, which is the
+    third time an environment difference between fixtures and real scans hid a
+    broken scanner (gosec #1457, roslyn #1469, this).
+    """
+
+    XML = (b'<?xml version="1.0" encoding="UTF-8"?>\n'
+           b'<BugCollection version="4.8.6">'
+           b'<BugInstance type="SQL_INJECTION" priority="1">'
+           b'<Class classname="com.x.A"/>'
+           b'<SourceLine sourcepath="com/x/A.java" start="7"/>'
+           b'</BugInstance></BugCollection>')
+    NOISE = (b'2026-09-02T00:07:08Z main ERROR Could not determine local host '
+             b'name java.net.UnknownHostException: a1e47b6b3be5\n'
+             b'\tat java.base/java.net.InetAddress.getLocalHost\n')
+
+    def test_log_prefixed_output_still_parses(self):
+        a = sb.SpotBugsAdapter()
+        clean = a.parse(self.XML, "g1")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            prefixed = a.parse(self.NOISE + self.XML, "g1")
+        self.assertEqual(len(prefixed), len(clean), "log prefix cost us findings")
+        self.assertEqual(len(prefixed), 1)
+        self.assertIn("stripped", err.getvalue(),
+                      "stripping a prefix should be disclosed, not silent")
+
+    def test_clean_output_is_untouched(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            out = sb.SpotBugsAdapter().parse(self.XML, "g1")
+        self.assertEqual(len(out), 1)
+        self.assertEqual(err.getvalue(), "",
+                         "no prefix to strip -> no note")
+
+    def test_noise_with_no_report_still_fails(self):
+        # A trim must not turn "the scanner produced no report" into "the
+        # scanner found nothing" -- that is the silent-zero class this whole
+        # series exists to stamp out. No XML at all is a FAILURE.
+        with self.assertRaises(ParseError):
+            sb.SpotBugsAdapter().parse(self.NOISE, "g1")
+
+    def test_a_stray_angle_bracket_is_not_mistaken_for_the_report(self):
+        # Anchored to the document start, not to any '<'.
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            out = sb.SpotBugsAdapter().parse(
+                b"WARN generic<T> in log line\n" + self.XML, "g1")
+        self.assertEqual(len(out), 1)
+
 
 
 if __name__ == "__main__":
