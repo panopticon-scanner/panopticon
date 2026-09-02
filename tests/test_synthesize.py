@@ -2678,9 +2678,9 @@ def _agentic(fid="AG-001", sev="HIGH", **kw):
 
 
 class TestHealthScore(unittest.TestCase):
-    """#1146: secondary health ratio = non-blank LoC / weighted defect
-    footprint, reported ALONGSIDE the letter grade, never touching the gate.
-    Higher = healthier (more clean code per unit of severity-weighted defect)."""
+    """#1146: secondary health index = the share of reviewed LoC NOT under
+    severity-weighted defect footprint, on a 0-100 scale, reported ALONGSIDE the
+    letter grade and never touching the gate. Higher = healthier; 100 = clean."""
 
     def test_loc_span_point_and_range(self):
         self.assertEqual(syn._loc_span({"location": {"line_start": 10, "line_end": 10}}), 1)
@@ -2702,10 +2702,44 @@ class TestHealthScore(unittest.TestCase):
         # 25*40 (HIGH span 40) + 1*1 (LOW span 1) + 0*100 (INFO weight 0)
         self.assertEqual(syn.weighted_defect(findings), 1001)
 
-    def test_health_score_ratio_and_clean_case(self):
-        self.assertEqual(syn.health_score(2000, 100), 20.0)
-        # no weighted defect -> undefined ratio -> None (the clean case)
-        self.assertIsNone(syn.health_score(2000, 0))
+    def test_health_score_is_the_clean_share_on_a_0_100_scale(self):
+        # 2000 clean LoC against 100 weighted defect -> 2000/2100 of the total.
+        self.assertEqual(syn.health_score(2000, 100), 95.24)
+        # Equal parts -> the midpoint, which is what makes the scale readable.
+        self.assertEqual(syn.health_score(500, 500), 50.0)
+
+    def test_a_clean_repo_scores_a_perfect_100_not_none(self):
+        # THE bug this formula exists to fix: under `total_loc / weighted_defect`
+        # the single best possible outcome divided by zero and reported None, so
+        # a spotless scan had a blank health field.
+        self.assertEqual(syn.health_score(2000, 0), 100.0)
+
+    def test_health_score_is_bounded_at_both_ends(self):
+        # Never above 100 ...
+        self.assertLessEqual(syn.health_score(10 ** 9, 1), 100.0)
+        # ... and never below 0, however wide the defect footprint gets. The
+        # rejected `100 - weighted/total_loc` form goes NEGATIVE here (-25.0):
+        # a 100-line file-scoped run with ten HIGH findings spanning 50 lines.
+        self.assertEqual(syn.health_score(100, 25 * 50 * 10), 0.79)
+        self.assertGreaterEqual(syn.health_score(1, 10 ** 9), 0.0)
+
+    def test_health_score_none_only_when_nothing_was_reviewed(self):
+        # Both inputs zero is the ONLY undefined case now, and it means a broken
+        # run (no readable reviewed file), not a clean one.
+        self.assertIsNone(syn.health_score(0, 0))
+
+    def test_health_score_orders_the_six_calibration_targets(self):
+        # Real measured (total_loc, weighted_defect) from the six calibration
+        # runs. The score must rank them exactly as the old ratio did -- this is
+        # a rescale, not a re-ranking -- while spreading them across ~35 points
+        # instead of the 1.38 that `100 - weighted/total_loc` would have given.
+        targets = [("fzf", 51789, 93341), ("gotify", 31277, 52305),
+                   ("ripgrep", 68932, 72954), ("express", 21911, 14512),
+                   ("btcpayserver", 321482, 183694), ("solidus", 251596, 105547)]
+        scored = [(syn.health_score(loc, wd), name) for name, loc, wd in targets]
+        old_order = [n for _, n in sorted((loc / wd, n) for n, loc, wd in targets)]
+        self.assertEqual([n for _, n in sorted(scored)], old_order)
+        self.assertGreater(max(s for s, _ in scored) - min(s for s, _ in scored), 30)
 
     def test_nonblank_loc_excludes_blanks_and_dedupes(self):
         with tempfile.TemporaryDirectory() as d:
@@ -2782,15 +2816,27 @@ class TestEvidenceReport(unittest.TestCase):
         self.assertEqual(health["weighted_defect"], 100)  # 25 * 4, unverified excluded
         self.assertEqual(health["weights"]["critical"], 125)
         self.assertIsInstance(health["total_loc"], int)  # file absent in test -> 0
-        # total_loc 0 over a non-zero defect -> a real (0.0) score, not None
+        # No clean LoC against a real defect -> the floor, 0.0, not None.
         self.assertEqual(health["score"], 0.0)
 
-    def test_summary_health_score_null_when_no_gate_eligible_defect(self):
+    def test_summary_health_score_null_only_when_nothing_measurable(self):
         # An unverified-only report has an empty gate-eligible set -> no weighted
-        # defect -> score is None (clean case), not a divide-by-zero.
+        # defect. In this fixture the reviewed file does not exist either, so
+        # total_loc is 0 too and BOTH inputs are zero -- the one genuinely
+        # undefined case. A clean repo with real LoC scores 100 (see
+        # test_a_clean_repo_scores_a_perfect_100_not_none).
         health = self._report([_agentic()])["summary"]["health"]
         self.assertEqual(health["weighted_defect"], 0)
+        self.assertEqual(health["total_loc"], 0)
         self.assertIsNone(health["score"])
+
+    def test_summary_health_states_its_own_formula(self):
+        # The score changed shape once; a report that names the expression it
+        # used stays interpretable when it changes again.
+        health = self._report([_agentic()])["summary"]["health"]
+        self.assertEqual(health["formula"], syn.HEALTH_FORMULA)
+        self.assertIn("total_loc", health["formula"])
+        self.assertIn("weighted_defect", health["formula"])
 
     def test_rejected_moves_to_discarded_with_severity_intact(self):
         finding = _agentic()
