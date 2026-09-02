@@ -1745,8 +1745,14 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
     # identical to) driver.verify_execute's own engagement decision, which
     # scores the raw per-cell list -- see engaged_matrix_cells's docstring.
     engaged_cells = engaged_matrix_cells(findings)
+    # #1475: verdict files that EXIST for a cell but cannot be bound to it (the
+    # finding_id echo names a different finding, or none at all). Collected
+    # separately because they are the opposite failure from `unanswered`: an
+    # advisor ran and answered, and the answer was mislabelled.
+    verdict_misrouted = []
     for entry in queue:
-        v = evidence_mod.match_verdict(entry, verdicts, run_id=verdict_run_id)
+        v = evidence_mod.match_verdict(entry, verdicts, run_id=verdict_run_id,
+                                       misrouted=verdict_misrouted)
         if v is None and by_fid:
             v = evidence_mod.match_verdict_by_id(entry["finding"], by_fid,
                                                  run_id=verdict_run_id)
@@ -1774,6 +1780,13 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
     if unanswered:
         print("synthesize: %d queued findings had no verdict; left unverified"
               % unanswered, file=sys.stderr)
+    if verdict_misrouted:
+        print("synthesize: %d verdict(s) could not be bound to the cell they were "
+              "dispatched for (an advisor answered, mislabelled): %s"
+              % (len(verdict_misrouted),
+                 ", ".join("%s (%s)" % (m["queue_id"], m["reason"])
+                           for m in verdict_misrouted[:5])),
+              file=sys.stderr)
     unknown = set(verdicts) - {e["queue_id"] for e in queue}
     if unknown:
         print("synthesize: verdict file(s) for unknown queue_id(s): %s"
@@ -1811,6 +1824,12 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
         # non-zero count means verification evidence was lost, distinct from a
         # finding that never had a verdict generated (#938).
         "unloadable": len(verdict_unloadable),
+        # #1475: a verdict file existed for the cell but its finding_id echo
+        # named a different finding (or none). These are ALSO counted in
+        # `unanswered` -- the finding genuinely has no valid verdict -- but the
+        # cause is the opposite of a missing dispatch, and the report has to be
+        # able to tell an operator which one happened.
+        "misrouted": len(verdict_misrouted),
         # Measured only when --verdicts-dir was passed at all. Emitting 0 for a
         # run with no verify phase would read as "nothing went unanswered",
         # which is the opposite of the truth; null means "not measured", the

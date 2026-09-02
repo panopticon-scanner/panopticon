@@ -4269,6 +4269,7 @@ class TestVerdictAccountingMeta(unittest.TestCase):
                 "matched": 1,
                 "unknown": 1,
                 "unanswered": 1,
+                "misrouted": 0,
                 "unloadable": 0,
             },
         )
@@ -4296,11 +4297,20 @@ class TestVerdictAccountingMeta(unittest.TestCase):
             )
         self.assertEqual(r["meta"]["coverage"]["verdicts"]["unloadable"], 2)
         self.assertIn("un-loadable", err.getvalue())
+        # a corrupt file is NOT a misrouted one -- different failure, different
+        # remedy, so the two counters must not bleed into each other.
+        self.assertEqual(r["meta"]["coverage"]["verdicts"]["misrouted"], 0)
 
-    def test_echo_mismatch_is_dropped_and_counted_as_unanswered(self):
+    def test_echo_mismatch_is_dropped_and_reported_as_misrouted(self):
         # match_verdict refuses a verdict that echoes a different finding_id.
         # It is neither matched nor unknown, so supplied - matched - unknown
         # is exactly the echo-rejected count.
+        #
+        # #1475: it is ALSO counted as `misrouted`. The rejection was always
+        # correct; what run-6 lacked was any way to tell it apart from a cell
+        # no advisor ever answered, since both only moved `unanswered`. This is
+        # the run-6 shape exactly: a verdict file present for the cell, naming
+        # somebody else's finding.
         a = self._f("A-1", "first claim", "a.py")
         queue = self._queue([a])
         verdicts = {
@@ -4330,10 +4340,44 @@ class TestVerdictAccountingMeta(unittest.TestCase):
                 "matched": 0,
                 "unknown": 0,
                 "unanswered": 1,
+                # the whole point: an advisor DID answer, mislabelled -- not a
+                # dispatch that never happened.
+                "misrouted": 1,
                 "unloadable": 0,
             },
         )
         self.assertEqual(r["summary"]["gate"], "OFF")  # ...and it looks clean
+        # stderr must say an advisor answered and was mislabelled, not merely
+        # that something is unanswered -- that distinction is the fix.
+        self.assertIn("mislabelled", err.getvalue())
+
+    def test_run6_shape_misroute_is_distinguishable_from_a_missing_dispatch(self):
+        # The two failures that ran-6 collapsed into one number, side by side.
+        # Same queue, same `unanswered: 1`, opposite causes and opposite fixes:
+        # one needs the advisor re-dispatched, the other needs its answer
+        # relabelled. A report that cannot tell them apart sends the operator
+        # digging through raw agent transcripts, which is what it cost here.
+        a = self._f("SG-006", "tool claim", "a.py")
+        queue = self._queue([a])
+
+        def report(verdicts):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                r = syn.build_report([a], [], "t", None, "2026-08-05T00:00:00Z",
+                                     verdicts=verdicts, verdicts_supplied=True)
+            return r["meta"]["coverage"]["verdicts"]
+
+        # (a) no advisor ever answered this cell
+        missing = report({})
+        # (b) an advisor answered, echoing somebody else's finding (run-6: the
+        #     cell dispatched for SG-006 returned ESS-036)
+        misrouted = report({queue[0]["queue_id"]: {
+            "verdict": "REJECTED", "reasoning": "r", "finding_id": "ESS-036"}})
+
+        self.assertEqual(missing["unanswered"], 1)
+        self.assertEqual(misrouted["unanswered"], 1)     # same headline ...
+        self.assertEqual(missing["misrouted"], 0)        # ... different cause
+        self.assertEqual(misrouted["misrouted"], 1)
 
     def test_unanswered_is_null_when_no_verdicts_were_supplied(self):
         # 0 would read as "nothing went unanswered" for a run that never ran a
@@ -4351,6 +4395,7 @@ class TestVerdictAccountingMeta(unittest.TestCase):
                 "matched": 0,
                 "unknown": 0,
                 "unanswered": None,
+                "misrouted": 0,
                 "unloadable": 0,
             },
         )

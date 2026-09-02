@@ -162,7 +162,11 @@
                   ],
                   "description": "Queued findings left without a verdict; null when no --verdicts-dir was supplied, i.e. not measured."
                 },
-                "unloadable": {
+                "misrouted": {
+              "type": "integer",
+              "description": "#1475: verdict files that EXISTED for the cell they were written for but could not be bound to it -- the finding_id echo named a different finding, or none. Also counted in `unanswered` (the finding has no valid verdict either way), but the cause is the OPPOSITE of a missing dispatch: an advisor ran, adjudicated, and mislabelled its answer. Reported separately so the two are distinguishable without reading agent transcripts."
+            },
+            "unloadable": {
                   "type": "integer",
                   "description": "Verdict files present on disk but un-loadable (corrupt/invalid JSON); their findings are left unverified. A non-zero count means verification evidence was lost, distinct from a verdict that was never generated (#938)."
                 }
