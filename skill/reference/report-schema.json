@@ -386,12 +386,15 @@
             "string",
             "null"
           ],
+          "description": "Letter banded over summary.health.score: S=100, A>=90, B>=80, C>=70, D>=60, F>=26, X below. S is reachable ONLY at exactly 100 (no gate-eligible weighted defect). Supersedes the max-severity rollup, which saturated -- one HIGH anywhere was a D at any codebase size. null when health is unmeasurable (no readable reviewed LoC) or when coverage is incomplete, in which case provisional_grade carries the letter.",
           "enum": [
+            "S",
             "A",
             "B",
             "C",
             "D",
             "F",
+            "X",
             null
           ]
         },
@@ -400,12 +403,15 @@
             "string",
             "null"
           ],
+          "description": "The letter overall_grade would have carried, held back because coverage did not complete. Same bands.",
           "enum": [
+            "S",
             "A",
             "B",
             "C",
             "D",
             "F",
+            "X",
             null
           ]
         },
@@ -591,6 +597,7 @@
             }
           },
           "panel_grades": {
+            "description": "Per-panel A-F, still the MAX-SEVERITY rollup and deliberately not health-banded: health needs lines of code, and LoC is not attributable per panel (one file feeds several). Do not read these on the same scale as summary.overall_grade.",
             "type": "object"
           },
           "key_findings": {

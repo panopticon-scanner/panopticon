@@ -523,7 +523,7 @@ def _render_compare_summary(label, report):
 <div class="compare-panel">
 <h3>{_escape(label)}</h3>
 <div class="badges">
-<span class="badge grade">{_escape(summary.get('overall_grade', '-'))}</span>
+<span class="badge grade">{_escape(summary.get('overall_grade') or '-')}</span>
 <span class="badge {_severity_class(summary.get('risk_level', 'INFO'))}">Risk: {_escape(summary.get('risk_level', '-'))}</span>
 <span class="badge {_gate_class(summary.get('gate', 'OFF'))}">Gate: {_escape(summary.get('gate', 'OFF'))}</span>
 </div>

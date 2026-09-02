@@ -921,9 +921,13 @@ def health_score(total_loc, weighted):
     `weighted_defect`, which is 0 for a CLEAN repo -- so the single best possible
     outcome was the one case that had to return None.
 
-    This form inverts all three. The remaining degenerate case is
-    total_loc == weighted == 0 (nothing reviewed at all), which is a broken run
-    rather than a good one, and still returns None.
+    This form inverts all three. The remaining degenerate case is total_loc == 0
+    -- no reviewed file was readable -- which returns None because it is a broken
+    MEASUREMENT, not a health of zero. That distinction became load-bearing when
+    the letter grade started keying on this score: nonblank_loc() skips missing,
+    unreadable and binary files silently, so a run whose paths do not resolve (a
+    stale worktree, a moved checkout, a revoked volume permission) would otherwise
+    report the floor grade for a codebase it never managed to read.
 
     Deliberately NOT `100 - weighted/total_loc`, the obvious inversion: that
     reads as a percentage but has no floor (a file-scoped run with wide HIGH
@@ -934,10 +938,9 @@ def health_score(total_loc, weighted):
     saturating form used here spreads the same six across 35.68-70.45, in the
     same order.
     """
-    denom = total_loc + weighted
-    if not denom:
+    if not total_loc:
         return None
-    return round(100.0 * total_loc / denom, 2)
+    return round(100.0 * total_loc / (total_loc + weighted), 2)
 
 
 def health_stats(total_loc, gate_eligible):
@@ -956,6 +959,51 @@ def health_stats(total_loc, gate_eligible):
         "formula": HEALTH_FORMULA,
         "population": "gate_eligible",
     }
+
+
+# Owner-set bands over the 0-100 health index (2026-09-02). Ordered best-first
+# by LOWER BOUND; a score falls in the first band it reaches.
+#
+# S and X exist because A-F alone has no room at either end. S is reachable ONLY
+# at exactly 100 -- no gate-eligible weighted defect at all -- so it is a real
+# distinction rather than a rounding of A. X is the floor band: a weighted defect
+# footprint three times the size of the codebase reviewed.
+#
+# The F band is deliberately the widest (26-59). That is where every measured
+# codebase currently sits, and widening it is honest about the fact that we have
+# never scanned a healthy control -- see health_grade's note on recalibration.
+HEALTH_GRADE_BANDS = ((100, "S"), (90, "A"), (80, "B"), (70, "C"), (60, "D"),
+                      (26, "F"))
+HEALTH_GRADE_FLOOR = "X"
+
+
+def health_grade(score):
+    """Letter grade from the 0-100 health index, or None when health is None.
+
+    Replaces the max-severity rollup, which SATURATED: one CRITICAL anywhere was
+    an F and one HIGH anywhere was a D, regardless of size, so a 320 KLoC service
+    with 100 HIGHs and a 30 KLoC utility with one both graded D. Across eleven
+    measured runs the old rollup produced ten Ds and one F -- it could not tell
+    any two codebases apart, which is why health had to be read instead.
+
+    Severity has NOT stopped mattering; it moved to where it belongs. `--fail-on`
+    plus summary.gate_severities is what breaks a build, risk_level still reports
+    the worst severity present, and the distribution is displayed with the gate's
+    reach marked on it. The grade answers a different question -- how much of the
+    codebase is clean -- and now has a metric that can actually answer it.
+
+    CALIBRATION CAVEAT, stated because the bands look more settled than they are:
+    all eleven measured runs score 35.68-70.45, so they land C/D/F and nothing has
+    ever reached B. We have never scanned a healthy control, so the bands are a
+    reasonable prior, not a fitted result. `total_loc` and `weighted_defect` are
+    both in every report, so a recut costs nothing and re-grades history exactly.
+    """
+    if score is None:
+        return None
+    for lower, letter in HEALTH_GRADE_BANDS:
+        if score >= lower:
+            return letter
+    return HEALTH_GRADE_FLOOR
 
 
 ID_RE = re.compile(r"^[A-Z]{2,8}-\d{3,}$")  # {2,8}: real agents emit e.g. STRUCT-001
@@ -1056,7 +1104,9 @@ def apply_doc_severity_policy(findings, security_mode, doc_globs=None):
     return {"downgraded": downgraded, "examples": examples}
 
 
-_GRADE_ORDER = ["A", "B", "C", "D", "F"]
+# Best-first. S/X bracket the A-F rollup used for per-panel grades; the letters
+# in between keep their exact previous ordering.
+_GRADE_ORDER = ["S", "A", "B", "C", "D", "F", "X"]
 
 
 def _worst_grade(grades):
@@ -1839,7 +1889,12 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
         })
     group_objs = _roll_up_to_parent(group_objs, groups_meta, by_panel)
 
-    overall = _worst_grade([grade(by_panel[p]) for p in by_panel])
+    # The headline grade now comes from the health index, not the max-severity
+    # rollup -- see health_grade(). Computed here (rather than inline in the
+    # summary) because certify() needs it, and the same dict is reused below so
+    # the grade and the reported health can never disagree.
+    health = health_stats(nonblank_loc(target, groups_meta), gate_eligible)
+    overall = health_grade(health["score"])
     for f in findings:
         f.pop("_group", None)
         f.pop("_repo_root", None)
@@ -2001,7 +2056,7 @@ def build_report(findings, groups_meta, target, fail_on, timestamp, review_type=
             "gate_severities": gate_severity_roles(gate_eligible, fail_on),
             # #1146: size-aware health ratio alongside the letter; denominator is
             # the gate-eligible set, numerator the reviewed scope's non-blank LoC.
-            "health": health_stats(nonblank_loc(target, groups_meta), gate_eligible),
+            "health": health,
             "evidence_stats": evidence_stats(findings),
             "evidence_stats_population": "all",
             "counts": {
@@ -2077,6 +2132,21 @@ _GATE_ROLE_NOTE = {
     "contributing": "**FAILS THE GATE**",
     "in_play": "in play, nothing confirmed here",
 }
+
+
+def _grade_text(summary):
+    """The grade as displayed: the letter, a provisional letter, or n/a.
+
+    Three-way because the grade now derives from health, which is None when no
+    reviewed file was readable. "None (provisional)" -- what the old two-way
+    format produced for that case -- reads as a grade rather than as the absence
+    of one.
+    """
+    if summary.get("overall_grade"):
+        return summary["overall_grade"]
+    if summary.get("provisional_grade"):
+        return "%s (provisional)" % summary["provisional_grade"]
+    return "n/a (no reviewed lines of code to grade)"
 
 
 def _render_severity_block(stats, roles, gate_eligible_stats=None):
@@ -2159,7 +2229,7 @@ def render_summary(report):
         "# panopticon — %s" % report["meta"]["target"],
         "",
         "**Grade:** %s  **Risk:** %s  **Gate:** %s%s" % (
-            (s["overall_grade"] or ("%s (provisional)" % s.get("provisional_grade"))),
+            _grade_text(s),
             s["risk_level"], s["gate"],
             ("  " + _health_headline(s.get("health"))) if _health_headline(s.get("health")) else ""),
         "",

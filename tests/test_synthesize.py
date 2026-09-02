@@ -834,8 +834,12 @@ class TestReport(unittest.TestCase):
         report = syn.build_report(
             findings, [{"name": "g1", "files": ["a.py"]}], "src", "high", DEFAULT_TIMESTAMP
         )
-        self.assertEqual(report["summary"]["overall_grade"], "A")
+        # The letter now comes from health, and "a.py" does not exist here, so
+        # there is no LoC to measure -> no grade. The GATE is what this asserts.
+        self.assertIsNone(report["summary"]["overall_grade"])
         self.assertEqual(report["summary"]["gate"], "PASS")
+        # panel_grades stay the per-panel SEVERITY rollup -- health needs LoC,
+        # which is not attributable per panel (one file feeds several).
         self.assertEqual(report["groups"][0]["panel_grades"]["code"], "A")
 
     def test_validate_clean_report(self):
@@ -1680,10 +1684,10 @@ class TestGroupParentRollup(unittest.TestCase):
         # both subgroups' files are reachable for file-level drill-down
         self.assertIn("src/ui/admin/a.py", ui["files"])
         self.assertIn("src/ui/components/b.py", ui["files"])
-        # overall letter/gate still computed over ALL gate-eligible findings,
-        # unaffected by the group-level roll-up (both findings are eligible
-        # under gate_unverified, so overall reflects the HIGH -> "D")
-        self.assertEqual(report["summary"]["overall_grade"], "D")
+        # The overall letter is health-derived and these files do not exist, so
+        # it is unmeasurable here; the per-panel severity rollup asserted above
+        # is what this test is actually about.
+        self.assertIsNone(report["summary"]["overall_grade"])
         self.assertEqual(report["summary"]["gate"], "OFF")
 
     def test_flat_self_parented_groups_report_unchanged(self):
@@ -2662,6 +2666,25 @@ class TestGroupReMatchesDispatchNames(unittest.TestCase):
             self.assertEqual(syn._expected_from_filename(base), (group, domain), base)
 
 
+@contextlib.contextmanager
+def _target_with_files(groups, lines=100):
+    """A real on-disk target for `groups`, so the letter grade is measurable.
+
+    The grade keys on the health index, whose numerator is non-blank LoC across
+    the reviewed files. A fixture pointing at files that do not exist has no LoC
+    to measure and therefore no grade -- correct behaviour, but useless for a
+    test that wants to assert a letter.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        for g in groups:
+            for rel in g.get("files") or []:
+                path = os.path.join(d, rel)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write("x = 1\n" * lines)
+        yield d
+
+
 def _agentic(fid="AG-001", sev="HIGH", **kw):
     f = {
         "id": fid,
@@ -2753,6 +2776,112 @@ class TestHealthScore(unittest.TestCase):
 
     def test_nonblank_loc_tolerates_missing_file(self):
         self.assertEqual(syn.nonblank_loc("/no/such/dir", [{"name": "g", "files": ["nope.py"]}]), 0)
+
+
+class TestHealthLetterGrade(unittest.TestCase):
+    """The letter grade, banded over the 0-100 health index.
+
+    Replaces the max-severity rollup, which saturated: one HIGH anywhere was a D
+    regardless of codebase size, so ten of the eleven measured runs graded D and
+    the eleventh graded F.
+    """
+
+    def test_every_band_boundary(self):
+        for score, letter in ((100, "S"), (99.99, "A"), (90, "A"), (89.99, "B"),
+                              (80, "B"), (79.99, "C"), (70, "C"), (69.99, "D"),
+                              (60, "D"), (59.99, "F"), (26, "F"), (25.99, "X"),
+                              (0, "X")):
+            with self.subTest(score=score):
+                self.assertEqual(syn.health_grade(score), letter)
+
+    def test_s_is_reachable_only_at_exactly_100(self):
+        # S must mean "no gate-eligible weighted defect at all", not "rounded up
+        # from 99.995" -- otherwise it is just a second A.
+        self.assertEqual(syn.health_grade(100), "S")
+        self.assertEqual(syn.health_grade(99.99), "A")
+
+    def test_unmeasurable_health_has_no_grade(self):
+        # None, not X. A run whose paths do not resolve read no code; grading it
+        # the floor letter would report a catastrophe it never measured.
+        self.assertIsNone(syn.health_grade(None))
+
+    def test_grades_are_monotonic_in_health(self):
+        order = ["S", "A", "B", "C", "D", "F", "X"]
+        seen = [syn.health_grade(v) for v in range(100, -1, -1)]
+        ranks = [order.index(g) for g in seen]
+        self.assertEqual(ranks, sorted(ranks), "a lower health scored a better letter")
+
+    def test_the_six_calibration_targets_grade_c_d_f(self):
+        # Real measured (total_loc, weighted_defect). Recorded because the bands
+        # are a prior, not a fit: no measured codebase has ever reached B, so
+        # this is the evidence a future recut would be argued against.
+        expected = {"fzf": "F", "gotify": "F", "ripgrep": "F",
+                    "express": "D", "btcpayserver": "D", "solidus": "C"}
+        measured = {"fzf": (51789, 93341), "gotify": (31277, 52305),
+                    "ripgrep": (68932, 72954), "express": (21911, 14512),
+                    "btcpayserver": (321482, 183694), "solidus": (251596, 105547)}
+        got = {n: syn.health_grade(syn.health_score(*v)) for n, v in measured.items()}
+        self.assertEqual(got, expected)
+
+    def test_grade_no_longer_saturates_on_one_high(self):
+        # THE regression the change exists to prevent. Two codebases, same single
+        # confirmed HIGH, three orders of magnitude apart in size. The old
+        # max-severity rollup graded both D; they must now differ.
+        def graded(lines):
+            groups = [{"name": "g1", "files": ["a.py"]}]
+            finding = _agentic(sev="HIGH",
+                               location={"file": "a.py", "line_start": 1, "line_end": 4})
+            verdicts = {syn.finding_fingerprint(finding): {
+                "finding_id": "AG-001", "verdict": "CONFIRMED", "reasoning": "v"}}
+            with _target_with_files(groups, lines=lines) as tgt:
+                r = syn.build_report([finding], groups, tgt, "high",
+                                     "2026-01-01T00:00:00Z", verdicts=verdicts)
+            return r["summary"]["overall_grade"]
+
+        small, large = graded(50), graded(50000)
+        self.assertNotEqual(small, large)
+        # 25 (HIGH) x 4 lines = 100 weighted defect either way.
+        self.assertEqual(large, "A")   # ... against 50,000 clean lines -> 99.8
+        self.assertEqual(small, "F")   # ... against 50 -> 33.33
+        # Not S: S needs ZERO gate-eligible weighted defect, so a confirmed
+        # finding of any severity can never reach it however large the codebase.
+
+    def test_a_clean_tree_grades_s_end_to_end(self):
+        groups = [{"name": "g1", "files": ["a.py"]}]
+        with _target_with_files(groups) as tgt:
+            r = syn.build_report([], groups, tgt, "high", "2026-01-01T00:00:00Z")
+        self.assertEqual(r["summary"]["overall_grade"], "S")
+        self.assertEqual(r["summary"]["health"]["score"], 100.0)
+
+    def test_grade_and_health_can_never_disagree(self):
+        # They are computed from one shared dict; this pins that they stay so.
+        groups = [{"name": "g1", "files": ["a.py"]}]
+        finding = _agentic(sev="MEDIUM",
+                           location={"file": "a.py", "line_start": 1, "line_end": 20})
+        verdicts = {syn.finding_fingerprint(finding): {
+            "finding_id": "AG-001", "verdict": "CONFIRMED", "reasoning": "v"}}
+        with _target_with_files(groups, lines=200) as tgt:
+            r = syn.build_report([finding], groups, tgt, "high",
+                                 "2026-01-01T00:00:00Z", verdicts=verdicts)
+        s = r["summary"]
+        self.assertEqual(s["overall_grade"], syn.health_grade(s["health"]["score"]))
+
+
+class TestGradeTextRendering(unittest.TestCase):
+    def test_a_letter_renders_bare(self):
+        self.assertEqual(syn._grade_text({"overall_grade": "B"}), "B")
+
+    def test_a_held_letter_renders_provisional(self):
+        self.assertEqual(syn._grade_text({"overall_grade": None,
+                                          "provisional_grade": "C"}),
+                         "C (provisional)")
+
+    def test_no_letter_at_all_renders_n_a_not_the_word_none(self):
+        # The old two-way format produced "None (provisional)" here, which reads
+        # as a grade rather than as the absence of one.
+        text = syn._grade_text({"overall_grade": None, "provisional_grade": None})
+        self.assertNotIn("None", text)
+        self.assertIn("n/a", text)
 
 
 class TestGateSeverityRoles(unittest.TestCase):
@@ -2892,12 +3021,12 @@ class TestEvidenceReport(unittest.TestCase):
         self.assertEqual(f["severity"], "CRITICAL")
         self.assertEqual(f["evidence"]["status"], "unverified")
         self.assertEqual(report["summary"]["gate"], "PASS")
-        self.assertEqual(report["summary"]["overall_grade"], "A")
+        self.assertIsNone(report["summary"]["overall_grade"])   # no LoC here
 
     def test_gate_unverified_opts_in(self):
         report = self._report([_agentic(sev="CRITICAL")], gate_unverified=True)
         self.assertEqual(report["summary"]["gate"], "FAIL")
-        self.assertEqual(report["summary"]["overall_grade"], "F")
+        self.assertIsNone(report["summary"]["overall_grade"])   # no LoC here
         self.assertEqual(report["summary"]["gate_policy"], "include_unverified")
 
     def test_confirmed_verdict_gates(self):
@@ -2913,7 +3042,7 @@ class TestEvidenceReport(unittest.TestCase):
         f = report["findings"][0]
         self.assertEqual(f["evidence"]["status"], "advisor_confirmed")
         self.assertEqual(report["summary"]["gate"], "FAIL")
-        self.assertEqual(report["summary"]["overall_grade"], "D")
+        self.assertIsNone(report["summary"]["overall_grade"])   # no LoC here
 
     def test_summary_health_counts_only_gate_eligible(self):
         # #1146: the health denominator is the gate-eligible set (same as the
@@ -2934,9 +3063,11 @@ class TestEvidenceReport(unittest.TestCase):
         self.assertEqual(health["population"], "gate_eligible")
         self.assertEqual(health["weighted_defect"], 100)  # 25 * 4, unverified excluded
         self.assertEqual(health["weights"]["critical"], 125)
-        self.assertIsInstance(health["total_loc"], int)  # file absent in test -> 0
-        # No clean LoC against a real defect -> the floor, 0.0, not None.
-        self.assertEqual(health["score"], 0.0)
+        self.assertEqual(health["total_loc"], 0)  # file absent in this fixture
+        # No readable LoC is an unmeasurable codebase, NOT a health of zero --
+        # otherwise a run whose paths fail to resolve grades X for code it never
+        # read. See health_score's note.
+        self.assertIsNone(health["score"])
 
     def test_summary_health_score_null_only_when_nothing_measurable(self):
         # An unverified-only report has an empty gate-eligible set -> no weighted
@@ -4429,10 +4560,15 @@ class TestCoverageDivergence(unittest.TestCase):
             "groups_complete": [],
             "groups_partial": ["g1"],
         }
-        r = syn.build_report([], self.GROUPS, "t", "high", self.TS, fan_out=fan_out)
+        # Real files on disk: the letter is health-derived, and a fixture with
+        # no readable LoC has no letter to make provisional.
+        with _target_with_files(self.GROUPS) as tgt:
+            r = syn.build_report([], self.GROUPS, tgt, "high", self.TS, fan_out=fan_out)
         self.assertEqual(r["summary"]["gate"], "INCONCLUSIVE")
         self.assertIsNone(r["summary"]["overall_grade"])
-        self.assertEqual(r["summary"]["provisional_grade"], "A")
+        # No findings -> no weighted defect -> health 100 -> S, held provisional
+        # because a high-value panel did not complete.
+        self.assertEqual(r["summary"]["provisional_grade"], "S")
         self.assertEqual(
             r["meta"]["coverage"]["divergence"]["panels"]["security"],
             {"planned": 21, "executed": 3},
@@ -4455,8 +4591,10 @@ class TestCoverageDivergence(unittest.TestCase):
         self.assertEqual(r["summary"]["gate"], "INCONCLUSIVE")
 
     def test_backward_compat_no_fanout_no_scout(self):
-        r = syn.build_report([], self.GROUPS, "t", "high", self.TS)
-        self.assertEqual(r["summary"]["overall_grade"], "A")
+        with _target_with_files(self.GROUPS) as tgt:
+            r = syn.build_report([], self.GROUPS, tgt, "high", self.TS)
+        # Clean tree, fully covered: no weighted defect at all -> health 100 -> S.
+        self.assertEqual(r["summary"]["overall_grade"], "S")
         self.assertEqual(r["summary"]["gate"], "PASS")
         self.assertTrue(r["summary"]["coverage_certified"])
         self.assertIsNone(r["summary"]["provisional_grade"])
@@ -4757,14 +4895,12 @@ class TestRenderSummaryCoverage(unittest.TestCase):
             "groups_complete": [],
             "groups_partial": ["g1"],
         }
-        r = syn.build_report(
-            [],
-            [{"name": "g1", "files": ["a.py"]}],
-            "t",
-            "high",
-            "2026-01-01T00:00:00Z",
-            fan_out=fan_out,
-        )
+        groups = [{"name": "g1", "files": ["a.py"]}]
+        # Real files: the summary line prints a PROVISIONAL letter, and there is
+        # no letter to hold provisional without readable LoC.
+        with _target_with_files(groups) as tgt:
+            r = syn.build_report([], groups, tgt, "high", "2026-01-01T00:00:00Z",
+                                 fan_out=fan_out)
         text = syn.render_summary(r)
         self.assertIn("INCONCLUSIVE", text)
         self.assertIn("NOT CERTIFIED", text)
