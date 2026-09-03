@@ -50,6 +50,10 @@ class TestRunEngine(unittest.TestCase):
         c, _ = _fake_phase("c")
         status = driver.run_engine("/root", {}, [a, b, c])
         self.assertEqual(status["status"], "complete")
+        # A finished run must SAY to disarm the write-guard: it is fail-closed
+        # while registered, so one left armed denies every later Write/Edit in
+        # the session, the operator's included.
+        self.assertIn("uninstall", status["teardown"])
         self.assertEqual(status["advanced"], ["a", "b", "c"])
 
     def test_stops_at_first_checkpoint(self):

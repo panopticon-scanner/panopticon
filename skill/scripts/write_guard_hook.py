@@ -339,6 +339,34 @@ def install(plan, settings_path=".claude/settings.local.json",
     return added
 
 
+def is_armed(settings_path=".claude/settings.local.json",
+             allowlist_path=".panopticon/write-allowlist.json"):
+    """(armed, grants): is the guard registered, and over how many paths?
+
+    The guard is fail-closed while registered, and the allowlist IS the complete
+    set of permitted writes -- so a guard left armed after a fan-out finishes
+    denies EVERY subsequent Write/Edit in the session, including the operator's
+    own, with only the hook's per-write reason to say why. Teardown is a host
+    duty (docs/PANOPTICON.md) that nothing previously verified; this makes the
+    state checkable in one call so a host, a test, or CI can assert it.
+    """
+    try:
+        with open(settings_path, encoding="utf-8") as fh:
+            settings = json.load(fh)
+    except (OSError, ValueError):
+        return False, 0
+    hooks = (settings.get("hooks") or {}).get("PreToolUse") or []
+    armed = any(_HOOK_CMD in (h.get("command") or "")
+                for entry in hooks if isinstance(entry, dict)
+                for h in (entry.get("hooks") or []) if isinstance(h, dict))
+    if not armed:
+        return False, 0
+    try:
+        return True, len(_read_allowlist(allowlist_path))
+    except Exception:              # noqa: BLE001 - unreadable == armed over nothing
+        return True, 0
+
+
 def uninstall(settings_path=".claude/settings.local.json",
               allowlist_path=".panopticon/write-allowlist.json", *, plan=None):
     # #11: with `plan` given, remove ONLY that fan-out's paths (scoped teardown)

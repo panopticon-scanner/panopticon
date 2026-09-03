@@ -449,6 +449,48 @@ class TestInstallUninstall(unittest.TestCase):
                 self.assertEqual(json.load(fh),
                                  [os.path.realpath(a[0]["out_file"])])
 
+    def test_is_armed_reports_registration_and_grant_count(self):
+        # Teardown is a host duty that nothing verified. `is_armed` makes the
+        # state checkable in one call, so a stale guard -- which denies EVERY
+        # later Write/Edit in the session -- can be asserted against.
+        with tempfile.TemporaryDirectory() as d:
+            settings = os.path.join(d, "settings.local.json")
+            al = os.path.join(d, "allow.json")
+            pano = os.path.join(d, ".panopticon")
+            os.makedirs(pano)
+            self.assertEqual(wg.is_armed(settings, al), (False, 0))
+            wg.install([{"out_file": os.path.join(pano, "findings-A-SEC.json")},
+                        {"out_file": os.path.join(pano, "findings-B-COD.json")}],
+                       settings, al)
+            self.assertEqual(wg.is_armed(settings, al), (True, 2))
+            wg.uninstall(settings, al)
+            self.assertEqual(wg.is_armed(settings, al), (False, 0))
+
+    def test_is_armed_says_armed_when_the_allowlist_is_gone(self):
+        # The dangerous state, and the one the count must not hide: registered
+        # (so fail-closed, denying everything) with nothing granted.
+        with tempfile.TemporaryDirectory() as d:
+            settings = os.path.join(d, "settings.local.json")
+            al = os.path.join(d, "allow.json")
+            pano = os.path.join(d, ".panopticon")
+            os.makedirs(pano)
+            wg.install([{"out_file": os.path.join(pano, "f.json")}], settings, al)
+            os.remove(al)
+            self.assertEqual(wg.is_armed(settings, al), (True, 0))
+
+    def test_uninstall_is_safe_when_nothing_is_installed(self):
+        # The `complete` status tells the host to tear down unconditionally,
+        # so this must never raise on a run that armed no guard.
+        with tempfile.TemporaryDirectory() as d:
+            settings = os.path.join(d, "settings.local.json")
+            al = os.path.join(d, "allow.json")
+            wg.uninstall(settings, al)                      # nothing at all
+            with open(settings, "w", encoding="utf-8") as fh:
+                json.dump({"env": {"X": "1"}}, fh)
+            wg.uninstall(settings, al)                      # settings, no hook
+            with open(settings, encoding="utf-8") as fh:
+                self.assertEqual(json.load(fh)["env"], {"X": "1"})
+
     def test_matcher_and_write_tools_cannot_drift(self):
         # #680: the registered PreToolUse matcher must name EXACTLY the tools
         # decide() adjudicates — no more (a matcher tool decide() waves
