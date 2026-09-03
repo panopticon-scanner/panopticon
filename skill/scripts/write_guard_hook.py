@@ -25,7 +25,22 @@ _MATCHER = "|".join(_WRITE_TOOLS_LIST)
 
 
 def allowlist_from_plan(plan):
-    """Realpath-normalized set of every out_file the plan declares."""
+    """Realpath-normalized set of every out_file the plan declares.
+
+    `plan` is a SEQUENCE OF ENTRIES (``[{"out_file": ...}, ...]``), never the
+    dispatch-request object that wraps them. #1482: handed the wrapper, this
+    used to iterate the mapping's KEYS -- plain strings -- match no `out_file`,
+    and return an empty set with no error. `install` then wrote that empty set
+    over every live grant, and `uninstall(plan=...)` subtracted nothing and
+    silently kept the guard armed. The two shapes are indistinguishable at a
+    call site holding a parsed dispatch-request, so reject the wrapper here
+    rather than let it degrade into an empty success.
+    """
+    if isinstance(plan, (dict, str, bytes)):
+        raise TypeError(
+            "plan must be a sequence of dispatch entries, not %s -- pass the "
+            "dispatch request's `entries` list, not the request object itself"
+            % type(plan).__name__)
     out = set()
     for entry in plan:
         path = entry.get("out_file") if isinstance(entry, dict) else None
@@ -296,6 +311,20 @@ def install(plan, settings_path=".claude/settings.local.json",
     # (findings-<group>-<domain>.json), so a paired uninstall(plan=...) can later
     # drop exactly this call's paths without disturbing another fan-out's.
     added = allowlist_from_plan(plan)
+    # #1482: an install that grants NOTHING is always a caller error -- a
+    # malformed plan, or a plan whose entries declare no out_file. Letting it
+    # through is destructive rather than merely useless: `added` is what anchors
+    # the confinement filter below, so with no anchor every carried grant is
+    # dropped as unconfined and the write returns an EMPTY allowlist -- revoking
+    # every agent in a still-running fan-out, which is the failure #11 exists to
+    # prevent. Teardown has its own entry point (`uninstall`, scoped via
+    # `plan=`); this one only ever adds.
+    if not added:
+        raise ValueError(
+            "refusing to install a write-guard that grants nothing: the plan "
+            "declared no out_file. This would clear %d existing grant(s) and "
+            "deny every in-flight write. Use uninstall() to tear the guard "
+            "down." % len(_read_allowlist(allowlist_path)))
     # #run10 SEC-C1D: the union above trusted whatever was already on disk. A
     # target repo can ship its own `.panopticon/write-allowlist.json` (the path is
     # inside the scanned tree), so a planted entry -- `~/.ssh/authorized_keys`, a
