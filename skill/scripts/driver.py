@@ -445,6 +445,14 @@ class Phase:
 _PHASE_RESULT_KINDS = ("advanced", "checkpoint")
 
 
+# Emitted with the terminal "complete" status: the call that disarms the
+# write-guard once the run needs it no longer. Safe to run unconditionally --
+# `uninstall` is a no-op when nothing is installed -- and it must run from the
+# SESSION root, since hook registration is session-rooted (#calibration-4).
+TEARDOWN_DIRECTIVE = (
+    "write_guard_hook.uninstall()  # from the SESSION root; safe if not armed")
+
+
 @dataclasses.dataclass
 class PhaseResult:
     kind: str                     # "advanced" | "checkpoint"
@@ -487,7 +495,17 @@ def run_engine(review_root, manifest, phases, max_steps=None):
         if phase is None:
             return {"status": "complete", "phase": None, "checkpoint": None,
                     "group": None, "dispatch_request": None,
-                    "advanced": advanced, "message": "all phases complete"}
+                    "advanced": advanced, "message": "all phases complete",
+                    # The run is over, so no fan-out still needs write access.
+                    # The guard is fail-closed while registered and its
+                    # allowlist IS the complete set of permitted writes, so one
+                    # left armed denies EVERY later Write/Edit in the session --
+                    # the operator's included -- with only the hook's per-write
+                    # reason to say why. Teardown was a host duty stated in
+                    # prose (docs/PANOPTICON.md) that nothing signalled at the
+                    # one moment it becomes unambiguously safe. Say it here, in
+                    # the status the host already parses.
+                    "teardown": TEARDOWN_DIRECTIVE}
         result = phase.execute(review_root, manifest)
         if result.kind == "checkpoint":
             return {"status": "checkpoint", "phase": phase.name,
