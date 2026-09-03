@@ -370,6 +370,85 @@ class TestInstallUninstall(unittest.TestCase):
                 saved = json.load(fh)
             self.assertEqual(len(saved["hooks"]["PreToolUse"]), 1)
 
+    def test_the_request_object_is_rejected_not_iterated(self):
+        # #1482: `install` takes a SEQUENCE OF ENTRIES. Handed the dispatch
+        # request that wraps them, the old code iterated the mapping's keys,
+        # matched no out_file, and returned an empty set with no error --
+        # which install then wrote over every live grant.
+        with tempfile.TemporaryDirectory() as d:
+            settings = os.path.join(d, "settings.local.json")
+            al = os.path.join(d, "allow.json")
+            pano = os.path.join(d, ".panopticon")
+            os.makedirs(pano)
+            live = [{"out_file": os.path.join(pano, "findings-App-SEC.json")}]
+            wg.install(live, settings, al)
+            with open(al, encoding="utf-8") as fh:
+                before = json.load(fh)
+            with self.assertRaises(TypeError) as ctx:
+                wg.install({"entries": live}, settings, al)
+            self.assertIn("entries", str(ctx.exception))
+            with open(al, encoding="utf-8") as fh:
+                self.assertEqual(json.load(fh), before)   # grants untouched
+
+    def test_install_that_grants_nothing_refuses_instead_of_wiping(self):
+        # The composition that made #1482 destructive rather than merely
+        # useless: `added` anchors _confined_to_artifact_roots, so an empty
+        # `added` leaves no anchor, every carried grant is dropped as
+        # unconfined, and the allowlist is written EMPTY.
+        with tempfile.TemporaryDirectory() as d:
+            settings = os.path.join(d, "settings.local.json")
+            al = os.path.join(d, "allow.json")
+            pano = os.path.join(d, ".panopticon")
+            os.makedirs(pano)
+            wg.install([{"out_file": os.path.join(pano, "f.json")}], settings, al)
+            with open(al, encoding="utf-8") as fh:
+                before = json.load(fh)
+            self.assertTrue(before)
+            with self.assertRaises(ValueError) as ctx:
+                wg.install([{"note": "entry with no out_file"}], settings, al)
+            self.assertIn("grants nothing", str(ctx.exception))
+            with open(al, encoding="utf-8") as fh:
+                self.assertEqual(json.load(fh), before)
+
+    def test_scoped_uninstall_rejects_the_request_object_too(self):
+        # The same wrong shape fails OPEN on the teardown path: subtracting an
+        # empty set leaves every grant in place and silently keeps the guard
+        # armed, so the type check has to cover uninstall as well.
+        with tempfile.TemporaryDirectory() as d:
+            settings = os.path.join(d, "settings.local.json")
+            al = os.path.join(d, "allow.json")
+            pano = os.path.join(d, ".panopticon")
+            os.makedirs(pano)
+            plan = [{"out_file": os.path.join(pano, "f.json")}]
+            wg.install(plan, settings, al)
+            with self.assertRaises(TypeError):
+                wg.uninstall(settings, al, plan={"entries": plan})
+
+    def test_a_string_plan_is_rejected(self):
+        # A path handed in place of a plan iterates as CHARACTERS.
+        with self.assertRaises(TypeError):
+            wg.allowlist_from_plan("dispatch-request.json")
+
+    def test_the_11_union_and_scoped_teardown_still_work(self):
+        # Guards the guard: the new checks must not disturb the properties
+        # they are protecting -- concurrent fan-outs union (#11), and tearing
+        # down one leaves the other armed.
+        with tempfile.TemporaryDirectory() as d:
+            settings = os.path.join(d, "settings.local.json")
+            al = os.path.join(d, "allow.json")
+            pano = os.path.join(d, ".panopticon")
+            os.makedirs(pano)
+            a = [{"out_file": os.path.join(pano, "findings-A-SEC.json")}]
+            b = [{"out_file": os.path.join(pano, "findings-B-COD.json")}]
+            wg.install(a, settings, al)
+            wg.install(b, settings, al)
+            with open(al, encoding="utf-8") as fh:
+                self.assertEqual(len(json.load(fh)), 2)
+            wg.uninstall(settings, al, plan=b)
+            with open(al, encoding="utf-8") as fh:
+                self.assertEqual(json.load(fh),
+                                 [os.path.realpath(a[0]["out_file"])])
+
     def test_matcher_and_write_tools_cannot_drift(self):
         # #680: the registered PreToolUse matcher must name EXACTLY the tools
         # decide() adjudicates — no more (a matcher tool decide() waves
