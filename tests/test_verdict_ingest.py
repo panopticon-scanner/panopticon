@@ -199,6 +199,47 @@ class TestApplyVerdict(unittest.TestCase):
         self.assertEqual(e["finding"]["severity"], "HIGH")
         self.assertEqual(e["finding"]["provenance"]["confirmation_status"], "REJECTED")
 
+    def test_advisor_code_recorded_when_it_differs(self):
+        # The mis-fit signal: the panel filed one code, an independent re-read
+        # preferred another. Recorded, never applied -- one advisor is not an
+        # authority on the catalog.
+        e = _entry(code="DAT-C1B")
+        f = e["finding"]
+        evidence.apply_verdict(f, {"verdict": "CONFIRMED", "code": "QAL-G1A"})
+        self.assertEqual(f["provenance"]["advisor_code"], "QAL-G1A")
+        self.assertEqual(f["code"], "DAT-C1B")      # finding's own code untouched
+
+    def test_advisor_code_absent_when_it_agrees(self):
+        # Presence of the field IS the strain flag, so agreement must not set it
+        # -- otherwise every finding carries one and the signal is worthless.
+        e = _entry(code="DAT-C1B")
+        f = e["finding"]
+        evidence.apply_verdict(f, {"verdict": "CONFIRMED", "code": "DAT-C1B"})
+        self.assertNotIn("advisor_code", f["provenance"])
+
+    def test_advisor_code_absent_when_verdict_states_none(self):
+        e = _entry(code="DAT-C1B")
+        f = e["finding"]
+        evidence.apply_verdict(f, {"verdict": "CONFIRMED"})
+        self.assertNotIn("advisor_code", f["provenance"])
+
+    def test_advisor_declaring_a_gap_is_recorded(self):
+        # The direction that used to be lost entirely: panel filed a real code,
+        # the advisor says nothing in the catalog fits. 7 of these were dropped
+        # on btcpayserver run-1 while 2 refuted gaps stayed in the pool.
+        e = _entry(code="SEC-B1C")
+        f = e["finding"]
+        evidence.apply_verdict(f, {"verdict": "CONFIRMED", "code": "SEC-X0X"})
+        self.assertEqual(f["provenance"]["advisor_code"], "SEC-X0X")
+
+    def test_advisor_refuting_a_gap_is_recorded(self):
+        # The reverse: the panel declared a gap, the advisor found a real code.
+        e = _entry(code="COD-X0X")
+        f = e["finding"]
+        evidence.apply_verdict(f, {"verdict": "CONFIRMED", "code": "COD-C3C"})
+        self.assertEqual(f["provenance"]["advisor_code"], "COD-C3C")
+        self.assertEqual(f["code"], "COD-X0X")      # still filed as the gap
+
     def test_existing_citation_keys_not_overwritten(self):
         e = _entry(citations={"cwe": ["CWE-79"]})
         evidence.apply_verdict(e["finding"],
