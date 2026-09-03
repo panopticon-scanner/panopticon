@@ -1,0 +1,126 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "StrainReport",
+  "description": "Panopticon's catalog-STRAIN report: findings that WERE coded, but where an independent re-read preferred a different code. The companion to X0XReport, and deliberately a separate artifact because it answers a different question. X0X is ABSENCE evidence -- the reviewer found nothing in its menu that fit -- and can therefore only ever argue the `new_code` disposition. Strain is MIS-FIT evidence: two codes are in play and a reviewer had to choose, so it is the only input that can argue `boundary` (two codes both plausibly fit; the criteria do not separate them) or `refine_existing` (one code is nearly right and its criteria should stretch). Those dispositions are already in OCRDb's adjudication vocabulary with no report producing evidence for them. Strain also catches what X0X structurally cannot: a gap whose neighbours are good enough that no reviewer ever files a fallback. Like X0XReport this is a young contract with `additionalProperties` left open on every object, and like X0XReport it does NOT adjudicate -- the disposition is a pool decision, not emitter output.",
+  "type": "object",
+  "required": ["schema_version", "generated_by", "ocrdb_version", "signals"],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "description": "Version of THIS report schema, bumped only on a breaking shape change."
+    },
+    "generated_by": {
+      "type": "object",
+      "description": "Provenance of the Panopticon run(s) that emitted this report.",
+      "required": ["panopticon_version", "run_id"],
+      "properties": {
+        "panopticon_version": {"type": "string"},
+        "run_id": {
+          "type": "string",
+          "description": "The run this was emitted from. A cross-run strain report names its primary run here and the full set in `compared_runs`."
+        },
+        "compared_runs": {
+          "type": "array",
+          "description": "For cross-run signals: every run id compared. A cross-run signal is only meaningful when the runs reviewed the SAME ref, so record it.",
+          "items": {"type": "string"}
+        }
+      }
+    },
+    "ocrdb_version": {
+      "type": "string",
+      "description": "The OCRDb bundle version reviewed against. Every signal is strain RELATIVE to this catalog state and can be re-evaluated as criteria are refined."
+    },
+    "target": {
+      "type": "object",
+      "description": "What was reviewed. Optional, and may be scrubbed before a signal leaves Panopticon.",
+      "properties": {
+        "name": {"type": "string"},
+        "ecosystem": {"type": "string"},
+        "ref": {
+          "type": "string",
+          "description": "commit sha / ref reviewed. Load-bearing for `cross_run_disagreement`: two runs on DIFFERENT refs did not review the same code, so their coding disagreement is not evidence of anything."
+        }
+      }
+    },
+    "generated_at": {
+      "type": "string",
+      "description": "ISO-8601 timestamp the report was produced (optional)."
+    },
+    "signals": {
+      "type": "array",
+      "description": "One record per observed disagreement about which code a finding belongs under. NOT one per finding: a signal is a PAIR of codes plus the evidence that a reviewer had to choose between them.",
+      "items": {
+        "type": "object",
+        "required": ["signal", "code_filed", "code_preferred", "occurrences"],
+        "properties": {
+          "signal": {
+            "type": "string",
+            "enum": ["advisor_recode", "cross_run_disagreement"],
+            "description": "How the disagreement was observed. `advisor_recode`: within one run, the verify advisor independently landed on a different code than the panel that filed the finding -- high confidence (an independent re-read of the same code) and low volume. `cross_run_disagreement`: two runs over the SAME ref coded the same site differently -- lower confidence per instance (either run may simply be wrong) but much higher volume, and available on any repeat run."
+          },
+          "code_filed": {
+            "type": "string",
+            "description": "The code the finding was actually filed under, and which the report still carries. A value ending `-X0X` means the panel declared a gap."
+          },
+          "code_preferred": {
+            "type": "string",
+            "description": "The code the second reader preferred. A value ending `-X0X` means the second reader judged `code_filed` a MIS-FIT and would have declared a gap -- the signal X0X alone can never produce, because no fallback was ever filed."
+          },
+          "direction": {
+            "type": "string",
+            "enum": ["declares_gap", "refutes_gap", "code_to_code"],
+            "description": "Derived convenience. `declares_gap`: a real code was filed, the second reader wanted `-X0X` (a gap the pool never heard about). `refutes_gap`: `-X0X` was filed but the second reader found a real code (a candidate the pool should DROP). `code_to_code`: two real codes -- the `boundary` / `refine_existing` case."
+          },
+          "domain": {
+            "type": "string",
+            "enum": ["SEC", "COD", "ARC", "TST", "QAL", "AGT", "DAT", "OPS", "ACC", "LNG", "ZZZ"],
+            "description": "Domain of `code_filed`. A cross-DOMAIN disagreement is a different and more serious kind of strain than one within a domain's own areas."
+          },
+          "cross_domain": {
+            "type": "boolean",
+            "description": "True when `code_filed` and `code_preferred` belong to different domains. Within-domain strain usually argues `refine_existing`; cross-domain strain usually argues `boundary`, and may indicate a domain-scope problem rather than a code problem."
+          },
+          "summary": {
+            "type": "string",
+            "description": "The finding in one human-readable line -- what was actually being coded."
+          },
+          "rationale": {
+            "type": "string",
+            "description": "The second reader's own words on why it preferred `code_preferred`. For `advisor_recode` this is the advisor's verdict reasoning, which usually argues the boundary explicitly. Absent for `cross_run_disagreement`: neither run knew it was disagreeing, which is exactly why that signal is weaker per instance."
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"],
+            "description": "Severity of the finding under dispute. Strain on a HIGH finding matters more than on an INFO one."
+          },
+          "recurrence": {
+            "type": "integer",
+            "description": "How many times this exact (code_filed, code_preferred) pair was observed. A pair seen once is an anecdote; a pair seen repeatedly across independent sites is a boundary that genuinely does not hold."
+          },
+          "occurrences": {
+            "type": "array",
+            "minItems": 1,
+            "description": "The concrete sites where the disagreement was observed.",
+            "items": {
+              "type": "object",
+              "required": ["file"],
+              "properties": {
+                "file": {"type": "string", "description": "Repository-relative path."},
+                "line_start": {"type": "integer"},
+                "line_end": {"type": "integer"},
+                "finding_id": {
+                  "type": "string",
+                  "description": "The Panopticon finding id -- traces the signal back to the source review report."
+                },
+                "run_id": {
+                  "type": "string",
+                  "description": "Which run this occurrence came from. Required in practice for `cross_run_disagreement`, where the point is that two named runs differed."
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

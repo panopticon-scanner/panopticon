@@ -883,6 +883,10 @@
                   "string",
                   "null"
                 ]
+              },
+              "advisor_code": {
+                "type": "string",
+                "description": "The OCRDb code the verify advisor independently landed on, recorded ONLY when it differs from the finding's own `code`. Never applied \u2014 the advisor is a second opinion, not an authority on the catalog, so re-coding on one opinion is refused for the same reason severity is untouched. Its presence is the catalog-STRAIN flag: the panel filed one code and an independent re-read preferred another. A value ending `-X0X` means the advisor judged the panel's real code a mis-fit; an `-X0X` finding whose advisor_code is a real code means the reverse."
               }
             }
           },

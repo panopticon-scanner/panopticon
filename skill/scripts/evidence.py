@@ -606,8 +606,25 @@ def apply_verdict(finding, verdict):
 
     Never touches severity or confidence — the two-axis invariant. Citation
     re-validation happens afterwards via citations.enrich_citations.
+
+    The advisor's own `code` is RECORDED, never applied. An advisor that lands
+    on a different OCRDb code than the panel did is stating a considered second
+    opinion about the catalog — it re-read the code independently — and that
+    disagreement is the only mis-fit signal the pipeline produces. It used to be
+    dropped here: on btcpayserver run-1, 7 findings whose advisor said "this is
+    actually a gap" (`<DOM>-X0X`) kept the panel's real code and never reached
+    the gap pool, while 2 whose advisor found a real code for a panel-declared
+    gap stayed in it — exactly the wrong half of the signal surviving.
+
+    Recorded rather than applied for the same reason severity is untouched: one
+    advisor is not an authority on the catalog, and silently re-coding a finding
+    would change what the report claims on a single opinion. `advisor_code` is
+    set only when it DIFFERS, so its presence is itself the strain flag.
     """
     prov = finding.setdefault("provenance", {})
+    advisor_code = verdict.get("code")
+    if advisor_code and str(advisor_code) != str(finding.get("code") or ""):
+        prov["advisor_code"] = str(advisor_code)
     v = str(verdict.get("verdict", "")).upper()
     prov["confirmation_status"] = {"CONFIRMED": "CONFIRMED",
                                    "REJECTED": "REJECTED"}.get(v, "NEEDS_MORE_INFO")
