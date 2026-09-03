@@ -654,10 +654,29 @@ def coverage_done(review_root, manifest):
                for g, _ in _discovered_groups(review_root))
 
 
+def _chunk_of_map(review_root):
+    """{group name -> the review unit it was split out of}, from groups.json.
+
+    Discovery states this outright (`chunk_of`), so the driver no longer has to
+    infer it from the name. Authoritative where present; groups.json written
+    before the field falls back to `_chunk_parent` (#1480).
+    """
+    data = _load_json(_pano(review_root, "groups.json")) or {}
+    return {g["name"]: g["chunk_of"]
+            for g in (data.get("groups") or [])
+            if isinstance(g, dict) and g.get("name") and g.get("chunk_of")}
+
+
 def _chunk_parent(name):
     """The committed parent of a discovery chunk `<name>_<i>` (#5.0-10), or None
     if `name` is not a `<something>_<digits>` chunk. Leftover `._N` chunks map to
-    parent '.', never in the matrix, so they correctly keep an empty floor."""
+    parent '.', never in the matrix, so they correctly keep an empty floor.
+
+    Superseded by discovery's `chunk_of` field, which says this rather than
+    guessing it; kept as the fallback for a pre-`chunk_of` groups.json. The
+    guess is not reliable on its own -- it cannot tell a chunk of `API` from a
+    committed group named `API_1` (#1480).
+    """
     if not name or "_" not in name:
         return None
     head, _, tail = name.rpartition("_")
@@ -801,6 +820,7 @@ def coverage_execute(review_root, manifest):
                                    % len(entries))
     # Every group now has a scout output -> compute coverage (one group per call:
     # local work, no dispatch, so the cadence is unchanged and cheap).
+    chunk_of = _chunk_of_map(review_root)
     for group, files in groups:
         if _json_parses(_pano(review_root, "coverage-%s.json" % group)):
             continue
@@ -815,9 +835,12 @@ def coverage_execute(review_root, manifest):
         raw = scout.get("domains") or []
         spec = matrix.get(group)
         if spec is None:
-            parent = _chunk_parent(group)   # #5.0-10: a >15-file group split into
-            if parent is not None:          # <name>_<i> chunks inherits its parent's
-                spec = matrix.get(parent)   # committed floor/exclude/tests
+            # #5.0-10: a group split into <name>_<i> chunks inherits its
+            # committed floor/exclude/tests. `chunk_of` names that unit
+            # outright; fall back to inferring it for an older groups.json.
+            unit = chunk_of.get(group) or _chunk_parent(group)
+            if unit is not None and unit != group:
+                spec = matrix.get(unit)
         spec = spec or {}
         floor = spec.get("floor", set())
         # net against floor here so disclosure["scout_added"] reports only the

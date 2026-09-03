@@ -804,14 +804,30 @@ def discover_repo_files(repo, include_fixtures=False, pruned_fixtures=None,
 # not a per-group depth. is_architecture_file / is_database_file survive: they
 # still feed compute_group_panels.
 
-def _group_obj(name, files, security_mode, parent=None):
-    """Build one group entry: panels and parent for a file set.
+def _group_obj(name, files, security_mode, parent=None, chunk_of=None):
+    """Build one group entry: panels, parent and chunk_of for a file set.
 
-    `parent` is the review-unit this group rolls up to (Task 6's synthesize
-    consumes it): a subgroup passes its catalog-declared parent name; a leaf
-    or leftover chunk defaults to self-parenting (``parent or name``), so a
-    flat groups.yml (all leaves) yields ``parent == name`` for every group --
-    an additive field for existing groups.json consumers.
+    Two roll-up axes, deliberately separate:
+
+    `parent` is the AUTHORED axis -- the review unit this group rolls up to,
+    at most one level deep (`groups_schema`: subgroups cannot nest). A
+    subgroup passes its catalog-declared parent name; a leaf or leftover
+    chunk defaults to self-parenting (``parent or name``), so a flat
+    groups.yml (all leaves) yields ``parent == name`` for every group.
+
+    `chunk_of` is the MACHINE axis -- the review unit this group was split
+    OUT OF when it outgrew ``max_per_group``. Chunking is an internal
+    performance decision that means nothing to whoever wrote groups.yml, so
+    it gets its own field instead of being recovered by parsing ``_<n>`` off
+    a name: that inference cannot tell a chunk of `API` from a committed
+    group named `API_1` (#1480). A group that was never split is its own
+    whole, so ``chunk_of == name``.
+
+    Keeping them apart is what lets `Product:API` survive being chunked. Its
+    chunks carry ``chunk_of="Product:API"`` and ``parent="Product"``, so the
+    fold is two hops -- chunks to their review unit, then the unit to its
+    authored parent -- and "subgroups cannot nest" stays literally true.
+    Both axes self-reference at the top, so either walk terminates.
     """
     panels = compute_group_panels(files, security_mode)
     return {
@@ -819,6 +835,7 @@ def _group_obj(name, files, security_mode, parent=None):
         "files": files,
         "panels": panels,
         "parent": parent or name,
+        "chunk_of": chunk_of or name,
     }
 
 _COMMONS_CATALOG_PATH = os.path.join(
@@ -852,7 +869,7 @@ def _emit_named_groups(named, max_per_group, security_mode, parent_lookup=None):
             groups.append(_group_obj(name, chunks[0], security_mode, parent=parent))
         else:
             groups.extend(_group_obj("%s_%d" % (name, i + 1), c, security_mode,
-                                     parent=parent)
+                                     parent=parent, chunk_of=name)
                           for i, c in enumerate(chunks))
     return groups
 
@@ -891,7 +908,12 @@ def catalog_groups(files, catalog, max_per_group, security_mode):
     # derived artifact a hidden dotfile (`findings-._1-ARC.json`, `scout-._1.json`
     # -- invisible in `ls` and most editor trees) and rendered as a meaningless
     # group name in the report. `Ungrouped_N` says what it is and stays visible.
-    groups.extend(_group_obj(UNGROUPED_SINK + "_%d" % (i + 1), c, security_mode)
+    # Both axes point at the sink itself: its chunks fold to the `Ungrouped`
+    # review unit, which then self-parents like any other top-level unit. A
+    # self-parenting CHUNK would make `Ungrouped_1` a report node in its own
+    # right, which is the chunk name leaking into the output again.
+    groups.extend(_group_obj(UNGROUPED_SINK + "_%d" % (i + 1), c, security_mode,
+                             parent=UNGROUPED_SINK, chunk_of=UNGROUPED_SINK)
                   for i, c in enumerate(chunk_files(residual, max_per_group)))
     _assert_unique_names(groups)
     return groups, residual
@@ -929,7 +951,10 @@ def build_result(repo, mode, target, facet, impl, tests,
     """
     chunks = chunk_files(impl if group_files is None else group_files, max_per_group)
     base = os.path.basename(target.rstrip("/")) or target or "root"
-    groups = [_group_obj("%s_%d" % (base, i + 1), c, security_mode)
+    # Non-catalog path: the target itself is the review unit and every group is
+    # a chunk of it, so `chunk_of` is the base name even when there is one chunk.
+    groups = [_group_obj("%s_%d" % (base, i + 1), c, security_mode,
+                         chunk_of=base)
               for i, c in enumerate(chunks)]
     return {
         "security_mode": security_mode,

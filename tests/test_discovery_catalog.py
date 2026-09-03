@@ -219,10 +219,17 @@ class TestGroupObjParent(unittest.TestCase):
         self.assertEqual(by_name["UI:Admin"]["parent"], "UI")
         # leaf group self-parents
         self.assertEqual(by_name["docs"]["parent"], "docs")
-        # leftover Ungrouped_N chunk self-parents (run-9 A5: was ._N)
+        # The residual sink's chunks parent to the SINK, not to themselves.
+        # They used to self-parent, back when `parent` was the only roll-up
+        # axis and a chunk had nowhere else to point. Now that `chunk_of`
+        # carries the chunk relationship, a self-parenting `Ungrouped_1` would
+        # fold into a report node named after a chunk -- the machine's naming
+        # leaking into the output, which is what `chunk_of` exists to stop.
+        # Both axes point at `Ungrouped`; the unit self-parents from there.
         leftover_groups = [g for g in groups if g["name"].startswith("Ungrouped_")]
         self.assertEqual(len(leftover_groups), 1)
-        self.assertEqual(leftover_groups[0]["parent"], leftover_groups[0]["name"])
+        self.assertEqual(leftover_groups[0]["parent"], orchestrator.UNGROUPED_SINK)
+        self.assertEqual(leftover_groups[0]["chunk_of"], orchestrator.UNGROUPED_SINK)
         self.assertEqual(leftovers, ["orphan.py"])
 
     def test_catalog_groups_oversize_subgroup_chunks_keep_parent(self):
@@ -287,6 +294,87 @@ class TestCommonsCatalog(unittest.TestCase):
         self.assertEqual(sorted(docs_groups[0]["files"]),
                          ["README.md", "docs/guide.md"])   # committed group owns both
         self.assertEqual(docs_groups[0]["parent"], "Docs")  # committed leaf, not Commons
+
+
+class TestChunkOfAxis(unittest.TestCase):
+    """`chunk_of` is the machine roll-up axis: the review unit a group was
+    split out of when it outgrew max_per_group. It exists so nothing has to
+    recover that relationship by parsing `_<n>` off a name -- an inference that
+    cannot tell a chunk of `API` from a committed group named `API_1` (#1480).
+
+    It is deliberately independent of `parent`, the authored axis. A chunk of
+    `Product:API` carries chunk_of="Product:API" and parent="Product", so the
+    report folds in two hops (chunks -> unit -> authored parent) while
+    groups_schema's "subgroups cannot nest" stays literally true."""
+
+    def _by_name(self, groups):
+        return {g["name"]: g for g in groups}
+
+    def test_an_unsplit_group_is_its_own_whole(self):
+        groups, _ = orchestrator.catalog_groups(
+            ["src/a.py"], {"App": {"match": ["src/**"]}},
+            max_per_group=50, security_mode="standard")
+        self.assertEqual(self._by_name(groups)["App"]["chunk_of"], "App")
+
+    def test_chunks_name_the_unit_they_came_from(self):
+        groups, _ = orchestrator.catalog_groups(
+            ["src/f%02d.py" % i for i in range(10)],
+            {"App": {"match": ["src/**"]}},
+            max_per_group=4, security_mode="standard")
+        chunks = [g for g in groups if g["name"].startswith("App_")]
+        self.assertEqual(len(chunks), 3)
+        self.assertEqual({g["chunk_of"] for g in chunks}, {"App"})
+        # ...and `App` itself is never emitted -- it is a fold target, not a cell.
+        self.assertNotIn("App", {g["name"] for g in groups})
+
+    def test_the_two_axes_stay_independent_under_a_parent(self):
+        # The case the field exists for: chunking must not dissolve the
+        # authored review unit. Both axes are needed to place a chunk.
+        catalog = {"Product:API": {"match": ["app/api/**"], "parent": "Product"}}
+        groups, _ = orchestrator.catalog_groups(
+            ["app/api/f%02d.py" % i for i in range(10)], catalog,
+            max_per_group=4, security_mode="standard")
+        for g in groups:
+            self.assertEqual(g["chunk_of"], "Product:API")   # machine axis
+            self.assertEqual(g["parent"], "Product")         # authored axis
+
+    def test_residual_sink_folds_to_itself_on_both_axes(self):
+        # A self-parenting sink CHUNK would make `Ungrouped_1` a report node,
+        # which is the chunk name leaking into the output all over again.
+        groups, _ = orchestrator.catalog_groups(
+            ["a.xyz", "b.xyz"], {}, max_per_group=1, security_mode="standard")
+        sink = [g for g in groups if g["name"].startswith("Ungrouped_")]
+        self.assertEqual(len(sink), 2)
+        for g in sink:
+            self.assertEqual(g["chunk_of"], orchestrator.UNGROUPED_SINK)
+            self.assertEqual(g["parent"], orchestrator.UNGROUPED_SINK)
+
+    def test_both_axes_terminate(self):
+        # Every group's fold target is either itself or a name that is not a
+        # group, so neither walk can cycle.
+        files = ["src/f%02d.py" % i for i in range(10)] + ["README.md", "odd.xyz"]
+        groups, _ = orchestrator.catalog_groups(
+            files, {"App": {"match": ["src/**"]}},
+            max_per_group=4, security_mode="standard")
+        names = {g["name"] for g in groups}
+        for g in groups:
+            for axis in ("chunk_of", "parent"):
+                target = g[axis]
+                self.assertTrue(target == g["name"] or target not in names,
+                                "%s.%s -> %s is a second hop through a real "
+                                "group" % (g["name"], axis, target))
+
+    def test_the_fold_reconstructs_every_file_exactly_once(self):
+        files = ["app/api/f%03d.py" % i for i in range(150)]
+        catalog = {"Product:API": {"match": ["app/api/**"], "parent": "Product"}}
+        groups, _ = orchestrator.catalog_groups(
+            files, catalog, max_per_group=32, security_mode="standard")
+        folded = []
+        for g in groups:
+            if g["chunk_of"] == "Product:API":
+                folded.extend(g["files"])
+        self.assertEqual(sorted(folded), sorted(files))
+        self.assertEqual(len(folded), len(set(folded)))   # chunks are disjoint
 
 
 class TestGroupNameUniqueness(unittest.TestCase):
