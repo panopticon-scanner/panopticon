@@ -33,7 +33,40 @@ import diff_map  # noqa: E402
 import groups_schema  # noqa: E402
 import plan_contract  # noqa: E402
 
-DEFAULT_MAX_PER_GROUP = 15
+# Files per review group before it splits into `<name>_<i>` chunks.
+#
+# 64, from the calibration corpus (7 runs / 5 targets, 2026-08-30..09-03). The
+# cap is a BUDGET dial, not an accuracy one, and the evidence says so from three
+# directions:
+#
+# - Marginal efficiency is FLAT at ~830 findings per billion tokens across a 16x
+#   cap range (16..256 on btcpayserver). There is no knee to find: every rung
+#   costs about the same per additional finding, so a smaller cap buys more
+#   findings at proportionally more cost, never a better rate.
+# - Reviewers SATURATE. Growing groups ~54% moved gotify's per-cell yield +21%
+#   (10.3 -> 15.8 files/group) but btcpayserver's -1% (47.5 -> 73.7). Below
+#   roughly 20 files a cell is under-fed and wastes reviewer capacity; past ~50
+#   it produces all it is going to regardless. 15 sat under that floor for every
+#   target measured.
+#
+# 48 rather than 64 because the cap is an upper bound and what matters is where
+# real repos LAND inside the 20..50 band. At 64 the two large targets sit right
+# against the saturation ceiling -- btcpayserver 46.5 files/group, solidus 48.9
+# -- so their marginal files buy nothing. At 48 they land at 36.2 and 38.1,
+# comfortably inside it. Small targets are floored by their capability count and
+# barely move (fzf 12 groups either way, ripgrep 11, express 11-12), so this
+# only changes behaviour where it should: repos big enough for the cap to bind.
+# - Verdict quality does not move with the cap: primary confirm rate was 84.6%
+#   at cap-128 and 84.8% at cap-64 on the same repo, and severity mix held.
+#
+# What the cap does NOT fix: two runs at the SAME cap on the SAME commit agree
+# on only 45% of findings, identical to two runs at DIFFERENT caps. Coverage
+# comes from repeating a scan, not from shrinking its groups (#calibration).
+#
+# Group count floors at the committed catalog's capability count, so on a small
+# repo 64 rarely binds and groups land one-per-capability -- the shape a reader
+# expects. Auto-sizing from repo size and a cost/time budget is post-5.1 work.
+DEFAULT_MAX_PER_GROUP = 48
 
 # run-9 A5: base name for the residual (ungrouped) sink's chunks, `<name>_<i>`.
 # Must NOT start with a dot: the name flows into every derived artifact filename
@@ -246,7 +279,7 @@ def collect_changed_files(repo, base=None):
             out.append(p.replace(os.sep, "/"))
     return out
 
-def chunk_files(files, max_per=15):
+def chunk_files(files, max_per=DEFAULT_MAX_PER_GROUP):
     """Group files into balanced chunks by directory, each with at most max_per files."""
     if max_per < 1:
         raise ValueError("max_per must be >= 1")

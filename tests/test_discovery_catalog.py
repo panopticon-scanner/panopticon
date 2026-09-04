@@ -132,7 +132,12 @@ class TestCatalogMatchGroups(unittest.TestCase):
             os.makedirs(os.path.join(d, ".panopticon"))
             with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
                 fh.write("groups:\n  pkg:\n    match: ['pkg/**']\n")
-            out, _ = run_scan_with_err(d)
+            # Pin the cap rather than relying on the default: this test is
+            # about the CHUNKING behaviour (a match group over the cap splits
+            # into `<name>_<i>`), not about whatever DEFAULT_MAX_PER_GROUP
+            # happens to be. It silently stopped testing anything when the
+            # default moved 15 -> 64 and 20 files no longer split.
+            out, _ = run_scan_with_err(d, "--max-per-group", "15")
             names = [g["name"] for g in out["groups"]]
             self.assertEqual(names, ["pkg_1", "pkg_2"])
             self.assertEqual(sum(len(g["files"]) for g in out["groups"]), 20)
