@@ -15,6 +15,7 @@ import argparse
 import fnmatch
 import functools
 import json
+import math
 import os
 import re
 import subprocess
@@ -286,14 +287,24 @@ def chunk_files(files, max_per=DEFAULT_MAX_PER_GROUP):
     by_dir = {}
     for f in files:
         by_dir.setdefault(os.path.dirname(f), []).append(f)
+    # Pack to an EVEN target rather than greedily to max_per (#1499). Greedy
+    # packing of 97 files at max_per=48 yields 48/48/1, and that 1-file
+    # trailing chunk is a full review cell in the measured 0.20-findings/cell
+    # bucket -- the same waste the Commons floor exists to remove, re-introduced
+    # one level down. The chunk COUNT is unchanged (ceil(n/max_per) either way),
+    # so this never adds a cell; it only stops one being near-empty. The
+    # per-directory split must use `target` too: splitting dir blocks at
+    # max_per first would re-create the starved remainder before packing runs.
+    n_chunks = max(1, math.ceil(len(files) / max_per)) if files else 0
+    target = math.ceil(len(files) / n_chunks) if n_chunks else max_per
     blocks = []
     for d in sorted(by_dir):
         members = sorted(by_dir[d])
-        for i in range(0, len(members), max_per):
-            blocks.append(members[i:i + max_per])
+        for i in range(0, len(members), target):
+            blocks.append(members[i:i + target])
     chunks, cur = [], []
     for block in blocks:
-        if cur and len(cur) + len(block) > max_per:
+        if cur and len(cur) + len(block) > target:
             chunks.append(cur)
             cur = []
         cur.extend(block)
@@ -906,6 +917,63 @@ def _emit_named_groups(named, max_per_group, security_mode, parent_lookup=None):
                           for i, c in enumerate(chunks))
     return groups
 
+COMMONS_MIN_FILES = 6
+COMMONS_FOLD_NAME = "Commons"
+
+def _fold_tiny_commons(commons_named, catalog):
+    """Fold under-sized Commons categories into one ``Commons`` group (5.2, #1499).
+
+    Measured across 6 target-runs / 319 group-instances: a tiny (<=5 file)
+    UNIVERSAL group yields 0.20 findings/cell and is empty 86% of the time,
+    against 2.99 for a normal-sized universal group and 3.29 for a tiny
+    CAPABILITY one. Neither "tiny" nor "universal" predicts waste on its own --
+    only the conjunction does, and every Commons category is universal by
+    construction. ``_emit_named_groups`` has no minimum size, so it will emit a
+    full review cell for a 2-file Docs match: widening the Commons globs
+    without this floor manufactures more of exactly that waste.
+
+    Folding is skipped unless it actually removes a group (>=2 tiny
+    categories) -- renaming a lone tiny category to ``Commons`` would cost its
+    honest name and save nothing.
+
+    ``Commons`` is never emitted when the committed catalog already claims that
+    name: two groups sharing a name write the SAME
+    ``findings-<group>-<domain>.json``, so one cell's findings silently clobber
+    the other's. That is the same hazard the Commons pass guards against by
+    dropping already-committed category names.
+
+    Merging cannot weaken SEC coverage: ``coverage_model.applicable_sec_floor``
+    keys on FILES, not group names, so a `.env` or a lockfile still floors its
+    group to SEC wherever it lands.
+    """
+    if COMMONS_FOLD_NAME in catalog:
+        return commons_named
+    tiny = {n for n, fs in commons_named.items() if len(fs) < COMMONS_MIN_FILES}
+    if not tiny:
+        return commons_named
+    kept = {n: fs for n, fs in commons_named.items() if n not in tiny}
+    folded = sorted(f for n in commons_named if n in tiny for f in commons_named[n])
+    if len(folded) >= COMMONS_MIN_FILES:
+        kept[COMMONS_FOLD_NAME] = folded          # stands on its own
+        return kept
+    if not kept:
+        # Nothing normal-sized to absorb it. Folding two 1-file categories into
+        # one still removes a cell; renaming a LONE tiny category would remove
+        # none, so leave it under its honest name.
+        if len(tiny) < 2:
+            return commons_named
+        kept[COMMONS_FOLD_NAME] = folded
+        return kept
+    # Still under the floor. Absorb into the smallest normal-sized sibling --
+    # this is the case that actually removes cells in the wild (a lone 1-file
+    # `Deps` group was the single most common tiny universal group across the
+    # calibration pool). The merged unit is renamed `Commons` rather than
+    # keeping the host's name: it is genuinely mixed now, and filing a lockfile
+    # under `Docs` would be a silent mislabel.
+    host = min(kept, key=lambda n: (len(kept[n]), n))
+    kept[COMMONS_FOLD_NAME] = sorted(kept.pop(host) + folded)
+    return kept
+
 def catalog_groups(files, catalog, max_per_group, security_mode):
     """Build stable, catalog-named groups for --repo-scan (#499).
 
@@ -936,6 +1004,7 @@ def catalog_groups(files, catalog, max_per_group, security_mode):
                                 parent_lookup=lambda n: catalog[n].get("parent"))
     commons = {n: g for n, g in _commons_catalog().items() if n not in catalog}
     commons_named, residual = assign_by_catalog(leftovers, commons)
+    commons_named = _fold_tiny_commons(commons_named, catalog)
     groups.extend(_emit_named_groups(commons_named, max_per_group, security_mode))
     # run-9 A5: the residual sink used to be named `._N`. A leading dot made every
     # derived artifact a hidden dotfile (`findings-._1-ARC.json`, `scout-._1.json`

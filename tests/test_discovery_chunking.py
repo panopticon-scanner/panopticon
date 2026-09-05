@@ -46,3 +46,30 @@ class TestPanelPriority(unittest.TestCase):
     def test_panels_in_priority_order_puts_unknown_last(self):
         assert orchestrator.panels_in_priority_order(
             ["test", "zzz", "security"]) == ["security", "test", "zzz"]
+
+
+class TestChunkBalance(unittest.TestCase):
+    """#1499: chunks pack to an even target, not greedily to max_per.
+
+    Greedy packing of 97 files at max_per=48 gives 48/48/1, and that 1-file
+    trailing chunk is a full review cell in the measured 0.20-findings/cell
+    bucket -- the Commons floor's waste, re-introduced one level down.
+    """
+
+    def test_no_starved_trailing_chunk(self):
+        files = ["src/f%03d.py" % i for i in range(97)]
+        chunks = orchestrator.chunk_files(files, max_per=48)
+        self.assertEqual(len(chunks), 3)                    # count unchanged
+        self.assertTrue(all(len(c) <= 48 for c in chunks))  # cap still holds
+        sizes = [len(c) for c in chunks]
+        self.assertLessEqual(max(sizes) - min(sizes), 2)    # balanced: 33/33/31
+        self.assertEqual(sum(len(c) for c in chunks), 97)   # nothing dropped
+
+    def test_chunk_count_matches_greedy(self):
+        # Balancing must never ADD a cell: ceil(n/max_per) either way.
+        import math
+        for n in (1, 47, 48, 49, 96, 97, 200):
+            files = ["src/f%03d.py" % i for i in range(n)]
+            chunks = orchestrator.chunk_files(files, max_per=48)
+            self.assertEqual(len(chunks), max(1, math.ceil(n / 48)), n)
+            self.assertTrue(all(len(c) <= 48 for c in chunks), n)
