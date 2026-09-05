@@ -301,8 +301,40 @@ def _remove_hook_entry(settings_path):
     _atomic_write_json(settings_path, settings, indent=2)
 
 
-def install(plan, settings_path=".claude/settings.local.json",
-            allowlist_path=".panopticon/write-allowlist.json"):
+DEFAULT_SETTINGS_PATH = ".claude/settings.local.json"
+DEFAULT_ALLOWLIST_PATH = ".panopticon/write-allowlist.json"
+
+
+def _resolve(settings_path, allowlist_path, session_root):
+    """(settings_path, allowlist_path, used_defaults).
+
+    #1493: the defaults are CWD-RELATIVE, but the settings file a running session
+    actually consults is the one at its SESSION ROOT. The driver is invoked from
+    the target repo, so a caller that armed the guard "from where the driver runs"
+    wrote `<target>/.claude/settings.local.json` -- a file nothing reads -- while
+    the live guard kept the PREVIOUS round's allowlist. 47 advisors then completed
+    and had every write rejected, and `is_armed()` reported (True, 47) throughout
+    because it read back the same inert file it had just written.
+
+    `session_root` lets a caller that knows the root (the driver has --session-dir)
+    declare it instead of inheriting CWD. `used_defaults` tells install() whether
+    it may apply the existence check below -- explicit paths are trusted, because
+    the tests and other callers legitimately point at temp dirs.
+    """
+    explicit = settings_path is not None or allowlist_path is not None
+    if session_root is not None:
+        if explicit:
+            raise ValueError(
+                "pass session_root OR explicit settings_path/allowlist_path, "
+                "not both -- they resolve to different files and the guard would "
+                "arm somewhere other than where it was checked")
+        return (os.path.join(session_root, DEFAULT_SETTINGS_PATH),
+                os.path.join(session_root, DEFAULT_ALLOWLIST_PATH), False)
+    return (settings_path or DEFAULT_SETTINGS_PATH,
+            allowlist_path or DEFAULT_ALLOWLIST_PATH, not explicit)
+
+
+def install(plan, settings_path=None, allowlist_path=None, *, session_root=None):
     # #11: UNION with any existing allowlist rather than REPLACING it wholesale.
     # A re-arm while a prior fan-out is still in flight (an overlapping/nested
     # install) used to overwrite the allowlist with only the new set, silently
@@ -310,6 +342,23 @@ def install(plan, settings_path=".claude/settings.local.json",
     # 8 findings). Unioning keeps prior grants live. out_files are unique per cell
     # (findings-<group>-<domain>.json), so a paired uninstall(plan=...) can later
     # drop exactly this call's paths without disturbing another fan-out's.
+    settings_path, allowlist_path, used_defaults = _resolve(
+        settings_path, allowlist_path, session_root)
+    # #1493: arming a guard into a settings file that does not yet exist means
+    # CREATING one -- and a session root essentially always already has one,
+    # because that is where its permissions live. So a missing file here is the
+    # signature of being in the wrong directory, which is exactly the failure
+    # that produced an inert guard. Fail closed and name the resolved path,
+    # rather than writing a decorative file and reporting success.
+    if used_defaults and not os.path.exists(settings_path):
+        raise ValueError(
+            "refusing to arm the write-guard at %s: that settings file does not "
+            "exist, so this would CREATE one -- which means the current directory "
+            "(%s) is almost certainly not the session root, and the guard would "
+            "never be consulted. Pass session_root=<the directory the session was "
+            "started in>, or explicit settings_path/allowlist_path if you really "
+            "mean this location."
+            % (os.path.abspath(settings_path), os.path.abspath(os.curdir)))
     added = allowlist_from_plan(plan)
     # #1482: an install that grants NOTHING is always a caller error -- a
     # malformed plan, or a plan whose entries declare no out_file. Letting it
@@ -339,8 +388,25 @@ def install(plan, settings_path=".claude/settings.local.json",
     return added
 
 
-def is_armed(settings_path=".claude/settings.local.json",
-             allowlist_path=".panopticon/write-allowlist.json"):
+def guard_state(settings_path=None, allowlist_path=None, *, session_root=None):
+    """The full answer `is_armed` cannot give: which files were consulted.
+
+    #1493: `is_armed()` returning (True, 47) is not evidence the guard is live --
+    it only says "a guard is registered at the path I looked at". When that path
+    is not the one the session reads, the tuple is true and useless. Callers
+    diagnosing a guard that "is armed" but rejects every write need the resolved
+    paths, so return them.
+    """
+    settings_path, allowlist_path, _ = _resolve(
+        settings_path, allowlist_path, session_root)
+    armed, grants = is_armed(settings_path, allowlist_path)
+    return {"armed": armed, "grants": grants,
+            "settings_path": os.path.abspath(settings_path),
+            "allowlist_path": os.path.abspath(allowlist_path),
+            "settings_exists": os.path.exists(settings_path)}
+
+
+def is_armed(settings_path=None, allowlist_path=None, *, session_root=None):
     """(armed, grants): is the guard registered, and over how many paths?
 
     The guard is fail-closed while registered, and the allowlist IS the complete
@@ -350,6 +416,8 @@ def is_armed(settings_path=".claude/settings.local.json",
     duty (docs/PANOPTICON.md) that nothing previously verified; this makes the
     state checkable in one call so a host, a test, or CI can assert it.
     """
+    settings_path, allowlist_path, _ = _resolve(
+        settings_path, allowlist_path, session_root)
     try:
         with open(settings_path, encoding="utf-8") as fh:
             settings = json.load(fh)
@@ -367,12 +435,14 @@ def is_armed(settings_path=".claude/settings.local.json",
         return True, 0
 
 
-def uninstall(settings_path=".claude/settings.local.json",
-              allowlist_path=".panopticon/write-allowlist.json", *, plan=None):
+def uninstall(settings_path=None, allowlist_path=None, *, plan=None,
+              session_root=None):
     # #11: with `plan` given, remove ONLY that fan-out's paths (scoped teardown)
     # and keep the guard armed while any OTHER fan-out's paths remain -- so
     # tearing down one fan-out never revokes a concurrent one. With no `plan`
     # (the legacy default), tear the whole guard down.
+    settings_path, allowlist_path, _ = _resolve(
+        settings_path, allowlist_path, session_root)
     if plan is not None:
         remaining = _read_allowlist(allowlist_path) - allowlist_from_plan(plan)
         if remaining:
