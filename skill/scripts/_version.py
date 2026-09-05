@@ -13,7 +13,7 @@ model_resolver.py, and ocrdb.py (#dedup of 3 identical inline spellings).
 """
 import os
 
-__version__ = "5.0.1"
+__version__ = "5.1.0"
 
 
 def reference_path(*parts):
