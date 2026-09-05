@@ -21,6 +21,7 @@ DEFAULT_TIMESTAMP = "2026-07-23T00:00:00Z"
 
 
 import scripts.synthesize as syn  # noqa: E402
+from scripts._version import __version__  # noqa: E402
 import scripts.ocrdb as ocrdb  # noqa: E402
 
 import pytest  # noqa: E402
@@ -3201,7 +3202,7 @@ class TestEvidenceReport(unittest.TestCase):
         report = self._report([_agentic()])
         self.assertNotIn("effort_to_remediate", report["summary"])
         self.assertNotIn("recommendations", report)
-        self.assertEqual(report["meta"]["version"], "5.0.1")
+        self.assertEqual(report["meta"]["version"], __version__)
 
     def test_citation_quality_lives_in_evidence(self):
         report = self._report([_agentic(citations={"cwe": ["CWE-89"]})])
@@ -3747,7 +3748,7 @@ class TestToolPolicyMode(unittest.TestCase):
             [f], [], "t", None, "2026-08-03T00:00:00Z", tool_policy_mode="mixed"
         )
         self.assertEqual(report["meta"]["coverage"]["tool_policy_mode"], "mixed")
-        self.assertEqual(report["meta"]["version"], "5.0.1")
+        self.assertEqual(report["meta"]["version"], __version__)
 
 
 class TestToolsRanFromDispositions(unittest.TestCase):

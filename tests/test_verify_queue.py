@@ -4,6 +4,7 @@ import tempfile
 import unittest
 
 import scripts.evidence as evidence
+from scripts._version import __version__
 
 
 def _finding(fid, sev, **kw):
@@ -140,7 +141,7 @@ class TestWriteVerifyQueue(unittest.TestCase):
             evidence.write_verify_queue(entries, cut, path)
             with open(path) as fh:
                 payload = json.load(fh)
-        self.assertEqual(payload["version"], "5.0.1")
+        self.assertEqual(payload["version"], __version__)
         self.assertEqual(payload["cut_by_max_verify"], 0)
         self.assertEqual(len(payload["entries"]), 1)   # #run7 TST-B3A: count diff, not IndexError
         self.assertEqual(payload["entries"][0]["queue_id"],

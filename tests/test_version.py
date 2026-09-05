@@ -55,9 +55,13 @@ class TestVersionSingleSourcing(unittest.TestCase):
 
     def test_verify_queue_payload_uses_the_constant(self):
         # #run7 TST-A2A: _version.py names the verify-queue payload as a consumer,
-        # but only report-meta + citations UA were guarded. The one payload-version
-        # check elsewhere asserts a hardcoded "5.0.1" literal, so a regression that
+        # but only report-meta + citations UA were guarded, so a regression that
         # hardcoded the literal in evidence.py would pass until the next bump.
+        #
+        # The 5.1.0 bump was that next bump: three assertions elsewhere pinned the
+        # "5.0.1" literal and broke on it. They now compare against __version__
+        # too, so a release bump no longer costs a round of test edits -- which is
+        # what single-sourcing was for.
         import json
         import tempfile
         import scripts.evidence as evidence

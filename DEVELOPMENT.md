@@ -5,7 +5,7 @@ Agent-tool host, plus portable support for other SKILL.md-compatible agents. Thi
 design record that travels with the skill (installed dir / OneDrive), so future
 work has context without the original spec/plan docs.
 
-**Current version: 5.0.1** (semver — see Versioning below).
+**Current version: 5.1.0** (semver — see Versioning below).
 
 ## What it is
 A **discovery → scout → fan-out → synthesis** pipeline. It profiles a target with a
@@ -187,7 +187,26 @@ changes to the report schema, CLI, or grade contract. Bump `SKILL.md` `metadata.
 `version` together.
 
 History:
-- **5.0.1** (current) — honest instrumentation. The first 5.0 point release,
+- **5.1.0** (current) — measurement. 231 commits, 37 issues: the release where the
+  scanner's own numbers became worth reading. The grade moves from a max-severity
+  rollup that SATURATED (ten Ds and one F across eleven runs — it could not tell
+  any two codebases apart) to a bounded health index that discriminates (#1473,
+  #1456, #1146); `meta.cost.tokens` goes from usually-null to collected
+  automatically, with a window bounded at both ends so a run's ledger reproduces
+  after the fact (#1450, #1453, #1494). Grouping becomes controllable rather than
+  implicit: `--max-per-group` is exposed and defaulted to 48 after a measured cap
+  series (#1462, #1488), subgroups roll up to their parent in the report (#1305),
+  and a chunk states its parentage instead of having it inferred from its name
+  (#1480). Per-run folders (#1130) and X0X catalog-gap emission (#1132) land as
+  planned; tool-aware review ships as a SEC-cell PoC (#1307) with the full
+  treatment deferred to 5.2 (#1131). The tool axis is repaired end to end —
+  dependency-check no longer certifies off a build file alone (#1474), a tool
+  verdict is keyed to its dispatched cell rather than an echoed id (#1475), and
+  the void gosec axes were re-measured rather than caveated (#1477).
+  The remaining 136 fixes are self-scan remediation from runs 6-10 plus the
+  calibration apparatus that made five targets measurable — including two
+  pre-registered predictions, one of which failed and was recorded as failed.
+- **5.0.1** — honest instrumentation. The first 5.0 point release,
   clearing the residuals from the BursarBuddy calibration and the 5.0 PR sweep.
   `meta.cost` now enumerates every driver dispatch class (#1030); the verify
   backup re-reads only its scoped files and the tool-advisor runs lighter, the
