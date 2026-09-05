@@ -74,6 +74,39 @@ _SEC_FILE_HINTS = (_SEC_SUPPLY_CHAIN_HINTS + _SEC_CODE_HINTS
                    + _SEC_SECRET_FILE_HINTS + _DB_FILE_HINTS)
 
 
+# #1489: extensions with no code surface for COD to review. Deliberately a
+# DENYLIST, so the gate fails OPEN: an unrecognized extension counts as source
+# and keeps COD. Only a group that is ENTIRELY recognized assets loses it --
+# stricter than the >=95%-non-source shape that was measured, because dropping a
+# floor domain wrongly is worse than spending one cell.
+#
+# .svg is listed: it is reviewable text, but not by COD. The one real finding
+# these groups produced was ARC's (a sprite set drifted out of parity with the
+# readme logos) and ARC keeps its own >=2-directories gate, so that path is
+# untouched.
+_ASSET_EXTENSIONS = frozenset((
+    ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico", ".bmp", ".tiff",
+    ".tif", ".avif", ".heic",
+    ".woff", ".woff2", ".ttf", ".otf", ".eot",
+    ".mp3", ".mp4", ".wav", ".ogg", ".oga", ".webm", ".mov", ".avi", ".m4a",
+    ".zip", ".gz", ".bz2", ".xz", ".tar", ".7z", ".rar",
+    ".pdf", ".bin", ".exe", ".dll", ".so", ".dylib", ".class", ".jar", ".wasm",
+    ".psd", ".ai", ".sketch", ".fig",
+))
+
+
+def has_code_surface(files):
+    """True when at least one file could carry a COD defect (#1489).
+
+    Fails open: only files whose extension is a KNOWN asset type are discounted,
+    so anything unfamiliar still counts as reviewable source.
+    """
+    for f in files or ():
+        if os.path.splitext(str(f))[1].lower() not in _ASSET_EXTENSIONS:
+            return True
+    return False
+
+
 def _any_hint(files, hints):
     for f in files or ():
         low = str(f).lower()
@@ -91,7 +124,11 @@ def applicable_global_floor(files, scout, global_floor=GLOBAL_FLOOR):
     objectively surfaced is still available via scout_added in effective_panels.
     Pure; the return is always a subset of `global_floor`.
 
-    - COD: always (kept whenever it is in `global_floor`).
+    - COD: any file that is not a recognized binary/media asset (#1489). COD was
+      previously unconditional, so a pure-asset group -- which `chunk_files`
+      produces reliably, because it packs by directory -- still drew a COD cell.
+      Across 7 calibration runs those cells returned 0 findings in every
+      instance, against a 2.71-5.83 corpus baseline.
     - DAT: any db/schema/model/migration/seed file.
     - TST: any test-file signal.
     - ARC: the group spans >= 2 distinct file directories (real cross-module
@@ -99,7 +136,7 @@ def applicable_global_floor(files, scout, global_floor=GLOBAL_FLOOR):
     """
     files = list(files or [])
     keep = set()
-    if "COD" in global_floor:
+    if "COD" in global_floor and has_code_surface(files):
         keep.add("COD")
     if "DAT" in global_floor and _any_hint(files, _DB_FILE_HINTS):
         keep.add("DAT")
