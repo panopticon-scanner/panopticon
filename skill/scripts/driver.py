@@ -11,6 +11,7 @@ import copy
 import dataclasses
 import functools
 import glob as _glob
+import datetime
 import json
 import os
 import re
@@ -1778,6 +1779,14 @@ def _collect_host_usage(review_root, manifest):
     created = manifest.get("created")
     if created:
         cmd += ["--since", created]
+    # #1494: bound the window's END too. A floor alone only makes the number
+    # reproducible until the NEXT run in the same session -- re-collecting an
+    # earlier run afterwards silently bills it for the later run's tokens (fzf
+    # read 0.443 B in-run and 0.751 B once ripgrep had run in the same session).
+    # Usage is collected at synthesize, after every agent has finished, so "now"
+    # is this run's true ceiling and freezes the ledger permanently.
+    cmd += ["--until", datetime.datetime.now(datetime.timezone.utc)
+            .strftime("%Y-%m-%dT%H:%M:%SZ")]
     try:
         proc = _run_child(cmd, review_root, "usage", timeout=120)
     except DriverError as exc:

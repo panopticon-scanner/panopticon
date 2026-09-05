@@ -219,8 +219,15 @@ def classify_transcript(path):
     return "unattributed"
 
 
-def scan(path, since=None):
-    """(totals, record_count, models) for one transcript, at or after `since`."""
+def scan(path, since=None, until=None):
+    """(totals, record_count, models) for one transcript, within [since, until].
+
+    #1494: `until` bounds the END of the window. A floor alone is not enough when
+    several runs share one session transcript -- re-collecting an earlier run after
+    a later one has started silently absorbs the later run's tokens (fzf read
+    0.443 B when collected in-run and 0.751 B once ripgrep had run in the same
+    session). The floor makes the number reproducible only until the next run.
+    """
     totals, n, models = _zero(), 0, {}
     for rec in _iter_records(path):
         msg = rec.get("message")
@@ -229,7 +236,10 @@ def scan(path, since=None):
         usage = msg.get("usage")
         if not isinstance(usage, dict):
             continue
-        if since and (rec.get("timestamp") or "") < since:
+        ts = rec.get("timestamp") or ""
+        if since and ts < since:
+            continue
+        if until and ts > until:
             continue
         _add(totals, usage)
         n += 1
@@ -239,7 +249,8 @@ def scan(path, since=None):
     return totals, n, models
 
 
-def collect(run_dir, project_dir, transcript=None, tasks_dir=None, since=None):
+def collect(run_dir, project_dir, transcript=None, tasks_dir=None, since=None,
+            until=None):
     """Assemble the usage document, or None when no transcript is available."""
     controller = transcript or find_controller_transcript(project_dir, since=since)
     tasks = find_task_transcripts(controller, tasks_dir)
@@ -253,7 +264,7 @@ def collect(run_dir, project_dir, transcript=None, tasks_dir=None, since=None):
     by_phase_transcripts = {}
 
     if controller:
-        t, n, m = scan(controller, since)
+        t, n, m = scan(controller, since, until)
         _add(by_source["controller"], t)
         for k, v in m.items():
             models[k] = models.get(k, 0) + v
@@ -262,7 +273,7 @@ def collect(run_dir, project_dir, transcript=None, tasks_dir=None, since=None):
         controller_records = n
 
     for p in tasks:
-        t, n, m = scan(p, since)
+        t, n, m = scan(p, since, until)
         if not n:
             continue
         phase = classify_transcript(p)
@@ -296,6 +307,7 @@ def collect(run_dir, project_dir, transcript=None, tasks_dir=None, since=None):
         "subagent_transcripts": agents,
         "by_model": models,
         "window_start": since,
+        "window_end": until,
         # A SUMMARY, not the list. `sources` was one entry per transcript, each
         # carrying an absolute path: 700 entries / 190 KB on gotify, which is
         # 99% of meta.cost and ~99% of the whole report base.
@@ -322,9 +334,64 @@ def collect(run_dir, project_dir, transcript=None, tasks_dir=None, since=None):
     }
 
 
+def _manifest_matches_run(manifest, run_dir):
+    """Is this manifest the one for `run_dir`?
+
+    An ancestor `.panopticon/run-manifest.json` describes whatever run is CURRENT
+    for that target -- which is not necessarily the run being collected. Run tags
+    end in the first 8 hex of the run_id (`...-20260904-a6388b3f` <- `a6388b3f...`),
+    so the two can be checked against each other. A manifest that names a different
+    run is worse than no manifest: it supplies a plausible but wrong floor.
+    """
+    run_id = str(manifest.get("run_id") or "")
+    tag = os.path.basename(os.path.normpath(run_dir))
+    if not run_id or "-" not in tag:
+        return False
+    return run_id.startswith(tag.rsplit("-", 1)[-1])
+
+
+def later_run_started(run_dir, since):
+    """A sibling run folder whose manifest starts AFTER this one, or None.
+
+    #1494: runs in the same host session share a transcript, so a `since` floor
+    alone stops being sufficient the moment a later run begins -- everything it
+    spends lands inside this run's open-ended window. Sibling run folders are the
+    available evidence that this has happened.
+    """
+    runs_dir = os.path.dirname(os.path.abspath(run_dir))
+    mine = os.path.basename(os.path.normpath(run_dir))
+    latest = None
+    try:
+        siblings = os.listdir(runs_dir)
+    except OSError:
+        return None
+    for name in siblings:
+        if name == mine or name == "latest":
+            continue
+        p = os.path.join(runs_dir, name)
+        if not os.path.isdir(p):
+            continue
+        started = run_started_at(p)
+        if started and since and started > since:
+            if latest is None or started < latest[1]:
+                latest = (name, started)
+    return latest
+
+
 def run_started_at(run_dir):
     """The run manifest's `created` stamp, so a shared transcript is not
-    over-counted with usage that predates the scan."""
+    over-counted with usage that predates the scan.
+
+    #1494: this used to look ONLY inside `run_dir`, but the driver writes the
+    manifest one level up at `.panopticon/run-manifest.json`. The lookup missed,
+    `--since` fell back to counting the whole transcript, and fzf's 0.443 B run
+    reported 14.7 B -- a 33x overstatement produced by the documented default
+    path. Worse, it was non-deterministic: collecting the same run again minutes
+    later returned 15.0 B, because the session transcript had grown.
+
+    So walk up as well, and only accept an ancestor manifest that actually names
+    THIS run.
+    """
     for name in ("run-manifest.json", "manifest.json"):
         p = os.path.join(run_dir, name)
         try:
@@ -334,6 +401,18 @@ def run_started_at(run_dir):
             continue
         if created:
             return created
+    d = os.path.abspath(run_dir)
+    for _ in range(3):                      # runs/<tag> -> runs -> .panopticon
+        d = os.path.dirname(d)
+        if not d or d == os.path.dirname(d):
+            break
+        try:
+            with open(os.path.join(d, "run-manifest.json"), encoding="utf-8") as fh:
+                manifest = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if manifest.get("created") and _manifest_matches_run(manifest, run_dir):
+            return manifest["created"]
     return None
 
 
@@ -348,6 +427,10 @@ def main(argv=None):
                     help="controller transcript .jsonl (default: auto-discover)")
     ap.add_argument("--tasks-dir", default=None,
                     help="directory of subagent transcripts (default: auto)")
+    ap.add_argument("--until", default=None,
+                    help="ISO timestamp ceiling (default: none, but refuses when "
+                         "a later run shares the transcript); 'none' to accept "
+                         "an open-ended window")
     ap.add_argument("--since", default=None,
                     help="ISO timestamp floor (default: the run manifest's "
                          "`created`; pass 'none' to count the whole transcript)")
@@ -361,11 +444,37 @@ def main(argv=None):
     since = args.since
     if since is None:
         since = run_started_at(args.run_dir)
+        if since is None:
+            # #1494: "count the whole transcript" is never the right answer for a
+            # PER-RUN ledger -- it is only ever a silent overstatement, and one
+            # that grows every time it is re-collected. Refuse and say how to
+            # proceed deliberately, rather than emitting a number that looks fine.
+            print("collect-usage: no run manifest found for %s, so there is no "
+                  "start-of-run floor. Counting the whole transcript would "
+                  "over-report this run's cost (and would report a DIFFERENT "
+                  "number each time the transcript grows). Pass --since "
+                  "<ISO timestamp>, or --since none to deliberately count "
+                  "everything." % args.run_dir, file=sys.stderr)
+            return 2
     elif since.lower() == "none":
         since = None
 
+    until = args.until
+    if until is None and since is not None:
+        later = later_run_started(args.run_dir, since)
+        if later:
+            print("collect-usage: run %s started at %s, AFTER this run's floor "
+                  "(%s), and shares the host session transcript -- counting to "
+                  "the end of the transcript would bill this run for that one's "
+                  "tokens. Pass --until <ISO timestamp of this run's completion> "
+                  "to bound the window, or --until none to accept the overlap."
+                  % (later[0], later[1], since), file=sys.stderr)
+            return 2
+    elif until is not None and until.lower() == "none":
+        until = None
+
     doc = collect(args.run_dir, args.project_dir, args.transcript,
-                  args.tasks_dir, since)
+                  args.tasks_dir, since, until)
     if doc is None:
         # Deliberately not an error, and deliberately not a zero: the channel is
         # optional, and a usage.json full of zeros would be a false ledger.

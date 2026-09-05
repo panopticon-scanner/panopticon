@@ -271,11 +271,71 @@ class TestCollect(unittest.TestCase):
                            tasks_dir=os.path.join(d, "empty")))
 
     def test_main_writes_nothing_when_no_transcript(self):
+        # `--since` is supplied so this exercises the no-TRANSCRIPT path (rc 1)
+        # rather than the no-MANIFEST refusal added for #1494 (rc 2).
         with tempfile.TemporaryDirectory() as d:
             rc = cu.main(["--run-dir", d, "--project-dir", d,
+                          "--since", "2026-08-30T00:00:00Z",
                           "--tasks-dir", os.path.join(d, "none")])
         self.assertEqual(rc, 1)
         self.assertFalse(os.path.exists(os.path.join(d, "usage.json")))
+
+    def test_main_refuses_when_no_floor_can_be_resolved(self):
+        # #1494: "count the whole transcript" is never right for a per-run
+        # ledger. fzf's 0.443 B run reported 14.7 B through this fallback -- and
+        # 15.0 B minutes later, because the transcript kept growing. A ledger
+        # that changes every time it is collected is worse than an absent one.
+        with tempfile.TemporaryDirectory() as d:
+            rc = cu.main(["--run-dir", d, "--project-dir", d,
+                          "--tasks-dir", os.path.join(d, "none")])
+        self.assertEqual(rc, 2)
+        self.assertFalse(os.path.exists(os.path.join(d, "usage.json")))
+
+    def test_since_is_found_in_the_top_level_manifest_one_level_up(self):
+        # #1494: the driver writes run-manifest.json to `.panopticon/`, NOT into
+        # the run folder, so a lookup confined to run_dir missed it entirely.
+        with tempfile.TemporaryDirectory() as d:
+            pano = os.path.join(d, ".panopticon")
+            run = os.path.join(pano, "runs", "claude-redteam-repo-20260904-a6388b3f")
+            os.makedirs(run)
+            with open(os.path.join(pano, "run-manifest.json"), "w",
+                      encoding="utf-8") as fh:
+                json.dump({"run_id": "a6388b3fb01943b9ab393d138ab84a85",
+                           "created": "2026-09-04T05:59:59Z"}, fh)
+            self.assertEqual(cu.run_started_at(run), "2026-09-04T05:59:59Z")
+
+    def test_an_ancestor_manifest_for_a_DIFFERENT_run_is_not_used(self):
+        # The top-level manifest describes whatever run is CURRENT for a target,
+        # which is not necessarily the one being collected. A wrong floor is
+        # worse than none: it is plausible, so nothing questions it.
+        with tempfile.TemporaryDirectory() as d:
+            pano = os.path.join(d, ".panopticon")
+            run = os.path.join(pano, "runs", "claude-redteam-repo-20260830-d1085295")
+            os.makedirs(run)
+            with open(os.path.join(pano, "run-manifest.json"), "w",
+                      encoding="utf-8") as fh:
+                json.dump({"run_id": "a6388b3fb01943b9ab393d138ab84a85",
+                           "created": "2026-09-04T05:59:59Z"}, fh)
+            self.assertIsNone(cu.run_started_at(run))
+
+    def test_until_bounds_the_window_end(self):
+        # #1494: a floor alone stops being enough once a LATER run shares the
+        # session transcript. fzf read 0.443 B collected in-run and 0.751 B once
+        # ripgrep had run after it.
+        recs = [{"timestamp": "2026-09-04T06:00:00Z",
+                 "message": {"usage": {"output_tokens": 10}}},
+                {"timestamp": "2026-09-04T23:00:00Z",
+                 "message": {"usage": {"output_tokens": 90}}}]
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "t.jsonl")
+            with open(p, "w", encoding="utf-8") as fh:
+                for r in recs:
+                    fh.write(json.dumps(r) + "\n")
+            open_window, _, _ = cu.scan(p, "2026-09-04T05:00:00Z")
+            bounded, _, _ = cu.scan(p, "2026-09-04T05:00:00Z",
+                                    "2026-09-04T22:00:00Z")
+            self.assertEqual(open_window["output_tokens"], 100)
+            self.assertEqual(bounded["output_tokens"], 10)
 
     def test_since_defaults_to_the_run_manifest(self):
         with tempfile.TemporaryDirectory() as d:
