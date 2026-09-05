@@ -478,6 +478,73 @@ class TestInstallUninstall(unittest.TestCase):
             os.remove(al)
             self.assertEqual(wg.is_armed(settings, al), (True, 0))
 
+    def test_install_refuses_to_create_a_settings_file_from_the_wrong_cwd(self):
+        # #1493: the defaults are CWD-relative, but the settings file a session
+        # consults is the one at its SESSION ROOT. Arming "from where the driver
+        # runs" (the target repo) wrote a file nothing reads, left the PREVIOUS
+        # round's allowlist live, and cost 47 advisors every one of their writes
+        # -- while is_armed() reported (True, 47) the whole time. A session root
+        # already has a settings file, so being asked to CREATE one is the
+        # signature of standing in the wrong directory.
+        with tempfile.TemporaryDirectory() as d:
+            pano = os.path.join(d, ".panopticon")
+            os.makedirs(pano)
+            plan = [{"out_file": os.path.join(pano, "findings-A-SEC.json")}]
+            cwd = os.getcwd()
+            try:
+                os.chdir(d)
+                with self.assertRaises(ValueError) as cm:
+                    wg.install(plan)
+            finally:
+                os.chdir(cwd)
+            self.assertIn("session root", str(cm.exception))
+            # and it must not have written the decorative file it refused to arm
+            self.assertFalse(os.path.exists(
+                os.path.join(d, ".claude", "settings.local.json")))
+
+    def test_session_root_resolves_both_paths_under_it(self):
+        # The declared-root path: a caller that knows the root (the driver has
+        # --session-dir) says so instead of inheriting whatever CWD it was run in.
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, ".claude"))
+            os.makedirs(os.path.join(d, ".panopticon"))
+            with open(os.path.join(d, ".claude", "settings.local.json"), "w") as fh:
+                fh.write("{}")
+            out = os.path.join(d, ".panopticon", "findings-A-SEC.json")
+            wg.install([{"out_file": out}], session_root=d)
+            st = wg.guard_state(session_root=d)
+            self.assertTrue(st["armed"])
+            self.assertEqual(st["grants"], 1)
+            self.assertEqual(st["settings_path"],
+                             os.path.abspath(os.path.join(d, ".claude",
+                                                          "settings.local.json")))
+            wg.uninstall(session_root=d)
+            self.assertFalse(wg.guard_state(session_root=d)["armed"])
+
+    def test_session_root_and_explicit_paths_together_are_refused(self):
+        # They resolve to different files: the guard would arm in one place and
+        # be checked in another, which is the whole #1493 failure restated.
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(ValueError):
+                wg.install([{"out_file": os.path.join(d, "f.json")}],
+                           os.path.join(d, "settings.json"), session_root=d)
+
+    def test_guard_state_names_the_files_it_consulted(self):
+        # is_armed()'s (True, N) does not say WHICH guard -- it is true of an
+        # inert one too. guard_state must expose the resolved paths so a "armed
+        # but every write rejected" case is diagnosable.
+        with tempfile.TemporaryDirectory() as d:
+            settings = os.path.join(d, "settings.local.json")
+            al = os.path.join(d, "allow.json")
+            pano = os.path.join(d, ".panopticon")
+            os.makedirs(pano)
+            wg.install([{"out_file": os.path.join(pano, "f.json")}], settings, al)
+            st = wg.guard_state(settings, al)
+            self.assertEqual((st["armed"], st["grants"]), (True, 1))
+            self.assertEqual(st["settings_path"], os.path.abspath(settings))
+            self.assertEqual(st["allowlist_path"], os.path.abspath(al))
+            self.assertTrue(st["settings_exists"])
+
     def test_uninstall_is_safe_when_nothing_is_installed(self):
         # The `complete` status tells the host to tear down unconditionally,
         # so this must never raise on a run that armed no guard.

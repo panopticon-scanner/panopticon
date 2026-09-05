@@ -69,11 +69,41 @@ def test_global_floor_still_subject_to_exclude():
 
 # --- #5.0-19: applicable_global_floor surface gate --------------------------
 
-def test_applicable_floor_cod_is_universal():
+def test_applicable_floor_cod_kept_for_any_non_asset_file():
     # a docs-only, single-dir, testless, db-free group still reviews code
     got = cov.applicable_global_floor(["README.md"],
                                       {"surfaces": [], "has_tests": False})
     if not (got == frozenset({"COD"})): raise AssertionError()
+
+def test_applicable_floor_drops_cod_on_a_pure_asset_group():
+    # #1489: COD was unconditional, so an image folder still spent a review cell.
+    # chunk_files packs by directory, so pure-asset chunks are a reliable shape,
+    # not a rare one -- and across 7 calibration runs those COD cells returned
+    # ZERO findings in every instance (corpus baseline 2.71-5.83 per cell).
+    files = ["wwwroot/img/logo.png", "wwwroot/img/sprite.svg",
+             "wwwroot/fonts/inter.woff2"]
+    got = cov.applicable_global_floor(files, {"surfaces": []})
+    if "COD" in got:
+        raise AssertionError("COD kept on a group with no code surface")
+    # ARC must SURVIVE: its >=2-directory gate is what found the one real defect
+    # these groups produced (a sprite set drifted out of parity with the logos).
+    if "ARC" not in got:
+        raise AssertionError("ARC wrongly dropped from an asset group")
+
+def test_applicable_floor_cod_gate_fails_open_on_unknown_extensions():
+    # The gate is a denylist of known asset types, so anything unfamiliar counts
+    # as reviewable source. Dropping a floor domain wrongly is worse than
+    # spending one cell.
+    got = cov.applicable_global_floor(["a/thing.zzz", "b/other.zzz"],
+                                      {"surfaces": []})
+    if "COD" not in got:
+        raise AssertionError("COD dropped for an unrecognized extension")
+
+def test_applicable_floor_keeps_cod_when_one_source_file_is_present():
+    got = cov.applicable_global_floor(["wwwroot/img/a.png", "src/Home.cs"],
+                                      {"surfaces": []})
+    if "COD" not in got:
+        raise AssertionError("COD dropped from a group that contains source")
 
 def test_applicable_floor_surfaceless_group_drops_dat_tst_arc():
     got = cov.applicable_global_floor(["src/app/page.tsx"],
