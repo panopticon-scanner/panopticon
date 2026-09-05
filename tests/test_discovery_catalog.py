@@ -252,22 +252,91 @@ class TestGroupObjParent(unittest.TestCase):
 class TestCommonsCatalog(unittest.TestCase):
     """Task 5 (#499): a curated Commons vocabulary (Docs/CI/Build/Config/Deps)
     names committed-unmatched leftover files before the true residual falls
-    to `._N`. Committed groups always win -- Commons only ever sees
+    to `Ungrouped_N`. Committed groups always win -- Commons only ever sees
     leftovers."""
 
-    def test_commons_names_leftovers_before_dot_n(self):
+    def test_commons_names_leftovers_before_ungrouped(self):
+        # One README and one Dockerfile are two TINY categories, so #1499 folds
+        # them into a single `Commons` group rather than spending a full review
+        # cell on each. What must survive the fold: the files are still claimed
+        # (not dropped), and the true residual is still disclosed separately.
         catalog = {"App": {"match": ["src/**"]}}
         groups, leftovers = orchestrator.catalog_groups(
             ["src/app.py", "README.md", "Dockerfile", "weird.xyz"],
             catalog, max_per_group=50, security_mode="standard")
-        names = {g["name"] for g in groups}
-        self.assertIn("Docs", names)   # README.md -> Docs
-        self.assertIn("Build", names)  # Dockerfile -> Build
-        self.assertTrue(any(n.startswith("Ungrouped_") for n in names))  # weird.xyz -> residual
-        self.assertIn("src/app.py",
-                       next(g["files"] for g in groups if g["name"] == "App"))
+        by_name = {g["name"]: g for g in groups}
+        self.assertIn("Commons", by_name)
+        self.assertEqual(sorted(by_name["Commons"]["files"]),
+                         ["Dockerfile", "README.md"])
+        self.assertTrue(any(n.startswith("Ungrouped_") for n in by_name))
+        self.assertIn("src/app.py", by_name["App"]["files"])
         # weird.xyz is the true residual -- disclosed, not silently absorbed.
         self.assertEqual(leftovers, ["weird.xyz"])
+
+    def test_normal_sized_commons_categories_keep_their_names(self):
+        # The floor is a floor, not a merge-everything. Categories at or above
+        # COMMONS_MIN_FILES are the productive 2.99 findings/cell bucket and
+        # must keep their own names and their own cells.
+        files = (["doc%d.md" % i for i in range(orchestrator.COMMONS_MIN_FILES)]
+                 + ["Dockerfile", "Makefile", "pom.xml", "go.mod",
+                    "Gemfile", "Rakefile"])
+        groups, _leftovers = orchestrator.catalog_groups(
+            files, {}, max_per_group=50, security_mode="standard")
+        names = {g["name"] for g in groups}
+        self.assertEqual(names, {"Docs", "Build"})
+        self.assertNotIn("Commons", names)
+
+    def test_lone_tiny_category_keeps_its_honest_name(self):
+        # Folding a SINGLE tiny category would just rename `Docs` to `Commons`:
+        # same one cell, less information. The fold requires >=2 tiny
+        # categories, so it must not fire here.
+        groups, _leftovers = orchestrator.catalog_groups(
+            ["README.md"], {}, max_per_group=50, security_mode="standard")
+        names = {g["name"] for g in groups}
+        self.assertEqual(names, {"Docs"})
+
+    def test_fold_suppressed_when_committed_catalog_claims_Commons(self):
+        # Same clobber hazard the Commons pass already guards: two groups named
+        # `Commons` would write the SAME findings-Commons-<domain>.json. The
+        # committed group wins and the fold stands down, so the tiny categories
+        # keep their own names rather than colliding.
+        catalog = {"Commons": {"match": ["shared/**"]}}
+        groups, _leftovers = orchestrator.catalog_groups(
+            ["shared/util.py", "README.md", "Dockerfile"],
+            catalog, max_per_group=50, security_mode="standard")
+        names = [g["name"] for g in groups]
+        self.assertEqual(names.count("Commons"), 1)
+        self.assertEqual(next(g["files"] for g in groups if g["name"] == "Commons"),
+                         ["shared/util.py"])
+        self.assertIn("Docs", names)
+        self.assertIn("Build", names)
+
+    def test_folded_commons_still_draws_the_SEC_floor(self):
+        # The property that makes the merge legal: applicable_sec_floor keys on
+        # FILES, not group names, so folding a secret-bearing or supply-chain
+        # file into `Commons` cannot silently exempt it from SEC review
+        # (#1072 / run-10 SEC-G2A).
+        groups, _leftovers = orchestrator.catalog_groups(
+            [".env", "package-lock.json"], {},
+            max_per_group=50, security_mode="standard")
+        by_name = {g["name"]: g for g in groups}
+        self.assertIn("Commons", by_name)
+        self.assertIn("security", by_name["Commons"]["panels"])
+
+    def test_lone_tiny_category_absorbed_by_smallest_normal_sibling(self):
+        # The most common tiny universal group in the calibration pool is a
+        # lone 1-file `Deps`. It has no tiny peer to pair with, so it is
+        # absorbed by the smallest normal-sized sibling instead -- which is the
+        # case that actually removes a cell. The merged unit is renamed
+        # `Commons`, not left as `Docs`, because filing a lockfile under `Docs`
+        # would be a silent mislabel.
+        files = ["doc%d.md" % i for i in range(8)] + ["yarn.lock"]
+        groups, _leftovers = orchestrator.catalog_groups(
+            files, {}, max_per_group=50, security_mode="standard")
+        names = {g["name"] for g in groups}
+        self.assertEqual(names, {"Commons"})          # one cell, not two
+        self.assertIn("yarn.lock",
+                      next(g["files"] for g in groups if g["name"] == "Commons"))
 
     def test_committed_group_wins_over_commons(self):
         # A committed `src/**` group claims src/app.py -- Commons never sees it.

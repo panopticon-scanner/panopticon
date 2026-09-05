@@ -1,23 +1,239 @@
-# Panopticon Commons catalog -- 5.1 curated starter (groups-subgroups-scoping,
-# #499). Near-universal, cross-cutting file groups (Docs/CI/Build/Config/Deps)
-# that discovery.catalog_groups checks AFTER the committed .panopticon/
-# groups.yml catalog: committed groups always win, Commons only ever sees
-# genuine leftovers, and the true residual still chunks `._N`. A curated
-# starter, not an empirical pass across the target pool (that's a tracked
-# follow-up) -- order + globs are the curation surface.
+# Panopticon Commons catalog -- near-universal, cross-cutting file groups
+# (Docs/CI/Build/Config/Deps) that discovery.catalog_groups checks AFTER the
+# committed .panopticon/groups.yml catalog: committed groups always win,
+# Commons only ever sees genuine leftovers, and the true residual still
+# chunks `Ungrouped_N`.
+#
+# 5.2 (#1499): the 5.1 starter's 38 hand-picked globs are replaced by the
+# EMPIRICAL pass the starter's header promised -- globs proposed by >=4 of 6
+# independent seats in the 5.2.0 vocab panel (calibration/2026-08-21-5.2.0-
+# vocab-panel/), unioned with all 38 shipped globs, then curated to 182.
+#
+# The panel reproduced the starter's five categories exactly and proposed no
+# sixth, which is the load-bearing result: the taxonomy is convergent, only
+# its coverage was thin.
+#
+# UNION, not replace. Seven shipped globs (.gitlab-ci.yml, Jenkinsfile,
+# azure-pipelines*, *.mk, *.ini, *.cfg, build.gradle*) were absent from the
+# panel set because the calibration pool is GitHub-hosted -- pool bias, not
+# evidence against them. Dropping them would have been a silent regression.
+#
+# Curation rules applied to the raw 234-glob union:
+#   R1  drop directory-prefix globs that commonly hold application source
+#       (`config/**` -> Rails routes/initializers are code). Such files fall
+#       to Ungrouped, whose yield is a catalog-COVERAGE signal we surface.
+#   R2  drop single-repo artifacts that cleared the >=4-seat filter by chance.
+#   R3  drop a literal when a sibling wildcard in the same category already
+#       claims it under discovery.match_patterns (44 collapsed). Verified
+#       with the real matcher, not fnmatch: a no-slash pattern matches the
+#       BASENAME at any depth, so `*.md` really does subsume
+#       `.github/CONTRIBUTING.md`.
+#   R4  a glob proposed for two categories goes to Build when it drives the
+#       toolchain (tsconfig*.json, rust-toolchain.toml).
+# Regression check: every one of the 38 shipped globs is still claimed.
+#
+# Category ORDER IS SEMANTIC -- assign_by_catalog is first-match-wins.
 #
 # Loaded by discovery._commons_catalog() as a plain {name: {"match": [...]}}
 # mapping fed straight to assign_by_catalog -- NOT routed through
 # groups_schema.parse_groups (this is shipped/tested data, not committed
 # user input).
+#
+# Sizing: discovery folds Commons categories under COMMONS_MIN_FILES into a
+# single `Commons` group. Measured across 6 target-runs / 319 group-instances,
+# a tiny (<=5 file) universal group yields 0.20 findings/cell and is empty 86%
+# of the time, versus 2.99 for a normal-sized one. Widening these globs without
+# that floor would manufacture more of exactly that waste.
 groups:
   Docs:
-    match: ["README*", "LICENSE*", "CHANGELOG*", "CONTRIBUTING*", "docs/**", "*.md"]
+    match:
+    - "*.md"
+    - "*.rst"
+    - ".github/*.md"
+    - ".github/ISSUE_TEMPLATE/**"
+    - "AUTHORS"
+    - "CHANGELOG*"
+    - "CITATION.cff"
+    - "CONTRIBUTING*"
+    - "COPYING"
+    - "INSTALL"
+    - "LICENSE*"
+    - "LICENSES/**"
+    - "NOTICE*"
+    - "README*"
+    - "SECURITY*"
+    - "changelog/**"
+    - "doc/**"
+    - "docs/**"
+    - "man/**"
   CI:
-    match: [".github/workflows/**", ".gitlab-ci.yml", ".circleci/**", "azure-pipelines*", "Jenkinsfile", ".travis.yml"]
+    match:
+    - ".buildkite/**"
+    - ".ci/**"
+    - ".circleci/**"
+    - ".github/actions/**"
+    - ".github/dependabot.yml"
+    - ".github/scripts/**"
+    - ".github/workflows/**"
+    - ".gitlab-ci.yml"
+    - ".travis.yml"
+    - ".woodpecker/**"
+    - "Jenkinsfile"
+    - "azure-pipelines*"
+    - "codecov.yml"
+    - "codemagic.yaml"
   Build:
-    match: ["Dockerfile*", "Makefile", "*.mk", "package.json", "pyproject.toml", "setup.py", "setup.cfg", "Cargo.toml", "go.mod", "build.gradle*", "pom.xml", "CMakeLists.txt"]
+    match:
+    - "*.Dockerfile"
+    - "*.gradle"
+    - "*.mk"
+    - ".goreleaser.yml"
+    - ".mvn/**"
+    - "BSDmakefile"
+    - "CMakeLists.txt"
+    - "CMakePresets.json"
+    - "Cargo.toml"
+    - "Directory.Build.props"
+    - "Dockerfile*"
+    - "Gemfile"
+    - "Gruntfile.js"
+    - "MANIFEST.in"
+    - "Makefile"
+    - "Rakefile"
+    - "artisan"
+    - "babel.config.js"
+    - "build.gradle*"
+    - "build.rs"
+    - "cmake/**"
+    - "compose.yml"
+    - "composer.json"
+    - "config.ru"
+    - "docker-compose*.yml"
+    - "docker/**"
+    - "flake.nix"
+    - "go.mod"
+    - "gradle.properties"
+    - "gradle/**"
+    - "gradlew"
+    - "gradlew.bat"
+    - "jest.preset.js"
+    - "lerna.json"
+    - "mvnw"
+    - "mvnw.cmd"
+    - "nx.json"
+    - "package.json"
+    - "platformio.ini"
+    - "pnpm-workspace.yaml"
+    - "pom.xml"
+    - "postcss.config.js"
+    - "pyproject.toml"
+    - "rust-toolchain.toml"
+    - "settings.gradle.kts"
+    - "setup.cfg"
+    - "setup.py"
+    - "tailwind.config.js"
+    - "tsconfig*.json"
+    - "turbo.json"
+    - "vite.config.js"
+    - "vitest.config.ts"
+    - "webpack.mix.js"
   Config:
-    match: [".gitignore", ".editorconfig", ".pre-commit-config.yaml", "*.cfg", "*.ini", ".env.example"]
+    match:
+    - "*.cfg"
+    - "*.config.js"
+    - "*.ini"
+    - ".air.toml"
+    - ".clang-format"
+    - ".clang-tidy"
+    - ".clangd"
+    - ".codecov.yaml"
+    - ".codecov.yml"
+    - ".coderabbit.yaml"
+    - ".codespellrc"
+    - ".config/**"
+    - ".devcontainer/**"
+    - ".dockerignore"
+    - ".editorconfig"
+    - ".env*"
+    - ".env*.example"
+    - ".eslintignore"
+    - ".eslintrc"
+    - ".eslintrc.js"
+    - ".eslintrc.json"
+    - ".eslintrc.yml"
+    - ".flake8"
+    - ".git-blame-ignore-revs"
+    - ".gitattributes"
+    - ".gitignore"
+    - ".gitmodules"
+    - ".gitpod.yml"
+    - ".golangci.yaml"
+    - ".golangci.yml"
+    - ".htaccess"
+    - ".husky/**"
+    - ".idea/**"
+    - ".ignore"
+    - ".mailmap"
+    - ".markdownlint.yaml"
+    - ".npmrc"
+    - ".nvmrc"
+    - ".oxfmtrc.json"
+    - ".oxlintrc.json"
+    - ".php-cs-fixer.dist.php"
+    - ".pre-commit-config.yaml"
+    - ".prettierignore"
+    - ".prettierrc"
+    - ".prettierrc.json"
+    - ".python-version"
+    - ".releaserc"
+    - ".rubocop.yml"
+    - ".ruby-version"
+    - ".rustfmt.toml"
+    - ".shellcheckrc"
+    - ".spectral.yaml"
+    - ".tool-versions"
+    - ".tx/**"
+    - ".typos.toml"
+    - ".vscode/**"
+    - ".yamllint.yaml"
+    - ".yarnrc"
+    - ".yarnrc.yml"
+    - "BannedSymbols.txt"
+    - "CODEOWNERS"
+    - "REUSE.toml"
+    - "app.json"
+    - "biome.json"
+    - "config.yaml"
+    - "crowdin.yml"
+    - "diesel.toml"
+    - "eslint.config.cjs"
+    - "eslint.config.mjs"
+    - "jsconfig.json"
+    - "mise.toml"
+    - "phpcs.xml"
+    - "phpstan.neon"
+    - "phpunit.xml"
+    - "pint.json"
+    - "playwright.config.ts"
+    - "project.inlang.json"
+    - "renovate.json"
+    - "renovate.json5"
+    - "rustfmt.toml"
+    - "sonar-project.properties"
+    - "stylecop.json"
+    - "typos.toml"
+    - "vercel.json"
   Deps:
-    match: ["package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "Cargo.lock", "go.sum", "requirements*.txt", "Gemfile.lock"]
+    match:
+    - "Cargo.lock"
+    - "Gemfile.lock"
+    - "composer.lock"
+    - "flake.lock"
+    - "go.sum"
+    - "gradle/libs.versions.toml"
+    - "package-lock.json"
+    - "pnpm-lock.yaml"
+    - "poetry.lock"
+    - "requirements*.txt"
+    - "uv.lock"
+    - "yarn.lock"
