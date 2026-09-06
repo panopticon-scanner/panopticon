@@ -195,3 +195,32 @@ def effective_panels(floor, scout_added, exclude, global_floor=GLOBAL_FLOOR,
         # surface the attempted-but-ignored exclusion so it's never silent (#1084)
         disclosure["exclude_rejected"] = rejected
     return effective, disclosure
+
+
+# 5.2 §6.2: the scout brief's surface -> domain prose (skill/agents/scout.md
+# "## Domains") as code, so domain selection is reproducible from surfaces and
+# the setup post-pass can floor a `custom:` capability from its profile
+# (#1490). The 13 surfaces are the scout's enum; anything else is ignored.
+SURFACES = frozenset({
+    "db_sql", "http_web", "auth", "crypto", "fs", "concurrency", "external_api",
+    "money_pii", "serialization", "templating", "secrets_config",
+    "architecture", "database",
+})
+_SEC_SURFACES = SURFACES - {"architecture"}
+_DAT_SURFACES = frozenset({"db_sql", "database"})
+
+
+def surfaces_to_domains(surfaces):
+    """The scout mapping as a function: COD always; SEC on any surface but
+    `architecture`; DAT on `db_sql`/`database`; ARC on `architecture`.
+    TST/QAL/AGT/OPS/ACC/LNG come from non-surface signals and stay with the
+    live scout. Unknown surfaces are ignored. Returns a sorted list."""
+    found = {s for s in (surfaces or []) if isinstance(s, str)} & SURFACES
+    out = {"COD"}
+    if found & _SEC_SURFACES:
+        out.add("SEC")
+    if found & _DAT_SURFACES:
+        out.add("DAT")
+    if "architecture" in found:
+        out.add("ARC")
+    return sorted(out)
