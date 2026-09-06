@@ -41,7 +41,8 @@ resolve against cwd; only the script path substitutes.
 
 ## Quick reference
 
-- `driver setup [target]` — one-time bootstrap; produces `.panopticon/groups.yml.draft`.
+- `driver setup [target] [--max-per-group N] [--max-groups N]` — one-time bootstrap; produces
+  `.panopticon/groups.yml.draft` + `setup-report.md` (read the report first).
 - `driver run [target] [flags]` — the resumable review loop.
 - Key flags: `--full`, `--security {standard,redteam}`, `--fail-on {critical,high,medium,low}`,
   `--severity {all,medium,high,critical}`, `--out PATH`, `--tools`, `--no-tools`,

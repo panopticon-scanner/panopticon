@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased — 5.2 grouping engine, plan 1
+
+Setup now front-loads the grouping work so every later run reuses it
+(spec: panopticon-docs `superpowers/specs/2026-09-06-panopticon-5.2-grouping-engine-design.md`).
+
+- **Catalogs, full prose:** the capability roster grows from the R1 13 to 45
+  entries harvested from the 5.2.0 vocab panel (>= 10 repos each), every entry
+  carrying `definition`/`boundary`/`aliases`/`examples`; a 9-entry **layer**
+  catalog (`layer_vocabulary.yml`) for splitting one oversize vertical; a
+  `tests_catalog.yml` for the test-tree seeds. Both catalogs render into the
+  setup-scan brief in full — the calibrated prose finally reaches the
+  classifier (#1500). Proposed labels normalize through aliases; reserved names
+  (`Tests`, `Commons`, `Ungrouped`, `Core`) are refused.
+- **Proposal v2:** per group, optional `layers` (`{layer, match}`) and a
+  `profile` (`purpose`, `surfaces`, `entry_points`, `trust_boundaries`);
+  `custom:` groups and catalog entries without an affinity row get their
+  review floor from the profile's surfaces (#1490 for setup-time groups).
+- **Size policy (stage 3):** cap = `--max-per-group` > `config.json
+  max_per_group` > 48; ceiling = `--max-groups` > `config.json max_groups` >
+  `max(4, 2 * ceil(code_files / cap))`. A layer under 6 files merges back, a
+  vertical over the cap splits by its layers (residual `Core`), over the
+  ceiling the smallest layers collapse first, verticals are never merged.
+  Committed groups always win; the outcome is written to `setup-report.md`
+  / `setup-report.json`.
+- **Tests axis:** a vertical's wildcard `tests` glob is scoped (under its
+  `match` dirs or naming the vertical/an alias); the cross-cutting test trees
+  form a `Tests` group last, at run time, from the leftovers.
+- **Stage 1 spine:** `setup-spine.json` — depth-2 tree, languages, manifests
+  and frameworks, already-claimed counts, test trees and the size arithmetic,
+  bounded and sanitized (#1120) — is computed once with the sizes pinned in
+  `setup-manifest.json` and rendered into the brief.
+- Deferred: `driver run --max-per-group` still chunks at run time and does
+  not read `config.json`; the durable profile (`profiles.yml`) and the scout
+  short-circuit, and `--seats` calibration, are plan 2.
+
 ## 5.0.1 — Honest instrumentation
 
 The first 5.0 point release: the residuals surfaced by the BursarBuddy
