@@ -33,6 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import diff_map  # noqa: E402
 import groups_schema  # noqa: E402
 import plan_contract  # noqa: E402
+import tests_axis  # noqa: E402
 
 # Files per review group before it splits into `<name>_<i>` chunks.
 #
@@ -388,33 +389,107 @@ def match_patterns(path, patterns):
             matched = not negate
     return matched
 
-def assign_by_catalog(files, catalog):
-    """Assign files to catalog groups that declare ``match`` patterns (#499).
+def _decide(path, tagged):
+    """gitignore-style decision over a TAGGED pattern list ``[(glob, tag)]``
+    (tag is ``"match"`` or ``"tests"``). Last match wins, ``!`` negates.
+    Returns ``(matched, tag, glob)`` for the deciding pattern so the caller
+    can tell whether a positive claim came from the scoped ``tests:`` axis."""
+    matched, tag, glob = False, None, None
+    for pat, src in tagged:
+        negate = pat.startswith("!")
+        if _glob_to_re(pat[1:] if negate else pat).match(path):
+            matched, tag, glob = (not negate), src, pat
+    return matched, tag, glob
+
+
+_VOCAB_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "data", "capability_vocabulary.yml")
+
+
+@functools.lru_cache(maxsize=1)
+def _capability_aliases():
+    """``{canonical name: [alias labels]}`` from the shipped capability
+    vocabulary, so a committed `Auth` group's `tests:` globs also credit
+    `tests/authentication/`. Empty when the file is unreadable: aliases only
+    ever ADD credit, so running without them is safe."""
+    try:
+        import setup_proposal
+        vocab, _ = setup_proposal.load_vocabulary(_VOCAB_PATH)
+    except (OSError, ValueError, ImportError):
+        return {}
+    return {name: list(entry.get("aliases") or [])
+            for name, entry in vocab.get("entries", {}).items()}
+
+
+def assign_scoped(files, catalog, aliases=None, prefixes=None):
+    """Assign files to catalog groups (#499) with SCOPED `tests:` globs (5.2 §4.2).
 
     Groups claim files in catalog order, first match wins, each file lands in
-    at most one group. Returns ``(assigned, leftovers)`` where ``assigned``
-    maps group name -> sorted files (empty groups omitted) and ``leftovers``
-    are files no group matched — the coverage gap the caller must disclose.
+    at most one group. Inside a group, ``match`` + ``tests`` form ONE
+    gitignore-style last-match-wins list. The one 5.2 addition: when the
+    deciding positive pattern is a WILDCARD ``tests:`` glob, the file credits
+    the group only if it lies under one of the group's distinguishing literal
+    ``match:`` prefixes or its path carries the group's name or an alias
+    (``tests_axis.scope_ok``). Otherwise the file falls through to the next
+    group. Literal ``tests:`` paths always credit.
+
+    ``aliases`` is ``{canonical name: [labels]}`` (default: the shipped
+    vocabulary); ``prefixes`` is ``tests_axis.distinguishing_prefixes`` of the
+    catalog (pass the FULL catalog's when assigning a partial one).
+
+    Returns ``(assigned, leftovers, warnings)``: ``assigned`` maps group ->
+    sorted files (empty groups omitted), ``leftovers`` are files no group
+    credited, ``warnings`` name every wildcard ``tests:`` glob that matched
+    files but credited none -- the "your glob is too broad" signal.
     """
-    # `tests:` globs are evaluated alongside `match:` so a test file matching
-    # either lands in that group and is credited toward coverage (#1137).
-    # Reuse match_patterns for gitignore-style last-match-wins semantics.
+    if aliases is None:
+        aliases = _capability_aliases()
+    if prefixes is None:
+        prefixes = tests_axis.distinguishing_prefixes(catalog)
     matchable = []
     for name, g in catalog.items():
-        pats = list(g.get("match") or []) + list(g.get("tests") or [])
-        if pats:
-            matchable.append((name, pats))
-    assigned = {name: [] for name, _ in matchable}
+        tagged = ([(p, "match") for p in (g.get("match") or [])]
+                  + [(p, "tests") for p in (g.get("tests") or [])])
+        if not tagged:
+            continue
+        labels = tests_axis.group_labels(name) or [str(name)]
+        extra = labels[1:] + [a for lab in labels for a in aliases.get(lab, [])]
+        keys = tests_axis.name_keys(labels[0], extra)
+        matchable.append((name, tagged, keys, prefixes.get(labels[0], [])))
+    assigned = {name: [] for name, *_ in matchable}
+    seen = {}                       # (group, glob) -> [matched, credited]
     leftovers = []
     for f in files:
-        for name, pats in matchable:
-            if match_patterns(f, pats):
-                assigned[name].append(f)
-                break
+        for name, tagged, keys, pfx in matchable:
+            matched, tag, glob = _decide(f, tagged)
+            if not matched:
+                continue
+            if tag == "tests" and not tests_axis.is_literal_glob(glob):
+                tally = seen.setdefault((name, glob), [0, 0])
+                tally[0] += 1
+                if not tests_axis.scope_ok(f, keys, pfx):
+                    continue        # a later group may still claim it
+                tally[1] += 1
+            assigned[name].append(f)
+            break
         else:
             leftovers.append(f)
+    warnings = [
+        "%s: tests glob %r matched %d file(s) but credited none (a wildcard "
+        "tests: glob is scoped to the group's match: prefixes and name/aliases; "
+        "move it to match: to claim unconditionally)" % (name, glob, hit)
+        for (name, glob), (hit, credited) in sorted(seen.items())
+        if hit and not credited]
     return ({n: sorted(fs) for n, fs in assigned.items() if fs},
-            sorted(leftovers))
+            sorted(leftovers), warnings)
+
+
+def assign_by_catalog(files, catalog):
+    """``assign_scoped`` for callers that want the 5.0 two-tuple. Warnings are
+    dropped here; ``catalog_groups`` (the scan path) reports them."""
+    assigned, leftovers, _ = assign_scoped(files, catalog)
+    return assigned, leftovers
 
 def _parse_catalog_yaml(text):
     """Parse the documented catalog structure (2-space indent):
@@ -974,6 +1049,68 @@ def _fold_tiny_commons(commons_named, catalog):
     kept[COMMONS_FOLD_NAME] = sorted(kept.pop(host) + folded)
     return kept
 
+TESTS_GROUP = "Tests"
+TESTS_MIN_FILES = COMMONS_MIN_FILES
+_TESTS_CATALOG_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "data", "tests_catalog.yml")
+
+
+@functools.lru_cache(maxsize=1)
+def _tests_catalog():
+    """The Tests sweep seed globs (5.2 §4.3) as ``{"Tests": {"match": [...]}}``,
+    loaded like ``_commons_catalog``: shipped, tested data, no parse_groups."""
+    with open(_TESTS_CATALOG_PATH, encoding="utf-8") as fh:
+        doc = yaml.safe_load(fh) or {}
+    return doc.get("groups") or {}
+
+
+def _tests_suppressed(catalog):
+    """A committed (or assembled) ``Tests`` group, or any ``Tests:*``
+    subgroup, owns the test tree: the sweep must not mint a second ``Tests``
+    (same findings-file clobber hazard as Commons)."""
+    return any(tests_axis.group_labels(n)[:1] == [TESTS_GROUP] for n in catalog)
+
+
+def vertical_homes(catalog):
+    """``{group id: [literal prefix]}`` from each group's POSITIVE ``match:``
+    globs -- the path-affinity targets for under-floor test files (§4.5).
+    Groups with no literal prefix are omitted (a bare ``**/*.rs`` has no
+    home)."""
+    homes = {}
+    for name, body in catalog.items():
+        prefixes = sorted({tests_axis.literal_prefix(g)
+                           for g in (body.get("match") or [])
+                           if isinstance(g, str) and not g.startswith("!")
+                           and tests_axis.literal_prefix(g)})
+        if prefixes:
+            homes[name] = prefixes
+    return homes
+
+
+def sweep_tests(leftovers, homes):
+    """Form the ``Tests`` universal vertical LAST (5.2 §4.3-4.5).
+
+    ``leftovers`` are the files no committed group credited; ``homes`` is
+    ``vertical_homes(catalog)``. Files matching the seed globs are swept. At or
+    above ``TESTS_MIN_FILES`` they are one ``Tests`` group. Below it, each
+    attaches by path affinity (deepest shared directory prefix with a
+    vertical's ``match:``) to that vertical; files with no affinity still form
+    a tiny ``Tests`` -- a tiny CODE group yields (3.3/cell measured), it is
+    tiny+universal that is dead, and a test file is code.
+
+    Returns ``(tests, attached, remaining)``: the ``Tests`` file list (may be
+    empty), ``{group: [files]}`` to extend, and the untouched leftovers.
+    """
+    seeds = (_tests_catalog().get(TESTS_GROUP) or {}).get("match") or []
+    swept = sorted(f for f in leftovers if match_patterns(f, seeds))
+    remaining = sorted(f for f in leftovers if f not in set(swept))
+    if len(swept) >= TESTS_MIN_FILES:
+        return swept, {}, remaining
+    attached, unattached = tests_axis.attach_by_affinity(swept, homes)
+    return unattached, attached, remaining
+
+
 def catalog_groups(files, catalog, max_per_group, security_mode):
     """Build stable, catalog-named groups for --repo-scan (#499).
 
@@ -999,9 +1136,24 @@ def catalog_groups(files, catalog, max_per_group, security_mode):
     already defines (e.g. an authored ``Docs`` group) is dropped before Commons
     ever runs.
     """
-    named, leftovers = assign_by_catalog(files, catalog)
-    groups = _emit_named_groups(named, max_per_group, security_mode,
-                                parent_lookup=lambda n: catalog[n].get("parent"))
+    named, leftovers, warnings = assign_scoped(files, catalog)
+    for w in warnings:
+        print("groups.yml: %s" % w, file=sys.stderr)
+    # 5.2 §4.3: the Tests universal vertical forms LAST, from test-tree files
+    # no vertical's scoped `tests:` axis credited -- unless the catalog already
+    # owns the test tree. Under the floor, files attach to the vertical they
+    # sit beside (§4.5). Runs BEFORE Commons so `tests/conftest.py` is a test,
+    # not Config.
+    if not _tests_suppressed(catalog):
+        tests, attached, leftovers = sweep_tests(leftovers, vertical_homes(catalog))
+        for n, fs in attached.items():
+            named[n] = sorted(named.get(n, []) + fs)
+        if tests:
+            named[TESTS_GROUP] = tests
+    groups = _emit_named_groups(
+        named, max_per_group, security_mode,
+        parent_lookup=lambda n: (TESTS_GROUP if n == TESTS_GROUP
+                                 else (catalog.get(n) or {}).get("parent")))
     commons = {n: g for n, g in _commons_catalog().items() if n not in catalog}
     commons_named, residual = assign_by_catalog(leftovers, commons)
     commons_named = _fold_tiny_commons(commons_named, catalog)
@@ -1078,10 +1230,23 @@ def emit(obj, fh=None):
     json.dump(obj, fh, indent=2)
     fh.write("\n")
 
+def _leaf_body(body):
+    """The four leaf lists of a committed group body, order-faithful."""
+    body = body if isinstance(body, dict) else {}
+    return {
+        "match": list(body.get("match") or []),
+        "tests": list(body.get("tests") or []),
+        "panels": list(body.get("panels") or []),
+        "exclude": list(body.get("exclude") or []),
+    }
+
 def _committed_matrix(repo):
-    """Committed groups.yml as serializable {name: {match, tests, panels, exclude}},
-    preserving committed field ORDER verbatim (never-clobber is byte-faithful).
-    Empty when none is committed (first run -> adopt-all)."""
+    """Committed groups.yml as serializable {name: body}, preserving committed
+    field ORDER verbatim (never-clobber is byte-faithful). A leaf body is
+    {match, tests, panels, exclude}; a PARENT (keys are subgroup names, #1305)
+    is {"subgroups": {sub: leaf body}} so the structure survives the additive
+    merge instead of collapsing to an empty leaf (5.2). Empty when none is
+    committed (first run -> adopt-all)."""
     path = os.path.join(repo, ".panopticon", "groups.yml")
     if not os.path.isfile(path):
         return {}
@@ -1099,13 +1264,10 @@ def _committed_matrix(repo):
         print("committed groups.yml: %s" % e, file=sys.stderr)
     out = {}
     for name, body in raw.items():
-        body = body or {}
-        out[name] = {
-            "match": list(body.get("match") or []),
-            "tests": list(body.get("tests") or []),
-            "panels": list(body.get("panels") or []),
-            "exclude": list(body.get("exclude") or []),
-        }
+        if isinstance(body, dict) and body and not (groups_schema.RESERVED & set(body)):
+            out[name] = {"subgroups": {sub: _leaf_body(sb) for sub, sb in body.items()}}
+        else:
+            out[name] = _leaf_body(body)
     return out
 
 def _matrix_catalog(repo):
@@ -1296,8 +1458,9 @@ def main(argv=None):
             print("unknown group %r for --scope-group" % args.scope_group,
                   file=sys.stderr)
             return 2
-        assigned, _ = assign_by_catalog(allf, {args.scope_group:
-                                               catalog[args.scope_group]})
+        assigned, _, _ = assign_scoped(
+            allf, {args.scope_group: catalog[args.scope_group]},
+            prefixes=tests_axis.distinguishing_prefixes(catalog))
         scoped = assigned.get(args.scope_group, [])
     elif args.scope_dir:
         d = args.scope_dir.strip("/") + "/"
