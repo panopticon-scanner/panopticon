@@ -416,9 +416,12 @@ def _capability_aliases():
     try:
         import setup_proposal
         vocab, _ = setup_proposal.load_vocabulary(_VOCAB_PATH)
-    except (OSError, ValueError, ImportError):
+    except (OSError, ValueError, ImportError, yaml.YAMLError):
         return {}
-    return {name: list(entry.get("aliases") or [])
+    # The loader keeps the raw entry; re-check the shape so a scalar `aliases`
+    # (a loader ERROR, not a crash) cannot explode into per-character labels.
+    return {name: [a for a in (entry.get("aliases") or []) if isinstance(a, str)]
+            if isinstance(entry.get("aliases"), list) else []
             for name, entry in vocab.get("entries", {}).items()}
 
 
@@ -434,6 +437,13 @@ def assign_scoped(files, catalog, aliases=None, prefixes=None):
     (``tests_axis.scope_ok``). Otherwise the file falls through to the next
     group. Literal ``tests:`` paths always credit.
 
+    Sibling subgroups share their parent's distinguishing prefixes, so a
+    wildcard ``tests:`` glob on ``Auth:Core`` would otherwise credit a test
+    that sits under ``Auth:API``'s own ``match:`` directory just because
+    ``Auth:Core`` is listed first. When the deciding pattern is a wildcard
+    ``tests:`` glob on a subgroup and a SIBLING that also matches the file
+    owns a deeper literal prefix over it, the file is left for that sibling.
+
     ``aliases`` is ``{canonical name: [labels]}`` (default: the shipped
     vocabulary); ``prefixes`` is ``tests_axis.distinguishing_prefixes`` of the
     catalog (pass the FULL catalog's when assigning a partial one).
@@ -448,6 +458,7 @@ def assign_scoped(files, catalog, aliases=None, prefixes=None):
     if prefixes is None:
         prefixes = tests_axis.distinguishing_prefixes(catalog)
     matchable = []
+    tagged_of, own_prefixes, parent_of = {}, {}, {}
     for name, g in catalog.items():
         tagged = ([(p, "match") for p in (g.get("match") or [])]
                   + [(p, "tests") for p in (g.get("tests") or [])])
@@ -457,6 +468,24 @@ def assign_scoped(files, catalog, aliases=None, prefixes=None):
         extra = labels[1:] + [a for lab in labels for a in aliases.get(lab, [])]
         keys = tests_axis.name_keys(labels[0], extra)
         matchable.append((name, tagged, keys, prefixes.get(labels[0], [])))
+        tagged_of[name] = tagged
+        if len(labels) > 1:
+            parent_of[name] = labels[0]
+            own_prefixes[name] = sorted({tests_axis.literal_prefix(p)
+                                         for p in (g.get("match") or [])
+                                         if isinstance(p, str) and not p.startswith("!")
+                                         and tests_axis.literal_prefix(p)})
+
+    def own_depth(name, f):
+        return max([len(p) for p in own_prefixes.get(name, []) if tests_axis._under(f, p)]
+                   or [0])
+
+    def deeper_sibling_claims(name, f):
+        mine = own_depth(name, f)
+        return any(own_depth(sib, f) > mine and _decide(f, tagged_of[sib])[0]
+                   for sib, parent in parent_of.items()
+                   if sib != name and parent == parent_of[name])
+
     assigned = {name: [] for name, *_ in matchable}
     seen = {}                       # (group, glob) -> [matched, credited]
     leftovers = []
@@ -470,6 +499,8 @@ def assign_scoped(files, catalog, aliases=None, prefixes=None):
                 tally[0] += 1
                 if not tests_axis.scope_ok(f, keys, pfx):
                     continue        # a later group may still claim it
+                if name in parent_of and deeper_sibling_claims(name, f):
+                    continue        # the sibling whose directory it is takes it
                 tally[1] += 1
             assigned[name].append(f)
             break
@@ -1021,7 +1052,8 @@ def _fold_tiny_commons(commons_named, catalog):
     keys on FILES, not group names, so a `.env` or a lockfile still floors its
     group to SEC wherever it lands.
     """
-    if COMMONS_FOLD_NAME in catalog:
+    if COMMONS_FOLD_NAME in catalog or any(
+            tests_axis.group_labels(n)[:1] == [COMMONS_FOLD_NAME] for n in catalog):
         return commons_named
     tiny = {n for n, fs in commons_named.items() if len(fs) < COMMONS_MIN_FILES}
     if not tiny:
@@ -1068,8 +1100,20 @@ def _tests_catalog():
 def _tests_suppressed(catalog):
     """A committed (or assembled) ``Tests`` group, or any ``Tests:*``
     subgroup, owns the test tree: the sweep must not mint a second ``Tests``
-    (same findings-file clobber hazard as Commons)."""
-    return any(tests_axis.group_labels(n)[:1] == [TESTS_GROUP] for n in catalog)
+    (same findings-file clobber hazard as Commons). Compared casefolded so a
+    committed ``tests`` group suppresses too (case-insensitive filesystems
+    would collide the two findings files anyway)."""
+    return any(lab[:1] and lab[0].casefold() == TESTS_GROUP.casefold()
+               for lab in (tests_axis.group_labels(n) for n in catalog))
+
+
+def negated_by_own_match(path, body):
+    """True when the group's own ``match:`` list REJECTS ``path`` -- the
+    deciding (last matching) glob is a negation. Path affinity must not
+    re-attach a test file the vertical explicitly excluded (5.2 §4.5)."""
+    _matched, _tag, glob = _decide(path, [(p, "match") for p in (body.get("match") or [])
+                                          if isinstance(p, str)])
+    return bool(glob) and glob.startswith("!")
 
 
 def vertical_homes(catalog):
@@ -1088,7 +1132,7 @@ def vertical_homes(catalog):
     return homes
 
 
-def sweep_tests(leftovers, homes):
+def sweep_tests(leftovers, homes, catalog=None):
     """Form the ``Tests`` universal vertical LAST (5.2 §4.3-4.5).
 
     ``leftovers`` are the files no committed group credited; ``homes`` is
@@ -1099,6 +1143,11 @@ def sweep_tests(leftovers, homes):
     a tiny ``Tests`` -- a tiny CODE group yields (3.3/cell measured), it is
     tiny+universal that is dead, and a test file is code.
 
+    ``catalog`` (the leaf view behind ``homes``) lets affinity respect a
+    vertical's own ``match:`` negations: a file the vertical excluded with
+    ``!`` is not handed back to it by proximity -- it stays in the tiny
+    ``Tests`` instead. Without it every attachment stands.
+
     Returns ``(tests, attached, remaining)``: the ``Tests`` file list (may be
     empty), ``{group: [files]}`` to extend, and the untouched leftovers.
     """
@@ -1108,20 +1157,34 @@ def sweep_tests(leftovers, homes):
     if len(swept) >= TESTS_MIN_FILES:
         return swept, {}, remaining
     attached, unattached = tests_axis.attach_by_affinity(swept, homes)
-    return unattached, attached, remaining
+    if catalog:
+        kept = {}
+        for name, fs in attached.items():
+            for f in fs:
+                if negated_by_own_match(f, catalog.get(name) or {}):
+                    unattached.append(f)
+                else:
+                    kept.setdefault(name, []).append(f)
+        attached = kept
+    return sorted(unattached), attached, remaining
 
 
-def catalog_groups(files, catalog, max_per_group, security_mode):
+def catalog_groups(files, catalog, max_per_group, security_mode, warnings=None):
     """Build stable, catalog-named groups for --repo-scan (#499).
 
-    Files are assigned by ``assign_by_catalog``; a matched group larger than
-    ``max_per_group`` splits into ``<name>_<i>`` chunks. Committed-catalog
+    Files are assigned by ``assign_scoped``; a matched group larger than
+    ``max_per_group`` splits into ``<name>_<i>`` chunks. Between the committed
+    catalog and Commons the Tests sweep (``sweep_tests``, 5.2 §4.3) forms the
+    ``Tests`` universal vertical from leftover test-tree files. Remaining
     leftovers then fall through the curated Commons vocabulary (5.1, #499:
-    Docs/CI/Build/Config/Deps) via the SAME ``assign_by_catalog`` -- committed
+    Docs/CI/Build/Config/Deps) via the SAME ``assign_scoped`` -- committed
     groups always win, Commons only ever sees leftovers. Only the true
     residual keeps the legacy ``._N`` chunk naming. Returns
     ``(groups, residual)``; callers must surface ``residual`` (the coverage
-    gap), never drop it.
+    gap), never drop it. Scoped-tests warnings (a wildcard ``tests:`` glob
+    that credited nothing) go to stderr and, when ``warnings`` is a list, are
+    appended to it so a caller whose stderr is captured (the driver) can
+    still surface them.
 
     Each named group carries the committed catalog entry's `parent` (self for
     a leaf, the subgroup's parent name for e.g. `UI:Admin`); a chunk split off
@@ -1136,16 +1199,18 @@ def catalog_groups(files, catalog, max_per_group, security_mode):
     already defines (e.g. an authored ``Docs`` group) is dropped before Commons
     ever runs.
     """
-    named, leftovers, warnings = assign_scoped(files, catalog)
-    for w in warnings:
+    named, leftovers, scoped_warnings = assign_scoped(files, catalog)
+    for w in scoped_warnings:
         print("groups.yml: %s" % w, file=sys.stderr)
+    if warnings is not None:
+        warnings.extend(scoped_warnings)
     # 5.2 §4.3: the Tests universal vertical forms LAST, from test-tree files
     # no vertical's scoped `tests:` axis credited -- unless the catalog already
     # owns the test tree. Under the floor, files attach to the vertical they
     # sit beside (§4.5). Runs BEFORE Commons so `tests/conftest.py` is a test,
     # not Config.
     if not _tests_suppressed(catalog):
-        tests, attached, leftovers = sweep_tests(leftovers, vertical_homes(catalog))
+        tests, attached, leftovers = sweep_tests(leftovers, vertical_homes(catalog), catalog)
         for n, fs in attached.items():
             named[n] = sorted(named.get(n, []) + fs)
         if tests:
@@ -1154,7 +1219,12 @@ def catalog_groups(files, catalog, max_per_group, security_mode):
         named, max_per_group, security_mode,
         parent_lookup=lambda n: (TESTS_GROUP if n == TESTS_GROUP
                                  else (catalog.get(n) or {}).get("parent")))
-    commons = {n: g for n, g in _commons_catalog().items() if n not in catalog}
+    # A committed PARENT (`Docs` with subgroups) is only present as `Docs:*`
+    # flat ids; its top-level name is just as taken (setup's plan_groups
+    # excludes on the same `tops`).
+    tops = {tests_axis.group_labels(n)[0] for n in catalog if tests_axis.group_labels(n)}
+    commons = {n: g for n, g in _commons_catalog().items()
+               if n not in catalog and n not in tops}
     commons_named, residual = assign_by_catalog(leftovers, commons)
     commons_named = _fold_tiny_commons(commons_named, catalog)
     groups.extend(_emit_named_groups(commons_named, max_per_group, security_mode))
@@ -1529,8 +1599,14 @@ def main(argv=None):
         if os.path.isfile(_stale_hunks):
             os.remove(_stale_hunks)
     if any(g.get("match") for g in catalog.values()):
+        scoped_warnings = []
         groups, leftovers = catalog_groups(allf, catalog, args.max_per_group,
-                                           args.security)
+                                           args.security, warnings=scoped_warnings)
+        if scoped_warnings:
+            # stderr is captured by the driver's child runner; the resolved
+            # output is what it reads, so the "your tests: glob credited
+            # nothing" signal travels there too.
+            result["scoped_tests_warnings"] = scoped_warnings
         result["groups"] = groups
         result["counts"]["groups"] = len(groups)
         result["counts"]["ungrouped"] = len(leftovers)

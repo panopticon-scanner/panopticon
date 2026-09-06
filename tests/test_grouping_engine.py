@@ -378,7 +378,8 @@ class TestPlanGroups(unittest.TestCase):
 
     def test_setup_partition_reproduces_at_run_time(self):
         # The leaf sizes the report promises are what groups.yml.draft yields
-        # when the scan assigns files through it.
+        # when the scan assigns files through it -- through assign_scoped AND
+        # through the whole run-time pipeline (Tests sweep, Commons, residual).
         res = ge.plan_groups(REPO, COMMITTED, ASSEMBLED, cap=48, aliases={}, ceiling=8)
         merged, diff = sp.merge_additive(COMMITTED, res["groups"], res["claims"])
         self.assertEqual(diff["dropped_redundant"], ["Billing", "Spelunking"])
@@ -391,6 +392,83 @@ class TestPlanGroups(unittest.TestCase):
                     if lf["kind"] in ("committed", "vertical", "layer")}
         self.assertEqual({n: len(fs) for n, fs in assigned.items()}, promised)
         self.assertEqual(len(leftovers), 20)          # 5 tests + 9 commons + 6 ungrouped
+        groups, residual = discovery.catalog_groups(REPO, catalog, max_per_group=48,
+                                                    security_mode="standard")
+        by_name = {g["name"]: len(g["files"]) for g in groups}
+        self.assertEqual(by_name, {**promised, "Tests": 5, "Commons": 9, "Ungrouped_1": 6})
+        self.assertEqual(residual, res["report"]["ungrouped"])
+        self.assertEqual(sum(by_name.values()), res["report"]["files"]["total"])
+
+    def test_redundant_proposals_do_not_shape_the_sweep_or_commons(self):
+        # A proposed Tests / Docs that claims nothing is dropped by
+        # merge_additive, so it must neither suppress the sweep nor reserve
+        # the Commons name -- the report would promise a groups.yml that
+        # never lands.
+        assembled = dict(ASSEMBLED)
+        assembled["Tests"] = {"match": ["spec/**"], "tests": [], "panels": [], "layers": [],
+                              "profile": _EMPTY_PROFILE}
+        assembled["Docs"] = {"match": ["manual/**"], "tests": [], "panels": [], "layers": [],
+                             "profile": _EMPTY_PROFILE}
+        res = ge.plan_groups(REPO, COMMITTED, assembled, cap=48, aliases={}, ceiling=8)
+        r = res["report"]
+        self.assertEqual(r["redundant"], ["Billing", "Docs", "Spelunking", "Tests"])
+        self.assertFalse(r["tests"]["suppressed"])
+        self.assertEqual(r["tests"]["swept"], 5)
+        self.assertEqual(r["commons"], {"Commons": 9})
+        base = ge.plan_groups(REPO, COMMITTED, ASSEMBLED, cap=48, aliases={}, ceiling=8)
+        self.assertEqual(r["leaves"], base["report"]["leaves"])
+
+    def test_empty_committed_leaf_is_not_a_dispatch_unit(self):
+        committed = dict(COMMITTED)
+        committed["Legacy"] = {"match": ["internal/gone/**"], "tests": [], "panels": [],
+                               "exclude": []}
+        res = ge.plan_groups(REPO, committed, ASSEMBLED, cap=48, aliases={}, ceiling=8)
+        r = res["report"]
+        legacy = next(lf for lf in r["leaves"] if lf["name"] == "Legacy")
+        self.assertEqual((legacy["files"], legacy["units"]), (0, 0))
+        self.assertEqual(r["over_ceiling_by"], 0, "8 leaves listed, 7 dispatched, ceiling 8")
+        self.assertEqual([n for n in r["ceiling_notes"]], [])
+        text = ge.format_report(r)
+        self.assertIn("| Legacy | committed | 0 | 0 | - |", text)
+        self.assertIn("- Legacy: committed leaf claims 0 files (not dispatched", text)
+
+    def test_nothing_to_sweep_is_said_plainly(self):
+        r = ge.plan_groups(REPO, COMMITTED, ASSEMBLED, cap=48, aliases={}, ceiling=8)["report"]
+        r = dict(r, tests={"suppressed": False, "swept": 0, "attached": {}})
+        self.assertIn("- nothing to sweep: every test-tree file was credited by a vertical",
+                      ge.format_report(r))
+        r = dict(r, tests={"suppressed": False, "swept": 0, "attached": {"Search": 2}})
+        text = ge.format_report(r)
+        self.assertIn("- no `Tests` group: the leftover test-tree files are under the floor", text)
+        self.assertIn("- attached 2 to Search by path affinity", text)
+
+    def test_report_strings_from_the_repo_and_proposal_are_sanitized(self):
+        self.assertEqual(ge._clean("a\x1bb`c"), "abc")
+        self.assertEqual(ge._clean("two words", token=True), "'two words'")
+        self.assertEqual(ge._clean("two words"), "two words")
+        self.assertTrue(ge._clean("x" * 500).endswith("xxx..."))
+        self.assertEqual(len(ge._clean("x" * 500)), ge._MAX_REPORT_STR + 3)
+        r = ge.plan_groups(REPO, COMMITTED, ASSEMBLED, cap=48, aliases={}, ceiling=8)["report"]
+        r = dict(r, ungrouped_by_dir={"odd dir`\x07": 1}, ungrouped=["odd dir/x.go"],
+                 scoped_tests_warnings=["Auth: tests glob `**` matched\x00 nothing"])
+        disclosure = {"groups": [{"name": "Auth", "normalized": {"from": "log in`\x1b[31m", "to": "Auth"},
+                                  "custom": False}],
+                      "collisions": [{"capability": "sign in", "name": "Auth"}],
+                      "warnings": ["Auth: layer 'x y' dropped`"], "errors": []}
+        text = ge.format_report(r, disclosure)
+        self.assertIn("- 'odd dir': 1", text)
+        self.assertIn("- scoped-tests warning: Auth: tests glob ** matched nothing", text)
+        self.assertIn("- 'log in[31m' -> Auth", text)
+        self.assertIn("- collision: 'sign in' folded into Auth", text)
+        self.assertIn("- warning: Auth: layer 'x y' dropped\n", text)
+        self.assertNotIn("`", text.split("## Names")[1])
+
+    def test_leak_note_names_a_sanitized_path(self):
+        layers = [{"layer": "API", "match": ["**/http/**"], "canonical": True}]
+        _, notes = ge.plan_layers(AUTH, layers, cap=48,
+                                  all_files=ALL + ["else where/http/x`.go"])
+        self.assertEqual(notes[0], "layer API dropped: its globs match 1 file(s) outside "
+                                   "the vertical (e.g. 'else where/http/x.go')")
 
     def test_deterministic_across_input_order(self):
         a = ge.plan_groups(REPO, COMMITTED, ASSEMBLED, cap=48, aliases={}, ceiling=8)

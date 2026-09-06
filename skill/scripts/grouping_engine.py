@@ -26,6 +26,7 @@ Every function is deterministic given its arguments (sorted iteration, ties
 broken by name) -- run-to-run variance must come only from the proposal.
 """
 import math
+import re
 
 import coverage_model
 import discovery
@@ -35,6 +36,22 @@ import tests_axis
 FLOOR = discovery.COMMONS_MIN_FILES     # a layer under this merges back (6)
 MIN_CEILING = 4
 CORE = "Core"                            # the engine-owned residual layer
+_MAX_REPORT_STR = 200
+
+
+def _clean(text, token=False):
+    """Report hygiene (#1120) for strings that come from the repo or the
+    proposal rather than from validated names: control characters and
+    backticks are stripped and the length is capped; a TOKEN (a path, a raw
+    label) carrying whitespace or quotes is repr'd so it cannot read as a
+    phrase of the report. Same shape as setup_flow's spine sanitizer, kept
+    local because setup_flow imports this module."""
+    s = re.sub(r"[\x00-\x1f\x7f-\x9f`]", "", str(text or "")).strip()
+    if len(s) > _MAX_REPORT_STR:
+        s = s[:_MAX_REPORT_STR] + "..."
+    if token and any(c in s for c in " \n\r\t\"'"):
+        s = repr(s)
+    return s
 
 
 def ceiling_for(code_files, cap):
@@ -71,7 +88,7 @@ def count_code_files(files):
     kinds = classify_files(files)
     n_tests = sum(1 for k in kinds.values() if k == "tests")
     n_commons = sum(1 for k in kinds.values() if k.startswith("commons:"))
-    return len(files) - n_commons - n_tests, n_commons, n_tests
+    return len(kinds) - n_commons - n_tests, n_commons, n_tests
 
 
 def _positive(globs):
@@ -117,10 +134,11 @@ def plan_layers(vertical_files, layer_specs, cap, all_files, floor=FLOOR):
         leaked = [f for f in outside if discovery.match_patterns(f, globs)]
         if leaked:
             notes.append("layer %s dropped: its globs match %d file(s) outside the "
-                         "vertical (e.g. %s)" % (name, len(leaked), leaked[0]))
+                         "vertical (e.g. %s)" % (name, len(leaked), _clean(leaked[0], token=True)))
             continue
         mine = [f for f in unclaimed if discovery.match_patterns(f, globs)]
-        unclaimed = [f for f in unclaimed if f not in set(mine)]
+        taken = set(mine)
+        unclaimed = [f for f in unclaimed if f not in taken]
         layers.append({"layer": name, "files": mine, "match": globs,
                        "canonical": bool(spec.get("canonical")),
                        "carrier": False, "absorbed": []})
@@ -153,8 +171,10 @@ def merge_smallest_layer(layers):
     ceiling). The smallest non-carrier layer merges into the carrier; if the
     smallest IS the carrier, the largest other layer absorbs it and becomes
     the carrier (its own globs are then replaced by the residual's, see
-    `layer_bodies`). Ties break on proposal order (earlier survives). Returns
-    `(new_layers, note)`; a list of one is returned unchanged."""
+    `layer_bodies`). Ties break on list order (earlier survives) -- and the
+    carrier is listed LAST, so in a tie with the carrier it is the carrier
+    that is absorbed. Returns `(new_layers, note)`; a list of one is returned
+    unchanged."""
     if len(layers) <= 1:
         return list(layers), "nothing to merge"
     order = {id(ly): i for i, ly in enumerate(layers)}
@@ -319,17 +339,23 @@ def plan_groups(files, committed, assembled, cap, aliases=None, ceiling=None):
     warnings = list(warnings) + list(more)
     claims = {n: list(fs) for n, fs in sorted({**a_assigned, **parent_claims}.items())}
     skipped = [n for n in parents if claims.get(n)]
-    suppressed = discovery._tests_suppressed(full_view)
+    # What the merged groups.yml will actually contain: the committed leaves
+    # plus the proposals that claimed something (merge_additive drops the
+    # rest as redundant). A redundant proposed `Tests` must not suppress the
+    # sweep, nor a redundant vertical offer an affinity home or take a name.
+    landing_view = {n: v for n, v in full_view.items()
+                    if n in committed_view or a_assigned.get(n)}
+    suppressed = discovery._tests_suppressed(landing_view)
     if suppressed:
         tests, attached = [], {}
     else:
         tests, attached, leftovers = discovery.sweep_tests(
-            leftovers, discovery.vertical_homes(full_view))
-    tops = {_top(n) for n in full_view}
+            leftovers, discovery.vertical_homes(landing_view), landing_view)
+    tops = {_top(n) for n in landing_view}
     commons_cat = {n: g for n, g in discovery._commons_catalog().items()
-                   if n not in full_view and n not in tops}
+                   if n not in landing_view and n not in tops}
     commons_named, residual = discovery.assign_by_catalog(leftovers, commons_cat)
-    commons_named = discovery._fold_tiny_commons(commons_named, full_view)
+    commons_named = discovery._fold_tiny_commons(commons_named, landing_view)
 
     code_files, n_commons, n_tests = count_code_files(files)
     ceiling = int(ceiling) if ceiling else ceiling_for(code_files, cap)
@@ -359,8 +385,14 @@ def plan_groups(files, committed, assembled, cap, aliases=None, ceiling=None):
             layer_report[name] = {"kept": [], "notes": [
                 "committed parent left untouched: proposed layers %s dropped"
                 % ", ".join(ly["layer"] for ly in proposed)]}
-    other_leaves = (len(committed_view) + new_unlayered + (1 if tests else 0)
-                    + len(commons_named))
+    # a committed leaf is never layered, so its proposal globs (if any) land
+    # on the leaf itself; one that claims nothing is not dispatched and does
+    # not count against the ceiling
+    committed_files = {fid: sorted(set(c_assigned.get(fid, [])) | set(attached.get(fid, []))
+                                   | set(a_assigned.get(fid, [])))
+                       for fid in committed_view}
+    other_leaves = (sum(1 for fs in committed_files.values() if fs) + new_unlayered
+                    + (1 if tests else 0) + len(commons_named))
     layered, ceiling_notes, over_by = apply_ceiling(layered, other_leaves, ceiling)
     for name, layers in layered.items():
         layer_report[name]["kept"] = [
@@ -375,12 +407,9 @@ def plan_groups(files, committed, assembled, cap, aliases=None, ceiling=None):
         groups[name] = layer_bodies(vertical, layered[name]) if name in layered else vertical
 
     leaves = []
-    for fid, view in committed_view.items():
-        body = setup_proposal.flatten_groups(committed)[fid]
-        mine = set(c_assigned.get(fid, [])) | set(attached.get(fid, []))
-        if fid in active and fid not in layered:
-            mine |= set(a_assigned.get(fid, []))
-        leaves.append(_leaf(fid, "committed", mine, body.get("panels"), cap))
+    committed_flat = setup_proposal.flatten_groups(committed)
+    for fid, mine in committed_files.items():
+        leaves.append(_leaf(fid, "committed", mine, committed_flat[fid].get("panels"), cap))
     for name, body in active.items():
         if not claims.get(name) or name in committed:
             continue
@@ -448,6 +477,10 @@ def format_report(report, disclosure=None):
     out += ["| %s | %s | %d | %d | %s |" % (lf["name"], lf["kind"], lf["files"], lf["units"],
                                             ", ".join(lf["domains"]) or "-")
             for lf in r["leaves"]]
+    empty = [lf["name"] for lf in r["leaves"] if lf["kind"] == "committed" and not lf["files"]]
+    if empty:
+        out += [""] + ["- %s: committed leaf claims 0 files (not dispatched, not counted "
+                       "against the ceiling) -- its globs match nothing" % n for n in empty]
     if r["layers"]:
         out += ["", "## Layers", ""]
         for name, info in r["layers"].items():
@@ -458,24 +491,27 @@ def format_report(report, disclosure=None):
                     for ly in info["kept"])))
             else:
                 out.append("- %s: unlayered" % name)
-            out += ["  - %s" % n for n in info["notes"]]
+            out += ["  - %s" % _clean(n) for n in info["notes"]]
     if r["ceiling_notes"]:
-        out += ["", "## Ceiling", ""] + ["- %s" % n for n in r["ceiling_notes"]]
+        out += ["", "## Ceiling", ""] + ["- %s" % _clean(n) for n in r["ceiling_notes"]]
     t = r["tests"]
     out += ["", "## Tests", ""]
     if t["suppressed"]:
         out.append("- sweep suppressed: a committed or proposed `Tests` group owns the test tree")
+    elif not t["swept"] and not t["attached"]:
+        out.append("- nothing to sweep: every test-tree file was credited by a vertical")
     else:
         out.append("- swept %d test-tree file(s) into `Tests` (formed last, mechanical at run time)"
-                   % t["swept"])
+                   % t["swept"] if t["swept"] else
+                   "- no `Tests` group: the leftover test-tree files are under the floor")
         out += ["- attached %d to %s by path affinity (under the floor)" % (n, g)
                 for g, n in t["attached"].items()]
-    out += ["- scoped-tests warning: %s" % w for w in r["scoped_tests_warnings"]]
+    out += ["- scoped-tests warning: %s" % _clean(w) for w in r["scoped_tests_warnings"]]
     out += ["", "## Commons", ""]
     out += ["- %s: %d" % (n, c) for n, c in r["commons"].items()] or ["- none"]
     out += ["", "## Ungrouped -- capabilities your catalog is missing (%d files)" % len(r["ungrouped"]), ""]
     if r["ungrouped"]:
-        out += ["- %s: %d" % (d, n) for d, n in r["ungrouped_by_dir"].items()]
+        out += ["- %s: %d" % (_clean(d, token=True), n) for d, n in r["ungrouped_by_dir"].items()]
         out.append("")
         out.append("Ungrouped code is reviewed (chunked as `Ungrouped_N`) and yields well; "
                    "a high Ungrouped count is a coverage signal, not waste. Name the "
@@ -493,10 +529,11 @@ def format_report(report, disclosure=None):
         out += ["", "## Names", ""]
         out += ["- custom: %s (floor %s, %s)" % (g["name"], ", ".join(g["floor"]) or "none",
                                                   g["floor_source"]) for g in custom]
-        out += ["- %s -> %s" % (g["normalized"]["from"], g["normalized"]["to"]) for g in renamed]
-        out += ["- collision: %s folded into %s" % (c["capability"], c["name"])
+        out += ["- %s -> %s" % (_clean(g["normalized"]["from"], token=True), g["normalized"]["to"])
+                for g in renamed]
+        out += ["- collision: %s folded into %s" % (_clean(c["capability"], token=True), c["name"])
                 for c in disclosure.get("collisions", [])]
-        out += ["- warning: %s" % w for w in disclosure.get("warnings", [])]
+        out += ["- warning: %s" % _clean(w) for w in disclosure.get("warnings", [])]
         if out[-1] == "":
             out.append("- none")
     return "\n".join(out) + "\n"

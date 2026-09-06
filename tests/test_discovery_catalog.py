@@ -2,6 +2,7 @@
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 from discovery_test_helpers import (orchestrator, touch, run_scan_with_err,
                                     run_scan_helper)
@@ -185,6 +186,24 @@ class TestCatalogMatchGroups(unittest.TestCase):
             self.assertEqual(sorted(out["exclude_paths"]), ["docs/secret/**", "vendor/**"])
             self.assertEqual(out["excluded_count"], 2)
 
+    def test_scoped_tests_warnings_reach_the_resolved_output(self):
+        # The driver captures discovery's stderr; the JSON is what it reads.
+        with tempfile.TemporaryDirectory() as d:
+            self._setup(d)
+            touch(d, "tests/test_cart.py")
+            with open(os.path.join(d, ".panopticon", "groups.yml"), "w", encoding="utf-8") as fh:
+                fh.write("groups:\n  Auth:\n    match: ['src/auth/**']\n    tests: ['tests/**']\n")
+            out, err = run_scan_with_err(d)
+            self.assertEqual(len(out["scoped_tests_warnings"]), 1)
+            self.assertIn("credited none", out["scoped_tests_warnings"][0])
+            self.assertIn("credited none", err)
+            out, _ = run_scan_with_err(d, "--max-per-group", "50")
+            self.assertIn("scoped_tests_warnings", out)
+        with tempfile.TemporaryDirectory() as d:
+            self._setup(d)
+            out, _ = run_scan_with_err(d)
+            self.assertNotIn("scoped_tests_warnings", out, "absent when there are none")
+
     def test_exclude_paths_absent_is_zero_behavior_change(self):
         # Back-compat: no `exclude_paths:` key -> no disclosure fields, and
         # the previously-covered "orphan" leftover behavior is untouched.
@@ -294,6 +313,13 @@ class TestCommonsCatalog(unittest.TestCase):
             ["README.md"], {}, max_per_group=50, security_mode="standard")
         names = {g["name"] for g in groups}
         self.assertEqual(names, {"Docs"})
+
+    def test_fold_suppressed_when_committed_parent_is_named_Commons(self):
+        commons_named = {"Docs": ["a.md"], "Deps": ["go.sum"],
+                         "Build": ["b%d" % i for i in range(orchestrator.COMMONS_MIN_FILES)]}
+        catalog = {"Commons:Shared": {"match": ["shared/**"], "parent": "Commons"}}
+        self.assertEqual(orchestrator._fold_tiny_commons(dict(commons_named), catalog),
+                         commons_named)
 
     def test_fold_suppressed_when_committed_catalog_claims_Commons(self):
         # Same clobber hazard the Commons pass already guards: two groups named
@@ -629,6 +655,54 @@ class TestScopedTests(unittest.TestCase):
         self.assertEqual(assigned, {})
         self.assertEqual(leftovers, ["shared/x_test.go"])
 
+    def test_wildcard_tests_glob_defers_to_the_sibling_whose_directory_it_is(self):
+        # Siblings share the parent's prefixes, so listing `Auth:Core` first
+        # would let its wildcard `tests:` swallow a test that sits INSIDE
+        # `Auth:API`'s own directory. The engine's own draft has exactly this
+        # shape: the carrier negates the other layers' globs and carries tests.
+        catalog = {
+            "Auth:Core": {"match": ["internal/auth/**", "!internal/auth/http/**"],
+                          "parent": "Auth", "tests": ["**/*_test.go"]},
+            "Auth:API": {"match": ["internal/auth/http/**"], "parent": "Auth", "tests": []},
+        }
+        files = ["internal/auth/http/x_test.go", "internal/auth/y_test.go",
+                 "tests/auth_flow_test.go"]
+        assigned, leftovers, warnings = orchestrator.assign_scoped(files, catalog, aliases={})
+        self.assertEqual(assigned, {
+            "Auth:Core": ["internal/auth/y_test.go", "tests/auth_flow_test.go"],
+            "Auth:API": ["internal/auth/http/x_test.go"],
+        })
+        self.assertEqual(leftovers, [])
+        self.assertEqual(warnings, [], "the carrier still credited files, so no warning")
+
+    def test_sibling_deferral_requires_the_sibling_to_match(self):
+        # A deeper sibling prefix alone is not enough: if the sibling's own
+        # globs reject the file, deferring would strand it.
+        catalog = {
+            "Auth:Core": {"match": ["internal/auth/**"], "parent": "Auth",
+                          "tests": ["**/*_test.go"]},
+            "Auth:API": {"match": ["internal/auth/http/*.go"], "parent": "Auth"},
+        }
+        assigned, leftovers, _ = orchestrator.assign_scoped(
+            ["internal/auth/http/deep/x_test.go"], catalog, aliases={})
+        self.assertEqual(assigned, {"Auth:Core": ["internal/auth/http/deep/x_test.go"]})
+        self.assertEqual(leftovers, [])
+
+    def test_shipped_alias_shape_is_rechecked(self):
+        # The loader reports a scalar `aliases` as an ERROR but keeps the raw
+        # entry; a string must not explode into per-character labels here.
+        # discovery imports the bare module name lazily; patch that binding.
+        with mock.patch("setup_proposal.load_vocabulary",
+                        return_value=({"entries": {"Auth": {"aliases": "Login"},
+                                                   "API": {"aliases": ["Http", 3]},
+                                                   "UI": {}}}, ["err"])):
+            orchestrator._capability_aliases.cache_clear()
+            try:
+                self.assertEqual(orchestrator._capability_aliases(),
+                                 {"Auth": [], "API": ["Http"], "UI": []})
+            finally:
+                orchestrator._capability_aliases.cache_clear()
+
 
 class TestTestsSweep(unittest.TestCase):
     """5.2 spec §4.3-4.6: the `Tests` universal vertical is formed LAST from
@@ -664,7 +738,31 @@ class TestTestsSweep(unittest.TestCase):
     def test_tests_suppressed_by_committed_tests_or_subgroup(self):
         self.assertTrue(orchestrator._tests_suppressed({"Tests": {"match": ["tests/**"]}}))
         self.assertTrue(orchestrator._tests_suppressed({"Tests:E2E": {"match": ["e2e/**"], "parent": "Tests"}}))
+        self.assertTrue(orchestrator._tests_suppressed({"tests": {"match": ["tests/**"]}}),
+                        "case-insensitive filesystems would collide the findings files")
         self.assertFalse(orchestrator._tests_suppressed({"Testing": {"match": ["x/**"]}}))
+
+    def test_affinity_respects_the_verticals_own_negation(self):
+        # `Core` excluded its `__tests__` dir on purpose; proximity must not
+        # hand the file back. Without the catalog every attachment stands.
+        homes = {"Core": ["src/core"]}
+        catalog = {"Core": {"match": ["src/core/**", "!src/core/__tests__/**"]}}
+        swept = ["src/core/__tests__/a.test.ts", "src/core/__tests__/b.test.ts"]
+        tests, attached, _ = orchestrator.sweep_tests(swept, homes, catalog)
+        self.assertEqual(attached, {})
+        self.assertEqual(tests, swept)
+        tests, attached, _ = orchestrator.sweep_tests(swept, homes)
+        self.assertEqual(attached, {"Core": swept})
+        self.assertEqual(tests, [])
+
+    def test_negated_by_own_match_reads_the_deciding_glob(self):
+        body = {"match": ["src/core/**", "!src/core/__tests__/**", "src/core/__tests__/keep/**"]}
+        self.assertFalse(orchestrator.negated_by_own_match("src/core/lib.ts", body))
+        self.assertTrue(orchestrator.negated_by_own_match("src/core/__tests__/a.ts", body))
+        self.assertFalse(orchestrator.negated_by_own_match("src/core/__tests__/keep/a.ts", body))
+        self.assertFalse(orchestrator.negated_by_own_match("elsewhere/a.ts", body),
+                         "no glob decided: not negated (just not claimed)")
+        self.assertFalse(orchestrator.negated_by_own_match("x", {}))
 
     def test_catalog_groups_forms_tests_last(self):
         catalog = {"Auth": {"match": ["src/auth/**"], "tests": ["tests/**"]}}
@@ -719,3 +817,39 @@ class TestTestsSweep(unittest.TestCase):
             orchestrator.catalog_groups(["tests/test_cart.py"], catalog, max_per_group=50,
                                         security_mode="standard")
         self.assertIn("Auth: tests glob 'tests/**' matched 1 file(s) but credited none", err.getvalue())
+
+    def test_scoped_warnings_are_collected_for_the_caller(self):
+        # The driver runs discovery as a child whose stderr is captured; the
+        # list is how the "credited none" signal reaches resolved.json.
+        import contextlib
+        import io
+        catalog = {"Auth": {"match": ["src/auth/**"], "tests": ["tests/**"]}}
+        got = []
+        with contextlib.redirect_stderr(io.StringIO()):
+            orchestrator.catalog_groups(["tests/test_cart.py"], catalog, max_per_group=50,
+                                        security_mode="standard", warnings=got)
+        self.assertEqual(len(got), 1)
+        self.assertIn("credited none", got[0])
+
+    def test_catalog_groups_keeps_a_negated_test_out_of_its_vertical(self):
+        catalog = {"Core": {"match": ["src/core/*.ts", "!src/core/__tests__/**"]}}
+        groups, leftovers = orchestrator.catalog_groups(
+            ["src/core/lib.ts", "src/core/__tests__/a.test.ts"],
+            catalog, max_per_group=50, security_mode="standard")
+        by = self._names(groups)
+        self.assertEqual(by["Core"]["files"], ["src/core/lib.ts"])
+        self.assertEqual(by["Tests"]["files"], ["src/core/__tests__/a.test.ts"])
+        self.assertEqual(leftovers, [])
+
+    def test_committed_parent_name_is_taken_for_commons_too(self):
+        # `Docs` is present only as `Docs:Guides`; a Commons `Docs` beside it
+        # would clobber the parent's rolled-up report node (setup's plan_groups
+        # excludes on the same `tops`).
+        catalog = {"Docs:Guides": {"match": ["docs/guides/**"], "parent": "Docs"}}
+        groups, leftovers = orchestrator.catalog_groups(
+            ["docs/guides/a.md", "docs/other.md", "README.md"],
+            catalog, max_per_group=50, security_mode="standard")
+        names = [g["name"] for g in groups]
+        self.assertIn("Docs:Guides", names)
+        self.assertNotIn("Docs", names)
+        self.assertEqual(sorted(leftovers), ["README.md", "docs/other.md"])
