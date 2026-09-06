@@ -5,6 +5,7 @@ import unittest
 from unittest import mock
 
 import scripts.coverage_model as coverage_model
+import scripts.grouping_engine as grouping_engine
 import scripts.setup_flow as setup_flow
 import shutil
 
@@ -381,7 +382,41 @@ class TestSetupFlow(unittest.TestCase):
         # backtick stripped, the whitespace survivor repr()-quoted (#1120)
         self.assertEqual(spine["tree"][0]["path"], "'evil dir'")
         self.assertNotIn("`", json.dumps(spine))
-        self.assertEqual(spine["claimed"], {"committed": {}, "commons": {}})
+        self.assertEqual(spine["claimed"], {"committed": {}, "commons": {}, "groups_yml": False})
+
+    def test_spine_lists_every_committed_leaf_and_says_why_nothing_is_claimed(self):
+        # A committed group whose globs match nothing today still appears (as
+        # 0) -- the agent must not re-propose it -- and the "nothing claimed"
+        # wording distinguishes no groups.yml from one without match: globs.
+        d = self._spine_repo()
+        with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
+            fh.write("groups:\n  Checkout:\n    match: ['src/checkout/**']\n"
+                     "  Legacy:\n    match: ['src/gone/**']\n")
+        spine = setup_flow.build_spine(d)
+        self.assertEqual(spine["claimed"]["committed"], {"Checkout": 2, "Legacy": 0})
+        self.assertTrue(spine["claimed"]["groups_yml"])
+        text = setup_flow.format_spine(spine)
+        self.assertIn("    Legacy                                       0", text)
+        self.assertIn("0 = its globs match nothing today", text)
+        with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
+            fh.write("groups:\n  Checkout: [src/checkout/pay.py]\n")
+        spine = setup_flow.build_spine(d)
+        self.assertEqual(spine["claimed"]["committed"], {"Checkout": 0})
+        os.remove(os.path.join(d, ".panopticon", "groups.yml"))
+        spine = setup_flow.build_spine(d)
+        self.assertEqual(spine["claimed"]["committed"], {})
+        self.assertFalse(spine["claimed"]["groups_yml"])
+        self.assertIn("nothing (no groups.yml)", setup_flow.format_spine(spine))
+        self.assertIn("nothing (it has no match: globs)",
+                      setup_flow.format_spine(dict(spine, claimed={
+                          "committed": {}, "commons": {}, "groups_yml": True})))
+
+    def test_budget_quotes_the_engine_floor_and_min_ceiling(self):
+        d = self._spine_repo()
+        budget = setup_flow.format_budget(setup_flow.build_spine(d))
+        self.assertIn("a layer under %d files merges back" % grouping_engine.FLOOR, budget)
+        self.assertIn("= max(%d, 2 * ceil(code_files / cap))" % grouping_engine.MIN_CEILING,
+                      budget)
 
     def test_format_spine_and_budget_render_the_brief_sections(self):
         d = self._spine_repo()

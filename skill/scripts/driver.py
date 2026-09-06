@@ -2221,16 +2221,19 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES):
               file=sys.stderr, flush=True)
         manifest = None
     if manifest is None:
+        # 5.2 size policy, pinned at scan time so the brief's arithmetic and
+        # the ingest's layers agree (anti-drift, like the run manifest's
+        # max_per_group). CLI > config.json, resolved HERE so a config edit
+        # between scan and ingest cannot move the numbers; None = default.
+        overrides = setup_flow.config_overrides(review_root)
         manifest = {"schema_version": 1, "run_id": run_manifest.new_run_id(),
                     "review_root": os.path.abspath(review_root),
                     "target": os.path.abspath(args.target),
                     "host": args.host or _DEFAULTS["host"],
                     "vocabulary_path": None,
-                    # 5.2 size policy, pinned at scan time so the brief's
-                    # arithmetic and the ingest's layers agree (anti-drift, like
-                    # the run manifest's max_per_group). None = config.json/default.
-                    "max_per_group": getattr(args, "max_per_group", None),
-                    "max_groups": getattr(args, "max_groups", None)}
+                    "max_per_group": (getattr(args, "max_per_group", None)
+                                      or overrides["max_per_group"]),
+                    "max_groups": getattr(args, "max_groups", None) or overrides["max_groups"]}
         _write_json(_setup_manifest_path(review_root), manifest)
     try:
         result = run_engine(review_root, manifest, phases)
@@ -2371,7 +2374,7 @@ def build_parser():
         # Files per review subgroup. Fewer, larger cells cost less in total
         # (per-cell overhead is amortized) at the price of a wider lens per
         # reviewer. Anti-drift: use --reset to change it on an existing run.
-        p.add_argument("--max-per-group", type=int, default=None)
+        p.add_argument("--max-per-group", type=_positive_int, default=None)
         scope = p.add_mutually_exclusive_group()
         scope.add_argument("-f", "--file", dest="scope_file", default=None)
         scope.add_argument("-d", "--directory", dest="scope_dir", default=None)
@@ -2386,9 +2389,21 @@ def build_parser():
     # 5.2 size policy (spec §5.3): files per dispatch unit and the leaf
     # ceiling. Unset = .panopticon/config.json (max_per_group / max_groups),
     # else the defaults (48; max(4, 2 x ceil(code_files / cap))).
-    sp.add_argument("--max-per-group", type=int, default=None)
-    sp.add_argument("--max-groups", type=int, default=None)
+    sp.add_argument("--max-per-group", type=_positive_int, default=None)
+    sp.add_argument("--max-groups", type=_positive_int, default=None)
     return parser
+
+
+def _positive_int(text):
+    """argparse type for the size flags: `0` would silently fall through to
+    the config/default and a negative cap breaks the ceiling formula."""
+    try:
+        value = int(text)
+    except ValueError:
+        value = 0
+    if value < 1:
+        raise argparse.ArgumentTypeError("expected a positive integer, got %r" % text)
+    return value
 
 
 def _error_status(message):

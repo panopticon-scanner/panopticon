@@ -2971,6 +2971,45 @@ class TestDriverSetup(unittest.TestCase):
         self.assertEqual(status["status"], "complete")
         self.assertEqual(driver.load_setup_manifest(d)["max_per_group"], 3)
 
+    def test_setup_size_flags_must_be_positive(self):
+        parser = driver.build_parser()
+        for argv in (["setup", ".", "--max-per-group", "0"],
+                     ["setup", ".", "--max-groups", "-3"],
+                     ["setup", ".", "--max-per-group", "x"],
+                     ["run", ".", "--max-per-group", "0"]):
+            with self.subTest(argv=argv), self.assertRaises(SystemExit), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                parser.parse_args(argv)
+        self.assertEqual(parser.parse_args(["setup", ".", "--max-groups", "5"]).max_groups, 5)
+
+    def test_setup_manifest_pins_the_config_numbers_at_creation(self):
+        # config.json is resolved when the manifest is minted: an edit between
+        # scan and ingest cannot move the cap or the ceiling under the brief.
+        d = self._repo()
+        os.makedirs(driver._pano(d), exist_ok=True)
+        with open(os.path.join(driver._pano(d), "config.json"), "w") as fh:
+            json.dump({"max_per_group": 7, "max_groups": 9}, fh)
+        driver.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
+        manifest = driver.load_setup_manifest(d)
+        self.assertEqual((manifest["max_per_group"], manifest["max_groups"]), (7, 9))
+        with open(os.path.join(driver._pano(d), "config.json"), "w") as fh:
+            json.dump({"max_per_group": 2, "max_groups": 4}, fh)
+        with open(driver._pano(d, "setup-proposal.json"), "w") as fh:
+            json.dump({"groups": [{"capability": "Checkout",
+                                   "match": ["src/checkout/**"], "tests": []}]}, fh)
+        status = driver.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
+        self.assertEqual(status["status"], "complete")
+        report = driver._load_json(driver._pano(d, "setup-report.json"))["report"]
+        self.assertEqual((report["cap"], report["ceiling"]), (7, 9))
+        # the CLI still wins over config
+        d2 = self._repo()
+        os.makedirs(driver._pano(d2), exist_ok=True)
+        with open(os.path.join(driver._pano(d2), "config.json"), "w") as fh:
+            json.dump({"max_per_group": 7}, fh)
+        driver.run_setup_flow(driver.build_parser().parse_args(
+            ["setup", d2, "--max-per-group", "3"]))
+        self.assertEqual(driver.load_setup_manifest(d2)["max_per_group"], 3)
+
     def test_scan_writes_the_spine_with_the_manifest_sizes(self):
         # 5.2 stage 1: the scan phase computes the spine ONCE with the sizes
         # the manifest pinned, persists it, and the brief carries the same

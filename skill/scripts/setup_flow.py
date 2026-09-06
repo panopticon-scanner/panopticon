@@ -413,7 +413,9 @@ def build_spine(repo, max_per_group=None, max_groups=None, files=None):
       languages:  [{language, files}] over CODE files, most first
       manifests:  [path] dependency manifests at depth <= 2
       frameworks: [name] detected from the manifests
-      claimed:    {"committed": {flat id: n}, "commons": {category: n}}
+      claimed:    {"committed": {flat id: n}, "commons": {category: n},
+                   "groups_yml": bool} -- every committed leaf is listed, a
+                  leaf whose globs match nothing today as 0
       test_trees: [{path, files}] depth-2 directories the Tests sweep will take
     Every repo-derived token is passed through `_sanitize_spine_token`."""
     if files is None:
@@ -470,8 +472,9 @@ def build_spine(repo, max_per_group=None, max_groups=None, files=None):
         "languages": languages,
         "manifests": [san(m) for m in manifests[:_MAX_MANIFESTS]],
         "frameworks": frameworks,
-        "claimed": {"committed": {san(n): len(fs) for n, fs in sorted(assigned.items())},
-                    "commons": dict(sorted(commons_counts.items()))},
+        "claimed": {"committed": {san(n): len(assigned.get(n, [])) for n in sorted(committed_view)},
+                    "commons": dict(sorted(commons_counts.items())),
+                    "groups_yml": bool(committed)},
         "test_trees": [{"path": san(n), "files": test_dirs[n]}
                        for n in test_rows[:_MAX_TEST_TREE_ROWS]],
     }
@@ -481,7 +484,9 @@ def format_spine(spine):
     """The `{repo_spine}` section of the brief: tree, languages, frameworks,
     manifests, what is already claimed, and the test trees with the sweep
     instruction (spec §5.1). Deterministic; no timestamps."""
-    out = ["Depth-2 directory tree (files under each node, dominant extension):", ""]
+    out = ["Depth-2 directory tree (a row counts the files that roll up to that node: "
+           "a file directly under a top-level directory counts there, deeper files "
+           "under their depth-2 directory; then the dominant extension):", ""]
     for row in spine["tree"]:
         out.append("    %-40s %5d  %s" % (row["path"], row["files"], row["ext"]))
     if spine.get("tree_more"):
@@ -492,8 +497,11 @@ def format_spine(spine):
             "Manifests: %s" % (", ".join(spine["manifests"]) or "(none)"), ""]
     committed = spine["claimed"]["committed"]
     if committed:
-        out.append("Already claimed by the committed groups.yml (these win; do not re-propose them):")
+        out.append("Already claimed by the committed groups.yml (these win; do not re-propose "
+                   "them; 0 = its globs match nothing today):")
         out += ["    %-40s %5d" % (n, k) for n, k in committed.items()]
+    elif spine["claimed"].get("groups_yml"):
+        out.append("Already claimed by the committed groups.yml: nothing (it has no match: globs).")
     else:
         out.append("Already claimed by the committed groups.yml: nothing (no groups.yml).")
     commons = spine["claimed"]["commons"]
@@ -516,14 +524,16 @@ def format_budget(spine):
     instruction (spec §5.1)."""
     f = spine["files"]
     how = {"cli": "from --max-groups", "config": "from .panopticon/config.json",
-           "formula": "= max(4, 2 * ceil(code_files / cap))"}[spine["ceiling_source"]]
+           "formula": "= max(%d, 2 * ceil(code_files / cap))" % grouping_engine.MIN_CEILING
+           }[spine["ceiling_source"]]
     return "\n".join([
         "- files: %d total = %d code + %d commons + %d test tree"
         % (f["total"], f["code"], f["commons"], f["test_tree"]),
         "- cap (files per review group, --max-per-group): %d" % spine["cap"],
         "- ceiling (review groups this repo affords): %d %s" % (spine["ceiling"], how),
         "- propose `layers` ONLY for a vertical you estimate OVER the cap (%d files); "
-        "a layer under 6 files merges back into its parent" % spine["cap"],
+        "a layer under %d files merges back into its parent"
+        % (spine["cap"], grouping_engine.FLOOR),
         "- aim for verticals of roughly cap/2 files or more; over the ceiling, the "
         "smallest layers are collapsed first and verticals are never merged",
     ])
@@ -766,17 +776,19 @@ def ingest_proposal(repo=".", proposal_path=None, max_per_group=None, max_groups
     planned = grouping_engine.plan_groups(
         discovery.discover_repo_files(repo), committed, assembled, cap, ceiling=ceiling)
     merged, diff = sp.merge_additive(committed, planned["groups"], planned["claims"])
+    report = planned["report"]
+    # Serialize everything BEFORE opening any file: a serializer failure must
+    # not leave a truncated draft beside a missing report.
+    draft_text = sp.dump_groups_yaml(merged)
+    report_text = grouping_engine.format_report(report, disclosure)
+    report_json = json.dumps({"schema_version": 1, "report": report, "disclosure": disclosure,
+                              "diff": diff}, indent=1, sort_keys=True) + "\n"
     root = plan_contract.artifact_root(repo)
     draft = os.path.join(root, "groups.yml.draft")
-    with open(draft, "w", encoding="utf-8") as fh:
-        fh.write(sp.dump_groups_yaml(merged))
-    report = planned["report"]
     report_path = os.path.join(root, "setup-report.md")
-    with open(report_path, "w", encoding="utf-8") as fh:
-        fh.write(grouping_engine.format_report(report, disclosure))
-    with open(os.path.join(root, "setup-report.json"), "w", encoding="utf-8") as fh:
-        json.dump({"schema_version": 1, "report": report, "disclosure": disclosure,
-                   "diff": diff}, fh, indent=1, sort_keys=True)
-        fh.write("\n")
+    for path, text in ((draft, draft_text), (report_path, report_text),
+                       (os.path.join(root, "setup-report.json"), report_json)):
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
     return {"ok": True, "draft": draft, "diff": diff, "disclosure": disclosure,
             "report": report, "report_path": report_path}
