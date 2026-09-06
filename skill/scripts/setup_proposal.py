@@ -1,12 +1,14 @@
-"""Deterministic core of the 5.0 `panopticon setup` scan flow.
+"""Deterministic core of the `panopticon setup` scan flow.
 
-Loads the curated capability vocabulary + affinity table, validates and
-assembles a setup-scan agent's proposal into a matrix groups mapping (panel
-floors from the affinity table; custom groups scout-only), and additive-merges
-it against a committed groups.yml without ever clobbering it. Pure: every
-function is a total function of its inputs (the only I/O is reading a data file
-whose path it is handed). See
-docs/superpowers/specs/2026-08-14-panopticon-5.0-setup-scan-design.md.
+Loads the curated capability vocabulary + affinity table (5.0) and the layer
+catalog (5.2), validates and assembles a setup-scan agent's proposal into a
+matrix groups mapping (panel floors from the affinity table or the profile
+surfaces; custom groups scout-only; aliases canonicalized through the
+catalogs; layers as subgroups), and additive-merges it against a committed
+groups.yml without ever clobbering it. Pure: every function is a total
+function of its inputs (the only I/O is reading a data file whose path it is
+handed). See docs/superpowers/specs/2026-08-14-panopticon-5.0-setup-scan-design.md
+and the 5.2 grouping-engine spec (§3 catalogs, §5.3 assembly).
 """
 
 import re
@@ -30,6 +32,15 @@ def alias_key(label):
     return re.sub(r"[^0-9a-z]", "", str(label or "").casefold())
 
 
+# Reserved names compared the way aliases are, so `tests`, `Un-grouped` and
+# `CORE` are refused alongside the canonical spellings.
+_RESERVED_KEYS = frozenset(alias_key(n) for n in RESERVED_GROUP_NAMES)
+# Top-level names a PROPOSAL may not take: the engine mints these at run time.
+# `Tests` is deliberately absent (R4 -- a committed Tests suppresses the
+# sweep) and `Core` is a layer name, refused by _NOT_LAYER_KEYS instead.
+_ENGINE_OWNED_KEYS = frozenset({alias_key("Commons"), alias_key("Ungrouped")})
+
+
 def _load_catalog(path, root_key, kind, noun):
     """Shared loader for the capability and layer catalogs -- one entry shape
     (spec §3). Returns ({"names", "hints", "entries", "aliases"}, errors):
@@ -45,7 +56,10 @@ def _load_catalog(path, root_key, kind, noun):
     to two entries (first owner kept, collision reported)."""
     empty = {"names": [], "hints": {}, "entries": {}, "aliases": {}}
     with open(path, encoding="utf-8") as fh:
-        doc = yaml.safe_load(fh) or {}
+        try:
+            doc = yaml.safe_load(fh) or {}
+        except yaml.YAMLError as exc:
+            return empty, ["%s: cannot parse %s: %s" % (kind, path, exc)]
     if not isinstance(doc, dict):
         return empty, ["%s: root must be a mapping" % kind]
     items = doc.get(root_key)
@@ -65,7 +79,7 @@ def _load_catalog(path, root_key, kind, noun):
         if name in entries:
             errors.append("%s: duplicate %s %r" % (kind, noun, name))
             continue
-        if name in RESERVED_GROUP_NAMES:
+        if alias_key(name) in _RESERVED_KEYS:
             errors.append("%s: %s name %r is reserved" % (kind, noun, name))
             continue
         raw_hints = entry.get("hints")
@@ -91,10 +105,15 @@ def _load_catalog(path, root_key, kind, noun):
             key = alias_key(label)
             if not key:
                 continue
+            if key in _RESERVED_KEYS:
+                errors.append("%s: alias %r of %s is reserved"
+                              % (kind, label, name))
+                continue
             owner = aliases.get(key)
             if owner is not None and owner != name:
-                errors.append("%s: alias %r of %s collides with %s"
-                              % (kind, label, name, owner))
+                errors.append("%s: %s %r of %s collides with %s"
+                              % (kind, "name" if label == name else "alias",
+                                 label, name, owner))
                 continue
             aliases[key] = name
     return ({"names": names, "hints": hints, "entries": entries,
@@ -221,7 +240,13 @@ def _validate_layers(group_label, layers):
     """Shape/caps check for a proposal group's optional `layers` list
     (spec §5.2): each entry is `{"layer": name, "match": [glob, ...]}`.
     Two entries whose names fold to one alias_key are a duplicate (they
-    would become the same `Parent:Layer` subgroup)."""
+    would become the same `Parent:Layer` subgroup). Layer globs may not
+    negate: the carrier layer's `!` globs are minted by the engine from the
+    other layers' POSITIVE globs (R2), so a negation authored inside a layer
+    would evict files from the vertical itself rather than route them
+    between its layers. Names are only shape-checked here -- an invalid or
+    chunk-colliding name is dropped with a warning by `_keep_layers` (the
+    group survives its layers)."""
     if layers is None:
         return []
     if not isinstance(layers, list):
@@ -247,8 +272,16 @@ def _validate_layers(group_label, layers):
         if key in seen:
             errors.append("proposal group %s: duplicate layer %r" % (group_label, lname))
         seen.add(key)
+        match = layer.get("match")
         errors.extend(_validate_str_list("%s layer %s" % (group_label, lname),
-                                         "match", layer.get("match"), required=True))
+                                         "match", match, required=True))
+        if isinstance(match, list):
+            for glob in match:
+                if isinstance(glob, str) and glob.startswith("!"):
+                    errors.append("proposal group %s: layer %s: negation %r is not "
+                                  "allowed in a layer (the engine derives the carrier's "
+                                  "negations; put exclusions in the group's match)"
+                                  % (group_label, lname, glob))
     return errors
 
 
@@ -363,11 +396,14 @@ def _floor_for(is_custom, cap, affinity, surfaces):
 def _keep_layers(name, proposed, layer_aliases, warnings):
     """Canonicalize a group's proposed layers through the layer catalog
     (spec §5.3 step 1) and drop the ones that may not be layers: reserved /
-    not-a-layer names (`Core`, `Tests`, `Config`, `Docs`, ...) and names
-    that are not a valid subgroup token. Dropping is disclosed in
-    `warnings`; the group itself is kept. A name the catalog does not know
-    is kept verbatim (custom layers are allowed, like custom capabilities)
-    and flagged `canonical: False` for the report and the promotion ratchet."""
+    not-a-layer names (`Core`, `Tests`, `Config`, `Docs`, ...), names that
+    are not a valid subgroup token (groups_schema._invalid_name) and names
+    that collide with a sibling's chunk names (`API_1` next to `API`, which
+    groups_schema refuses in a committed groups.yml). Dropping is disclosed
+    in `warnings`; the group itself is kept. A name the catalog does not
+    know is kept verbatim (custom layers are allowed, like custom
+    capabilities) and flagged `canonical: False` for the report and the
+    promotion ratchet."""
     kept = []
     for layer in proposed:
         raw = layer["layer"]
@@ -378,12 +414,25 @@ def _keep_layers(name, proposed, layer_aliases, warnings):
             warnings.append("%s: layer %r dropped (reserved or not a layer -- tests are the "
                             "tests: axis, config and docs are Commons)" % (name, raw))
             continue
-        if not groups_schema._GROUP_NAME_RE.match(lname):
+        if groups_schema._invalid_name(lname):
             warnings.append("%s: layer %r dropped (not a valid group name)" % (name, raw))
             continue
+        if alias_key(lname) == alias_key(name):
+            warnings.append("%s: layer %r is named like its group (becomes %s:%s -- "
+                            "consider a role name such as Core or API)"
+                            % (name, raw, name, lname))
         kept.append({"layer": lname, "match": list(layer["match"]),
                      "canonical": canonical is not None})
-    return kept
+    names = {layer["layer"] for layer in kept}
+    out = []
+    for layer in kept:
+        m = groups_schema._CHUNK_SUFFIX_RE.match(layer["layer"])
+        if m and m.group("base") in names:
+            warnings.append("%s: layer %r dropped (collides with the chunk names of layer "
+                            "%r)" % (name, layer["layer"], m.group("base")))
+            continue
+        out.append(layer)
+    return out
 
 
 def _clean_profile(profile):
@@ -428,13 +477,19 @@ def assemble(proposal, vocabulary, affinity, layers=None):
     (#run9 ARC-D2B: a known capability and its custom alias in either order
     keep the known floor). Every collision is recorded.
 
+    `Commons` and `Ungrouped` (any spelling) are engine-owned at the top
+    level -- the run-time sweep mints them -- so a proposal naming one is an
+    error. `Tests` is allowed (R4: a committed Tests suppresses the sweep)
+    and `Core` is only reserved as a layer.
+
     Dropped layers are reported in `disclosure["warnings"]`; the mapping is
-    round-tripped (leaf fields only) through groups_schema.parse_groups and a
+    round-tripped through groups_schema.parse_groups in the nested form the
+    draft is written in (leaf fields only, layers as subgroups) and a
     violation returns (None, disclosure) so setup fails loudly.
     """
     errors = validate_proposal(proposal)
     if errors:
-        return None, {"groups": [], "errors": errors}
+        return None, {"groups": [], "errors": errors, "collisions": [], "warnings": []}
     known = set(vocabulary.get("names") or [])
     aliases = dict(vocabulary.get("aliases") or {})
     for n in known:
@@ -446,6 +501,11 @@ def assemble(proposal, vocabulary, affinity, layers=None):
     for g in proposal["groups"]:
         raw = g["capability"]
         label = _group_name(raw).strip()
+        if alias_key(label) in _ENGINE_OWNED_KEYS:
+            disclosure["errors"].append(
+                "proposal group %r: name is engine-owned (the run-time sweep mints "
+                "Commons and Ungrouped) -- rename it" % raw)
+            continue
         canonical = aliases.get(alias_key(label))
         if canonical is not None:
             cap, name, is_custom = canonical, canonical, False
@@ -485,21 +545,38 @@ def assemble(proposal, vocabulary, affinity, layers=None):
                 existing["profile"][field] = profile[field]
         for field in _PROFILE_LIST_FIELDS:
             _union_into(existing["profile"][field], profile[field])
-        if not is_custom and dgroup["custom"]:
-            dgroup["custom"], dgroup["capability"] = False, cap
-            if normalized:
-                dgroup["normalized"] = normalized
+        # `is_custom == dgroup["custom"]` always holds here: a label that
+        # resolves through the aliases is known in every spelling
+        # (`custom:Auth` and `Auth` both canonicalize before the lookup), so
+        # a known group never collides with a custom one -- the merged floor
+        # only has to be recomputed from the merged surfaces.
         floor, floor_source = _floor_for(dgroup["custom"], dgroup["capability"], affinity,
                                          existing["profile"]["surfaces"])
         existing["panels"], dgroup["floor"], dgroup["floor_source"] = floor, floor, floor_source
         disclosure["collisions"].append({"name": name, "capability": raw})
-    leaves = {n: {k: v for k, v in body.items() if k in groups_schema.RESERVED}
-              for n, body in out.items()}
-    parsed, perrors = groups_schema.parse_groups({"groups": leaves})
+    if disclosure["errors"]:
+        return None, disclosure
+    parsed, perrors = groups_schema.parse_groups({"groups": _nested_leaves(out)})
     if perrors:
         disclosure["errors"] = perrors
         return None, disclosure
     return out, disclosure
+
+
+def _nested_leaves(groups):
+    """The assembled mapping in the shape the draft is written (a layered
+    group nests its layers as subgroups, the carrier holding the parent's
+    globs), leaf fields only -- what groups_schema.parse_groups validates."""
+    nested = {}
+    for name, body in groups.items():
+        leaf = {k: list(v) for k, v in body.items() if k in groups_schema.RESERVED}
+        if body.get("layers"):
+            subs = {layer["layer"]: {"match": list(layer["match"])} for layer in body["layers"]}
+            subs.setdefault("Core", dict(leaf))
+            nested[name] = subs
+        else:
+            nested[name] = leaf
+    return nested
 
 
 def flatten_groups(groups):
@@ -532,10 +609,19 @@ def _copy_body(body):
 
 
 def _all_globs(body, field):
-    """A body's `field` globs, including every subgroup's, order-preserving."""
+    """A body's `field` globs, including every subgroup's, order-preserving.
+
+    A subgroup's negation of a SIBLING's positive glob is dropped: it is the
+    carrier's partition (`!src/auth/http/**` routing files to `Auth:API`),
+    not a claim boundary, and collapsed into one leaf it would shrink the
+    claim (`src/auth/**` minus http) instead of reproducing it."""
     out = list(body.get(field) or [])
-    for leaf in (body.get("subgroups") or {}).values():
-        _union_into(out, leaf.get(field) or [])
+    subs = body.get("subgroups") or {}
+    siblings = {g for leaf in subs.values() for g in (leaf.get(field) or [])
+                if not g.startswith("!")}
+    for leaf in subs.values():
+        _union_into(out, [g for g in (leaf.get(field) or [])
+                          if not (g.startswith("!") and g[1:] in siblings)])
     return out
 
 
@@ -552,8 +638,10 @@ def merge_additive(committed, assembled, claims):
     - new name           -> adopted as proposed (leaf or parent); `new_groups`
     - committed leaf     -> only EXTENDED with globs it does not carry. When
                             the assembled side is a parent, its subgroup globs
-                            extend the leaf and the layers are NOT introduced
-                            (`layers_dropped`): a committed leaf stays a leaf.
+                            extend the leaf (minus the carrier's partition
+                            negations, which would shrink the committed claim)
+                            and the layers are NOT introduced (`layers_dropped`):
+                            a committed leaf stays a leaf.
     - committed parent   -> untouched, `skipped_committed_parent`: the owner's
                             subgroup structure is theirs to edit.
     """

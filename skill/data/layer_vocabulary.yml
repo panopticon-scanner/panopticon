@@ -61,7 +61,7 @@ layers:
   - name: Client
     definition: "A consumer of the server's public interface shipped in the same repo: SDKs, generated API clients, mobile/desktop apps, CLI clients that only speak the API."
     boundary: "The server's own screens are UI. A client for a THIRD party's API is Integration."
-    aliases: [clients, sdk, sdks, app, mobile, desktop, consumer]
+    aliases: [clients, sdk, sdks, mobile, desktop, consumer]
     hints: ["**/client/**", "**/clients/**", "**/sdk/**", "**/mobile/**"]
     examples:
       - {repo: btcpayserver, path: BTCPayServer.Client/}

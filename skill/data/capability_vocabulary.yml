@@ -163,7 +163,7 @@ capabilities:
     definition: "The externally-exposed interface surface: routes, controllers, schemas, and versioning."
     boundary: "Never internal wiring or clients calling out to other services -- that stays with the owning capability."
     hints: ["**/api/**", "**/routes/**", "**/graphql/**"]
-    aliases: []
+    aliases: [PublicAPI]
     examples:
       - {repo: bookstack, path: app/Api/}
       - {repo: solidus, path: api/}
@@ -208,8 +208,8 @@ capabilities:
     tier: universal
     definition: "Application and user configuration surfaces: settings screens, preference storage, feature toggles."
     boundary: "Operator-only instance administration is Admin; credential/session handling is Auth."
-    hints: ["**/settings/**", "**/preferences/**", "**/config/**"]
-    aliases: [Configuration, Preferences, Config]
+    hints: ["**/settings/**", "**/preferences/**"]
+    aliases: [Configuration, Preferences]
     examples:
       - {repo: bookstack, path: app/Settings/}
       - {repo: listmonk, path: cmd/settings.go}
@@ -237,7 +237,7 @@ capabilities:
     definition: "Extension mechanism: plugin/extension discovery, loading, sandboxing, hooks, and the marketplace/app registry."
     boundary: "Calling out to a specific third-party service is the owning capability's Integration layer, not Plugins."
     hints: ["**/plugins/**", "**/plugin/**", "**/extensions/**", "**/addons/**"]
-    aliases: [Extensions, Extensibility, Apps, Providers, Scripting, Addons]
+    aliases: [Extensions, Extensibility, Apps, Scripting, Addons]
     examples:
       - {repo: inventree, path: src/backend/InvenTree/plugin/}
       - {repo: gh-cli, path: pkg/cmd/extension/}
@@ -291,7 +291,7 @@ capabilities:
     tier: universal
     definition: "User file handling: uploads, attachments, blob/object storage backends, file metadata."
     boundary: "Media-specific processing (transcoding, thumbnails, streaming) is Media; the database layer is the Data LAYER, not Storage."
-    hints: ["**/storage/**", "**/uploads/**", "**/attachments/**", "**/files/**"]
+    hints: ["**/storage/**", "**/uploads/**", "**/attachments/**"]
     aliases: [Files, Attachments, Uploads, FileStorage, Blobs]
     examples:
       - {repo: bookstack, path: app/Uploads/}
@@ -319,7 +319,7 @@ capabilities:
     tier: vertical
     definition: "Media pipeline: image/audio/video processing, transcoding, thumbnails, streaming, playback."
     boundary: "Generic upload/attachment plumbing is Storage."
-    hints: ["**/media/**", "**/audio/**", "**/video/**", "**/images/**", "**/streaming/**"]
+    hints: ["**/media/**", "**/audio/**", "**/video/**", "**/streaming/**"]
     aliases: [Audio, Video, Images, Streaming, Playback]
     examples:
       - {repo: godot, path: servers/audio/}
@@ -333,7 +333,7 @@ capabilities:
     tier: universal
     definition: "First-run and sign-up experience: registration, invitations, setup wizards, guided tours."
     boundary: "Credential verification and session issuance is Auth; ongoing profile management is Accounts."
-    hints: ["**/onboarding/**", "**/signup/**", "**/registration/**", "**/setup/**"]
+    hints: ["**/onboarding/**", "**/signup/**", "**/registration/**"]
     aliases: [Signup, Registration, SetupWizard, Invitations]
     examples:
       - {repo: forem, path: app/controllers/onboardings_controller.rb}
@@ -347,8 +347,8 @@ capabilities:
     tier: vertical
     definition: "Person-to-person communication as a product feature: chat, conversations, channels, calls, threads."
     boundary: "System-to-user delivery (email/push/in-app alerts) is Notifications."
-    hints: ["**/messaging/**", "**/chat/**", "**/conversations/**", "**/channels/**", "**/calls/**"]
-    aliases: [Chat, Conversations, Channels, Calls, Threads]
+    hints: ["**/messaging/**", "**/chat/**", "**/conversations/**", "**/calls/**"]
+    aliases: [Chat, Conversations, Calls, Threads]
     examples:
       - {repo: mattermost, path: server/channels/api4/post.go}
       - {repo: signal-ios, path: SignalServiceKit/Messages/}
@@ -375,8 +375,8 @@ capabilities:
     tier: universal
     definition: "Outbound and inbound webhook lifecycle: subscriptions, signing/verification, delivery, retries."
     boundary: "User-facing alerts are Notifications; the generic HTTP API surface is API."
-    hints: ["**/webhooks/**", "**/webhook/**", "**/hooks/**"]
-    aliases: [Webhook, Hooks]
+    hints: ["**/webhooks/**", "**/webhook/**"]
+    aliases: [Webhook]
     examples:
       - {repo: hyperswitch, path: crates/router/src/core/webhooks/}
       - {repo: firefly-iii, path: app/Http/Controllers/Webhooks/}
@@ -389,7 +389,7 @@ capabilities:
     tier: universal
     definition: "The landing/overview surface: home dashboards, widgets, summary cards, dashboard layout persistence."
     boundary: "Report generation is Reporting; the numbers behind the widgets are Analytics."
-    hints: ["**/dashboard/**", "**/dashboards/**", "**/widgets/**", "**/home/**"]
+    hints: ["**/dashboard/**", "**/dashboards/**", "**/widgets/**"]
     aliases: [Dashboards, Widgets, Overview]
     examples:
       - {repo: linkwarden, path: apps/web/lib/api/controllers/dashboard/}
@@ -404,7 +404,7 @@ capabilities:
     definition: "Work-item management: projects, tasks, issues, boards, milestones, assignments."
     boundary: "Tenant/team structure is Organizations; date-driven scheduling is Calendar."
     hints: ["**/projects/**", "**/tasks/**", "**/issues/**", "**/boards/**"]
-    aliases: [Project, Tasks, Issues, Boards, Milestones]
+    aliases: [Project, Issues, Boards, Milestones]
     examples:
       - {repo: openproject, path: app/models/project.rb}
       - {repo: erpnext, path: erpnext/projects/}
@@ -417,8 +417,8 @@ capabilities:
     tier: vertical
     definition: "Payment processing: gateway/provider integrations, transaction lifecycle, refunds, payouts, payment methods."
     boundary: "The cart-to-order flow is Checkout (R1); recurring invoicing is Billing. Payments is the money-movement machinery both call."
-    hints: ["**/payments/**", "**/gateways/**", "**/stripe/**", "**/paypal/**"]
-    aliases: [Payment, Gateways, Payouts, Refunds]
+    hints: ["**/payments/**", "**/stripe/**", "**/paypal/**"]
+    aliases: [Payment, Payouts, Refunds]
     examples:
       - {repo: hyperswitch, path: crates/router/src/core/payments/}
       - {repo: woocommerce, path: plugins/woocommerce/includes/gateways/}
@@ -487,7 +487,7 @@ capabilities:
     tier: vertical
     definition: "Sharing objects outside their owner's scope: share links, public pages, guest access, embed tokens."
     boundary: "Role-based access inside the tenant is Permissions; co-editing is Collaboration."
-    hints: ["**/sharing/**", "**/shares/**", "**/share/**", "**/public/**"]
+    hints: ["**/sharing/**", "**/shares/**", "**/share/**"]
     aliases: [Shares, ShareLinks, PublicLinks]
     examples:
       - {repo: immich, path: server/src/services/shared-link.service.ts}
@@ -570,8 +570,8 @@ capabilities:
     tier: vertical
     definition: "Managed content: CMS pages, posts, blocks, publishing workflow, content types and their rendering."
     boundary: "Product/SKU data is Catalog; user documents are Documents; the editing widget is Editor."
-    hints: ["**/cms/**", "**/content/**", "**/pages/**", "**/posts/**"]
-    aliases: [CMS, Pages, Posts, Publishing]
+    hints: ["**/cms/**", "**/content/**", "**/posts/**"]
+    aliases: [CMS, Posts, Publishing]
     examples:
       - {repo: bagisto, path: packages/Webkul/CMS/}
       - {repo: evershop, path: packages/evershop/src/modules/cms/}

@@ -192,6 +192,103 @@ class TestLoaders(unittest.TestCase):
         self.assertIn("Auth", affinity)
         self.assertTrue(any("Ghost" in e for e in errors))
 
+    def _write(self, text):
+        fd, path = tempfile.mkstemp(suffix=".yml")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        self.addCleanup(lambda: os.path.exists(path) and os.unlink(path))
+        return path
+
+    def test_alias_key_folds_case_whitespace_and_punctuation(self):
+        for label in ("Rate Limiting", "rate_limiting", "rate-limiting",
+                      "RateLimiting", " RATE LIMITING "):
+            self.assertEqual(sp.alias_key(label), "ratelimiting")
+        self.assertEqual(sp.alias_key(None), "")
+
+    def test_loader_returns_entries_and_aliases(self):
+        path = self._write(
+            "capabilities:\n"
+            "  - name: Auth\n"
+            "    definition: d\n"
+            "    aliases: [authentication, 'identity and access']\n"
+            "  - name: Search\n")
+        vocab, errs = sp.load_vocabulary(path)
+        self.assertEqual(errs, [])
+        self.assertEqual(vocab["names"], ["Auth", "Search"])
+        self.assertEqual(vocab["entries"]["Auth"]["definition"], "d")
+        self.assertEqual(vocab["aliases"]["authentication"], "Auth")
+        self.assertEqual(vocab["aliases"]["identityandaccess"], "Auth")
+        self.assertEqual(vocab["aliases"]["search"], "Search")   # a name is its own alias
+        self.assertEqual(sp.canonicalize("Identity And Access", vocab), "Auth")
+        self.assertEqual(sp.canonicalize("AUTH", vocab), "Auth")
+        self.assertIsNone(sp.canonicalize("Payments", vocab))
+
+    def test_alias_resolving_to_two_entries_is_a_loader_error(self):
+        path = self._write(
+            "capabilities:\n"
+            "  - name: Auth\n"
+            "    aliases: [identity]\n"
+            "  - name: Accounts\n"
+            "    aliases: [Identity]\n")
+        vocab, errs = sp.load_vocabulary(path)
+        self.assertEqual(len(errs), 1)
+        self.assertIn("alias 'Identity' of Accounts collides with Auth", errs[0])
+        self.assertEqual(vocab["aliases"]["identity"], "Auth")   # first owner kept
+
+    def test_name_colliding_with_an_alias_says_name(self):
+        path = self._write(
+            "capabilities:\n"
+            "  - name: Auth\n"
+            "    aliases: [identity]\n"
+            "  - name: Identity\n")
+        _, errs = sp.load_vocabulary(path)
+        self.assertEqual(errs, ["vocabulary: name 'Identity' of Identity collides with Auth"])
+
+    def test_reserved_name_is_a_loader_error(self):
+        path = self._write("capabilities:\n  - name: Tests\n  - name: Auth\n")
+        vocab, errs = sp.load_vocabulary(path)
+        self.assertEqual(errs, ["vocabulary: capability name 'Tests' is reserved"])
+        self.assertEqual(vocab["names"], ["Auth"])
+
+    def test_reserved_name_is_refused_in_every_spelling(self):
+        # Reserved names are compared the way aliases are: `tests`, `Un-grouped`
+        # and `CORE` would otherwise sneak past the exact-string check and
+        # canonicalize a proposal onto an engine-owned name.
+        for spelling in ("tests", "Un-grouped", "CORE", " Commons "):
+            path = self._write("capabilities:\n  - name: '%s'\n  - name: Auth\n" % spelling)
+            vocab, errs = sp.load_vocabulary(path)
+            self.assertEqual(errs, ["vocabulary: capability name %r is reserved" % spelling])
+            self.assertEqual(vocab["names"], ["Auth"], spelling)
+
+    def test_reserved_alias_is_a_loader_error(self):
+        path = self._write("capabilities:\n  - name: Platform\n    aliases: [core, Shared]\n")
+        vocab, errs = sp.load_vocabulary(path)
+        self.assertEqual(errs, ["vocabulary: alias 'core' of Platform is reserved"])
+        self.assertEqual(vocab["names"], ["Platform"])
+        self.assertIsNone(sp.canonicalize("Core", vocab))        # the alias was not kept
+        self.assertEqual(sp.canonicalize("shared", vocab), "Platform")
+
+    def test_unparseable_yaml_is_a_loader_error(self):
+        vocab, errs = sp.load_vocabulary(self._write("capabilities: [unclosed\n"))
+        self.assertEqual(vocab["names"], [])
+        self.assertEqual(len(errs), 1)
+        self.assertIn("vocabulary: cannot parse", errs[0])
+
+    def test_scalar_aliases_produce_error_not_char_explosion(self):
+        path = self._write("capabilities:\n  - name: Auth\n    aliases: authentication\n")
+        vocab, errs = sp.load_vocabulary(path)
+        self.assertEqual(errs, ["vocabulary Auth: aliases must be a list"])
+        self.assertEqual(set(vocab["aliases"]), {"auth"})
+
+    def test_load_layers_uses_the_layers_root_key(self):
+        path = self._write("layers:\n  - name: API\n    aliases: [controller, routes]\n")
+        layers, errs = sp.load_layers(path)
+        self.assertEqual(errs, [])
+        self.assertEqual(layers["names"], ["API"])
+        self.assertEqual(sp.canonicalize("Controller", layers), "API")
+        bad, errs = sp.load_layers(self._write("layers: {API: 1}\n"))
+        self.assertEqual(errs, ["layers: layers must be a list"])
+
 
 class TestAssemble(unittest.TestCase):
     def setUp(self):
@@ -315,7 +412,7 @@ class TestAssemble(unittest.TestCase):
         self.assertEqual(groups["Auth"]["match"], ["src/oauth/**", "src/auth/**"])
         auth_entries = [g for g in disc["groups"] if g["name"] == "Auth"]
         self.assertEqual(len(auth_entries), 1)
-        self.assertFalse(auth_entries[0]["custom"])                  # upgraded to known
+        self.assertFalse(auth_entries[0]["custom"])                  # canonicalized, not custom
         self.assertEqual(auth_entries[0]["floor"], ["SEC"])
 
     def test_bare_custom_prefix_rejected_in_validation(self):
@@ -510,6 +607,19 @@ class TestValidateProposalV2(unittest.TestCase):
         layers = [{"layer": "L%d" % i, "match": ["x"]} for i in range(sp._MAX_LAYERS + 1)]
         self.assertIn("too many layers", sp.validate_proposal(self._one(layers=layers))[0])
 
+    def test_negation_inside_a_layer_is_rejected(self):
+        # R2: the carrier's negations are derived from the other layers'
+        # positive globs. An authored `!` inside a layer would evict files
+        # from the vertical at run time instead of routing them.
+        errs = sp.validate_proposal(self._one(
+            layers=[{"layer": "API", "match": ["a/http/**", "!a/http/legacy/**"]}]))
+        self.assertEqual(len(errs), 1)
+        self.assertIn("layer API: negation '!a/http/legacy/**' is not allowed", errs[0])
+        # A negation on the GROUP's own match stays legal (that is the escape hatch).
+        self.assertEqual(sp.validate_proposal({"groups": [
+            {"capability": "custom:g", "match": ["a/**", "!a/legacy/**"],
+             "layers": [{"layer": "API", "match": ["a/http/**"]}]}]}), [])
+
     def test_profile_shape_and_caps(self):
         self.assertIn("profile must be a mapping",
                       sp.validate_proposal(self._one(profile="x"))[0])
@@ -663,6 +773,45 @@ class TestAssembleV2(unittest.TestCase):
         self.assertTrue(any("'bad name'" in w and "not a valid group name" in w
                             for w in disc["warnings"]))
 
+    def test_chunk_colliding_and_parent_named_layers(self):
+        # `API_1` is what an oversize `Auth:API` chunks to (groups_schema
+        # refuses the committed form) -- dropped with a warning; a layer named
+        # like its group is legal but warned (it becomes `Auth:Auth`).
+        groups, disc = sp.assemble(self._p([
+            {"capability": "Auth", "match": ["x/**"],
+             "layers": [{"layer": "API", "match": ["x/http/**"]},
+                        {"layer": "API_1", "match": ["x/http2/**"]},
+                        {"layer": "auth", "match": ["x/core/**"]}]}]),
+            self.vocab, self.affinity, layers=self.layers)
+        self.assertEqual([layer["layer"] for layer in groups["Auth"]["layers"]],
+                         ["API", "auth"])
+        self.assertEqual(disc["errors"], [])
+        self.assertTrue(any("'API_1' dropped" in w and "chunk names of layer 'API'" in w
+                            for w in disc["warnings"]), disc["warnings"])
+        self.assertTrue(any("'auth' is named like its group" in w for w in disc["warnings"]),
+                        disc["warnings"])
+
+    def test_engine_owned_top_level_names_are_rejected(self):
+        # The run-time sweep mints Commons and Ungrouped; a proposal naming
+        # one (any spelling) would collide with it at run time.
+        for label in ("Commons", "custom:Commons", "commons", "custom:Ungrouped",
+                      "un-grouped"):
+            groups, disc = sp.assemble(self._p([
+                {"capability": "Auth", "match": ["x/**"]},
+                {"capability": label, "match": ["y/**"]}]), self.vocab, self.affinity)
+            self.assertIsNone(groups, label)
+            self.assertEqual(len(disc["errors"]), 1, label)
+            self.assertIn("engine-owned", disc["errors"][0])
+            self.assertEqual(disc["collisions"], [])
+            self.assertEqual(disc["warnings"], [])
+
+    def test_failed_validation_returns_every_disclosure_key(self):
+        groups, disc = sp.assemble({"groups": [{"capability": "custom:", "match": ["x"]}]},
+                                   self.vocab, self.affinity)
+        self.assertIsNone(groups)
+        self.assertEqual(set(disc), {"groups", "errors", "collisions", "warnings"})
+        self.assertTrue(disc["errors"])
+
     def test_top_level_core_and_tests_groups_are_allowed(self):
         # R4: a repo whose crate IS `core` (ripgrep) may name a vertical Core;
         # a large cross-cutting suite may be proposed as Tests (with layers).
@@ -724,6 +873,23 @@ class TestAssembleV2(unittest.TestCase):
                         for n, b in groups.items()}})
         self.assertEqual(errors, [])
 
+    def test_round_trip_validates_the_nested_draft_shape(self):
+        # The shape parse_groups checks is the one the draft is written in:
+        # layers as subgroups plus the residual `Core` carrier.
+        nested = sp._nested_leaves({
+            "Auth": {"match": ["x/**"], "tests": ["t/**"], "panels": ["SEC"],
+                     "layers": [{"layer": "API", "match": ["x/http/**"], "canonical": True}],
+                     "profile": {}},
+            "Search": {"match": ["s/**"], "tests": [], "panels": [], "layers": [],
+                       "profile": {}}})
+        self.assertEqual(nested, {
+            "Auth": {"API": {"match": ["x/http/**"]},
+                     "Core": {"match": ["x/**"], "tests": ["t/**"], "panels": ["SEC"]}},
+            "Search": {"match": ["s/**"], "tests": [], "panels": []}})
+        parsed, errors = groups_schema.parse_groups({"groups": nested})
+        self.assertEqual(errors, [])
+        self.assertEqual(set(parsed), {"Auth:API", "Auth:Core", "Search"})
+
 
 class TestMergeAdditiveV2(unittest.TestCase):
     """5.2: parents (layers as subgroups, #1305) flow through flatten / merge /
@@ -740,15 +906,15 @@ class TestMergeAdditiveV2(unittest.TestCase):
                                              "panels": []}})
         self.assertEqual(list(flat), ["Auth:API", "Auth:Core", "Search"])
         self.assertEqual(flat["Auth:Core"]["match"], ["src/auth/**", "!src/auth/http/**"])
-        flat["Search"]["match"].append("zzz")            # copies, not views
-        self.assertEqual(flat["Auth:API"]["match"], ["src/auth/http/**"])
+        flat["Auth:API"]["match"].append("zzz")          # copies, not views
+        self.assertEqual(self.PARENT["subgroups"]["API"]["match"], ["src/auth/http/**"])
 
     def test_new_parent_is_adopted_with_its_layers(self):
         merged, diff = sp.merge_additive({}, {"Auth": self.PARENT},
                                          {"Auth": ["src/auth/http/login.py"]})
         self.assertEqual(list(merged["Auth"]["subgroups"]), ["API", "Core"])
         self.assertEqual(diff["new_groups"], [{
-            "name": "Auth", "match": ["src/auth/http/**", "src/auth/**", "!src/auth/http/**"],
+            "name": "Auth", "match": ["src/auth/http/**", "src/auth/**"],
             "panels": [], "subgroups": ["API", "Core"]}])
         merged["Auth"]["subgroups"]["API"]["match"].append("zzz")
         self.assertEqual(self.PARENT["subgroups"]["API"]["match"], ["src/auth/http/**"])
@@ -758,11 +924,26 @@ class TestMergeAdditiveV2(unittest.TestCase):
         merged, diff = sp.merge_additive(committed, {"Auth": self.PARENT},
                                          {"Auth": ["src/auth/http/login.py"]})
         self.assertNotIn("subgroups", merged["Auth"])                 # still a leaf
-        self.assertEqual(merged["Auth"]["match"],
-                         ["src/auth/**", "src/auth/http/**", "!src/auth/http/**"])
+        # The carrier's `!src/auth/http/**` is a partition between the layers,
+        # not a claim boundary: absorbed into one leaf it would shrink the
+        # committed claim, so it is dropped.
+        self.assertEqual(merged["Auth"]["match"], ["src/auth/**", "src/auth/http/**"])
         self.assertEqual(diff["layers_dropped"], [{"name": "Auth", "layers": ["API", "Core"]}])
-        self.assertEqual(diff["extended_groups"][0]["added_match"],
-                         ["src/auth/http/**", "!src/auth/http/**"])
+        self.assertEqual(diff["extended_groups"][0]["added_match"], ["src/auth/http/**"])
+
+    def test_committed_leaf_keeps_a_genuine_exclusion_from_the_proposal(self):
+        # A negation that is NOT a sibling's positive glob is a real boundary
+        # (`src/auth/legacy/**` belongs to nobody) and still extends the leaf.
+        parent = {"subgroups": {"API": {"match": ["src/auth/http/**"], "tests": [],
+                                        "panels": [], "exclude": []},
+                                "Core": {"match": ["src/auth/**", "!src/auth/http/**",
+                                                   "!src/auth/legacy/**"],
+                                         "tests": [], "panels": [], "exclude": []}}}
+        committed = {"Auth": {"match": ["src/auth/**"], "tests": [], "panels": []}}
+        merged, _ = sp.merge_additive(committed, {"Auth": parent},
+                                      {"Auth": ["src/auth/http/login.py"]})
+        self.assertEqual(merged["Auth"]["match"],
+                         ["src/auth/**", "src/auth/http/**", "!src/auth/legacy/**"])
 
     def test_committed_parent_is_never_touched(self):
         committed = {"Auth": self.PARENT}
