@@ -2947,6 +2947,87 @@ class TestDriverSetup(unittest.TestCase):
         self.assertIn("groups.yml.draft", "".join(os.listdir(driver._pano(d))))
         self.assertFalse(os.path.isfile(driver._pano(d, "groups.yml")))
 
+    def test_setup_size_flags_pin_the_manifest_and_reach_the_report(self):
+        # 5.2: --max-per-group/--max-groups are pinned in setup-manifest.json at
+        # scan time and honoured by ingest; the report artifacts are written
+        # and the completion message points at the report.
+        d = self._repo()
+        args = driver.build_parser().parse_args(
+            ["setup", d, "--max-per-group", "3", "--max-groups", "5"])
+        driver.run_setup_flow(args)                       # scan checkpoint
+        manifest = driver.load_setup_manifest(d)
+        self.assertEqual((manifest["max_per_group"], manifest["max_groups"]), (3, 5))
+        with open(driver._pano(d, "setup-proposal.json"), "w") as fh:
+            json.dump({"groups": [{"capability": "Checkout",
+                                   "match": ["src/checkout/**"], "tests": []}]}, fh)
+        status = driver.run_setup_flow(args)              # re-invoke -> ingest
+        self.assertEqual(status["status"], "complete")
+        self.assertIn("setup-report.md", status["message"])
+        report = driver._load_json(driver._pano(d, "setup-report.json"))["report"]
+        self.assertEqual((report["cap"], report["ceiling"]), (3, 5))
+        self.assertTrue(os.path.isfile(driver._pano(d, "setup-report.md")))
+        # a bare re-invocation resumes the pinned manifest, not the (absent) flags
+        status = driver.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
+        self.assertEqual(status["status"], "complete")
+        self.assertEqual(driver.load_setup_manifest(d)["max_per_group"], 3)
+
+    def test_scan_writes_the_spine_with_the_manifest_sizes(self):
+        # 5.2 stage 1: the scan phase computes the spine ONCE with the sizes
+        # the manifest pinned, persists it, and the brief carries the same
+        # numbers -- what the agent plans against is what ingest applies.
+        d = self._repo()
+        args = driver.build_parser().parse_args(
+            ["setup", d, "--max-per-group", "3", "--max-groups", "5"])
+        status = driver.run_setup_flow(args)
+        self.assertEqual(status["checkpoint"], "scan")
+        spine = driver._load_json(driver._pano(d, "setup-spine.json"))
+        self.assertEqual((spine["cap"], spine["ceiling"], spine["ceiling_source"]),
+                         (3, 5, "cli"))
+        self.assertEqual(driver.setup_flow.read_spine(d), spine)
+        with open(driver._pano(d, "setup-scan-brief.md"), encoding="utf-8") as fh:
+            brief = fh.read()
+        self.assertIn("## Size arithmetic", brief)
+        self.assertIn("ceiling (review groups this repo affords): 5 from --max-groups", brief)
+        self.assertIn("setup-spine.json", driver._TOP_LEVEL)
+        self.assertIn("setup-spine.json", driver._SETUP_ARTIFACTS)
+        # --reset drops the pinned sizes and re-runs scan: the spine is rebuilt
+        # with the defaults, not left over from the flagged run
+        driver.run_setup_flow(driver.build_parser().parse_args(["setup", d, "--reset"]))
+        spine = driver._load_json(driver._pano(d, "setup-spine.json"))
+        self.assertEqual((spine["cap"], spine["ceiling_source"]), (48, "formula"))
+
+    def test_scan_brief_carries_the_bundled_catalogs(self):
+        # 5.2 §5.1: the scan phase renders BOTH shipped catalogs in full prose
+        # (#1500) -- the capability entries with their definitions and the
+        # layer entries the agent may name -- plus the surfaces enum.
+        d = self._repo()
+        driver.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
+        with open(driver._pano(d, "setup-scan-brief.md"), encoding="utf-8") as fh:
+            brief = fh.read()
+        self.assertIn("## Capability catalog", brief)
+        self.assertIn("### Auth\nDefinition: ", brief)
+        self.assertIn("## Layer catalog", brief)
+        self.assertIn("### API\nDefinition: ", brief)
+        self.assertNotIn("do not propose `layers`", brief)
+        for surface in driver.coverage_model.SURFACES:
+            self.assertIn(surface, brief)
+
+    def test_reset_clears_the_report_artifacts(self):
+        d = self._repo()
+        args = driver.build_parser().parse_args(["setup", d])
+        driver.run_setup_flow(args)
+        with open(driver._pano(d, "setup-proposal.json"), "w") as fh:
+            json.dump({"groups": [{"capability": "Checkout",
+                                   "match": ["src/checkout/**"], "tests": []}]}, fh)
+        driver.run_setup_flow(args)
+        for name in ("setup-report.md", "setup-report.json"):
+            self.assertTrue(os.path.isfile(driver._pano(d, name)), name)
+            self.assertIn(name, driver._TOP_LEVEL)
+            self.assertIn(name, driver._SETUP_ARTIFACTS)
+        driver.run_setup_flow(driver.build_parser().parse_args(["setup", d, "--reset"]))
+        for name in ("setup-report.md", "setup-report.json", "groups.yml.draft"):
+            self.assertFalse(os.path.isfile(driver._pano(d, name)), name)
+
 
 class TestDriverEntrypoint(unittest.TestCase):
     """#5.0-01: the documented `python3 skill/scripts/driver.py run ...` must

@@ -94,6 +94,7 @@ _TOP_LEVEL = frozenset({
     "config.json", "groups.yml", "groups.yml.draft",
     "run-manifest.json", "setup-manifest.json",
     "setup-proposal.json", "setup-complete.json", "setup-scan-brief.md",
+    "setup-spine.json", "setup-report.md", "setup-report.json",
     "epss-cache.json", "write-allowlist.json",
     "report.json", "report.json.html",
 })
@@ -2107,7 +2108,13 @@ def scan_execute(review_root, manifest):
     vocab, present = setup_flow.load_bundled_vocabulary(manifest.get("vocabulary_path"))
     if not present:
         return _scan_fallback(review_root, manifest, host, note=note)   # Task 3
-    brief_path = setup_flow.render_scan_brief(review_root, vocab)
+    # 5.2 stage 1: the spine is computed once, with the sizes the manifest
+    # pinned, persisted for the record and rendered into the brief.
+    spine = setup_flow.build_spine(review_root, max_per_group=manifest.get("max_per_group"),
+                                   max_groups=manifest.get("max_groups"))
+    setup_flow.write_spine(review_root, spine)
+    layers, _ = setup_flow.load_bundled_layers()
+    brief_path = setup_flow.render_scan_brief(review_root, vocab, layers=layers, spine=spine)
     entry = _setup_scan_entry(review_root, _read_text(brief_path))
     req = write_dispatch_request(review_root, manifest["run_id"], "scan", None, [entry])
     msg = "setup-scan checkpoint" + ((" — " + note) if note else "")
@@ -2121,11 +2128,14 @@ def ingest_done(review_root, manifest):
 
 
 def ingest_execute(review_root, manifest):
-    res = setup_flow.ingest_proposal(review_root)
+    res = setup_flow.ingest_proposal(review_root,
+                                     max_per_group=manifest.get("max_per_group"),
+                                     max_groups=manifest.get("max_groups"))
     if not res["ok"]:
         raise DriverError("ingest: " + "; ".join(res["errors"]))
     return PhaseResult(kind="advanced",
-                       message="setup: draft written %s" % res["draft"])
+                       message="setup: draft written %s; report %s"
+                       % (res["draft"], res["report_path"]))
 
 
 SETUP_PHASES = (
@@ -2134,8 +2144,9 @@ SETUP_PHASES = (
 )
 
 
-_SETUP_ARTIFACTS = ("setup-scan-brief.md", "setup-proposal.json",
-                    "groups.yml.draft", "setup-complete.json", SETUP_MANIFEST)
+_SETUP_ARTIFACTS = ("setup-scan-brief.md", "setup-spine.json", "setup-proposal.json",
+                    "groups.yml.draft", "setup-report.md", "setup-report.json",
+                    "setup-complete.json", SETUP_MANIFEST)
 
 
 def _clear_setup_artifacts(review_root):
@@ -2214,7 +2225,12 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES):
                     "review_root": os.path.abspath(review_root),
                     "target": os.path.abspath(args.target),
                     "host": args.host or _DEFAULTS["host"],
-                    "vocabulary_path": None}
+                    "vocabulary_path": None,
+                    # 5.2 size policy, pinned at scan time so the brief's
+                    # arithmetic and the ingest's layers agree (anti-drift, like
+                    # the run manifest's max_per_group). None = config.json/default.
+                    "max_per_group": getattr(args, "max_per_group", None),
+                    "max_groups": getattr(args, "max_groups", None)}
         _write_json(_setup_manifest_path(review_root), manifest)
     try:
         result = run_engine(review_root, manifest, phases)
@@ -2222,8 +2238,9 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES):
         return _error_status(str(exc))
     if result.get("status") == "complete":
         if os.path.isfile(_pano(review_root, "groups.yml.draft")):
-            result["message"] = ("setup complete — review .panopticon/groups.yml.draft, "
-                                 "move it to .panopticon/groups.yml, and commit")
+            result["message"] = ("setup complete — read .panopticon/setup-report.md, "
+                                 "review .panopticon/groups.yml.draft, move it to "
+                                 ".panopticon/groups.yml, and commit")
         else:
             msg = ("setup complete — vocab-absent fallback seeded a flat "
                   ".panopticon/groups.yml; review, edit, and commit it")
@@ -2366,6 +2383,11 @@ def build_parser():
     sp.add_argument("target", nargs="?", default=".")
     sp.add_argument("--host", default=None, choices=["claude", "generic", "gemini"])
     sp.add_argument("--reset", action="store_true")
+    # 5.2 size policy (spec §5.3): files per dispatch unit and the leaf
+    # ceiling. Unset = .panopticon/config.json (max_per_group / max_groups),
+    # else the defaults (48; max(4, 2 x ceil(code_files / cap))).
+    sp.add_argument("--max-per-group", type=int, default=None)
+    sp.add_argument("--max-groups", type=int, default=None)
     return parser
 
 
