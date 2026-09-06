@@ -1,0 +1,26 @@
+# Panopticon Tests sweep -- seed globs for the run-time `Tests` universal
+# vertical (5.2 spec §4.3). Formed LAST, from test-tree files no vertical's
+# scoped `tests:` axis credited. Loaded by discovery._tests_catalog() as a
+# plain {name: {match}} mapping exactly like commons_catalog.yml; a committed
+# or assembled group named `Tests` (or any `Tests:*` subgroup) suppresses it.
+# Fixture directories are pruned before any of this runs (_is_fixture_dir).
+#
+# Panel-harvested (2026-08-21-5.2.0-vocab-panel) and curated like Commons:
+# conventional test-tree roots only -- never a bare extension glob, never a
+# project-layout prefix. Colocated tests (`foo_test.go`, `foo.test.ts`) are
+# NOT swept: they belong to the vertical beside them via its `tests:` axis.
+version: 1.0.0
+groups:
+  Tests:
+    match:
+      - "tests/**"
+      - "test/**"
+      - "spec/**"
+      - "e2e/**"
+      - "__tests__/**"
+      - "**/__tests__/**"
+      - "integration/**"
+      - "cypress/**"
+      - "playwright/**"
+      - "load/**"
+      - "benchmarks/**"

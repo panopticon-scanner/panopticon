@@ -112,16 +112,32 @@ class TestTemplateFrontmatter(unittest.TestCase):
 
 
 class TestSetupScanTemplate(unittest.TestCase):
-    def test_renders_with_spine_and_vocabulary(self):
+    def test_renders_with_spine_and_catalogs(self):
         rendered = dispatch.render_prompt("setup-scan.md", {
             "repo_spine": "src/, tests/, pyproject.toml",
-            "vocabulary_labels": "Auth, Checkout, Catalog",
-            "vocabulary_hints": "- Auth: **/auth/**, **/login/**"})
-        self.assertIn("Checkout", rendered)
+            "budget": "- cap: 48",
+            "capability_catalog": "### Auth\nDefinition: sign-in.\nHints (non-authoritative): **/auth/**",
+            "layer_catalog": "### API\nDefinition: the transport edge.",
+            "surfaces": "auth, http_web"})
+        self.assertIn("### Auth", rendered)
+        self.assertIn("### API", rendered)
         self.assertIn("UNTRUSTED DATA", rendered)
         self.assertIn('"capability"', rendered)  # proposal JSON shape present
-        self.assertIn("**/auth/**", rendered)  # hint globs reach the classifier
+        self.assertIn('"layers"', rendered)      # 5.2: layers in the proposal shape
+        self.assertIn('"profile"', rendered)     # 5.2: profile in the proposal shape
+        self.assertIn("**/auth/**", rendered)    # hint globs reach the classifier
         self.assertIn("non-authoritative", rendered)  # hints labeled as suggestions
+        self.assertIn("from: auth, http_web)", rendered)  # the surfaces enum
+        self.assertIn("`Core`", rendered)        # the reserved layer name is named
+
+    def test_placeholders_are_exactly_the_brief_mapping(self):
+        # render_scan_brief supplies exactly these five; a sixth placeholder
+        # in the template would raise at scan time, a missing one would drop
+        # a section silently.
+        _, body = dispatch.load_template("setup-scan.md")
+        self.assertEqual(sorted(set(dispatch.PLACEHOLDER_RE.findall(body))),
+                         ["budget", "capability_catalog", "layer_catalog",
+                          "repo_spine", "surfaces"])
 
     def test_is_read_only(self):
         meta, _ = dispatch.load_template("setup-scan.md")

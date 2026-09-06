@@ -4,6 +4,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+import scripts.coverage_model as coverage_model
+import scripts.grouping_engine as grouping_engine
 import scripts.setup_flow as setup_flow
 import shutil
 
@@ -99,6 +101,44 @@ class TestSetupFlow(unittest.TestCase):
         self.assertEqual(cm["Checkout"]["match"], ["src/checkout/**"])
         self.assertEqual(cm["Checkout"]["panels"], ["SEC"])
 
+    def test_committed_matrix_keeps_parent_structure(self):
+        # 5.2: a #1305 parent must come back as {"subgroups": {...}}, not as an
+        # empty leaf that the additive merge would then "extend" into a leaf.
+        d = _repo(self)
+        with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
+            fh.write("groups:\n  Checkout:\n    API:\n      match: ['src/checkout/api/**']\n"
+                     "      panels: [SEC]\n    Core:\n      match: ['src/checkout/**']\n")
+        cm = setup_flow.committed_matrix(d)
+        self.assertEqual(list(cm["Checkout"]["subgroups"]), ["API", "Core"])
+        self.assertEqual(cm["Checkout"]["subgroups"]["API"]["panels"], ["SEC"])
+        self.assertEqual(cm["Checkout"]["subgroups"]["Core"],
+                         {"match": ["src/checkout/**"], "tests": [], "panels": [], "exclude": []})
+        self.assertNotIn("match", cm["Checkout"])
+
+    def test_ingest_never_flattens_a_committed_parent(self):
+        d = _repo(self)
+        with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
+            fh.write("groups:\n  Checkout:\n    API:\n      match: ['src/checkout/api/**']\n"
+                     "    Core:\n      match: ['src/checkout/**']\n")
+        os.makedirs(os.path.join(d, "src", "search"))
+        with open(os.path.join(d, "src", "search", "q.py"), "w") as fh:
+            fh.write("y = 2\n")
+        proposal = {"groups": [
+            {"capability": "Checkout", "match": ["src/checkout/**", "src/pay/**"]},
+            {"capability": "Search", "match": ["src/search/**"]}]}
+        pp = os.path.join(d, ".panopticon", "setup-proposal.json")
+        with open(pp, "w") as fh:
+            json.dump(proposal, fh)
+        res = setup_flow.ingest_proposal(d, pp)
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(res["diff"]["dropped_redundant"], ["Checkout"])   # claims nothing new
+        self.assertEqual([g["name"] for g in res["diff"]["new_groups"]], ["Search"])
+        import yaml as _yaml
+        with open(res["draft"], encoding="utf-8") as fh:
+            drafted = _yaml.safe_load(fh)["groups"]
+        self.assertEqual(list(drafted["Checkout"]), ["API", "Core"])     # parent intact
+        self.assertEqual(drafted["Search"]["match"], ["src/search/**"])
+
     def test_ingest_writes_draft_with_affinity_floor(self):
         d = _repo(self)
         proposal = {"groups": [{"capability": "Checkout",
@@ -183,20 +223,249 @@ class TestSetupFlow(unittest.TestCase):
         self.assertIn("Auth", brief)
         self.assertIn("**/auth/**", brief)  # the hint globs reach the classifier
 
-    def test_repo_spine_summary(self):
-        with tempfile.TemporaryDirectory() as d:
-            os.makedirs(os.path.join(d, "src", "app"))
-            os.makedirs(os.path.join(d, "tests"))
-            with open(os.path.join(d, "src", "app", "main.py"), "w") as fh:
-                fh.write("print(1)")
-            with open(os.path.join(d, "package.json"), "w") as fh:
-                fh.write("{}")
-            with open(os.path.join(d, "pyproject.toml"), "w") as fh:
-                fh.write("[project]")
-            summary = setup_flow._repo_spine_summary(d)
-            self.assertIn("top-level: src", summary)
-            self.assertIn("package.json", summary)
-            self.assertIn("pyproject.toml", summary)
+    def test_render_capability_catalog_is_full_prose(self):
+        # #1500: definition/boundary/aliases/examples/see_also all reach the
+        # brief, hints are labelled non-authoritative, entries keep file order.
+        vocab = {
+            "names": ["Auth", "Checkout"],
+            "hints": {"Auth": ["**/auth/**", "**/login/**"]},
+            "entries": {
+                "Auth": {"definition": "Identity: sign-in, sessions, tokens.",
+                         "boundary": "Authorization rules on resources are the owning vertical.",
+                         "aliases": ["authentication", "login"],
+                         "examples": [{"repo": "authelia", "path": "internal/authentication/"},
+                                      {"repo": "gotify", "path": "auth/"}],
+                         "see_also": ["Users"]},
+                "Checkout": {"definition": "Cart to order."}}}
+        text = setup_flow.render_capability_catalog(vocab)
+        self.assertEqual(text.split("\n\n")[0], "\n".join([
+            "### Auth",
+            "Definition: Identity: sign-in, sessions, tokens.",
+            "Boundary: Authorization rules on resources are the owning vertical.",
+            "Aliases: authentication, login",
+            "Hints (non-authoritative): **/auth/**, **/login/**",
+            "Examples: authelia `internal/authentication/`; gotify `auth/`",
+            "See also: Users"]))
+        self.assertEqual(text.split("\n\n")[1], "### Checkout\nDefinition: Cart to order.")
+        # the 5.0 shape (names + hints, no entries) still renders
+        self.assertEqual(setup_flow.render_capability_catalog(
+            {"names": ["Auth"], "hints": {"Auth": ["**/auth/**"]}}),
+            "### Auth\nHints (non-authoritative): **/auth/**")
+        self.assertEqual(setup_flow.render_capability_catalog({"names": []}),
+                         "(no capability catalog bundled)")
+
+    def test_render_layer_catalog_tells_the_agent_when_there_are_no_layers(self):
+        self.assertEqual(setup_flow.render_layer_catalog(None),
+                         "(no layer catalog bundled -- do not propose `layers`)")
+        self.assertEqual(setup_flow.render_layer_catalog({"names": []}),
+                         "(no layer catalog bundled -- do not propose `layers`)")
+        layers = {"names": ["API"], "hints": {"API": ["**/api/**"]},
+                  "entries": {"API": {"definition": "Inbound request handling.",
+                                      "aliases": ["controllers", "routes"]}}}
+        self.assertEqual(setup_flow.render_layer_catalog(layers), "\n".join([
+            "### API", "Definition: Inbound request handling.",
+            "Aliases: controllers, routes",
+            "Hints (non-authoritative): **/api/**"]))
+
+    def test_load_bundled_layers_present_and_absent(self):
+        layers, present = setup_flow.load_bundled_layers()
+        self.assertTrue(present)
+        self.assertIn("API", layers["names"])
+        self.assertIn("definition", layers["entries"]["API"])
+        with mock.patch.object(setup_flow, "_LAYERS_PATH", "/nonexistent/layers.yml"):
+            self.assertEqual(setup_flow.load_bundled_layers(), ({"names": []}, False))
+        d = _repo(self)
+        bad = os.path.join(d, "layers.yml")
+        with open(bad, "w", encoding="utf-8") as fh:
+            fh.write("layers: [{name: Core}]\n")   # reserved name -> loader error
+        self.assertEqual(setup_flow.load_bundled_layers(bad), ({"names": []}, False))
+
+    def test_scan_brief_carries_both_catalogs_and_the_surfaces_enum(self):
+        d = _repo(self)
+        vocab = {"names": ["Auth"], "hints": {"Auth": ["**/auth/**"]},
+                 "entries": {"Auth": {"definition": "Identity: sign-in, sessions, tokens."}}}
+        layers = {"names": ["API"], "entries": {"API": {"definition": "Inbound request handling."}}}
+        with open(setup_flow.render_scan_brief(d, vocab, layers=layers), encoding="utf-8") as fh:
+            brief = fh.read()
+        self.assertIn("## Capability catalog", brief)
+        self.assertIn("### Auth\nDefinition: Identity: sign-in, sessions, tokens.", brief)
+        self.assertIn("## Layer catalog", brief)
+        self.assertIn("### API\nDefinition: Inbound request handling.", brief)
+        for surface in coverage_model.SURFACES:      # every profile surface is offered
+            self.assertIn(surface, brief)
+        self.assertIn('"layers"', brief)
+        self.assertIn('"profile"', brief)
+        self.assertNotIn("{", brief.split("```json")[0])   # no unrendered placeholder before the JSON example
+        # layers=None: the brief tells the agent not to propose layers
+        with open(setup_flow.render_scan_brief(d, vocab), encoding="utf-8") as fh:
+            self.assertIn("do not propose `layers`", fh.read())
+
+    def _spine_repo(self):
+        # A small polyglot repo: a committed vertical, a second unclaimed one,
+        # docs/CI/manifests for Commons, two test trees, two manifests that
+        # name frameworks. Non-git, so discovery walks the tree.
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        files = {
+            "src/checkout/pay.py": "x = 1\n",
+            "src/checkout/api/routes.py": "x = 1\n",
+            "src/search/a.go": "package s\n",
+            "src/search/b.go": "package s\n",
+            "src/search/deep/c.go": "package s\n",
+            "docs/guide.md": "# g\n",
+            "README.md": "# r\n",
+            ".github/workflows/ci.yml": "on: push\n",
+            "tests/checkout/test_pay.py": "def test(): pass\n",
+            "tests/search/search_test.go": "package s\n",
+            "package.json": '{"dependencies": {"react": "18"}}\n',
+            "pyproject.toml": "[project]\ndependencies = ['django']\n",
+        }
+        for rel, body in files.items():
+            os.makedirs(os.path.join(d, os.path.dirname(rel)) or d, exist_ok=True)
+            with open(os.path.join(d, rel), "w") as fh:
+                fh.write(body)
+        os.makedirs(os.path.join(d, ".panopticon"))
+        with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
+            fh.write("groups:\n  Checkout:\n    match: ['src/checkout/**']\n    panels: [SEC]\n")
+        return d
+
+    def test_build_spine_tree_languages_frameworks_and_claims(self):
+        d = self._spine_repo()
+        spine = setup_flow.build_spine(d)
+        self.assertEqual(spine["schema_version"], 1)
+        # code = total - commons - test tree, over the shipped classifiers
+        self.assertEqual(spine["files"],
+                         {"total": 12, "code": 5, "commons": 5, "test_tree": 2})
+        self.assertEqual((spine["cap"], spine["ceiling"], spine["ceiling_source"]),
+                         (48, 4, "formula"))
+        # depth-2 rows, most files first, ties by path; deeper files roll up
+        self.assertEqual(spine["tree"][:3], [
+            {"path": ".", "files": 3, "ext": ".json"},
+            {"path": "src/search", "files": 3, "ext": ".go"},
+            {"path": "src/checkout", "files": 2, "ext": ".py"}])
+        self.assertEqual(spine["tree_more"], 0)
+        # languages count CODE files only (tests and commons excluded)
+        self.assertEqual(spine["languages"], [{"language": "Go", "files": 3},
+                                              {"language": "Python", "files": 2}])
+        self.assertEqual(spine["manifests"], ["package.json", "pyproject.toml"])
+        self.assertEqual(spine["frameworks"], ["Django", "React"])
+        # committed groups claim first; Commons is counted on the leftovers
+        self.assertEqual(spine["claimed"]["committed"], {"Checkout": 2})
+        self.assertEqual(spine["claimed"]["commons"], {"Build": 2, "CI": 1, "Docs": 2})
+        self.assertEqual(spine["test_trees"], [{"path": "tests/checkout", "files": 1},
+                                               {"path": "tests/search", "files": 1}])
+        json.dumps(spine)                                  # serializable
+
+    def test_build_spine_size_precedence_matches_ingest(self):
+        d = self._spine_repo()
+        with open(os.path.join(d, ".panopticon", "config.json"), "w") as fh:
+            json.dump({"max_per_group": 2, "max_groups": 6}, fh)
+        spine = setup_flow.build_spine(d)
+        self.assertEqual((spine["cap"], spine["ceiling"], spine["ceiling_source"]),
+                         (2, 6, "config"))
+        spine = setup_flow.build_spine(d, max_per_group=3, max_groups=9)
+        self.assertEqual((spine["cap"], spine["ceiling"], spine["ceiling_source"]),
+                         (3, 9, "cli"))
+        os.remove(os.path.join(d, ".panopticon", "config.json"))
+        spine = setup_flow.build_spine(d, max_per_group=2)
+        # 5 code files at cap 2 -> max(4, 2 * ceil(5 / 2)) = 6
+        self.assertEqual((spine["cap"], spine["ceiling"], spine["ceiling_source"]),
+                         (2, 6, "formula"))
+
+    def test_build_spine_rows_are_bounded_and_sanitized(self):
+        d = _repo(self)
+        files = ["pkg%03d/mod.py" % i for i in range(90)] + ["evil` dir/x.py"]
+        spine = setup_flow.build_spine(d, files=files)
+        self.assertEqual(len(spine["tree"]), setup_flow._MAX_TREE_ROWS)
+        self.assertEqual(spine["tree_more"], 91 - setup_flow._MAX_TREE_ROWS)
+        # the odd name sorts first (1 file each, ties by path) and is neutralised:
+        # backtick stripped, the whitespace survivor repr()-quoted (#1120)
+        self.assertEqual(spine["tree"][0]["path"], "'evil dir'")
+        self.assertNotIn("`", json.dumps(spine))
+        self.assertEqual(spine["claimed"], {"committed": {}, "commons": {}, "groups_yml": False})
+
+    def test_spine_lists_every_committed_leaf_and_says_why_nothing_is_claimed(self):
+        # A committed group whose globs match nothing today still appears (as
+        # 0) -- the agent must not re-propose it -- and the "nothing claimed"
+        # wording distinguishes no groups.yml from one without match: globs.
+        d = self._spine_repo()
+        with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
+            fh.write("groups:\n  Checkout:\n    match: ['src/checkout/**']\n"
+                     "  Legacy:\n    match: ['src/gone/**']\n")
+        spine = setup_flow.build_spine(d)
+        self.assertEqual(spine["claimed"]["committed"], {"Checkout": 2, "Legacy": 0})
+        self.assertTrue(spine["claimed"]["groups_yml"])
+        text = setup_flow.format_spine(spine)
+        self.assertIn("    Legacy                                       0", text)
+        self.assertIn("0 = its globs match nothing today", text)
+        with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
+            fh.write("groups:\n  Checkout: [src/checkout/pay.py]\n")
+        spine = setup_flow.build_spine(d)
+        self.assertEqual(spine["claimed"]["committed"], {"Checkout": 0})
+        os.remove(os.path.join(d, ".panopticon", "groups.yml"))
+        spine = setup_flow.build_spine(d)
+        self.assertEqual(spine["claimed"]["committed"], {})
+        self.assertFalse(spine["claimed"]["groups_yml"])
+        self.assertIn("nothing (no groups.yml)", setup_flow.format_spine(spine))
+        self.assertIn("nothing (it has no match: globs)",
+                      setup_flow.format_spine(dict(spine, claimed={
+                          "committed": {}, "commons": {}, "groups_yml": True})))
+
+    def test_budget_quotes_the_engine_floor_and_min_ceiling(self):
+        d = self._spine_repo()
+        budget = setup_flow.format_budget(setup_flow.build_spine(d))
+        self.assertIn("a layer under %d files merges back" % grouping_engine.FLOOR, budget)
+        self.assertIn("= max(%d, 2 * ceil(code_files / cap))" % grouping_engine.MIN_CEILING,
+                      budget)
+
+    def test_format_spine_and_budget_render_the_brief_sections(self):
+        d = self._spine_repo()
+        spine = setup_flow.build_spine(d, max_groups=5)
+        text = setup_flow.format_spine(spine)
+        self.assertIn("src/search                                   3  .go", text)
+        self.assertIn("Languages (code files): Go (3), Python (2)", text)
+        self.assertIn("Frameworks (from manifests): Django, React", text)
+        self.assertIn("Already claimed by the committed groups.yml", text)
+        self.assertIn("    Checkout                                     2", text)
+        self.assertIn("Claimed by the Commons classifier", text)
+        self.assertIn("the Tests sweep will catch these", text)
+        self.assertIn("    tests/search                                 1", text)
+        budget = setup_flow.format_budget(spine)
+        self.assertIn("- files: 12 total = 5 code + 5 commons + 2 test tree", budget)
+        self.assertIn("--max-per-group): 48", budget)
+        self.assertIn("ceiling (review groups this repo affords): 5 from --max-groups", budget)
+        self.assertIn("propose `layers` ONLY for a vertical you estimate OVER the cap (48 files)",
+                      budget)
+        self.assertNotIn("{", text + budget)     # nothing left for render_prompt to choke on
+
+    def test_write_and_read_spine_round_trip(self):
+        d = self._spine_repo()
+        self.assertIsNone(setup_flow.read_spine(d))
+        spine = setup_flow.build_spine(d)
+        path = setup_flow.write_spine(d, spine)
+        self.assertEqual(os.path.basename(path), "setup-spine.json")
+        self.assertEqual(setup_flow.read_spine(d), spine)
+        with open(path, "w") as fh:
+            fh.write("[]")
+        self.assertIsNone(setup_flow.read_spine(d))          # not a v1 mapping
+        with open(path, "w") as fh:
+            fh.write("{not json")
+        self.assertIsNone(setup_flow.read_spine(d))
+
+    def test_scan_brief_renders_the_spine_and_the_budget(self):
+        d = self._spine_repo()
+        vocab = {"names": ["Auth"], "hints": {"Auth": ["**/auth/**"]}}
+        path = setup_flow.render_scan_brief(d, vocab, spine=setup_flow.build_spine(d, max_groups=7))
+        with open(path, encoding="utf-8") as fh:
+            brief = fh.read()
+        self.assertIn("## Repository spine", brief)
+        self.assertIn("src/search                                   3  .go", brief)
+        self.assertIn("## Size arithmetic", brief)
+        self.assertIn("ceiling (review groups this repo affords): 7 from --max-groups", brief)
+        # a brief with no spine argument builds one with the default sizes
+        path = setup_flow.render_scan_brief(d, vocab)
+        with open(path, encoding="utf-8") as fh:
+            self.assertIn("--max-per-group): 48", fh.read())
 
     def test_sanitize_spine_token_neutralizes_adversarial_input(self):
         # #run7 TST-A2D: _sanitize_spine_token (#1120 prompt-injection defense for
@@ -347,6 +616,92 @@ class TestSetupFlow(unittest.TestCase):
         self.assertNotIn(".panopticon/*", gi)   # not migrated
         self.assertNotIn("!.panopticon/", gi)   # dir not re-exposed
         self.assertFalse(res["groups_yml_committable"])
+
+
+    # --- 5.2 stage 3 wiring: size policy, layers, the setup report -----------
+
+    def _write_proposal(self, d, proposal):
+        pp = os.path.join(d, ".panopticon", "setup-proposal.json")
+        with open(pp, "w") as fh:
+            json.dump(proposal, fh)
+        return pp
+
+    def test_config_overrides_honour_positive_ints_only(self):
+        d = _repo(self)
+        self.assertEqual(setup_flow.config_overrides(d),
+                         {"max_per_group": None, "max_groups": None})
+        with open(os.path.join(d, ".panopticon", "config.json"), "w") as fh:
+            json.dump({"max_per_group": 32, "max_groups": "8"}, fh)
+        self.assertEqual(setup_flow.config_overrides(d),
+                         {"max_per_group": 32, "max_groups": None})
+        with open(os.path.join(d, ".panopticon", "config.json"), "w") as fh:
+            json.dump({"max_per_group": True, "max_groups": 0}, fh)
+        self.assertEqual(setup_flow.config_overrides(d),
+                         {"max_per_group": None, "max_groups": None})
+        with open(os.path.join(d, ".panopticon", "config.json"), "w") as fh:
+            fh.write("not json")
+        self.assertEqual(setup_flow.config_overrides(d),
+                         {"max_per_group": None, "max_groups": None})
+
+    def test_ingest_writes_the_report_and_resolves_cap_cli_over_config(self):
+        d = _repo(self)
+        with open(os.path.join(d, ".panopticon", "config.json"), "w") as fh:
+            json.dump({"max_per_group": 2, "max_groups": 6}, fh)
+        pp = self._write_proposal(d, {"groups": [{"capability": "Checkout",
+                                                  "match": ["src/checkout/**"], "tests": []}]})
+        res = setup_flow.ingest_proposal(d, pp)
+        self.assertTrue(res["ok"], res)
+        self.assertEqual((res["report"]["cap"], res["report"]["ceiling"]), (2, 6))
+        self.assertEqual(res["report_path"], os.path.join(d, ".panopticon", "setup-report.md"))
+        with open(res["report_path"], encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertTrue(text.startswith("# Setup report\n"))
+        self.assertIn("| Checkout | vertical | 1 | 1 |", text)
+        with open(os.path.join(d, ".panopticon", "setup-report.json"), encoding="utf-8") as fh:
+            doc = json.load(fh)
+        self.assertEqual(sorted(doc), ["diff", "disclosure", "report", "schema_version"])
+        self.assertEqual(doc["report"], res["report"])
+        self.assertEqual(doc["diff"], res["diff"])
+        # CLI beats config; an explicit ceiling beats config too
+        res = setup_flow.ingest_proposal(d, pp, max_per_group=3, max_groups=9)
+        self.assertEqual((res["report"]["cap"], res["report"]["ceiling"]), (3, 9))
+
+    def test_ingest_layers_a_new_vertical_over_the_cap_into_the_draft(self):
+        # 12 files, cap 8: the proposed API layer (6) and the residual Core (6)
+        # both clear the floor, so the draft carries Checkout as a parent.
+        d = _repo(self)
+        for sub in ("api", "core"):
+            os.makedirs(os.path.join(d, "src", "checkout", sub), exist_ok=True)
+            for i in range(6):
+                with open(os.path.join(d, "src", "checkout", sub, "f%d.py" % i), "w") as fh:
+                    fh.write("x = %d\n" % i)
+        os.remove(os.path.join(d, "src", "checkout", "pay.py"))
+        pp = self._write_proposal(d, {"groups": [{
+            "capability": "Checkout", "match": ["src/checkout/**"], "tests": [],
+            "layers": [{"layer": "API", "match": ["src/checkout/api/**"]}]}]})
+        res = setup_flow.ingest_proposal(d, pp, max_per_group=8)
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(res["diff"]["new_groups"][0]["subgroups"], ["API", "Core"])
+        import yaml as _yaml
+        with open(res["draft"], encoding="utf-8") as fh:
+            drafted = _yaml.safe_load(fh)["groups"]
+        self.assertEqual(list(drafted["Checkout"]), ["API", "Core"])
+        self.assertEqual(drafted["Checkout"]["API"]["match"], ["src/checkout/api/**"])
+        self.assertEqual(drafted["Checkout"]["Core"]["match"],
+                         ["src/checkout/**", "!src/checkout/api/**"])
+        self.assertEqual(drafted["Checkout"]["API"]["panels"], ["SEC", "ACC"])   # floor rides
+        self.assertIn("- Checkout: API (6), Core (6, carrier)", open(res["report_path"]).read())
+
+    def test_ingest_missing_layer_catalog_fails_no_draft(self):
+        d = _repo(self)
+        pp = self._write_proposal(d, {"groups": [{"capability": "Checkout",
+                                                  "match": ["src/checkout/**"], "tests": []}]})
+        with mock.patch.object(setup_flow, "_LAYERS_PATH", os.path.join(d, "nope.yml")):
+            res = setup_flow.ingest_proposal(d, pp)
+        self.assertFalse(res["ok"])
+        self.assertIn("layer data is missing", res["errors"][0])
+        self.assertFalse(os.path.isfile(os.path.join(d, ".panopticon", "groups.yml.draft")))
+        self.assertFalse(os.path.isfile(os.path.join(d, ".panopticon", "setup-report.md")))
 
 
 class TestSeedGroupsManifestInjection(unittest.TestCase):

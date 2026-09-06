@@ -287,3 +287,35 @@ def test_signal_floor_defaults_empty_leaves_existing_callers_unchanged():
     # the new param is opt-in: a caller passing only global_floor is unaffected.
     eff, _ = cov.effective_panels({"COD"}, set(), set(), global_floor=set())
     if eff != {"COD"}: raise AssertionError()
+
+
+# 5.2 §6.2: the scout prose as code.
+
+def test_surfaces_to_domains_cod_always_even_with_no_surfaces():
+    if cov.surfaces_to_domains([]) != ["COD"]: raise AssertionError()
+    if cov.surfaces_to_domains(None) != ["COD"]: raise AssertionError()
+
+
+def test_surfaces_to_domains_sec_on_any_security_surface():
+    for s in sorted(cov.SURFACES - {"architecture"}):
+        if "SEC" not in cov.surfaces_to_domains([s]): raise AssertionError(s)
+    if "SEC" in cov.surfaces_to_domains(["architecture"]): raise AssertionError()
+
+
+def test_surfaces_to_domains_dat_and_arc():
+    if cov.surfaces_to_domains(["db_sql"]) != ["COD", "DAT", "SEC"]: raise AssertionError()
+    if cov.surfaces_to_domains(["database"]) != ["COD", "DAT", "SEC"]: raise AssertionError()
+    if cov.surfaces_to_domains(["architecture"]) != ["ARC", "COD"]: raise AssertionError()
+
+
+def test_surfaces_to_domains_ignores_unknown_and_non_strings():
+    got = cov.surfaces_to_domains(["bogus", 3, None, "auth"])
+    if got != ["COD", "SEC"]: raise AssertionError(got)
+
+
+def test_surfaces_enum_is_the_scouts_thirteen():
+    if len(cov.SURFACES) != 13: raise AssertionError(sorted(cov.SURFACES))
+    for s in ("db_sql", "http_web", "auth", "crypto", "fs", "concurrency", "external_api",
+              "money_pii", "serialization", "templating", "secrets_config",
+              "architecture", "database"):
+        if s not in cov.SURFACES: raise AssertionError(s)
