@@ -11,8 +11,11 @@ Setup now front-loads the grouping work so every later run reuses it
   catalog (`layer_vocabulary.yml`) for splitting one oversize vertical; a
   `tests_catalog.yml` for the test-tree seeds. Both catalogs render into the
   setup-scan brief in full — the calibrated prose finally reaches the
-  classifier (#1500). Proposed labels normalize through aliases; reserved names
-  (`Tests`, `Commons`, `Ungrouped`, `Core`) are refused.
+  classifier (#1500). Proposed labels normalize through aliases. The reserved
+  names `Tests`, `Commons`, `Ungrouped` and `Core` may not be catalog entries,
+  aliases, or proposed layers; a proposal may name a `Tests` group (a committed
+  `Tests` suppresses the run-time sweep) but not `Commons` or `Ungrouped`,
+  which the engine mints.
 - **Proposal v2:** per group, optional `layers` (`{layer, match}`) and a
   `profile` (`purpose`, `surfaces`, `entry_points`, `trust_boundaries`);
   `custom:` groups and catalog entries without an affinity row get their
@@ -31,6 +34,16 @@ Setup now front-loads the grouping work so every later run reuses it
   and frameworks, already-claimed counts, test trees and the size arithmetic,
   bounded and sanitized (#1120) — is computed once with the sizes pinned in
   `setup-manifest.json` and rendered into the brief.
+- **Compatibility (5.1 -> 5.2):** the `groups.yml` schema is unchanged and a
+  5.1 setup proposal still validates; re-running `driver setup` is optional
+  and never overwrites a committed `groups.yml`. Three run-time behaviours DO
+  change without re-running setup: a wildcard `tests:` glob (`**/*_test.go`)
+  is scoped to the vertical's own directories and files that name it (the
+  files it used to credit elsewhere are reported once, to stderr and
+  `scoped_tests_warnings`); leftover test-tree files sweep into a `Tests`
+  group; a committed `Tests` (or `Tests:*`) suppresses that sweep. Escape
+  hatch when the old crediting was intended: move the glob from `tests:` to
+  `match:`.
 - Deferred: `driver run --max-per-group` still chunks at run time and does
   not read `config.json`; the durable profile (`profiles.yml`) and the scout
   short-circuit, and `--seats` calibration, are plan 2.
