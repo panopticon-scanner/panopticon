@@ -1,22 +1,33 @@
-# Panopticon capability vocabulary -- R1-calibrated roster (#2-data).
-# Ratified 2026-08-16: calibration/2026-08-15-vocab-panel-r1/rulings.md
-# (owner rulings R-1..R-4) + synthesis.md (T1 per-label findings, evidence
-# behind each definition/boundary). 234 valid reports over 128 targets
-# (96 app-shaped arm) -- see synthesis-data.json for per-label counts.
+# Panopticon capability vocabulary -- R2 roster (5.2 grouping engine, spec §3.2).
 #
-# The classifier maps source files onto these business-capability labels.
-# `name` + `hints` are the only loader-consumed keys (setup_proposal.load_
-# vocabulary); `hints` are optional match suggestions fed to the classifier,
-# not authoritative. `tier`/`definition`/`boundary`/`see_also`/`provenance`/
-# `evidence` are additive metadata (loader-ignored) carrying the round's
-# menu-grade one-liners and audit trail.
-version: 1.0.0
+# R1 (2026-08-16, calibration/2026-08-15-vocab-panel-r1/rulings.md): the 13
+# entries marked `provenance: r1` are kept VERBATIM (definition/boundary/hints/
+# evidence untouched); they gained `aliases` and `examples` only.
+# R2 (2026-08-21-5.2.0-vocab-panel, 6 seats x up to 165 repos, 714 vertical-
+# sweep cells): 32 entries marked `provenance: panel-5.2.0`, harvested by
+# panopticon-docs/calibration/scripts/harvest_capability_roster.py -- a folded
+# name canonical in >= 10 repos is an entry; 5..9 is an alias or `deferred`.
+#
+# Loader-consumed keys (setup_proposal.load_vocabulary): `name`, `hints`
+# (optional, non-authoritative globs), `aliases` (folded by alias_key: casefold,
+# non-alphanumerics stripped -- "Identity & Access" == identityaccess).
+# `definition`/`boundary` are rendered into the setup-scan brief (#1500);
+# `examples` are verified pool anchors ({repo, path} under calibration_targets);
+# `tier`/`see_also`/`provenance`/`evidence` are audit metadata.
+# Hint overlap between an R1 entry and a newer one (e.g. Notifications
+# `**/email*/**` vs Email) is expected: hints suggest, definitions decide.
+version: 2.0.0
 capabilities:
   - name: Auth
     tier: universal
     definition: "Credential, session, and identity-verification lifecycle (login, MFA, token/session issuance)."
     boundary: "Profile, preference, and org-membership CRUD is Accounts, not Auth."
     hints: ["**/auth/**", "**/login/**", "**/session*/**"]
+    aliases: [Authentication, Identity, IdentityAccess, "Identity & Access", IAM, UsersAuth, AuthIdentity, Login, SSO, OAuth]
+    examples:
+      - {repo: infisical, path: backend/src/services/auth}
+      - {repo: documenso, path: packages/auth/}
+      - {repo: authelia, path: internal/authentication}
     see_also: [Accounts]
     provenance: r1
     evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 92, repos_total: 96}
@@ -26,6 +37,11 @@ capabilities:
     definition: "User profile, preference, and organization-membership management (account CRUD)."
     boundary: "Credential, session, and identity lifecycle is Auth, not Accounts."
     hints: ["**/account*/**", "**/users/**", "**/profile*/**"]
+    aliases: [Users, User, Account, UserManagement, AccountManagement, Profiles]
+    examples:
+      - {repo: bookstack, path: app/Users/}
+      - {repo: freescout, path: app/Http/Controllers/UsersController.php}
+      - {repo: gotify, path: ui/src/user}
     see_also: [Auth]
     provenance: r1
     evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 88, repos_total: 96}
@@ -35,6 +51,11 @@ capabilities:
     definition: "The purchase-completion flow: cart, payment capture, and order placement."
     boundary: "Not recurring billing/subscription management (-> Billing) or post-purchase shipping/order processing (-> Fulfillment)."
     hints: ["**/checkout/**", "**/payment*/**", "**/cart/**"]
+    aliases: [Cart]
+    examples:
+      - {repo: bagisto, path: packages/Webkul/Checkout/}
+      - {repo: prestashop, path: classes/checkout/}
+      - {repo: woocommerce, path: plugins/woocommerce/includes/class-wc-checkout.php}
     see_also: [Billing, Fulfillment]
     provenance: r1
     evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 24, repos_total: 96}
@@ -44,6 +65,11 @@ capabilities:
     definition: "Recurring billing, invoicing, and subscription lifecycle management."
     boundary: "Not the one-time purchase/payment-capture flow (-> Checkout)."
     hints: ["**/billing/**", "**/invoice*/**", "**/subscription*/**"]
+    aliases: [Subscriptions, Invoicing, Invoices]
+    examples:
+      - {repo: formbricks, path: apps/web/modules/ee/billing/}
+      - {repo: lago-api, path: app/services/subscriptions/}
+      - {repo: documenso, path: packages/ee/server-only/stripe/}
     see_also: [Checkout]
     provenance: r1
     evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 37, repos_total: 96}
@@ -53,6 +79,11 @@ capabilities:
     definition: "Merchandise: product and inventory data, listings, and catalog structure."
     boundary: "Not the search/indexing layer (-> Search); a general content/media corpus is out of scope (R2 watch-list, not Catalog)."
     hints: ["**/catalog/**", "**/products/**", "**/inventory/**"]
+    aliases: [Product, Products]
+    examples:
+      - {repo: prestashop, path: src/Core/Domain/Product/}
+      - {repo: bagisto, path: packages/Webkul/Product/}
+      - {repo: solidus, path: core/app/models/spree/product.rb}
     provenance: r1
     evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 24, repos_total: 96}
 
@@ -61,6 +92,11 @@ capabilities:
     definition: "User-facing search and query/indexing surfaces (search bar, filters, index build/rebuild)."
     boundary: "Not the product catalog/browse UI (-> Catalog) and not analytics/BI on search behavior (-> Reporting)."
     hints: ["**/search/**", "**/index*/**", "**/query/**"]
+    aliases: [Indexing]
+    examples:
+      - {repo: bookstack, path: app/Search/}
+      - {repo: gh-cli, path: pkg/cmd/search/}
+      - {repo: mattermost, path: server/channels/app/searchengine.go}
     see_also: [Catalog]
     provenance: r1
     evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 67, repos_total: 96}
@@ -70,6 +106,11 @@ capabilities:
     definition: "Order fulfillment: shipping, delivery, and post-purchase order processing."
     boundary: "Not the purchase/payment-capture flow (-> Checkout)."
     hints: ["**/fulfil*/**", "**/shipping/**", "**/orders/**"]
+    aliases: [Orders, Order, Shipping]
+    examples:
+      - {repo: prestashop, path: src/Core/Domain/Order/}
+      - {repo: solidus, path: core/app/models/spree/order.rb}
+      - {repo: saleor, path: saleor/order/}
     see_also: [Checkout]
     provenance: r1
     # thin presence (n=13, 14%) -- rulings flags re-measure at R2
@@ -80,6 +121,11 @@ capabilities:
     definition: "User-facing messaging across any channel (email, push, SMS, in-app, webhook delivery to the user)."
     boundary: "Not internal event/pub-sub buses (-> Platform or the owning vertical)."
     hints: ["**/notif*/**", "**/email*/**", "**/messaging/**"]
+    aliases: [Notification, Alerts, Push]
+    examples:
+      - {repo: forem, path: app/models/notification.rb}
+      - {repo: mattermost, path: server/channels/app/notification.go}
+      - {repo: outline, path: server/routes/api/notifications/}
     see_also: [Platform]
     provenance: r1
     evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 86, repos_total: 96}
@@ -89,6 +135,11 @@ capabilities:
     definition: "Business reporting and BI: user-facing analytics and reports."
     boundary: "Not operational/telemetry dashboards (-> the OPS domain surface) and not data-export tooling (-> the owning vertical)."
     hints: ["**/report*/**", "**/analytics/**", "**/dashboard*/**"]
+    aliases: [Reports]
+    examples:
+      - {repo: inventree, path: src/backend/InvenTree/report/}
+      - {repo: actual, path: packages/desktop-client/src/components/reports/}
+      - {repo: horilla, path: report/}
     see_also: [Admin]
     provenance: r1
     evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 70, repos_total: 96}
@@ -98,6 +149,11 @@ capabilities:
     definition: "Back-office administration and operator tooling (admin console, backoffice screens)."
     boundary: "Not business reporting/BI (-> Reporting) and not end-user account self-service (-> Accounts)."
     hints: ["**/admin/**", "**/backoffice/**"]
+    aliases: [Administration, AdminDashboard, InstanceAdministration, Backoffice]
+    examples:
+      - {repo: forem, path: app/controllers/admin/}
+      - {repo: gitea, path: routers/web/admin}
+      - {repo: metabase, path: frontend/src/metabase/admin/}
     see_also: [Reporting, Accounts]
     provenance: r1
     evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 77, repos_total: 96}
@@ -107,6 +163,11 @@ capabilities:
     definition: "The externally-exposed interface surface: routes, controllers, schemas, and versioning."
     boundary: "Never internal wiring or clients calling out to other services -- that stays with the owning capability."
     hints: ["**/api/**", "**/routes/**", "**/graphql/**"]
+    aliases: []
+    examples:
+      - {repo: bookstack, path: app/Api/}
+      - {repo: solidus, path: api/}
+      - {repo: leantime, path: app/Domain/Api/}
     see_also: [Platform]
     provenance: r1
     evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 85, repos_total: 96}
@@ -116,6 +177,11 @@ capabilities:
     definition: "Shared core infrastructure and cross-cutting code that no vertical owns."
     boundary: "Only what no vertical owns; shared UI/design-system code is its own capability (-> UI), not Platform."
     hints: ["**/core/**", "**/common/**", "**/lib/**", "**/util*/**"]
+    aliases: [Common, Shared, Infrastructure]
+    examples:
+      - {repo: mattermost, path: server/platform}
+      - {repo: gitea, path: modules}
+      - {repo: ripgrep, path: crates/core}
     see_also: [UI, API]
     provenance: r1
     evidence: {round: 2026-08-15-vocab-panel-r1, repos_present: 96, repos_total: 96}
@@ -125,8 +191,480 @@ capabilities:
     definition: "Shared, reusable presentation and design-system code: component library, shared web UI."
     boundary: "Not a vertical's own feature screens -- those stay with the owning capability."
     hints: ["**/design-system/**", "**/components/ui/**", "**/ui-kit/**"]
+    aliases: [WebUI, Themes, Theming, DesignSystem]
+    examples:
+      - {repo: bookstack, path: app/Theming/}
+      - {repo: qbittorrent, path: src/webui/}
+      - {repo: navidrome, path: ui/}
     see_also: [Platform]
     provenance: r1
     # R-1 carve-out out of Platform: not independently seeded/measured in R1
     # (no evidence -> rides the global floor + scout); repos_present omitted.
     evidence: {round: 2026-08-15-vocab-panel-r1, repos_total: 96, note: "carve-out (R-1); unmeasured in R1"}
+
+  # ---- R2: harvested from the 5.2.0 vocab panel (>= 10 repos after alias folding) ----
+
+  - name: Settings
+    tier: universal
+    definition: "Application and user configuration surfaces: settings screens, preference storage, feature toggles."
+    boundary: "Operator-only instance administration is Admin; credential/session handling is Auth."
+    hints: ["**/settings/**", "**/preferences/**", "**/config/**"]
+    aliases: [Configuration, Preferences, Config]
+    examples:
+      - {repo: bookstack, path: app/Settings/}
+      - {repo: listmonk, path: cmd/settings.go}
+      - {repo: antennapod, path: ui/preferences}
+    see_also: [Admin, Accounts]
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, repos_present: 44, seats: 6}
+
+  - name: AI
+    tier: vertical
+    definition: "LLM, assistant, and agent features: prompt/completion plumbing, MCP servers and tools, model routing."
+    boundary: "Classic search/indexing is Search; analytics on usage is Analytics."
+    hints: ["**/ai/**", "**/llm/**", "**/mcp/**", "**/agents/**"]
+    aliases: [MCP, AIAssistant, Assistant, Agents, LLM, Copilot]
+    examples:
+      - {repo: forem, path: app/services/ai/}
+      - {repo: surrealdb, path: surrealdb/mcp/}
+      - {repo: localai, path: core/services/agents/}
+    see_also: [Search]
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, repos_present: 42, seats: 6}
+
+  - name: Plugins
+    tier: universal
+    definition: "Extension mechanism: plugin/extension discovery, loading, sandboxing, hooks, and the marketplace/app registry."
+    boundary: "Calling out to a specific third-party service is the owning capability's Integration layer, not Plugins."
+    hints: ["**/plugins/**", "**/plugin/**", "**/extensions/**", "**/addons/**"]
+    aliases: [Extensions, Extensibility, Apps, Providers, Scripting, Addons]
+    examples:
+      - {repo: inventree, path: src/backend/InvenTree/plugin/}
+      - {repo: gh-cli, path: pkg/cmd/extension/}
+      - {repo: godot, path: modules/gdscript/}
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, repos_present: 42, seats: 6}
+
+  - name: Organizations
+    tier: universal
+    definition: "Multi-tenant structure: organizations, teams, workspaces, groups, membership and tenant isolation."
+    boundary: "Individual profile CRUD is Accounts (its R1 definition mentions org-membership; when both exist, membership of a tenant structure lands here); role/permission evaluation is Permissions."
+    hints: ["**/organizations/**", "**/teams/**", "**/workspaces/**", "**/tenants/**"]
+    aliases: [Organization, Teams, Team, Workspaces, Workspace, Groups, Tenants, MultiTenancy]
+    examples:
+      - {repo: forem, path: app/models/organization.rb}
+      - {repo: mattermost, path: server/channels/api4/team.go}
+      - {repo: formbricks, path: apps/web/modules/organization/}
+    see_also: [Accounts, Permissions]
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, repos_present: 40, seats: 6}
+
+  - name: ImportExport
+    tier: universal
+    definition: "Bulk data movement: importers, exporters, ingestion pipelines, and file-format converters."
+    boundary: "Continuous replication between instances is Sync; user-facing reports are Reporting."
+    hints: ["**/import*/**", "**/export*/**", "**/ingestion/**"]
+    aliases: [Import, Export, DataImport, Ingestion, Importing, Import_Export]
+    examples:
+      - {repo: plausible, path: lib/plausible/ingestion/}
+      - {repo: outline, path: server/routes/api/imports/}
+      - {repo: penpot, path: frontend/src/app/main/ui/exports/}
+    see_also: [Sync, Reporting]
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, repos_present: 36, seats: 6}
+
+  - name: Observability
+    tier: universal
+    definition: "Operational telemetry of the system itself: health checks, metrics, tracing, structured logging, diagnostics."
+    boundary: "Product/business analytics is Analytics; the user-facing audit trail is Audit."
+    hints: ["**/telemetry/**", "**/tracing/**", "**/metrics/**", "**/health/**", "**/diagnostics/**"]
+    aliases: [Telemetry, Monitoring, Metrics, Logging, Tracing, Health, Diagnostics]
+    examples:
+      - {repo: mlflow, path: mlflow/tracing/}
+      - {repo: surrealdb, path: surrealdb/server/src/telemetry/}
+      - {repo: dapr, path: pkg/diagnostics/}
+    see_also: [Analytics, Audit]
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, repos_present: 33, seats: 6}
+
+  - name: Storage
+    tier: universal
+    definition: "User file handling: uploads, attachments, blob/object storage backends, file metadata."
+    boundary: "Media-specific processing (transcoding, thumbnails, streaming) is Media; the database layer is the Data LAYER, not Storage."
+    hints: ["**/storage/**", "**/uploads/**", "**/attachments/**", "**/files/**"]
+    aliases: [Files, Attachments, Uploads, FileStorage, Blobs]
+    examples:
+      - {repo: bookstack, path: app/Uploads/}
+      - {repo: mattermost, path: server/channels/api4/file.go}
+      - {repo: appwrite, path: src/Appwrite/Platform/Modules/Storage/}
+    see_also: [Media]
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, repos_present: 32, seats: 6}
+
+  - name: Analytics
+    tier: universal
+    definition: "Product and usage analytics: event collection, aggregation, stats, and insight computation."
+    boundary: "Rendered BI reports are Reporting; the system's own telemetry is Observability."
+    hints: ["**/analytics/**", "**/stats/**", "**/statistics/**", "**/insights/**"]
+    aliases: [Statistics, Stats, Insights]
+    examples:
+      - {repo: plausible, path: lib/plausible/stats/}
+      - {repo: typesense, path: src/analytics_manager.cpp}
+      - {repo: ghost, path: ghost/core/core/server/services/stats/}
+    see_also: [Reporting, Observability, Dashboard]
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, repos_present: 29, seats: 6}
+
+  - name: Media
+    tier: vertical
+    definition: "Media pipeline: image/audio/video processing, transcoding, thumbnails, streaming, playback."
+    boundary: "Generic upload/attachment plumbing is Storage."
+    hints: ["**/media/**", "**/audio/**", "**/video/**", "**/images/**", "**/streaming/**"]
+    aliases: [Audio, Video, Images, Streaming, Playback]
+    examples:
+      - {repo: godot, path: servers/audio/}
+      - {repo: mastodon, path: app/models/media_attachment.rb}
+      - {repo: hedgedoc, path: backend/src/media/}
+    see_also: [Storage]
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, repos_present: 29, seats: 6}
+
+  - name: Onboarding
+    tier: universal
+    definition: "First-run and sign-up experience: registration, invitations, setup wizards, guided tours."
+    boundary: "Credential verification and session issuance is Auth; ongoing profile management is Accounts."
+    hints: ["**/onboarding/**", "**/signup/**", "**/registration/**", "**/setup/**"]
+    aliases: [Signup, Registration, SetupWizard, Invitations]
+    examples:
+      - {repo: forem, path: app/controllers/onboardings_controller.rb}
+      - {repo: signal-ios, path: Signal/Registration/}
+      - {repo: mattermost, path: server/channels/app/onboarding.go}
+    see_also: [Auth, Accounts]
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, repos_present: 29, seats: 6}
+
+  - name: Messaging
+    tier: vertical
+    definition: "Person-to-person communication as a product feature: chat, conversations, channels, calls, threads."
+    boundary: "System-to-user delivery (email/push/in-app alerts) is Notifications."
+    hints: ["**/messaging/**", "**/chat/**", "**/conversations/**", "**/channels/**", "**/calls/**"]
+    aliases: [Chat, Conversations, Channels, Calls, Threads]
+    examples:
+      - {repo: mattermost, path: server/channels/api4/post.go}
+      - {repo: signal-ios, path: SignalServiceKit/Messages/}
+      - {repo: chatwoot, path: app/models/conversation.rb}
+    see_also: [Notifications, Collaboration]
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, repos_present: 25, seats: 6}
+
+  - name: Security
+    tier: universal
+    definition: "Security primitives offered as a capability: secrets management, encryption/key handling, rate limiting, CSRF/CSP, attestation."
+    boundary: "Login and sessions are Auth; role checks are Permissions. Security is what protects, not who may act."
+    hints: ["**/security/**", "**/secrets/**", "**/crypto/**", "**/encryption/**", "**/ratelimit*/**"]
+    aliases: [Secrets, Encryption, RateLimiting, Crypto, Hardening]
+    examples:
+      - {repo: airflow, path: airflow-core/src/airflow/secrets/}
+      - {repo: dapr, path: pkg/api/universal/secrets.go}
+      - {repo: fastapi, path: fastapi/security/}
+    see_also: [Auth, Permissions]
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, repos_present: 25, seats: 6}
+
+  - name: Webhooks
+    tier: universal
+    definition: "Outbound and inbound webhook lifecycle: subscriptions, signing/verification, delivery, retries."
+    boundary: "User-facing alerts are Notifications; the generic HTTP API surface is API."
+    hints: ["**/webhooks/**", "**/webhook/**", "**/hooks/**"]
+    aliases: [Webhook, Hooks]
+    examples:
+      - {repo: hyperswitch, path: crates/router/src/core/webhooks/}
+      - {repo: firefly-iii, path: app/Http/Controllers/Webhooks/}
+      - {repo: gitea, path: services/webhook/}
+    see_also: [Notifications, API]
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, repos_present: 25, seats: 5}
+
+  - name: Dashboard
+    tier: universal
+    definition: "The landing/overview surface: home dashboards, widgets, summary cards, dashboard layout persistence."
+    boundary: "Report generation is Reporting; the numbers behind the widgets are Analytics."
+    hints: ["**/dashboard/**", "**/dashboards/**", "**/widgets/**", "**/home/**"]
+    aliases: [Dashboards, Widgets, Overview]
+    examples:
+      - {repo: linkwarden, path: apps/web/lib/api/controllers/dashboard/}
+      - {repo: metabase, path: src/metabase/dashboards/}
+      - {repo: plausible, path: assets/js/dashboard/}
+    see_also: [Reporting, Analytics]
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, repos_present: 24, seats: 6}
+
+  - name: Projects
+    tier: vertical
+    definition: "Work-item management: projects, tasks, issues, boards, milestones, assignments."
+    boundary: "Tenant/team structure is Organizations; date-driven scheduling is Calendar."
+    hints: ["**/projects/**", "**/tasks/**", "**/issues/**", "**/boards/**"]
+    aliases: [Project, Tasks, Issues, Boards, Milestones]
+    examples:
+      - {repo: openproject, path: app/models/project.rb}
+      - {repo: erpnext, path: erpnext/projects/}
+      - {repo: gh-cli, path: pkg/cmd/issue/}
+    see_also: [Organizations, Calendar]
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, repos_present: 24, seats: 6}
+
+  - name: Payments
+    tier: vertical
+    definition: "Payment processing: gateway/provider integrations, transaction lifecycle, refunds, payouts, payment methods."
+    boundary: "The cart-to-order flow is Checkout (R1); recurring invoicing is Billing. Payments is the money-movement machinery both call."
+    hints: ["**/payments/**", "**/gateways/**", "**/stripe/**", "**/paypal/**"]
+    aliases: [Payment, Gateways, Payouts, Refunds]
+    examples:
+      - {repo: hyperswitch, path: crates/router/src/core/payments/}
+      - {repo: woocommerce, path: plugins/woocommerce/includes/gateways/}
+      - {repo: bagisto, path: packages/Webkul/Payment/}
+    see_also: [Checkout, Billing]
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, repos_present: 22, seats: 6}
+
+  - name: Workflows
+    tier: vertical
+    definition: "User-defined automation: rule engines, pipelines, triggers/actions, approval flows, state machines."
+    boundary: "Background job infrastructure is the Worker LAYER; webhook delivery is Webhooks."
+    hints: ["**/workflows/**", "**/workflow/**", "**/automation/**", "**/rules/**", "**/pipelines/**"]
+    aliases: [Automation, Pipelines, Rules, Triggers, Approvals]
+    examples:
+      - {repo: formbricks, path: apps/web/modules/ee/workflows/}
+      - {repo: firefly-iii, path: app/TransactionRules/}
+      - {repo: keycloak, path: model/jpa/src/main/java/org/keycloak/models/workflow/}
+    see_also: [Webhooks]
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, repos_present: 21, seats: 6}
+
+  - name: Collaboration
+    tier: vertical
+    definition: "Multi-user co-editing and social features on shared objects: real-time presence, comments, mentions, reactions, activity feeds."
+    boundary: "Standalone chat/conversations are Messaging; link/permission sharing is Sharing."
+    hints: ["**/collab*/**", "**/comments/**", "**/presence/**", "**/mentions/**"]
+    aliases: [Collab, Comments, Mentions, Presence, Reactions]
+    examples:
+      - {repo: excalidraw, path: excalidraw-app/collab/}
+      - {repo: docmost, path: apps/server/src/collaboration/}
+      - {repo: forem, path: app/models/comment.rb}
+    see_also: [Messaging, Sharing]
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, repos_present: 20, seats: 6}
+
+  - name: Permissions
+    tier: universal
+    definition: "Authorization: roles, policies, ACLs, scopes, and the checks that decide who may do what."
+    boundary: "Proving who someone is (login/session/MFA) is Auth; the operator console that edits roles is Admin."
+    hints: ["**/permissions/**", "**/authorization/**", "**/rbac/**", "**/policies/**", "**/roles/**"]
+    aliases: [AccessControl, RBAC, Authorization, Roles, Policies, ACL]
+    examples:
+      - {repo: bookstack, path: app/Permissions/}
+      - {repo: keycloak, path: services/src/main/java/org/keycloak/authorization/}
+      - {repo: authelia, path: internal/authorization/}
+    see_also: [Auth, Admin]
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, repos_present: 20, seats: 6}
+
+  - name: Customers
+    tier: vertical
+    definition: "Customer records and relationship management: contacts, leads, customer profiles and history (CRM)."
+    boundary: "The application's own login users are Accounts; orders those customers place are Fulfillment."
+    hints: ["**/customers/**", "**/customer/**", "**/crm/**", "**/contacts/**"]
+    aliases: [Customer, CRM, Contacts, Leads]
+    examples:
+      - {repo: freescout, path: app/Http/Controllers/CustomersController.php}
+      - {repo: bagisto, path: packages/Webkul/Customer/}
+      - {repo: erpnext, path: erpnext/crm/}
+    see_also: [Accounts, Fulfillment]
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, repos_present: 19, seats: 6}
+
+  - name: Sharing
+    tier: vertical
+    definition: "Sharing objects outside their owner's scope: share links, public pages, guest access, embed tokens."
+    boundary: "Role-based access inside the tenant is Permissions; co-editing is Collaboration."
+    hints: ["**/sharing/**", "**/shares/**", "**/share/**", "**/public/**"]
+    aliases: [Shares, ShareLinks, PublicLinks]
+    examples:
+      - {repo: immich, path: server/src/services/shared-link.service.ts}
+      - {repo: navidrome, path: core/share.go}
+      - {repo: outline, path: server/routes/api/shares/}
+    see_also: [Permissions, Collaboration]
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, repos_present: 18, seats: 6}
+
+  - name: Calendar
+    tier: vertical
+    definition: "Time-based scheduling: calendars, events, appointments, availability, recurrence, iCal sync."
+    boundary: "Task/issue tracking is Projects; background job scheduling is the Worker LAYER."
+    hints: ["**/calendar/**", "**/scheduling/**", "**/appointments/**", "**/availability/**"]
+    aliases: [Scheduling, Appointments, Availability, Bookings]
+    examples:
+      - {repo: kimai, path: src/Calendar/}
+      - {repo: leantime, path: app/Domain/Calendar/}
+      - {repo: openemr, path: interface/main/calendar/}
+    see_also: [Projects]
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, repos_present: 17, seats: 5}
+
+  - name: Email
+    tier: universal
+    definition: "Email as a subsystem: templates, mailers, SMTP/provider transport, inbound mail parsing, deliverability."
+    boundary: "Deciding WHAT to tell the user across channels is Notifications (R1); Email is the channel implementation."
+    hints: ["**/email/**", "**/emails/**", "**/mail/**", "**/mailers/**"]
+    aliases: [Mail, Mailers, SMTP, Emails]
+    examples:
+      - {repo: forem, path: app/mailers/}
+      - {repo: django, path: django/core/mail/}
+      - {repo: ghost, path: ghost/core/core/server/services/email-service/}
+    see_also: [Notifications]
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, repos_present: 17, seats: 6}
+
+  - name: Documents
+    tier: vertical
+    definition: "Document-centric product objects: documents/notes/pages as first-class records, revisions, templates, signing."
+    boundary: "The rich-text editing component is Editor; generic file blobs are Storage; marketing/CMS pages are Content."
+    hints: ["**/documents/**", "**/document/**", "**/notes/**", "**/revisions/**"]
+    aliases: [Document, Notes, Revisions]
+    examples:
+      - {repo: outline, path: server/routes/api/documents/}
+      - {repo: nocodb, path: packages/nocodb/src/services/documents.service.ts}
+      - {repo: espocrm, path: application/Espo/Modules/Crm/Entities/Document.php}
+    see_also: [Editor, Storage, Content]
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, repos_present: 16, seats: 5}
+
+  - name: Localization
+    tier: universal
+    definition: "Internationalization and localization: translation catalogs, locale negotiation, formatting, RTL, translated content."
+    boundary: "Region-specific tax rules are Tax; currency conversion in money flows is Payments/Billing."
+    hints: ["**/i18n/**", "**/l10n/**", "**/locale*/**", "**/translations/**", "**/lang/**"]
+    aliases: [I18n, L10n, Translations, Translation, Locales, Intl]
+    examples:
+      - {repo: novu, path: apps/api/src/app/translations}
+      - {repo: strapi, path: packages/plugins/i18n/}
+      - {repo: medusa, path: packages/modules/translation/src/models/}
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, repos_present: 16, seats: 6}
+
+  - name: Audit
+    tier: universal
+    definition: "The user-visible audit trail: who did what and when — audit log storage, retention, and its viewer/export."
+    boundary: "Operational logs/traces for engineers are Observability; version history of a document is Documents."
+    hints: ["**/audit/**", "**/audits/**", "**/auditlog*/**", "**/activity/**"]
+    aliases: [AuditLog, AuditLogs, Auditing, ActivityLog]
+    examples:
+      - {repo: bytebase, path: proto/v1/v1/audit_log_service.proto}
+      - {repo: nocodb, path: packages/nocodb/src/services/audits.service.ts}
+      - {repo: bigcapital, path: packages/server/src/modules/AuditLogs}
+    see_also: [Observability]
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, repos_present: 14, seats: 4}
+
+  - name: Content
+    tier: vertical
+    definition: "Managed content: CMS pages, posts, blocks, publishing workflow, content types and their rendering."
+    boundary: "Product/SKU data is Catalog; user documents are Documents; the editing widget is Editor."
+    hints: ["**/cms/**", "**/content/**", "**/pages/**", "**/posts/**"]
+    aliases: [CMS, Pages, Posts, Publishing]
+    examples:
+      - {repo: bagisto, path: packages/Webkul/CMS/}
+      - {repo: evershop, path: packages/evershop/src/modules/cms/}
+      - {repo: prestashop, path: src/Core/Domain/CmsPage/}
+    see_also: [Catalog, Documents, Editor]
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, repos_present: 14, seats: 6}
+
+  - name: Inventory
+    tier: vertical
+    definition: "Stock management: stock levels, warehouses/locations, movements, reservations, reorder points."
+    boundary: "Product definitions and listings are Catalog (its R1 definition names inventory data; when both exist, stock QUANTITIES land here); order shipping is Fulfillment."
+    hints: ["**/inventory/**", "**/stock/**", "**/warehouse*/**"]
+    aliases: [Stock, Warehouse, Warehouses, StockManagement]
+    examples:
+      - {repo: grocy, path: services/StockService.php}
+      - {repo: inventree, path: src/backend/InvenTree/stock/}
+      - {repo: erpnext, path: erpnext/stock/}
+    see_also: [Catalog, Fulfillment]
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, repos_present: 13, seats: 6}
+
+  - name: Tax
+    tier: vertical
+    definition: "Tax calculation and compliance: rates, zones, categories, exemptions, tax reports."
+    boundary: "Order totals and payment capture are Checkout/Payments; invoicing is Billing."
+    hints: ["**/tax/**", "**/taxes/**", "**/taxation/**", "**/vat/**"]
+    aliases: [Taxes, Taxation, VAT]
+    examples:
+      - {repo: solidus, path: core/app/models/spree/tax/}
+      - {repo: evershop, path: packages/evershop/src/modules/tax/}
+      - {repo: saleor, path: saleor/tax/}
+    see_also: [Checkout, Billing]
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, repos_present: 13, seats: 6}
+
+  - name: Promotions
+    tier: vertical
+    definition: "Commercial incentives: coupons, discounts, promotion rules, campaigns, loyalty."
+    boundary: "Price computation inside the cart is Checkout; catalog pricing is Catalog."
+    hints: ["**/promotions/**", "**/promotion*/**", "**/discounts/**", "**/coupons/**", "**/marketing/**"]
+    aliases: [Promotion, Discounts, Coupons, Marketing, Campaigns, Loyalty]
+    examples:
+      - {repo: woocommerce, path: plugins/woocommerce/includes/class-wc-coupon.php}
+      - {repo: bagisto, path: packages/Webkul/Marketing/}
+      - {repo: prestashop, path: src/Core/Domain/Discount/}
+    see_also: [Checkout, Catalog]
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, repos_present: 12, seats: 6}
+
+  - name: Sync
+    tier: vertical
+    definition: "Keeping copies consistent: replication between instances/devices, offline-first sync, conflict resolution, backup/restore."
+    boundary: "One-shot bulk moves are ImportExport; real-time co-editing is Collaboration."
+    hints: ["**/sync/**", "**/replication/**", "**/offline/**", "**/backup*/**"]
+    aliases: [Replication, Offline, Backup, Backups]
+    examples:
+      - {repo: antennapod, path: net/sync/service}
+      - {repo: actual, path: packages/sync-server/}
+      - {repo: harbor, path: src/controller/replication}
+    see_also: [ImportExport, Collaboration]
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, repos_present: 11, seats: 6}
+
+  - name: Editor
+    tier: vertical
+    definition: "The editing surface itself: rich-text/markdown/canvas/code editors, toolbars, keybindings, editor plugins."
+    boundary: "The stored objects being edited are Documents/Content; shared design-system widgets are UI."
+    hints: ["**/editor/**", "**/wysiwyg/**", "**/markdown/**"]
+    aliases: [WYSIWYG, RichText, Canvas]
+    examples:
+      - {repo: bookstack, path: resources/js/wysiwyg/}
+      - {repo: godot, path: editor/}
+      - {repo: outline, path: shared/editor/}
+    see_also: [Documents, Content, UI]
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, repos_present: 10, seats: 6}
+
+# 5..9-repo tier from the same panel: neither folded nor promoted (spec §3.2).
+# Re-tally at the next roster round; `docs` is Commons, `publicapi` is API.
+deferred:
+  - {name: Assets, repos_present: 9}
+  - {name: Collections, repos_present: 9}
+  - {name: Events, repos_present: 9}
+  - {name: Realtime, repos_present: 8}
+  - {name: Tags, repos_present: 8}
+  - {name: DataManagement, repos_present: 7}
+  - {name: Cloud, repos_present: 6}
+  - {name: Discovery, repos_present: 6}
+  - {name: Federation, repos_present: 6}
+  - {name: Forms, repos_present: 6}
+  - {name: Polls, repos_present: 6}
+  - {name: Sales, repos_present: 6}
+  - {name: Support, repos_present: 6}
+  - {name: Installer, repos_present: 5}
+  - {name: Moderation, repos_present: 5}

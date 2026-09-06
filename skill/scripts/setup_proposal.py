@@ -9,62 +9,115 @@ whose path it is handed). See
 docs/superpowers/specs/2026-08-14-panopticon-5.0-setup-scan-design.md.
 """
 
+import re
+
 import yaml
 
+import coverage_model
 import groups_schema
 
+# 5.2: names the engine mints itself -- the Tests sweep, the Commons fold, the
+# residual sink, and the residual LAYER. A catalog entry or alias carrying one
+# of these would collide with an engine-owned group (spec §3, §4.6).
+RESERVED_GROUP_NAMES = frozenset({"Tests", "Commons", "Ungrouped", "Core"})
 
-def load_vocabulary(path):
-    """Return ({"names": [...], "hints": {name: [...]}}, errors)."""
+
+def alias_key(label):
+    """Fold a catalog name/alias or a proposed label to its comparison key:
+    casefold, then drop everything that is not a letter or digit, so
+    `Rate Limiting`, `rate_limiting`, `rate-limiting` and `RateLimiting` are
+    one key. Aliases match on this key (spec §3.2)."""
+    return re.sub(r"[^0-9a-z]", "", str(label or "").casefold())
+
+
+def _load_catalog(path, root_key, kind, noun):
+    """Shared loader for the capability and layer catalogs -- one entry shape
+    (spec §3). Returns ({"names", "hints", "entries", "aliases"}, errors):
+
+    - names:   canonical names in file order
+    - hints:   {name: [glob]} -- optional, non-authoritative match suggestions
+    - entries: {name: the entry mapping as loaded} (definition/boundary/...)
+    - aliases: {alias_key: canonical name}; every name maps to itself
+
+    Permissive about prose completeness (tests/test_catalog_data.py enforces
+    the SHIPPED data so fixtures can stay minimal); strict about the two
+    things that break routing: a duplicate name, and an alias that resolves
+    to two entries (first owner kept, collision reported)."""
+    empty = {"names": [], "hints": {}, "entries": {}, "aliases": {}}
     with open(path, encoding="utf-8") as fh:
         doc = yaml.safe_load(fh) or {}
-
-    # Guard: doc must be a mapping
     if not isinstance(doc, dict):
-        return {"names": [], "hints": {}}, [
-            "vocabulary: root must be a mapping"
-        ]
-
-    # Guard: capabilities must be a list
-    capabilities = doc.get("capabilities")
-    if capabilities is None:
-        capabilities = []
-    elif not isinstance(capabilities, list):
-        return {"names": [], "hints": {}}, [
-            "vocabulary: capabilities must be a list"
-        ]
-
-    names, hints, errors, seen = [], {}, [], set()
-    for entry in capabilities:
-        # Guard: each entry must be a mapping
+        return empty, ["%s: root must be a mapping" % kind]
+    items = doc.get(root_key)
+    if items is None:
+        items = []
+    elif not isinstance(items, list):
+        return empty, ["%s: %s must be a list" % (kind, root_key)]
+    names, hints, entries, aliases, errors = [], {}, {}, {}, []
+    for entry in items:
         if not isinstance(entry, dict):
-            errors.append("vocabulary: capability entry must be a mapping")
+            errors.append("%s: %s entry must be a mapping" % (kind, noun))
             continue
-
         name = entry.get("name")
         if not name or not isinstance(name, str):
-            errors.append("vocabulary: capability with missing/empty name")
+            errors.append("%s: %s with missing/empty name" % (kind, noun))
             continue
-        if name in seen:
-            errors.append("vocabulary: duplicate capability %r" % name)
+        if name in entries:
+            errors.append("%s: duplicate %s %r" % (kind, noun, name))
             continue
-
-        seen.add(name)
-        names.append(name)
-
-        # Guard: hints must be a list (if present)
+        if name in RESERVED_GROUP_NAMES:
+            errors.append("%s: %s name %r is reserved" % (kind, noun, name))
+            continue
         raw_hints = entry.get("hints")
         if raw_hints is None:
             entry_hints = []
         elif not isinstance(raw_hints, list):
-            errors.append("vocabulary %s: hints must be a list" % name)
+            errors.append("%s %s: hints must be a list" % (kind, name))
             entry_hints = []
         else:
             entry_hints = [h for h in raw_hints if isinstance(h, str)]
-
+        raw_aliases = entry.get("aliases")
+        if raw_aliases is None:
+            entry_aliases = []
+        elif not isinstance(raw_aliases, list):
+            errors.append("%s %s: aliases must be a list" % (kind, name))
+            entry_aliases = []
+        else:
+            entry_aliases = [a for a in raw_aliases if isinstance(a, str)]
+        names.append(name)
         hints[name] = entry_hints
+        entries[name] = entry
+        for label in [name] + entry_aliases:
+            key = alias_key(label)
+            if not key:
+                continue
+            owner = aliases.get(key)
+            if owner is not None and owner != name:
+                errors.append("%s: alias %r of %s collides with %s"
+                              % (kind, label, name, owner))
+                continue
+            aliases[key] = name
+    return ({"names": names, "hints": hints, "entries": entries,
+             "aliases": aliases}, errors)
 
-    return {"names": names, "hints": hints}, errors
+
+def load_vocabulary(path):
+    """Return ({"names", "hints", "entries", "aliases"}, errors) for
+    capability_vocabulary.yml. `names`/`hints` are the 5.0 keys every existing
+    caller reads; `entries`/`aliases` are the 5.2 additions (#1500)."""
+    return _load_catalog(path, "capabilities", "vocabulary", "capability")
+
+
+def load_layers(path):
+    """Same shape for layer_vocabulary.yml (spec §3.3)."""
+    return _load_catalog(path, "layers", "layers", "layer")
+
+
+def canonicalize(label, catalog):
+    """Resolve a proposed label to its canonical catalog name through
+    `aliases`, or None when it resolves to nothing (the label then stays
+    `custom:<label>` -- expected and allowed, spec §3.4)."""
+    return (catalog.get("aliases") or {}).get(alias_key(label))
 
 
 def load_affinity(path, vocabulary):
@@ -118,6 +171,20 @@ _MAX_GROUPS = 500
 _MAX_GROUP_ENTRIES = 1000       # match or tests entries in one group
 _MAX_ENTRY_LEN = 4096           # a single match glob / test path / capability name
 
+# 5.2 §5.2: the additive proposal fields. `layers` becomes `Parent:Layer`
+# subgroups (bounded like groups); `profile` is prose the setup agent wrote
+# about the group and feeds the floor (#1490) and, in plan 2, profiles.yml.
+_MAX_LAYERS = 12                # layers proposed for one group
+_MAX_PROFILE_STR = 512          # one profile string / one profile list item
+_MAX_PROFILE_LIST = 32          # items in one profile list
+_PROFILE_STR_FIELDS = ("purpose",)
+_PROFILE_LIST_FIELDS = ("surfaces", "entry_points", "trust_boundaries")
+# Names a proposed LAYER may not take: the engine-owned names (`Core` is the
+# residual layer the engine mints itself) and the spec's "not layers" --
+# tests are the `tests:` axis, config and docs are Commons (spec §3.3).
+_NOT_LAYER_KEYS = frozenset({alias_key(n) for n in RESERVED_GROUP_NAMES}) | frozenset({
+    "test", "config", "configuration", "doc", "docs", "documentation"})
+
 
 def _validate_str_list(group_label, field, values, required):
     """Shared shape/caps check for a proposal group's `match`/`tests` list
@@ -150,6 +217,86 @@ def _validate_str_list(group_label, field, values, required):
     return errors
 
 
+def _validate_layers(group_label, layers):
+    """Shape/caps check for a proposal group's optional `layers` list
+    (spec §5.2): each entry is `{"layer": name, "match": [glob, ...]}`.
+    Two entries whose names fold to one alias_key are a duplicate (they
+    would become the same `Parent:Layer` subgroup)."""
+    if layers is None:
+        return []
+    if not isinstance(layers, list):
+        return ["proposal group %s: layers must be a list" % group_label]
+    if len(layers) > _MAX_LAYERS:
+        return ["proposal group %s: too many layers (%d > %d)"
+                % (group_label, len(layers), _MAX_LAYERS)]
+    errors, seen = [], set()
+    for j, layer in enumerate(layers):
+        if not isinstance(layer, dict):
+            errors.append("proposal group %s: layer %d must be a mapping" % (group_label, j))
+            continue
+        lname = layer.get("layer")
+        if not lname or not isinstance(lname, str):
+            errors.append("proposal group %s: layer %d: missing/empty layer name"
+                          % (group_label, j))
+            continue
+        if len(lname) > _MAX_ENTRY_LEN:
+            errors.append("proposal group %s: layer %d: name exceeds %d chars"
+                          % (group_label, j, _MAX_ENTRY_LEN))
+            continue
+        key = alias_key(lname)
+        if key in seen:
+            errors.append("proposal group %s: duplicate layer %r" % (group_label, lname))
+        seen.add(key)
+        errors.extend(_validate_str_list("%s layer %s" % (group_label, lname),
+                                         "match", layer.get("match"), required=True))
+    return errors
+
+
+def _validate_profile(group_label, profile):
+    """Shape/caps check for a proposal group's optional `profile` mapping
+    (spec §5.2). Strict on keys and on the surfaces enum: the profile is
+    what floors a `custom:` capability, so a misspelled key or surface must
+    fail loudly rather than silently weaken the floor."""
+    if profile is None:
+        return []
+    if not isinstance(profile, dict):
+        return ["proposal group %s: profile must be a mapping" % group_label]
+    errors = []
+    allowed = set(_PROFILE_STR_FIELDS) | set(_PROFILE_LIST_FIELDS)
+    for key in sorted((k for k in profile if k not in allowed), key=str):
+        errors.append("proposal group %s: unknown profile field %r" % (group_label, key))
+    for field in _PROFILE_STR_FIELDS:
+        value = profile.get(field)
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            errors.append("proposal group %s: profile.%s must be a string" % (group_label, field))
+        elif len(value) > _MAX_PROFILE_STR:
+            errors.append("proposal group %s: profile.%s exceeds %d chars"
+                          % (group_label, field, _MAX_PROFILE_STR))
+    for field in _PROFILE_LIST_FIELDS:
+        values = profile.get(field)
+        if values is None:
+            continue
+        if not isinstance(values, list) or not all(isinstance(v, str) for v in values):
+            errors.append("proposal group %s: profile.%s must be a list of strings"
+                          % (group_label, field))
+            continue
+        if len(values) > _MAX_PROFILE_LIST:
+            errors.append("proposal group %s: too many profile.%s entries (%d > %d)"
+                          % (group_label, field, len(values), _MAX_PROFILE_LIST))
+        elif any(len(v) > _MAX_PROFILE_STR for v in values):
+            errors.append("proposal group %s: a profile.%s entry exceeds %d chars"
+                          % (group_label, field, _MAX_PROFILE_STR))
+    surfaces = profile.get("surfaces")
+    if isinstance(surfaces, list):
+        for s in surfaces:
+            if isinstance(s, str) and s not in coverage_model.SURFACES:
+                errors.append("proposal group %s: profile.surfaces %r is not a known surface"
+                              % (group_label, s))
+    return errors
+
+
 def validate_proposal(proposal):
     """Return a list of human-readable errors (empty = valid)."""
     if not isinstance(proposal, dict):
@@ -178,6 +325,8 @@ def validate_proposal(proposal):
             errors.append("proposal group %s: custom: prefix cannot be empty" % label)
         errors.extend(_validate_str_list(label, "match", g.get("match"), required=True))
         errors.extend(_validate_str_list(label, "tests", g.get("tests"), required=False))
+        errors.extend(_validate_layers(label, g.get("layers")))
+        errors.extend(_validate_profile(label, g.get("profile")))
     return errors
 
 
@@ -186,180 +335,295 @@ def _group_name(capability):
     return capability.split("custom:", 1)[1] if capability.startswith("custom:") else capability
 
 
-def assemble(proposal, vocabulary, affinity):
+def _union_into(target, values):
+    """Append each of `values` not already in `target` (order-preserving,
+    de-duplicated union in place)."""
+    for v in values:
+        if v not in target:
+            target.append(v)
+
+
+def _floor_for(is_custom, cap, affinity, surfaces):
+    """(floor, floor_source) for one group -- spec §5.3 step 6 and R3.
+
+    An affinity row always wins. Otherwise the profile's surfaces derive the
+    floor through coverage_model.surfaces_to_domains (`"profile"`, #1490) --
+    minus COD, which the run-time global floor supplies whenever code is
+    present (DAT/ARC stay: the global floor gates them on file hints an
+    ORM- or CI-heavy group may not carry). With no surfaces the 5.0 empty
+    sources stand."""
+    if not is_custom and cap in affinity:
+        return list(affinity[cap]), "affinity"
+    if surfaces:
+        derived = [d for d in coverage_model.surfaces_to_domains(surfaces) if d != "COD"]
+        return derived, "profile"
+    return [], ("empty(scout-only)" if is_custom else "affinity(missing)")
+
+
+def _keep_layers(name, proposed, layer_aliases, warnings):
+    """Canonicalize a group's proposed layers through the layer catalog
+    (spec §5.3 step 1) and drop the ones that may not be layers: reserved /
+    not-a-layer names (`Core`, `Tests`, `Config`, `Docs`, ...) and names
+    that are not a valid subgroup token. Dropping is disclosed in
+    `warnings`; the group itself is kept. A name the catalog does not know
+    is kept verbatim (custom layers are allowed, like custom capabilities)
+    and flagged `canonical: False` for the report and the promotion ratchet."""
+    kept = []
+    for layer in proposed:
+        raw = layer["layer"]
+        key = alias_key(raw)
+        canonical = layer_aliases.get(key)
+        lname = canonical if canonical is not None else raw.strip()
+        if key in _NOT_LAYER_KEYS:
+            warnings.append("%s: layer %r dropped (reserved or not a layer -- tests are the "
+                            "tests: axis, config and docs are Commons)" % (name, raw))
+            continue
+        if not groups_schema._GROUP_NAME_RE.match(lname):
+            warnings.append("%s: layer %r dropped (not a valid group name)" % (name, raw))
+            continue
+        kept.append({"layer": lname, "match": list(layer["match"]),
+                     "canonical": canonical is not None})
+    return kept
+
+
+def _clean_profile(profile):
+    """Copy the known profile fields only, lists de-duplicated."""
+    out = {}
+    for field in _PROFILE_STR_FIELDS:
+        if profile.get(field):
+            out[field] = profile[field]
+    for field in _PROFILE_LIST_FIELDS:
+        values = []
+        _union_into(values, profile.get(field) or [])
+        out[field] = values
+    return out
+
+
+def assemble(proposal, vocabulary, affinity, layers=None):
     """Return (groups_mapping | None, disclosure).
 
-    Floor outcomes:
-    - matched capability with affinity entry -> affinity floor (`floor_source: "affinity"`)
-    - custom or unknown capability -> empty floor (`floor_source: "empty(scout-only)"`)
-    - known capability absent from affinity table -> empty floor (`floor_source: "affinity(missing)"`)
+    Each assembled group is `{"match", "tests", "panels", "layers", "profile"}`;
+    `layers` is the canonicalized `[{"layer", "match", "canonical"}]` list
+    (empty when none proposed) and `profile` the cleaned profile mapping
+    (empty when none). `layers` is the loaded layer catalog (load_layers) used
+    to canonicalize layer names; None skips canonicalization (every proposed
+    layer is then custom).
 
-    The assembled mapping is round-tripped through groups_schema.parse_groups; a
-    schema violation returns (None, disclosure) with the errors, so setup fails
-    loudly rather than writing a bad draft. Collisions (same post-_group_name name)
-    are merged: first occurrence's floor wins, match/tests are unioned, collision
-    is recorded in disclosure.
+    Names canonicalize through the vocabulary's `aliases` (spec §3.4) -- so
+    `authentication`, `AUTH` and `custom:authentication` all become `Auth`
+    and keep Auth's affinity floor; #run7 COD-C2D's case/whitespace fold is
+    the degenerate case (every known name is its own alias). A label that
+    resolves to nothing is custom (`custom:` prefix or not); custom spellings
+    that fold to one alias_key are one group, named by the first spelling.
+
+    Floor outcomes (`floor_source`):
+    - affinity row present                -> `"affinity"`
+    - else profile surfaces present       -> `"profile"` (surfaces_to_domains, #1490)
+    - else custom                         -> `"empty(scout-only)"`
+    - else known but no affinity row      -> `"affinity(missing)"`
+
+    Collisions (same canonical name) merge: match/tests/layers/profile lists
+    are unioned, the first non-empty `purpose` is kept, and the floor is
+    recomputed from the MERGED state so the outcome is order-independent
+    (#run9 ARC-D2B: a known capability and its custom alias in either order
+    keep the known floor). Every collision is recorded.
+
+    Dropped layers are reported in `disclosure["warnings"]`; the mapping is
+    round-tripped (leaf fields only) through groups_schema.parse_groups and a
+    violation returns (None, disclosure) so setup fails loudly.
     """
     errors = validate_proposal(proposal)
     if errors:
         return None, {"groups": [], "errors": errors}
     known = set(vocabulary.get("names") or [])
-    # #run7 COD-C2D: a known capability that differs from its vocab spelling only
-    # by surrounding whitespace or letter case (`"Auth "`, `"auth"`) must not be
-    # misread as custom -- doing so silently DISCARDS its calibrated affinity
-    # floor (a security downgrade). Canonicalize non-custom names through a
-    # case/space-folded index to the exact vocab name before the floor lookup.
-    canon = {n.casefold(): n for n in known}
+    aliases = dict(vocabulary.get("aliases") or {})
+    for n in known:
+        aliases.setdefault(alias_key(n), n)
+    layer_aliases = dict((layers or {}).get("aliases") or {})
     out = {}
-    disclosure = {"groups": [], "errors": [], "collisions": []}
+    custom_seen = {}     # alias_key -> first spelling of a custom name
+    disclosure = {"groups": [], "errors": [], "collisions": [], "warnings": []}
     for g in proposal["groups"]:
-        cap = g["capability"]
-        normalized = None
-        if cap.startswith("custom:"):
-            name = _group_name(cap)
-            is_custom = True
+        raw = g["capability"]
+        label = _group_name(raw).strip()
+        canonical = aliases.get(alias_key(label))
+        if canonical is not None:
+            cap, name, is_custom = canonical, canonical, False
         else:
-            canonical = canon.get(cap.strip().casefold())
-            if canonical is None:
-                name = cap
-                is_custom = True
-            else:
-                if canonical != cap:
-                    normalized = {"from": cap, "to": canonical}
-                cap = canonical           # use the exact vocab name downstream
-                name = canonical
-                is_custom = False
-        # Determine floor_source: distinguish known-but-missing from custom/unknown
-        if is_custom:
-            floor = []
-            floor_source = "empty(scout-only)"
-        elif cap in affinity:
-            floor = list(affinity[cap])
-            floor_source = "affinity"
-        else:
-            # Known capability but missing from affinity table
-            floor = []
-            floor_source = "affinity(missing)"
-        new_match = list(g["match"])
-        new_tests = list(g.get("tests") or [])
-        if name in out:
-            # Collision: merge into existing group
-            # Keep first occurrence's floor and is_custom status
-            # Union match and tests (de-duplicated, order-preserving)
-            existing = out[name]
-            # Union match: preserve order, deduplicate
-            merged_match = list(existing["match"])
-            for m in new_match:
-                if m not in merged_match:
-                    merged_match.append(m)
-            # Union tests: preserve order, deduplicate
-            merged_tests = list(existing["tests"])
-            for t in new_tests:
-                if t not in merged_tests:
-                    merged_tests.append(t)
-            out[name]["match"] = merged_match
-            out[name]["tests"] = merged_tests
-            # #run9 ARC-D2B: floor/is_custom must be order-INDEPENDENT. A known
-            # capability (e.g. 'Auth', affinity floor ['SEC']) and its OWN custom:
-            # alias ('custom:Auth', empty floor) collide on the same name; keeping
-            # the FIRST occurrence dropped the calibrated floor whenever the custom:
-            # alias was listed first -- a silent security downgrade decided by input
-            # order. If THIS occurrence is the known capability and the group was
-            # recorded as custom (empty floor), upgrade the merged group to the
-            # known floor so the outcome no longer depends on ordering.
-            dgroup = next(d for d in disclosure["groups"] if d["name"] == name)
-            if not is_custom and dgroup["custom"]:
-                out[name]["panels"] = floor
-                dgroup["custom"] = False
-                dgroup["floor"] = floor
-                dgroup["floor_source"] = floor_source
-                if normalized:
-                    dgroup["normalized"] = normalized
-            # Record collision (capability that was merged in)
-            disclosure["collisions"].append({
-                "name": name, "capability": cap
-            })
-        else:
-            # First occurrence of this name
-            out[name] = {
-                "match": new_match,
-                "tests": new_tests,
-                "panels": floor,
-            }
-            # Add to disclosure (only once per name)
+            # custom: spellings that fold to one key are one group, named by
+            # the first spelling seen (disclosed via `normalized`).
+            cap, is_custom = raw, True
+            name = custom_seen.setdefault(alias_key(label), label)
+        normalized = None if name == _group_name(raw) else {"from": raw, "to": name}
+        profile = _clean_profile(g.get("profile") or {})
+        kept_layers = _keep_layers(name, g.get("layers") or [], layer_aliases,
+                                   disclosure["warnings"])
+        if name not in out:
+            floor, floor_source = _floor_for(is_custom, cap, affinity, profile["surfaces"])
+            out[name] = {"match": list(g["match"]), "tests": list(g.get("tests") or []),
+                         "panels": floor, "layers": kept_layers, "profile": profile}
             disclosure["groups"].append({
                 "name": name, "capability": cap, "custom": is_custom,
-                "floor": floor,
-                "floor_source": floor_source,
-                # #run7 COD-C2D: record the case/whitespace fixup so the
-                # canonicalization is visible in the disclosure, never silent.
+                "floor": floor, "floor_source": floor_source,
+                # record the alias/case fixup so canonicalization is visible
                 "normalized": normalized,
             })
-    parsed, perrors = groups_schema.parse_groups({"groups": out})
+            continue
+        # Collision: merge into the existing group, then recompute the floor
+        # from the merged state (order-independent).
+        existing = out[name]
+        dgroup = next(d for d in disclosure["groups"] if d["name"] == name)
+        _union_into(existing["match"], g["match"])
+        _union_into(existing["tests"], g.get("tests") or [])
+        have = {alias_key(layer["layer"]) for layer in existing["layers"]}
+        for layer in kept_layers:
+            if alias_key(layer["layer"]) not in have:
+                existing["layers"].append(layer)
+                have.add(alias_key(layer["layer"]))
+        for field in _PROFILE_STR_FIELDS:
+            if not existing["profile"].get(field) and profile.get(field):
+                existing["profile"][field] = profile[field]
+        for field in _PROFILE_LIST_FIELDS:
+            _union_into(existing["profile"][field], profile[field])
+        if not is_custom and dgroup["custom"]:
+            dgroup["custom"], dgroup["capability"] = False, cap
+            if normalized:
+                dgroup["normalized"] = normalized
+        floor, floor_source = _floor_for(dgroup["custom"], dgroup["capability"], affinity,
+                                         existing["profile"]["surfaces"])
+        existing["panels"], dgroup["floor"], dgroup["floor_source"] = floor, floor, floor_source
+        disclosure["collisions"].append({"name": name, "capability": raw})
+    leaves = {n: {k: v for k, v in body.items() if k in groups_schema.RESERVED}
+              for n, body in out.items()}
+    parsed, perrors = groups_schema.parse_groups({"groups": leaves})
     if perrors:
         disclosure["errors"] = perrors
         return None, disclosure
     return out, disclosure
 
 
+def flatten_groups(groups):
+    """{flat_id: leaf} for a nested groups mapping: a leaf stays under its
+    name; a parent `{"subgroups": {sub: leaf}}` yields `Parent:Sub` leaves
+    (the flat ids groups_schema.parse_groups mints). Lists are copied."""
+    flat = {}
+    for name, body in groups.items():
+        subs = body.get("subgroups")
+        if isinstance(subs, dict):
+            for sub, leaf in subs.items():
+                flat["%s:%s" % (name, sub)] = {k: (list(v) if isinstance(v, list) else v)
+                                                for k, v in leaf.items()}
+        else:
+            flat[name] = {k: (list(v) if isinstance(v, list) else v)
+                          for k, v in body.items() if k != "subgroups"}
+    return flat
+
+
+def _copy_body(body):
+    """Deep-enough copy of a group body (lists and the subgroups mapping)."""
+    out = {}
+    for k, v in body.items():
+        if k == "subgroups" and isinstance(v, dict):
+            out[k] = {sub: {sk: (list(sv) if isinstance(sv, list) else sv)
+                            for sk, sv in leaf.items()} for sub, leaf in v.items()}
+        else:
+            out[k] = list(v) if isinstance(v, list) else v
+    return out
+
+
+def _all_globs(body, field):
+    """A body's `field` globs, including every subgroup's, order-preserving."""
+    out = list(body.get(field) or [])
+    for leaf in (body.get("subgroups") or {}).values():
+        _union_into(out, leaf.get(field) or [])
+    return out
+
+
 def merge_additive(committed, assembled, claims):
     """Additive, never-clobber merge (spec §5).
 
-    committed/assembled: {name: {"match": [...], "tests": [...], "panels": [...]}}.
-    claims: {name: [file]} — the assembled groups that claimed previously-
-    unassigned files (from orchestrator.assign_by_catalog; Task 6). A group that
-    claims nothing new is dropped as redundant. Existing entries (match/tests/
-    panels + any owner edit) are never rewritten; an existing group is only
-    *extended* with globs/tests it does not already carry.
+    committed/assembled: {name: body} where a body is a leaf
+    {"match", "tests", "panels"[, "exclude"]} or a parent
+    {"subgroups": {sub: leaf}} (layers, 5.2). claims: {name: [file]} -- the
+    assembled groups that claimed previously-unassigned files (from
+    discovery.assign_by_catalog). A group that claims nothing new is dropped
+    as redundant. Committed entries are never rewritten:
+
+    - new name           -> adopted as proposed (leaf or parent); `new_groups`
+    - committed leaf     -> only EXTENDED with globs it does not carry. When
+                            the assembled side is a parent, its subgroup globs
+                            extend the leaf and the layers are NOT introduced
+                            (`layers_dropped`): a committed leaf stays a leaf.
+    - committed parent   -> untouched, `skipped_committed_parent`: the owner's
+                            subgroup structure is theirs to edit.
     """
-    merged = {name: {k: (list(v) if isinstance(v, list) else v)
-                     for k, v in body.items()}
-              for name, body in committed.items()}
-    diff = {"new_groups": [], "extended_groups": [], "dropped_redundant": []}
+    merged = {name: _copy_body(body) for name, body in committed.items()}
+    diff = {"new_groups": [], "extended_groups": [], "dropped_redundant": [],
+            "layers_dropped": [], "skipped_committed_parent": []}
     for name, body in assembled.items():
         if not claims.get(name):
             diff["dropped_redundant"].append(name)
             continue
-        if name in merged:
-            existing = merged[name]
-            new_match = [p for p in body.get("match", [])
-                         if p not in existing.get("match", [])]
-            new_tests = [t for t in body.get("tests", [])
-                         if t not in existing.get("tests", [])]
-            if new_match or new_tests:
-                existing["match"] = list(existing.get("match", [])) + new_match
-                existing["tests"] = list(existing.get("tests", [])) + new_tests
-                diff["extended_groups"].append(
-                    {"name": name, "added_match": new_match, "added_tests": new_tests})
-        else:
-            merged[name] = {
-                "match": list(body.get("match", [])),
-                "tests": list(body.get("tests", [])),
-                "panels": list(body.get("panels", [])),
-            }
-            diff["new_groups"].append(
-                {"name": name, "match": list(body.get("match", [])),
-                 "panels": list(body.get("panels", []))})
+        subs = body.get("subgroups") or {}
+        if name not in merged:
+            if subs:
+                merged[name] = {"subgroups": _copy_body({"subgroups": subs})["subgroups"]}
+                diff["new_groups"].append(
+                    {"name": name, "match": _all_globs(body, "match"),
+                     "panels": [], "subgroups": list(subs)})
+            else:
+                merged[name] = {"match": list(body.get("match", [])),
+                                "tests": list(body.get("tests", [])),
+                                "panels": list(body.get("panels", []))}
+                diff["new_groups"].append(
+                    {"name": name, "match": list(body.get("match", [])),
+                     "panels": list(body.get("panels", [])), "subgroups": []})
+            continue
+        existing = merged[name]
+        if existing.get("subgroups"):
+            diff["skipped_committed_parent"].append(name)
+            continue
+        new_match = [p for p in _all_globs(body, "match") if p not in existing.get("match", [])]
+        new_tests = [t for t in _all_globs(body, "tests") if t not in existing.get("tests", [])]
+        if new_match or new_tests:
+            existing["match"] = list(existing.get("match", [])) + new_match
+            existing["tests"] = list(existing.get("tests", [])) + new_tests
+            diff["extended_groups"].append(
+                {"name": name, "added_match": new_match, "added_tests": new_tests})
+        if subs:
+            diff["layers_dropped"].append({"name": name, "layers": list(subs)})
     return merged, diff
+
+
+def _yaml_leaf(body):
+    """Only the non-empty leaf fields, in schema order."""
+    entry = {}
+    for key in ("match", "tests", "panels", "exclude"):
+        vals = body.get(key) or []
+        if vals:
+            entry[key] = list(vals)
+    return entry
 
 
 def dump_groups_yaml(groups, header=True):
     """Serialize a groups mapping to canonical mapping-form groups.yml text.
-    Insertion order preserved; only non-empty fields emitted; round-trips
-    through groups_schema.parse_groups. yaml.safe_dump handles quoting of
-    indicator-leading scalars (e.g. '**/auth/**')."""
+    Insertion order preserved; only non-empty fields emitted; a parent body
+    (`subgroups`) nests its leaves under the parent name (the #1305 schema);
+    round-trips through groups_schema.parse_groups. yaml.safe_dump handles
+    quoting of indicator-leading scalars (e.g. '**/auth/**')."""
     cleaned = {}
     for name, body in groups.items():
-        entry = {}
-        for key in ("match", "tests", "panels", "exclude"):
-            vals = body.get(key) or []
-            if vals:
-                entry[key] = list(vals)
-        cleaned[name] = entry
+        subs = body.get("subgroups")
+        if isinstance(subs, dict) and subs:
+            cleaned[name] = {sub: _yaml_leaf(leaf) for sub, leaf in subs.items()}
+        else:
+            cleaned[name] = _yaml_leaf(body)
     body_text = yaml.safe_dump({"groups": cleaned}, sort_keys=False,
                                default_flow_style=False, allow_unicode=True)
     if not header:
         return body_text
     return ("# panopticon groups catalog (matrix form) -- match/tests/panels/exclude.\n"
             "# gitignore-flavored globs; first matching group wins; edit and commit.\n"
+            "# A group whose keys are names (no match:) is a parent; its subgroups\n"
+            "# are its layers and roll up to it in the report.\n"
             + body_text)

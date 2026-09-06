@@ -1,0 +1,118 @@
+# Panopticon layer vocabulary -- 5.2 (spec §3.3). HORIZONTAL names for splitting
+# one oversize vertical into subgroups (`Auth:API`, `Auth:Data`). A layer is
+# never a top-level group and never merges two verticals. NOT layers: tests
+# (the `tests:` axis), config and docs (Commons). `Core` is reserved for the
+# engine's residual layer and must not appear here.
+#
+# Loader-consumed keys: name, aliases, hints. The rest is rendered verbatim
+# into the setup brief so the agent sees the same definitions we test against.
+version: 1.0.0
+layers:
+  - name: API
+    definition: "Inbound request handling: HTTP/RPC/GraphQL routes, controllers, handlers, request/response DTOs and serializers."
+    boundary: "Business rules invoked by a handler are Service; cross-request plumbing (auth checks, rate limits, logging) is Middleware; an outbound client to someone else's API is Integration."
+    aliases: [controller, controllers, handler, handlers, routes, routing, endpoints, rest, graphql, grpc, transport]
+    hints: ["**/api/**", "**/controllers/**", "**/handlers/**", "**/routes/**"]
+    examples:
+      - {repo: gotify, path: api/}
+      - {repo: authelia, path: internal/handlers/}
+      - {repo: btcpayserver, path: BTCPayServer/Controllers/}
+      - {repo: solidus, path: api/app/controllers/}
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, cells: 143, folded: [controller: 46]}
+
+  - name: Service
+    definition: "The vertical's business logic: use cases, domain rules, orchestration between API and Data, in-process managers."
+    boundary: "Persistence mapping is Data; request parsing is API; background execution is Worker. When a vertical has no separable service tier, do not invent one -- leave it in the parent."
+    aliases: [services, domain, logic, usecases, use-cases, application, manager, managers, core-logic, engine, server]
+    hints: ["**/services/**", "**/service/**", "**/domain/**", "**/usecases/**"]
+    examples:
+      - {repo: btcpayserver, path: BTCPayServer/Services/}
+      - {repo: authelia, path: internal/service/}
+      - {repo: solidus, path: core/lib/spree/}
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, cells: 133}
+
+  - name: Data
+    definition: "Persistence: models/entities, schema and migrations, repositories, query builders, ORM configuration, caches that back a store."
+    boundary: "Reading a store from a request handler does not make the handler Data. Import/export of user data is the ImportExport capability, not this layer."
+    aliases: [database, db, persistence, models, model, entities, entity, repository, repositories, migrations, migration, schema, orm, storage-layer, dao]
+    hints: ["**/models/**", "**/migrations/**", "**/repository/**", "**/db/**", "**/database/**"]
+    examples:
+      - {repo: gotify, path: database/}
+      - {repo: authelia, path: internal/storage/}
+      - {repo: bookstack, path: database/migrations/}
+      - {repo: btcpayserver, path: BTCPayServer.Data/}
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, cells: 150, folded: [migrations: 40]}
+
+  - name: UI
+    definition: "Server-rendered or client-side presentation for the vertical: templates, views, components, pages, styles, front-end state for those screens."
+    boundary: "A whole separate front-end application or SDK that talks to the server over its public API is Client. Theming/design-system code shared by every vertical is the UI capability, not a layer of one vertical."
+    aliases: [views, view, templates, frontend, front-end, web, webui, components, pages, presentation, screens]
+    hints: ["**/views/**", "**/templates/**", "**/components/**", "**/pages/**", "web/**", "ui/**"]
+    examples:
+      - {repo: gotify, path: ui/src/}
+      - {repo: authelia, path: web/src/}
+      - {repo: bookstack, path: resources/js/}
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, cells: 133}
+
+  - name: Client
+    definition: "A consumer of the server's public interface shipped in the same repo: SDKs, generated API clients, mobile/desktop apps, CLI clients that only speak the API."
+    boundary: "The server's own screens are UI. A client for a THIRD party's API is Integration."
+    aliases: [clients, sdk, sdks, app, mobile, desktop, consumer]
+    hints: ["**/client/**", "**/clients/**", "**/sdk/**", "**/mobile/**"]
+    examples:
+      - {repo: btcpayserver, path: BTCPayServer.Client/}
+      - {repo: airflow, path: airflow-ctl/}
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, cells: 94}
+
+  - name: Worker
+    definition: "Background execution: jobs, queues, schedulers, cron, consumers, long-running hosted services."
+    boundary: "The service logic a job calls is Service; a queue's persistence is Data. A one-shot admin command is CLI."
+    aliases: [workers, jobs, job, queue, queues, scheduler, schedulers, cron, background, tasks-runner, consumers, executors, hosted-services, daemon]
+    hints: ["**/jobs/**", "**/workers/**", "**/queue/**", "**/scheduler/**", "**/HostedServices/**"]
+    examples:
+      - {repo: btcpayserver, path: BTCPayServer/HostedServices/}
+      - {repo: airflow, path: airflow-core/src/airflow/jobs/}
+      - {repo: airflow, path: airflow-core/src/airflow/executors/}
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, cells: 113}
+
+  - name: Middleware
+    definition: "Cross-request plumbing in the request pipeline: authentication/authorization checks, rate limiting, CORS, logging, error translation, filters, interceptors."
+    boundary: "The credential lifecycle itself is the Auth capability; a middleware that only enforces it is this layer. Route definitions are API."
+    aliases: [middlewares, filters, filter, interceptors, interceptor, guards, pipeline, plumbing]
+    hints: ["**/middleware/**", "**/middlewares/**", "**/filters/**", "**/interceptors/**"]
+    examples:
+      - {repo: authelia, path: internal/middlewares/}
+      - {repo: bookstack, path: app/Http/Middleware/}
+      - {repo: btcpayserver, path: BTCPayServer/Filters/}
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, cells: 49}
+
+  - name: CLI
+    definition: "Command-line entry points and argument parsing for operating the vertical: admin commands, management scripts, console commands."
+    boundary: "A CLI that is the product's ONLY interface (fzf, ripgrep) is not a layer of a vertical -- the verticals are the features it exposes. A CLI that only calls the public API is Client."
+    aliases: [cli, command-line, commands, console, cmd, bin, scripts-entry, management-commands]
+    hints: ["cmd/**", "**/cli/**", "**/commands/**", "**/Console/**", "bin/**"]
+    examples:
+      - {repo: authelia, path: cmd/authelia/}
+      - {repo: bookstack, path: app/Console/Commands/}
+      - {repo: airflow, path: airflow-core/src/airflow/cli/}
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, cells: 35}
+
+  - name: Integration
+    definition: "Outbound adapters to systems the repo does not own: third-party API clients, provider drivers, webhooks delivery transport, protocol bridges."
+    boundary: "Receiving webhooks is API; the feature of managing webhook subscriptions is the Webhooks capability. A pluggable extension point is the Plugins capability."
+    aliases: [integrations, adapters, adapter, providers, provider, connectors, connector, external, third-party, gateways, gateway, drivers, bridges]
+    hints: ["**/integrations/**", "**/adapters/**", "**/providers/**", "**/connectors/**"]
+    examples:
+      - {repo: authelia, path: internal/notification/}
+      - {repo: btcpayserver, path: BTCPayServer/Payments/}
+      - {repo: airflow, path: providers/}
+    provenance: panel-5.2.0
+    evidence: {round: 2026-08-21-5.2.0-vocab-panel, cells: 40}
