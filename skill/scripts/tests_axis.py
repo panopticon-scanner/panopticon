@@ -19,7 +19,10 @@ import os
 import re
 
 TEST_TOKENS = frozenset({"test", "tests", "spec", "specs"})
-_WILDCARD = re.compile(r"[*?\[]")
+# What discovery._glob_to_re treats as a wildcard: `*`, `**` and `?`. It has
+# no character classes, so `[ab]` is a literal there and must be one here --
+# the two matchers have to agree on what "literal" means (#1501).
+_WILDCARD = re.compile(r"[*?]")
 # `RateLimiting` -> Rate|Limiting; `HTTPServer` -> HTTP|Server; but an acronym
 # plural (`APIs`, `IDs`) stays one token -- the word after the run must be a
 # real word (>= 2 lowercase letters), not a lone `s`.
@@ -46,7 +49,8 @@ def _norm(toks):
 
 def name_keys(name, aliases=()):
     """Token tuples that identify a group: canonical name first, then aliases,
-    plural-folded, empties and duplicates dropped."""
+    plural-folded, empties and duplicates dropped. Position matters to
+    `_carries`: only the canonical key (index 0) may match by prefix."""
     keys = []
     for label in [name] + list(aliases or []):
         key = _norm(tokens(label))
@@ -74,14 +78,26 @@ def _runs_contain(seq, key):
 
 
 def _carries(seq, keys):
+    """Does a token run `seq` carry one of `keys`?
+
+    Three ways, in order: the key as a whole-token run (`auth` in
+    `auth_handlers`); the key's tokens fused into one (`OAuth` tokenizes to
+    o|auth but the path says `oauth/`; likewise GraphQL, WebSocket); or, for
+    the CANONICAL key only, the run as a leading prefix of the key (`tools/`
+    names `ToolAdapters`). The prefix rule is confined to the canonical name
+    on purpose: applied to every alias and stem it credits `test_setup.py`
+    to Onboarding via the alias SetupWizard, `test_data.py` to ImportExport
+    via DataImport -- the over-claim the scoping exists to stop (R1)."""
     seq = _norm(seq)
     if not seq:
         return False
-    for key in keys:
+    for i, key in enumerate(keys):
         if _runs_contain(seq, key):
             return True
-        if len(seq) < len(key) and tuple(key[:len(seq)]) == seq:
-            return True      # `tools/` names `ToolAdapters`
+        if len(key) > 1 and "".join(key) in seq:
+            return True
+        if i == 0 and len(seq) < len(key) and tuple(key[:len(seq)]) == seq:
+            return True
     return False
 
 
@@ -96,7 +112,12 @@ def path_carries_name(path, keys):
 
 
 def is_literal_glob(glob):
-    return not _WILDCARD.search(glob.removeprefix("!"))
+    """A glob that names exactly one path: no wildcard AND at least one `/`.
+    A slash-less basename (`conftest.py`) matches at every depth under the
+    gitignore semantics discovery uses, so it is a wildcard in effect and is
+    scoped like one."""
+    bare = glob.removeprefix("!")
+    return "/" in bare and not _WILDCARD.search(bare)
 
 
 def literal_prefix(glob):

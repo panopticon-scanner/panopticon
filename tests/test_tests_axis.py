@@ -60,6 +60,26 @@ class TestPathCarriesName(unittest.TestCase):
         self.assertFalse(ta.path_carries_name("tests/adapters/test_gosec.py", keys),
                          "a later token alone is not a prefix")
 
+    def test_prefix_rule_is_confined_to_the_canonical_name(self):
+        # R1 tightening: an alias's leading token must not claim by prefix --
+        # `test_setup.py` is not Onboarding's just because SetupWizard is an
+        # alias, and `test_data.py` is not ImportExport's via DataImport.
+        onboarding = ta.name_keys("Onboarding", ["SetupWizard", "Signup"])
+        self.assertFalse(ta.path_carries_name("tests/test_setup.py", onboarding))
+        self.assertTrue(ta.path_carries_name("tests/test_setup_wizard.py", onboarding),
+                        "the whole alias still carries")
+        self.assertTrue(ta.path_carries_name("tests/signup/test_form.py", onboarding))
+
+    def test_fused_camel_case_key_matches_its_flat_spelling(self):
+        # `OAuth` tokenizes to o|auth but every path spells it `oauth`.
+        for name, path in (("OAuth", "tests/oauth/test_flow.py"),
+                           ("GraphQL", "tests/test_graphql.py"),
+                           ("WebSocket", "tests/websockets/test_ping.py")):
+            self.assertTrue(ta.path_carries_name(path, ta.name_keys(name)), name)
+        self.assertFalse(ta.path_carries_name("tests/test_oauthlib_shim.py",
+                                              ta.name_keys("OAuth")),
+                         "fused key matches a whole token, not a substring")
+
     def test_no_carry(self):
         self.assertFalse(ta.path_carries_name("tests/checkout/test_cart.py", self.AUTH))
         self.assertFalse(ta.path_carries_name("tests/test_authorization.py", self.AUTH),
@@ -73,7 +93,10 @@ class TestGlobPrefixes(unittest.TestCase):
         self.assertFalse(ta.is_literal_glob("tests/**"))
         self.assertFalse(ta.is_literal_glob("**/*_test.go"))
         self.assertFalse(ta.is_literal_glob("tests/test_?.py"))
-        self.assertFalse(ta.is_literal_glob("tests/[ab].py"))
+        self.assertTrue(ta.is_literal_glob("tests/[ab].py"),
+                        "discovery._glob_to_re has no character classes: `[ab]` is literal")
+        self.assertFalse(ta.is_literal_glob("conftest.py"),
+                         "a slash-less basename matches at every depth")
 
     def test_literal_prefix(self):
         self.assertEqual(ta.literal_prefix("internal/authentication/**/*_test.go"), "internal/authentication")
@@ -121,7 +144,13 @@ class TestAffinity(unittest.TestCase):
         self.assertEqual(attached, {"Core": ["crates/core/tests/a.rs"],
                                     "Search": ["crates/searcher/tests/b.rs"]})
         self.assertEqual(unattached, ["crates/x.rs", "tests/c.rs"],
-                         "depth-1 ties across groups do not attach; zero depth never does")
+                         "depth 1 never attaches (a shared top-level dir says nothing); "
+                         "zero depth never does")
+
+    def test_depth_one_does_not_attach_even_without_a_tie(self):
+        attached, unattached = ta.attach_by_affinity(["crates/x.rs"], {"Core": ["crates/core"]})
+        self.assertEqual(attached, {})
+        self.assertEqual(unattached, ["crates/x.rs"])
 
     def test_attach_tie_at_depth_over_one_goes_to_first_name(self):
         homes = {"B": ["a/b"], "A": ["a/b"]}
