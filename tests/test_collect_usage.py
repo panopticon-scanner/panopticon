@@ -7,9 +7,10 @@ import scripts.collect_usage as cu
 
 # NOTE: scripts.synthesize is imported lazily inside the one test that needs it.
 # Importing it at module scope prepends skill/scripts to sys.path[0]
-# (score_gate.py:11), where skill/scripts/tools/ then shadows tests/tools/ and
-# breaks collection of every test that does `from tools.git_repo import ...`.
-# This file sorts early enough alphabetically to trigger that for the whole run.
+# (score_gate.py:11), where skill/scripts/tools/ used to shadow tests/tools/ and
+# break collection of every test that does `from tools.git_repo import ...`.
+# tests/conftest.py now binds `tools` before any test module imports (WS-0 S4),
+# so this is no longer load-bearing; kept so the module stays cheap to collect.
 
 
 def _rec(role="assistant", usage=None, model="claude-opus-5", ts=None,
