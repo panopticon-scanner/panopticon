@@ -1,7 +1,8 @@
 import json, os, tempfile, unittest
 from unittest import mock
-import scripts.driver as driver
 import scripts.phases.runio as runio
+import scripts.phases.review as review
+import scripts.phases.verify as verify
 
 def _manifest(root):
     return {"run_id": "RID", "host": "claude", "security_mode": "standard"}
@@ -41,7 +42,7 @@ class TestVerifyPrimary(unittest.TestCase):
                        return_value="panopticon-domain-advisor"),
             mock.patch("scripts.ocrdb.load_bundle", return_value={"domains": {}})
         ):
-            result = driver.verify_execute(self.root, self.manifest)
+            result = verify.verify_execute(self.root, self.manifest)
         self.assertEqual(result.checkpoint, "verify")
         req = runio._load_json(runio._pano(self.root, "dispatch-request.json"))
         outs = [os.path.basename(e["out_file"]) for e in req["entries"]]
@@ -58,7 +59,7 @@ class TestVerifyPrimary(unittest.TestCase):
         _cell(self.root, "app", "QAL", [{"domain": "QAL", "severity": "INFO",
               "title": "t", "category": "x", "location": {"file": "a.py", "line_start": 2}}])
         with mock.patch("scripts.ocrdb.load_bundle", return_value={"domains": {}}):
-            result = driver.verify_execute(self.root, self.manifest)
+            result = verify.verify_execute(self.root, self.manifest)
         self.assertEqual(result.kind, "advanced")
 
     def test_forged_evidence_does_not_suppress_engagement(self):
@@ -74,7 +75,7 @@ class TestVerifyPrimary(unittest.TestCase):
                        return_value="panopticon-domain-advisor"),
             mock.patch("scripts.ocrdb.load_bundle", return_value={"domains": {}})
         ):
-            result = driver.verify_execute(self.root, self.manifest)
+            result = verify.verify_execute(self.root, self.manifest)
         self.assertEqual(result.checkpoint, "verify")   # engaged despite forged evidence
 
     def test_verify_done_false_when_engaged_cell_unverified(self):
@@ -82,13 +83,13 @@ class TestVerifyPrimary(unittest.TestCase):
               "severity": "HIGH", "title": "t", "category": "authz",
               "location": {"file": "a.py", "line_start": 1}}])
         with mock.patch("scripts.ocrdb.load_bundle", return_value={"domains": {}}):
-            self.assertFalse(driver.verify_done(self.root, self.manifest))
+            self.assertFalse(verify.verify_done(self.root, self.manifest))
 
     def test_verify_done_true_when_engaged_cell_has_primary_bundle(self):
         _cell(self.root, "app", "SEC", [{"domain": "SEC", "code": "SEC-A1A",
               "severity": "HIGH", "title": "t", "category": "authz",
               "location": {"file": "a.py", "line_start": 1}}])
-        cell = driver._load_cell_findings(self.root, self.manifest, "app", "SEC")
+        cell = review._load_cell_findings(self.root, self.manifest, "app", "SEC")
         vd = os.path.join(self.root, ".panopticon", "verdicts")
         os.makedirs(vd, exist_ok=True)
         with open(os.path.join(vd, "verdicts-app-SEC.json"), "w") as fh:
@@ -96,7 +97,7 @@ class TestVerifyPrimary(unittest.TestCase):
                        "_panopticon": {"run_id": "RID", "role": "domain_advisor",
                                        "domain": "SEC", "group": "app", "stage": "primary"}}, fh)
         with mock.patch("scripts.ocrdb.load_bundle", return_value={"domains": {}}):
-            self.assertTrue(driver.verify_done(self.root, self.manifest))
+            self.assertTrue(verify.verify_done(self.root, self.manifest))
 
     def test_verify_done_false_when_bundle_stamp_mismatches(self):
         # #1192 AGT-C1A: _verify_cell_done binds a verdict bundle to its cell by
@@ -108,7 +109,7 @@ class TestVerifyPrimary(unittest.TestCase):
         _cell(self.root, "app", "SEC", [{"domain": "SEC", "code": "SEC-A1A",
               "severity": "HIGH", "title": "t", "category": "authz",
               "location": {"file": "a.py", "line_start": 1}}])
-        cell = driver._load_cell_findings(self.root, self.manifest, "app", "SEC")
+        cell = review._load_cell_findings(self.root, self.manifest, "app", "SEC")
         vd = os.path.join(self.root, ".panopticon", "verdicts")
         os.makedirs(vd, exist_ok=True)
         good = {"run_id": "RID", "role": "domain_advisor",
@@ -124,7 +125,7 @@ class TestVerifyPrimary(unittest.TestCase):
             with mock.patch("scripts.ocrdb.load_bundle",
                             return_value={"domains": {}}):
                 self.assertFalse(
-                    driver.verify_done(self.root, self.manifest),
+                    verify.verify_done(self.root, self.manifest),
                     "bundle with mismatched stamp %r must not verify" % bad)
 
     # --- A2 (run-9): 1:1 finding<->verdict reconciliation, bounded re-dispatch ---
@@ -134,7 +135,7 @@ class TestVerifyPrimary(unittest.TestCase):
              "category": "authz", "location": {"file": "a.py", "line_start": 1}},
             {"domain": "SEC", "code": "SEC-B1A", "severity": "HIGH", "title": "two",
              "category": "output", "location": {"file": "b.py", "line_start": 2}}])
-        return driver._load_cell_findings(self.root, self.manifest, "app", "SEC")
+        return review._load_cell_findings(self.root, self.manifest, "app", "SEC")
 
     def _write_primary_bundle(self, fids):
         vd = os.path.join(self.root, ".panopticon", "verdicts")
@@ -150,10 +151,10 @@ class TestVerifyPrimary(unittest.TestCase):
         # silent verdicts.unanswered:1 that sinks certification (the run-9 cause).
         cell = self._two_finding_cell()
         self._write_primary_bundle([cell[0]["id"]])                    # 1 of 2
-        self.assertFalse(driver._verify_cell_done(
+        self.assertFalse(verify._verify_cell_done(
             self.root, self.manifest, "app", "SEC", "primary"))
         self._write_primary_bundle([cell[0]["id"], cell[1]["id"]])     # both -> done
-        self.assertTrue(driver._verify_cell_done(
+        self.assertTrue(verify._verify_cell_done(
             self.root, self.manifest, "app", "SEC", "primary"))
 
     def test_extra_unknown_verdict_does_not_block_done(self):
@@ -161,7 +162,7 @@ class TestVerifyPrimary(unittest.TestCase):
         # re-dispatch as long as every finding IS covered.
         cell = self._two_finding_cell()
         self._write_primary_bundle([cell[0]["id"], cell[1]["id"], "phantom"])
-        self.assertTrue(driver._verify_cell_done(
+        self.assertTrue(verify._verify_cell_done(
             self.root, self.manifest, "app", "SEC", "primary"))
 
     def test_incomplete_bundle_accepted_after_max_attempts(self):
@@ -170,11 +171,11 @@ class TestVerifyPrimary(unittest.TestCase):
         # INCONCLUSIVE, rather than wedging forever on a systematic re-coder.
         cell = self._two_finding_cell()
         self._write_primary_bundle([cell[0]["id"]])                    # stays incomplete
-        for _ in range(driver._MAX_VERIFY_ATTEMPTS):
-            self.assertFalse(driver._verify_cell_done(
+        for _ in range(verify._MAX_VERIFY_ATTEMPTS):
+            self.assertFalse(verify._verify_cell_done(
                 self.root, self.manifest, "app", "SEC", "primary"))
-            driver._bump_verify_attempts(self.root, "app", "SEC", "primary")
-        self.assertTrue(driver._verify_cell_done(                      # budget spent
+            verify._bump_verify_attempts(self.root, "app", "SEC", "primary")
+        self.assertTrue(verify._verify_cell_done(                      # budget spent
             self.root, self.manifest, "app", "SEC", "primary"))
 
     def test_execute_charges_an_attempt_only_on_redispatch(self):
@@ -187,11 +188,11 @@ class TestVerifyPrimary(unittest.TestCase):
                        return_value="panopticon-domain-advisor"),
             mock.patch("scripts.ocrdb.load_bundle", return_value={"domains": {}}),
         ):
-            driver.verify_execute(self.root, self.manifest)            # first dispatch
-            self.assertEqual(driver._verify_attempts(self.root, "app", "SEC", "primary"), 0)
+            verify.verify_execute(self.root, self.manifest)            # first dispatch
+            self.assertEqual(verify._verify_attempts(self.root, "app", "SEC", "primary"), 0)
             self._write_primary_bundle([cell[0]["id"]])               # incomplete return
-            driver.verify_execute(self.root, self.manifest)           # re-dispatch
-            self.assertEqual(driver._verify_attempts(self.root, "app", "SEC", "primary"), 1)
+            verify.verify_execute(self.root, self.manifest)           # re-dispatch
+            self.assertEqual(verify._verify_attempts(self.root, "app", "SEC", "primary"), 1)
 
 
 class TestVerifyBackup(unittest.TestCase):
@@ -217,7 +218,7 @@ class TestVerifyBackup(unittest.TestCase):
                                        "stage": "primary"}}, fh)
 
     def test_backup_summoned_after_primary_confirm(self):
-        cell = driver._load_cell_findings(self.root, self.manifest, "app", "SEC")
+        cell = review._load_cell_findings(self.root, self.manifest, "app", "SEC")
         self._primary_confirm(cell[0]["id"])
         with (
             mock.patch("scripts.dispatch.render_prompt", return_value="BODY"),
@@ -225,7 +226,7 @@ class TestVerifyBackup(unittest.TestCase):
                        return_value="panopticon-domain-advisor"),
             mock.patch("scripts.ocrdb.load_bundle", return_value={"domains": {}})
         ):
-            result = driver.verify_execute(self.root, self.manifest)
+            result = verify.verify_execute(self.root, self.manifest)
         self.assertEqual(result.checkpoint, "verify")
         e = runio._load_json(runio._pano(self.root, "dispatch-request.json"))["entries"][0]
         self.assertTrue(e["out_file"].endswith("verdicts-app-SEC-backup.json"))
@@ -246,7 +247,7 @@ class TestVerifyBackup(unittest.TestCase):
         # verify_execute proceeds to the (batched) backup round.
         os.makedirs(os.path.join(root, ".panopticon", "verdicts"), exist_ok=True)
         for g in ("app", "api"):
-            cell = driver._load_cell_findings(root, self.manifest, g, "SEC")
+            cell = review._load_cell_findings(root, self.manifest, g, "SEC")
             with open(os.path.join(root, ".panopticon", "verdicts",
                                    "verdicts-%s-SEC.json" % g), "w") as fh:
                 json.dump({"verdicts": [{"finding_id": cell[0]["id"],
@@ -260,7 +261,7 @@ class TestVerifyBackup(unittest.TestCase):
                        return_value="panopticon-domain-advisor"),
             mock.patch("scripts.ocrdb.load_bundle", return_value={"domains": {}})
         ):
-            result = driver.verify_execute(root, self.manifest)
+            result = verify.verify_execute(root, self.manifest)
         self.assertEqual(result.checkpoint, "verify")
         self.assertIsNone(result.group)                 # batched, not per-group
         entries = runio._load_json(runio._pano(root, "dispatch-request.json"))["entries"]
@@ -269,7 +270,7 @@ class TestVerifyBackup(unittest.TestCase):
         self.assertEqual(groups, {"app", "api"})        # both groups, ONE checkpoint
 
     def test_rejected_category_never_summons_backup(self):
-        cell = driver._load_cell_findings(self.root, self.manifest, "app", "SEC")
+        cell = review._load_cell_findings(self.root, self.manifest, "app", "SEC")
         os.makedirs(os.path.join(self.root, ".panopticon", "verdicts"), exist_ok=True)
         with open(os.path.join(self.root, ".panopticon", "verdicts",
                                "verdicts-app-SEC.json"), "w") as fh:
@@ -278,25 +279,25 @@ class TestVerifyBackup(unittest.TestCase):
                                        "domain": "SEC", "group": "app",
                                        "stage": "primary"}}, fh)
         with mock.patch("scripts.ocrdb.load_bundle", return_value={"domains": {}}):
-            result = driver.verify_execute(self.root, self.manifest)
+            result = verify.verify_execute(self.root, self.manifest)
         self.assertEqual(result.kind, "advanced")     # nothing to back up
 
     def test_confirmed_high_alone_below_fb_no_backup(self):
         _cell(self.root, "app", "SEC", [{"domain": "SEC", "code": "SEC-A1A",
               "severity": "HIGH", "title": "t", "category": "authz",
               "location": {"file": "a.py", "line_start": 1}}])
-        cell = driver._load_cell_findings(self.root, self.manifest, "app", "SEC")
+        cell = review._load_cell_findings(self.root, self.manifest, "app", "SEC")
         self._primary_confirm(cell[0]["id"])   # or inline-write the CONFIRMED primary bundle
         with mock.patch("scripts.ocrdb.load_bundle", return_value={"domains": {}}):
-            result = driver.verify_execute(self.root, self.manifest)
+            result = verify.verify_execute(self.root, self.manifest)
         self.assertEqual(result.kind, "advanced")   # HIGH alone below F_b -> no backup round
 
     def test_verify_done_gates_on_backup_round(self):
         # setUp already writes a CRITICAL cell (clears F_b); if your setUp differs, write one here
-        cell = driver._load_cell_findings(self.root, self.manifest, "app", "SEC")
+        cell = review._load_cell_findings(self.root, self.manifest, "app", "SEC")
         self._primary_confirm(cell[0]["id"])       # primary CONFIRMED bundle only
         with mock.patch("scripts.ocrdb.load_bundle", return_value={"domains": {}}):
-            self.assertFalse(driver.verify_done(self.root, self.manifest))   # backup owed
+            self.assertFalse(verify.verify_done(self.root, self.manifest))   # backup owed
         # now write the -backup bundle
         vd = os.path.join(self.root, ".panopticon", "verdicts")
         with open(os.path.join(vd, "verdicts-app-SEC-backup.json"), "w") as fh:
@@ -304,4 +305,4 @@ class TestVerifyBackup(unittest.TestCase):
                        "_panopticon": {"run_id": self.manifest["run_id"], "role": "domain_advisor",
                                        "domain": "SEC", "group": "app", "stage": "backup"}}, fh)
         with mock.patch("scripts.ocrdb.load_bundle", return_value={"domains": {}}):
-            self.assertTrue(driver.verify_done(self.root, self.manifest))
+            self.assertTrue(verify.verify_done(self.root, self.manifest))
