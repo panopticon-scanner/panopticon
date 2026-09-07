@@ -44,7 +44,8 @@ import scripts.run_tools as run_tools  # noqa: E402
 import scripts.run_manifest as run_manifest  # noqa: E402
 import scripts.score_gate as score_gate  # noqa: E402
 import scripts.setup_flow as setup_flow  # noqa: E402
-import scripts.synthesize as synthesize  # noqa: E402
+import scripts.synth.findings as findings_mod  # noqa: E402
+import scripts.synth.plan as plan_mod  # noqa: E402
 import scripts._version as _version  # noqa: E402
 
 CHECKPOINT_KINDS = ("scout", "review", "verify", "scan")
@@ -1121,11 +1122,11 @@ def _cell_entry(review_root, manifest, group, domain, files, tests, host, bundle
 
 def _load_cell_findings(review_root, manifest, group, domain):
     """The cell's reviewer findings, normalized + id-assigned exactly as
-    synthesize.load_findings does, or None when the cell file is absent/mismatched.
+    findings_mod.load_findings does, or None when the cell file is absent/mismatched.
     Ids match synthesize's so the advisor's finding_id echo binds at synthesis.
 
-    Strips synthesize.AGENT_FORBIDDEN_FIELDS (source/reinforced/corroborated/
-    corroborated_by/evidence) before normalizing, mirroring synthesize.load_findings:
+    Strips findings_mod.AGENT_FORBIDDEN_FIELDS (source/reinforced/corroborated/
+    corroborated_by/evidence) before normalizing, mirroring findings_mod.load_findings:
     a raw panel finding must never carry a self-asserted `evidence.status` into
     score_gate.should_engage_primary, or a forged "rejected" (factor 0.0) would
     let a finding duck the F_p gate entirely.
@@ -1146,12 +1147,12 @@ def _load_cell_findings(review_root, manifest, group, domain):
         if not isinstance(f, dict):
             continue
         raw = dict(f)
-        for k in synthesize.AGENT_FORBIDDEN_FIELDS:
+        for k in findings_mod.AGENT_FORBIDDEN_FIELDS:
             raw.pop(k, None)
-        nf = synthesize.normalize_finding(raw)
+        nf = findings_mod.normalize_finding(raw)
         # #1109: never trust an agent-supplied id -- always content-derive it, so
         # a crafted/colliding well-formed id can't bind a downstream verdict to
-        # the wrong finding. Kept in lockstep with synthesize.load_findings so the
+        # the wrong finding. Kept in lockstep with findings_mod.load_findings so the
         # advisor's finding_id echo still binds at synthesis.
         nf["id"] = evidence.matrix_finding_id(nf)
         out.append(nf)
@@ -1281,9 +1282,9 @@ def _driver_plan_entries(review_root, manifest):
     (#5.0-16). Computed DETERMINISTICALLY from groups.json (each discovered
     group) x its effective domains -- the SAME two sources review_execute
     dispatches from (_discovered_groups x _effective_domains) -- with the EXACT
-    out_file spelling _cell_entry uses, so synthesize.reconcile_findings_files
+    out_file spelling _cell_entry uses, so synth.integrity.reconcile_findings_files
     sees no missing/unexpected on a clean run. `enforced` mirrors _cell_entry so
-    synthesize.derive_tool_policy_mode reports the run's real posture rather than
+    plan_mod.derive_tool_policy_mode reports the run's real posture rather than
     defaulting to "advisory". No `files`/`role` -- this is a declaration of
     which out_files must exist, not a scope grant or a cost row."""
     enforced = manifest.get("host", "claude") == "claude"
@@ -1305,7 +1306,7 @@ def _write_driver_plan(review_root, manifest):
     cell set is fixed once coverage completes, which gates the review phase).
     An empty target (no cells) writes NO plan -- reconcile then stays a correct
     no-op rather than flagging an empty plan."""
-    path = _pano(review_root, synthesize.DRIVER_DISPATCH_PLAN)
+    path = _pano(review_root, plan_mod.DRIVER_DISPATCH_PLAN)
     if os.path.isfile(path):
         return path
     entries = _driver_plan_entries(review_root, manifest)
@@ -1616,7 +1617,7 @@ def _tool_verify_queue(review_root, manifest):
     inputs through the identical functions makes the (queue_id, id) pair the tool
     findings carry here byte-identical to what synthesize's report exports.
 
-    Additive only: this CALLS synthesize.load_findings/normalize_finding/
+    Additive only: this CALLS findings_mod.load_findings/normalize_finding/
     prepare_for_queue and evidence.build_verify_queue; it changes none of them.
     include_fixtures/group/exclude are pinned to synthesize's main() tool-ingest
     call (group=None, exclude_globs=None) for identity; _tools_include_fixtures
@@ -1625,13 +1626,13 @@ def _tool_verify_queue(review_root, manifest):
     tools_dir = _pano(review_root, "tools")
     if not ran or not os.path.isdir(tools_dir):
         return []
-    findings = synthesize.load_findings(
+    findings = findings_mod.load_findings(
         sorted(_glob.glob(_pano(review_root, "findings-*.json"))))
     tool_findings, _disp = ingest_tools.ingest_dir_detailed(
         tools_dir, None, include_fixtures=_tools_include_fixtures(manifest))
     for tf in tool_findings:
-        findings.append(synthesize.normalize_finding(tf))
-    prepared, _integration = synthesize.prepare_for_queue(findings)
+        findings.append(findings_mod.normalize_finding(tf))
+    prepared, _integration = findings_mod.prepare_for_queue(findings)
     flags = manifest.get("flags") or {}
     # #18: match synthesize's --max-verify DEFAULT (None = uncapped), not a
     # hardcoded 100. build_verify_queue caps the COMBINED queue and this method

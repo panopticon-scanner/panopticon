@@ -6,6 +6,8 @@ import unittest
 
 import scripts.evidence as evidence
 import scripts.synthesize as synthesize
+import scripts.synth.findings as findings_mod
+import scripts.synth.report as report_mod
 
 def _bundle(tmp_path, name, verdicts, stage="primary", run_id="R"):
     d = tmp_path / "verdicts"
@@ -72,13 +74,13 @@ class TestVerdictBundles(unittest.TestCase):
                 {"domain": "SEC", "code": "SEC-A1A", "severity": "HIGH",
                  "title": "authz bypass", "description": "x",
                  "location": {"file": "app/x.py", "line_start": 4}, "category": "authz"}]}))
-            findings = synthesize.load_findings([str(fp)])
+            findings = findings_mod.load_findings([str(fp)])
             fid = findings[0]["id"]
             d_path = _bundle(tmp_path, "verdicts-app-SEC.json",
                         [{"finding_id": fid, "verdict": "CONFIRMED", "reasoning": "ok"}],
                         run_id="R")
             by_fid, _ = evidence.load_verdict_bundles(d_path)
-            report = synthesize.build_report(findings, [], "src", "high",
+            report = report_mod.build_report(findings, [], "src", "high",
                                              "2026-08-15T00:00:00Z",
                                              verdicts={}, verdict_bundles=by_fid,
                                              verdicts_supplied=True, verdict_run_id="R")
@@ -92,12 +94,12 @@ class TestVerdictBundles(unittest.TestCase):
                 {"domain": "SEC", "code": "SEC-A1A", "severity": "HIGH", "title": "authz",
                  "description": "x", "location": {"file": "app/x.py", "line_start": 4},
                  "category": "authz"}]}))
-            findings = synthesize.load_findings([str(fp)])
+            findings = findings_mod.load_findings([str(fp)])
             fid = findings[0]["id"]
             qid = evidence.finding_fingerprint(findings[0])
             verdicts = {qid: {"finding_id": fid, "verdict": "REJECTED"}}
             by_fid = {fid: [{"finding_id": fid, "verdict": "CONFIRMED", "run_id": None}]}
-            report = synthesize.build_report(findings, [], "src", "high",
+            report = report_mod.build_report(findings, [], "src", "high",
                                              "2026-08-15T00:00:00Z", verdicts=verdicts,
                                              verdict_bundles=by_fid, verdicts_supplied=True)
             self.assertEqual(report["findings"], [])
@@ -162,7 +164,7 @@ class TestVerdictBundles(unittest.TestCase):
                 {"domain": "SEC", "code": "SEC-A1A", "severity": "HIGH", "title": "t",
                  "description": "x", "location": {"file": "a.py", "line_start": 1},
                  "category": "authz"}]}))
-            findings = synthesize.load_findings([str(fp)])
+            findings = findings_mod.load_findings([str(fp)])
             fid = findings[0]["id"]
             vd = tmp_path / "verdicts"
             vd.mkdir()
@@ -189,12 +191,12 @@ class TestVerdictBundles(unittest.TestCase):
                 {"domain": "SEC", "code": "SEC-A1A", "severity": "HIGH", "title": "t",
                  "description": "x", "location": {"file": "a.py", "line_start": 1},
                  "category": "authz"}]}))
-            findings = synthesize.load_findings([str(fp)])
+            findings = findings_mod.load_findings([str(fp)])
             fid = findings[0]["id"]
             d_path = _bundle(tmp_path, "verdicts-app-SEC.json",
                         [{"finding_id": fid, "verdict": "CONFIRMED"}], run_id=None)
             by_fid, _ = evidence.load_verdict_bundles(d_path)
-            report = synthesize.build_report(findings, [], "src", "high",
+            report = report_mod.build_report(findings, [], "src", "high",
                                              "2026-08-15T00:00:00Z", verdicts={},
                                              verdict_bundles=by_fid, verdicts_supplied=True)
             vs = report["meta"]["coverage"]["verdicts"]

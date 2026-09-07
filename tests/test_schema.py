@@ -3,7 +3,7 @@ import os
 import unittest
 
 
-from scripts.synthesize import build_report
+import scripts.synth.report as report_mod
 from scripts._version import __version__
 
 SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "..", "skill", "reference", "report-schema.json")
@@ -132,13 +132,12 @@ class TestReportSchema(unittest.TestCase):
         # discriminate formats. It is OPTIONAL in the schema: a legacy pre-5.1
         # report (no stamp) must still validate, since the reconciler reads
         # historical reports across runs.
-        import scripts.synthesize as syn
         with open(SCHEMA_PATH, encoding="utf-8") as fh:
             schema = json.load(fh)
-        self.assertIsInstance(syn.REPORT_SCHEMA_VERSION, int)
-        built = build_report([], [{"name": "g1", "files": ["a.py"]}],
+        self.assertIsInstance(report_mod.REPORT_SCHEMA_VERSION, int)
+        built = report_mod.build_report([], [{"name": "g1", "files": ["a.py"]}],
                              "t", "high", "2026-01-01T00:00:00Z")
-        self.assertEqual(built["schema_version"], syn.REPORT_SCHEMA_VERSION)
+        self.assertEqual(built["schema_version"], report_mod.REPORT_SCHEMA_VERSION)
         jsonschema.validate(built, schema)                       # stamped -> valid
         legacy = _minimal_report()
         legacy.pop("schema_version", None)                       # pre-5.1 shape
@@ -203,7 +202,7 @@ class TestReportSchema(unittest.TestCase):
         target = "test-target"
 
         # Call build_report with minimal inputs
-        report = build_report(
+        report = report_mod.build_report(
             findings=findings,
             groups_meta=groups_meta,
             target=target,
@@ -226,7 +225,7 @@ class TestReportSchema(unittest.TestCase):
     def test_inconclusive_report_validates_against_schema(self):
         with open(SCHEMA_PATH, encoding="utf-8") as fh:
             schema = json.load(fh)
-        report = build_report(
+        report = report_mod.build_report(
             [], [{"name": "g1", "files": ["a.py"]}], "t", "high",
             "2026-08-09T00:00:00Z",
             fan_out={"planned": {"security": 1}, "executed": {},

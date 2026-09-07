@@ -1,5 +1,7 @@
 import json
-import scripts.synthesize as syn
+import scripts.synth.findings as findings_mod
+import scripts.synth.plan as plan_mod
+import scripts.synth.report as report_mod
 
 def _cell_file(tmp_path, group, domain, sev, line=1, verdict=None):
     fp = tmp_path / ("findings-%s-%s.json" % (group, domain))
@@ -14,20 +16,20 @@ def test_engaged_matrix_cells_uses_fp():
             "category": "x", "location": {"file": "a.py", "line_start": 1}}
     f_lo = {"_group": "app", "domain": "QAL", "severity": "LOW", "title": "t",
             "category": "x", "location": {"file": "a.py", "line_start": 2}}
-    cells = syn.engaged_matrix_cells([f_hi, f_lo])
+    cells = plan_mod.engaged_matrix_cells([f_hi, f_lo])
     assert ("app", "SEC") in cells and ("app", "QAL") not in cells
 
 def test_below_gate_cell_does_not_force_inconclusive(tmp_path):
     fp = _cell_file(tmp_path, "app", "QAL", "LOW")   # score 0 < F_p, no advisor owed
-    findings = syn.load_findings([fp])
-    report = syn.build_report(findings, [], "src", "high", "2026-08-15T00:00:00Z",
+    findings = findings_mod.load_findings([fp])
+    report = report_mod.build_report(findings, [], "src", "high", "2026-08-15T00:00:00Z",
                               verdicts_supplied=True)
     assert report["summary"]["gate"] != "INCONCLUSIVE"
 
 def test_engaged_unverified_cell_forces_inconclusive(tmp_path):
     fp = _cell_file(tmp_path, "app", "SEC", "HIGH")  # score >= F_p, no verdict
-    findings = syn.load_findings([fp])
-    report = syn.build_report(findings, [], "src", "high", "2026-08-15T00:00:00Z",
+    findings = findings_mod.load_findings([fp])
+    report = report_mod.build_report(findings, [], "src", "high", "2026-08-15T00:00:00Z",
                               verdicts_supplied=True)
     assert report["summary"]["gate"] == "INCONCLUSIVE"
     assert report["meta"]["coverage"]["verify_matrix"]["unverified_engaged"] \

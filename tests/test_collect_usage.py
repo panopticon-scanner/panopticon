@@ -350,7 +350,7 @@ class TestEndToEndIntoTheReport(unittest.TestCase):
     def test_written_usage_is_what_synthesize_surfaces(self):
         # The whole point of the channel: what the collector writes is what
         # meta.cost.tokens reports, verbatim.
-        import scripts.synthesize as syn
+        import scripts.synth.cost as cost_mod
         with tempfile.TemporaryDirectory() as d:
             ctl = _write(os.path.join(d, "ctl.jsonl"), [_rec(usage=_u(o=99))])
             rc = cu.main(["--run-dir", d, "--project-dir", d,
@@ -358,7 +358,7 @@ class TestEndToEndIntoTheReport(unittest.TestCase):
                           "--tasks-dir", os.path.join(d, "none"), "--since", "none"])
             self.assertEqual(rc, 0)
             written = json.load(open(os.path.join(d, "usage.json"), encoding="utf-8"))
-            surfaced = syn.load_run_usage(d)
+            surfaced = cost_mod.load_run_usage(d)
         self.assertEqual(surfaced, written)
         self.assertEqual(surfaced["total"], 99)
 
