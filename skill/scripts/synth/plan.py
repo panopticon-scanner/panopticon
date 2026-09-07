@@ -450,6 +450,7 @@ def reconcile(plan, tools, resolved):
                                      or integrity.get("mislabeled_findings_files")
                                      or integrity.get("content_mismatched_files")
                                      or integrity.get("content_snapshot_unreadable")
+                                     or integrity.get("content_snapshot_missing")
                                      or integrity.get("empty_dispatch_plans")
                                      or integrity.get("invalid_dispatch_plans")
                                      or integrity.get("invalid_verify_queue"))

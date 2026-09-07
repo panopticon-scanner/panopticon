@@ -1088,6 +1088,18 @@ class TestDriverIntegrityWiring(unittest.TestCase):
         with open(os.path.join(d, "src", "app.py"), "w") as fh:
             fh.write("def f():\n    return 1\n")
         os.makedirs(os.path.join(d, ".panopticon"))
+        # #1511 BR-06: PERSIST the manifest before writing any run artifact.
+        # These tests used an in-memory manifest dict that was never written, so
+        # `_run_tag` found nothing and every `_pano` call resolved the flat
+        # top-level layout -- the class asserted the two anti-tamper controls
+        # worked on a code path production never takes, and the per-run wiring
+        # bug (#1511) sailed through a suite that appeared to cover it.
+        self._m = run_manifest.build_manifest(
+            target=d, review_root=d, host="claude", security_mode="standard",
+            run_id=self.RUN_ID, flags={"fail_on": "high"})
+        run_manifest.write_manifest(d, self._m)
+        self._run_dir = os.path.join(d, ".panopticon", "runs",
+                                     run_manifest.run_tag(self._m))
         runio._write_json(runio._pano(d, "groups.json"),
                            {"groups": [{"name": "app", "files": ["src/app.py"]}]})
         with open(runio._pano(d, "groups.yml"), "w") as fh:
@@ -1095,11 +1107,18 @@ class TestDriverIntegrityWiring(unittest.TestCase):
         runio._write_json(runio._pano(d, "coverage-app.json"),
                            {"group": "app", "floor": effective,
                             "effective": effective, "run_id": self.RUN_ID})
+        # Run artifacts must land INSIDE the run folder, not beside it.
+        self.assertTrue(os.path.isfile(os.path.join(self._run_dir, "groups.json")),
+                        "fixture wrote run artifacts to the flat layout")
+        # A stale top-level snapshot from an earlier run: if any of this class's
+        # assertions can be satisfied by reading it, the wiring is wrong.
+        runio._write_json(
+            os.path.join(d, ".panopticon", "out-file-hashes.json"),
+            {os.path.join(self._run_dir, "findings-app-QAL.json"): "0" * 64})
         return d
 
     def _manifest(self):
-        return {"run_id": self.RUN_ID, "host": "claude",
-                "security_mode": "standard", "flags": {"fail_on": "high"}}
+        return self._m
 
     def _cell_payload(self, domain, title="nit"):
         # QAL LOW scores below F_p, so verify engages nothing -- the only reason

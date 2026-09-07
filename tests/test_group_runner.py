@@ -297,6 +297,15 @@ class TestOutFileContentHashes(unittest.TestCase):
             self.assertFalse(unreadable)
 
     def test_no_snapshot_reads_as_not_measured(self):
+        # #1208 read this as a PINNED FAIL-OPEN: deleting the baseline looks
+        # exactly like a run that never had one. It stays correct HERE -- this
+        # primitive takes a path and nothing else, so it cannot know whether a
+        # snapshot was owed. That judgement needs the run's context, and it now
+        # lives one layer up: synth.integrity._owes_a_snapshot reads the driver
+        # dispatch plan, and an absent snapshot on a run that DECLARED cells sets
+        # content_snapshot_missing, which fails the gate closed (#1511).
+        # See tests/synth/test_integrity.py::
+        #   test_a_driver_run_owing_a_snapshot_that_is_gone_fails_closed
         checked, mismatched, unreadable = gr.verify_out_file_hashes(
             ["x.json"], hashes_path="/nonexistent/h.json")
         self.assertIsNone(checked)

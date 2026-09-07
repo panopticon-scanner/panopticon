@@ -9,6 +9,10 @@ import scripts.evidence as evidence_mod
 import scripts.group_runner as group_runner
 import scripts.groups_schema as groups_schema
 
+# Module-attribute access only (spec §3 rule 1): plan imports this module back,
+# and the pair is safe precisely because neither touches the other at import time.
+from . import plan as plan_mod
+
 
 def duplicate_out_files(plan):
     """out_file values assigned to more than one reviewer entry in the merged
@@ -173,6 +177,25 @@ def read_unenforced_ack(path=os.path.join(".panopticon", "unenforced-ack.json"))
     return data
 
 
+def _owes_a_snapshot(run_dir):
+    """True when this run's driver plan declares at least one review cell.
+
+    That plan is what `_snapshot_review_out_files` hashes, so its presence is
+    exactly the condition under which a snapshot must exist. A missing or empty
+    plan means no cells were declared and nothing could have been snapshotted.
+    Unreadable is treated as NOT owing: a corrupt plan is already reported by
+    the plan loader, and inferring a second failure from it would double-count
+    one fault.
+    """
+    try:
+        with open(os.path.join(run_dir, plan_mod.DRIVER_DISPATCH_PLAN),
+                  encoding="utf-8") as fh:
+            entries = json.load(fh)
+    except (OSError, ValueError):
+        return False
+    return isinstance(entries, list) and any(isinstance(e, dict) for e in entries)
+
+
 def integrity_section(plan_lists, files, run_dir, plans_seen, invalid_plans,
                       invalid_verify_queue):
     """`meta.integrity` as main() assembled it (WS-0 S3): planned-vs-ingested
@@ -202,8 +225,31 @@ def integrity_section(plan_lists, files, run_dir, plans_seen, invalid_plans,
                   "reporting unenforced_acknowledged: false", file=sys.stderr)
     # #493 R4: after-the-fact content check -- when the orchestrator recorded
     # out-file hashes at fan-out end, verify the ingested bytes still match.
+    #
+    # #1511 (Codex BR-01): read the snapshot from THIS run's folder, explicitly.
+    # The driver writes it per-run (`runs/<tag>/out-file-hashes.json`) while the
+    # verifier defaulted to top-level `.panopticon/`, found nothing, and reported
+    # a run that never had a snapshot -- so the guard was inactive on every
+    # ordinary driver run, and run-11 shipped CERTIFIED with
+    # content_hashes_checked null. run_dir is the same context every other run
+    # artifact resolves against (ack, plans, tool manifest); naming the path here
+    # also means a stale top-level snapshot can neither substitute for the
+    # active run's nor manufacture a mismatch in it.
+    snapshot_path = os.path.join(run_dir, "out-file-hashes.json")
     content_checked, content_mismatched, content_snapshot_unreadable = \
-        group_runner.verify_out_file_hashes(files)
+        group_runner.verify_out_file_hashes(files, hashes_path=snapshot_path)
+    # #1208: absence used to read as a benign "not measured", which made deleting
+    # the baseline the cheapest way to erase evidence of a substitution. A run
+    # whose driver plan DECLARES cells owed a snapshot, so absence there is a
+    # deleted baseline, not an ordinary non-fan-out run. A run that owes nothing
+    # (no driver plan, or one declaring nothing) keeps the benign reading.
+    content_snapshot_missing = (not os.path.isfile(snapshot_path)
+                                and _owes_a_snapshot(run_dir))
+    if content_snapshot_missing:
+        print("synthesize: this run's dispatch plan declares review cells, so a "
+              "fan-out out-file-hashes.json snapshot is OWED -- none is present at "
+              "%s. Treating as a deleted baseline (fail-closed), not an unmeasured "
+              "run; integrity is NOT certified." % snapshot_path, file=sys.stderr)
     if content_mismatched:
         print("synthesize: %d findings file(s) changed AFTER the fan-out "
               "snapshot (content substitution?): %s"
@@ -225,6 +271,7 @@ def integrity_section(plan_lists, files, run_dir, plans_seen, invalid_plans,
                  "content_hashes_checked": content_checked,
                  "content_mismatched_files": content_mismatched,
                  "content_snapshot_unreadable": content_snapshot_unreadable,
+                 "content_snapshot_missing": content_snapshot_missing,
                  "empty_dispatch_plans": sum(1 for pl in plan_lists if not pl),
                  "invalid_dispatch_plans": invalid_plans,
                  "invalid_verify_queue": invalid_verify_queue,

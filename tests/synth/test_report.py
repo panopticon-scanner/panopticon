@@ -2762,6 +2762,26 @@ class TestIntegrity(unittest.TestCase):
         self.assertEqual(r["meta"]["integrity"], integ)
         self.assertEqual(r["summary"]["gate"], "INCONCLUSIVE")
 
+    def test_a_missing_owed_snapshot_cannot_certify(self):
+        # #1511/#1208: "not measured" must be impossible on a driver run. The
+        # snapshot the run owed is gone, so integrity is unproven -- that has to
+        # read like the substitution it could be hiding, not like a clean run.
+        integ = {
+            "unexpected_findings_files": [],
+            "missing_planned_files": [],
+            "content_mismatched_files": [],
+            "content_snapshot_unreadable": False,
+            "content_snapshot_missing": True,
+            "unenforced_acknowledged": False,
+        }
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(groups_meta=self.G, integrity=integ),
+        ))
+        self.assertEqual(r["summary"]["gate"], "INCONCLUSIVE")
+        self.assertIs(r["summary"]["coverage_certified"], False)
+
     def test_build_report_integrity_defaults_empty(self):
         r = report_mod.build_report(report_mod.ReportInputs(
             run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
