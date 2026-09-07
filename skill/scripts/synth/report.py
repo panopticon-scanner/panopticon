@@ -85,6 +85,27 @@ class RunConfig:
     max_verify: int | None = None
     gate_scope: str = "on-diff"
 
+    @classmethod
+    def from_args(cls, args, groups_json, timestamp):
+        """The CLI flags resolved against the run's groups.json (WS-0 S3):
+        an explicit --changes wins over a discovered mode (a groups.json mode
+        must not flip an explicitly-requested changes review back to repo);
+        --security wins over the file's security_mode; both default to
+        repo / standard. `groups_json` is {} when there is no readable file."""
+        review_type = "changes" if args.changes else "repo"
+        if not args.changes:
+            review_type = findings_mod.MODE_TO_REVIEW_TYPE.get(groups_json.get("mode"),
+                                                               review_type)
+        security_mode = args.security
+        if security_mode is None:
+            security_mode = groups_json.get("security_mode", "standard")
+        if security_mode is None:
+            security_mode = "standard"
+        return cls(target=args.target, fail_on=args.fail_on, timestamp=timestamp,
+                   review_type=review_type, security_mode=security_mode,
+                   gate_unverified=args.gate_unverified, max_verify=args.max_verify,
+                   gate_scope=args.gate_scope)
+
 
 @dataclass(frozen=True)
 class ReportInputs:

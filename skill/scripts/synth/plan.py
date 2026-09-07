@@ -3,13 +3,17 @@ from dataclasses import dataclass, field
 import glob
 import json
 import os
+import sys
 
 import scripts.evidence as evidence_mod
+import scripts.group_runner as group_runner
 import scripts.groups_schema as groups_schema
+import scripts.ingest_tools as ingest_tools
 import scripts.plan_contract as plan_contract
 import scripts.score_gate as score_gate
 from scripts.tools import EXECUTES_TARGET_BUILD
 from . import findings as findings_mod
+from . import integrity as integrity_mod
 
 
 @dataclass(frozen=True)
@@ -28,6 +32,39 @@ class PlanInputs:
     integrity: dict | None = None
     resume: dict | None = None
 
+    @classmethod
+    def load(cls, run_dir, files, verdicts_dir, groups_meta, plans, queue, verdicts):
+        """main()'s plan stage (WS-0 S3), in its original order: lane
+        discipline (#441), fan-out accounting, resume stats, the integrity
+        section, scout requests, coverage files. `plans` is the
+        load_dispatch_plans_detailed triple and `queue` the load_verify_queue
+        pair -- both read once by main() because ToolAxis.load / FindingSet.load
+        need a piece of each first (#146/C1: never load the plans twice).
+        `verdicts` is the FindingSet's dict, threaded through resume_stats so
+        the verdicts dir is read once."""
+        plan_lists, plans_seen, invalid_plans = plans
+        queue_obj, invalid_verify_queue = queue
+        plan = [e for pl in plan_lists for e in pl]
+        out_of_scope = out_of_scope_findings(files, plan)
+        if out_of_scope and out_of_scope["count"]:
+            print("synthesize: %d finding(s) cite files OUTSIDE their group's "
+                  "assigned file list (#441) -- reviewers left their lane; see "
+                  "meta.coverage.out_of_scope" % out_of_scope["count"],
+                  file=sys.stderr)
+        fan_out = group_runner.fan_out_coverage(plan) if plan else None
+        resume = group_runner.resume_stats(plan, queue_obj, verdicts_dir, _verdicts=verdicts)
+        integrity = integrity_mod.integrity_section(
+            plan_lists, files, run_dir, plans_seen, invalid_plans, invalid_verify_queue)
+        scout_requested, scout_profiles_seen = load_scout_requests(run_dir)
+        # 5.0 (matrix Sec5.1): auto-discover <run_dir>/coverage-<group>.json the
+        # same way groups.json/scout-*.json are -- fed to audit_floor_cells in
+        # reconcile along with the ingested paths.
+        coverages = load_coverage_files(run_dir)
+        return cls(groups_meta=groups_meta, fan_out=fan_out,
+                   scout_requested=sorted(scout_requested),
+                   scout_profiles_seen=scout_profiles_seen, out_of_scope=out_of_scope,
+                   coverages=coverages, integrity=integrity, resume=resume)
+
 
 @dataclass(frozen=True)
 class ToolAxis:
@@ -43,6 +80,40 @@ class ToolAxis:
     dispositions: dict | None = None
     manifest: dict | None = None
     ingested_paths: list | None = None
+
+    @classmethod
+    def load(cls, args, run_dir, plan_lists, dispositions, tools_ran):
+        """The tool axis from the run folder (WS-0 S3): the runner's
+        tools-manifest with its two FATAL (#17) checks, the policy mode the
+        dispatch plans declare, and the ingest results `ingest_tool_findings`
+        produced. #1031: a present manifest makes reconcile gate on its
+        `missing`, not the scout's advisory list; a corrupt/absent one just
+        falls back to the 4.x scout-derived gate (tolerant read)."""
+        manifest = None
+        tm_path = os.path.join(run_dir, "tools-manifest.json")
+        if os.path.isfile(tm_path):
+            try:
+                with open(tm_path, encoding="utf-8") as fh:
+                    tm = json.load(fh)
+                manifest = tm if isinstance(tm, dict) else None
+            except (OSError, ValueError):
+                manifest = None
+        if manifest is not None:
+            # #17: never certify against a foreign/stale manifest. A 5.1 manifest
+            # carries schema_version; its run_id (when the runner stamps it) must
+            # match this run. Either mismatch is a loud error, not a silent fallback.
+            if "schema_version" not in manifest:
+                sys.exit("FATAL (#17): tools-manifest at %s lacks schema_version — it "
+                         "looks like a pre-5.1 flat manifest from another run; refusing "
+                         "to certify against it. Re-run the tools phase." % tm_path)
+            mrid = manifest.get("run_id")
+            if args.run_id and mrid and mrid != args.run_id:
+                sys.exit("FATAL (#17): tools-manifest run_id %r != this run %r (at %s) — "
+                         "refusing to certify against another run's manifest."
+                         % (mrid, args.run_id, tm_path))
+        return cls(policy_mode=derive_tool_policy_mode(plans=plan_lists),
+                   tools_ran=tools_ran, dispositions=dispositions, manifest=manifest,
+                   ingested_paths=args.files)
 
 
 @dataclass(frozen=True)
@@ -396,3 +467,85 @@ def reconcile(plan, tools, resolved):
     return Reconciled(coverage=coverage, integrity=integrity, integrity_ok=integrity_ok,
                       panels_incomplete=panels_incomplete, tools_absent=tools_absent,
                       cell_audit=cell_audit, groups_meta=plan.groups_meta)
+
+
+def load_groups_json(path):
+    """The run's groups.json as a dict, or {} when there is no file at `path`,
+    it cannot be read, or it is not a JSON object -- tolerant by design (never
+    abort a run); the two failure modes are announced on stderr."""
+    if not (path and os.path.isfile(path)):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            gj = json.load(fh)
+    except (OSError, ValueError) as e:
+        print("synthesize: could not read %s (%s); ignoring" % (path, e), file=sys.stderr)
+        return {}
+    if not isinstance(gj, dict):
+        print("synthesize: %s is not a JSON object; ignoring" % path, file=sys.stderr)
+        return {}
+    return gj
+
+
+def load_verify_queue(run_dir):
+    """(queue, invalid_reason) for <run_dir>/verify-queue.json: the parsed
+    queue when it is a dict with an `entries` list, else None plus the reason
+    meta.integrity.invalid_verify_queue reports; (None, None) with no file."""
+    path = os.path.join(run_dir, "verify-queue.json")
+    if not os.path.isfile(path):
+        return None, None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            loaded = json.load(fh)
+    except (OSError, ValueError) as exc:
+        return None, "cannot read verify queue: %s" % exc
+    if isinstance(loaded, dict) and isinstance(loaded.get("entries"), list):
+        return loaded, None
+    return None, "verify queue has no entries list"
+
+
+def load_scout_requests(run_dir):
+    """(tools requested, profiles seen) across <run_dir>/scout-*.json. #471: a
+    scout can return tools:[] -- a silent decline of the tool layer -- so the
+    profile count is recorded separately and the decline is announced."""
+    requested = set()
+    profiles_seen = 0
+    for sp in glob.glob(os.path.join(run_dir, "scout-*.json")):
+        try:
+            with open(sp, encoding="utf-8") as fh:
+                sd = evidence_mod.load_json_tolerant(fh.read())
+        except (OSError, ValueError):  # tolerant by design: never abort a run
+            continue
+        if not isinstance(sd, dict):
+            continue
+        profiles_seen += 1
+        tools = sd.get("tools")
+        if isinstance(tools, list):
+            requested.update(t for t in tools if isinstance(t, str))
+    if profiles_seen and not requested:
+        print("synthesize: %d scout profile(s) requested NO tools (tools:[]) "
+              "-- the tool layer ran on default triggers only, not scout "
+              "guidance" % profiles_seen, file=sys.stderr)
+    return requested, profiles_seen
+
+
+def ingest_tool_findings(args):
+    """The --tools-dir ingest (WS-0 S3): (raw tool findings, per-adapter
+    dispositions, tools_ran). tools_ran is None when --tools-dir wasn't
+    supplied -- reconcile then infers build_executing_tools from the findings;
+    an empty set would ASSERT "no build-executing tool ran" from an absence of
+    evidence (the inversion #450 was about). A "failed" disposition (empty /
+    unparseable / no-adapter) is excluded from tools_ran, so
+    build_executing_tools can no longer name an adapter that ran empty."""
+    if not args.tools_dir:
+        default_tools = os.path.join(".panopticon", "tools")
+        if os.path.isdir(default_tools) and os.listdir(default_tools):
+            print("synthesize: %s appears un-ingested — pass --tools-dir %s to "
+                  "include tool findings in this report"
+                  % (default_tools, default_tools), file=sys.stderr)
+    if not (args.tools_dir and os.path.isdir(args.tools_dir)):
+        return [], {}, None
+    tool_findings, dispositions = ingest_tools.ingest_dir_detailed(
+        args.tools_dir, None, exclude_globs=args.tools_exclude,
+        include_fixtures=args.include_fixtures)
+    return tool_findings, dispositions, tools_ran_from_dispositions(dispositions)

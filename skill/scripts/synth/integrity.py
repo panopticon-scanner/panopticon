@@ -3,8 +3,10 @@ import hashlib
 import json
 import os
 import re
+import sys
 
 import scripts.evidence as evidence_mod
+import scripts.group_runner as group_runner
 import scripts.groups_schema as groups_schema
 
 
@@ -169,3 +171,67 @@ def read_unenforced_ack(path=os.path.join(".panopticon", "unenforced-ack.json"))
     if not isinstance(data, dict) or not data.get("acknowledged"):
         return {}
     return data
+
+
+def integrity_section(plan_lists, files, run_dir, plans_seen, invalid_plans,
+                      invalid_verify_queue):
+    """`meta.integrity` as main() assembled it (WS-0 S3): planned-vs-ingested
+    findings files, out_file collisions, mislabeled / cross-domain files, the
+    unenforced ack (+ its #493 staleness check), the #493 R4 content-hash
+    check, and the plan-loader's own counts. `plan_lists` is the per-file
+    list load_dispatch_plans_detailed returned; `plans_seen` / `invalid_plans`
+    / `invalid_verify_queue` are that loader's and load_verify_queue's
+    disclosures, carried through so "no plan found" and "reconciled, nothing
+    wrong" read apart."""
+    plan = [e for pl in plan_lists for e in pl]
+    unexpected, missing = reconcile_findings_files(plan, files)
+    ack = read_unenforced_ack(os.path.join(run_dir, "unenforced-ack.json"))
+    # #493 R2: an ack with no run binding over-reports risk forever -- a
+    # stale ack from an earlier --allow-unenforced run would mark a fully
+    # enforced run acknowledged. The ack now carries plan_sha256 (canonical
+    # hash of the plan content it acknowledged); treat a non-matching ack as
+    # STALE: report false + a loud note. A legacy ack without the field stays
+    # trusted (pre-#493 artifacts).
+    ack_stale = False
+    if ack and ack.get("plan_sha256") is not None and plan_lists:
+        hashes = {_plan_hash(pl) for pl in plan_lists}
+        if ack["plan_sha256"] not in hashes:
+            ack_stale = True
+            print("synthesize: unenforced-ack.json does not hash-match any "
+                  "on-disk dispatch plan -- STALE ack from a previous run; "
+                  "reporting unenforced_acknowledged: false", file=sys.stderr)
+    # #493 R4: after-the-fact content check -- when the orchestrator recorded
+    # out-file hashes at fan-out end, verify the ingested bytes still match.
+    content_checked, content_mismatched, content_snapshot_unreadable = \
+        group_runner.verify_out_file_hashes(files)
+    if content_mismatched:
+        print("synthesize: %d findings file(s) changed AFTER the fan-out "
+              "snapshot (content substitution?): %s"
+              % (len(content_mismatched), ", ".join(content_mismatched)),
+              file=sys.stderr)
+    if content_snapshot_unreadable:
+        # #run7 #1208: a present-but-corrupt out-file-hashes.json is a tamper
+        # signal, not a missing snapshot -- fail closed rather than silently pass.
+        print("synthesize: the fan-out out-file-hashes.json snapshot EXISTS but is "
+              "unreadable/corrupt -- treating as tamper (fail-closed), not a missing "
+              "snapshot; integrity is NOT certified.", file=sys.stderr)
+    integrity = {"unexpected_findings_files": unexpected,
+                 "missing_planned_files": missing,
+                 "duplicate_out_files": duplicate_out_files(plan),
+                 "mislabeled_findings_files": mislabeled_findings_files(files),
+                 "cross_domain_findings": cross_domain_findings(files),
+                 "unenforced_acknowledged": bool(ack) and not ack_stale,
+                 "ack_stale": ack_stale,
+                 "content_hashes_checked": content_checked,
+                 "content_mismatched_files": content_mismatched,
+                 "content_snapshot_unreadable": content_snapshot_unreadable,
+                 "empty_dispatch_plans": sum(1 for pl in plan_lists if not pl),
+                 "invalid_dispatch_plans": invalid_plans,
+                 "invalid_verify_queue": invalid_verify_queue,
+                 "plans_seen": plans_seen}
+    if ack:
+        # Surface the Bash-coverage disclosure fields written by dispatch so
+        # they appear in meta.integrity in the final report (#680).
+        # Default to False so consumers never see None for this field.
+        integrity["write_guard_covers_bash"] = ack.get("write_guard_covers_bash", False)
+    return integrity

@@ -6979,3 +6979,437 @@ class ReportInputsTest(unittest.TestCase):
         self.assertEqual(whole, by_hand)
         self.assertEqual(list(whole), ["schema_version", "meta", "summary", "groups",
                                        "findings", "discarded_claims", "cross_panel"])
+
+
+def _cli_args(**kw):
+    """An argparse.Namespace with every flag main() parses, at the parser's
+    defaults, so the WS-0 S3 loaders see exactly the attribute set main() hands
+    them. Override per test."""
+    import argparse
+    ns = dict(target="unknown", groups=None, security=None, fail_on=None,
+              severity="all", changes=False, out=None, run_id=None, run_dir=None,
+              html_out=None, compare=None, epss=False, tools_dir=None,
+              tools_exclude=None, doc_paths=None, include_fixtures=False,
+              emit_verify_queue=False, verdicts_dir=None, gate_unverified=False,
+              max_verify=None, diff_hunks=None, diff_context=5, gate_scope="on-diff",
+              files=[])
+    ns.update(kw)
+    return argparse.Namespace(**ns)
+
+
+class RunConfigLoaderTest(unittest.TestCase):
+    """WS-0 S3: RunConfig.from_args resolves the CLI against groups.json."""
+
+    def test_explicit_changes_beats_a_discovered_repo_mode(self):
+        run = report_mod.RunConfig.from_args(
+            _cli_args(changes=True), {"mode": "repo"}, DEFAULT_TIMESTAMP)
+        self.assertEqual(run.review_type, "changes")
+
+    def test_discovered_mode_maps_to_review_type(self):
+        run = report_mod.RunConfig.from_args(_cli_args(), {"mode": "files"}, DEFAULT_TIMESTAMP)
+        self.assertEqual(run.review_type, "changes")
+        run = report_mod.RunConfig.from_args(_cli_args(), {"mode": "bogus"}, DEFAULT_TIMESTAMP)
+        self.assertEqual(run.review_type, "repo")
+        run = report_mod.RunConfig.from_args(_cli_args(), {}, DEFAULT_TIMESTAMP)
+        self.assertEqual(run.review_type, "repo")
+
+    def test_explicit_security_beats_the_file(self):
+        run = report_mod.RunConfig.from_args(
+            _cli_args(security="redteam"), {"security_mode": "standard"}, DEFAULT_TIMESTAMP)
+        self.assertEqual(run.security_mode, "redteam")
+
+    def test_security_defaults_to_standard_even_when_the_file_says_null(self):
+        run = report_mod.RunConfig.from_args(
+            _cli_args(), {"security_mode": None}, DEFAULT_TIMESTAMP)
+        self.assertEqual(run.security_mode, "standard")
+        run = report_mod.RunConfig.from_args(_cli_args(), {}, DEFAULT_TIMESTAMP)
+        self.assertEqual(run.security_mode, "standard")
+
+    def test_flags_are_carried_verbatim(self):
+        run = report_mod.RunConfig.from_args(
+            _cli_args(target="t", fail_on="high", gate_unverified=True, max_verify=7,
+                      gate_scope="all"), {}, DEFAULT_TIMESTAMP)
+        self.assertEqual((run.target, run.fail_on, run.timestamp, run.gate_unverified,
+                          run.max_verify, run.gate_scope),
+                         ("t", "high", DEFAULT_TIMESTAMP, True, 7, "all"))
+
+
+class PlanLoadersTest(unittest.TestCase):
+    """WS-0 S3: the plan.py readers main() used to inline."""
+
+    def test_load_groups_json_tolerates_every_failure(self):
+        self.assertEqual(plan_mod.load_groups_json(None), {})
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(plan_mod.load_groups_json(os.path.join(d, "nope.json")), {})
+            bad = os.path.join(d, "bad.json")
+            with open(bad, "w") as fh:
+                fh.write("{not json")
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self.assertEqual(plan_mod.load_groups_json(bad), {})
+            self.assertIn("could not read", err.getvalue())
+            lst = os.path.join(d, "list.json")
+            with open(lst, "w") as fh:
+                json.dump([1, 2], fh)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self.assertEqual(plan_mod.load_groups_json(lst), {})
+            self.assertIn("is not a JSON object", err.getvalue())
+            good = os.path.join(d, "groups.json")
+            with open(good, "w") as fh:
+                json.dump({"groups": [{"name": "g1"}], "mode": "repo"}, fh)
+            self.assertEqual(plan_mod.load_groups_json(good)["groups"], [{"name": "g1"}])
+
+    def test_load_verify_queue_three_outcomes(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(plan_mod.load_verify_queue(d), (None, None))
+            qp = os.path.join(d, "verify-queue.json")
+            with open(qp, "w") as fh:
+                json.dump({"run_id": "r1", "entries": []}, fh)
+            queue, invalid = plan_mod.load_verify_queue(d)
+            self.assertEqual(queue["run_id"], "r1")
+            self.assertIsNone(invalid)
+            with open(qp, "w") as fh:
+                json.dump({"entries": "nope"}, fh)
+            self.assertEqual(plan_mod.load_verify_queue(d),
+                             (None, "verify queue has no entries list"))
+            with open(qp, "w") as fh:
+                fh.write("{")
+            queue, invalid = plan_mod.load_verify_queue(d)
+            self.assertIsNone(queue)
+            self.assertTrue(invalid.startswith("cannot read verify queue: "))
+
+    def test_load_scout_requests_unions_tools_and_counts_profiles(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(plan_mod.load_scout_requests(d), (set(), 0))
+            with open(os.path.join(d, "scout-a.json"), "w") as fh:
+                json.dump({"tools": ["semgrep", 3, "gitleaks"]}, fh)
+            with open(os.path.join(d, "scout-b.json"), "w") as fh:
+                json.dump({"tools": "not-a-list"}, fh)
+            with open(os.path.join(d, "scout-c.json"), "w") as fh:
+                fh.write("[]")   # not a dict -> not a profile
+            with open(os.path.join(d, "scout-d.json"), "w") as fh:
+                fh.write("{{{")  # unreadable -> skipped
+            requested, seen = plan_mod.load_scout_requests(d)
+            self.assertEqual(requested, {"semgrep", "gitleaks"})
+            self.assertEqual(seen, 2)
+
+    def test_load_scout_requests_announces_a_silent_decline(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "scout-a.json"), "w") as fh:
+                json.dump({"tools": []}, fh)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self.assertEqual(plan_mod.load_scout_requests(d), (set(), 1))
+            self.assertIn("requested NO tools", err.getvalue())
+
+    def test_ingest_tool_findings_without_tools_dir_is_not_measured(self):
+        with tempfile.TemporaryDirectory() as d:
+            cwd = os.getcwd()
+            try:
+                os.chdir(d)
+                # no .panopticon/tools -> silent
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    self.assertEqual(plan_mod.ingest_tool_findings(_cli_args()), ([], {}, None))
+                self.assertEqual(err.getvalue(), "")
+                # a non-empty default tools dir left un-ingested is announced
+                os.makedirs(os.path.join(".panopticon", "tools"))
+                with open(os.path.join(".panopticon", "tools", "x.json"), "w") as fh:
+                    fh.write("{}")
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    self.assertEqual(plan_mod.ingest_tool_findings(_cli_args()), ([], {}, None))
+                self.assertIn("appears un-ingested", err.getvalue())
+                # --tools-dir pointing nowhere is still "not measured"
+                self.assertEqual(
+                    plan_mod.ingest_tool_findings(_cli_args(tools_dir=os.path.join(d, "no")))[2],
+                    None)
+            finally:
+                os.chdir(cwd)
+
+    def test_ingest_tool_findings_with_an_empty_tools_dir_measures_nothing_ran(self):
+        with tempfile.TemporaryDirectory() as d:
+            tools_dir = os.path.join(d, "tools")
+            os.makedirs(tools_dir)
+            found, dispositions, ran = plan_mod.ingest_tool_findings(_cli_args(tools_dir=tools_dir))
+            self.assertEqual(found, [])
+            self.assertEqual(dispositions, {})
+            self.assertEqual(ran, set())   # measured: nothing ran (not None)
+
+    def test_tool_axis_load_reads_the_manifest_and_refuses_foreign_ones(self):
+        with tempfile.TemporaryDirectory() as d:
+            axis = plan_mod.ToolAxis.load(_cli_args(files=["f.json"]), d, [], {}, None)
+            self.assertIsNone(axis.manifest)
+            self.assertEqual(axis.policy_mode, "unknown")
+            self.assertEqual(axis.ingested_paths, ["f.json"])
+            tm = os.path.join(d, "tools-manifest.json")
+            with open(tm, "w") as fh:
+                fh.write("{corrupt")
+            self.assertIsNone(plan_mod.ToolAxis.load(_cli_args(), d, [], {}, None).manifest)
+            with open(tm, "w") as fh:
+                json.dump({"selected": ["semgrep"]}, fh)   # pre-5.1: no schema_version
+            with self.assertRaises(SystemExit) as cm:
+                plan_mod.ToolAxis.load(_cli_args(), d, [], {}, None)
+            self.assertIn("lacks schema_version", str(cm.exception))
+            with open(tm, "w") as fh:
+                json.dump({"schema_version": "1", "run_id": "other"}, fh)
+            with self.assertRaises(SystemExit) as cm:
+                plan_mod.ToolAxis.load(_cli_args(run_id="this"), d, [], {}, None)
+            self.assertIn("run_id 'other' != this run 'this'", str(cm.exception))
+            # same run (or no --run-id) is accepted
+            axis = plan_mod.ToolAxis.load(_cli_args(run_id="other"), d, [], {"semgrep": "ok"},
+                                          {"semgrep"})
+            self.assertEqual(axis.manifest["run_id"], "other")
+            self.assertEqual(axis.tools_ran, {"semgrep"})
+            self.assertEqual(axis.dispositions, {"semgrep": "ok"})
+            self.assertIsNotNone(plan_mod.ToolAxis.load(_cli_args(), d, [], {}, None).manifest)
+
+    def test_tool_axis_load_derives_policy_mode_from_the_plans(self):
+        plans = [[{"group": "g1", "domain": "code", "tool_policy": "enforced"}]]
+        axis = plan_mod.ToolAxis.load(_cli_args(), ".", plans, {}, None)
+        self.assertEqual(axis.policy_mode, plan_mod.derive_tool_policy_mode(plans=plans))
+
+    def test_plan_inputs_load_composes_the_plan_stage(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "scout-g1.json"), "w") as fh:
+                json.dump({"tools": ["semgrep"]}, fh)
+            with open(os.path.join(d, "coverage-g1.json"), "w") as fh:
+                json.dump({"group": "g1", "cells": []}, fh)
+            groups_meta = [{"name": "g1", "files": ["a.py"]}]
+            plans = ([], 0, 0)
+            queue = (None, None)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                pi = plan_mod.PlanInputs.load(d, [], None, groups_meta, plans, queue, {})
+            self.assertEqual(err.getvalue(), "")
+            self.assertEqual(pi.groups_meta, groups_meta)
+            self.assertIsNone(pi.fan_out)          # no plan -> not measured
+            self.assertEqual(pi.scout_requested, ["semgrep"])
+            self.assertEqual(pi.scout_profiles_seen, 1)
+            self.assertEqual(pi.integrity["plans_seen"], 0)
+            self.assertEqual(pi.coverages, plan_mod.load_coverage_files(d))
+            self.assertEqual(pi.resume, group_runner_mod.resume_stats([], None, None, _verdicts={}))
+            self.assertEqual(pi.out_of_scope, plan_mod.out_of_scope_findings([], []))
+
+
+import scripts.group_runner as group_runner_mod  # noqa: E402
+
+
+class IntegritySectionTest(unittest.TestCase):
+    """WS-0 S3: meta.integrity assembled from the plan lists and ingested files."""
+
+    KEYS = ["unexpected_findings_files", "missing_planned_files", "duplicate_out_files",
+            "mislabeled_findings_files", "cross_domain_findings", "unenforced_acknowledged",
+            "ack_stale", "content_hashes_checked", "content_mismatched_files",
+            "content_snapshot_unreadable", "empty_dispatch_plans", "invalid_dispatch_plans",
+            "invalid_verify_queue", "plans_seen"]
+
+    def test_key_order_is_the_report_contract(self):
+        with tempfile.TemporaryDirectory() as d:
+            sec = integrity_mod.integrity_section([], [], d, 0, 0, None)
+        self.assertEqual(list(sec), self.KEYS)
+        self.assertFalse(sec["unenforced_acknowledged"])
+        self.assertNotIn("write_guard_covers_bash", sec)
+
+    def test_ack_is_honoured_and_a_stale_one_is_reported(self):
+        plan = [{"group": "g1", "domain": "code", "out_file": "findings-g1-code.json"}]
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "unenforced-ack.json"), "w") as fh:
+                json.dump({"acknowledged": True, "plan_sha256": integrity_mod._plan_hash(plan),
+                           "write_guard_covers_bash": True}, fh)
+            sec = integrity_mod.integrity_section([plan], [], d, 1, 0, None)
+            self.assertTrue(sec["unenforced_acknowledged"])
+            self.assertFalse(sec["ack_stale"])
+            self.assertTrue(sec["write_guard_covers_bash"])
+            self.assertEqual(sec["missing_planned_files"], ["findings-g1-code.json"])
+            with open(os.path.join(d, "unenforced-ack.json"), "w") as fh:
+                json.dump({"acknowledged": True, "plan_sha256": "0" * 64}, fh)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                sec = integrity_mod.integrity_section([plan], [], d, 1, 0, None)
+            self.assertFalse(sec["unenforced_acknowledged"])
+            self.assertTrue(sec["ack_stale"])
+            self.assertIn("STALE ack", err.getvalue())
+            self.assertFalse(sec["write_guard_covers_bash"])   # ack present, field absent
+
+    def test_counts_pass_through(self):
+        with tempfile.TemporaryDirectory() as d:
+            sec = integrity_mod.integrity_section([[], []], [], d, 2, 3, "cannot read verify queue: x")
+        self.assertEqual(sec["empty_dispatch_plans"], 2)
+        self.assertEqual(sec["plans_seen"], 2)
+        self.assertEqual(sec["invalid_dispatch_plans"], 3)
+        self.assertEqual(sec["invalid_verify_queue"], "cannot read verify queue: x")
+
+
+class EmitVerifyQueueTest(unittest.TestCase):
+    """WS-0 S3: the --emit-verify-queue exit main() branches on."""
+
+    def test_writes_the_queue_and_returns_true(self):
+        f = _make_finding(severity="HIGH", id="CD-007")
+        with tempfile.TemporaryDirectory() as d:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertTrue(verdicts_mod.emit_verify_queue([f], d, None))
+            qp = os.path.join(d, "verify-queue.json")
+            self.assertTrue(os.path.isfile(qp))
+            with open(qp) as fh:
+                self.assertEqual(len(json.load(fh)["entries"]), 1)
+            self.assertIn("verify queue: 1 entries", out.getvalue())
+
+    def test_nothing_to_queue_removes_a_stale_queue_and_returns_false(self):
+        with tempfile.TemporaryDirectory() as d:
+            qp = os.path.join(d, "verify-queue.json")
+            with open(qp, "w") as fh:
+                json.dump({"entries": [{"queue_id": "stale"}]}, fh)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self.assertFalse(verdicts_mod.emit_verify_queue([], d, None))
+            self.assertFalse(os.path.exists(qp))
+            self.assertIn("verify queue empty; emitting final report", err.getvalue())
+
+    def test_does_not_mutate_the_findings(self):
+        f = _make_finding(severity="HIGH", id="CD-007")
+        before = json.dumps(f, sort_keys=True)
+        with tempfile.TemporaryDirectory() as d:
+            with contextlib.redirect_stdout(io.StringIO()):
+                verdicts_mod.emit_verify_queue([f], d, None)
+        self.assertEqual(json.dumps(f, sort_keys=True), before)
+
+
+class MainLoaderOrderTest(unittest.TestCase):
+    """WS-0 S3 fix #1: main() must run FindingSet.prepare()/the
+    --emit-verify-queue branch BEFORE plan_mod.load_verify_queue() (and
+    FindingSet.load()'s verdicts read) -- the old main() prepared findings,
+    branched on --emit-verify-queue (which can DELETE a stale
+    verify-queue.json left by a PREVIOUS run), and only THEN read the queue
+    file and loaded verdicts. Reading the queue before the branch runs would
+    let a stale queue leak into verdict_run_id/resume/invalid_verify_queue on
+    the "nothing to queue this run" path even though emit_verify_queue just
+    removed the file."""
+
+    def test_verify_queue_is_read_after_the_emit_branch_runs(self):
+        calls = []
+        real_emit = verdicts_mod.emit_verify_queue
+        real_load_queue = plan_mod.load_verify_queue
+
+        def spy_emit(findings, run_dir, max_verify):
+            calls.append("emit")
+            return real_emit(findings, run_dir, max_verify)
+
+        def spy_load_queue(run_dir):
+            calls.append("load_queue")
+            return real_load_queue(run_dir)
+
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            fp = os.path.join(d, "findings-g1-code.json")
+            with open(fp, "w") as fh:
+                json.dump({"findings": []}, fh)   # nothing to queue this run
+            panopticon_dir = os.path.join(d, ".panopticon")
+            os.makedirs(panopticon_dir)
+            qpath = os.path.join(panopticon_dir, "verify-queue.json")
+            with open(qpath, "w") as fh:
+                # A leftover queue from a PREVIOUS run -- a real run_id and
+                # entries, so a stale READ (not just a missed delete) would be
+                # observable, not just a file-existence check.
+                json.dump({"run_id": "stale-run", "entries": [{"queue_id": "STALE"}]}, fh)
+            out = os.path.join(d, "report.json")
+            with mock.patch.object(verdicts_mod, "emit_verify_queue", side_effect=spy_emit), \
+                    mock.patch.object(plan_mod, "load_verify_queue", side_effect=spy_load_queue):
+                rc = syn.main(["--emit-verify-queue", "--out", out, fp])
+            self.assertEqual(rc, 0)
+            self.assertTrue(os.path.exists(out))
+            # The old main()'s order: emit_verify_queue's stale-queue deletion
+            # runs BEFORE anything reads the queue file.
+            self.assertEqual(calls, ["emit", "load_queue"])
+            # And the deletion is real: a fresh read after main() returns sees
+            # no queue at all, exactly like a run with no leftover file.
+            self.assertEqual(plan_mod.load_verify_queue(panopticon_dir), (None, None))
+
+
+class FindingSetLoaderTest(unittest.TestCase):
+    """WS-0 S3: FindingSet.load = files + tool findings + enrichment + policy +
+    severity floor + verdicts, in main()'s original order."""
+
+    def _write_findings(self, d, findings):
+        p = os.path.join(d, "findings-g1-code-panel_review.json")
+        with open(p, "w") as fh:
+            json.dump({"findings": findings}, fh)
+        return p
+
+    def test_loads_files_and_normalizes_tool_findings(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = self._write_findings(d, [_make_finding(severity="HIGH", id="CD-001")])
+            tf = {"tool": "semgrep", "rule_id": "r.1", "severity": "MEDIUM",
+                  "title": "tool hit", "location": {"file": "b.py", "line_start": 1},
+                  "panel": "security", "category": "injection", "confidence": "LIKELY"}
+            with contextlib.redirect_stdout(io.StringIO()):
+                fs = findings_mod.FindingSet.load(_cli_args(files=[p]), [tf], "standard", None)
+            self.assertEqual(len(fs.findings), 2)
+            self.assertEqual(fs.findings[1]["title"], "tool hit")
+            self.assertFalse(fs.verdicts_supplied)
+            self.assertEqual(fs.verdicts, {})
+            self.assertEqual(fs.verdict_unloadable, [])
+            self.assertIsNone(fs.verdict_run_id)
+            self.assertIsNotNone(fs.catalog)
+
+    def test_severity_floor_and_run_id_are_applied(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = self._write_findings(d, [_make_finding(severity="HIGH", id="CD-001"),
+                                         _make_finding(severity="LOW", id="CD-002")])
+            with contextlib.redirect_stdout(io.StringIO()):
+                fs = findings_mod.FindingSet.load(_cli_args(files=[p], severity="high"),
+                                                  [], "standard", "run-9")
+            self.assertEqual([f["severity"] for f in fs.findings], ["HIGH"])
+            self.assertEqual(fs.verdict_run_id, "run-9")
+
+    def test_verdicts_dir_is_read_once_and_unloadable_deduped(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = self._write_findings(d, [_make_finding(severity="HIGH", id="CD-001")])
+            vd = os.path.join(d, "verdicts")
+            os.makedirs(vd)
+            with open(os.path.join(vd, "broken.json"), "w") as fh:
+                fh.write("{broken")
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                fs = findings_mod.FindingSet.load(_cli_args(files=[p], verdicts_dir=vd),
+                                                  [], "standard", None)
+            self.assertTrue(fs.verdicts_supplied)
+            # both loaders trip over the same file; it is reported once (#938)
+            self.assertEqual([u["file"] for u in fs.verdict_unloadable], ["broken.json"])
+
+
+class CostLoaderTest(unittest.TestCase):
+    def test_cost_inputs_load_resolves_under_run_dir(self):
+        with tempfile.TemporaryDirectory() as d:
+            ci = cost_mod.CostInputs.load(d, None, None)
+            self.assertIsNone(ci.driver_cost)     # no dispatch-plan-driver.json -> legacy
+            self.assertIsNone(ci.run_usage)
+            with open(os.path.join(d, "dispatch-plan-driver.json"), "w") as fh:
+                json.dump({"plan": []}, fh)
+            ci = cost_mod.CostInputs.load(d, None, None)
+            self.assertEqual(ci.driver_cost, cost_mod.driver_cost_counts(d, None, None))
+            self.assertIsNotNone(ci.driver_cost)
+
+
+class DeltaLoaderTest(unittest.TestCase):
+    def test_from_args_without_hunks_is_inactive(self):
+        dc = delta_mod.DeltaContext.from_args(_cli_args(diff_context=3))
+        self.assertIsNone(dc.diff_hunks)
+        self.assertEqual(dc.diff_context, 3)
+        self.assertFalse(dc.active)
+
+    def test_from_args_loads_hunks_and_warns_without_fail_on(self):
+        with tempfile.TemporaryDirectory() as d:
+            hp = os.path.join(d, "diff-hunks.json")
+            with open(hp, "w") as fh:
+                json.dump({"base": "main", "hunks": {"a.py": [[1, 5]]}}, fh)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                dc = delta_mod.DeltaContext.from_args(_cli_args(diff_hunks=hp))
+            self.assertTrue(dc.active)
+            self.assertIn("DELTA REVIEW WITH Gate: OFF", err.getvalue())
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                delta_mod.DeltaContext.from_args(_cli_args(diff_hunks=hp, fail_on="high"))
+            self.assertEqual(err.getvalue(), "")

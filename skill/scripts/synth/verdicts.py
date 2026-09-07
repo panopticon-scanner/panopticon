@@ -1,5 +1,8 @@
-"""Verdict matching: resolve findings against advisor verdicts and the delta context."""
+"""The verify round: emit its queue, then resolve findings against the advisor
+verdicts and the delta context."""
 from dataclasses import dataclass
+import copy
+import os
 import sys
 
 import scripts.citations as citations
@@ -10,6 +13,35 @@ from . import findings as findings_mod
 from . import codes as codes_mod
 from . import delta as delta_mod
 from . import plan as plan_mod
+
+
+def emit_verify_queue(findings, run_dir, max_verify):
+    """--emit-verify-queue (WS-0 S3): write <run_dir>/verify-queue.json from the
+    prepared findings and return True (main exits 0 so the orchestrator runs
+    the verify phase). With nothing to queue, remove a STALE queue file and
+    return False: main goes on to emit the final report."""
+    prepared, _ = findings_mod.prepare_for_queue(copy.deepcopy(findings))
+    queue, cut = evidence_mod.build_verify_queue(prepared, max_verify)
+    qpath = os.path.join(run_dir, "verify-queue.json")
+    if queue:
+        evidence_mod.write_verify_queue(queue, cut, qpath)
+        print("verify queue: %d entries (%d cut by --max-verify) -> %s"
+              % (len(queue), cut, qpath))
+        return True
+    # Nothing to verify this run. Post-P2 EVERY finding queues -- tool
+    # findings included -- so an empty queue means this run produced no
+    # findings at all, not "only findings that never queued". A queue file
+    # left by a PREVIOUS run would otherwise mislead step 7's re-run: the
+    # orchestrator branches on the file's existence, so a stale one would
+    # send it to the verify phase with stale/absent entries.
+    if os.path.isfile(qpath):
+        try:
+            os.remove(qpath)
+        except OSError as e:
+            print("synthesize: could not remove stale %s: %s" % (qpath, e),
+                  file=sys.stderr)
+    print("verify queue empty; emitting final report", file=sys.stderr)
+    return False
 
 
 @dataclass(frozen=True)
