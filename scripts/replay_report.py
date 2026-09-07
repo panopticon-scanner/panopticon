@@ -116,6 +116,7 @@ def _scratch_root(tmp, review_root, manifest, tag, run_folder):
 def replay(args):
     repo = os.path.abspath(args.repo or os.path.dirname(HERE))
     sys.path.insert(0, os.path.join(repo, "skill"))
+    import scripts.phases.runio as runio
     import scripts.driver as driver
     import scripts.run_manifest as run_manifest
 
@@ -143,10 +144,10 @@ def replay(args):
 
     with tempfile.TemporaryDirectory(prefix="replay-") as tmp:
         root = _scratch_root(tmp, review_root, manifest, tag, run_folder)
-        with mock.patch("scripts.driver._run_child", new=fake_run_child):
+        with mock.patch("scripts.phases.runio._run_child", new=fake_run_child):
             try:
                 driver.synthesize_execute(root, manifest)
-            except driver.DriverError:
+            except runio.DriverError:
                 pass    # expected: the no-op child produced no report
         if not recorded or "synthesize.py" not in os.path.basename(recorded[-1][1]):
             sys.exit(f"driver did not build a synthesize command: {recorded}")
@@ -156,7 +157,7 @@ def replay(args):
         # Pinned hash seed: set-ordered report keys (groups[].panel_grades
         # iterates VALID_PANELS, a set) otherwise reorder per process, which
         # the key-order check in `diff` would report as drift.
-        env = dict(driver._child_env(), PYTHONHASHSEED="0")
+        env = dict(runio._child_env(), PYTHONHASHSEED="0")
         proc = subprocess.run(cmd, cwd=root, capture_output=True, text=True,  # nosec B603
                               env=env)
         after = _listing(run_folder)

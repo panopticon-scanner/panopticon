@@ -15,6 +15,7 @@ import shutil
 import tempfile
 import unittest
 from unittest import mock
+import scripts.phases.runio as runio
 
 import scripts.driver as driver
 import scripts.evidence as evidence
@@ -51,20 +52,20 @@ class _ToolVerifyBase(unittest.TestCase):
         os.makedirs(os.path.join(d, "src"))
         with open(os.path.join(d, "src", "app.py"), "w") as fh:
             fh.write("import os\nx = 1\ny = 2\nz = 3\npw = 'dummy'\n")
-        os.makedirs(driver._pano(d, "tools"))
-        with open(driver._pano(d, "tools", "semgrep.sarif"), "w") as fh:
+        os.makedirs(runio._pano(d, "tools"))
+        with open(runio._pano(d, "tools", "semgrep.sarif"), "w") as fh:
             json.dump(_semgrep_sarif(results), fh)
-        driver._write_json(driver._pano(d, "tools-ran.json"), {"ran": True, "run_id": RUN_ID})
-        driver._write_json(
-            driver._pano(d, "groups.json"), {"groups": [{"name": "app", "files": ["src/app.py"]}]}
+        runio._write_json(runio._pano(d, "tools-ran.json"), {"ran": True, "run_id": RUN_ID})
+        runio._write_json(
+            runio._pano(d, "groups.json"), {"groups": [{"name": "app", "files": ["src/app.py"]}]}
         )
-        driver._write_json(
-            driver._pano(d, "coverage-app.json"),
+        runio._write_json(
+            runio._pano(d, "coverage-app.json"),
             {"group": "app", "floor": floor or [], "effective": floor or [], "run_id": RUN_ID},
         )
         if agent_findings:
-            driver._write_json(
-                driver._pano(d, "findings-app-SEC.json"),
+            runio._write_json(
+                runio._pano(d, "findings-app-SEC.json"),
                 {
                     "findings": agent_findings,
                     "_panopticon": {
@@ -85,7 +86,7 @@ class _ToolVerifyBase(unittest.TestCase):
     def _bundle(self):
         # verify_execute loads the ocrdb bundle for the (empty) cell rounds; the
         # tool round never touches it. Stub it out for speed/isolation.
-        return mock.patch("scripts.driver.ocrdb.load_bundle", return_value={"domains": {}})
+        return mock.patch("scripts.ocrdb.load_bundle", return_value={"domains": {}})
 
 
 class TestToolQueueParity(_ToolVerifyBase):
@@ -94,7 +95,7 @@ class TestToolQueueParity(_ToolVerifyBase):
 
     def _report_tool_pairs(self, d, manifest):
         driver.synthesize_execute(d, manifest)
-        report = driver._load_json(driver._pano(d, "report.json"))
+        report = runio._load_json(runio._pano(d, "report.json"))
         return {
             (f["fingerprint"], f["id"]) for f in report["findings"] if evidence.is_tool_sourced(f)
         }
@@ -138,7 +139,7 @@ class TestToolQueueParity(_ToolVerifyBase):
 
     def test_empty_queue_when_tools_did_not_run(self):
         d = self._repo([_result("r1", "src/app.py", 1)])
-        driver._write_json(driver._pano(d, "tools-ran.json"), {"ran": False, "run_id": RUN_ID})
+        runio._write_json(runio._pano(d, "tools-ran.json"), {"ran": False, "run_id": RUN_ID})
         self.assertEqual(driver._tool_verify_queue(d, self._manifest()), [])
 
 
@@ -150,13 +151,13 @@ class TestToolVerifyDispatch(_ToolVerifyBase):
         with self._bundle():
             result = driver.verify_execute(d, m)
         self.assertEqual((result.checkpoint, result.group), ("verify", "tools"))
-        entry = driver._load_json(driver._pano(d, "dispatch-request.json"))["entries"][0]
+        entry = runio._load_json(runio._pano(d, "dispatch-request.json"))["entries"][0]
         self.assertEqual(entry["agent"], "panopticon-advisor")  # advisor.md shell
         self.assertTrue(entry["enforced"])
         self.assertEqual(entry["delivery"], "return_json")  # host persists
         self.assertEqual(os.path.basename(entry["out_file"]), f"{qid}.json")
         self.assertEqual(
-            os.path.dirname(entry["out_file"]), os.path.abspath(driver._pano(d, "verdicts"))
+            os.path.dirname(entry["out_file"]), os.path.abspath(runio._pano(d, "verdicts"))
         )
         self.assertEqual(entry["out_file"], os.path.abspath(entry["out_file"]))
         self.assertIn("Repo root:", entry["prompt"])  # advisor root pin
@@ -167,7 +168,7 @@ class TestToolVerifyDispatch(_ToolVerifyBase):
         m["host"] = "generic"
         with self._bundle():
             driver.verify_execute(d, m)
-        entry = driver._load_json(driver._pano(d, "dispatch-request.json"))["entries"][0]
+        entry = runio._load_json(runio._pano(d, "dispatch-request.json"))["entries"][0]
         self.assertIsNone(entry["agent"])
         self.assertFalse(entry["enforced"])
 
@@ -217,7 +218,7 @@ class TestToolVerifyEndToEnd(_ToolVerifyBase):
             self.assertEqual(result.checkpoint, "verify")
             self.assertFalse(driver.verify_done(d, m))  # verdict owed
         driver.synthesize_execute(d, m)
-        report = driver._load_json(driver._pano(d, "report.json"))
+        report = runio._load_json(runio._pano(d, "report.json"))
         self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
         self.assertEqual(report["meta"]["coverage"]["verdicts"]["unanswered"], 1)
 
@@ -227,14 +228,14 @@ class TestToolVerifyEndToEnd(_ToolVerifyBase):
         qid, finding = driver._tool_verify_queue(d, m)[0]
         with self._bundle():
             driver.verify_execute(d, m)
-        entry = driver._load_json(driver._pano(d, "dispatch-request.json"))["entries"][0]
+        entry = runio._load_json(runio._pano(d, "dispatch-request.json"))["entries"][0]
         # simulate the host persisting the advisor's RETURNED verdict JSON
         self._persist(entry["out_file"], "CONFIRMED", finding["id"])
         with self._bundle():
             self.assertTrue(driver.verify_done(d, m))
             self.assertEqual(driver.verify_execute(d, m).kind, "advanced")
         driver.synthesize_execute(d, m)
-        report = driver._load_json(driver._pano(d, "report.json"))
+        report = runio._load_json(runio._pano(d, "report.json"))
         tf = next(f for f in report["findings"] if evidence.is_tool_sourced(f))
         self.assertEqual(tf["evidence"]["status"], "tool_confirmed")
         self.assertNotEqual(report["summary"]["gate"], "INCONCLUSIVE")
@@ -258,7 +259,7 @@ class TestToolVerifyResume(_ToolVerifyBase):
 
         # answer exactly one
         qid0, f0 = queue[0]
-        os.makedirs(driver._pano(d, "verdicts"), exist_ok=True)
+        os.makedirs(runio._pano(d, "verdicts"), exist_ok=True)
         with open(driver._tool_verdict_out_file(d, qid0), "w") as fh:
             json.dump(
                 {"finding_id": f0["id"], "verdict": "REJECTED", "reasoning": "not reachable"}, fh
@@ -271,7 +272,7 @@ class TestToolVerifyResume(_ToolVerifyBase):
         self.assertEqual(result.checkpoint, "verify")
         outs = [
             os.path.basename(e["out_file"])
-            for e in driver._load_json(driver._pano(d, "dispatch-request.json"))["entries"]
+            for e in runio._load_json(runio._pano(d, "dispatch-request.json"))["entries"]
         ]
         self.assertEqual(outs, [f"{queue[1][0]}.json"])
         self.assertNotIn(f"{qid0}.json", outs)
@@ -290,7 +291,7 @@ class TestToolVerifyResume(_ToolVerifyBase):
         d = self._repo([_result("r1", "src/app.py", 1, level="note")])
         m = self._manifest()
         qid, _f = driver._tool_verify_queue(d, m)[0]
-        os.makedirs(driver._pano(d, "verdicts"), exist_ok=True)
+        os.makedirs(runio._pano(d, "verdicts"), exist_ok=True)
         with open(driver._tool_verdict_out_file(d, qid), "w") as fh:
             fh.write("{ not valid json")
         self.assertFalse(driver._tool_verdict_done(d, qid))
@@ -318,7 +319,7 @@ class TestSynthesizeFixtureParityWiring(_ToolVerifyBase):
             return mock.Mock(returncode=0, stdout="", stderr="")
 
         d = self._repo([_result("r1", "src/app.py", 1)])
-        with mock.patch("scripts.driver.subprocess.run", side_effect=fake_run):
+        with mock.patch("subprocess.run", side_effect=fake_run):
             driver.synthesize_execute(d, manifest)
         return captured["cmd"]
 

@@ -19,9 +19,16 @@ ws0-god-module-refactor-design.md section 6.3.
    (`NAME = some_module.attr`): a name lives in exactly one module.
 5. Size ratchet: no package module exceeds LINE_CEILING lines. Raising the
    number here is a visible decision; drifting past it is not.
+6. Every package module imports on its own in a fresh interpreter. `phases/`
+   contains two mutual pairs (coverage<->requests, review<->verify); rule 1
+   is what makes them safe (a partially-initialized sibling is fine when it
+   is only read at call time), and this proves it for whichever module the
+   importer reaches first.
 """
 import ast
+import importlib
 import os
+import subprocess
 import sys
 import unittest
 
@@ -30,7 +37,7 @@ from conftest import REPO_ROOT, SKILL_ROOT
 SCRIPTS = os.path.join(SKILL_ROOT, "scripts")
 TESTS = os.path.join(REPO_ROOT, "tests")
 PACKAGES = ("synth", "phases")          # rules apply to whichever exist
-EXPECTED_PACKAGES = ("synth",)          # S1 lands synth; D1 extends to phases
+EXPECTED_PACKAGES = ("synth", "phases")  # S1 lands synth; D1 adds phases
 ENTRY_SCRIPTS = ("synthesize.py", "driver.py")
 LINE_CEILING = 700
 _SKIP_DIRS = {"fixtures", "goldens", "__pycache__"}
@@ -169,6 +176,50 @@ class LayoutTest(unittest.TestCase):
                 over.append("%s: %d lines" % (_rel(path), n))
         self.assertEqual(over, [], "module over the %d-line ceiling; split it or raise "
                          "LINE_CEILING deliberately:\n%s" % (LINE_CEILING, "\n".join(over)))
+
+
+    def test_rule6_every_package_module_imports_standalone(self):
+        env = dict(os.environ)
+        env["PYTHONPATH"] = os.pathsep.join(
+            [SKILL_ROOT, SCRIPTS] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
+        failures = []
+        for pkg, d in _package_dirs():
+            for f in sorted(os.listdir(d)):
+                if not f.endswith(".py") or f == "__init__.py":
+                    continue
+                mod = "scripts.%s.%s" % (pkg, f[:-3])
+                r = subprocess.run(  # nosec B603
+                    [sys.executable, "-c", "import " + mod],
+                    capture_output=True, text=True, env=env, cwd=REPO_ROOT)
+                if r.returncode != 0:
+                    failures.append("%s: %s" % (mod, (r.stderr.strip().splitlines() or [""])[-1]))
+        self.assertEqual(failures, [], "module does not import on its own (a `from .x "
+                         "import Y` in an import cycle is the usual cause):\n"
+                         + "\n".join(failures))
+
+
+class ScriptsDirTest(unittest.TestCase):
+    """`runio._SCRIPTS_DIR` is the one expression WS-0 D1 had to rewrite: the
+    package sits a directory deeper than driver.py did, and `_script()` /
+    `_child_env()` resolve sibling entry scripts and the child PYTHONPATH
+    against it. A wrong value sends every child process to phases/.
+
+    Imported inside the tests, not at module scope: this file must still
+    collect (and rule 6 must still report) when the package is broken."""
+
+    def _runio(self):
+        return importlib.import_module("scripts.phases.runio")
+
+    def test_scripts_dir_is_the_skill_scripts_directory(self):
+        runio = self._runio()
+        self.assertEqual(runio._SCRIPTS_DIR, SCRIPTS)
+        self.assertTrue(os.path.isfile(os.path.join(runio._SCRIPTS_DIR, "driver.py")))
+
+    def test_script_resolves_a_sibling_entry_script(self):
+        runio = self._runio()
+        self.assertEqual(runio._script("synthesize.py"),
+                         os.path.join(SCRIPTS, "synthesize.py"))
+        self.assertTrue(os.path.isfile(runio._script("synthesize.py")))
 
 
 if __name__ == "__main__":

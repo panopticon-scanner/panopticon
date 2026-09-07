@@ -8,6 +8,7 @@ import os
 import tempfile
 import unittest
 from unittest import mock
+import scripts.phases.runio as runio
 
 import scripts.driver as driver
 import scripts.ocrdb as ocrdb
@@ -103,13 +104,13 @@ class TestIngestedToolFindings(unittest.TestCase):
     def setUp(self):
         self._t = tempfile.TemporaryDirectory()
         self.root = os.path.realpath(self._t.name)
-        os.makedirs(driver._pano(self.root, "tools"))
+        os.makedirs(runio._pano(self.root, "tools"))
         self.addCleanup(self._t.cleanup)
         driver._ingested_tool_findings.cache_clear()
         self.addCleanup(driver._ingested_tool_findings.cache_clear)
 
     def test_reads_and_normalizes_tools_dir(self):
-        with open(driver._pano(self.root, "tools", "semgrep.sarif"), "w") as fh:
+        with open(runio._pano(self.root, "tools", "semgrep.sarif"), "w") as fh:
             json.dump(_SARIF, fh)
         got = driver._ingested_tool_findings(self.root, False)
         files = {(f.get("location") or {}).get("file") for f in got}
@@ -126,12 +127,12 @@ class TestCellEntryInjection(unittest.TestCase):
     def setUp(self):
         self._t = tempfile.TemporaryDirectory()
         self.root = os.path.realpath(self._t.name)
-        os.makedirs(driver._pano(self.root, "tools"))
+        os.makedirs(runio._pano(self.root, "tools"))
         self.addCleanup(self._t.cleanup)
         self.manifest = {"run_id": "R", "security_mode": "standard"}
         driver._ingested_tool_findings.cache_clear()
         self.addCleanup(driver._ingested_tool_findings.cache_clear)
-        with open(driver._pano(self.root, "tools", "semgrep.sarif"), "w") as fh:
+        with open(runio._pano(self.root, "tools", "semgrep.sarif"), "w") as fh:
             json.dump(_SARIF, fh)
 
     def test_sec_cell_prompt_carries_tool_hits(self):

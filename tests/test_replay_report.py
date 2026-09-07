@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 import unittest
 from unittest import mock
+import scripts.phases.runio as runio
 
 import replay_report
 
@@ -36,11 +37,10 @@ def _run_folder(base):
 def _fake_synthesize_execute(root, manifest):
     """Stand-in driver phase: asks `_run_child` for the synthesize argv exactly
     once, the way the real phase does, then reports the child wrote nothing."""
-    import scripts.driver as driver
-    driver._run_child(["python3", "/repo/skill/scripts/synthesize.py", "--out",
+    runio._run_child(["python3", "/repo/skill/scripts/synthesize.py", "--out",
                        os.path.join(root, ".panopticon", "orig-report.json")],
                       root, "synthesize")
-    raise driver.DriverError("no report")
+    raise runio.DriverError("no report")
 
 
 def _fake_child(cmd, cwd, capture_output, text, env):
