@@ -35,7 +35,7 @@ def _expected_from_filename(basename):
 
     #run10: this keyed on the 4.x `-panel_review` / `-lens_sweep-<lens>` suffix
     until those roles were retired (#1441). The only findings filename the
-    pipeline can produce is driver._cell_entry's `findings-<group>-<domain>.json`
+    pipeline can produce is phases.review._cell_entry's `findings-<group>-<domain>.json`
     (driver.py), which never matched -- so every caller below silently returned
     "nothing wrong" on every 5.x run. Keyed on the cell shape it now checks the
     files that actually exist.
@@ -55,7 +55,7 @@ def mislabeled_findings_files(paths):
     Flags a file as soon as its `_panopticon` cell stamp, or any finding's
     own `domain`, clearly disagrees with the filename; absent fields are
     never second-guessed. This is the byte-identity follow-up SKILL.md
-    step 9 names. Distinct from driver._get_valid_cell_data, which guards the
+    step 9 names. Distinct from phases.review._get_valid_cell_data, which guards the
     same stamp at review-phase done-detection for the cells the driver itself
     dispatched: this one screens whatever synthesize was actually handed."""
     bad = []

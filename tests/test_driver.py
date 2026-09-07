@@ -355,7 +355,7 @@ class TestReviewMatrixEndToEnd(unittest.TestCase):
 class TestVerifyMatrixEndToEnd(unittest.TestCase):
     """5.0-P5 Slice B Task 5: verify is no longer a no-op. Against the real
     driver functions (verify_execute/verify_done) and
-    a real synthesize.py subprocess (driver.synthesize_execute) -- mirrors
+    a real synthesize.py subprocess (phases.synthesize.synthesize_execute) -- mirrors
     TestReviewMatrixEndToEnd's real-artifact style, but drives review/verify
     state directly on disk (as TestVerifyPrimary/TestVerifyBackup in
     test_driver_verify.py do) rather than through the full driver.run()

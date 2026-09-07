@@ -6,7 +6,7 @@ now gets a per-finding advisor dispatched by the DRIVER, its verdict matched by
 longer flipped to INCONCLUSIVE just because a scanner fired.
 
 Style mirrors test_driver_verify.py / TestVerifyMatrixEndToEnd: drives state on
-disk and runs a REAL synthesize.py subprocess via driver.synthesize_execute.
+disk and runs a REAL synthesize.py subprocess via phases.synthesize.synthesize_execute.
 """
 
 import json

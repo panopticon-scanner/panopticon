@@ -39,7 +39,7 @@ class TestFindingsFileIntegrity(unittest.TestCase):
         self.assertEqual(integrity_mod.duplicate_out_files([]), [])
 
     def test_expected_from_filename(self):
-        # #run10: keyed on the cell shape driver._cell_entry writes. The group
+        # #run10: keyed on the cell shape phases.review._cell_entry writes. The group
         # may contain hyphens, so the DOMAIN is the last token.
         self.assertEqual(
             integrity_mod._expected_from_filename("findings-DocumentsIntake-SEC.json"),

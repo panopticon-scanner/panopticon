@@ -145,12 +145,12 @@ DRIVER_DISPATCH_PLAN = "dispatch-plan-driver.json"
 def engaged_matrix_cells(findings):
     """Matrix (group, domain) cells scoring >= F_p — the cells a primary advisor
     engages. Called BEFORE verdicts are derived, so the score uses the unverified
-    evidence factor, the same as driver.verify_execute's own engagement decision.
+    evidence factor, the same as phases.verify.verify_execute's own engagement decision.
 
     `findings` here is the DEDUPED/aggregated list (prepare_for_queue has
-    already run), whereas driver.verify_execute/verify_done score
+    already run), whereas phases.verify.verify_execute/verify_done score
     should_engage_primary on the raw per-cell list (see
-    driver._load_cell_findings) -- dedup only removes findings, never adds
+    phases.review._load_cell_findings) -- dedup only removes findings, never adds
     them, so the cells this returns are a subset of what the driver engaged,
     never a superset. Safe: verify_done gates synthesize, so every
     driver-engaged cell already has a verdict bundle on disk by the time this
@@ -178,7 +178,7 @@ def audit_floor_cells(coverages, present):
     """Certifiable-coverage check (matrix Sec5.1): every FLOOR (domain, group)
     cell must have produced a findings file. `coverages` = the per-group
     coverage dicts (as written to .panopticon/coverage-<group>.json by
-    driver.coverage_execute: {"group", "floor", "effective", ...}); `present`
+    phases.coverage.coverage_execute: {"group", "floor", "effective", ...}); `present`
     = {group: set(domains with a findings file)}. A missing floor cell is the
     INCONCLUSIVE story -- scout-WIDENED (non-floor) domains are never audited
     here, matching the matrix's floor-is-the-contract semantics. A floor domain
@@ -229,7 +229,7 @@ def present_cells(paths):
 
 def load_coverage_files(panopticon_dir=".panopticon"):
     """Load every .panopticon/coverage-<group>.json cell-coverage artifact
-    (driver.coverage_execute's output) for audit_floor_cells. Tolerant:
+    (phases.coverage.coverage_execute's output) for audit_floor_cells. Tolerant:
     unreadable/malformed/non-dict files are skipped, never raise -- these are
     the same run artifacts groups.json/scout-*.json are read as elsewhere."""
     out = []

@@ -35,8 +35,11 @@ summary + JSON artifact) with standards citations and CI gating.
   (`discovery`→`coverage`→`tools`→`review`→`verify`→`synthesize`→`validate`) that runs
   `discovery.py`/`dispatch.py`/`synthesize.py`/`run_tools.py` itself and stops at each dispatch
   checkpoint; the phase cursor is recomputed from disk every invocation (crash/compaction-resumable).
+  Thin entry script: the CLI, the `PHASES` table, `run()` and `main()`. Each phase lives in
+  `skill/scripts/phases/` (one module per phase, plus `runio`/`engine`/`requests`/`setup`).
 - `skill/scripts/synthesize.py` — merge per-panel finding files (+ optional `--tools-dir` tool
   findings) into a validated `CodeReviewReport`: dedupe/reinforce, grade, gate, citations.
+  Thin entry script: the work lives in `skill/scripts/synth/`, one stage per module.
 - `skill/scripts/dispatch.py` — agent-template renderer + host enforcement-shell emitter
   (host-neutral frontmatter parser, `render_prompt`, `--render-advisor`,
   `--emit-host-agents`). The 4.x DispatchPlan builder it was named for is retired;
@@ -183,7 +186,7 @@ Rebuild cadence: monthly, or whenever a new adapter is added. The same monthly c
 ## Versioning
 Scheme: a **minor** bump (2.x.0) per release round; **major** (x.0.0) reserved for breaking
 changes to the report schema, CLI, or grade contract. Bump `SKILL.md` `metadata.version`,
-`synthesize.build_report`'s `meta.version`, and `evidence.write_verify_queue`'s payload
+`synth.report.build_report`'s `meta.version`, and `evidence.write_verify_queue`'s payload
 `version` together.
 
 History:

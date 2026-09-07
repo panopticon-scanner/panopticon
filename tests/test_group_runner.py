@@ -43,7 +43,7 @@ class TestEntryIsDone(unittest.TestCase):
     # only ran when the entry declared `run_id`, which no driver entry did
     # either. So for every driver entry it compared nothing and agreed, and
     # resume accepted ANY parseable findings file sitting at the expected path,
-    # including one left by a previous run. driver._cell_entry now declares
+    # including one left by a previous run. phases.review._cell_entry now declares
     # run_id/group/domain, and the check compares what the entry declares.
 
     def _cell(self, d, run_id="R1", group="Auth", domain="SEC", stamp=True,
