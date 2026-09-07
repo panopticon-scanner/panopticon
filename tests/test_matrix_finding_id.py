@@ -6,6 +6,7 @@ import unittest
 
 import scripts.evidence as evidence
 import scripts.synthesize as synthesize
+import scripts.synth.findings as findings_mod
 
 ID_RE = re.compile(r"^[A-Z]{2,8}-[0-9]{3,}$")
 
@@ -86,7 +87,7 @@ class TestMatrixFindingId(unittest.TestCase):
                     }
                 )
             )
-            out = synthesize.load_findings([str(p)])
+            out = findings_mod.load_findings([str(p)])
             # #1109: agent-supplied ids are never trusted -- both are
             # content-derived and schema-valid, and the supplied "SEC-001" is
             # replaced, not kept.
@@ -106,7 +107,7 @@ class TestMatrixFindingId(unittest.TestCase):
                 "title": "real defect", "category": "authz",
                 "location": {"file": "app/auth.py", "line_start": 5},
             }]}))
-            out = synthesize.load_findings([str(p)])
+            out = findings_mod.load_findings([str(p)])
             self.assertNotEqual(out[0]["id"], "SEC-999")
             self.assertTrue(ID_RE.match(out[0]["id"]))
 

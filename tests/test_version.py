@@ -42,8 +42,8 @@ class TestVersionSingleSourcing(unittest.TestCase):
         self.assertEqual(m.group(1), __version__)
 
     def test_report_meta_uses_the_constant(self):
-        import scripts.synthesize as syn
-        report = syn.build_report([], [{"name": "g1", "files": ["a.py"]}],
+        import scripts.synth.report as report_mod
+        report = report_mod.build_report([], [{"name": "g1", "files": ["a.py"]}],
                                   "t", "high", "2026-01-01T00:00:00Z")
         self.assertEqual(report["meta"]["version"], __version__)
 

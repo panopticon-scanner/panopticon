@@ -265,9 +265,9 @@ class TestBothPassesAgree(unittest.TestCase):
 
     def test_pass1_and_pass2_build_identical_queue_ids(self):
         import copy
-        import scripts.synthesize as syn
-        p1, _ = syn.prepare_for_queue(copy.deepcopy(self._raw()))
-        p2, _ = syn.prepare_for_queue(copy.deepcopy(self._raw()))
+        import scripts.synth.findings as findings_mod
+        p1, _ = findings_mod.prepare_for_queue(copy.deepcopy(self._raw()))
+        p2, _ = findings_mod.prepare_for_queue(copy.deepcopy(self._raw()))
         ids1 = {e["queue_id"] for e in evidence.build_verify_queue(p1)[0]}
         ids2 = {e["queue_id"] for e in evidence.build_verify_queue(p2)[0]}
         self.assertEqual(ids1, ids2)
@@ -275,8 +275,8 @@ class TestBothPassesAgree(unittest.TestCase):
 
     def test_aggregation_happens_before_the_queue_is_built(self):
         import copy
-        import scripts.synthesize as syn
-        prepared, _ = syn.prepare_for_queue(copy.deepcopy(self._raw()))
+        import scripts.synth.findings as findings_mod
+        prepared, _ = findings_mod.prepare_for_queue(copy.deepcopy(self._raw()))
         b105 = [f for f in prepared
                 if (f.get("tool_evidence") or {}).get("rule_id") == "B105"]
         self.assertEqual(len(b105), 1)   # 2 hits collapsed to 1 finding

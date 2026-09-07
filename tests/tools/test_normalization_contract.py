@@ -24,7 +24,7 @@ import json
 import os
 import unittest
 
-from scripts import synthesize as syn
+import scripts.synth.report as report_mod
 from scripts.tools import ADAPTERS
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -189,9 +189,9 @@ class TestFindingsSurviveIntoAReport(unittest.TestCase):
         findings = self._all_findings()
         self.assertGreater(len(findings), 30,
                            "expected findings from every adapter's golden")
-        report = syn.build_report(findings, [], "probe-target", "high",
+        report = report_mod.build_report(findings, [], "probe-target", "high",
                                   "2026-01-01T00:00:00Z")
-        errors, _warnings = syn.validate_report(report)
+        errors, _warnings = report_mod.validate_report(report)
         self.assertEqual(
             errors, [],
             "findings from real tool output failed the report schema: %s"
@@ -203,9 +203,9 @@ class TestFindingsSurviveIntoAReport(unittest.TestCase):
         findings = self._all_findings()
         self.assertGreater(len(findings), 0, "no goldens parsed; nothing to corrupt")
         findings[0] = dict(findings[0], id="not-a-valid-id", title="")
-        report = syn.build_report(findings, [], "probe-target", "high",
+        report = report_mod.build_report(findings, [], "probe-target", "high",
                                   "2026-01-01T00:00:00Z")
-        errors, _warnings = syn.validate_report(report)
+        errors, _warnings = report_mod.validate_report(report)
         self.assertTrue(errors, "validator accepted a malformed finding")
 
 

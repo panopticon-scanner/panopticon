@@ -4,7 +4,9 @@ import tempfile
 import unittest
 
 import scripts.ocrdb as ocrdb
-import scripts.synthesize as synthesize
+import scripts.synth.findings as findings_mod
+import scripts.synth.codes as codes_mod
+import scripts.synth.report as report_mod
 
 
 def _bundle():
@@ -23,7 +25,7 @@ class TestVerdictQuality(unittest.TestCase):
     def test_advisor_corrects_code_with_provenance(self):
         b = _bundle()
         f = {"id": "SEC-1", "code": "SEC-A1A", "severity": "HIGH", "domain": "SEC"}
-        cov = synthesize.apply_verdict_quality(
+        cov = codes_mod.apply_verdict_quality(
             [f], {id(f): {"code": "SEC-B2B", "verdict": "CONFIRMED", "stage": "primary"}}, b)
         self.assertEqual(f["code"], "SEC-B2B")
         self.assertEqual(f["code_corrected_by"], "agent:advisor")
@@ -33,7 +35,7 @@ class TestVerdictQuality(unittest.TestCase):
         b = _bundle()
         f = {"id": "SEC-1", "code": "SEC-A1A", "severity": "CRITICAL", "domain": "SEC",
              "severity_override": {"from": "MEDIUM", "to": "CRITICAL"}}   # no reason
-        cov = synthesize.apply_verdict_quality([f], {}, b)
+        cov = codes_mod.apply_verdict_quality([f], {}, b)
         self.assertEqual(f["severity"], "MEDIUM")                 # reverted to code default
         self.assertNotIn("severity_override", f)
         self.assertEqual(cov["overrides"]["count"], 0)
@@ -42,13 +44,13 @@ class TestVerdictQuality(unittest.TestCase):
         b = _bundle()
         f = {"id": "SEC-1", "code": "SEC-A1A", "severity": "CRITICAL", "domain": "SEC",
              "severity_override": {"from": "MEDIUM", "to": "CRITICAL", "reason": "prod exposed"}}
-        cov = synthesize.apply_verdict_quality([f], {}, b)
+        cov = codes_mod.apply_verdict_quality([f], {}, b)
         self.assertEqual(f["severity"], "CRITICAL")
         self.assertEqual(cov["overrides"], {"count": 1, "up": 1, "down": 0})
 
     def test_backup_confirm_sets_flag(self):
         f = {"id": "SEC-1", "code": "SEC-A1A", "severity": "HIGH"}
-        synthesize.apply_verdict_quality(
+        codes_mod.apply_verdict_quality(
             [f], {id(f): {"verdict": "CONFIRMED", "stage": "backup"}}, _bundle())
         self.assertTrue(f.get("backup_confirmed"))
 
@@ -61,8 +63,8 @@ class TestVerdictQuality(unittest.TestCase):
                      "title": "t", "description": "x",
                      "location": {"file": "a.py", "line_start": 1}, "category": "authz",
                      "severity_override": {"from": "MEDIUM", "to": "CRITICAL", "reason": "prod"}}]}, fh)
-            findings = synthesize.load_findings([fp])
-            report = synthesize.build_report(findings, [], "src", None,
+            findings = findings_mod.load_findings([fp])
+            report = report_mod.build_report(findings, [], "src", None,
                                              "2026-08-15T00:00:00Z")
             ocrdb_cov = report["meta"]["coverage"]["ocrdb"]
             self.assertEqual(ocrdb_cov["overrides"]["count"], 1)
@@ -72,40 +74,40 @@ class TestVerdictQuality(unittest.TestCase):
         b = _bundle()  # SEC-A1A default MEDIUM
         f = {"id": "SEC-1", "code": "SEC-A1A", "severity": "LOW", "domain": "SEC",
              "severity_override": {"from": "MEDIUM", "to": "LOW", "reason": "intended lower"}}
-        cov = synthesize.apply_verdict_quality([f], {}, b)
+        cov = codes_mod.apply_verdict_quality([f], {}, b)
         self.assertEqual(cov["overrides"], {"count": 1, "up": 0, "down": 1})
 
     def test_bundle_absent_missing_reason_override_leaves_severity_no_crash(self):
         f = {"id": "SEC-1", "code": "SEC-A1A", "severity": "CRITICAL",
              "severity_override": {"from": "MEDIUM", "to": "CRITICAL"}}   # no reason
-        cov = synthesize.apply_verdict_quality([f], {}, None)             # bundle absent
+        cov = codes_mod.apply_verdict_quality([f], {}, None)             # bundle absent
         self.assertEqual(f["severity"], "CRITICAL")          # untouched (default_severity None -> can't revert)
         self.assertNotIn("severity_override", f)          # override still dropped + disclosed
         self.assertEqual(cov["code_corrections"], 0)
 
     def test_backup_confirmed_not_set_for_primary_or_backup_reject(self):
         f1 = {"id": "SEC-1", "code": "SEC-A1A", "severity": "HIGH"}
-        synthesize.apply_verdict_quality(
+        codes_mod.apply_verdict_quality(
             [f1], {id(f1): {"verdict": "CONFIRMED", "stage": "primary"}}, _bundle())
         self.assertNotIn("backup_confirmed", f1)          # primary confirm != double-confirm
         f2 = {"id": "SEC-2", "code": "SEC-A1A", "severity": "HIGH"}
-        synthesize.apply_verdict_quality(
+        codes_mod.apply_verdict_quality(
             [f2], {id(f2): {"verdict": "REJECTED", "stage": "backup"}}, _bundle())
         self.assertNotIn("backup_confirmed", f2)          # backup reject != confirm
 
     def test_code_correction_noops(self):
         b = _bundle()
         f1 = {"id": "SEC-1", "code": "SEC-A1A", "severity": "LOW"}          # verdict has no code
-        synthesize.apply_verdict_quality([f1], {id(f1): {"verdict": "CONFIRMED"}}, b)
+        codes_mod.apply_verdict_quality([f1], {id(f1): {"verdict": "CONFIRMED"}}, b)
         self.assertEqual(f1["code"], "SEC-A1A")
         self.assertNotIn("code_corrected_by", f1)
         f2 = {"id": "SEC-2", "code": "SEC-A1A", "severity": "LOW"}          # invalid code
-        synthesize.apply_verdict_quality(
+        codes_mod.apply_verdict_quality(
             [f2], {id(f2): {"code": "SEC-ZZZ", "verdict": "CONFIRMED"}}, b)
         self.assertEqual(f2["code"], "SEC-A1A")
         self.assertNotIn("code_corrected_by", f2)
         f3 = {"id": "SEC-3", "code": "SEC-A1A", "severity": "LOW"}          # code == finding's own
-        cov = synthesize.apply_verdict_quality(
+        cov = codes_mod.apply_verdict_quality(
             [f3], {id(f3): {"code": "SEC-A1A", "verdict": "CONFIRMED"}}, b)
         self.assertEqual(cov["code_corrections"], 0)
 

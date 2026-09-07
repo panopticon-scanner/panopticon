@@ -200,10 +200,12 @@ class TestFingerprintMoved(unittest.TestCase):
             "SCS0005")
         self.assertIsNone(evidence.tool_rule_id({}))
 
-    def test_synthesize_aliases_still_resolve(self):
+    def test_synthesize_no_longer_re_exports_evidence(self):
+        # WS-0 S1: a name lives in exactly one module -- the entry script
+        # dropped its `X = evidence_mod.X` delegation aliases.
         import scripts.synthesize as syn
-        self.assertIs(syn.finding_fingerprint, evidence.finding_fingerprint)
-        self.assertIs(syn.tool_rule_id, evidence.tool_rule_id)
+        for name in ("finding_fingerprint", "tool_rule_id", "load_json_tolerant"):
+            self.assertFalse(hasattr(syn, name), name)
 
 
 class TestReconcileKey(unittest.TestCase):

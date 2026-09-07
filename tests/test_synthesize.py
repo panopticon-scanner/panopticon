@@ -21,6 +21,15 @@ DEFAULT_TIMESTAMP = "2026-07-23T00:00:00Z"
 
 
 import scripts.synthesize as syn  # noqa: E402
+import scripts.synth.findings as findings_mod  # noqa: E402
+import scripts.synth.codes as codes_mod  # noqa: E402
+import scripts.synth.delta as delta_mod  # noqa: E402
+import scripts.synth.grading as grading_mod  # noqa: E402
+import scripts.synth.plan as plan_mod  # noqa: E402
+import scripts.synth.integrity as integrity_mod  # noqa: E402
+import scripts.synth.cost as cost_mod  # noqa: E402
+import scripts.synth.report as report_mod  # noqa: E402
+import scripts.synth.render as render_mod  # noqa: E402
 from scripts._version import __version__  # noqa: E402
 import scripts.ocrdb as ocrdb  # noqa: E402
 
@@ -64,27 +73,27 @@ class TestFindingsFileIntegrity(unittest.TestCase):
             },
         ]
         self.assertEqual(
-            syn.duplicate_out_files(plan), [".panopticon/findings-g1-redteam-panel_review.json"]
+            integrity_mod.duplicate_out_files(plan), [".panopticon/findings-g1-redteam-panel_review.json"]
         )
-        self.assertEqual(syn.duplicate_out_files([]), [])
+        self.assertEqual(integrity_mod.duplicate_out_files([]), [])
 
     def test_expected_from_filename(self):
         # #run10: keyed on the cell shape driver._cell_entry writes. The group
         # may contain hyphens, so the DOMAIN is the last token.
         self.assertEqual(
-            syn._expected_from_filename("findings-DocumentsIntake-SEC.json"),
+            integrity_mod._expected_from_filename("findings-DocumentsIntake-SEC.json"),
             ("DocumentsIntake", "SEC"),
         )
         self.assertEqual(
-            syn._expected_from_filename("findings-My-Hyphenated-Group-COD.json"),
+            integrity_mod._expected_from_filename("findings-My-Hyphenated-Group-COD.json"),
             ("My-Hyphenated-Group", "COD"),
         )
-        self.assertIsNone(syn._expected_from_filename("groups.json"))
+        self.assertIsNone(integrity_mod._expected_from_filename("groups.json"))
         # not an OCRDb domain -> not a reviewer findings file
-        self.assertIsNone(syn._expected_from_filename("findings-g1-NOPE.json"))
+        self.assertIsNone(integrity_mod._expected_from_filename("findings-g1-NOPE.json"))
         # the retired 4.x spellings are no longer produced, so no longer parsed
         self.assertIsNone(
-            syn._expected_from_filename("findings-g1-redteam-panel_review.json"))
+            integrity_mod._expected_from_filename("findings-g1-redteam-panel_review.json"))
 
     def test_mislabeled_when_content_disagrees(self):
         with tempfile.TemporaryDirectory() as d:
@@ -102,9 +111,9 @@ class TestFindingsFileIntegrity(unittest.TestCase):
             with open(wrong_group, "w") as fh:
                 json.dump({"findings": [{"domain": "SEC"}],
                            "_panopticon": {"group": "g9", "domain": "SEC"}}, fh)
-            self.assertEqual(syn.mislabeled_findings_files([good]), [])
-            self.assertEqual(syn.mislabeled_findings_files([bad]), [bad])
-            self.assertEqual(syn.mislabeled_findings_files([wrong_group]), [wrong_group])
+            self.assertEqual(integrity_mod.mislabeled_findings_files([good]), [])
+            self.assertEqual(integrity_mod.mislabeled_findings_files([bad]), [bad])
+            self.assertEqual(integrity_mod.mislabeled_findings_files([wrong_group]), [wrong_group])
 
     def test_cross_domain_finding_is_not_a_mislabeled_file(self):
         # #calibration-4 (gotify): the stamp is CORRECT -- the file is exactly
@@ -120,8 +129,8 @@ class TestFindingsFileIntegrity(unittest.TestCase):
                                         {"domain": "TST", "ocrdb_code": "TST-X0X"}],
                            "_panopticon": {"group": "ClientDevices",
                                            "domain": "ARC"}}, fh)
-            self.assertEqual(syn.mislabeled_findings_files([p]), [])
-            xd = syn.cross_domain_findings([p])
+            self.assertEqual(integrity_mod.mislabeled_findings_files([p]), [])
+            xd = integrity_mod.cross_domain_findings([p])
             self.assertEqual(len(xd), 1)
             self.assertEqual(xd[0]["cell_domain"], "ARC")
             self.assertEqual(xd[0]["finding_domain"], "TST")
@@ -133,7 +142,7 @@ class TestFindingsFileIntegrity(unittest.TestCase):
             with open(p, "w") as fh:
                 json.dump({"findings": [{"domain": "SEC"}, {"title": "no domain"}],
                            "_panopticon": {"group": "g1", "domain": "SEC"}}, fh)
-            self.assertEqual(syn.cross_domain_findings([p]), [])
+            self.assertEqual(integrity_mod.cross_domain_findings([p]), [])
 
     def test_cross_domain_findings_do_not_block_certification(self):
         # The whole point of the split: reported, never gating. Asserted
@@ -146,7 +155,7 @@ class TestFindingsFileIntegrity(unittest.TestCase):
                     "invalid_dispatch_plans": [], "invalid_verify_queue": None,
                     "unenforced_acknowledged": False, "plans_seen": 1}
             base.update(integrity)
-            return syn.build_report([], [], "t", "high", "2026-01-01T00:00:00Z",
+            return report_mod.build_report([], [], "t", "high", "2026-01-01T00:00:00Z",
                                     integrity=base)
 
         xdom = [{"file": "findings-g1-ARC.json", "cell_domain": "ARC",
@@ -165,7 +174,7 @@ class TestFindingsFileIntegrity(unittest.TestCase):
             p = os.path.join(d, "findings-g1-COD.json")
             with open(p, "w") as fh:
                 json.dump({"findings": [{"description": "no domain field"}]}, fh)
-            self.assertEqual(syn.mislabeled_findings_files([p]), [])
+            self.assertEqual(integrity_mod.mislabeled_findings_files([p]), [])
 
     def test_mislabeled_file_forces_inconclusive_end_to_end(self):
         # --fail-on high makes the base gate PASS (no high findings); the
@@ -223,7 +232,7 @@ class TestFindingsFileIntegrity(unittest.TestCase):
         files = glob.glob(os.path.join(base, "findings-*.json"))
         if not files:
             self.skipTest("No findings files found in PANOPTICON_TAPESTRY_CORPUS_PATH")
-        self.assertEqual(syn.mislabeled_findings_files(files), [])
+        self.assertEqual(integrity_mod.mislabeled_findings_files(files), [])
 
 
 @contextlib.contextmanager
@@ -238,77 +247,77 @@ def _chdir(path):
 
 class TestNormalize(unittest.TestCase):
     def test_verdict_maps_to_confidence(self):
-        f = syn.normalize_finding({"severity": "high", "verdict": "CONFIRMED", "panel": "security"})
+        f = findings_mod.normalize_finding({"severity": "high", "verdict": "CONFIRMED", "panel": "security"})
         self.assertEqual(f["severity"], "HIGH")
         self.assertEqual(f["confidence"], "CERTAIN")
 
     def test_plausible_maps_to_likely(self):
-        f = syn.normalize_finding({"verdict": "PLAUSIBLE"})
+        f = findings_mod.normalize_finding({"verdict": "PLAUSIBLE"})
         self.assertEqual(f["confidence"], "LIKELY")
 
     def test_unlabeled_defaults_possible(self):
-        f = syn.normalize_finding({"severity": "MEDIUM"})
+        f = findings_mod.normalize_finding({"severity": "MEDIUM"})
         self.assertEqual(f["confidence"], "POSSIBLE")
 
     def test_invalid_severity_becomes_info(self):
-        f = syn.normalize_finding({"severity": "sorta-bad"})
+        f = findings_mod.normalize_finding({"severity": "sorta-bad"})
         self.assertEqual(f["severity"], "INFO")
 
     def test_normalize_accepts_new_panels(self):
         for panel in ["architecture", "database", "redteam"]:
-            f = syn.normalize_finding({"panel": panel, "title": "x", "description": "y"})
+            f = findings_mod.normalize_finding({"panel": panel, "title": "x", "description": "y"})
             self.assertEqual(f["panel"], panel)
 
     def test_normalize_defaults_unknown_panel_to_code(self):
-        f = syn.normalize_finding({"panel": "unknown", "title": "x"})
+        f = findings_mod.normalize_finding({"panel": "unknown", "title": "x"})
         self.assertEqual(f["panel"], "code")
 
     def test_normalize_omits_empty_lens(self):
-        f = syn.normalize_finding({"title": "x"})
+        f = findings_mod.normalize_finding({"title": "x"})
         self.assertNotIn("lens", f)
 
     def test_normalize_preserves_nonempty_lens(self):
-        f = syn.normalize_finding({"title": "x", "lens": "injection"})
+        f = findings_mod.normalize_finding({"title": "x", "lens": "injection"})
         self.assertEqual(f["lens"], "injection")
 
     def test_normalize_bridges_line_to_line_start(self):
         # #5.0-04: agents emit location {file, line}; the pipeline keys line_start.
-        f = syn.normalize_finding({"title": "x", "location": {"file": "a.py", "line": 7}})
+        f = findings_mod.normalize_finding({"title": "x", "location": {"file": "a.py", "line": 7}})
         self.assertEqual(f["location"]["line_start"], 7)
         self.assertNotIn("line", f["location"])
 
     def test_normalize_does_not_override_explicit_line_start(self):
-        f = syn.normalize_finding(
+        f = findings_mod.normalize_finding(
             {"title": "x", "location": {"file": "a.py", "line": 7, "line_start": 3}}
         )
         self.assertEqual(f["location"]["line_start"], 3)
 
     def test_location_coerced(self):
-        f = syn.normalize_finding({"location": {"file": "a.py", "line_start": 10}})
+        f = findings_mod.normalize_finding({"location": {"file": "a.py", "line_start": 10}})
         self.assertEqual(f["location"]["line_end"], 10)
 
 
 class TestNormalizeCodeDomain(unittest.TestCase):
     def test_code_and_domain_pass_through(self):
-        f = syn.normalize_finding({"code": "SEC-A1A", "domain": "SEC", "panel": "security"})
+        f = findings_mod.normalize_finding({"code": "SEC-A1A", "domain": "SEC", "panel": "security"})
         self.assertEqual(f["code"], "SEC-A1A")
         self.assertEqual(f["domain"], "SEC")
 
     def test_panel_backfilled_from_domain_when_absent(self):
         # a domain-scoped finding with no valid panel gets panel from the map
-        f = syn.normalize_finding({"code": "DAT-A1A", "domain": "DAT"})
+        f = findings_mod.normalize_finding({"code": "DAT-A1A", "domain": "DAT"})
         self.assertEqual(f["panel"], "database")
 
     def test_panel_backfilled_for_domain_without_legacy_panel(self):
-        f = syn.normalize_finding({"code": "OPS-A1A", "domain": "OPS"})
+        f = findings_mod.normalize_finding({"code": "OPS-A1A", "domain": "OPS"})
         self.assertEqual(f["panel"], "code")  # OPS has no legacy panel -> code
 
     def test_explicit_valid_panel_is_not_overridden(self):
-        f = syn.normalize_finding({"domain": "SEC", "panel": "database"})
+        f = findings_mod.normalize_finding({"domain": "SEC", "panel": "database"})
         self.assertEqual(f["panel"], "database")  # caller's valid panel wins
 
     def test_no_domain_no_code_is_unchanged_behavior(self):
-        f = syn.normalize_finding({"title": "x"})
+        f = findings_mod.normalize_finding({"title": "x"})
         self.assertEqual(f["panel"], "code")  # existing default
         self.assertNotIn("code", f)
 
@@ -316,7 +325,7 @@ class TestNormalizeCodeDomain(unittest.TestCase):
 class TestLoad(unittest.TestCase):
     def test_tolerant_json_with_fences(self):
         body = '```json\n{"findings": [{"severity": "LOW"}]}\n```'
-        data = syn.load_json_tolerant(body)
+        data = evidence_mod.load_json_tolerant(body)
         self.assertEqual(len(data["findings"]), 1)
 
     def test_load_findings_skips_missing(self):
@@ -324,7 +333,7 @@ class TestLoad(unittest.TestCase):
             good = os.path.join(d, "findings-x-code.json")
             with open(good, "w") as fh:
                 json.dump({"findings": [{"severity": "HIGH", "panel": "code"}]}, fh)
-            findings = syn.load_findings([good, os.path.join(d, "missing.json")])
+            findings = findings_mod.load_findings([good, os.path.join(d, "missing.json")])
             self.assertEqual(len(findings), 1)
             self.assertEqual(findings[0]["confidence"], "POSSIBLE")
 
@@ -333,21 +342,21 @@ class TestLoad(unittest.TestCase):
             p = os.path.join(d, "findings-x-code.json")
             with open(p, "w") as fh:
                 fh.write("[1, 2, 3]")
-            self.assertEqual(syn.load_findings([p]), [])
+            self.assertEqual(findings_mod.load_findings([p]), [])
 
     def test_load_findings_skips_non_dict_finding_entries(self):
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "findings-x-code.json")
             with open(p, "w") as fh:
                 json.dump({"findings": ["oops", {"severity": "LOW", "panel": "code"}]}, fh)
-            out = syn.load_findings([p])
+            out = findings_mod.load_findings([p])
             self.assertEqual(len(out), 1)
             self.assertEqual(out[0]["severity"], "LOW")
 
     def test_tolerant_json_with_prose_around_object(self):
         # The regex fallback: panel output wrapped in prose (no code fence).
         body = 'Sure, here is the JSON:\n{"findings": [{"severity": "LOW"}]}\nHope that helps!'
-        self.assertEqual(syn.load_json_tolerant(body), {"findings": [{"severity": "LOW"}]})
+        self.assertEqual(evidence_mod.load_json_tolerant(body), {"findings": [{"severity": "LOW"}]})
 
     def test_load_findings_skips_invalid_json_and_continues(self):
 
@@ -371,7 +380,7 @@ class TestLoad(unittest.TestCase):
                 )
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
-                out = syn.load_findings([bad, good])
+                out = findings_mod.load_findings([bad, good])
             self.assertIn("PARSE ERROR", err.getvalue())
             self.assertEqual(len(out), 1)  # good file still processed
 
@@ -383,7 +392,7 @@ class TestLoad(unittest.TestCase):
                 json.dump({"findings": "not-a-list"}, fh)
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
-                out = syn.load_findings([p])
+                out = findings_mod.load_findings([p])
             self.assertIn("no findings list", err.getvalue())
             self.assertEqual(out, [])
 
@@ -421,7 +430,7 @@ class TestLoad(unittest.TestCase):
                 )
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
-                out = syn.load_findings([p])
+                out = findings_mod.load_findings([p])
             self.assertEqual(len(out), 1)
             for forged in ("source", "reinforced", "corroborated", "corroborated_by", "evidence"):
                 self.assertNotIn(forged, out[0])
@@ -444,7 +453,7 @@ class TestDedupe(unittest.TestCase):
                 "location": {"file": "a.rb", "line_start": 10},
             },
         ]
-        out = syn.dedupe(findings)
+        out = findings_mod.dedupe(findings)
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0]["severity"], "HIGH")
 
@@ -466,7 +475,7 @@ class TestDedupe(unittest.TestCase):
                 "location": {"file": "a.rb", "line_start": 10},
             },
         ]
-        self.assertEqual(len(syn.dedupe(findings)), 2)
+        self.assertEqual(len(findings_mod.dedupe(findings)), 2)
 
     def test_two_agent_findings_same_line_both_kept(self):
         # Two agent-sourced findings (different panels/categories) at the same
@@ -489,7 +498,7 @@ class TestDedupe(unittest.TestCase):
                 "location": {"file": "a.py", "line_start": 5},
             },
         ]
-        out = syn.dedupe(findings)
+        out = findings_mod.dedupe(findings)
         self.assertEqual(len(out), 2)
         self.assertFalse(any(f.get("reinforced") for f in out))
 
@@ -508,14 +517,14 @@ class TestDedupe(unittest.TestCase):
                 "location": {"file": "b.rb", "line_start": 10},
             },
         ]
-        self.assertEqual(len(syn.dedupe(findings)), 2)
+        self.assertEqual(len(findings_mod.dedupe(findings)), 2)
 
     def test_no_file_findings_not_merged(self):
         findings = [
             {"severity": "LOW", "confidence": "NOTE", "category": "x", "location": {}},
             {"severity": "LOW", "confidence": "NOTE", "category": "x", "location": {}},
         ]
-        self.assertEqual(len(syn.dedupe(findings)), 2)
+        self.assertEqual(len(findings_mod.dedupe(findings)), 2)
 
     def test_no_line_same_category_both_kept(self):
         # CD-001 regression: two distinct issues in the same file that both omit
@@ -537,7 +546,7 @@ class TestDedupe(unittest.TestCase):
                 "location": {"file": "a.py"},
             },
         ]
-        self.assertEqual(len(syn.dedupe(findings)), 2)
+        self.assertEqual(len(findings_mod.dedupe(findings)), 2)
 
     def test_reinforce_sourceless_agent_with_tool(self):
         # Production shape: real panel findings carry NO 'source' field; only
@@ -564,7 +573,7 @@ class TestDedupe(unittest.TestCase):
                 "location": {"file": "db.py", "line_start": 10},
             },
         ]
-        out = syn.dedupe(findings)
+        out = findings_mod.dedupe(findings)
         self.assertEqual(len(out), 1)
         self.assertTrue(out[0].get("reinforced"))
         # confidence is never mutated by the pipeline (amended spec) — the
@@ -594,7 +603,7 @@ class TestDedupe(unittest.TestCase):
                 "citations": {"cwe": [{"id": "CWE-352", "name": "CSRF", "verified": True}]},
             },
         ]
-        out = syn.dedupe(findings)
+        out = findings_mod.dedupe(findings)
         self.assertEqual(len(out), 1)
         self.assertTrue(out[0].get("reinforced"))
 
@@ -630,7 +639,7 @@ class TestDedupe(unittest.TestCase):
                 "location": {"file": "db.py", "line_start": 10},
             },
         ]
-        out = syn.dedupe(findings)
+        out = findings_mod.dedupe(findings)
         cats = sorted(f.get("category") for f in out)
         self.assertIn("structure", cats)  # unrelated finding NOT dropped
         self.assertEqual(len(out), 2)  # sql-injection (collapsed) + structure
@@ -655,7 +664,7 @@ class TestReinforceMerge(unittest.TestCase):
             "cvss": {"score": 1.0, "vector": "AGENT"},
             "exploit_scenario": "agent scenario",
         }
-        syn._reinforce_merge(tool_best, agent_other)
+        findings_mod._reinforce_merge(tool_best, agent_other)
         self.assertEqual(tool_best["cvss"]["vector"], "TOOL")
         self.assertEqual(tool_best["exploit_scenario"], "agent scenario")
 
@@ -672,7 +681,7 @@ class TestReinforceMerge(unittest.TestCase):
             "category": "sqli",
             "cvss": {"score": 8.5, "vector": "AGENT"},
         }
-        syn._reinforce_merge(tool_best, agent_other)
+        findings_mod._reinforce_merge(tool_best, agent_other)
         self.assertEqual(tool_best["cvss"]["vector"], "AGENT")
 
 
@@ -681,27 +690,27 @@ class TestGrading(unittest.TestCase):
         return {"severity": sev}
 
     def test_grade_rule(self):
-        self.assertEqual(syn.grade([self._f("CRITICAL")]), "F")
-        self.assertEqual(syn.grade([self._f("HIGH")]), "D")
-        self.assertEqual(syn.grade([self._f("MEDIUM")]), "C")
-        self.assertEqual(syn.grade([self._f("LOW")]), "B")
-        self.assertEqual(syn.grade([self._f("INFO")]), "A")
-        self.assertEqual(syn.grade([]), "A")
+        self.assertEqual(grading_mod.grade([self._f("CRITICAL")]), "F")
+        self.assertEqual(grading_mod.grade([self._f("HIGH")]), "D")
+        self.assertEqual(grading_mod.grade([self._f("MEDIUM")]), "C")
+        self.assertEqual(grading_mod.grade([self._f("LOW")]), "B")
+        self.assertEqual(grading_mod.grade([self._f("INFO")]), "A")
+        self.assertEqual(grading_mod.grade([]), "A")
 
     def test_risk_level(self):
-        self.assertEqual(syn.risk_level([self._f("HIGH"), self._f("LOW")]), "HIGH")
-        self.assertEqual(syn.risk_level([self._f("INFO")]), "LOW")
+        self.assertEqual(grading_mod.risk_level([self._f("HIGH"), self._f("LOW")]), "HIGH")
+        self.assertEqual(grading_mod.risk_level([self._f("INFO")]), "LOW")
 
     def test_gate_off_when_no_threshold(self):
-        self.assertEqual(syn.gate_verdict([self._f("CRITICAL")], None), "OFF")
+        self.assertEqual(grading_mod.gate_verdict([self._f("CRITICAL")], None), "OFF")
 
     def test_gate_fail_at_or_above_threshold(self):
-        self.assertEqual(syn.gate_verdict([self._f("HIGH")], "high"), "FAIL")
-        self.assertEqual(syn.gate_verdict([self._f("CRITICAL")], "high"), "FAIL")
-        self.assertEqual(syn.gate_verdict([self._f("MEDIUM")], "high"), "PASS")
+        self.assertEqual(grading_mod.gate_verdict([self._f("HIGH")], "high"), "FAIL")
+        self.assertEqual(grading_mod.gate_verdict([self._f("CRITICAL")], "high"), "FAIL")
+        self.assertEqual(grading_mod.gate_verdict([self._f("MEDIUM")], "high"), "PASS")
 
     def test_severity_stats(self):
-        stats = syn.severity_stats([self._f("HIGH"), self._f("HIGH"), self._f("LOW")])
+        stats = grading_mod.severity_stats([self._f("HIGH"), self._f("HIGH"), self._f("LOW")])
         self.assertEqual(stats["high"], 2)
         self.assertEqual(stats["low"], 1)
         self.assertEqual(stats["critical"], 0)
@@ -712,7 +721,7 @@ class TestCertify(unittest.TestCase):
         return [{"severity": "CRITICAL", "evidence": {"status": "advisor_confirmed"}}]
 
     def test_clean_complete_pass_real_grade(self):
-        r = syn.certify("A", [], "high", set(), [])
+        r = grading_mod.certify("A", [], "high", set(), [])
         self.assertEqual(r["gate"], "PASS")
         self.assertEqual(r["overall_grade"], "A")
         self.assertIsNone(r["provisional_grade"])
@@ -720,14 +729,14 @@ class TestCertify(unittest.TestCase):
         self.assertIsNone(r["coverage_note"])
 
     def test_clean_high_value_incomplete_inconclusive(self):
-        r = syn.certify("B", [], "high", {"security"}, [])
+        r = grading_mod.certify("B", [], "high", {"security"}, [])
         self.assertEqual(r["gate"], "INCONCLUSIVE")
         self.assertIsNone(r["overall_grade"])
         self.assertEqual(r["provisional_grade"], "B")
         self.assertFalse(r["coverage_certified"])
 
     def test_clean_low_value_tail_pass_with_note(self):
-        r = syn.certify("B", [], "high", {"test"}, [])
+        r = grading_mod.certify("B", [], "high", {"test"}, [])
         self.assertEqual(r["gate"], "PASS")
         self.assertIsNone(r["overall_grade"])
         self.assertEqual(r["provisional_grade"], "B")
@@ -735,16 +744,16 @@ class TestCertify(unittest.TestCase):
         self.assertIn("test", r["coverage_note"])
 
     def test_confirmed_fail_beats_inconclusive(self):
-        r = syn.certify("F", self._crit(), "high", {"security"}, [])
+        r = grading_mod.certify("F", self._crit(), "high", {"security"}, [])
         self.assertEqual(r["gate"], "FAIL")
 
     def test_off_preserved_with_gap(self):
-        r = syn.certify("B", [], None, {"security"}, [])
+        r = grading_mod.certify("B", [], None, {"security"}, [])
         self.assertEqual(r["gate"], "OFF")
         self.assertFalse(r["coverage_certified"])
 
     def test_requested_absent_tool_inconclusive(self):
-        r = syn.certify("A", [], "high", set(), ["semgrep"])
+        r = grading_mod.certify("A", [], "high", set(), ["semgrep"])
         self.assertEqual(r["gate"], "INCONCLUSIVE")
         self.assertFalse(r["coverage_certified"])
 
@@ -755,13 +764,13 @@ class TestFloorCellAudit(unittest.TestCase):
 
     def test_missing_floor_cell_is_inconclusive(self):
         # a coverage file declares SEC as floor; no findings-<g>-SEC.json exists
-        cells = syn.audit_floor_cells(
+        cells = plan_mod.audit_floor_cells(
             [{"group": "Auth", "floor": ["SEC"], "effective": ["SEC"]}], present={"Auth": set()}
         )  # no cell findings present
         self.assertEqual(cells["missing_floor"], [["Auth", "SEC"]])
 
     def test_present_floor_cell_ok(self):
-        cells = syn.audit_floor_cells(
+        cells = plan_mod.audit_floor_cells(
             [{"group": "Auth", "floor": ["SEC"], "effective": ["SEC"]}], present={"Auth": {"SEC"}}
         )
         self.assertEqual(cells["missing_floor"], [])
@@ -769,7 +778,7 @@ class TestFloorCellAudit(unittest.TestCase):
     def test_excluded_floor_cell_not_missing(self):
         # #5.0-11: a floor domain a group opted out of (e.g. a universal global-
         # floor domain) does not run, so it is not a missing floor cell.
-        cells = syn.audit_floor_cells(
+        cells = plan_mod.audit_floor_cells(
             [{"group": "Auth", "floor": ["SEC", "DAT"], "excluded": ["DAT"], "effective": ["SEC"]}],
             present={"Auth": {"SEC"}},
         )  # only SEC ran; DAT excluded
@@ -783,32 +792,32 @@ class TestPresentCells(unittest.TestCase):
 
     def test_parses_group_and_domain(self):
         self.assertEqual(
-            syn.present_cells([os.path.join(".panopticon", "findings-Auth-SEC.json")]),
+            plan_mod.present_cells([os.path.join(".panopticon", "findings-Auth-SEC.json")]),
             {"Auth": {"SEC"}},
         )
 
     def test_hyphenated_group_name_preserved(self):
         # groups may themselves contain hyphens; the domain is the fixed
         # hyphen-free suffix, so rpartition keeps the rest as the group.
-        self.assertEqual(syn.present_cells(["findings-my-group-DAT.json"]), {"my-group": {"DAT"}})
+        self.assertEqual(plan_mod.present_cells(["findings-my-group-DAT.json"]), {"my-group": {"DAT"}})
 
     def test_legacy_panel_suffixed_names_do_not_match(self):
         # lowercase panel tokens (and -panel_review/-lens_sweep-<lens>
         # suffixes) are never a domain code -- no false "present" cell.
         self.assertEqual(
-            syn.present_cells(["findings-g1-code-panel_review.json", "findings-g1-security.json"]),
+            plan_mod.present_cells(["findings-g1-code-panel_review.json", "findings-g1-security.json"]),
             {},
         )
 
     def test_multiple_domains_accumulate_per_group(self):
         self.assertEqual(
-            syn.present_cells(["findings-Auth-SEC.json", "findings-Auth-DAT.json"]),
+            plan_mod.present_cells(["findings-Auth-SEC.json", "findings-Auth-DAT.json"]),
             {"Auth": {"SEC", "DAT"}},
         )
 
     def test_empty_and_none_tolerated(self):
-        self.assertEqual(syn.present_cells([]), {})
-        self.assertEqual(syn.present_cells(None), {})
+        self.assertEqual(plan_mod.present_cells([]), {})
+        self.assertEqual(plan_mod.present_cells(None), {})
 
 
 def _make_finding(**kw):
@@ -832,7 +841,7 @@ class TestReport(unittest.TestCase):
         # unverified findings are not gate-eligible by default -> grade/gate
         # reflect the (empty) gate-eligible set, not the raw severity.
         findings = [_make_finding(severity="HIGH", panel="code")]
-        report = syn.build_report(
+        report = report_mod.build_report(
             findings, [{"name": "g1", "files": ["a.py"]}], "src", "high", DEFAULT_TIMESTAMP
         )
         # The letter now comes from health, and "a.py" does not exist here, so
@@ -845,23 +854,23 @@ class TestReport(unittest.TestCase):
 
     def test_validate_clean_report(self):
         findings = [_make_finding()]
-        report = syn.build_report(
+        report = report_mod.build_report(
             findings, [{"name": "g1", "files": ["a.py"]}], "src", None, DEFAULT_TIMESTAMP
         )
-        errors, _ = syn.validate_report(report)
+        errors, _ = report_mod.validate_report(report)
         self.assertEqual(errors, [])
 
     def test_validate_flags_bad_id_and_missing_cvss(self):
         bad = _make_finding(id="lowercase", panel="security", severity="CRITICAL")
-        report = syn.build_report(
+        report = report_mod.build_report(
             [bad], [{"name": "g1", "files": ["a.py"]}], "src", None, DEFAULT_TIMESTAMP
         )
-        errors, _ = syn.validate_report(report)
+        errors, _ = report_mod.validate_report(report)
         self.assertTrue(any("id" in e for e in errors))
         self.assertTrue(any("cvss" in e or "exploit" in e for e in errors))
 
     def test_validate_flags_duplicate_ids(self):
-        report = syn.build_report(
+        report = report_mod.build_report(
             [
                 _make_finding(
                     id="CD-001", title="a", category="x", location={"file": "a", "line_start": 1}
@@ -875,15 +884,15 @@ class TestReport(unittest.TestCase):
             None,
             DEFAULT_TIMESTAMP,
         )
-        errors, _ = syn.validate_report(report)
+        errors, _ = report_mod.validate_report(report)
         self.assertTrue(any("duplicate" in e.lower() for e in errors))
 
     def test_build_report_honors_review_type(self):
-        report = syn.build_report([], [], "src/app.py", None, DEFAULT_TIMESTAMP, review_type="file")
+        report = report_mod.build_report([], [], "src/app.py", None, DEFAULT_TIMESTAMP, review_type="file")
         self.assertEqual(report["meta"]["review_type"], "file")
 
     def test_build_report_includes_security_mode(self):
-        report = syn.build_report([], [], "src", None, DEFAULT_TIMESTAMP, security_mode="redteam")
+        report = report_mod.build_report([], [], "src", None, DEFAULT_TIMESTAMP, security_mode="redteam")
         self.assertEqual(report["meta"]["security_mode"], "redteam")
 
     def test_build_report_populates_models_used(self):
@@ -921,7 +930,7 @@ class TestReport(unittest.TestCase):
                 },
             ),
         ]
-        report = syn.build_report(findings, [], "src", None, DEFAULT_TIMESTAMP)
+        report = report_mod.build_report(findings, [], "src", None, DEFAULT_TIMESTAMP)
         models = report["meta"]["models_used"]
         self.assertEqual(len(models), 3)
         self.assertIn({"model": "kimi-k2.7-coding", "version": "v1", "role": "lens_sweep"}, models)
@@ -1060,10 +1069,10 @@ class TestReport(unittest.TestCase):
 
     def test_validate_redteam_high_requires_cvss_and_exploit(self):
         bad = _make_finding(id="RT-001", panel="redteam", severity="HIGH")
-        report = syn.build_report(
+        report = report_mod.build_report(
             [bad], [{"name": "g1", "files": ["a.py"]}], "src", None, DEFAULT_TIMESTAMP
         )
-        errors, _ = syn.validate_report(report)
+        errors, _ = report_mod.validate_report(report)
         self.assertTrue(any("cvss" in e for e in errors))
         self.assertTrue(any("exploit" in e for e in errors))
 
@@ -1075,10 +1084,10 @@ class TestReport(unittest.TestCase):
             cvss={"score": 9.0},
             exploit_scenario="x",
         )
-        report = syn.build_report(
+        report = report_mod.build_report(
             [good], [{"name": "g1", "files": ["a.py"]}], "src", None, DEFAULT_TIMESTAMP
         )
-        errors, _ = syn.validate_report(report)
+        errors, _ = report_mod.validate_report(report)
         self.assertEqual(errors, [])
 
     def test_main_severity_filter_excludes_lower(self):
@@ -1307,7 +1316,7 @@ class TestCliAndSummary(unittest.TestCase):
     def test_render_summary_contains_grade_and_location(self):
         # gate_unverified=True: this test is about render_summary's formatting
         # (location string, FAIL label), not the default gating policy.
-        report = syn.build_report(
+        report = report_mod.build_report(
             [
                 {
                     "id": "CD-001",
@@ -1327,12 +1336,12 @@ class TestCliAndSummary(unittest.TestCase):
             DEFAULT_TIMESTAMP,
             gate_unverified=True,
         )
-        text = syn.render_summary(report)
+        text = render_mod.render_summary(report)
         self.assertIn("a.rb:42", text)
         self.assertIn("FAIL", text)
 
     def test_render_summary_includes_all_panel_grades(self):
-        report = syn.build_report(
+        report = report_mod.build_report(
             [
                 {
                     "id": "CD-001",
@@ -1349,7 +1358,7 @@ class TestCliAndSummary(unittest.TestCase):
             None,
             DEFAULT_TIMESTAMP,
         )
-        text = syn.render_summary(report)
+        text = render_mod.render_summary(report)
         for panel in ["code", "test", "security", "architecture", "database", "redteam"]:
             self.assertIn("%s " % panel, text)
 
@@ -1411,11 +1420,11 @@ class TestCliAndSummary(unittest.TestCase):
             }
             for i in range(1, 400)
         ]
-        report = syn.build_report(findings, [], "src", None, DEFAULT_TIMESTAMP)
+        report = report_mod.build_report(findings, [], "src", None, DEFAULT_TIMESTAMP)
         n_before = len(report["findings"])
         with tempfile.TemporaryDirectory() as d:
             out = os.path.join(d, "report.json")
-            paths = syn.write_report(report, out, max_bytes=SPLIT_FILE_MAX_BYTES)
+            paths = render_mod.write_report(report, out, max_bytes=SPLIT_FILE_MAX_BYTES)
             self.assertGreaterEqual(len(paths), 2)
             with open(paths[0]) as _fh:
                 main_doc = json.load(_fh)
@@ -1440,13 +1449,13 @@ class TestCliAndSummary(unittest.TestCase):
             }
             for i in range(1, 400)
         ]
-        report = syn.build_report(findings, [], "src", None, DEFAULT_TIMESTAMP)
+        report = report_mod.build_report(findings, [], "src", None, DEFAULT_TIMESTAMP)
         with tempfile.TemporaryDirectory() as d:
             out = os.path.join(d, "report.json")
             # If os.replace fails partway, no incomplete files should be left behind
             with unittest.mock.patch("os.replace", side_effect=OSError("disk full")):
                 with self.assertRaises(OSError):
-                    syn.write_report(report, out, max_bytes=SPLIT_FILE_MAX_BYTES)
+                    render_mod.write_report(report, out, max_bytes=SPLIT_FILE_MAX_BYTES)
             self.assertFalse(os.path.exists(out))
             # No stray .tmp files left in dir
             self.assertEqual(os.listdir(d), [])
@@ -1481,16 +1490,16 @@ class TestCliAndSummary(unittest.TestCase):
 
 class TestReconciliation(unittest.TestCase):
     def test_normalize_backfills_title_category(self):
-        f = syn.normalize_finding({"description": "First line.\nSecond", "severity": "LOW"})
+        f = findings_mod.normalize_finding({"description": "First line.\nSecond", "severity": "LOW"})
         self.assertEqual(f["title"], "First line.")
         self.assertEqual(f["category"], "general")
 
     def test_normalize_untitled_when_no_description(self):
-        f = syn.normalize_finding({"severity": "LOW"})
+        f = findings_mod.normalize_finding({"severity": "LOW"})
         self.assertEqual(f["title"], "(untitled)")
 
     def test_normalize_collapses_multiline_title(self):
-        f = syn.normalize_finding(
+        f = findings_mod.normalize_finding(
             {"title": "Package: requests\nInstalled: 2.19.0\nCVE-x", "severity": "MEDIUM"}
         )
         self.assertEqual(f["title"], "Package: requests Installed: 2.19.0 CVE-x")
@@ -1547,7 +1556,7 @@ class TestReconciliation(unittest.TestCase):
             self.assertTrue(any(f["title"] == "crit" for f in report["findings"]))
 
     def test_validate_returns_errors_and_warnings(self):
-        report = syn.build_report(
+        report = report_mod.build_report(
             [
                 {
                     "id": "CD-001",
@@ -1564,12 +1573,12 @@ class TestReconciliation(unittest.TestCase):
             None,
             DEFAULT_TIMESTAMP,
         )
-        errors, warnings = syn.validate_report(report)
+        errors, warnings = report_mod.validate_report(report)
         self.assertEqual(errors, [])
         self.assertTrue(any("location" in w for w in warnings))
 
     def test_tool_security_finding_exempt_from_cvss(self):
-        report = syn.build_report(
+        report = report_mod.build_report(
             [
                 {
                     "id": "TR-001",
@@ -1587,11 +1596,11 @@ class TestReconciliation(unittest.TestCase):
             None,
             DEFAULT_TIMESTAMP,
         )
-        errors, _ = syn.validate_report(report)
+        errors, _ = report_mod.validate_report(report)
         self.assertEqual(errors, [])
 
     def test_four_digit_tool_id_is_valid(self):
-        report = syn.build_report(
+        report = report_mod.build_report(
             [
                 {
                     "id": "SG-1000",
@@ -1609,7 +1618,7 @@ class TestReconciliation(unittest.TestCase):
             None,
             DEFAULT_TIMESTAMP,
         )
-        errors, _ = syn.validate_report(report)
+        errors, _ = report_mod.validate_report(report)
         self.assertFalse(any("id" in e for e in errors))
 
 
@@ -1631,7 +1640,7 @@ class TestGroupTag(unittest.TestCase):
                 "_group": "g1",
             }
         ]
-        report = syn.build_report(
+        report = report_mod.build_report(
             findings,
             [{"name": "g1", "files": ["app/foo.rb"]}],
             "src",
@@ -1665,7 +1674,7 @@ class TestGroupParentRollup(unittest.TestCase):
             {"name": "UI:Admin", "files": ["src/ui/admin/a.py"], "parent": "UI"},
             {"name": "UI:Components", "files": ["src/ui/components/b.py"], "parent": "UI"},
         ]
-        report = syn.build_report(
+        report = report_mod.build_report(
             findings, groups_meta, "src", None, DEFAULT_TIMESTAMP,
             gate_unverified=True,
         )
@@ -1697,7 +1706,7 @@ class TestGroupParentRollup(unittest.TestCase):
         # key, same fields, same values.
         findings = [_make_finding(severity="HIGH", panel="code")]
         groups_meta = [{"name": "g1", "files": ["a.py"]}]
-        report = syn.build_report(
+        report = report_mod.build_report(
             findings, groups_meta, "src", "high", DEFAULT_TIMESTAMP,
         )
         self.assertEqual(len(report["groups"]), 1)
@@ -1712,7 +1721,7 @@ class TestGroupParentRollup(unittest.TestCase):
         # always writes) -- must still take the leaf/self-parented shape.
         findings = [_make_finding(severity="HIGH", panel="code")]
         groups_meta = [{"name": "g1", "files": ["a.py"], "parent": "g1"}]
-        report = syn.build_report(
+        report = report_mod.build_report(
             findings, groups_meta, "src", "high", DEFAULT_TIMESTAMP,
         )
         self.assertEqual(len(report["groups"]), 1)
@@ -1725,7 +1734,7 @@ class TestGroupParentRollup(unittest.TestCase):
             p = os.path.join(d, "findings-mygroup-code.json")
             with open(p, "w") as fh:
                 json.dump({"findings": [{"severity": "LOW", "panel": "code"}]}, fh)
-            out = syn.load_findings([p])
+            out = findings_mod.load_findings([p])
             self.assertEqual(out[0]["_group"], "mygroup")
 
     def test_load_findings_tags_group_from_new_panel_filenames(self):
@@ -1734,7 +1743,7 @@ class TestGroupParentRollup(unittest.TestCase):
                 p = os.path.join(d, "findings-mygroup-%s.json" % panel)
                 with open(p, "w") as fh:
                     json.dump({"findings": [{"severity": "LOW", "panel": panel}]}, fh)
-                out = syn.load_findings([p])
+                out = findings_mod.load_findings([p])
                 self.assertEqual(out[0]["_group"], "mygroup")
                 self.assertEqual(out[0]["panel"], panel)
 
@@ -1748,7 +1757,7 @@ class TestGroupParentRollup(unittest.TestCase):
                 json.dump(
                     {"findings": [{"severity": "LOW", "domain": "SEC", "code": "SEC-X0X"}]}, fh
                 )
-            out = syn.load_findings([p])
+            out = findings_mod.load_findings([p])
             self.assertEqual(out[0]["_group"], "Auth")
 
 
@@ -1810,7 +1819,7 @@ class TestReinforce(unittest.TestCase):
                 "citations": {"cwe": [{"id": "CWE-89", "name": "SQLi", "verified": True}]},
             },
         ]
-        out = syn.dedupe(findings)
+        out = findings_mod.dedupe(findings)
         self.assertEqual(len(out), 1)
         self.assertTrue(out[0].get("reinforced"))
         self.assertEqual(out[0]["confidence"], "CERTAIN")
@@ -1843,7 +1852,7 @@ class TestReinforce(unittest.TestCase):
                 "exploit_scenario": "Attacker injects SQL via the search box.",
             },
         ]
-        out = syn.dedupe(findings)
+        out = findings_mod.dedupe(findings)
         self.assertEqual(len(out), 1)
         self.assertTrue(out[0].get("reinforced"))
         self.assertEqual(out[0]["confidence"], "CERTAIN")
@@ -1851,8 +1860,8 @@ class TestReinforce(unittest.TestCase):
         self.assertEqual(out[0]["exploit_scenario"], "Attacker injects SQL via the search box.")
         self.assertIn("cwe", out[0].get("citations", {}))
 
-        report = syn.build_report(out, [], "src", None, DEFAULT_TIMESTAMP)
-        errors, _ = syn.validate_report(report)
+        report = report_mod.build_report(out, [], "src", None, DEFAULT_TIMESTAMP)
+        errors, _ = report_mod.validate_report(report)
         self.assertEqual(errors, [])
 
     def test_agent_cvss_preferred_over_tool_cvss(self):
@@ -1880,7 +1889,7 @@ class TestReinforce(unittest.TestCase):
                 "exploit_scenario": "agent scenario",
             },
         ]
-        out = syn.dedupe(findings)
+        out = findings_mod.dedupe(findings)
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0]["cvss"]["score"], 8.5)
         self.assertEqual(out[0]["exploit_scenario"], "agent scenario")
@@ -1912,7 +1921,7 @@ class TestReinforce(unittest.TestCase):
                 "remediation": "Use parameterized queries",
             },
         ]
-        out = syn.dedupe(findings)
+        out = findings_mod.dedupe(findings)
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0]["impact"], "Data exfiltration")
         self.assertEqual(out[0]["references"], ["https://example.com"])
@@ -1997,7 +2006,7 @@ class TestToolsDirIntegration(unittest.TestCase):
 
 class TestSummaryCitations(unittest.TestCase):
     def test_summary_shows_cwe_and_provenance(self):
-        report = syn.build_report(
+        report = report_mod.build_report(
             [
                 {
                     "id": "SG-001",
@@ -2028,7 +2037,7 @@ class TestSummaryCitations(unittest.TestCase):
             None,
             DEFAULT_TIMESTAMP,
         )
-        text = syn.render_summary(report)
+        text = render_mod.render_summary(report)
         self.assertIn("CWE-89", text)
         self.assertIn("Act", text)
         # the provenance chip shows the evidence status, not "reinforced". No
@@ -2037,7 +2046,7 @@ class TestSummaryCitations(unittest.TestCase):
         self.assertIn("tool_reported", text)
 
     def test_summary_shows_panel_label(self):
-        report = syn.build_report(
+        report = report_mod.build_report(
             [
                 {
                     "id": "SE-001",
@@ -2057,7 +2066,7 @@ class TestSummaryCitations(unittest.TestCase):
             None,
             DEFAULT_TIMESTAMP,
         )
-        self.assertIn("security", syn.render_summary(report))
+        self.assertIn("security", render_mod.render_summary(report))
 
 
 class TestCrossPanelCorroboration(unittest.TestCase):
@@ -2097,7 +2106,7 @@ class TestCrossPanelCorroboration(unittest.TestCase):
             ),
             self._f("TST-701", "test", "test-coverage", 42),
         ]
-        report = syn.build_report(findings, [], "src", None, DEFAULT_TIMESTAMP)
+        report = report_mod.build_report(findings, [], "src", None, DEFAULT_TIMESTAMP)
         integ = report["cross_panel"]["integration_findings"]
         self.assertEqual(len(integ), 1)
         entry = integ[0]
@@ -2123,7 +2132,7 @@ class TestCrossPanelCorroboration(unittest.TestCase):
             self._f("TS-1", "test", "test-coverage", 151),
             self._f("CD-1", "code", "error-handling", 151),
         ]
-        report = syn.build_report(findings, [], "src", None, DEFAULT_TIMESTAMP)
+        report = report_mod.build_report(findings, [], "src", None, DEFAULT_TIMESTAMP)
         integ = report["cross_panel"]["integration_findings"]
         self.assertEqual(len(integ), 1)
         self.assertEqual(sorted(integ[0]["panels"]), ["code", "security", "test"])
@@ -2144,7 +2153,7 @@ class TestCrossPanelCorroboration(unittest.TestCase):
             ),
             self._f("TS-1", "test", "test-coverage", 42, file="b.py"),
         ]
-        report = syn.build_report(findings, [], "src", None, DEFAULT_TIMESTAMP)
+        report = report_mod.build_report(findings, [], "src", None, DEFAULT_TIMESTAMP)
         self.assertEqual(report["cross_panel"]["integration_findings"], [])
         self.assertFalse(any(f.get("corroborated") for f in report["findings"]))
 
@@ -2162,7 +2171,7 @@ class TestCrossPanelCorroboration(unittest.TestCase):
             ),
             self._f("TS-1", "test", "test-coverage", 90),
         ]
-        report = syn.build_report(findings, [], "src", None, DEFAULT_TIMESTAMP)
+        report = report_mod.build_report(findings, [], "src", None, DEFAULT_TIMESTAMP)
         self.assertEqual(report["cross_panel"]["integration_findings"], [])
 
     def test_negative_same_panel_not_cross_panel(self):
@@ -2172,14 +2181,14 @@ class TestCrossPanelCorroboration(unittest.TestCase):
             self._f("CD-1", "code", "structure", 5),
             self._f("CD-2", "code", "naming", 5),
         ]
-        report = syn.build_report(findings, [], "src", None, DEFAULT_TIMESTAMP)
+        report = report_mod.build_report(findings, [], "src", None, DEFAULT_TIMESTAMP)
         self.assertEqual(report["cross_panel"]["integration_findings"], [])
         self.assertFalse(any(f.get("corroborated") for f in report["findings"]))
 
     def test_proximity_window_adjacent_lines(self):
         # Panels citing adjacent lines (function def at 150, vulnerable call at
         # 151) within CORROBORATION_LINE_WINDOW still corroborate.
-        self.assertGreaterEqual(syn.CORROBORATION_LINE_WINDOW, 1)
+        self.assertGreaterEqual(findings_mod.CORROBORATION_LINE_WINDOW, 1)
         findings = [
             self._f(
                 "SE-1",
@@ -2191,7 +2200,7 @@ class TestCrossPanelCorroboration(unittest.TestCase):
             ),
             self._f("CD-1", "code", "error-handling", 151),
         ]
-        report = syn.build_report(findings, [], "src", None, DEFAULT_TIMESTAMP)
+        report = report_mod.build_report(findings, [], "src", None, DEFAULT_TIMESTAMP)
         self.assertEqual(len(report["cross_panel"]["integration_findings"]), 1)
 
     def test_confidence_not_mutated_by_corroboration(self):
@@ -2202,7 +2211,7 @@ class TestCrossPanelCorroboration(unittest.TestCase):
             self._f("SE-1", "security", "input-validation", 7, conf="POSSIBLE"),
             self._f("CD-1", "code", "error-handling", 7, conf="CERTAIN"),
         ]
-        integ = syn.cross_panel_corroboration(fs)
+        integ = findings_mod.cross_panel_corroboration(fs)
         self.assertEqual(len(integ), 1)
         by_id = {f["id"]: f for f in fs}
         self.assertEqual(by_id["SE-1"]["confidence"], "POSSIBLE")
@@ -2211,7 +2220,7 @@ class TestCrossPanelCorroboration(unittest.TestCase):
         self.assertTrue(by_id["CD-1"]["corroborated"])
 
     def test_integration_entry_records_max_severity(self):
-        integ = syn.cross_panel_corroboration(
+        integ = findings_mod.cross_panel_corroboration(
             [
                 self._f("SE-1", "security", "input-validation", 3, sev="CRITICAL"),
                 self._f("CD-1", "code", "error-handling", 3, sev="LOW"),
@@ -2253,7 +2262,7 @@ class TestCrossPanelCorroboration(unittest.TestCase):
                 "location": {"file": "db.py", "line_start": 10},
             },
         ]
-        report = syn.build_report(findings, [], "src", None, DEFAULT_TIMESTAMP)
+        report = report_mod.build_report(findings, [], "src", None, DEFAULT_TIMESTAMP)
         secs = [f for f in report["findings"] if f["panel"] == "security"]
         self.assertEqual(len(secs), 1)  # tool+agent still collapsed
         self.assertTrue(secs[0].get("reinforced"))  # reinforce preserved
@@ -2271,8 +2280,8 @@ class TestCrossPanelCorroboration(unittest.TestCase):
             ),
             self._f("TS-1", "test", "test-coverage", 42),
         ]
-        report = syn.build_report(findings, [], "src", None, DEFAULT_TIMESTAMP)
-        text = syn.render_summary(report)
+        report = report_mod.build_report(findings, [], "src", None, DEFAULT_TIMESTAMP)
+        text = render_mod.render_summary(report)
         self.assertIn("Cross-panel", text)
         self.assertIn("app/resolver.py:42", text)
 
@@ -2305,7 +2314,7 @@ class TestCompareParts(unittest.TestCase):
                 json.dump({"meta": {"parts": ["r_part2.json"]},
                            "summary": {"gate": "PASS"},
                            "findings": [{"id": "F1"}], "discarded_claims": []}, fh)
-            rep = syn._read_json_report(main)
+            rep = render_mod._read_json_report(main)
         self.assertEqual([f["id"] for f in rep["findings"]], ["F1", "F2"])
         self.assertEqual([x["id"] for x in rep["discarded_claims"]], ["D2"])
         self.assertEqual(rep["summary"]["gate"], "PASS")   # main meta/summary kept
@@ -2318,7 +2327,7 @@ class TestCompareParts(unittest.TestCase):
                            "findings": []}, fh)
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
-                self.assertIsNone(syn._read_json_report(main))  # not a silent partial
+                self.assertIsNone(render_mod._read_json_report(main))  # not a silent partial
             self.assertIn("incomplete", err.getvalue())
 
     def test_read_json_report_recovers_discarded_sibling_without_parts(self):
@@ -2333,7 +2342,7 @@ class TestCompareParts(unittest.TestCase):
                 json.dump({"meta": {"discarded_claims_file": "r-discarded.json"},
                            "summary": {"gate": "PASS"},
                            "findings": [{"id": "F1"}], "discarded_claims": []}, fh)
-            rep = syn._read_json_report(main)
+            rep = render_mod._read_json_report(main)
         self.assertEqual([f["id"] for f in rep["findings"]], ["F1"])
         self.assertEqual([x["id"] for x in rep["discarded_claims"]], ["D1", "D2"])
 
@@ -2345,7 +2354,7 @@ class TestCompareParts(unittest.TestCase):
                            "findings": []}, fh)
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
-                self.assertIsNone(syn._read_json_report(main))   # not a silent partial
+                self.assertIsNone(render_mod._read_json_report(main))   # not a silent partial
             self.assertIn("incomplete", err.getvalue())
 
 
@@ -2363,7 +2372,7 @@ class TestLoadFindingsProvenanceScrub(unittest.TestCase):
                     "provenance": {"confirmation_status": "CONFIRMED",
                                    "confirmed_by": "agent:self", "model": "m"}}]}, fh)
             with contextlib.redirect_stderr(io.StringIO()):
-                out = syn.load_findings([fp])
+                out = findings_mod.load_findings([fp])
         prov = out[0].get("provenance") or {}
         self.assertNotIn("confirmation_status", prov)
         self.assertNotIn("confirmed_by", prov)
@@ -2565,10 +2574,10 @@ class TestHtmlOut(unittest.TestCase):
             self.assertIn("invalid JSON", captured.getvalue())
 
     def test_derive_html_path_is_case_insensitive(self):
-        self.assertEqual(syn._derive_html_path("report.json"), "report.json.html")
-        self.assertEqual(syn._derive_html_path("report.JSON"), "report.JSON.html")
-        self.assertEqual(syn._derive_html_path("report.Json"), "report.Json.html")
-        self.assertEqual(syn._derive_html_path("dir"), os.path.join("dir", "report.html"))
+        self.assertEqual(render_mod._derive_html_path("report.json"), "report.json.html")
+        self.assertEqual(render_mod._derive_html_path("report.JSON"), "report.JSON.html")
+        self.assertEqual(render_mod._derive_html_path("report.Json"), "report.Json.html")
+        self.assertEqual(render_mod._derive_html_path("dir"), os.path.join("dir", "report.html"))
 
 
 class TestInternalFieldCleanup(unittest.TestCase):
@@ -2605,13 +2614,13 @@ class TestInternalFieldCleanup(unittest.TestCase):
             "_repo_root": "/some/path",
         }
         verdicts = {
-            syn.finding_fingerprint(f1): {
+            evidence_mod.finding_fingerprint(f1): {
                 "finding_id": "SEC-001",
                 "verdict": "REJECTED",
                 "reasoning": "False positive.",
             }
         }
-        report = syn.build_report([f1, f2], [], "src", None, DEFAULT_TIMESTAMP, verdicts=verdicts)
+        report = report_mod.build_report([f1, f2], [], "src", None, DEFAULT_TIMESTAMP, verdicts=verdicts)
         self.assertEqual(len(report["findings"]), 1)
         self.assertEqual(len(report.get("discarded_claims", [])), 1)
         for finding in report["findings"]:
@@ -2634,12 +2643,12 @@ class TestGroupReMatchesDispatchNames(unittest.TestCase):
                               ("Ungrouped_1", "TST")):
             base = os.path.basename(
                 driver._pano("/repo", "findings-%s-%s.json" % (group, domain)))
-            m = syn.GROUP_RE.match(base)
+            m = findings_mod.GROUP_RE.match(base)
             self.assertIsNotNone(m, base)
             self.assertEqual(m.group(1), group, base)
 
     def test_still_matches_legacy_2x_names(self):
-        m = syn.GROUP_RE.match("findings-changes_1-security.json")
+        m = findings_mod.GROUP_RE.match("findings-changes_1-security.json")
         self.assertIsNotNone(m)
         self.assertEqual(m.group(1), "changes_1")
 
@@ -2647,7 +2656,7 @@ class TestGroupReMatchesDispatchNames(unittest.TestCase):
         # P4 review cells: findings-<group>-<domain>.json, domain from
         # groups_schema.DOMAINS (e.g. "SEC"), no further panel_review/lens_sweep
         # suffix. GROUP_RE's axis alternation must include the domain codes.
-        m = syn.GROUP_RE.match("findings-Auth-SEC.json")
+        m = findings_mod.GROUP_RE.match("findings-Auth-SEC.json")
         self.assertIsNotNone(m)
         self.assertEqual(m.group(1), "Auth")
 
@@ -2664,7 +2673,7 @@ class TestGroupReMatchesDispatchNames(unittest.TestCase):
                               ("My-Hyphenated-Group", "TST")):
             base = os.path.basename(
                 driver._pano("/repo", "findings-%s-%s.json" % (group, domain)))
-            self.assertEqual(syn._expected_from_filename(base), (group, domain), base)
+            self.assertEqual(integrity_mod._expected_from_filename(base), (group, domain), base)
 
 
 @contextlib.contextmanager
@@ -2707,15 +2716,15 @@ class TestHealthScore(unittest.TestCase):
     letter grade and never touching the gate. Higher = healthier; 100 = clean."""
 
     def test_loc_span_point_and_range(self):
-        self.assertEqual(syn._loc_span({"location": {"line_start": 10, "line_end": 10}}), 1)
-        self.assertEqual(syn._loc_span({"location": {"line_start": 20, "line_end": 59}}), 40)
+        self.assertEqual(grading_mod._loc_span({"location": {"line_start": 10, "line_end": 10}}), 1)
+        self.assertEqual(grading_mod._loc_span({"location": {"line_start": 20, "line_end": 59}}), 40)
 
     def test_loc_span_tolerates_missing_or_bad_range(self):
-        self.assertEqual(syn._loc_span({}), 1)
-        self.assertEqual(syn._loc_span({"location": {"line_start": None}}), 1)
-        self.assertEqual(syn._loc_span({"location": {"line_start": 5}}), 1)
+        self.assertEqual(grading_mod._loc_span({}), 1)
+        self.assertEqual(grading_mod._loc_span({"location": {"line_start": None}}), 1)
+        self.assertEqual(grading_mod._loc_span({"location": {"line_start": 5}}), 1)
         # inverted range floors at 1, never negative
-        self.assertEqual(syn._loc_span({"location": {"line_start": 9, "line_end": 3}}), 1)
+        self.assertEqual(grading_mod._loc_span({"location": {"line_start": 9, "line_end": 3}}), 1)
 
     def test_weighted_defect_line_span_weighting(self):
         findings = [
@@ -2724,33 +2733,33 @@ class TestHealthScore(unittest.TestCase):
             {"severity": "INFO", "location": {"line_start": 1, "line_end": 100}},
         ]
         # 25*40 (HIGH span 40) + 1*1 (LOW span 1) + 0*100 (INFO weight 0)
-        self.assertEqual(syn.weighted_defect(findings), 1001)
+        self.assertEqual(grading_mod.weighted_defect(findings), 1001)
 
     def test_health_score_is_the_clean_share_on_a_0_100_scale(self):
         # 2000 clean LoC against 100 weighted defect -> 2000/2100 of the total.
-        self.assertEqual(syn.health_score(2000, 100), 95.24)
+        self.assertEqual(grading_mod.health_score(2000, 100), 95.24)
         # Equal parts -> the midpoint, which is what makes the scale readable.
-        self.assertEqual(syn.health_score(500, 500), 50.0)
+        self.assertEqual(grading_mod.health_score(500, 500), 50.0)
 
     def test_a_clean_repo_scores_a_perfect_100_not_none(self):
         # THE bug this formula exists to fix: under `total_loc / weighted_defect`
         # the single best possible outcome divided by zero and reported None, so
         # a spotless scan had a blank health field.
-        self.assertEqual(syn.health_score(2000, 0), 100.0)
+        self.assertEqual(grading_mod.health_score(2000, 0), 100.0)
 
     def test_health_score_is_bounded_at_both_ends(self):
         # Never above 100 ...
-        self.assertLessEqual(syn.health_score(10 ** 9, 1), 100.0)
+        self.assertLessEqual(grading_mod.health_score(10 ** 9, 1), 100.0)
         # ... and never below 0, however wide the defect footprint gets. The
         # rejected `100 - weighted/total_loc` form goes NEGATIVE here (-25.0):
         # a 100-line file-scoped run with ten HIGH findings spanning 50 lines.
-        self.assertEqual(syn.health_score(100, 25 * 50 * 10), 0.79)
-        self.assertGreaterEqual(syn.health_score(1, 10 ** 9), 0.0)
+        self.assertEqual(grading_mod.health_score(100, 25 * 50 * 10), 0.79)
+        self.assertGreaterEqual(grading_mod.health_score(1, 10 ** 9), 0.0)
 
     def test_health_score_none_only_when_nothing_was_reviewed(self):
         # Both inputs zero is the ONLY undefined case now, and it means a broken
         # run (no readable reviewed file), not a clean one.
-        self.assertIsNone(syn.health_score(0, 0))
+        self.assertIsNone(grading_mod.health_score(0, 0))
 
     def test_health_score_orders_the_six_calibration_targets(self):
         # Real measured (total_loc, weighted_defect) from the six calibration
@@ -2760,7 +2769,7 @@ class TestHealthScore(unittest.TestCase):
         targets = [("fzf", 51789, 93341), ("gotify", 31277, 52305),
                    ("ripgrep", 68932, 72954), ("express", 21911, 14512),
                    ("btcpayserver", 321482, 183694), ("solidus", 251596, 105547)]
-        scored = [(syn.health_score(loc, wd), name) for name, loc, wd in targets]
+        scored = [(grading_mod.health_score(loc, wd), name) for name, loc, wd in targets]
         old_order = [n for _, n in sorted((loc / wd, n) for n, loc, wd in targets)]
         self.assertEqual([n for _, n in sorted(scored)], old_order)
         self.assertGreater(max(s for s, _ in scored) - min(s for s, _ in scored), 30)
@@ -2773,10 +2782,10 @@ class TestHealthScore(unittest.TestCase):
                 {"name": "g", "files": ["a.py"]},
                 {"name": "h", "files": ["a.py"]},
             ]  # same file -> counted once
-            self.assertEqual(syn.nonblank_loc(d, groups), 2)
+            self.assertEqual(grading_mod.nonblank_loc(d, groups), 2)
 
     def test_nonblank_loc_tolerates_missing_file(self):
-        self.assertEqual(syn.nonblank_loc("/no/such/dir", [{"name": "g", "files": ["nope.py"]}]), 0)
+        self.assertEqual(grading_mod.nonblank_loc("/no/such/dir", [{"name": "g", "files": ["nope.py"]}]), 0)
 
 
 class TestHealthLetterGrade(unittest.TestCase):
@@ -2793,22 +2802,22 @@ class TestHealthLetterGrade(unittest.TestCase):
                               (60, "D"), (59.99, "F"), (26, "F"), (25.99, "X"),
                               (0, "X")):
             with self.subTest(score=score):
-                self.assertEqual(syn.health_grade(score), letter)
+                self.assertEqual(grading_mod.health_grade(score), letter)
 
     def test_s_is_reachable_only_at_exactly_100(self):
         # S must mean "no gate-eligible weighted defect at all", not "rounded up
         # from 99.995" -- otherwise it is just a second A.
-        self.assertEqual(syn.health_grade(100), "S")
-        self.assertEqual(syn.health_grade(99.99), "A")
+        self.assertEqual(grading_mod.health_grade(100), "S")
+        self.assertEqual(grading_mod.health_grade(99.99), "A")
 
     def test_unmeasurable_health_has_no_grade(self):
         # None, not X. A run whose paths do not resolve read no code; grading it
         # the floor letter would report a catastrophe it never measured.
-        self.assertIsNone(syn.health_grade(None))
+        self.assertIsNone(grading_mod.health_grade(None))
 
     def test_grades_are_monotonic_in_health(self):
         order = ["S", "A", "B", "C", "D", "F", "X"]
-        seen = [syn.health_grade(v) for v in range(100, -1, -1)]
+        seen = [grading_mod.health_grade(v) for v in range(100, -1, -1)]
         ranks = [order.index(g) for g in seen]
         self.assertEqual(ranks, sorted(ranks), "a lower health scored a better letter")
 
@@ -2821,7 +2830,7 @@ class TestHealthLetterGrade(unittest.TestCase):
         measured = {"fzf": (51789, 93341), "gotify": (31277, 52305),
                     "ripgrep": (68932, 72954), "express": (21911, 14512),
                     "btcpayserver": (321482, 183694), "solidus": (251596, 105547)}
-        got = {n: syn.health_grade(syn.health_score(*v)) for n, v in measured.items()}
+        got = {n: grading_mod.health_grade(grading_mod.health_score(*v)) for n, v in measured.items()}
         self.assertEqual(got, expected)
 
     def test_grade_no_longer_saturates_on_one_high(self):
@@ -2832,10 +2841,10 @@ class TestHealthLetterGrade(unittest.TestCase):
             groups = [{"name": "g1", "files": ["a.py"]}]
             finding = _agentic(sev="HIGH",
                                location={"file": "a.py", "line_start": 1, "line_end": 4})
-            verdicts = {syn.finding_fingerprint(finding): {
+            verdicts = {evidence_mod.finding_fingerprint(finding): {
                 "finding_id": "AG-001", "verdict": "CONFIRMED", "reasoning": "v"}}
             with _target_with_files(groups, lines=lines) as tgt:
-                r = syn.build_report([finding], groups, tgt, "high",
+                r = report_mod.build_report([finding], groups, tgt, "high",
                                      "2026-01-01T00:00:00Z", verdicts=verdicts)
             return r["summary"]["overall_grade"]
 
@@ -2850,7 +2859,7 @@ class TestHealthLetterGrade(unittest.TestCase):
     def test_a_clean_tree_grades_s_end_to_end(self):
         groups = [{"name": "g1", "files": ["a.py"]}]
         with _target_with_files(groups) as tgt:
-            r = syn.build_report([], groups, tgt, "high", "2026-01-01T00:00:00Z")
+            r = report_mod.build_report([], groups, tgt, "high", "2026-01-01T00:00:00Z")
         self.assertEqual(r["summary"]["overall_grade"], "S")
         self.assertEqual(r["summary"]["health"]["score"], 100.0)
 
@@ -2859,28 +2868,28 @@ class TestHealthLetterGrade(unittest.TestCase):
         groups = [{"name": "g1", "files": ["a.py"]}]
         finding = _agentic(sev="MEDIUM",
                            location={"file": "a.py", "line_start": 1, "line_end": 20})
-        verdicts = {syn.finding_fingerprint(finding): {
+        verdicts = {evidence_mod.finding_fingerprint(finding): {
             "finding_id": "AG-001", "verdict": "CONFIRMED", "reasoning": "v"}}
         with _target_with_files(groups, lines=200) as tgt:
-            r = syn.build_report([finding], groups, tgt, "high",
+            r = report_mod.build_report([finding], groups, tgt, "high",
                                  "2026-01-01T00:00:00Z", verdicts=verdicts)
         s = r["summary"]
-        self.assertEqual(s["overall_grade"], syn.health_grade(s["health"]["score"]))
+        self.assertEqual(s["overall_grade"], grading_mod.health_grade(s["health"]["score"]))
 
 
 class TestGradeTextRendering(unittest.TestCase):
     def test_a_letter_renders_bare(self):
-        self.assertEqual(syn._grade_text({"overall_grade": "B"}), "B")
+        self.assertEqual(render_mod._grade_text({"overall_grade": "B"}), "B")
 
     def test_a_held_letter_renders_provisional(self):
-        self.assertEqual(syn._grade_text({"overall_grade": None,
+        self.assertEqual(render_mod._grade_text({"overall_grade": None,
                                           "provisional_grade": "C"}),
                          "C (provisional)")
 
     def test_no_letter_at_all_renders_n_a_not_the_word_none(self):
         # The old two-way format produced "None (provisional)" here, which reads
         # as a grade rather than as the absence of one.
-        text = syn._grade_text({"overall_grade": None, "provisional_grade": None})
+        text = render_mod._grade_text({"overall_grade": None, "provisional_grade": None})
         self.assertNotIn("None", text)
         self.assertIn("n/a", text)
 
@@ -2896,28 +2905,28 @@ class TestGateSeverityRoles(unittest.TestCase):
     ALL = [{"severity": s} for s in ("HIGH", "MEDIUM", "LOW", "INFO")]
 
     def test_fail_on_critical_puts_only_critical_in_play(self):
-        roles = syn.gate_severity_roles(self.ALL, "CRITICAL")
+        roles = grading_mod.gate_severity_roles(self.ALL, "CRITICAL")
         self.assertEqual(roles["in_play"], ["CRITICAL"])
         # No CRITICAL findings exist, so it is in play and did NOT fire.
         self.assertEqual(roles["contributing"], [])
 
     def test_fail_on_high_marks_high_as_contributing(self):
-        roles = syn.gate_severity_roles(self.ALL, "HIGH")
+        roles = grading_mod.gate_severity_roles(self.ALL, "HIGH")
         self.assertEqual(roles["in_play"], ["CRITICAL", "HIGH"])
         self.assertEqual(roles["contributing"], ["HIGH"])
 
     def test_fail_on_medium_walks_the_threshold_down(self):
-        roles = syn.gate_severity_roles(self.ALL, "MEDIUM")
+        roles = grading_mod.gate_severity_roles(self.ALL, "MEDIUM")
         self.assertEqual(roles["in_play"], ["CRITICAL", "HIGH", "MEDIUM"])
         self.assertEqual(roles["contributing"], ["HIGH", "MEDIUM"])
 
     def test_no_fail_on_puts_nothing_in_play(self):
-        roles = syn.gate_severity_roles(self.ALL, None)
+        roles = grading_mod.gate_severity_roles(self.ALL, None)
         self.assertEqual(roles, {"fail_on": None, "in_play": [], "contributing": []})
 
     def test_unknown_fail_on_marks_nothing_rather_than_crashing(self):
         # gate_verdict would raise on this; the display must degrade to unmarked.
-        self.assertEqual(syn.gate_severity_roles(self.ALL, "SEVERE"),
+        self.assertEqual(grading_mod.gate_severity_roles(self.ALL, "SEVERE"),
                          {"fail_on": None, "in_play": [], "contributing": []})
 
     def test_roles_never_outrank_the_gate_verdict(self):
@@ -2927,8 +2936,8 @@ class TestGateSeverityRoles(unittest.TestCase):
         for pop in ([], [{"severity": "INFO"}], self.ALL,
                     [{"severity": "CRITICAL"}] + self.ALL):
             for fail_on in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"):
-                roles = syn.gate_severity_roles(pop, fail_on)
-                verdict = syn.gate_verdict(pop, fail_on)
+                roles = grading_mod.gate_severity_roles(pop, fail_on)
+                verdict = grading_mod.gate_verdict(pop, fail_on)
                 self.assertEqual(bool(roles["contributing"]), verdict == "FAIL",
                                  "%s @ %s: %r vs %s" % (pop, fail_on, roles, verdict))
 
@@ -2941,8 +2950,8 @@ class TestSeverityBlockRendering(unittest.TestCase):
     def _block(self, fail_on, eligible=None):
         eligible = eligible if eligible is not None else (
             [{"severity": s} for s in ("HIGH", "MEDIUM", "LOW", "INFO")])
-        return "\n".join(syn._render_severity_block(
-            self.STATS, syn.gate_severity_roles(eligible, fail_on)))
+        return "\n".join(render_mod._render_severity_block(
+            self.STATS, grading_mod.gate_severity_roles(eligible, fail_on)))
 
     def test_every_severity_is_listed_with_its_count(self):
         out = self._block("HIGH")
@@ -2984,7 +2993,7 @@ class TestSeverityBlockRendering(unittest.TestCase):
 
 class TestEvidenceReport(unittest.TestCase):
     def _report(self, findings, verdicts=None, gate_unverified=False, fail_on="high"):
-        return syn.build_report(
+        return report_mod.build_report(
             findings,
             [],
             "target",
@@ -3010,7 +3019,7 @@ class TestEvidenceReport(unittest.TestCase):
         # Same finding, now confirmed: it becomes gate-eligible, the level turns
         # contributing, and the gate FAILs. The mark tracks the verdict.
         finding = _agentic(sev="HIGH")
-        verdicts = {syn.finding_fingerprint(finding): {
+        verdicts = {evidence_mod.finding_fingerprint(finding): {
             "finding_id": "AG-001", "verdict": "CONFIRMED", "reasoning": "v"}}
         report = self._report([finding], verdicts=verdicts, fail_on="high")
         self.assertEqual(report["summary"]["gate_severities"]["contributing"], ["HIGH"])
@@ -3033,7 +3042,7 @@ class TestEvidenceReport(unittest.TestCase):
     def test_confirmed_verdict_gates(self):
         finding = _agentic()
         verdicts = {
-            syn.finding_fingerprint(finding): {
+            evidence_mod.finding_fingerprint(finding): {
                 "finding_id": "AG-001",
                 "verdict": "CONFIRMED",
                 "reasoning": "verified",
@@ -3054,7 +3063,7 @@ class TestEvidenceReport(unittest.TestCase):
             fid="AG-002", location={"file": "app.py", "line_start": 90, "line_end": 99}
         )
         verdicts = {
-            syn.finding_fingerprint(confirmed): {
+            evidence_mod.finding_fingerprint(confirmed): {
                 "finding_id": "AG-001",
                 "verdict": "CONFIRMED",
                 "reasoning": "v",
@@ -3085,14 +3094,14 @@ class TestEvidenceReport(unittest.TestCase):
         # The score changed shape once; a report that names the expression it
         # used stays interpretable when it changes again.
         health = self._report([_agentic()])["summary"]["health"]
-        self.assertEqual(health["formula"], syn.HEALTH_FORMULA)
+        self.assertEqual(health["formula"], grading_mod.HEALTH_FORMULA)
         self.assertIn("total_loc", health["formula"])
         self.assertIn("weighted_defect", health["formula"])
 
     def test_rejected_moves_to_discarded_with_severity_intact(self):
         finding = _agentic()
         verdicts = {
-            syn.finding_fingerprint(finding): {
+            evidence_mod.finding_fingerprint(finding): {
                 "finding_id": "AG-001",
                 "verdict": "REJECTED",
                 "reasoning": "not exploitable",
@@ -3109,7 +3118,7 @@ class TestEvidenceReport(unittest.TestCase):
     def test_needs_more_info_stays_visible_not_gating(self):
         finding = _agentic()
         verdicts = {
-            syn.finding_fingerprint(finding): {
+            evidence_mod.finding_fingerprint(finding): {
                 "finding_id": "AG-001",
                 "verdict": "NEEDS_MORE_INFO",
                 "reasoning": "need deploy config",
@@ -3136,7 +3145,7 @@ class TestEvidenceReport(unittest.TestCase):
             "location": {"file": "app.py", "line_start": 5},
             "provenance": {"discovered_by": "tool:semgrep", "confirmation_status": "TOOL"},
         }
-        report = self._report([syn.normalize_finding(tool)])
+        report = self._report([findings_mod.normalize_finding(tool)])
         self.assertEqual(report["findings"][0]["evidence"]["status"], "tool_reported")
         self.assertEqual(report["summary"]["gate"], "PASS")
 
@@ -3146,7 +3155,7 @@ class TestEvidenceReport(unittest.TestCase):
         # (same file/line/category would otherwise keep only the more severe one).
         f2 = _agentic(fid="AG-002", sev="LOW", location={"file": "app.py", "line_start": 99})
         verdicts = {
-            syn.finding_fingerprint(f1): {
+            evidence_mod.finding_fingerprint(f1): {
                 "finding_id": "AG-001",
                 "verdict": "REJECTED",
                 "reasoning": "r",
@@ -3163,7 +3172,7 @@ class TestEvidenceReport(unittest.TestCase):
         f1 = _agentic()
         f2 = _agentic(fid="AG-002", sev="LOW", location={"file": "app.py", "line_start": 99})
         verdicts = {
-            syn.finding_fingerprint(f1): {
+            evidence_mod.finding_fingerprint(f1): {
                 "finding_id": "AG-001",
                 "verdict": "REJECTED",
                 "reasoning": "r",
@@ -3281,11 +3290,11 @@ class TestSeverityImmutability(unittest.TestCase):
         for finding, verdict in cases:
             original = finding["severity"]
             verdicts = (
-                {syn.finding_fingerprint(finding): dict(verdict, finding_id=finding["id"])}
+                {evidence_mod.finding_fingerprint(finding): dict(verdict, finding_id=finding["id"])}
                 if verdict
                 else None
             )
-            report = syn.build_report(
+            report = report_mod.build_report(
                 [finding], [], "t", "high", "2026-08-03T00:00:00Z", verdicts=verdicts
             )
             everywhere = report["findings"] + report["discarded_claims"]
@@ -3312,11 +3321,11 @@ class TestSeverityImmutability(unittest.TestCase):
         for finding, verdict in cases:
             original = finding["confidence"]
             verdicts = (
-                {syn.finding_fingerprint(finding): dict(verdict, finding_id=finding["id"])}
+                {evidence_mod.finding_fingerprint(finding): dict(verdict, finding_id=finding["id"])}
                 if verdict
                 else None
             )
-            report = syn.build_report(
+            report = report_mod.build_report(
                 [finding], [], "t", "high", "2026-08-03T00:00:00Z", verdicts=verdicts
             )
             everywhere = report["findings"] + report["discarded_claims"]
@@ -3352,7 +3361,7 @@ class TestTwoPassCli(unittest.TestCase):
             # position-based "NNN-id".
             self.assertEqual(
                 queue["entries"][0]["queue_id"],
-                syn.finding_fingerprint(queue["entries"][0]["finding"]),
+                evidence_mod.finding_fingerprint(queue["entries"][0]["finding"]),
             )
 
     def test_pass1_empty_queue_falls_through_to_report(self):
@@ -3371,11 +3380,11 @@ class TestTwoPassCli(unittest.TestCase):
             fp = self._write_findings(d, [finding])
             vd = os.path.join(d, ".panopticon", "verdicts")
             os.makedirs(vd)
-            qid = syn.finding_fingerprint(finding)
+            qid = evidence_mod.finding_fingerprint(finding)
             # #1109: the verdict must echo the finding's CONTENT-derived id (what
             # load_findings assigns), not any agent-supplied id -- mirrors the
             # advisor echoing the driver-assigned id in production.
-            expected_fid = evidence_mod.matrix_finding_id(syn.normalize_finding(finding))
+            expected_fid = evidence_mod.matrix_finding_id(findings_mod.normalize_finding(finding))
             with open(os.path.join(vd, "%s.json" % qid), "w") as fh:
                 json.dump(
                     {"finding_id": expected_fid, "verdict": "CONFIRMED",
@@ -3613,7 +3622,7 @@ class TestTwoPassCli(unittest.TestCase):
             # COLLIDING pair would break this for a reason unrelated to #443:
             # the queue ids would be {fp, fp-1} while both findings export
             # fingerprint fp (see the divergence comments in
-            # evidence.build_verify_queue and synthesize.build_report).
+            # evidence.build_verify_queue and report_mod.build_report).
             self.assertEqual(pass1_qids, pass2_fps)
 
 
@@ -3641,7 +3650,7 @@ class TestDedupeRuleIdDiscrimination(unittest.TestCase):
             self._dep("OS-002", "GHSA-bbbb"),
             self._dep("OS-003", "GHSA-cccc", sev="CRITICAL"),
         ]
-        out = syn.dedupe(findings)
+        out = findings_mod.dedupe(findings)
         self.assertEqual(len(out), 3)
         self.assertEqual(
             {f["tool_evidence"]["rule_id"] for f in out}, {"GHSA-aaaa", "GHSA-bbbb", "GHSA-cccc"}
@@ -3653,7 +3662,7 @@ class TestDedupeRuleIdDiscrimination(unittest.TestCase):
             self._dep("OS-002", "GHSA-aaaa", sev="HIGH"),
             self._dep("OS-003", "GHSA-bbbb"),
         ]
-        out = syn.dedupe(findings)
+        out = findings_mod.dedupe(findings)
         self.assertEqual(len(out), 2)
         kept = {f["tool_evidence"]["rule_id"]: f["severity"] for f in out}
         self.assertEqual(kept["GHSA-aaaa"], "HIGH")
@@ -3673,7 +3682,7 @@ class TestDedupeRuleIdDiscrimination(unittest.TestCase):
             },
         }
         findings = [self._dep("OS-001", "GHSA-aaaa"), self._dep("OS-002", "GHSA-bbbb"), agent]
-        out = syn.dedupe(findings)
+        out = findings_mod.dedupe(findings)
         self.assertEqual(len(out), 3)  # two rules + the agent bucket
         self.assertTrue(all(f.get("reinforced") for f in out))
 
@@ -3700,16 +3709,16 @@ class TestCalibrationFixmes(unittest.TestCase):
                     },
                 }
             )
-        entries = syn._collect_models_used(fs)
+        entries = report_mod._collect_models_used(fs)
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["model"], "claude-haiku-4-5-20251001")
 
     def test_id_re_accepts_real_agent_prefixes(self):
         # F-CAL-4: observed real ids like STRUCT-001 (6 letters) must validate
         for good in ("CD-001", "STRUCT-001", "ABCDEFGH-123"):
-            self.assertIsNotNone(syn.ID_RE.match(good), good)
+            self.assertIsNotNone(findings_mod.ID_RE.match(good), good)
         for bad in ("A-001", "ABCDEFGHI-001", "struct-001", "SEC-01"):
-            self.assertIsNone(syn.ID_RE.match(bad), bad)
+            self.assertIsNone(findings_mod.ID_RE.match(bad), bad)
 
 
 class TestToolPolicyMode(unittest.TestCase):
@@ -3723,28 +3732,28 @@ class TestToolPolicyMode(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             self._write_plan(d, [True, True])
             self.assertEqual(
-                syn.derive_tool_policy_mode(os.path.join(d, ".panopticon")), "enforced"
+                plan_mod.derive_tool_policy_mode(os.path.join(d, ".panopticon")), "enforced"
             )
 
     def test_none_enforced(self):
         with tempfile.TemporaryDirectory() as d:
             self._write_plan(d, [False, False])
             self.assertEqual(
-                syn.derive_tool_policy_mode(os.path.join(d, ".panopticon")), "advisory"
+                plan_mod.derive_tool_policy_mode(os.path.join(d, ".panopticon")), "advisory"
             )
 
     def test_mixed(self):
         with tempfile.TemporaryDirectory() as d:
             self._write_plan(d, [True, False])
-            self.assertEqual(syn.derive_tool_policy_mode(os.path.join(d, ".panopticon")), "mixed")
+            self.assertEqual(plan_mod.derive_tool_policy_mode(os.path.join(d, ".panopticon")), "mixed")
 
     def test_no_plan_files_is_unknown(self):
         with tempfile.TemporaryDirectory() as d:
-            self.assertEqual(syn.derive_tool_policy_mode(d), "unknown")
+            self.assertEqual(plan_mod.derive_tool_policy_mode(d), "unknown")
 
     def test_report_meta_carries_mode_and_new_version(self):
         f = _agentic()
-        report = syn.build_report(
+        report = report_mod.build_report(
             [f], [], "t", None, "2026-08-03T00:00:00Z", tool_policy_mode="mixed"
         )
         self.assertEqual(report["meta"]["coverage"]["tool_policy_mode"], "mixed")
@@ -3758,22 +3767,22 @@ class TestToolsRanFromDispositions(unittest.TestCase):
             "gitleaks": {"status": "empty", "findings": 0},
             "semgrep": {"status": "failed", "findings": 0, "reason": "empty output file"},
         }
-        self.assertEqual(syn.tools_ran_from_dispositions(dispositions), {"bandit", "gitleaks"})
+        self.assertEqual(plan_mod.tools_ran_from_dispositions(dispositions), {"bandit", "gitleaks"})
 
     def test_empty_dispositions_yields_empty_set(self):
-        self.assertEqual(syn.tools_ran_from_dispositions({}), set())
+        self.assertEqual(plan_mod.tools_ran_from_dispositions({}), set())
 
 
 class TestBuildExecutingTools(unittest.TestCase):
 
     def test_meta_records_build_executing_tool(self):
         f = _make_finding(source="tool:roslyn-secguard")
-        report = syn.build_report([f], [], "t", None, "2026-08-03T00:00:00Z")
+        report = report_mod.build_report([f], [], "t", None, "2026-08-03T00:00:00Z")
         self.assertEqual(report["meta"]["coverage"]["build_executing_tools"], ["roslyn-secguard"])
 
     def test_meta_empty_without_executing_tools(self):
         f = _make_finding(source="tool:bandit")
-        report = syn.build_report([f], [], "t", None, "2026-08-03T00:00:00Z")
+        report = report_mod.build_report([f], [], "t", None, "2026-08-03T00:00:00Z")
         self.assertEqual(report["meta"]["coverage"]["build_executing_tools"], [])
 
 
@@ -3801,7 +3810,7 @@ class TestEvidenceIntegrity(unittest.TestCase):
             "location": {"file": "a.py", "line_start": 1},
         }
         with tempfile.TemporaryDirectory() as d:
-            loaded = syn.load_findings([self._agent_file(d, [forged])])
+            loaded = findings_mod.load_findings([self._agent_file(d, [forged])])
         self.assertNotIn("source", loaded[0])
         self.assertFalse(evidence_mod.is_tool_sourced(loaded[0]))
 
@@ -3817,7 +3826,7 @@ class TestEvidenceIntegrity(unittest.TestCase):
             "location": {"file": "a.py", "line_start": 2},
         }
         with tempfile.TemporaryDirectory() as d:
-            loaded = syn.load_findings([self._agent_file(d, [forged])])
+            loaded = findings_mod.load_findings([self._agent_file(d, [forged])])
         self.assertNotIn("reinforced", loaded[0])
 
     def test_forged_finding_still_reaches_the_verify_queue(self):
@@ -3833,14 +3842,14 @@ class TestEvidenceIntegrity(unittest.TestCase):
             "location": {"file": "a.py", "line_start": 3},
         }
         with tempfile.TemporaryDirectory() as d:
-            loaded = syn.load_findings([self._agent_file(d, [forged])])
+            loaded = findings_mod.load_findings([self._agent_file(d, [forged])])
         entries, _ = evidence_mod.build_verify_queue(loaded)
         # forged finding is still queued (not dropped) -- but its supplied id is
         # replaced with a content-derived one, so it can't bind a foreign verdict
         # (#1109).
         self.assertEqual(len(entries), 1)
         self.assertNotEqual(entries[0]["finding"]["id"], "AG-003")
-        self.assertTrue(syn.ID_RE.match(entries[0]["finding"]["id"]))
+        self.assertTrue(findings_mod.ID_RE.match(entries[0]["finding"]["id"]))
 
     def test_real_tool_findings_keep_their_source(self):
         # ingest_tools output is not agent-authored and must be untouched.
@@ -3855,24 +3864,24 @@ class TestEvidenceIntegrity(unittest.TestCase):
             "location": {"file": "a.py", "line_start": 4},
             "provenance": {"discovered_by": "tool:semgrep", "confirmation_status": "TOOL"},
         }
-        f = syn.normalize_finding(dict(tool))
+        f = findings_mod.normalize_finding(dict(tool))
         self.assertTrue(evidence_mod.is_tool_sourced(f))
 
 
 class TestSchemaErrorsAreNotSilent(unittest.TestCase):
     def test_report_records_schema_error_count(self):
         bad = _agentic(fid="ag-lower")  # id fails ID_RE
-        report = syn.build_report([bad], [], "t", None, "2026-08-03T00:00:00Z")
-        errors, _ = syn.validate_report(report)
+        report = report_mod.build_report([bad], [], "t", None, "2026-08-03T00:00:00Z")
+        errors, _ = report_mod.validate_report(report)
         self.assertTrue(errors)
-        syn.attach_schema_status(report, errors)
+        report_mod.attach_schema_status(report, errors)
         self.assertEqual(report["meta"]["schema_errors"], len(errors))
 
     def test_clean_report_records_zero(self):
         clean = _agentic(panel="code", category="style", severity="LOW")
-        report = syn.build_report([clean], [], "t", None, "2026-08-03T00:00:00Z")
-        errors, _ = syn.validate_report(report)
-        syn.attach_schema_status(report, errors)
+        report = report_mod.build_report([clean], [], "t", None, "2026-08-03T00:00:00Z")
+        errors, _ = report_mod.validate_report(report)
+        report_mod.attach_schema_status(report, errors)
         self.assertEqual(report["meta"]["schema_errors"], 0)
 
 
@@ -3893,48 +3902,48 @@ class TestFindingFingerprint(unittest.TestCase):
         return f
 
     def test_stable_across_line_moves(self):
-        a = syn.finding_fingerprint(self._f())
-        b = syn.finding_fingerprint(self._f(location={"file": "a.py", "line_start": 99}))
+        a = evidence_mod.finding_fingerprint(self._f())
+        b = evidence_mod.finding_fingerprint(self._f(location={"file": "a.py", "line_start": 99}))
         self.assertEqual(a, b)
 
     def test_stable_across_agent_rewording(self):
         # Agent prose varies run to run; identity must not.
-        a = syn.finding_fingerprint(
+        a = evidence_mod.finding_fingerprint(
             self._f(title="Module mixes concerns", description="one phrasing")
         )
-        b = syn.finding_fingerprint(
+        b = evidence_mod.finding_fingerprint(
             self._f(title="Module mixes concerns", description="a totally different phrasing")
         )
         self.assertEqual(a, b)
 
     def test_rule_id_discriminates_tool_findings_at_one_locus(self):
-        a = syn.finding_fingerprint(
+        a = evidence_mod.finding_fingerprint(
             self._f(source="tool:semgrep", tool_evidence={"rule_id": "R-AAA"})
         )
-        b = syn.finding_fingerprint(
+        b = evidence_mod.finding_fingerprint(
             self._f(source="tool:semgrep", tool_evidence={"rule_id": "R-BBB"})
         )
         self.assertNotEqual(a, b)
 
     def test_different_files_differ(self):
-        a = syn.finding_fingerprint(self._f())
-        b = syn.finding_fingerprint(self._f(location={"file": "b.py", "line_start": 10}))
+        a = evidence_mod.finding_fingerprint(self._f())
+        b = evidence_mod.finding_fingerprint(self._f(location={"file": "b.py", "line_start": 10}))
         self.assertNotEqual(a, b)
 
     def test_leading_dot_of_a_dotfile_path_is_not_stripped(self):
         # `.github/workflows/ci.yml` and `github/workflows/ci.yml` are different
         # paths; only a `./` prefix is noise.
-        a = syn.finding_fingerprint(self._f(location={"file": ".github/w/ci.yml"}))
-        b = syn.finding_fingerprint(self._f(location={"file": "github/w/ci.yml"}))
+        a = evidence_mod.finding_fingerprint(self._f(location={"file": ".github/w/ci.yml"}))
+        b = evidence_mod.finding_fingerprint(self._f(location={"file": "github/w/ci.yml"}))
         self.assertNotEqual(a, b)
 
     def test_dot_slash_prefix_is_normalized_away(self):
-        a = syn.finding_fingerprint(self._f(location={"file": "./a.py"}))
-        b = syn.finding_fingerprint(self._f(location={"file": "a.py"}))
+        a = evidence_mod.finding_fingerprint(self._f(location={"file": "./a.py"}))
+        b = evidence_mod.finding_fingerprint(self._f(location={"file": "a.py"}))
         self.assertEqual(a, b)
 
     def test_report_findings_carry_fingerprints(self):
-        report = syn.build_report([_agentic()], [], "t", None, "2026-08-03T00:00:00Z")
+        report = report_mod.build_report([_agentic()], [], "t", None, "2026-08-03T00:00:00Z")
         self.assertTrue(report["findings"][0]["fingerprint"])
         self.assertEqual(len(report["findings"][0]["fingerprint"]), 16)
 
@@ -3957,7 +3966,7 @@ class TestToolFindingAggregation(unittest.TestCase):
         }
 
     def test_same_rule_same_file_collapses_with_loci(self):
-        out = syn.aggregate_tool_findings(
+        out = findings_mod.aggregate_tool_findings(
             [self._hit("A-001", 13), self._hit("A-002", 20), self._hit("A-003", 31)]
         )
         self.assertEqual(len(out), 1)
@@ -3966,7 +3975,7 @@ class TestToolFindingAggregation(unittest.TestCase):
         self.assertEqual(out[0]["occurrences"], 3)
 
     def test_different_rules_stay_separate(self):
-        out = syn.aggregate_tool_findings(
+        out = findings_mod.aggregate_tool_findings(
             [self._hit("A-001", 13, "R1"), self._hit("A-002", 20, "R2")]
         )
         self.assertEqual(len(out), 2)
@@ -3982,7 +3991,7 @@ class TestToolFindingAggregation(unittest.TestCase):
             "location": {"file": "a.py", "line_start": 1},
         }
         b = dict(a, id="AG-002", location={"file": "a.py", "line_start": 2})
-        self.assertEqual(len(syn.aggregate_tool_findings([a, b])), 2)
+        self.assertEqual(len(findings_mod.aggregate_tool_findings([a, b])), 2)
 
     def _sarif_hit(
         self, fid, line, rule="B607", title="Starting a process with a partial executable path"
@@ -4010,7 +4019,7 @@ class TestToolFindingAggregation(unittest.TestCase):
         # all; the rule id is in provenance.confirmation_reasoning. Keying only
         # on tool_evidence.rule_id silently skipped every SARIF finding, so one
         # rule firing 4x in one file stayed 4 issues instead of 1 with 4 loci.
-        out = syn.aggregate_tool_findings(
+        out = findings_mod.aggregate_tool_findings(
             [
                 self._sarif_hit("BN-1", 129),
                 self._sarif_hit("BN-2", 140),
@@ -4026,8 +4035,8 @@ class TestToolFindingAggregation(unittest.TestCase):
     def test_sarif_fingerprint_survives_a_tool_message_rewording(self):
         # Identity must key on the rule, not the scanner's prose — otherwise a
         # tool upgrade that rewords its message orphans every existing issue.
-        a = syn.finding_fingerprint(self._sarif_hit("BN-1", 129))
-        b = syn.finding_fingerprint(
+        a = evidence_mod.finding_fingerprint(self._sarif_hit("BN-1", 129))
+        b = evidence_mod.finding_fingerprint(
             self._sarif_hit("BN-1", 129, title="Partial executable path used")
         )
         self.assertEqual(a, b)
@@ -4046,7 +4055,7 @@ class TestToolFindingAggregation(unittest.TestCase):
             "category": "known_vulns",
             "location": {"file": ".github/workflows/ci.yml", "line_start": 20},
         }
-        aggregated = syn.aggregate_tool_findings(
+        aggregated = findings_mod.aggregate_tool_findings(
             [self._hit("A-001", 13), self._hit("A-002", 20), self._hit("A-003", 31), agent]
         )
         tool_survivor = [f for f in aggregated if f.get("id", "").startswith("A-")]
@@ -4054,7 +4063,7 @@ class TestToolFindingAggregation(unittest.TestCase):
         self.assertEqual(tool_survivor[0]["occurrences"], 3)
         # The survivor sits on the corroborated line, not the lowest one.
         self.assertEqual(tool_survivor[0]["location"]["line_start"], 20)
-        deduped, _ = syn.prepare_findings(aggregated)
+        deduped, _ = findings_mod.prepare_findings(aggregated)
         self.assertTrue(any(f.get("reinforced") for f in deduped))
 
 
@@ -4064,7 +4073,7 @@ class TestShortTitle(unittest.TestCase):
             "This Dependabot configuration does not set a cooldown period. "
             "Newly published packages can be malicious or unstable. " + "x" * 400
         )
-        f = syn.normalize_finding(
+        f = findings_mod.normalize_finding(
             {
                 "id": "SG-001",
                 "title": long,
@@ -4080,7 +4089,7 @@ class TestShortTitle(unittest.TestCase):
         self.assertTrue(f["short_title"].endswith("…"))
 
     def test_short_title_passes_through_unchanged(self):
-        f = syn.normalize_finding(
+        f = findings_mod.normalize_finding(
             {
                 "id": "SG-002",
                 "title": "Short and sweet",
@@ -4143,7 +4152,7 @@ class TestToolAxisMeta(unittest.TestCase):
         return f
 
     def test_tool_axis_counts_unverified_as_unanswered(self):
-        r = syn.build_report([self._tool()], [], "t", None, "2026-08-05T00:00:00Z")
+        r = report_mod.build_report([self._tool()], [], "t", None, "2026-08-05T00:00:00Z")
         axis = r["meta"]["coverage"]["tool_axis"]
         self.assertEqual(axis["queued"], 1)
         self.assertEqual(axis["unanswered"], 1)
@@ -4152,8 +4161,8 @@ class TestToolAxisMeta(unittest.TestCase):
 
     def test_tool_axis_rejection_rate_when_verdicts_exist(self):
         a, b = self._tool("T-1"), self._tool("T-2", location={"file": "b.py", "line_start": 2})
-        prepared, _ = syn.prepare_for_queue([a, b])
-        queue, _c = syn.evidence_mod.build_verify_queue(prepared)
+        prepared, _ = findings_mod.prepare_for_queue([a, b])
+        queue, _c = evidence_mod.build_verify_queue(prepared)
         verdicts = {}
         for i, e in enumerate(queue):
             verdicts[e["queue_id"]] = {
@@ -4161,7 +4170,7 @@ class TestToolAxisMeta(unittest.TestCase):
                 "finding_id": e["finding"]["id"],
                 "reasoning": "r",
             }
-        r = syn.build_report(
+        r = report_mod.build_report(
             [a, b], [], "t", None, "2026-08-05T00:00:00Z", verdicts=verdicts, verdicts_supplied=True
         )
         axis = r["meta"]["coverage"]["tool_axis"]
@@ -4170,8 +4179,8 @@ class TestToolAxisMeta(unittest.TestCase):
 
     def test_tool_axis_counts_needs_more_info_and_excludes_it_from_decided(self):
         a, b = self._tool("T-1"), self._tool("T-2", location={"file": "b.py", "line_start": 2})
-        prepared, _ = syn.prepare_for_queue([a, b])
-        queue, _c = syn.evidence_mod.build_verify_queue(prepared)
+        prepared, _ = findings_mod.prepare_for_queue([a, b])
+        queue, _c = evidence_mod.build_verify_queue(prepared)
         verdicts = {
             queue[0]["queue_id"]: {
                 "verdict": "NEEDS_MORE_INFO",
@@ -4179,7 +4188,7 @@ class TestToolAxisMeta(unittest.TestCase):
                 "reasoning": "r",
             }
         }
-        r = syn.build_report(
+        r = report_mod.build_report(
             [a, b], [], "t", None, "2026-08-05T00:00:00Z", verdicts=verdicts, verdicts_supplied=True
         )
         axis = r["meta"]["coverage"]["tool_axis"]
@@ -4196,18 +4205,18 @@ class TestToolAxisMeta(unittest.TestCase):
         # is_tool_sourced(f) OR f.get("reinforced") -- not is_tool_sourced
         # alone -- so it must still land in the tool axis.
         f = _agentic(reinforced=True)
-        r = syn.build_report([f], [], "t", None, "2026-08-05T00:00:00Z")
+        r = report_mod.build_report([f], [], "t", None, "2026-08-05T00:00:00Z")
         axis = r["meta"]["coverage"]["tool_axis"]
         self.assertEqual(axis["queued"], 1)
 
     def test_build_executing_tools_reports_a_run_with_zero_findings(self):
-        r = syn.build_report(
+        r = report_mod.build_report(
             [], [], "t", None, "2026-08-05T00:00:00Z", tools_ran={"roslyn-secguard", "bandit"}
         )
         self.assertEqual(r["meta"]["coverage"]["build_executing_tools"], ["roslyn-secguard"])
 
     def test_build_executing_tools_falls_back_without_tools_ran(self):
-        r = syn.build_report(
+        r = report_mod.build_report(
             [self._tool(source="tool:roslyn-secguard")], [], "t", None, "2026-08-05T00:00:00Z"
         )
         self.assertEqual(r["meta"]["coverage"]["build_executing_tools"], ["roslyn-secguard"])
@@ -4235,8 +4244,8 @@ class TestVerdictAccountingMeta(unittest.TestCase):
         }
 
     def _queue(self, findings):
-        prepared, _ = syn.prepare_for_queue(findings)
-        return syn.evidence_mod.build_verify_queue(prepared)[0]
+        prepared, _ = findings_mod.prepare_for_queue(findings)
+        return evidence_mod.build_verify_queue(prepared)[0]
 
     def test_counts_matched_unknown_and_unanswered(self):
         a = self._f("A-1", "first claim", "a.py")
@@ -4258,7 +4267,7 @@ class TestVerdictAccountingMeta(unittest.TestCase):
                 "finding_id": "GONE-1",
             },
         }
-        r = syn.build_report(
+        r = report_mod.build_report(
             [a, b], [], "t", None, "2026-08-05T00:00:00Z", verdicts=verdicts, verdicts_supplied=True
         )
         self.assertEqual(
@@ -4283,7 +4292,7 @@ class TestVerdictAccountingMeta(unittest.TestCase):
         self._queue([a])
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
-            r = syn.build_report(
+            r = report_mod.build_report(
                 [a],
                 [],
                 "t",
@@ -4323,7 +4332,7 @@ class TestVerdictAccountingMeta(unittest.TestCase):
         }
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
-            r = syn.build_report(
+            r = report_mod.build_report(
                 [a],
                 [],
                 "t",
@@ -4364,7 +4373,7 @@ class TestVerdictAccountingMeta(unittest.TestCase):
         def report(verdicts):
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
-                r = syn.build_report([a], [], "t", None, "2026-08-05T00:00:00Z",
+                r = report_mod.build_report([a], [], "t", None, "2026-08-05T00:00:00Z",
                                      verdicts=verdicts, verdicts_supplied=True)
             return r["meta"]["coverage"]["verdicts"]
 
@@ -4384,7 +4393,7 @@ class TestVerdictAccountingMeta(unittest.TestCase):
         # 0 would read as "nothing went unanswered" for a run that never ran a
         # verify phase; null says "not measured" (as tool_axis.rejection_rate
         # already does).
-        r = syn.build_report(
+        r = report_mod.build_report(
             [self._f("A-1", "first claim", "a.py")], [], "t", None, "2026-08-05T00:00:00Z"
         )
         self.assertEqual(
@@ -4416,14 +4425,14 @@ class TestVerdictCutAccounting(unittest.TestCase):
         }
 
     def test_uncapped_run_reports_cut_zero(self):
-        r = syn.build_report([self._f("A"), self._f("B")], [], "t", None, "2026-08-05T00:00:00Z")
+        r = report_mod.build_report([self._f("A"), self._f("B")], [], "t", None, "2026-08-05T00:00:00Z")
         v = r["meta"]["coverage"]["verdicts"]
         self.assertEqual(v["cut"], 0)
         self.assertEqual(v["queued"], 2)
 
     def test_capped_run_reports_the_cut(self):
         findings = [self._f("A", "CRITICAL"), self._f("B", "HIGH"), self._f("C", "LOW")]
-        r = syn.build_report(findings, [], "t", None, "2026-08-05T00:00:00Z", max_verify=1)
+        r = report_mod.build_report(findings, [], "t", None, "2026-08-05T00:00:00Z", max_verify=1)
         v = r["meta"]["coverage"]["verdicts"]
         self.assertEqual(v["queued"], 1)
         self.assertEqual(v["cut"], 2)
@@ -4438,22 +4447,22 @@ class TestToolPolicyModeUnknown(unittest.TestCase):
 
     def test_no_plan_is_unknown(self):
         with tempfile.TemporaryDirectory() as d:
-            self.assertEqual(syn.derive_tool_policy_mode(d), "unknown")
+            self.assertEqual(plan_mod.derive_tool_policy_mode(d), "unknown")
 
     def test_plan_with_no_enforced_entries_is_advisory(self):
         with tempfile.TemporaryDirectory() as d:
             self._plan(d, [{"role": "panel_review", "enforced": False}])
-            self.assertEqual(syn.derive_tool_policy_mode(d), "advisory")
+            self.assertEqual(plan_mod.derive_tool_policy_mode(d), "advisory")
 
     def test_all_enforced_is_enforced(self):
         with tempfile.TemporaryDirectory() as d:
             self._plan(d, [{"enforced": True}, {"enforced": True}])
-            self.assertEqual(syn.derive_tool_policy_mode(d), "enforced")
+            self.assertEqual(plan_mod.derive_tool_policy_mode(d), "enforced")
 
     def test_some_enforced_is_mixed(self):
         with tempfile.TemporaryDirectory() as d:
             self._plan(d, [{"enforced": True}, {"enforced": False}])
-            self.assertEqual(syn.derive_tool_policy_mode(d), "mixed")
+            self.assertEqual(plan_mod.derive_tool_policy_mode(d), "mixed")
 
 
 class TestMetaCoverage(unittest.TestCase):
@@ -4472,7 +4481,7 @@ class TestMetaCoverage(unittest.TestCase):
         }
 
     def test_coverage_block_holds_the_moved_fields(self):
-        r = syn.build_report(
+        r = report_mod.build_report(
             [self._tool()],
             [],
             "t",
@@ -4490,13 +4499,13 @@ class TestMetaCoverage(unittest.TestCase):
         self.assertIn("verdicts", cov)
 
     def test_moved_fields_are_gone_from_top_level_meta(self):
-        r = syn.build_report([self._tool()], [], "t", None, "2026-08-05T00:00:00Z")
+        r = report_mod.build_report([self._tool()], [], "t", None, "2026-08-05T00:00:00Z")
         m = r["meta"]
         for k in ("tool_axis", "verdicts", "tool_policy_mode", "build_executing_tools"):
             self.assertNotIn(k, m)
 
     def test_coverage_present_on_a_findings_only_run(self):
-        r = syn.build_report(
+        r = report_mod.build_report(
             [
                 {
                     "id": "A",
@@ -4547,7 +4556,7 @@ class TestCoverageEndToEnd(unittest.TestCase):
             "bandit": {"status": "ok", "findings": 1},
             "semgrep": {"status": "failed", "findings": 0, "reason": "empty output file"},
         }
-        r = syn.build_report(
+        r = report_mod.build_report(
             [tool, agent],
             [],
             "t",
@@ -4587,11 +4596,11 @@ class TestFanOutCoverageMeta(unittest.TestCase):
             "groups_complete": ["g1"],
             "groups_partial": ["g2"],
         }
-        r = syn.build_report([self._f()], [], "t", None, "2026-08-07T00:00:00Z", fan_out=fo)
+        r = report_mod.build_report([self._f()], [], "t", None, "2026-08-07T00:00:00Z", fan_out=fo)
         self.assertEqual(r["meta"]["coverage"]["fan_out"], fo)
 
     def test_fan_out_null_when_absent(self):
-        r = syn.build_report([self._f()], [], "t", None, "2026-08-07T00:00:00Z")
+        r = report_mod.build_report([self._f()], [], "t", None, "2026-08-07T00:00:00Z")
         self.assertIsNone(r["meta"]["coverage"]["fan_out"])
 
 
@@ -4609,7 +4618,7 @@ class TestCoverageDivergence(unittest.TestCase):
         # Real files on disk: the letter is health-derived, and a fixture with
         # no readable LoC has no letter to make provisional.
         with _target_with_files(self.GROUPS) as tgt:
-            r = syn.build_report([], self.GROUPS, tgt, "high", self.TS, fan_out=fan_out)
+            r = report_mod.build_report([], self.GROUPS, tgt, "high", self.TS, fan_out=fan_out)
         self.assertEqual(r["summary"]["gate"], "INCONCLUSIVE")
         self.assertIsNone(r["summary"]["overall_grade"])
         # No findings -> no weighted defect -> health 100 -> S, held provisional
@@ -4622,7 +4631,7 @@ class TestCoverageDivergence(unittest.TestCase):
         self.assertNotIn("code", r["meta"]["coverage"]["divergence"]["panels"])
 
     def test_tool_requested_absent_is_disclosed_and_inconclusive(self):
-        r = syn.build_report(
+        r = report_mod.build_report(
             [],
             self.GROUPS,
             "t",
@@ -4638,7 +4647,7 @@ class TestCoverageDivergence(unittest.TestCase):
 
     def test_backward_compat_no_fanout_no_scout(self):
         with _target_with_files(self.GROUPS) as tgt:
-            r = syn.build_report([], self.GROUPS, tgt, "high", self.TS)
+            r = report_mod.build_report([], self.GROUPS, tgt, "high", self.TS)
         # Clean tree, fully covered: no weighted defect at all -> health 100 -> S.
         self.assertEqual(r["summary"]["overall_grade"], "S")
         self.assertEqual(r["summary"]["gate"], "PASS")
@@ -4647,7 +4656,7 @@ class TestCoverageDivergence(unittest.TestCase):
         self.assertEqual(r["meta"]["coverage"]["divergence"], {"panels": {}, "tools": {}})
 
     def test_present_empty_dispatch_plan_is_inconclusive(self):
-        r = syn.build_report(
+        r = report_mod.build_report(
             [],
             self.GROUPS,
             "t",
@@ -4669,7 +4678,7 @@ class TestFloorCellCoverageWiring(unittest.TestCase):
     TS = "2026-01-01T00:00:00Z"
 
     def test_missing_floor_cell_forces_inconclusive_and_is_disclosed(self):
-        r = syn.build_report(
+        r = report_mod.build_report(
             [],
             self.GROUPS,
             "t",
@@ -4683,7 +4692,7 @@ class TestFloorCellCoverageWiring(unittest.TestCase):
         self.assertFalse(r["summary"]["coverage_certified"])
 
     def test_present_floor_cell_stays_certified(self):
-        r = syn.build_report(
+        r = report_mod.build_report(
             [],
             self.GROUPS,
             "t",
@@ -4697,7 +4706,7 @@ class TestFloorCellCoverageWiring(unittest.TestCase):
         self.assertTrue(r["summary"]["coverage_certified"])
 
     def test_backward_compat_no_coverages_no_regression(self):
-        r = syn.build_report([], self.GROUPS, "t", "high", self.TS)
+        r = report_mod.build_report([], self.GROUPS, "t", "high", self.TS)
         self.assertEqual(r["meta"]["coverage"]["cells"], {"missing_floor": []})
         self.assertEqual(r["summary"]["gate"], "PASS")
 
@@ -4707,7 +4716,7 @@ class TestResumeDisclosure(unittest.TestCase):
     TS = "2026-01-01T00:00:00Z"
 
     def test_build_report_emits_resume(self):
-        r = syn.build_report(
+        r = report_mod.build_report(
             [],
             self.G,
             "t",
@@ -4722,7 +4731,7 @@ class TestResumeDisclosure(unittest.TestCase):
         self.assertEqual(r["meta"]["coverage"]["resume"]["verify"]["pending"], 40)
 
     def test_build_report_resume_defaults_none(self):
-        r = syn.build_report([], self.G, "t", "high", self.TS)
+        r = report_mod.build_report([], self.G, "t", "high", self.TS)
         self.assertIsNone(r["meta"]["coverage"]["resume"])
 
     def test_main_tolerates_non_list_verify_queue_entries(self):
@@ -4859,7 +4868,7 @@ class TestDriverPlanReconcile(unittest.TestCase):
         plan = [{"group": g, "domain": dom, "enforced": True,
                  "out_file": os.path.join(pan, "findings-%s-%s.json" % (g, dom))}
                 for g, dom in cells]
-        with open(os.path.join(pan, syn.DRIVER_DISPATCH_PLAN), "w",
+        with open(os.path.join(pan, plan_mod.DRIVER_DISPATCH_PLAN), "w",
                   encoding="utf-8") as fh:
             json.dump(plan, fh)
         files = []
@@ -4945,9 +4954,9 @@ class TestRenderSummaryCoverage(unittest.TestCase):
         # Real files: the summary line prints a PROVISIONAL letter, and there is
         # no letter to hold provisional without readable LoC.
         with _target_with_files(groups) as tgt:
-            r = syn.build_report([], groups, tgt, "high", "2026-01-01T00:00:00Z",
+            r = report_mod.build_report([], groups, tgt, "high", "2026-01-01T00:00:00Z",
                                  fan_out=fan_out)
-        text = syn.render_summary(r)
+        text = render_mod.render_summary(r)
         self.assertIn("INCONCLUSIVE", text)
         self.assertIn("NOT CERTIFIED", text)
         self.assertIn("security", text)
@@ -4959,7 +4968,7 @@ class TestRenderSummaryResume(unittest.TestCase):
     TS = "2026-01-01T00:00:00Z"
 
     def test_resume_line_shown_when_pending(self):
-        r = syn.build_report(
+        r = report_mod.build_report(
             [],
             self.G,
             "t",
@@ -4970,13 +4979,13 @@ class TestRenderSummaryResume(unittest.TestCase):
                 "verify": {"total": 52, "done": 12, "pending": 40},
             },
         )
-        text = syn.render_summary(r)
+        text = render_mod.render_summary(r)
         self.assertIn("Resume:", text)
         self.assertIn("33/74", text)
         self.assertIn("12/52", text)
 
     def test_no_resume_line_when_complete(self):
-        r = syn.build_report(
+        r = report_mod.build_report(
             [],
             self.G,
             "t",
@@ -4987,11 +4996,11 @@ class TestRenderSummaryResume(unittest.TestCase):
                 "verify": {"total": 52, "done": 52, "pending": 0},
             },
         )
-        self.assertNotIn("Resume:", syn.render_summary(r))
+        self.assertNotIn("Resume:", render_mod.render_summary(r))
 
     def test_no_resume_line_when_resume_absent(self):
-        r = syn.build_report([], self.G, "t", "high", self.TS)  # resume=None
-        self.assertNotIn("Resume:", syn.render_summary(r))
+        r = report_mod.build_report([], self.G, "t", "high", self.TS)  # resume=None
+        self.assertNotIn("Resume:", render_mod.render_summary(r))
 
 
 class TestIntegrity(unittest.TestCase):
@@ -4999,12 +5008,12 @@ class TestIntegrity(unittest.TestCase):
     TS = "2026-01-01T00:00:00Z"
 
     def test_certify_integrity_not_ok_is_inconclusive(self):
-        r = syn.certify("A", [], "high", set(), [], integrity_ok=False)
+        r = grading_mod.certify("A", [], "high", set(), [], integrity_ok=False)
         self.assertEqual(r["gate"], "INCONCLUSIVE")
         self.assertFalse(r["coverage_certified"])
 
     def test_certify_integrity_ok_default_unchanged(self):
-        r = syn.certify("A", [], "high", set(), [])
+        r = grading_mod.certify("A", [], "high", set(), [])
         self.assertEqual(r["gate"], "PASS")
         self.assertTrue(r["coverage_certified"])
 
@@ -5013,14 +5022,14 @@ class TestIntegrity(unittest.TestCase):
         # finding must still FAIL the gate when integrity is also broken --
         # integrity_ok=False must never downgrade a FAIL to INCONCLUSIVE.
         crit = [{"severity": "CRITICAL", "evidence": {"status": "advisor_confirmed"}}]
-        r = syn.certify("F", crit, "high", set(), [], integrity_ok=False)
+        r = grading_mod.certify("F", crit, "high", set(), [], integrity_ok=False)
         self.assertEqual(r["gate"], "FAIL")
         self.assertFalse(r["coverage_certified"])
 
     def test_certify_integrity_not_ok_off_preserved(self):
         # No --fail-on -> gate is OFF regardless of coverage; integrity_ok
         # must not force it to INCONCLUSIVE.
-        r = syn.certify("A", [], None, set(), [], integrity_ok=False)
+        r = grading_mod.certify("A", [], None, set(), [], integrity_ok=False)
         self.assertEqual(r["gate"], "OFF")
         self.assertFalse(r["coverage_certified"])
 
@@ -5036,13 +5045,13 @@ class TestIntegrity(unittest.TestCase):
             ".panopticon/findings-g1-code-panel_review.json",
             ".panopticon/findings-EVIL-decoy.json",
         ]
-        unexpected, missing = syn.reconcile_findings_files(plan, ingested)
+        unexpected, missing = integrity_mod.reconcile_findings_files(plan, ingested)
         self.assertEqual(unexpected, [".panopticon/findings-EVIL-decoy.json"])
         self.assertEqual(missing, [".panopticon/findings-g1-code-lens_sweep-style.json"])
 
     def test_reconcile_skipped_without_plan(self):
-        self.assertEqual(syn.reconcile_findings_files([], ["whatever.json"]), ([], []))
-        self.assertEqual(syn.reconcile_findings_files(None, ["x.json"]), ([], []))
+        self.assertEqual(integrity_mod.reconcile_findings_files([], ["whatever.json"]), ([], []))
+        self.assertEqual(integrity_mod.reconcile_findings_files(None, ["x.json"]), ([], []))
 
     def test_build_report_emits_integrity_and_inconclusive_on_unexpected(self):
         integ = {
@@ -5050,12 +5059,12 @@ class TestIntegrity(unittest.TestCase):
             "missing_planned_files": [],
             "unenforced_acknowledged": False,
         }
-        r = syn.build_report([], self.G, "t", "high", self.TS, integrity=integ)
+        r = report_mod.build_report([], self.G, "t", "high", self.TS, integrity=integ)
         self.assertEqual(r["meta"]["integrity"], integ)
         self.assertEqual(r["summary"]["gate"], "INCONCLUSIVE")
 
     def test_build_report_integrity_defaults_empty(self):
-        r = syn.build_report([], self.G, "t", "high", self.TS)
+        r = report_mod.build_report([], self.G, "t", "high", self.TS)
         self.assertEqual(
             r["meta"]["integrity"],
             {
@@ -5076,7 +5085,7 @@ class TestIntegrity(unittest.TestCase):
     def test_build_report_integrity_non_dict_does_not_raise(self):
         # M10: a truthy non-dict integrity (e.g. a stray list) must fall back
         # to the default rather than raise on the .get() calls below it.
-        r = syn.build_report([], self.G, "t", "high", self.TS, integrity=["not", "a", "dict"])
+        r = report_mod.build_report([], self.G, "t", "high", self.TS, integrity=["not", "a", "dict"])
         self.assertEqual(
             r["meta"]["integrity"],
             {
@@ -5095,7 +5104,7 @@ class TestIntegrity(unittest.TestCase):
         self.assertEqual(r["summary"]["gate"], "PASS")
 
     def test_present_semantically_invalid_plan_is_inconclusive(self):
-        r = syn.build_report(
+        r = report_mod.build_report(
             [],
             self.G,
             "t",
@@ -5123,7 +5132,7 @@ class TestIntegrity(unittest.TestCase):
             "missing_planned_files": [".panopticon/findings-g1-x.json"],
             "unenforced_acknowledged": False,
         }
-        r = syn.build_report([], self.G, "t", "high", self.TS, integrity=integ)
+        r = report_mod.build_report([], self.G, "t", "high", self.TS, integrity=integ)
         self.assertEqual(r["summary"]["gate"], "PASS")
 
 
@@ -5137,15 +5146,15 @@ class TestRenderSummaryIntegrity(unittest.TestCase):
             "missing_planned_files": [],
             "unenforced_acknowledged": False,
         }
-        text = syn.render_summary(
-            syn.build_report([], self.G, "t", "high", self.TS, integrity=integ)
+        text = render_mod.render_summary(
+            report_mod.build_report([], self.G, "t", "high", self.TS, integrity=integ)
         )
         self.assertIn("Integrity:", text)
         self.assertIn("findings-EVIL.json", text)
 
     def test_no_integrity_line_when_clean(self):
         self.assertNotIn(
-            "Integrity:", syn.render_summary(syn.build_report([], self.G, "t", "high", self.TS))
+            "Integrity:", render_mod.render_summary(report_mod.build_report([], self.G, "t", "high", self.TS))
         )
 
 
@@ -5159,26 +5168,26 @@ class TestReadUnenforcedAck(unittest.TestCase):
             path = os.path.join(d, "ack.json")
             with open(path, "w", encoding="utf-8") as fh:
                 json.dump({"acknowledged": True, "roles": ["panel_review"]}, fh)
-            self.assertTrue(syn.read_unenforced_ack(path))
+            self.assertTrue(integrity_mod.read_unenforced_ack(path))
 
     def test_false_when_missing(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "does-not-exist.json")
-            self.assertFalse(syn.read_unenforced_ack(path))
+            self.assertFalse(integrity_mod.read_unenforced_ack(path))
 
     def test_false_when_malformed_json(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "ack.json")
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write("{not json")
-            self.assertFalse(syn.read_unenforced_ack(path))
+            self.assertFalse(integrity_mod.read_unenforced_ack(path))
 
     def test_false_when_non_dict_payload(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "ack.json")
             with open(path, "w", encoding="utf-8") as fh:
                 json.dump(["not", "a", "dict"], fh)
-            self.assertFalse(syn.read_unenforced_ack(path))
+            self.assertFalse(integrity_mod.read_unenforced_ack(path))
 
 
 class TestLoadDiffHunks(unittest.TestCase):
@@ -5198,33 +5207,33 @@ class TestLoadDiffHunks(unittest.TestCase):
                     },
                     fh,
                 )
-            data = syn.load_diff_hunks(path)
+            data = delta_mod.load_diff_hunks(path)
             self.assertEqual(data["base"], "main")
             self.assertEqual(data["hunks"], {"a.py": [(10, 12), (20, 20)]})
 
     def test_missing_file_returns_empty_dict(self):
-        self.assertEqual(syn.load_diff_hunks("/does/not/exist/diff-hunks.json"), {})
+        self.assertEqual(delta_mod.load_diff_hunks("/does/not/exist/diff-hunks.json"), {})
 
     def test_malformed_json_returns_empty_dict(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "diff-hunks.json")
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write("{not json")
-            self.assertEqual(syn.load_diff_hunks(path), {})
+            self.assertEqual(delta_mod.load_diff_hunks(path), {})
 
     def test_non_dict_payload_returns_empty_dict(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "diff-hunks.json")
             with open(path, "w", encoding="utf-8") as fh:
                 json.dump(["not", "a", "dict"], fh)
-            self.assertEqual(syn.load_diff_hunks(path), {})
+            self.assertEqual(delta_mod.load_diff_hunks(path), {})
 
     def test_missing_hunks_key_defaults_to_empty(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "diff-hunks.json")
             with open(path, "w", encoding="utf-8") as fh:
                 json.dump({"base": "main"}, fh)
-            data = syn.load_diff_hunks(path)
+            data = delta_mod.load_diff_hunks(path)
             self.assertEqual(data["hunks"], {})
 
 
@@ -5237,7 +5246,7 @@ class TestClassifyFindings(unittest.TestCase):
             {"id": "A-2", "location": {"file": "a.py", "line_start": 90}},
         ]
         hunks = {"a.py": [(10, 12)]}
-        syn.classify_findings(findings, hunks, 5)
+        delta_mod.classify_findings(findings, hunks, 5)
         self.assertTrue(findings[0]["delta"]["on_diff"])
         self.assertFalse(findings[1]["delta"]["on_diff"])
         self.assertIn("hunk", findings[0]["delta"])
@@ -5273,7 +5282,7 @@ class TestDeltaClassify(unittest.TestCase):
             "files_changed": 1,
             "hunks": {"a.py": [(10, 12)]},
         }
-        rep = syn.build_report(
+        rep = report_mod.build_report(
             findings,
             [{"name": "g1", "files": ["a.py"]}],
             "t",
@@ -5300,7 +5309,7 @@ class TestDeltaClassify(unittest.TestCase):
                 "location": {"file": "a.py", "line_start": 11},
             },
         ]
-        rep = syn.build_report(
+        rep = report_mod.build_report(
             findings, [{"name": "g1", "files": ["a.py"]}], "t", "high", "2026-01-01T00:00:00Z"
         )
         self.assertNotIn("delta", rep["findings"][0])
@@ -5327,7 +5336,7 @@ class TestDeltaClassify(unittest.TestCase):
             "files_changed": 0,
             "hunks": {},
         }
-        rep = syn.build_report(
+        rep = report_mod.build_report(
             findings,
             [{"name": "g1", "files": ["a.py"]}],
             "t",
@@ -5375,7 +5384,7 @@ class TestDeltaGate(unittest.TestCase):
             "files_changed": 1,
             "hunks": {"a.py": [(10, 12)]},
         }
-        rep = syn.build_report(
+        rep = report_mod.build_report(
             self._findings(),
             [{"name": "g1", "files": ["a.py"]}],
             "t",
@@ -5399,7 +5408,7 @@ class TestDeltaGate(unittest.TestCase):
             "files_changed": 1,
             "hunks": {"a.py": [(10, 12)]},
         }
-        rep = syn.build_report(
+        rep = report_mod.build_report(
             self._findings(),
             [{"name": "g1", "files": ["a.py"]}],
             "t",
@@ -5424,7 +5433,7 @@ class TestDeltaGate(unittest.TestCase):
             "files_changed": 1,
             "hunks": {"a.py": [(10, 12)]},
         }
-        rep = syn.build_report(
+        rep = report_mod.build_report(
             self._findings(),
             [{"name": "g1", "files": ["a.py"]}],
             "t",
@@ -5448,7 +5457,7 @@ class TestDeltaGate(unittest.TestCase):
             "files_changed": 0,
             "hunks": {},
         }
-        rep = syn.build_report(
+        rep = report_mod.build_report(
             self._findings(),
             [{"name": "g1", "files": ["a.py"]}],
             "t",
@@ -5484,20 +5493,20 @@ class TestRenderDelta(unittest.TestCase):
         }
 
     def test_warns_on_pre_existing_high(self):
-        out = syn.render_summary(self._report({"critical": 0, "high": 2, "medium": 5, "low": 3}))
+        out = render_mod.render_summary(self._report({"critical": 0, "high": 2, "medium": 5, "low": 3}))
         self.assertIn("pre-existing", out.lower())
         self.assertIn("2", out)  # HIGH count
         self.assertIn("⚠", out)  # loud warning glyph
         self.assertIn("5", out)  # MEDIUM count still shown
 
     def test_no_warning_without_high(self):
-        out = syn.render_summary(self._report({"critical": 0, "high": 0, "medium": 4, "low": 1}))
+        out = render_mod.render_summary(self._report({"critical": 0, "high": 0, "medium": 4, "low": 1}))
         self.assertNotIn("⚠", out)
         self.assertIn("4", out)  # MEDIUM count still shown
 
     def test_delta_lines_placed_between_evidence_and_groups(self):
         r = self._report({"critical": 1, "high": 0, "medium": 0, "low": 0})
-        out = syn.render_summary(r)
+        out = render_mod.render_summary(r)
         lines = out.split("\n")
         ev_idx = next(i for i, ln in enumerate(lines) if ln.startswith("**Evidence:**"))
         groups_idx = next(i for i, ln in enumerate(lines) if ln == "## Groups")
@@ -5508,7 +5517,7 @@ class TestRenderDelta(unittest.TestCase):
     def test_no_delta_block_when_not_delta_mode(self):
         r = self._report({"critical": 0, "high": 0, "medium": 0, "low": 0})
         r["summary"]["delta"] = None
-        out = syn.render_summary(r)
+        out = render_mod.render_summary(r)
         self.assertNotIn("On-diff", out)
         self.assertNotIn("Pre-existing", out)
 
@@ -5568,7 +5577,7 @@ class TestReportSecretRedaction(unittest.TestCase):
                           "references": ["see %s" % secret]}],
             "discarded_claims": [{"id": "D1", "reason": "quoted %s" % secret}],
         }
-        syn.redact_report_secrets(report)
+        render_mod.redact_report_secrets(report)
         blob = json.dumps(report)
         self.assertNotIn(secret, blob)
         self.assertIn("[REDACTED_TOKEN]", report["findings"][0]["description"])
@@ -5580,7 +5589,7 @@ class TestReportSecretRedaction(unittest.TestCase):
 
     def test_no_findings_or_discarded_is_safe(self):
         r = {"findings": []}
-        syn.redact_report_secrets(r)
+        render_mod.redact_report_secrets(r)
         self.assertEqual(r["findings"], [])
 
 
@@ -5589,10 +5598,10 @@ class TestSevOrdinal(unittest.TestCase):
         # #run7 QAL-D1B: _SEV_ORDINAL must be DERIVED from evidence.SEV_ORDER,
         # not a hand-literal that silently desyncs on a reorder/add/remove.
         import scripts.evidence as ev
-        self.assertEqual(syn._SEV_ORDINAL,
+        self.assertEqual(codes_mod._SEV_ORDINAL,
                          {s: i for i, s in enumerate(reversed(ev.SEV_ORDER))})
-        self.assertLess(syn._SEV_ORDINAL["LOW"], syn._SEV_ORDINAL["HIGH"])
-        self.assertEqual(syn._SEV_ORDINAL["INFO"], 0)
+        self.assertLess(codes_mod._SEV_ORDINAL["LOW"], codes_mod._SEV_ORDINAL["HIGH"])
+        self.assertEqual(codes_mod._SEV_ORDINAL["INFO"], 0)
 
 
 class TestWriteReportDiscardedSplit(unittest.TestCase):
@@ -5614,7 +5623,7 @@ class TestWriteReportDiscardedSplit(unittest.TestCase):
             out = os.path.join(d, "report.json")
             report = self._report(n_findings=60, n_discarded=200)   # ~80KB discarded
             with contextlib.redirect_stderr(io.StringIO()):
-                written = syn.write_report(report, out, max_bytes=8000)
+                written = render_mod.write_report(report, out, max_bytes=8000)
             disc = os.path.join(d, "report-discarded.json")
             self.assertIn(disc, written)
             self.assertTrue(os.path.isfile(disc))
@@ -5646,7 +5655,7 @@ class TestWriteReportDiscardedSplit(unittest.TestCase):
             report = self._report(n_findings=1, n_discarded=200)
             with mock.patch("os.replace", side_effect=flaky):
                 with self.assertRaises(OSError):
-                    syn.write_report(report, out, max_bytes=2000)
+                    render_mod.write_report(report, out, max_bytes=2000)
             self.assertFalse(os.path.exists(out))            # main never committed
             self.assertFalse(os.path.exists(
                 os.path.join(d, "report-discarded.json")))    # sibling not left
@@ -5659,7 +5668,7 @@ class TestWriteReportDiscardedSplit(unittest.TestCase):
                       "findings": [{"id": "F%d" % i, "desc": "d" * 250} for i in range(5)]}
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
-                syn.write_report(report, out, max_bytes=8000)
+                render_mod.write_report(report, out, max_bytes=8000)
             self.assertIn("report base is", err.getvalue())   # loud, not silent floor
 class TestRunDirArtifactResolution(unittest.TestCase):
     """#17/#16: under 5.1 per-run folders synthesize must resolve run artifacts
@@ -5804,13 +5813,13 @@ class TestOutOfScope(unittest.TestCase):
                     fh,
                 )
             plan = [{"group": "g1", "files": ["a.py"], "out_file": "x"}]
-            res = syn.out_of_scope_findings([fp], plan)
+            res = plan_mod.out_of_scope_findings([fp], plan)
         self.assertEqual(res["checked"], 2)
         self.assertEqual(res["count"], 1)
         self.assertEqual(res["examples"], [{"group": "g1", "file": "z.py"}])
 
     def test_no_plan_returns_none_never_zero_claim(self):
-        self.assertIsNone(syn.out_of_scope_findings(["findings-g1-code.json"], []))
+        self.assertIsNone(plan_mod.out_of_scope_findings(["findings-g1-code.json"], []))
 
     def test_unplanned_group_and_tool_files_skipped(self):
         with tempfile.TemporaryDirectory() as d:
@@ -5818,7 +5827,7 @@ class TestOutOfScope(unittest.TestCase):
             with open(fp, "w") as fh:
                 json.dump({"findings": [{"id": "A-1", "location": {"file": "z.py"}}]}, fh)
             plan = [{"group": "g1", "files": ["a.py"], "out_file": "x"}]
-            res = syn.out_of_scope_findings([fp], plan)
+            res = plan_mod.out_of_scope_findings([fp], plan)
         self.assertEqual(res["checked"], 0)
         self.assertEqual(res["count"], 0)
 
@@ -5837,7 +5846,7 @@ class TestReconcileRealpath(unittest.TestCase):
                 json.dump({"findings": []}, fh)
             plan = [{"out_file": os.path.join(link, fname)}]  # symlink form
             ingested = [os.path.join(real, fname)]  # physical form
-            unexpected, missing = syn.reconcile_findings_files(plan, ingested)
+            unexpected, missing = integrity_mod.reconcile_findings_files(plan, ingested)
         self.assertEqual((unexpected, missing), ([], []))
 
 
@@ -5860,7 +5869,7 @@ class TestDocSeverityPolicy(unittest.TestCase):
 
     def test_code_finding_under_doc_tree_downgrades_to_info(self):
         f = self._f("docs/superpowers/plans/x.md")
-        res = syn.apply_doc_severity_policy([f], "standard")
+        res = findings_mod.apply_doc_severity_policy([f], "standard")
         self.assertEqual(f["severity"], "INFO")
         self.assertEqual(f["doc_policy"], {"downgraded_from": "MEDIUM"})
         self.assertEqual(res["downgraded"], 1)
@@ -5873,20 +5882,20 @@ class TestDocSeverityPolicy(unittest.TestCase):
             title="Hardcoded API key pasted into plan",
             category="secrets",
         )
-        res = syn.apply_doc_severity_policy([f], "standard")
+        res = findings_mod.apply_doc_severity_policy([f], "standard")
         self.assertEqual(f["severity"], "CRITICAL")
         self.assertEqual(res["downgraded"], 0)
 
     def test_redteam_mode_is_a_full_bypass(self):
         f = self._f("docs/plan.md")
-        res = syn.apply_doc_severity_policy([f], "redteam")
+        res = findings_mod.apply_doc_severity_policy([f], "redteam")
         self.assertIsNone(res)
         self.assertEqual(f["severity"], "MEDIUM")
 
     def test_non_doc_path_untouched_and_info_never_touched(self):
         a = self._f("skill/scripts/synthesize.py")
         b = self._f("docs/x.md", sev="INFO")
-        res = syn.apply_doc_severity_policy([a, b], "standard")
+        res = findings_mod.apply_doc_severity_policy([a, b], "standard")
         self.assertEqual(a["severity"], "MEDIUM")
         self.assertNotIn("doc_policy", b)
         self.assertEqual(res["downgraded"], 0)
@@ -5957,14 +5966,14 @@ class TestPathVariantClustering(unittest.TestCase):
         }
 
     def test_dedupe_merges_dot_slash_variant(self):
-        out = syn.dedupe(
+        out = findings_mod.dedupe(
             [self._agent("SE-001", "./src/auth.py", 10), self._tool("SG-001", "src/auth.py", 10)]
         )
         self.assertEqual(len(out), 1)
         self.assertTrue(out[0].get("reinforced"))
 
     def test_dedupe_merges_backslash_variant(self):
-        out = syn.dedupe(
+        out = findings_mod.dedupe(
             [self._agent("SE-001", "src/auth.py", 10), self._tool("SG-001", "src\\auth.py", 10)]
         )
         self.assertEqual(len(out), 1)
@@ -5973,7 +5982,7 @@ class TestPathVariantClustering(unittest.TestCase):
     def test_corroboration_across_path_variants(self):
         a = self._agent("SE-001", "./app/resolver.py", 42)
         b = self._agent("TS-001", "app/resolver.py", 43, panel="test", category="test-coverage")
-        integration = syn.cross_panel_corroboration([a, b])
+        integration = findings_mod.cross_panel_corroboration([a, b])
         self.assertEqual(len(integration), 1)
         self.assertTrue(a.get("corroborated"))
         self.assertTrue(b.get("corroborated"))
@@ -5984,8 +5993,8 @@ class TestPathVariantClustering(unittest.TestCase):
         # when both spell the path identically.
         agent = self._agent("SE-001", "./f.py", 10)
         tools = [self._tool("SG-001", "f.py", 5), self._tool("SG-002", "f.py", 10)]
-        out = syn.aggregate_tool_findings([agent] + tools)
-        merged = [f for f in out if syn.evidence_mod.is_tool_sourced(f)]
+        out = findings_mod.aggregate_tool_findings([agent] + tools)
+        merged = [f for f in out if evidence_mod.is_tool_sourced(f)]
         self.assertEqual(len(merged), 1)
         self.assertEqual(merged[0]["location"]["line_start"], 10)
 
@@ -5998,22 +6007,22 @@ class TestUnloadableVerdictsGate(unittest.TestCase):
         return [{"severity": "CRITICAL", "evidence": {"status": "advisor_confirmed"}}]
 
     def test_unloadable_forces_inconclusive_on_pass(self):
-        r = syn.certify("A", [], "high", set(), [], verdicts_unloadable=1)
+        r = grading_mod.certify("A", [], "high", set(), [], verdicts_unloadable=1)
         self.assertEqual(r["gate"], "INCONCLUSIVE")
         self.assertFalse(r["coverage_certified"])
 
     def test_zero_unloadable_leaves_pass(self):
-        r = syn.certify("A", [], "high", set(), [], verdicts_unloadable=0)
+        r = grading_mod.certify("A", [], "high", set(), [], verdicts_unloadable=0)
         self.assertEqual(r["gate"], "PASS")
         self.assertTrue(r["coverage_certified"])
 
     def test_unanswered_supplied_verdict_forces_inconclusive(self):
-        r = syn.certify("A", [], "high", set(), [], verdicts_unanswered=1)
+        r = grading_mod.certify("A", [], "high", set(), [], verdicts_unanswered=1)
         self.assertEqual(r["gate"], "INCONCLUSIVE")
         self.assertFalse(r["coverage_certified"])
 
     def test_unloadable_never_masks_fail(self):
-        r = syn.certify("F", self._crit(), "high", set(), [], verdicts_unloadable=2)
+        r = grading_mod.certify("F", self._crit(), "high", set(), [], verdicts_unloadable=2)
         self.assertEqual(r["gate"], "FAIL")
 
     def test_build_report_wires_unloadable_into_gate(self):
@@ -6029,7 +6038,7 @@ class TestUnloadableVerdictsGate(unittest.TestCase):
         }
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
-            clean = syn.build_report(
+            clean = report_mod.build_report(
                 [dict(f)],
                 [],
                 "t",
@@ -6038,7 +6047,7 @@ class TestUnloadableVerdictsGate(unittest.TestCase):
                 verdicts={},
                 verdicts_supplied=True,
             )
-            lossy = syn.build_report(
+            lossy = report_mod.build_report(
                 [dict(f)],
                 [],
                 "t",
@@ -6076,7 +6085,7 @@ class TestCostLedger(unittest.TestCase):
         # one with end-to-end build_report coverage.
         dc = {"review_cells": 4, "verify_primary": 2, "verify_backup": 1,
               "verify_tools": 3, "tool_scan": 2}
-        r = syn.build_report(
+        r = report_mod.build_report(
             [self._f("A-1", "a.py"), self._f("A-2", "b.py")],
             [],
             "t",
@@ -6101,7 +6110,7 @@ class TestCostLedger(unittest.TestCase):
         )
 
     def test_cost_ledger_without_plans(self):
-        r = syn.build_report([self._f("A-1", "a.py")], [], "t", "high", "2026-08-05T00:00:00Z")
+        r = report_mod.build_report([self._f("A-1", "a.py")], [], "t", "high", "2026-08-05T00:00:00Z")
         phases = [d["phase"] for d in r["meta"]["cost"]["dispatches"]]
         self.assertEqual(phases, ["scout", "verify"])
         self.assertEqual(r["meta"]["cost"]["dispatches"][0]["count"], 0)
@@ -6114,9 +6123,9 @@ class TestCostLedger(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "usage.json"), "w", encoding="utf-8") as fh:
                 json.dump({"total": 21053000, "by_phase": {"review": 10290000}}, fh)
-            usage = syn.load_run_usage(d)
+            usage = cost_mod.load_run_usage(d)
         self.assertEqual(usage["total"], 21053000)
-        r = syn.build_report([self._f("A-1", "a.py")], [], "t", "high",
+        r = report_mod.build_report([self._f("A-1", "a.py")], [], "t", "high",
                              "2026-08-05T00:00:00Z", run_usage=usage)
         self.assertEqual(r["meta"]["cost"]["tokens"]["total"], 21053000)
 
@@ -6124,15 +6133,15 @@ class TestCostLedger(unittest.TestCase):
         # No usage.json -> null, exactly as before. We never estimate tokens from
         # the dispatch counts: a fabricated ledger is worse than an honest gap.
         with tempfile.TemporaryDirectory() as d:
-            self.assertIsNone(syn.load_run_usage(d))                 # absent
+            self.assertIsNone(cost_mod.load_run_usage(d))                 # absent
             with open(os.path.join(d, "usage.json"), "w", encoding="utf-8") as fh:
                 fh.write("{not json")
-            self.assertIsNone(syn.load_run_usage(d))                 # malformed
+            self.assertIsNone(cost_mod.load_run_usage(d))                 # malformed
             with open(os.path.join(d, "usage.json"), "w", encoding="utf-8") as fh:
                 json.dump({}, fh)
-            self.assertIsNone(syn.load_run_usage(d))                 # empty
-        self.assertIsNone(syn.load_run_usage(""))
-        r = syn.build_report([self._f("A-1", "a.py")], [], "t", "high",
+            self.assertIsNone(cost_mod.load_run_usage(d))                 # empty
+        self.assertIsNone(cost_mod.load_run_usage(""))
+        r = report_mod.build_report([self._f("A-1", "a.py")], [], "t", "high",
                              "2026-08-05T00:00:00Z")
         self.assertIsNone(r["meta"]["cost"]["tokens"])
 
@@ -6163,7 +6172,7 @@ class TestCostLedgerDriver(unittest.TestCase):
         # plan entries on the retired roles, which matched nothing on any
         # reachable run; the always-empty section is gone.
         self.assertEqual(
-            syn.cost_dispatches(3, 5, None),
+            cost_mod.cost_dispatches(3, 5, None),
             [
                 {"phase": "scout", "role": "scout", "model": None, "count": 3},
                 {"phase": "verify", "role": "advisor", "model": None, "count": 5},
@@ -6179,7 +6188,7 @@ class TestCostLedgerDriver(unittest.TestCase):
             "tool_scan": 5,
         }
         self.assertEqual(
-            syn.cost_dispatches(7, 0, dc),
+            cost_mod.cost_dispatches(7, 0, dc),
             [
                 {"phase": "scout", "role": "scout", "model": None, "count": 7},
                 {"phase": "review", "role": "domain_panel", "model": None, "count": 36},
@@ -6198,7 +6207,7 @@ class TestCostLedgerDriver(unittest.TestCase):
             "verify_tools": 0,
             "tool_scan": 0,
         }
-        phases = [(r["phase"], r["role"]) for r in syn.cost_dispatches(1, 0, dc)]
+        phases = [(r["phase"], r["role"]) for r in cost_mod.cost_dispatches(1, 0, dc)]
         self.assertNotIn(("tools", "scan"), phases)
         # the verify rounds are pipeline phases: always disclosed, even at 0
         self.assertIn(("verify", "domain_advisor_backup"), phases)
@@ -6208,7 +6217,7 @@ class TestCostLedgerDriver(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             pano = os.path.join(d, ".panopticon")
             os.makedirs(pano)
-            self.assertIsNone(syn.driver_cost_counts(pano, os.path.join(pano, "verdicts"), None))
+            self.assertIsNone(cost_mod.driver_cost_counts(pano, os.path.join(pano, "verdicts"), None))
 
     def test_driver_cost_counts_from_artifacts(self):
         with tempfile.TemporaryDirectory() as d:
@@ -6243,7 +6252,7 @@ class TestCostLedgerDriver(unittest.TestCase):
                 ) as fh:
                     fh.write("{}")
             self.assertEqual(
-                syn.driver_cost_counts(pano, vdir, {"semgrep", "bandit"}),
+                cost_mod.driver_cost_counts(pano, vdir, {"semgrep", "bandit"}),
                 {
                     "review_cells": 3,
                     "verify_primary": 2,
@@ -6282,7 +6291,7 @@ class TestCostLedgerDriver(unittest.TestCase):
                     os.path.join(vdir, "ff00aa11bb22cc3%d.json" % i), "w", encoding="utf-8"
                 ) as fh:
                     fh.write("{}")
-            counts = syn.driver_cost_counts(pano, vdir, set())
+            counts = cost_mod.driver_cost_counts(pano, vdir, set())
             self.assertEqual(counts["verify_primary"], 5)
             self.assertEqual(counts["verify_backup"], 2)
             self.assertEqual(counts["verify_tools"], 3)  # NOT 10
@@ -6367,10 +6376,10 @@ class TestCostLedgerDriver(unittest.TestCase):
             "verify_tools": 0,
             "tool_scan": 3,
         }
-        r = syn.build_report(
+        r = report_mod.build_report(
             [], [], "t", "high", "2026-08-17T00:00:00Z", scout_profiles_seen=2, driver_cost=dc
         )
-        errors, _ = syn.validate_report(r)
+        errors, _ = report_mod.validate_report(r)
         self.assertEqual(errors, [], "driver cost rows must pass report-schema")
         phases = {row["phase"] for row in r["meta"]["cost"]["dispatches"]}
         self.assertTrue({"review", "tools"} <= phases)
@@ -6395,7 +6404,7 @@ class TestToolCoverageCertification(unittest.TestCase):
             "missing": [],
             "excluded_scope": [],
         }
-        r = syn.build_report(
+        r = report_mod.build_report(
             [],
             [],
             "t",
@@ -6423,7 +6432,7 @@ class TestToolCoverageCertification(unittest.TestCase):
             "missing": ["npm-audit"],
             "excluded_scope": [],
         }
-        r = syn.build_report([], [], "t", "high", self.TS, scout_requested=[], tool_manifest=tm)
+        r = report_mod.build_report([], [], "t", "high", self.TS, scout_requested=[], tool_manifest=tm)
         self.assertEqual(self._div_tools(r), {"npm-audit": "requested_absent"})
         self.assertFalse(r["summary"]["coverage_certified"])
 
@@ -6435,7 +6444,7 @@ class TestToolCoverageCertification(unittest.TestCase):
             "missing": ["npm-audit"],
             "excluded_scope": [],
         }
-        r = syn.build_report(
+        r = report_mod.build_report(
             [],
             [],
             "t",
@@ -6452,7 +6461,7 @@ class TestToolCoverageCertification(unittest.TestCase):
 
     def test_manifest_absent_uses_legacy_scout_gate(self):
         # no manifest -> unchanged 4.x behavior (scout_requested - produced).
-        r = syn.build_report([], [], "t", "high", self.TS, scout_requested=["eslint"], tools_ran=[])
+        r = report_mod.build_report([], [], "t", "high", self.TS, scout_requested=["eslint"], tools_ran=[])
         self.assertEqual(self._div_tools(r), {"eslint": "requested_absent"})
         self.assertFalse(r["summary"]["coverage_certified"])
 
@@ -6466,7 +6475,7 @@ class TestOcrdbCoverageHardening(unittest.TestCase):
 
     def test_domainless_code_normalized_to_sentinel(self):  # #2
         f = {"code": "garbage"}  # no '-', no sibling domain -> no derivable domain
-        cov = syn.validate_finding_codes([f], self._bundle())
+        cov = codes_mod.validate_finding_codes([f], self._bundle())
         self.assertEqual(f["code"], "ZZZ-X0X")  # reserved sentinel
         self.assertEqual(cov["domainless"], 1)
         self.assertEqual(cov["invalid_codes"], 1)  # still counted as "not real"
@@ -6475,7 +6484,7 @@ class TestOcrdbCoverageHardening(unittest.TestCase):
         b = self._bundle()
         cod = ocrdb.domain_menu(b, "COD")[0]["code"]  # a real COD code
         f = {"domain": "SEC", "code": cod}  # stated SEC, code says COD
-        cov = syn.validate_finding_codes([f], b)
+        cov = codes_mod.validate_finding_codes([f], b)
         self.assertEqual(cov["code_domain_mismatch"], 1)
         self.assertEqual(f["code"], cod)  # valid code kept, not rewritten
 
@@ -6514,14 +6523,14 @@ class TestOcrdbValidation(unittest.TestCase):
         b = self._bundle()
         real = ocrdb.domain_menu(b, "SEC")[0]["code"]
         findings = [{"code": real, "domain": "SEC"}]
-        cov = syn.validate_finding_codes(findings, b)
+        cov = codes_mod.validate_finding_codes(findings, b)
         self.assertEqual(findings[0]["code"], real)
         self.assertEqual(cov["invalid_codes"], 0)
 
     def test_unknown_code_replaced_with_fallback_and_counted(self):
         b = self._bundle()
         findings = [{"code": "SEC-ZZZ", "domain": "SEC"}]
-        cov = syn.validate_finding_codes(findings, b)
+        cov = codes_mod.validate_finding_codes(findings, b)
         self.assertEqual(findings[0]["code"], "SEC-X0X")
         self.assertEqual(cov["invalid_codes"], 1)
         self.assertEqual(cov["fallbacks"].get("SEC"), 1)
@@ -6529,7 +6538,7 @@ class TestOcrdbValidation(unittest.TestCase):
     def test_code_without_domain_derives_domain_from_code(self):
         b = self._bundle()
         findings = [{"code": "SEC-ZZZ"}]  # no "domain" key
-        cov = syn.validate_finding_codes(findings, b)
+        cov = codes_mod.validate_finding_codes(findings, b)
         self.assertEqual(findings[0]["code"], "SEC-X0X")  # domain derived via ocrdb.domain_of
         self.assertEqual(cov["invalid_codes"], 1)
         self.assertEqual(cov["fallbacks"].get("SEC"), 1)
@@ -6537,18 +6546,18 @@ class TestOcrdbValidation(unittest.TestCase):
     def test_explicit_fallback_counted_as_fallback_not_invalid(self):
         b = self._bundle()
         findings = [{"code": "SEC-X0X", "domain": "SEC"}]
-        cov = syn.validate_finding_codes(findings, b)
+        cov = codes_mod.validate_finding_codes(findings, b)
         self.assertEqual(cov["invalid_codes"], 0)
         self.assertEqual(cov["fallbacks"].get("SEC"), 1)
 
     def test_bundle_absent_leaves_findings_and_returns_none(self):
         findings = [{"code": "SEC-A1A"}]
-        cov = syn.validate_finding_codes(findings, None)
+        cov = codes_mod.validate_finding_codes(findings, None)
         self.assertIsNone(cov)
         self.assertEqual(findings[0]["code"], "SEC-A1A")  # untouched
 
     def test_build_report_stamps_ocrdb_version(self):
-        report = syn.build_report(
+        report = report_mod.build_report(
             [{"title": "t", "severity": "LOW", "code": "SEC-A1A", "domain": "SEC"}],
             [],
             "src",
@@ -6560,7 +6569,7 @@ class TestOcrdbValidation(unittest.TestCase):
 
     def test_build_report_bundle_absent_is_null_and_safe(self):
         with unittest.mock.patch("scripts.ocrdb.load_bundle", return_value=None):
-            report = syn.build_report(
+            report = report_mod.build_report(
                 [{"title": "t", "severity": "LOW", "code": "SEC-A1A", "domain": "SEC"}],
                 [],
                 "src",
@@ -6596,14 +6605,14 @@ class TestStrictGate(unittest.TestCase):
         }
 
     def test_unverified_tool_high_no_longer_fails_the_gate(self):
-        r = syn.build_report([self._tool_high()], [], "t", "high", "2026-08-05T00:00:00Z")
+        r = report_mod.build_report([self._tool_high()], [], "t", "high", "2026-08-05T00:00:00Z")
         self.assertEqual(r["summary"]["gate"], "PASS")
         self.assertEqual(r["findings"][0]["evidence"]["status"], "tool_reported")
 
     def test_confirmed_tool_high_fails_the_gate(self):
         f = self._tool_high()
-        prepared, _ = syn.prepare_for_queue([dict(f)])
-        queue, _c = syn.evidence_mod.build_verify_queue(prepared)
+        prepared, _ = findings_mod.prepare_for_queue([dict(f)])
+        queue, _c = evidence_mod.build_verify_queue(prepared)
         qid = queue[0]["queue_id"]
         verdicts = {
             qid: {
@@ -6612,13 +6621,13 @@ class TestStrictGate(unittest.TestCase):
                 "reasoning": "real credential",
             }
         }
-        r = syn.build_report(
+        r = report_mod.build_report(
             [f], [], "t", "high", "2026-08-05T00:00:00Z", verdicts=verdicts, verdicts_supplied=True
         )
         self.assertEqual(r["summary"]["gate"], "FAIL")
 
     def test_gate_unverified_still_includes_tool_reported(self):
-        r = syn.build_report(
+        r = report_mod.build_report(
             [self._tool_high()], [], "t", "high", "2026-08-05T00:00:00Z", gate_unverified=True
         )
         self.assertEqual(r["summary"]["gate"], "FAIL")
