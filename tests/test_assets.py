@@ -1,5 +1,6 @@
 import os
 import unittest
+import scripts.phases.review as review
 
 from conftest import SKILL_ROOT as ROOT   # #run7 TST-G1B/QAL-D1B: shared path anchor
 
@@ -37,15 +38,14 @@ class TestAssets(unittest.TestCase):
         # anything: #1441 deleted panel-review.md, the checklist's ONLY
         # consumer, so this asset was still shipped, still asserted, and no
         # longer delivered to any reviewer. Pin DELIVERY, not just contents.
-        import scripts.driver as driver
 
-        rendered = driver._render_security_checklist("SEC")
+        rendered = review._render_security_checklist("SEC")
         self.assertIn("security-checklists.md", rendered)
         self.assertTrue(os.path.isfile(
             os.path.join(ROOT, "reference", "security-checklists.md")))
         # and only the SEC cell pays for it
         for domain in ("COD", "TST", "ARC", "DAT"):
-            self.assertEqual(driver._render_security_checklist(domain), "", domain)
+            self.assertEqual(review._render_security_checklist(domain), "", domain)
 
     def test_read_missing_file_raises(self):
         with self.assertRaises(FileNotFoundError):

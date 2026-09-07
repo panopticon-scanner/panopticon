@@ -16,6 +16,7 @@ import tempfile
 import unittest
 from unittest import mock
 import scripts.phases.runio as runio
+import scripts.phases.verify as verify
 
 import scripts.driver as driver
 import scripts.evidence as evidence
@@ -103,7 +104,7 @@ class TestToolQueueParity(_ToolVerifyBase):
     def test_queue_ids_and_ids_match_synthesize(self):
         d = self._repo([_result("r1", "src/app.py", 1), _result("r2", "src/app.py", 9)])
         m = self._manifest()
-        driver_pairs = {(qid, f["id"]) for qid, f in driver._tool_verify_queue(d, m)}
+        driver_pairs = {(qid, f["id"]) for qid, f in verify._tool_verify_queue(d, m)}
         self.assertTrue(driver_pairs)  # non-empty
         # queue_id == exported fingerprint, and the finding id round-trips too.
         self.assertEqual(driver_pairs, self._report_tool_pairs(d, m))
@@ -130,7 +131,7 @@ class TestToolQueueParity(_ToolVerifyBase):
             ],
         )
         m = self._manifest()
-        queue = driver._tool_verify_queue(d, m)
+        queue = verify._tool_verify_queue(d, m)
         driver_pairs = {(qid, f["id"]) for qid, f in queue}
         # survivor is the SECOND hit (SG-002), NOT the first -- proves the
         # full-pipeline survivor selection.
@@ -140,16 +141,16 @@ class TestToolQueueParity(_ToolVerifyBase):
     def test_empty_queue_when_tools_did_not_run(self):
         d = self._repo([_result("r1", "src/app.py", 1)])
         runio._write_json(runio._pano(d, "tools-ran.json"), {"ran": False, "run_id": RUN_ID})
-        self.assertEqual(driver._tool_verify_queue(d, self._manifest()), [])
+        self.assertEqual(verify._tool_verify_queue(d, self._manifest()), [])
 
 
 class TestToolVerifyDispatch(_ToolVerifyBase):
     def test_entry_is_return_persist_advisor(self):
         d = self._repo([_result("r1", "src/app.py", 1, level="note")])
         m = self._manifest()
-        qid, _f = driver._tool_verify_queue(d, m)[0]
+        qid, _f = verify._tool_verify_queue(d, m)[0]
         with self._bundle():
-            result = driver.verify_execute(d, m)
+            result = verify.verify_execute(d, m)
         self.assertEqual((result.checkpoint, result.group), ("verify", "tools"))
         entry = runio._load_json(runio._pano(d, "dispatch-request.json"))["entries"][0]
         self.assertEqual(entry["agent"], "panopticon-advisor")  # advisor.md shell
@@ -167,7 +168,7 @@ class TestToolVerifyDispatch(_ToolVerifyBase):
         m = self._manifest()
         m["host"] = "generic"
         with self._bundle():
-            driver.verify_execute(d, m)
+            verify.verify_execute(d, m)
         entry = runio._load_json(runio._pano(d, "dispatch-request.json"))["entries"][0]
         self.assertIsNone(entry["agent"])
         self.assertFalse(entry["enforced"])
@@ -177,7 +178,7 @@ class TestToolVerifyDispatch(_ToolVerifyBase):
         d = self._repo(results)
         m = self._manifest()
         m["flags"] = {"max_verify": 3}
-        queue = driver._tool_verify_queue(d, m)
+        queue = verify._tool_verify_queue(d, m)
         # #run7 TST-G3F: 10 distinct tool results, no agent findings, cap 3 ->
         # the queue is EXACTLY 3. assertLessEqual passed vacuously on 0/1/2 too.
         self.assertEqual(len(queue), 3)
@@ -194,7 +195,7 @@ class TestToolVerifyDispatch(_ToolVerifyBase):
         d = self._repo(results)
         m = self._manifest()                       # no max_verify flag
         self.assertNotIn("max_verify", m["flags"])
-        queue = driver._tool_verify_queue(d, m)
+        queue = verify._tool_verify_queue(d, m)
         self.assertEqual(len(queue), 101)          # old hardcoded 100 would truncate
 
 
@@ -214,9 +215,9 @@ class TestToolVerifyEndToEnd(_ToolVerifyBase):
         d = self._repo([_result("r1", "src/app.py", 1, level="note")])
         m = self._manifest()
         with self._bundle():
-            result = driver.verify_execute(d, m)
+            result = verify.verify_execute(d, m)
             self.assertEqual(result.checkpoint, "verify")
-            self.assertFalse(driver.verify_done(d, m))  # verdict owed
+            self.assertFalse(verify.verify_done(d, m))  # verdict owed
         driver.synthesize_execute(d, m)
         report = runio._load_json(runio._pano(d, "report.json"))
         self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
@@ -225,15 +226,15 @@ class TestToolVerifyEndToEnd(_ToolVerifyBase):
     def test_confirmed_verdict_reaches_tool_confirmed_no_inconclusive(self):
         d = self._repo([_result("r1", "src/app.py", 1, level="note")])
         m = self._manifest()
-        qid, finding = driver._tool_verify_queue(d, m)[0]
+        qid, finding = verify._tool_verify_queue(d, m)[0]
         with self._bundle():
-            driver.verify_execute(d, m)
+            verify.verify_execute(d, m)
         entry = runio._load_json(runio._pano(d, "dispatch-request.json"))["entries"][0]
         # simulate the host persisting the advisor's RETURNED verdict JSON
         self._persist(entry["out_file"], "CONFIRMED", finding["id"])
         with self._bundle():
-            self.assertTrue(driver.verify_done(d, m))
-            self.assertEqual(driver.verify_execute(d, m).kind, "advanced")
+            self.assertTrue(verify.verify_done(d, m))
+            self.assertEqual(verify.verify_execute(d, m).kind, "advanced")
         driver.synthesize_execute(d, m)
         report = runio._load_json(runio._pano(d, "report.json"))
         tf = next(f for f in report["findings"] if evidence.is_tool_sourced(f))
@@ -253,22 +254,22 @@ class TestToolVerifyResume(_ToolVerifyBase):
             ]
         )
         m = self._manifest()
-        queue = driver._tool_verify_queue(d, m)
+        queue = verify._tool_verify_queue(d, m)
         self.assertEqual(len(queue), 2)
-        self.assertFalse(driver.verify_done(d, m))  # both owed
+        self.assertFalse(verify.verify_done(d, m))  # both owed
 
         # answer exactly one
         qid0, f0 = queue[0]
         os.makedirs(runio._pano(d, "verdicts"), exist_ok=True)
-        with open(driver._tool_verdict_out_file(d, qid0), "w") as fh:
+        with open(verify._tool_verdict_out_file(d, qid0), "w") as fh:
             json.dump(
                 {"finding_id": f0["id"], "verdict": "REJECTED", "reasoning": "not reachable"}, fh
             )
-        self.assertFalse(driver.verify_done(d, m))  # one still owed
+        self.assertFalse(verify.verify_done(d, m))  # one still owed
 
         # re-dispatch names ONLY the still-undone entry
         with self._bundle():
-            result = driver.verify_execute(d, m)
+            result = verify.verify_execute(d, m)
         self.assertEqual(result.checkpoint, "verify")
         outs = [
             os.path.basename(e["out_file"])
@@ -279,23 +280,23 @@ class TestToolVerifyResume(_ToolVerifyBase):
 
         # answer the second -> verify phase drains
         qid1, f1 = queue[1]
-        with open(driver._tool_verdict_out_file(d, qid1), "w") as fh:
+        with open(verify._tool_verdict_out_file(d, qid1), "w") as fh:
             json.dump(
                 {"finding_id": f1["id"], "verdict": "CONFIRMED", "reasoning": "reachable"}, fh
             )
-        self.assertTrue(driver.verify_done(d, m))
+        self.assertTrue(verify.verify_done(d, m))
         with self._bundle():
-            self.assertEqual(driver.verify_execute(d, m).kind, "advanced")
+            self.assertEqual(verify.verify_execute(d, m).kind, "advanced")
 
     def test_garbled_verdict_is_not_done(self):
         d = self._repo([_result("r1", "src/app.py", 1, level="note")])
         m = self._manifest()
-        qid, _f = driver._tool_verify_queue(d, m)[0]
+        qid, _f = verify._tool_verify_queue(d, m)[0]
         os.makedirs(runio._pano(d, "verdicts"), exist_ok=True)
-        with open(driver._tool_verdict_out_file(d, qid), "w") as fh:
+        with open(verify._tool_verdict_out_file(d, qid), "w") as fh:
             fh.write("{ not valid json")
-        self.assertFalse(driver._tool_verdict_done(d, qid))
-        self.assertFalse(driver.verify_done(d, m))
+        self.assertFalse(verify._tool_verdict_done(d, qid))
+        self.assertFalse(verify.verify_done(d, m))
 
 
 class TestSynthesizeFixtureParityWiring(_ToolVerifyBase):
@@ -364,14 +365,14 @@ class TestRedteamFixtureDecouple(_ToolVerifyBase):
 
     def _queue_uris(self, manifest):
         d = self._repo([_result("rust-cve", self._FIXTURE_URI, 1)])
-        queue = driver._tool_verify_queue(d, manifest)
+        queue = verify._tool_verify_queue(d, manifest)
         return [f.get("location", {}).get("file") for _q, f in queue]
 
     def test_tools_include_fixtures_false_for_redteam_without_flag(self):
-        self.assertFalse(driver._tools_include_fixtures(self._redteam()))
+        self.assertFalse(verify._tools_include_fixtures(self._redteam()))
 
     def test_tools_include_fixtures_true_only_with_explicit_flag(self):
-        self.assertTrue(driver._tools_include_fixtures(self._redteam(include_fixtures=True)))
+        self.assertTrue(verify._tools_include_fixtures(self._redteam(include_fixtures=True)))
 
     def test_redteam_prunes_fixture_finding_from_verify_queue(self):
         self.assertNotIn(self._FIXTURE_URI, self._queue_uris(self._redteam()))

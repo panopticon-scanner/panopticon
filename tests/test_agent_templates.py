@@ -218,7 +218,7 @@ class TestDomainPanelSingleWriteInstruction(unittest.TestCase):
     instruction that requires `_panopticon` and names `{out_file}` -- not the
     shared delivery-contract mechanism built for panel-review's no-`_panopticon`
     contract. A reviewer that follows a stray `{delivery_contract}`-style
-    instruction and omits `_panopticon` fails driver._cell_done forever."""
+    instruction and omits `_panopticon` fails review._cell_done forever."""
 
     def test_no_delivery_contract_placeholders(self):
         _meta, body = dispatch.load_template("domain-panel.md")

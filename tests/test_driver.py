@@ -27,6 +27,8 @@ import scripts.phases.coverage as coverage
 import scripts.phases.discovery as discovery
 import scripts.phases.requests as requests
 import scripts.phases.tools as tools_phase
+import scripts.phases.review as review
+import scripts.phases.verify as verify
 
 from tools.git_repo import make_git_repo
 
@@ -991,7 +993,7 @@ class TestCoveragePhase(unittest.TestCase):
         with mock.patch("scripts.dispatch.render_prompt", return_value="B"), \
              mock.patch("scripts.dispatch.registered_agent_name",
                         return_value="panopticon-domain-panel"):
-            r = driver.review_execute(self.root, self.manifest)
+            r = review.review_execute(self.root, self.manifest)
         self.assertEqual(r.kind, "checkpoint")
         self.assertEqual(r.checkpoint, "review")
         self.assertIsNone(r.group)                        # batched, not per-group
@@ -1259,9 +1261,9 @@ class TestVerifyCreatesDir(unittest.TestCase):
         self.manifest = {"run_id": "R"}
 
     def test_verify_execute_creates_verdicts_dir(self):
-        driver.verify_execute(self.root, self.manifest)
+        verify.verify_execute(self.root, self.manifest)
         self.assertTrue(os.path.isdir(runio._pano(self.root, "verdicts")))
-        self.assertTrue(driver.verify_done(self.root, self.manifest))
+        self.assertTrue(verify.verify_done(self.root, self.manifest))
 
 
 class TestCommittedGroupsFailLoud(unittest.TestCase):
@@ -1291,7 +1293,7 @@ class TestCommittedGroupsFailLoud(unittest.TestCase):
         m = {"run_id": "R", "host": "claude", "security_mode": "standard"}
         with mock.patch("scripts.ocrdb.load_bundle", return_value={"domains": {}}):
             with self.assertRaises(runio.DriverError):
-                driver.review_execute(d, m)
+                review.review_execute(d, m)
 
 
 class TestCellFanOut(unittest.TestCase):
@@ -1318,7 +1320,7 @@ class TestCellFanOut(unittest.TestCase):
              mock.patch("scripts.dispatch.registered_agent_name",
                         return_value="panopticon-domain-panel"), \
              mock.patch("scripts.ocrdb.load_bundle", return_value={"domains": {}}):
-            result = driver.review_execute(self.root, self.manifest)
+            result = review.review_execute(self.root, self.manifest)
         self.assertEqual(result.kind, "checkpoint")
         self.assertEqual(result.checkpoint, "review")
         req = runio._load_json(runio._pano(self.root, "dispatch-request.json"))
@@ -1329,24 +1331,24 @@ class TestCellFanOut(unittest.TestCase):
             self.assertNotIn("delivery", e)   # host-agnostic
 
     def test_review_done_requires_all_cells(self):
-        self.assertFalse(driver.review_done(self.root, self.manifest))
+        self.assertFalse(review.review_done(self.root, self.manifest))
         for dom in ("SEC", "DAT"):
             runio._write_json(runio._pano(self.root, "findings-Auth-%s.json" % dom),
                                {"findings": [], "_panopticon": {"run_id": "R",
                                 "role": "domain_panel", "domain": dom, "group": "Auth"}})
-        self.assertTrue(driver.review_done(self.root, self.manifest))
+        self.assertTrue(review.review_done(self.root, self.manifest))
 
     def test_stale_run_id_cell_is_not_done(self):
         runio._write_json(runio._pano(self.root, "findings-Auth-SEC.json"),
                            {"findings": [], "_panopticon": {"run_id": "OLD",
                             "role": "domain_panel", "domain": "SEC", "group": "Auth"}})
-        self.assertFalse(driver.review_done(self.root, self.manifest))
+        self.assertFalse(review.review_done(self.root, self.manifest))
 
     def test_cell_prompt_names_the_out_file(self):
         # a real render (no render_prompt mock): the dispatched reviewer must be
         # TOLD where to write, or its findings file never appears and the cell
         # never completes.
-        entry = driver._cell_entry(self.root, self.manifest, "Auth", "SEC",
+        entry = review._cell_entry(self.root, self.manifest, "Auth", "SEC",
                                     ["a.py"], [], "claude", ocrdb.load_bundle())
         self.assertIn(entry["out_file"], entry["prompt"])
 
@@ -1374,7 +1376,7 @@ class TestReviewerFileListsAreAbsolute(unittest.TestCase):
                       "description": "d"}]
 
     def _make_verify_entry(self):
-        return driver._verify_entry(self.root, self.manifest, "Auth", "SEC",
+        return verify._verify_entry(self.root, self.manifest, "Auth", "SEC",
                                     self.files, self.cell, "claude",
                                     ocrdb.load_bundle(), "primary")
 
@@ -1390,7 +1392,7 @@ class TestReviewerFileListsAreAbsolute(unittest.TestCase):
         self._assert_absolute_not_relative(entry["prompt"])
 
     def test_cell_entry_file_list_is_absolute(self):
-        entry = driver._cell_entry(self.root, self.manifest, "Auth", "SEC",
+        entry = review._cell_entry(self.root, self.manifest, "Auth", "SEC",
                                     self.files, [], "claude", ocrdb.load_bundle())
         self._assert_absolute_not_relative(entry["prompt"])
 
@@ -2121,7 +2123,7 @@ class TestVerifyMatrixEndToEnd(unittest.TestCase):
                             "domain": domain, "group": "app"}})
 
     def _confirm_bundle(self, d, manifest, domain, group="app"):
-        cell = driver._load_cell_findings(d, manifest, group, domain)
+        cell = review._load_cell_findings(d, manifest, group, domain)
         fid = cell[0]["id"]   # driver's own id assignment -- what an advisor echoes
         return json.dumps({"verdicts": [{"finding_id": fid, "verdict": "CONFIRMED",
                                          "reasoning": "verified by advisor"}],
@@ -2140,7 +2142,7 @@ class TestVerifyMatrixEndToEnd(unittest.TestCase):
         self._write_cell(d, "SEC")
         manifest = self._manifest()
 
-        result = driver.verify_execute(d, manifest)
+        result = verify.verify_execute(d, manifest)
         self.assertEqual(result.kind, "checkpoint")
         self.assertEqual(result.checkpoint, "verify")
         req = runio._load_json(runio._pano(d, "dispatch-request.json"))
@@ -2149,9 +2151,9 @@ class TestVerifyMatrixEndToEnd(unittest.TestCase):
         text = self._confirm_bundle(d, manifest, "SEC")
         self._self_write(entry, text)
 
-        result2 = driver.verify_execute(d, manifest)   # drains the (empty) backup round
+        result2 = verify.verify_execute(d, manifest)   # drains the (empty) backup round
         self.assertEqual(result2.kind, "advanced")
-        self.assertTrue(driver.verify_done(d, manifest))
+        self.assertTrue(verify.verify_done(d, manifest))
 
         synth = driver.synthesize_execute(d, manifest)
         self.assertEqual(synth.kind, "advanced")
@@ -2166,9 +2168,9 @@ class TestVerifyMatrixEndToEnd(unittest.TestCase):
         self._write_cell(d, "SEC")
         manifest = self._manifest()
 
-        result = driver.verify_execute(d, manifest)   # engages SEC, dispatches, never answered
+        result = verify.verify_execute(d, manifest)   # engages SEC, dispatches, never answered
         self.assertEqual(result.checkpoint, "verify")
-        self.assertFalse(driver.verify_done(d, manifest))
+        self.assertFalse(verify.verify_done(d, manifest))
 
         synth = driver.synthesize_execute(d, manifest)
         self.assertEqual(synth.kind, "advanced")
@@ -2183,7 +2185,7 @@ class TestVerifyMatrixEndToEnd(unittest.TestCase):
         self._write_cell(d, "QAL")
         manifest = self._manifest()
 
-        result = driver.verify_execute(d, manifest)   # both cells pending, one dispatch
+        result = verify.verify_execute(d, manifest)   # both cells pending, one dispatch
         self.assertEqual(result.checkpoint, "verify")
         req = runio._load_json(runio._pano(d, "dispatch-request.json"))
         outs = sorted(os.path.basename(e["out_file"]) for e in req["entries"])
@@ -2194,7 +2196,7 @@ class TestVerifyMatrixEndToEnd(unittest.TestCase):
         text = self._confirm_bundle(d, manifest, "SEC")
         self._self_write(sec_entry, text)
 
-        result2 = driver.verify_execute(d, manifest)
+        result2 = verify.verify_execute(d, manifest)
         self.assertEqual(result2.kind, "checkpoint")
         req2 = runio._load_json(runio._pano(d, "dispatch-request.json"))
         outs2 = [os.path.basename(e["out_file"]) for e in req2["entries"]]
@@ -2237,7 +2239,7 @@ class TestDriverRunLoopEndToEnd(unittest.TestCase):
                             "domain": domain, "group": group}})
 
     def _self_write_verify(self, d, manifest, entry, domain, group="app"):
-        cell = driver._load_cell_findings(d, manifest, group, domain)
+        cell = review._load_cell_findings(d, manifest, group, domain)
         fid = cell[0]["id"]
         stage = "backup" if entry["out_file"].endswith("-backup.json") else "primary"
         runio._write_json(entry["out_file"], {
@@ -2250,22 +2252,22 @@ class TestDriverRunLoopEndToEnd(unittest.TestCase):
         d = self._repo(["SEC"])
         manifest = self._manifest()
         # review checkpoint
-        r = driver.review_execute(d, manifest)
+        r = review.review_execute(d, manifest)
         self.assertEqual(r.checkpoint, "review")
         req = requests.load_dispatch_request(d)
         for e in req["entries"]:
             self.assertNotIn("write_mode", e)          # unified self-write shape
             self._self_write_review(d, e, "SEC")
-        self.assertTrue(driver.review_done(d, manifest))
+        self.assertTrue(review.review_done(d, manifest))
         # verify checkpoint (primary; SEC HIGH is < F_b so no backup)
-        v = driver.verify_execute(d, manifest)
+        v = verify.verify_execute(d, manifest)
         self.assertEqual(v.checkpoint, "verify")
         req = requests.load_dispatch_request(d)
         for e in req["entries"]:
             self._self_write_verify(d, manifest, e, "SEC")
-        v2 = driver.verify_execute(d, manifest)
+        v2 = verify.verify_execute(d, manifest)
         self.assertEqual(v2.kind, "advanced")
-        self.assertTrue(driver.verify_done(d, manifest))
+        self.assertTrue(verify.verify_done(d, manifest))
         # synthesize → graded report, advisor_confirmed, not INCONCLUSIVE
         self.assertEqual(driver.synthesize_execute(d, manifest).kind, "advanced")
         report = runio._load_json(runio._pano(d, "report.json"))
@@ -2276,7 +2278,7 @@ class TestDriverRunLoopEndToEnd(unittest.TestCase):
     def test_below_gate_cell_needs_no_verify(self):
         d = self._repo(["QAL"])
         manifest = self._manifest()
-        driver.review_execute(d, manifest)
+        review.review_execute(d, manifest)
         for e in requests.load_dispatch_request(d)["entries"]:
             runio._write_json(e["out_file"], {
                 "findings": [{"title": "nit", "severity": "LOW", "domain": "QAL",
@@ -2285,8 +2287,8 @@ class TestDriverRunLoopEndToEnd(unittest.TestCase):
                 "_panopticon": {"run_id": self.RUN_ID, "role": "domain_panel",
                                 "domain": "QAL", "group": "app"}})
         # QAL LOW scores 0 < F_p → verify engages nothing → advances
-        self.assertEqual(driver.verify_execute(d, manifest).kind, "advanced")
-        self.assertTrue(driver.verify_done(d, manifest))
+        self.assertEqual(verify.verify_execute(d, manifest).kind, "advanced")
+        self.assertTrue(verify.verify_done(d, manifest))
 
     def test_scout_checkpoint_is_read_only_return_persist(self):
         # The run's FIRST checkpoint (scout) is the opposite shape from
@@ -2376,7 +2378,7 @@ class TestDriverSingleScopeEndToEnd(unittest.TestCase):
                             "domain": domain, "group": group}})
 
     def _self_write_verify(self, d, manifest, entry, domain, group):
-        cell = driver._load_cell_findings(d, manifest, group, domain)
+        cell = review._load_cell_findings(d, manifest, group, domain)
         fid = cell[0]["id"]
         stage = "backup" if entry["out_file"].endswith("-backup.json") else "primary"
         runio._write_json(entry["out_file"], {
@@ -2410,23 +2412,23 @@ class TestDriverSingleScopeEndToEnd(unittest.TestCase):
         self.assertTrue(coverage.coverage_done(d, manifest))
 
         # review checkpoint -- self-write cell findings, scoped to Checkout's files
-        r = driver.review_execute(d, manifest)
+        r = review.review_execute(d, manifest)
         self.assertEqual(r.checkpoint, "review")
         self.assertIsNone(r.group)                          # #5: review cells batched, group=None
         req = requests.load_dispatch_request(d)
         for e in req["entries"]:
             self.assertNotIn("write_mode", e)               # unified self-write shape
             self._self_write_review(e, "SEC", "Checkout")
-        self.assertTrue(driver.review_done(d, manifest))
+        self.assertTrue(review.review_done(d, manifest))
 
         # verify checkpoint -- primary only (SEC HIGH is < F_b, so no backup)
-        v = driver.verify_execute(d, manifest)
+        v = verify.verify_execute(d, manifest)
         self.assertEqual(v.checkpoint, "verify")
         req = requests.load_dispatch_request(d)
         for e in req["entries"]:
             self._self_write_verify(d, manifest, e, "SEC", "Checkout")
-        self.assertEqual(driver.verify_execute(d, manifest).kind, "advanced")
-        self.assertTrue(driver.verify_done(d, manifest))
+        self.assertEqual(verify.verify_execute(d, manifest).kind, "advanced")
+        self.assertTrue(verify.verify_done(d, manifest))
 
         # synthesize -> graded report, every finding confined to Checkout's files
         self.assertEqual(driver.synthesize_execute(d, manifest).kind, "advanced")
@@ -2564,7 +2566,7 @@ class TestDriverDeltaEndToEnd(unittest.TestCase):
                                 "domain": domain, "group": "Checkout"}})
 
     def _self_write_verify_all(self, d, manifest, entry):
-        cell = driver._load_cell_findings(d, manifest, "Checkout", "SEC")
+        cell = review._load_cell_findings(d, manifest, "Checkout", "SEC")
         runio._write_json(entry["out_file"], {
             "verdicts": [{"finding_id": f["id"], "verdict": "CONFIRMED",
                           "reasoning": "verified"} for f in cell],
@@ -2609,21 +2611,21 @@ class TestDriverDeltaEndToEnd(unittest.TestCase):
         # #5.0-19: pay.py is a single, surfaceless file, so the global floor's
         # ARC/DAT/TST are surface-gated off; self-write both findings into SEC
         # (scoped to pay.py) and an empty cell into COD.
-        r = driver.review_execute(d, manifest)
+        r = review.review_execute(d, manifest)
         self.assertEqual(r.checkpoint, "review")
         req = requests.load_dispatch_request(d)
         self.assertEqual(len(req["entries"]), 2)
         self._self_write_review_two_findings(req["entries"])
-        self.assertTrue(driver.review_done(d, manifest))
+        self.assertTrue(review.review_done(d, manifest))
 
         # verify checkpoint -- primary only (combined score < F_b, no backup)
-        v = driver.verify_execute(d, manifest)
+        v = verify.verify_execute(d, manifest)
         self.assertEqual(v.checkpoint, "verify")
         req = requests.load_dispatch_request(d)
         self.assertEqual(len(req["entries"]), 1)
         self._self_write_verify_all(d, manifest, req["entries"][0])
-        self.assertEqual(driver.verify_execute(d, manifest).kind, "advanced")
-        self.assertTrue(driver.verify_done(d, manifest))
+        self.assertEqual(verify.verify_execute(d, manifest).kind, "advanced")
+        self.assertTrue(verify.verify_done(d, manifest))
 
         # synthesize -> a graded report with a populated delta block.
         self.assertEqual(driver.synthesize_execute(d, manifest).kind, "advanced")
@@ -3205,19 +3207,19 @@ class TestDriverIntegrityWiring(unittest.TestCase):
                                 "domain": domain, "group": "app"}}
 
     def _drive_review(self, d, m, domain="QAL"):
-        r = driver.review_execute(d, m)
+        r = review.review_execute(d, m)
         self.assertEqual(r.checkpoint, "review")
         for e in requests.load_dispatch_request(d)["entries"]:
             runio._write_json(e["out_file"], self._cell_payload(domain))
-        self.assertTrue(driver.review_done(d, m))
+        self.assertTrue(review.review_done(d, m))
 
     def test_clean_run_integrity_not_inconclusive(self):
         d = self._repo(["QAL"])
         m = self._manifest()
         self._drive_review(d, m)
         # verify engages nothing -> advances, but snapshots at its top first
-        self.assertEqual(driver.verify_execute(d, m).kind, "advanced")
-        self.assertTrue(driver.verify_done(d, m))
+        self.assertEqual(verify.verify_execute(d, m).kind, "advanced")
+        self.assertTrue(verify.verify_done(d, m))
         self.assertTrue(os.path.isfile(runio._pano(d, "dispatch-plan-driver.json")))
         self.assertTrue(os.path.isfile(runio._pano(d, "out-file-hashes.json")))
         self.assertEqual(driver.synthesize_execute(d, m).kind, "advanced")
@@ -3236,7 +3238,7 @@ class TestDriverIntegrityWiring(unittest.TestCase):
         d = self._repo(["QAL"])
         m = self._manifest()
         self._drive_review(d, m)
-        driver.verify_execute(d, m)   # snapshot taken over the DECLARED cells
+        verify.verify_execute(d, m)   # snapshot taken over the DECLARED cells
         # a rogue reviewer writes a cell the plan never declared
         runio._write_json(runio._pano(d, "findings-app-BOGUS.json"),
                            {"findings": [], "_panopticon": {
@@ -3254,7 +3256,7 @@ class TestDriverIntegrityWiring(unittest.TestCase):
         d = self._repo(["QAL"])
         m = self._manifest()
         self._drive_review(d, m)
-        driver.verify_execute(d, m)   # snapshot the ORIGINAL bytes now
+        verify.verify_execute(d, m)   # snapshot the ORIGINAL bytes now
         self.assertTrue(os.path.isfile(runio._pano(d, "out-file-hashes.json")))
         # substitute the DECLARED cell's bytes after the snapshot
         cell = runio._pano(d, "findings-app-QAL.json")
@@ -3275,16 +3277,16 @@ class TestDriverIntegrityWiring(unittest.TestCase):
         self._drive_review(d, m)
         plan_path = runio._pano(d, "dispatch-plan-driver.json")
         plan1 = runio._load_json(plan_path)
-        driver.review_execute(d, m)   # second pass: plan write is a no-op
+        review.review_execute(d, m)   # second pass: plan write is a no-op
         self.assertEqual(runio._load_json(plan_path), plan1)
-        driver.verify_execute(d, m)   # first snapshot
+        verify.verify_execute(d, m)   # first snapshot
         hashes_path = runio._pano(d, "out-file-hashes.json")
         snap1 = runio._load_json(hashes_path)
         # substitute a declared cell, then a SECOND verify_execute must NOT
         # re-hash -- re-hashing would silently mask the substitution
         with open(runio._pano(d, "findings-app-QAL.json"), "a") as fh:
             fh.write("\n")
-        driver.verify_execute(d, m)
+        verify.verify_execute(d, m)
         self.assertEqual(runio._load_json(hashes_path), snap1)
 
 
@@ -3299,7 +3301,7 @@ class TestVerifyBackupNarrowing(unittest.TestCase):
         scope = [{"location": {"file": "src/a.py", "line_start": 3}},
                  {"location": {"file": "src/b.py", "line_start": 9}}]
         self.assertEqual(
-            driver._backup_scope_files("/repo", ["src/a.py", "src/b.py", "src/c.py"], scope),
+            verify._backup_scope_files("/repo", ["src/a.py", "src/b.py", "src/c.py"], scope),
             ["src/a.py", "src/b.py"])   # c.py (uncited) dropped
 
     def test_backup_scope_files_dedups_preserving_order(self):
@@ -3307,7 +3309,7 @@ class TestVerifyBackupNarrowing(unittest.TestCase):
                  {"location": {"file": "src/a.py"}},
                  {"location": {"file": "src/b.py"}}]
         self.assertEqual(
-            driver._backup_scope_files("/repo", ["src/a.py", "src/b.py"], scope),
+            verify._backup_scope_files("/repo", ["src/a.py", "src/b.py"], scope),
             ["src/a.py", "src/b.py"])
 
     def test_backup_scope_files_falls_back_when_location_missing(self):
@@ -3317,7 +3319,7 @@ class TestVerifyBackupNarrowing(unittest.TestCase):
         for bad in ({"location": {"file": ""}}, {"location": None}, {},
                     {"location": {}}):
             scope = [{"location": {"file": "src/a.py"}}, bad]
-            self.assertEqual(driver._backup_scope_files("/repo", full, scope), full)
+            self.assertEqual(verify._backup_scope_files("/repo", full, scope), full)
 
     def test_backup_scope_files_falls_back_on_escaping_claim_path(self):
         # #1096: an LLM/panel-supplied location.file that escapes review_root
@@ -3329,10 +3331,10 @@ class TestVerifyBackupNarrowing(unittest.TestCase):
             scope = [{"location": {"file": "src/a.py"}},
                      {"location": {"file": evil}}]
             self.assertEqual(
-                driver._backup_scope_files("/repo", full, scope), full, evil)
+                verify._backup_scope_files("/repo", full, scope), full, evil)
         # a confined relative path is still used verbatim
         self.assertEqual(
-            driver._backup_scope_files(
+            verify._backup_scope_files(
                 "/repo", full, [{"location": {"file": "src/a.py"}}]),
             ["src/a.py"])
 
@@ -3358,14 +3360,14 @@ class TestVerifyBackupNarrowing(unittest.TestCase):
         # neutralized before it reaches the unconfined advisor; in-tree paths and
         # other location fields pass through untouched.
         root = "/repo"
-        esc = driver._confine_claim_location(
+        esc = verify._confine_claim_location(
             root, {"file": "../../../.ssh/id_rsa", "line_start": 3})
-        self.assertEqual(esc["file"], driver._REDACTED_CLAIM_PATH)
+        self.assertEqual(esc["file"], verify._REDACTED_CLAIM_PATH)
         self.assertEqual(esc["line_start"], 3)                 # siblings preserved
-        keep = driver._confine_claim_location(root, {"file": "src/auth.py", "line_start": 9})
+        keep = verify._confine_claim_location(root, {"file": "src/auth.py", "line_start": 9})
         self.assertEqual(keep["file"], "src/auth.py")
-        self.assertIsNone(driver._confine_claim_location(root, None))   # no location
-        self.assertEqual(driver._confine_claim_location(root, {}), {})  # no file key
+        self.assertIsNone(verify._confine_claim_location(root, None))   # no location
+        self.assertEqual(verify._confine_claim_location(root, {}), {})  # no file key
 
     def test_render_findings_confines_location_in_claims(self):
         # #run8 ARC-F2A: the claims JSON handed to the domain-advisor must carry a
@@ -3376,8 +3378,8 @@ class TestVerifyBackupNarrowing(unittest.TestCase):
             {"id": "A-002", "severity": "LOW", "title": "y",
              "location": {"file": "app/db.py", "line_start": 5}},
         ]
-        blob = json.loads(driver._render_findings("/repo", cell))
-        self.assertEqual(blob[0]["location"]["file"], driver._REDACTED_CLAIM_PATH)
+        blob = json.loads(verify._render_findings("/repo", cell))
+        self.assertEqual(blob[0]["location"]["file"], verify._REDACTED_CLAIM_PATH)
         self.assertEqual(blob[1]["location"]["file"], "app/db.py")
 
     def test_tool_verify_entry_confines_finding_location(self):
@@ -3386,9 +3388,9 @@ class TestVerifyBackupNarrowing(unittest.TestCase):
         finding = {"id": "T-1", "severity": "HIGH",
                    "location": {"file": "../../../root/.ssh/id_rsa", "line_start": 2}}
         with tempfile.TemporaryDirectory() as root:
-            entry = driver._tool_verify_entry(
+            entry = verify._tool_verify_entry(
                 root, {"run_id": "r"}, "q1", finding, "kimi")
-        self.assertIn(driver._REDACTED_CLAIM_PATH, entry["prompt"])
+        self.assertIn(verify._REDACTED_CLAIM_PATH, entry["prompt"])
         self.assertNotIn("id_rsa", entry["prompt"])
 
     def _manifest(self):
@@ -3417,16 +3419,16 @@ class TestVerifyBackupNarrowing(unittest.TestCase):
                                 "domain": "SEC", "group": "G"}})
             # load the cell for its synthesize-assigned ids, then CONFIRM both
             # (primary) so the authz category clears F_b and a backup is summoned.
-            cell = driver._load_cell_findings(d, manifest, "G", "SEC")
+            cell = review._load_cell_findings(d, manifest, "G", "SEC")
             self.assertEqual(len(cell), 2)
             runio._write_json(
-                driver._verify_out_file(d, "G", "SEC", "primary"), {
+                verify._verify_out_file(d, "G", "SEC", "primary"), {
                     "verdicts": [{"finding_id": f["id"], "verdict": "CONFIRMED",
                                   "reasoning": "real"} for f in cell],
                     "_panopticon": {"run_id": self.RUN_ID, "role": "domain_advisor",
                                     "domain": "SEC", "group": "G",
                                     "stage": "primary"}})
-            res = driver._verify_backup_execute(d, manifest, "claude",
+            res = verify._verify_backup_execute(d, manifest, "claude",
                                                 ocrdb.load_bundle())
             self.assertIsNotNone(res)
             self.assertEqual(res.checkpoint, "verify")
@@ -3519,11 +3521,11 @@ class TestDriverHardening(unittest.TestCase):
         b = {"domains": {"SEC": {"entries": {
             "SEC-A1A": {"name": "cmd-inj", "criteria": "qualifies when unsanitized"},
             "SEC-A1B": {"name": "nocrit"}}}}}
-        out = driver._render_criteria(b, "SEC")
+        out = review._render_criteria(b, "SEC")
         self.assertIn("SEC-A1A", out)
         self.assertIn("qualifies when unsanitized", out)
         self.assertNotIn("SEC-A1B", out)              # no criteria -> omitted
-        none = driver._render_criteria(
+        none = review._render_criteria(
             {"domains": {"SEC": {"entries": {"SEC-A1B": {"name": "nocrit"}}}}}, "SEC")
         self.assertIn("no explicit OCRDb criteria", none)   # never blank
 
@@ -3533,7 +3535,7 @@ class TestDriverHardening(unittest.TestCase):
                         "criteria": "CRITSENTINEL when the sink is reached"}}}}}
         cell = [{"id": "SEC-1", "title": "t", "severity": "HIGH", "domain": "SEC",
                  "category": "x", "location": {"file": "a.py", "line_start": 1}}]
-        entry = driver._verify_entry("/repo", {"run_id": "R", "host": "claude"},
+        entry = verify._verify_entry("/repo", {"run_id": "R", "host": "claude"},
                                      "app", "SEC", ["a.py"], cell, "claude", b,
                                      "primary")
         self.assertIn("CRITSENTINEL", entry["prompt"])
