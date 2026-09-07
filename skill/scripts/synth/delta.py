@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 import json
 import os
+import sys
 
 import scripts.diff_map as diff_map
 
@@ -17,6 +18,20 @@ class DeltaContext:
     @property
     def active(self):
         return bool(self.diff_hunks and self.diff_hunks.get("base"))
+
+    @classmethod
+    def from_args(cls, args):
+        """--diff-hunks / --diff-context as main() read them (WS-0 S3), with
+        the #957 notice when a delta review is run without --fail-on."""
+        diff_hunks = load_diff_hunks(args.diff_hunks) if args.diff_hunks else None
+        if args.diff_hunks and not args.fail_on:
+            # #957: a delta review is gate-first by intent, but the gate only
+            # arms when --fail-on is passed. Without this notice a forgotten
+            # flag yields a green-looking report whose gate silently reads OFF.
+            print("synthesize: DELTA REVIEW WITH Gate: OFF -- no --fail-on was "
+                  "passed, so nothing can gate this change; pass --fail-on "
+                  "{critical,high,medium,low} to arm the gate", file=sys.stderr)
+        return cls(diff_hunks=diff_hunks, diff_context=args.diff_context)
 
 
 def load_diff_hunks(path):

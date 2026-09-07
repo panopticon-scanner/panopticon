@@ -15,6 +15,14 @@ class CostInputs:
     driver_cost: dict | None = None
     run_usage: dict | None = None
 
+    @classmethod
+    def load(cls, run_dir, verdicts_dir, tools_ran):
+        """meta.cost's inputs from the run folder (WS-0 S3). #21: the driver
+        plan and the verdicts resolve under `run_dir` like every other run
+        artifact -- reading them flat left driver_cost None on every 5.1 run."""
+        return cls(driver_cost=driver_cost_counts(run_dir, verdicts_dir, tools_ran),
+                   run_usage=load_run_usage(run_dir))
+
 
 def load_run_usage(run_dir):
     """Host-reported dispatch usage for `meta.cost.tokens` (#run10 D4), or None.

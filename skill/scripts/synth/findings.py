@@ -5,6 +5,7 @@ import os
 import re
 import sys
 
+import scripts.citations as citations
 import scripts.evidence as evidence_mod
 import scripts.groups_schema as groups_schema
 import scripts.ocrdb as ocrdb
@@ -47,6 +48,68 @@ class FindingSet:
     verdict_bundles: dict = field(default_factory=dict)
     catalog: dict | None = None      # CWE catalog; None -> citations.load_cwe_catalog()
     doc_policy: dict | None = None   # apply_doc_severity_policy's disclosure
+
+    @classmethod
+    def prepare(cls, args, tool_findings, security_mode):
+        """The findings half of main()'s findings stage (WS-0 S3 fix #1):
+        the reviewer findings files, the raw tool findings
+        `ingest_tool_findings` handed over (normalized here), CWE/EPSS
+        enrichment, the doc-tree severity policy (#487, with its stderr
+        notice), and the --severity floor. Returns (findings, doc_policy,
+        catalog).
+
+        Split out of `load` so main() can run this BEFORE the
+        --emit-verify-queue branch and read the verify queue / load verdicts
+        (the rest of `load`) only AFTER it, as the old main() did --
+        emit_verify_queue can DELETE a stale verify-queue.json left by a
+        previous run, so reading the queue or verdicts before that branch
+        runs would let stale state leak into verdict_run_id/resume/
+        invalid_verify_queue on the "nothing to queue this run" path."""
+        findings = load_findings(args.files)
+        for tf in tool_findings:
+            findings.append(normalize_finding(tf))
+        catalog = citations.load_cwe_catalog()
+        citations.enrich_citations(findings, catalog, epss_enabled=args.epss,
+                                   cache_path=os.path.join(".panopticon", "epss-cache.json"))
+        doc_policy = apply_doc_severity_policy(findings, security_mode,
+                                               doc_globs=args.doc_paths)
+        if doc_policy and doc_policy["downgraded"]:
+            print("synthesize: %d code finding(s) under doc trees soft-downgraded "
+                  "to INFO (#487; secrets exempt, redteam bypasses) -- see "
+                  "meta.coverage.doc_policy" % doc_policy["downgraded"],
+                  file=sys.stderr)
+        if args.severity and args.severity != "all":
+            threshold = SEV_ORDER.index(args.severity.upper())
+            findings = [f for f in findings if _sev_rank(f) <= threshold]
+        return findings, doc_policy, catalog
+
+    @classmethod
+    def load(cls, args, tool_findings, security_mode, verdict_run_id, prepared=None):
+        """main()'s findings stage (WS-0 S3), in its original order: `prepare`
+        (above) for the findings half, then the advisor verdicts and bundles.
+        `verdict_run_id` is the verify queue's run_id (None without a queue)
+        so a verdict from another run is rejected. `prepared` lets main()
+        reuse a `prepare()` it already ran ahead of the --emit-verify-queue
+        branch (WS-0 S3 fix #1) instead of re-deriving the same findings;
+        when omitted `load` calls `prepare` itself, so this contract (and
+        every existing caller) is unchanged."""
+        if prepared is None:
+            prepared = cls.prepare(args, tool_findings, security_mode)
+        findings, doc_policy, catalog = prepared
+        verdicts, verdict_unloadable = evidence_mod.load_verdicts_detailed(args.verdicts_dir)
+        verdict_bundles, bundle_unloadable = evidence_mod.load_verdict_bundles(args.verdicts_dir)
+        # Both loaders scan the same verdicts_dir and independently attempt to
+        # parse every *.json in it, so a single unparseable file is reported by
+        # both -- dedupe on filename or a genuinely-corrupt file double-counts
+        # in meta.coverage.verdicts.unloadable (#938 follow-on).
+        verdict_unloadable = verdict_unloadable or []
+        already = {u.get("file") for u in verdict_unloadable}
+        verdict_unloadable = verdict_unloadable + [
+            u for u in bundle_unloadable if u.get("file") not in already]
+        return cls(findings=findings, verdicts=verdicts,
+                   verdicts_supplied=args.verdicts_dir is not None,
+                   verdict_unloadable=verdict_unloadable, verdict_run_id=verdict_run_id,
+                   verdict_bundles=verdict_bundles, catalog=catalog, doc_policy=doc_policy)
 
 RELATED_PANELS = {
     "security": {"architecture", "database", "redteam"},

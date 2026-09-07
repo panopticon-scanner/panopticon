@@ -3,28 +3,23 @@
 grades and a CI gate verdict. Stdlib-only.
 """
 import argparse
-import glob
 import json
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import scripts.citations as citations
-import scripts.evidence as evidence_mod
-import scripts.group_runner as group_runner
 import scripts.html_report as html_report
-import scripts.ingest_tools as ingest_tools
 import scripts.ocrdb as ocrdb
 import scripts.plan_contract as plan_contract
 import scripts.x0x_report as x0x_report
 import scripts.synth.findings as findings_mod
 import scripts.synth.delta as delta_mod
 import scripts.synth.plan as plan_mod
-import scripts.synth.integrity as integrity_mod
 import scripts.synth.cost as cost_mod
 import scripts.synth.report as report_mod
 import scripts.synth.render as render_mod
+import scripts.synth.verdicts as verdicts_mod
 
 
 def main(argv=None):
@@ -111,9 +106,6 @@ def main(argv=None):
         print("synthesize: %s" % exc, file=sys.stderr)
         return 2
 
-    groups_meta = []
-    review_type = "changes" if args.changes else "repo"
-    security_mode = args.security
     # Default to the discovery output so the report carries group definitions:
     # groups[].files drives the HTML heatmap and grouped findings, and an empty
     # groups[] is why those fell back to path segments. An explicit --groups
@@ -124,26 +116,8 @@ def main(argv=None):
         default_groups = os.path.join(".panopticon", "groups.json")
         if os.path.isfile(default_groups):
             groups_path = default_groups
-    if groups_path and os.path.isfile(groups_path):
-        try:
-            with open(groups_path, encoding="utf-8") as fh:
-                gj = json.load(fh)
-            if isinstance(gj, dict):
-                groups_meta = gj.get("groups", [])
-                # An explicit --changes wins: a discovered groups.json mode must
-                # not flip an explicitly-requested changes review back to repo.
-                if not args.changes:
-                    review_type = findings_mod.MODE_TO_REVIEW_TYPE.get(gj.get("mode"), review_type)
-                if security_mode is None:
-                    security_mode = gj.get("security_mode", "standard")
-            else:
-                print("synthesize: %s is not a JSON object; ignoring" % groups_path,
-                      file=sys.stderr)
-        except (OSError, ValueError) as e:  # tolerant by design: never abort a run
-            print("synthesize: could not read %s (%s); ignoring" % (groups_path, e),
-                  file=sys.stderr)
-    if security_mode is None:
-        security_mode = "standard"
+    gj = plan_mod.load_groups_json(groups_path)
+    groups_meta = gj.get("groups", [])
 
     # #17/#16: run-scoped artifacts (tools-manifest, scout-*, coverage-*, dispatch
     # plans, verify-queue, unenforced-ack) live in the run directory next to
@@ -167,238 +141,34 @@ def main(argv=None):
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     out = args.out or os.path.join(".panopticon", "report-%s.json" % ts.replace(":", ""))
 
-    if not args.tools_dir:
-        default_tools = os.path.join(".panopticon", "tools")
-        if os.path.isdir(default_tools) and os.listdir(default_tools):
-            print("synthesize: %s appears un-ingested — pass --tools-dir %s to "
-                  "include tool findings in this report"
-                  % (default_tools, default_tools), file=sys.stderr)
-    findings = findings_mod.load_findings(args.files)
-    tool_dispositions = {}
-    # None when --tools-dir wasn't supplied: build_report treats None as
-    # "not measured -> infer build_executing_tools from findings"; an empty set
-    # would ASSERT "no build-executing tool ran" from an absence of evidence
-    # (the inversion #450 was about).
-    tools_ran = None
-    if args.tools_dir and os.path.isdir(args.tools_dir):
-        tool_findings, tool_dispositions = ingest_tools.ingest_dir_detailed(
-            args.tools_dir, None, exclude_globs=args.tools_exclude,
-            include_fixtures=args.include_fixtures)
-        for tf in tool_findings:
-            findings.append(findings_mod.normalize_finding(tf))
-        # A "failed" disposition (empty / unparseable / no-adapter) is excluded,
-        # so build_executing_tools can no longer name an adapter that ran empty.
-        tools_ran = plan_mod.tools_ran_from_dispositions(tool_dispositions)
-    # #1031: the runner's deterministic adapter manifest (run_tools --manifest:
-    # selected/produced/missing/excluded_scope). Present -> build_report gates on
-    # `missing`, not the scout's advisory list. Tolerant read: a corrupt/absent
-    # manifest just falls back to the 4.x scout-derived gate.
-    tool_manifest = None
-    _tm_path = os.path.join(run_dir, "tools-manifest.json")
-    if os.path.isfile(_tm_path):
-        try:
-            with open(_tm_path, encoding="utf-8") as fh:
-                _tm = json.load(fh)
-            tool_manifest = _tm if isinstance(_tm, dict) else None
-        except (OSError, ValueError):
-            tool_manifest = None
-    if tool_manifest is not None:
-        # #17: never certify against a foreign/stale manifest. A 5.1 manifest
-        # carries schema_version; its run_id (when the runner stamps it) must
-        # match this run. Either mismatch is a loud error, not a silent fallback.
-        if "schema_version" not in tool_manifest:
-            sys.exit("FATAL (#17): tools-manifest at %s lacks schema_version — it "
-                     "looks like a pre-5.1 flat manifest from another run; refusing "
-                     "to certify against it. Re-run the tools phase." % _tm_path)
-        _mrid = tool_manifest.get("run_id")
-        if args.run_id and _mrid and _mrid != args.run_id:
-            sys.exit("FATAL (#17): tools-manifest run_id %r != this run %r (at %s) — "
-                     "refusing to certify against another run's manifest."
-                     % (_mrid, args.run_id, _tm_path))
-    catalog = citations.load_cwe_catalog()
-    citations.enrich_citations(findings, catalog, epss_enabled=args.epss,
-                               cache_path=os.path.join(".panopticon", "epss-cache.json"))
-    doc_policy = findings_mod.apply_doc_severity_policy(findings, security_mode,
-                                           doc_globs=args.doc_paths)
-    if doc_policy and doc_policy["downgraded"]:
-        print("synthesize: %d code finding(s) under doc trees soft-downgraded "
-              "to INFO (#487; secrets exempt, redteam bypasses) -- see "
-              "meta.coverage.doc_policy" % doc_policy["downgraded"],
-              file=sys.stderr)
-    if args.severity and args.severity != "all":
-        threshold = findings_mod.SEV_ORDER.index(args.severity.upper())
-        findings = [f for f in findings if findings_mod._sev_rank(f) <= threshold]
-
-    if args.emit_verify_queue:
-        import copy
-        prepared, _ = findings_mod.prepare_for_queue(copy.deepcopy(findings))
-        queue, cut = evidence_mod.build_verify_queue(prepared, args.max_verify)
-        qpath = os.path.join(run_dir, "verify-queue.json")
-        if queue:
-            evidence_mod.write_verify_queue(queue, cut, qpath)
-            print("verify queue: %d entries (%d cut by --max-verify) -> %s"
-                  % (len(queue), cut, qpath))
-            return 0
-        # Nothing to verify this run. Post-P2 EVERY finding queues -- tool
-        # findings included -- so an empty queue means this run produced no
-        # findings at all, not "only findings that never queued". A queue file
-        # left by a PREVIOUS run would otherwise mislead step 7's re-run: the
-        # orchestrator branches on the file's existence, so a stale one would
-        # send it to the verify phase with stale/absent entries.
-        if os.path.isfile(qpath):
-            try:
-                os.remove(qpath)
-            except OSError as e:
-                print("synthesize: could not remove stale %s: %s" % (qpath, e),
-                      file=sys.stderr)
-        print("verify queue empty; emitting final report", file=sys.stderr)
-
-    verdicts, verdict_unloadable = evidence_mod.load_verdicts_detailed(args.verdicts_dir)
-    verdict_bundles, bundle_unloadable = evidence_mod.load_verdict_bundles(args.verdicts_dir)
-    # Both loaders scan the same verdicts_dir and independently attempt to parse
-    # every *.json in it, so a single unparseable file is reported by both --
-    # dedupe on filename or a genuinely-corrupt file double-counts in
-    # meta.coverage.verdicts.unloadable (#938 follow-on).
-    verdict_unloadable = verdict_unloadable or []
-    _already_unloadable = {u.get("file") for u in verdict_unloadable}
-    verdict_unloadable = verdict_unloadable + [
-        u for u in bundle_unloadable if u.get("file") not in _already_unloadable]
-    # Union of every per-group dispatch-plan-*.json on disk -- loaded ONCE and
-    # shared with derive_tool_policy_mode, so the two cannot drift apart again
-    # (#146/C1). The real fan-out workflow writes one plan file PER GROUP
-    # (dispatch-plan-<group>.json); a lone dispatch-plan.json is just the
-    # one-group case of that same naming convention, not a different shape.
-    # plans_seen distinguishes "no plan found -> reconcile skipped" from
-    # "reconciled, nothing wrong" -- an empty unexpected/missing pair means
-    # nothing on its own (see meta.integrity below).
-    _plan_lists, plans_seen, invalid_plans = plan_mod.load_dispatch_plans_detailed(
-        panopticon_dir=run_dir)
-    _plan = [e for plan in _plan_lists for e in plan]
-    out_of_scope = plan_mod.out_of_scope_findings(args.files, _plan)
-    if out_of_scope and out_of_scope["count"]:
-        print("synthesize: %d finding(s) cite files OUTSIDE their group's "
-              "assigned file list (#441) -- reviewers left their lane; see "
-              "meta.coverage.out_of_scope" % out_of_scope["count"],
-              file=sys.stderr)
-    tool_policy_mode = plan_mod.derive_tool_policy_mode(plans=_plan_lists)
-    fan_out = group_runner.fan_out_coverage(_plan) if _plan else None
-    _queue = None
-    invalid_verify_queue = None
-    queue_path = os.path.join(run_dir, "verify-queue.json")
-    if os.path.isfile(queue_path):
-        try:
-            with open(queue_path, encoding="utf-8") as fh:
-                loaded_q = json.load(fh)
-            if (isinstance(loaded_q, dict)
-                    and isinstance(loaded_q.get("entries"), list)):
-                _queue = loaded_q
-            else:
-                invalid_verify_queue = "verify queue has no entries list"
-        except (OSError, ValueError) as exc:
-            invalid_verify_queue = "cannot read verify queue: %s" % exc
-    resume = group_runner.resume_stats(_plan, _queue, args.verdicts_dir,
-                                       _verdicts=verdicts)
-    unexpected, missing = integrity_mod.reconcile_findings_files(_plan, args.files)
-    _ack = integrity_mod.read_unenforced_ack(os.path.join(run_dir, "unenforced-ack.json"))
-    # #493 R2: an ack with no run binding over-reports risk forever -- a
-    # stale ack from an earlier --allow-unenforced run would mark a fully
-    # enforced run acknowledged. The ack now carries plan_sha256 (canonical
-    # hash of the plan content it acknowledged); treat a non-matching ack as
-    # STALE: report false + a loud note. A legacy ack without the field stays
-    # trusted (pre-#493 artifacts).
-    ack_stale = False
-    if _ack and _ack.get("plan_sha256") is not None and _plan_lists:
-        _hashes = {integrity_mod._plan_hash(pl) for pl in _plan_lists}
-        if _ack["plan_sha256"] not in _hashes:
-            ack_stale = True
-            print("synthesize: unenforced-ack.json does not hash-match any "
-                  "on-disk dispatch plan -- STALE ack from a previous run; "
-                  "reporting unenforced_acknowledged: false", file=sys.stderr)
-    # #493 R4: after-the-fact content check -- when the orchestrator recorded
-    # out-file hashes at fan-out end, verify the ingested bytes still match.
-    content_checked, content_mismatched, content_snapshot_unreadable = \
-        group_runner.verify_out_file_hashes(args.files)
-    if content_mismatched:
-        print("synthesize: %d findings file(s) changed AFTER the fan-out "
-              "snapshot (content substitution?): %s"
-              % (len(content_mismatched), ", ".join(content_mismatched)),
-              file=sys.stderr)
-    if content_snapshot_unreadable:
-        # #run7 #1208: a present-but-corrupt out-file-hashes.json is a tamper
-        # signal, not a missing snapshot -- fail closed rather than silently pass.
-        print("synthesize: the fan-out out-file-hashes.json snapshot EXISTS but is "
-              "unreadable/corrupt -- treating as tamper (fail-closed), not a missing "
-              "snapshot; integrity is NOT certified.", file=sys.stderr)
-    integrity = {"unexpected_findings_files": unexpected,
-                 "missing_planned_files": missing,
-                 "duplicate_out_files": integrity_mod.duplicate_out_files(_plan),
-                 "mislabeled_findings_files": integrity_mod.mislabeled_findings_files(args.files),
-                 "cross_domain_findings": integrity_mod.cross_domain_findings(args.files),
-                 "unenforced_acknowledged": bool(_ack) and not ack_stale,
-                 "ack_stale": ack_stale,
-                 "content_hashes_checked": content_checked,
-                 "content_mismatched_files": content_mismatched,
-                 "content_snapshot_unreadable": content_snapshot_unreadable,
-                 "empty_dispatch_plans": sum(1 for plan in _plan_lists if not plan),
-                 "invalid_dispatch_plans": invalid_plans,
-                 "invalid_verify_queue": invalid_verify_queue,
-                 "plans_seen": plans_seen}
-    if _ack:
-        # Surface the Bash-coverage disclosure fields written by dispatch so
-        # they appear in meta.integrity in the final report (#680).
-        # Default to False so consumers never see None for this field.
-        integrity["write_guard_covers_bash"] = _ack.get("write_guard_covers_bash", False)
-    scout_requested = set()
-    scout_profiles_seen = 0
-    for sp in glob.glob(os.path.join(run_dir, "scout-*.json")):
-        try:
-            with open(sp, encoding="utf-8") as fh:
-                sd = evidence_mod.load_json_tolerant(fh.read())
-        except (OSError, ValueError):  # tolerant by design: never abort a run
-            continue
-        if not isinstance(sd, dict):
-            continue
-        scout_profiles_seen += 1
-        tools = sd.get("tools")
-        if isinstance(tools, list):
-            scout_requested.update(t for t in tools if isinstance(t, str))
-    if scout_profiles_seen and not scout_requested:
-        # #471: a scout can return tools:[] -- a silent decline of the tool
-        # layer. Disclose it; the artifact records scout_profiles_seen so
-        # "no scouts ran" and "scouts ran, requested nothing" read apart.
-        print("synthesize: %d scout profile(s) requested NO tools (tools:[]) "
-              "-- the tool layer ran on default triggers only, not scout "
-              "guidance" % scout_profiles_seen, file=sys.stderr)
-
-    # 5.0 (matrix Sec5.1): auto-discover .panopticon/coverage-<group>.json the
-    # same way groups.json/scout-*.json are auto-discovered above -- fed to
-    # audit_floor_cells in build_report along with args.files (the "ingested
-    # paths", reconcile_findings_files' own term for this same list).
-    coverages = plan_mod.load_coverage_files(run_dir)
-
-    # meta.cost (#1030): on the 5.0 driver path, count every dispatch class from
-    # its own on-disk artifact -- review cells, verify rounds, and the tool scan.
-    # driver_cost is None off the driver path (no dispatch-plan-driver.json), and
-    # cost_dispatches then emits the scout + queued-advisor rows only.
-    # #21: resolve the plan + verdicts under `run_dir`
-    # like every other run artifact. The 5.1 per-run-folder migration threaded
-    # run_dir through the scout/coverage/manifest reads above but MISSED this one
-    # (the plan lives at run_dir/dispatch-plan-driver.json, not flat .panopticon),
-    # leaving a now-false "cwd-relative" comment -- so driver_cost was silently
-    # None on EVERY 5.1 run and cost_dispatches fell back to the empty 4.x shape,
-    # falsifying meta.cost (run-7: reported scout=24/advisor=581 vs ~298 real
-    # dispatches).
-    driver_cost = cost_mod.driver_cost_counts(
-        run_dir, args.verdicts_dir, tools_ran)
-
-    diff_hunks = delta_mod.load_diff_hunks(args.diff_hunks) if args.diff_hunks else None
-    if args.diff_hunks and not args.fail_on:
-        # #957: a delta review is gate-first by intent, but the gate only arms
-        # when --fail-on is passed. Without this notice a forgotten flag
-        # yields a green-looking report whose gate silently reads OFF.
-        print("synthesize: DELTA REVIEW WITH Gate: OFF -- no --fail-on was "
-              "passed, so nothing can gate this change; pass --fail-on "
-              "{critical,high,medium,low} to arm the gate", file=sys.stderr)
+    # WS-0 S3: each ReportInputs struct loads itself from the run folder; main()
+    # only threads the three reads two loaders share -- the dispatch plans
+    # (ToolAxis.policy_mode + PlanInputs; loaded ONCE so the two cannot drift
+    # apart again, #146/C1), the verify queue (FindingSet.verdict_run_id +
+    # PlanInputs.resume) and the ingested tool findings (FindingSet + ToolAxis).
+    # WS-0 S3 fix #1: FindingSet.prepare() runs BEFORE the --emit-verify-queue
+    # branch, and the verify-queue read / FindingSet.load()'s verdicts read run
+    # AFTER it -- matching the old main()'s order. emit_verify_queue can DELETE
+    # a stale verify-queue.json left by a previous run, so reading the queue or
+    # loading verdicts before that branch runs would let stale state leak into
+    # verdict_run_id, resume and invalid_verify_queue on the "nothing to queue
+    # this run" path.
+    run = report_mod.RunConfig.from_args(args, gj, ts)
+    plans = plan_mod.load_dispatch_plans_detailed(panopticon_dir=run_dir)
+    tool_findings, dispositions, tools_ran = plan_mod.ingest_tool_findings(args)
+    tools = plan_mod.ToolAxis.load(args, run_dir, plans[0], dispositions, tools_ran)
+    prepared = findings_mod.FindingSet.prepare(args, tool_findings, run.security_mode)
+    if args.emit_verify_queue and verdicts_mod.emit_verify_queue(
+            prepared[0], run_dir, args.max_verify):
+        return 0
+    queue = plan_mod.load_verify_queue(run_dir)
+    fs = findings_mod.FindingSet.load(args, tool_findings, run.security_mode,
+                                      verdict_run_id=(queue[0] or {}).get("run_id"),
+                                      prepared=prepared)
+    plan = plan_mod.PlanInputs.load(run_dir, args.files, args.verdicts_dir, groups_meta,
+                                    plans, queue, fs.verdicts)
+    cost = cost_mod.CostInputs.load(run_dir, args.verdicts_dir, tools_ran)
+    delta = delta_mod.DeltaContext.from_args(args)
 
     # #1034/#1: a corrupt/malformed OCRDb bundle must exit with a code CI can
     # tell apart from a gate FAIL (1) or INCONCLUSIVE (2). Validate it up front
@@ -411,49 +181,7 @@ def main(argv=None):
         return 3
 
     report = report_mod.build_report(report_mod.ReportInputs(
-        run=report_mod.RunConfig(
-            target=args.target,
-            fail_on=args.fail_on,
-            timestamp=ts,
-            review_type=review_type,
-            security_mode=security_mode,
-            gate_unverified=args.gate_unverified,
-            max_verify=args.max_verify,
-            gate_scope=args.gate_scope,
-        ),
-        findings=findings_mod.FindingSet(
-            findings=findings,
-            verdicts=verdicts,
-            verdicts_supplied=args.verdicts_dir is not None,
-            verdict_unloadable=verdict_unloadable,
-            verdict_run_id=(_queue or {}).get("run_id"),
-            verdict_bundles=verdict_bundles,
-            catalog=catalog,
-            doc_policy=doc_policy,
-        ),
-        delta=delta_mod.DeltaContext(diff_hunks=diff_hunks, diff_context=args.diff_context),
-        plan=plan_mod.PlanInputs(
-            groups_meta=groups_meta,
-            fan_out=fan_out,
-            scout_requested=sorted(scout_requested),
-            scout_profiles_seen=scout_profiles_seen,
-            out_of_scope=out_of_scope,
-            coverages=coverages,
-            integrity=integrity,
-            resume=resume,
-        ),
-        tools=plan_mod.ToolAxis(
-            policy_mode=tool_policy_mode,
-            tools_ran=tools_ran,
-            dispositions=tool_dispositions,
-            manifest=tool_manifest,
-            ingested_paths=args.files,
-        ),
-        cost=cost_mod.CostInputs(
-            driver_cost=driver_cost,
-            run_usage=cost_mod.load_run_usage(run_dir),
-        ),
-    ))
+        run=run, findings=fs, delta=delta, plan=plan, tools=tools, cost=cost))
     render_mod.redact_report_secrets(report)   # #run7 SEC-B2C: before any shareable artifact
     errors, warnings = report_mod.validate_report(report)
     report_mod.attach_schema_status(report, errors)
