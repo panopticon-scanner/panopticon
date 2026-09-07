@@ -1,0 +1,362 @@
+"""Tests for scripts.phases.setup: the `driver setup` scan/ingest flow and its manifest.
+"""
+import contextlib
+import io
+import json
+import os
+import unittest
+from unittest import mock
+
+import scripts.phases.runio as runio
+import scripts.phases.setup as setup
+
+import scripts.driver as driver
+import scripts.coverage_model as coverage_model
+import scripts.setup_flow as setup_flow
+
+from tools.git_repo import make_git_repo
+
+
+class TestDriverSetup(unittest.TestCase):
+    def _repo(self):
+        return make_git_repo(
+            test_case=self,
+            files={"src/checkout/pay.py": "x = 1\n"},
+            branch="main",
+            user_email="t@t",
+            user_name="t",
+        )
+
+    def test_setup_verb_parses(self):
+        args = driver.build_parser().parse_args(["setup", "."])
+        self.assertEqual(args.verb, "setup")
+
+    def test_scan_emits_setup_scan_checkpoint_when_vocab_present(self):
+        d = self._repo()
+        args = driver.build_parser().parse_args(["setup", d])
+        status = setup.run_setup_flow(args)
+        self.assertEqual(status["status"], "checkpoint")
+        self.assertEqual(status["checkpoint"], "scan")
+        req = runio._load_json(runio._pano(d, "dispatch-request.json"))
+        self.assertEqual(req["checkpoint"], "scan")
+        entry = req["entries"][0]
+        self.assertEqual(entry["id"], "setup-scan")
+        self.assertTrue(entry["out_file"].endswith("setup-proposal.json"))
+        self.assertTrue(os.path.isfile(runio._pano(d, "setup-scan-brief.md")))
+
+    def test_scan_leaves_blanket_gitignore_and_notes_forced_add(self):
+        # #1135: a repo already blanket-ignoring .panopticon/ keeps its
+        # .gitignore untouched (no migration to /*), and the scan surfaces that
+        # groups.yml must be `git add -f`-ed.
+        d = self._repo()
+        with open(os.path.join(d, ".gitignore"), "w") as fh:
+            fh.write(".panopticon/\n")
+        args = driver.build_parser().parse_args(["setup", d])
+        status = setup.run_setup_flow(args)
+        self.assertIn("git add -f", status["message"])
+        with open(os.path.join(d, ".gitignore"), encoding="utf-8") as fh:
+            gi = fh.read()
+        self.assertIn(".panopticon/", gi)
+        self.assertNotIn(".panopticon/*", gi)   # not migrated in place
+
+    def test_ingest_writes_draft_then_completes(self):
+        d = self._repo()
+        args = driver.build_parser().parse_args(["setup", d])
+        setup.run_setup_flow(args)                       # scan checkpoint
+        proposal = {"groups": [{"capability": "Checkout",
+                                "match": ["src/checkout/**"], "tests": []}]}
+        with open(runio._pano(d, "setup-proposal.json"), "w") as fh:
+            json.dump(proposal, fh)
+        status = setup.run_setup_flow(args)              # re-invoke -> ingest
+        self.assertEqual(status["status"], "complete")
+        self.assertTrue(os.path.isfile(runio._pano(d, "groups.yml.draft")))
+        self.assertFalse(os.path.isfile(runio._pano(d, "groups.yml")))
+
+    def test_vocab_absent_falls_back_to_seed_and_completes(self):
+        # The bundled fixture is always present, so force absence at the loader
+        # boundary to exercise the fallback path deterministically.
+        d = self._repo()
+        args = driver.build_parser().parse_args(["setup", d])
+        with mock.patch("scripts.setup_flow.load_bundled_vocabulary",
+                        return_value=({"names": []}, False)):
+            status = setup.run_setup_flow(args)
+        self.assertEqual(status["status"], "complete")
+        self.assertTrue(runio._json_parses(runio._pano(d, "setup-complete.json")))
+        self.assertTrue(os.path.isfile(runio._pano(d, "groups.yml")))   # flat seed
+        # no scan checkpoint was emitted
+        self.assertFalse(os.path.isfile(runio._pano(d, "setup-proposal.json")))
+
+    def test_stale_fallback_marker_self_heals_when_vocab_returns(self):
+        # First run: vocab absent -> fallback marker written, run completes
+        # without a checkpoint.
+        d = self._repo()
+        args = driver.build_parser().parse_args(["setup", d])
+        with mock.patch("scripts.setup_flow.load_bundled_vocabulary",
+                        return_value=({"names": []}, False)):
+            status1 = setup.run_setup_flow(args)
+        self.assertEqual(status1["status"], "complete")
+        marker = runio._load_json(runio._pano(d, "setup-complete.json"))
+        self.assertEqual(marker["mode"], "fallback")
+
+        # Re-invoke WITHOUT --reset, vocab now present (no mock => real bundled
+        # fixture). Without the self-heal, scan_done/ingest_done would both
+        # short-circuit on the stale marker and this would return "complete"
+        # again, reusing the flat fallback seed instead of running a real scan.
+        status2 = setup.run_setup_flow(args)
+        self.assertEqual(status2["status"], "checkpoint")
+        self.assertEqual(status2["checkpoint"], "scan")
+        self.assertFalse(runio._json_parses(runio._pano(d, "setup-complete.json")))
+        self.assertTrue(os.path.isfile(runio._pano(d, "setup-scan-brief.md")))
+
+    def test_completion_message_branches_on_draft_vs_fallback(self):
+        # vocab-absent fallback: flat groups.yml, no draft -> message must not
+        # send the owner looking for a groups.yml.draft that was never written.
+        d1 = self._repo()
+        args1 = driver.build_parser().parse_args(["setup", d1])
+        with mock.patch("scripts.setup_flow.load_bundled_vocabulary",
+                        return_value=({"names": []}, False)):
+            status1 = setup.run_setup_flow(args1)
+        self.assertEqual(status1["status"], "complete")
+        self.assertNotIn("draft", status1["message"])
+        self.assertIn("groups.yml", status1["message"])
+
+        # vocab-present path: ingest writes a real draft -> message should
+        # point the owner at it.
+        d2 = self._repo()
+        args2 = driver.build_parser().parse_args(["setup", d2])
+        setup.run_setup_flow(args2)                       # scan checkpoint
+        proposal = {"groups": [{"capability": "Checkout",
+                                "match": ["src/checkout/**"], "tests": []}]}
+        with open(runio._pano(d2, "setup-proposal.json"), "w") as fh:
+            json.dump(proposal, fh)
+        status2 = setup.run_setup_flow(args2)              # re-invoke -> ingest
+        self.assertEqual(status2["status"], "complete")
+        self.assertIn("draft", status2["message"])
+
+    def test_fallback_message_surfaces_readiness_gaps(self):
+        # Force a deterministic readiness gap (a docker check that failed)
+        # rather than relying on the real docker/tools-image state of the
+        # machine running the tests -- that state varies by environment and
+        # would make this assertion flaky.
+        d = self._repo()
+        args = driver.build_parser().parse_args(["setup", d])
+        fake_checks = [("docker", False,
+                        "docker unavailable -- install/start Docker or run with --no-tools")]
+        with mock.patch("scripts.setup_flow.load_bundled_vocabulary",
+                        return_value=({"names": []}, False)), \
+             mock.patch("scripts.setup_flow.readiness", return_value=fake_checks):
+            status = setup.run_setup_flow(args)
+        self.assertEqual(status["status"], "complete")
+        self.assertIn("readiness gaps", status["message"])
+        self.assertIn("docker", status["message"])
+
+    def test_ingest_malformed_proposal_errors(self):
+        d = self._repo()
+        args = driver.build_parser().parse_args(["setup", d])
+        setup.run_setup_flow(args)
+        with open(runio._pano(d, "setup-proposal.json"), "w") as fh:
+            json.dump({"groups": [{"capability": "", "match": []}]}, fh)
+        status = setup.run_setup_flow(args)
+        self.assertEqual(status["status"], "error")
+        self.assertFalse(os.path.isfile(runio._pano(d, "groups.yml.draft")))
+
+    def test_reset_clears_setup_artifacts(self):
+        d = self._repo()
+        args = driver.build_parser().parse_args(["setup", d])
+        setup.run_setup_flow(args)                        # scan checkpoint: brief + manifest
+        self.assertTrue(os.path.isfile(runio._pano(d, "setup-scan-brief.md")))
+        # Simulate a real returned proposal sitting on disk pre-reset (the host
+        # wrote it back but it was never ingested) -- a genuine artifact for
+        # --reset to clear, not one that never existed.
+        proposal = {"groups": [{"capability": "Checkout",
+                                "match": ["src/checkout/**"], "tests": []}]}
+        with open(runio._pano(d, "setup-proposal.json"), "w") as fh:
+            json.dump(proposal, fh)
+        run_id_before = setup.load_setup_manifest(d)["run_id"]
+
+        reset_args = driver.build_parser().parse_args(["setup", d, "--reset"])
+        setup.run_setup_flow(reset_args)                  # clears, then re-scans
+
+        # the pre-existing proposal was actually removed (not left for the
+        # re-scan to trip over as a stale "already done" marker)
+        self.assertFalse(os.path.isfile(runio._pano(d, "setup-proposal.json")))
+        # the setup-manifest was regenerated, not reused -> a genuinely fresh run
+        self.assertNotEqual(setup.load_setup_manifest(d)["run_id"], run_id_before)
+        # a real re-scan happened (brief re-rendered under the fresh run)
+        self.assertTrue(os.path.isfile(runio._pano(d, "setup-scan-brief.md")))
+
+    def test_foreign_setup_manifest_is_discarded_and_rebuilt(self):
+        # #run7 AGT-C1A: a target-committed setup-manifest stamped with a foreign
+        # review_root (presetting a hostile vocabulary_path) must be discarded and
+        # rebuilt from args, mirroring the run-manifest #1093 guard.
+        import io, contextlib
+        d = self._repo()
+        os.makedirs(runio._pano(d), exist_ok=True)
+        runio._write_json(runio._pano(d, "setup-manifest.json"),
+                           {"schema_version": 1, "run_id": "FOREIGN",
+                            "review_root": "/somewhere/else",
+                            "vocabulary_path": "/etc/hostile-vocab.yml",
+                            "host": "claude"})
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
+        m = setup.load_setup_manifest(d)
+        self.assertNotEqual(m["review_root"], "/somewhere/else")   # re-stamped to THIS tree
+        self.assertNotEqual(m["run_id"], "FOREIGN")                # rebuilt, not reused
+        self.assertIsNone(m["vocabulary_path"])                    # hostile path dropped
+        self.assertIn("ignoring foreign setup-manifest", err.getvalue())
+
+    def test_reset_preserves_committed_groups_yml(self):
+        d = self._repo()
+        os.makedirs(runio._pano(d), exist_ok=True)
+        committed_path = runio._pano(d, "groups.yml")
+        content = "groups:\n  checkout:\n    match:\n      - src/checkout/**\n"
+        with open(committed_path, "w") as fh:
+            fh.write(content)
+
+        args = driver.build_parser().parse_args(["setup", d])
+        setup.run_setup_flow(args)                        # scan checkpoint
+
+        reset_args = driver.build_parser().parse_args(["setup", d, "--reset"])
+        setup.run_setup_flow(reset_args)                  # clears setup artifacts only
+
+        self.assertTrue(os.path.isfile(committed_path))
+        with open(committed_path, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), content)
+
+    def test_setup_end_to_end_loop(self):
+        """scan checkpoint -> host persists proposal -> re-invoke ingests ->
+        complete, draft present, committed groups.yml never written."""
+        d = self._repo()
+        args = driver.build_parser().parse_args(["setup", d])
+        s1 = setup.run_setup_flow(args)
+        self.assertEqual(s1["checkpoint"], "scan")
+        entry = runio._load_json(runio._pano(d, "dispatch-request.json"))["entries"][0]
+        # host return-persist: write the returned proposal to entry["out_file"]
+        with open(entry["out_file"], "w") as fh:
+            json.dump({"groups": [{"capability": "Checkout",
+                                   "match": ["src/checkout/**"], "tests": []}]}, fh)
+        s2 = setup.run_setup_flow(args)
+        self.assertEqual(s2["status"], "complete")
+        self.assertIn("groups.yml.draft", "".join(os.listdir(runio._pano(d))))
+        self.assertFalse(os.path.isfile(runio._pano(d, "groups.yml")))
+
+    def test_setup_size_flags_pin_the_manifest_and_reach_the_report(self):
+        # 5.2: --max-per-group/--max-groups are pinned in setup-manifest.json at
+        # scan time and honoured by ingest; the report artifacts are written
+        # and the completion message points at the report.
+        d = self._repo()
+        args = driver.build_parser().parse_args(
+            ["setup", d, "--max-per-group", "3", "--max-groups", "5"])
+        setup.run_setup_flow(args)                       # scan checkpoint
+        manifest = setup.load_setup_manifest(d)
+        self.assertEqual((manifest["max_per_group"], manifest["max_groups"]), (3, 5))
+        with open(runio._pano(d, "setup-proposal.json"), "w") as fh:
+            json.dump({"groups": [{"capability": "Checkout",
+                                   "match": ["src/checkout/**"], "tests": []}]}, fh)
+        status = setup.run_setup_flow(args)              # re-invoke -> ingest
+        self.assertEqual(status["status"], "complete")
+        self.assertIn("setup-report.md", status["message"])
+        report = runio._load_json(runio._pano(d, "setup-report.json"))["report"]
+        self.assertEqual((report["cap"], report["ceiling"]), (3, 5))
+        self.assertTrue(os.path.isfile(runio._pano(d, "setup-report.md")))
+        # a bare re-invocation resumes the pinned manifest, not the (absent) flags
+        status = setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
+        self.assertEqual(status["status"], "complete")
+        self.assertEqual(setup.load_setup_manifest(d)["max_per_group"], 3)
+
+    def test_setup_size_flags_must_be_positive(self):
+        parser = driver.build_parser()
+        for argv in (["setup", ".", "--max-per-group", "0"],
+                     ["setup", ".", "--max-groups", "-3"],
+                     ["setup", ".", "--max-per-group", "x"],
+                     ["run", ".", "--max-per-group", "0"]):
+            with self.subTest(argv=argv), self.assertRaises(SystemExit), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                parser.parse_args(argv)
+        self.assertEqual(parser.parse_args(["setup", ".", "--max-groups", "5"]).max_groups, 5)
+
+    def test_setup_manifest_pins_the_config_numbers_at_creation(self):
+        # config.json is resolved when the manifest is minted: an edit between
+        # scan and ingest cannot move the cap or the ceiling under the brief.
+        d = self._repo()
+        os.makedirs(runio._pano(d), exist_ok=True)
+        with open(os.path.join(runio._pano(d), "config.json"), "w") as fh:
+            json.dump({"max_per_group": 7, "max_groups": 9}, fh)
+        setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
+        manifest = setup.load_setup_manifest(d)
+        self.assertEqual((manifest["max_per_group"], manifest["max_groups"]), (7, 9))
+        with open(os.path.join(runio._pano(d), "config.json"), "w") as fh:
+            json.dump({"max_per_group": 2, "max_groups": 4}, fh)
+        with open(runio._pano(d, "setup-proposal.json"), "w") as fh:
+            json.dump({"groups": [{"capability": "Checkout",
+                                   "match": ["src/checkout/**"], "tests": []}]}, fh)
+        status = setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
+        self.assertEqual(status["status"], "complete")
+        report = runio._load_json(runio._pano(d, "setup-report.json"))["report"]
+        self.assertEqual((report["cap"], report["ceiling"]), (7, 9))
+        # the CLI still wins over config
+        d2 = self._repo()
+        os.makedirs(runio._pano(d2), exist_ok=True)
+        with open(os.path.join(runio._pano(d2), "config.json"), "w") as fh:
+            json.dump({"max_per_group": 7}, fh)
+        setup.run_setup_flow(driver.build_parser().parse_args(
+            ["setup", d2, "--max-per-group", "3"]))
+        self.assertEqual(setup.load_setup_manifest(d2)["max_per_group"], 3)
+
+    def test_scan_writes_the_spine_with_the_manifest_sizes(self):
+        # 5.2 stage 1: the scan phase computes the spine ONCE with the sizes
+        # the manifest pinned, persists it, and the brief carries the same
+        # numbers -- what the agent plans against is what ingest applies.
+        d = self._repo()
+        args = driver.build_parser().parse_args(
+            ["setup", d, "--max-per-group", "3", "--max-groups", "5"])
+        status = setup.run_setup_flow(args)
+        self.assertEqual(status["checkpoint"], "scan")
+        spine = runio._load_json(runio._pano(d, "setup-spine.json"))
+        self.assertEqual((spine["cap"], spine["ceiling"], spine["ceiling_source"]),
+                         (3, 5, "cli"))
+        self.assertEqual(setup_flow.read_spine(d), spine)
+        with open(runio._pano(d, "setup-scan-brief.md"), encoding="utf-8") as fh:
+            brief = fh.read()
+        self.assertIn("## Size arithmetic", brief)
+        self.assertIn("ceiling (review groups this repo affords): 5 from --max-groups", brief)
+        self.assertIn("setup-spine.json", runio._TOP_LEVEL)
+        self.assertIn("setup-spine.json", setup._SETUP_ARTIFACTS)
+        # --reset drops the pinned sizes and re-runs scan: the spine is rebuilt
+        # with the defaults, not left over from the flagged run
+        setup.run_setup_flow(driver.build_parser().parse_args(["setup", d, "--reset"]))
+        spine = runio._load_json(runio._pano(d, "setup-spine.json"))
+        self.assertEqual((spine["cap"], spine["ceiling_source"]), (48, "formula"))
+
+    def test_scan_brief_carries_the_bundled_catalogs(self):
+        # 5.2 §5.1: the scan phase renders BOTH shipped catalogs in full prose
+        # (#1500) -- the capability entries with their definitions and the
+        # layer entries the agent may name -- plus the surfaces enum.
+        d = self._repo()
+        setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
+        with open(runio._pano(d, "setup-scan-brief.md"), encoding="utf-8") as fh:
+            brief = fh.read()
+        self.assertIn("## Capability catalog", brief)
+        self.assertIn("### Auth\nDefinition: ", brief)
+        self.assertIn("## Layer catalog", brief)
+        self.assertIn("### API\nDefinition: ", brief)
+        self.assertNotIn("do not propose `layers`", brief)
+        for surface in coverage_model.SURFACES:
+            self.assertIn(surface, brief)
+
+    def test_reset_clears_the_report_artifacts(self):
+        d = self._repo()
+        args = driver.build_parser().parse_args(["setup", d])
+        setup.run_setup_flow(args)
+        with open(runio._pano(d, "setup-proposal.json"), "w") as fh:
+            json.dump({"groups": [{"capability": "Checkout",
+                                   "match": ["src/checkout/**"], "tests": []}]}, fh)
+        setup.run_setup_flow(args)
+        for name in ("setup-report.md", "setup-report.json"):
+            self.assertTrue(os.path.isfile(runio._pano(d, name)), name)
+            self.assertIn(name, runio._TOP_LEVEL)
+            self.assertIn(name, setup._SETUP_ARTIFACTS)
+        setup.run_setup_flow(driver.build_parser().parse_args(["setup", d, "--reset"]))
+        for name in ("setup-report.md", "setup-report.json", "groups.yml.draft"):
+            self.assertFalse(os.path.isfile(runio._pano(d, name)), name)
