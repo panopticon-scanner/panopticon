@@ -28,7 +28,7 @@ jobs:
       contents: write          # scoped to this job: it commits a branch
       pull-requests: write     # ...and opens the PR
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Check the pin
         id: check
