@@ -17,8 +17,8 @@ import unittest
 from unittest import mock
 import scripts.phases.runio as runio
 import scripts.phases.verify as verify
+import scripts.phases.synthesize as synthesize
 
-import scripts.driver as driver
 import scripts.evidence as evidence
 
 RUN_ID = "RID"
@@ -95,7 +95,7 @@ class TestToolQueueParity(_ToolVerifyBase):
     synthesize's for the same .panopticon/tools/ fixture."""
 
     def _report_tool_pairs(self, d, manifest):
-        driver.synthesize_execute(d, manifest)
+        synthesize.synthesize_execute(d, manifest)
         report = runio._load_json(runio._pano(d, "report.json"))
         return {
             (f["fingerprint"], f["id"]) for f in report["findings"] if evidence.is_tool_sourced(f)
@@ -218,7 +218,7 @@ class TestToolVerifyEndToEnd(_ToolVerifyBase):
             result = verify.verify_execute(d, m)
             self.assertEqual(result.checkpoint, "verify")
             self.assertFalse(verify.verify_done(d, m))  # verdict owed
-        driver.synthesize_execute(d, m)
+        synthesize.synthesize_execute(d, m)
         report = runio._load_json(runio._pano(d, "report.json"))
         self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
         self.assertEqual(report["meta"]["coverage"]["verdicts"]["unanswered"], 1)
@@ -235,7 +235,7 @@ class TestToolVerifyEndToEnd(_ToolVerifyBase):
         with self._bundle():
             self.assertTrue(verify.verify_done(d, m))
             self.assertEqual(verify.verify_execute(d, m).kind, "advanced")
-        driver.synthesize_execute(d, m)
+        synthesize.synthesize_execute(d, m)
         report = runio._load_json(runio._pano(d, "report.json"))
         tf = next(f for f in report["findings"] if evidence.is_tool_sourced(f))
         self.assertEqual(tf["evidence"]["status"], "tool_confirmed")
@@ -321,7 +321,7 @@ class TestSynthesizeFixtureParityWiring(_ToolVerifyBase):
 
         d = self._repo([_result("r1", "src/app.py", 1)])
         with mock.patch("subprocess.run", side_effect=fake_run):
-            driver.synthesize_execute(d, manifest)
+            synthesize.synthesize_execute(d, manifest)
         return captured["cmd"]
 
     def test_out_path_missing_flag_raises_clear_error(self):

@@ -57,7 +57,7 @@ def _fake_child(cmd, cwd, capture_output, text, env):
 
 
 def _replay_into(review_root, run_folder, out_dir):
-    with mock.patch("scripts.driver.synthesize_execute", new=_fake_synthesize_execute), \
+    with mock.patch("scripts.phases.synthesize.synthesize_execute", new=_fake_synthesize_execute), \
             mock.patch.object(replay_report.subprocess, "run", new=_fake_child), \
             mock.patch("sys.stdout"):
         replay_report.replay(argparse.Namespace(

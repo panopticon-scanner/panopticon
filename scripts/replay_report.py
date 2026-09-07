@@ -117,7 +117,7 @@ def replay(args):
     repo = os.path.abspath(args.repo or os.path.dirname(HERE))
     sys.path.insert(0, os.path.join(repo, "skill"))
     import scripts.phases.runio as runio
-    import scripts.driver as driver
+    import scripts.phases.synthesize as synthesize_phase
     import scripts.run_manifest as run_manifest
 
     review_root = os.path.abspath(args.review_root)
@@ -146,7 +146,7 @@ def replay(args):
         root = _scratch_root(tmp, review_root, manifest, tag, run_folder)
         with mock.patch("scripts.phases.runio._run_child", new=fake_run_child):
             try:
-                driver.synthesize_execute(root, manifest)
+                synthesize_phase.synthesize_execute(root, manifest)
             except runio.DriverError:
                 pass    # expected: the no-op child produced no report
         if not recorded or "synthesize.py" not in os.path.basename(recorded[-1][1]):
