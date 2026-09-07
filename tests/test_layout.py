@@ -14,9 +14,18 @@ ws0-god-module-refactor-design.md section 6.3.
    (`import synth.findings`, `from phases import runio`): skill/scripts/ is
    also on sys.path, so a flat import builds a SECOND module object with its
    own state and its own patch targets.
-3. `synth/*` never imports `scripts.driver` or `scripts.phases.*`.
-4. `synthesize.py` and `driver.py` hold no module-level re-export
-   (`NAME = some_module.attr`): a name lives in exactly one module.
+3. Neither package imports the other side, and neither imports an entry
+   script: `synth/*` never reaches `scripts.driver` / `scripts.phases.*`,
+   `phases/*` never reaches `scripts.synthesize`, and neither reaches its own
+   entry script (that is the cycle the packages exist to break).
+4. No module-level re-export (`NAME = some_module.attr`). In an entry script
+   that means any imported module: re-exports are how a moved name stays
+   reachable from the god module for ever. In a package module it means a
+   SIBLING in the same package -- `_pano = runio._pano` inside `phases/` gives
+   one function two patch targets, which is the hazard rule 1 exists for. An
+   alias of a shared definition from outside the package stays legal and is
+   expected to say why (`synth/findings.py` aliases three `scripts.evidence`
+   names, per #688: local copies of shared definitions drift).
 5. Size ratchet: no package module exceeds LINE_CEILING lines. Raising the
    number here is a visible decision; drifting past it is not.
 6. Every package module imports on its own in a fresh interpreter. `phases/`
@@ -37,6 +46,15 @@ from conftest import REPO_ROOT, SKILL_ROOT
 SCRIPTS = os.path.join(SKILL_ROOT, "scripts")
 TESTS = os.path.join(REPO_ROOT, "tests")
 PACKAGES = ("synth", "phases")          # rules apply to whichever exist
+# Rule 3, per package: what this package may never import. Both directions of
+# the synth/phases boundary, plus each package's own entry script -- importing
+# it back is the cycle the packages exist to break. The bare forms catch a flat
+# import that rule 2 would also reject.
+FORBIDDEN_IMPORTS = {
+    "synth": ("scripts.driver", "scripts.phases", "scripts.synthesize",
+              "driver", "phases", "synthesize"),
+    "phases": ("scripts.driver", "scripts.synthesize", "driver", "synthesize"),
+}
 EXPECTED_PACKAGES = ("synth", "phases")  # S1 lands synth; D1 adds phases
 ENTRY_SCRIPTS = ("synthesize.py", "driver.py")
 LINE_CEILING = 700
@@ -121,51 +139,88 @@ class LayoutTest(unittest.TestCase):
         self.assertEqual(offenders, [], "flat package import (double-module hazard):\n"
                          + "\n".join(offenders))
 
-    def test_rule3_synth_never_imports_driver_or_phases(self):
-        forbidden_roots = ("scripts.driver", "scripts.phases", "driver", "phases")
+    def test_rule3_packages_never_import_the_other_side_or_an_entry_script(self):
         offenders = []
-        synth_dir = os.path.join(SCRIPTS, "synth")
-        for path in _package_files():
-            if os.path.dirname(path) != synth_dir:
-                continue
-            for node in ast.walk(_parse(path)):
-                if isinstance(node, ast.Import):
-                    mods = [a.name for a in node.names]
-                elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-                    mods = [node.module] + [node.module + "." + a.name for a in node.names]
-                else:
+        for pkg, d in _package_dirs():
+            for path in sorted(os.listdir(d)):
+                if not path.endswith(".py"):
                     continue
-                if any(m == r or m.startswith(r + ".") for m in mods for r in forbidden_roots):
-                    offenders.append(_where(path, node))
-        self.assertEqual(offenders, [], "synth/* must not depend on the driver side:\n"
+                path = os.path.join(d, path)
+                forbidden_roots = FORBIDDEN_IMPORTS[pkg]
+                for node in ast.walk(_parse(path)):
+                    if isinstance(node, ast.Import):
+                        mods = [a.name for a in node.names]
+                    elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                        mods = [node.module] + [node.module + "." + a.name
+                                                for a in node.names]
+                    else:
+                        continue
+                    if any(m == r or m.startswith(r + ".")
+                           for m in mods for r in forbidden_roots):
+                        offenders.append(_where(path, node))
+        self.assertEqual(offenders, [], "a package module reached across the boundary "
+                         "(synth/* must not touch the driver side; phases/* must not "
+                         "touch synthesize; neither may import its own entry script):\n"
                          + "\n".join(offenders))
 
-    def test_rule4_entry_scripts_hold_no_re_exports(self):
+    def _re_exports(self, path, aliases):
+        """Module-level `NAME = <alias>.attr` for any alias in `aliases`."""
+        out = []
+        for node in _parse(path).body:
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            value = node.value
+            while isinstance(value, ast.Attribute):
+                value = value.value
+            if isinstance(value, ast.Name) and value.id in aliases:
+                out.append(_where(path, node))
+        return out
+
+    def _imported_module_aliases(self, path):
+        """Names bound to a non-stdlib module by an import in this file.
+
+        Includes `from . import runio`, which is how every intra-package
+        reference is written (rule 1) and therefore how a sibling re-export
+        would get its name."""
         stdlib = set(sys.stdlib_module_names)
+        aliases = set()
+        for node in ast.walk(_parse(path)):
+            if isinstance(node, ast.Import):
+                for a in node.names:
+                    if a.name.split(".")[0] not in stdlib:
+                        aliases.add(a.asname or a.name.split(".")[0])
+            elif isinstance(node, ast.ImportFrom):
+                if node.level:                       # from . import runio
+                    aliases.update(a.asname or a.name for a in node.names)
+                elif node.module and node.module.split(".")[0] not in stdlib:
+                    aliases.update(a.asname or a.name for a in node.names)
+        return aliases
+
+    def test_rule4_entry_scripts_hold_no_re_exports(self):
         offenders = []
         for entry in ENTRY_SCRIPTS:
             path = os.path.join(SCRIPTS, entry)
-            tree = _parse(path)
-            module_aliases = set()
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Import):
-                    for a in node.names:
-                        if a.name.split(".")[0] not in stdlib:
-                            module_aliases.add(a.asname or a.name.split(".")[0])
-                elif isinstance(node, ast.ImportFrom) and node.module \
-                        and node.module.split(".")[0] not in stdlib:
-                    for a in node.names:
-                        module_aliases.add(a.asname or a.name)
-            for node in tree.body:
-                if not isinstance(node, (ast.Assign, ast.AnnAssign)):
-                    continue
-                value = node.value
-                while isinstance(value, ast.Attribute):
-                    value = value.value
-                if isinstance(value, ast.Name) and value.id in module_aliases:
-                    offenders.append(_where(path, node))
+            offenders += self._re_exports(path, self._imported_module_aliases(path))
         self.assertEqual(offenders, [], "re-export in an entry script (a name lives in "
                          "exactly one module):\n" + "\n".join(offenders))
+
+    def test_rule4_package_modules_hold_no_sibling_re_exports(self):
+        """A sibling re-export gives one function two patch targets, which is
+        exactly what rule 1 exists to prevent. Aliasing a shared definition from
+        OUTSIDE the package is a different thing and stays legal -- see
+        `synth/findings.py`'s three `scripts.evidence` aliases (#688)."""
+        offenders = []
+        for _pkg, d in _package_dirs():
+            siblings = {f[:-3] for f in os.listdir(d)
+                        if f.endswith(".py") and f != "__init__.py"}
+            for f in sorted(os.listdir(d)):
+                if not f.endswith(".py"):
+                    continue
+                path = os.path.join(d, f)
+                bound = self._imported_module_aliases(path) & siblings
+                offenders += self._re_exports(path, bound)
+        self.assertEqual(offenders, [], "re-export of a package sibling (one name, one "
+                         "module, one patch target):\n" + "\n".join(offenders))
 
     def test_rule5_size_ratchet(self):
         over = []
