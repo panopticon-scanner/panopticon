@@ -25,8 +25,10 @@ The run folder may live anywhere under any name (an archive copy works);
 it is paired with the manifest by run_id, not by folder name. A folder
 replayed away from the absolute paths recorded in its dispatch plan (an
 archive copy) deterministically exercises the path-mismatch integrity branch
-on both sides of a diff; the scratch root is scrubbed to `<scratch>` in every
-output so those replays still compare.
+on both sides of a diff; the scratch root is scrubbed to `<scratch>` and the
+out-dir to `<out>` in every output -- the report files and the captured
+`synthesize.stdout` / `synthesize.stderr` alike -- so two replays compare
+wherever they were written.
 
 `--repo` points at the checkout whose skill/ should do the replay (default:
 this file's own repo) -- use it to produce the base-commit replay from the
@@ -36,9 +38,11 @@ branch checkout before the tool exists on the base.
 of two out-dirs, masking `meta.timestamp` and the x0x `generated_at`, and
 exits 1 on any difference -- including a key-order change, which the parsed
 compare alone would forgive but the written bytes do not. The `.json.html`
-rendering is compared as text with ISO timestamps masked. The out-dir files are named `<tag>-report*.json`
-exactly like the driver's, so `diff <out-dir> <review-root>/.panopticon`
-also shows the (informational, un-gated) drift from the historical report.
+rendering is compared as text with ISO timestamps masked, and the two
+captured streams line by line (the first differing line is reported). The
+out-dir files are named `<tag>-report*.json` exactly like the driver's, so
+`diff <out-dir> <review-root>/.panopticon` also shows the (informational,
+un-gated) drift from the historical report.
 """
 import argparse
 import json
@@ -51,6 +55,7 @@ from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SUFFIXES = (".json", "_part2.json", "-discarded.json", "-x0x.json")
+STREAMS = ("synthesize.stdout", "synthesize.stderr")
 REQUIRED = ("dispatch-plan-driver.json", "out-file-hashes.json")
 MASK = {".json": ("meta.timestamp",), "-x0x.json": ("generated_at",)}
 _TS_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
@@ -75,18 +80,25 @@ def _folder_run_id(run_folder):
                 return json.load(fh).get("run_id")
     return None
 
-def _scrub_scratch(path, root):
-    """Replace the scratch root (fresh per replay) with a stable token.
+def _scrub(text, root, out_dir):
+    """Replace the two per-replay absolute paths with stable tokens.
 
-    A folder replayed away from its original absolute paths (an archive copy)
+    The scratch root (fresh per replay) reaches the outputs when a folder is
+    replayed away from its original absolute paths (an archive copy): that
     trips the dispatch-plan path-mismatch branch, whose report lists the
-    findings files by their scratch-root path; scrubbing keeps two such
-    replays comparable."""
+    findings files by their scratch-root path. The out-dir reaches stdout
+    through the `X0X artifact:` / `HTML artifact:` lines. Scrubbing both keeps
+    two replays comparable wherever they were written."""
+    return text.replace(root, "<scratch>").replace(out_dir, "<out>")
+
+
+def _scrub_scratch(path, root, out_dir):
     with open(path, encoding="utf-8") as fh:
         text = fh.read()
-    if root in text:
+    scrubbed = _scrub(text, root, out_dir)
+    if scrubbed != text:
         with open(path, "w", encoding="utf-8") as fh:
-            fh.write(text.replace(root, "<scratch>"))
+            fh.write(scrubbed)
 
 def _scratch_root(tmp, review_root, manifest, tag, run_folder):
     root = os.path.join(tmp, "root")
@@ -150,15 +162,15 @@ def replay(args):
         after = _listing(run_folder)
         for name in os.listdir(out_dir):
             if name.startswith(tag):
-                _scrub_scratch(os.path.join(out_dir, name), root)
+                _scrub_scratch(os.path.join(out_dir, name), root, out_dir)
     with open(os.path.join(out_dir, "replay.json"), "w", encoding="utf-8") as fh:
         json.dump({"repo": repo, "review_root": review_root, "run_folder": run_folder,
                    "argv": [a.replace(root, "<scratch>") for a in cmd],
                    "returncode": proc.returncode}, fh, indent=2)
     with open(os.path.join(out_dir, "synthesize.stderr"), "w", encoding="utf-8") as fh:
-        fh.write(proc.stderr or "")
+        fh.write(_scrub(proc.stderr or "", root, out_dir))
     with open(os.path.join(out_dir, "synthesize.stdout"), "w", encoding="utf-8") as fh:
-        fh.write(proc.stdout or "")
+        fh.write(_scrub(proc.stdout or "", root, out_dir))
     if after != before:
         changed = sorted(k for k in set(before) | set(after) if before.get(k) != after.get(k))
         sys.exit(f"REFERENCE RUN FOLDER MUTATED: {changed}")
@@ -234,6 +246,17 @@ def diff(args):
                 problems.append(f"{html}: differs (ISO timestamps masked)")
         elif os.path.isfile(pa) != os.path.isfile(pb):
             problems.append(f"{html}: present on {'A' if os.path.isfile(pa) else 'B'} only")
+    for stream in STREAMS:
+        pa, pb = os.path.join(a_dir, stream), os.path.join(b_dir, stream)
+        if os.path.isfile(pa) != os.path.isfile(pb):
+            problems.append(f"{stream}: present on {'A' if os.path.isfile(pa) else 'B'} only")
+        elif os.path.isfile(pa):
+            with open(pa, encoding="utf-8") as fa, open(pb, encoding="utf-8") as fb:
+                la, lb = fa.read().splitlines(), fb.read().splitlines()
+            if la != lb:
+                first = next((i for i, (x, y) in enumerate(zip(la, lb)) if x != y),
+                             min(len(la), len(lb)))
+                problems.append(f"{stream}: differs at line {first + 1}")
     for line in problems:
         print(line)
     print(f"{'DIFFERENT' if problems else 'IDENTICAL'}: {len(problems)} difference(s) "
