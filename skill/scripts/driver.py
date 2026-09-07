@@ -7,8 +7,6 @@ every invocation, so a crash/compaction/interrupt resumes identically. See
 docs/superpowers/specs/2026-08-15-panopticon-5.0-driver-skeleton-design.md.
 """
 import argparse
-import copy
-import dataclasses
 import functools
 import glob as _glob
 import datetime
@@ -28,7 +26,6 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))                   # skill/scripts
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # skill
 
-import yaml  # noqa: E402
 
 import scripts.coverage_model as coverage_model  # noqa: E402
 import scripts.diff_map as diff_map  # noqa: E402
@@ -39,7 +36,6 @@ import scripts.groups_schema as groups_schema  # noqa: E402
 import scripts.ingest_tools as ingest_tools  # noqa: E402
 import scripts.ocrdb as ocrdb  # noqa: E402
 import scripts.plan_contract as plan_contract  # noqa: E402
-import scripts.redact as redact  # noqa: E402
 import scripts.run_tools as run_tools  # noqa: E402
 import scripts.run_manifest as run_manifest  # noqa: E402
 import scripts.score_gate as score_gate  # noqa: E402
@@ -47,326 +43,20 @@ import scripts.setup_flow as setup_flow  # noqa: E402
 import scripts.synth.findings as findings_mod  # noqa: E402
 import scripts.synth.plan as plan_mod  # noqa: E402
 import scripts._version as _version  # noqa: E402
-
-CHECKPOINT_KINDS = ("scout", "review", "verify", "scan")
-
-_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
-
-
-def _redact_output(text):
-    # #run7 SEC-B2C: the patterns live in scripts.redact, single-sourced with
-    # synthesize's report-body redaction so the two can never drift.
-    return redact.redact(text)
-
-
-class DriverError(Exception):
-    """A hard phase failure. main() converts it to a status:'error' result."""
-
-
-def _script(name):
-    return os.path.join(_SCRIPTS_DIR, name)
-
-
-def _child_env():
-    """Env for subprocessed panopticon CLIs. They do `import scripts.*` (a
-    namespace package) plus BARE imports of both skill/scripts modules (e.g.
-    `import evidence`) and repo-root scripts/ modules (e.g. `import file_issues`),
-    so PYTHONPATH must mirror tests/conftest.py exactly: skill, skill/scripts,
-    and <repo>/scripts."""
-    scripts_dir = _SCRIPTS_DIR                         # .../skill/scripts
-    skill_dir = os.path.dirname(scripts_dir)           # .../skill
-    repo_root = os.path.dirname(skill_dir)             # .../panopticon
-    repo_scripts = os.path.join(repo_root, "scripts")  # .../panopticon/scripts
-    env = dict(os.environ)
-    parts = [skill_dir, scripts_dir, repo_scripts]
-    env["PYTHONPATH"] = os.pathsep.join(
-        parts + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
-    return env
-
-
-# §5.1 per-run folders. These artifacts stay at `.panopticon/` top-level: setup
-# files, the resume anchors (run-manifest / setup-manifest), the cross-run EPSS
-# cache, the transient write-guard allowlist (the hook reads it CWD-relative and is
-# run-context-free), and the compat report symlinks. EVERY other artifact is per-run
-# and routes into `.panopticon/runs/<tag>/`. The durable reports live top-level and
-# tag-named (`<tag>-report.json`), so the run folder can be cleared — reclaiming the
-# findings/verdicts bulk — without losing any report.
-_TOP_LEVEL = frozenset({
-    "config.json", "groups.yml", "groups.yml.draft",
-    "run-manifest.json", "setup-manifest.json",
-    "setup-proposal.json", "setup-complete.json", "setup-scan-brief.md",
-    "setup-spine.json", "setup-report.md", "setup-report.json",
-    "epss-cache.json", "write-allowlist.json",
-    "report.json", "report.json.html",
-})
-
-
-def _run_tag(review_root):
-    """The active run's folder name from the manifest, or None before one exists
-    (setup / pre-discovery) — callers then fall back to the flat top-level."""
-    return run_manifest.run_tag(run_manifest.load_manifest(review_root))
-
-
-def _pano(review_root, *parts):
-    """Resolve a `.panopticon` artifact path: top-level for setup/anchor/cache/report
-    (`_TOP_LEVEL`), else per-run under `.panopticon/runs/<tag>/`. The manifest anchors
-    the tag, so every done-predicate (which stats a `_pano` path) resolves the same
-    folder on every resume."""
-    base = os.path.join(review_root, ".panopticon")
-    if parts and parts[0] not in _TOP_LEVEL:
-        tag = _run_tag(review_root)
-        if tag is not None:
-            return os.path.join(base, "runs", tag, *parts)
-    return os.path.join(base, *parts)
-
-
-def _report_out(review_root):
-    """The durable, top-level, tag-named report path passed to synthesize as --out;
-    `_part2.json` and `.html` derive from this stem, so all three land top-level and
-    tag-named. Falls back to flat `report.json` when there is no manifest."""
-    tag = _run_tag(review_root)
-    name = f"{tag}-report.json" if tag else "report.json"
-    return os.path.join(review_root, ".panopticon", name)
-
-
-def _relink(link_path, target_name):
-    """Create or replace a relative symlink `link_path -> target_name` (same dir)."""
-    os.makedirs(os.path.dirname(link_path), exist_ok=True)
-    try:
-        if os.path.islink(link_path) or os.path.exists(link_path):
-            os.remove(link_path)
-    except OSError:
-        pass
-    os.symlink(target_name, link_path)
-
-
-def _ensure_run_symlinks(review_root):
-    """Point `.panopticon/runs/latest` at the active run folder (best-effort; a
-    platform without symlinks simply skips it — the tag-named paths still work)."""
-    tag = _run_tag(review_root)
-    if not tag:
-        return
-    try:
-        _relink(os.path.join(review_root, ".panopticon", "runs", "latest"), tag)
-    except OSError:
-        pass
-
-
-def _prompt_safe(text):
-    """Neutralize characters that could break prompt-line structure so a hostile
-    filename cannot inject bullet lines into a reviewer's prompt (#1190 AGT-A1A).
-    C0/C1 control chars, DEL, and the Unicode line/paragraph separators are
-    rendered as inert \\xNN / \\uNNNN escapes; ordinary characters (including
-    non-ASCII) pass through unchanged, so legitimate paths are untouched."""
-    out = []
-    for ch in text:
-        o = ord(ch)
-        if o < 0x20 or o == 0x7f or 0x80 <= o <= 0x9f or o in (0x2028, 0x2029):
-            out.append("\\x%02x" % o if o < 0x100 else "\\u%04x" % o)
-        else:
-            out.append(ch)
-    return "".join(out)
-
-
-def _abs_file_list(review_root, files):
-    """Bullet list of files absolutized against review_root (#975): the reviewer
-    subagent inherits the HOST's cwd, not review_root/the --pr worktree, so a
-    bare-relative path resolves against the wrong tree. File-list specific — do
-    NOT route tests or other bullet lists through this; they stay repo-relative.
-    Paths are prompt-sanitized (#1190) so a control char in a filename cannot
-    inject prompt lines."""
-    return "\n".join(
-        "- " + _prompt_safe(os.path.abspath(os.path.join(review_root, f)))
-        for f in files
-    ) or "- (no files)"
-
-
-def _load_json(path):
-    try:
-        with open(path, encoding="utf-8") as fh:
-            return json.load(fh)
-    except (OSError, ValueError):
-        return None
-
-
-def _confine_artifact_path(path):
-    """Reject a `.panopticon` artifact path whose REAL location escapes the real
-    `.panopticon` via a symlinked component (#run9 SEC-X0X). plan_contract.
-    artifact_root() vets only the TOP-LEVEL `.panopticon` (once, at run start) and
-    _open_w_nofollow's O_NOFOLLOW only the FINAL component, so a hostile target can
-    plant an INTERMEDIATE symlink (`.panopticon/runs -> /elsewhere`) that a write
-    would traverse. Anchor on the path's own `.panopticon` segment and require the
-    realpath (which resolves any symlinked intermediate dir) to stay inside the
-    real root. A planted `runs` link resolves outside and is rejected; a legit
-    not-yet-created path resolves lexically against its real parent and passes, and
-    the intentional `runs/latest` link (which points WITHIN `.panopticon`) passes.
-    A path with no `.panopticon` segment is not an artifact path and is left be."""
-    apath = os.path.abspath(path)
-    parts = apath.split(os.sep)
-    if ".panopticon" not in parts:
-        return
-    root = os.sep.join(parts[:parts.index(".panopticon") + 1]) or os.sep
-    real_root = os.path.realpath(root)
-    real = os.path.realpath(apath)
-    if not (real == real_root or real.startswith(real_root + os.sep)):
-        raise ValueError(
-            "artifact path escapes .panopticon via a symlinked component: %r" % path)
-
-
-def _open_w_nofollow(path):
-    """Open `path` for writing, refusing to follow a symlink at the final path
-    component. A target repo (untrusted under redteam) can pre-commit a
-    `.panopticon` artifact path as a symlink to a file the invoking user can
-    write (a dotfile, authorized_keys, ...); plain open() would follow it and
-    clobber that target. O_NOFOLLOW makes the open fail on a symlink; we then
-    replace the link with a fresh regular file instead of writing through it
-    (#1095 -- mirrors run_manifest's exclusive-create precedent).
-
-    #run9 SEC-X0X: O_NOFOLLOW guards only the FINAL component, so confine the whole
-    resolved path to the real `.panopticon` first -- an intermediate symlinked dir
-    (`.panopticon/runs -> /elsewhere`) would otherwise carry this write outside."""
-    _confine_artifact_path(path)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        fd = os.open(path, flags, 0o644)
-    except OSError:
-        if os.path.islink(path):
-            os.unlink(path)                       # neutralize the link, never follow it
-            fd = os.open(path, flags, 0o644)
-        else:
-            raise
-    return os.fdopen(fd, "w", encoding="utf-8")
-
-
-def _write_json(path, data):
-    _confine_artifact_path(path)              # SEC-X0X: before makedirs, which would
-    os.makedirs(os.path.dirname(path), exist_ok=True)   # otherwise follow a symlinked dir
-    with _open_w_nofollow(path) as fh:
-        json.dump(data, fh, indent=2, sort_keys=True)
-    return path
-
-
-def _json_parses(path):
-    return _load_json(path) is not None
-
-
-def _load_return_json(path):
-    """Read a RETURN-PERSIST artifact -- a file whose content an AGENT produced as
-    its reply and the HOST wrote to disk verbatim -- tolerating the markdown fence
-    or prose preamble a chat reply wraps JSON in.
-
-    run-9 showed this is a property of the RETURN channel, not prompt wording: on
-    one model in one session, 233/233 self-write files were clean JSON while 0/25
-    scouts and 94/95 tool advisors came back fence-wrapped, even under an explicit
-    "raw JSON only, no fences" instruction -- because a model's final
-    conversational turn looks like a chat reply and instructions do not reliably
-    suppress the wrapper. So the confirm-it-parses step on a returned file MUST
-    unwrap, or an unparseable-but-recoverable scout reads as "no output" and the
-    run re-dispatches it forever. Uses the same tolerant reader
-    (evidence.load_json_tolerant) the tool-verdict path already relies on.
-
-    Distinct from _load_json, which stays STRICT: it reads artifacts the driver
-    itself writes (groups.json, out-file hashes, run manifests, the derived
-    coverage-*.json), where a markdown fence would signal tampering rather than a
-    chat wrapper and must never be silently accepted. Returns the parsed value, or
-    None when unrecoverable."""
-    try:
-        with open(path, encoding="utf-8") as fh:
-            body = fh.read()
-    except OSError:
-        return None
-    try:
-        return evidence.load_json_tolerant(body)
-    except ValueError:
-        return None
-
-
-def _return_json_parses(path):
-    return _load_return_json(path) is not None
-
-
-@functools.lru_cache(maxsize=8)
-def _parse_committed_groups(path, _mtime):
-    """Parse + validate groups.yml, memoized on (path, mtime) so a single
-    `driver run` re-parses the file at most once per content version instead of
-    once per group/phase (#1033). `_mtime` is part of the cache key only — a
-    changed file busts the entry. Never mutate the returned structures; callers
-    get deep copies via load_committed_groups."""
-    with open(path, encoding="utf-8") as fh:
-        doc = yaml.safe_load(fh)
-    return groups_schema.parse_groups(doc if isinstance(doc, dict) else {})
-
-
-def load_committed_groups(review_root):
-    """Parse the committed groups.yml via groups_schema (P1). A MISSING file is
-    an error (the driver run requires a committed matrix — `panopticon setup`
-    produces it), not an empty success."""
-    path = _pano(review_root, "groups.yml")
-    try:
-        mtime = os.path.getmtime(path)
-    except FileNotFoundError:
-        return {}, ["no committed groups.yml at %s — run `panopticon setup` first"
-                    % path]
-    except OSError as exc:
-        return {}, ["groups.yml unreadable: %s" % exc]
-    try:
-        groups, errors = _parse_committed_groups(path, mtime)
-    except (OSError, yaml.YAMLError) as exc:
-        return {}, ["groups.yml unreadable: %s" % exc]
-    # Deep-copy so a caller mutating its result can never corrupt the shared
-    # cache entry the next phase reads.
-    return copy.deepcopy(groups), list(errors)
-
-
-# Hard bound per phase so a wedged discovery/synthesize or a hung tool runner
-# cannot block the whole (resumable, CI-automatable) driver indefinitely (#1094).
-# discovery/synthesize are fast; the tools phase is a generous backstop above
-# run_tools' own per-tool TOOL_TIMEOUT=900 -- it catches a wedged run_tools
-# harness, not a single slow scanner.
-_CHILD_TIMEOUTS = {"discovery": 600, "tools": 7200, "synthesize": 600}
-_CHILD_TIMEOUT_DEFAULT = 600
-
-
-def _run_child(cmd, review_root, phase, timeout=None):
-    """subprocess.run for a deterministic phase, converting a spawn-level OSError
-    (ENOENT on the interpreter, EMFILE, a bad cwd, ...) or a phase timeout into a
-    DriverError so run()'s handler yields a clean status:error instead of a raw
-    traceback or an unbounded hang (#1033; #1094; #1021/5.0-14 covered only the
-    --pr acquire path). Returns the CompletedProcess on a normal spawn — a
-    non-zero exit is the caller's to interpret, not a spawn error."""
-    if timeout is None:
-        timeout = _CHILD_TIMEOUTS.get(phase, _CHILD_TIMEOUT_DEFAULT)
-    try:
-        return subprocess.run(cmd, cwd=review_root, capture_output=True,  # nosec B603
-                              text=True, env=_child_env(), timeout=timeout)
-    except subprocess.TimeoutExpired:
-        raise DriverError("%s: %s timed out after %ss"
-                          % (phase, cmd[1] if len(cmd) > 1 else cmd[0], timeout))
-    except OSError as exc:
-        raise DriverError("%s: could not spawn %s: %s"
-                          % (phase, cmd[1] if len(cmd) > 1 else cmd[0], exc))
-
-
-def _load_ocrdb_bundle():
-    """ocrdb.load_bundle, converting a malformed-bundle ValueError into a
-    DriverError so a corrupt bundle is a clean status:error, not a raw traceback
-    that crashes the driver mid-phase (#1034)."""
-    try:
-        return ocrdb.load_bundle()
-    except ValueError as exc:
-        raise DriverError("OCRDb bundle unreadable: %s" % exc)
+import scripts.phases.engine as engine
+import scripts.phases.runio as runio
 
 
 def discovery_done(review_root, manifest):
-    return _json_parses(_pano(review_root, "groups.json"))
+    return runio._json_parses(runio._pano(review_root, "groups.json"))
 
 
 def discovery_execute(review_root, manifest):
-    _groups, errors = load_committed_groups(review_root)
+    _groups, errors = runio.load_committed_groups(review_root)
     if errors:
-        raise DriverError("discovery: " + "; ".join(errors))
-    out = _pano(review_root, "groups.json")
-    cmd = [sys.executable, _script("discovery.py"), "--repo-scan",
+        raise runio.DriverError("discovery: " + "; ".join(errors))
+    out = runio._pano(review_root, "groups.json")
+    cmd = [sys.executable, runio._script("discovery.py"), "--repo-scan",
            "--security", manifest.get("security_mode", "standard"),
            review_root, "--out", out]
     scope = manifest.get("scope") or {"mode": "repo"}
@@ -396,138 +86,12 @@ def discovery_execute(review_root, manifest):
     _mpg = (manifest.get("flags") or {}).get("max_per_group")
     if _mpg is not None:
         cmd += ["--max-per-group", str(_mpg)]
-    proc = _run_child(cmd, review_root, "discovery")
-    if not _json_parses(out):
-        raise DriverError(
+    proc = runio._run_child(cmd, review_root, "discovery")
+    if not runio._json_parses(out):
+        raise runio.DriverError(
             "discovery: discovery --repo-scan produced no groups.json "
-            "(rc=%s): %s" % (proc.returncode, _redact_output((proc.stderr or proc.stdout)[:400])))
-    return PhaseResult(kind="advanced", message="discovery: groups.json written")
-
-
-def resolve_review_root(target, base=None, pr=None, runner=subprocess.run):
-    """Resolve the single review root, pinned once in the manifest (spec §5).
-
-    - pr given: acquire the deterministic PR worktree (diff_map); its path is
-      the root.
-    - git repo: `git rev-parse --show-toplevel` from the target.
-    - non-git: the target directory itself.
-    Returns (review_root, worktree, pr_base): worktree is the PR worktree to
-    release at validate (else None); pr_base is the PR's base branch as read
-    by the acquire (else None), for `run()` to pin as the manifest base.
-    """
-    if pr is not None:
-        info = diff_map.acquire_pr(pr, repo=target, runner=runner)
-        return info["worktree"], info["worktree"], info["base"]
-    target = os.path.abspath(target)
-    start = target if os.path.isdir(target) else os.path.dirname(target)
-    try:
-        # #run7 OPS-A1A: bound the probe. This runs at the very start of EVERY
-        # `driver run`/`setup`, before any phase timeout; a wedged index.lock,
-        # fsmonitor/watchman hook, credential prompt, or hung network FS would
-        # otherwise block the whole resumable driver indefinitely. Catch the
-        # timeout locally -- run()'s outer handler doesn't cover SubprocessError,
-        # so it would escape as an uncaught traceback -- and fall through to the
-        # existing non-git return.
-        proc = runner(["git", "-C", start, "rev-parse", "--show-toplevel"],
-                      capture_output=True, text=True, timeout=15)
-        if proc.returncode == 0 and proc.stdout.strip():
-            return os.path.realpath(proc.stdout.strip()), None, None
-    except (OSError, subprocess.SubprocessError):
-        pass
-    return (start if os.path.isdir(start) else target), None, None
-
-
-@dataclasses.dataclass(frozen=True)
-class Phase:
-    name: str
-    kind: str        # "deterministic" | "checkpoint" | "mixed"
-    done: object     # callable(review_root, manifest) -> bool
-    execute: object  # callable(review_root, manifest) -> PhaseResult
-
-
-_PHASE_RESULT_KINDS = ("advanced", "checkpoint")
-
-
-# Emitted with the terminal "complete" status: the call that disarms the
-# write-guard once the run needs it no longer. Safe to run unconditionally --
-# `uninstall` is a no-op when nothing is installed -- and it must run from the
-# SESSION root, since hook registration is session-rooted (#calibration-4).
-TEARDOWN_DIRECTIVE = (
-    "write_guard_hook.uninstall()  # from the SESSION root; safe if not armed")
-
-
-@dataclasses.dataclass
-class PhaseResult:
-    kind: str                     # "advanced" | "checkpoint"
-    checkpoint: str = None        # scout|review|verify (iff kind == "checkpoint")
-    group: str = None
-    dispatch_request: str = None  # absolute path (iff checkpoint)
-    message: str = ""
-
-    def __post_init__(self):
-        # #1033: reject an unknown kind loudly. run_engine treats anything that
-        # isn't "checkpoint" as "advanced", so a typo ("advance") or a status
-        # string ("complete"/"error") would be silently mishandled otherwise.
-        if self.kind not in _PHASE_RESULT_KINDS:
-            raise ValueError("unknown PhaseResult kind: %r" % self.kind)
-
-
-def _first_not_done(phases, review_root, manifest):
-    for phase in phases:
-        if not phase.done(review_root, manifest):
-            return phase
-    return None
-
-
-def run_engine(review_root, manifest, phases, max_steps=None):
-    """Advance the state machine from disk. Repeatedly executes the first
-    not-done phase until a checkpoint stops it or every phase is done. Returns a
-    status dict; never exits (the CLI owns process exit).
-
-    The cursor is recomputed every iteration, so a mixed phase that advances one
-    unit at a time is simply re-selected until its done() is satisfied.
-    """
-    advanced = []
-    # Progress guard: a buggy phase that returns "advanced" but never satisfies
-    # done() would spin forever. Cap the work and fail loudly. The bound is far
-    # above any real (phase-count + group-count) unit total.
-    if max_steps is None:
-        max_steps = 10000
-    for _ in range(max_steps):
-        phase = _first_not_done(phases, review_root, manifest)
-        if phase is None:
-            return {"status": "complete", "phase": None, "checkpoint": None,
-                    "group": None, "dispatch_request": None,
-                    "advanced": advanced, "message": "all phases complete",
-                    # The run is over, so no fan-out still needs write access.
-                    # The guard is fail-closed while registered and its
-                    # allowlist IS the complete set of permitted writes, so one
-                    # left armed denies EVERY later Write/Edit in the session --
-                    # the operator's included -- with only the hook's per-write
-                    # reason to say why. Teardown was a host duty stated in
-                    # prose (docs/PANOPTICON.md) that nothing signalled at the
-                    # one moment it becomes unambiguously safe. Say it here, in
-                    # the status the host already parses.
-                    "teardown": TEARDOWN_DIRECTIVE}
-        result = phase.execute(review_root, manifest)
-        if result.kind == "checkpoint":
-            return {"status": "checkpoint", "phase": phase.name,
-                    "checkpoint": result.checkpoint, "group": result.group,
-                    "dispatch_request": result.dispatch_request,
-                    "advanced": advanced,
-                    "message": result.message or ("%s checkpoint" % result.checkpoint)}
-        if phase.name not in advanced:
-            advanced.append(phase.name)
-    raise RuntimeError(
-        "driver engine exceeded %d steps without completing — a phase returned "
-        "'advanced' without satisfying its done() predicate" % max_steps)
-
-
-def emit_status(status, stream=None):
-    """Print the status JSON and return the process exit code: 0 for
-    checkpoint/complete, 1 for error. The CLI does `sys.exit(emit_status(...))`."""
-    (stream or sys.stdout).write(json.dumps(status) + "\n")
-    return 1 if status.get("status") == "error" else 0
+            "(rc=%s): %s" % (proc.returncode, runio._redact_output((proc.stderr or proc.stdout)[:400])))
+    return engine.PhaseResult(kind="advanced", message="discovery: groups.json written")
 
 
 _PROMPT_FILE_SAFE = re.compile(r"[^A-Za-z0-9._-]")
@@ -540,7 +104,7 @@ def _prompt_file_path(review_root, entry_id):
     name, which is operator-supplied, so a `/` or `..` in it must not steer the
     write out of the prompts directory."""
     safe = _PROMPT_FILE_SAFE.sub("_", str(entry_id)) or "entry"
-    return _pano(review_root, "_prompts", "%s.txt" % safe)
+    return runio._pano(review_root, "_prompts", "%s.txt" % safe)
 
 
 def _materialize_prompts(review_root, entries):
@@ -567,9 +131,9 @@ def _materialize_prompts(review_root, entries):
         if isinstance(prompt, str) and prompt and eid:
             path = _prompt_file_path(review_root, eid)
             try:
-                _confine_artifact_path(path)
+                runio._confine_artifact_path(path)
                 os.makedirs(os.path.dirname(path), exist_ok=True)
-                with _open_w_nofollow(path) as fh:
+                with runio._open_w_nofollow(path) as fh:
                     fh.write(prompt)
                 entry["prompt_file"] = os.path.abspath(path)
             except (OSError, ValueError) as exc:
@@ -588,14 +152,14 @@ def write_dispatch_request(review_root, run_id, checkpoint, group, entries):
 
     Each entry also gets a `prompt_file` (#run10 B2) — the same text, addressable
     — so a host can hand an agent a path instead of echoing the whole prompt."""
-    if checkpoint not in CHECKPOINT_KINDS:
+    if checkpoint not in runio.CHECKPOINT_KINDS:
         raise ValueError("unknown checkpoint kind: %r" % checkpoint)
     entries = _materialize_prompts(review_root, entries)
     request = {"schema_version": 1, "run_id": run_id, "checkpoint": checkpoint,
                "group": group, "entries": list(entries)}
-    path = _pano(review_root, "dispatch-request.json")
+    path = runio._pano(review_root, "dispatch-request.json")
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with _open_w_nofollow(path) as fh:
+    with runio._open_w_nofollow(path) as fh:
         json.dump(request, fh, indent=2)
     return os.path.abspath(path)
 
@@ -604,12 +168,12 @@ def load_dispatch_request(review_root):
     """The parsed .panopticon/dispatch-request.json (or None if absent/invalid).
     The host reads req['entries'] to install the write-guard
     (write_guard_hook.install(entries)) and to dispatch the checkpoint's cells."""
-    return _load_json(_pano(review_root, "dispatch-request.json"))
+    return runio._load_json(runio._pano(review_root, "dispatch-request.json"))
 
 
 def _discovered_groups(review_root):
     """(name, files) per group from discovery's groups.json."""
-    data = _load_json(_pano(review_root, "groups.json")) or {}
+    data = runio._load_json(runio._pano(review_root, "groups.json")) or {}
     return [(g.get("name"), g.get("files") or [])
             for g in (data.get("groups") or [])
             if isinstance(g, dict) and g.get("name")]
@@ -621,7 +185,7 @@ def _scout_entry(review_root, manifest, group, files, host, registry_tools=None)
     appended. Enforcement is host-declared (claude registers panopticon-scout)."""
     body = dispatch.render_prompt("scout.md", {}, host)
     security = manifest.get("security_mode", "standard")
-    file_list = _abs_file_list(review_root, files)
+    file_list = runio._abs_file_list(review_root, files)
     # #1053: ground the scout's tool recommendation in the real adapter registry
     # so it can only name scanners that exist -- an ungrounded scout invents
     # pytest/pylint/ruff/... and #1031 can only disclose them as
@@ -646,14 +210,14 @@ def _scout_entry(review_root, manifest, group, files, host, registry_tools=None)
             "enforced": enforced,
             "model": None,
             "prompt": prompt,
-            "out_file": os.path.abspath(_pano(review_root, "scout-%s.json" % group))}
+            "out_file": os.path.abspath(runio._pano(review_root, "scout-%s.json" % group))}
 
 
 def coverage_done(review_root, manifest):
     # Vacuously done when discovery produced no groups (empty target); otherwise
     # done once every discovered group has a coverage file. (Evaluated only after
     # discovery, an earlier phase, so groups.json is already present.)
-    return all(_json_parses(_pano(review_root, "coverage-%s.json" % g))
+    return all(runio._json_parses(runio._pano(review_root, "coverage-%s.json" % g))
                for g, _ in _discovered_groups(review_root))
 
 
@@ -664,7 +228,7 @@ def _chunk_of_map(review_root):
     infer it from the name. Authoritative where present; groups.json written
     before the field falls back to `_chunk_parent` (#1480).
     """
-    data = _load_json(_pano(review_root, "groups.json")) or {}
+    data = runio._load_json(runio._pano(review_root, "groups.json")) or {}
     return {g["name"]: g["chunk_of"]
             for g in (data.get("groups") or [])
             if isinstance(g, dict) and g.get("name") and g.get("chunk_of")}
@@ -731,13 +295,13 @@ def _scout_shape_errors(scout):
 def _bump_scout_attempts(review_root, group):
     """Persisted per-group re-dispatch counter that bounds #3's retry loop.
     Lives alongside the scout outputs, so --reset clears it with them."""
-    path = _pano(review_root, "scout-attempts.json")
-    data = _load_json(path) if _json_parses(path) else {}
+    path = runio._pano(review_root, "scout-attempts.json")
+    data = runio._load_json(path) if runio._json_parses(path) else {}
     if not isinstance(data, dict):
         data = {}
     n = int(data.get(group, 0)) + 1
     data[group] = n
-    _write_json(path, data)
+    runio._write_json(path, data)
     return n
 
 
@@ -746,12 +310,12 @@ def coverage_execute(review_root, manifest):
     group's coverage as the floor widened by the scout's valid domains. Returns
     after one unit of work; the engine re-selects coverage until every group has
     a coverage file. Re-emits only the still-missing scouts on resume."""
-    matrix, errors = load_committed_groups(review_root)
+    matrix, errors = runio.load_committed_groups(review_root)
     if errors:
         # #1091: fail loud like discovery_execute -- a missing/corrupt groups.yml
         # on a RESUME (discovery is already done, so its gate never re-runs) would
         # otherwise silently yield matrix={}, dropping the committed floor/exclude.
-        raise DriverError("coverage: " + "; ".join(errors))
+        raise runio.DriverError("coverage: " + "; ".join(errors))
     host = manifest.get("host", "claude")
     groups = _discovered_groups(review_root)
     # #1056: scouts are independent and there is exactly one per group, so a
@@ -762,13 +326,13 @@ def coverage_execute(review_root, manifest):
     # scouts that still have no output (durable state = the entries' out_files).
     pending_scouts = []
     for g, f in groups:
-        if _json_parses(_pano(review_root, "coverage-%s.json" % g)):
+        if runio._json_parses(runio._pano(review_root, "coverage-%s.json" % g)):
             continue
-        sp = _pano(review_root, "scout-%s.json" % g)
+        sp = runio._pano(review_root, "scout-%s.json" % g)
         # A scout is a RETURN-PERSIST file: read it tolerantly, or a fence-wrapped
         # but otherwise-valid profile reads as "no output" and re-dispatches
         # forever (run-9: 0/25 scouts fenced -> the whole phase silently looped).
-        if not _return_json_parses(sp):
+        if not runio._return_json_parses(sp):
             pending_scouts.append((g, f))          # no output yet
             continue
         # #3: a scout that PARSES as JSON but has the wrong shape would slip
@@ -779,7 +343,7 @@ def coverage_execute(review_root, manifest):
         # field is gone, the failure mode is not.) Validate at the return-persist
         # accept boundary; on a mismatch, DISCARD the garbage and re-dispatch that
         # one scout. Cap the retries so a deterministically-broken host fails loud.
-        scout = _load_return_json(sp)
+        scout = runio._load_return_json(sp)
         errs = _scout_shape_errors(scout)
         if errs:
             n = _bump_scout_attempts(review_root, g)
@@ -788,7 +352,7 @@ def coverage_execute(review_root, manifest):
                   % (g, n, _MAX_SCOUT_ATTEMPTS, "; ".join(errs)),
                   file=sys.stderr, flush=True)
             if n >= _MAX_SCOUT_ATTEMPTS:
-                raise DriverError(
+                raise runio.DriverError(
                     "scout for group %s returned schema-invalid output %d times "
                     "(fix the agent or `--reset`): %s" % (g, n, "; ".join(errs)))
             try:
@@ -801,7 +365,7 @@ def coverage_execute(review_root, manifest):
             # unwrapped JSON so the coverage read below and synthesize's raw
             # scout-*.json scan both get clean bytes, whatever wrapper the host
             # wrote. Unwrap AND persist the unwrapped form -- not just parse past.
-            _write_json(sp, scout)
+            runio._write_json(sp, scout)
     if pending_scouts:
         # run-9 E1: gate the tool registry the scouts see to THIS repo's detected
         # languages + applicable adapters, computed once, so no scout over-requests
@@ -817,7 +381,7 @@ def coverage_execute(review_root, manifest):
                    for g, f in pending_scouts]
         req = write_dispatch_request(review_root, manifest["run_id"],
                                      "scout", None, entries)
-        return PhaseResult(kind="checkpoint", checkpoint="scout", group=None,
+        return engine.PhaseResult(kind="checkpoint", checkpoint="scout", group=None,
                            dispatch_request=req,
                            message="scout checkpoint for %d group(s)"
                                    % len(entries))
@@ -825,16 +389,16 @@ def coverage_execute(review_root, manifest):
     # local work, no dispatch, so the cadence is unchanged and cheap).
     chunk_of = _chunk_of_map(review_root)
     for group, files in groups:
-        if _json_parses(_pano(review_root, "coverage-%s.json" % group)):
+        if runio._json_parses(runio._pano(review_root, "coverage-%s.json" % group)):
             continue
-        scout_path = _pano(review_root, "scout-%s.json" % group)
+        scout_path = runio._pano(review_root, "scout-%s.json" % group)
         # #5.0-12: a scout that returns a non-object (e.g. a JSON array) parses as
         # JSON but would slip past `or {}` (a non-empty list is truthy) and crash
         # `.get` with an uncaught AttributeError. Validate the shape at the gate
         # and fail loud (status:error) instead.
-        scout = _load_return_json(scout_path)
+        scout = runio._load_return_json(scout_path)
         if not isinstance(scout, dict):
-            raise DriverError("scout output for group %s is not a JSON object" % group)
+            raise runio.DriverError("scout output for group %s is not a JSON object" % group)
         raw = scout.get("domains") or []
         spec = matrix.get(group)
         if spec is None:
@@ -899,32 +463,32 @@ def coverage_execute(review_root, manifest):
                   "fixture corpus), use top-level `exclude_paths:` in groups.yml, "
                   "not per-group `exclude:`." % (group, ", ".join(rejected)),
                   file=sys.stderr)
-        _write_json(_pano(review_root, "coverage-%s.json" % group), cov)
-        return PhaseResult(kind="advanced",
+        runio._write_json(runio._pano(review_root, "coverage-%s.json" % group), cov)
+        return engine.PhaseResult(kind="advanced",
                            message="coverage: group %s (floor+scout)" % group)
-    return PhaseResult(kind="advanced", message="coverage: complete")
+    return engine.PhaseResult(kind="advanced", message="coverage: complete")
 
 
 def tools_done(review_root, manifest):
-    return _json_parses(_pano(review_root, "tools-ran.json"))
+    return runio._json_parses(runio._pano(review_root, "tools-ran.json"))
 
 
 def tools_execute(review_root, manifest):
     if (manifest.get("flags") or {}).get("tools") is False:
-        _write_json(_pano(review_root, "tools-ran.json"),
+        runio._write_json(runio._pano(review_root, "tools-ran.json"),
                     {"schema_version": 1, "ran": False, "skipped": True, "crashed": False,
                      "note": "tools disabled (--no-tools)",
                      "returncode": None, "run_id": manifest["run_id"]})
-        return PhaseResult(kind="advanced", message="tools: skipped (--no-tools)")
-    out_dir = _pano(review_root, "tools")
+        return engine.PhaseResult(kind="advanced", message="tools: skipped (--no-tools)")
+    out_dir = runio._pano(review_root, "tools")
     # #1031: --manifest records the deterministic adapter set (selected/produced/
     # missing) so synthesize can certify tool coverage against what the runner
     # actually resolved, not the scout's advisory tool list.
-    cmd = [sys.executable, _script("run_tools.py"), "--target", review_root,
+    cmd = [sys.executable, runio._script("run_tools.py"), "--target", review_root,
            "--out", out_dir, "--deps",
            "--run-id", manifest.get("run_id") or "",   # #17: manifest self-identifies
-           "--manifest", _pano(review_root, "tools-manifest.json")]
-    proc = _run_child(cmd, review_root, "tools")
+           "--manifest", runio._pano(review_root, "tools-manifest.json")]
+    proc = runio._run_child(cmd, review_root, "tools")
     produced = os.path.isdir(out_dir) and bool(os.listdir(out_dir))
     # #1033: a real scanner/runner CRASH (non-zero exit + no output) is NOT a
     # benign Docker-absent skip (exit 0 + no output). Distinguish them: record a
@@ -934,10 +498,10 @@ def tools_execute(review_root, manifest):
     # stop that a missing Docker image doesn't deserve.
     crashed = (not produced) and proc.returncode not in (0, None)
     raw_err = (proc.stderr or "").strip()[:300]
-    note = "" if produced else (_redact_output(raw_err)
+    note = "" if produced else (runio._redact_output(raw_err)
                                 or ("tool scan crashed" if crashed
                                     else "no tool output produced"))
-    _write_json(_pano(review_root, "tools-ran.json"),
+    runio._write_json(runio._pano(review_root, "tools-ran.json"),
                 {"schema_version": 1, "ran": produced, "skipped": not produced, "crashed": crashed,
                  "note": note, "returncode": proc.returncode,
                  "run_id": manifest["run_id"]})
@@ -946,7 +510,7 @@ def tools_execute(review_root, manifest):
                          % (proc.returncode, note))
     elif not produced:
         sys.stderr.write("driver: tool scan produced no output — %s\n" % note)
-    return PhaseResult(kind="advanced",
+    return engine.PhaseResult(kind="advanced",
                        message="tools: %s" % (
                            "produced output" if produced
                            else ("CRASHED — " + note if crashed
@@ -954,12 +518,12 @@ def tools_execute(review_root, manifest):
 
 
 def _effective_domains(review_root, group):
-    cov = _load_json(_pano(review_root, "coverage-%s.json" % group)) or {}
+    cov = runio._load_json(runio._pano(review_root, "coverage-%s.json" % group)) or {}
     return list(cov.get("effective") or [])
 
 
 def _get_valid_cell_data(review_root, manifest, group, domain):
-    data = _load_json(_pano(review_root, "findings-%s-%s.json" % (group, domain)))
+    data = runio._load_json(runio._pano(review_root, "findings-%s-%s.json" % (group, domain)))
     if not (isinstance(data, dict) and isinstance(data.get("findings"), list)):
         return None
     meta = data.get("_panopticon")
@@ -1025,6 +589,8 @@ def _render_criteria(bundle, domain):
 # give us); other domains need a rule/CWE->domain index (deferred). The
 # independent tool-verify round is untouched; this is purely a prompt input.
 _TOOL_HIT_DOMAINS = frozenset({"SEC"})
+
+
 _TOOL_HITS_CAP = 40
 
 
@@ -1035,7 +601,7 @@ def _ingested_tool_findings(review_root, include_fixtures):
     include_fixtures) so the review-time map reflects the SAME findings the
     independent tool-verify round adjudicates. Returns () when the tools dir is
     absent or ingest fails — the map is advisory and must never break a review."""
-    tools_dir = _pano(review_root, "tools")
+    tools_dir = runio._pano(review_root, "tools")
     if not os.path.isdir(tools_dir):
         return ()
     try:
@@ -1097,9 +663,9 @@ def _tool_hits_for_cell(review_root, manifest, domain, files):
 
 
 def _cell_entry(review_root, manifest, group, domain, files, tests, host, bundle):
-    file_list = _abs_file_list(review_root, files)
+    file_list = runio._abs_file_list(review_root, files)
     test_list = "\n".join("- " + t for t in tests) or "- (no tests)"
-    out_file = os.path.abspath(_pano(review_root, "findings-%s-%s.json" % (group, domain)))
+    out_file = os.path.abspath(runio._pano(review_root, "findings-%s-%s.json" % (group, domain)))
     prompt = dispatch.render_prompt("domain-panel.md", {
         "domain": domain, "group": group, "file_list": file_list,
         "tests": test_list, "security_mode": manifest.get("security_mode", "standard"),
@@ -1161,7 +727,7 @@ def _load_cell_findings(review_root, manifest, group, domain):
 
 def _verify_out_file(review_root, group, domain, stage):
     suffix = "-backup" if stage == "backup" else ""
-    return os.path.abspath(_pano(review_root, "verdicts",
+    return os.path.abspath(runio._pano(review_root, "verdicts",
                                  "verdicts-%s-%s%s.json" % (group, domain, suffix)))
 
 
@@ -1169,8 +735,8 @@ _MAX_VERIFY_ATTEMPTS = 3
 
 
 def _verify_attempts(review_root, group, domain, stage):
-    path = _pano(review_root, "verify-attempts.json")
-    data = _load_json(path) if _json_parses(path) else {}
+    path = runio._pano(review_root, "verify-attempts.json")
+    data = runio._load_json(path) if runio._json_parses(path) else {}
     if not isinstance(data, dict):
         return 0
     return int(data.get("%s/%s/%s" % (group, domain, stage), 0))
@@ -1181,14 +747,14 @@ def _bump_verify_attempts(review_root, group, domain, stage):
     verdict-reconciliation retry loop, so a systematically-re-coding advisor
     surfaces as unanswered -> INCONCLUSIVE instead of wedging the run. Lives with
     the verdicts, so --reset clears it."""
-    path = _pano(review_root, "verify-attempts.json")
-    data = _load_json(path) if _json_parses(path) else {}
+    path = runio._pano(review_root, "verify-attempts.json")
+    data = runio._load_json(path) if runio._json_parses(path) else {}
     if not isinstance(data, dict):
         data = {}
     key = "%s/%s/%s" % (group, domain, stage)
     n = int(data.get(key, 0)) + 1
     data[key] = n
-    _write_json(path, data)
+    runio._write_json(path, data)
     return n
 
 
@@ -1198,7 +764,7 @@ def _verify_bundle_labeled(review_root, manifest, group, domain, stage):
     mislabeled one). Separates an A2 reconciliation shortfall, which the bounded
     budget governs, from a first dispatch or an unloadable return, which keep the
     existing uncapped re-dispatch."""
-    data = _load_json(_verify_out_file(review_root, group, domain, stage))
+    data = runio._load_json(_verify_out_file(review_root, group, domain, stage))
     if not (isinstance(data, dict) and isinstance(data.get("verdicts"), list)):
         return False
     meta = data.get("_panopticon") or {}
@@ -1224,7 +790,7 @@ def _verify_cell_done(review_root, manifest, group, domain, stage):
     # so requiring 1:1 there would re-dispatch every backup cell forever.
     if stage != "primary":
         return True
-    data = _load_json(_verify_out_file(review_root, group, domain, stage))
+    data = runio._load_json(_verify_out_file(review_root, group, domain, stage))
     cell = _load_cell_findings(review_root, manifest, group, domain)
     want = {str(f["id"]) for f in (cell or [])}
     got = {str(v.get("finding_id")) for v in data["verdicts"]
@@ -1255,7 +821,7 @@ def _render_findings(review_root, cell):
 
 
 def _verify_entry(review_root, manifest, group, domain, files, cell, host, bundle, stage):
-    file_list = _abs_file_list(review_root, files)
+    file_list = runio._abs_file_list(review_root, files)
     out_file = _verify_out_file(review_root, group, domain, stage)
     prompt = dispatch.render_prompt("domain-advisor.md", {
         "domain": domain, "group": group, "file_list": file_list,
@@ -1294,7 +860,7 @@ def _driver_plan_entries(review_root, manifest):
             entries.append({
                 "group": group, "domain": domain, "enforced": enforced,
                 "out_file": os.path.abspath(
-                    _pano(review_root, "findings-%s-%s.json" % (group, domain)))})
+                    runio._pano(review_root, "findings-%s-%s.json" % (group, domain)))})
     return entries
 
 
@@ -1306,13 +872,13 @@ def _write_driver_plan(review_root, manifest):
     cell set is fixed once coverage completes, which gates the review phase).
     An empty target (no cells) writes NO plan -- reconcile then stays a correct
     no-op rather than flagging an empty plan."""
-    path = _pano(review_root, plan_mod.DRIVER_DISPATCH_PLAN)
+    path = runio._pano(review_root, plan_mod.DRIVER_DISPATCH_PLAN)
     if os.path.isfile(path):
         return path
     entries = _driver_plan_entries(review_root, manifest)
     if not entries:
         return None
-    return _write_json(path, entries)
+    return runio._write_json(path, entries)
 
 
 def _snapshot_review_out_files(review_root, manifest):
@@ -1323,7 +889,7 @@ def _snapshot_review_out_files(review_root, manifest):
     later substitution -- e.g. by a rogue advisor on the unenforced generic host
     -- is caught. Idempotent AND one-way: if the snapshot already exists it is
     NOT rewritten -- re-hashing after a substitution would mask it."""
-    path = _pano(review_root, "out-file-hashes.json")
+    path = runio._pano(review_root, "out-file-hashes.json")
     if os.path.isfile(path):
         return path
     entries = _driver_plan_entries(review_root, manifest)
@@ -1346,13 +912,13 @@ def review_execute(review_root, manifest):
     # injected/undeclared findings file is caught by reconcile at synthesis.
     _write_driver_plan(review_root, manifest)
     host = manifest.get("host", "claude")
-    bundle = _load_ocrdb_bundle()
+    bundle = runio._load_ocrdb_bundle()
     # group tests come from the committed matrix (parse_groups tests field)
-    matrix, errors = load_committed_groups(review_root)
+    matrix, errors = runio.load_committed_groups(review_root)
     if errors:
         # #1092: same resume-reachable gap as coverage -- a corrupt groups.yml
         # would silently drop every group's committed tests from the prompts.
-        raise DriverError("review: " + "; ".join(errors))
+        raise runio.DriverError("review: " + "; ".join(errors))
     # #5: batch EVERY pending review cell across ALL groups into one checkpoint
     # (like the scout fan-out, #1056) instead of one group per round trip -- run-6
     # serialized 26 groups into 26 sequential trips while the host can dispatch
@@ -1374,11 +940,11 @@ def review_execute(review_root, manifest):
     if all_entries:
         req = write_dispatch_request(review_root, manifest["run_id"], "review",
                                      None, all_entries)
-        return PhaseResult(kind="checkpoint", checkpoint="review", group=None,
+        return engine.PhaseResult(kind="checkpoint", checkpoint="review", group=None,
                            dispatch_request=req,
                            message="review: %d cell(s) across %d group(s)"
                                    % (len(all_entries), ngroups))
-    return PhaseResult(kind="advanced", message="review: all cells complete")
+    return engine.PhaseResult(kind="advanced", message="review: all cells complete")
 
 
 def verify_execute(review_root, manifest):
@@ -1386,9 +952,9 @@ def verify_execute(review_root, manifest):
     # boundary (idempotent) BEFORE any advisor runs, so a verify-phase
     # substitution is caught. review_done gates this phase, so all cells exist.
     _snapshot_review_out_files(review_root, manifest)
-    os.makedirs(_pano(review_root, "verdicts"), exist_ok=True)
+    os.makedirs(runio._pano(review_root, "verdicts"), exist_ok=True)
     host = manifest.get("host", "claude")
-    bundle = _load_ocrdb_bundle()
+    bundle = runio._load_ocrdb_bundle()
     # PRIMARY round: one advisor per engaged (>= F_p), not-yet-verified cell.
     # #5: batch every pending primary advisor across ALL groups into one
     # checkpoint (like review + scout), instead of one group per round trip. The
@@ -1417,7 +983,7 @@ def verify_execute(review_root, manifest):
     if all_entries:
         req = write_dispatch_request(review_root, manifest["run_id"], "verify",
                                      None, all_entries)
-        return PhaseResult(kind="checkpoint", checkpoint="verify", group=None,
+        return engine.PhaseResult(kind="checkpoint", checkpoint="verify", group=None,
                            dispatch_request=req,
                            message="verify: %d primary advisor(s) across %d group(s)"
                            % (len(all_entries), ngroups))
@@ -1430,7 +996,7 @@ def verify_execute(review_root, manifest):
     tools = _verify_tools_execute(review_root, manifest, host)
     if tools is not None:
         return tools
-    return PhaseResult(kind="advanced", message="verify: all cells verified")
+    return engine.PhaseResult(kind="advanced", message="verify: all cells verified")
 
 
 def verify_done(review_root, manifest):
@@ -1452,7 +1018,7 @@ def _cell_backup_findings(review_root, manifest, group, domain):
     cell = _load_cell_findings(review_root, manifest, group, domain)
     if not cell:
         return []
-    primary = _load_json(_verify_out_file(review_root, group, domain, "primary"))
+    primary = runio._load_json(_verify_out_file(review_root, group, domain, "primary"))
     if not (isinstance(primary, dict) and isinstance(primary.get("verdicts"), list)):
         return []
     by_fid = {str(v.get("finding_id")): v for v in primary["verdicts"]
@@ -1468,26 +1034,6 @@ def _cell_backup_findings(review_root, manifest, group, domain):
             out += [f for f in cat_findings
                     if (f["evidence"].get("status") == "advisor_confirmed")]
     return out
-
-
-def _confined_to_root(review_root, path):
-    """True iff the claim path resolves inside review_root. An absolute path or a
-    `../`-escape resolves outside and is rejected (#1096) -- the claim's
-    location.file is LLM/panel-supplied (steerable by injection planted in the
-    reviewed repo), so it must not be able to point a downstream advisor at files
-    outside the review tree.
-
-    #run7 ARC-F2A: resolve SYMLINKS (realpath), not just `..`/join (abspath). A
-    committed in-tree symlink whose lexical path starts with root+sep (e.g.
-    `src/evil -> /etc/passwd`) passed the old abspath check, then the backup
-    advisor's unconfined Read followed it out of the repo. realpath on a
-    non-existent tail resolves the existing prefix and appends the rest lexically,
-    so a legitimate not-yet-written path still confines correctly."""
-    if not isinstance(path, str) or not path:
-        return False
-    root = os.path.realpath(review_root)
-    full = os.path.realpath(os.path.join(root, path))
-    return full == root or full.startswith(root + os.sep)
 
 
 _REDACTED_CLAIM_PATH = "<redacted: location escapes review root>"
@@ -1508,7 +1054,7 @@ def _confine_claim_location(review_root, loc):
     if not isinstance(loc, dict):
         return loc
     path = loc.get("file")
-    if isinstance(path, str) and path and not _confined_to_root(review_root, path):
+    if isinstance(path, str) and path and not runio._confined_to_root(review_root, path):
         loc = dict(loc)
         loc["file"] = _REDACTED_CLAIM_PATH
     return loc
@@ -1526,7 +1072,7 @@ def _backup_scope_files(review_root, files, scope):
     for f in scope:
         loc = f.get("location") if isinstance(f, dict) else None
         path = loc.get("file") if isinstance(loc, dict) else None
-        if not path or not _confined_to_root(review_root, path):
+        if not path or not runio._confined_to_root(review_root, path):
             return list(files)
         if path not in located:
             located.append(path)
@@ -1561,7 +1107,7 @@ def _verify_backup_execute(review_root, manifest, host, bundle):
     if all_entries:
         req = write_dispatch_request(review_root, manifest["run_id"], "verify",
                                      None, all_entries)
-        return PhaseResult(kind="checkpoint", checkpoint="verify", group=None,
+        return engine.PhaseResult(kind="checkpoint", checkpoint="verify", group=None,
                            dispatch_request=req,
                            message="verify: %d backup advisor(s) across %d group(s)"
                            % (len(all_entries), ngroups))
@@ -1622,12 +1168,12 @@ def _tool_verify_queue(review_root, manifest):
     include_fixtures/group/exclude are pinned to synthesize's main() tool-ingest
     call (group=None, exclude_globs=None) for identity; _tools_include_fixtures
     is the value synthesize_execute forwards."""
-    ran = (_load_json(_pano(review_root, "tools-ran.json")) or {}).get("ran")
-    tools_dir = _pano(review_root, "tools")
+    ran = (runio._load_json(runio._pano(review_root, "tools-ran.json")) or {}).get("ran")
+    tools_dir = runio._pano(review_root, "tools")
     if not ran or not os.path.isdir(tools_dir):
         return []
     findings = findings_mod.load_findings(
-        sorted(_glob.glob(_pano(review_root, "findings-*.json"))))
+        sorted(_glob.glob(runio._pano(review_root, "findings-*.json"))))
     tool_findings, _disp = ingest_tools.ingest_dir_detailed(
         tools_dir, None, include_fixtures=_tools_include_fixtures(manifest))
     for tf in tool_findings:
@@ -1654,7 +1200,7 @@ def _tool_verdict_out_file(review_root, queue_id):
     the SAME directory the cell verdict bundles use, but a single-verdict file
     keyed by queue_id (synthesize's evidence.load_verdicts_detailed picks it up;
     load_verdict_bundles skips it as not-a-bundle)."""
-    return os.path.abspath(_pano(review_root, "verdicts", "%s.json" % queue_id))
+    return os.path.abspath(runio._pano(review_root, "verdicts", "%s.json" % queue_id))
 
 
 def _tool_verdict_done(review_root, queue_id):
@@ -1714,7 +1260,7 @@ def _verify_tools_execute(review_root, manifest, host):
                for qid, f in pending]
     req = write_dispatch_request(review_root, manifest["run_id"], "verify",
                                  "tools", entries)
-    return PhaseResult(kind="checkpoint", checkpoint="verify", group="tools",
+    return engine.PhaseResult(kind="checkpoint", checkpoint="verify", group="tools",
                        dispatch_request=req,
                        message="verify: %d tool advisor(s)" % len(entries))
 
@@ -1727,7 +1273,7 @@ def _verify_tools_done(review_root, manifest):
 def synthesize_done(review_root, manifest):
     # §5.1: gate on the durable tag-named report, not the convenience symlink, so
     # resume never depends on symlink creation having succeeded.
-    return _json_parses(_report_out(review_root))
+    return runio._json_parses(runio._report_out(review_root))
 
 
 def _collect_host_usage(review_root, manifest):
@@ -1749,11 +1295,11 @@ def _collect_host_usage(review_root, manifest):
     """
     if manifest.get("host") != "claude":
         return None          # other hosts write their own usage.json, or none
-    if os.path.isfile(_pano(review_root, "usage.json")):
+    if os.path.isfile(runio._pano(review_root, "usage.json")):
         return None          # already collected (resume) -- never overwrite
     # dirname of a non-top-level artifact IS the per-run folder -- the same
     # directory synthesize resolves as run_dir (dirname of --groups).
-    run_dir = os.path.dirname(_pano(review_root, "usage.json"))
+    run_dir = os.path.dirname(runio._pano(review_root, "usage.json"))
     # --project-dir locates the HOST SESSION's transcript, so it is the directory
     # the session runs in -- NOT the review root. #calibration-2: these are the
     # same path for a self-scan (every run 1-10), so passing review_root worked
@@ -1770,7 +1316,7 @@ def _collect_host_usage(review_root, manifest):
     # root, so let the operator state it; getcwd() remains the default because it
     # is right for the documented invocation.
     session_dir = manifest.get("session_dir") or os.getcwd()
-    cmd = [sys.executable, _script("collect_usage.py"),
+    cmd = [sys.executable, runio._script("collect_usage.py"),
            "--run-dir", run_dir,
            "--project-dir", session_dir]
     # Pass the window explicitly. run-manifest.json is a _TOP_LEVEL artifact, so
@@ -1790,8 +1336,8 @@ def _collect_host_usage(review_root, manifest):
     cmd += ["--until", datetime.datetime.now(datetime.timezone.utc)
             .strftime("%Y-%m-%dT%H:%M:%SZ")]
     try:
-        proc = _run_child(cmd, review_root, "usage", timeout=120)
-    except DriverError as exc:
+        proc = runio._run_child(cmd, review_root, "usage", timeout=120)
+    except runio.DriverError as exc:
         print("driver: usage collection skipped (%s); meta.cost.tokens stays null"
               % exc, file=sys.stderr, flush=True)
         return None
@@ -1819,19 +1365,19 @@ def synthesize_execute(review_root, manifest):
     _write_driver_plan(review_root, manifest)
     _snapshot_review_out_files(review_root, manifest)
     _collect_host_usage(review_root, manifest)
-    findings = sorted(_glob.glob(_pano(review_root, "findings-*.json")))
-    verdicts_dir = _pano(review_root, "verdicts")
+    findings = sorted(_glob.glob(runio._pano(review_root, "findings-*.json")))
+    verdicts_dir = runio._pano(review_root, "verdicts")
     os.makedirs(verdicts_dir, exist_ok=True)   # empty in P3 (verify is a no-op)
-    report = _report_out(review_root)   # §5.1: durable, top-level, tag-named
+    report = runio._report_out(review_root)   # §5.1: durable, top-level, tag-named
     flags = manifest.get("flags") or {}
-    cmd = [sys.executable, _script("synthesize.py"),
+    cmd = [sys.executable, runio._script("synthesize.py"),
            "--out", report,
-           "--groups", _pano(review_root, "groups.json"),
+           "--groups", runio._pano(review_root, "groups.json"),
            "--security", manifest.get("security_mode", "standard"),
            "--run-id", manifest.get("run_id") or "",   # §5.1: X0X report provenance
            "--verdicts-dir", verdicts_dir]
-    if (_load_json(_pano(review_root, "tools-ran.json")) or {}).get("ran"):
-        cmd += ["--tools-dir", _pano(review_root, "tools")]
+    if (runio._load_json(runio._pano(review_root, "tools-ran.json")) or {}).get("ran"):
+        cmd += ["--tools-dir", runio._pano(review_root, "tools")]
         # Pin synthesize's fixture posture to the tool-verify queue's
         # (#5.0-03): both must ingest the SAME tool findings or synthesize
         # could queue one the driver never dispatched a verdict for. Also
@@ -1843,33 +1389,33 @@ def synthesize_execute(review_root, manifest):
                       ("--gate-scope", "gate_scope")):
         if flags.get(key):
             cmd += [flag, str(flags[key])]
-    diff_hunks = _pano(review_root, "diff-hunks.json")
+    diff_hunks = runio._pano(review_root, "diff-hunks.json")
     if os.path.isfile(diff_hunks):
         cmd += ["--diff-hunks", diff_hunks]
     if flags.get("diff_context") is not None:
         cmd += ["--diff-context", str(flags["diff_context"])]
     cmd += findings
-    proc = _run_child(cmd, review_root, "synthesize")
+    proc = runio._run_child(cmd, review_root, "synthesize")
     # A failing gate exits non-zero but still writes the report — that is a valid
     # outcome, not a driver error. Only an ABSENT report is a failure.
-    if not _json_parses(report):
-        raise DriverError("synthesize produced no report.json (rc=%s): %s"
-                          % (proc.returncode, _redact_output((proc.stderr or proc.stdout)[:400])))
+    if not runio._json_parses(report):
+        raise runio.DriverError("synthesize produced no report.json (rc=%s): %s"
+                          % (proc.returncode, runio._redact_output((proc.stderr or proc.stdout)[:400])))
     # §5.1: point the flat compat paths at the latest tag-named report, so every
     # existing reader of report.json / report.json.html resolves it unchanged, and
     # refresh runs/latest. The tag-named files are the durable top-level outputs;
     # the run folder can be cleared without touching them.
-    tag = _run_tag(review_root)
+    tag = runio._run_tag(review_root)
     if tag:
         try:   # compat symlinks are best-effort; the tag-named report is authoritative
-            _relink(_pano(review_root, "report.json"), f"{tag}-report.json")
+            runio._relink(runio._pano(review_root, "report.json"), f"{tag}-report.json")
             if os.path.exists(f"{report}.html"):
-                _relink(_pano(review_root, "report.json.html"),
+                runio._relink(runio._pano(review_root, "report.json.html"),
                         f"{tag}-report.json.html")
         except OSError:
             pass
-        _ensure_run_symlinks(review_root)
-    return PhaseResult(kind="advanced", message="synthesize: report.json written")
+        runio._ensure_run_symlinks(review_root)
+    return engine.PhaseResult(kind="advanced", message="synthesize: report.json written")
 
 
 # #run9 OPS-E1A: sentinel written when the run-start baseline probe FAILS
@@ -1882,7 +1428,7 @@ _TREE_BASELINE_PROBE_FAILED = "#panopticon:baseline-probe-failed\n"
 
 def _write_probe_failed_baseline(baseline):
     os.makedirs(os.path.dirname(baseline), exist_ok=True)
-    with _open_w_nofollow(baseline) as fh:
+    with runio._open_w_nofollow(baseline) as fh:
         fh.write(_TREE_BASELINE_PROBE_FAILED)
     return baseline
 
@@ -1893,7 +1439,7 @@ def capture_tree_baseline(review_root, runner=subprocess.run):
     PROBE FAILURE (timeout/error/unexpected non-zero) is NOT the same as non-git:
     it records a sentinel (loudly) so validate fails CLOSED rather than silently
     certifying a tree it never established a reference for (#run9 OPS-E1A)."""
-    baseline = _pano(review_root, "tree-baseline.txt")
+    baseline = runio._pano(review_root, "tree-baseline.txt")
     if os.path.exists(baseline):
         return baseline
     try:
@@ -1912,7 +1458,7 @@ def capture_tree_baseline(review_root, runner=subprocess.run):
               file=sys.stderr, flush=True)
         return _write_probe_failed_baseline(baseline)
     os.makedirs(os.path.dirname(baseline), exist_ok=True)
-    with _open_w_nofollow(baseline) as fh:
+    with runio._open_w_nofollow(baseline) as fh:
         fh.write(proc.stdout)
     return baseline
 
@@ -1955,7 +1501,7 @@ def _tree_delta(review_root, runner):
     file INTO .panopticon/ still changed the outside tree via its source, which
     the old destination-only check silently missed."""
     try:
-        with open(_pano(review_root, "tree-baseline.txt"), encoding="utf-8") as fh:
+        with open(runio._pano(review_root, "tree-baseline.txt"), encoding="utf-8") as fh:
             raw = fh.read()
     except OSError:
         return []                                    # no baseline (non-git) -> nothing to compare
@@ -1982,7 +1528,7 @@ def _tree_delta(review_root, runner):
 
 
 def validate_done(review_root, manifest):
-    data = _load_json(_pano(review_root, "validate.json"))
+    data = runio._load_json(runio._pano(review_root, "validate.json"))
     return (isinstance(data, dict) and data.get("run_id") == manifest.get("run_id")
             and data.get("tree_clean") is True)
 
@@ -1992,13 +1538,13 @@ def validate_execute(review_root, manifest, runner=subprocess.run):
     # The PR worktree (when review_root IS the worktree) is released by run()
     # AFTER the run completes, NOT here: releasing mid-machine would delete the
     # review root (report.json + manifest) and break cursor derivation. (Ruling A)
-    _write_json(_pano(review_root, "validate.json"),
+    runio._write_json(runio._pano(review_root, "validate.json"),
                 {"schema_version": 1, "run_id": manifest["run_id"],
                  "tree_clean": not delta, "unexpected_changes": delta})
     if delta:
-        raise DriverError("validate: reviewer side effects outside .panopticon/: "
+        raise runio.DriverError("validate: reviewer side effects outside .panopticon/: "
                           + "; ".join(delta[:10]))
-    return PhaseResult(kind="advanced", message="validate: clean tree")
+    return engine.PhaseResult(kind="advanced", message="validate: clean tree")
 
 
 def _finalize_worktree(review_root, manifest):
@@ -2038,9 +1584,9 @@ def _finalize_worktree(review_root, manifest):
             failed.append((name, e))   # #run7 OPS-E1A: no longer silently swallowed
     if tag and os.path.isfile(os.path.join(dst_dir, f"{tag}-report.json")):
         try:
-            _relink(os.path.join(dst_dir, "report.json"), f"{tag}-report.json")
+            runio._relink(os.path.join(dst_dir, "report.json"), f"{tag}-report.json")
             if os.path.isfile(os.path.join(dst_dir, f"{tag}-report.json.html")):
-                _relink(os.path.join(dst_dir, "report.json.html"),
+                runio._relink(os.path.join(dst_dir, "report.json.html"),
                         f"{tag}-report.json.html")
         except OSError:
             pass
@@ -2063,11 +1609,11 @@ SETUP_MANIFEST = "setup-manifest.json"
 
 
 def _setup_manifest_path(review_root):
-    return _pano(review_root, SETUP_MANIFEST)
+    return runio._pano(review_root, SETUP_MANIFEST)
 
 
 def load_setup_manifest(review_root):
-    return _load_json(_setup_manifest_path(review_root))
+    return runio._load_json(_setup_manifest_path(review_root))
 
 
 def _read_text(path):
@@ -2092,12 +1638,12 @@ def _setup_scan_entry(review_root, prompt):
             "enforced": False,
             "model": None,
             "prompt": prompt,
-            "out_file": os.path.abspath(_pano(review_root, "setup-proposal.json"))}
+            "out_file": os.path.abspath(runio._pano(review_root, "setup-proposal.json"))}
 
 
 def scan_done(review_root, manifest):
-    return (_json_parses(_pano(review_root, "setup-proposal.json"))
-            or _json_parses(_pano(review_root, "setup-complete.json")))
+    return (runio._json_parses(runio._pano(review_root, "setup-proposal.json"))
+            or runio._json_parses(runio._pano(review_root, "setup-complete.json")))
 
 
 def scan_execute(review_root, manifest):
@@ -2119,13 +1665,13 @@ def scan_execute(review_root, manifest):
     entry = _setup_scan_entry(review_root, _read_text(brief_path))
     req = write_dispatch_request(review_root, manifest["run_id"], "scan", None, [entry])
     msg = "setup-scan checkpoint" + ((" — " + note) if note else "")
-    return PhaseResult(kind="checkpoint", checkpoint="scan", group=None,
+    return engine.PhaseResult(kind="checkpoint", checkpoint="scan", group=None,
                        dispatch_request=req, message=msg)
 
 
 def ingest_done(review_root, manifest):
-    return (os.path.isfile(_pano(review_root, "groups.yml.draft"))
-            or _json_parses(_pano(review_root, "setup-complete.json")))
+    return (os.path.isfile(runio._pano(review_root, "groups.yml.draft"))
+            or runio._json_parses(runio._pano(review_root, "setup-complete.json")))
 
 
 def ingest_execute(review_root, manifest):
@@ -2133,15 +1679,15 @@ def ingest_execute(review_root, manifest):
                                      max_per_group=manifest.get("max_per_group"),
                                      max_groups=manifest.get("max_groups"))
     if not res["ok"]:
-        raise DriverError("ingest: " + "; ".join(res["errors"]))
-    return PhaseResult(kind="advanced",
+        raise runio.DriverError("ingest: " + "; ".join(res["errors"]))
+    return engine.PhaseResult(kind="advanced",
                        message="setup: draft written %s; report %s"
                        % (res["draft"], res["report_path"]))
 
 
 SETUP_PHASES = (
-    Phase("scan", "checkpoint", scan_done, scan_execute),
-    Phase("ingest", "deterministic", ingest_done, ingest_execute),
+    engine.Phase("scan", "checkpoint", scan_done, scan_execute),
+    engine.Phase("ingest", "deterministic", ingest_done, ingest_execute),
 )
 
 
@@ -2155,7 +1701,7 @@ def _clear_setup_artifacts(review_root):
     touches the committed groups.yml."""
     for name in _SETUP_ARTIFACTS:
         try:
-            os.remove(_pano(review_root, name))
+            os.remove(runio._pano(review_root, name))
         except OSError:
             pass
 
@@ -2168,7 +1714,7 @@ def _scan_fallback(review_root, manifest, host, note=None):
     path, created, names = setup_flow.seed_flat_manifest(review_root)
     checks = setup_flow.readiness(review_root, host=host)
     gaps = [c[0] for c in checks if c[1] is False]
-    _write_json(_pano(review_root, "setup-complete.json"), {
+    runio._write_json(runio._pano(review_root, "setup-complete.json"), {
         "schema_version": 1,
         "mode": "fallback", "seed": path, "created": created, "groups": names,
         "readiness": [[c[0], c[1], c[2]] for c in checks],
@@ -2177,7 +1723,7 @@ def _scan_fallback(review_root, manifest, host, note=None):
            % (path, "OK" if not gaps else "gaps: " + ", ".join(gaps)))
     if note:   # #1135: surface the "groups.yml needs `git add -f`" note
         msg += " — " + note
-    return PhaseResult(kind="advanced", message=msg)
+    return engine.PhaseResult(kind="advanced", message=msg)
 
 
 def _drop_stale_fallback_marker(review_root):
@@ -2186,13 +1732,13 @@ def _drop_stale_fallback_marker(review_root):
     supersede the flat seed. Remove it so the engine re-scans (self-healing; no
     --reset needed). No-op when there is no fallback marker or vocab is still
     absent."""
-    marker = _load_json(_pano(review_root, "setup-complete.json"))
+    marker = runio._load_json(runio._pano(review_root, "setup-complete.json"))
     if not (isinstance(marker, dict) and marker.get("mode") == "fallback"):
         return
     _vocab, present = setup_flow.load_bundled_vocabulary(None)
     if present:
         try:
-            os.remove(_pano(review_root, "setup-complete.json"))
+            os.remove(runio._pano(review_root, "setup-complete.json"))
         except OSError:
             pass
 
@@ -2202,12 +1748,12 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES):
     phase). Resolves the review root, pins a minimal setup-manifest once, and
     advances scan->ingest through run_engine. Writes a draft; the owner reviews
     and commits it."""
-    review_root, _wt, _pr = resolve_review_root(args.target, runner=runner)
+    review_root, _wt, _pr = runio.resolve_review_root(args.target, runner=runner)
     if getattr(args, "reset", False):
         _clear_setup_artifacts(review_root)               # Task 3
     _drop_stale_fallback_marker(review_root)
     manifest = load_setup_manifest(review_root)
-    if manifest is not None and _foreign_manifest(
+    if manifest is not None and runio._foreign_manifest(
             manifest, review_root, _setup_manifest_path(review_root)):
         # #run7/#run8 AGT-C1A: a target repo can force-commit its own
         # .panopticon/setup-manifest.json (gitignored but `git add -f`-able) to
@@ -2230,33 +1776,31 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES):
         manifest = {"schema_version": 1, "run_id": run_manifest.new_run_id(),
                     "review_root": os.path.abspath(review_root),
                     "target": os.path.abspath(args.target),
-                    "host": args.host or _DEFAULTS["host"],
+                    "host": args.host or runio._DEFAULTS["host"],
                     "vocabulary_path": None,
                     "max_per_group": (getattr(args, "max_per_group", None)
                                       or overrides["max_per_group"]),
                     "max_groups": getattr(args, "max_groups", None) or overrides["max_groups"]}
-        _write_json(_setup_manifest_path(review_root), manifest)
+        runio._write_json(_setup_manifest_path(review_root), manifest)
     try:
-        result = run_engine(review_root, manifest, phases)
-    except DriverError as exc:
-        return _error_status(str(exc))
+        result = engine.run_engine(review_root, manifest, phases)
+    except runio.DriverError as exc:
+        return runio._error_status(str(exc))
     if result.get("status") == "complete":
-        if os.path.isfile(_pano(review_root, "groups.yml.draft")):
+        if os.path.isfile(runio._pano(review_root, "groups.yml.draft")):
             result["message"] = ("setup complete — read .panopticon/setup-report.md, "
                                  "review .panopticon/groups.yml.draft, move it to "
                                  ".panopticon/groups.yml, and commit")
         else:
             msg = ("setup complete — vocab-absent fallback seeded a flat "
                   ".panopticon/groups.yml; review, edit, and commit it")
-            gaps = (_load_json(_pano(review_root, "setup-complete.json")) or {}).get("gaps") or []
+            gaps = (runio._load_json(runio._pano(review_root, "setup-complete.json")) or {}).get("gaps") or []
             if gaps:
                 msg += (" — readiness gaps: %s (fix before running a review)"
                        % ", ".join(gaps))
             result["message"] = msg
     return result
 
-
-_DEFAULTS = {"host": "claude", "security": "standard"}
 
 _RESET_GLOBS = ("groups.json", "coverage-*.json", "scout-*.json", "tools-ran.json",
                 "validate.json",
@@ -2269,14 +1813,15 @@ _RESET_GLOBS = ("groups.json", "coverage-*.json", "scout-*.json", "tools-ran.jso
                 "diff-hunks.json", "out-file-hashes.json",
                 "dispatch-plan-driver.json")
 
+
 PHASES = (
-    Phase("discovery", "deterministic", discovery_done, discovery_execute),
-    Phase("coverage", "mixed", coverage_done, coverage_execute),
-    Phase("tools", "deterministic", tools_done, tools_execute),
-    Phase("review", "checkpoint", review_done, review_execute),
-    Phase("verify", "mixed", verify_done, verify_execute),
-    Phase("synthesize", "deterministic", synthesize_done, synthesize_execute),
-    Phase("validate", "deterministic", validate_done, validate_execute),
+    engine.Phase("discovery", "deterministic", discovery_done, discovery_execute),
+    engine.Phase("coverage", "mixed", coverage_done, coverage_execute),
+    engine.Phase("tools", "deterministic", tools_done, tools_execute),
+    engine.Phase("review", "checkpoint", review_done, review_execute),
+    engine.Phase("verify", "mixed", verify_done, verify_execute),
+    engine.Phase("synthesize", "deterministic", synthesize_done, synthesize_execute),
+    engine.Phase("validate", "deterministic", validate_done, validate_execute),
 )
 
 
@@ -2321,7 +1866,7 @@ def _clear_run_artifacts(review_root):
     run's folder/report. MUST run BEFORE the manifest is removed, so the tag still
     resolves; with no/corrupt manifest it degrades to the legacy flat sweep."""
     base = os.path.join(review_root, ".panopticon")
-    tag = _run_tag(review_root)
+    tag = runio._run_tag(review_root)
     if tag:
         shutil.rmtree(os.path.join(base, "runs", tag), ignore_errors=True)
         # runs/latest now dangles (its target folder is gone) — drop the pointer;
@@ -2407,68 +1952,15 @@ def _positive_int(text):
     return value
 
 
-def _error_status(message):
-    return {"status": "error", "phase": None, "checkpoint": None, "group": None,
-            "dispatch_request": None, "advanced": [], "message": message}
-
-
-def _manifest_committed(review_root, manifest_file):
-    """True if `manifest_file` is TRACKED by git in review_root -- i.e. it was
-    committed INTO the target (an attacker `git add -f`-ing past the
-    `.panopticon/` gitignore), never written by a prior driver run, whose
-    manifest stays gitignored/untracked.
-
-    #run8 AGT-C1A: this is the robust, non-secret foreign-manifest signal. The
-    old review_root-stamp check treated the operator's local checkout path as
-    unguessable, but CI checkout paths ($GITHUB_WORKSPACE, /home/runner/work/...)
-    are public, so an attacker could forge a matching stamp. A committed file
-    cannot be forged into looking untracked. A non-git target, a missing file,
-    or any git error yields False (nothing was committed, so nothing to distrust
-    on this basis; the stamp check still applies)."""
-    if not manifest_file or not os.path.isfile(manifest_file):
-        return False
-    git_bin = shutil.which("git") or "git"
-    try:
-        rel = os.path.relpath(manifest_file, review_root)
-        r = subprocess.run(  # nosec B603
-            [git_bin, "-C", review_root, "ls-files", "--error-unmatch", "--", rel],
-            capture_output=True, text=True, timeout=30,
-            env={"PATH": os.environ.get("PATH", "")})
-    except Exception:
-        return False
-    return r.returncode == 0
-
-
-def _foreign_manifest(manifest, review_root, manifest_file=None):
-    """#1093 / #run8 AGT-C1A: True if a loaded manifest was NOT written by a
-    prior run in THIS tree, so it must be discarded and rebuilt from the real CLI
-    args rather than trusted as run config (a target that force-commits its own
-    `.panopticon/run-manifest.json` could preset flags.tools:false to skip the
-    scan, or flags.fail_on to force gate:PASS).
-
-    Two independent signals, either sufficient:
-      * the manifest FILE is git-tracked in review_root (`_manifest_committed`)
-        -- the primary, non-secret check: a driver-written resume manifest is
-        gitignored/untracked, so a tracked one was committed by the target.
-      * the stamped `review_root` differs from this checkout (the original #1093
-        signal, kept as a fallback for a non-git target where nothing is tracked
-        and for a manifest carried over from another machine)."""
-    if not isinstance(manifest, dict):
-        return False
-    if _manifest_committed(review_root, manifest_file):
-        return True
-    return manifest.get("review_root") != os.path.abspath(review_root)
-
-
 def run(args, runner=subprocess.run, phases=PHASES):
     # #5.0-14: resolving the review root can fail loudly for a --pr run (gh
     # auth/network, a bad PR number, worktree acquisition) — keep it inside the
     # status protocol instead of letting a raw RuntimeError escape run().
     try:
-        review_root, worktree, pr_base = resolve_review_root(
+        review_root, worktree, pr_base = runio.resolve_review_root(
             args.target, base=args.base, pr=args.pr, runner=runner)
     except (RuntimeError, ValueError, OSError) as exc:
-        return _error_status("could not resolve review root: %s" % exc)
+        return runio._error_status("could not resolve review root: %s" % exc)
     if args.pr is not None:
         # A PR is a changed-files delta by definition. manifest["base"] holds the
         # user's EXPLICIT override only (anti-drift key); the gh-detected PR base
@@ -2489,12 +1981,12 @@ def run(args, runner=subprocess.run, phases=PHASES):
     except ValueError as exc:
         if worktree:
             diff_map.release_worktree(worktree, repo=args.target)
-        return _error_status("unsafe artifact root: %s" % exc)
+        return runio._error_status("unsafe artifact root: %s" % exc)
     if args.reset:
         _clear_run_artifacts(review_root)   # §5.1: resolve the tag before the manifest goes
         run_manifest.reset_run(review_root)
     manifest = run_manifest.load_manifest(review_root)
-    if _foreign_manifest(manifest, review_root, run_manifest.manifest_path(review_root)):
+    if runio._foreign_manifest(manifest, review_root, run_manifest.manifest_path(review_root)):
         # #1093: a target-committed run-manifest.json (foreign review_root) could
         # preset flags to skip tools / force gate:PASS. Drop it and rebuild from
         # the real CLI args, exactly like a corrupt manifest below.
@@ -2514,8 +2006,8 @@ def run(args, runner=subprocess.run, phases=PHASES):
         run_manifest.reset_run(review_root)
         manifest = run_manifest.build_manifest(
             target=args.target, review_root=review_root,
-            host=args.host or _DEFAULTS["host"],
-            security_mode=args.security or _DEFAULTS["security"],
+            host=args.host or runio._DEFAULTS["host"],
+            security_mode=args.security or runio._DEFAULTS["security"],
             base=base, flags=_cli_flags(args), worktree=worktree,
             scope=scope, pr=args.pr, pr_base=pr_base)
         run_manifest.write_manifest(review_root, manifest)
@@ -2524,7 +2016,7 @@ def run(args, runner=subprocess.run, phases=PHASES):
             manifest, host=args.host, security_mode=args.security,
             base=base, flags=_cli_flags(args), scope=scope, pr=args.pr)
         if conflicts:
-            return _error_status("flag drift (use --reset to start over): "
+            return runio._error_status("flag drift (use --reset to start over): "
                                  + "; ".join(conflicts))
     # In-memory only, and deliberately NOT a manifest field: it names where the
     # HOST SESSION runs, which is a property of this invocation rather than of
@@ -2541,25 +2033,25 @@ def run(args, runner=subprocess.run, phases=PHASES):
     # Refuse loudly and name --reset instead; the durable report stays on disk.
     # (Guarded by `not args.reset`: a --reset run just cleared its derived
     # artifacts, so it can never be already-complete at this point.)
-    if not args.reset and _first_not_done(phases, review_root, manifest) is None:
-        report = _pano(review_root, "report.json")
+    if not args.reset and engine._first_not_done(phases, review_root, manifest) is None:
+        report = runio._pano(review_root, "report.json")
         loc = report if os.path.exists(report) else review_root
-        return _error_status(
+        return runio._error_status(
             "run already complete (report at %s) -- use `--reset` to start a new "
             "run" % loc)
     # §5.1: point runs/latest at the active run folder now that the manifest (hence
     # the tag) is established — so the pointer exists throughout the run, not just
     # after synthesize writes the report.
-    _ensure_run_symlinks(review_root)
+    runio._ensure_run_symlinks(review_root)
     # I2: capture the clean-tree baseline unconditionally and BEFORE the engine
     # runs. Idempotent (returns the existing baseline if present) -> no-op on a
     # normal resume, but self-heals a baseline that a mid-first-run interrupt
     # left missing (which had silently disabled the clean-tree guard).
     capture_tree_baseline(review_root, runner=runner)
     try:
-        result = run_engine(review_root, manifest, phases)
-    except DriverError as exc:
-        return _error_status(str(exc))
+        result = engine.run_engine(review_root, manifest, phases)
+    except runio.DriverError as exc:
+        return runio._error_status(str(exc))
     if result.get("status") == "complete":
         _finalize_worktree(review_root, manifest)
     return result
@@ -2568,8 +2060,8 @@ def run(args, runner=subprocess.run, phases=PHASES):
 def main(argv=None):
     args = build_parser().parse_args(argv)
     if args.verb == "setup":
-        return emit_status(run_setup_flow(args))
-    return emit_status(run(args))
+        return engine.emit_status(run_setup_flow(args))
+    return engine.emit_status(run(args))
 
 
 if __name__ == "__main__":

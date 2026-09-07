@@ -7,6 +7,7 @@ import os
 import json
 import tempfile
 import unittest
+import scripts.phases.runio as runio
 
 import scripts.synthesize as syn
 import scripts.synth.findings as findings_mod
@@ -613,12 +614,11 @@ class TestGroupReMatchesDispatchNames(unittest.TestCase):
         # findings filenames is now the driver's review-cell path. GROUP_RE must
         # still parse the group out of what the pipeline ACTUALLY writes -- that
         # is the invariant this guards, independent of which module emits it.
-        import scripts.driver as driver
 
         for group, domain in (("changes_1", "SEC"), ("Auth", "COD"),
                               ("Ungrouped_1", "TST")):
             base = os.path.basename(
-                driver._pano("/repo", "findings-%s-%s.json" % (group, domain)))
+                runio._pano("/repo", "findings-%s-%s.json" % (group, domain)))
             m = findings_mod.GROUP_RE.match(base)
             self.assertIsNotNone(m, base)
             self.assertEqual(m.group(1), group, base)
@@ -643,12 +643,11 @@ class TestGroupReMatchesDispatchNames(unittest.TestCase):
         # five green tests said otherwise. Pin it to the real producer, the same
         # way the GROUP_RE guard above does, so a future rename fails loudly
         # here instead of quietly disarming an integrity check.
-        import scripts.driver as driver
 
         for group, domain in (("changes_1", "SEC"), ("Auth", "COD"),
                               ("My-Hyphenated-Group", "TST")):
             base = os.path.basename(
-                driver._pano("/repo", "findings-%s-%s.json" % (group, domain)))
+                runio._pano("/repo", "findings-%s-%s.json" % (group, domain)))
             self.assertEqual(integrity_mod._expected_from_filename(base), (group, domain), base)
 
 class TestDedupeRuleIdDiscrimination(unittest.TestCase):
