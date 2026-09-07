@@ -12,7 +12,6 @@ import glob as _glob
 import datetime
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -27,499 +26,23 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))                  
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # skill
 
 
-import scripts.coverage_model as coverage_model  # noqa: E402
 import scripts.diff_map as diff_map  # noqa: E402
 import scripts.dispatch as dispatch  # noqa: E402
 import scripts.evidence as evidence  # noqa: E402
-import scripts.group_runner as group_runner  # noqa: E402
-import scripts.groups_schema as groups_schema  # noqa: E402
 import scripts.ingest_tools as ingest_tools  # noqa: E402
 import scripts.ocrdb as ocrdb  # noqa: E402
 import scripts.plan_contract as plan_contract  # noqa: E402
-import scripts.run_tools as run_tools  # noqa: E402
 import scripts.run_manifest as run_manifest  # noqa: E402
 import scripts.score_gate as score_gate  # noqa: E402
 import scripts.setup_flow as setup_flow  # noqa: E402
 import scripts.synth.findings as findings_mod  # noqa: E402
-import scripts.synth.plan as plan_mod  # noqa: E402
 import scripts._version as _version  # noqa: E402
 import scripts.phases.engine as engine
 import scripts.phases.runio as runio
-
-
-def discovery_done(review_root, manifest):
-    return runio._json_parses(runio._pano(review_root, "groups.json"))
-
-
-def discovery_execute(review_root, manifest):
-    _groups, errors = runio.load_committed_groups(review_root)
-    if errors:
-        raise runio.DriverError("discovery: " + "; ".join(errors))
-    out = runio._pano(review_root, "groups.json")
-    cmd = [sys.executable, runio._script("discovery.py"), "--repo-scan",
-           "--security", manifest.get("security_mode", "standard"),
-           review_root, "--out", out]
-    scope = manifest.get("scope") or {"mode": "repo"}
-    mode = scope.get("mode")
-    if mode == "changed":
-        cmd += ["--scope-changed"]
-    elif mode == "files":
-        cmd += ["--scope-files"] + list(scope.get("target") or [])
-    else:
-        _scope_arg = {"file": "--scope-file", "directory": "--scope-dir",
-                      "group": "--scope-group"}.get(mode)
-        if _scope_arg and scope.get("target"):
-            cmd += [_scope_arg, scope["target"]]
-    if manifest.get("base"):
-        cmd += ["--base", manifest["base"]]
-    if manifest.get("pr_base"):
-        cmd += ["--pr-base", manifest["pr_base"]]
-    _dc = (manifest.get("flags") or {}).get("diff_context")
-    if _dc is not None:
-        cmd += ["--diff-context", str(_dc)]
-    # Chunk size was reachable only by calling discovery.py directly, so in
-    # practice every run used the 15-file default. On a mid-size repo that is
-    # the difference between a scan and a non-starter: solidus (3,622 files)
-    # sharded into 291 subgroups, and cells are groups x domains, so it
-    # projected past 4B tokens. It is an anti-drift flag because re-chunking
-    # mid-run would silently repartition every cell the run has already done.
-    _mpg = (manifest.get("flags") or {}).get("max_per_group")
-    if _mpg is not None:
-        cmd += ["--max-per-group", str(_mpg)]
-    proc = runio._run_child(cmd, review_root, "discovery")
-    if not runio._json_parses(out):
-        raise runio.DriverError(
-            "discovery: discovery --repo-scan produced no groups.json "
-            "(rc=%s): %s" % (proc.returncode, runio._redact_output((proc.stderr or proc.stdout)[:400])))
-    return engine.PhaseResult(kind="advanced", message="discovery: groups.json written")
-
-
-_PROMPT_FILE_SAFE = re.compile(r"[^A-Za-z0-9._-]")
-
-
-def _prompt_file_path(review_root, entry_id):
-    """Where one entry's prompt is materialized: `_prompts/<entry-id>.txt`.
-
-    The id is sanitized to a single flat filename -- an entry id embeds a group
-    name, which is operator-supplied, so a `/` or `..` in it must not steer the
-    write out of the prompts directory."""
-    safe = _PROMPT_FILE_SAFE.sub("_", str(entry_id)) or "entry"
-    return runio._pano(review_root, "_prompts", "%s.txt" % safe)
-
-
-def _materialize_prompts(review_root, entries):
-    """Write each entry's prompt to its own file and stamp `prompt_file` on the
-    entry (#run10 B2).
-
-    A dispatch entry carried its prompt ONLY inline, averaging 13.3 KB for review
-    cells and 19.6 KB for verify cells -- so a controller dispatching 120 review
-    cells had to reproduce ~1.6 MB of prompt text it had just read from disk, into
-    its own context. Run-10 worked around this by hand-materializing 4.22 MB of
-    prompts and pointing each agent at its file; that worked, but every host has
-    to reinvent it, and one that doesn't blows its context on the review
-    checkpoint alone.
-
-    `prompt` stays inline (unchanged contract, no host is forced to migrate);
-    `prompt_file` is the addressable alternative. Best-effort: if the prompts
-    directory cannot be written, entries keep their inline prompt and the run
-    proceeds -- this is an ergonomic affordance, never a dispatch precondition."""
-    out = []
-    for entry in entries:
-        entry = dict(entry)
-        prompt = entry.get("prompt")
-        eid = entry.get("id")
-        if isinstance(prompt, str) and prompt and eid:
-            path = _prompt_file_path(review_root, eid)
-            try:
-                runio._confine_artifact_path(path)
-                os.makedirs(os.path.dirname(path), exist_ok=True)
-                with runio._open_w_nofollow(path) as fh:
-                    fh.write(prompt)
-                entry["prompt_file"] = os.path.abspath(path)
-            except (OSError, ValueError) as exc:
-                print("driver: could not materialize prompt for %s (%s); the "
-                      "inline prompt still stands" % (eid, exc),
-                      file=sys.stderr, flush=True)
-        out.append(entry)
-    return out
-
-
-def write_dispatch_request(review_root, run_id, checkpoint, group, entries):
-    """Write the single per-(group, checkpoint) dispatch-request.json and return
-    its ABSOLUTE path. Host-agnostic: entries carry only neutral fields and any
-    paths inside them must already be absolute (spec §4). The request is rolling
-    — the durable state is the entries' out_files, not this file.
-
-    Each entry also gets a `prompt_file` (#run10 B2) — the same text, addressable
-    — so a host can hand an agent a path instead of echoing the whole prompt."""
-    if checkpoint not in runio.CHECKPOINT_KINDS:
-        raise ValueError("unknown checkpoint kind: %r" % checkpoint)
-    entries = _materialize_prompts(review_root, entries)
-    request = {"schema_version": 1, "run_id": run_id, "checkpoint": checkpoint,
-               "group": group, "entries": list(entries)}
-    path = runio._pano(review_root, "dispatch-request.json")
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with runio._open_w_nofollow(path) as fh:
-        json.dump(request, fh, indent=2)
-    return os.path.abspath(path)
-
-
-def load_dispatch_request(review_root):
-    """The parsed .panopticon/dispatch-request.json (or None if absent/invalid).
-    The host reads req['entries'] to install the write-guard
-    (write_guard_hook.install(entries)) and to dispatch the checkpoint's cells."""
-    return runio._load_json(runio._pano(review_root, "dispatch-request.json"))
-
-
-def _discovered_groups(review_root):
-    """(name, files) per group from discovery's groups.json."""
-    data = runio._load_json(runio._pano(review_root, "groups.json")) or {}
-    return [(g.get("name"), g.get("files") or [])
-            for g in (data.get("groups") or [])
-            if isinstance(g, dict) and g.get("name")]
-
-
-def _scout_entry(review_root, manifest, group, files, host, registry_tools=None):
-    """One host-agnostic scout dispatch entry (spec §4). The scout body +
-    tool-policy line come from dispatch.render_prompt; the assignment is
-    appended. Enforcement is host-declared (claude registers panopticon-scout)."""
-    body = dispatch.render_prompt("scout.md", {}, host)
-    security = manifest.get("security_mode", "standard")
-    file_list = runio._abs_file_list(review_root, files)
-    # #1053: ground the scout's tool recommendation in the real adapter registry
-    # so it can only name scanners that exist -- an ungrounded scout invents
-    # pytest/pylint/ruff/... and #1031 can only disclose them as
-    # requested_unavailable noise. The list is the single source of truth from
-    # run_tools, appended here so it reaches enforced and generic scouts alike.
-    # run-9 E1: the caller passes a registry already gated to this run's languages
-    # + applicable adapters (so the scout can't over-request cross-language tools);
-    # fall back to the full universe for a direct caller that doesn't gate.
-    if registry_tools is None:
-        registry_tools = run_tools.recommendable_tools()
-    registry = ", ".join(registry_tools)
-    prompt = (body
-              + "\n\n## Assignment\n\nGroup: %s\nSecurity mode: %s\n\nFiles:\n%s\n"
-                % (group, security, file_list)
-              + "\n## Available scanners\n\nRecommend `tools` ONLY from this "
-                "registry — these are the only scanners that can run. Emit `[]` "
-                "if none apply; never invent a tool name:\n%s\n" % registry
-              + "\nReturn the ScopeProfile JSON for this group.")
-    enforced = host == "claude"
-    return {"id": "scout-%s" % group,
-            "agent": dispatch.registered_agent_name("scout.md") if enforced else None,
-            "enforced": enforced,
-            "model": None,
-            "prompt": prompt,
-            "out_file": os.path.abspath(runio._pano(review_root, "scout-%s.json" % group))}
-
-
-def coverage_done(review_root, manifest):
-    # Vacuously done when discovery produced no groups (empty target); otherwise
-    # done once every discovered group has a coverage file. (Evaluated only after
-    # discovery, an earlier phase, so groups.json is already present.)
-    return all(runio._json_parses(runio._pano(review_root, "coverage-%s.json" % g))
-               for g, _ in _discovered_groups(review_root))
-
-
-def _chunk_of_map(review_root):
-    """{group name -> the review unit it was split out of}, from groups.json.
-
-    Discovery states this outright (`chunk_of`), so the driver no longer has to
-    infer it from the name. Authoritative where present; groups.json written
-    before the field falls back to `_chunk_parent` (#1480).
-    """
-    data = runio._load_json(runio._pano(review_root, "groups.json")) or {}
-    return {g["name"]: g["chunk_of"]
-            for g in (data.get("groups") or [])
-            if isinstance(g, dict) and g.get("name") and g.get("chunk_of")}
-
-
-def _chunk_parent(name):
-    """The committed parent of a discovery chunk `<name>_<i>` (#5.0-10), or None
-    if `name` is not a `<something>_<digits>` chunk. Leftover `._N` chunks map to
-    parent '.', never in the matrix, so they correctly keep an empty floor.
-
-    Superseded by discovery's `chunk_of` field, which says this rather than
-    guessing it; kept as the fallback for a pre-`chunk_of` groups.json. The
-    guess is not reliable on its own -- it cannot tell a chunk of `API` from a
-    committed group named `API_1` (#1480).
-    """
-    if not name or "_" not in name:
-        return None
-    head, _, tail = name.rpartition("_")
-    return head if head and tail.isdigit() else None
-
-
-# #3: bound the return-persist re-dispatch loop so a deterministically-broken
-# host fails loud instead of re-dispatching the same garbage forever.
-_MAX_SCOUT_ATTEMPTS = 3
-
-
-def _scout_shape_errors(scout):
-    """Load-bearing structural checks on a returned ScopeProfile -- a
-    dependency-free subset of `scope-profile-schema.json`. The driver validates
-    by hand rather than importing jsonschema so this check cannot become the
-    thing that makes a scan need a third-party package at runtime. Checks
-    only the invariants the coverage/dispatch path actually indexes; returns []
-    when the shape is safe to consume, else human-readable errors.
-
-    #run10 D3: validates exactly the fields the scout contract still asks for.
-    The old `lenses` panel->array check (added for run-6) went with the field
-    itself, along with the retired 4.x lens plumbing it guarded. A profile that
-    still carries extra keys validates fine; they are simply never read."""
-    if not isinstance(scout, dict):
-        return ["not a JSON object"]
-    errs = []
-    for field in ("domains", "files", "tools"):
-        v = scout.get(field)
-        if v is None:
-            continue
-        if not isinstance(v, list):
-            errs.append("`%s` must be an array" % field)
-            continue
-        # #run10 COD-B2A: checking only that the field IS an array let a nested
-        # or object-valued ELEMENT through -- `{"domains": [["COD"]]}` or
-        # `{"domains": [{"x": 1}]}` passed this gate and then crashed
-        # coverage_execute with an uncaught TypeError (unhashable list) deep in
-        # the set arithmetic, mid-phase, instead of being discarded and
-        # re-dispatched here. These are return-persist values from an LLM, which
-        # this file's own docstrings document as unreliable, so validate the
-        # elements at the accept boundary too.
-        bad = [x for x in v if not isinstance(x, str)]
-        if bad:
-            errs.append("`%s` must contain only strings (got %s)"
-                        % (field, ", ".join(sorted({type(x).__name__ for x in bad}))))
-    return errs
-
-
-def _bump_scout_attempts(review_root, group):
-    """Persisted per-group re-dispatch counter that bounds #3's retry loop.
-    Lives alongside the scout outputs, so --reset clears it with them."""
-    path = runio._pano(review_root, "scout-attempts.json")
-    data = runio._load_json(path) if runio._json_parses(path) else {}
-    if not isinstance(data, dict):
-        data = {}
-    n = int(data.get(group, 0)) + 1
-    data[group] = n
-    runio._write_json(path, data)
-    return n
-
-
-def coverage_execute(review_root, manifest):
-    """Emit ALL pending scouts in one checkpoint (#1056), then compute each
-    group's coverage as the floor widened by the scout's valid domains. Returns
-    after one unit of work; the engine re-selects coverage until every group has
-    a coverage file. Re-emits only the still-missing scouts on resume."""
-    matrix, errors = runio.load_committed_groups(review_root)
-    if errors:
-        # #1091: fail loud like discovery_execute -- a missing/corrupt groups.yml
-        # on a RESUME (discovery is already done, so its gate never re-runs) would
-        # otherwise silently yield matrix={}, dropping the committed floor/exclude.
-        raise runio.DriverError("coverage: " + "; ".join(errors))
-    host = manifest.get("host", "claude")
-    groups = _discovered_groups(review_root)
-    # #1056: scouts are independent and there is exactly one per group, so a
-    # per-group checkpoint (like the review fan-out) would be no better than the
-    # old sequential loop -- run-5's 21 groups cost ~40 min of pure profiling
-    # round-trips. Emit EVERY pending scout in one checkpoint so the host
-    # dispatches them concurrently; on a crash/resume this re-emits only the
-    # scouts that still have no output (durable state = the entries' out_files).
-    pending_scouts = []
-    for g, f in groups:
-        if runio._json_parses(runio._pano(review_root, "coverage-%s.json" % g)):
-            continue
-        sp = runio._pano(review_root, "scout-%s.json" % g)
-        # A scout is a RETURN-PERSIST file: read it tolerantly, or a fence-wrapped
-        # but otherwise-valid profile reads as "no output" and re-dispatches
-        # forever (run-9: 0/25 scouts fenced -> the whole phase silently looped).
-        if not runio._return_json_parses(sp):
-            pending_scouts.append((g, f))          # no output yet
-            continue
-        # #3: a scout that PARSES as JSON but has the wrong shape would slip
-        # past the dict gate in the coverage loop below -- a `domains` value that
-        # is not a list of domain codes silently widens the cell matrix to
-        # nothing, or to garbage cells that fail their own done-predicate. (The
-        # original run-6 instance was `lenses` returned as panel->object; that
-        # field is gone, the failure mode is not.) Validate at the return-persist
-        # accept boundary; on a mismatch, DISCARD the garbage and re-dispatch that
-        # one scout. Cap the retries so a deterministically-broken host fails loud.
-        scout = runio._load_return_json(sp)
-        errs = _scout_shape_errors(scout)
-        if errs:
-            n = _bump_scout_attempts(review_root, g)
-            print("scout output for group %s failed shape validation "
-                  "(attempt %d/%d): %s"
-                  % (g, n, _MAX_SCOUT_ATTEMPTS, "; ".join(errs)),
-                  file=sys.stderr, flush=True)
-            if n >= _MAX_SCOUT_ATTEMPTS:
-                raise runio.DriverError(
-                    "scout for group %s returned schema-invalid output %d times "
-                    "(fix the agent or `--reset`): %s" % (g, n, "; ".join(errs)))
-            try:
-                os.remove(sp)                       # discard -> re-dispatch fresh
-            except OSError:
-                pass
-            pending_scouts.append((g, f))
-        else:
-            # Normalize the accepted return-persist file in place: rewrite the
-            # unwrapped JSON so the coverage read below and synthesize's raw
-            # scout-*.json scan both get clean bytes, whatever wrapper the host
-            # wrote. Unwrap AND persist the unwrapped form -- not just parse past.
-            runio._write_json(sp, scout)
-    if pending_scouts:
-        # run-9 E1: gate the tool registry the scouts see to THIS repo's detected
-        # languages + applicable adapters, computed once, so no scout over-requests
-        # a cross-language scanner the runner can never select (the
-        # requested_unavailable disclosure noise). Best-effort: any detection error
-        # falls back to the full universe rather than blocking the scout dispatch.
-        try:
-            registry_tools = run_tools.recommendable_tools(
-                languages=run_tools.detect_languages(review_root), target=review_root)
-        except Exception:                       # noqa: BLE001 - never block dispatch
-            registry_tools = None
-        entries = [_scout_entry(review_root, manifest, g, f, host, registry_tools)
-                   for g, f in pending_scouts]
-        req = write_dispatch_request(review_root, manifest["run_id"],
-                                     "scout", None, entries)
-        return engine.PhaseResult(kind="checkpoint", checkpoint="scout", group=None,
-                           dispatch_request=req,
-                           message="scout checkpoint for %d group(s)"
-                                   % len(entries))
-    # Every group now has a scout output -> compute coverage (one group per call:
-    # local work, no dispatch, so the cadence is unchanged and cheap).
-    chunk_of = _chunk_of_map(review_root)
-    for group, files in groups:
-        if runio._json_parses(runio._pano(review_root, "coverage-%s.json" % group)):
-            continue
-        scout_path = runio._pano(review_root, "scout-%s.json" % group)
-        # #5.0-12: a scout that returns a non-object (e.g. a JSON array) parses as
-        # JSON but would slip past `or {}` (a non-empty list is truthy) and crash
-        # `.get` with an uncaught AttributeError. Validate the shape at the gate
-        # and fail loud (status:error) instead.
-        scout = runio._load_return_json(scout_path)
-        if not isinstance(scout, dict):
-            raise runio.DriverError("scout output for group %s is not a JSON object" % group)
-        raw = scout.get("domains") or []
-        spec = matrix.get(group)
-        if spec is None:
-            # #5.0-10: a group split into <name>_<i> chunks inherits its
-            # committed floor/exclude/tests. `chunk_of` names that unit
-            # outright; fall back to inferring it for an older groups.json.
-            unit = chunk_of.get(group) or _chunk_parent(group)
-            if unit is not None and unit != group:
-                spec = matrix.get(unit)
-        spec = spec or {}
-        floor = spec.get("floor", set())
-        # net against floor here so disclosure["scout_added"] reports only the
-        # genuinely NEW domains (a domain already on the floor isn't "added").
-        scout_added = {d for d in raw if d in groups_schema.DOMAINS} - set(floor)
-        scout_invalid = sorted(set(raw) - groups_schema.DOMAINS)
-        # #5.0-19: gate the universal-tier floor on this group's observable
-        # surface, so a testless / db-free / single-module group does not spend
-        # a DAT/TST/ARC cell manufacturing noise (BursarBuddy calibration:
-        # those cells produced 59 of 97 noise findings and caught 0 vulns). COD
-        # stays universal; a scout that requested a domain still gets it via
-        # scout_added regardless of the gate, so this only drops floor domains
-        # the scout omitted AND whose surface is objectively absent.
-        gated_floor = coverage_model.applicable_global_floor(files, scout)
-        # #run8 SEC-G2A: SEC has no place in the universal GLOBAL_FLOOR (a blanket
-        # SEC floor reintroduces the #5.0-19 surfaceless noise), but a group whose
-        # OBJECTIVE files carry a security surface -- a supply-chain
-        # manifest/CI/Docker file, a db/SQLi file, or an auth/crypto/secrets file
-        # -- must get a deterministic SEC review even when neither the committed
-        # `panels:` nor the scout asked for it, so a mis-reporting or adversarial
-        # groups.yml cannot silently skip its own security review.
-        sec_floor = coverage_model.applicable_sec_floor(files)
-        effective, disclosure = coverage_model.effective_panels(
-            floor, scout_added, spec.get("exclude", set()),
-            global_floor=gated_floor, signal_floor=sec_floor)
-        cov = {
-            "schema_version": 1,
-            "group": group,
-            "floor": disclosure["floor"],
-            "excluded": disclosure["excluded"],
-            "scout_added": disclosure["scout_added"],   # new domains, exclude-netted
-            "scout_invalid": scout_invalid,             # dropped, disclosed
-            "global_floor_suppressed": sorted(          # #5.0-19: surface absent
-                coverage_model.GLOBAL_FLOOR - gated_floor),
-            "sec_floor_applied": sorted(sec_floor),     # #run8 SEC-G2A: objective
-            "effective": sorted(effective),             # security surface -> SEC forced on
-            "scout_file": os.path.abspath(scout_path),
-            "run_id": manifest["run_id"],
-        }
-        # #8c/#7: a committed `exclude` naming a NON_EXCLUDABLE domain (SEC,
-        # #1084) is OVERRIDDEN -- effective_panels discloses it as
-        # `exclude_rejected`, but the coverage-write used to DROP that key. So an
-        # operator who reached for a fixture-corpus `exclude:`-sink got a SILENT
-        # SEC panel on deliberately-vulnerable code, and 16 illusory HIGHs
-        # reached the gate (run-6). Persist the override AND warn loudly: to drop
-        # a path corpus entirely (fixtures included, SEC included), use top-level
-        # `exclude_paths:`, which prunes before grouping so no domain reviews it.
-        rejected = disclosure.get("exclude_rejected")
-        if rejected:
-            cov["exclude_rejected"] = rejected
-            print("coverage: group %s exclude %s was OVERRIDDEN (non-excludable) "
-                  "-- these domains still run. To drop paths entirely (e.g. a "
-                  "fixture corpus), use top-level `exclude_paths:` in groups.yml, "
-                  "not per-group `exclude:`." % (group, ", ".join(rejected)),
-                  file=sys.stderr)
-        runio._write_json(runio._pano(review_root, "coverage-%s.json" % group), cov)
-        return engine.PhaseResult(kind="advanced",
-                           message="coverage: group %s (floor+scout)" % group)
-    return engine.PhaseResult(kind="advanced", message="coverage: complete")
-
-
-def tools_done(review_root, manifest):
-    return runio._json_parses(runio._pano(review_root, "tools-ran.json"))
-
-
-def tools_execute(review_root, manifest):
-    if (manifest.get("flags") or {}).get("tools") is False:
-        runio._write_json(runio._pano(review_root, "tools-ran.json"),
-                    {"schema_version": 1, "ran": False, "skipped": True, "crashed": False,
-                     "note": "tools disabled (--no-tools)",
-                     "returncode": None, "run_id": manifest["run_id"]})
-        return engine.PhaseResult(kind="advanced", message="tools: skipped (--no-tools)")
-    out_dir = runio._pano(review_root, "tools")
-    # #1031: --manifest records the deterministic adapter set (selected/produced/
-    # missing) so synthesize can certify tool coverage against what the runner
-    # actually resolved, not the scout's advisory tool list.
-    cmd = [sys.executable, runio._script("run_tools.py"), "--target", review_root,
-           "--out", out_dir, "--deps",
-           "--run-id", manifest.get("run_id") or "",   # #17: manifest self-identifies
-           "--manifest", runio._pano(review_root, "tools-manifest.json")]
-    proc = runio._run_child(cmd, review_root, "tools")
-    produced = os.path.isdir(out_dir) and bool(os.listdir(out_dir))
-    # #1033: a real scanner/runner CRASH (non-zero exit + no output) is NOT a
-    # benign Docker-absent skip (exit 0 + no output). Distinguish them: record a
-    # `crashed` marker + a loud stderr line, but still advance -- tools are
-    # best-effort and #1031's manifest gate already fails certification when a
-    # selected adapter produces nothing, so the run stays honest without a hard
-    # stop that a missing Docker image doesn't deserve.
-    crashed = (not produced) and proc.returncode not in (0, None)
-    raw_err = (proc.stderr or "").strip()[:300]
-    note = "" if produced else (runio._redact_output(raw_err)
-                                or ("tool scan crashed" if crashed
-                                    else "no tool output produced"))
-    runio._write_json(runio._pano(review_root, "tools-ran.json"),
-                {"schema_version": 1, "ran": produced, "skipped": not produced, "crashed": crashed,
-                 "note": note, "returncode": proc.returncode,
-                 "run_id": manifest["run_id"]})
-    if crashed:
-        sys.stderr.write("driver: tool scan CRASHED (rc=%s) — %s\n"
-                         % (proc.returncode, note))
-    elif not produced:
-        sys.stderr.write("driver: tool scan produced no output — %s\n" % note)
-    return engine.PhaseResult(kind="advanced",
-                       message="tools: %s" % (
-                           "produced output" if produced
-                           else ("CRASHED — " + note if crashed
-                                 else "SKIPPED — " + note)))
-
-
-def _effective_domains(review_root, group):
-    cov = runio._load_json(runio._pano(review_root, "coverage-%s.json" % group)) or {}
-    return list(cov.get("effective") or [])
+import scripts.phases.coverage as coverage
+import scripts.phases.discovery as discovery
+import scripts.phases.requests as requests
+import scripts.phases.tools as tools
 
 
 def _get_valid_cell_data(review_root, manifest, group, domain):
@@ -843,74 +366,18 @@ def _verify_entry(review_root, manifest, group, domain, files, cell, host, bundl
             "enforced": enforced, "model": None, "prompt": prompt, "out_file": out_file}
 
 
-def _driver_plan_entries(review_root, manifest):
-    """The declared review cells as a matrix domain-cell dispatch plan
-    (#5.0-16). Computed DETERMINISTICALLY from groups.json (each discovered
-    group) x its effective domains -- the SAME two sources review_execute
-    dispatches from (_discovered_groups x _effective_domains) -- with the EXACT
-    out_file spelling _cell_entry uses, so synth.integrity.reconcile_findings_files
-    sees no missing/unexpected on a clean run. `enforced` mirrors _cell_entry so
-    plan_mod.derive_tool_policy_mode reports the run's real posture rather than
-    defaulting to "advisory". No `files`/`role` -- this is a declaration of
-    which out_files must exist, not a scope grant or a cost row."""
-    enforced = manifest.get("host", "claude") == "claude"
-    entries = []
-    for group, _files in _discovered_groups(review_root):
-        for domain in _effective_domains(review_root, group):
-            entries.append({
-                "group": group, "domain": domain, "enforced": enforced,
-                "out_file": os.path.abspath(
-                    runio._pano(review_root, "findings-%s-%s.json" % (group, domain)))})
-    return entries
-
-
-def _write_driver_plan(review_root, manifest):
-    """Write .panopticon/dispatch-plan-driver.json declaring every review cell
-    (#5.0-16 H2), so synthesize's reconcile_findings_files (undeclared-file
-    detection) is live on the driver path. Idempotent: written once, only when
-    cells exist; a later call is a no-op if the file is already present (the
-    cell set is fixed once coverage completes, which gates the review phase).
-    An empty target (no cells) writes NO plan -- reconcile then stays a correct
-    no-op rather than flagging an empty plan."""
-    path = runio._pano(review_root, plan_mod.DRIVER_DISPATCH_PLAN)
-    if os.path.isfile(path):
-        return path
-    entries = _driver_plan_entries(review_root, manifest)
-    if not entries:
-        return None
-    return runio._write_json(path, entries)
-
-
-def _snapshot_review_out_files(review_root, manifest):
-    """Snapshot a sha256 per declared review cell at the review->verify boundary
-    (#5.0-16 H3), so synthesize's verify_out_file_hashes (content-substitution
-    detection) is live on the driver path. Runs after review_done (every cell
-    written) and before any verify-phase agent can touch a findings file, so a
-    later substitution -- e.g. by a rogue advisor on the unenforced generic host
-    -- is caught. Idempotent AND one-way: if the snapshot already exists it is
-    NOT rewritten -- re-hashing after a substitution would mask it."""
-    path = runio._pano(review_root, "out-file-hashes.json")
-    if os.path.isfile(path):
-        return path
-    entries = _driver_plan_entries(review_root, manifest)
-    if not entries:
-        return None
-    group_runner.snapshot_out_files(entries, out_path=os.path.abspath(path))
-    return path if os.path.isfile(path) else None
-
-
 def review_done(review_root, manifest):
-    groups = _discovered_groups(review_root)
+    groups = coverage._discovered_groups(review_root)
     if not groups:
         return True   # vacuous (no groups)
     return all(_cell_done(review_root, manifest, g, d)
-               for g, _ in groups for d in _effective_domains(review_root, g))
+               for g, _ in groups for d in coverage._effective_domains(review_root, g))
 
 
 def review_execute(review_root, manifest):
     # #5.0-16 H2: declare every review cell before dispatching any, so an
     # injected/undeclared findings file is caught by reconcile at synthesis.
-    _write_driver_plan(review_root, manifest)
+    requests._write_driver_plan(review_root, manifest)
     host = manifest.get("host", "claude")
     bundle = runio._load_ocrdb_bundle()
     # group tests come from the committed matrix (parse_groups tests field)
@@ -927,8 +394,8 @@ def review_execute(review_root, manifest):
     # from the full entry set, so the fail-closed allowlist still covers every cell
     # (_write_driver_plan above already declared them all for reconcile).
     all_entries, ngroups = [], 0
-    for group, files in _discovered_groups(review_root):
-        domains = _effective_domains(review_root, group)
+    for group, files in coverage._discovered_groups(review_root):
+        domains = coverage._effective_domains(review_root, group)
         pending = [d for d in domains if not _cell_done(review_root, manifest, group, d)]
         if not pending:
             continue
@@ -938,7 +405,7 @@ def review_execute(review_root, manifest):
             _cell_entry(review_root, manifest, group, d, files, tests, host, bundle)
             for d in pending)
     if all_entries:
-        req = write_dispatch_request(review_root, manifest["run_id"], "review",
+        req = requests.write_dispatch_request(review_root, manifest["run_id"], "review",
                                      None, all_entries)
         return engine.PhaseResult(kind="checkpoint", checkpoint="review", group=None,
                            dispatch_request=req,
@@ -951,7 +418,7 @@ def verify_execute(review_root, manifest):
     # #5.0-16 H3: snapshot every declared cell's bytes at the review->verify
     # boundary (idempotent) BEFORE any advisor runs, so a verify-phase
     # substitution is caught. review_done gates this phase, so all cells exist.
-    _snapshot_review_out_files(review_root, manifest)
+    requests._snapshot_review_out_files(review_root, manifest)
     os.makedirs(runio._pano(review_root, "verdicts"), exist_ok=True)
     host = manifest.get("host", "claude")
     bundle = runio._load_ocrdb_bundle()
@@ -961,9 +428,9 @@ def verify_execute(review_root, manifest):
     # BACKUP and TOOL rounds below stay sequential -- they depend on the primary
     # verdicts being complete first (verify_done gates them on all-primary-done).
     all_entries, ngroups = [], 0
-    for group, files in _discovered_groups(review_root):
+    for group, files in coverage._discovered_groups(review_root):
         pending = []
-        for domain in _effective_domains(review_root, group):
+        for domain in coverage._effective_domains(review_root, group):
             cell = _load_cell_findings(review_root, manifest, group, domain)
             if cell is None or not score_gate.should_engage_primary(cell):
                 continue   # unreviewed, or below-gate: unverified + disclosed at synth
@@ -981,7 +448,7 @@ def verify_execute(review_root, manifest):
                 _verify_entry(review_root, manifest, group, d, files, c,
                               host, bundle, "primary") for d, c in pending)
     if all_entries:
-        req = write_dispatch_request(review_root, manifest["run_id"], "verify",
+        req = requests.write_dispatch_request(review_root, manifest["run_id"], "verify",
                                      None, all_entries)
         return engine.PhaseResult(kind="checkpoint", checkpoint="verify", group=None,
                            dispatch_request=req,
@@ -1000,8 +467,8 @@ def verify_execute(review_root, manifest):
 
 
 def verify_done(review_root, manifest):
-    for group, _files in _discovered_groups(review_root):
-        for domain in _effective_domains(review_root, group):
+    for group, _files in coverage._discovered_groups(review_root):
+        for domain in coverage._effective_domains(review_root, group):
             cell = _load_cell_findings(review_root, manifest, group, domain)
             if cell is None or not score_gate.should_engage_primary(cell):
                 continue
@@ -1087,9 +554,9 @@ def _verify_backup_execute(review_root, manifest, host, bundle):
     # independent -- streaming one group per checkpoint just serialized 19 round
     # trips against a 20-wide host (run-7).
     all_entries, ngroups = [], 0
-    for group, files in _discovered_groups(review_root):
+    for group, files in coverage._discovered_groups(review_root):
         pending = []
-        for domain in _effective_domains(review_root, group):
+        for domain in coverage._effective_domains(review_root, group):
             scope = _cell_backup_findings(review_root, manifest, group, domain)
             if not scope:
                 continue
@@ -1105,7 +572,7 @@ def _verify_backup_execute(review_root, manifest, host, bundle):
                               _backup_scope_files(review_root, files, c), c,
                               host, bundle, "backup") for d, c in pending)
     if all_entries:
-        req = write_dispatch_request(review_root, manifest["run_id"], "verify",
+        req = requests.write_dispatch_request(review_root, manifest["run_id"], "verify",
                                      None, all_entries)
         return engine.PhaseResult(kind="checkpoint", checkpoint="verify", group=None,
                            dispatch_request=req,
@@ -1115,8 +582,8 @@ def _verify_backup_execute(review_root, manifest, host, bundle):
 
 
 def _verify_backup_done(review_root, manifest):
-    for group, _files in _discovered_groups(review_root):
-        for domain in _effective_domains(review_root, group):
+    for group, _files in coverage._discovered_groups(review_root):
+        for domain in coverage._effective_domains(review_root, group):
             if _cell_backup_findings(review_root, manifest, group, domain) \
                     and not _verify_cell_done(review_root, manifest, group, domain, "backup"):
                 return False
@@ -1258,7 +725,7 @@ def _verify_tools_execute(review_root, manifest, host):
         return None
     entries = [_tool_verify_entry(review_root, manifest, qid, f, host)
                for qid, f in pending]
-    req = write_dispatch_request(review_root, manifest["run_id"], "verify",
+    req = requests.write_dispatch_request(review_root, manifest["run_id"], "verify",
                                  "tools", entries)
     return engine.PhaseResult(kind="checkpoint", checkpoint="verify", group="tools",
                        dispatch_request=req,
@@ -1362,8 +829,8 @@ def synthesize_execute(review_root, manifest):
     # done (no engaged cell -> verify_execute never ran, so no agent ran either
     # -- the snapshot here still captures authentic post-review bytes). Both are
     # idempotent no-ops when review_execute/verify_execute already wrote them.
-    _write_driver_plan(review_root, manifest)
-    _snapshot_review_out_files(review_root, manifest)
+    requests._write_driver_plan(review_root, manifest)
+    requests._snapshot_review_out_files(review_root, manifest)
     _collect_host_usage(review_root, manifest)
     findings = sorted(_glob.glob(runio._pano(review_root, "findings-*.json")))
     verdicts_dir = runio._pano(review_root, "verdicts")
@@ -1663,7 +1130,7 @@ def scan_execute(review_root, manifest):
     layers, _ = setup_flow.load_bundled_layers()
     brief_path = setup_flow.render_scan_brief(review_root, vocab, layers=layers, spine=spine)
     entry = _setup_scan_entry(review_root, _read_text(brief_path))
-    req = write_dispatch_request(review_root, manifest["run_id"], "scan", None, [entry])
+    req = requests.write_dispatch_request(review_root, manifest["run_id"], "scan", None, [entry])
     msg = "setup-scan checkpoint" + ((" — " + note) if note else "")
     return engine.PhaseResult(kind="checkpoint", checkpoint="scan", group=None,
                        dispatch_request=req, message=msg)
@@ -1815,9 +1282,9 @@ _RESET_GLOBS = ("groups.json", "coverage-*.json", "scout-*.json", "tools-ran.jso
 
 
 PHASES = (
-    engine.Phase("discovery", "deterministic", discovery_done, discovery_execute),
-    engine.Phase("coverage", "mixed", coverage_done, coverage_execute),
-    engine.Phase("tools", "deterministic", tools_done, tools_execute),
+    engine.Phase("discovery", "deterministic", discovery.discovery_done, discovery.discovery_execute),
+    engine.Phase("coverage", "mixed", coverage.coverage_done, coverage.coverage_execute),
+    engine.Phase("tools", "deterministic", tools.tools_done, tools.tools_execute),
     engine.Phase("review", "checkpoint", review_done, review_execute),
     engine.Phase("verify", "mixed", verify_done, verify_execute),
     engine.Phase("synthesize", "deterministic", synthesize_done, synthesize_execute),
