@@ -29,6 +29,9 @@ import scripts.phases.requests as requests
 import scripts.phases.tools as tools_phase
 import scripts.phases.review as review
 import scripts.phases.verify as verify
+import scripts.phases.setup as setup
+import scripts.phases.synthesize as synthesize
+import scripts.phases.validate as validate_phase
 
 from tools.git_repo import make_git_repo
 
@@ -480,7 +483,7 @@ class TestHostUsageCollection(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d, \
              mock.patch("scripts.phases.runio._run_child") as run:
             run.return_value = mock.Mock(returncode=0)
-            driver._collect_host_usage(d, self._manifest())
+            synthesize._collect_host_usage(d, self._manifest())
         cmd = run.call_args[0][0]   # the argv passed to _run_child
         self.assertIn("collect_usage.py", " ".join(cmd))
         # --since must be passed explicitly: run-manifest.json is _TOP_LEVEL, so
@@ -501,7 +504,7 @@ class TestHostUsageCollection(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d, \
              mock.patch("scripts.phases.runio._run_child") as run:
             run.return_value = mock.Mock(returncode=0)
-            driver._collect_host_usage(d, self._manifest())
+            synthesize._collect_host_usage(d, self._manifest())
         cmd = run.call_args[0][0]
         project_dir = cmd[cmd.index("--project-dir") + 1]
         self.assertEqual(project_dir, os.getcwd())
@@ -518,7 +521,7 @@ class TestHostUsageCollection(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d, \
              mock.patch("scripts.phases.runio._run_child") as run:
             run.return_value = mock.Mock(returncode=0)
-            driver._collect_host_usage(
+            synthesize._collect_host_usage(
                 d, self._manifest(session_dir="/somewhere/session"))
         cmd = run.call_args[0][0]
         self.assertEqual(cmd[cmd.index("--project-dir") + 1], "/somewhere/session")
@@ -529,7 +532,7 @@ class TestHostUsageCollection(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d, \
              mock.patch("scripts.phases.runio._run_child") as run:
             run.return_value = mock.Mock(returncode=0)
-            driver._collect_host_usage(d, self._manifest(session_dir=""))
+            synthesize._collect_host_usage(d, self._manifest(session_dir=""))
         cmd = run.call_args[0][0]
         self.assertEqual(cmd[cmd.index("--project-dir") + 1], os.getcwd())
 
@@ -541,7 +544,7 @@ class TestHostUsageCollection(unittest.TestCase):
              mock.patch("scripts.phases.runio._run_child") as run, \
              contextlib.redirect_stderr(buf):
             run.return_value = mock.Mock(returncode=1)
-            driver._collect_host_usage(
+            synthesize._collect_host_usage(
                 d, self._manifest(session_dir="/somewhere/session"))
         err = buf.getvalue()
         self.assertIn("/somewhere/session", err)
@@ -589,7 +592,7 @@ class TestHostUsageCollection(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d, \
              mock.patch("scripts.phases.runio._run_child") as run:
             self.assertIsNone(
-                driver._collect_host_usage(d, self._manifest(host="generic")))
+                synthesize._collect_host_usage(d, self._manifest(host="generic")))
         run.assert_not_called()
 
     def test_existing_usage_is_never_overwritten_on_resume(self):
@@ -599,7 +602,7 @@ class TestHostUsageCollection(unittest.TestCase):
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write('{"total": 1}')
-            self.assertIsNone(driver._collect_host_usage(d, self._manifest()))
+            self.assertIsNone(synthesize._collect_host_usage(d, self._manifest()))
         run.assert_not_called()
 
     def test_a_failed_collection_is_never_fatal(self):
@@ -609,7 +612,7 @@ class TestHostUsageCollection(unittest.TestCase):
              mock.patch("scripts.phases.runio._run_child",
                         side_effect=runio.DriverError("boom")), \
              contextlib.redirect_stderr(io.StringIO()) as err:
-            self.assertIsNone(driver._collect_host_usage(d, self._manifest()))
+            self.assertIsNone(synthesize._collect_host_usage(d, self._manifest()))
         self.assertIn("meta.cost.tokens stays null", err.getvalue())
 
     def test_no_transcript_is_reported_not_raised(self):
@@ -617,7 +620,7 @@ class TestHostUsageCollection(unittest.TestCase):
              mock.patch("scripts.phases.runio._run_child",
                         return_value=mock.Mock(returncode=1)), \
              contextlib.redirect_stderr(io.StringIO()) as err:
-            driver._collect_host_usage(d, self._manifest())
+            synthesize._collect_host_usage(d, self._manifest())
         self.assertIn("produced nothing", err.getvalue())
 
 
@@ -1455,9 +1458,9 @@ class TestSynthesizePhase(unittest.TestCase):
                 json.dump({"grade": "A", "findings": []}, fh)
             return mock.Mock(returncode=0, stdout="", stderr="")
         with mock.patch("subprocess.run", side_effect=fake_run):
-            result = driver.synthesize_execute(self.root, self.manifest)
+            result = synthesize.synthesize_execute(self.root, self.manifest)
         self.assertEqual(result.kind, "advanced")
-        self.assertTrue(driver.synthesize_done(self.root, self.manifest))
+        self.assertTrue(synthesize.synthesize_done(self.root, self.manifest))
         cmd = captured["cmd"]
         self.assertIn("--verdicts-dir", cmd)
         self.assertNotIn("--emit-verify-queue", cmd)
@@ -1474,7 +1477,7 @@ class TestSynthesizePhase(unittest.TestCase):
                 json.dump({"findings": []}, fh)
             return mock.Mock(returncode=0, stdout="", stderr="")
         with mock.patch("subprocess.run", side_effect=fake_run) as rm_:
-            driver.synthesize_execute(self.root, self.manifest)
+            synthesize.synthesize_execute(self.root, self.manifest)
         self.assertIn("--tools-dir", rm_.call_args[0][0])
 
     def test_gate_fail_nonzero_still_advances_when_report_present(self):
@@ -1483,14 +1486,14 @@ class TestSynthesizePhase(unittest.TestCase):
                 json.dump({"grade": "F", "findings": []}, fh)
             return mock.Mock(returncode=2, stdout="", stderr="gate failed")  # non-zero
         with mock.patch("subprocess.run", side_effect=fake_run):
-            result = driver.synthesize_execute(self.root, self.manifest)
+            result = synthesize.synthesize_execute(self.root, self.manifest)
         self.assertEqual(result.kind, "advanced")
 
     def test_absent_report_raises(self):
         with mock.patch("subprocess.run",
                         return_value=mock.Mock(returncode=1, stdout="", stderr="boom")):
             with self.assertRaises(runio.DriverError):
-                driver.synthesize_execute(self.root, self.manifest)
+                synthesize.synthesize_execute(self.root, self.manifest)
 
     def test_diff_context_forwarded_when_set(self):
         manifest = dict(self.manifest,
@@ -1502,7 +1505,7 @@ class TestSynthesizePhase(unittest.TestCase):
                 json.dump({"grade": "A", "findings": []}, fh)
             return mock.Mock(returncode=0, stdout="", stderr="")
         with mock.patch("subprocess.run", side_effect=fake_run):
-            driver.synthesize_execute(self.root, manifest)
+            synthesize.synthesize_execute(self.root, manifest)
         cmd = captured["cmd"]
         self.assertIn("--diff-context", cmd)
         self.assertEqual(cmd[cmd.index("--diff-context") + 1], "5")
@@ -1513,7 +1516,7 @@ class TestSynthesizePhase(unittest.TestCase):
                 json.dump({"grade": "A", "findings": []}, fh)
             return mock.Mock(returncode=0, stdout="", stderr="")
         with mock.patch("subprocess.run", side_effect=fake_run) as run:
-            driver.synthesize_execute(self.root, self.manifest)
+            synthesize.synthesize_execute(self.root, self.manifest)
         self.assertNotIn("--diff-context", run.call_args.args[0])
 
 
@@ -1558,26 +1561,26 @@ class TestValidatePhase(unittest.TestCase):
 
     def test_clean_tree_advances(self):
         d = self._git_repo()
-        driver.capture_tree_baseline(d)
+        validate_phase.capture_tree_baseline(d)
         m = {"run_id": "R", "worktree": None}
-        result = driver.validate_execute(d, m)
+        result = validate_phase.validate_execute(d, m)
         self.assertEqual(result.kind, "advanced")
-        self.assertTrue(driver.validate_done(d, m))
+        self.assertTrue(validate_phase.validate_done(d, m))
 
     def test_reviewer_side_effect_outside_panopticon_raises(self):
         d = self._git_repo()
-        driver.capture_tree_baseline(d)
+        validate_phase.capture_tree_baseline(d)
         open(os.path.join(d, "leaked.py"), "w").close()   # NEW file outside .panopticon
         m = {"run_id": "R", "worktree": None}
         with self.assertRaises(runio.DriverError):
-            driver.validate_execute(d, m)
-        self.assertFalse(driver.validate_done(d, m))   # dirty tree != validated
+            validate_phase.validate_execute(d, m)
+        self.assertFalse(validate_phase.validate_done(d, m))   # dirty tree != validated
 
     def test_panopticon_changes_are_ignored(self):
         d = self._git_repo()
-        driver.capture_tree_baseline(d)
+        validate_phase.capture_tree_baseline(d)
         open(os.path.join(d, ".panopticon", "report.json"), "w").close()
-        result = driver.validate_execute(d, {"run_id": "R", "worktree": None})
+        result = validate_phase.validate_execute(d, {"run_id": "R", "worktree": None})
         self.assertEqual(result.kind, "advanced")
 
     def test_validate_does_not_release_pr_worktree(self):
@@ -1585,19 +1588,19 @@ class TestValidatePhase(unittest.TestCase):
         # the worktree, releasing here would delete report.json + the manifest and
         # break cursor derivation. Release happens in run() on completion instead.
         d = self._git_repo()
-        driver.capture_tree_baseline(d)
+        validate_phase.capture_tree_baseline(d)
         with mock.patch("scripts.diff_map.release_worktree") as rel:
-            result = driver.validate_execute(d, {"run_id": "R", "worktree": "/tmp/pr-wt"})
+            result = validate_phase.validate_execute(d, {"run_id": "R", "worktree": "/tmp/pr-wt"})
         rel.assert_not_called()
         self.assertEqual(result.kind, "advanced")
-        self.assertTrue(driver.validate_done(d, {"run_id": "R", "worktree": "/tmp/pr-wt"}))
+        self.assertTrue(validate_phase.validate_done(d, {"run_id": "R", "worktree": "/tmp/pr-wt"}))
 
     def test_non_git_target_has_no_baseline_and_advances(self):
         with tempfile.TemporaryDirectory() as d:
             d = os.path.realpath(d)
             os.makedirs(os.path.join(d, ".panopticon"))
-            self.assertIsNone(driver.capture_tree_baseline(d))
-            result = driver.validate_execute(d, {"run_id": "R", "worktree": None})
+            self.assertIsNone(validate_phase.capture_tree_baseline(d))
+            result = validate_phase.validate_execute(d, {"run_id": "R", "worktree": None})
             self.assertEqual(result.kind, "advanced")
 
     def test_baseline_probe_failure_fails_closed(self):
@@ -1610,29 +1613,29 @@ class TestValidatePhase(unittest.TestCase):
                 raise subprocess.TimeoutExpired(cmd="git", timeout=15)
             buf = io.StringIO()
             with contextlib.redirect_stderr(buf):
-                driver.capture_tree_baseline(d, runner=boom)
+                validate_phase.capture_tree_baseline(d, runner=boom)
             self.assertIn("fail closed", buf.getvalue())
             with self.assertRaises(runio.DriverError):        # sentinel -> fail closed
-                driver.validate_execute(d, {"run_id": "R", "worktree": None})
+                validate_phase.validate_execute(d, {"run_id": "R", "worktree": None})
 
     def test_validate_probe_failure_fails_closed(self):
         # A baseline was captured cleanly, but the validate-time git-status probe
         # fails -- the tree cannot be confirmed unchanged, so fail closed, not clean.
         d = self._git_repo()
-        driver.capture_tree_baseline(d)
+        validate_phase.capture_tree_baseline(d)
         def boom(*_a, **_k):
             raise OSError("git unavailable")
         with self.assertRaises(runio.DriverError):
-            driver.validate_execute(d, {"run_id": "R", "worktree": None}, runner=boom)
+            validate_phase.validate_execute(d, {"run_id": "R", "worktree": None}, runner=boom)
 
     def test_panopticon_prefix_sibling_is_flagged(self):
         # a repo-root file sharing the '.panopticon' prefix WITHOUT a '/' boundary
         # is a reviewer side effect, not an in-.panopticon artifact -> must raise.
         d = self._git_repo()
-        driver.capture_tree_baseline(d)
+        validate_phase.capture_tree_baseline(d)
         open(os.path.join(d, ".panopticon-evil.py"), "w").close()
         with self.assertRaises(runio.DriverError):
-            driver.validate_execute(d, {"run_id": "R", "worktree": None})
+            validate_phase.validate_execute(d, {"run_id": "R", "worktree": None})
 
     def test_rename_out_of_panopticon_is_flagged(self):
         # a rename moving a tracked file OUT of .panopticon/ must be caught on
@@ -1643,10 +1646,10 @@ class TestValidatePhase(unittest.TestCase):
         open(inside, "w").close()
         subprocess.run(["git", "-C", d, "add", "-A"], check=True)
         subprocess.run(["git", "-C", d, "commit", "-qm", "add pano file"], check=True)
-        driver.capture_tree_baseline(d)
+        validate_phase.capture_tree_baseline(d)
         subprocess.run(["git", "-C", d, "mv", ".panopticon/x.py", "leaked.py"], check=True)
         with self.assertRaises(runio.DriverError):
-            driver.validate_execute(d, {"run_id": "R", "worktree": None})
+            validate_phase.validate_execute(d, {"run_id": "R", "worktree": None})
 
     def test_rename_into_panopticon_is_flagged(self):
         # #1033/SEC-1: a rename moving a tracked file INTO .panopticon/ still
@@ -1656,11 +1659,11 @@ class TestValidatePhase(unittest.TestCase):
         open(os.path.join(d, "real_src.py"), "w").close()
         subprocess.run(["git", "-C", d, "add", "-A"], check=True)
         subprocess.run(["git", "-C", d, "commit", "-qm", "add real_src"], check=True)
-        driver.capture_tree_baseline(d)
+        validate_phase.capture_tree_baseline(d)
         subprocess.run(["git", "-C", d, "mv", "real_src.py", ".panopticon/hidden.py"],
                        check=True)
         with self.assertRaises(runio.DriverError):
-            driver.validate_execute(d, {"run_id": "R", "worktree": None})
+            validate_phase.validate_execute(d, {"run_id": "R", "worktree": None})
 
     def test_nonascii_name_in_panopticon_is_not_flagged(self):
         # #1033/SEC-1: -z emits RAW paths, so a non-ASCII filename inside
@@ -1673,9 +1676,9 @@ class TestValidatePhase(unittest.TestCase):
         open(os.path.join(d, ".panopticon", "keep.txt"), "w").close()
         subprocess.run(["git", "-C", d, "add", ".panopticon/keep.txt"], check=True)
         subprocess.run(["git", "-C", d, "commit", "-qm", "track pano"], check=True)
-        driver.capture_tree_baseline(d)
+        validate_phase.capture_tree_baseline(d)
         open(os.path.join(d, ".panopticon", "é.py"), "w").close()   # é.py
-        result = driver.validate_execute(d, {"run_id": "R", "worktree": None})
+        result = validate_phase.validate_execute(d, {"run_id": "R", "worktree": None})
         self.assertEqual(result.kind, "advanced")   # in-.panopticon -> ignored
 
 
@@ -1699,7 +1702,7 @@ class TestFinalizeWorktree(unittest.TestCase):
             os.path.join(worktree, ".panopticon", f"{tag}-report.json"),
             {"summary": {"gate": "PASS"}})
         with mock.patch.object(diff_map, "release_worktree") as rel:
-            driver._finalize_worktree(worktree, manifest)
+            validate_phase._finalize_worktree(worktree, manifest)
         # the durable tag-named report is surfaced to the OWNING checkout...
         self.assertEqual(
             runio._load_json(os.path.join(target, ".panopticon", f"{tag}-report.json")),
@@ -1713,7 +1716,7 @@ class TestFinalizeWorktree(unittest.TestCase):
     def test_no_worktree_is_a_noop(self):
         target = self._dir()
         with mock.patch.object(diff_map, "release_worktree") as rel:
-            driver._finalize_worktree(target, {"run_id": "R", "worktree": None})
+            validate_phase._finalize_worktree(target, {"run_id": "R", "worktree": None})
         rel.assert_not_called()
 
     def test_failed_report_surface_keeps_worktree_not_silent(self):
@@ -1732,7 +1735,7 @@ class TestFinalizeWorktree(unittest.TestCase):
              mock.patch("shutil.copyfile",
                         side_effect=OSError("disk full")), \
              contextlib.redirect_stderr(err):
-            driver._finalize_worktree(worktree, manifest)
+            validate_phase._finalize_worktree(worktree, manifest)
         rel.assert_not_called()                        # worktree KEPT, not destroyed
         self.assertIn("KEEPING the worktree", err.getvalue())
 
@@ -1747,7 +1750,7 @@ class TestFinalizeWorktree(unittest.TestCase):
             runio._write_json(
                 os.path.join(worktree, ".panopticon", f"{tag}-{part}"), {"p": part})
         with mock.patch.object(diff_map, "release_worktree"):
-            driver._finalize_worktree(worktree, manifest)
+            validate_phase._finalize_worktree(worktree, manifest)
         for part in ("report_part3.json", "report_part4.json", "report-discarded.json"):
             self.assertTrue(
                 os.path.isfile(os.path.join(target, ".panopticon", f"{tag}-{part}")),
@@ -1974,14 +1977,14 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         checkpoint = dict(complete, status="checkpoint", checkpoint="scout")
 
         with mock.patch("scripts.phases.engine.run_engine", return_value=complete), \
-                mock.patch("scripts.driver._finalize_worktree") as fin:
+                mock.patch("scripts.phases.validate._finalize_worktree") as fin:
             status = driver.run(self._args(d))
         self.assertEqual(status["status"], "complete")
         fin.assert_called_once()
 
         d2 = self._repo()
         with mock.patch("scripts.phases.engine.run_engine", return_value=checkpoint), \
-                mock.patch("scripts.driver._finalize_worktree") as fin2:
+                mock.patch("scripts.phases.validate._finalize_worktree") as fin2:
             status2 = driver.run(self._args(d2))
         self.assertEqual(status2["status"], "checkpoint")
         fin2.assert_not_called()
@@ -2155,7 +2158,7 @@ class TestVerifyMatrixEndToEnd(unittest.TestCase):
         self.assertEqual(result2.kind, "advanced")
         self.assertTrue(verify.verify_done(d, manifest))
 
-        synth = driver.synthesize_execute(d, manifest)
+        synth = synthesize.synthesize_execute(d, manifest)
         self.assertEqual(synth.kind, "advanced")
         report = runio._load_json(runio._pano(d, "report.json"))
         finding = next(f for f in report["findings"] if f.get("domain") == "SEC")
@@ -2172,7 +2175,7 @@ class TestVerifyMatrixEndToEnd(unittest.TestCase):
         self.assertEqual(result.checkpoint, "verify")
         self.assertFalse(verify.verify_done(d, manifest))
 
-        synth = driver.synthesize_execute(d, manifest)
+        synth = synthesize.synthesize_execute(d, manifest)
         self.assertEqual(synth.kind, "advanced")
         report = runio._load_json(runio._pano(d, "report.json"))
         self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
@@ -2269,7 +2272,7 @@ class TestDriverRunLoopEndToEnd(unittest.TestCase):
         self.assertEqual(v2.kind, "advanced")
         self.assertTrue(verify.verify_done(d, manifest))
         # synthesize → graded report, advisor_confirmed, not INCONCLUSIVE
-        self.assertEqual(driver.synthesize_execute(d, manifest).kind, "advanced")
+        self.assertEqual(synthesize.synthesize_execute(d, manifest).kind, "advanced")
         report = runio._load_json(runio._pano(d, "report.json"))
         finding = next(f for f in report["findings"] if f.get("domain") == "SEC")
         self.assertEqual(finding["evidence"]["status"], "advisor_confirmed")
@@ -2431,7 +2434,7 @@ class TestDriverSingleScopeEndToEnd(unittest.TestCase):
         self.assertTrue(verify.verify_done(d, manifest))
 
         # synthesize -> graded report, every finding confined to Checkout's files
-        self.assertEqual(driver.synthesize_execute(d, manifest).kind, "advanced")
+        self.assertEqual(synthesize.synthesize_execute(d, manifest).kind, "advanced")
         report = runio._load_json(runio._pano(d, "report.json"))
         self.assertTrue(report["findings"])
         for f in report["findings"]:
@@ -2628,7 +2631,7 @@ class TestDriverDeltaEndToEnd(unittest.TestCase):
         self.assertTrue(verify.verify_done(d, manifest))
 
         # synthesize -> a graded report with a populated delta block.
-        self.assertEqual(driver.synthesize_execute(d, manifest).kind, "advanced")
+        self.assertEqual(synthesize.synthesize_execute(d, manifest).kind, "advanced")
         report = runio._load_json(runio._pano(d, "report.json"))
 
         delta_meta = report["meta"]["coverage"]["delta"]
@@ -2662,7 +2665,7 @@ class TestDriverDeltaEndToEnd(unittest.TestCase):
         # FAIL. This proves the default on-diff scoping is what produced the PASS
         # (not a vacuous pass), i.e. gate scope actually changes the outcome.
         manifest["flags"]["gate_scope"] = "all"
-        self.assertEqual(driver.synthesize_execute(d, manifest).kind, "advanced")
+        self.assertEqual(synthesize.synthesize_execute(d, manifest).kind, "advanced")
         report_all = runio._load_json(runio._pano(d, "report.json"))
         self.assertEqual(report_all["summary"]["gate"], "FAIL")
 
@@ -2722,12 +2725,12 @@ class TestDriverDeltaEndToEnd(unittest.TestCase):
         d = os.path.realpath(tempfile.mkdtemp())
         self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
         subprocess.run(["git", "init", "-q"], cwd=d, check=True)
-        driver.capture_tree_baseline(d)   # real git status --porcelain, clean
+        validate_phase.capture_tree_baseline(d)   # real git status --porcelain, clean
         wt = diff_map._worktree_dir(d, 7)
         manifest = {"run_id": self.RUN_ID, "worktree": wt}
 
         with mock.patch.object(diff_map, "release_worktree") as rel:
-            result = driver.validate_execute(d, manifest)
+            result = validate_phase.validate_execute(d, manifest)
 
         self.assertEqual(result.kind, "advanced")
         rel.assert_not_called()
@@ -2753,7 +2756,7 @@ class TestDriverSetup(unittest.TestCase):
     def test_scan_emits_setup_scan_checkpoint_when_vocab_present(self):
         d = self._repo()
         args = driver.build_parser().parse_args(["setup", d])
-        status = driver.run_setup_flow(args)
+        status = setup.run_setup_flow(args)
         self.assertEqual(status["status"], "checkpoint")
         self.assertEqual(status["checkpoint"], "scan")
         req = runio._load_json(runio._pano(d, "dispatch-request.json"))
@@ -2771,7 +2774,7 @@ class TestDriverSetup(unittest.TestCase):
         with open(os.path.join(d, ".gitignore"), "w") as fh:
             fh.write(".panopticon/\n")
         args = driver.build_parser().parse_args(["setup", d])
-        status = driver.run_setup_flow(args)
+        status = setup.run_setup_flow(args)
         self.assertIn("git add -f", status["message"])
         with open(os.path.join(d, ".gitignore"), encoding="utf-8") as fh:
             gi = fh.read()
@@ -2781,12 +2784,12 @@ class TestDriverSetup(unittest.TestCase):
     def test_ingest_writes_draft_then_completes(self):
         d = self._repo()
         args = driver.build_parser().parse_args(["setup", d])
-        driver.run_setup_flow(args)                       # scan checkpoint
+        setup.run_setup_flow(args)                       # scan checkpoint
         proposal = {"groups": [{"capability": "Checkout",
                                 "match": ["src/checkout/**"], "tests": []}]}
         with open(runio._pano(d, "setup-proposal.json"), "w") as fh:
             json.dump(proposal, fh)
-        status = driver.run_setup_flow(args)              # re-invoke -> ingest
+        status = setup.run_setup_flow(args)              # re-invoke -> ingest
         self.assertEqual(status["status"], "complete")
         self.assertTrue(os.path.isfile(runio._pano(d, "groups.yml.draft")))
         self.assertFalse(os.path.isfile(runio._pano(d, "groups.yml")))
@@ -2798,7 +2801,7 @@ class TestDriverSetup(unittest.TestCase):
         args = driver.build_parser().parse_args(["setup", d])
         with mock.patch("scripts.setup_flow.load_bundled_vocabulary",
                         return_value=({"names": []}, False)):
-            status = driver.run_setup_flow(args)
+            status = setup.run_setup_flow(args)
         self.assertEqual(status["status"], "complete")
         self.assertTrue(runio._json_parses(runio._pano(d, "setup-complete.json")))
         self.assertTrue(os.path.isfile(runio._pano(d, "groups.yml")))   # flat seed
@@ -2812,7 +2815,7 @@ class TestDriverSetup(unittest.TestCase):
         args = driver.build_parser().parse_args(["setup", d])
         with mock.patch("scripts.setup_flow.load_bundled_vocabulary",
                         return_value=({"names": []}, False)):
-            status1 = driver.run_setup_flow(args)
+            status1 = setup.run_setup_flow(args)
         self.assertEqual(status1["status"], "complete")
         marker = runio._load_json(runio._pano(d, "setup-complete.json"))
         self.assertEqual(marker["mode"], "fallback")
@@ -2821,7 +2824,7 @@ class TestDriverSetup(unittest.TestCase):
         # fixture). Without the self-heal, scan_done/ingest_done would both
         # short-circuit on the stale marker and this would return "complete"
         # again, reusing the flat fallback seed instead of running a real scan.
-        status2 = driver.run_setup_flow(args)
+        status2 = setup.run_setup_flow(args)
         self.assertEqual(status2["status"], "checkpoint")
         self.assertEqual(status2["checkpoint"], "scan")
         self.assertFalse(runio._json_parses(runio._pano(d, "setup-complete.json")))
@@ -2834,7 +2837,7 @@ class TestDriverSetup(unittest.TestCase):
         args1 = driver.build_parser().parse_args(["setup", d1])
         with mock.patch("scripts.setup_flow.load_bundled_vocabulary",
                         return_value=({"names": []}, False)):
-            status1 = driver.run_setup_flow(args1)
+            status1 = setup.run_setup_flow(args1)
         self.assertEqual(status1["status"], "complete")
         self.assertNotIn("draft", status1["message"])
         self.assertIn("groups.yml", status1["message"])
@@ -2843,12 +2846,12 @@ class TestDriverSetup(unittest.TestCase):
         # point the owner at it.
         d2 = self._repo()
         args2 = driver.build_parser().parse_args(["setup", d2])
-        driver.run_setup_flow(args2)                       # scan checkpoint
+        setup.run_setup_flow(args2)                       # scan checkpoint
         proposal = {"groups": [{"capability": "Checkout",
                                 "match": ["src/checkout/**"], "tests": []}]}
         with open(runio._pano(d2, "setup-proposal.json"), "w") as fh:
             json.dump(proposal, fh)
-        status2 = driver.run_setup_flow(args2)              # re-invoke -> ingest
+        status2 = setup.run_setup_flow(args2)              # re-invoke -> ingest
         self.assertEqual(status2["status"], "complete")
         self.assertIn("draft", status2["message"])
 
@@ -2864,7 +2867,7 @@ class TestDriverSetup(unittest.TestCase):
         with mock.patch("scripts.setup_flow.load_bundled_vocabulary",
                         return_value=({"names": []}, False)), \
              mock.patch("scripts.setup_flow.readiness", return_value=fake_checks):
-            status = driver.run_setup_flow(args)
+            status = setup.run_setup_flow(args)
         self.assertEqual(status["status"], "complete")
         self.assertIn("readiness gaps", status["message"])
         self.assertIn("docker", status["message"])
@@ -2872,17 +2875,17 @@ class TestDriverSetup(unittest.TestCase):
     def test_ingest_malformed_proposal_errors(self):
         d = self._repo()
         args = driver.build_parser().parse_args(["setup", d])
-        driver.run_setup_flow(args)
+        setup.run_setup_flow(args)
         with open(runio._pano(d, "setup-proposal.json"), "w") as fh:
             json.dump({"groups": [{"capability": "", "match": []}]}, fh)
-        status = driver.run_setup_flow(args)
+        status = setup.run_setup_flow(args)
         self.assertEqual(status["status"], "error")
         self.assertFalse(os.path.isfile(runio._pano(d, "groups.yml.draft")))
 
     def test_reset_clears_setup_artifacts(self):
         d = self._repo()
         args = driver.build_parser().parse_args(["setup", d])
-        driver.run_setup_flow(args)                        # scan checkpoint: brief + manifest
+        setup.run_setup_flow(args)                        # scan checkpoint: brief + manifest
         self.assertTrue(os.path.isfile(runio._pano(d, "setup-scan-brief.md")))
         # Simulate a real returned proposal sitting on disk pre-reset (the host
         # wrote it back but it was never ingested) -- a genuine artifact for
@@ -2891,16 +2894,16 @@ class TestDriverSetup(unittest.TestCase):
                                 "match": ["src/checkout/**"], "tests": []}]}
         with open(runio._pano(d, "setup-proposal.json"), "w") as fh:
             json.dump(proposal, fh)
-        run_id_before = driver.load_setup_manifest(d)["run_id"]
+        run_id_before = setup.load_setup_manifest(d)["run_id"]
 
         reset_args = driver.build_parser().parse_args(["setup", d, "--reset"])
-        driver.run_setup_flow(reset_args)                  # clears, then re-scans
+        setup.run_setup_flow(reset_args)                  # clears, then re-scans
 
         # the pre-existing proposal was actually removed (not left for the
         # re-scan to trip over as a stale "already done" marker)
         self.assertFalse(os.path.isfile(runio._pano(d, "setup-proposal.json")))
         # the setup-manifest was regenerated, not reused -> a genuinely fresh run
-        self.assertNotEqual(driver.load_setup_manifest(d)["run_id"], run_id_before)
+        self.assertNotEqual(setup.load_setup_manifest(d)["run_id"], run_id_before)
         # a real re-scan happened (brief re-rendered under the fresh run)
         self.assertTrue(os.path.isfile(runio._pano(d, "setup-scan-brief.md")))
 
@@ -2918,8 +2921,8 @@ class TestDriverSetup(unittest.TestCase):
                             "host": "claude"})
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
-            driver.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
-        m = driver.load_setup_manifest(d)
+            setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
+        m = setup.load_setup_manifest(d)
         self.assertNotEqual(m["review_root"], "/somewhere/else")   # re-stamped to THIS tree
         self.assertNotEqual(m["run_id"], "FOREIGN")                # rebuilt, not reused
         self.assertIsNone(m["vocabulary_path"])                    # hostile path dropped
@@ -2934,10 +2937,10 @@ class TestDriverSetup(unittest.TestCase):
             fh.write(content)
 
         args = driver.build_parser().parse_args(["setup", d])
-        driver.run_setup_flow(args)                        # scan checkpoint
+        setup.run_setup_flow(args)                        # scan checkpoint
 
         reset_args = driver.build_parser().parse_args(["setup", d, "--reset"])
-        driver.run_setup_flow(reset_args)                  # clears setup artifacts only
+        setup.run_setup_flow(reset_args)                  # clears setup artifacts only
 
         self.assertTrue(os.path.isfile(committed_path))
         with open(committed_path, encoding="utf-8") as fh:
@@ -2948,14 +2951,14 @@ class TestDriverSetup(unittest.TestCase):
         complete, draft present, committed groups.yml never written."""
         d = self._repo()
         args = driver.build_parser().parse_args(["setup", d])
-        s1 = driver.run_setup_flow(args)
+        s1 = setup.run_setup_flow(args)
         self.assertEqual(s1["checkpoint"], "scan")
         entry = runio._load_json(runio._pano(d, "dispatch-request.json"))["entries"][0]
         # host return-persist: write the returned proposal to entry["out_file"]
         with open(entry["out_file"], "w") as fh:
             json.dump({"groups": [{"capability": "Checkout",
                                    "match": ["src/checkout/**"], "tests": []}]}, fh)
-        s2 = driver.run_setup_flow(args)
+        s2 = setup.run_setup_flow(args)
         self.assertEqual(s2["status"], "complete")
         self.assertIn("groups.yml.draft", "".join(os.listdir(runio._pano(d))))
         self.assertFalse(os.path.isfile(runio._pano(d, "groups.yml")))
@@ -2967,22 +2970,22 @@ class TestDriverSetup(unittest.TestCase):
         d = self._repo()
         args = driver.build_parser().parse_args(
             ["setup", d, "--max-per-group", "3", "--max-groups", "5"])
-        driver.run_setup_flow(args)                       # scan checkpoint
-        manifest = driver.load_setup_manifest(d)
+        setup.run_setup_flow(args)                       # scan checkpoint
+        manifest = setup.load_setup_manifest(d)
         self.assertEqual((manifest["max_per_group"], manifest["max_groups"]), (3, 5))
         with open(runio._pano(d, "setup-proposal.json"), "w") as fh:
             json.dump({"groups": [{"capability": "Checkout",
                                    "match": ["src/checkout/**"], "tests": []}]}, fh)
-        status = driver.run_setup_flow(args)              # re-invoke -> ingest
+        status = setup.run_setup_flow(args)              # re-invoke -> ingest
         self.assertEqual(status["status"], "complete")
         self.assertIn("setup-report.md", status["message"])
         report = runio._load_json(runio._pano(d, "setup-report.json"))["report"]
         self.assertEqual((report["cap"], report["ceiling"]), (3, 5))
         self.assertTrue(os.path.isfile(runio._pano(d, "setup-report.md")))
         # a bare re-invocation resumes the pinned manifest, not the (absent) flags
-        status = driver.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
+        status = setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
         self.assertEqual(status["status"], "complete")
-        self.assertEqual(driver.load_setup_manifest(d)["max_per_group"], 3)
+        self.assertEqual(setup.load_setup_manifest(d)["max_per_group"], 3)
 
     def test_setup_size_flags_must_be_positive(self):
         parser = driver.build_parser()
@@ -3002,15 +3005,15 @@ class TestDriverSetup(unittest.TestCase):
         os.makedirs(runio._pano(d), exist_ok=True)
         with open(os.path.join(runio._pano(d), "config.json"), "w") as fh:
             json.dump({"max_per_group": 7, "max_groups": 9}, fh)
-        driver.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
-        manifest = driver.load_setup_manifest(d)
+        setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
+        manifest = setup.load_setup_manifest(d)
         self.assertEqual((manifest["max_per_group"], manifest["max_groups"]), (7, 9))
         with open(os.path.join(runio._pano(d), "config.json"), "w") as fh:
             json.dump({"max_per_group": 2, "max_groups": 4}, fh)
         with open(runio._pano(d, "setup-proposal.json"), "w") as fh:
             json.dump({"groups": [{"capability": "Checkout",
                                    "match": ["src/checkout/**"], "tests": []}]}, fh)
-        status = driver.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
+        status = setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
         self.assertEqual(status["status"], "complete")
         report = runio._load_json(runio._pano(d, "setup-report.json"))["report"]
         self.assertEqual((report["cap"], report["ceiling"]), (7, 9))
@@ -3019,9 +3022,9 @@ class TestDriverSetup(unittest.TestCase):
         os.makedirs(runio._pano(d2), exist_ok=True)
         with open(os.path.join(runio._pano(d2), "config.json"), "w") as fh:
             json.dump({"max_per_group": 7}, fh)
-        driver.run_setup_flow(driver.build_parser().parse_args(
+        setup.run_setup_flow(driver.build_parser().parse_args(
             ["setup", d2, "--max-per-group", "3"]))
-        self.assertEqual(driver.load_setup_manifest(d2)["max_per_group"], 3)
+        self.assertEqual(setup.load_setup_manifest(d2)["max_per_group"], 3)
 
     def test_scan_writes_the_spine_with_the_manifest_sizes(self):
         # 5.2 stage 1: the scan phase computes the spine ONCE with the sizes
@@ -3030,7 +3033,7 @@ class TestDriverSetup(unittest.TestCase):
         d = self._repo()
         args = driver.build_parser().parse_args(
             ["setup", d, "--max-per-group", "3", "--max-groups", "5"])
-        status = driver.run_setup_flow(args)
+        status = setup.run_setup_flow(args)
         self.assertEqual(status["checkpoint"], "scan")
         spine = runio._load_json(runio._pano(d, "setup-spine.json"))
         self.assertEqual((spine["cap"], spine["ceiling"], spine["ceiling_source"]),
@@ -3041,10 +3044,10 @@ class TestDriverSetup(unittest.TestCase):
         self.assertIn("## Size arithmetic", brief)
         self.assertIn("ceiling (review groups this repo affords): 5 from --max-groups", brief)
         self.assertIn("setup-spine.json", runio._TOP_LEVEL)
-        self.assertIn("setup-spine.json", driver._SETUP_ARTIFACTS)
+        self.assertIn("setup-spine.json", setup._SETUP_ARTIFACTS)
         # --reset drops the pinned sizes and re-runs scan: the spine is rebuilt
         # with the defaults, not left over from the flagged run
-        driver.run_setup_flow(driver.build_parser().parse_args(["setup", d, "--reset"]))
+        setup.run_setup_flow(driver.build_parser().parse_args(["setup", d, "--reset"]))
         spine = runio._load_json(runio._pano(d, "setup-spine.json"))
         self.assertEqual((spine["cap"], spine["ceiling_source"]), (48, "formula"))
 
@@ -3053,7 +3056,7 @@ class TestDriverSetup(unittest.TestCase):
         # (#1500) -- the capability entries with their definitions and the
         # layer entries the agent may name -- plus the surfaces enum.
         d = self._repo()
-        driver.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
+        setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
         with open(runio._pano(d, "setup-scan-brief.md"), encoding="utf-8") as fh:
             brief = fh.read()
         self.assertIn("## Capability catalog", brief)
@@ -3067,16 +3070,16 @@ class TestDriverSetup(unittest.TestCase):
     def test_reset_clears_the_report_artifacts(self):
         d = self._repo()
         args = driver.build_parser().parse_args(["setup", d])
-        driver.run_setup_flow(args)
+        setup.run_setup_flow(args)
         with open(runio._pano(d, "setup-proposal.json"), "w") as fh:
             json.dump({"groups": [{"capability": "Checkout",
                                    "match": ["src/checkout/**"], "tests": []}]}, fh)
-        driver.run_setup_flow(args)
+        setup.run_setup_flow(args)
         for name in ("setup-report.md", "setup-report.json"):
             self.assertTrue(os.path.isfile(runio._pano(d, name)), name)
             self.assertIn(name, runio._TOP_LEVEL)
-            self.assertIn(name, driver._SETUP_ARTIFACTS)
-        driver.run_setup_flow(driver.build_parser().parse_args(["setup", d, "--reset"]))
+            self.assertIn(name, setup._SETUP_ARTIFACTS)
+        setup.run_setup_flow(driver.build_parser().parse_args(["setup", d, "--reset"]))
         for name in ("setup-report.md", "setup-report.json", "groups.yml.draft"):
             self.assertFalse(os.path.isfile(runio._pano(d, name)), name)
 
@@ -3222,7 +3225,7 @@ class TestDriverIntegrityWiring(unittest.TestCase):
         self.assertTrue(verify.verify_done(d, m))
         self.assertTrue(os.path.isfile(runio._pano(d, "dispatch-plan-driver.json")))
         self.assertTrue(os.path.isfile(runio._pano(d, "out-file-hashes.json")))
-        self.assertEqual(driver.synthesize_execute(d, m).kind, "advanced")
+        self.assertEqual(synthesize.synthesize_execute(d, m).kind, "advanced")
         report = runio._load_json(runio._pano(d, "report.json"))
         integ = report["meta"]["integrity"]
         self.assertGreaterEqual(integ["plans_seen"], 1)
@@ -3244,7 +3247,7 @@ class TestDriverIntegrityWiring(unittest.TestCase):
                            {"findings": [], "_panopticon": {
                                "run_id": self.RUN_ID, "role": "domain_panel",
                                "domain": "BOGUS", "group": "app"}})
-        driver.synthesize_execute(d, m)
+        synthesize.synthesize_execute(d, m)
         report = runio._load_json(runio._pano(d, "report.json"))
         integ = report["meta"]["integrity"]
         self.assertTrue(any("findings-app-BOGUS.json" in p
@@ -3261,7 +3264,7 @@ class TestDriverIntegrityWiring(unittest.TestCase):
         # substitute the DECLARED cell's bytes after the snapshot
         cell = runio._pano(d, "findings-app-QAL.json")
         runio._write_json(cell, self._cell_payload("QAL", title="INJECTED"))
-        driver.synthesize_execute(d, m)
+        synthesize.synthesize_execute(d, m)
         report = runio._load_json(runio._pano(d, "report.json"))
         integ = report["meta"]["integrity"]
         # still a DECLARED file -> not unexpected; only the content check fires
