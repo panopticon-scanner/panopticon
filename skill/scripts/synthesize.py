@@ -167,7 +167,10 @@ def main(argv=None):
                                       prepared=prepared)
     plan = plan_mod.PlanInputs.load(run_dir, args.files, args.verdicts_dir, groups_meta,
                                     plans, queue, fs.verdicts)
-    cost = cost_mod.CostInputs.load(run_dir, args.verdicts_dir, tools_ran)
+    # #1335: SPEND, not coverage -- a no-op scanner still cost a dispatch.
+    cost = cost_mod.CostInputs.load(
+        run_dir, args.verdicts_dir,
+        plan_mod.tools_produced_from_dispositions(dispositions))
     delta = delta_mod.DeltaContext.from_args(args)
 
     # #1034/#1: a corrupt/malformed OCRDb bundle must exit with a code CI can

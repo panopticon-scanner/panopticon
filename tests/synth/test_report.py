@@ -2453,6 +2453,27 @@ class TestCoverageDivergence(unittest.TestCase):
         )
         self.assertNotIn("code", r["meta"]["coverage"]["divergence"]["panels"])
 
+    def test_tool_noscan_is_disclosed_without_sinking_the_gate(self):
+        # #1335: a semgrep that scanned 0 files gets no coverage credit (it is
+        # absent from tools_ran), but it is NOT a coverage loss the operator can
+        # fix -- on a no-surface repo there was nothing for it to scan. So it is
+        # disclosed as `produced_noscan` and must never reach tools_absent,
+        # which is what turns the gate INCONCLUSIVE.
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(groups_meta=self.GROUPS,
+                                     scout_requested=["trivy", "semgrep"]),
+            tools=plan_mod.ToolAxis(
+                tools_ran=["trivy"],
+                dispositions={"trivy": {"status": "ok", "findings": 2},
+                              "semgrep": {"status": "noscan", "findings": 0}}),
+        ))
+        self.assertEqual(r["meta"]["coverage"]["divergence"]["tools"],
+                         {"semgrep": "produced_noscan"})
+        self.assertNotIn("semgrep", r["meta"]["coverage"]["tools_ran"])
+        self.assertNotEqual(r["summary"]["gate"], "INCONCLUSIVE")
+
     def test_tool_requested_absent_is_disclosed_and_inconclusive(self):
         r = report_mod.build_report(report_mod.ReportInputs(
             run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),

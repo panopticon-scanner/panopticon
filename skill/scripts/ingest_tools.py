@@ -8,6 +8,7 @@ adapter are skipped with a diagnostic. Stdlib-only.
 """
 import fnmatch
 import glob
+import json
 import os
 import sys
 
@@ -127,11 +128,27 @@ def _filter_parsed_findings(parsed, include_fixtures, exclude_globs):
     return kept, fx_count, gl_count, ra_count
 
 
+def _scanned_files(raw):
+    """The scanned-file count run_tools recorded on the artifact, or None.
+
+    #1335: `runs[0].properties.panopticon_scanned_files` is stamped at capture
+    time from a scanner's own stderr (semgrep today). None means the artifact
+    makes no claim -- an older run, a tool with no such signal, or stderr that
+    did not match. Only an explicit 0 is evidence of a no-op.
+    """
+    try:
+        props = json.loads(raw)["runs"][0]["properties"]
+        count = props["panopticon_scanned_files"]
+    except (ValueError, KeyError, IndexError, TypeError):
+        return None
+    return count if isinstance(count, int) and not isinstance(count, bool) else None
+
+
 def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=False):
     """Ingest raw tool-output files and report each adapter's disposition.
 
     Returns (findings, dispositions). dispositions maps each output file's
-    adapter name (its filename stem) to {"status": ok|empty|failed,
+    adapter name (its filename stem) to {"status": ok|empty|noscan|failed,
     "findings": int} plus a "reason" when failed. This is the single
     authoritative walk — a file's disposition reflects exactly what parsing
     saw, so nothing downstream can classify it differently. `findings` is the
@@ -217,14 +234,24 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
                                   % (str(e).splitlines() or [""])[0]}
             continue
         raw_count = len(parsed)
+        scanned = _scanned_files(raw)
         parsed, fx_cnt, gl_cnt, ra_cnt = _filter_parsed_findings(
             parsed, include_fixtures, exclude_globs)
         fx_excluded += fx_cnt
         gl_excluded += gl_cnt
         ra_excluded += ra_cnt
         out.extend(parsed)
-        dispositions[tool] = {"status": "ok" if raw_count else "empty",
-                              "findings": raw_count}
+        if raw_count:
+            status, reason = "ok", None
+        elif scanned == 0:
+            # #1335: no findings AND a run-time witness that nothing was scanned.
+            # "empty" would credit coverage this adapter never provided.
+            status, reason = "noscan", "scanned 0 files"
+        else:
+            status, reason = "empty", None
+        dispositions[tool] = {"status": status, "findings": raw_count}
+        if reason:
+            dispositions[tool]["reason"] = reason
     if fx_excluded or gl_excluded or ra_excluded:
         reasons = []
         if fx_excluded:

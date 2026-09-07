@@ -361,14 +361,31 @@ def derive_tool_policy_mode(panopticon_dir=".panopticon", plans=None):
     return "advisory"
 
 def tools_ran_from_dispositions(dispositions):
-    """Adapters that produced a parseable document (status ok or empty).
+    """Adapters whose run is worth COVERAGE CREDIT (status ok or empty).
 
     A 'failed' adapter (0-byte / unparseable / no registered adapter) is
     excluded, so build_executing_tools can never name an adapter that ran
     empty. This is the repair of #450's residual weakness and the core of #456.
+
+    #1335: 'noscan' is excluded too. An adapter that scanned zero files ran
+    without covering anything, and naming it in `tools_ran` is the report
+    asserting coverage it does not have. Use `tools_produced_from_dispositions`
+    for the different question of which adapters actually cost a dispatch.
     """
     return {name for name, d in dispositions.items()
             if d.get("status") in ("ok", "empty")}
+
+
+def tools_produced_from_dispositions(dispositions):
+    """Adapters that ran and produced a parseable document -- 'noscan' included.
+
+    #1335 split this from `tools_ran_from_dispositions`, which had been asked
+    two questions at once. A no-op semgrep provided no coverage but did consume
+    a dispatch, so the cost ledger must still count it; crediting coverage and
+    counting spend are not the same set.
+    """
+    return {name for name, d in dispositions.items()
+            if d.get("status") in ("ok", "empty", "noscan")}
 
 
 def reconcile(plan, tools, resolved):
@@ -399,6 +416,17 @@ def reconcile(plan, tools, resolved):
     else:
         tools_absent = sorted(set(plan.scout_requested or []) - produced)
         tool_divergence = {t: "requested_absent" for t in tools_absent}
+    # #1335: an adapter that ran but scanned nothing is disclosed, never gated.
+    # It is absent from `tools_ran` (no coverage credit) which would otherwise
+    # sink it into `tools_absent` on the scout-derived path above -- but a
+    # no-surface target is not a coverage loss an operator can act on, so
+    # `produced_noscan` is non-gating by construction: it appears only in the
+    # divergence map, and `tools_absent` is what reaches certify().
+    noscan = sorted(name for name, d in (tools.dispositions or {}).items()
+                    if isinstance(d, dict) and d.get("status") == "noscan")
+    if noscan:
+        tools_absent = [t for t in tools_absent if t not in noscan]
+        tool_divergence.update({t: "produced_noscan" for t in noscan})
     divergence = {
         "panels": {p: {"planned": planned[p], "executed": executed.get(p, 0)}
                    for p in sorted(panels_incomplete)},

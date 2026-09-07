@@ -350,6 +350,67 @@ class TestRunTools(unittest.TestCase):
             self.assertIn(b"TRUNCATED", written)
 
 
+class TestSemgrepScanCount(unittest.TestCase):
+    """#1335: a semgrep whose config carries no rules for the target's languages
+    scans 0 files and emits an empty-but-valid SARIF -- indistinguishable, in the
+    artifact, from a semgrep that genuinely ran clean. The SARIF has no
+    scanned-files signal (`invocations` is just executionSuccessful; the driver's
+    rule list is the config's, not what matched), so the only evidence is
+    semgrep's stderr. Capture it at run time, when it still exists."""
+
+    def test_parses_the_scanned_file_count_from_stderr(self):
+        self.assertEqual(rt._semgrep_scanned_files(b"Ran 412 rules on 0 files.\n"), 0)
+        self.assertEqual(rt._semgrep_scanned_files(b"ran 8 rules on 137 files: 2 findings."), 137)
+        self.assertEqual(
+            rt._semgrep_scanned_files(b"noise\nRan 1 rule on 5 files\nmore noise"), 5)
+
+    def test_absent_or_unrecognised_stderr_yields_no_claim(self):
+        # Parsing English stderr is brittle across semgrep versions, so the
+        # failure mode must be "no signal", never a fabricated 0 -- a false
+        # `noscan` would strip real coverage credit.
+        for stderr in (b"", b"Scan completed successfully.", b"Ran rules on files",
+                       None, b"Ran 5 rules on many files"):
+            self.assertIsNone(rt._semgrep_scanned_files(stderr))
+
+    def test_annotation_injects_the_count_into_the_sarif(self):
+        payload = json.dumps({"runs": [{"results": []}]}).encode("utf-8")
+        annotated = rt._annotate_scanned_files(payload, 0)
+        doc = json.loads(annotated)
+        self.assertEqual(doc["runs"][0]["properties"]["panopticon_scanned_files"], 0)
+        self.assertEqual(doc["runs"][0]["results"], [], "annotation altered the findings")
+
+    def test_annotation_leaves_unparseable_or_shapeless_output_alone(self):
+        for payload in (b"{not json", b"[]", b'{"runs": []}', b'{"runs": [123]}'):
+            self.assertEqual(rt._annotate_scanned_files(payload, 0), payload)
+
+    def test_semgrep_capture_annotates_from_its_own_stderr(self):
+        # End to end through the real streaming writer: the child prints a SARIF
+        # on stdout and semgrep's summary line on stderr.
+        child = ("import sys; sys.stderr.write('Ran 400 rules on 0 files.\\n'); "
+                 "sys.stdout.write('{\"runs\": [{\"results\": []}]}')")
+        proc = rt._popen_runner([sys.executable, "-c", child],
+                                stdout=sp.PIPE, stderr=sp.PIPE)
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "semgrep.sarif")
+            self.assertEqual(
+                rt._stream_and_write("tool", "semgrep", proc, out, timeout=8), out)
+            with open(out, encoding="utf-8") as fh:
+                doc = json.load(fh)
+        self.assertEqual(doc["runs"][0]["properties"]["panopticon_scanned_files"], 0)
+
+    def test_other_tools_are_not_annotated(self):
+        child = ("import sys; sys.stderr.write('Ran 400 rules on 0 files.\\n'); "
+                 "sys.stdout.write('{\"runs\": [{\"results\": []}]}')")
+        proc = rt._popen_runner([sys.executable, "-c", child],
+                                stdout=sp.PIPE, stderr=sp.PIPE)
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "bandit.sarif")
+            rt._stream_and_write("tool", "bandit", proc, out, timeout=8)
+            with open(out, encoding="utf-8") as fh:
+                doc = json.load(fh)
+        self.assertNotIn("properties", doc["runs"][0])
+
+
 class TestStreamingRunnerAndDeadline(unittest.TestCase):
     """#run7 COD-A2A / #1111: production must STREAM tool output through the
     bounded sink (not buffer it whole and drop), and the streaming read must be

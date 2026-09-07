@@ -130,6 +130,22 @@ class TestToolsRanFromDispositions(unittest.TestCase):
     def test_empty_dispositions_yields_empty_set(self):
         self.assertEqual(plan_mod.tools_ran_from_dispositions({}), set())
 
+    def test_noscan_gets_no_coverage_credit_but_still_counts_as_produced(self):
+        # #1335: the two questions this set used to answer at once. A no-op
+        # semgrep provided no coverage (so it must not appear in tools_ran or
+        # build_executing_tools) but it DID run and produce a document, so the
+        # cost ledger must still count its dispatch.
+        dispositions = {
+            "bandit": {"status": "ok", "findings": 3},
+            "gitleaks": {"status": "empty", "findings": 0},
+            "semgrep": {"status": "noscan", "findings": 0, "reason": "scanned 0 files"},
+            "trivy": {"status": "failed", "findings": 0, "reason": "empty output file"},
+        }
+        self.assertEqual(plan_mod.tools_ran_from_dispositions(dispositions),
+                         {"bandit", "gitleaks"})
+        self.assertEqual(plan_mod.tools_produced_from_dispositions(dispositions),
+                         {"bandit", "gitleaks", "semgrep"})
+
 class TestToolPolicyModeUnknown(unittest.TestCase):
     def _plan(self, d, entries):
         import json as _json
