@@ -3,6 +3,8 @@ import os
 import unittest
 
 
+import scripts.synth.findings as findings_mod
+import scripts.synth.plan as plan_mod
 import scripts.synth.report as report_mod
 from scripts._version import __version__
 
@@ -135,8 +137,11 @@ class TestReportSchema(unittest.TestCase):
         with open(SCHEMA_PATH, encoding="utf-8") as fh:
             schema = json.load(fh)
         self.assertIsInstance(report_mod.REPORT_SCHEMA_VERSION, int)
-        built = report_mod.build_report([], [{"name": "g1", "files": ["a.py"]}],
-                             "t", "high", "2026-01-01T00:00:00Z")
+        built = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp="2026-01-01T00:00:00Z"),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(groups_meta=[{"name": "g1", "files": ["a.py"]}]),
+        ))
         self.assertEqual(built["schema_version"], report_mod.REPORT_SCHEMA_VERSION)
         jsonschema.validate(built, schema)                       # stamped -> valid
         legacy = _minimal_report()
@@ -202,15 +207,17 @@ class TestReportSchema(unittest.TestCase):
         target = "test-target"
 
         # Call build_report with minimal inputs
-        report = report_mod.build_report(
-            findings=findings,
-            groups_meta=groups_meta,
-            target=target,
-            fail_on="critical",
-            timestamp="2026-08-03T11:47:43Z",
-            review_type="repo",
-            security_mode="standard"
-        )
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(
+                target=target,
+                fail_on="critical",
+                timestamp="2026-08-03T11:47:43Z",
+                review_type="repo",
+                security_mode="standard",
+            ),
+            findings=findings_mod.FindingSet(findings=findings),
+            plan=plan_mod.PlanInputs(groups_meta=groups_meta),
+        ))
 
         # Validate against schema
         jsonschema.validate(report, schema)
@@ -225,11 +232,15 @@ class TestReportSchema(unittest.TestCase):
     def test_inconclusive_report_validates_against_schema(self):
         with open(SCHEMA_PATH, encoding="utf-8") as fh:
             schema = json.load(fh)
-        report = report_mod.build_report(
-            [], [{"name": "g1", "files": ["a.py"]}], "t", "high",
-            "2026-08-09T00:00:00Z",
-            fan_out={"planned": {"security": 1}, "executed": {},
-                     "groups_complete": [], "groups_partial": ["g1"]})
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp="2026-08-09T00:00:00Z"),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(
+                groups_meta=[{"name": "g1", "files": ["a.py"]}],
+                fan_out={"planned": {"security": 1}, "executed": {},
+                         "groups_complete": [], "groups_partial": ["g1"]},
+            ),
+        ))
         self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
         self.assertIsNone(report["summary"]["overall_grade"])
         jsonschema.validate(report, schema)

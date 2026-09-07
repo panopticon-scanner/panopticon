@@ -24,6 +24,7 @@ import json
 import os
 import unittest
 
+import scripts.synth.findings as findings_mod
 import scripts.synth.report as report_mod
 from scripts.tools import ADAPTERS
 
@@ -189,8 +190,14 @@ class TestFindingsSurviveIntoAReport(unittest.TestCase):
         findings = self._all_findings()
         self.assertGreater(len(findings), 30,
                            "expected findings from every adapter's golden")
-        report = report_mod.build_report(findings, [], "probe-target", "high",
-                                  "2026-01-01T00:00:00Z")
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(
+                target="probe-target",
+                fail_on="high",
+                timestamp="2026-01-01T00:00:00Z",
+            ),
+            findings=findings_mod.FindingSet(findings=findings),
+        ))
         errors, _warnings = report_mod.validate_report(report)
         self.assertEqual(
             errors, [],
@@ -203,8 +210,14 @@ class TestFindingsSurviveIntoAReport(unittest.TestCase):
         findings = self._all_findings()
         self.assertGreater(len(findings), 0, "no goldens parsed; nothing to corrupt")
         findings[0] = dict(findings[0], id="not-a-valid-id", title="")
-        report = report_mod.build_report(findings, [], "probe-target", "high",
-                                  "2026-01-01T00:00:00Z")
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(
+                target="probe-target",
+                fail_on="high",
+                timestamp="2026-01-01T00:00:00Z",
+            ),
+            findings=findings_mod.FindingSet(findings=findings),
+        ))
         errors, _warnings = report_mod.validate_report(report)
         self.assertTrue(errors, "validator accepted a malformed finding")
 

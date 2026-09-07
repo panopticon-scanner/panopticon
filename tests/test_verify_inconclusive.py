@@ -22,15 +22,19 @@ def test_engaged_matrix_cells_uses_fp():
 def test_below_gate_cell_does_not_force_inconclusive(tmp_path):
     fp = _cell_file(tmp_path, "app", "QAL", "LOW")   # score 0 < F_p, no advisor owed
     findings = findings_mod.load_findings([fp])
-    report = report_mod.build_report(findings, [], "src", "high", "2026-08-15T00:00:00Z",
-                              verdicts_supplied=True)
+    report = report_mod.build_report(report_mod.ReportInputs(
+        run=report_mod.RunConfig(target="src", fail_on="high", timestamp="2026-08-15T00:00:00Z"),
+        findings=findings_mod.FindingSet(findings=findings, verdicts_supplied=True),
+    ))
     assert report["summary"]["gate"] != "INCONCLUSIVE"
 
 def test_engaged_unverified_cell_forces_inconclusive(tmp_path):
     fp = _cell_file(tmp_path, "app", "SEC", "HIGH")  # score >= F_p, no verdict
     findings = findings_mod.load_findings([fp])
-    report = report_mod.build_report(findings, [], "src", "high", "2026-08-15T00:00:00Z",
-                              verdicts_supplied=True)
+    report = report_mod.build_report(report_mod.ReportInputs(
+        run=report_mod.RunConfig(target="src", fail_on="high", timestamp="2026-08-15T00:00:00Z"),
+        findings=findings_mod.FindingSet(findings=findings, verdicts_supplied=True),
+    ))
     assert report["summary"]["gate"] == "INCONCLUSIVE"
     assert report["meta"]["coverage"]["verify_matrix"]["unverified_engaged"] \
         == [["app", "SEC"]]

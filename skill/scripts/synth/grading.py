@@ -1,7 +1,15 @@
 """Grades, gate verdict, certification and the health index."""
+from dataclasses import dataclass
 import os
 
 from . import findings as findings_mod
+
+
+@dataclass(frozen=True)
+class Graded:
+    """grade_report()'s result: the report's `summary` and `groups` sections."""
+    summary: dict
+    groups: list
 
 
 def grade(findings):
@@ -346,3 +354,86 @@ _GATE_ROLE_NOTE = {
     "contributing": "**FAILS THE GATE**",
     "in_play": "in play, nothing confirmed here",
 }
+
+
+def grade_report(run, resolved, reconciled):
+    """The grading cluster (WS-0 S2): per-group panel grades, the health index,
+    certification and the gate, from the resolved findings and the reconciled
+    plan. Severity is never mutated here; grades and the gate are computed
+    from gate-eligible findings only."""
+    gate_eligible = resolved.gate_eligible
+    by_panel = {p: [] for p in findings_mod.VALID_PANELS}
+    for f in gate_eligible:
+        by_panel.get(f["panel"], by_panel["code"]).append(f)
+
+    groups_meta = reconciled.groups_meta
+    known_groups = {g["name"] for g in groups_meta}
+    eligible_ids = {id(x) for x in gate_eligible}
+    group_objs = []
+    for g in groups_meta:
+        gfiles = set(g["files"])
+        gfind = [f for f in resolved.active
+                 if (f.get("_group") == g["name"])
+                 or (f.get("_group") not in known_groups
+                     and (f.get("location") or {}).get("file") in gfiles)]
+        geligible = [f for f in gfind if id(f) in eligible_ids]
+        gp = {p: [x for x in geligible if x["panel"] == p] for p in by_panel}
+        group_objs.append({
+            "name": g["name"],
+            "files": g["files"],
+            "panel_grades": {p: grade(gp[p]) for p in by_panel},
+            "key_findings": [f.get("title", "") for f in gfind
+                             if f["severity"] in ("CRITICAL", "HIGH")][:5],
+        })
+    group_objs = _roll_up_to_parent(group_objs, groups_meta, by_panel)
+
+    # The headline grade comes from the health index, not the max-severity
+    # rollup -- see health_grade(). certify() needs it, and the same dict is
+    # reused in the summary so the grade and the reported health can never
+    # disagree.
+    health = health_stats(nonblank_loc(run.target, groups_meta), gate_eligible)
+    overall = health_grade(health["score"])
+    cert = certify(overall, gate_eligible, run.fail_on, reconciled.panels_incomplete,
+                   reconciled.tools_absent,
+                   integrity_ok=reconciled.integrity_ok,
+                   verdicts_unloadable=len(resolved.verdict_unloadable),
+                   verdicts_unanswered=resolved.unanswered_gate,
+                   missing_floor=len(reconciled.cell_audit["missing_floor"]))
+    summary = {
+        "overall_grade": cert["overall_grade"],
+        "provisional_grade": cert["provisional_grade"],
+        "coverage_certified": cert["coverage_certified"],
+        "coverage_note": cert["coverage_note"],
+        "risk_level": risk_level(gate_eligible),
+        "top_issues": [f.get("title", "") for f in
+                       sorted(resolved.active, key=findings_mod._issue_sort)[:3]],
+        "gate": cert["gate"],
+        "gate_policy": ("include_unverified" if run.gate_unverified
+                        else "confirmed_only"),
+        # #1059: `stats` and `evidence_stats` count DIFFERENT populations --
+        # `stats` the ACTIVE (non-rejected == findings[]) set, `evidence_stats`
+        # ALL findings (active + discarded == findings[] + discarded_claims[]).
+        # Their totals differ by len(rejected); the population tags + counts
+        # block below make that explicit and reconcilable (the run-5 self-scan
+        # surfaced two unlabeled HIGH counts in one summary).
+        "stats": severity_stats(resolved.active),
+        "stats_population": "active",
+        # Which severities the --fail-on threshold puts in play, and which of
+        # them the FAIL is actually made of. Computed off `gate_eligible`,
+        # NOT off `stats` above -- see gate_severity_roles().
+        "gate_severities": gate_severity_roles(gate_eligible, run.fail_on),
+        # #1146: size-aware health ratio alongside the letter; denominator is
+        # the gate-eligible set, numerator the reviewed scope's non-blank LoC.
+        "health": health,
+        "evidence_stats": findings_mod.evidence_stats(resolved.findings),
+        "evidence_stats_population": "all",
+        "counts": {
+            "active": len(resolved.active),
+            "discarded": len(resolved.rejected),
+            "total": len(resolved.findings),
+        },
+        "delta": ({"on_diff": severity_stats(resolved.on_diff_active),
+                   "pre_existing": severity_stats(resolved.pre_existing_active)}
+                  if resolved.delta_mode else None),
+    }
+    return Graded(summary=summary, groups=group_objs)

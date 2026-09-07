@@ -29,6 +29,7 @@ import scripts.synth.plan as plan_mod  # noqa: E402
 import scripts.synth.integrity as integrity_mod  # noqa: E402
 import scripts.synth.cost as cost_mod  # noqa: E402
 import scripts.synth.report as report_mod  # noqa: E402
+import scripts.synth.verdicts as verdicts_mod  # noqa: E402
 import scripts.synth.render as render_mod  # noqa: E402
 from scripts._version import __version__  # noqa: E402
 import scripts.ocrdb as ocrdb  # noqa: E402
@@ -155,8 +156,15 @@ class TestFindingsFileIntegrity(unittest.TestCase):
                     "invalid_dispatch_plans": [], "invalid_verify_queue": None,
                     "unenforced_acknowledged": False, "plans_seen": 1}
             base.update(integrity)
-            return report_mod.build_report([], [], "t", "high", "2026-01-01T00:00:00Z",
-                                    integrity=base)
+            return report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(
+                    target="t",
+                    fail_on="high",
+                    timestamp="2026-01-01T00:00:00Z",
+                ),
+                findings=findings_mod.FindingSet(findings=[]),
+                plan=plan_mod.PlanInputs(integrity=base),
+            ))
 
         xdom = [{"file": "findings-g1-ARC.json", "cell_domain": "ARC",
                  "finding_domain": "TST", "code": "TST-X0X"}]
@@ -841,9 +849,11 @@ class TestReport(unittest.TestCase):
         # unverified findings are not gate-eligible by default -> grade/gate
         # reflect the (empty) gate-eligible set, not the raw severity.
         findings = [_make_finding(severity="HIGH", panel="code")]
-        report = report_mod.build_report(
-            findings, [{"name": "g1", "files": ["a.py"]}], "src", "high", DEFAULT_TIMESTAMP
-        )
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on="high", timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(findings=findings),
+            plan=plan_mod.PlanInputs(groups_meta=[{"name": "g1", "files": ["a.py"]}]),
+        ))
         # The letter now comes from health, and "a.py" does not exist here, so
         # there is no LoC to measure -> no grade. The GATE is what this asserts.
         self.assertIsNone(report["summary"]["overall_grade"])
@@ -854,45 +864,64 @@ class TestReport(unittest.TestCase):
 
     def test_validate_clean_report(self):
         findings = [_make_finding()]
-        report = report_mod.build_report(
-            findings, [{"name": "g1", "files": ["a.py"]}], "src", None, DEFAULT_TIMESTAMP
-        )
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on=None, timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(findings=findings),
+            plan=plan_mod.PlanInputs(groups_meta=[{"name": "g1", "files": ["a.py"]}]),
+        ))
         errors, _ = report_mod.validate_report(report)
         self.assertEqual(errors, [])
 
     def test_validate_flags_bad_id_and_missing_cvss(self):
         bad = _make_finding(id="lowercase", panel="security", severity="CRITICAL")
-        report = report_mod.build_report(
-            [bad], [{"name": "g1", "files": ["a.py"]}], "src", None, DEFAULT_TIMESTAMP
-        )
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on=None, timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(findings=[bad]),
+            plan=plan_mod.PlanInputs(groups_meta=[{"name": "g1", "files": ["a.py"]}]),
+        ))
         errors, _ = report_mod.validate_report(report)
         self.assertTrue(any("id" in e for e in errors))
         self.assertTrue(any("cvss" in e or "exploit" in e for e in errors))
 
     def test_validate_flags_duplicate_ids(self):
-        report = report_mod.build_report(
-            [
-                _make_finding(
-                    id="CD-001", title="a", category="x", location={"file": "a", "line_start": 1}
-                ),
-                _make_finding(
-                    id="CD-001", title="b", category="y", location={"file": "b", "line_start": 2}
-                ),
-            ],
-            [],
-            "t",
-            None,
-            DEFAULT_TIMESTAMP,
-        )
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on=None, timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(
+                findings=[
+                    _make_finding(
+                        id="CD-001", title="a", category="x", location={"file": "a", "line_start": 1}
+                    ),
+                    _make_finding(
+                        id="CD-001", title="b", category="y", location={"file": "b", "line_start": 2}
+                    ),
+                ],
+            ),
+        ))
         errors, _ = report_mod.validate_report(report)
         self.assertTrue(any("duplicate" in e.lower() for e in errors))
 
     def test_build_report_honors_review_type(self):
-        report = report_mod.build_report([], [], "src/app.py", None, DEFAULT_TIMESTAMP, review_type="file")
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(
+                target="src/app.py",
+                fail_on=None,
+                timestamp=DEFAULT_TIMESTAMP,
+                review_type="file",
+            ),
+            findings=findings_mod.FindingSet(findings=[]),
+        ))
         self.assertEqual(report["meta"]["review_type"], "file")
 
     def test_build_report_includes_security_mode(self):
-        report = report_mod.build_report([], [], "src", None, DEFAULT_TIMESTAMP, security_mode="redteam")
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(
+                target="src",
+                fail_on=None,
+                timestamp=DEFAULT_TIMESTAMP,
+                security_mode="redteam",
+            ),
+            findings=findings_mod.FindingSet(findings=[]),
+        ))
         self.assertEqual(report["meta"]["security_mode"], "redteam")
 
     def test_build_report_populates_models_used(self):
@@ -930,7 +959,10 @@ class TestReport(unittest.TestCase):
                 },
             ),
         ]
-        report = report_mod.build_report(findings, [], "src", None, DEFAULT_TIMESTAMP)
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on=None, timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(findings=findings),
+        ))
         models = report["meta"]["models_used"]
         self.assertEqual(len(models), 3)
         self.assertIn({"model": "kimi-k2.7-coding", "version": "v1", "role": "lens_sweep"}, models)
@@ -1069,9 +1101,11 @@ class TestReport(unittest.TestCase):
 
     def test_validate_redteam_high_requires_cvss_and_exploit(self):
         bad = _make_finding(id="RT-001", panel="redteam", severity="HIGH")
-        report = report_mod.build_report(
-            [bad], [{"name": "g1", "files": ["a.py"]}], "src", None, DEFAULT_TIMESTAMP
-        )
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on=None, timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(findings=[bad]),
+            plan=plan_mod.PlanInputs(groups_meta=[{"name": "g1", "files": ["a.py"]}]),
+        ))
         errors, _ = report_mod.validate_report(report)
         self.assertTrue(any("cvss" in e for e in errors))
         self.assertTrue(any("exploit" in e for e in errors))
@@ -1084,9 +1118,11 @@ class TestReport(unittest.TestCase):
             cvss={"score": 9.0},
             exploit_scenario="x",
         )
-        report = report_mod.build_report(
-            [good], [{"name": "g1", "files": ["a.py"]}], "src", None, DEFAULT_TIMESTAMP
-        )
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on=None, timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(findings=[good]),
+            plan=plan_mod.PlanInputs(groups_meta=[{"name": "g1", "files": ["a.py"]}]),
+        ))
         errors, _ = report_mod.validate_report(report)
         self.assertEqual(errors, [])
 
@@ -1316,48 +1352,52 @@ class TestCliAndSummary(unittest.TestCase):
     def test_render_summary_contains_grade_and_location(self):
         # gate_unverified=True: this test is about render_summary's formatting
         # (location string, FAIL label), not the default gating policy.
-        report = report_mod.build_report(
-            [
-                {
-                    "id": "CD-001",
-                    "title": "SQL injection",
-                    "severity": "HIGH",
-                    "confidence": "CERTAIN",
-                    "panel": "security",
-                    "category": "injection",
-                    "location": {"file": "a.rb", "line_start": 42},
-                    "cvss": {"score": 8.1, "vector": "CVSS:3.1/AV:N"},
-                    "exploit_scenario": "...",
-                }
-            ],
-            [{"name": "g1", "files": ["a.rb"]}],
-            "src",
-            "high",
-            DEFAULT_TIMESTAMP,
-            gate_unverified=True,
-        )
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(
+                target="src",
+                fail_on="high",
+                timestamp=DEFAULT_TIMESTAMP,
+                gate_unverified=True,
+            ),
+            findings=findings_mod.FindingSet(
+                findings=[
+                    {
+                        "id": "CD-001",
+                        "title": "SQL injection",
+                        "severity": "HIGH",
+                        "confidence": "CERTAIN",
+                        "panel": "security",
+                        "category": "injection",
+                        "location": {"file": "a.rb", "line_start": 42},
+                        "cvss": {"score": 8.1, "vector": "CVSS:3.1/AV:N"},
+                        "exploit_scenario": "...",
+                    }
+                ],
+            ),
+            plan=plan_mod.PlanInputs(groups_meta=[{"name": "g1", "files": ["a.rb"]}]),
+        ))
         text = render_mod.render_summary(report)
         self.assertIn("a.rb:42", text)
         self.assertIn("FAIL", text)
 
     def test_render_summary_includes_all_panel_grades(self):
-        report = report_mod.build_report(
-            [
-                {
-                    "id": "CD-001",
-                    "title": "t",
-                    "severity": "LOW",
-                    "confidence": "POSSIBLE",
-                    "panel": "architecture",
-                    "category": "structure",
-                    "location": {"file": "a.py", "line_start": 1},
-                }
-            ],
-            [{"name": "g1", "files": ["a.py"]}],
-            "src",
-            None,
-            DEFAULT_TIMESTAMP,
-        )
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on=None, timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(
+                findings=[
+                    {
+                        "id": "CD-001",
+                        "title": "t",
+                        "severity": "LOW",
+                        "confidence": "POSSIBLE",
+                        "panel": "architecture",
+                        "category": "structure",
+                        "location": {"file": "a.py", "line_start": 1},
+                    }
+                ],
+            ),
+            plan=plan_mod.PlanInputs(groups_meta=[{"name": "g1", "files": ["a.py"]}]),
+        ))
         text = render_mod.render_summary(report)
         for panel in ["code", "test", "security", "architecture", "database", "redteam"]:
             self.assertIn("%s " % panel, text)
@@ -1420,7 +1460,10 @@ class TestCliAndSummary(unittest.TestCase):
             }
             for i in range(1, 400)
         ]
-        report = report_mod.build_report(findings, [], "src", None, DEFAULT_TIMESTAMP)
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on=None, timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(findings=findings),
+        ))
         n_before = len(report["findings"])
         with tempfile.TemporaryDirectory() as d:
             out = os.path.join(d, "report.json")
@@ -1449,7 +1492,10 @@ class TestCliAndSummary(unittest.TestCase):
             }
             for i in range(1, 400)
         ]
-        report = report_mod.build_report(findings, [], "src", None, DEFAULT_TIMESTAMP)
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on=None, timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(findings=findings),
+        ))
         with tempfile.TemporaryDirectory() as d:
             out = os.path.join(d, "report.json")
             # If os.replace fails partway, no incomplete files should be left behind
@@ -1556,68 +1602,65 @@ class TestReconciliation(unittest.TestCase):
             self.assertTrue(any(f["title"] == "crit" for f in report["findings"]))
 
     def test_validate_returns_errors_and_warnings(self):
-        report = report_mod.build_report(
-            [
-                {
-                    "id": "CD-001",
-                    "title": "t",
-                    "severity": "LOW",
-                    "confidence": "POSSIBLE",
-                    "panel": "code",
-                    "category": "general",
-                    "location": {},
-                }
-            ],
-            [],
-            "src",
-            None,
-            DEFAULT_TIMESTAMP,
-        )
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on=None, timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(
+                findings=[
+                    {
+                        "id": "CD-001",
+                        "title": "t",
+                        "severity": "LOW",
+                        "confidence": "POSSIBLE",
+                        "panel": "code",
+                        "category": "general",
+                        "location": {},
+                    }
+                ],
+            ),
+        ))
         errors, warnings = report_mod.validate_report(report)
         self.assertEqual(errors, [])
         self.assertTrue(any("location" in w for w in warnings))
 
     def test_tool_security_finding_exempt_from_cvss(self):
-        report = report_mod.build_report(
-            [
-                {
-                    "id": "TR-001",
-                    "title": "t",
-                    "severity": "HIGH",
-                    "confidence": "CERTAIN",
-                    "panel": "security",
-                    "category": "general",
-                    "source": "tool:trivy",
-                    "location": {"file": "a", "line_start": 1},
-                }
-            ],
-            [],
-            "src",
-            None,
-            DEFAULT_TIMESTAMP,
-        )
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on=None, timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(
+                findings=[
+                    {
+                        "id": "TR-001",
+                        "title": "t",
+                        "severity": "HIGH",
+                        "confidence": "CERTAIN",
+                        "panel": "security",
+                        "category": "general",
+                        "source": "tool:trivy",
+                        "location": {"file": "a", "line_start": 1},
+                    }
+                ],
+            ),
+        ))
         errors, _ = report_mod.validate_report(report)
         self.assertEqual(errors, [])
 
     def test_four_digit_tool_id_is_valid(self):
-        report = report_mod.build_report(
-            [
-                {
-                    "id": "SG-1000",
-                    "title": "t",
-                    "severity": "LOW",
-                    "confidence": "CERTAIN",
-                    "panel": "security",
-                    "category": "x",
-                    "source": "tool:semgrep",
-                    "location": {"file": "a", "line_start": 1},
-                }
-            ],
-            [],
-            "src",
-            None,
-            DEFAULT_TIMESTAMP,
-        )
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on=None, timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(
+                findings=[
+                    {
+                        "id": "SG-1000",
+                        "title": "t",
+                        "severity": "LOW",
+                        "confidence": "CERTAIN",
+                        "panel": "security",
+                        "category": "x",
+                        "source": "tool:semgrep",
+                        "location": {"file": "a", "line_start": 1},
+                    }
+                ],
+            ),
+        ))
         errors, _ = report_mod.validate_report(report)
         self.assertFalse(any("id" in e for e in errors))
 
@@ -1640,14 +1683,16 @@ class TestGroupTag(unittest.TestCase):
                 "_group": "g1",
             }
         ]
-        report = report_mod.build_report(
-            findings,
-            [{"name": "g1", "files": ["app/foo.rb"]}],
-            "src",
-            None,
-            DEFAULT_TIMESTAMP,
-            gate_unverified=True,
-        )
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(
+                target="src",
+                fail_on=None,
+                timestamp=DEFAULT_TIMESTAMP,
+                gate_unverified=True,
+            ),
+            findings=findings_mod.FindingSet(findings=findings),
+            plan=plan_mod.PlanInputs(groups_meta=[{"name": "g1", "files": ["app/foo.rb"]}]),
+        ))
         self.assertEqual(report["groups"][0]["panel_grades"]["test"], "D")  # not "A"
         # _group scrubbed from emitted findings
         self.assertNotIn("_group", report["findings"][0])
@@ -1674,10 +1719,16 @@ class TestGroupParentRollup(unittest.TestCase):
             {"name": "UI:Admin", "files": ["src/ui/admin/a.py"], "parent": "UI"},
             {"name": "UI:Components", "files": ["src/ui/components/b.py"], "parent": "UI"},
         ]
-        report = report_mod.build_report(
-            findings, groups_meta, "src", None, DEFAULT_TIMESTAMP,
-            gate_unverified=True,
-        )
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(
+                target="src",
+                fail_on=None,
+                timestamp=DEFAULT_TIMESTAMP,
+                gate_unverified=True,
+            ),
+            findings=findings_mod.FindingSet(findings=findings),
+            plan=plan_mod.PlanInputs(groups_meta=groups_meta),
+        ))
         names = [g["name"] for g in report["groups"]]
         self.assertEqual(names, ["UI"])
         ui = report["groups"][0]
@@ -1706,9 +1757,11 @@ class TestGroupParentRollup(unittest.TestCase):
         # key, same fields, same values.
         findings = [_make_finding(severity="HIGH", panel="code")]
         groups_meta = [{"name": "g1", "files": ["a.py"]}]
-        report = report_mod.build_report(
-            findings, groups_meta, "src", "high", DEFAULT_TIMESTAMP,
-        )
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on="high", timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(findings=findings),
+            plan=plan_mod.PlanInputs(groups_meta=groups_meta),
+        ))
         self.assertEqual(len(report["groups"]), 1)
         g = report["groups"][0]
         self.assertEqual(g["name"], "g1")
@@ -1721,9 +1774,11 @@ class TestGroupParentRollup(unittest.TestCase):
         # always writes) -- must still take the leaf/self-parented shape.
         findings = [_make_finding(severity="HIGH", panel="code")]
         groups_meta = [{"name": "g1", "files": ["a.py"], "parent": "g1"}]
-        report = report_mod.build_report(
-            findings, groups_meta, "src", "high", DEFAULT_TIMESTAMP,
-        )
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on="high", timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(findings=findings),
+            plan=plan_mod.PlanInputs(groups_meta=groups_meta),
+        ))
         self.assertEqual(len(report["groups"]), 1)
         g = report["groups"][0]
         self.assertEqual(g["name"], "g1")
@@ -1860,7 +1915,10 @@ class TestReinforce(unittest.TestCase):
         self.assertEqual(out[0]["exploit_scenario"], "Attacker injects SQL via the search box.")
         self.assertIn("cwe", out[0].get("citations", {}))
 
-        report = report_mod.build_report(out, [], "src", None, DEFAULT_TIMESTAMP)
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on=None, timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(findings=out),
+        ))
         errors, _ = report_mod.validate_report(report)
         self.assertEqual(errors, [])
 
@@ -2006,37 +2064,36 @@ class TestToolsDirIntegration(unittest.TestCase):
 
 class TestSummaryCitations(unittest.TestCase):
     def test_summary_shows_cwe_and_provenance(self):
-        report = report_mod.build_report(
-            [
-                {
-                    "id": "SG-001",
-                    "title": "sqli",
-                    "severity": "HIGH",
-                    "confidence": "CERTAIN",
-                    "panel": "security",
-                    "category": "injection",
-                    "source": "tool:semgrep",
-                    "reinforced": True,
-                    "location": {"file": "a.py", "line_start": 1},
-                    "citations": {
-                        "cwe": [{"id": "CWE-89", "name": "SQLi", "verified": True}],
-                        "ssvc": {
-                            "decision": "Act",
-                            "model": "deployer-reduced",
-                            "inputs": {
-                                "exploitation": "active",
-                                "exposure": "open",
-                                "impact": "high",
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on=None, timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(
+                findings=[
+                    {
+                        "id": "SG-001",
+                        "title": "sqli",
+                        "severity": "HIGH",
+                        "confidence": "CERTAIN",
+                        "panel": "security",
+                        "category": "injection",
+                        "source": "tool:semgrep",
+                        "reinforced": True,
+                        "location": {"file": "a.py", "line_start": 1},
+                        "citations": {
+                            "cwe": [{"id": "CWE-89", "name": "SQLi", "verified": True}],
+                            "ssvc": {
+                                "decision": "Act",
+                                "model": "deployer-reduced",
+                                "inputs": {
+                                    "exploitation": "active",
+                                    "exposure": "open",
+                                    "impact": "high",
+                                },
                             },
                         },
-                    },
-                }
-            ],
-            [],
-            "src",
-            None,
-            DEFAULT_TIMESTAMP,
-        )
+                    }
+                ],
+            ),
+        ))
         text = render_mod.render_summary(report)
         self.assertIn("CWE-89", text)
         self.assertIn("Act", text)
@@ -2046,26 +2103,25 @@ class TestSummaryCitations(unittest.TestCase):
         self.assertIn("tool_reported", text)
 
     def test_summary_shows_panel_label(self):
-        report = report_mod.build_report(
-            [
-                {
-                    "id": "SE-001",
-                    "title": "x",
-                    "severity": "HIGH",
-                    "confidence": "CERTAIN",
-                    "panel": "security",
-                    "category": "novel",
-                    "source": "agent:sr",
-                    "location": {"file": "a", "line_start": 1},
-                    "cvss": {"score": 8, "vector": "v"},
-                    "exploit_scenario": "e",
-                }
-            ],
-            [],
-            "t",
-            None,
-            DEFAULT_TIMESTAMP,
-        )
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on=None, timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(
+                findings=[
+                    {
+                        "id": "SE-001",
+                        "title": "x",
+                        "severity": "HIGH",
+                        "confidence": "CERTAIN",
+                        "panel": "security",
+                        "category": "novel",
+                        "source": "agent:sr",
+                        "location": {"file": "a", "line_start": 1},
+                        "cvss": {"score": 8, "vector": "v"},
+                        "exploit_scenario": "e",
+                    }
+                ],
+            ),
+        ))
         self.assertIn("security", render_mod.render_summary(report))
 
 
@@ -2106,7 +2162,10 @@ class TestCrossPanelCorroboration(unittest.TestCase):
             ),
             self._f("TST-701", "test", "test-coverage", 42),
         ]
-        report = report_mod.build_report(findings, [], "src", None, DEFAULT_TIMESTAMP)
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on=None, timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(findings=findings),
+        ))
         integ = report["cross_panel"]["integration_findings"]
         self.assertEqual(len(integ), 1)
         entry = integ[0]
@@ -2132,7 +2191,10 @@ class TestCrossPanelCorroboration(unittest.TestCase):
             self._f("TS-1", "test", "test-coverage", 151),
             self._f("CD-1", "code", "error-handling", 151),
         ]
-        report = report_mod.build_report(findings, [], "src", None, DEFAULT_TIMESTAMP)
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on=None, timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(findings=findings),
+        ))
         integ = report["cross_panel"]["integration_findings"]
         self.assertEqual(len(integ), 1)
         self.assertEqual(sorted(integ[0]["panels"]), ["code", "security", "test"])
@@ -2153,7 +2215,10 @@ class TestCrossPanelCorroboration(unittest.TestCase):
             ),
             self._f("TS-1", "test", "test-coverage", 42, file="b.py"),
         ]
-        report = report_mod.build_report(findings, [], "src", None, DEFAULT_TIMESTAMP)
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on=None, timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(findings=findings),
+        ))
         self.assertEqual(report["cross_panel"]["integration_findings"], [])
         self.assertFalse(any(f.get("corroborated") for f in report["findings"]))
 
@@ -2171,7 +2236,10 @@ class TestCrossPanelCorroboration(unittest.TestCase):
             ),
             self._f("TS-1", "test", "test-coverage", 90),
         ]
-        report = report_mod.build_report(findings, [], "src", None, DEFAULT_TIMESTAMP)
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on=None, timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(findings=findings),
+        ))
         self.assertEqual(report["cross_panel"]["integration_findings"], [])
 
     def test_negative_same_panel_not_cross_panel(self):
@@ -2181,7 +2249,10 @@ class TestCrossPanelCorroboration(unittest.TestCase):
             self._f("CD-1", "code", "structure", 5),
             self._f("CD-2", "code", "naming", 5),
         ]
-        report = report_mod.build_report(findings, [], "src", None, DEFAULT_TIMESTAMP)
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on=None, timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(findings=findings),
+        ))
         self.assertEqual(report["cross_panel"]["integration_findings"], [])
         self.assertFalse(any(f.get("corroborated") for f in report["findings"]))
 
@@ -2200,7 +2271,10 @@ class TestCrossPanelCorroboration(unittest.TestCase):
             ),
             self._f("CD-1", "code", "error-handling", 151),
         ]
-        report = report_mod.build_report(findings, [], "src", None, DEFAULT_TIMESTAMP)
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on=None, timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(findings=findings),
+        ))
         self.assertEqual(len(report["cross_panel"]["integration_findings"]), 1)
 
     def test_confidence_not_mutated_by_corroboration(self):
@@ -2262,7 +2336,10 @@ class TestCrossPanelCorroboration(unittest.TestCase):
                 "location": {"file": "db.py", "line_start": 10},
             },
         ]
-        report = report_mod.build_report(findings, [], "src", None, DEFAULT_TIMESTAMP)
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on=None, timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(findings=findings),
+        ))
         secs = [f for f in report["findings"] if f["panel"] == "security"]
         self.assertEqual(len(secs), 1)  # tool+agent still collapsed
         self.assertTrue(secs[0].get("reinforced"))  # reinforce preserved
@@ -2280,7 +2357,10 @@ class TestCrossPanelCorroboration(unittest.TestCase):
             ),
             self._f("TS-1", "test", "test-coverage", 42),
         ]
-        report = report_mod.build_report(findings, [], "src", None, DEFAULT_TIMESTAMP)
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on=None, timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(findings=findings),
+        ))
         text = render_mod.render_summary(report)
         self.assertIn("Cross-panel", text)
         self.assertIn("app/resolver.py:42", text)
@@ -2620,7 +2700,10 @@ class TestInternalFieldCleanup(unittest.TestCase):
                 "reasoning": "False positive.",
             }
         }
-        report = report_mod.build_report([f1, f2], [], "src", None, DEFAULT_TIMESTAMP, verdicts=verdicts)
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on=None, timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(findings=[f1, f2], verdicts=verdicts),
+        ))
         self.assertEqual(len(report["findings"]), 1)
         self.assertEqual(len(report.get("discarded_claims", [])), 1)
         for finding in report["findings"]:
@@ -2844,8 +2927,15 @@ class TestHealthLetterGrade(unittest.TestCase):
             verdicts = {evidence_mod.finding_fingerprint(finding): {
                 "finding_id": "AG-001", "verdict": "CONFIRMED", "reasoning": "v"}}
             with _target_with_files(groups, lines=lines) as tgt:
-                r = report_mod.build_report([finding], groups, tgt, "high",
-                                     "2026-01-01T00:00:00Z", verdicts=verdicts)
+                r = report_mod.build_report(report_mod.ReportInputs(
+                    run=report_mod.RunConfig(
+                        target=tgt,
+                        fail_on="high",
+                        timestamp="2026-01-01T00:00:00Z",
+                    ),
+                    findings=findings_mod.FindingSet(findings=[finding], verdicts=verdicts),
+                    plan=plan_mod.PlanInputs(groups_meta=groups),
+                ))
             return r["summary"]["overall_grade"]
 
         small, large = graded(50), graded(50000)
@@ -2859,7 +2949,15 @@ class TestHealthLetterGrade(unittest.TestCase):
     def test_a_clean_tree_grades_s_end_to_end(self):
         groups = [{"name": "g1", "files": ["a.py"]}]
         with _target_with_files(groups) as tgt:
-            r = report_mod.build_report([], groups, tgt, "high", "2026-01-01T00:00:00Z")
+            r = report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(
+                    target=tgt,
+                    fail_on="high",
+                    timestamp="2026-01-01T00:00:00Z",
+                ),
+                findings=findings_mod.FindingSet(findings=[]),
+                plan=plan_mod.PlanInputs(groups_meta=groups),
+            ))
         self.assertEqual(r["summary"]["overall_grade"], "S")
         self.assertEqual(r["summary"]["health"]["score"], 100.0)
 
@@ -2871,8 +2969,15 @@ class TestHealthLetterGrade(unittest.TestCase):
         verdicts = {evidence_mod.finding_fingerprint(finding): {
             "finding_id": "AG-001", "verdict": "CONFIRMED", "reasoning": "v"}}
         with _target_with_files(groups, lines=200) as tgt:
-            r = report_mod.build_report([finding], groups, tgt, "high",
-                                 "2026-01-01T00:00:00Z", verdicts=verdicts)
+            r = report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(
+                    target=tgt,
+                    fail_on="high",
+                    timestamp="2026-01-01T00:00:00Z",
+                ),
+                findings=findings_mod.FindingSet(findings=[finding], verdicts=verdicts),
+                plan=plan_mod.PlanInputs(groups_meta=groups),
+            ))
         s = r["summary"]
         self.assertEqual(s["overall_grade"], grading_mod.health_grade(s["health"]["score"]))
 
@@ -2993,15 +3098,15 @@ class TestSeverityBlockRendering(unittest.TestCase):
 
 class TestEvidenceReport(unittest.TestCase):
     def _report(self, findings, verdicts=None, gate_unverified=False, fail_on="high"):
-        return report_mod.build_report(
-            findings,
-            [],
-            "target",
-            fail_on,
-            "2026-08-03T00:00:00Z",
-            verdicts=verdicts,
-            gate_unverified=gate_unverified,
-        )
+        return report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(
+                target="target",
+                fail_on=fail_on,
+                timestamp="2026-08-03T00:00:00Z",
+                gate_unverified=gate_unverified,
+            ),
+            findings=findings_mod.FindingSet(findings=findings, verdicts=verdicts),
+        ))
 
     def test_summary_carries_the_gate_severity_roles(self):
         # The report must ship the roles, not leave every renderer to re-derive
@@ -3294,9 +3399,14 @@ class TestSeverityImmutability(unittest.TestCase):
                 if verdict
                 else None
             )
-            report = report_mod.build_report(
-                [finding], [], "t", "high", "2026-08-03T00:00:00Z", verdicts=verdicts
-            )
+            report = report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(
+                    target="t",
+                    fail_on="high",
+                    timestamp="2026-08-03T00:00:00Z",
+                ),
+                findings=findings_mod.FindingSet(findings=[finding], verdicts=verdicts),
+            ))
             everywhere = report["findings"] + report["discarded_claims"]
             self.assertEqual(
                 everywhere[0]["severity"], original, "severity mutated for verdict=%r" % verdict
@@ -3325,9 +3435,14 @@ class TestSeverityImmutability(unittest.TestCase):
                 if verdict
                 else None
             )
-            report = report_mod.build_report(
-                [finding], [], "t", "high", "2026-08-03T00:00:00Z", verdicts=verdicts
-            )
+            report = report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(
+                    target="t",
+                    fail_on="high",
+                    timestamp="2026-08-03T00:00:00Z",
+                ),
+                findings=findings_mod.FindingSet(findings=[finding], verdicts=verdicts),
+            ))
             everywhere = report["findings"] + report["discarded_claims"]
             self.assertEqual(
                 everywhere[0]["confidence"], original, "confidence mutated for verdict=%r" % verdict
@@ -3753,9 +3868,11 @@ class TestToolPolicyMode(unittest.TestCase):
 
     def test_report_meta_carries_mode_and_new_version(self):
         f = _agentic()
-        report = report_mod.build_report(
-            [f], [], "t", None, "2026-08-03T00:00:00Z", tool_policy_mode="mixed"
-        )
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on=None, timestamp="2026-08-03T00:00:00Z"),
+            findings=findings_mod.FindingSet(findings=[f]),
+            tools=plan_mod.ToolAxis(policy_mode="mixed"),
+        ))
         self.assertEqual(report["meta"]["coverage"]["tool_policy_mode"], "mixed")
         self.assertEqual(report["meta"]["version"], __version__)
 
@@ -3777,12 +3894,18 @@ class TestBuildExecutingTools(unittest.TestCase):
 
     def test_meta_records_build_executing_tool(self):
         f = _make_finding(source="tool:roslyn-secguard")
-        report = report_mod.build_report([f], [], "t", None, "2026-08-03T00:00:00Z")
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on=None, timestamp="2026-08-03T00:00:00Z"),
+            findings=findings_mod.FindingSet(findings=[f]),
+        ))
         self.assertEqual(report["meta"]["coverage"]["build_executing_tools"], ["roslyn-secguard"])
 
     def test_meta_empty_without_executing_tools(self):
         f = _make_finding(source="tool:bandit")
-        report = report_mod.build_report([f], [], "t", None, "2026-08-03T00:00:00Z")
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on=None, timestamp="2026-08-03T00:00:00Z"),
+            findings=findings_mod.FindingSet(findings=[f]),
+        ))
         self.assertEqual(report["meta"]["coverage"]["build_executing_tools"], [])
 
 
@@ -3871,7 +3994,10 @@ class TestEvidenceIntegrity(unittest.TestCase):
 class TestSchemaErrorsAreNotSilent(unittest.TestCase):
     def test_report_records_schema_error_count(self):
         bad = _agentic(fid="ag-lower")  # id fails ID_RE
-        report = report_mod.build_report([bad], [], "t", None, "2026-08-03T00:00:00Z")
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on=None, timestamp="2026-08-03T00:00:00Z"),
+            findings=findings_mod.FindingSet(findings=[bad]),
+        ))
         errors, _ = report_mod.validate_report(report)
         self.assertTrue(errors)
         report_mod.attach_schema_status(report, errors)
@@ -3879,7 +4005,10 @@ class TestSchemaErrorsAreNotSilent(unittest.TestCase):
 
     def test_clean_report_records_zero(self):
         clean = _agentic(panel="code", category="style", severity="LOW")
-        report = report_mod.build_report([clean], [], "t", None, "2026-08-03T00:00:00Z")
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on=None, timestamp="2026-08-03T00:00:00Z"),
+            findings=findings_mod.FindingSet(findings=[clean]),
+        ))
         errors, _ = report_mod.validate_report(report)
         report_mod.attach_schema_status(report, errors)
         self.assertEqual(report["meta"]["schema_errors"], 0)
@@ -3943,7 +4072,10 @@ class TestFindingFingerprint(unittest.TestCase):
         self.assertEqual(a, b)
 
     def test_report_findings_carry_fingerprints(self):
-        report = report_mod.build_report([_agentic()], [], "t", None, "2026-08-03T00:00:00Z")
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on=None, timestamp="2026-08-03T00:00:00Z"),
+            findings=findings_mod.FindingSet(findings=[_agentic()]),
+        ))
         self.assertTrue(report["findings"][0]["fingerprint"])
         self.assertEqual(len(report["findings"][0]["fingerprint"]), 16)
 
@@ -4152,7 +4284,10 @@ class TestToolAxisMeta(unittest.TestCase):
         return f
 
     def test_tool_axis_counts_unverified_as_unanswered(self):
-        r = report_mod.build_report([self._tool()], [], "t", None, "2026-08-05T00:00:00Z")
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on=None, timestamp="2026-08-05T00:00:00Z"),
+            findings=findings_mod.FindingSet(findings=[self._tool()]),
+        ))
         axis = r["meta"]["coverage"]["tool_axis"]
         self.assertEqual(axis["queued"], 1)
         self.assertEqual(axis["unanswered"], 1)
@@ -4170,9 +4305,14 @@ class TestToolAxisMeta(unittest.TestCase):
                 "finding_id": e["finding"]["id"],
                 "reasoning": "r",
             }
-        r = report_mod.build_report(
-            [a, b], [], "t", None, "2026-08-05T00:00:00Z", verdicts=verdicts, verdicts_supplied=True
-        )
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on=None, timestamp="2026-08-05T00:00:00Z"),
+            findings=findings_mod.FindingSet(
+                findings=[a, b],
+                verdicts=verdicts,
+                verdicts_supplied=True,
+            ),
+        ))
         axis = r["meta"]["coverage"]["tool_axis"]
         self.assertEqual((axis["confirmed"], axis["rejected"]), (1, 1))
         self.assertEqual(axis["rejection_rate"], 0.5)
@@ -4188,9 +4328,14 @@ class TestToolAxisMeta(unittest.TestCase):
                 "reasoning": "r",
             }
         }
-        r = report_mod.build_report(
-            [a, b], [], "t", None, "2026-08-05T00:00:00Z", verdicts=verdicts, verdicts_supplied=True
-        )
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on=None, timestamp="2026-08-05T00:00:00Z"),
+            findings=findings_mod.FindingSet(
+                findings=[a, b],
+                verdicts=verdicts,
+                verdicts_supplied=True,
+            ),
+        ))
         axis = r["meta"]["coverage"]["tool_axis"]
         self.assertEqual(axis["needs_more_info"], 1)
         self.assertEqual(axis["unanswered"], 1)
@@ -4205,20 +4350,26 @@ class TestToolAxisMeta(unittest.TestCase):
         # is_tool_sourced(f) OR f.get("reinforced") -- not is_tool_sourced
         # alone -- so it must still land in the tool axis.
         f = _agentic(reinforced=True)
-        r = report_mod.build_report([f], [], "t", None, "2026-08-05T00:00:00Z")
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on=None, timestamp="2026-08-05T00:00:00Z"),
+            findings=findings_mod.FindingSet(findings=[f]),
+        ))
         axis = r["meta"]["coverage"]["tool_axis"]
         self.assertEqual(axis["queued"], 1)
 
     def test_build_executing_tools_reports_a_run_with_zero_findings(self):
-        r = report_mod.build_report(
-            [], [], "t", None, "2026-08-05T00:00:00Z", tools_ran={"roslyn-secguard", "bandit"}
-        )
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on=None, timestamp="2026-08-05T00:00:00Z"),
+            findings=findings_mod.FindingSet(findings=[]),
+            tools=plan_mod.ToolAxis(tools_ran={"roslyn-secguard", "bandit"}),
+        ))
         self.assertEqual(r["meta"]["coverage"]["build_executing_tools"], ["roslyn-secguard"])
 
     def test_build_executing_tools_falls_back_without_tools_ran(self):
-        r = report_mod.build_report(
-            [self._tool(source="tool:roslyn-secguard")], [], "t", None, "2026-08-05T00:00:00Z"
-        )
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on=None, timestamp="2026-08-05T00:00:00Z"),
+            findings=findings_mod.FindingSet(findings=[self._tool(source="tool:roslyn-secguard")]),
+        ))
         self.assertEqual(r["meta"]["coverage"]["build_executing_tools"], ["roslyn-secguard"])
 
 
@@ -4267,9 +4418,14 @@ class TestVerdictAccountingMeta(unittest.TestCase):
                 "finding_id": "GONE-1",
             },
         }
-        r = report_mod.build_report(
-            [a, b], [], "t", None, "2026-08-05T00:00:00Z", verdicts=verdicts, verdicts_supplied=True
-        )
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on=None, timestamp="2026-08-05T00:00:00Z"),
+            findings=findings_mod.FindingSet(
+                findings=[a, b],
+                verdicts=verdicts,
+                verdicts_supplied=True,
+            ),
+        ))
         self.assertEqual(
             r["meta"]["coverage"]["verdicts"],
             {
@@ -4292,19 +4448,22 @@ class TestVerdictAccountingMeta(unittest.TestCase):
         self._queue([a])
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
-            r = report_mod.build_report(
-                [a],
-                [],
-                "t",
-                None,
-                "2026-08-05T00:00:00Z",
-                verdicts={},
-                verdicts_supplied=True,
-                verdict_unloadable=[
-                    {"file": "x.json", "reason": "unparseable: ..."},
-                    {"file": "y.json", "reason": "missing/invalid verdict key"},
-                ],
-            )
+            r = report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(
+                    target="t",
+                    fail_on=None,
+                    timestamp="2026-08-05T00:00:00Z",
+                ),
+                findings=findings_mod.FindingSet(
+                    findings=[a],
+                    verdicts={},
+                    verdicts_supplied=True,
+                    verdict_unloadable=[
+                        {"file": "x.json", "reason": "unparseable: ..."},
+                        {"file": "y.json", "reason": "missing/invalid verdict key"},
+                    ],
+                ),
+            ))
         self.assertEqual(r["meta"]["coverage"]["verdicts"]["unloadable"], 2)
         self.assertIn("un-loadable", err.getvalue())
         # a corrupt file is NOT a misrouted one -- different failure, different
@@ -4332,15 +4491,18 @@ class TestVerdictAccountingMeta(unittest.TestCase):
         }
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
-            r = report_mod.build_report(
-                [a],
-                [],
-                "t",
-                None,
-                "2026-08-05T00:00:00Z",
-                verdicts=verdicts,
-                verdicts_supplied=True,
-            )
+            r = report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(
+                    target="t",
+                    fail_on=None,
+                    timestamp="2026-08-05T00:00:00Z",
+                ),
+                findings=findings_mod.FindingSet(
+                    findings=[a],
+                    verdicts=verdicts,
+                    verdicts_supplied=True,
+                ),
+            ))
         self.assertEqual(
             r["meta"]["coverage"]["verdicts"],
             {
@@ -4373,8 +4535,18 @@ class TestVerdictAccountingMeta(unittest.TestCase):
         def report(verdicts):
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
-                r = report_mod.build_report([a], [], "t", None, "2026-08-05T00:00:00Z",
-                                     verdicts=verdicts, verdicts_supplied=True)
+                r = report_mod.build_report(report_mod.ReportInputs(
+                    run=report_mod.RunConfig(
+                        target="t",
+                        fail_on=None,
+                        timestamp="2026-08-05T00:00:00Z",
+                    ),
+                    findings=findings_mod.FindingSet(
+                        findings=[a],
+                        verdicts=verdicts,
+                        verdicts_supplied=True,
+                    ),
+                ))
             return r["meta"]["coverage"]["verdicts"]
 
         # (a) no advisor ever answered this cell
@@ -4393,9 +4565,10 @@ class TestVerdictAccountingMeta(unittest.TestCase):
         # 0 would read as "nothing went unanswered" for a run that never ran a
         # verify phase; null says "not measured" (as tool_axis.rejection_rate
         # already does).
-        r = report_mod.build_report(
-            [self._f("A-1", "first claim", "a.py")], [], "t", None, "2026-08-05T00:00:00Z"
-        )
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on=None, timestamp="2026-08-05T00:00:00Z"),
+            findings=findings_mod.FindingSet(findings=[self._f("A-1", "first claim", "a.py")]),
+        ))
         self.assertEqual(
             r["meta"]["coverage"]["verdicts"],
             {
@@ -4425,14 +4598,25 @@ class TestVerdictCutAccounting(unittest.TestCase):
         }
 
     def test_uncapped_run_reports_cut_zero(self):
-        r = report_mod.build_report([self._f("A"), self._f("B")], [], "t", None, "2026-08-05T00:00:00Z")
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on=None, timestamp="2026-08-05T00:00:00Z"),
+            findings=findings_mod.FindingSet(findings=[self._f("A"), self._f("B")]),
+        ))
         v = r["meta"]["coverage"]["verdicts"]
         self.assertEqual(v["cut"], 0)
         self.assertEqual(v["queued"], 2)
 
     def test_capped_run_reports_the_cut(self):
         findings = [self._f("A", "CRITICAL"), self._f("B", "HIGH"), self._f("C", "LOW")]
-        r = report_mod.build_report(findings, [], "t", None, "2026-08-05T00:00:00Z", max_verify=1)
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(
+                target="t",
+                fail_on=None,
+                timestamp="2026-08-05T00:00:00Z",
+                max_verify=1,
+            ),
+            findings=findings_mod.FindingSet(findings=findings),
+        ))
         v = r["meta"]["coverage"]["verdicts"]
         self.assertEqual(v["queued"], 1)
         self.assertEqual(v["cut"], 2)
@@ -4481,16 +4665,15 @@ class TestMetaCoverage(unittest.TestCase):
         }
 
     def test_coverage_block_holds_the_moved_fields(self):
-        r = report_mod.build_report(
-            [self._tool()],
-            [],
-            "t",
-            None,
-            "2026-08-05T00:00:00Z",
-            tools_ran={"bandit"},
-            tool_policy_mode="enforced",
-            tool_dispositions={"bandit": {"status": "ok", "findings": 1}},
-        )
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on=None, timestamp="2026-08-05T00:00:00Z"),
+            findings=findings_mod.FindingSet(findings=[self._tool()]),
+            tools=plan_mod.ToolAxis(
+                policy_mode="enforced",
+                tools_ran={"bandit"},
+                dispositions={"bandit": {"status": "ok", "findings": 1}},
+            ),
+        ))
         cov = r["meta"]["coverage"]
         self.assertEqual(cov["adapters"]["bandit"]["status"], "ok")
         self.assertEqual(cov["tools_ran"], ["bandit"])
@@ -4499,30 +4682,32 @@ class TestMetaCoverage(unittest.TestCase):
         self.assertIn("verdicts", cov)
 
     def test_moved_fields_are_gone_from_top_level_meta(self):
-        r = report_mod.build_report([self._tool()], [], "t", None, "2026-08-05T00:00:00Z")
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on=None, timestamp="2026-08-05T00:00:00Z"),
+            findings=findings_mod.FindingSet(findings=[self._tool()]),
+        ))
         m = r["meta"]
         for k in ("tool_axis", "verdicts", "tool_policy_mode", "build_executing_tools"):
             self.assertNotIn(k, m)
 
     def test_coverage_present_on_a_findings_only_run(self):
-        r = report_mod.build_report(
-            [
-                {
-                    "id": "A",
-                    "severity": "LOW",
-                    "panel": "code",
-                    "category": "logic",
-                    "title": "t",
-                    "confidence": "POSSIBLE",
-                    "description": "d",
-                    "location": {"file": "a.py", "line_start": 1},
-                }
-            ],
-            [],
-            "t",
-            None,
-            "2026-08-05T00:00:00Z",
-        )
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on=None, timestamp="2026-08-05T00:00:00Z"),
+            findings=findings_mod.FindingSet(
+                findings=[
+                    {
+                        "id": "A",
+                        "severity": "LOW",
+                        "panel": "code",
+                        "category": "logic",
+                        "title": "t",
+                        "confidence": "POSSIBLE",
+                        "description": "d",
+                        "location": {"file": "a.py", "line_start": 1},
+                    }
+                ],
+            ),
+        ))
         self.assertIn("coverage", r["meta"])
         self.assertEqual(r["meta"]["coverage"]["tool_policy_mode"], "unknown")
         self.assertEqual(r["meta"]["coverage"]["adapters"], {})
@@ -4556,17 +4741,20 @@ class TestCoverageEndToEnd(unittest.TestCase):
             "bandit": {"status": "ok", "findings": 1},
             "semgrep": {"status": "failed", "findings": 0, "reason": "empty output file"},
         }
-        r = report_mod.build_report(
-            [tool, agent],
-            [],
-            "t",
-            "high",
-            "2026-08-05T00:00:00Z",
-            max_verify=1,
-            tools_ran={"bandit"},
-            tool_policy_mode="enforced",
-            tool_dispositions=disp,
-        )
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(
+                target="t",
+                fail_on="high",
+                timestamp="2026-08-05T00:00:00Z",
+                max_verify=1,
+            ),
+            findings=findings_mod.FindingSet(findings=[tool, agent]),
+            tools=plan_mod.ToolAxis(
+                policy_mode="enforced",
+                tools_ran={"bandit"},
+                dispositions=disp,
+            ),
+        ))
         cov = r["meta"]["coverage"]
         # semgrep failed -> not in tools_ran / build_executing_tools
         self.assertNotIn("semgrep", cov["tools_ran"])
@@ -4596,11 +4784,18 @@ class TestFanOutCoverageMeta(unittest.TestCase):
             "groups_complete": ["g1"],
             "groups_partial": ["g2"],
         }
-        r = report_mod.build_report([self._f()], [], "t", None, "2026-08-07T00:00:00Z", fan_out=fo)
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on=None, timestamp="2026-08-07T00:00:00Z"),
+            findings=findings_mod.FindingSet(findings=[self._f()]),
+            plan=plan_mod.PlanInputs(fan_out=fo),
+        ))
         self.assertEqual(r["meta"]["coverage"]["fan_out"], fo)
 
     def test_fan_out_null_when_absent(self):
-        r = report_mod.build_report([self._f()], [], "t", None, "2026-08-07T00:00:00Z")
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on=None, timestamp="2026-08-07T00:00:00Z"),
+            findings=findings_mod.FindingSet(findings=[self._f()]),
+        ))
         self.assertIsNone(r["meta"]["coverage"]["fan_out"])
 
 
@@ -4618,7 +4813,11 @@ class TestCoverageDivergence(unittest.TestCase):
         # Real files on disk: the letter is health-derived, and a fixture with
         # no readable LoC has no letter to make provisional.
         with _target_with_files(self.GROUPS) as tgt:
-            r = report_mod.build_report([], self.GROUPS, tgt, "high", self.TS, fan_out=fan_out)
+            r = report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(target=tgt, fail_on="high", timestamp=self.TS),
+                findings=findings_mod.FindingSet(findings=[]),
+                plan=plan_mod.PlanInputs(groups_meta=self.GROUPS, fan_out=fan_out),
+            ))
         self.assertEqual(r["summary"]["gate"], "INCONCLUSIVE")
         self.assertIsNone(r["summary"]["overall_grade"])
         # No findings -> no weighted defect -> health 100 -> S, held provisional
@@ -4631,15 +4830,12 @@ class TestCoverageDivergence(unittest.TestCase):
         self.assertNotIn("code", r["meta"]["coverage"]["divergence"]["panels"])
 
     def test_tool_requested_absent_is_disclosed_and_inconclusive(self):
-        r = report_mod.build_report(
-            [],
-            self.GROUPS,
-            "t",
-            "high",
-            self.TS,
-            tools_ran=["trivy"],
-            scout_requested=["trivy", "semgrep"],
-        )
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(groups_meta=self.GROUPS, scout_requested=["trivy", "semgrep"]),
+            tools=plan_mod.ToolAxis(tools_ran=["trivy"]),
+        ))
         self.assertEqual(
             r["meta"]["coverage"]["divergence"]["tools"], {"semgrep": "requested_absent"}
         )
@@ -4647,7 +4843,11 @@ class TestCoverageDivergence(unittest.TestCase):
 
     def test_backward_compat_no_fanout_no_scout(self):
         with _target_with_files(self.GROUPS) as tgt:
-            r = report_mod.build_report([], self.GROUPS, tgt, "high", self.TS)
+            r = report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(target=tgt, fail_on="high", timestamp=self.TS),
+                findings=findings_mod.FindingSet(findings=[]),
+                plan=plan_mod.PlanInputs(groups_meta=self.GROUPS),
+            ))
         # Clean tree, fully covered: no weighted defect at all -> health 100 -> S.
         self.assertEqual(r["summary"]["overall_grade"], "S")
         self.assertEqual(r["summary"]["gate"], "PASS")
@@ -4656,14 +4856,14 @@ class TestCoverageDivergence(unittest.TestCase):
         self.assertEqual(r["meta"]["coverage"]["divergence"], {"panels": {}, "tools": {}})
 
     def test_present_empty_dispatch_plan_is_inconclusive(self):
-        r = report_mod.build_report(
-            [],
-            self.GROUPS,
-            "t",
-            "high",
-            self.TS,
-            integrity={"plans_seen": 1, "empty_dispatch_plans": 1},
-        )
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(
+                groups_meta=self.GROUPS,
+                integrity={"plans_seen": 1, "empty_dispatch_plans": 1},
+            ),
+        ))
         self.assertEqual(r["summary"]["gate"], "INCONCLUSIVE")
         self.assertFalse(r["summary"]["coverage_certified"])
 
@@ -4678,35 +4878,41 @@ class TestFloorCellCoverageWiring(unittest.TestCase):
     TS = "2026-01-01T00:00:00Z"
 
     def test_missing_floor_cell_forces_inconclusive_and_is_disclosed(self):
-        r = report_mod.build_report(
-            [],
-            self.GROUPS,
-            "t",
-            "high",
-            self.TS,
-            coverages=[{"group": "g1", "floor": ["SEC"], "effective": ["SEC"]}],
-            ingested_paths=[],
-        )
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(
+                groups_meta=self.GROUPS,
+                coverages=[{"group": "g1", "floor": ["SEC"], "effective": ["SEC"]}],
+            ),
+            tools=plan_mod.ToolAxis(ingested_paths=[]),
+        ))
         self.assertEqual(r["meta"]["coverage"]["cells"]["missing_floor"], [["g1", "SEC"]])
         self.assertEqual(r["summary"]["gate"], "INCONCLUSIVE")
         self.assertFalse(r["summary"]["coverage_certified"])
 
     def test_present_floor_cell_stays_certified(self):
-        r = report_mod.build_report(
-            [],
-            self.GROUPS,
-            "t",
-            "high",
-            self.TS,
-            coverages=[{"group": "g1", "floor": ["SEC"], "effective": ["SEC"]}],
-            ingested_paths=[os.path.join(".panopticon", "findings-g1-SEC.json")],
-        )
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(
+                groups_meta=self.GROUPS,
+                coverages=[{"group": "g1", "floor": ["SEC"], "effective": ["SEC"]}],
+            ),
+            tools=plan_mod.ToolAxis(
+                ingested_paths=[os.path.join(".panopticon", "findings-g1-SEC.json")],
+            ),
+        ))
         self.assertEqual(r["meta"]["coverage"]["cells"]["missing_floor"], [])
         self.assertEqual(r["summary"]["gate"], "PASS")
         self.assertTrue(r["summary"]["coverage_certified"])
 
     def test_backward_compat_no_coverages_no_regression(self):
-        r = report_mod.build_report([], self.GROUPS, "t", "high", self.TS)
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(groups_meta=self.GROUPS),
+        ))
         self.assertEqual(r["meta"]["coverage"]["cells"], {"missing_floor": []})
         self.assertEqual(r["summary"]["gate"], "PASS")
 
@@ -4716,22 +4922,26 @@ class TestResumeDisclosure(unittest.TestCase):
     TS = "2026-01-01T00:00:00Z"
 
     def test_build_report_emits_resume(self):
-        r = report_mod.build_report(
-            [],
-            self.G,
-            "t",
-            "high",
-            self.TS,
-            resume={
-                "fan_out": {"total": 74, "done": 33, "pending": 41},
-                "verify": {"total": 52, "done": 12, "pending": 40},
-            },
-        )
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(
+                groups_meta=self.G,
+                resume={
+                    "fan_out": {"total": 74, "done": 33, "pending": 41},
+                    "verify": {"total": 52, "done": 12, "pending": 40},
+                },
+            ),
+        ))
         self.assertEqual(r["meta"]["coverage"]["resume"]["fan_out"]["done"], 33)
         self.assertEqual(r["meta"]["coverage"]["resume"]["verify"]["pending"], 40)
 
     def test_build_report_resume_defaults_none(self):
-        r = report_mod.build_report([], self.G, "t", "high", self.TS)
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(groups_meta=self.G),
+        ))
         self.assertIsNone(r["meta"]["coverage"]["resume"])
 
     def test_main_tolerates_non_list_verify_queue_entries(self):
@@ -4954,8 +5164,15 @@ class TestRenderSummaryCoverage(unittest.TestCase):
         # Real files: the summary line prints a PROVISIONAL letter, and there is
         # no letter to hold provisional without readable LoC.
         with _target_with_files(groups) as tgt:
-            r = report_mod.build_report([], groups, tgt, "high", "2026-01-01T00:00:00Z",
-                                 fan_out=fan_out)
+            r = report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(
+                    target=tgt,
+                    fail_on="high",
+                    timestamp="2026-01-01T00:00:00Z",
+                ),
+                findings=findings_mod.FindingSet(findings=[]),
+                plan=plan_mod.PlanInputs(groups_meta=groups, fan_out=fan_out),
+            ))
         text = render_mod.render_summary(r)
         self.assertIn("INCONCLUSIVE", text)
         self.assertIn("NOT CERTIFIED", text)
@@ -4968,38 +5185,42 @@ class TestRenderSummaryResume(unittest.TestCase):
     TS = "2026-01-01T00:00:00Z"
 
     def test_resume_line_shown_when_pending(self):
-        r = report_mod.build_report(
-            [],
-            self.G,
-            "t",
-            "high",
-            self.TS,
-            resume={
-                "fan_out": {"total": 74, "done": 33, "pending": 41},
-                "verify": {"total": 52, "done": 12, "pending": 40},
-            },
-        )
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(
+                groups_meta=self.G,
+                resume={
+                    "fan_out": {"total": 74, "done": 33, "pending": 41},
+                    "verify": {"total": 52, "done": 12, "pending": 40},
+                },
+            ),
+        ))
         text = render_mod.render_summary(r)
         self.assertIn("Resume:", text)
         self.assertIn("33/74", text)
         self.assertIn("12/52", text)
 
     def test_no_resume_line_when_complete(self):
-        r = report_mod.build_report(
-            [],
-            self.G,
-            "t",
-            "high",
-            self.TS,
-            resume={
-                "fan_out": {"total": 74, "done": 74, "pending": 0},
-                "verify": {"total": 52, "done": 52, "pending": 0},
-            },
-        )
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(
+                groups_meta=self.G,
+                resume={
+                    "fan_out": {"total": 74, "done": 74, "pending": 0},
+                    "verify": {"total": 52, "done": 52, "pending": 0},
+                },
+            ),
+        ))
         self.assertNotIn("Resume:", render_mod.render_summary(r))
 
     def test_no_resume_line_when_resume_absent(self):
-        r = report_mod.build_report([], self.G, "t", "high", self.TS)  # resume=None
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(groups_meta=self.G),
+        ))  # resume=None
         self.assertNotIn("Resume:", render_mod.render_summary(r))
 
 
@@ -5059,12 +5280,20 @@ class TestIntegrity(unittest.TestCase):
             "missing_planned_files": [],
             "unenforced_acknowledged": False,
         }
-        r = report_mod.build_report([], self.G, "t", "high", self.TS, integrity=integ)
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(groups_meta=self.G, integrity=integ),
+        ))
         self.assertEqual(r["meta"]["integrity"], integ)
         self.assertEqual(r["summary"]["gate"], "INCONCLUSIVE")
 
     def test_build_report_integrity_defaults_empty(self):
-        r = report_mod.build_report([], self.G, "t", "high", self.TS)
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(groups_meta=self.G),
+        ))
         self.assertEqual(
             r["meta"]["integrity"],
             {
@@ -5085,7 +5314,11 @@ class TestIntegrity(unittest.TestCase):
     def test_build_report_integrity_non_dict_does_not_raise(self):
         # M10: a truthy non-dict integrity (e.g. a stray list) must fall back
         # to the default rather than raise on the .get() calls below it.
-        r = report_mod.build_report([], self.G, "t", "high", self.TS, integrity=["not", "a", "dict"])
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(groups_meta=self.G, integrity=["not", "a", "dict"]),
+        ))
         self.assertEqual(
             r["meta"]["integrity"],
             {
@@ -5104,19 +5337,19 @@ class TestIntegrity(unittest.TestCase):
         self.assertEqual(r["summary"]["gate"], "PASS")
 
     def test_present_semantically_invalid_plan_is_inconclusive(self):
-        r = report_mod.build_report(
-            [],
-            self.G,
-            "t",
-            "high",
-            self.TS,
-            integrity={
-                "plans_seen": 1,
-                "invalid_dispatch_plans": [
-                    {"file": "p.json", "reason": "entry 0 is not an object"}
-                ],
-            },
-        )
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(
+                groups_meta=self.G,
+                integrity={
+                    "plans_seen": 1,
+                    "invalid_dispatch_plans": [
+                        {"file": "p.json", "reason": "entry 0 is not an object"}
+                    ],
+                },
+            ),
+        ))
         self.assertEqual(r["summary"]["gate"], "INCONCLUSIVE")
         self.assertFalse(r["summary"]["coverage_certified"])
 
@@ -5132,7 +5365,11 @@ class TestIntegrity(unittest.TestCase):
             "missing_planned_files": [".panopticon/findings-g1-x.json"],
             "unenforced_acknowledged": False,
         }
-        r = report_mod.build_report([], self.G, "t", "high", self.TS, integrity=integ)
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(groups_meta=self.G, integrity=integ),
+        ))
         self.assertEqual(r["summary"]["gate"], "PASS")
 
 
@@ -5147,14 +5384,22 @@ class TestRenderSummaryIntegrity(unittest.TestCase):
             "unenforced_acknowledged": False,
         }
         text = render_mod.render_summary(
-            report_mod.build_report([], self.G, "t", "high", self.TS, integrity=integ)
+            report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
+                findings=findings_mod.FindingSet(findings=[]),
+                plan=plan_mod.PlanInputs(groups_meta=self.G, integrity=integ),
+            ))
         )
         self.assertIn("Integrity:", text)
         self.assertIn("findings-EVIL.json", text)
 
     def test_no_integrity_line_when_clean(self):
         self.assertNotIn(
-            "Integrity:", render_mod.render_summary(report_mod.build_report([], self.G, "t", "high", self.TS))
+            "Integrity:", render_mod.render_summary(report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
+                findings=findings_mod.FindingSet(findings=[]),
+                plan=plan_mod.PlanInputs(groups_meta=self.G),
+            )))
         )
 
 
@@ -5282,15 +5527,12 @@ class TestDeltaClassify(unittest.TestCase):
             "files_changed": 1,
             "hunks": {"a.py": [(10, 12)]},
         }
-        rep = report_mod.build_report(
-            findings,
-            [{"name": "g1", "files": ["a.py"]}],
-            "t",
-            "high",
-            "2026-01-01T00:00:00Z",
-            diff_hunks=hunks,
-            diff_context=5,
-        )
+        rep = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp="2026-01-01T00:00:00Z"),
+            findings=findings_mod.FindingSet(findings=findings),
+            delta=delta_mod.DeltaContext(diff_hunks=hunks, diff_context=5),
+            plan=plan_mod.PlanInputs(groups_meta=[{"name": "g1", "files": ["a.py"]}]),
+        ))
         by = {f["id"]: f["delta"]["on_diff"] for f in rep["findings"]}
         self.assertTrue(by["A-1"])
         self.assertFalse(by["A-2"])
@@ -5309,9 +5551,11 @@ class TestDeltaClassify(unittest.TestCase):
                 "location": {"file": "a.py", "line_start": 11},
             },
         ]
-        rep = report_mod.build_report(
-            findings, [{"name": "g1", "files": ["a.py"]}], "t", "high", "2026-01-01T00:00:00Z"
-        )
+        rep = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp="2026-01-01T00:00:00Z"),
+            findings=findings_mod.FindingSet(findings=findings),
+            plan=plan_mod.PlanInputs(groups_meta=[{"name": "g1", "files": ["a.py"]}]),
+        ))
         self.assertNotIn("delta", rep["findings"][0])
 
     def test_build_report_no_delta_when_base_unresolved(self):
@@ -5336,15 +5580,12 @@ class TestDeltaClassify(unittest.TestCase):
             "files_changed": 0,
             "hunks": {},
         }
-        rep = report_mod.build_report(
-            findings,
-            [{"name": "g1", "files": ["a.py"]}],
-            "t",
-            "high",
-            "2026-01-01T00:00:00Z",
-            diff_hunks=hunks,
-            diff_context=5,
-        )
+        rep = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp="2026-01-01T00:00:00Z"),
+            findings=findings_mod.FindingSet(findings=findings),
+            delta=delta_mod.DeltaContext(diff_hunks=hunks, diff_context=5),
+            plan=plan_mod.PlanInputs(groups_meta=[{"name": "g1", "files": ["a.py"]}]),
+        ))
         self.assertNotIn("delta", rep["findings"][0])
 
 
@@ -5384,17 +5625,18 @@ class TestDeltaGate(unittest.TestCase):
             "files_changed": 1,
             "hunks": {"a.py": [(10, 12)]},
         }
-        rep = report_mod.build_report(
-            self._findings(),
-            [{"name": "g1", "files": ["a.py"]}],
-            "t",
-            "high",
-            "2026-01-01T00:00:00Z",
-            gate_unverified=True,
-            diff_hunks=hunks,
-            diff_context=5,
-            gate_scope="on-diff",
-        )
+        rep = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(
+                target="t",
+                fail_on="high",
+                timestamp="2026-01-01T00:00:00Z",
+                gate_unverified=True,
+                gate_scope="on-diff",
+            ),
+            findings=findings_mod.FindingSet(findings=self._findings()),
+            delta=delta_mod.DeltaContext(diff_hunks=hunks, diff_context=5),
+            plan=plan_mod.PlanInputs(groups_meta=[{"name": "g1", "files": ["a.py"]}]),
+        ))
         # only the on-diff HIGH gates
         self.assertEqual(rep["summary"]["delta"]["on_diff"].get("high"), 1)
         self.assertEqual(rep["summary"]["delta"]["pre_existing"].get("high"), 1)
@@ -5408,17 +5650,18 @@ class TestDeltaGate(unittest.TestCase):
             "files_changed": 1,
             "hunks": {"a.py": [(10, 12)]},
         }
-        rep = report_mod.build_report(
-            self._findings(),
-            [{"name": "g1", "files": ["a.py"]}],
-            "t",
-            "high",
-            "2026-01-01T00:00:00Z",
-            gate_unverified=True,
-            diff_hunks=hunks,
-            diff_context=5,
-            gate_scope="all",
-        )
+        rep = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(
+                target="t",
+                fail_on="high",
+                timestamp="2026-01-01T00:00:00Z",
+                gate_unverified=True,
+                gate_scope="all",
+            ),
+            findings=findings_mod.FindingSet(findings=self._findings()),
+            delta=delta_mod.DeltaContext(diff_hunks=hunks, diff_context=5),
+            plan=plan_mod.PlanInputs(groups_meta=[{"name": "g1", "files": ["a.py"]}]),
+        ))
         self.assertEqual(rep["summary"]["gate"], "FAIL")  # both HIGHs count
 
     def test_coverage_delta_carries_three_anchors(self):
@@ -5433,16 +5676,17 @@ class TestDeltaGate(unittest.TestCase):
             "files_changed": 1,
             "hunks": {"a.py": [(10, 12)]},
         }
-        rep = report_mod.build_report(
-            self._findings(),
-            [{"name": "g1", "files": ["a.py"]}],
-            "t",
-            "high",
-            "2026-01-01T00:00:00Z",
-            gate_unverified=True,
-            diff_hunks=hunks,
-            diff_context=5,
-        )
+        rep = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(
+                target="t",
+                fail_on="high",
+                timestamp="2026-01-01T00:00:00Z",
+                gate_unverified=True,
+            ),
+            findings=findings_mod.FindingSet(findings=self._findings()),
+            delta=delta_mod.DeltaContext(diff_hunks=hunks, diff_context=5),
+            plan=plan_mod.PlanInputs(groups_meta=[{"name": "g1", "files": ["a.py"]}]),
+        ))
         d = rep["meta"]["coverage"]["delta"]
         self.assertEqual((d["base_commit"], d["delta_start"], d["delta_end"]), ("b0", "d0", "d1"))
         self.assertIs(d["includes_uncommitted"], False)
@@ -5457,16 +5701,17 @@ class TestDeltaGate(unittest.TestCase):
             "files_changed": 0,
             "hunks": {},
         }
-        rep = report_mod.build_report(
-            self._findings(),
-            [{"name": "g1", "files": ["a.py"]}],
-            "t",
-            "high",
-            "2026-01-01T00:00:00Z",
-            gate_unverified=True,
-            diff_hunks=hunks,
-            diff_context=5,
-        )
+        rep = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(
+                target="t",
+                fail_on="high",
+                timestamp="2026-01-01T00:00:00Z",
+                gate_unverified=True,
+            ),
+            findings=findings_mod.FindingSet(findings=self._findings()),
+            delta=delta_mod.DeltaContext(diff_hunks=hunks, diff_context=5),
+            plan=plan_mod.PlanInputs(groups_meta=[{"name": "g1", "files": ["a.py"]}]),
+        ))
         self.assertNotEqual(rep["summary"]["gate"], "INCONCLUSIVE")
         self.assertIsNone(rep["summary"]["delta"])
         self.assertIsNone(rep["meta"]["coverage"]["delta"])
@@ -6038,25 +6283,31 @@ class TestUnloadableVerdictsGate(unittest.TestCase):
         }
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
-            clean = report_mod.build_report(
-                [dict(f)],
-                [],
-                "t",
-                "high",
-                "2026-08-05T00:00:00Z",
-                verdicts={},
-                verdicts_supplied=True,
-            )
-            lossy = report_mod.build_report(
-                [dict(f)],
-                [],
-                "t",
-                "high",
-                "2026-08-05T00:00:00Z",
-                verdicts={},
-                verdicts_supplied=True,
-                verdict_unloadable=[{"file": "x.json", "reason": "unparseable"}],
-            )
+            clean = report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(
+                    target="t",
+                    fail_on="high",
+                    timestamp="2026-08-05T00:00:00Z",
+                ),
+                findings=findings_mod.FindingSet(
+                    findings=[dict(f)],
+                    verdicts={},
+                    verdicts_supplied=True,
+                ),
+            ))
+            lossy = report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(
+                    target="t",
+                    fail_on="high",
+                    timestamp="2026-08-05T00:00:00Z",
+                ),
+                findings=findings_mod.FindingSet(
+                    findings=[dict(f)],
+                    verdicts={},
+                    verdicts_supplied=True,
+                    verdict_unloadable=[{"file": "x.json", "reason": "unparseable"}],
+                ),
+            ))
         self.assertEqual(clean["summary"]["gate"], "INCONCLUSIVE")
         self.assertEqual(lossy["summary"]["gate"], "INCONCLUSIVE")
 
@@ -6085,15 +6336,14 @@ class TestCostLedger(unittest.TestCase):
         # one with end-to-end build_report coverage.
         dc = {"review_cells": 4, "verify_primary": 2, "verify_backup": 1,
               "verify_tools": 3, "tool_scan": 2}
-        r = report_mod.build_report(
-            [self._f("A-1", "a.py"), self._f("A-2", "b.py")],
-            [],
-            "t",
-            "high",
-            "2026-08-05T00:00:00Z",
-            scout_profiles_seen=3,
-            driver_cost=dc,
-        )
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp="2026-08-05T00:00:00Z"),
+            findings=findings_mod.FindingSet(
+                findings=[self._f("A-1", "a.py"), self._f("A-2", "b.py")],
+            ),
+            plan=plan_mod.PlanInputs(scout_profiles_seen=3),
+            cost=cost_mod.CostInputs(driver_cost=dc),
+        ))
         cost = r["meta"]["cost"]
         self.assertIsNone(cost["tokens"])
         self.assertEqual(
@@ -6110,7 +6360,10 @@ class TestCostLedger(unittest.TestCase):
         )
 
     def test_cost_ledger_without_plans(self):
-        r = report_mod.build_report([self._f("A-1", "a.py")], [], "t", "high", "2026-08-05T00:00:00Z")
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp="2026-08-05T00:00:00Z"),
+            findings=findings_mod.FindingSet(findings=[self._f("A-1", "a.py")]),
+        ))
         phases = [d["phase"] for d in r["meta"]["cost"]["dispatches"]]
         self.assertEqual(phases, ["scout", "verify"])
         self.assertEqual(r["meta"]["cost"]["dispatches"][0]["count"], 0)
@@ -6125,8 +6378,11 @@ class TestCostLedger(unittest.TestCase):
                 json.dump({"total": 21053000, "by_phase": {"review": 10290000}}, fh)
             usage = cost_mod.load_run_usage(d)
         self.assertEqual(usage["total"], 21053000)
-        r = report_mod.build_report([self._f("A-1", "a.py")], [], "t", "high",
-                             "2026-08-05T00:00:00Z", run_usage=usage)
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp="2026-08-05T00:00:00Z"),
+            findings=findings_mod.FindingSet(findings=[self._f("A-1", "a.py")]),
+            cost=cost_mod.CostInputs(run_usage=usage),
+        ))
         self.assertEqual(r["meta"]["cost"]["tokens"]["total"], 21053000)
 
     def test_tokens_stay_null_without_host_usage(self):
@@ -6141,8 +6397,10 @@ class TestCostLedger(unittest.TestCase):
                 json.dump({}, fh)
             self.assertIsNone(cost_mod.load_run_usage(d))                 # empty
         self.assertIsNone(cost_mod.load_run_usage(""))
-        r = report_mod.build_report([self._f("A-1", "a.py")], [], "t", "high",
-                             "2026-08-05T00:00:00Z")
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp="2026-08-05T00:00:00Z"),
+            findings=findings_mod.FindingSet(findings=[self._f("A-1", "a.py")]),
+        ))
         self.assertIsNone(r["meta"]["cost"]["tokens"])
 
     def test_cost_in_report_schema(self):
@@ -6376,9 +6634,12 @@ class TestCostLedgerDriver(unittest.TestCase):
             "verify_tools": 0,
             "tool_scan": 3,
         }
-        r = report_mod.build_report(
-            [], [], "t", "high", "2026-08-17T00:00:00Z", scout_profiles_seen=2, driver_cost=dc
-        )
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp="2026-08-17T00:00:00Z"),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(scout_profiles_seen=2),
+            cost=cost_mod.CostInputs(driver_cost=dc),
+        ))
         errors, _ = report_mod.validate_report(r)
         self.assertEqual(errors, [], "driver cost rows must pass report-schema")
         phases = {row["phase"] for row in r["meta"]["cost"]["dispatches"]}
@@ -6404,15 +6665,12 @@ class TestToolCoverageCertification(unittest.TestCase):
             "missing": [],
             "excluded_scope": [],
         }
-        r = report_mod.build_report(
-            [],
-            [],
-            "t",
-            "high",
-            self.TS,
-            scout_requested=["bcryptjs", "pip-audit", "eslint"],
-            tool_manifest=tm,
-        )
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(scout_requested=["bcryptjs", "pip-audit", "eslint"]),
+            tools=plan_mod.ToolAxis(manifest=tm),
+        ))
         self.assertEqual(
             self._div_tools(r),
             {
@@ -6432,7 +6690,12 @@ class TestToolCoverageCertification(unittest.TestCase):
             "missing": ["npm-audit"],
             "excluded_scope": [],
         }
-        r = report_mod.build_report([], [], "t", "high", self.TS, scout_requested=[], tool_manifest=tm)
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(scout_requested=[]),
+            tools=plan_mod.ToolAxis(manifest=tm),
+        ))
         self.assertEqual(self._div_tools(r), {"npm-audit": "requested_absent"})
         self.assertFalse(r["summary"]["coverage_certified"])
 
@@ -6444,15 +6707,12 @@ class TestToolCoverageCertification(unittest.TestCase):
             "missing": ["npm-audit"],
             "excluded_scope": [],
         }
-        r = report_mod.build_report(
-            [],
-            [],
-            "t",
-            "high",
-            self.TS,
-            scout_requested=["npm-audit", "bcryptjs"],
-            tool_manifest=tm,
-        )
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(scout_requested=["npm-audit", "bcryptjs"]),
+            tools=plan_mod.ToolAxis(manifest=tm),
+        ))
         self.assertEqual(
             self._div_tools(r),
             {"npm-audit": "requested_absent", "bcryptjs": "requested_unavailable"},
@@ -6461,7 +6721,12 @@ class TestToolCoverageCertification(unittest.TestCase):
 
     def test_manifest_absent_uses_legacy_scout_gate(self):
         # no manifest -> unchanged 4.x behavior (scout_requested - produced).
-        r = report_mod.build_report([], [], "t", "high", self.TS, scout_requested=["eslint"], tools_ran=[])
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(scout_requested=["eslint"]),
+            tools=plan_mod.ToolAxis(tools_ran=[]),
+        ))
         self.assertEqual(self._div_tools(r), {"eslint": "requested_absent"})
         self.assertFalse(r["summary"]["coverage_certified"])
 
@@ -6557,25 +6822,23 @@ class TestOcrdbValidation(unittest.TestCase):
         self.assertEqual(findings[0]["code"], "SEC-A1A")  # untouched
 
     def test_build_report_stamps_ocrdb_version(self):
-        report = report_mod.build_report(
-            [{"title": "t", "severity": "LOW", "code": "SEC-A1A", "domain": "SEC"}],
-            [],
-            "src",
-            None,
-            DEFAULT_TIMESTAMP,
-        )
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on=None, timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(
+                findings=[{"title": "t", "severity": "LOW", "code": "SEC-A1A", "domain": "SEC"}],
+            ),
+        ))
         self.assertEqual(report["meta"]["ocrdb_version"], "0.5.0")
         self.assertIsNotNone(report["meta"]["coverage"]["ocrdb"])
 
     def test_build_report_bundle_absent_is_null_and_safe(self):
         with unittest.mock.patch("scripts.ocrdb.load_bundle", return_value=None):
-            report = report_mod.build_report(
-                [{"title": "t", "severity": "LOW", "code": "SEC-A1A", "domain": "SEC"}],
-                [],
-                "src",
-                None,
-                DEFAULT_TIMESTAMP,
-            )
+            report = report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(target="src", fail_on=None, timestamp=DEFAULT_TIMESTAMP),
+                findings=findings_mod.FindingSet(
+                    findings=[{"title": "t", "severity": "LOW", "code": "SEC-A1A", "domain": "SEC"}],
+                ),
+            ))
         self.assertIsNone(report["meta"]["ocrdb_version"])
         self.assertIsNone(report["meta"]["coverage"]["ocrdb"])
         self.assertEqual(report["findings"][0]["code"], "SEC-A1A")  # untouched, bundle-absent path
@@ -6605,7 +6868,10 @@ class TestStrictGate(unittest.TestCase):
         }
 
     def test_unverified_tool_high_no_longer_fails_the_gate(self):
-        r = report_mod.build_report([self._tool_high()], [], "t", "high", "2026-08-05T00:00:00Z")
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp="2026-08-05T00:00:00Z"),
+            findings=findings_mod.FindingSet(findings=[self._tool_high()]),
+        ))
         self.assertEqual(r["summary"]["gate"], "PASS")
         self.assertEqual(r["findings"][0]["evidence"]["status"], "tool_reported")
 
@@ -6621,13 +6887,95 @@ class TestStrictGate(unittest.TestCase):
                 "reasoning": "real credential",
             }
         }
-        r = report_mod.build_report(
-            [f], [], "t", "high", "2026-08-05T00:00:00Z", verdicts=verdicts, verdicts_supplied=True
-        )
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp="2026-08-05T00:00:00Z"),
+            findings=findings_mod.FindingSet(
+                findings=[f],
+                verdicts=verdicts,
+                verdicts_supplied=True,
+            ),
+        ))
         self.assertEqual(r["summary"]["gate"], "FAIL")
 
     def test_gate_unverified_still_includes_tool_reported(self):
-        r = report_mod.build_report(
-            [self._tool_high()], [], "t", "high", "2026-08-05T00:00:00Z", gate_unverified=True
-        )
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(
+                target="t",
+                fail_on="high",
+                timestamp="2026-08-05T00:00:00Z",
+                gate_unverified=True,
+            ),
+            findings=findings_mod.FindingSet(findings=[self._tool_high()]),
+        ))
         self.assertEqual(r["summary"]["gate"], "FAIL")
+
+
+class ReportInputsTest(unittest.TestCase):
+    """WS-0 S2: the grouped build_report input structs. Their defaults must
+    mean exactly what the omitted keyword meant on the 33-argument signature,
+    and the four-stage orchestrator must not depend on which of them a caller
+    spelled out."""
+
+    def _run(self):
+        return report_mod.RunConfig(target="t", fail_on="high", timestamp=DEFAULT_TIMESTAMP)
+
+    def test_omitted_structs_equal_their_explicit_defaults(self):
+        f = _make_finding(severity="HIGH")
+        terse = report_mod.build_report(report_mod.ReportInputs(
+            run=self._run(), findings=findings_mod.FindingSet(findings=[dict(f)])))
+        explicit = report_mod.build_report(report_mod.ReportInputs(
+            run=self._run(),
+            findings=findings_mod.FindingSet(findings=[dict(f)]),
+            delta=delta_mod.DeltaContext(),
+            plan=plan_mod.PlanInputs(),
+            tools=plan_mod.ToolAxis(),
+            cost=cost_mod.CostInputs(),
+        ))
+        self.assertEqual(terse, explicit)
+        # the "not measured" values the defaults stand for
+        cov = terse["meta"]["coverage"]
+        self.assertEqual(cov["tool_policy_mode"], "unknown")
+        self.assertEqual(cov["scout_profiles_seen"], 0)
+        self.assertIsNone(cov["delta"])
+        self.assertIsNone(cov["resume"])
+        self.assertIsNone(terse["meta"]["cost"]["tokens"])
+        self.assertEqual(terse["meta"]["integrity"]["plans_seen"], 0)
+        self.assertEqual(terse["groups"], [])
+
+    def test_structs_are_frozen(self):
+        import dataclasses
+        run = self._run()
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            run.target = "u"
+        fs = findings_mod.FindingSet(findings=[])
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            fs.verdicts = {}
+
+    def test_delta_context_active_needs_a_base(self):
+        self.assertFalse(delta_mod.DeltaContext().active)
+        self.assertFalse(delta_mod.DeltaContext(diff_hunks={"hunks": {}}).active)
+        self.assertTrue(delta_mod.DeltaContext(diff_hunks={"base": "main", "hunks": {}}).active)
+
+    def test_legacy_positional_signature_is_gone(self):
+        with self.assertRaises(TypeError):
+            report_mod.build_report([], [], "t", "high", DEFAULT_TIMESTAMP)
+
+    def test_stages_compose_to_the_report(self):
+        # build_report is resolve -> reconcile -> grade -> cost -> assemble;
+        # running the stages by hand must give the same envelope.
+        f = _make_finding(severity="HIGH")
+        inp = report_mod.ReportInputs(
+            run=self._run(), findings=findings_mod.FindingSet(findings=[dict(f)]),
+            plan=plan_mod.PlanInputs(groups_meta=[{"name": "g1", "files": ["a.py"]}]))
+        whole = report_mod.build_report(inp)
+        inp = report_mod.ReportInputs(
+            run=self._run(), findings=findings_mod.FindingSet(findings=[dict(f)]),
+            plan=plan_mod.PlanInputs(groups_meta=[{"name": "g1", "files": ["a.py"]}]))
+        resolved = verdicts_mod.resolve_findings(inp.findings, inp.delta, inp.run)
+        reconciled = plan_mod.reconcile(inp.plan, inp.tools, resolved)
+        graded = grading_mod.grade_report(inp.run, resolved, reconciled)
+        cost = cost_mod.cost_section(inp.cost, 0, resolved.verdict_stats["queued"])
+        by_hand = report_mod.assemble(inp.run, resolved, reconciled, graded, cost)
+        self.assertEqual(whole, by_hand)
+        self.assertEqual(list(whole), ["schema_version", "meta", "summary", "groups",
+                                       "findings", "discarded_claims", "cross_panel"])

@@ -1,4 +1,5 @@
 """Dispatch plans, coverage cells, out-of-scope and the tool axis."""
+from dataclasses import dataclass, field
 import glob
 import json
 import os
@@ -7,7 +8,54 @@ import scripts.evidence as evidence_mod
 import scripts.groups_schema as groups_schema
 import scripts.plan_contract as plan_contract
 import scripts.score_gate as score_gate
+from scripts.tools import EXECUTES_TARGET_BUILD
 from . import findings as findings_mod
+
+
+@dataclass(frozen=True)
+class PlanInputs:
+    """What the run folder says was planned and what happened to it (WS-0 S2):
+    group definitions, fan-out accounting, scout requests, lane discipline,
+    per-group coverage cells, the integrity dict main() assembled, and resume
+    stats. Every default is the "not measured" value the omitted build_report
+    keyword carried."""
+    groups_meta: list = field(default_factory=list)
+    fan_out: dict | None = None
+    scout_requested: list | None = None
+    scout_profiles_seen: int = 0
+    out_of_scope: dict | None = None
+    coverages: list | None = None
+    integrity: dict | None = None
+    resume: dict | None = None
+
+
+@dataclass(frozen=True)
+class ToolAxis:
+    """The tool layer's own accounting (WS-0 S2). `tools_ran` None means
+    --tools-dir was not supplied, and build_executing_tools is inferred from
+    the findings; an empty set asserts "no build-executing tool ran" (the
+    inversion #450 was about). `manifest` is the runner's deterministic
+    tools-manifest (#1031); `ingested_paths` the findings-file list main()
+    ingested (reconcile_findings_files' own term), which audit_floor_cells
+    reads for the cells present."""
+    policy_mode: str | None = None
+    tools_ran: set | None = None
+    dispositions: dict | None = None
+    manifest: dict | None = None
+    ingested_paths: list | None = None
+
+
+@dataclass(frozen=True)
+class Reconciled:
+    """reconcile()'s result: the `meta.coverage` and `meta.integrity` sections
+    plus the plan-derived facts certification needs."""
+    coverage: dict
+    integrity: dict
+    integrity_ok: bool
+    panels_incomplete: set
+    tools_absent: list
+    cell_audit: dict
+    groups_meta: list
 
 
 # One source for the per-group dispatch-plan filename glob (#681): synthesize
@@ -250,3 +298,101 @@ def tools_ran_from_dispositions(dispositions):
     """
     return {name for name, d in dispositions.items()
             if d.get("status") in ("ok", "empty")}
+
+
+def reconcile(plan, tools, resolved):
+    """The plan-reconciliation cluster (WS-0 S2): meta.coverage and
+    meta.integrity from the dispatch plan, the tool layer and the resolved
+    findings (verdict stats, tool axis, ocrdb coverage, delta counts)."""
+    planned = (plan.fan_out or {}).get("planned") or {} if isinstance(plan.fan_out, dict) else {}
+    executed = (plan.fan_out or {}).get("executed") or {} if isinstance(plan.fan_out, dict) else {}
+    panels_incomplete = {p for p, n in planned.items() if executed.get(p, 0) < n}
+    tools_ran = tools.tools_ran
+    produced = set(tools_ran if tools_ran is not None else resolved.tool_names)
+    # #1031: certify on the runner's DETERMINISTIC adapter set when its manifest
+    # is present -- `missing` (applicable known adapters that didn't produce) is
+    # the only real tool-coverage loss, so it drives the gate (`tools_absent`).
+    # The scout's advisory list is demoted: a request the runner can't satisfy
+    # (no adapter, or inapplicable to the target) is disclosed as non-gating
+    # `requested_unavailable`, never sinking coverage_certified. With no manifest
+    # (e.g. --no-tools, or a pre-manifest run) the 4.x scout-derived gate stands.
+    if isinstance(tools.manifest, dict):
+        selected = set(tools.manifest.get("selected") or [])
+        produced_m = set(tools.manifest.get("produced") or [])
+        missing = tools.manifest.get("missing")
+        tools_absent = sorted(missing if isinstance(missing, list)
+                              else selected - produced_m)
+        unavailable = sorted(set(plan.scout_requested or []) - selected - produced_m)
+        tool_divergence = {t: "requested_absent" for t in tools_absent}
+        tool_divergence.update({t: "requested_unavailable" for t in unavailable})
+    else:
+        tools_absent = sorted(set(plan.scout_requested or []) - produced)
+        tool_divergence = {t: "requested_absent" for t in tools_absent}
+    divergence = {
+        "panels": {p: {"planned": planned[p], "executed": executed.get(p, 0)}
+                   for p in sorted(panels_incomplete)},
+        "tools": tool_divergence,
+    }
+    integrity = plan.integrity if isinstance(plan.integrity, dict) else None
+    integrity = integrity or {"unexpected_findings_files": [],
+                              "missing_planned_files": [],
+                              "duplicate_out_files": [],
+                              "mislabeled_findings_files": [],
+                              "cross_domain_findings": [],
+                              "empty_dispatch_plans": 0,
+                              "invalid_dispatch_plans": [],
+                              "invalid_verify_queue": None,
+                              "unenforced_acknowledged": False,
+                              "plans_seen": 0}
+    scope_ok = not ((plan.out_of_scope or {}).get("count")
+                    if isinstance(plan.out_of_scope, dict) else False)
+    integrity_ok = scope_ok and not (integrity.get("unexpected_findings_files")
+                                     or integrity.get("duplicate_out_files")
+                                     or integrity.get("mislabeled_findings_files")
+                                     or integrity.get("content_mismatched_files")
+                                     or integrity.get("content_snapshot_unreadable")
+                                     or integrity.get("empty_dispatch_plans")
+                                     or integrity.get("invalid_dispatch_plans")
+                                     or integrity.get("invalid_verify_queue"))
+    # 5.0 (matrix Sec5.1): certifiable coverage over the review matrix's FLOOR
+    # cells, alongside the requested-absent-TOOL check above. `coverages` is
+    # the raw list of coverage-<group>.json dicts the caller read (main()
+    # auto-discovers them, same convention as groups.json/scout-*.json);
+    # `ingested_paths` is the findings-file path list the caller ingested.
+    # Both default to empty/None for callers that predate P4 cells, so
+    # cell_audit is a no-op {"missing_floor": []} for them.
+    cell_audit = audit_floor_cells(plan.coverages or [], present_cells(tools.ingested_paths))
+    coverage = {
+        "adapters": tools.dispositions or {},
+        "tools_ran": (sorted(tools_ran) if tools_ran is not None
+                      else sorted(resolved.tool_names)),
+        "build_executing_tools": sorted(
+            (set(tools_ran) if tools_ran is not None else resolved.tool_names)
+            & EXECUTES_TARGET_BUILD),
+        "tool_policy_mode": tools.policy_mode or "unknown",
+        "tool_axis": resolved.tool_axis,
+        # #471: with scout_requested, lets consumers tell "no scouts
+        # ran" (0) apart from "scouts ran and requested no tools"
+        # (N>0 with scout_requested []).
+        "scout_profiles_seen": plan.scout_profiles_seen,
+        "scout_requested": sorted(plan.scout_requested or []),
+        "out_of_scope": plan.out_of_scope,
+        "doc_policy": resolved.doc_policy,
+        "verdicts": resolved.verdict_stats,
+        "ocrdb": resolved.ocrdb_coverage,   # None when no bundle vendored (= 4.x)
+        # P5 verify-matrix accounting: engaged (>= F_p) cell count and the
+        # engaged cells left unverified -- the same set that forces gate
+        # INCONCLUSIVE via the gate-aware `unanswered` count.
+        "verify_matrix": resolved.verify_matrix,
+        "fan_out": plan.fan_out,
+        "divergence": divergence,
+        # 5.0 (matrix Sec5.1): per-floor-cell certifiable-coverage
+        # disclosure -- {"missing_floor": [[group, domain], ...]}. A
+        # non-empty list is what forces the gate to INCONCLUSIVE.
+        "cells": cell_audit,
+        "resume": plan.resume,
+        "delta": resolved.delta_meta,
+    }
+    return Reconciled(coverage=coverage, integrity=integrity, integrity_ok=integrity_ok,
+                      panels_incomplete=panels_incomplete, tools_absent=tools_absent,
+                      cell_audit=cell_audit, groups_meta=plan.groups_meta)

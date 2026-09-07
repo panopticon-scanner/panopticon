@@ -1,9 +1,19 @@
 """The run's dispatch/usage ledger (meta.cost)."""
+from dataclasses import dataclass
 import glob
 import json
 import os
 
 from . import plan as plan_mod
+
+
+@dataclass(frozen=True)
+class CostInputs:
+    """What meta.cost is derived from (WS-0 S2): the driver's per-class
+    dispatch counts (None off the driver path) and the host's usage.json
+    (None when the host wrote none -- never an estimate)."""
+    driver_cost: dict | None = None
+    run_usage: dict | None = None
 
 
 def load_run_usage(run_dir):
@@ -124,3 +134,17 @@ def driver_cost_counts(pano_dir, verdicts_dir, tools_ran):
             "verify_backup": backup,
             "verify_tools": tool_adv,
             "tool_scan": len(tools_ran) if tools_ran else 0}
+
+
+def cost_section(cost, scout_profiles_seen, queued):
+    """`meta.cost`: the run's dispatch ledger, derived from the artifacts already
+    ingested (scout profiles, dispatch plans, verify queue / driver verdict
+    bundles) -- never hand-assembled. On the 5.0 driver path `driver_cost`
+    carries the per-class counts so review cells + verify rounds + the tool
+    scan are all represented (#1030); it is None only when there is no driver
+    plan to read. `tokens` is the host-reported usage when the host wrote
+    usage.json (see load_run_usage); still null when it did not."""
+    return {
+        "dispatches": cost_dispatches(scout_profiles_seen, queued, cost.driver_cost),
+        "tokens": cost.run_usage,
+    }
