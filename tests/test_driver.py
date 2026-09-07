@@ -23,6 +23,10 @@ import scripts.groups_schema as groups_schema
 import scripts.plan_contract as plan_contract
 import scripts.phases.runio as runio
 import scripts.setup_flow as setup_flow
+import scripts.phases.coverage as coverage
+import scripts.phases.discovery as discovery
+import scripts.phases.requests as requests
+import scripts.phases.tools as tools_phase
 
 from tools.git_repo import make_git_repo
 
@@ -210,7 +214,7 @@ class TestWriteDispatchRequest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             entries = [{"id": "e1", "agent": "panopticon-scout", "enforced": True,
                         "model": None, "prompt": "…", "out_file": "/abs/scout-Auth.json"}]
-            path = driver.write_dispatch_request(root, "RID", "scout", "Auth", entries)
+            path = requests.write_dispatch_request(root, "RID", "scout", "Auth", entries)
             self.assertTrue(path.endswith(".panopticon/dispatch-request.json"))
             self.assertEqual(path, os.path.abspath(path))
             with open(path, encoding="utf-8") as fh:
@@ -225,7 +229,7 @@ class TestWriteDispatchRequest(unittest.TestCase):
     def test_unknown_checkpoint_kind_raises(self):
         with tempfile.TemporaryDirectory() as root:
             with self.assertRaises(ValueError):
-                driver.write_dispatch_request(root, "RID", "bogus", "Auth", [])
+                requests.write_dispatch_request(root, "RID", "bogus", "Auth", [])
 
 
 class TestResolveReviewRoot(unittest.TestCase):
@@ -315,7 +319,7 @@ class TestDiscoveryPhase(unittest.TestCase):
 
     def test_missing_groups_yml_raises(self):
         with self.assertRaises(runio.DriverError):
-            driver.discovery_execute(self.root, self.manifest)
+            discovery.discovery_execute(self.root, self.manifest)
 
     def test_discovery_subprocesses_discovery_and_marks_done(self):
         self._write_groups_yml("groups:\n  Auth:\n    match: ['src/auth/**']\n")
@@ -327,16 +331,16 @@ class TestDiscoveryPhase(unittest.TestCase):
             return mock.Mock(returncode=0, stdout="", stderr="")
 
         with mock.patch("subprocess.run", side_effect=fake_run):
-            result = driver.discovery_execute(self.root, self.manifest)
+            result = discovery.discovery_execute(self.root, self.manifest)
         self.assertEqual(result.kind, "advanced")
-        self.assertTrue(driver.discovery_done(self.root, self.manifest))
+        self.assertTrue(discovery.discovery_done(self.root, self.manifest))
 
     def test_discovery_raises_when_no_groups_json_produced(self):
         self._write_groups_yml("groups:\n  Auth:\n    match: ['src/auth/**']\n")
         with mock.patch("subprocess.run",
                         return_value=mock.Mock(returncode=1, stdout="", stderr="boom")):
             with self.assertRaises(runio.DriverError):
-                driver.discovery_execute(self.root, self.manifest)
+                discovery.discovery_execute(self.root, self.manifest)
 
     def test_discovery_threads_scope_group_to_repo_scan(self):
         self._write_groups_yml("groups:\n  Auth:\n    match: ['src/auth/**']\n")
@@ -349,7 +353,7 @@ class TestDiscoveryPhase(unittest.TestCase):
             return mock.Mock(returncode=0, stdout="", stderr="")
 
         with mock.patch("subprocess.run", side_effect=fake_run) as run:
-            result = driver.discovery_execute(self.root, manifest)
+            result = discovery.discovery_execute(self.root, manifest)
         self.assertEqual(result.kind, "advanced")
         cmd = run.call_args.args[0]
         self.assertIn("--scope-group", cmd)
@@ -366,7 +370,7 @@ class TestDiscoveryPhase(unittest.TestCase):
             return mock.Mock(returncode=0, stdout="", stderr="")
 
         with mock.patch("subprocess.run", side_effect=fake_run) as run:
-            driver.discovery_execute(self.root, manifest)
+            discovery.discovery_execute(self.root, manifest)
         cmd = run.call_args.args[0]
         self.assertNotIn("--scope-file", cmd)
         self.assertNotIn("--scope-dir", cmd)
@@ -384,7 +388,7 @@ class TestDiscoveryPhase(unittest.TestCase):
             return mock.Mock(returncode=0, stdout="", stderr="")
 
         with mock.patch("subprocess.run", side_effect=fake_run) as run:
-            result = driver.discovery_execute(self.root, manifest)
+            result = discovery.discovery_execute(self.root, manifest)
         self.assertEqual(result.kind, "advanced")
         cmd = run.call_args.args[0]
         self.assertIn("--scope-changed", cmd)
@@ -409,7 +413,7 @@ class TestDiscoveryPhase(unittest.TestCase):
             return mock.Mock(returncode=0, stdout="", stderr="")
 
         with mock.patch("subprocess.run", side_effect=fake_run) as run:
-            result = driver.discovery_execute(self.root, manifest)
+            result = discovery.discovery_execute(self.root, manifest)
         self.assertEqual(result.kind, "advanced")
         cmd = run.call_args.args[0]
         self.assertIn("--scope-files", cmd)
@@ -432,7 +436,7 @@ class TestDiscoveryPhase(unittest.TestCase):
             return mock.Mock(returncode=0, stdout="", stderr="")
 
         with mock.patch("subprocess.run", side_effect=fake_run) as run:
-            result = driver.discovery_execute(self.root, manifest)
+            result = discovery.discovery_execute(self.root, manifest)
         self.assertEqual(result.kind, "advanced")
         cmd = run.call_args.args[0]
         self.assertIn("--scope-changed", cmd)
@@ -454,7 +458,7 @@ class TestDiscoveryPhase(unittest.TestCase):
             return mock.Mock(returncode=0, stdout="", stderr="")
 
         with mock.patch("subprocess.run", side_effect=fake_run) as run:
-            driver.discovery_execute(self.root, manifest)
+            discovery.discovery_execute(self.root, manifest)
         cmd = run.call_args.args[0]
         self.assertNotIn("--pr-base", cmd)
         self.assertIn("--base", cmd)
@@ -637,7 +641,7 @@ class TestCoveragePhase(unittest.TestCase):
                         return_value="SCOUT-BODY"), \
              mock.patch("scripts.dispatch.registered_agent_name",
                         return_value="panopticon-scout"):
-            result = driver.coverage_execute(self.root, self.manifest)
+            result = coverage.coverage_execute(self.root, self.manifest)
         self.assertEqual(result.kind, "checkpoint")
         self.assertEqual(result.checkpoint, "scout")
         self.assertIsNone(result.group)                 # #1056: batched, not per-group
@@ -664,7 +668,7 @@ class TestCoveragePhase(unittest.TestCase):
         with mock.patch("scripts.dispatch.render_prompt", return_value="B"), \
              mock.patch("scripts.dispatch.registered_agent_name",
                         return_value="panopticon-scout"):
-            result = driver.coverage_execute(self.root, self.manifest)
+            result = coverage.coverage_execute(self.root, self.manifest)
         self.assertEqual(result.checkpoint, "scout")
         req = runio._load_json(runio._pano(self.root, "dispatch-request.json"))
         outs = sorted(os.path.basename(e["out_file"]) for e in req["entries"])
@@ -686,7 +690,7 @@ class TestCoveragePhase(unittest.TestCase):
                         return_value="SCOUT-BODY"), \
              mock.patch("scripts.dispatch.registered_agent_name",
                         return_value="panopticon-scout"):
-            driver.coverage_execute(self.root, self.manifest)
+            coverage.coverage_execute(self.root, self.manifest)
         prompt = runio._load_json(
             runio._pano(self.root, "dispatch-request.json"))["entries"][0]["prompt"]
         self.assertIn("Available scanners", prompt)
@@ -702,7 +706,7 @@ class TestCoveragePhase(unittest.TestCase):
         with mock.patch("scripts.dispatch.render_prompt", return_value="B"), \
              mock.patch("scripts.dispatch.registered_agent_name",
                         return_value="panopticon-scout"):
-            driver.coverage_execute(self.root, m)
+            coverage.coverage_execute(self.root, m)
         entry = runio._load_json(runio._pano(self.root, "dispatch-request.json"))["entries"][0]
         self.assertFalse(entry["enforced"])
         self.assertIsNone(entry["agent"])
@@ -714,7 +718,7 @@ class TestCoveragePhase(unittest.TestCase):
             "    exclude: [OPS]\n")
         runio._write_json(runio._pano(self.root, "scout-Auth.json"),
                            {"group": "Auth", "panels": ["code"]})
-        result = driver.coverage_execute(self.root, self.manifest)
+        result = coverage.coverage_execute(self.root, self.manifest)
         self.assertEqual(result.kind, "advanced")
         cov = runio._load_json(runio._pano(self.root, "coverage-Auth.json"))
         # #5.0-19: the universal floor (#5.0-11) is now surface-gated. This
@@ -741,7 +745,7 @@ class TestCoveragePhase(unittest.TestCase):
                         return_value="SCOUT-BODY-XYZ"), \
              mock.patch("scripts.dispatch.registered_agent_name",
                         return_value="panopticon-scout"):
-            driver.coverage_execute(self.root, self.manifest)
+            coverage.coverage_execute(self.root, self.manifest)
         entry = runio._load_json(
             runio._pano(self.root, "dispatch-request.json"))["entries"][0]
         self.assertIn("prompt_file", entry)
@@ -756,7 +760,7 @@ class TestCoveragePhase(unittest.TestCase):
         prompts_dir = os.path.realpath(runio._pano(self.root, "_prompts"))
         for hostile in ("review-../../etc/passwd-SEC", "a/b/c", "../../../x",
                         "", "..", "/abs/path"):
-            p = os.path.realpath(driver._prompt_file_path(self.root, hostile))
+            p = os.path.realpath(requests._prompt_file_path(self.root, hostile))
             # The invariant is containment, not the absence of dot characters:
             # separators are stripped, so a residual ".." is just a flat filename.
             self.assertEqual(os.path.dirname(p), prompts_dir, hostile)
@@ -768,7 +772,7 @@ class TestCoveragePhase(unittest.TestCase):
         with mock.patch("scripts.phases.runio._open_w_nofollow",
                         side_effect=OSError("read-only fs")), \
              contextlib.redirect_stderr(io.StringIO()) as err:
-            entries = driver._materialize_prompts(
+            entries = requests._materialize_prompts(
                 self.root, [{"id": "scout-Auth", "prompt": "BODY"}])
         self.assertNotIn("prompt_file", entries[0])
         self.assertEqual(entries[0]["prompt"], "BODY")
@@ -785,7 +789,7 @@ class TestCoveragePhase(unittest.TestCase):
         sp = runio._pano(self.root, "scout-Auth.json")
         with open(sp, "w", encoding="utf-8") as fh:
             fh.write('```json\n{"group": "Auth", "panels": ["code"]}\n```\n')
-        result = driver.coverage_execute(self.root, self.manifest)
+        result = coverage.coverage_execute(self.root, self.manifest)
         self.assertEqual(result.kind, "advanced")            # accepted, not re-dispatched
         self.assertTrue(runio._json_parses(
             runio._pano(self.root, "coverage-Auth.json")))
@@ -798,12 +802,12 @@ class TestCoveragePhase(unittest.TestCase):
         # an uncaught TypeError (unhashable list) mid-phase. It must be caught at
         # the accept boundary and re-dispatched instead.
         for bad in ([["COD"]], [{"x": 1}], ["COD", 7], [None]):
-            errs = driver._scout_shape_errors({"domains": bad})
+            errs = coverage._scout_shape_errors({"domains": bad})
             self.assertTrue(errs, "accepted a bad domains payload: %r" % (bad,))
             self.assertIn("only strings", " ".join(errs))
-        self.assertEqual(driver._scout_shape_errors({"domains": ["COD", "SEC"]}), [])
-        self.assertEqual(driver._scout_shape_errors({"domains": []}), [])
-        self.assertEqual(driver._scout_shape_errors({}), [])          # absent is fine
+        self.assertEqual(coverage._scout_shape_errors({"domains": ["COD", "SEC"]}), [])
+        self.assertEqual(coverage._scout_shape_errors({"domains": []}), [])
+        self.assertEqual(coverage._scout_shape_errors({}), [])          # absent is fine
 
     def test_malformed_scout_domains_redispatches_instead_of_crashing(self):
         # End-to-end: the bad profile is DISCARDED and the scout re-emitted, not
@@ -816,7 +820,7 @@ class TestCoveragePhase(unittest.TestCase):
              mock.patch("scripts.dispatch.registered_agent_name",
                         return_value="panopticon-scout"), \
              contextlib.redirect_stderr(io.StringIO()):
-            result = driver.coverage_execute(self.root, self.manifest)
+            result = coverage.coverage_execute(self.root, self.manifest)
         self.assertEqual(result.checkpoint, "scout")      # re-dispatched, no crash
 
     def test_prose_preamble_scout_is_recovered(self):
@@ -828,7 +832,7 @@ class TestCoveragePhase(unittest.TestCase):
         with open(sp, "w", encoding="utf-8") as fh:
             fh.write('Here is the ScopeProfile for Auth:\n\n'
                      '```json\n{"group": "Auth", "domains": ["COD"]}\n```\n')
-        result = driver.coverage_execute(self.root, self.manifest)
+        result = coverage.coverage_execute(self.root, self.manifest)
         self.assertEqual(result.kind, "advanced")
         self.assertTrue(runio._json_parses(
             runio._pano(self.root, "coverage-Auth.json")))
@@ -887,7 +891,7 @@ class TestCoveragePhase(unittest.TestCase):
                            {"group": "Fixtures", "domains": ["SEC"]})
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
-            driver.coverage_execute(self.root, self.manifest)
+            coverage.coverage_execute(self.root, self.manifest)
         cov = runio._load_json(runio._pano(self.root, "coverage-Fixtures.json"))
         self.assertEqual(cov["exclude_rejected"], ["SEC"])
         self.assertNotIn("SEC", cov["excluded"])    # override -> not a real exclusion
@@ -906,7 +910,7 @@ class TestCoveragePhase(unittest.TestCase):
                            {"group": "Auth", "panels": ["code"]})
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
-            driver.coverage_execute(self.root, self.manifest)
+            coverage.coverage_execute(self.root, self.manifest)
         cov = runio._load_json(runio._pano(self.root, "coverage-Auth.json"))
         self.assertNotIn("exclude_rejected", cov)
         self.assertNotIn("exclude_paths", err.getvalue())
@@ -926,7 +930,7 @@ class TestCoveragePhase(unittest.TestCase):
              mock.patch("scripts.dispatch.registered_agent_name",
                         return_value="panopticon-scout"), \
              contextlib.redirect_stderr(err):
-            result = driver.coverage_execute(self.root, self.manifest)
+            result = coverage.coverage_execute(self.root, self.manifest)
         self.assertEqual(result.kind, "checkpoint")
         self.assertEqual(result.checkpoint, "scout")
         self.assertFalse(os.path.exists(runio._pano(self.root, "scout-Auth.json")))
@@ -943,7 +947,7 @@ class TestCoveragePhase(unittest.TestCase):
                            {"group": "Auth", "domains": ["SEC"], "risk": "high",
                             "depth": "deep", "languages": ["python"],
                             "lenses": {"code": [{"name": "x", "spawn": True}]}})
-        result = driver.coverage_execute(self.root, self.manifest)
+        result = coverage.coverage_execute(self.root, self.manifest)
         self.assertEqual(result.kind, "advanced")
         self.assertTrue(os.path.isfile(runio._pano(self.root, "coverage-Auth.json")))
 
@@ -957,14 +961,14 @@ class TestCoveragePhase(unittest.TestCase):
              mock.patch("scripts.dispatch.registered_agent_name",
                         return_value="panopticon-scout"), \
              contextlib.redirect_stderr(io.StringIO()):
-            for _ in range(driver._MAX_SCOUT_ATTEMPTS - 1):
+            for _ in range(coverage._MAX_SCOUT_ATTEMPTS - 1):
                 runio._write_json(runio._pano(self.root, "scout-Auth.json"), bad)
                 self.assertEqual(
-                    driver.coverage_execute(self.root, self.manifest).kind,
+                    coverage.coverage_execute(self.root, self.manifest).kind,
                     "checkpoint")
             runio._write_json(runio._pano(self.root, "scout-Auth.json"), bad)
             with self.assertRaises(runio.DriverError):
-                driver.coverage_execute(self.root, self.manifest)
+                coverage.coverage_execute(self.root, self.manifest)
     def test_review_batches_all_pending_cells_across_groups(self):
         # #5: every pending (domain, group) cell across ALL groups goes out in ONE
         # review checkpoint (group=None), not one round trip per group (run-6: 26
@@ -980,10 +984,10 @@ class TestCoveragePhase(unittest.TestCase):
         # coverage computes one group per call (engine re-selects) -- drive it to
         # completion so BOTH groups have coverage before review runs.
         for _ in range(10):
-            if driver.coverage_done(self.root, self.manifest):
+            if coverage.coverage_done(self.root, self.manifest):
                 break
-            driver.coverage_execute(self.root, self.manifest)
-        self.assertTrue(driver.coverage_done(self.root, self.manifest))
+            coverage.coverage_execute(self.root, self.manifest)
+        self.assertTrue(coverage.coverage_done(self.root, self.manifest))
         with mock.patch("scripts.dispatch.render_prompt", return_value="B"), \
              mock.patch("scripts.dispatch.registered_agent_name",
                         return_value="panopticon-domain-panel"):
@@ -991,7 +995,7 @@ class TestCoveragePhase(unittest.TestCase):
         self.assertEqual(r.kind, "checkpoint")
         self.assertEqual(r.checkpoint, "review")
         self.assertIsNone(r.group)                        # batched, not per-group
-        req = driver.load_dispatch_request(self.root)
+        req = requests.load_dispatch_request(self.root)
         groups_in_batch = {e["id"][len("review-"):].rsplit("-", 1)[0]
                            for e in req["entries"]}
         self.assertEqual(groups_in_batch, {"Auth", "Api"})   # both groups, ONE checkpoint
@@ -1005,7 +1009,7 @@ class TestCoveragePhase(unittest.TestCase):
         self._groups_yml("groups:\n  Core:\n    match: ['src/**']\n    panels: [SEC]\n")
         runio._write_json(runio._pano(self.root, "scout-Core.json"),
                            {"group": "Core", "surfaces": ["database", "architecture"]})
-        driver.coverage_execute(self.root, self.manifest)
+        coverage.coverage_execute(self.root, self.manifest)
         cov = runio._load_json(runio._pano(self.root, "coverage-Core.json"))
         self.assertEqual(cov["effective"], ["ARC", "COD", "DAT", "SEC", "TST"])
         self.assertEqual(cov["global_floor_suppressed"], [])
@@ -1019,7 +1023,7 @@ class TestCoveragePhase(unittest.TestCase):
         self._groups_json([{"name": "Orphan", "files": ["a.py"]}])
         self._groups_yml("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n")
         runio._write_json(runio._pano(self.root, "scout-Orphan.json"), {"g": 1})
-        driver.coverage_execute(self.root, self.manifest)
+        coverage.coverage_execute(self.root, self.manifest)
         cov = runio._load_json(runio._pano(self.root, "coverage-Orphan.json"))
         # no vertical floor, and a single surfaceless file ('a.py') -> the
         # surface-gated global floor (#5.0-19) injects only universal COD.
@@ -1036,7 +1040,7 @@ class TestCoveragePhase(unittest.TestCase):
         self._groups_yml("groups:\n  Api:\n    match: ['**']\n    panels: [COD]\n")
         runio._write_json(runio._pano(self.root, "scout-Api.json"),
                            {"group": "Api", "domains": ["COD"]})   # no SEC from scout
-        driver.coverage_execute(self.root, self.manifest)
+        coverage.coverage_execute(self.root, self.manifest)
         cov = runio._load_json(runio._pano(self.root, "coverage-Api.json"))
         self.assertIn("SEC", cov["effective"])                 # forced by objective signal
         self.assertEqual(cov["sec_floor_applied"], ["SEC"])    # disclosed
@@ -1052,7 +1056,7 @@ class TestCoveragePhase(unittest.TestCase):
         runio._write_json(runio._pano(self.root, "scout-Api.json"),
                            {"group": "Api", "domains": []})
         with contextlib.redirect_stderr(io.StringIO()):
-            driver.coverage_execute(self.root, self.manifest)
+            coverage.coverage_execute(self.root, self.manifest)
         cov = runio._load_json(runio._pano(self.root, "coverage-Api.json"))
         self.assertIn("SEC", cov["effective"])
         self.assertEqual(cov["exclude_rejected"], ["SEC"])
@@ -1064,7 +1068,7 @@ class TestCoveragePhase(unittest.TestCase):
         self._groups_yml("groups:\n  Docs:\n    match: ['**']\n    panels: [COD]\n")
         runio._write_json(runio._pano(self.root, "scout-Docs.json"),
                            {"group": "Docs", "domains": []})
-        driver.coverage_execute(self.root, self.manifest)
+        coverage.coverage_execute(self.root, self.manifest)
         cov = runio._load_json(runio._pano(self.root, "coverage-Docs.json"))
         self.assertNotIn("SEC", cov["effective"])
         self.assertEqual(cov["sec_floor_applied"], [])
@@ -1072,10 +1076,10 @@ class TestCoveragePhase(unittest.TestCase):
     def test_coverage_done_only_when_all_groups_covered(self):
         self._groups_json([{"name": "A", "files": []}, {"name": "B", "files": []}])
         self._groups_yml("groups:\n  A:\n    match: ['*']\n  B:\n    match: ['*']\n")
-        self.assertFalse(driver.coverage_done(self.root, self.manifest))
+        self.assertFalse(coverage.coverage_done(self.root, self.manifest))
         for g in ("A", "B"):
             runio._write_json(runio._pano(self.root, "coverage-%s.json" % g), {"g": g})
-        self.assertTrue(driver.coverage_done(self.root, self.manifest))
+        self.assertTrue(coverage.coverage_done(self.root, self.manifest))
 
 
 class TestCoverageBridge(unittest.TestCase):
@@ -1099,7 +1103,7 @@ class TestCoverageBridge(unittest.TestCase):
         # widens coverage with it; SEC is already the committed floor.
         self._setup("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n",
                     ["SEC", "OPS"])
-        driver.coverage_execute(self.root, self.manifest)
+        coverage.coverage_execute(self.root, self.manifest)
         cov = runio._load_json(runio._pano(self.root, "coverage-Auth.json"))
         self.assertEqual(cov["scout_added"], ["OPS"])          # SEC already floor
         # #5.0-19: 'a.py' is surfaceless, so the global floor injects only COD;
@@ -1109,7 +1113,7 @@ class TestCoverageBridge(unittest.TestCase):
     def test_invalid_scout_domain_dropped_and_disclosed(self):
         self._setup("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n",
                     ["DAT", "BOGUS"])
-        driver.coverage_execute(self.root, self.manifest)
+        coverage.coverage_execute(self.root, self.manifest)
         cov = runio._load_json(runio._pano(self.root, "coverage-Auth.json"))
         self.assertEqual(cov["scout_added"], ["DAT"])
         self.assertEqual(cov["scout_invalid"], ["BOGUS"])
@@ -1117,7 +1121,7 @@ class TestCoverageBridge(unittest.TestCase):
     def test_scout_cannot_override_exclude(self):
         self._setup("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n"
                     "    exclude: [DAT]\n", ["DAT"])
-        driver.coverage_execute(self.root, self.manifest)
+        coverage.coverage_execute(self.root, self.manifest)
         cov = runio._load_json(runio._pano(self.root, "coverage-Auth.json"))
         self.assertNotIn("DAT", cov["effective"])              # exclude wins
 
@@ -1135,16 +1139,16 @@ class TestCoverageBridge(unittest.TestCase):
              mock.patch("scripts.dispatch.registered_agent_name",
                         return_value="panopticon-scout"), \
              contextlib.redirect_stderr(io.StringIO()):
-            for _ in range(driver._MAX_SCOUT_ATTEMPTS - 1):
+            for _ in range(coverage._MAX_SCOUT_ATTEMPTS - 1):
                 with open(runio._pano(self.root, "scout-Auth.json"), "w") as fh:
                     fh.write('["SEC", "DAT"]')      # a list, not an object
                 self.assertEqual(
-                    driver.coverage_execute(self.root, self.manifest).kind,
+                    coverage.coverage_execute(self.root, self.manifest).kind,
                     "checkpoint")
             with open(runio._pano(self.root, "scout-Auth.json"), "w") as fh:
                 fh.write('["SEC", "DAT"]')
             with self.assertRaises(runio.DriverError):
-                driver.coverage_execute(self.root, self.manifest)
+                coverage.coverage_execute(self.root, self.manifest)
 
     def test_chunk_inherits_parent_committed_floor(self):
         # #5.0-10: a >15-file group split into Auth_1/Auth_2 chunks must inherit
@@ -1155,7 +1159,7 @@ class TestCoverageBridge(unittest.TestCase):
             fh.write("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n")
         runio._write_json(runio._pano(self.root, "scout-Auth_1.json"),
                            {"group": "Auth_1", "domains": []})
-        driver.coverage_execute(self.root, self.manifest)
+        coverage.coverage_execute(self.root, self.manifest)
         cov = runio._load_json(runio._pano(self.root, "coverage-Auth_1.json"))
         # SEC is the parent's committed floor — only present if the chunk resolved
         # to Auth (without the fix the chunk misses the matrix -> no SEC).
@@ -1163,12 +1167,12 @@ class TestCoverageBridge(unittest.TestCase):
         self.assertIn("SEC", cov["effective"])
 
     def test_chunk_parent_parsing(self):
-        self.assertEqual(driver._chunk_parent("Auth_1"), "Auth")
-        self.assertEqual(driver._chunk_parent("skill_1_2"), "skill_1")
-        self.assertEqual(driver._chunk_parent("._3"), ".")   # legacy leftover chunk
-        self.assertEqual(driver._chunk_parent("Ungrouped_3"), "Ungrouped")  # run-9 A5
-        self.assertIsNone(driver._chunk_parent("Auth"))
-        self.assertIsNone(driver._chunk_parent("Auth_x"))
+        self.assertEqual(coverage._chunk_parent("Auth_1"), "Auth")
+        self.assertEqual(coverage._chunk_parent("skill_1_2"), "skill_1")
+        self.assertEqual(coverage._chunk_parent("._3"), ".")   # legacy leftover chunk
+        self.assertEqual(coverage._chunk_parent("Ungrouped_3"), "Ungrouped")  # run-9 A5
+        self.assertIsNone(coverage._chunk_parent("Auth"))
+        self.assertIsNone(coverage._chunk_parent("Auth_x"))
 
 
 class TestToolsPhase(unittest.TestCase):
@@ -1186,11 +1190,11 @@ class TestToolsPhase(unittest.TestCase):
             open(os.path.join(out, "trivy.json"), "w").close()
             return mock.Mock(returncode=0, stdout="", stderr="")
         with mock.patch("subprocess.run", side_effect=fake_run):
-            result = driver.tools_execute(self.root, self.manifest)
+            result = tools_phase.tools_execute(self.root, self.manifest)
         self.assertEqual(result.kind, "advanced")
         marker = runio._load_json(runio._pano(self.root, "tools-ran.json"))
         self.assertTrue(marker["ran"])
-        self.assertTrue(driver.tools_done(self.root, self.manifest))
+        self.assertTrue(tools_phase.tools_done(self.root, self.manifest))
 
     def test_passes_manifest_flag(self):
         # #1031: tools_execute asks run_tools for the deterministic adapter
@@ -1205,7 +1209,7 @@ class TestToolsPhase(unittest.TestCase):
             open(os.path.join(out, "trivy.json"), "w").close()
             return mock.Mock(returncode=0, stdout="", stderr="")
         with mock.patch("subprocess.run", side_effect=fake_run):
-            driver.tools_execute(self.root, self.manifest)
+            tools_phase.tools_execute(self.root, self.manifest)
         cmd = captured["cmd"]
         self.assertIn("--manifest", cmd)
         self.assertEqual(cmd[cmd.index("--manifest") + 1],
@@ -1216,7 +1220,7 @@ class TestToolsPhase(unittest.TestCase):
             return mock.Mock(returncode=0, stdout="",
                              stderr="panopticon-tools image not available; skipping")
         with mock.patch("subprocess.run", side_effect=fake_run):
-            result = driver.tools_execute(self.root, self.manifest)
+            result = tools_phase.tools_execute(self.root, self.manifest)
         self.assertEqual(result.kind, "advanced")
         marker = runio._load_json(runio._pano(self.root, "tools-ran.json"))
         self.assertFalse(marker["ran"])
@@ -1230,7 +1234,7 @@ class TestToolsPhase(unittest.TestCase):
         def crash_run(cmd, **kw):
             return mock.Mock(returncode=2, stdout="", stderr="run_tools traceback")
         with mock.patch("subprocess.run", side_effect=crash_run):
-            result = driver.tools_execute(self.root, self.manifest)
+            result = tools_phase.tools_execute(self.root, self.manifest)
         self.assertEqual(result.kind, "advanced")
         marker = runio._load_json(runio._pano(self.root, "tools-ran.json"))
         self.assertFalse(marker["ran"])
@@ -1240,7 +1244,7 @@ class TestToolsPhase(unittest.TestCase):
     def test_no_tools_flag_skips_subprocess(self):
         m = {"run_id": "R", "flags": {"tools": False}}
         with mock.patch("subprocess.run") as run_mock:
-            result = driver.tools_execute(self.root, m)
+            result = tools_phase.tools_execute(self.root, m)
         run_mock.assert_not_called()
         self.assertEqual(result.kind, "advanced")
         self.assertTrue(runio._load_json(runio._pano(self.root, "tools-ran.json"))["skipped"])
@@ -1280,7 +1284,7 @@ class TestCommittedGroupsFailLoud(unittest.TestCase):
         d = self._root(groups_yml=None)   # groups.yml gone after discovery
         m = {"run_id": "R", "host": "claude", "security_mode": "standard"}
         with self.assertRaises(runio.DriverError):
-            driver.coverage_execute(d, m)
+            coverage.coverage_execute(d, m)
 
     def test_review_raises_on_corrupt_groups_yml(self):
         d = self._root(groups_yml="groups: [broken\n")   # invalid YAML shape
@@ -1382,7 +1386,7 @@ class TestReviewerFileListsAreAbsolute(unittest.TestCase):
         self.assertNotIn("- %s" % self.files[0], prompt)
 
     def test_scout_entry_file_list_is_absolute(self):
-        entry = driver._scout_entry(self.root, self.manifest, "Auth", self.files, "claude")
+        entry = coverage._scout_entry(self.root, self.manifest, "Auth", self.files, "claude")
         self._assert_absolute_not_relative(entry["prompt"])
 
     def test_cell_entry_file_list_is_absolute(self):
@@ -1766,7 +1770,7 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         return driver.build_parser().parse_args(["run", target, *extra])
 
     def _inject_scouts(self, root):
-        for g, _ in driver._discovered_groups(root):
+        for g, _ in coverage._discovered_groups(root):
             p = runio._pano(root, "scout-%s.json" % g)
             if not os.path.exists(p):
                 runio._write_json(p, {"group": g, "panels": ["code"]})
@@ -2036,7 +2040,7 @@ class TestReviewMatrixEndToEnd(unittest.TestCase):
     def _service(self, d, status, run_id):
         # emulate the orchestrator dispatching whatever the checkpoint asked for
         if status.get("checkpoint") == "scout":
-            for g, _ in driver._discovered_groups(d):
+            for g, _ in coverage._discovered_groups(d):
                 p = runio._pano(d, "scout-%s.json" % g)
                 if not os.path.exists(p):
                     runio._write_json(p, {"group": g, "domains": ["COD"]})
@@ -2248,7 +2252,7 @@ class TestDriverRunLoopEndToEnd(unittest.TestCase):
         # review checkpoint
         r = driver.review_execute(d, manifest)
         self.assertEqual(r.checkpoint, "review")
-        req = driver.load_dispatch_request(d)
+        req = requests.load_dispatch_request(d)
         for e in req["entries"]:
             self.assertNotIn("write_mode", e)          # unified self-write shape
             self._self_write_review(d, e, "SEC")
@@ -2256,7 +2260,7 @@ class TestDriverRunLoopEndToEnd(unittest.TestCase):
         # verify checkpoint (primary; SEC HIGH is < F_b so no backup)
         v = driver.verify_execute(d, manifest)
         self.assertEqual(v.checkpoint, "verify")
-        req = driver.load_dispatch_request(d)
+        req = requests.load_dispatch_request(d)
         for e in req["entries"]:
             self._self_write_verify(d, manifest, e, "SEC")
         v2 = driver.verify_execute(d, manifest)
@@ -2273,7 +2277,7 @@ class TestDriverRunLoopEndToEnd(unittest.TestCase):
         d = self._repo(["QAL"])
         manifest = self._manifest()
         driver.review_execute(d, manifest)
-        for e in driver.load_dispatch_request(d)["entries"]:
+        for e in requests.load_dispatch_request(d)["entries"]:
             runio._write_json(e["out_file"], {
                 "findings": [{"title": "nit", "severity": "LOW", "domain": "QAL",
                               "code": "QAL-A1A", "category": "style",
@@ -2302,12 +2306,12 @@ class TestDriverRunLoopEndToEnd(unittest.TestCase):
             fh.write("groups:\n  app:\n    match: ['src/**']\n")   # #1091 healthy resume
         manifest = self._manifest()
 
-        result = driver.coverage_execute(d, manifest)
+        result = coverage.coverage_execute(d, manifest)
         self.assertEqual(result.kind, "checkpoint")
         self.assertEqual(result.checkpoint, "scout")
-        self.assertFalse(driver.coverage_done(d, manifest))
+        self.assertFalse(coverage.coverage_done(d, manifest))
 
-        req = driver.load_dispatch_request(d)
+        req = requests.load_dispatch_request(d)
         self.assertEqual(req["checkpoint"], "scout")
         for entry in req["entries"]:
             # host-side return-persist: no self-write, the host writes what
@@ -2315,9 +2319,9 @@ class TestDriverRunLoopEndToEnd(unittest.TestCase):
             runio._write_json(entry["out_file"],
                                {"group": "app", "domains": ["SEC"]})
 
-        result2 = driver.coverage_execute(d, manifest)
+        result2 = coverage.coverage_execute(d, manifest)
         self.assertEqual(result2.kind, "advanced")
-        self.assertTrue(driver.coverage_done(d, manifest))
+        self.assertTrue(coverage.coverage_done(d, manifest))
 
 
 class TestDriverSingleScopeEndToEnd(unittest.TestCase):
@@ -2387,7 +2391,7 @@ class TestDriverSingleScopeEndToEnd(unittest.TestCase):
 
         # discovery: the real discovery.py --repo-scan --scope-group Checkout
         # subprocess -- single-scope restricts the matrix to the target group.
-        result = driver.discovery_execute(d, manifest)
+        result = discovery.discovery_execute(d, manifest)
         self.assertEqual(result.kind, "advanced")
         groups_json = runio._load_json(runio._pano(d, "groups.json"))
         names = {g["name"] for g in groups_json["groups"]}
@@ -2396,20 +2400,20 @@ class TestDriverSingleScopeEndToEnd(unittest.TestCase):
         self.assertEqual(files, ["src/checkout/cart.py", "src/checkout/pay.py"])
 
         # coverage: scout checkpoint (read-only return-persist) then floor+scout
-        cov = driver.coverage_execute(d, manifest)
+        cov = coverage.coverage_execute(d, manifest)
         self.assertEqual(cov.checkpoint, "scout")
         self.assertIsNone(cov.group)                 # #1056: scouts batched, group=None
-        req = driver.load_dispatch_request(d)
+        req = requests.load_dispatch_request(d)
         for e in req["entries"]:
             runio._write_json(e["out_file"], {"group": "Checkout", "domains": ["SEC"]})
-        self.assertEqual(driver.coverage_execute(d, manifest).kind, "advanced")
-        self.assertTrue(driver.coverage_done(d, manifest))
+        self.assertEqual(coverage.coverage_execute(d, manifest).kind, "advanced")
+        self.assertTrue(coverage.coverage_done(d, manifest))
 
         # review checkpoint -- self-write cell findings, scoped to Checkout's files
         r = driver.review_execute(d, manifest)
         self.assertEqual(r.checkpoint, "review")
         self.assertIsNone(r.group)                          # #5: review cells batched, group=None
-        req = driver.load_dispatch_request(d)
+        req = requests.load_dispatch_request(d)
         for e in req["entries"]:
             self.assertNotIn("write_mode", e)               # unified self-write shape
             self._self_write_review(e, "SEC", "Checkout")
@@ -2418,7 +2422,7 @@ class TestDriverSingleScopeEndToEnd(unittest.TestCase):
         # verify checkpoint -- primary only (SEC HIGH is < F_b, so no backup)
         v = driver.verify_execute(d, manifest)
         self.assertEqual(v.checkpoint, "verify")
-        req = driver.load_dispatch_request(d)
+        req = requests.load_dispatch_request(d)
         for e in req["entries"]:
             self._self_write_verify(d, manifest, e, "SEC", "Checkout")
         self.assertEqual(driver.verify_execute(d, manifest).kind, "advanced")
@@ -2440,7 +2444,7 @@ class TestDriverSingleScopeEndToEnd(unittest.TestCase):
         os.makedirs(os.path.join(d, ".panopticon"))   # no groups.yml -- un-setup repo
         manifest = self._manifest()
         with self.assertRaises(runio.DriverError) as cm:
-            driver.discovery_execute(d, manifest)
+            discovery.discovery_execute(d, manifest)
         self.assertIn("panopticon setup", str(cm.exception))
 
 
@@ -2573,7 +2577,7 @@ class TestDriverDeltaEndToEnd(unittest.TestCase):
 
         # discovery: the real discovery.py --repo-scan --scope-changed
         # --base subprocess -- restricts groups.json to the one changed file.
-        result = driver.discovery_execute(d, manifest)
+        result = discovery.discovery_execute(d, manifest)
         self.assertEqual(result.kind, "advanced")
         groups_json = runio._load_json(runio._pano(d, "groups.json"))
         names = {g["name"] for g in groups_json["groups"]}
@@ -2592,14 +2596,14 @@ class TestDriverDeltaEndToEnd(unittest.TestCase):
 
         # coverage: scout checkpoint then floor+scout (SEC as committed, plus
         # #5.0-11's GLOBAL_FLOOR ARC/COD/DAT/TST on every group)
-        cov = driver.coverage_execute(d, manifest)
+        cov = coverage.coverage_execute(d, manifest)
         self.assertEqual(cov.checkpoint, "scout")
         self.assertIsNone(cov.group)                 # #1056: scouts batched, group=None
-        req = driver.load_dispatch_request(d)
+        req = requests.load_dispatch_request(d)
         for e in req["entries"]:
             self._self_write_scout(e)
-        self.assertEqual(driver.coverage_execute(d, manifest).kind, "advanced")
-        self.assertTrue(driver.coverage_done(d, manifest))
+        self.assertEqual(coverage.coverage_execute(d, manifest).kind, "advanced")
+        self.assertTrue(coverage.coverage_done(d, manifest))
 
         # review checkpoint -- 2 cells (Checkout/SEC committed + universal COD).
         # #5.0-19: pay.py is a single, surfaceless file, so the global floor's
@@ -2607,7 +2611,7 @@ class TestDriverDeltaEndToEnd(unittest.TestCase):
         # (scoped to pay.py) and an empty cell into COD.
         r = driver.review_execute(d, manifest)
         self.assertEqual(r.checkpoint, "review")
-        req = driver.load_dispatch_request(d)
+        req = requests.load_dispatch_request(d)
         self.assertEqual(len(req["entries"]), 2)
         self._self_write_review_two_findings(req["entries"])
         self.assertTrue(driver.review_done(d, manifest))
@@ -2615,7 +2619,7 @@ class TestDriverDeltaEndToEnd(unittest.TestCase):
         # verify checkpoint -- primary only (combined score < F_b, no backup)
         v = driver.verify_execute(d, manifest)
         self.assertEqual(v.checkpoint, "verify")
-        req = driver.load_dispatch_request(d)
+        req = requests.load_dispatch_request(d)
         self.assertEqual(len(req["entries"]), 1)
         self._self_write_verify_all(d, manifest, req["entries"][0])
         self.assertEqual(driver.verify_execute(d, manifest).kind, "advanced")
@@ -2666,7 +2670,7 @@ class TestDriverDeltaEndToEnd(unittest.TestCase):
         os.makedirs(os.path.join(d, ".panopticon"))   # no groups.yml -- un-setup repo
         manifest = self._manifest(base="deadbeef")
         with self.assertRaises(runio.DriverError) as cm:
-            driver.discovery_execute(d, manifest)
+            discovery.discovery_execute(d, manifest)
         self.assertIn("panopticon setup", str(cm.exception))
 
     def test_pr_resolve_review_root_worktree_is_idempotent(self):
@@ -3203,7 +3207,7 @@ class TestDriverIntegrityWiring(unittest.TestCase):
     def _drive_review(self, d, m, domain="QAL"):
         r = driver.review_execute(d, m)
         self.assertEqual(r.checkpoint, "review")
-        for e in driver.load_dispatch_request(d)["entries"]:
+        for e in requests.load_dispatch_request(d)["entries"]:
             runio._write_json(e["out_file"], self._cell_payload(domain))
         self.assertTrue(driver.review_done(d, m))
 
@@ -3426,7 +3430,7 @@ class TestVerifyBackupNarrowing(unittest.TestCase):
                                                 ocrdb.load_bundle())
             self.assertIsNotNone(res)
             self.assertEqual(res.checkpoint, "verify")
-            entry = driver.load_dispatch_request(d)["entries"][0]
+            entry = requests.load_dispatch_request(d)["entries"][0]
             self.assertTrue(entry["out_file"].endswith("-backup.json"))
             prompt = entry["prompt"]
             self.assertIn("src/a.py", prompt)
@@ -3499,7 +3503,7 @@ class TestDriverHardening(unittest.TestCase):
         with mock.patch("subprocess.run",
                         side_effect=OSError("ENOENT: no python")):
             with self.assertRaises(runio.DriverError) as ctx:
-                driver.discovery_execute(d, {"security_mode": "standard",
+                discovery.discovery_execute(d, {"security_mode": "standard",
                                              "scope": {"mode": "repo"}})
         self.assertIn("could not spawn", str(ctx.exception))
 
