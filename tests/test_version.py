@@ -42,9 +42,14 @@ class TestVersionSingleSourcing(unittest.TestCase):
         self.assertEqual(m.group(1), __version__)
 
     def test_report_meta_uses_the_constant(self):
+        import scripts.synth.findings as findings_mod
+        import scripts.synth.plan as plan_mod
         import scripts.synth.report as report_mod
-        report = report_mod.build_report([], [{"name": "g1", "files": ["a.py"]}],
-                                  "t", "high", "2026-01-01T00:00:00Z")
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp="2026-01-01T00:00:00Z"),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(groups_meta=[{"name": "g1", "files": ["a.py"]}]),
+        ))
         self.assertEqual(report["meta"]["version"], __version__)
 
     def test_citations_user_agent_uses_the_constant(self):

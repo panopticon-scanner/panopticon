@@ -1,4 +1,5 @@
 """Finding ingestion, normalization, dedupe and corroboration."""
+from dataclasses import dataclass, field
 import fnmatch
 import os
 import re
@@ -27,6 +28,25 @@ MODE_TO_REVIEW_TYPE = {
 PANEL_ORDER = evidence_mod.PANELS
 
 VALID_PANELS = set(PANEL_ORDER)
+
+
+@dataclass(frozen=True)
+class FindingSet:
+    """The findings a report is built from, plus the advisor verdicts that
+    resolve them (WS-0 S2). Defaults mean what the omitted build_report
+    keyword meant: no verdicts, no catalog (loaded on demand), no doc policy.
+
+    `verdicts_supplied` records whether --verdicts-dir was passed at all
+    (distinct from whether it yielded any verdicts) so the aggregate "no
+    verdict" note still fires for an existing-but-empty dir."""
+    findings: list
+    verdicts: dict = field(default_factory=dict)
+    verdicts_supplied: bool = False
+    verdict_unloadable: list = field(default_factory=list)
+    verdict_run_id: str | None = None
+    verdict_bundles: dict = field(default_factory=dict)
+    catalog: dict | None = None      # CWE catalog; None -> citations.load_cwe_catalog()
+    doc_policy: dict | None = None   # apply_doc_severity_policy's disclosure
 
 RELATED_PANELS = {
     "security": {"architecture", "database", "redteam"},

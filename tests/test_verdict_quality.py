@@ -64,8 +64,14 @@ class TestVerdictQuality(unittest.TestCase):
                      "location": {"file": "a.py", "line_start": 1}, "category": "authz",
                      "severity_override": {"from": "MEDIUM", "to": "CRITICAL", "reason": "prod"}}]}, fh)
             findings = findings_mod.load_findings([fp])
-            report = report_mod.build_report(findings, [], "src", None,
-                                             "2026-08-15T00:00:00Z")
+            report = report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(
+                    target="src",
+                    fail_on=None,
+                    timestamp="2026-08-15T00:00:00Z",
+                ),
+                findings=findings_mod.FindingSet(findings=findings),
+            ))
             ocrdb_cov = report["meta"]["coverage"]["ocrdb"]
             self.assertEqual(ocrdb_cov["overrides"]["count"], 1)
             self.assertIn("code_corrections", ocrdb_cov)

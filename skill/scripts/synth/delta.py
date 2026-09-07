@@ -1,8 +1,22 @@
 """Delta review: diff hunks and on-diff / pre-existing classification."""
+from dataclasses import dataclass
 import json
 import os
 
 import scripts.diff_map as diff_map
+
+
+@dataclass(frozen=True)
+class DeltaContext:
+    """The orchestrator's diff-hunks.json (#449) and the on-diff tolerance
+    (WS-0 S2). `diff_hunks` None or without a `base` means a non-delta review:
+    no finding is classified and the gate scopes to every active finding."""
+    diff_hunks: dict | None = None
+    diff_context: int = 5
+
+    @property
+    def active(self):
+        return bool(self.diff_hunks and self.diff_hunks.get("base"))
 
 
 def load_diff_hunks(path):

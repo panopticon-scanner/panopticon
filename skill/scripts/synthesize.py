@@ -410,33 +410,50 @@ def main(argv=None):
         print("synthesize: OCRDb bundle unreadable: %s" % exc, file=sys.stderr)
         return 3
 
-    report = report_mod.build_report(findings, groups_meta, args.target, args.fail_on, ts,
-                          review_type, security_mode, verdicts=verdicts,
-                          verdict_bundles=verdict_bundles,
-                          gate_unverified=args.gate_unverified,
-                          max_verify=args.max_verify,
-                          verdicts_supplied=args.verdicts_dir is not None,
-                          tool_policy_mode=tool_policy_mode,
-                          tools_ran=tools_ran,
-                          tool_dispositions=tool_dispositions,
-                          fan_out=fan_out,
-                          scout_requested=sorted(scout_requested),
-                          scout_profiles_seen=scout_profiles_seen,
-                          out_of_scope=out_of_scope,
-                          doc_policy=doc_policy,
-                          resume=resume,
-                          integrity=integrity,
-                          diff_hunks=diff_hunks,
-                          diff_context=args.diff_context,
-                          gate_scope=args.gate_scope,
-                          catalog=catalog,
-                          verdict_unloadable=verdict_unloadable,
-                          verdict_run_id=(_queue or {}).get("run_id"),
-                          coverages=coverages,
-                          ingested_paths=args.files,
-                          driver_cost=driver_cost,
-                          tool_manifest=tool_manifest,
-                          run_usage=cost_mod.load_run_usage(run_dir))
+    report = report_mod.build_report(report_mod.ReportInputs(
+        run=report_mod.RunConfig(
+            target=args.target,
+            fail_on=args.fail_on,
+            timestamp=ts,
+            review_type=review_type,
+            security_mode=security_mode,
+            gate_unverified=args.gate_unverified,
+            max_verify=args.max_verify,
+            gate_scope=args.gate_scope,
+        ),
+        findings=findings_mod.FindingSet(
+            findings=findings,
+            verdicts=verdicts,
+            verdicts_supplied=args.verdicts_dir is not None,
+            verdict_unloadable=verdict_unloadable,
+            verdict_run_id=(_queue or {}).get("run_id"),
+            verdict_bundles=verdict_bundles,
+            catalog=catalog,
+            doc_policy=doc_policy,
+        ),
+        delta=delta_mod.DeltaContext(diff_hunks=diff_hunks, diff_context=args.diff_context),
+        plan=plan_mod.PlanInputs(
+            groups_meta=groups_meta,
+            fan_out=fan_out,
+            scout_requested=sorted(scout_requested),
+            scout_profiles_seen=scout_profiles_seen,
+            out_of_scope=out_of_scope,
+            coverages=coverages,
+            integrity=integrity,
+            resume=resume,
+        ),
+        tools=plan_mod.ToolAxis(
+            policy_mode=tool_policy_mode,
+            tools_ran=tools_ran,
+            dispositions=tool_dispositions,
+            manifest=tool_manifest,
+            ingested_paths=args.files,
+        ),
+        cost=cost_mod.CostInputs(
+            driver_cost=driver_cost,
+            run_usage=cost_mod.load_run_usage(run_dir),
+        ),
+    ))
     render_mod.redact_report_secrets(report)   # #run7 SEC-B2C: before any shareable artifact
     errors, warnings = report_mod.validate_report(report)
     report_mod.attach_schema_status(report, errors)

@@ -80,10 +80,20 @@ class TestVerdictBundles(unittest.TestCase):
                         [{"finding_id": fid, "verdict": "CONFIRMED", "reasoning": "ok"}],
                         run_id="R")
             by_fid, _ = evidence.load_verdict_bundles(d_path)
-            report = report_mod.build_report(findings, [], "src", "high",
-                                             "2026-08-15T00:00:00Z",
-                                             verdicts={}, verdict_bundles=by_fid,
-                                             verdicts_supplied=True, verdict_run_id="R")
+            report = report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(
+                    target="src",
+                    fail_on="high",
+                    timestamp="2026-08-15T00:00:00Z",
+                ),
+                findings=findings_mod.FindingSet(
+                    findings=findings,
+                    verdicts={},
+                    verdicts_supplied=True,
+                    verdict_run_id="R",
+                    verdict_bundles=by_fid,
+                ),
+            ))
             self.assertEqual(report["findings"][0]["evidence"]["status"], "advisor_confirmed")
 
     def test_queue_id_match_not_overwritten_by_fid_bundle(self):
@@ -99,9 +109,19 @@ class TestVerdictBundles(unittest.TestCase):
             qid = evidence.finding_fingerprint(findings[0])
             verdicts = {qid: {"finding_id": fid, "verdict": "REJECTED"}}
             by_fid = {fid: [{"finding_id": fid, "verdict": "CONFIRMED", "run_id": None}]}
-            report = report_mod.build_report(findings, [], "src", "high",
-                                             "2026-08-15T00:00:00Z", verdicts=verdicts,
-                                             verdict_bundles=by_fid, verdicts_supplied=True)
+            report = report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(
+                    target="src",
+                    fail_on="high",
+                    timestamp="2026-08-15T00:00:00Z",
+                ),
+                findings=findings_mod.FindingSet(
+                    findings=findings,
+                    verdicts=verdicts,
+                    verdicts_supplied=True,
+                    verdict_bundles=by_fid,
+                ),
+            ))
             self.assertEqual(report["findings"], [])
             self.assertEqual(report["discarded_claims"][0]["evidence"]["status"], "rejected")
 
@@ -196,9 +216,19 @@ class TestVerdictBundles(unittest.TestCase):
             d_path = _bundle(tmp_path, "verdicts-app-SEC.json",
                         [{"finding_id": fid, "verdict": "CONFIRMED"}], run_id=None)
             by_fid, _ = evidence.load_verdict_bundles(d_path)
-            report = report_mod.build_report(findings, [], "src", "high",
-                                             "2026-08-15T00:00:00Z", verdicts={},
-                                             verdict_bundles=by_fid, verdicts_supplied=True)
+            report = report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(
+                    target="src",
+                    fail_on="high",
+                    timestamp="2026-08-15T00:00:00Z",
+                ),
+                findings=findings_mod.FindingSet(
+                    findings=findings,
+                    verdicts={},
+                    verdicts_supplied=True,
+                    verdict_bundles=by_fid,
+                ),
+            ))
             vs = report["meta"]["coverage"]["verdicts"]
             self.assertEqual(vs["matched"], 1)
             self.assertGreaterEqual(vs["supplied"], 1)
