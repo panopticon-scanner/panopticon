@@ -33,6 +33,39 @@ class TestIngest(unittest.TestCase):
         self.assertTrue(f["id"].startswith("SG-"))
         self.assertIn("CWE-89", f["citations"]["cwe"])
 
+    def _disposition_for(self, scanned, results):
+        sarif = {"runs": [{"tool": {"driver": {"name": "semgrep", "rules": []}},
+                           "results": results}]}
+        if scanned is not None:
+            sarif["runs"][0]["properties"] = {"panopticon_scanned_files": scanned}
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "semgrep.sarif"), "w") as fh:
+                json.dump(sarif, fh)
+            _, disp = it.ingest_dir_detailed(d, "g1")
+        return disp["semgrep"]
+
+    def test_scanned_zero_is_noscan_not_empty(self):
+        # #1335: 0 files scanned is a silent no-op. Recording it as "empty"
+        # credits SEC coverage semgrep never provided (false-clean).
+        d = self._disposition_for(0, [])
+        self.assertEqual(d["status"], "noscan")
+        self.assertEqual(d["findings"], 0)
+        self.assertIn("0 files", d.get("reason", ""))
+
+    def test_scanned_some_files_with_no_findings_stays_empty(self):
+        # A genuine clean run. Unchanged behaviour.
+        self.assertEqual(self._disposition_for(137, [])["status"], "empty")
+
+    def test_no_scanned_signal_stays_empty(self):
+        # No annotation (older artifact, non-semgrep tool, unrecognised stderr)
+        # must not become noscan -- absence of evidence is not evidence.
+        self.assertEqual(self._disposition_for(None, [])["status"], "empty")
+
+    def test_findings_outrank_a_zero_scan_count(self):
+        # Contradictory artifact: trust the findings, which are proof of a scan.
+        r = SARIF["runs"][0]["results"]
+        self.assertEqual(self._disposition_for(0, r)["status"], "ok")
+
     def test_ingest_dir_tolerant(self):
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "semgrep.sarif"), "w") as fh:

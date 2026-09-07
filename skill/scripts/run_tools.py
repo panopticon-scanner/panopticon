@@ -9,6 +9,7 @@ under --online. Degrades gracefully when Docker is absent. Stdlib-only.
 import fnmatch
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -17,6 +18,7 @@ import threading
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.tools import ADAPTERS, ONLINE_ONLY
+from scripts.tools.base import drain_stderr_async
 from scripts import plan_contract
 from scripts.tools.legacy_sarif import LEGACY_SARIF_TOOLS, TOOL_CMD
 
@@ -347,6 +349,61 @@ def _write_completed(label, tool, res, out_path):
     return _atomic_write(out_path, out_bytes)
 
 
+# #1335: semgrep's SARIF carries NO scanned-files signal -- `invocations` is
+# just {executionSuccessful: true}, and tool.driver.rules lists the CONFIG's
+# rules whether or not any file matched. So a semgrep whose ruleset covers none
+# of the target's languages scans 0 files and emits an artifact byte-identical
+# in shape to a genuinely clean run. The one witness is semgrep's own stderr,
+# which exists only at run time -- capture it into the artifact while we have it.
+_SEMGREP_SCANNED = re.compile(rb"\bran\s+\d+\s+rules?\s+on\s+(\d+)\s+files?\b",
+                              re.IGNORECASE)
+
+
+def _semgrep_scanned_files(stderr):
+    """The M in semgrep's `Ran N rules on M files`, or None if it isn't there.
+
+    None means "no claim": semgrep's summary wording is English prose and has
+    drifted across versions, so an unrecognised line must leave the artifact
+    unannotated and the disposition exactly as it is today. Fabricating a 0
+    would strip coverage credit from a scanner that really did run.
+    """
+    m = _SEMGREP_SCANNED.search(stderr or b"")
+    return int(m.group(1)) if m else None
+
+
+def _annotate_scanned_files(payload, count):
+    """Record `count` as runs[0].properties.panopticon_scanned_files.
+
+    Tolerant by design: output that is not a SARIF document with at least one
+    run object is returned untouched. This runs on every semgrep capture, and a
+    malformed artifact is already handled (and reported) by the ingest walk --
+    it must not become a write failure here.
+    """
+    try:
+        doc = json.loads(payload)
+        run = doc["runs"][0]
+        if not isinstance(run, dict):
+            return payload
+    except (ValueError, KeyError, IndexError, TypeError):
+        return payload
+    run.setdefault("properties", {})["panopticon_scanned_files"] = count
+    return json.dumps(doc).encode("utf-8")
+
+
+# Per-tool post-capture annotation, keyed by tool name: signals that exist only
+# while the child runs and would otherwise be lost to the artifact.
+_STDERR_ANNOTATORS = {"semgrep": _semgrep_scanned_files}
+
+
+def _annotate_from_stderr(tool, payload, stderr):
+    """Apply `tool`'s stderr annotation, if it has one. Identity otherwise."""
+    reader = _STDERR_ANNOTATORS.get(tool)
+    if reader is None:
+        return payload
+    count = reader(stderr)
+    return payload if count is None else _annotate_scanned_files(payload, count)
+
+
 def _drain(stream):
     """Read and discard the rest of a stream past the byte cap so the child is
     never left blocked on a full pipe. #run7 QAL-D1A: shared by both truncation
@@ -401,6 +458,12 @@ def _stream_and_write(label, tool, proc, out_path, timeout=TOOL_TIMEOUT,
     timer = threading.Timer(timeout, _watchdog)
     timer.daemon = True
     timer.start()
+    # #1510: drain stderr concurrently from the start. Reading stdout to EOF
+    # first deadlocks against any scanner that fills its 64KB stderr pipe before
+    # emitting stdout -- the parent waits on stdout the blocked child cannot
+    # write, and only the watchdog breaks it, costing the whole scan timeout and
+    # that tool's coverage. Shared with tools/base.run_tool, which already had it.
+    join_stderr = drain_stderr_async(proc)
     try:
         with tempfile.SpooledTemporaryFile(max_size=1024 * 1024) as spool:
             truncated = False
@@ -420,9 +483,9 @@ def _stream_and_write(label, tool, proc, out_path, timeout=TOOL_TIMEOUT,
                         _drain(proc.stdout)
                         break
                     spool.write(chunk)
-                stderr = proc.stderr.read()
                 # The watchdog guarantees the child terminates, so wait() is bounded.
                 rc = proc.wait()
+                stderr = join_stderr()
             finally:
                 try:
                     proc.stdout.close()
@@ -475,7 +538,8 @@ def _stream_and_write(label, tool, proc, out_path, timeout=TOOL_TIMEOUT,
                 return _atomic_write(out_path, payload)
 
             spool.seek(0)
-            return _atomic_write(out_path, spool.read())
+            return _atomic_write(
+                out_path, _annotate_from_stderr(tool, spool.read(), stderr))
     finally:
         timer.cancel()
 

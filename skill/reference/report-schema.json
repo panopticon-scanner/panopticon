@@ -84,14 +84,14 @@
           "properties": {
             "adapters": {
               "type": "object",
-              "description": "Per output file: {status: ok|empty|failed, findings: int, reason?: str}. A failed file (0-byte, unparseable, or no registered adapter) is not counted as having run."
+              "description": "Per output file: {status: ok|empty|noscan|failed, findings: int, reason?: str}. A failed file (0-byte, unparseable, or no registered adapter) is not counted as having run. noscan (#1335) = the adapter ran and produced a valid document but scanned zero files, so it gets no coverage credit."
             },
             "tools_ran": {
               "type": "array",
               "items": {
                 "type": "string"
               },
-              "description": "Adapters that produced a parseable document (status ok or empty)."
+              "description": "Adapters whose run earns coverage credit (status ok or empty). Excludes noscan: an adapter that scanned zero files covered nothing (#1335)."
             },
             "build_executing_tools": {
               "type": "array",
@@ -206,7 +206,7 @@
             },
             "divergence": {
               "type": "object",
-              "description": "Planned-vs-executed gaps: {panels: {name: {planned, executed}}, tools: {name: 'requested_absent'}}."
+              "description": "Planned-vs-executed gaps: {panels: {name: {planned, executed}}, tools: {name: 'requested_absent'|'requested_unavailable'|'produced_noscan'}}. Only requested_absent reaches tools_absent and can gate; the other two are disclosure."
             },
             "resume": {
               "type": [

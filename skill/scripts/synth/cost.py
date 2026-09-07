@@ -16,11 +16,11 @@ class CostInputs:
     run_usage: dict | None = None
 
     @classmethod
-    def load(cls, run_dir, verdicts_dir, tools_ran):
+    def load(cls, run_dir, verdicts_dir, tools_produced):
         """meta.cost's inputs from the run folder (WS-0 S3). #21: the driver
         plan and the verdicts resolve under `run_dir` like every other run
         artifact -- reading them flat left driver_cost None on every 5.1 run."""
-        return cls(driver_cost=driver_cost_counts(run_dir, verdicts_dir, tools_ran),
+        return cls(driver_cost=driver_cost_counts(run_dir, verdicts_dir, tools_produced),
                    run_usage=load_run_usage(run_dir))
 
 
@@ -94,7 +94,7 @@ def cost_dispatches(scout_profiles_seen, verify_queued, driver_cost=None):
                      "count": driver_cost["tool_scan"]})
     return rows
 
-def driver_cost_counts(pano_dir, verdicts_dir, tools_ran):
+def driver_cost_counts(pano_dir, verdicts_dir, tools_produced):
     """Count each 5.0 driver dispatch class from its own on-disk artifact, for
     meta.cost (#1030). Returns None on the legacy path (no
     dispatch-plan-driver.json) so `cost_dispatches` keeps the 4.x shape.
@@ -108,7 +108,10 @@ def driver_cost_counts(pano_dir, verdicts_dir, tools_ran):
       verify primary = the self-written cell bundles verdicts-<g>-<d>.json
       verify backup  = the ...-backup.json bundles
       tool-advisor   = the return-persisted verdicts/<queue_id>.json files
-      tool scan      = the adapters that produced output (`tools_ran`)
+      tool scan      = the adapters that produced output
+                       (`tools_produced`) -- #1335: this counts SPEND, so a
+                       no-op scanner still counts; it is deliberately not
+                       `tools_ran`, which answers the coverage question
     """
     plan_path = os.path.join(pano_dir, plan_mod.DRIVER_DISPATCH_PLAN)
     if not os.path.isfile(plan_path):
@@ -141,7 +144,7 @@ def driver_cost_counts(pano_dir, verdicts_dir, tools_ran):
             "verify_primary": len(bundles) - backup,
             "verify_backup": backup,
             "verify_tools": tool_adv,
-            "tool_scan": len(tools_ran) if tools_ran else 0}
+            "tool_scan": len(tools_produced) if tools_produced else 0}
 
 
 def cost_section(cost, scout_profiles_seen, queued):

@@ -136,6 +136,36 @@ class TestRunTool(unittest.TestCase):
         self.assertLessEqual(len(err), base.MAX_TOOL_STDERR_BYTES + len(chunk))
         self.assertLess(len(err), n * len(chunk))
 
+    def test_drain_stderr_async_keeps_the_tail_and_reads_past_the_cap(self):
+        # #1510: the shared primitive both capture paths use. Two properties:
+        # it keeps reading after the retention cap is reached (or the child
+        # blocks on a full pipe and deadlocks the parent), and what it RETAINS
+        # is the tail -- the buffer exists to diagnose "exited N", and a scanner
+        # puts its error message last.
+        cap = 4096
+        head, tail = b"H" * 8192, b"TAIL-MARKER"
+
+        class _Stream:
+            """A pipe hands back at most one buffer per read, never the whole
+            stream -- a fake that returns everything at once leaves the deque
+            one chunk long and never exercises eviction."""
+
+            def __init__(self, payload, per_read=4096):
+                self._buf = io.BytesIO(payload)
+                self._per_read = per_read
+
+            def read(self, n=-1):
+                return self._buf.read(min(n, self._per_read) if n > 0 else self._per_read)
+
+        stream = _Stream(head + tail)
+        proc = mock.Mock(stderr=stream)
+        retained = base.drain_stderr_async(proc, cap=cap)()
+
+        self.assertTrue(retained.endswith(tail), "retention dropped the tail")
+        self.assertLessEqual(len(retained), cap + 64 * 1024)
+        self.assertLess(len(retained), len(head + tail))
+        self.assertEqual(stream.read(), b"", "stream was not drained to EOF")
+
     def test_findings_exit_one_does_not_log(self):
         err = io.StringIO()
         fake = FakePopen(stdout=b"[]", stderr=b"warnings", returncode=1)

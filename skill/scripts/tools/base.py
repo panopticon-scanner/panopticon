@@ -1,5 +1,6 @@
 """Shared base utilities for tool adapters."""
 from __future__ import annotations
+import collections
 import json
 import math
 import os
@@ -235,6 +236,53 @@ MAX_TOOL_OUTPUT_BYTES = 50 * 1024 * 1024
 MAX_TOOL_STDERR_BYTES = 1 * 1024 * 1024
 
 
+def drain_stderr_async(proc, cap=MAX_TOOL_STDERR_BYTES):
+    """Drain ``proc.stderr`` to EOF on a daemon thread, retaining ``cap`` bytes.
+
+    Both capture paths need this. A child that fills its stderr pipe (64 KB on
+    Linux) blocks on write; a parent that reads stdout to EOF *first* is then
+    waiting on stdout the blocked child cannot produce, and only the watchdog
+    breaks the tie -- at the cost of the whole scan timeout plus that scanner's
+    coverage (#1510 / Codex BR-05, and #K2-1 for the inner runner).
+
+    Draining therefore starts at process start and CONTINUES PAST the retention
+    cap: once we stop keeping bytes we must still read them, or the pipe backs
+    up and the deadlock returns by another door.
+
+    Retention keeps the TAIL. The buffer exists to diagnose "exited N", and a
+    scanner puts its error message last; keeping the head would bound memory
+    while discarding the only part worth printing. At least one chunk is always
+    retained, so a single read larger than `cap` still yields diagnostics.
+
+    Returns a ``join(timeout=2.0) -> bytes`` callable.
+    """
+    chunks = collections.deque()
+    kept = [0]
+
+    def _pump():
+        try:
+            while True:
+                chunk = proc.stderr.read(64 * 1024)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                kept[0] += len(chunk)
+                while kept[0] > cap and len(chunks) > 1:
+                    kept[0] -= len(chunks.popleft())
+        except Exception:
+            pass
+
+    thread = threading.Thread(target=_pump)
+    thread.daemon = True
+    thread.start()
+
+    def join(timeout=2.0):
+        thread.join(timeout)
+        return b"".join(chunks)
+
+    return join
+
+
 def _drain(stream):
     """Read and discard the rest of a stream so the child is never left blocked
     on a full pipe."""
@@ -278,25 +326,7 @@ def run_tool(cmd, timeout, ok_codes=(0, 1), capture_stderr=False, **kwargs):
     timer.daemon = True
     timer.start()
 
-    stderr_chunks: list[bytes] = []
-    stderr_collected = 0
-
-    def _drain_stderr():
-        nonlocal stderr_collected
-        try:
-            while True:
-                chunk = proc.stderr.read(64 * 1024)
-                if not chunk:
-                    break
-                if stderr_collected < MAX_TOOL_STDERR_BYTES:
-                    stderr_chunks.append(chunk)
-                    stderr_collected += len(chunk)
-        except Exception:
-            pass
-
-    stderr_thread = threading.Thread(target=_drain_stderr)
-    stderr_thread.daemon = True
-    stderr_thread.start()
+    join_stderr = drain_stderr_async(proc)
 
     try:
         chunks: list[bytes] = []
@@ -338,8 +368,7 @@ def run_tool(cmd, timeout, ok_codes=(0, 1), capture_stderr=False, **kwargs):
             )
 
         rc = proc.wait()
-        stderr_thread.join(timeout=2.0)
-        stderr = b"".join(stderr_chunks)
+        stderr = join_stderr()
 
         if truncated:
             if capture_stderr:
@@ -352,7 +381,7 @@ def run_tool(cmd, timeout, ok_codes=(0, 1), capture_stderr=False, **kwargs):
         except Exception:
             pass
         # Closing stderr wakes the drain thread if it is still blocked.
-        stderr_thread.join(timeout=0.5)
+        join_stderr(0.5)
         try:
             proc.stderr.close()
         except Exception:
