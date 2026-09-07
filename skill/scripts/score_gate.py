@@ -39,7 +39,7 @@ def finding_score(finding):
 
     Unknown/absent values fall to their safe default (severity → INFO=0,
     confidence → POSSIBLE, evidence.status → unverified), matching
-    synthesize.normalize_finding.
+    synth.findings.normalize_finding.
     """
     sev = SEVERITY_WEIGHT.get(finding.get("severity"), 0)
     conf = CONFIDENCE_MULT.get(finding.get("confidence"), _DEFAULT_CONF)

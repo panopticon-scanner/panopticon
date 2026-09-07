@@ -113,7 +113,7 @@ def resolve_findings(fs, delta, run):
     by_fid = fs.verdict_bundles or {}
     # Computed on PRE-verdict evidence (nothing below has applied a verdict yet)
     # and on this DEDUPED `findings` list, so it is a subset of (never
-    # identical to) driver.verify_execute's own engagement decision, which
+    # identical to) phases.verify.verify_execute's own engagement decision, which
     # scores the raw per-cell list -- see engaged_matrix_cells's docstring.
     engaged_cells = plan_mod.engaged_matrix_cells(findings)
     # #1475: verdict files that EXIST for a cell but cannot be bound to it (the

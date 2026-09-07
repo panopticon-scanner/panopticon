@@ -64,13 +64,16 @@ PHASES = (
 def _cli_flags(args):
     if getattr(args, "tools", False) and getattr(args, "no_tools", False):
         raise ValueError("cannot specify both --tools and --no-tools")
-    tools = False if getattr(args, "no_tools", False) else (
+    # not `tools`: that name is bound to scripts.phases.tools at module scope,
+    # and shadowing it here would make any later use of the module in this
+    # function an UnboundLocalError.
+    tools_flag = False if getattr(args, "no_tools", False) else (
         True if getattr(args, "tools", False) else None)
     values = {"fail_on": getattr(args, "fail_on", None),
               "severity": getattr(args, "severity", None),
               "gate_scope": getattr(args, "gate_scope", None),
               "diff_context": getattr(args, "diff_context", None),
-              "tools": tools,
+              "tools": tools_flag,
               "include_fixtures": True if getattr(args, "include_fixtures", False) else None,
               "max_per_group": getattr(args, "max_per_group", None)}
     return {k: values.get(k) for k in run_manifest._FLAG_KEYS}

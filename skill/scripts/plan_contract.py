@@ -33,7 +33,7 @@ def driver_plan_issues(plan):
     so its `dispatch-plan-driver.json` declares domain cells. Each entry is a
     dict carrying a non-empty str `group`, a `domain` in groups_schema.DOMAINS,
     and an `out_file` whose BASENAME is exactly `findings-<group>-<domain>.json`
-    (the deterministic spelling driver._cell_entry writes, so
+    (the deterministic spelling phases.review._cell_entry writes, so
     reconcile_findings_files agrees). Returns issue strings ([] = valid); a
     valid driver plan feeds reconcile_findings_files / snapshot_out_files.
     Structural only -- it declares which out_files the review fan-out was to

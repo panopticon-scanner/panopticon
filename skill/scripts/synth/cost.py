@@ -64,7 +64,7 @@ def cost_dispatches(scout_profiles_seen, verify_queued, driver_cost=None):
 
     #run10: the plan-less path also emitted `fan_out` rows counted by filtering
     plan entries on `role in (panel_review, lens_sweep)`. Driver plan entries
-    carry no `role` at all (driver._driver_plan_entries says so outright), and
+    carry no `role` at all (phases.requests._driver_plan_entries says so outright), and
     the 4.x roles that did are retired (#1441), so that filter matched nothing
     on any run it could still be reached on -- it contributed an always-empty
     list. Removed rather than left as a permanently-zero ledger section.

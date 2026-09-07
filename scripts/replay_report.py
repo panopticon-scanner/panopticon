@@ -12,7 +12,7 @@ replay on the base commit, for every reference run folder.
 `replay` never touches the reference: it builds a scratch review root (a
 symlink farm of <review-root>'s top-level entries plus a REAL `.panopticon/`
 holding a copy of the manifest and a `runs/<tag>` symlink to <run-folder>),
-calls `driver.synthesize_execute` with `_run_child` patched to record the
+calls `phases.synthesize.synthesize_execute` with `_run_child` patched to record the
 command instead of running it, then re-runs that recorded synthesize argv
 with `--out` redirected into <out-dir>. cwd is the scratch root, so every
 cwd-relative read (group files for the LOC count, `.panopticon` artifacts)

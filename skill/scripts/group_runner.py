@@ -19,7 +19,7 @@ def entry_is_done(out_file, entry=None):
     """True iff out_file exists and parses as a findings file.
 
     A findings file is a JSON object with a `findings` list (the same shape
-    synthesize.load_findings accepts). A missing, truncated, or malformed file
+    synth.findings.load_findings accepts). A missing, truncated, or malformed file
     is NOT done — it is re-run on resume.
     """
     if not out_file or not os.path.isfile(out_file):
@@ -42,7 +42,7 @@ def entry_is_done(out_file, entry=None):
     # and only ran at all when the entry declared `run_id`, which none did
     # either. For every driver entry the whole block was skipped, so resume
     # accepted any parseable findings file at the expected path. Driver entries
-    # now declare run_id/group/domain (driver._cell_entry), which is what makes
+    # now declare run_id/group/domain (phases.review._cell_entry), which is what makes
     # this live; an entry declaring none of them still means "done on parse".
     declared = [(k, entry.get(k)) for k in ("run_id", "role", "group", "domain")
                 if entry.get(k) is not None]

@@ -103,7 +103,7 @@ def matrix_finding_id(finding):
 
     Pure over the finding's OWN stable fields, so the driver (per-cell, Slice B)
     and synthesize (global) compute the SAME id independently. Callers MUST pass a
-    finding already run through synthesize.normalize_finding so title/category
+    finding already run through synth.findings.normalize_finding so title/category
     defaults agree on both sides. Deliberately NOT keyed on finding_fingerprint:
     that hashes `panel`, which a raw cell finding lacks but normalize derives, so
     the two views would diverge. Includes line_start so two findings sharing a
@@ -249,7 +249,7 @@ def _queue_tiebreak(f):
     Deliberately limited to fields BOTH synthesize passes see identically on
     the same finding object: location/severity/source/id survive unchanged
     from the --emit-verify-queue pass to the report-build pass. `_group` is
-    NOT safe -- synthesize.build_report strips it (`f.pop("_group", None)`)
+    NOT safe -- synth.report.build_report strips it (`f.pop("_group", None)`)
     before the second pass would ever see it -- and hashing the whole
     finding dict is NOT safe either, since later pipeline stages add keys
     (`evidence`, `fingerprint`) the emit pass never sees. Either would
@@ -300,7 +300,7 @@ def build_verify_queue(findings, max_verify=None):
             # identity is now carrying more than one claim.
             #
             # KNOWN DIVERGENCE (unchanged behavior, recorded): the -<n> suffix
-            # lives only in the queue. synthesize.build_report exports
+            # lives only in the queue. synth.report.build_report exports
             # `fingerprint` straight from finding_fingerprint, so BOTH members
             # of a colliding pair export the bare `fp` -- a
             # fingerprint -> queue_id lookup is ambiguous for them, and `fp-1`
