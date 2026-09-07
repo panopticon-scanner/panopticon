@@ -386,6 +386,28 @@ class TestStreamingRunnerAndDeadline(unittest.TestCase):
             with open(out, "rb") as fh:
                 self.assertEqual(fh.read(), b"hello-stream")
 
+    def test_chatty_stderr_does_not_deadlock_the_stdout_capture(self):
+        # #1510 (Codex BR-05 = run-11 COD-1902034584): _stream_and_write read
+        # stdout to EOF and only THEN proc.stderr.read(). A child that fills the
+        # 64KB stderr pipe blocks on write before it ever writes stdout, so the
+        # parent waits on stdout the blocked child cannot produce -- deadlock,
+        # resolved only by the watchdog burning the whole scan timeout.
+        #
+        # A real subprocess is mandatory here: a fake stream that returns bytes
+        # immediately models no backpressure, so it cannot fail this test.
+        child = ("import sys; sys.stderr.write('x' * (2 * 1024 * 1024)); "
+                 "sys.stderr.flush(); sys.stdout.write('{}'); sys.stdout.flush()")
+        proc = rt._popen_runner([sys.executable, "-c", child],
+                                stdout=sp.PIPE, stderr=sp.PIPE)
+        err = io.StringIO()
+        with tempfile.TemporaryDirectory() as d, contextlib.redirect_stderr(err):
+            out = os.path.join(d, "o.sarif")
+            written = rt._stream_and_write("tool", "chatty", proc, out, timeout=8)
+            self.assertEqual(written, out, "chatty stderr deadlocked the capture")
+            with open(out, "rb") as fh:
+                self.assertEqual(fh.read(), b"{}")
+        self.assertNotIn("timed out", err.getvalue())
+
     def test_watchdog_kills_hung_tool_and_skips(self):
         # A tool whose stdout.read() BLOCKS (hang) must be killed at the deadline
         # and skipped -- the bound subprocess.run's timeout used to give, now

@@ -17,6 +17,7 @@ import threading
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.tools import ADAPTERS, ONLINE_ONLY
+from scripts.tools.base import drain_stderr_async
 from scripts import plan_contract
 from scripts.tools.legacy_sarif import LEGACY_SARIF_TOOLS, TOOL_CMD
 
@@ -401,6 +402,12 @@ def _stream_and_write(label, tool, proc, out_path, timeout=TOOL_TIMEOUT,
     timer = threading.Timer(timeout, _watchdog)
     timer.daemon = True
     timer.start()
+    # #1510: drain stderr concurrently from the start. Reading stdout to EOF
+    # first deadlocks against any scanner that fills its 64KB stderr pipe before
+    # emitting stdout -- the parent waits on stdout the blocked child cannot
+    # write, and only the watchdog breaks it, costing the whole scan timeout and
+    # that tool's coverage. Shared with tools/base.run_tool, which already had it.
+    join_stderr = drain_stderr_async(proc)
     try:
         with tempfile.SpooledTemporaryFile(max_size=1024 * 1024) as spool:
             truncated = False
@@ -420,9 +427,9 @@ def _stream_and_write(label, tool, proc, out_path, timeout=TOOL_TIMEOUT,
                         _drain(proc.stdout)
                         break
                     spool.write(chunk)
-                stderr = proc.stderr.read()
                 # The watchdog guarantees the child terminates, so wait() is bounded.
                 rc = proc.wait()
+                stderr = join_stderr()
             finally:
                 try:
                     proc.stdout.close()
