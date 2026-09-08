@@ -66,6 +66,44 @@ class TestIngest(unittest.TestCase):
         r = SARIF["runs"][0]["results"]
         self.assertEqual(self._disposition_for(0, r)["status"], "ok")
 
+    def test_lost_required_coverage_names_absent_and_unusable_with_reasons(self):
+        # #1512 / Codex BR-02: the manifest says a scanner produced bytes; the
+        # dispositions say those bytes did not parse. Bytes on disk are not
+        # coverage, and the two views have to be reconciled somewhere -- this is
+        # the one definition, shared by the CI gate and the report.
+        manifest = {"selected": ["bandit", "gitleaks", "npm-audit", "trivy"],
+                    "produced": ["bandit", "gitleaks", "trivy"],
+                    "missing": ["npm-audit"], "excluded_scope": ["eslint-security"]}
+        dispositions = {
+            "bandit": {"status": "failed", "findings": 0, "reason": "unparseable: x"},
+            "gitleaks": {"status": "ok", "findings": 2},
+            "trivy": {"status": "empty", "findings": 0},
+        }
+        lost = it.lost_required_coverage(manifest, dispositions)
+        self.assertEqual(sorted(lost), ["bandit", "npm-audit"])
+        self.assertEqual(lost["bandit"]["kind"], "unusable")
+        self.assertIn("unparseable", lost["bandit"]["reason"])
+        self.assertEqual(lost["npm-audit"]["kind"], "absent")
+        self.assertNotIn("eslint-security", lost)   # excluded_scope is never required
+
+    def test_lost_required_coverage_treats_a_selected_tool_with_no_disposition_as_absent(self):
+        # An inconsistent manifest (claims produced, nothing ingested) must not
+        # read as coverage.
+        manifest = {"selected": ["bandit"], "produced": ["bandit"], "missing": [],
+                    "excluded_scope": []}
+        lost = it.lost_required_coverage(manifest, {})
+        self.assertEqual(lost["bandit"]["kind"], "absent")
+
+    def test_lost_required_coverage_does_not_claim_a_noscan_scanner(self):
+        # #1335 decided noscan separately: it produced a valid document and is a
+        # no-surface signal, disclosed as produced_noscan and NON-gating. Folding
+        # it in here would silently re-gate it.
+        manifest = {"selected": ["semgrep"], "produced": ["semgrep"], "missing": [],
+                    "excluded_scope": []}
+        lost = it.lost_required_coverage(
+            manifest, {"semgrep": {"status": "noscan", "findings": 0}})
+        self.assertEqual(lost, {})
+
     def test_ingest_dir_tolerant(self):
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "semgrep.sarif"), "w") as fh:

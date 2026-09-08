@@ -206,7 +206,7 @@
             },
             "divergence": {
               "type": "object",
-              "description": "Planned-vs-executed gaps: {panels: {name: {planned, executed}}, tools: {name: 'requested_absent'|'requested_unavailable'|'produced_noscan'}}. Only requested_absent reaches tools_absent and can gate; the other two are disclosure."
+              "description": "Planned-vs-executed gaps: {panels: {name: {planned, executed}}, tools: {name: 'requested_absent'|'produced_unusable'|'requested_unavailable'|'produced_noscan'}}. requested_absent (selected, no output) and produced_unusable (#1512: output produced but ingestion could not parse it) are lost required coverage and reach tools_absent, so they gate. requested_unavailable (scout asked for a tool the runner cannot run) and produced_noscan (#1335: ran but scanned zero files) are disclosure only and never gate."
             },
             "resume": {
               "type": [

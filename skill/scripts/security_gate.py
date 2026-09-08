@@ -48,13 +48,12 @@ def evaluate(tools_dir, manifest_path, exclude_globs=None):
     manifest = load_manifest(manifest_path)
     findings, dispositions = ingest_tools.ingest_dir_detailed(
         tools_dir, "ci", exclude_globs=exclude_globs or [])
-    failures = []
-    for name in manifest["selected"]:
-        disposition = dispositions.get(name)
-        if name in manifest["missing"] or disposition is None:
-            failures.append("%s: no output" % name)
-        elif disposition.get("status") == "failed":
-            failures.append("%s: %s" % (name, disposition.get("reason", "failed")))
+    # #1512: one definition of lost required coverage, shared with the report's
+    # tool axis. Extracted, not duplicated -- the two views disagreeing is what
+    # let a scanner that wrote unparseable bytes certify in the report while
+    # this gate correctly failed it.
+    failures = ["%s: %s" % (name, info["reason"]) for name, info
+                in ingest_tools.lost_required_coverage(manifest, dispositions).items()]
     # excluded_scope adapters are disclosed, never required, and their output
     # (if any lingered) is known — not "unexpected".
     known = set(manifest["selected"]) | set(manifest.get("excluded_scope", []))

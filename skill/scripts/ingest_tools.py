@@ -128,6 +128,43 @@ def _filter_parsed_findings(parsed, include_fixtures, exclude_globs):
     return kept, fx_count, gl_count, ra_count
 
 
+def lost_required_coverage(manifest, dispositions):
+    """Selected scanners that did not deliver usable coverage, with reasons.
+
+    Returns an ordered ``{tool: {"kind": "absent"|"unusable", "reason": str}}``
+    in the manifest's own selection order. This is the single definition of
+    "required coverage we did not get", shared by the CI gate
+    (`security_gate.evaluate`) and the report's tool axis -- #1512 existed
+    because those two had separate answers and the report's was derived from the
+    manifest alone, so a scanner that wrote unparseable bytes still certified.
+
+    - `absent`   -- named in the manifest's `missing`, or selected with no
+                    disposition at all (an inconsistent manifest claiming
+                    production that ingestion never saw).
+    - `unusable` -- output exists but ingestion could not use it: malformed,
+                    truncated, oversized, unreadable, or no registered adapter.
+
+    `excluded_scope` adapters are never required, so they are never named here.
+    `empty` is completed coverage -- a scanner that ran and found nothing is the
+    outcome the pipeline hopes for. `noscan` is deliberately NOT lost coverage
+    either: #1335 judged it separately as a no-surface disclosure
+    (`produced_noscan`, non-gating), and folding it in here would silently
+    re-gate it.
+    """
+    missing = set(manifest.get("missing") or [])
+    lost = {}
+    for name in manifest.get("selected") or []:
+        if not isinstance(name, str):
+            continue
+        disposition = dispositions.get(name) if dispositions else None
+        if name in missing or disposition is None:
+            lost[name] = {"kind": "absent", "reason": "no output"}
+        elif disposition.get("status") == "failed":
+            lost[name] = {"kind": "unusable",
+                          "reason": disposition.get("reason") or "failed"}
+    return lost
+
+
 def _scanned_files(raw):
     """The scanned-file count run_tools recorded on the artifact, or None.
 
