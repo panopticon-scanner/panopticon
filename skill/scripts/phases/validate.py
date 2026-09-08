@@ -1,5 +1,7 @@
 """Phase 7 -- validate: the working-tree baseline, delta and worktree finalization."""
 import glob as _glob
+import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -23,6 +25,90 @@ def _write_probe_failed_baseline(baseline):
     with runio._open_w_nofollow(baseline) as fh:
         fh.write(_TREE_BASELINE_PROBE_FAILED)
     return baseline
+
+# #1514 (Codex BR-04): the baseline used to be raw porcelain status, and the
+# delta was set subtraction over those records. A file that was ALREADY dirty at
+# run start (` M app.py`) could be rewritten arbitrarily during the run and its
+# status record never changed -- delta empty, tree_clean true. Pre-existing edits
+# are the normal starting state for a coding-agent review, so that was the common
+# path, not a corner. v2 records a content digest per baselined path alongside
+# the status text, which is what makes "same status, different bytes" visible.
+_BASELINE_SCHEMA = 2
+
+# An untracked directory is one porcelain record but arbitrarily many files.
+# Digesting without a bound would let a large untracked tree stall every run at
+# start; exceeding it marks the baseline unestablished rather than quietly
+# skipping files, so the failure is loud and fails CLOSED at validate.
+_MAX_BASELINE_FILES = 20000
+
+
+def _file_entry(path):
+    """Content identity for one path: symlink target, file digest + exec bit,
+    or absence. Mode is reduced to the executable bit because that is the only
+    permission git itself tracks."""
+    if os.path.islink(path):
+        return {"type": "symlink", "target": os.readlink(path)}
+    if not os.path.exists(path):
+        return {"type": "absent"}
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return {"type": "file", "sha": h.hexdigest(),
+            "exec": bool(os.stat(path).st_mode & 0o111)}
+
+
+def _dir_entry(path, budget):
+    """Content identity for an untracked DIRECTORY -- one digest over every
+    file's relative path and content, so an edit anywhere inside it shows up."""
+    h = hashlib.sha256()
+    for root, dirs, files in os.walk(path):
+        dirs.sort()
+        for name in sorted(files):
+            budget[0] -= 1
+            if budget[0] < 0:
+                return {"type": "truncated"}
+            full = os.path.join(root, name)
+            rel = os.path.relpath(full, path)
+            entry = _file_entry(full)
+            h.update(rel.encode("utf-8", "surrogateescape"))
+            h.update(json.dumps(entry, sort_keys=True).encode("utf-8"))
+    return {"type": "dir", "sha": h.hexdigest()}
+
+
+def _entry_for(review_root, rel, budget):
+    full = os.path.join(review_root, rel)
+    if os.path.isdir(full) and not os.path.islink(full):
+        return _dir_entry(full, budget)
+    budget[0] -= 1
+    if budget[0] < 0:
+        return {"type": "truncated"}
+    return _file_entry(full)
+
+
+def _content_entries(review_root, status_output):
+    """{path: entry} for every OUTSIDE-.panopticon path the status names.
+
+    Only baselined paths need digests: a change to any file that was CLEAN at
+    run start produces a NEW status record, which record subtraction already
+    catches. The hole was exactly the paths whose record cannot change because
+    it is already there.
+
+    Ignored files are out of scope BY POLICY: `git status` without --ignored
+    never reports them, so they are neither baselined nor audited. Build outputs
+    and caches churn during any real run, and a scanner that never writes them
+    is not what this guard exists to prove.
+    """
+    budget = [_MAX_BASELINE_FILES]
+    entries = {}
+    for _xy, paths in _porcelain_z_records(status_output):
+        for rel in paths:
+            rel = rel.rstrip("/")
+            if not rel or not _outside_panopticon(rel) or rel in entries:
+                continue
+            entries[rel] = _entry_for(review_root, rel, budget)
+    return entries
+
 
 def capture_tree_baseline(review_root, runner=subprocess.run):
     """Snapshot the clean-tree baseline once (run start). Returns None (no
@@ -48,9 +134,18 @@ def capture_tree_baseline(review_root, runner=subprocess.run):
               % (proc.returncode, (proc.stderr or "").strip()[:200]),
               file=sys.stderr, flush=True)
         return _write_probe_failed_baseline(baseline)
+    entries = _content_entries(review_root, proc.stdout)
+    truncated = any(e.get("type") == "truncated" for e in entries.values())
+    if truncated:
+        print("driver: clean-tree baseline exceeded %d files while digesting "
+              "already-dirty/untracked paths; content equality cannot be "
+              "established and the integrity guard will fail closed at validate"
+              % _MAX_BASELINE_FILES, file=sys.stderr, flush=True)
     os.makedirs(os.path.dirname(baseline), exist_ok=True)
     with runio._open_w_nofollow(baseline) as fh:
-        fh.write(proc.stdout)
+        json.dump({"schema_version": _BASELINE_SCHEMA, "status": proc.stdout,
+                   "entries": entries, "truncated": truncated}, fh,
+                  sort_keys=True)
     return baseline
 
 def _porcelain_z_records(output):
@@ -98,7 +193,26 @@ def _tree_delta(review_root, runner):
         # reference exists -- the tree CANNOT be certified clean. Fail closed.
         return ["clean-tree baseline was never captured (git-status probe failed "
                 "at run start); tree integrity cannot be certified"]
-    baseline = _porcelain_z_records(raw)
+    # #1514: a v1 baseline is raw porcelain text with no digests. Resuming across
+    # the upgrade must say so rather than silently certify on a check it cannot
+    # perform -- the same fail-closed rule the probe-failure sentinel follows.
+    try:
+        snapshot = json.loads(raw)
+        if not isinstance(snapshot, dict):
+            raise ValueError("not an object")
+    except ValueError:
+        return ["clean-tree baseline predates content digests (schema v1); "
+                "content equality not established, so tree integrity cannot "
+                "be certified"]
+    if snapshot.get("schema_version") != _BASELINE_SCHEMA:
+        return ["clean-tree baseline schema_version %r is not %d; content "
+                "equality not established, so tree integrity cannot be certified"
+                % (snapshot.get("schema_version"), _BASELINE_SCHEMA)]
+    if snapshot.get("truncated"):
+        return ["clean-tree baseline was truncated at %d files; content equality "
+                "not established, so tree integrity cannot be certified"
+                % _MAX_BASELINE_FILES]
+    baseline = _porcelain_z_records(snapshot.get("status") or "")
     try:
         proc = runner(["git", "-C", review_root, "status", "--porcelain", "-z"],
                       capture_output=True, text=True, timeout=15)
@@ -111,8 +225,31 @@ def _tree_delta(review_root, runner):
         return ["clean-tree verification git-status failed (%s); tree integrity "
                 "cannot be certified" % exc]
     new = _porcelain_z_records(proc.stdout) - baseline
-    return sorted("%s %s" % (xy, " -> ".join(paths)) for xy, paths in new
-                  if any(_outside_panopticon(p) for p in paths))
+    delta = sorted("%s %s" % (xy, " -> ".join(paths)) for xy, paths in new
+                   if any(_outside_panopticon(p) for p in paths))
+    # #1514: the record set answers "did any file's STATUS change". It cannot see
+    # a rewrite of a file that was already dirty (record unchanged) or a revert
+    # of one (record disappears, and subtraction only looks at NEW records). Both
+    # are reviewer side effects on user content, so compare the digests too.
+    recorded = snapshot.get("entries")
+    if isinstance(recorded, dict):
+        budget = [_MAX_BASELINE_FILES]
+        for rel, was in sorted(recorded.items()):
+            try:
+                now = _entry_for(review_root, rel, budget)
+            except OSError as exc:
+                delta.append("%s content unreadable at validate (%s); tree "
+                             "integrity cannot be certified" % (rel, exc))
+                continue
+            if now.get("type") == "truncated":
+                delta.append("%s content equality not established (baseline "
+                             "budget exhausted)" % rel)
+            elif now != was:
+                delta.append("CONTENT %s (%s -> %s)"
+                             % (rel, was.get("type"), now.get("type"))
+                             if now.get("type") != was.get("type")
+                             else "CONTENT %s" % rel)
+    return delta
 
 def validate_done(review_root, manifest):
     data = runio._load_json(runio._pano(review_root, "validate.json"))
