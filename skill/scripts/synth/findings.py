@@ -7,6 +7,7 @@ import sys
 
 import scripts.citations as citations
 import scripts.evidence as evidence_mod
+import scripts.findings_contract as findings_contract
 import scripts.groups_schema as groups_schema
 import scripts.ocrdb as ocrdb
 
@@ -217,7 +218,30 @@ def load_findings(paths):
 
     Agent-settable trust fields are stripped here — see AGENT_FORBIDDEN_FIELDS.
     """
+    return load_findings_detailed(paths)[0]
+
+
+def load_findings_detailed(paths):
+    """``(findings, diagnostics)`` — the same load, plus what it had to drop.
+
+    #1513: dropped source evidence used to exist only as a line on stderr, so a
+    report built from a file whose entries were silently skipped looked exactly
+    like one built from a clean file. `diagnostics` is one entry per REJECTED
+    file: ``{"file", "cell", "defects"}``, where `cell` is ``[group, domain]``
+    when the name identifies one. `meta.integrity` carries them, and they fail
+    certification closed — a reviewer that returned garbage must not read as a
+    reviewer that found nothing.
+
+    Salvageable findings in a partly-bad file are still returned. Dropping them
+    too would destroy real evidence to punish a protocol error; the file is
+    recorded as defective AND its usable findings reported, which is an
+    incomplete report rather than an empty one.
+
+    Naming follows `ingest_tools.ingest_dir` / `ingest_dir_detailed`: the plain
+    call keeps its list return for the ~20 callers that only want findings.
+    """
     out = []
+    diagnostics = []
     for path in paths:
         if not os.path.isfile(path):
             print("MISSING: %s" % path, file=sys.stderr)
@@ -227,19 +251,29 @@ def load_findings(paths):
                 data = evidence_mod.load_json_tolerant(fh.read())
         except Exception as e:  # noqa: BLE001 - tolerant by design
             print("PARSE ERROR %s: %s" % (path, e), file=sys.stderr)
+            diagnostics.append({"file": str(path),
+                                "cell": findings_contract.cell_of(path),
+                                "defects": [{"index": None,
+                                             "reason": "parse error: %s" % e}]})
             continue
+        defects = findings_contract.payload_defects(data)
+        if defects:
+            for d in defects:
+                print("synthesize: dropped %s in %s (%s)"
+                      % ("finding %d" % d["index"] if d["index"] is not None
+                         else "the payload", path, d["reason"]), file=sys.stderr)
+            diagnostics.append({"file": str(path),
+                                "cell": findings_contract.cell_of(path),
+                                "defects": defects})
         if not isinstance(data, dict):
-            print("not a JSON object: %s" % path, file=sys.stderr)
             continue
         findings = data.get("findings", [])
         if not isinstance(findings, list):
-            print("no findings list in %s" % path, file=sys.stderr)
             continue
         m = GROUP_RE.match(os.path.basename(path))
         group = m.group(1) if m else None
         for f in findings:
             if not isinstance(f, dict):
-                print("skipping non-object finding in %s" % path, file=sys.stderr)
                 continue
             for forbidden in AGENT_FORBIDDEN_FIELDS:
                 if forbidden in f:
@@ -271,7 +305,7 @@ def load_findings(paths):
             if group is not None:
                 nf["_group"] = group
             out.append(nf)
-    return out
+    return out, diagnostics
 
 # Alias the shared severity rank instead of re-implementing it — same
 # rationale as _is_tool_sourced below.

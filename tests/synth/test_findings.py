@@ -164,7 +164,9 @@ class TestLoad(unittest.TestCase):
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
                 out = findings_mod.load_findings([p])
-            self.assertIn("no findings list", err.getvalue())
+            # #1513: the notice now names the type it actually got, so a
+            # reader can tell "findings: {}" from "findings: null".
+            self.assertIn("findings is str, not a list", err.getvalue())
             self.assertEqual(out, [])
 
     def test_load_findings_strips_forged_trust_fields(self):
