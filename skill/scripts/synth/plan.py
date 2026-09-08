@@ -472,6 +472,7 @@ def reconcile(plan, tools, resolved):
                                      or integrity.get("content_mismatched_files")
                                      or integrity.get("content_snapshot_unreadable")
                                      or integrity.get("content_snapshot_missing")
+                                     or integrity.get("malformed_findings_files")
                                      or integrity.get("empty_dispatch_plans")
                                      or integrity.get("invalid_dispatch_plans")
                                      or integrity.get("invalid_verify_queue"))
@@ -482,7 +483,18 @@ def reconcile(plan, tools, resolved):
     # `ingested_paths` is the findings-file path list the caller ingested.
     # Both default to empty/None for callers that predate P4 cells, so
     # cell_audit is a no-op {"missing_floor": []} for them.
-    cell_audit = audit_floor_cells(plan.coverages or [], present_cells(tools.ingested_paths))
+    # #1513: presence is filename-derived, which is right for "was synthesize
+    # HANDED this cell" but wrong for "did this cell complete". A cell whose file
+    # violates the findings contract was written and is therefore present, yet it
+    # is not completed work -- so net it out before the floor audit and let it
+    # surface as missing_floor, the channel that already means "a floor cell did
+    # not produce a review".
+    present = present_cells(tools.ingested_paths)
+    for entry in (integrity.get("malformed_findings_files") or []):
+        cell = entry.get("cell") if isinstance(entry, dict) else None
+        if cell and cell[0] in present:
+            present[cell[0]].discard(cell[1])
+    cell_audit = audit_floor_cells(plan.coverages or [], present)
     coverage = {
         "adapters": tools.dispositions or {},
         "tools_ran": (sorted(tools_ran) if tools_ran is not None

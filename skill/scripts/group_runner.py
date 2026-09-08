@@ -10,6 +10,7 @@ import json
 import os
 
 import scripts.evidence as evidence
+import scripts.findings_contract as findings_contract
 
 __all__ = ["entry_is_done", "pending_entries", "fan_out_coverage",
            "verdict_is_done", "pending_verdicts", "resume_stats"]
@@ -18,9 +19,10 @@ __all__ = ["entry_is_done", "pending_entries", "fan_out_coverage",
 def entry_is_done(out_file, entry=None):
     """True iff out_file exists and parses as a findings file.
 
-    A findings file is a JSON object with a `findings` list (the same shape
-    synth.findings.load_findings accepts). A missing, truncated, or malformed file
-    is NOT done — it is re-run on resume.
+    A findings file is a JSON object with a `findings` list of objects — the
+    shared `findings_contract` rule, the same one the driver's completion
+    predicate and direct synthesis apply. A missing, truncated, or malformed
+    file is NOT done — it is re-run on resume.
     """
     if not out_file or not os.path.isfile(out_file):
         return False
@@ -29,7 +31,10 @@ def entry_is_done(out_file, entry=None):
             data = json.load(fh)
     except (OSError, ValueError):
         return False
-    if not (isinstance(data, dict) and isinstance(data.get("findings"), list)):
+    # #1513: the same contract the driver and direct synthesis apply. A file
+    # whose findings list holds a non-object is not completed work, so resume
+    # must not skip it.
+    if not findings_contract.is_acceptable(data):
         return False
     if not isinstance(entry, dict):
         return True

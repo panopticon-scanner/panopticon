@@ -256,7 +256,7 @@
         },
         "integrity": {
           "type": "object",
-          "description": "Run-integrity reconciliation driving certification: unexpected, duplicate, mislabeled, content-mismatched, empty, or invalid dispatch artifacts force gate INCONCLUSIVE — as does a fan-out snapshot that is corrupt (content_snapshot_unreadable) or owed-but-absent (content_snapshot_missing).",
+          "description": "Run-integrity reconciliation driving certification: unexpected, duplicate, mislabeled, malformed, content-mismatched, empty, or invalid dispatch artifacts force gate INCONCLUSIVE — as does a fan-out snapshot that is corrupt (content_snapshot_unreadable) or owed-but-absent (content_snapshot_missing).",
           "properties": {
             "unexpected_findings_files": {
               "type": "array",
@@ -268,6 +268,13 @@
               "type": "array",
               "items": {
                 "type": "string"
+              }
+            },
+            "malformed_findings_files": {
+              "type": "array",
+              "description": "#1513: findings files that violate the findings contract, as [{file, cell: [group, domain]|null, defects: [{index, reason}]}]. A stamped cell whose findings list holds a non-object is not a completed clean review; these fail the gate closed and their cells are netted out of the floor audit. Dropped source evidence used to exist only on stderr.",
+              "items": {
+                "type": "object"
               }
             },
             "duplicate_out_files": {

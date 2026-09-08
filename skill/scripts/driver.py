@@ -47,7 +47,10 @@ _RESET_GLOBS = ("groups.json", "coverage-*.json", "scout-*.json", "tools-ran.jso
                 # #5.0-16: the driver's own dispatch plan clears too, so a
                 # --reset run re-declares cells from fresh coverage.
                 "diff-hunks.json", "out-file-hashes.json",
-                "dispatch-plan-driver.json")
+                "dispatch-plan-driver.json",
+                # #1513: the per-cell retry budget is run-scoped -- a --reset
+                # must not start with a cell already exhausted.
+                "cell-attempts.json")
 
 
 PHASES = (

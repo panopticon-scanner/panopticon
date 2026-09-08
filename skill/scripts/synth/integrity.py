@@ -8,6 +8,7 @@ import sys
 import scripts.evidence as evidence_mod
 import scripts.group_runner as group_runner
 import scripts.groups_schema as groups_schema
+import scripts.findings_contract as findings_contract
 
 # Module-attribute access only (spec §3 rule 1): plan imports this module back,
 # and the pair is safe precisely because neither touches the other at import time.
@@ -81,6 +82,37 @@ def mislabeled_findings_files(paths):
             if (md and md != domain) or (mg and mg != group):
                 bad.append(p)
     return sorted(set(bad))
+
+def malformed_findings_files(paths):
+    """Findings files that violate the shared contract, with what was dropped.
+
+    #1513: a stamped cell whose `findings` list held a non-object was accepted
+    everywhere -- the driver called it a completed review, and synthesis turned
+    it into `findings: []` with `schema_errors: 0` and certified PASS. Dropped
+    entries existed only as a line on stderr, so a report built from garbage was
+    byte-indistinguishable from one built from a clean, empty review.
+
+    Returns ``[{"file", "cell", "defects"}]``, sorted by file. Screens whatever
+    synthesize was HANDED, which is why it also catches direct synthesis on a
+    malformed cell -- fixing only the driver's done-predicate would leave
+    `synthesize.py` able to certify invalid input on its own.
+    """
+    out = []
+    for p in paths or []:
+        try:
+            with open(p, encoding="utf-8") as fh:
+                data = evidence_mod.load_json_tolerant(fh.read())
+        except (OSError, ValueError) as e:
+            out.append({"file": str(p), "cell": findings_contract.cell_of(p),
+                        "defects": [{"index": None,
+                                     "reason": "parse error: %s" % e}]})
+            continue
+        defects = findings_contract.payload_defects(data)
+        if defects:
+            out.append({"file": str(p), "cell": findings_contract.cell_of(p),
+                        "defects": defects})
+    return sorted(out, key=lambda d: d["file"])
+
 
 def cross_domain_findings(paths):
     """Findings filed under a domain other than their cell's — REPORTED, never gating.
@@ -261,8 +293,15 @@ def integrity_section(plan_lists, files, run_dir, plans_seen, invalid_plans,
         print("synthesize: the fan-out out-file-hashes.json snapshot EXISTS but is "
               "unreadable/corrupt -- treating as tamper (fail-closed), not a missing "
               "snapshot; integrity is NOT certified.", file=sys.stderr)
+    malformed = malformed_findings_files(files)
+    if malformed:
+        print("synthesize: %d findings file(s) violate the findings contract "
+              "(dropped source evidence): %s"
+              % (len(malformed), ", ".join(d["file"] for d in malformed)),
+              file=sys.stderr)
     integrity = {"unexpected_findings_files": unexpected,
                  "missing_planned_files": missing,
+                 "malformed_findings_files": malformed,
                  "duplicate_out_files": duplicate_out_files(plan),
                  "mislabeled_findings_files": mislabeled_findings_files(files),
                  "cross_domain_findings": cross_domain_findings(files),

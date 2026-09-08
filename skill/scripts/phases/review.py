@@ -9,15 +9,65 @@ import scripts.ocrdb as ocrdb
 import scripts.synth.findings as findings_mod
 import scripts._version as _version
 from . import engine
+import scripts.findings_contract as findings_contract
+
 from . import runio
 from . import coverage
 from . import requests
 from . import verify
 
 
+# #1513: rejecting a malformed cell is only half the fix. review_execute
+# recomputes `pending` from _cell_done on every invocation, so a reviewer that
+# keeps writing garbage would be re-dispatched forever -- trading a false
+# certification for a wedged run. Bound the retries, then let the cell surface
+# as incomplete: an unrecoverable cell is a coverage gap the report must
+# disclose, not a loop the operator has to break by hand.
+#
+# Three is a retry budget, not a quality bar: run-11's real case (a panel that
+# wrote unescaped quotes) recovered on its first re-dispatch, and a cell that
+# has failed three times is not going to be fixed by a fourth identical prompt.
+MAX_CELL_ATTEMPTS = 3
+_ATTEMPTS_FILE = "cell-attempts.json"
+
+
+def _cell_key(group, domain):
+    return "%s/%s" % (group, domain)
+
+
+def _cell_attempts(review_root):
+    data = runio._load_json(runio._pano(review_root, _ATTEMPTS_FILE))
+    return data if isinstance(data, dict) else {}
+
+
+def _record_attempts(review_root, keys):
+    """Count one dispatch per cell. Written at dispatch time, not completion:
+    the whole point is to bound cells that never complete."""
+    data = _cell_attempts(review_root)
+    for key in keys:
+        try:
+            data[key] = int(data.get(key, 0)) + 1
+        except (TypeError, ValueError):
+            data[key] = 1
+    runio._write_json(runio._pano(review_root, _ATTEMPTS_FILE), data)
+
+
+def _cell_exhausted(review_root, group, domain):
+    """True when this cell has used its retry budget without ever completing."""
+    try:
+        used = int(_cell_attempts(review_root).get(_cell_key(group, domain), 0))
+    except (TypeError, ValueError):
+        return False
+    return used >= MAX_CELL_ATTEMPTS
+
+
 def _get_valid_cell_data(review_root, manifest, group, domain):
     data = runio._load_json(runio._pano(review_root, "findings-%s-%s.json" % (group, domain)))
-    if not (isinstance(data, dict) and isinstance(data.get("findings"), list)):
+    # #1513: shape-only was too shallow -- `findings: [null]` is a list, so a
+    # reviewer that returned garbage counted as a completed clean review. The
+    # contract rule is shared with resume and direct synthesis; fixing this site
+    # alone would just move the false certification downstream.
+    if not findings_contract.is_acceptable(data):
         return None
     meta = data.get("_panopticon")
     if (isinstance(meta, dict) and meta.get("run_id") == manifest.get("run_id")
@@ -210,7 +260,11 @@ def review_done(review_root, manifest):
     groups = coverage._discovered_groups(review_root)
     if not groups:
         return True   # vacuous (no groups)
+    # A cell that exhausted its retry budget is not DONE -- _cell_done still says
+    # no, and synthesis surfaces it as a missing floor cell -- but there is no
+    # work left to dispatch for it, so the phase must advance rather than wedge.
     return all(_cell_done(review_root, manifest, g, d)
+               or _cell_exhausted(review_root, g, d)
                for g, _ in groups for d in coverage._effective_domains(review_root, g))
 
 def review_execute(review_root, manifest):
@@ -235,7 +289,9 @@ def review_execute(review_root, manifest):
     all_entries, ngroups = [], 0
     for group, files in coverage._discovered_groups(review_root):
         domains = coverage._effective_domains(review_root, group)
-        pending = [d for d in domains if not _cell_done(review_root, manifest, group, d)]
+        pending = [d for d in domains
+                   if not _cell_done(review_root, manifest, group, d)
+                   and not _cell_exhausted(review_root, group, d)]
         if not pending:
             continue
         ngroups += 1
@@ -244,6 +300,9 @@ def review_execute(review_root, manifest):
             _cell_entry(review_root, manifest, group, d, files, tests, host, bundle)
             for d in pending)
     if all_entries:
+        _record_attempts(review_root, [_cell_key(e["group"], e["domain"])
+                                       for e in all_entries
+                                       if e.get("group") and e.get("domain")])
         req = requests.write_dispatch_request(review_root, manifest["run_id"], "review",
                                      None, all_entries)
         return engine.PhaseResult(kind="checkpoint", checkpoint="review", group=None,

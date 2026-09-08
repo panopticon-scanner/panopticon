@@ -254,7 +254,8 @@ class TestReconcileRealpath(unittest.TestCase):
 class IntegritySectionTest(unittest.TestCase):
     """WS-0 S3: meta.integrity assembled from the plan lists and ingested files."""
 
-    KEYS = ["unexpected_findings_files", "missing_planned_files", "duplicate_out_files",
+    KEYS = ["unexpected_findings_files", "missing_planned_files",
+            "malformed_findings_files", "duplicate_out_files",
             "mislabeled_findings_files", "cross_domain_findings", "unenforced_acknowledged",
             "ack_stale", "content_hashes_checked", "content_mismatched_files",
             "content_snapshot_unreadable", "content_snapshot_missing",
