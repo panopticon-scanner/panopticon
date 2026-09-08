@@ -152,8 +152,23 @@ def normalize_finding(f):
     # uniqueness, delta classification, and schema validation all work.
     if "line_start" not in loc and loc.get("line") is not None:
         loc["line_start"] = loc.pop("line")
-    loc.setdefault("line_end", loc.get("line_start"))
-    loc.setdefault("function", None)
+    # #1522 (COD-D1B): a location, if present, must identify a FILE -- the old
+    # code left `{"line_end": null, "function": null}` behind for a payload with
+    # no location, violating both the schema's required array and line_end's
+    # integer type, and validate_report only WARNS so it reached the artifact.
+    # A locus-free finding (repo-wide catalog/coverage gap) is legitimate and now
+    # carries no location key, which validates; quarantining it would discard a
+    # real result over a field it was never about. A whole-file finding keeps its
+    # file without having a line number invented for it.
+    if not loc.get("file"):
+        f.pop("location", None)
+    elif loc.get("line_start") is not None:
+        loc.setdefault("line_end", loc.get("line_start"))
+        loc.setdefault("function", None)
+    else:
+        loc.pop("line_start", None)
+        loc.pop("line_end", None)
+        loc.setdefault("function", None)
     f.setdefault("references", [])
     f.setdefault("impact", "")
     f.setdefault("remediation", "")
@@ -391,6 +406,7 @@ def dedupe(findings):
             other = agent_srcd[0] if _is_tool_sourced(best) else tool_srcd[0]
             best["reinforced"] = True
             _reinforce_merge(best, other)
+            evidence_mod.record_merged_id(best, other)
             result.append(best)
         else:
             by_cat = {}
@@ -439,6 +455,11 @@ def dedupe(findings):
                         for m in sub:
                             if m is not best:
                                 _reinforce_merge(best, m)
+                    # #1476: alias EVERY collapsed member -- the
+                    # corroboration branch above is conditional, the drop is not.
+                    for m in sub:
+                        if m is not best:
+                            evidence_mod.record_merged_id(best, m)
                     result.append(best)
     return result + passthrough
 
