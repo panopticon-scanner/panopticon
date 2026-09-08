@@ -5,9 +5,8 @@ type: prompt
 whenToUse: When reviewing code, pull requests, branches, security posture, test quality, architecture, or database surfaces in a codebase
 arguments:
   - target
-  - mode
+  - host
   - security
-  - out
 disableModelInvocation: false
 license: MIT
 metadata:
@@ -44,9 +43,10 @@ resolve against cwd; only the script path substitutes.
 - `driver setup [target] [--max-per-group N] [--max-groups N]` — one-time bootstrap; produces
   `.panopticon/groups.yml.draft` + `setup-report.md` (read the report first).
 - `driver run [target] [flags]` — the resumable review loop.
-- Key flags: `--full`, `--security {standard,redteam}`, `--fail-on {critical,high,medium,low}`,
-  `--severity {all,medium,high,critical}`, `--out PATH`, `--tools`, `--no-tools`,
-  `--max-verify N`, `--max-per-group N`, `--base <ref>`, `--pr <n>`, `--changes`.
+- Key flags: `--host NAME`, `--security {standard,redteam}`,
+  `--fail-on {critical,high,medium,low}`, `--severity {all,medium,high,critical}`,
+  `--tools`, `--no-tools`, `--max-per-group N`, `--gate-scope`, `--base <ref>`,
+  `--pr <n>`, `--changes`.
 - CI gate key: `summary.gate` (`PASS` / `FAIL` / `OFF` / `INCONCLUSIVE`).
 
 See [`docs/PANOPTICON.md`](docs/PANOPTICON.md) for the complete contract.

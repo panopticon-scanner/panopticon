@@ -25,7 +25,7 @@ Thanks for your interest in improving Panopticon.
 ## Testing
 
 - All changes should include tests.
-- The CI matrix runs on Python 3.11, 3.12, and 3.13.
+- The CI matrix runs on Python 3.11, 3.12, 3.13, and 3.14.
 - Security scans run on every PR; intentionally vulnerable fixtures live in `tests/fixtures/` and are excluded from the gate.
 
 ## Reporting security issues

@@ -375,3 +375,110 @@ class TestReviewRootDocs(unittest.TestCase):
         skill = _read_doc()
         self.assertIn("Repo root:", skill)
         self.assertIn("#975", skill)
+
+
+def _registered_driver_flags():
+    """Every option string `driver`'s parser actually registers, plus the
+    positionals, keyed by the name a doc would use."""
+    import scripts.driver as driver
+    parser = driver.build_parser()
+    options, positionals = set(), set()
+
+    def _harvest(p):
+        for action in p._actions:
+            if action.option_strings:
+                options.update(action.option_strings)
+            elif action.dest not in ("command", "help"):
+                positionals.add(action.dest)
+        for group in p._subparsers._group_actions if p._subparsers else []:
+            for sub in getattr(group, "choices", {}).values():
+                _harvest(sub)
+
+    _harvest(parser)
+    return options, positionals
+
+
+class TestAdvertisedFlagsExist(unittest.TestCase):
+    """#1531: SKILL.md's frontmatter and quick reference advertised four flags
+    `driver run` does not have -- `--mode`, `--out`, `--full`, `--max-verify`
+    (that last one belongs to synthesize.py). The existing guard checked the
+    README quick-start for `--mode`/`--target` only, which is why these
+    survived. Derive the allowed set from the parser instead of listing it."""
+
+    def setUp(self):
+        with open(os.path.join(ROOT, "SKILL.md"), encoding="utf-8") as fh:
+            self.text = fh.read()
+        self.options, self.positionals = _registered_driver_flags()
+
+    def test_quick_reference_advertises_only_real_flags(self):
+        block = self.text.split("## Quick reference", 1)[1]
+        advertised = set(re.findall(r"`?(--[a-z][a-z-]+)", block))
+        unknown = sorted(advertised - self.options)
+        self.assertEqual(
+            unknown, [],
+            "SKILL.md advertises flags `driver` does not register: %s. A new "
+            "adopter copy-pastes these." % ", ".join(unknown))
+
+    def test_frontmatter_arguments_are_real(self):
+        block = _section(self.text, "arguments:", "disableModelInvocation:")
+        named = re.findall(r"^\s*-\s*(\S+)", block, re.MULTILINE)
+        self.assertTrue(named, "SKILL.md lost its frontmatter arguments list")
+        unknown = [n for n in named
+                   if n not in self.positionals and "--" + n not in self.options]
+        self.assertEqual(
+            unknown, [],
+            "SKILL.md frontmatter names arguments the driver has no parser "
+            "entry for: %s" % ", ".join(unknown))
+
+    def test_the_guard_would_notice_a_planted_flag(self):
+        advertised = {"--security", "--definitely-not-a-flag"}
+        self.assertEqual(sorted(advertised - self.options),
+                         ["--definitely-not-a-flag"])
+
+
+class TestDocsMatchTheTree(unittest.TestCase):
+    """#1531: three doc-vs-code drifts that a reader has no way to detect.
+    Each is asserted against the thing it describes, not against a copy."""
+
+    def test_readme_agents_table_names_every_agent(self):
+        agents = sorted(f[:-3] for f in os.listdir(os.path.join(ROOT, "agents"))
+                        if f.endswith(".md"))
+        with open(os.path.join(ROOT, os.pardir, "README.md"), encoding="utf-8") as fh:
+            line = [ln for ln in fh if "skill/agents/" in ln]
+        self.assertTrue(line, "README lost its skill/agents/ row")
+        missing = [a for a in agents if a not in line[0]]
+        self.assertEqual(
+            missing, [],
+            "README's agents row omits %s; skill/agents/ holds %s"
+            % (", ".join(missing), ", ".join(agents)))
+
+    def test_contributing_python_matrix_matches_ci(self):
+        root = os.path.join(ROOT, os.pardir)
+        with open(os.path.join(root, ".github", "workflows", "ci.yml"),
+                  encoding="utf-8") as fh:
+            ci = fh.read()
+        m = re.search(r"python-version:\s*\[([^\]]+)\]", ci)
+        self.assertIsNotNone(m, "ci.yml lost its python-version matrix")
+        versions = re.findall(r"[\d.]+", m.group(1))
+        with open(os.path.join(root, "CONTRIBUTING.md"), encoding="utf-8") as fh:
+            contributing = fh.read()
+        sentence = [ln for ln in contributing.splitlines()
+                    if "CI matrix runs on Python" in ln]
+        self.assertTrue(sentence, "CONTRIBUTING lost its CI-matrix sentence")
+        missing = [v for v in versions if v not in sentence[0]]
+        self.assertEqual(
+            missing, [],
+            "CONTRIBUTING says %r but ci.yml runs %s"
+            % (sentence[0].strip(), ", ".join(versions)))
+
+    def test_checkpoint_comment_does_not_restate_the_kinds(self):
+        # The comment listed three of the four CHECKPOINT_KINDS. A comment that
+        # COPIES a constant drifts from it; one that names it cannot.
+        with open(os.path.join(ROOT, "scripts", "phases", "engine.py"),
+                  encoding="utf-8") as fh:
+            engine = fh.read()
+        line = [ln for ln in engine.splitlines() if "checkpoint: str" in ln]
+        self.assertTrue(line, "engine.py lost its checkpoint field")
+        self.assertIn("CHECKPOINT_KINDS", line[0],
+                      "the checkpoint comment should name CHECKPOINT_KINDS "
+                      "rather than restate its members: %s" % line[0].strip())
