@@ -46,7 +46,8 @@ resolve against cwd; only the script path substitutes.
 - Key flags: `--host NAME`, `--security {standard,redteam}`,
   `--fail-on {critical,high,medium,low}`, `--severity {all,medium,high,critical}`,
   `--tools`, `--no-tools`, `--max-per-group N`, `--gate-scope`, `--base <ref>`,
-  `--pr <n>`, `--changes`.
+  `--pr <n>`, `--changes`, `--allow-unenforced` (required to dispatch
+  write-capable reviewers on a host that cannot mediate Write).
 - CI gate key: `summary.gate` (`PASS` / `FAIL` / `OFF` / `INCONCLUSIVE`).
 
 See [`docs/PANOPTICON.md`](docs/PANOPTICON.md) for the complete contract.
