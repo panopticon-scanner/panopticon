@@ -3315,6 +3315,65 @@ class TestToolCoverageCertification(unittest.TestCase):
         )
         self.assertTrue(r["summary"]["coverage_certified"])
 
+    def test_produced_but_unusable_adapter_gates(self):
+        # #1512 / Codex BR-02: bandit was selected and wrote bytes, so the
+        # manifest calls it produced with nothing missing -- but ingestion could
+        # not parse those bytes. Deriving coverage from the manifest alone
+        # certified a scanner that never delivered a finding it could read.
+        tm = {"selected": ["bandit", "gitleaks"],
+              "produced": ["bandit", "gitleaks"], "missing": [], "excluded_scope": []}
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(scout_requested=[]),
+            tools=plan_mod.ToolAxis(
+                manifest=tm, tools_ran={"gitleaks"},
+                dispositions={"bandit": {"status": "failed", "findings": 0,
+                                         "reason": "unparseable: x"},
+                              "gitleaks": {"status": "ok", "findings": 1}}),
+        ))
+        self.assertEqual(self._div_tools(r), {"bandit": "produced_unusable"})
+        self.assertFalse(r["summary"]["coverage_certified"])
+        self.assertEqual(r["summary"]["gate"], "INCONCLUSIVE")
+        # the reason stays legible in the artifact, not just the label
+        self.assertIn("unparseable",
+                      r["meta"]["coverage"]["adapters"]["bandit"]["reason"])
+
+    def test_unusable_gates_while_noscan_beside_it_does_not(self):
+        # The two #1512 / #1335 verdicts must not collapse into each other: one
+        # is lost coverage an operator can act on, the other is a no-surface
+        # disclosure. Same run, same manifest, different outcomes.
+        tm = {"selected": ["bandit", "semgrep"],
+              "produced": ["bandit", "semgrep"], "missing": [], "excluded_scope": []}
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(scout_requested=[]),
+            tools=plan_mod.ToolAxis(
+                manifest=tm, tools_ran=set(),
+                dispositions={"bandit": {"status": "failed", "findings": 0,
+                                         "reason": "unparseable: x"},
+                              "semgrep": {"status": "noscan", "findings": 0}}),
+        ))
+        self.assertEqual(self._div_tools(r),
+                         {"bandit": "produced_unusable", "semgrep": "produced_noscan"})
+        self.assertFalse(r["summary"]["coverage_certified"])
+
+    def test_a_manifest_without_ingestion_keeps_the_1031_behaviour(self):
+        # --no-tools / no --tools-dir: there are no dispositions to judge
+        # usability with. Inferring "unusable" from their absence would fail
+        # every selected adapter on a run that never ingested.
+        tm = {"selected": ["bandit"], "produced": ["bandit"], "missing": [],
+              "excluded_scope": []}
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(scout_requested=[]),
+            tools=plan_mod.ToolAxis(manifest=tm),
+        ))
+        self.assertEqual(self._div_tools(r), {})
+        self.assertTrue(r["summary"]["coverage_certified"])
+
     def test_real_missing_adapter_gates(self):
         # a SELECTED adapter that didn't produce is a real coverage loss ->
         # requested_absent -> not certified, even if the scout never named it.

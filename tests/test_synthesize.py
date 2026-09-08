@@ -10,6 +10,7 @@ import unittest
 from unittest import mock
 
 import scripts.synthesize as syn
+import scripts.run_tools as run_tools
 import scripts.synth.findings as findings_mod
 import scripts.synth.plan as plan_mod
 import scripts.synth.verdicts as verdicts_mod
@@ -774,6 +775,62 @@ class TestScoutToolDisclosure(unittest.TestCase):
             with open(out) as fh:
                 report = json.load(fh)
             self.assertEqual(report["meta"]["coverage"]["scout_profiles_seen"], 0)
+
+class TestUnusableScannerCertification(unittest.TestCase):
+    """#1512 / Codex BR-02, end to end on real artifacts.
+
+    The acceptance asks for a REAL raw output file and a REAL manifest rather
+    than a hand-built build_report input, because the defect lived precisely in
+    the gap between what the runner wrote and what ingestion could read -- a
+    pre-built input closes that gap by construction and cannot fail."""
+
+    def _run(self, d, payload):
+        td = os.path.join(d, "tools")
+        os.makedirs(td)
+        with open(os.path.join(td, "bandit.sarif"), "wb") as fh:
+            fh.write(payload)
+        # The real writer's own manifest: bandit selected AND produced, nothing
+        # missing -- which is the truth about bytes, and a lie about coverage.
+        run_tools.write_manifest(os.path.join(d, "tools-manifest.json"),
+                                 ["bandit"], [os.path.join(td, "bandit.sarif")],
+                                 run_id="rid-1")
+        fp = os.path.join(d, "findings-g1-code.json")
+        with open(fp, "w") as fh:
+            json.dump({"findings": []}, fh)
+        out = os.path.join(d, "r.json")
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            rc = syn.main(["--target", "src", "--run-dir", d, "--tools-dir", td,
+                           "--fail-on", "high", "--out", out, fp])
+        with open(out, encoding="utf-8") as fh:
+            return rc, json.load(fh)
+
+    def test_unparseable_scanner_output_cannot_certify(self):
+        with tempfile.TemporaryDirectory() as d:
+            rc, report = self._run(d, b"not JSON")
+        cov = report["meta"]["coverage"]
+        self.assertEqual(cov["adapters"]["bandit"]["status"], "failed")
+        self.assertEqual(cov["tools_ran"], [])
+        self.assertEqual(cov["divergence"]["tools"], {"bandit": "produced_unusable"})
+        self.assertFalse(report["summary"]["coverage_certified"])
+        self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
+        self.assertEqual(rc, 2)
+
+    def test_valid_zero_finding_output_still_certifies(self):
+        # `empty` is completed coverage, not lost coverage -- a scanner that ran
+        # and found nothing is the outcome the whole pipeline hopes for.
+        sarif = json.dumps({"runs": [{"tool": {"driver": {"name": "bandit",
+                                                          "rules": []}},
+                                      "results": []}]}).encode("utf-8")
+        with tempfile.TemporaryDirectory() as d:
+            rc, report = self._run(d, sarif)
+        cov = report["meta"]["coverage"]
+        self.assertEqual(cov["adapters"]["bandit"]["status"], "empty")
+        self.assertEqual(cov["tools_ran"], ["bandit"])
+        self.assertEqual(cov["divergence"]["tools"], {})
+        self.assertTrue(report["summary"]["coverage_certified"])
+        self.assertEqual(rc, 0)
+
 
 class TestRunDirArtifactResolution(unittest.TestCase):
     """#17/#16: under 5.1 per-run folders synthesize must resolve run artifacts

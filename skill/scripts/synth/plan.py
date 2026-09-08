@@ -408,10 +408,31 @@ def reconcile(plan, tools, resolved):
         selected = set(tools.manifest.get("selected") or [])
         produced_m = set(tools.manifest.get("produced") or [])
         missing = tools.manifest.get("missing")
-        tools_absent = sorted(missing if isinstance(missing, list)
+        missing_list = sorted(missing if isinstance(missing, list)
                               else selected - produced_m)
+        tools_absent = list(missing_list)
+        tool_divergence = {t: "requested_absent" for t in missing_list}
+        # #1512 (Codex BR-02): the manifest records what the RUNNER wrote, which
+        # is a fact about bytes, not about coverage. A selected scanner whose
+        # output could not be parsed is `failed` in the dispositions and already
+        # excluded from tools_ran -- but coverage was derived from the manifest
+        # alone, so it certified a scanner that delivered nothing readable.
+        # Required set stays the manifest's selection; it is reconciled here
+        # against what ingestion could actually USE:
+        #     tools_absent = missing  U  (selected - usable)
+        # Guarded on tools_ran, which is None exactly when no ingest ran
+        # (--no-tools, or no --tools-dir). With no dispositions to judge
+        # usability by, inferring "unusable" from their absence would fail every
+        # selected adapter on a run that never ingested.
+        if tools.tools_ran is not None:
+            lost = ingest_tools.lost_required_coverage(tools.manifest,
+                                                       tools.dispositions or {})
+            tools_absent = sorted(set(tools_absent) | set(lost))
+            tool_divergence.update(
+                {t: "produced_unusable" if info["kind"] == "unusable"
+                 else "requested_absent"
+                 for t, info in lost.items()})
         unavailable = sorted(set(plan.scout_requested or []) - selected - produced_m)
-        tool_divergence = {t: "requested_absent" for t in tools_absent}
         tool_divergence.update({t: "requested_unavailable" for t in unavailable})
     else:
         tools_absent = sorted(set(plan.scout_requested or []) - produced)
