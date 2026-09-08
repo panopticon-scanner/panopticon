@@ -23,7 +23,7 @@ TEARDOWN_DIRECTIVE = (
 @dataclasses.dataclass
 class PhaseResult:
     kind: str                     # "advanced" | "checkpoint"
-    checkpoint: str = None        # scout|review|verify (iff kind == "checkpoint")
+    checkpoint: str = None        # a runio.CHECKPOINT_KINDS member, iff kind == "checkpoint"
     group: str = None
     dispatch_request: str = None  # absolute path (iff checkpoint)
     message: str = ""

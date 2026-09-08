@@ -48,6 +48,32 @@ Setup now front-loads the grouping work so every later run reuses it
   not read `config.json`; the durable profile (`profiles.yml`) and the scout
   short-circuit, and `--seats` calibration, are plan 2.
 
+## 5.1.0 — Measurement
+
+The release where the scanner's own numbers became worth reading. 231 commits,
+37 issues.
+
+- **A grade that discriminates:** the max-severity rollup had SATURATED — ten Ds
+  and one F across eleven runs, unable to tell any two codebases apart. It is
+  replaced by a bounded health index (#1473, #1456, #1146).
+- **A cost ledger that reproduces:** `meta.cost.tokens` goes from usually-null to
+  collected automatically, over a window bounded at BOTH ends, so a run's ledger
+  still reproduces after the fact (#1450, #1453, #1494).
+- **Grouping becomes controllable rather than implicit:** `--max-per-group` is
+  exposed and defaulted to 48 after a measured cap series (#1462, #1488),
+  subgroups roll up to their parent in the report (#1305), and a chunk states its
+  parentage instead of having it inferred from its name (#1480).
+- **Per-run folders** (#1130) and **X0X catalog-gap emission** (#1132) land as
+  planned. Tool-aware review ships as a SEC-cell proof of concept (#1307); the
+  full treatment is deferred to 5.2 (#1131).
+- **The tool axis is repaired end to end:** dependency-check no longer certifies
+  off a build file alone (#1474), a tool verdict is keyed to its dispatched cell
+  rather than an echoed id (#1475), and the void gosec axes were re-measured
+  rather than caveated (#1477).
+- **The remaining 136 fixes** are self-scan remediation from runs 6-10, plus the
+  calibration apparatus that made five targets measurable — including two
+  pre-registered predictions, one of which failed and was recorded as failed.
+
 ## 5.0.1 — Honest instrumentation
 
 The first 5.0 point release: the residuals surfaced by the BursarBuddy

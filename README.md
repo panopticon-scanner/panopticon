@@ -108,7 +108,7 @@ kimi /panopticon --pr 217              # review PR 217 in an isolated worktree
 | `skill/SKILL.md` | Skill entry point (frontmatter + quick reference) |
 | `docs/PANOPTICON.md` | Full user guide, driver run-loop spec, and schema contracts |
 | `skill/scripts/` | Runnable Python modules (driver, discovery, synthesizer, dispatch, tools) |
-| `skill/agents/` | Custom agent definitions (`scout`, `domain-panel`, `domain-advisor`, `advisor`) |
+| `skill/agents/` | Custom agent definitions (`advisor`, `domain-advisor`, `domain-panel`, `scout`, `setup-scan`) |
 | `skill/reference/` | Schemas, CWE catalog, security checklists, example group profiles |
 | `scripts/` | Project maintenance, issue filing, and triage CLI scripts |
 | `tests/` | pytest suite |

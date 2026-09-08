@@ -41,6 +41,30 @@ class TestVersionSingleSourcing(unittest.TestCase):
         self.assertIsNotNone(m, "SKILL.md lost its frontmatter version")
         self.assertEqual(m.group(1), __version__)
 
+    def test_changelog_has_a_section_for_the_current_version(self):
+        """#1530: the FIFTH changelog-drift issue (#52, #518, #533, #1185,
+        #1188 preceded it). Every one was fixed by hand and none added a guard,
+        so the class kept coming back -- 5.1.0 shipped with 232 commits and no
+        entry. The version bump and the changelog heading are now the same
+        step: a bump without a section fails here.
+        """
+        headings = re.findall(r"^## ([\d.]+)", _read("CHANGELOG.md"), re.MULTILINE)
+        self.assertIn(
+            __version__, headings,
+            "CHANGELOG.md has no '## %s' section. The release that bumps "
+            "_version.py must add the section in the same commit; the "
+            "'## Unreleased' heading is for the NEXT version, not this one. "
+            "Found: %s" % (__version__, ", ".join(headings[:5])))
+
+    def test_changelog_sections_descend(self):
+        # A section inserted in the wrong place reads as history and hides the
+        # gap this guard exists to catch.
+        headings = re.findall(r"^## ([\d.]+)", _read("CHANGELOG.md"), re.MULTILINE)
+        keyed = [tuple(int(n) for n in h.split(".")) for h in headings]
+        self.assertEqual(keyed, sorted(keyed, reverse=True),
+                         "CHANGELOG.md version sections are out of order: %s"
+                         % ", ".join(headings))
+
     def test_report_meta_uses_the_constant(self):
         import scripts.synth.findings as findings_mod
         import scripts.synth.plan as plan_mod
