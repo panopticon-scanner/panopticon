@@ -5,6 +5,7 @@ import unittest
 from unittest import mock
 
 import file_issues
+import triage
 
 
 def _completed(returncode=0, stdout="", stderr=""):
@@ -187,13 +188,19 @@ class TestCreateEmptyStdout(unittest.TestCase):
     stdout. create() must back off and retry, never crash on splitlines()[-1]."""
 
     def test_empty_stdout_then_url_retries_and_returns(self):
-        calls = [_completed(0, ""), _completed(0, "https://gh/issues/900")]
+        # #1212 changed what happens BETWEEN the empty response and the retry:
+        # the ambiguous rc=0 is now probed (`gh issue list`) before re-creating,
+        # so a create that actually landed is adopted instead of duplicated.
+        # Here the probe reports nothing filed, so the retry proceeds as before.
+        calls = [_completed(0, ""),                        # create: rc=0, no url
+                 _completed(0, "[]"),                      # probe: nothing filed
+                 _completed(0, "https://gh/issues/900")]   # retry: the real url
         with mock.patch.object(file_issues.subprocess, "run",
                                side_effect=calls) as run, \
              mock.patch.object(file_issues.time, "sleep") as slept:
             url = file_issues.create("t", "b", ["self-scan"], dry=False)
         self.assertEqual(url, "https://gh/issues/900")
-        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_count, 3)
         slept.assert_called()  # backed off between the empty response and retry
 
     def test_persistent_empty_stdout_returns_none_without_crashing(self):
@@ -273,3 +280,232 @@ class TestLedgerSafety(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestVerifiedByRendering(unittest.TestCase):
+    """#run11 COD-D3C: evidence.derive_evidence returns verified_by as a LIST in
+    some branches and a bare STRING in others. Iterating a string yields
+    CHARACTERS, so the public issue body read 'a, g, e, n, t, :, ...'."""
+
+    def _body(self, verified_by):
+        f = dict(FINDING, evidence={"status": "tool_reported",
+                                    "verified_by": verified_by})
+        return file_issues.body_for(f, False)
+
+    def test_string_verified_by_renders_as_one_identity(self):
+        body = self._body("tool:bandit")
+        self.assertIn("**Corroborating panels:** tool:bandit", body)
+        self.assertNotIn("t, o, o, l", body)
+
+    def test_list_verified_by_still_joins_the_identities(self):
+        self.assertIn("**Corroborating panels:** security, database",
+                      self._body(["security", "database"]))
+
+    def test_single_character_identity_is_not_mistaken_for_a_list(self):
+        self.assertIn("**Corroborating panels:** x", self._body("x"))
+
+
+class TestPartPathConfinement(unittest.TestCase):
+    """#1523 (SEC-D1C): this filer publishes to PERMANENT PUBLIC issues, and its
+    copy of the part-path check never got the realpath re-confinement the
+    reconcile.py original was hardened with, so a planted same-directory symlink
+    exfiltrated an arbitrary JSON file into the issue tracker."""
+
+    def test_rejects_parts_entry_escaping_via_symlink(self):
+        with tempfile.TemporaryDirectory() as base:
+            outside = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
+            outside.write(b"{}")
+            outside.close()
+            try:
+                os.symlink(outside.name, os.path.join(base, "part.json"))
+                with self.assertRaises(ValueError):
+                    file_issues.resolve_part_path(base, "part.json")
+                real = os.path.join(base, "ok.json")
+                with open(real, "w") as fh:
+                    fh.write("{}")
+                self.assertEqual(file_issues.resolve_part_path(base, "ok.json"),
+                                 os.path.realpath(real))
+            finally:
+                os.unlink(outside.name)
+
+    def test_rejects_lexical_escape_and_absolute_parts(self):
+        with tempfile.TemporaryDirectory() as base:
+            for bad in ("../../etc/passwd", "/etc/passwd"):
+                with self.assertRaises(ValueError):
+                    file_issues.resolve_part_path(base, bad)
+
+    def test_is_the_same_function_reconcile_hardened(self):
+        # The defect was a COPY that drifted. Pin the shared identity so it
+        # cannot silently fork again.
+        import scripts.reconcile as reconcile
+        self.assertIs(file_issues.resolve_part_path,
+                      reconcile._resolve_part_path)
+
+
+class TestLedgerConcurrency(unittest.TestCase):
+    """#run11 DAT-F1C: main() loads the ledger once, then every record() wrote
+    the WHOLE in-memory dict back. A second filer running concurrently had its
+    entries silently overwritten -- and a lost ledger entry means the finding is
+    re-filed as a DUPLICATE public issue on the next run."""
+
+    def test_record_preserves_an_entry_written_by_another_process(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "ledger.json")
+            mine = {}
+            file_issues.record(mine, "a|1||finding", "url-a", path=path)
+            # Another filer records its own finding while this one holds `mine`.
+            file_issues.record({}, "b|2||finding", "url-b", path=path)
+            # This filer records a second entry from its now-stale in-memory dict.
+            file_issues.record(mine, "c|3||finding", "url-c", path=path)
+            on_disk = file_issues.load_ledger(path=path)
+        self.assertEqual(on_disk, {"a|1||finding": "url-a",
+                                   "b|2||finding": "url-b",
+                                   "c|3||finding": "url-c"})
+
+    def test_record_takes_an_exclusive_lock(self):
+        if file_issues.fcntl is None:
+            self.skipTest("no fcntl on this platform")
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "ledger.json")
+            with mock.patch.object(file_issues.fcntl, "flock",
+                                   wraps=file_issues.fcntl.flock) as flock:
+                file_issues.record({}, "k", "u", path=path)
+        modes = [c.args[1] for c in flock.call_args_list]
+        self.assertIn(file_issues.fcntl.LOCK_EX, modes)
+
+    def test_record_still_updates_the_callers_dict(self):
+        with tempfile.TemporaryDirectory() as d:
+            ledger = {}
+            file_issues.record(ledger, "k", "u",
+                               path=os.path.join(d, "ledger.json"))
+        self.assertEqual(ledger["k"], "u")
+
+
+class TestLedgerSchemaVersion(unittest.TestCase):
+    """#run11 DAT-F2A: the ledger carried no version, so key-format evolution was
+    detected by counting '|' fields. A row the heuristic misread was carried
+    through unmigrated and silently orphaned -- never again recognised as filed."""
+
+    def test_record_stamps_the_schema_version(self):
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "ledger.json")
+            file_issues.record({}, "fp|id|p.py|finding", "u", path=path)
+            with open(path, encoding="utf-8") as fh:
+                raw = json.load(fh)
+        self.assertEqual(raw["schema_version"], file_issues.LEDGER_SCHEMA_VERSION)
+        self.assertEqual(raw["entries"], {"fp|id|p.py|finding": "u"})
+
+    def test_legacy_flat_ledger_is_still_read_and_migrated(self):
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "ledger.json")
+            legacy = {"fp|SEC-1|%sskill/x.py|finding" % file_issues.repo_root(): "u"}
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(legacy, fh)
+            self.assertEqual(file_issues.load_ledger(path=path),
+                             {"fp|SEC-1|skill/x.py|finding": "u"})
+
+    def test_a_versioned_ledger_is_not_re_sniffed(self):
+        # file_fixmes keys are a bare id -- one '|'-free field. The old
+        # heuristic had to guess; a versioned ledger must pass them through
+        # untouched rather than re-deciding what shape they are.
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "ledger.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"schema_version": file_issues.LEDGER_SCHEMA_VERSION,
+                           "entries": {"FIXME-12": "u"}}, fh)
+            self.assertEqual(file_issues.load_ledger(path=path), {"FIXME-12": "u"})
+
+    def test_refuses_a_ledger_from_a_newer_filer(self):
+        # Reading it as empty would re-file every finding as a duplicate --
+        # the same hazard #run9 COD-B1A closed for a corrupt ledger.
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "ledger.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"schema_version": file_issues.LEDGER_SCHEMA_VERSION + 1,
+                           "entries": {}}, fh)
+            with self.assertRaises(RuntimeError) as caught:
+                file_issues.load_ledger(path=path)
+        self.assertIn("newer", str(caught.exception).lower())
+
+
+class TestCreateIdempotence(unittest.TestCase):
+    """#1212: `gh issue create` has been seen exiting 0 with EMPTY stdout under
+    GitHub secondary rate limits. The old code assumed that meant the issue was
+    not created and retried blind -- so whenever it HAD been created, the retry
+    filed a duplicate permanent public issue. Ask before re-creating."""
+
+    def _run_returning(self, *results):
+        it = iter(results)
+
+        def _run(cmd, **kw):
+            return next(it)
+        return _run
+
+    def test_empty_stdout_adopts_an_existing_issue_instead_of_refiling(self):
+        listing = '[{"title": "t", "url": "https://gh/issues/42"}]'
+        run = self._run_returning(_completed(0, ""), _completed(0, listing))
+        with mock.patch.object(file_issues.subprocess, "run", side_effect=run) as r, \
+             mock.patch.object(file_issues.time, "sleep"):
+            url = file_issues.create("t", "b", ["self-scan"], dry=False)
+        self.assertEqual(url, "https://gh/issues/42")
+        self.assertEqual(r.call_count, 2)          # probe, then STOP -- no re-create
+        self.assertIn("issue", r.call_args_list[1].args[0])
+        self.assertIn("list", r.call_args_list[1].args[0])
+
+    def test_a_different_title_is_not_adopted(self):
+        listing = '[{"title": "some other issue", "url": "https://gh/issues/9"}]'
+        run = self._run_returning(_completed(0, ""), _completed(0, listing),
+                                  _completed(0, "https://gh/issues/10"))
+        with mock.patch.object(file_issues.subprocess, "run", side_effect=run), \
+             mock.patch.object(file_issues.time, "sleep"):
+            url = file_issues.create("t", "b", ["self-scan"], dry=False)
+        self.assertEqual(url, "https://gh/issues/10")
+
+    def test_an_unreadable_probe_keeps_the_old_retry_behaviour(self):
+        # If we cannot tell whether the issue exists, the safe fallback is the
+        # behaviour that was already shipping, not a silent give-up.
+        run = self._run_returning(_completed(0, ""), _completed(1, "", "boom"),
+                                  _completed(0, "https://gh/issues/11"))
+        with mock.patch.object(file_issues.subprocess, "run", side_effect=run), \
+             mock.patch.object(file_issues.time, "sleep"):
+            url = file_issues.create("t", "b", ["self-scan"], dry=False)
+        self.assertEqual(url, "https://gh/issues/11")
+
+
+class TestRetryLadderHasOneOwner(unittest.TestCase):
+    """#run11 ARC-A3A / QAL-D1A: triage.gh() and file_issues.create() each had
+    their own 5-attempt, 60*attempt ladder with their own rate-limit check. They
+    had already diverged once. One ladder, two exhaustion policies."""
+
+    def _file_issues_backoffs(self):
+        with mock.patch.object(file_issues.subprocess, "run",
+                               return_value=_completed(1, "", "API rate limit exceeded")), \
+             mock.patch.object(file_issues.time, "sleep") as slept:
+            file_issues.create("t", "b", ["self-scan"], dry=False)
+        return [c.args[0] for c in slept.call_args_list]
+
+    def _triage_backoffs(self):
+        slept = []
+        runner = mock.Mock(return_value=_completed(1, "", "API rate limit exceeded"))
+        with self.assertRaises(RuntimeError):
+            triage.gh(["gh", "x"], runner=runner, sleep=slept.append)
+        return slept
+
+    def test_both_callers_walk_the_same_backoff_schedule(self):
+        self.assertEqual(self._file_issues_backoffs(), self._triage_backoffs())
+
+    def test_the_schedule_is_the_shared_one(self):
+        self.assertEqual(self._triage_backoffs(),
+                         [triage.backoff_seconds(a) for a in range(1, triage.GH_ATTEMPTS)])
+
+    def test_exhaustion_policies_stay_different(self):
+        # triage.gh() raises so a caller cannot silently continue; create()
+        # returns None so the finding is left un-ledgered for a resumed run.
+        with mock.patch.object(file_issues.subprocess, "run",
+                               return_value=_completed(1, "", "API rate limit exceeded")), \
+             mock.patch.object(file_issues.time, "sleep"):
+            self.assertIsNone(file_issues.create("t", "b", ["s"], dry=False))
