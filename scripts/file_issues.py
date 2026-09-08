@@ -10,6 +10,8 @@ against them rather than silently dropped.
 Usage:  python3 .panopticon/file_issues.py [--dry-run] [--limit N]
 """
 import argparse
+import contextlib
+import functools
 import json
 import os
 import shutil
@@ -17,8 +19,22 @@ import subprocess
 import sys
 import time
 
+try:
+    import fcntl               # POSIX only; the ledger lock degrades without it
+except ImportError:            # pragma: no cover - not reachable on posix CI
+    fcntl = None
+
 import triage
 from sanitize import repo_root, repo_relative, scrub, defang
+
+# skill/scripts/reconcile.py owns the part-path confinement. This filer used to
+# carry its own copy, which never received the #run9 SEC-D1C realpath hardening
+# (#1523) -- so import the one implementation rather than mirroring it again.
+_SKILL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                      "skill")
+if _SKILL not in sys.path:
+    sys.path.insert(0, _SKILL)
+import scripts.reconcile as _reconcile  # noqa: E402
 
 __all__ = ["repo_root", "repo_relative", "scrub", "defang"]
 
@@ -131,8 +147,15 @@ def body_for(f, rejected=False, report=REPORT, report_url=REPORT_URL,
         verb = "Advisor verdict" if not rejected else "Advisor rejection"
         L.append("\n## %s\n\n%s" % (verb, defang(reasoning)))
     if ev.get("verified_by"):
+        verified_by = ev["verified_by"]
+        # #run11 COD-D3C: derive_evidence returns this as a LIST in some
+        # branches and a bare STRING in others ("tool:bandit", "agent:advisor").
+        # Iterating a string yields CHARACTERS, so the public issue body read
+        # "a, g, e, n, t, :, a, ..." -- one identity is a one-element list.
+        if isinstance(verified_by, str):
+            verified_by = [verified_by]
         L.append("\n**Corroborating panels:** %s" % ", ".join(
-            defang(str(x)) for x in ev["verified_by"]))
+            defang(str(x)) for x in verified_by))
     L.append("\n---\n")
     fp = defang(f.get("fingerprint") or "").replace("`", "'")
     L.append("**Fingerprint:** `%s` — stable cross-run identity; excludes line "
@@ -153,6 +176,13 @@ REPO_SLUG = "panopticon-scanner/panopticon"
 
 LEDGER = ".panopticon/filed-issues.json"
 
+# #run11 DAT-F2A: the ledger used to be a bare {key: url} map with no version,
+# so a key-format change was detected by COUNTING '|' fields -- and a key the
+# heuristic misread (a corrupt one, a future shape, or a sibling filer's
+# '|'-free id) was carried through unmigrated and silently orphaned, never again
+# recognised as already-filed. v2 states the format instead of sniffing it.
+LEDGER_SCHEMA_VERSION = 2
+
 
 def normalize_ledger(raw_ledger):
     """Normalize legacy ledger keys (e.g. absolute paths) to canonical repo-relative keys (#1124)."""
@@ -170,6 +200,25 @@ def normalize_ledger(raw_ledger):
     return migrated
 
 
+def _unwrap_ledger(data, path):
+    """Entries out of either ledger shape.
+
+    v2 states its version, so its keys are taken AS WRITTEN -- no '|'-counting.
+    A bare map is the legacy v1 shape and gets the one-time key migration."""
+    if isinstance(data, dict) and "schema_version" in data:
+        version = data.get("schema_version")
+        if version != LEDGER_SCHEMA_VERSION:
+            raise RuntimeError(
+                "ledger %s declares schema_version %r, but this filer speaks %d. "
+                "A newer filer wrote it; reading it anyway would mis-key the "
+                "dedup state and re-file findings as duplicate public issues. "
+                "Upgrade this filer, or delete the ledger deliberately to start "
+                "fresh." % (path, version, LEDGER_SCHEMA_VERSION))
+        entries = data.get("entries")
+        return dict(entries) if isinstance(entries, dict) else {}
+    return normalize_ledger(data)
+
+
 def load_ledger(path=LEDGER):
     """Filing is resumable: a run that dies partway must not re-file.
 
@@ -178,7 +227,7 @@ def load_ledger(path=LEDGER):
     try:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
-            return normalize_ledger(data)
+        return _unwrap_ledger(data, path)
     except FileNotFoundError:
         return {}                    # no ledger yet -> legitimate first run
     except (OSError, ValueError) as e:
@@ -194,13 +243,52 @@ def load_ledger(path=LEDGER):
             "Restore it, or delete it deliberately to start fresh." % (path, e)) from e
 
 
+@contextlib.contextmanager
+def _ledger_lock(path):
+    """Exclusive lock for one read-modify-write of the ledger.
+
+    Without it two filers each read the ledger at start-up and whichever wrote
+    last erased the other's entries (#run11 DAT-F1C) -- and a lost entry is a
+    DUPLICATE public issue on the next run. The lock lives beside the ledger
+    rather than on it, so it survives the atomic os.replace below."""
+    if fcntl is None:                      # pragma: no cover - posix in CI
+        yield
+        return
+    with open(path + ".lock", "a") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
 def record(ledger, key, url, path=LEDGER):
+    """Add one entry, merging whatever else reached the file meanwhile.
+
+    The caller's dict is a snapshot taken at start-up; re-reading under the lock
+    is what keeps a concurrent filer's entries from being erased by this write.
+    """
     ledger[key] = url
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(ledger, fh, indent=1, sort_keys=True)
-    os.replace(tmp, path)
+    with _ledger_lock(path):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                merged = _unwrap_ledger(json.load(fh), path)
+        except FileNotFoundError:
+            merged = {}
+        except ValueError as e:
+            # A corrupt ledger must not be silently flattened into this write
+            # -- that would drop every entry it still holds (#run9 COD-B1A).
+            raise RuntimeError(
+                "ledger %s is present but unreadable/corrupt (%s); refusing to "
+                "overwrite it." % (path, e)) from e
+        merged.update(ledger)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"schema_version": LEDGER_SCHEMA_VERSION,
+                       "entries": merged}, fh, indent=1, sort_keys=True)
+        os.replace(tmp, path)
+    ledger.update(merged)
 
 
 def make_ledger_key(fingerprint, finding_id, location_file, kind):
@@ -213,14 +301,11 @@ def make_ledger_key(fingerprint, finding_id, location_file, kind):
     )
 
 
-def resolve_part_path(base_dir, part):
-    """Resolve and validate a report part continuation path within base_dir (#1122)."""
-    part = str(part)
-    base_norm = os.path.normpath(base_dir or ".")
-    ppath = os.path.normpath(os.path.join(base_norm, part))
-    if os.path.isabs(part) or not (ppath == base_norm or ppath.startswith(base_norm + os.sep)):
-        raise ValueError("invalid meta.parts entry: %r" % part)
-    return ppath
+# The hardened original (#1122 confinement + #run9 SEC-D1C symlink
+# re-confinement), not a copy: this filer publishes to permanent public issues,
+# so a part that resolves outside the report directory must not be openable
+# here either (#1523).
+resolve_part_path = _reconcile._resolve_part_path
 
 
 def key_for(f, rejected):
@@ -239,6 +324,45 @@ def key_for(f, rejected):
 GH_CREATE_TIMEOUT = 60
 
 
+def _gh_bin():
+    return shutil.which("gh") or "gh"
+
+
+def find_existing_issue(title, runner):
+    """URL of an issue that already carries EXACTLY this title, or None.
+
+    #1212: `gh issue create` exiting 0 with empty stdout is ambiguous -- it has
+    been observed under GitHub secondary rate limits, and the retry that
+    followed assumed the issue had not been created. Whenever it HAD been, the
+    retry filed a duplicate permanent public issue. So ask.
+
+    None means "no match, or could not tell". Both keep the pre-existing retry
+    behaviour rather than inventing a new failure mode: an unanswerable probe
+    must not turn a filable finding into a silent skip.
+    """
+    try:
+        r = runner([_gh_bin(), "issue", "list",
+                    "--search", '"%s" in:title' % title,
+                    "--state", "all", "--limit", "50", "--json", "title,url"],
+                   capture_output=True, text=True)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    try:
+        rows = json.loads(r.stdout or "[]")
+    except ValueError:
+        return None
+    if not isinstance(rows, list):
+        return None
+    for row in rows:
+        # Exact title only: `--search` is fuzzy, and adopting a NEAR match would
+        # silently drop a real finding.
+        if isinstance(row, dict) and row.get("title") == title and row.get("url"):
+            return row["url"]
+    return None
+
+
 def create(title, body, labels, dry, throttle=0.0, env=None):
     if dry:
         print("\n" + "=" * 78)
@@ -249,59 +373,34 @@ def create(title, body, labels, dry, throttle=0.0, env=None):
         return None
     if env is None:
         env = triage.gh_env()
-    gh_bin = shutil.which("gh") or "gh"
-    for attempt in range(1, 6):
-        try:
-            r = subprocess.run([gh_bin, "issue", "create", "--title", title,  # nosec B603
-                                "--body", body, "--label", ",".join(labels)],
-                               capture_output=True, text=True,
-                               env=env, timeout=GH_CREATE_TIMEOUT)
-        except subprocess.TimeoutExpired:
-            # A hung gh must not block the run indefinitely (#1104): back off
-            # and retry, else leave un-ledgered for a later resume like the
-            # empty-stdout path below, rather than halting the whole run.
-            if attempt < 5:
-                backoff = 60 * attempt
-                print("gh create timed out after %ds (attempt %d); backing off %ds"
-                      % (GH_CREATE_TIMEOUT, attempt, backoff),
-                      file=sys.stderr, flush=True)
-                time.sleep(backoff)
-                continue
-            print("FAILED (gh create timed out): %s" % title,
-                  file=sys.stderr, flush=True)
-            return None
-        if r.returncode == 0:
-            out = r.stdout.strip().splitlines()
-            if out:
-                url = out[-1]
-                print("%s  %s" % (url, title[:70]), flush=True)
-                if throttle:
-                    time.sleep(throttle)
-                return url
-            # rc==0 but nothing on stdout. Observed under GitHub secondary rate
-            # limits, where `gh issue create` exits 0 without printing the URL
-            # (and, empirically, without creating the issue). Back off and retry
-            # rather than crashing on splitlines()[-1]; if a URL never appears,
-            # return None so this finding is left un-ledgered for a later resume
-            # instead of halting the whole run.
-            if attempt < 5:
-                backoff = 60 * attempt
-                print("empty stdout on rc=0 (attempt %d); backing off %ds"
-                      % (attempt, backoff), file=sys.stderr, flush=True)
-                time.sleep(backoff)
-                continue
-            print("FAILED (rc=0, no url returned): %s" % title,
-                  file=sys.stderr, flush=True)
-            return None
-        err = (r.stderr or "").strip()
-        if any(h in err.lower() for h in triage.RATE_HINTS) and attempt < 5:
-            backoff = 60 * attempt
-            print("rate limited (attempt %d); sleeping %ds" % (attempt, backoff),
-                  file=sys.stderr, flush=True)
-            time.sleep(backoff)
-            continue
-        print("FAILED: %s\n%s" % (title, err), file=sys.stderr, flush=True)
-        return None
+    # Built here, not at import: tests patch subprocess.run, and the hard
+    # timeout keeps a hung gh from blocking the unattended run (#1104).
+    runner = functools.partial(subprocess.run, env=env, timeout=GH_CREATE_TIMEOUT)
+    outcome, payload = triage.attempt_gh(
+        [_gh_bin(), "issue", "create", "--title", title,
+         "--body", body, "--label", ",".join(labels)],
+        runner, time.sleep, retry_empty_stdout=True,
+        on_empty=lambda: find_existing_issue(title, runner),
+        what="gh issue create")
+    if outcome == "adopted":
+        print("%s  %s  (already filed; adopted, not re-created)"
+              % (payload, title[:70]), flush=True)
+        return payload
+    if outcome == "ok":
+        url = payload.strip().splitlines()[-1]
+        print("%s  %s" % (url, title[:70]), flush=True)
+        if throttle:
+            time.sleep(throttle)
+        return url
+    # Exhaustion leaves the finding UN-LEDGERED so a later run re-files it,
+    # rather than halting the whole run. triage.gh() raises instead; the two
+    # policies differ deliberately, which is why the ladder returns an outcome.
+    if outcome == "timeout":
+        print("FAILED (gh create timed out): %s" % title, file=sys.stderr, flush=True)
+    elif outcome == "empty":
+        print("FAILED (rc=0, no url returned): %s" % title, file=sys.stderr, flush=True)
+    else:
+        print("FAILED: %s\n%s" % (title, payload), file=sys.stderr, flush=True)
     return None
 
 
@@ -330,7 +429,7 @@ def main():
     # A large report is split; meta.parts names the continuation files, resolved
     # beside the main artifact. Reading only the first part silently under-files.
     for part in (report.get("meta") or {}).get("parts") or []:
-        ppath = resolve_part_path(os.path.dirname(a.report), part)
+        ppath = resolve_part_path(os.path.dirname(os.path.abspath(a.report)), part)
         try:
             with open(ppath, encoding="utf-8") as fh:
                 pdata = json.load(fh)

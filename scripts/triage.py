@@ -203,34 +203,84 @@ def default_gh_runner():
     return functools.partial(subprocess.run, env=gh_env(), timeout=GH_TIMEOUT)
 
 
-def gh(argv, runner=None, sleep=time.sleep):
-    if runner is None:
-        runner = default_gh_runner()
-    for attempt in range(1, 6):
+# One retry ladder for every gh subprocess call in the repo. It used to be two:
+# this module's gh() and file_issues.create() each carried the same 5-attempt,
+# 60*attempt, RATE_HINTS-sniffing loop, and they had ALREADY diverged in
+# behaviour (#run11 ARC-A3A / QAL-D1A). file_fixmes.py's own comment records the
+# same drift happening once before.
+GH_ATTEMPTS = 5
+
+
+def backoff_seconds(attempt):
+    """The project's single retry schedule."""
+    return 60 * attempt
+
+
+def _backoff(message, attempt, sleep):
+    seconds = backoff_seconds(attempt)
+    print("%s; backing off %ds" % (message, seconds), file=sys.stderr, flush=True)
+    sleep(seconds)
+
+
+def attempt_gh(argv, runner, sleep, retry_empty_stdout=False, on_empty=None,
+               what=None):
+    """Run `argv` through the shared gh retry ladder.
+
+    Returns (outcome, payload), one of:
+      ("ok", stdout) ("adopted", value) ("timeout", None) ("empty", None)
+      ("failed", stderr)
+
+    The ladder lives here alone -- attempt cap, backoff schedule, rate-limit
+    heuristics, TimeoutExpired handling. What EXHAUSTION MEANS stays with the
+    caller, because the two callers genuinely disagree: gh() raises so a caller
+    cannot silently continue, while file_issues.create() returns None so the
+    finding is left un-ledgered for a resumed run. That is why this reports an
+    outcome instead of deciding one.
+
+    `on_empty` is consulted when an attempt exits 0 with NO stdout, before
+    backing off: return a value to adopt as the result, or None to keep retrying.
+    """
+    label = what or " ".join(argv[:4])
+    for attempt in range(1, GH_ATTEMPTS + 1):
+        final = attempt == GH_ATTEMPTS
         try:
             r = runner(argv, capture_output=True, text=True)
         except subprocess.TimeoutExpired:
-            # The finding's core: without a timeout the retry logic never engages
-            # because subprocess.run never returns. Now a hang is a retryable
-            # failure -- back off and retry, else give up loudly (#1103).
-            if attempt < 5:
-                backoff = 60 * attempt
-                print("gh timed out (attempt %d); backing off %ds"
-                      % (attempt, backoff), file=sys.stderr, flush=True)
-                sleep(backoff)
-                continue
-            raise RuntimeError("%s timed out after retries" % " ".join(argv[:4]))
-        if r.returncode == 0:
-            return r.stdout
-        err = (r.stderr or "").strip()
-        if any(h in err.lower() for h in RATE_HINTS) and attempt < 5:
-            backoff = 60 * attempt
-            print("rate limited (attempt %d); sleeping %ds"
-                  % (attempt, backoff), file=sys.stderr, flush=True)
-            sleep(backoff)
+            # Without a timeout the retry logic never engages, because
+            # subprocess.run never returns; a hang is a retryable failure (#1103).
+            if final:
+                return "timeout", None
+            _backoff("%s timed out (attempt %d)" % (label, attempt), attempt, sleep)
             continue
-        raise RuntimeError("%s failed: %s" % (" ".join(argv[:4]), err))
-    raise RuntimeError("%s failed after retries" % " ".join(argv[:4]))
+        if r.returncode == 0:
+            if not retry_empty_stdout or (r.stdout or "").strip():
+                return "ok", r.stdout
+            if on_empty is not None:
+                adopted = on_empty()
+                if adopted is not None:
+                    return "adopted", adopted
+            if final:
+                return "empty", None
+            _backoff("empty stdout on rc=0 (attempt %d)" % attempt, attempt, sleep)
+            continue
+        err = (r.stderr or "").strip()
+        if any(h in err.lower() for h in RATE_HINTS) and not final:
+            _backoff("rate limited (attempt %d)" % attempt, attempt, sleep)
+            continue
+        return "failed", err
+    return "failed", "exhausted %d attempts" % GH_ATTEMPTS
+
+
+def gh(argv, runner=None, sleep=time.sleep):
+    if runner is None:
+        runner = default_gh_runner()
+    outcome, payload = attempt_gh(argv, runner, sleep)
+    if outcome == "ok":
+        return payload
+    label = " ".join(argv[:4])
+    if outcome == "timeout":
+        raise RuntimeError("%s timed out after retries" % label)
+    raise RuntimeError("%s failed: %s" % (label, payload))
 
 
 def apply(rows, dry=False, throttle=1.5, runner=None,
