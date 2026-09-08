@@ -10,6 +10,7 @@ docs/superpowers/specs/2026-08-15-panopticon-5.0-driver-skeleton-design.md §3.
 import datetime
 import json
 import os
+import subprocess
 import re
 import uuid
 
@@ -56,10 +57,40 @@ def new_run_id():
     return uuid.uuid4().hex
 
 
+def _target_provenance(target, runner=subprocess.run):
+    """(commit, dirty) for the tree being scanned, or (None, None) if not git.
+
+    #1492: nothing in the run record established WHICH code a run saw. `base`
+    and `pr_base` are the delta-review base REF, not the scanned HEAD, and both
+    are null on a full-repo run -- so every cross-run comparison the calibration
+    apparatus rests on (the cap series, the same-cap overlap result, the per-cell
+    yield curve) assumed tree-identity it could not verify. Comparing fzf's
+    cap-15 and cap-48 runs required inferring it from the fact that their group
+    files union to 155 paths, which would catch a changed file SET and never a
+    changed file's CONTENTS.
+
+    Recorded, never enforced: a resumed run must not be refused because the tree
+    moved under it. This is provenance, not an anti-drift flag.
+    """
+    try:
+        head = runner(["git", "-C", target, "rev-parse", "HEAD"],
+                      capture_output=True, text=True, timeout=15)
+        if head.returncode != 0:
+            return None, None
+        status = runner(["git", "-C", target, "status", "--porcelain"],
+                        capture_output=True, text=True, timeout=15)
+        if status.returncode != 0:
+            return head.stdout.strip() or None, None
+        return head.stdout.strip() or None, bool(status.stdout.strip())
+    except (subprocess.SubprocessError, OSError):
+        return None, None
+
+
 def build_manifest(*, target, review_root, host, security_mode, base=None,
                    flags=None, run_id=None, worktree=None, scope=None, pr=None,
                    pr_base=None, created=None):
     flags = flags or {}
+    _commit, _dirty = _target_provenance(os.path.abspath(target))
     return {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id or new_run_id(),
@@ -79,6 +110,11 @@ def build_manifest(*, target, review_root, host, security_mode, base=None,
         # orchestrator's --pr-base for origin/<base> preference (#947). NOT an
         # anti-drift key -- a PR's base is fixed by the PR, not a user knob.
         "pr_base": pr_base,
+        # #1492: provenance of the tree that was scanned. Recorded so a
+        # cross-run comparison can be VERIFIED rather than assumed; never an
+        # anti-drift key (see _target_provenance).
+        "target_commit": _commit,
+        "target_dirty": _dirty,
     }
 
 
