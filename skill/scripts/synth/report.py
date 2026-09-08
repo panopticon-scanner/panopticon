@@ -144,6 +144,9 @@ def assemble(run, resolved, reconciled, graded, cost):
     for f in resolved.findings:
         f.pop("_group", None)
         f.pop("_repo_root", None)
+        # #1476: dedupe's alias carrier. Internal plumbing for verdict binding,
+        # not part of the artifact contract -- stripped here with the others.
+        f.pop(evidence_mod.MERGED_IDS_FIELD, None)
     return {
         "schema_version": REPORT_SCHEMA_VERSION,
         "meta": {

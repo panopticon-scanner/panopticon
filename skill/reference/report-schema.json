@@ -734,9 +734,9 @@
           },
           "location": {
             "type": "object",
+            "description": "#1522: a location, if present, identifies a FILE. line_start is optional -- a whole-file finding (missing header, bad config) is legitimate and must not have a line number invented for it. A finding with no locus at all (a repo-wide catalog- or coverage-gap finding) carries no location key at all; `location` is not in the finding-level required list.",
             "required": [
-              "file",
-              "line_start"
+              "file"
             ],
             "properties": {
               "file": {

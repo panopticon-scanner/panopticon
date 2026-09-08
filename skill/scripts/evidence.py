@@ -579,6 +579,44 @@ def load_verdict_bundles(verdicts_dir):
     return by_fid, unloadable
 
 
+MERGED_IDS_FIELD = "_merged_ids"
+
+
+def merged_ids(finding):
+    """Ids of findings collapsed INTO this one by dedupe, if any.
+
+    #1476: dedupe drops the non-survivor outright, so its assigned id vanishes
+    from the report and every verdict that echoed it binds to nothing. Run-6 lost
+    148 of 2,043 supplied verdicts that way -- roughly 7% of the most expensive
+    phase of a run, and a CONFIRMED verdict among them means a real finding is
+    reported as unverified.
+
+    The id is content-derived and must stay so (the driver and synthesize compute
+    it independently and have to agree), so the survivor keeps the collapsed ids
+    as ALIASES instead. Underscore-prefixed like `_group`: an internal carrier
+    stripped before the report is written, never a trust field an agent asserts.
+    """
+    ids = finding.get(MERGED_IDS_FIELD)
+    return [i for i in ids if isinstance(i, str)] if isinstance(ids, list) else []
+
+
+def record_merged_id(best, other):
+    """Carry `other`'s identity onto the survivor dedupe kept, transitively.
+
+    Transitive because a cluster larger than two collapses in stages: an alias a
+    first merge recorded must survive a second, or the earliest twin's verdict
+    unbinds anyway. Lives here beside `merged_ids` so the alias vocabulary has
+    exactly one home.
+    """
+    aliases = list(merged_ids(best))
+    for candidate in [other.get("id")] + merged_ids(other):
+        if (isinstance(candidate, str) and candidate
+                and candidate != best.get("id") and candidate not in aliases):
+            aliases.append(candidate)
+    if aliases:
+        best[MERGED_IDS_FIELD] = aliases
+
+
 def match_verdict_by_id(finding, by_fid, run_id=None):
     """Match a bundle verdict to a finding by its assigned `id`. by_fid maps a
     finding_id to a LIST of candidate verdicts (primary and/or backup, possibly
@@ -588,13 +626,24 @@ def match_verdict_by_id(finding, by_fid, run_id=None):
     fid = finding.get("id")
     if not fid:
         return None
-    candidates = by_fid.get(str(fid))
+    # #1476: the finding's OWN id first, then the ids dedupe collapsed into it.
+    # Order is the whole discipline -- an alias must never outrank the real id,
+    # because the survivor's own verdict adjudicated the finding that survived.
+    # Aliasing widens WHICH id may bind, never which RUN: the run_id filter below
+    # is applied to alias candidates identically, so a stale cross-run verdict
+    # gains no new way in.
+    candidates = None
+    for key in [str(fid)] + merged_ids(finding):
+        pool = by_fid.get(key)
+        if not pool:
+            continue
+        if run_id is not None:
+            pool = [c for c in pool if c.get("run_id") == run_id]
+        if pool:
+            candidates = pool
+            break
     if not candidates:
         return None
-    if run_id is not None:
-        candidates = [c for c in candidates if c.get("run_id") == run_id]
-        if not candidates:
-            return None
     for c in candidates:
         if c.get("stage") == "backup":
             return c
