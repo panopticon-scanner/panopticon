@@ -51,15 +51,43 @@ SEV_MAP = {
     "info": "INFO",
     "informational": "INFO",
     "none": "INFO",
+    # SARIF `level` (#1229). This is the format the pipeline ingests most, and
+    # its whole vocabulary used to fall through to the INFO default.
+    "error": "HIGH",
+    "warning": "MEDIUM",
+    "note": "LOW",
 }
+
+# Distinct unmapped values already reported, so a scanner that emits one on
+# every finding costs one line, not thousands.
+_warned_severities = set()
 
 ID_RE = re.compile(r"^[A-Z]{2,4}-\d{3,}$")
 
 
 def normalize_severity(value: str | None) -> str:
+    """Map a tool's severity word onto the pipeline's ladder.
+
+    #1229 (COD-C1B): an UNMAPPED value used to become INFO in silence, which
+    can bury a genuinely severe finding beneath the gate floor. An unmapped
+    value is a gap in SEV_MAP -- not a tool saying "informational" -- so the
+    fallback now says which word it could not place. The fallback itself is
+    still INFO: changing it moves gate outcomes for every scan, which is an
+    owner call, not a side effect of adding a warning.
+    """
     if not isinstance(value, str):
         return "INFO"
-    return SEV_MAP.get(value.lower().strip(), "INFO")
+    key = value.lower().strip()
+    if not key:
+        return "INFO"                # the tool said nothing; not a map gap
+    if key in SEV_MAP:
+        return SEV_MAP[key]
+    if key not in _warned_severities:
+        _warned_severities.add(key)
+        print("unmapped tool severity %r; grading it INFO. Add it to "
+              "tools.base.SEV_MAP if it means something higher." % value,
+              file=sys.stderr, flush=True)
+    return "INFO"
 
 
 def new_finding_id(prefix: str, n: int) -> str:

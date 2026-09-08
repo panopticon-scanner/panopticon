@@ -46,7 +46,49 @@ class TestBase(unittest.TestCase):
         self.assertEqual(base.normalize_severity("moderate"), "MEDIUM")
         self.assertEqual(base.normalize_severity("low"), "LOW")
         self.assertEqual(base.normalize_severity("info"), "INFO")
-        self.assertEqual(base.normalize_severity("unknown"), "INFO")
+
+    def test_normalize_severity_maps_the_sarif_level_vocabulary(self):
+        # #1229: SARIF is the format this pipeline ingests most, and its
+        # `level` vocabulary was entirely absent from SEV_MAP -- so every
+        # SARIF-native level fell through to the INFO default.
+        self.assertEqual(base.normalize_severity("error"), "HIGH")
+        self.assertEqual(base.normalize_severity("warning"), "MEDIUM")
+        self.assertEqual(base.normalize_severity("note"), "LOW")
+        self.assertEqual(base.normalize_severity("none"), "INFO")
+
+    def test_unmapped_severity_is_reported_not_silently_downgraded(self):
+        # #1229 (COD-C1B): this test used to assert `"unknown" -> INFO` and
+        # nothing else, codifying the silent downgrade as intended behaviour.
+        # An unmapped value means OUR MAP has a gap, not that the tool reported
+        # something informational -- so the fallback must say so out loud.
+        base._warned_severities.clear()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(base.normalize_severity("blocker"), "INFO")
+        self.assertIn("blocker", err.getvalue())
+        self.assertIn("INFO", err.getvalue())
+
+    def test_each_unmapped_value_is_reported_once(self):
+        # One line per distinct gap; a scanner emitting it on every finding
+        # must not drown the run log.
+        base._warned_severities.clear()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            for _ in range(5):
+                base.normalize_severity("blocker")
+            base.normalize_severity("showstopper")
+        self.assertEqual(err.getvalue().count("blocker"), 1)
+        self.assertIn("showstopper", err.getvalue())
+
+    def test_a_missing_severity_is_not_reported_as_a_mapping_gap(self):
+        # None/"" is a tool that said nothing, not a vocabulary we failed to
+        # map -- warning about it would be noise on every such finding.
+        base._warned_severities.clear()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(base.normalize_severity(None), "INFO")
+            self.assertEqual(base.normalize_severity("  "), "INFO")
+        self.assertEqual(err.getvalue(), "")
 
     def test_new_finding_id_increments(self):
         self.assertEqual(base.new_finding_id("PA", 1), "PA-001")

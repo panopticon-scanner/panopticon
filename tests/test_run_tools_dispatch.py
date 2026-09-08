@@ -1,5 +1,6 @@
 """Adapter dispatch tests for scripts.run_tools."""
 import contextlib
+import inspect
 import io
 import json
 import os
@@ -67,6 +68,89 @@ class TestAdapterDispatch(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertEqual(os.listdir(d), [])   # no artifact written
 
+class TestDefaultSelectionBranch(unittest.TestCase):
+    """#1526 (TST-A2C): main()'s `else` arm -- taken whenever --tools is omitted
+    -- is the branch EVERY real scan uses (driver.tools_execute and
+    .github/workflows/security.yml both omit the flag), yet every rt.main() test
+    passed --tools and took the other arm. Its four constituents were unit-tested
+    in isolation; their COMPOSITION was not.
+
+    Docker is reported unavailable so the manifest records the selection without
+    launching a container: `selected` is exactly the composed `chosen` list."""
+
+    def _selection_for(self, target, extra=()):
+        with tempfile.TemporaryDirectory() as d:
+            manifest = os.path.join(d, "manifest.json")
+            with mock.patch("scripts.run_tools.docker_available", return_value=False), \
+                 mock.patch("scripts.run_tools.run_tools",
+                            side_effect=AssertionError("scan must not run without docker")), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                rc = rt.main(["--target", target, "--out", os.path.join(d, "out"),
+                              "--manifest", manifest] + list(extra))
+            self.assertEqual(rc, 0)
+            with open(manifest, encoding="utf-8") as fh:
+                return json.load(fh)
+
+    def _expected(self, target, deps=False, exclude=()):
+        selected_adapters = rt.select_adapters(target)
+        required_names, _ = rt.partition_by_exclusion(
+            selected_adapters, target, list(exclude))
+        phase1 = [n for n in required_names if n in rt.PHASE1_ADAPTERS]
+        phase2 = [n for n in required_names if n in rt.PHASE2_ADAPTERS]
+        languages = rt.detect_languages(target)
+        return rt.filter_online(
+            rt.select_tools(languages, deps) + phase1 + phase2, False)
+
+    def _polyglot(self, target):
+        """A target that draws from BOTH phase sets, so neither half of the
+        concatenation can be asserted vacuously."""
+        for name, body in (("requirements.txt", "requests==2.0.0\n"),   # phase 1
+                           ("app.py", "x = 1\n"),
+                           ("Cargo.lock", "[[package]]\nname = \"x\"\n"),  # phase 2
+                           ("Gemfile.lock", "GEM\n  specs:\n")):           # phase 2
+            with open(os.path.join(target, name), "w") as fh:
+                fh.write(body)
+
+    def test_omitting_tools_composes_the_production_selection(self):
+        with tempfile.TemporaryDirectory() as target:
+            self._polyglot(target)
+            payload = self._selection_for(target, extra=["--deps"])
+            expected = self._expected(target, deps=True)
+            required, _ = rt.partition_by_exclusion(
+                rt.select_adapters(target), target, [])
+        self.assertEqual(payload["selected"], list(dict.fromkeys(expected)))
+        # Both halves of `phase1 + phase2` must actually be exercised, or the
+        # equality above proves only that an empty list equals an empty list.
+        self.assertTrue([n for n in required if n in rt.PHASE1_ADAPTERS],
+                        "fixture selected no phase-1 adapter")
+        self.assertTrue([n for n in required if n in rt.PHASE2_ADAPTERS],
+                        "fixture selected no phase-2 adapter")
+        self.assertTrue(set(rt.PHASE2_ADAPTERS) & set(payload["selected"]),
+                        "phase-2 adapters never reached the selection")
+
+    def test_the_default_branch_really_is_the_one_production_takes(self):
+        # Pin the premise rather than trusting it: if driver ever started
+        # passing --tools, this test would be guarding the wrong arm.
+        import scripts.phases.tools as tools_phase
+        source = inspect.getsource(tools_phase)
+        self.assertIn("run_tools.py", source)
+        self.assertNotIn('"--tools"', source)
+
+    def test_language_detection_feeds_the_selection(self):
+        # detect_languages is one of the four composed functions; a target with
+        # no recognised language must not silently select the python set.
+        with tempfile.TemporaryDirectory() as target:
+            with open(os.path.join(target, "app.py"), "w") as fh:
+                fh.write("x = 1\n")
+            python_selection = self._selection_for(target)["selected"]
+        with tempfile.TemporaryDirectory() as target:
+            with open(os.path.join(target, "README.md"), "w") as fh:
+                fh.write("# nothing\n")
+            bare_selection = self._selection_for(target)["selected"]
+        self.assertNotEqual(python_selection, bare_selection)
+
+
+class TestAdapterSelection(unittest.TestCase):
     def test_select_adapters_by_ecosystem(self):
         with tempfile.TemporaryDirectory() as d:
             open(os.path.join(d, "requirements.txt"), "w").close()
