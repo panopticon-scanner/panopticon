@@ -56,25 +56,55 @@ class DiffMapError(Exception):
     instead of scoping the on-diff gate to nothing (#5.0-08)."""
 
 
+def _merge_base_cause(repo, base):
+    """Why `git merge-base HEAD <base>` failed, in the operator's terms.
+
+    Only ever called on the failure path, so the extra git call is free."""
+    try:
+        rp = _run_git(repo, ["rev-parse", "--verify", "-q", "%s^{commit}" % base])
+        resolves = rp.returncode == 0 and bool(rp.stdout.strip())
+    except Exception:
+        return "the base could not be checked (git rev-parse itself failed)"
+    if not resolves:
+        return ("%r does not resolve to a commit -- check the ref name, or fetch "
+                "it if it is a remote branch this clone does not have" % base)
+    return ("%r resolves, but shares no common ancestor with HEAD. If this is a "
+            "shallow clone, deepen it (git fetch --unshallow, or fetch-depth: 0 "
+            "in CI); otherwise it is the wrong base" % base)
+
+
 def hunk_map(repo, base):
     """Changed new-side line ranges per file (merge-base vs working tree),
     including untracked non-ignored files as whole-file ranges.
 
-    Returns {} when the base is unresolvable (an upstream loud-fail already
-    guards this). RAISES DiffMapError when the diff itself fails after a valid
-    base — a git-diff failure must not fall through to an empty map that passes
-    the delta gate vacuously (#5.0-08)."""
+    RAISES DiffMapError when the base cannot be resolved, when HEAD and the base
+    share no common ancestor, or when the diff itself fails — none of these may
+    fall through to an empty map that passes the delta gate vacuously
+    (#5.0-08, #1256)."""
     try:
         mb = _run_git(repo, ["merge-base", "HEAD", base])
     except Exception as e:
         # #run7 OPS-E1A: an INFRA failure here (git missing, timeout) must fail
         # LOUD like the diff/ls-files steps below -- not silently return {} and
         # let the delta gate pass vacuously (#5.0-08), the exact hazard one call
-        # later. A genuinely unresolvable base is the SEPARATE returncode-based {}
-        # contract just below (an upstream loud-fail already guards it).
+        # later.
         raise DiffMapError("git merge-base HEAD..%s failed: %s" % (base, e))
     if mb.returncode != 0 or not mb.stdout.strip():
-        return {}
+        # #1256 (COD-B2C): this used to return {} on the documented assumption
+        # that "an upstream loud-fail already guards this". That guard is
+        # discovery.resolve_base_or_die, and it verifies the base ref RESOLVES
+        # TO A COMMIT -- a different question from whether HEAD and that commit
+        # share an ancestor. merge-base also fails, with a perfectly valid base,
+        # when they do not; the everyday way to reach that is a SHALLOW CLONE,
+        # since CI checkouts default to depth 1 and the fork point is simply not
+        # in the local history. Either way an empty hunk map scopes the on-diff
+        # gate to nothing and passes vacuously -- the exact hazard the diff and
+        # ls-files steps below already raise on -- so both fail loud here.
+        # Which one it was changes the operator's remedy, so say which.
+        raise DiffMapError(
+            "git merge-base HEAD..%s failed (exit %s): %s. The delta cannot be "
+            "computed, and an empty diff would pass the on-diff gate vacuously."
+            % (base, mb.returncode, _merge_base_cause(repo, base)))
     base_sha = mb.stdout.strip()
     # Pin diff formatting so a user's gitconfig (diff.mnemonicPrefix=true, a
     # diff.external driver, quotepath escaping) can't reshape the `+++ b/<path>`

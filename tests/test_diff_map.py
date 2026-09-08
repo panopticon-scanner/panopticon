@@ -94,8 +94,12 @@ class TestHunkMap(unittest.TestCase):
         m2 = diff_map.hunk_map(d, "main")
         self.assertEqual(m2["c.py"], [(1, 3)])
 
-    def test_missing_base_returns_empty(self):
-        self.assertEqual(diff_map.hunk_map(self._repo(), "no-such-ref"), {})
+    def test_unresolvable_base_raises_instead_of_returning_empty(self):
+        # #1256: this used to return {}. An empty map scopes the on-diff gate to
+        # nothing, so a typo'd or unfetched base would PASS vacuously.
+        with self.assertRaises(diff_map.DiffMapError) as caught:
+            diff_map.hunk_map(self._repo(), "no-such-ref")
+        self.assertIn("does not resolve to a commit", str(caught.exception))
 
     def _fake_git(self, seen, diff_rc=0, diff_err=""):
         def fake(repo, args, timeout=60):
@@ -418,8 +422,8 @@ class TestDiffMapFailures(unittest.TestCase):
         res = dm.diff_anchors(".", "nonexistent-branch-12345")
         self.assertIsNone(res.get("base_commit"))
 
-        hm = dm.hunk_map(".", "nonexistent-base")
-        self.assertEqual(hm, {})
+        with self.assertRaises(dm.DiffMapError):   # #1256: fails closed
+            dm.hunk_map(".", "nonexistent-base")
 
     def test_hunk_map_skips_untracked_symlink_outside_repo(self):
         # #1260: untracked-file line count must not follow symlinks outside repo.
