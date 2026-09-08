@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from _test_helpers import FakePopen, first
+from _test_helpers import FakePopen, first, only
 import scripts.tools.base as tools_base
 import scripts.tools.roslyn_secguard as rs
 
@@ -369,24 +369,31 @@ class TestRebaseSarifUris(unittest.TestCase):
             raw = json.dumps({"runs": [{"results": [{"locations": locations(tmp)}]}]}).encode()
             return json.loads(rs._rebase_sarif_uris(raw, tmp))
 
+    def _location(self, out):
+        """The sole rebased location, each hop guarded (TST-B3A): a regression
+        that drops the run, the result or the location fails by name here
+        instead of as a bare IndexError in the assertion below."""
+        run = only(out["runs"], "run")
+        result = only(run["results"], "result")
+        return only(result["locations"], "location")
+
     def test_v2_artifact_location_rebased(self):
         out = self._run(lambda tmp: [{"physicalLocation": {"artifactLocation": {
             "uri": "file://" + os.path.join(os.path.realpath(tmp), "MyApp", "Foo.cs")}}}])
-        got = out["runs"][0]["results"][0]["locations"][0][
-            "physicalLocation"]["artifactLocation"]["uri"]
+        got = self._location(out)["physicalLocation"]["artifactLocation"]["uri"]
         self.assertEqual(got, os.path.join("MyApp", "Foo.cs"))
 
     def test_v1_result_file_rebased(self):
         out = self._run(lambda tmp: [{"resultFile": {
             "uri": "file://" + os.path.join(os.path.realpath(tmp), "a.cs")}}])
-        self.assertEqual(
-            out["runs"][0]["results"][0]["locations"][0]["resultFile"]["uri"], "a.cs")
+        self.assertEqual(self._location(out)["resultFile"]["uri"], "a.cs")
 
     def test_uri_outside_tmp_left_unchanged(self):
         out = self._run(lambda tmp: [{"physicalLocation": {"artifactLocation": {
             "uri": "src/App.cs"}}}])
-        self.assertEqual(out["runs"][0]["results"][0]["locations"][0][
-            "physicalLocation"]["artifactLocation"]["uri"], "src/App.cs")
+        self.assertEqual(
+            self._location(out)["physicalLocation"]["artifactLocation"]["uri"],
+            "src/App.cs")
 
     def test_unparseable_returned_unchanged(self):
         self.assertEqual(rs._rebase_sarif_uris(b"{not json", "/tmp/x"), b"{not json")
