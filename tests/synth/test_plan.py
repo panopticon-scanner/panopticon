@@ -12,6 +12,7 @@ import scripts.synthesize as syn
 import scripts.synth.findings as findings_mod
 import scripts.synth.plan as plan_mod
 import scripts.synth.report as report_mod
+import scripts.group_runner as gr
 import scripts.group_runner as group_runner_mod
 from scripts._version import __version__
 
@@ -203,6 +204,11 @@ class TestDriverPlanReconcile(unittest.TestCase):
                            "_panopticon": {"run_id": "run-1", "role": "domain_panel",
                                            "group": g, "domain": dom}}, fh)
             files.append(os.path.join(".panopticon", name))
+        # #1511: the driver snapshots the declared cells at the review->verify
+        # boundary, so every real run reaching synthesize HAS one. A fixture that
+        # declares cells but skips the snapshot models a state production never
+        # produces -- and now (correctly) reads as a deleted baseline.
+        gr.snapshot_out_files(plan, out_path=os.path.join(pan, "out-file-hashes.json"))
         if decoy:
             with open(os.path.join(pan, "findings-EVIL.json"), "w",
                       encoding="utf-8") as fh:

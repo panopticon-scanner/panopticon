@@ -12,6 +12,7 @@ import scripts.synthesize as syn
 import scripts.synth.findings as findings_mod
 import scripts.synth.plan as plan_mod
 import scripts.synth.integrity as integrity_mod
+import scripts.group_runner as gr
 import scripts.synth.report as report_mod
 
 
@@ -256,7 +257,8 @@ class IntegritySectionTest(unittest.TestCase):
     KEYS = ["unexpected_findings_files", "missing_planned_files", "duplicate_out_files",
             "mislabeled_findings_files", "cross_domain_findings", "unenforced_acknowledged",
             "ack_stale", "content_hashes_checked", "content_mismatched_files",
-            "content_snapshot_unreadable", "empty_dispatch_plans", "invalid_dispatch_plans",
+            "content_snapshot_unreadable", "content_snapshot_missing",
+            "empty_dispatch_plans", "invalid_dispatch_plans",
             "invalid_verify_queue", "plans_seen"]
 
     def test_key_order_is_the_report_contract(self):
@@ -286,6 +288,88 @@ class IntegritySectionTest(unittest.TestCase):
             self.assertTrue(sec["ack_stale"])
             self.assertIn("STALE ack", err.getvalue())
             self.assertFalse(sec["write_guard_covers_bash"])   # ack present, field absent
+
+    def _cell(self, run_dir, body=b'{"findings": []}'):
+        path = os.path.join(run_dir, "findings-app-QAL.json")
+        with open(path, "wb") as fh:
+            fh.write(body)
+        return path
+
+    def _driver_plan(self, run_dir, out_file):
+        with open(os.path.join(run_dir, "dispatch-plan-driver.json"), "w") as fh:
+            json.dump([{"group": "app", "domain": "QAL", "out_file": out_file}], fh)
+
+    def test_snapshot_is_read_from_the_run_dir_not_the_flat_path(self):
+        # #1511 / Codex BR-01: the driver writes the snapshot into the PER-RUN
+        # folder, but the verifier defaulted to top-level `.panopticon/`, found
+        # nothing, and read the run as one that never had a snapshot -- so the
+        # content-substitution guard was inactive on every ordinary driver run
+        # (run-11 shipped CERTIFIED with content_hashes_checked null).
+        with tempfile.TemporaryDirectory() as run_dir:
+            cell = self._cell(run_dir)
+            self._driver_plan(run_dir, cell)
+            gr.snapshot_out_files([{"out_file": cell}],
+                                  out_path=os.path.join(run_dir, "out-file-hashes.json"))
+            with open(cell, "wb") as fh:            # substitute AFTER the snapshot
+                fh.write(b'{"findings": ["INJECTED"]}')
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                sec = integrity_mod.integrity_section([], [cell], run_dir, 0, 0, None)
+        self.assertEqual(sec["content_hashes_checked"], 1)
+        self.assertEqual(sec["content_mismatched_files"], [cell])
+        self.assertFalse(sec["content_snapshot_missing"])
+
+    def test_a_stale_top_level_snapshot_cannot_poison_the_active_run(self):
+        # The active run's snapshot is authoritative; a leftover top-level file
+        # from an earlier run must neither replace it nor manufacture a mismatch.
+        with tempfile.TemporaryDirectory() as root:
+            run_dir = os.path.join(root, ".panopticon", "runs", "tag")
+            os.makedirs(run_dir)
+            cell = self._cell(run_dir)
+            self._driver_plan(run_dir, cell)
+            gr.snapshot_out_files([{"out_file": cell}],
+                                  out_path=os.path.join(run_dir, "out-file-hashes.json"))
+            with open(os.path.join(root, ".panopticon", "out-file-hashes.json"), "w") as fh:
+                json.dump({os.path.realpath(cell): "0" * 64}, fh)
+            cwd = os.getcwd()
+            os.chdir(root)
+            try:
+                sec = integrity_mod.integrity_section([], [cell], run_dir, 0, 0, None)
+            finally:
+                os.chdir(cwd)
+        self.assertEqual(sec["content_mismatched_files"], [])
+        self.assertEqual(sec["content_hashes_checked"], 1)
+
+    def test_a_driver_run_owing_a_snapshot_that_is_gone_fails_closed(self):
+        # #1208: deleting the baseline read as a benign "not measured". On a run
+        # whose driver plan declares cells, the snapshot is OWED -- its absence
+        # is a deleted baseline, not an ordinary non-fan-out run.
+        with tempfile.TemporaryDirectory() as run_dir:
+            cell = self._cell(run_dir)
+            self._driver_plan(run_dir, cell)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                sec = integrity_mod.integrity_section([], [cell], run_dir, 0, 0, None)
+        self.assertTrue(sec["content_snapshot_missing"])
+        self.assertIsNone(sec["content_hashes_checked"])
+        self.assertIn("snapshot", err.getvalue().lower())
+
+    def test_a_run_that_owes_nothing_keeps_a_benign_absence(self):
+        # No driver plan = a legacy / manual synthesize invocation. Unchanged.
+        with tempfile.TemporaryDirectory() as run_dir:
+            cell = self._cell(run_dir)
+            sec = integrity_mod.integrity_section([], [cell], run_dir, 0, 0, None)
+        self.assertFalse(sec["content_snapshot_missing"])
+        self.assertIsNone(sec["content_hashes_checked"])
+
+    def test_an_empty_driver_plan_owes_nothing(self):
+        # A declared-nothing plan cannot have produced a snapshot, so its
+        # absence is not evidence of deletion.
+        with tempfile.TemporaryDirectory() as run_dir:
+            with open(os.path.join(run_dir, "dispatch-plan-driver.json"), "w") as fh:
+                json.dump([], fh)
+            sec = integrity_mod.integrity_section([], [], run_dir, 0, 0, None)
+        self.assertFalse(sec["content_snapshot_missing"])
 
     def test_counts_pass_through(self):
         with tempfile.TemporaryDirectory() as d:

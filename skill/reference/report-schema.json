@@ -256,7 +256,7 @@
         },
         "integrity": {
           "type": "object",
-          "description": "Run-integrity reconciliation driving certification: unexpected, duplicate, mislabeled, content-mismatched, empty, or invalid dispatch artifacts force gate INCONCLUSIVE.",
+          "description": "Run-integrity reconciliation driving certification: unexpected, duplicate, mislabeled, content-mismatched, empty, or invalid dispatch artifacts force gate INCONCLUSIVE — as does a fan-out snapshot that is corrupt (content_snapshot_unreadable) or owed-but-absent (content_snapshot_missing).",
           "properties": {
             "unexpected_findings_files": {
               "type": "array",
@@ -295,6 +295,14 @@
               "items": {
                 "type": "string"
               }
+            },
+            "content_snapshot_unreadable": {
+              "type": "boolean",
+              "description": "The fan-out snapshot EXISTS but is corrupt/empty — a tamper signal, not a missing snapshot. Fails the gate closed."
+            },
+            "content_snapshot_missing": {
+              "type": "boolean",
+              "description": "#1511/#1208: the run's dispatch plan declares review cells, so a snapshot was OWED, and none is present — a deleted baseline. Fails the gate closed. False on a run that owes nothing (no driver plan), which keeps the benign 'not measured' reading."
             },
             "empty_dispatch_plans": {
               "type": "integer"
