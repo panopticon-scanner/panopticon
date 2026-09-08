@@ -1,12 +1,10 @@
 import hashlib
 import io
 import os
-import sys
 import unittest
 from unittest import mock
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from scripts import bump_pins as bp  # noqa: E402
+import bump_pins as bp
 
 DOCKERFILE = """\
 ENV PATH="/usr/local/cargo/bin:${PATH}"

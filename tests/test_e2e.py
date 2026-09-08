@@ -5,6 +5,8 @@ import sys
 import tempfile
 import unittest
 
+from _test_helpers import first, only
+
 ROOT = os.path.join(os.path.dirname(__file__), os.pardir)
 SCRIPTS = os.path.join(ROOT, "skill", "scripts")
 
@@ -38,7 +40,7 @@ class TestEndToEnd(unittest.TestCase):
                 capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stderr)
             groups = json.loads(r.stdout)
-            gname = groups["groups"][0]["name"]
+            gname = first(groups["groups"], "group")["name"]
             # 2. write a findings file as a panel agent would
             os.makedirs(os.path.join(d, ".panopticon"))
             fp = os.path.join(d, ".panopticon", "findings-%s-code.json" % gname)
@@ -100,7 +102,7 @@ class TestX0XEmissionEndToEnd(unittest.TestCase):
                  "--repo-scan", d], capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stderr)
             groups = json.loads(r.stdout)
-            gname = groups["groups"][0]["name"]
+            gname = first(groups["groups"], "group")["name"]
             os.makedirs(os.path.join(d, ".panopticon"))
             fp = os.path.join(d, ".panopticon", "findings-%s-code.json" % gname)
             with open(fp, "w") as fh:
@@ -126,13 +128,12 @@ class TestX0XEmissionEndToEnd(unittest.TestCase):
             self.assertTrue(os.path.isfile(x0x_path), r2.stdout + r2.stderr)
             x0x = json.load(open(x0x_path))
             self.assertEqual(x0x["generated_by"]["run_id"], "RID-123")
-            self.assertEqual(len(x0x["candidates"]), 1, x0x)
-            c = x0x["candidates"][0]
+            c = only(x0x["candidates"], "candidate")
             self.assertEqual(c["domain"], "ARC")
             self.assertEqual(c["fallback_code"], "ARC-X0X")
             self.assertEqual(c["proposed_name"], "ungated-fixture-provisioning")
             # #1109: the occurrence id is the finding's CONTENT-derived id, not the
             # agent-supplied "AR-001" -- content-derived and ARC-domain-scoped.
-            fid = c["occurrences"][0]["finding_id"]
+            fid = first(c["occurrences"], "occurrence")["finding_id"]
             self.assertNotEqual(fid, "AR-001")
             self.assertRegex(fid, r"^ARC-\d{3,}$")
