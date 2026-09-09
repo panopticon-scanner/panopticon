@@ -4,11 +4,15 @@ import contextlib
 import io
 import json
 import os
+import shutil
+import tempfile
 import unittest
 from unittest import mock
 
 import scripts.phases.runio as runio
 import scripts.phases.setup as setup
+import scripts.phases.setup as setup_phase
+import scripts.phases.requests as requests
 
 import scripts.driver as driver
 import scripts.coverage_model as coverage_model
@@ -37,7 +41,7 @@ class TestDriverSetup(unittest.TestCase):
         status = setup.run_setup_flow(args)
         self.assertEqual(status["status"], "checkpoint")
         self.assertEqual(status["checkpoint"], "scan")
-        req = runio._load_json(runio._pano(d, "dispatch-request.json"))
+        req = runio._load_json(requests.request_path(d, namespace="setup"))
         self.assertEqual(req["checkpoint"], "scan")
         entry = req["entries"][0]
         self.assertEqual(entry["id"], "setup-scan")
@@ -231,7 +235,8 @@ class TestDriverSetup(unittest.TestCase):
         args = driver.build_parser().parse_args(["setup", d])
         s1 = setup.run_setup_flow(args)
         self.assertEqual(s1["checkpoint"], "scan")
-        entry = runio._load_json(runio._pano(d, "dispatch-request.json"))["entries"][0]
+        entry = runio._load_json(
+            requests.request_path(d, namespace="setup"))["entries"][0]
         # host return-persist: write the returned proposal to entry["out_file"]
         with open(entry["out_file"], "w") as fh:
             json.dump({"groups": [{"capability": "Checkout",
@@ -360,3 +365,122 @@ class TestDriverSetup(unittest.TestCase):
         setup.run_setup_flow(driver.build_parser().parse_args(["setup", d, "--reset"]))
         for name in ("setup-report.md", "setup-report.json", "groups.yml.draft"):
             self.assertFalse(os.path.isfile(runio._pano(d, name)), name)
+
+
+class TestSetupOwnsItsDispatchNamespace(unittest.TestCase):
+    """#1507: `driver setup` wrote its dispatch request and prompt through the
+    per-run resolver, so they landed in whatever `.panopticon/runs/latest`
+    pointed at -- an unrelated review run from a previous day, whose own
+    `dispatch-request.json` was overwritten with a `scan` checkpoint carrying
+    setup's run_id.
+
+    A run folder is one run's artifacts (#1130). A later setup silently mutating
+    an old one breaks that run's resume and its audit trail. Setup already has a
+    top-level namespace (setup-manifest, setup-proposal, setup-report...); the
+    dispatch request belongs beside them.
+    """
+
+    def _root(self):
+        d = os.path.realpath(tempfile.mkdtemp())
+        os.makedirs(os.path.join(d, ".panopticon"))
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        return d
+
+    def _prior_run(self, root):
+        """A previous review run's folder, exactly as a real one would look."""
+        tag = "claude-redteam-repo-20260829-07b08094"
+        folder = os.path.join(root, ".panopticon", "runs", tag)
+        os.makedirs(os.path.join(folder, "_prompts"))
+        with open(os.path.join(folder, "dispatch-request.json"), "w") as fh:
+            json.dump({"schema_version": 1, "run_id": "07b08094",
+                       "checkpoint": "review", "group": None, "entries": []}, fh)
+        with open(os.path.join(root, ".panopticon", "run-manifest.json"), "w") as fh:
+            json.dump({"schema_version": 1, "run_id": "07b08094",
+                       "host": "claude", "created": "2026-08-29T00:00:00Z",
+                       "tag": tag}, fh)
+        return folder
+
+    def _snapshot(self, folder):
+        out = {}
+        for base, _dirs, names in os.walk(folder):
+            for name in names:
+                path = os.path.join(base, name)
+                with open(path, "rb") as fh:
+                    out[os.path.relpath(path, folder)] = fh.read()
+        return out
+
+    def test_setup_writes_into_its_own_namespace(self):
+        root = self._root()
+        path = requests.write_dispatch_request(
+            root, "RID", "scan", None,
+            [{"id": "setup-scan", "agent": None, "enforced": False,
+              "model": None, "prompt": "BRIEF", "out_file": "/abs/p.json"}],
+            namespace="setup")
+        self.assertTrue(path.endswith(".panopticon/setup-dispatch-request.json"),
+                        path)
+        self.assertNotIn("/runs/", path)
+
+    def test_setup_leaves_a_previous_run_folder_byte_identical(self):
+        root = self._root()
+        folder = self._prior_run(root)
+        before = self._snapshot(folder)
+        requests.write_dispatch_request(
+            root, "ea7a6402", "scan", None,
+            [{"id": "setup-scan", "agent": None, "enforced": False,
+              "model": None, "prompt": "BRIEF", "out_file": "/abs/p.json"}],
+            namespace="setup")
+        self.assertEqual(self._snapshot(folder), before)
+
+    def test_the_setup_prompt_lands_beside_its_request(self):
+        root = self._root()
+        self._prior_run(root)
+        requests.write_dispatch_request(
+            root, "RID", "scan", None,
+            [{"id": "setup-scan", "agent": None, "enforced": False,
+              "model": None, "prompt": "BRIEF", "out_file": "/abs/p.json"}],
+            namespace="setup")
+        prompt = os.path.join(root, ".panopticon", "setup-prompts",
+                              "setup-scan.txt")
+        self.assertTrue(os.path.isfile(prompt))
+        with open(prompt, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "BRIEF")
+
+    def test_a_review_run_still_writes_into_its_run_folder(self):
+        # The namespace is opt-in; the run loop's behaviour is unchanged.
+        root = self._root()
+        folder = self._prior_run(root)
+        path = requests.write_dispatch_request(
+            root, "07b08094", "review", None,
+            [{"id": "review-G-SEC", "agent": None, "enforced": False,
+              "model": None, "prompt": "P", "out_file": "/abs/f.json"}])
+        self.assertEqual(os.path.dirname(path),
+                         os.path.dirname(runio._pano(root, "dispatch-request.json")))
+        self.assertIn(os.path.join(".panopticon", "runs"), path)
+        self.assertNotIn("setup-dispatch-request", path)
+        self.assertTrue(os.path.isdir(folder))
+
+    def test_the_namespaced_request_reads_back(self):
+        root = self._root()
+        requests.write_dispatch_request(
+            root, "RID", "scan", None,
+            [{"id": "setup-scan", "agent": None, "enforced": False,
+              "model": None, "prompt": "BRIEF", "out_file": "/abs/p.json"}],
+            namespace="setup")
+        req = requests.load_dispatch_request(root, namespace="setup")
+        self.assertEqual(req["checkpoint"], "scan")
+        self.assertEqual(req["run_id"], "RID")
+
+
+class TestSetupScanExecuteUsesTheNamespace(unittest.TestCase):
+    def test_scan_execute_points_at_the_setup_request(self):
+        d = os.path.realpath(tempfile.mkdtemp())
+        os.makedirs(os.path.join(d, ".panopticon"))
+        os.makedirs(os.path.join(d, "src"))
+        with open(os.path.join(d, "src", "app.py"), "w") as fh:
+            fh.write("x = 1\n")
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        result = setup_phase.scan_execute(d, {"run_id": "RID", "host": "claude"})
+        if result.kind != "checkpoint":
+            self.skipTest("vocab-absent fallback path")
+        self.assertTrue(result.dispatch_request.endswith(
+            ".panopticon/setup-dispatch-request.json"), result.dispatch_request)

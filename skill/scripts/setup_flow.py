@@ -42,6 +42,70 @@ _PANOPTICON_DIR_BLANKET = {
     "**/.panopticon", "**/.panopticon/",
 }
 
+# #1509: the set above enumerates SPELLINGS, and it missed the glob form
+# `.panopticon*/` -- which this project's own .gitignore uses deliberately, so a
+# preserved run renamed `.panopticon.prev-<stamp>` stays ignored. Setup then read
+# the repo as un-blanketed, appended the committable block, and its
+# `!.panopticon/` negation RE-EXPOSED groups.yml: the #1135 failure mode
+# recurring for a spelling nobody had listed, silently flipping the repo's policy
+# from "groups.yml is local" to "groups.yml is committable".
+#
+# Enumerating one more spelling would just move the goalposts. `git check-ignore`
+# is authoritative and understands every form, so it decides whenever the target
+# is a checkout; this pattern is the fallback for targets that are not.
+_PANOPTICON_BLANKET_RE = re.compile(r"^/?(\*\*/)?\.panopticon\*?/?$")
+
+
+# The forms that ignore only the directory's CONTENTS. A negation can still
+# re-include a file under these, so they are committable-compatible.
+_CONTENTS_FORM_RE = re.compile(r"^/?(\*\*/)?\.panopticon/\*{1,2}$")
+
+_CHECK_IGNORE_LINE = re.compile(r"^(.*):(\d+):(.*)$")
+
+
+def _git_blanket_pattern(repo, runner=subprocess.run):
+    """The .gitignore pattern git says ignores `.panopticon/groups.yml`.
+
+    Returns the pattern string, "" when git says nothing ignores it, or None
+    when git could not answer (not a checkout, git missing, unexpected exit) --
+    None falls back to pattern matching rather than guessing.
+
+    Asks about a FILE INSIDE the directory, never the directory itself.
+    Measured: `check-ignore -- .panopticon` answers 0 in a repo with no commits
+    and 1 in the same repo once it has one, for the identical `.panopticon*/`
+    pattern -- so the directory query cannot be trusted. The file query is
+    stable, and git's answer names the pattern that actually applies, which is
+    what decides negatability."""
+    try:
+        r = runner(["git", "-C", repo, "check-ignore", "-v", "--",
+                    os.path.join(".panopticon", "groups.yml")],
+                   capture_output=True, text=True, timeout=10)
+    except Exception:                                     # noqa: BLE001
+        return None
+    if r.returncode == 1:
+        return ""                          # git is sure: nothing ignores it
+    if r.returncode != 0:
+        return None                        # 128 = not a git repository
+    line = (r.stdout or "").split("\t", 1)[0]
+    m = _CHECK_IGNORE_LINE.match(line.strip())
+    return m.group(3) if m else None
+
+
+def _dir_blanket_ignored(repo, have):
+    """Whether the .panopticon DIRECTORY itself is already ignored.
+
+    That is the question that matters: git cannot re-include a file whose parent
+    directory is excluded, so a directory blanket is un-negatable and must be
+    left alone. `.panopticon/*` ignores the CONTENTS, not the directory, so it is
+    committable-compatible and correctly reads False here."""
+    pattern = _git_blanket_pattern(repo)
+    if pattern is not None:
+        # Ignored by a CONTENTS-form pattern is not a blanket: the negation
+        # block still works there, which is the whole distinction.
+        return bool(pattern) and not _CONTENTS_FORM_RE.match(pattern)
+    return bool(have & _PANOPTICON_DIR_BLANKET) or any(
+        _PANOPTICON_BLANKET_RE.match(line) for line in have)
+
 
 def _seed_groups_manifest(repo):
     """#485(1): write a STARTER committable groups.yml from the repo's
@@ -102,7 +166,11 @@ def _ensure_gitignore(repo):
     groups.yml stays ignored -- still readable by the driver, committable once
     with ``git add -f``. A fresh repo (or one already using the
     committable-compatible ``.panopticon/*`` form) gets the full block; any
-    already-present entry is skipped so re-runs are true no-ops."""
+    already-present entry is skipped so re-runs are true no-ops.
+
+    #1509: "already blanket-ignores" is decided by ``git check-ignore`` where
+    possible, not by matching spellings -- the literal set missed the glob form
+    and its negation then re-exposed groups.yml."""
     gi = os.path.join(repo, ".gitignore")
     try:
         with open(gi, encoding="utf-8") as fh:
@@ -110,7 +178,7 @@ def _ensure_gitignore(repo):
     except OSError:
         existing = ""
     have = {ln.strip() for ln in existing.splitlines()}
-    dir_blanket = bool(have & _PANOPTICON_DIR_BLANKET)
+    dir_blanket = _dir_blanket_ignored(repo, have)
     wanted = list(_ALWAYS_IGNORE_ENTRIES)
     if not dir_blanket:
         wanted = _PANOPTICON_COMMITTABLE_ENTRIES + wanted
@@ -721,6 +789,24 @@ def config_overrides(repo):
 _MAX_PROPOSAL_BYTES = 1_048_576   # 1 MiB -- far above any legitimate proposal
 
 
+def _committed_exclude_paths(repo):
+    """The committed groups.yml's top-level `exclude_paths`, [] when absent.
+
+    Read from the raw document rather than from committed_matrix, which returns
+    the `groups:` mapping alone (#1504)."""
+    path = os.path.join(plan_contract.artifact_root(repo), "groups.yml")
+    if not os.path.isfile(path):
+        return []
+    import groups_schema  # noqa: E402
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh) or {}
+    except (OSError, yaml.YAMLError):
+        return []            # a corrupt committed file is disclosed elsewhere
+    globs, _errors = groups_schema.parse_exclude_paths(doc)
+    return globs
+
+
 def ingest_proposal(repo=".", proposal_path=None, max_per_group=None, max_groups=None):
     """Ingest a setup-scan proposal -> assemble (aliases, layers, floors) ->
     stage 3 (grouping_engine.plan_groups: scoped assignment, Tests sweep,
@@ -779,7 +865,13 @@ def ingest_proposal(repo=".", proposal_path=None, max_per_group=None, max_groups
     report = planned["report"]
     # Serialize everything BEFORE opening any file: a serializer failure must
     # not leave a truncated draft beside a missing report.
-    draft_text = sp.dump_groups_yaml(merged)
+    # #1504: the merge above shapes the `groups:` mapping only. Any top-level
+    # key the operator committed -- today `exclude_paths` (#1136) -- has to be
+    # carried across explicitly, or the draft they are told to move over the
+    # committed file silently drops it and puts an excluded corpus back in
+    # scope for every domain and every tool scan.
+    draft_text = sp.dump_groups_yaml(
+        merged, exclude_paths=_committed_exclude_paths(repo))
     report_text = grouping_engine.format_report(report, disclosure)
     report_json = json.dumps({"schema_version": 1, "report": report, "disclosure": disclosure,
                               "diff": diff}, indent=1, sort_keys=True) + "\n"
