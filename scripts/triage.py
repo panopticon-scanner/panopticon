@@ -93,8 +93,13 @@ def validate(row):
     v = row.get("verdict")
     if v == "fix" and not isinstance(row.get("rank"), int):
         problems.append("fix needs an integer rank")
-    if v == "duplicate" and not row.get("duplicate_of"):
-        problems.append("duplicate needs duplicate_of")
+    if v == "duplicate":
+        if not row.get("duplicate_of"):
+            problems.append("duplicate needs duplicate_of")
+        elif not isinstance(row.get("duplicate_of"), int):
+            # An issue number, and typed as one so comment_for() can print a
+            # LIVE #N link without defanging it.
+            problems.append("duplicate_of must be an int")
     if v == "already-fixed":
         if not row.get("fixed_by"):
             problems.append("already-fixed needs fixed_by")
@@ -109,13 +114,20 @@ def validate(row):
 
 def comment_for(row):
     v = row["verdict"]
+    # Ledger free text reaches a PUBLIC comment, so it gets the same treatment
+    # as the rationale below. `duplicate_of` deliberately does NOT: validate()
+    # pins it to an int, which cannot carry an injection, and that is what lets
+    # its #N cross-link stay live -- defanging would break the link this comment
+    # exists to make. `rank` is int-checked by validate() for the one verdict
+    # that prints it. #run12 follow-up.
+    batch = scrub(defang(str(row["batch"])))
+    fixed_by = scrub(defang(str(row.get("fixed_by"))))
     head = {
         "fix": "**Triage: fix** — milestone %s, rank %s (provisional within "
-               "batch %s)" % (MILESTONE, row.get("rank"), row["batch"]),
+               "batch %s)" % (MILESTONE, row.get("rank"), batch),
         "duplicate": "**Triage: duplicate** of #%s — closing; the fix lands "
                      "on the canonical issue" % row.get("duplicate_of"),
-        "already-fixed": "**Triage: already fixed** by %s"
-                         % row.get("fixed_by"),
+        "already-fixed": "**Triage: already fixed** by %s" % fixed_by,
         "reject": "**Triage: rejected** — the run-2 advisor rejection was "
                   "spot-checked against the current tree and stands",
         "defer": "**Triage: deferred** — parked, out of the current "
@@ -125,8 +137,7 @@ def comment_for(row):
     if row.get("spot_check"):
         lines += ["", "**Spot-check:** %s" % scrub(defang(row["spot_check"]))]
     lines += ["", "---",
-              "*Remediation triage (batch %s) — spec: `%s`*"
-              % (row["batch"], SPEC)]
+              "*Remediation triage (batch %s) — spec: `%s`*" % (batch, SPEC)]
     return "\n".join(lines)
 
 
