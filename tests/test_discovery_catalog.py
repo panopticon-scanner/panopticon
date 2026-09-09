@@ -1,8 +1,11 @@
 """Catalog, glob semantics, group objects, and assign-by-catalog tests."""
+import io
 import os
 import tempfile
 import unittest
 from unittest import mock
+
+import scripts.groups_schema as groups_schema
 
 from discovery_test_helpers import (orchestrator, touch, run_scan_with_err,
                                     run_scan_helper)
@@ -853,3 +856,111 @@ class TestTestsSweep(unittest.TestCase):
         self.assertIn("Docs:Guides", names)
         self.assertNotIn("Docs", names)
         self.assertEqual(sorted(leftovers), ["README.md", "docs/other.md"])
+
+
+class TestGitignoreDivergences(unittest.TestCase):
+    """#1501: `groups.yml` is documented as taking gitignore-flavored globs,
+    but `_glob_to_re` is hand-rolled and two idioms diverged SILENTLY -- a
+    miscompiled glob does not error, it produces an empty group and inflates
+    `Ungrouped`, the very signal we read as catalog coverage.
+
+    Trailing-slash directory patterns are the most natural gitignore idiom and
+    the translation is exact, so they are now supported. Character classes
+    cannot be translated safely by this compiler, so they are refused at
+    validation time and compile to a never-matching regex here -- refusing
+    loudly, never matching wrongly.
+    """
+
+    def _m(self, path, patterns):
+        return orchestrator.match_patterns(path, patterns)
+
+    def test_trailing_slash_claims_the_directory_tree(self):
+        self.assertTrue(self._m("docs/guide.md", ["docs/"]))
+        self.assertTrue(self._m("docs/a/b/deep.md", ["docs/"]))
+        # unanchored, like gitignore: a `docs` directory at any depth
+        self.assertTrue(self._m("pkg/docs/guide.md", ["docs/"]))
+        # ... but only a directory of that exact name
+        self.assertFalse(self._m("docsite/guide.md", ["docs/"]))
+        # a FILE named docs is not a directory tree
+        self.assertFalse(self._m("docs", ["docs/"]))
+
+    def test_anchored_trailing_slash_stays_at_the_root(self):
+        self.assertTrue(self._m("build/out.o", ["/build/"]))
+        self.assertFalse(self._m("sub/build/out.o", ["/build/"]))
+        # a multi-segment pattern is anchored by the slash it already carries
+        self.assertTrue(self._m("src/vendor/x.go", ["src/vendor/"]))
+        self.assertFalse(self._m("pkg/src/vendor/x.go", ["src/vendor/"]))
+
+    def test_trailing_slash_still_negates(self):
+        self.assertFalse(self._m("docs/api/x.md", ["docs/", "!docs/api/"]))
+        self.assertTrue(self._m("docs/guide.md", ["docs/", "!docs/api/"]))
+
+    def test_character_class_matches_nothing_and_says_so(self):
+        with mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+            orchestrator._warned_globs.clear()
+            self.assertFalse(self._m("main.c", ["*.[ch]"]))
+            # and not as a literal either -- the old behaviour re.escape'd the
+            # brackets, so `*.[ch]` claimed a file actually named `main.[ch]`
+            self.assertFalse(self._m("main.[ch]", ["*.[ch]"]))
+            self.assertFalse(self._m("file3.txt", ["file[0-9].txt"]))
+        self.assertIn("character class", err.getvalue())
+
+    def test_the_disclosure_is_one_line_per_distinct_pattern(self):
+        with mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+            orchestrator._warned_globs.clear()
+            for path in ("a.c", "b.c", "c.c"):
+                self._m(path, ["*.[ch]", "src/[abc]/**"])
+        lines = [ln for ln in err.getvalue().splitlines() if ln.strip()]
+        self.assertEqual(len(lines), 2, err.getvalue())
+
+    def test_shipped_catalog_globs_carry_no_defect(self):
+        catalogs = [orchestrator._commons_catalog(), orchestrator._tests_catalog()]
+        for catalog in catalogs:
+            for name, body in catalog.items():
+                for glob in body.get("match") or []:
+                    with self.subTest(group=name, glob=glob):
+                        self.assertIsNone(groups_schema.glob_defect(glob))
+
+
+class TestGithubTopLevelFilesAreClaimed(unittest.TestCase):
+    """#1508: the first 5.2 setup on panopticon itself left exactly two files
+    in `Ungrouped` -- `.github/labels.yml` and `.github/apply-labels.sh`. CI
+    claimed `.github/workflows/**`, `.github/actions/**`, `.github/scripts/**`
+    and the literal `.github/dependabot.yml`; Docs claimed `.github/*.md` and
+    `.github/ISSUE_TEMPLATE/**`; nothing claimed the OTHER top-level residents
+    of that directory, which are conventional CI/repo config and are not code.
+
+    Ungrouped is documented as a catalog COVERAGE signal, so the report pushed
+    the owner to author a committed group for two CI files -- and, because a
+    committed group named `CI` suppresses the Commons category, that group had
+    to take the whole `.github` tree.
+    """
+
+    def _cat(self, path):
+        for name, body in orchestrator._commons_catalog().items():
+            if orchestrator.match_patterns(path, body.get("match") or []):
+                return name
+        return None
+
+    def test_the_two_run_11_strays_land_in_ci(self):
+        self.assertEqual(self._cat(".github/labels.yml"), "CI")
+        self.assertEqual(self._cat(".github/apply-labels.sh"), "CI")
+
+    def test_the_conventional_neighbours_land_there_too(self):
+        for path in (".github/FUNDING.yml", ".github/release.yml",
+                     ".github/stale.yml", ".github/dependabot.yml",
+                     ".github/renovate.json", ".github/labeler.yaml"):
+            with self.subTest(path=path):
+                self.assertEqual(self._cat(path), "CI")
+
+    def test_markdown_and_templates_still_belong_to_docs(self):
+        # Docs is checked FIRST, so widening CI must not steal them.
+        self.assertEqual(self._cat(".github/CONTRIBUTING.md"), "Docs")
+        self.assertEqual(self._cat(".github/ISSUE_TEMPLATE/bug.yml"), "Docs")
+
+    def test_the_widening_does_not_reach_outside_dot_github(self):
+        # `.github/*` stays inside that one directory: `*` does not cross a
+        # slash, so neither a repo-root file nor a nested one is swept in.
+        self.assertIsNone(self._cat("labels.yml"))
+        self.assertIsNone(self._cat("src/labels.yml"))
+        self.assertIsNone(self._cat(".github/nested/dir/thing.yml"))

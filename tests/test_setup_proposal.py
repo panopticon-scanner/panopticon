@@ -969,3 +969,34 @@ class TestMergeAdditiveV2(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestProposalGlobsAreRefused(unittest.TestCase):
+    """#1501: the setup agent authors globs too, and a glob the compiler
+    cannot translate renders an EMPTY group -- which then reads as a catalog
+    coverage gap rather than as the proposal error it is. Same rule as the
+    committed catalog, one definition (`groups_schema.glob_defect`).
+    """
+
+    def _errs(self, groups):
+        return sp.validate_proposal({"groups": groups})
+
+    def test_character_class_in_a_proposal_match_is_rejected(self):
+        errs = self._errs([{"capability": "custom:g", "match": ["src/*.[ch]"]}])
+        self.assertTrue(any("match glob 'src/*.[ch]'" in e for e in errs), errs)
+        self.assertTrue(any("'*.c' and '*.h'" in e for e in errs), errs)
+
+    def test_character_class_in_a_proposal_tests_is_rejected(self):
+        errs = self._errs([{"capability": "custom:g", "match": ["src/**"],
+                            "tests": ["t/file[0-9].py"]}])
+        self.assertTrue(any("tests glob" in e for e in errs), errs)
+
+    def test_character_class_in_a_layer_match_is_rejected(self):
+        errs = self._errs([{"capability": "custom:g", "match": ["src/**"],
+                            "layers": [{"layer": "Api", "match": ["src/[ab]/**"]},
+                                       {"layer": "Core", "match": ["src/core/**"]}]}])
+        self.assertTrue(any("match glob 'src/[ab]/**'" in e for e in errs), errs)
+
+    def test_trailing_slash_proposal_globs_are_accepted(self):
+        self.assertEqual(self._errs([{"capability": "custom:g",
+                                      "match": ["src/", "docs/"]}]), [])

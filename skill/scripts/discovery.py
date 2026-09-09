@@ -281,40 +281,87 @@ def collect_changed_files(repo, base=None):
             out.append(p.replace(os.sep, "/"))
     return out
 
+def _even_sizes(total, n_chunks):
+    """The exact size of each chunk: `n_chunks` numbers summing to `total`
+    and differing by at most one, largest first.
+
+    Deciding the sizes BEFORE packing is what makes the two promises
+    structural rather than emergent (#1503). With `m = ceil(total / max_per)`
+    the count is `m` by construction, and no size exceeds `max_per`: with no
+    remainder every size is `total / m <= max_per`; with a remainder
+    `total / m` is not a whole number, so it is strictly under `max_per` and
+    the larger size `floor(total / m) + 1` is still at most `max_per`.
+    """
+    base, rem = divmod(total, n_chunks)
+    return [base + 1] * rem + [base] * (n_chunks - rem)
+
+
 def chunk_files(files, max_per=DEFAULT_MAX_PER_GROUP):
-    """Group files into balanced chunks by directory, each with at most max_per files."""
+    """Group files into balanced chunks by directory, each with at most max_per files.
+
+    Chunk count is exactly `ceil(len(files) / max_per)` and chunk sizes differ
+    by at most one, whatever the directory shape. Directory cohesion is
+    best-effort within that: a directory small enough to fit stays in one
+    chunk.
+
+    #1499 packed to an even target instead of greedily to `max_per`, because
+    greedy packing of 97 files at 48 yields 48/48/1 and that 1-file chunk is a
+    full review cell in the measured 0.20-findings/cell bucket -- the waste the
+    Commons floor exists to remove, re-introduced one level down. But it packed
+    directory blocks FIRST-FIT in sorted-name order, closing the current chunk
+    whenever the next block did not fit, so both of its promises failed off the
+    single-directory happy path (#1503): `a`(2) `b`(25) `c`(23) chunked 3 ways
+    while `b`(25) `c`(23) `z`(2) -- the same 50 files -- chunked 2, and 30/30/37
+    re-created a starved 4-file tail. Sizes are now DECIDED first and the blocks
+    packed into them, so neither the count nor the balance can depend on
+    directory names.
+    """
     if max_per < 1:
         raise ValueError("max_per must be >= 1")
+    files = list(files)
+    if not files:
+        return []
+    n_chunks = max(1, math.ceil(len(files) / max_per))
+    sizes = _even_sizes(len(files), n_chunks)
     by_dir = {}
     for f in files:
         by_dir.setdefault(os.path.dirname(f), []).append(f)
-    # Pack to an EVEN target rather than greedily to max_per (#1499). Greedy
-    # packing of 97 files at max_per=48 yields 48/48/1, and that 1-file
-    # trailing chunk is a full review cell in the measured 0.20-findings/cell
-    # bucket -- the same waste the Commons floor exists to remove, re-introduced
-    # one level down. The chunk COUNT is unchanged (ceil(n/max_per) either way),
-    # so this never adds a cell; it only stops one being near-empty. The
-    # per-directory split must use `target` too: splitting dir blocks at
-    # max_per first would re-create the starved remainder before packing runs.
-    n_chunks = max(1, math.ceil(len(files) / max_per)) if files else 0
-    target = math.ceil(len(files) / n_chunks) if n_chunks else max_per
+    # One block per directory, split into even parts only when the directory
+    # alone cannot fit the largest chunk -- splitting at `sizes[0]` the way the
+    # old code split at `target` would re-create the starved remainder inside
+    # the block before packing ever ran.
     blocks = []
     for d in sorted(by_dir):
         members = sorted(by_dir[d])
-        for i in range(0, len(members), target):
-            blocks.append(members[i:i + target])
-    chunks, cur = [], []
-    for block in blocks:
-        if cur and len(cur) + len(block) > target:
-            chunks.append(cur)
-            cur = []
-        cur.extend(block)
-    if cur:
-        chunks.append(cur)
-    return chunks
+        parts = max(1, math.ceil(len(members) / sizes[0]))
+        cut, at = _even_sizes(len(members), parts), 0
+        for size in cut:
+            blocks.append(members[at:at + size])
+            at += size
+    # Largest block first into the chunk with the most room left (ties: the
+    # earlier chunk). A block bigger than any remaining room spills into the
+    # next-roomiest -- unavoidable when the directories cannot tile the sizes,
+    # and bounded, because total room equals the file count exactly.
+    chunks = [[] for _ in sizes]
+    for block in sorted(blocks, key=lambda b: (-len(b), b[0])):
+        rest = block
+        while rest:
+            k = max(range(n_chunks), key=lambda i: (sizes[i] - len(chunks[i]), -i))
+            take = min(sizes[k] - len(chunks[k]), len(rest))
+            chunks[k].extend(rest[:take])
+            rest = rest[take:]
+    # Chunks are numbered `<id>_1, _2, ...` downstream, so order them by their
+    # first path: the numbering then tracks the tree rather than the size slot
+    # a chunk happened to land in.
+    return sorted((sorted(c) for c in chunks), key=lambda c: c[0])
 
 def _split_inline_list(rest):
     return [x.strip().strip("'\"") for x in rest[1:-1].split(",") if x.strip()]
+
+
+# One disclosure per distinct pattern: `_glob_to_re` is called per (path,
+# pattern), so an unconditional print would emit a line per file scanned.
+_warned_globs = set()
 
 def _glob_to_re(pat):
     """Compile one gitignore-flavored glob to a regex over repo-relative paths.
@@ -322,8 +369,25 @@ def _glob_to_re(pat):
     Semantics (#499): ``*`` and ``?`` stay within a path segment, ``**``
     crosses segments, and a pattern containing no ``/`` matches the basename
     at any depth (gitignore's unanchored form). Patterns with a ``/`` are
-    anchored to the repo root.
+    anchored to the repo root, and a TRAILING ``/`` claims the directory and
+    everything under it (#1501: ``docs/`` is gitignore's most natural idiom
+    and used to compile to a regex requiring the path to end in ``/``, which a
+    repo-relative FILE path never does -- a silent zero-match).
     """
+    # A glob this compiler cannot translate faithfully must never be
+    # translated wrongly (#1501). A setup proposal carrying one is refused
+    # outright, but a committed groups.yml's parse errors are disclosed and
+    # NOT blocking (this module's standing policy, `_committed_matrix`), so
+    # one still reaches this compiler -- where the old behaviour was to
+    # `re.escape` the brackets into a literal that claimed the wrong files.
+    # Disclose and compile to a never-matching regex instead: refuse to guess.
+    defect = groups_schema.glob_defect(pat)
+    if defect:
+        if pat not in _warned_globs:
+            _warned_globs.add(pat)
+            print("discovery: glob %r matches nothing: %s (#1501)"
+                  % (pat[:80], defect), file=sys.stderr)
+        return re.compile(r"(?!)")
     # Collapse runs of adjacent segment-crossing wildcards BEFORE compiling.
     # `**/**/.../x` compiles to sequential `(?:[^/]+/)*` quantifiers -- the
     # textbook catastrophic-backtracking ReDoS shape -- and repo-supplied
@@ -349,6 +413,12 @@ def _glob_to_re(pat):
     anchored = "/" in pat[:-1] if pat.endswith("/") else "/" in pat
     if pat.startswith("/"):
         pat = pat[1:]
+    # `docs/` == `docs/**`: the directory tree, never the directory's own
+    # path. Anchoring was already decided on the authored form above, so an
+    # unanchored `docs/` still means "a docs directory at any depth", exactly
+    # as gitignore reads it.
+    if pat.endswith("/"):
+        pat += "**"
     out, i = [], 0
     while i < len(pat):
         c = pat[i]

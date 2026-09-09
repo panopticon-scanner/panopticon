@@ -598,7 +598,13 @@ def format_budget(spine):
         "- files: %d total = %d code + %d commons + %d test tree"
         % (f["total"], f["code"], f["commons"], f["test_tree"]),
         "- cap (files per review group, --max-per-group): %d" % spine["cap"],
-        "- ceiling (review groups this repo affords): %d %s" % (spine["ceiling"], how),
+        # #1506: name the population, or the agent reads the ceiling as a
+        # budget for EVERY leaf and proposes fewer verticals than the repo
+        # affords. `Tests` and the Commons categories are the engine's, formed
+        # after the proposal, and are not charged to this number.
+        "- ceiling (CODE review groups this repo affords): %d %s -- `Tests` and "
+        "the Commons categories are formed by the engine and are not counted "
+        "against it" % (spine["ceiling"], how),
         "- propose `layers` ONLY for a vertical you estimate OVER the cap (%d files); "
         "a layer under %d files merges back into its parent"
         % (spine["cap"], grouping_engine.FLOOR),

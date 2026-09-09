@@ -433,9 +433,15 @@ class TestSetupFlow(unittest.TestCase):
         budget = setup_flow.format_budget(spine)
         self.assertIn("- files: 12 total = 5 code + 5 commons + 2 test tree", budget)
         self.assertIn("--max-per-group): 48", budget)
-        self.assertIn("ceiling (review groups this repo affords): 5 from --max-groups", budget)
+        self.assertIn("ceiling (CODE review groups this repo affords): 5 from --max-groups", budget)
         self.assertIn("propose `layers` ONLY for a vertical you estimate OVER the cap (48 files)",
                       budget)
+        # #1506: the ceiling budgets CODE leaves. Saying so in the brief is the
+        # difference between an agent proposing the verticals the repo affords
+        # and one holding back to leave room for Tests and Commons -- leaves it
+        # does not control and that are not charged to this number.
+        self.assertIn("`Tests` and the Commons categories are formed by the engine "
+                      "and are not counted against it", budget)
         self.assertNotIn("{", text + budget)     # nothing left for render_prompt to choke on
 
     def test_write_and_read_spine_round_trip(self):
@@ -461,7 +467,7 @@ class TestSetupFlow(unittest.TestCase):
         self.assertIn("## Repository spine", brief)
         self.assertIn("src/search                                   3  .go", brief)
         self.assertIn("## Size arithmetic", brief)
-        self.assertIn("ceiling (review groups this repo affords): 7 from --max-groups", brief)
+        self.assertIn("ceiling (CODE review groups this repo affords): 7 from --max-groups", brief)
         # a brief with no spine argument builds one with the default sizes
         path = setup_flow.render_scan_brief(d, vocab)
         with open(path, encoding="utf-8") as fh:

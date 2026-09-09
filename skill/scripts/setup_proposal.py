@@ -233,6 +233,13 @@ def _validate_str_list(group_label, field, values, required):
     elif any(len(v) > _MAX_ENTRY_LEN for v in values):
         errors.append("proposal group %s: a %s entry exceeds %d chars"
                       % (group_label, field, _MAX_ENTRY_LEN))
+    # #1501: the setup agent authors globs too, and one the compiler cannot
+    # translate renders an EMPTY group -- which then reads as a catalog
+    # coverage gap rather than as the proposal error it is. Same rule as the
+    # committed catalog; layers route through here too, so this is the one
+    # place a proposal glob is checked.
+    errors.extend(groups_schema.glob_errors(
+        "proposal group %s" % group_label, field, values))
     return errors
 
 

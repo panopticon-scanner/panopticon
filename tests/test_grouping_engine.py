@@ -243,7 +243,7 @@ GOLDEN_REPORT = """\
 ## Size
 
 - files: 103 total = 87 code + 9 commons + 7 test tree
-- cap: 48 files per dispatch unit; ceiling: 8 leaves
+- cap: 48 files per dispatch unit; ceiling: 8 code leaves (+2 engine-owned: Tests and the Commons categories, which the ceiling does not budget)
 - leaves: 7 (committed 1, verticals 1, layers 3, Tests 1, Commons 1)
 - leaf size: min 5 / mean 13.9 / max 42
 - estimated cells: >= 22 (dispatch units x floor domains; the scout only widens)
@@ -327,22 +327,52 @@ class TestPlanGroups(unittest.TestCase):
             "internal/legacy/old.go", "internal/legacy/older.go", "pkg/util/strings.go"])
         self.assertEqual(ge.format_report(res["report"], DISCLOSURE), GOLDEN_REPORT)
 
-    def test_default_ceiling_collapses_layers_and_says_so(self):
-        # 87 code files / cap 48 -> ceiling 4; 5 non-layer leaves already exceed it,
-        # so every Auth layer collapses and the vertical falls back to chunking.
+    def test_the_default_ceiling_no_longer_spends_itself_on_engine_leaves(self):
+        # #1506: 87 code files / cap 48 -> ceiling 4, and the CODE leaves here
+        # are 2 non-layer plus Auth's 3 layers. One collapse brings that to 4
+        # and the vertical stays layered. Under the old arithmetic `Tests` and
+        # the folded `Commons` were charged to the same 4, so the non-layer
+        # leaves exceeded it on their own, every Auth layer was collapsed, and
+        # the report still said "over ceiling by 1 -- merge verticals" on a
+        # repo whose verticals are exactly the shape the brief asks for.
         res = ge.plan_groups(REPO, COMMITTED, ASSEMBLED, cap=48, aliases={})
         r = res["report"]
-        self.assertEqual((r["ceiling"], r["over_ceiling_by"]), (4, 1))
+        self.assertEqual((r["ceiling"], r["over_ceiling_by"]), (4, 0))
+        self.assertEqual(r["engine_leaves"], 2)
         self.assertEqual(r["ceiling_notes"], [
-            "Auth: layer Worker (8 files) merged into Core (ceiling 4 exceeded: 7 leaves)",
-            "Auth: layer API (11 files) merged into Core (ceiling 4 exceeded: 6 leaves)",
+            "Auth: layer Worker (8 files) merged into Core (ceiling 4 exceeded: 5 leaves)"])
+        self.assertEqual(list(res["groups"]["Auth"]["subgroups"]), ["API", "Core"])
+        self.assertIn("ceiling: 4 code leaves (+2 engine-owned: Tests and the "
+                      "Commons categories, which the ceiling does not budget)",
+                      ge.format_report(r, DISCLOSURE))
+
+    def test_an_explicit_ceiling_budgets_the_same_population(self):
+        # `--max-groups` keeps ONE meaning -- code leaves -- whatever its
+        # source, so a tight override still collapses every layer.
+        res = ge.plan_groups(REPO, COMMITTED, ASSEMBLED, cap=48, aliases={}, ceiling=3)
+        r = res["report"]
+        self.assertEqual((r["ceiling"], r["over_ceiling_by"]), (3, 0))
+        self.assertEqual(r["ceiling_notes"], [
+            "Auth: layer Worker (8 files) merged into Core (ceiling 3 exceeded: 5 leaves)",
+            "Auth: layer API (11 files) merged into Core (ceiling 3 exceeded: 4 leaves)",
             "Auth: a single layer remains, vertical unlayered (falls back to mechanical chunking)"])
         self.assertNotIn("subgroups", res["groups"]["Auth"])
+        # 3 code leaves, and the 2 engine leaves are still dispatched
+        self.assertEqual(r["leaf_count"]["total"], 5)
+
+    def test_over_ceiling_says_which_leaves_the_advice_can_move(self):
+        # Only reachable when CODE leaves exceed the ceiling now, so both
+        # levers the line names can actually move the number.
+        res = ge.plan_groups(REPO, COMMITTED, ASSEMBLED, cap=48, aliases={}, ceiling=1)
+        r = res["report"]
+        self.assertEqual(r["over_ceiling_by"], 2)
+        self.assertIn("**over ceiling by 2** -- the ceiling counts code leaves only, "
+                      "so raise `max_groups` or merge verticals",
+                      ge.format_report(r, DISCLOSURE))
         self.assertEqual([lf["name"] for lf in r["leaves"]],
                          ["Billing", "Auth", "Search", "Tests", "Commons"])
         self.assertEqual(r["leaves"][1]["units"], 2, "61 files at cap 48 -> 2 chunks")
         text = ge.format_report(r)
-        self.assertIn("- **over ceiling by 1** -- raise `max_groups`", text)
         self.assertIn("- Auth: unlayered", text)
         self.assertNotIn("## Names", text)
 
@@ -477,3 +507,75 @@ class TestPlanGroups(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCeilingIsCommensurableWithItsNumerator(unittest.TestCase):
+    """#1506: `ceiling_for` counts only CODE files -- `count_code_files`
+    subtracts the test tree and the Commons files -- but the leaf count it was
+    compared against included `Tests` and the Commons categories, the leaves
+    holding exactly those subtracted files. With the formula bottoming out at
+    `MIN_CEILING = 4`, any repo of <= 96 code files with two or more verticals
+    was over the ceiling by construction, and the advice it printed ("merge
+    verticals") could not reach the leaves causing the overage anyway.
+    """
+
+    def test_the_formula_is_unchanged(self):
+        # Deliberately: the setup brief quotes it to the agent verbatim, and
+        # stage 1 and stage 3 must keep deriving the identical number.
+        self.assertEqual(ge.ceiling_for(0, 48), 4)
+        self.assertEqual(ge.ceiling_for(97, 48), 6)
+        self.assertEqual(ge.ceiling_for(200, 48), 10)
+
+    def test_engine_leaves_are_reported_but_not_charged(self):
+        # 4 verticals of 29-45 files, a test tree and Commons files, cap 48 --
+        # the run-11 shape, reported as "over ceiling by 3, merge verticals".
+        dirs = {"Alpha": ("src/a", 29), "Bravo": ("src/b", 40),
+                "Charlie": ("src/c", 45), "Delta": ("src/d", 30)}
+        files = ([f for d, n in dirs.values() for f in _files(d, n)]
+                 + _files("tests", 40, ".go")
+                 + ["README.md", "docs/guide.md", "Makefile", "package.json"])
+        assembled = {n: {"match": ["%s/**" % d], "tests": [], "panels": []}
+                     for n, (d, _n) in dirs.items()}
+        r = ge.plan_groups(sorted(files), {}, assembled, cap=48, aliases={})["report"]
+        self.assertEqual(r["leaf_count"]["vertical"], 4)
+        self.assertGreaterEqual(r["engine_leaves"], 1)
+        self.assertEqual(r["over_ceiling_by"], 0)
+        self.assertEqual(r["ceiling_notes"], [])
+        # the leaf TOTAL still counts them -- they are dispatched, and the
+        # estimated-cells line has to stay honest
+        self.assertEqual(r["leaf_count"]["total"],
+                         r["leaf_count"]["vertical"] + r["engine_leaves"])
+
+    def test_a_repo_with_no_engine_leaves_reads_exactly_as_before(self):
+        files = _files("src/a", 20) + _files("src/b", 20)
+        assembled = {"Alpha": {"match": ["src/a/**"], "tests": [], "panels": []},
+                     "Bravo": {"match": ["src/b/**"], "tests": [], "panels": []}}
+        r = ge.plan_groups(sorted(files), {}, assembled, cap=48, aliases={})["report"]
+        self.assertEqual(r["engine_leaves"], 0)
+        self.assertNotIn("engine-owned", ge.format_report(r, None))
+
+
+class TestUnitsMatchWhatChunkingWillDo(unittest.TestCase):
+    """#1503: the report's `units` (and so `estimated_cells`) is
+    `ceil(files / cap)`, but `chunk_files` runs later, at RUN time, and used
+    to emit more chunks than that for ordinary directory shapes. The setup
+    report then under-counted the cells the run would actually dispatch. The
+    two sides are pinned here rather than left to agree by coincidence.
+    """
+
+    def _shapes(self):
+        return [
+            [("a", 2), ("b", 25), ("c", 23)],
+            [("a", 30), ("b", 30), ("c", 37)],
+            [("src/one", 60), ("src/two", 60), ("z", 1)],
+            [("a", 7), ("b", 11), ("c", 13), ("d", 17), ("e", 19)],
+            [("only", 1)],
+        ]
+
+    def test_a_leafs_units_equal_the_chunks_it_will_split_into(self):
+        for cap in (7, 15, 48):
+            for shape in self._shapes():
+                files = sorted("%s/f%03d.py" % (d, i) for d, n in shape for i in range(n))
+                with self.subTest(cap=cap, shape=shape):
+                    leaf = ge._leaf("L", "vertical", files, [], cap)
+                    self.assertEqual(leaf["units"], len(discovery.chunk_files(files, cap)))
