@@ -109,5 +109,133 @@ class TestRedactBareUuidSecret(unittest.TestCase):
                              "id %s ok" % benign, benign)
 
 
+class TestRedactAdditionalVendorFormats(unittest.TestCase):
+    """Each format below was FP-measured before being added: zero matches across
+    run-12 finding text, all tracked source, and the goldens -- while firing on a
+    well-formed specimen. All are anchored to a vendor prefix, or (JWT) to a
+    three-segment base64url structure, which is what buys that zero. Contrast
+    TestRedactRejectsGenericDetection."""
+
+    CASES = {
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0."
+        "dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk": "[REDACTED_JWT]",
+        "glpat-" + "A" * 20: "[REDACTED_TOKEN]",
+        "npm_" + "b" * 36: "[REDACTED_TOKEN]",
+        "hf_" + "c" * 34: "[REDACTED_TOKEN]",
+        "SG." + "d" * 22 + "." + "e" * 43: "[REDACTED_KEY]",
+        "dop_v1_" + "0" * 64: "[REDACTED_KEY]",
+        "sk_live_" + "f" * 24: "[REDACTED_KEY]",
+        "pypi-" + "g" * 40: "[REDACTED_TOKEN]",
+        "xapp-1-" + "H" * 20: "[REDACTED_SLACK_TOKEN]",
+    }
+
+    def test_masks_each_added_format(self):
+        for secret, marker in self.CASES.items():
+            out = redact.redact("leak: %s here" % secret)
+            self.assertIn(marker, out, secret)
+            self.assertNotIn(secret, out, secret)
+
+    def test_added_formats_survive_the_tree_walk(self):
+        jwt = [k for k in self.CASES if k.startswith("eyJ")][0]
+        out = redact.redact_tree({"d": "header %s trailer" % jwt})
+        self.assertNotIn(jwt, out["d"])
+
+
+class TestRedactRejectsGenericDetection(unittest.TestCase):
+    """Why redact.py has no entropy / long-hex / long-base64 rule, pinned so it
+    is not 'improved' back in.
+
+    Measured across run-12 finding text, tracked source, and the goldens:
+      hex>=32       ->  13 distinct in source,  26 in goldens (git SHAs, hashes)
+      base64>=32    ->  75 distinct in source, 111 in goldens (mostly paths)
+      entropy>=4.0  -> 402 distinct in source, 499 in goldens (URLs, paths)
+
+    This project's text is saturated with exactly the shapes a generic detector
+    keys on, and masking them breaks reconcile, integrity checking, and the
+    readability of every report. A noisy detector is unusable as a REDACTOR --
+    it mangles silently. The identifiers below must survive untouched."""
+
+    MUST_SURVIVE = (
+        "3d3c42e5aac5ba805825da76410c181273ba90b1",   # git SHA-1, 40 hex
+        "6cc4359bc7b24170b30d62615bdca076",           # content hash, 32 hex
+        "d41d8cd98f00b204e9800998ecf8427e",           # md5
+        "claude-redteam-repo-20260909-6cc4359b",      # run tag
+        "/mnt/panopticon/skill/scripts/synth/render.py",
+        "https://github.com/panopticon-scanner/panopticon/pull/1566",
+        "a1b2c3d4e5f60718",                           # finding fingerprint
+    )
+
+    def test_project_identifiers_are_never_masked(self):
+        for ident in self.MUST_SURVIVE:
+            self.assertEqual(redact.redact("ref %s ok" % ident),
+                             "ref %s ok" % ident, ident)
+
+
+class TestUuidIdentityKeysAreNotSecrets(unittest.TestCase):
+    """The UUID rule shipped in #1566 masked SARIF identity fields, because the
+    measurement that justified it used `git grep -E '\\b...'` -- and git grep's
+    POSIX ERE does NOT honour \\b, so it reported 0 matches where plain grep
+    finds 11. Never trust a zero from `git grep -E` with \\b.
+
+    What the goldens actually contain is a clean natural experiment:
+        gosec            "guid":   24 UUIDs -- SARIF rule identity, benign
+        dependency-check "source": 12 UUIDs -- CVE data source, benign
+        gitleaks         "text":    2 UUIDs -- the real leaked secret
+    A legitimate UUID is introduced by a key that names it as an identifier; a
+    leaked secret is not. That asymmetry is the discriminator."""
+
+    UUID = "f2856fc0-85b7-373f-83e7-6f8582243547"
+
+    def test_sarif_rule_guid_survives(self):
+        src = '{"rules": [{"guid": "%s", "id": "G404"}]}' % self.UUID
+        self.assertEqual(redact.redact(src), src)
+
+    def test_dependency_check_source_uuid_survives(self):
+        src = '{"vuln": {"source": "%s"}}' % self.UUID
+        self.assertEqual(redact.redact(src), src)
+
+    def test_identity_key_tolerates_whitespace_variants(self):
+        for src in ('{"guid":"%s"}' % self.UUID,
+                    '{"guid" :  "%s"}' % self.UUID):
+            self.assertEqual(redact.redact(src), src, src)
+
+    def test_a_snippet_field_is_still_masked(self):
+        """gitleaks reports the secret under `text`. That must still be caught."""
+        src = '{"snippet": {"text": "%s"}}' % self.UUID
+        out = redact.redact(src)
+        self.assertNotIn(self.UUID, out)
+        self.assertIn("[REDACTED_UUID]", out)
+
+    def test_a_bare_uuid_with_no_key_is_still_masked(self):
+        out = redact.redact("generic-api-key detected: %s" % self.UUID)
+        self.assertNotIn(self.UUID, out)
+
+    def test_tree_walk_preserves_identity_uuids_by_key(self):
+        """redact_tree() walks string LEAVES, so the key is not inside the string
+        and the textual lookbehind cannot see it. The walker must carry the key
+        down, or the fix works on one entry point and not the other -- which is
+        the exact half-fix shape that caused the original leak."""
+        src = {"rules": [{"guid": self.UUID, "id": "G404"}]}
+        self.assertEqual(redact.redact_tree(src)["rules"][0]["guid"], self.UUID)
+
+    def test_tree_walk_still_masks_a_snippet_uuid(self):
+        src = {"snippet": {"text": self.UUID}}
+        out = redact.redact_tree(src)
+        self.assertNotIn(self.UUID, out["snippet"]["text"])
+
+    def test_tree_walk_identity_exemption_is_uuid_only(self):
+        """An identity key exempts a UUID, not arbitrary content: a real token
+        parked under `source` is still masked."""
+        secret = "ghp_" + "A" * 36
+        out = redact.redact_tree({"source": secret})
+        self.assertNotIn(secret, out["source"])
+
+    def test_unknown_key_fails_closed_and_masks(self):
+        """Only keys that explicitly name an identifier are exempt. Anything
+        else -- including a key we have never seen -- is masked."""
+        src = '{"apiKey": "%s"}' % self.UUID
+        self.assertNotIn(self.UUID, redact.redact(src))
+
+
 if __name__ == "__main__":
     unittest.main()
