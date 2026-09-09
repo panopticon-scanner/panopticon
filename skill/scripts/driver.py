@@ -78,7 +78,8 @@ def _cli_flags(args):
               "diff_context": getattr(args, "diff_context", None),
               "tools": tools_flag,
               "include_fixtures": True if getattr(args, "include_fixtures", False) else None,
-              "max_per_group": getattr(args, "max_per_group", None)}
+              "max_per_group": getattr(args, "max_per_group", None),
+              "allow_unenforced": True if getattr(args, "allow_unenforced", False) else None}
     return {k: values.get(k) for k in run_manifest._FLAG_KEYS}
 
 
@@ -156,6 +157,13 @@ def build_parser():
         tools_group.add_argument("--tools", action="store_true")
         tools_group.add_argument("--no-tools", action="store_true")
         p.add_argument("--include-fixtures", action="store_true")
+        # #1519: on a host that cannot mediate the reviewer Write grant (today,
+        # anything but claude), dispatching write-capable cells is refused
+        # unless the operator accepts the residual risk here. Anti-drift, so a
+        # resume cannot quietly drop the acceptance.
+        p.add_argument("--allow-unenforced", action="store_true",
+                       help="accept that reviewer Write is unmediated on a "
+                            "non-claude host; recorded in unenforced-ack.json")
         # The directory the HOST SESSION runs in, used only to locate its
         # transcripts for the cost ledger. Defaults to cwd (#calibration-4).
         p.add_argument("--session-dir", default=None)
