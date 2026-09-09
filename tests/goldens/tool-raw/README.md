@@ -80,6 +80,17 @@ none` against a small probe directory (a `package-lock.json` pinning
 `lodash 4.17.15`, or a `requirements.txt` pinning `requests==2.19.0`). Offline
 they fail by design — `filter_online` drops them in favour of osv-scanner.
 
+**Mount a corpus, never your own checkout.** `gitleaks`, `bandit`, and `trivy`
+used to be pinned to `/mnt/panopticon` in `TARGETS`, so a refresh scanned the
+operator's real working tree — `.env` included — and #run12 committed the live
+API key gitleaks found into this public directory. They are `/src` now, and a
+test pins that. For `gitleaks` specifically the mounted target must carry
+**synthetic** secrets, or the golden parses to zero findings; inventing fake
+credentials for it is correct, and scanning your own tree to get real ones is
+the bug. Capture also redacts every payload before writing, and reports
+`"redacted": true` when it fires — treat that flag as "my capture target was
+wrong", not as "handled".
+
 Each capture re-parses its own trimmed payload before writing, so a trim that
 broke the shape is rejected rather than committed. Trimming is format-aware:
 JSON lists are cut to ~3 entries preferring the ones that carry findings (the
