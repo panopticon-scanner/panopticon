@@ -3,6 +3,24 @@
 import os
 import re
 import subprocess
+import sys
+
+# scrub() is the last thing to touch text before it is posted to a PUBLIC GitHub
+# issue, and it is the ONLY point all three filers share: file_issues.py reads a
+# report.json that synth/render.py already redacted, but file_fixmes.py (markdown
+# FIXME doc) and triage.py (JSONL ledger rows) never pass through that path, so a
+# secret in either went to GitHub verbatim. Redacting here makes coverage
+# independent of which artifact a filer happens to read.
+#
+# Imported, not reimplemented: #run7 SEC-B2C made redact.py the single owner of
+# the patterns, and a second list here would drift. Unconditional by design -- a
+# scrub() that skipped redaction because an optional import failed would fail
+# OPEN, silently, on the one path where that is least acceptable.
+_SKILL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                      "skill")
+if _SKILL not in sys.path:
+    sys.path.insert(0, _SKILL)
+import scripts.redact as _redact  # noqa: E402
 
 _REPO_ROOT_CACHE = None
 
@@ -35,11 +53,17 @@ def repo_relative(path):
 
 
 def scrub(text):
-    """Reviewers cite absolute local paths; issues are public and permanent."""
+    """Strip local paths AND mask secrets; issues are public and permanent.
+
+    Reviewers cite absolute local paths, and reviewer/tool text can quote a real
+    credential (#run12: gitleaks reported a live API key, and the report carried
+    it verbatim). Both are unfixable once posted, so both are handled here.
+    """
     root = repo_root()
     scrubbed = str(text).replace(root, "")
-    return re.sub(r"(?<![\w/-])%s(?![\w/-])" % re.escape(root.rstrip("/")),
-                  "the repo root", scrubbed)
+    scrubbed = re.sub(r"(?<![\w/-])%s(?![\w/-])" % re.escape(root.rstrip("/")),
+                      "the repo root", scrubbed)
+    return _redact.redact(scrubbed)
 
 
 _MENTION_RE = re.compile(r"@(?=[A-Za-z0-9._-])")

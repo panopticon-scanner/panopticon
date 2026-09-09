@@ -70,5 +70,44 @@ class TestRedact(unittest.TestCase):
         self.assertEqual(redact.redact_tree(True), True)
 
 
+class TestRedactBareUuidSecret(unittest.TestCase):
+    """#run12 SEC: every pattern above needs a token prefix (ghp_, sk-, AKIA) or
+    an assignment (Bearer). A secret *scanner* emits the secret with that context
+    stripped -- gitleaks reported a leaked API key as the bare snippet
+    `<uuid>` -- so nothing matched and the live key rode
+    into the shareable report. Shape, not context, is the only thing left to
+    match on. Synthetic UUID below; the real one is rotated and dead.
+    """
+
+    UUID = "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
+
+    def test_masks_a_bare_uuid_shaped_secret(self):
+        out = redact.redact("generic-api-key detected: %s" % self.UUID)
+        self.assertIn("[REDACTED_UUID]", out)
+        self.assertNotIn(self.UUID, out)
+
+    def test_masks_uppercase_uuid(self):
+        out = redact.redact("key %s here" % self.UUID.upper())
+        self.assertIn("[REDACTED_UUID]", out)
+        self.assertNotIn(self.UUID.upper(), out)
+
+    def test_masks_uuid_inside_a_finding_tree(self):
+        src = {"description": "the value %s appears in .env" % self.UUID}
+        out = redact.redact_tree(src)
+        self.assertNotIn(self.UUID, out["description"])
+        self.assertIn("[REDACTED_UUID]", out["description"])
+
+    def test_does_not_mask_panopticon_identifiers(self):
+        """The rule is deliberately the hyphenated 8-4-4-4-12 form only. These
+        real identifier shapes must survive, or every report gets mangled."""
+        for benign in ("claude-redteam-repo-20260909-6cc4359b",   # run tag
+                       "a1b2c3d4e5f60718",                        # fingerprint
+                       "0b8ee306",                                # short hex
+                       "d41d8cd98f00b204e9800998ecf8427e",        # md5, 32 hex
+                       "2026-09-09", "v5.1.0-rc1"):
+            self.assertEqual(redact.redact("id %s ok" % benign),
+                             "id %s ok" % benign, benign)
+
+
 if __name__ == "__main__":
     unittest.main()
