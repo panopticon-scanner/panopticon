@@ -15,10 +15,78 @@ from . import requests
 from . import review
 
 
-def _verify_out_file(review_root, group, domain, stage):
+# #1521 (OPS-D1A): `_render_findings` embedded a whole cell into the advisor
+# prompt with no cap, while the sibling tool-hits channel (review._TOOL_HITS_CAP)
+# is capped at 40. A reviewer that floods findings -- a menu-code loop, or a
+# redteam target engineered to provoke one -- inflated every verify prompt for
+# that cell without bound.
+#
+# The fix is NOT to drop claims. _verify_cell_done requires every finding in the
+# cell to be adjudicated, so a truncated prompt would burn the whole re-dispatch
+# budget and then report a real gap. Oversized cells are CHUNKED across several
+# advisor dispatches instead: bounded prompt, every claim still adjudicated.
+_CELL_CLAIMS_CAP = 25
+
+# The dominant size term within one claim is its free text. Bounding it keeps a
+# prompt linear in claim COUNT alone, and leaves every field the advisor needs
+# to act (id to echo, location to go read) untouched.
+_CLAIM_DESC_CAP = 2000
+
+
+def _cell_chunks(cell):
+    """A cell's claims split into advisor-sized slices, in order (#1521).
+
+    An empty cell yields one empty chunk, so callers still emit exactly one
+    dispatch for it rather than none."""
+    cell = list(cell or [])
+    if len(cell) <= _CELL_CLAIMS_CAP:
+        return [cell]
+    return [cell[i:i + _CELL_CLAIMS_CAP]
+            for i in range(0, len(cell), _CELL_CLAIMS_CAP)]
+
+
+def _verify_out_file(review_root, group, domain, stage, part=0):
     suffix = "-backup" if stage == "backup" else ""
+    # Part 0 keeps the established filename: existing runs, the backup reader
+    # and synthesize's bundle scan all already know it.
+    part_suffix = "" if not part else "-part%d" % part
     return os.path.abspath(runio._pano(review_root, "verdicts",
-                                 "verdicts-%s-%s%s.json" % (group, domain, suffix)))
+                                 "verdicts-%s-%s%s%s.json"
+                                 % (group, domain, suffix, part_suffix)))
+
+
+def _cell_verdicts(review_root, group, domain, stage, parts=1):
+    """Every verdict on disk for this cell/stage, merged across its parts."""
+    merged = []
+    for part in range(max(1, parts)):
+        data = runio._load_json(
+            _verify_out_file(review_root, group, domain, stage, part))
+        if isinstance(data, dict) and isinstance(data.get("verdicts"), list):
+            merged.extend(v for v in data["verdicts"] if isinstance(v, dict))
+    return merged
+
+
+def _part_done(review_root, manifest, group, domain, stage, part, chunk):
+    """One chunk's advisor answered it: bundle labeled, and (primary) every
+    claim in THIS slice adjudicated somewhere in the cell's bundles."""
+    if not _verify_bundle_labeled(review_root, manifest, group, domain,
+                                  stage, part):
+        return False
+    if stage != "primary":
+        return True
+    merged = _cell_verdicts(review_root, group, domain, stage, part + 1)
+    got = {str(v.get("finding_id")) for v in merged
+           if v.get("finding_id") is not None}
+    return {str(f["id"]) for f in chunk}.issubset(got)
+
+
+def _cell_parts_complete(review_root, manifest, group, domain, stage, cell):
+    """True when every part of this cell is answered.
+
+    The union across parts is what makes chunking safe: a cell counts as
+    answered only once all of its slices are."""
+    return all(_part_done(review_root, manifest, group, domain, stage, part, chunk)
+               for part, chunk in enumerate(_cell_chunks(cell or [])))
 
 _MAX_VERIFY_ATTEMPTS = 3
 
@@ -44,13 +112,14 @@ def _bump_verify_attempts(review_root, group, domain, stage):
     runio._write_json(path, data)
     return n
 
-def _verify_bundle_labeled(review_root, manifest, group, domain, stage):
+def _verify_bundle_labeled(review_root, manifest, group, domain, stage, part=0):
     """The verdict bundle exists, parses, and is labeled for THIS cell -- the
     advisor returned something coherent for it (vs no bundle, or an unloadable /
     mislabeled one). Separates an A2 reconciliation shortfall, which the bounded
     budget governs, from a first dispatch or an unloadable return, which keep the
     existing uncapped re-dispatch."""
-    data = runio._load_json(_verify_out_file(review_root, group, domain, stage))
+    data = runio._load_json(
+        _verify_out_file(review_root, group, domain, stage, part))
     if not (isinstance(data, dict) and isinstance(data.get("verdicts"), list)):
         return False
     meta = data.get("_panopticon") or {}
@@ -58,34 +127,51 @@ def _verify_bundle_labeled(review_root, manifest, group, domain, stage):
             and meta.get("domain") == domain and meta.get("group") == group
             and meta.get("stage", "primary") == stage)
 
-def _verify_cell_done(review_root, manifest, group, domain, stage):
+def _verify_cell_done(review_root, manifest, group, domain, stage, cell=None):
+    """Every claim this cell handed the advisor came back adjudicated.
+
+    `cell` is the claim set that was dispatched: the review cell for primary,
+    the backup ROUND'S OWN scope for backup (a severity-gated subset, so
+    loading the review cell there would demand verdicts nobody was asked for).
+
+    A2 (run-9): a labeled, parseable bundle is not "done" unless it actually
+    adjudicated every finding the advisor was handed. An advisor RE-CODED a
+    cell's findings -- a 4th TST-B1B while dropping a TST-B1A and a TST-B1C --
+    so a 10-finding cell came back with 9 verdicts and 2 findings went silently
+    unadjudicated. The bundle was accepted as done, the cell never
+    re-dispatched, and the drop surfaced only as a quiet verdicts.unanswered:1
+    that sank coverage_certified without naming a cause.
+
+    #1521: the reconcile now spans the cell's PARTS, since an oversized cell is
+    chunked across several advisor dispatches.
+    """
+    if cell is None:
+        cell = review._load_cell_findings(review_root, manifest, group, domain)
+    if _cell_parts_complete(review_root, manifest, group, domain, stage, cell):
+        return True
+    # Nothing usable on disk for the first part: never dispatched, or an
+    # unloadable return. Keep the existing UNCAPPED re-dispatch for that.
     if not _verify_bundle_labeled(review_root, manifest, group, domain, stage):
         return False
-    # A2 (run-9): a labeled, parseable bundle is not "done" unless it actually
-    # adjudicated every finding the advisor was handed. An advisor RE-CODED a
-    # cell's findings -- a 4th TST-B1B while dropping a TST-B1A and a TST-B1C -- so
-    # a 10-finding cell came back with 9 verdicts and 2 findings went silently
-    # unadjudicated. The bundle was accepted as done, the cell never re-dispatched,
-    # and the drop surfaced only as a quiet verdicts.unanswered:1 that sank
-    # coverage_certified without naming a cause. Reconcile the verdict finding_ids
-    # against the cell's findings (the exact set _render_findings hands the
-    # advisor, matched on the same str(id) binding synthesis uses).
-    #
-    # PRIMARY only: the backup round adjudicates a severity-gated SUBSET by design,
-    # so requiring 1:1 there would re-dispatch every backup cell forever.
-    if stage != "primary":
-        return True
-    data = runio._load_json(_verify_out_file(review_root, group, domain, stage))
-    cell = review._load_cell_findings(review_root, manifest, group, domain)
-    want = {str(f["id"]) for f in (cell or [])}
-    got = {str(v.get("finding_id")) for v in data["verdicts"]
-           if isinstance(v, dict) and v.get("finding_id") is not None}
-    if want.issubset(got):
-        return True
-    # Incomplete: re-dispatch (a chance to fix a transient re-code), but BOUNDED --
-    # once the budget is spent the gap is real and surfaces as unanswered ->
-    # INCONCLUSIVE at synthesis, honest, rather than wedging the run.
+    # Labeled but incomplete: re-dispatch (a chance to fix a transient re-code),
+    # but BOUNDED -- once the budget is spent the gap is real and surfaces as
+    # unanswered -> INCONCLUSIVE at synthesis, honest, rather than wedging.
     return _verify_attempts(review_root, group, domain, stage) >= _MAX_VERIFY_ATTEMPTS
+
+def _capped_description(description):
+    """One claim's free text, bounded and VISIBLY marked when cut (#1521).
+
+    The advisor re-reads the cited code either way; what a truncated tail costs
+    it is context, not the ability to adjudicate. Saying so in-band matters --
+    an advisor that cannot see the cut would treat a severed sentence as the
+    reviewer's whole argument."""
+    text = str(description or "")
+    if len(text) <= _CLAIM_DESC_CAP:
+        return text
+    return ("%s\n\n[truncated: %d of %d characters shown. Read the cited "
+            "location for the rest.]"
+            % (text[:_CLAIM_DESC_CAP], _CLAIM_DESC_CAP, len(text)))
+
 
 def _render_findings(review_root, cell):
     """The cell's claims as a compact JSON array the advisor adjudicates.
@@ -99,13 +185,14 @@ def _render_findings(review_root, cell):
     slim = [{"id": f["id"], "code": f.get("code"), "severity": f["severity"],
              "title": f["title"], "category": f.get("category"),
              "location": _confine_claim_location(review_root, f.get("location")),
-             "description": f.get("description", "")}
+             "description": _capped_description(f.get("description", ""))}
             for f in cell]
     return json.dumps(slim, indent=2)
 
-def _verify_entry(review_root, manifest, group, domain, files, cell, host, bundle, stage):
+def _verify_entry(review_root, manifest, group, domain, files, cell, host,
+                  bundle, stage, part=0):
     file_list = runio._abs_file_list(review_root, files)
-    out_file = _verify_out_file(review_root, group, domain, stage)
+    out_file = _verify_out_file(review_root, group, domain, stage, part)
     prompt = dispatch.render_prompt("domain-advisor.md", {
         "domain": domain, "group": group, "file_list": file_list,
         "findings": _render_findings(review_root, cell), "menu": review._render_menu(bundle, domain),
@@ -121,7 +208,8 @@ def _verify_entry(review_root, manifest, group, domain, files, cell, host, bundl
               "against this root -- read files THERE, never in your session's "
               "default checkout.\n\n%s" % (os.path.abspath(review_root), prompt))
     enforced = host == "claude"
-    return {"id": "verify-%s-%s-%s" % (group, domain, stage),
+    return {"id": "verify-%s-%s-%s%s" % (group, domain, stage,
+                                         "" if not part else "-part%d" % part),
             "agent": dispatch.registered_agent_name("domain-advisor.md") if enforced else None,
             "enforced": enforced, "model": None, "prompt": prompt, "out_file": out_file}
 
@@ -152,12 +240,19 @@ def verify_execute(review_root, manifest):
             # the bounded budget so an incomplete cell can't re-dispatch forever.
             if _verify_bundle_labeled(review_root, manifest, group, domain, "primary"):
                 _bump_verify_attempts(review_root, group, domain, "primary")
-            pending.append((domain, cell))
+            # #1521: an oversized cell is chunked; re-dispatch only the parts
+            # that are still unanswered.
+            pending.extend(
+                (domain, chunk, part)
+                for part, chunk in enumerate(_cell_chunks(cell))
+                if not _part_done(review_root, manifest, group, domain,
+                                  "primary", part, chunk))
         if pending:
             ngroups += 1
             all_entries.extend(
                 _verify_entry(review_root, manifest, group, d, files, c,
-                              host, bundle, "primary") for d, c in pending)
+                              host, bundle, "primary", part)
+                for d, c, part in pending)
     if all_entries:
         req = requests.write_dispatch_request(review_root, manifest["run_id"], "verify",
                                      None, all_entries)
@@ -194,11 +289,15 @@ def _cell_backup_findings(review_root, manifest, group, domain):
     cell = review._load_cell_findings(review_root, manifest, group, domain)
     if not cell:
         return []
-    primary = runio._load_json(_verify_out_file(review_root, group, domain, "primary"))
-    if not (isinstance(primary, dict) and isinstance(primary.get("verdicts"), list)):
+    # #1521: merged across the primary round's parts -- a chunked cell keeps its
+    # later parts' verdicts in sibling files, and reading only part 0 would
+    # silently narrow the backup's scope to the first slice.
+    verdicts = _cell_verdicts(review_root, group, domain, "primary",
+                              parts=len(_cell_chunks(cell)))
+    if not verdicts:
         return []
-    by_fid = {str(v.get("finding_id")): v for v in primary["verdicts"]
-              if isinstance(v, dict) and v.get("finding_id")}
+    by_fid = {str(v.get("finding_id")): v for v in verdicts
+              if v.get("finding_id")}
     for f in cell:
         f["evidence"] = evidence.derive_evidence(f, by_fid.get(str(f["id"])))
     by_cat = {}
@@ -265,9 +364,14 @@ def _verify_backup_execute(review_root, manifest, host, bundle):
             scope = _cell_backup_findings(review_root, manifest, group, domain)
             if not scope:
                 continue
-            if _verify_cell_done(review_root, manifest, group, domain, "backup"):
+            if _verify_cell_done(review_root, manifest, group, domain, "backup",
+                                  cell=scope):
                 continue
-            pending.append((domain, scope))
+            pending.extend(
+                (domain, chunk, part)
+                for part, chunk in enumerate(_cell_chunks(scope))
+                if not _part_done(review_root, manifest, group, domain,
+                                  "backup", part, chunk))
         if pending:
             ngroups += 1
             # #1029: the backup re-reads only its scoped claims' files, not the
@@ -275,7 +379,8 @@ def _verify_backup_execute(review_root, manifest, host, bundle):
             all_entries.extend(
                 _verify_entry(review_root, manifest, group, d,
                               _backup_scope_files(review_root, files, c), c,
-                              host, bundle, "backup") for d, c in pending)
+                              host, bundle, "backup", part)
+                for d, c, part in pending)
     if all_entries:
         req = requests.write_dispatch_request(review_root, manifest["run_id"], "verify",
                                      None, all_entries)
@@ -288,8 +393,9 @@ def _verify_backup_execute(review_root, manifest, host, bundle):
 def _verify_backup_done(review_root, manifest):
     for group, _files in coverage._discovered_groups(review_root):
         for domain in coverage._effective_domains(review_root, group):
-            if _cell_backup_findings(review_root, manifest, group, domain) \
-                    and not _verify_cell_done(review_root, manifest, group, domain, "backup"):
+            scope = _cell_backup_findings(review_root, manifest, group, domain)
+            if scope and not _verify_cell_done(review_root, manifest, group,
+                                               domain, "backup", cell=scope):
                 return False
     return True
 
@@ -356,8 +462,9 @@ def _tool_verify_queue(review_root, manifest):
     # tool findings, this dispatched only 6, leaving 30 permanently unanswered and
     # making tool_confirmed:0 an artifact, not a measurement). The docstring above
     # promises this queue is "computed EXACTLY as synthesize will" -- so it must
-    # take the same default. (The manifest never carries max_verify today, so this
-    # is uncapped in practice; if it ever does, it matches synthesize by key.)
+    # take the same default. Uncapped unless the operator passes --max-verify
+    # (AGT-679033153 made that flag reachable; before it, this was None on every
+    # real run by construction, so the cap existed only for tests).
     max_verify = flags.get("max_verify")
     queue, _cut = evidence.build_verify_queue(prepared, max_verify=max_verify)
     return [(e["queue_id"], e["finding"]) for e in queue

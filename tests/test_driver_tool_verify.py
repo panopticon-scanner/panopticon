@@ -383,3 +383,42 @@ class TestRedteamFixtureDecouple(_ToolVerifyBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestMaxVerifyIsReachable(unittest.TestCase):
+    """AGT-679033153 (AGT-E1B): the tool-verify cap existed but no real driver
+    run could reach it. `max_verify` was absent from run_manifest._FLAG_KEYS and
+    from driver._cli_flags, and build_manifest filters flags down to _FLAG_KEYS
+    -- so manifest['flags'].get('max_verify') was None BY CONSTRUCTION in every
+    CLI invocation. Only a hand-built test manifest could exercise it.
+
+    Under --security redteam the target is adversarial by definition and can be
+    engineered to maximize tool noise, so an unreachable cap is the wrong
+    default posture. The DEFAULT stays uncapped (#18: capping starved tool
+    findings); what changes is that an operator can now set it.
+    """
+
+    def test_the_flag_exists_on_driver_run(self):
+        import scripts.driver as driver
+        args = driver.build_parser().parse_args(["run", ".", "--max-verify", "7"])
+        self.assertEqual(args.max_verify, 7)
+
+    def test_cli_flags_carries_it(self):
+        import scripts.driver as driver
+        args = driver.build_parser().parse_args(["run", ".", "--max-verify", "7"])
+        self.assertEqual(driver._cli_flags(args).get("max_verify"), 7)
+
+    def test_it_survives_the_manifest_flag_filter(self):
+        import scripts.run_manifest as run_manifest
+        self.assertIn("max_verify", run_manifest._FLAG_KEYS)
+
+    def test_omitting_it_stays_uncapped(self):
+        # #18 again: the default must not start capping tool findings.
+        import scripts.driver as driver
+        args = driver.build_parser().parse_args(["run", "."])
+        self.assertIsNone(driver._cli_flags(args).get("max_verify"))
+
+    def test_a_negative_cap_is_refused_rather_than_silently_uncapping(self):
+        import scripts.driver as driver
+        with self.assertRaises(SystemExit):
+            driver.build_parser().parse_args(["run", ".", "--max-verify", "-1"])

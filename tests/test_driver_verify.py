@@ -306,3 +306,53 @@ class TestVerifyBackup(unittest.TestCase):
                                        "domain": "SEC", "group": "app", "stage": "backup"}}, fh)
         with mock.patch("scripts.ocrdb.load_bundle", return_value={"domains": {}}):
             self.assertTrue(verify.verify_done(self.root, self.manifest))
+
+
+class TestOversizedCellIsChunked(unittest.TestCase):
+    """#1521: an oversized cell must reach the advisor as SEVERAL bounded
+    dispatches, not one unbounded prompt -- and not as a truncated one, since
+    _verify_cell_done demands a verdict for every claim."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = self.tmp.name
+        self.manifest = _manifest(self.root)
+        _write(self.root, "groups.json",
+               {"groups": [{"name": "app", "files": ["a.py"]}]})
+        _write(self.root, "coverage-app.json", {"effective": ["SEC"]})
+        self.addCleanup(self.tmp.cleanup)
+
+    def _dispatch(self, n):
+        _cell(self.root, "app", "SEC",
+              [{"domain": "SEC", "code": "SEC-A1A", "severity": "HIGH",
+                "title": "t%d" % i, "category": "x",
+                "location": {"file": "a.py", "line_start": i + 1}}
+               for i in range(n)])
+        with (
+            mock.patch("scripts.dispatch.render_prompt", return_value="BODY"),
+            mock.patch("scripts.dispatch.registered_agent_name",
+                       return_value="panopticon-domain-advisor"),
+            mock.patch("scripts.ocrdb.load_bundle", return_value={"domains": {}})
+        ):
+            verify.verify_execute(self.root, self.manifest)
+        with open(runio._pano(self.root, "dispatch-request.json"),
+                  encoding="utf-8") as fh:
+            return json.load(fh)["entries"]
+
+    def test_a_small_cell_still_dispatches_exactly_one_advisor(self):
+        self.assertEqual(len(self._dispatch(3)), 1)
+
+    def test_an_oversized_cell_dispatches_one_advisor_per_chunk(self):
+        entries = self._dispatch(verify._CELL_CLAIMS_CAP * 2 + 1)
+        self.assertEqual(len(entries), 3)
+
+    def test_each_chunk_gets_a_distinct_id_and_out_file(self):
+        # Colliding ids would collide their prompt files; colliding out_files
+        # would have each advisor overwrite the last one's verdicts.
+        entries = self._dispatch(verify._CELL_CLAIMS_CAP * 2 + 1)
+        self.assertEqual(len({e["id"] for e in entries}), len(entries))
+        self.assertEqual(len({e["out_file"] for e in entries}), len(entries))
+
+    def test_the_first_chunk_keeps_the_established_out_file(self):
+        entries = self._dispatch(verify._CELL_CLAIMS_CAP * 2 + 1)
+        self.assertTrue(entries[0]["out_file"].endswith("verdicts-app-SEC.json"))
