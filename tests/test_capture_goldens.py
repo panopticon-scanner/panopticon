@@ -195,5 +195,121 @@ class TestMainStatusClassification(unittest.TestCase):
         self.assertEqual(report["t"]["golden_findings"], 1)
 
 
+class _RecordingAdapter(_Adapter):
+    """Records every payload handed to parse(), so a test can prove WHICH bytes
+    the pre-write verification actually checked."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.parsed_inputs = []
+
+    def parse(self, raw, group):
+        self.parsed_inputs.append(raw)
+        return super().parse(raw, group)
+
+
+class TestRedactBeforeWrite(unittest.TestCase):
+    """#run12: three adapters (gitleaks, bandit, trivy) point at /mnt/panopticon
+    -- the operator's own checkout -- so a real .env was in gitleaks' scan path
+    and its live API key was committed to a public golden. capture_goldens.py had
+    no redaction step of any kind, so whatever a scanner found got written
+    verbatim. Redact on the way out, and say so in the report."""
+
+    SECRET = "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
+
+    def _run(self, adapter):
+        out_dir = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(out_dir,
+                                                            ignore_errors=True))
+        target = tempfile.mkdtemp()
+        self.addCleanup(lambda: os.rmdir(target) if os.path.isdir(target) else None)
+        out = io.StringIO()
+        with unittest.mock.patch.object(cg, "ADAPTERS", {"t": adapter}), \
+             unittest.mock.patch.object(cg, "TARGETS", {"t": target}), \
+             unittest.mock.patch.object(cg.sys, "argv",
+                                        ["capture_goldens.py", out_dir]), \
+             contextlib.redirect_stdout(out):
+            cg.main()
+        path = os.path.join(out_dir, "t.raw")
+        written = open(path, "rb").read() if os.path.exists(path) else None
+        return json.loads(out.getvalue())["t"], written
+
+    def test_a_captured_secret_never_reaches_the_golden(self):
+        raw = json.dumps({"results": [{"snippet": self.SECRET}]}).encode()
+        report, written = self._run(_Adapter(raw=raw))
+        self.assertEqual(report["status"], "ok")
+        self.assertNotIn(self.SECRET.encode(), written)
+        self.assertIn(b"[REDACTED_UUID]", written)
+
+    def test_the_report_says_redaction_fired(self):
+        """Silent redaction would hide that a scanner reached a real secret --
+        which is itself the signal that the capture target is wrong."""
+        raw = json.dumps({"results": [{"snippet": self.SECRET}]}).encode()
+        report, _ = self._run(_Adapter(raw=raw))
+        self.assertTrue(report.get("redacted"))
+
+    def test_a_clean_payload_is_written_byte_identical(self):
+        """Redaction decodes to str; a payload with nothing to mask must not be
+        round-tripped through a lossy decode/encode."""
+        raw = json.dumps({"results": [{"id": "X-001"}]}).encode()
+        report, written = self._run(_Adapter(raw=raw))
+        self.assertEqual(written, cg.trim(raw))
+        self.assertFalse(report.get("redacted"))
+
+    def test_the_pre_write_check_parses_the_redacted_bytes(self):
+        """Order matters: redact, THEN verify. Verifying the pre-redaction bytes
+        would certify a payload that is not the one committed."""
+        raw = json.dumps({"results": [{"snippet": self.SECRET}]}).encode()
+        adapter = _RecordingAdapter(raw=raw)
+        self._run(adapter)
+        self.assertIn(b"[REDACTED_UUID]", adapter.parsed_inputs[-1])
+
+    def test_redaction_that_breaks_parse_is_rejected_not_written(self):
+        class _Picky(_Adapter):
+            def parse(self, raw, group):
+                if b"[REDACTED" in raw:
+                    raise RuntimeError("redaction broke it")
+                return self._parsed
+
+        raw = json.dumps({"results": [{"snippet": self.SECRET}]}).encode()
+        report, written = self._run(_Picky(raw=raw))
+        self.assertEqual(report["status"], "trim-broke-parse")
+        self.assertIsNone(written)
+
+
+class TestRedactBytes(unittest.TestCase):
+    SECRET = "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
+
+    def test_masks_and_flags(self):
+        out, hit = cg.redact_bytes(("key %s\n" % self.SECRET).encode())
+        self.assertTrue(hit)
+        self.assertNotIn(self.SECRET.encode(), out)
+
+    def test_clean_bytes_are_returned_unchanged_and_unflagged(self):
+        src = b'{"a": 1}'
+        out, hit = cg.redact_bytes(src)
+        self.assertFalse(hit)
+        self.assertIs(out, src)
+
+    def test_undecodable_bytes_do_not_raise(self):
+        src = b"\xff\xfe binary"
+        out, hit = cg.redact_bytes(src)
+        self.assertFalse(hit)
+        self.assertIs(out, src)
+
+
+class TestCaptureTargets(unittest.TestCase):
+    def test_no_adapter_scans_the_operators_own_checkout(self):
+        """#run12 root cause. Goldens are committed to a PUBLIC repo, and
+        /mnt/panopticon is the operator's real working tree -- .env included --
+        so pointing a SECRET SCANNER at it put a live API key in a public
+        fixture. A capture target must be a corpus chosen for the purpose. The
+        goldens README already documented these three as /src-mounted; only the
+        code disagreed."""
+        offenders = {n: t for n, t in cg.TARGETS.items()
+                     if t == "/mnt/panopticon"}
+        self.assertEqual(offenders, {})
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -11,6 +11,7 @@ import sys
 import xml.etree.ElementTree as ET
 
 sys.path.insert(0, "/opt/panopticon")
+from scripts import redact  # noqa: E402
 from scripts.tools import ADAPTERS  # noqa: E402
 
 F = "/opt/panopticon-fixtures"
@@ -22,9 +23,15 @@ TARGETS = {
     "dependency-check": f"{F}/WebGoat",
     "roslyn-secguard": f"{F}/AspGoat",
     "cargo-audit": f"{F}/vulnerable-rust",
-    "bandit": "/mnt/panopticon",
-    "gitleaks": "/mnt/panopticon",
-    "trivy": "/mnt/panopticon",
+    # /src, never the operator's own checkout: these three used to point at
+    # /mnt/panopticon, so gitleaks scanned the real working tree -- .env and all
+    # -- and #run12 committed the live key it found into a public golden. The
+    # goldens README already documented them as /src-mounted (pass 2); only this
+    # table disagreed. Refreshing gitleaks now needs a target that carries
+    # SYNTHETIC secrets, which is the point.
+    "bandit": "/src",
+    "gitleaks": "/src",
+    "trivy": "/src",
     "osv-scanner": "/src",
     "gosec": "/mnt/gotify",
     "eslint-security": "/src",       # mounted at /src: eslint's flat config
@@ -116,6 +123,30 @@ def trim(raw: bytes) -> bytes:
     return raw
 
 
+def redact_bytes(raw: bytes):
+    """Mask secrets in a payload that is about to be COMMITTED. -> (bytes, fired)
+
+    Three adapters below scan /mnt/panopticon -- the operator's own checkout --
+    so a real .env sits in gitleaks' path, and #run12 committed a live API key
+    into a public golden because nothing here looked. Capture is the last point
+    where a secret can be stopped before it enters git history, where removing
+    it costs a rewrite rather than an edit.
+
+    Returns the ORIGINAL object when nothing matched, so a clean payload is
+    never round-tripped through a lossy decode/encode: goldens are byte-compared
+    against what the tool really emitted, and "replace" would silently rewrite
+    any undecodable byte a tool happened to produce.
+    """
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw, False
+    masked = redact.redact(text)
+    if masked == text:
+        return raw, False
+    return masked.encode("utf-8"), True
+
+
 def main():
     out_dir = sys.argv[1]
     os.makedirs(out_dir, exist_ok=True)
@@ -147,6 +178,8 @@ def main():
                             "error": str(exc)[:160], "bytes": len(raw)}
             continue
         small = trim(raw)
+        # Redact BEFORE the check below, so what is verified is what is written.
+        small, redacted = redact_bytes(small)
         # A trimmed payload must still parse, or the golden is useless.
         try:
             reparsed = adapter.parse(small, "Probe")
@@ -157,7 +190,10 @@ def main():
             fh.write(small)
         report[name] = {"status": "ok", "rc": rc, "raw_bytes": len(raw),
                         "findings": len(parsed), "golden_bytes": len(small),
-                        "golden_findings": len(reparsed)}
+                        "golden_findings": len(reparsed),
+                        # Loud on purpose: a secret in a scan target means the
+                        # TARGET is wrong, and that outlives this one masking.
+                        "redacted": redacted}
     print(json.dumps(report, indent=2))
 
 
