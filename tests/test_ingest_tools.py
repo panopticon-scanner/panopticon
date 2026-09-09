@@ -604,3 +604,70 @@ class TestIngestDispositions(unittest.TestCase):
             findings = it.ingest_dir(d, "g1", include_fixtures=True)
         self.assertTrue(findings)
         self.assertEqual(first(findings)["citations"]["cve"], ["CVE-0000-0001"])
+
+
+class TestAdapterFindingCap(unittest.TestCase):
+    """#1236 (OPS-D1B): an adapter's parse() emitted every advisory block with
+    no result cap. Filed against bundler-audit, but nothing capped ANY adapter,
+    and ingest_dir_detailed is where every adapter's parse() is called -- so the
+    bound belongs here, once, rather than in the one adapter that got filed.
+
+    Truncation must never be silent: a dropped tool finding nobody is told about
+    is indistinguishable from a clean scan.
+    """
+
+    def _results(self, n, level="error"):
+        return [{"ruleId": "R%04d" % i, "level": level,
+                 "message": {"text": "finding %d" % i},
+                 "locations": [{"physicalLocation": {
+                     "artifactLocation": {"uri": "src/app.py"},
+                     "region": {"startLine": i + 1}}}]}
+                for i in range(n)]
+
+    def _ingest(self, results, cap):
+        sarif = {"runs": [{"tool": {"driver": {"name": "semgrep", "rules": []}},
+                           "results": results}]}
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "semgrep.sarif"), "w") as fh:
+                json.dump(sarif, fh)
+            with patch.object(it, "MAX_ADAPTER_FINDINGS", cap), \
+                 contextlib.redirect_stderr(io.StringIO()) as err:
+                findings, disp = it.ingest_dir_detailed(d, "g1")
+        return findings, disp, err.getvalue()
+
+    def test_an_adapter_under_the_cap_is_untouched(self):
+        findings, disp, err = self._ingest(self._results(3), cap=10)
+        self.assertEqual(len(findings), 3)
+        self.assertNotIn("truncated", disp["semgrep"])
+        self.assertEqual(err, "")
+
+    def test_an_oversized_adapter_is_capped(self):
+        findings, _disp, _err = self._ingest(self._results(25), cap=10)
+        self.assertEqual(len(findings), 10)
+
+    def test_the_truncation_is_disclosed_in_the_disposition(self):
+        _findings, disp, _err = self._ingest(self._results(25), cap=10)
+        self.assertEqual(disp["semgrep"]["truncated"], 15)
+        # `findings` stays the RAW count, so a report can read 25 seen / 10 kept.
+        self.assertEqual(disp["semgrep"]["findings"], 25)
+
+    def test_the_truncation_is_loud_on_stderr(self):
+        _findings, _disp, err = self._ingest(self._results(25), cap=10)
+        self.assertIn("semgrep", err)
+        self.assertIn("25", err)
+
+    def test_the_cap_keeps_the_most_severe(self):
+        # Dropping the one CRITICAL to keep ten notes would be worse than not
+        # capping at all.
+        results = self._results(20, level="note")
+        results.append({"ruleId": "BAD", "level": "error",
+                        "message": {"text": "the serious one"},
+                        "locations": [{"physicalLocation": {
+                            "artifactLocation": {"uri": "src/app.py"},
+                            "region": {"startLine": 99}}}]})
+        findings, _disp, _err = self._ingest(results, cap=3)
+        self.assertIn("the serious one", " ".join(f["title"] for f in findings))
+
+    def test_the_default_cap_is_not_reachable_by_an_ordinary_scan(self):
+        # A bound that fires on a normal repo would silently degrade every run.
+        self.assertGreaterEqual(it.MAX_ADAPTER_FINDINGS, 1000)

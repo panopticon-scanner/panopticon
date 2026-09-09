@@ -181,6 +181,36 @@ def _scanned_files(raw):
     return count if isinstance(count, int) and not isinstance(count, bool) else None
 
 
+# #1236 (OPS-D1B): no adapter capped its own result list. Filed against
+# bundler-audit's advisory loop, but the class is generic and THIS is where
+# every adapter's parse() is called, so the bound lives here once instead of
+# once per adapter. Set well above any honest scan: a repo that trips this has
+# a pathological lockfile or a rule loop, which is exactly the case the bound
+# is for.
+MAX_ADAPTER_FINDINGS = 2000
+
+_SEVERITY_RANK = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
+
+
+def _cap_findings(parsed, tool):
+    """Bound one adapter's yield, keeping the most severe. Returns (kept, dropped).
+
+    Severity-ordered rather than first-N: dropping a CRITICAL to keep a page of
+    notes would be worse than not capping. The sort is stable, so within a
+    severity the adapter's own order survives.
+    """
+    if len(parsed) <= MAX_ADAPTER_FINDINGS:
+        return parsed, 0
+    ordered = sorted(parsed, key=lambda f: _SEVERITY_RANK.get(
+        str(f.get("severity", "INFO")).upper(), len(_SEVERITY_RANK)))
+    dropped = len(parsed) - MAX_ADAPTER_FINDINGS
+    print("ingest note %s: %d findings exceeds the %d cap; kept the %d most "
+          "severe, dropped %d (OPS-D1B #1236)"
+          % (tool, len(parsed), MAX_ADAPTER_FINDINGS, MAX_ADAPTER_FINDINGS,
+             dropped), file=sys.stderr)
+    return ordered[:MAX_ADAPTER_FINDINGS], dropped
+
+
 def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=False):
     """Ingest raw tool-output files and report each adapter's disposition.
 
@@ -271,6 +301,7 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
                                   % (str(e).splitlines() or [""])[0]}
             continue
         raw_count = len(parsed)
+        parsed, truncated = _cap_findings(parsed, tool)
         scanned = _scanned_files(raw)
         parsed, fx_cnt, gl_cnt, ra_cnt = _filter_parsed_findings(
             parsed, include_fixtures, exclude_globs)
@@ -287,6 +318,11 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
         else:
             status, reason = "empty", None
         dispositions[tool] = {"status": status, "findings": raw_count}
+        if truncated:
+            # Disclosed, never silent: `findings` stays the RAW count, so a
+            # report reads "N seen, M dropped" rather than looking like a
+            # smaller clean scan (#1236).
+            dispositions[tool]["truncated"] = truncated
         if reason:
             dispositions[tool]["reason"] = reason
     if fx_excluded or gl_excluded or ra_excluded:

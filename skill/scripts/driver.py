@@ -79,7 +79,8 @@ def _cli_flags(args):
               "tools": tools_flag,
               "include_fixtures": True if getattr(args, "include_fixtures", False) else None,
               "max_per_group": getattr(args, "max_per_group", None),
-              "allow_unenforced": True if getattr(args, "allow_unenforced", False) else None}
+              "allow_unenforced": True if getattr(args, "allow_unenforced", False) else None,
+              "max_verify": getattr(args, "max_verify", None)}
     return {k: values.get(k) for k in run_manifest._FLAG_KEYS}
 
 
@@ -171,6 +172,13 @@ def build_parser():
         # (per-cell overhead is amortized) at the price of a wider lens per
         # reviewer. Anti-drift: use --reset to change it on an existing run.
         p.add_argument("--max-per-group", type=_positive_int, default=None)
+        # AGT-679033153: synthesize has had --max-verify since 5.0, but the
+        # driver never registered it and never put it in the flags dict, so
+        # `manifest["flags"].get("max_verify")` was None BY CONSTRUCTION on
+        # every real run -- the tool-verify cap was reachable only from a
+        # hand-built test manifest. The DEFAULT stays uncapped (#18: capping
+        # starved tool findings); this only makes it settable.
+        p.add_argument("--max-verify", type=_positive_int, default=None)
         scope = p.add_mutually_exclusive_group()
         scope.add_argument("-f", "--file", dest="scope_file", default=None)
         scope.add_argument("-d", "--directory", dest="scope_dir", default=None)
