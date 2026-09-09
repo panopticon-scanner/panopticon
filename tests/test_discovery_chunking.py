@@ -73,3 +73,71 @@ class TestChunkBalance(unittest.TestCase):
             chunks = orchestrator.chunk_files(files, max_per=48)
             self.assertEqual(len(chunks), max(1, math.ceil(n / 48)), n)
             self.assertTrue(all(len(c) <= 48 for c in chunks), n)
+
+
+class TestChunkCountIsExact(unittest.TestCase):
+    """#1503: the #1499 even-target packing promised `ceil(n/max_per)` chunks
+    and no starved tail. Both were false off the single-directory happy path,
+    because directory blocks were packed FIRST-FIT in sorted-name order and a
+    block that did not fit closed the current chunk. So the SAME 50 files
+    chunked into 2 or 3 depending only on the directory NAMES, and a 97-file
+    three-directory shape re-created the starved 4-file tail #1499 removed.
+    Each phantom chunk is a full domain fan-out.
+    """
+
+    def _files(self, spec):
+        return sorted("%s/f%03d.py" % (d, i) for d, n in spec for i in range(n))
+
+    def test_directory_names_do_not_change_the_chunk_count(self):
+        early = self._files([("a", 2), ("b", 25), ("c", 23)])
+        late = self._files([("b", 25), ("c", 23), ("z", 2)])
+        self.assertEqual([len(c) for c in orchestrator.chunk_files(early, max_per=48)],
+                         [25, 25])
+        self.assertEqual([len(c) for c in orchestrator.chunk_files(late, max_per=48)],
+                         [25, 25])
+
+    def test_no_sub_floor_trailing_chunk_across_directories(self):
+        # 97 files as 30/30/37: the old packer emitted [30, 30, 33, 4].
+        files = self._files([("a", 30), ("b", 30), ("c", 37)])
+        chunks = orchestrator.chunk_files(files, max_per=48)
+        self.assertEqual(len(chunks), 3)
+        self.assertGreaterEqual(min(len(c) for c in chunks),
+                                orchestrator.COMMONS_MIN_FILES)
+
+    def test_the_guarantees_hold_over_many_directory_shapes(self):
+        import math
+        shapes = [
+            [("a", 2), ("b", 25), ("c", 23)],
+            [("a", 30), ("b", 30), ("c", 37)],
+            [("a", 1), ("b", 1), ("c", 1)],
+            [("a", 48), ("b", 48)],
+            [("a", 49)],
+            [("a", 100), ("b", 3), ("c", 3), ("d", 3)],
+            [("a", 7), ("b", 11), ("c", 13), ("d", 17), ("e", 19), ("f", 23)],
+            [("deep/nest/a", 60), ("deep/nest/b", 60), ("z", 1)],
+        ]
+        for max_per in (7, 15, 48):
+            for shape in shapes:
+                files = self._files(shape)
+                with self.subTest(max_per=max_per, shape=shape):
+                    chunks = orchestrator.chunk_files(files, max_per=max_per)
+                    sizes = [len(c) for c in chunks]
+                    # exactly the promised count, never one more
+                    self.assertEqual(len(chunks),
+                                     math.ceil(len(files) / max_per))
+                    # the cap still holds, and no chunk is starved relative to
+                    # its siblings: sizes differ by at most one
+                    self.assertLessEqual(max(sizes), max_per)
+                    self.assertLessEqual(max(sizes) - min(sizes), 1)
+                    # every file exactly once
+                    flat = [f for c in chunks for f in c]
+                    self.assertEqual(sorted(flat), files)
+                    self.assertEqual(len(flat), len(set(flat)))
+
+    def test_a_directory_stays_together_when_it_fits(self):
+        # Cohesion is still the point: 25 + 23 + 2 packs as b | c+a, not by
+        # slicing b across the boundary.
+        files = self._files([("a", 2), ("b", 25), ("c", 23)])
+        chunks = orchestrator.chunk_files(files, max_per=48)
+        dirs = [{f.split("/")[0] for f in c} for c in chunks]
+        self.assertIn({"b"}, dirs)

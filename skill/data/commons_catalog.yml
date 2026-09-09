@@ -71,8 +71,20 @@ groups:
     - ".buildkite/**"
     - ".ci/**"
     - ".circleci/**"
+    # #1508: the TOP LEVEL of .github, which the workflows/actions/scripts
+    # subtree globs left uncovered. `labels.yml`, `apply-labels.sh`,
+    # `FUNDING.yml`, `release.yml`, `stale.yml`, `renovate.json` ... are
+    # conventional repo/CI config and none of them are code, but they fell to
+    # `Ungrouped` -- which we read as a catalog COVERAGE signal, so the report
+    # pushed the owner to author a committed group for two CI files. `*` does
+    # not cross a slash, so this stays inside that one directory; `.github/*.md`
+    # and `.github/ISSUE_TEMPLATE/**` stay with Docs, which is checked first.
+    # R3: `.github/dependabot.yml` is subsumed by `.github/*.yml` and dropped.
+    - ".github/*.json"
+    - ".github/*.sh"
+    - ".github/*.yaml"
+    - ".github/*.yml"
     - ".github/actions/**"
-    - ".github/dependabot.yml"
     - ".github/scripts/**"
     - ".github/workflows/**"
     - ".gitlab-ci.yml"

@@ -214,3 +214,49 @@ def test_exclude_paths_invalid_types():
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestGlobsAreRefusedRatherThanMiscompiled(unittest.TestCase):
+    """#1501: a glob the compiler cannot translate must not reach it. The
+    failure it replaces is silent -- an empty group and an inflated
+    `Ungrouped`, which is the signal we read as catalog coverage -- so the
+    error has to name the fix, not just the fault.
+    """
+
+    def test_character_class_in_match_is_an_error(self):
+        _groups, errors = gs.parse_groups(
+            {"groups": {"Native": {"match": ["src/*.[ch]"]}}})
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("group Native: match glob 'src/*.[ch]'", errors[0])
+        self.assertIn("'*.c' and '*.h'", errors[0])
+
+    def test_character_class_in_tests_is_an_error(self):
+        _groups, errors = gs.parse_groups(
+            {"groups": {"G": {"match": ["src/**"], "tests": ["t/file[0-9].py"]}}})
+        self.assertEqual([e for e in errors if "tests glob" in e], errors)
+        self.assertEqual(len(errors), 1, errors)
+
+    def test_a_subgroup_glob_is_checked_under_its_flat_id(self):
+        _groups, errors = gs.parse_groups(
+            {"groups": {"UI": {"Admin": {"match": ["ui/[ab]/**"]}}}})
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("group UI:Admin: match glob", errors[0])
+
+    def test_exclude_paths_is_checked_too(self):
+        globs, errors = gs.parse_exclude_paths({"exclude_paths": ["vendor/[0-9]*/**"]})
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("exclude_paths: entry glob", errors[0])
+        # the valid-entry list is still returned, as for the other shape errors
+        self.assertEqual(globs, ["vendor/[0-9]*/**"])
+
+    def test_trailing_slash_is_accepted_now_that_it_compiles(self):
+        _groups, errors = gs.parse_groups(
+            {"groups": {"Docs": {"match": ["docs/", "/build/"],
+                                 "tests": ["tests/"]}}})
+        self.assertEqual(errors, [])
+
+    def test_glob_defect_is_none_for_ordinary_globs(self):
+        for glob in ("src/**", "*.md", "!vendor/**", "a/b/c.py", "doc?.md",
+                     "**/vendor/**", "/README.md", "LICENSE*", "docs/"):
+            with self.subTest(glob=glob):
+                self.assertIsNone(gs.glob_defect(glob))

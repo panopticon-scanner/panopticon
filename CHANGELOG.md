@@ -27,6 +27,20 @@ Setup now front-loads the grouping work so every later run reuses it
   ceiling the smallest layers collapse first, verticals are never merged.
   Committed groups always win; the outcome is written to `setup-report.md`
   / `setup-report.json`.
+- **Setup engine fixes (from the first 5.2 self-scan, run-11):** the ceiling
+  budgets CODE leaves only — `Tests` and the Commons categories hold exactly
+  the files its numerator subtracts, so charging them to it made any repo of
+  <= 96 code files with two verticals "over ceiling" by construction and told
+  the owner to merge verticals (#1506). `chunk_files` packs to decided sizes,
+  so an oversize group splits into exactly `ceil(files / cap)` near-equal
+  chunks whatever its directory shape — it used to emit a phantom cell, and a
+  starved trailing chunk, depending only on directory names (#1503). The
+  Commons `CI` category claims the top level of `.github` (`*.yml`, `*.yaml`,
+  `*.sh`, `*.json`), so `labels.yml` and friends stop reading as a catalog
+  coverage gap (#1508). Globs: a trailing-slash directory pattern (`docs/`)
+  now compiles as gitignore reads it instead of silently matching nothing,
+  and a character class (`*.[ch]`) is refused at validation time instead of
+  being escaped into a literal that claims the wrong files (#1501).
 - **Tests axis:** a vertical's wildcard `tests` glob is scoped (under its
   `match` dirs or naming the vertical/an alias); the cross-cutting test trees
   form a `Tests` group last, at run time, from the leftovers.

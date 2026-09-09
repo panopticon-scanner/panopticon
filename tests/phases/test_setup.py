@@ -325,7 +325,7 @@ class TestDriverSetup(unittest.TestCase):
         with open(runio._pano(d, "setup-scan-brief.md"), encoding="utf-8") as fh:
             brief = fh.read()
         self.assertIn("## Size arithmetic", brief)
-        self.assertIn("ceiling (review groups this repo affords): 5 from --max-groups", brief)
+        self.assertIn("ceiling (CODE review groups this repo affords): 5 from --max-groups", brief)
         self.assertIn("setup-spine.json", runio._TOP_LEVEL)
         self.assertIn("setup-spine.json", setup._SETUP_ARTIFACTS)
         # --reset drops the pinned sizes and re-runs scan: the spine is rebuilt

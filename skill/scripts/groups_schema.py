@@ -44,6 +44,39 @@ RESIDUAL_SINK = "Ungrouped"
 _CHUNK_SUFFIX_RE = re.compile(r"(?P<base>.+)_\d+\Z")
 
 
+# #1501: `groups.yml` and the Commons catalog are documented as taking
+# "gitignore-flavored globs", but `discovery._glob_to_re` is a hand-rolled
+# translator, and a glob it cannot translate does not error -- it renders an
+# EMPTY group and inflates `Ungrouped`, the signal we read as catalog
+# coverage. So the compiler now handles gitignore's trailing-slash directory
+# form exactly, and this is the one place that names the form it cannot: a
+# character class, whose safe translation needs bracket-content parsing this
+# compiler does not do (it `re.escape`s the brackets, so `*.[ch]` used to
+# claim a file literally named `main.[ch]` and never `main.c`).
+#
+# Lives here, in the pure schema module, because this is where authored globs
+# are validated; `discovery` imports it for the same reason `setup_proposal`
+# does -- one rule, three callers, never a second copy.
+def glob_defect(pattern):
+    """The reason `pattern` cannot be compiled faithfully, or None.
+
+    A returned string is a complete operator-facing sentence naming the fix.
+    """
+    if not isinstance(pattern, str):
+        return None
+    if "[" in pattern:
+        return ("character classes are not supported -- write each spelling "
+                "as its own glob ('*.c' and '*.h', not '*.[ch]'), or use '?' "
+                "for a single character")
+    return None
+
+
+def glob_errors(label, field, globs):
+    """`glob_defect` over one authored list, as parse errors."""
+    return ["%s: %s glob %r is invalid: %s" % (label, field, g, defect)
+            for g in globs for defect in [glob_defect(g)] if defect]
+
+
 def _as_domain_set(name, field, raw, errors):
     out = set()
     if raw is None:
@@ -84,6 +117,7 @@ def _parse_leaf(name, raw, errors):
         if invalid_match:
             errors.append(f"group {name}: match entries must be non-empty strings")
         match = [x for x in raw_match if isinstance(x, str) and x.strip()]
+    errors.extend(glob_errors("group %s" % name, "match", match))
     raw_tests = raw.get("tests")
     if raw_tests is None:
         tests = []
@@ -95,6 +129,7 @@ def _parse_leaf(name, raw, errors):
         if invalid_tests:
             errors.append(f"group {name}: tests entries must be non-empty strings")
         tests = [x for x in raw_tests if isinstance(x, str) and x.strip()]
+    errors.extend(glob_errors("group %s" % name, "tests", tests))
     floor = _as_domain_set(name, "panels", raw.get("panels"), errors)
     exclude = _as_domain_set(name, "exclude", raw.get("exclude"), errors)
     for d in sorted(floor & exclude):
@@ -232,4 +267,5 @@ def parse_exclude_paths(doc):
     if invalid:
         errors.append("exclude_paths entries must be non-empty strings")
     globs = [x for x in raw if isinstance(x, str) and x.strip()]
+    errors.extend(glob_errors("exclude_paths", "entry", globs))
     return globs, errors

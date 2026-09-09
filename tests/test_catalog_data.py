@@ -184,3 +184,12 @@ class TestCapabilityCatalog(_CatalogCompleteness, unittest.TestCase):
                            "**/home/**", "**/setup/**", "**/images/**", "**/files/**",
                            "**/pages/**", "**/channels/**"):
             self.assertNotIn(ubiquitous, hints)
+
+    def test_no_shipped_hint_is_a_glob_the_compiler_refuses(self):
+        # #1501: a hint the compiler cannot translate would be handed to the
+        # setup agent as a suggestion that can only ever match nothing.
+        catalog, _ = sp.load_vocabulary(self.path)
+        for name, globs in catalog["hints"].items():
+            for glob in globs:
+                with self.subTest(entry=name, glob=glob):
+                    self.assertIsNone(groups_schema.glob_defect(glob))

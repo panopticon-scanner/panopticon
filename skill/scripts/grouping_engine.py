@@ -55,8 +55,21 @@ def _clean(text, token=False):
 
 
 def ceiling_for(code_files, cap):
-    """`max(4, 2 * ceil(code_files / cap))` -- the mean leaf holds roughly
-    `cap / 2` files or more (spec §5.3 step 5)."""
+    """`max(4, 2 * ceil(code_files / cap))` -- the mean CODE leaf holds roughly
+    `cap / 2` files or more (spec §5.3 step 5).
+
+    The ceiling budgets CODE leaves, and only code leaves (#1506). Its
+    numerator says so: `count_code_files` subtracts the test tree and the
+    Commons files, so the leaves that hold exactly those files -- `Tests` and
+    the Commons categories -- are not in the population this number sizes.
+    Counting them against it anyway put every repo of <= 96 code files with
+    two or more verticals over the ceiling BY CONSTRUCTION (2 verticals +
+    Tests + Commons + Docs = 5 > 4), and the report then told the owner to
+    merge verticals -- advice the spec forbids the engine to take, on a repo
+    whose verticals were exactly the shape the setup brief asks for. They are
+    also the leaves the ceiling cannot act on: its only lever is collapsing a
+    layer.
+    """
     cap = max(1, int(cap or 1))
     return max(MIN_CEILING, 2 * math.ceil(max(0, int(code_files or 0)) / cap))
 
@@ -359,6 +372,11 @@ def plan_groups(files, committed, assembled, cap, aliases=None, ceiling=None):
 
     code_files, n_commons, n_tests = count_code_files(files)
     ceiling = int(ceiling) if ceiling else ceiling_for(code_files, cap)
+    # The engine's own leaves -- the Tests sweep and the Commons categories
+    # left after the fold -- are counted but NOT charged to the ceiling
+    # (#1506); see `ceiling_for`. Whatever the ceiling's source, it budgets
+    # the same population, so `--max-groups` keeps one meaning.
+    engine_leaves = (1 if tests else 0) + len(commons_named)
     layered, layer_report = {}, {}
     new_unlayered = 0
     for name, body in active.items():
@@ -391,9 +409,8 @@ def plan_groups(files, committed, assembled, cap, aliases=None, ceiling=None):
     committed_files = {fid: sorted(set(c_assigned.get(fid, [])) | set(attached.get(fid, []))
                                    | set(a_assigned.get(fid, [])))
                        for fid in committed_view}
-    other_leaves = (sum(1 for fs in committed_files.values() if fs) + new_unlayered
-                    + (1 if tests else 0) + len(commons_named))
-    layered, ceiling_notes, over_by = apply_ceiling(layered, other_leaves, ceiling)
+    other_code_leaves = sum(1 for fs in committed_files.values() if fs) + new_unlayered
+    layered, ceiling_notes, over_by = apply_ceiling(layered, other_code_leaves, ceiling)
     for name, layers in layered.items():
         layer_report[name]["kept"] = [
             {"layer": ly["layer"], "files": len(ly["files"]), "carrier": ly["carrier"],
@@ -430,6 +447,7 @@ def plan_groups(files, committed, assembled, cap, aliases=None, ceiling=None):
         by_dir[_dir_key(f)] = by_dir.get(_dir_key(f), 0) + 1
     report = {
         "cap": cap, "ceiling": ceiling, "over_ceiling_by": over_by,
+        "engine_leaves": engine_leaves,
         "files": {"total": len(files), "code": code_files, "commons": n_commons,
                   "test_tree": n_tests},
         "leaves": leaves,
@@ -454,6 +472,18 @@ def plan_groups(files, committed, assembled, cap, aliases=None, ceiling=None):
     return {"groups": groups, "claims": claims, "report": report}
 
 
+def _ceiling_line(r):
+    """The size section's ceiling line. Says WHICH leaves the ceiling counts,
+    so the number can be reconciled against the leaf total printed beside it
+    rather than read as a contradiction (#1506)."""
+    line = "- cap: %d files per dispatch unit; ceiling: %d code leaves" % (
+        r["cap"], r["ceiling"])
+    if r.get("engine_leaves"):
+        line += (" (+%d engine-owned: Tests and the Commons categories, which the "
+                 "ceiling does not budget)" % r["engine_leaves"])
+    return line
+
+
 def format_report(report, disclosure=None):
     """Render `plan_groups(...)["report"]` (+ the `assemble` disclosure) as
     the deterministic `setup-report.md` (spec §7.1). No timestamps."""
@@ -463,7 +493,7 @@ def format_report(report, disclosure=None):
            "## Size", "",
            "- files: %d total = %d code + %d commons + %d test tree"
            % (f["total"], f["code"], f["commons"], f["test_tree"]),
-           "- cap: %d files per dispatch unit; ceiling: %d leaves" % (r["cap"], r["ceiling"]),
+           _ceiling_line(r),
            "- leaves: %d (committed %d, verticals %d, layers %d, Tests %d, Commons %d)"
            % (lc["total"], lc["committed"], lc["vertical"], lc["layer"], lc["tests"], lc["commons"]),
            "- leaf size: min %s / mean %s / max %s"
@@ -471,8 +501,11 @@ def format_report(report, disclosure=None):
            "- estimated cells: >= %d (dispatch units x floor domains; the scout only widens)"
            % r["estimated_cells"]]
     if r["over_ceiling_by"]:
-        out.append("- **over ceiling by %d** -- raise `max_groups` or merge verticals in "
-                   "groups.yml; nothing was dropped to fit" % r["over_ceiling_by"])
+        # Reachable only when CODE leaves exceed the ceiling, so both levers
+        # named here can actually move the number (#1506).
+        out.append("- **over ceiling by %d** -- the ceiling counts code leaves only, "
+                   "so raise `max_groups` or merge verticals in groups.yml; nothing "
+                   "was dropped to fit" % r["over_ceiling_by"])
     out += ["", "## Leaves", "", "| leaf | kind | files | units | floor |", "|---|---|---|---|---|"]
     out += ["| %s | %s | %d | %d | %s |" % (lf["name"], lf["kind"], lf["files"], lf["units"],
                                             ", ".join(lf["domains"]) or "-")
