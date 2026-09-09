@@ -154,12 +154,8 @@ def replay(args):
         cmd = recorded[-1]
         out_path = os.path.join(out_dir, f"{tag}-report.json")
         cmd[cmd.index("--out") + 1] = out_path
-        # Pinned hash seed: set-ordered report keys (groups[].panel_grades
-        # iterates VALID_PANELS, a set) otherwise reorder per process, which
-        # the key-order check in `diff` would report as drift.
-        env = dict(runio._child_env(), PYTHONHASHSEED="0")
         proc = subprocess.run(cmd, cwd=root, capture_output=True, text=True,  # nosec B603
-                              env=env)
+                              env=runio._child_env())
         after = _listing(run_folder)
         for name in os.listdir(out_dir):
             if name.startswith(tag):

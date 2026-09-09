@@ -250,3 +250,71 @@ class TestSeverityBlockRendering(unittest.TestCase):
         out = self._block("HIGH", eligible=[])
         self.assertIn("**HIGH: 101** \u2014 in play, nothing confirmed here", out)
         self.assertNotIn("FAILS THE GATE", out)
+
+
+class TestPanelGradeKeyOrder(unittest.TestCase):
+    """#1538: `by_panel` was seeded from `VALID_PANELS`, a set, so Python's
+    per-process `str` hash randomisation reordered the keys of every group's
+    `panel_grades` from run to run. Two reports built from identical inputs
+    were then not byte-identical, and every diff-based comparison of report
+    JSON -- A/B runs, the replay oracle, any CI artifact diff -- showed
+    spurious churn in every group block. The oracle papered over it by
+    pinning `PYTHONHASHSEED=0` in the child env; the order is now a property
+    of the product, so the pin is gone.
+    """
+
+    _PROBE = r"""
+import json, sys, types
+import scripts.synth.findings as findings_mod
+import scripts.synth.grading as grading_mod
+
+find = {"severity": "HIGH", "panel": "code", "title": "t", "_group": "App",
+        "location": {"file": "app.py"}}
+resolved = types.SimpleNamespace(
+    gate_eligible=[find], active=[find], rejected=[], findings=[find],
+    verdict_unloadable=[], unanswered_gate=0, on_diff_active=[],
+    pre_existing_active=[], delta_mode=False)
+reconciled = types.SimpleNamespace(
+    groups_meta=[{"name": "App", "files": ["app.py"], "parent": "App"}],
+    panels_incomplete=[], tools_absent=[], integrity_ok=True,
+    cell_audit={"missing_floor": []})
+run = types.SimpleNamespace(target=sys.argv[1], fail_on=None, gate_unverified=False)
+
+graded = grading_mod.grade_report(run, resolved, reconciled)
+print(json.dumps({"keys": list(graded.groups[0]["panel_grades"]),
+                  "canonical": list(findings_mod.PANEL_ORDER)}))
+"""
+
+    def _keys_under(self, seed):
+        import subprocess
+        import sys
+        from conftest import REPO_ROOT, SKILL_ROOT
+        env = dict(os.environ, PYTHONHASHSEED=str(seed))
+        env["PYTHONPATH"] = os.pathsep.join(
+            [SKILL_ROOT, os.path.join(SKILL_ROOT, "scripts"), REPO_ROOT])
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "app.py"), "w", encoding="utf-8") as fh:
+                fh.write("x = 1\n")
+            proc = subprocess.run(  # nosec B603
+                [sys.executable, "-c", self._PROBE, d],
+                capture_output=True, text=True, env=env, cwd=REPO_ROOT)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return __import__("json").loads(proc.stdout)
+
+    def test_key_order_is_the_canonical_panel_order_under_any_hash_seed(self):
+        # Several seeds: a set's iteration order is stable WITHIN a process,
+        # so a single-process assertion could pass by luck.
+        for seed in (0, 1, 7, 12345):
+            with self.subTest(seed=seed):
+                out = self._keys_under(seed)
+                self.assertEqual(out["keys"], out["canonical"])
+
+    def test_the_replay_oracle_no_longer_pins_the_hash_seed(self):
+        # The pin was a test-side patch over a product-side quirk; leaving it
+        # would keep the oracle green while the product stayed nondeterministic
+        # for every other reader of the JSON.
+        from conftest import REPO_ROOT
+        with open(os.path.join(REPO_ROOT, "scripts", "replay_report.py"),
+                  encoding="utf-8") as fh:
+            hits = [ln.strip() for ln in fh if "PYTHONHASHSEED" in ln]
+        self.assertEqual(hits, [], "replay_report.py still pins the hash seed")

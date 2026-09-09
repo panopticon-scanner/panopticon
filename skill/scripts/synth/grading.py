@@ -362,7 +362,11 @@ def grade_report(run, resolved, reconciled):
     plan. Severity is never mutated here; grades and the gate are computed
     from gate-eligible findings only."""
     gate_eligible = resolved.gate_eligible
-    by_panel = {p: [] for p in findings_mod.VALID_PANELS}
+    # Seeded from the ORDERED list, never from `VALID_PANELS` (#1538): every
+    # `panel_grades` mapping below and in the roll-up takes its key order from
+    # this dict, and a set's order is randomised per process, so two reports
+    # built from identical inputs were not byte-identical.
+    by_panel = {p: [] for p in findings_mod.PANEL_ORDER}
     for f in gate_eligible:
         by_panel.get(f["panel"], by_panel["code"]).append(f)
 
