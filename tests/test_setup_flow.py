@@ -758,3 +758,158 @@ class TestSeedGroupsManifestInjection(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _git_repo(test_case, gitignore):
+    """A real git checkout whose .gitignore is exactly `gitignore`."""
+    import subprocess
+    d = _repo(test_case)
+    for argv in (["init", "-q"], ["config", "user.name", "T"],
+                 ["config", "user.email", "t@example.com"]):
+        subprocess.run(["git", "-C", d] + argv, check=True,
+                       capture_output=True)
+    with open(os.path.join(d, ".gitignore"), "w") as fh:
+        fh.write(gitignore)
+    subprocess.run(["git", "-C", d, "add", "-A"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", d, "commit", "-qm", "init"], check=True,
+                   capture_output=True)
+    return d
+
+
+def _status(repo):
+    import subprocess
+    return subprocess.run(["git", "-C", repo, "status", "--porcelain"],
+                          capture_output=True, text=True).stdout
+
+
+class TestGlobFormBlanketIgnore(unittest.TestCase):
+    """#1509: this repo's own .gitignore blanket-ignores the directory with the
+    GLOB form `.panopticon*/` -- deliberately, so a preserved run renamed
+    `.panopticon.prev-<stamp>` stays ignored. `_PANOPTICON_DIR_BLANKET` knew
+    only the literal spellings, so setup read the repo as un-blanketed, appended
+    the committable block, and its `!.panopticon/` negations then RE-EXPOSED
+    groups.yml. That is the #1135 failure mode recurring for a new spelling --
+    and it silently flipped the repo's policy from "groups.yml is local" to
+    "groups.yml is committable" without being asked.
+    """
+
+    def test_glob_form_blanket_is_left_untouched(self):
+        d = _git_repo(self, "node_modules/\n.panopticon*/\n")
+        res = setup_flow.provision(d)
+        with open(os.path.join(d, ".gitignore"), encoding="utf-8") as fh:
+            gi = fh.read()
+        self.assertNotIn(".panopticon/*", gi)      # no committable block
+        self.assertNotIn("!.panopticon/", gi)      # directory not re-exposed
+        self.assertFalse(res["groups_yml_committable"])
+
+    def test_setup_leaves_a_glob_blanketed_tree_clean(self):
+        # The first thing a new adopter sees after `driver setup` must not be an
+        # unexplained diff in a file they did not touch -- and a self-scan run
+        # straight after setup would start on a dirty tree, which validate reads
+        # as a tamper signal.
+        d = _git_repo(self, "node_modules/\n.panopticon*/\n"
+                            ".claude/settings.local.json\n")
+        setup_flow.provision(d)
+        self.assertEqual(_status(d), "")
+
+    def test_the_literal_form_still_behaves_as_before(self):
+        d = _git_repo(self, ".panopticon/\n.claude/settings.local.json\n")
+        res = setup_flow.provision(d)
+        self.assertEqual(_status(d), "")
+        self.assertFalse(res["groups_yml_committable"])
+
+    def test_a_committable_form_repo_still_gets_its_negations(self):
+        # `.panopticon/*` ignores the CONTENTS, not the directory, so a negation
+        # can still re-include groups.yml -- this form must keep working.
+        d = _git_repo(self, ".panopticon/*\n")
+        res = setup_flow.provision(d)
+        with open(os.path.join(d, ".gitignore"), encoding="utf-8") as fh:
+            gi = fh.read()
+        self.assertIn("!.panopticon/groups.yml", gi)
+        self.assertTrue(res["groups_yml_committable"])
+
+    def test_a_fresh_git_repo_still_gets_the_full_block(self):
+        d = _git_repo(self, "node_modules/\n")
+        res = setup_flow.provision(d)
+        with open(os.path.join(d, ".gitignore"), encoding="utf-8") as fh:
+            gi = fh.read()
+        self.assertIn(".panopticon/*", gi)
+        self.assertTrue(res["groups_yml_committable"])
+
+    def test_glob_form_is_recognised_without_git(self):
+        # Not every target is a checkout; the pattern fallback must know the
+        # same spellings git does, or a non-git tree regresses to the bug.
+        d = _repo(self)
+        with open(os.path.join(d, ".gitignore"), "w") as fh:
+            fh.write(".panopticon*/\n")
+        res = setup_flow.provision(d)
+        with open(os.path.join(d, ".gitignore"), encoding="utf-8") as fh:
+            gi = fh.read()
+        self.assertNotIn("!.panopticon/", gi)
+        self.assertFalse(res["groups_yml_committable"])
+
+
+class TestDraftPreservesTopLevelKeys(unittest.TestCase):
+    """#1504: the merge and the draft writer both operate on the `groups:`
+    mapping ONLY. A committed groups.yml carrying the 5.1 top-level
+    `exclude_paths:` list (#1136 -- the first-class replacement for the Fixtures
+    sink group) came out of the draft WITHOUT it.
+
+    The completion message then tells the operator to move the draft over the
+    committed file. Following that on a repo that excludes a deliberately
+    vulnerable fixture corpus silently puts the corpus back in scope for every
+    domain and every tool scan -- the exact regression exclude_paths exists to
+    prevent, and one this project's own redteam self-scan depends on.
+    """
+
+    def test_dump_emits_a_committed_exclude_paths_list(self):
+        import scripts.setup_proposal as sp
+        import scripts.groups_schema as groups_schema
+        import yaml
+        text = sp.dump_groups_yaml(
+            {"Checkout": {"match": ["src/checkout/**"], "panels": ["SEC"]}},
+            exclude_paths=["tests/fixtures/**", "vendor/**"])
+        doc = yaml.safe_load(text)
+        globs, errors = groups_schema.parse_exclude_paths(doc)
+        self.assertEqual(errors, [])
+        self.assertEqual(globs, ["tests/fixtures/**", "vendor/**"])
+
+    def test_dump_omits_the_key_when_there_is_nothing_to_carry(self):
+        import scripts.setup_proposal as sp
+        import yaml
+        text = sp.dump_groups_yaml({"G": {"match": ["a/**"], "panels": ["SEC"]}})
+        self.assertNotIn("exclude_paths", yaml.safe_load(text))
+
+    def test_the_groups_mapping_still_round_trips(self):
+        import scripts.setup_proposal as sp
+        import scripts.groups_schema as groups_schema
+        import yaml
+        text = sp.dump_groups_yaml(
+            {"Checkout": {"match": ["src/checkout/**"], "panels": ["SEC"]}},
+            exclude_paths=["tests/fixtures/**"])
+        groups, errors = groups_schema.parse_groups(yaml.safe_load(text))
+        self.assertEqual(errors, [])
+        self.assertIn("Checkout", groups)
+
+    def test_ingest_carries_the_committed_exclusions_into_the_draft(self):
+        import scripts.groups_schema as groups_schema
+        import yaml
+        d = _repo(self)
+        with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
+            fh.write("groups:\n"
+                     "  Checkout:\n"
+                     "    match: ['src/checkout/**']\n"
+                     "    panels: [SEC]\n"
+                     "exclude_paths:\n"
+                     "  - tests/fixtures/**\n")
+        pp = os.path.join(d, ".panopticon", "setup-proposal.json")
+        with open(pp, "w") as fh:
+            json.dump({"groups": [{"capability": "Checkout",
+                                   "match": ["src/checkout/**"]}]}, fh)
+        res = setup_flow.ingest_proposal(d, pp)
+        self.assertTrue(res.get("ok"), res.get("errors"))
+        with open(res["draft"], encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh)
+        globs, errors = groups_schema.parse_exclude_paths(doc)
+        self.assertEqual(errors, [])
+        self.assertEqual(globs, ["tests/fixtures/**"])

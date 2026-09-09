@@ -62,7 +62,10 @@ def scan_execute(review_root, manifest):
     layers, _ = setup_flow.load_bundled_layers()
     brief_path = setup_flow.render_scan_brief(review_root, vocab, layers=layers, spine=spine)
     entry = _setup_scan_entry(review_root, _read_text(brief_path))
-    req = requests.write_dispatch_request(review_root, manifest["run_id"], "scan", None, [entry])
+    # #1507: setup's own namespace -- never the per-run resolver, which routed
+    # this into whatever runs/latest pointed at and clobbered that run's request.
+    req = requests.write_dispatch_request(review_root, manifest["run_id"], "scan",
+                                          None, [entry], namespace="setup")
     msg = "setup-scan checkpoint" + ((" — " + note) if note else "")
     return engine.PhaseResult(kind="checkpoint", checkpoint="scan", group=None,
                        dispatch_request=req, message=msg)
@@ -179,9 +182,12 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES):
         return runio._error_status(str(exc))
     if result.get("status") == "complete":
         if os.path.isfile(runio._pano(review_root, "groups.yml.draft")):
-            result["message"] = ("setup complete — read .panopticon/setup-report.md, "
-                                 "review .panopticon/groups.yml.draft, move it to "
-                                 ".panopticon/groups.yml, and commit")
+            result["message"] = (
+                "setup complete — read .panopticon/setup-report.md, then DIFF "
+                ".panopticon/groups.yml.draft against .panopticon/groups.yml "
+                "before moving it over: the draft rebuilds `groups:` and "
+                "carries a committed `exclude_paths:` across, but any other "
+                "hand-kept top-level key is yours to re-apply")
         else:
             msg = ("setup complete — vocab-absent fallback seeded a flat "
                   ".panopticon/groups.yml; review, edit, and commit it")

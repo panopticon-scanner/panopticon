@@ -14,16 +14,21 @@ from . import coverage
 
 _PROMPT_FILE_SAFE = re.compile(r"[^A-Za-z0-9._-]")
 
-def _prompt_file_path(review_root, entry_id):
+def _prompts_dir(namespace=None):
+    """`_prompts/` for a run, `<namespace>-prompts/` otherwise (#1507)."""
+    return "_prompts" if not namespace else "%s-prompts" % namespace
+
+
+def _prompt_file_path(review_root, entry_id, namespace=None):
     """Where one entry's prompt is materialized: `_prompts/<entry-id>.txt`.
 
     The id is sanitized to a single flat filename -- an entry id embeds a group
     name, which is operator-supplied, so a `/` or `..` in it must not steer the
     write out of the prompts directory."""
     safe = _PROMPT_FILE_SAFE.sub("_", str(entry_id)) or "entry"
-    return runio._pano(review_root, "_prompts", "%s.txt" % safe)
+    return runio._pano(review_root, _prompts_dir(namespace), "%s.txt" % safe)
 
-def _materialize_prompts(review_root, entries):
+def _materialize_prompts(review_root, entries, namespace=None):
     """Write each entry's prompt to its own file and stamp `prompt_file` on the
     entry (#run10 B2).
 
@@ -45,7 +50,7 @@ def _materialize_prompts(review_root, entries):
         prompt = entry.get("prompt")
         eid = entry.get("id")
         if isinstance(prompt, str) and prompt and eid:
-            path = _prompt_file_path(review_root, eid)
+            path = _prompt_file_path(review_root, eid, namespace)
             try:
                 runio._confine_artifact_path(path)
                 os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -59,7 +64,20 @@ def _materialize_prompts(review_root, entries):
         out.append(entry)
     return out
 
-def write_dispatch_request(review_root, run_id, checkpoint, group, entries):
+def request_path(review_root, namespace=None):
+    """The dispatch-request path for a run, or for a namespace like `setup`.
+
+    #1507: a run's request is per-run (`runs/<tag>/dispatch-request.json`), but
+    SETUP is not a run -- routing it through the per-run resolver put it in
+    whatever `runs/latest` happened to point at and clobbered that run's own
+    request. A namespace keeps setup's request beside its other artifacts."""
+    if namespace:
+        return runio._pano(review_root, "%s-dispatch-request.json" % namespace)
+    return runio._pano(review_root, "dispatch-request.json")
+
+
+def write_dispatch_request(review_root, run_id, checkpoint, group, entries,
+                           namespace=None):
     """Write the single per-(group, checkpoint) dispatch-request.json and return
     its ABSOLUTE path. Host-agnostic: entries carry only neutral fields and any
     paths inside them must already be absolute (spec §4). The request is rolling
@@ -69,20 +87,20 @@ def write_dispatch_request(review_root, run_id, checkpoint, group, entries):
     — so a host can hand an agent a path instead of echoing the whole prompt."""
     if checkpoint not in runio.CHECKPOINT_KINDS:
         raise ValueError("unknown checkpoint kind: %r" % checkpoint)
-    entries = _materialize_prompts(review_root, entries)
+    entries = _materialize_prompts(review_root, entries, namespace)
     request = {"schema_version": 1, "run_id": run_id, "checkpoint": checkpoint,
                "group": group, "entries": list(entries)}
-    path = runio._pano(review_root, "dispatch-request.json")
+    path = request_path(review_root, namespace)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with runio._open_w_nofollow(path) as fh:
         json.dump(request, fh, indent=2)
     return os.path.abspath(path)
 
-def load_dispatch_request(review_root):
+def load_dispatch_request(review_root, namespace=None):
     """The parsed .panopticon/dispatch-request.json (or None if absent/invalid).
     The host reads req['entries'] to install the write-guard
     (write_guard_hook.install(entries)) and to dispatch the checkpoint's cells."""
-    return runio._load_json(runio._pano(review_root, "dispatch-request.json"))
+    return runio._load_json(request_path(review_root, namespace))
 
 def _driver_plan_entries(review_root, manifest):
     """The declared review cells as a matrix domain-cell dispatch plan

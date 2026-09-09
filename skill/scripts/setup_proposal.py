@@ -693,12 +693,18 @@ def _yaml_leaf(body):
     return entry
 
 
-def dump_groups_yaml(groups, header=True):
+def dump_groups_yaml(groups, header=True, exclude_paths=None):
     """Serialize a groups mapping to canonical mapping-form groups.yml text.
     Insertion order preserved; only non-empty fields emitted; a parent body
     (`subgroups`) nests its leaves under the parent name (the #1305 schema);
     round-trips through groups_schema.parse_groups. yaml.safe_dump handles
-    quoting of indicator-leading scalars (e.g. '**/auth/**')."""
+    quoting of indicator-leading scalars (e.g. '**/auth/**').
+
+    `exclude_paths` (#1504) is carried through as a top-level sibling of
+    `groups:`. It is NOT part of the mapping this function otherwise shapes, so
+    a draft written without it silently dropped a committed exclusion -- and
+    the operator is told to move the draft over the committed file. Omitted
+    entirely when empty, so a repo that never had the key does not gain one."""
     cleaned = {}
     for name, body in groups.items():
         subs = body.get("subgroups")
@@ -706,7 +712,10 @@ def dump_groups_yaml(groups, header=True):
             cleaned[name] = {sub: _yaml_leaf(leaf) for sub, leaf in subs.items()}
         else:
             cleaned[name] = _yaml_leaf(body)
-    body_text = yaml.safe_dump({"groups": cleaned}, sort_keys=False,
+    document = {"groups": cleaned}
+    if exclude_paths:
+        document["exclude_paths"] = list(exclude_paths)
+    body_text = yaml.safe_dump(document, sort_keys=False,
                                default_flow_style=False, allow_unicode=True)
     if not header:
         return body_text

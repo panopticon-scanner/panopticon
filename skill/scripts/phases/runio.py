@@ -62,6 +62,11 @@ _TOP_LEVEL = frozenset({
     "run-manifest.json", "setup-manifest.json",
     "setup-proposal.json", "setup-complete.json", "setup-scan-brief.md",
     "setup-spine.json", "setup-report.md", "setup-report.json",
+    # #1507: setup's dispatch request + prompts. These used to route through the
+    # per-run resolver, which meant they landed in whatever `runs/latest` pointed
+    # at -- an unrelated review run, whose own dispatch-request.json setup then
+    # overwrote. Setup is not a run; its artifacts live beside its siblings above.
+    "setup-dispatch-request.json", "setup-prompts",
     "epss-cache.json", "write-allowlist.json",
     "report.json", "report.json.html",
 })
