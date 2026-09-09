@@ -398,6 +398,56 @@ class TestCommentSanitization(unittest.TestCase):
         self.assertNotIn("@maintainer", comment)
 
 
+class TestLedgerFieldSanitization(unittest.TestCase):
+    """comment_for() scrubbed `rationale` and `spot_check` but interpolated
+    `fixed_by` and `batch` raw, and validate() checked `duplicate_of` only for
+    truthiness. All three reach a PUBLIC GitHub comment.
+
+    The two get different treatment on purpose: free text is scrubbed and
+    defanged, while `duplicate_of` is pinned to an int -- an issue number cannot
+    carry an injection, and validating it is what lets the #N cross-link stay
+    LIVE. Defanging it would break the very link the comment exists to make."""
+
+    def test_fixed_by_is_scrubbed_and_defanged(self):
+        root = sanitize.repo_root()
+        row = fix_row(verdict="already-fixed", rank=None, spot_check="checked",
+                      fixed_by="%ssrc/x.py by @maintainer" % root)
+        c = triage.comment_for(row)
+        self.assertNotIn(root, c)
+        self.assertNotIn("@maintainer", c)
+
+    def test_a_secret_in_fixed_by_is_masked(self):
+        secret = "ghp_" + "A" * 36
+        row = fix_row(verdict="already-fixed", rank=None, spot_check="checked",
+                      fixed_by="fixed in %s" % secret)
+        self.assertNotIn(secret, triage.comment_for(row))
+
+    def test_batch_is_scrubbed_and_defanged(self):
+        row = fix_row(batch="B1 @everyone")
+        self.assertNotIn("@everyone", triage.comment_for(row))
+
+    def test_batch_is_sanitized_in_the_footer_too(self):
+        row = fix_row(verdict="reject", rank=None, spot_check="checked",
+                      batch="B1 @everyone")
+        self.assertNotIn("@everyone", triage.comment_for(row))
+
+    def test_duplicate_of_must_be_an_int(self):
+        row = fix_row(verdict="duplicate", rank=None, status="approved",
+                      duplicate_of="1 and something else")
+        with self.assertRaises(ValueError) as e:
+            triage.validate(row)
+        self.assertIn("duplicate_of", str(e.exception))
+
+    def test_a_valid_duplicate_of_keeps_a_live_issue_reference(self):
+        row = fix_row(verdict="duplicate", rank=None, duplicate_of=1234)
+        self.assertIn("#1234", triage.comment_for(row))
+
+    def test_an_int_duplicate_of_passes_validation(self):
+        row = fix_row(verdict="duplicate", rank=None, status="approved",
+                      duplicate_of=1234)
+        triage.validate(row)          # must not raise
+
+
 class TestValidateTimestamp(unittest.TestCase):
     def test_valid_utc_iso8601_passes(self):
         self.assertIsNone(triage.validate(fix_row()))
