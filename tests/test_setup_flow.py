@@ -933,9 +933,9 @@ class TestReadinessCannotAssertWhatItDidNotCheck(unittest.TestCase):
         # #1344 F2: pin this against real registration state, not whatever
         # happens to be under ~/.codex/agents on the machine running the
         # suite -- a developer box that has ever run `--emit-host-agents
-        # codex` for real (as this very SDD plan's earlier tasks did) would
-        # otherwise make `ok` legitimately True and the assertion below
-        # flaky-by-environment rather than a check on the code.
+        # codex` for real would otherwise make `ok` legitimately True and
+        # the assertion below flaky-by-environment rather than a check on
+        # the code.
         import dispatch
         with mock.patch.object(dispatch, "_is_registered", return_value=False):
             ok, detail = self._check("codex")["enforced-shells"]
@@ -943,6 +943,17 @@ class TestReadinessCannotAssertWhatItDidNotCheck(unittest.TestCase):
                          "readiness asserted enforcement without checking it")
         self.assertNotIn("codex_exec", detail,
                          "codex_exec was removed; readiness must not cite it")
+
+    def test_codex_reports_enforced_when_its_shells_really_are_registered(self):
+        # The other half of test_codex_no_longer_claims_enforcement_it_never
+        # _verified. That one proves the hardcoded True is gone; this one
+        # proves a REAL True still arrives, so "derived from a check" is
+        # demonstrated in both directions rather than asserted in a docstring.
+        import dispatch
+        with mock.patch.object(dispatch, "_is_registered", return_value=True):
+            ok, detail = self._check("codex")["enforced-shells"]
+        self.assertTrue(ok)
+        self.assertNotIn("codex_exec", detail)
 
     def test_gemini_is_not_told_to_run_a_command_that_raises(self):
         ok, detail = self._check("gemini")["enforced-shells"]
