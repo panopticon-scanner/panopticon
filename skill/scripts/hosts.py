@@ -149,19 +149,28 @@ def posture(host, evidence):
       artifact from another host's run must not grant anything.
     * A state string this module does not recognise -> UNKNOWN. Never trust an
       unparseable value; that is how `noscan` became `empty` in #1335.
+    * An unreadable SHAPE -> UNKNOWN. `evidence` that is not a mapping, or a
+      per-capability entry that is not a mapping, resolves to UNKNOWN for every
+      capability rather than raising. This function's input is a FILE ON DISK
+      (`host-capabilities.json`) and therefore untrusted: truncated,
+      half-written, or tampered. "Unparseable value" and "unparseable
+      container" are the same defect, and a crash mid-run is not failing
+      closed -- it is failing.
 
     UNKNOWN gates exactly as REFUTED. The two are kept distinct because
     "we did not measure" and "we measured and it is off" have different
     remedies, and the run says which (spec §5.1).
     """
-    evidence = evidence or {}
+    if not isinstance(evidence, dict):
+        evidence = {}
     row = HOSTS.get(host)
     result = {}
     for capability in CAPABILITIES:
         if not row or capability not in row.claims:
             result[capability] = UNKNOWN
             continue
-        state = (evidence.get(capability) or {}).get("state")
+        entry = evidence.get(capability)
+        state = entry.get("state") if isinstance(entry, dict) else None
         result[capability] = state if state in STATES else UNKNOWN
     return result
 
