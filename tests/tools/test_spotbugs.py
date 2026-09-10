@@ -2,7 +2,7 @@ import contextlib
 import io
 import os
 import unittest
-from _test_helpers import first, only
+from _test_helpers import first, only, skip_or_fail
 from unittest import mock
 from xml.etree.ElementTree import ParseError
 
@@ -176,7 +176,7 @@ class TestHardenedXmlParser(unittest.TestCase):
         # parser matters more after that change, not less.
         import importlib.util
         if importlib.util.find_spec("defusedxml") is None:
-            self.skipTest("defusedxml not installed on this host")
+            skip_or_fail(self, "defusedxml not installed on this host")
         self.assertIn("defusedxml", sb.ET.__name__,
                       "spotbugs must parse untrusted XML with defusedxml when "
                       "it is available; the stdlib parser is the fallback only")

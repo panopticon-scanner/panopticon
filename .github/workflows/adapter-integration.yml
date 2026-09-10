@@ -1,0 +1,79 @@
+name: Adapter integration
+
+# #1422: the adapter tests that invoke a REAL scanner against a REAL fixture
+# have never executed in automated CI. They guard themselves on preconditions
+# the standard runner cannot meet -- the goat fixtures are baked into the
+# fixtures image, and cargo-audit/brakeman/spotbugs/roslyn ship on no runner --
+# so `pytest tests/` skips every one of them and reports green. A detection
+# regression in any adapter would not fail anything.
+#
+# This is the environment where they are REQUIRED to run:
+# PANOPTICON_REQUIRE_INTEGRATION=1 turns each unmet precondition from a silent
+# skip into a hard failure, so the job cannot pass by skipping the work it
+# exists to do.
+#
+# Daily rather than per-PR, per the cost note in #1422: it builds the fixtures
+# image (three upstream goat checkouts plus a WebGoat jar build) on top of the
+# nightly tools image. Scheduled after docker-publish (06:00) and
+# tools-image-health (06:30) so it tests the image those two just produced and
+# vouched for. Use workflow_dispatch to run it on demand against a branch.
+on:
+  schedule:
+    - cron: "0 8 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: read
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}-tools:latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Deliberately NO fallback to a local build, unlike security.yml. That
+      # workflow degrades to a secretless image with a ::warning:: because a
+      # partial scan still gates something useful. Here a degraded image would
+      # mean the toolchain preconditions fail and the whole run reports red for
+      # a reason that is not a regression -- so an unavailable image is a loud
+      # infrastructure failure, not a quietly weaker test.
+      - name: Pull the nightly tools image
+        run: |
+          if ! docker pull "$IMAGE"; then
+            echo "::error::${IMAGE} is not available from GHCR. This job tests the published nightly image and does not build a substitute; check docker-publish.yml and tools-image-health.yml first."
+            exit 1
+          fi
+          docker tag "$IMAGE" panopticon-tools:latest
+
+      # FROM panopticon-tools:latest, adding the railsgoat / WebGoat / AspGoat
+      # fixtures (SHA-pinned in Dockerfile.fixtures) and pytest.
+      - name: Build the fixtures image
+        run: docker build -f Dockerfile.fixtures -t panopticon-fixtures:latest .
+
+      # The whole tests/tools/ tree, not a `*_integration.py` glob: the
+      # railsgoat probe that caught the stale brakeman CWE map lives in
+      # test_brakeman.py, so narrowing the selector would scope around exactly
+      # the class of defect this job exists to catch.
+      - name: Run the adapter tests against real tools and fixtures
+        run: |
+          docker run --rm \
+            -v "$PWD:/work:ro" -w /work \
+            -e FIXTURE_ROOT=/opt/panopticon-fixtures \
+            -e PANOPTICON_REQUIRE_INTEGRATION=1 \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            --entrypoint sh panopticon-fixtures:latest \
+            -c "python3 -m pytest tests/tools/ -q -rs -p no:cacheprovider"

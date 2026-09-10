@@ -7,7 +7,7 @@ import shutil
 import unittest
 from unittest import mock
 
-from _test_helpers import FakePopen, first, only
+from _test_helpers import FakePopen, first, only, skip_or_fail
 import scripts.tools.brakeman as br
 from tests.tools.conftest import FIXTURE_ROOT
 
@@ -354,9 +354,10 @@ class TestBrakemanAdapter(unittest.TestCase):
         """
         target = os.path.join(FIXTURE_ROOT, "railsgoat")
         if not os.path.isdir(target):
-            self.skipTest("railsgoat fixture not vendored (run inside the fixtures image)")
+            skip_or_fail(self, "railsgoat fixture not vendored "
+                         "(run inside the fixtures image)")
         if not shutil.which("brakeman"):
-            self.skipTest("brakeman not installed on this host")
+            skip_or_fail(self, "brakeman not installed on this host")
         adapter = br.BrakemanAdapter()
         self.assertTrue(adapter.is_applicable(target),
                         "brakeman should apply to the railsgoat project")

@@ -24,6 +24,8 @@ import json
 import os
 import unittest
 
+from _test_helpers import skip_or_fail
+
 import scripts.synth.findings as findings_mod
 import scripts.synth.report as report_mod
 from scripts.tools import ADAPTERS
@@ -83,7 +85,7 @@ class TestGoldenCoverage(unittest.TestCase):
         # A golden for an adapter that no longer exists is dead weight that
         # reads as coverage.
         if not os.path.isdir(GOLDEN_DIR):
-            self.skipTest("golden corpus not present")
+            skip_or_fail(self, "golden corpus not present")
         orphans = sorted(f[:-4] for f in os.listdir(GOLDEN_DIR)
                          if f.endswith(".raw") and f[:-4] not in ADAPTERS)
         self.assertEqual(orphans, [], "goldens with no registered adapter: %s"

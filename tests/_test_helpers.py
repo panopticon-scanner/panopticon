@@ -4,6 +4,35 @@ import os
 from conftest import FIXTURE_ROOT  # noqa: E402
 
 
+# --- #1422: strict mode for the live-tool tests -----------------------------
+# Every adapter integration test guards itself on a precondition (fixture
+# vendored, toolchain installed, adapter registered). Outside the image none
+# hold, so it skips -- correct on a dev machine, and a green tick over zero
+# executed assertions in the environment BUILT to run them. #1410 fixed one test
+# this way and left the pattern local to that file; these two make it the rule.
+REQUIRE_INTEGRATION_ENV = "PANOPTICON_REQUIRE_INTEGRATION"
+
+
+def require_integration():
+    """True when this environment is the one that IS meant to run live tools.
+
+    Read at CALL time, deliberately. A module-level constant is evaluated at
+    import, before any test or fixture can set the variable, which makes the
+    behaviour both unsettable and untestable without reloading the module.
+
+    Exactly "1" counts: an ambiguous "true"/"yes"/"" must not switch on a mode
+    that converts skips into failures.
+    """
+    return os.environ.get(REQUIRE_INTEGRATION_ENV) == "1"
+
+
+def skip_or_fail(test_case, reason):
+    """Skip on an unmet precondition -- or FAIL, where skipping is the bug."""
+    if require_integration():
+        test_case.fail("%s=1 but %s" % (REQUIRE_INTEGRATION_ENV, reason))
+    test_case.skipTest(reason)
+
+
 # --- TST-B3A: guarded indexing of a parse/build result -----------------------
 # Indexing an adapter's parse result directly (`findings[0]`) turns an
 # empty-list REGRESSION into a bare IndexError: the failure names the test's
@@ -95,15 +124,19 @@ def assert_adapter_finds(test_case, adapter_name, target_name, group="g1",
     """Run an adapter against a fixture and assert it produces findings.
 
     Skips the test when the fixture directory is not present (the normal case
-    outside the fixtures image). A non-applicable fixture or a tool crash is a
-    real failure, not a skip that would leave coverage silently empty (#583).
+    outside the fixtures image) -- unless PANOPTICON_REQUIRE_INTEGRATION=1, in
+    which case a missing fixture is a FAILURE, because the environment that sets
+    it is the one meant to have the fixture (#1422). A non-applicable fixture or
+    a tool crash is always a real failure, not a skip that would leave coverage
+    silently empty (#583).
     """
     from scripts.tools import ADAPTERS
 
     target = os.path.join(FIXTURE_ROOT, target_name)
     adapter = ADAPTERS[adapter_name]
     if not os.path.isdir(target):
-        test_case.skipTest(
+        skip_or_fail(
+            test_case,
             f"{target_name} fixture not vendored (run inside the fixtures image)"
         )
     test_case.assertTrue(
