@@ -91,6 +91,12 @@ jobs:
             docker build -t panopticon-tools controller
           fi
 
+      # --progress (#1317): this step can sit inside a single `docker run` for
+      # many minutes. Without it the Actions log shows nothing between the
+      # image pull and the gate, so a working scan and a hung one look
+      # identical from the run page. Safe HERE and not from the driver: nothing
+      # reads this process's stderr as a diagnostic, whereas phases/tools.py
+      # builds its failure note from the first 300 characters of it.
       - name: Run static-analysis tools
         run: |
           tools_out="$RUNNER_TEMP/${{ env.TOOLS_OUT }}"
@@ -101,6 +107,7 @@ jobs:
             --out "$tools_out" \
             --manifest "$manifest" \
             --exclude '${{ env.FIXTURE_GLOB }}' \
+            --progress \
             --deps
 
       # INTENTIONAL POLICY, not an oversight (#513): this CI gate fails on any

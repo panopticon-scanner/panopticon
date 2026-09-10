@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.tools import ADAPTERS, ONLINE_ONLY
 from scripts.tools.base import drain_stderr_async
 from scripts import plan_contract
+from scripts.progress import NullProgress, make_progress
 from scripts.tools.legacy_sarif import LEGACY_SARIF_TOOLS, TOOL_CMD
 
 # JS/TS SAST runs via the eslint-security ADAPTER (bundled flat config);
@@ -563,7 +564,8 @@ def _atomic_write(out_path, data):
     return out_path
 
 
-def run_tools(target, tools, out_dir, image="panopticon-tools", runner=None, online=False):
+def run_tools(target, tools, out_dir, image="panopticon-tools",
+              runner=None, online=False, progress=None):
     """Run selected security tools and adapters in Docker against target.
 
     Legacy SARIF tools use their hard-coded ``TOOL_CMD`` invocation. New Phase 1
@@ -576,7 +578,13 @@ def run_tools(target, tools, out_dir, image="panopticon-tools", runner=None, onl
     tools = filter_online(tools, online)
     written = []
     docker_bin = shutil.which("docker") or "docker"
-    for tool in tools:
+    # #1317: NullProgress by default, so the five call sites below need no
+    # `if progress:` guard and the runner's behaviour is byte-identical unless
+    # a caller opts in.
+    progress = progress or NullProgress()
+    total = len(tools)
+    progress.header(target, total)
+    for index, tool in enumerate(tools, 1):
         # Legacy SARIF path (kept for backward compatibility).
         cmd = TOOL_CMD.get(tool)
         if cmd:
@@ -598,7 +606,9 @@ def run_tools(target, tools, out_dir, image="panopticon-tools", runner=None, onl
                       + _privilege_drop_flags()
                       + ["--network", "none",
                          "-v", "%s:/src:ro" % os.path.abspath(target), image] + cmd)
-            done = _capture_run("tool", tool, docker, out_path, runner)
+            with progress.tool(tool, index, total) as step:
+                done = step.finish(
+                    _capture_run("tool", tool, docker, out_path, runner))
             if done:
                 written.append(done)
             continue
@@ -621,9 +631,20 @@ def run_tools(target, tools, out_dir, image="panopticon-tools", runner=None, onl
                 "-v", "%s:/src:ro" % os.path.abspath(target),
                 "-v", "%s:/opt/panopticon/scripts:ro" % scripts_dir, image,
                 "python3", "/opt/panopticon/scripts/_run_adapter.py", tool])
-            done = _capture_run("adapter", tool, docker, out_path, runner)
+            with progress.tool(tool, index, total) as step:
+                done = step.finish(
+                    _capture_run("adapter", tool, docker, out_path, runner))
             if done:
                 written.append(done)
+            continue
+
+        # Neither path claims it. Not silent-but-fine: the manifest already
+        # discloses it (selected without produced puts it in `missing`), so
+        # this line is the log catching up with what the artifact will say,
+        # not a new control.
+        progress.note("[%d/%d] %s skipped: no runner registered"
+                      % (index, total, tool))
+    progress.footer(len(written), total)
     return written
 
 
@@ -662,6 +683,12 @@ def main(argv=None):
     ap.add_argument("--run-id", default=None,
                     help="Stamp this run's id into the manifest so synthesize can "
                          "refuse to certify against another run's manifest (#17)")
+    ap.add_argument("--progress", action="store_true",
+                    help="Emit one stderr line per tool as the scan proceeds "
+                         "(#1317). OFF by default: the driver builds its "
+                         "tool-scan failure note from this process's first 300 "
+                         "stderr characters, and progress would crowd the real "
+                         "error out of it. CI passes it; the driver must not.")
     ap.add_argument("--exclude", action="append", default=[],
                     help="Path glob whose files are out of gate scope; an "
                          "adapter applicable only to excluded files is disclosed "
@@ -705,7 +732,8 @@ def main(argv=None):
             write_manifest(a.manifest, effective, [], excluded_scope=excluded_scope,
                            run_id=a.run_id)
         return 0
-    paths = run_tools(a.target, effective, a.out, online=a.online)
+    paths = run_tools(a.target, effective, a.out, online=a.online,
+                      progress=make_progress(a.progress))
     if a.manifest:
         write_manifest(a.manifest, effective, paths, excluded_scope=excluded_scope,
                        run_id=a.run_id)
