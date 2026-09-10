@@ -17,6 +17,58 @@ def _read_dockerfile_fixtures() -> str:
         return fh.read()
 
 
+# Longest first so the alternation cannot settle for a prefix. `sh` last is what
+# keeps `sha256sum` out: `sh` matches, then `\b` fails against the `a`.
+_INTERPRETERS = ("python3", "python", "bash", "dash", "perl", "ruby", "node",
+                 "zsh", "ksh", "sh")
+
+# `... | sh`, `... | sudo bash -s --`, `... | /usr/bin/env python3 -`
+_PIPE_TO_SHELL = re.compile(
+    r"\|\s*(?:sudo\s+(?:-\S+\s+)*)?(?:/usr/bin/env\s+)?(?:[\w.-]*/)*"
+    r"(?:%s)\b" % "|".join(_INTERPRETERS))
+# `bash <(curl ...)` -- no pipe, same event
+_PROCESS_SUB_FETCH = re.compile(r"<\(\s*(?:curl|wget)\b")
+_FETCH = re.compile(r"\b(?:curl|wget)\b")
+
+
+def _logical_lines(text):
+    """[(lineno, joined)] with Dockerfile `\\`-continuations folded in, so a
+    fetch and the pipe it feeds read as one string even when they are written as
+    two lines. lineno is where the logical line STARTS."""
+    out, start, buf = [], None, []
+    for n, line in enumerate(text.splitlines(), 1):
+        if start is None:
+            start = n
+        stripped = line.rstrip()
+        if stripped.endswith("\\"):
+            buf.append(stripped[:-1])
+            continue
+        buf.append(stripped)
+        out.append((start, " ".join(p.strip() for p in buf if p.strip())))
+        start, buf = None, []
+    if buf:
+        out.append((start, " ".join(p.strip() for p in buf if p.strip())))
+    return out
+
+
+def fetch_piped_into_a_shell(text):
+    """[(lineno, logical line)] for every fetch executed as it arrives.
+
+    Two shapes, both of which leave no artifact to check a digest against:
+    a fetch piped into an interpreter, and an interpreter reading a fetch
+    through process substitution. A fetch piped into something that is not an
+    interpreter (`| gpg --dearmor`, `| sha256sum -c -`, `| tar -x`) is a
+    different act and is left alone.
+    """
+    hits = []
+    for lineno, joined in _logical_lines(text):
+        if not _FETCH.search(joined):
+            continue
+        if _PIPE_TO_SHELL.search(joined) or _PROCESS_SUB_FETCH.search(joined):
+            hits.append((lineno, joined))
+    return hits
+
+
 class TestDockerfile(unittest.TestCase):
     def test_bundles_core_tools(self):
         text = _read_dockerfile().lower()
@@ -348,3 +400,53 @@ class TestDockerPublishWorkflow(unittest.TestCase):
     def test_concurrency_guard_is_configured(self):
         self.assertIn("concurrency", self.wf)
         self.assertTrue(self.wf["concurrency"]["group"])
+
+
+class TestNoFetchIsPipedIntoAShell(unittest.TestCase):
+    """SEC-E3C (#1251): a remote installer piped straight into an interpreter
+    executes whatever the server returns, and there is no artifact left to
+    check a digest against -- the fetch and the execution are the same event.
+
+    Both instances named in the issue (rustup, dotnet-install) were fixed by
+    #1467 and its dotnet sibling: each now downloads to a file, verifies it with
+    `sha256sum -c`, and only then runs it. What was missing is the guard --
+    `test_all_fetched_binaries_are_checksum_verified` pins the digests of the
+    artifacts we already fetch that way, but nothing stopped a NEW dependency
+    from arriving as `curl ... | sh`, which has no artifact to pin and so would
+    never appear on that list.
+    """
+
+    def test_the_rule_flags_a_piped_installer(self):
+        # The positive control. A guard run only over a clean tree can pass
+        # while matching nothing at all, so prove it says no before believing
+        # it when it says yes.
+        hostile = (
+            "RUN curl -sfL https://example.test/install.sh | sh\n"
+            "RUN wget -qO- https://example.test/get | sudo bash -s -- --yes\n"
+            "RUN curl -sfL https://example.test/i.py \\\n"
+            "    | python3 -\n"
+            "RUN bash <(curl -sfL https://example.test/install.sh)\n"
+        )
+        hits = fetch_piped_into_a_shell(hostile)
+        self.assertEqual([1, 2, 3, 5], [n for n, _ in hits], hits)
+
+    def test_the_rule_leaves_a_verified_download_alone(self):
+        benign = (
+            "RUN curl -sfL https://example.test/rustup-init -o /tmp/r \\\n"
+            "    && echo \"$SHA  /tmp/r\" | sha256sum -c - \\\n"
+            "    && chmod +x /tmp/r && /tmp/r -y\n"
+            # a fetch piped into a NON-interpreter is a different thing: this
+            # one dearmors an apt signing key, it does not execute the bytes.
+            "RUN curl -sfL https://example.test/key | gpg --dearmor -o /k.gpg\n"
+        )
+        self.assertEqual([], fetch_piped_into_a_shell(benign))
+
+    def test_no_dockerfile_pipes_a_fetch_into_a_shell(self):
+        for name, text in (("Dockerfile", _read_dockerfile()),
+                           ("Dockerfile.fixtures", _read_dockerfile_fixtures())):
+            hits = fetch_piped_into_a_shell(text)
+            self.assertEqual(
+                [], hits,
+                "%s pipes a network fetch straight into an interpreter; "
+                "download to a file and `sha256sum -c` it first:\n%s"
+                % (name, "\n".join("  line %d: %s" % h for h in hits)))
