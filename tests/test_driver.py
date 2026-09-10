@@ -196,12 +196,18 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         self.assertIn("scope", status["message"])
 
     def test_reset_restarts_from_scratch(self):
+        # #1515: --no-tools because this is the one lifecycle test that advances
+        # far enough to reach tools_execute, which spawns run_tools.py as a
+        # CHILD process -- conftest's docker refusal is in-process and cannot
+        # cross that boundary. Without the flag this test launched a real
+        # `docker run --memory 6g` scanner on any workstation with the image.
+        # It asserts on the reset/checkpoint state machine, not on scanners.
         d = self._repo()
-        args = self._args(d)
+        args = self._args(d, "--no-tools")
         driver.run(args)
         self._inject_scouts(d)
         driver.run(args)                                # advance past scout
-        status = driver.run(self._args(d, "--reset"))   # wipe + restart
+        status = driver.run(self._args(d, "--no-tools", "--reset"))
         self.assertEqual(status["status"], "checkpoint")
         self.assertEqual(status["checkpoint"], "scout")
         # reset never deletes the committed matrix

@@ -34,8 +34,33 @@ jobs:
           sudo mv /tmp/hadolint /usr/local/bin/hadolint
           hadolint Dockerfile
 
+      # #1421: this workflow fires on `skill/scripts/**`, so most PRs pay for it,
+      # and a plain `docker build` has no layer cache -- every one of them was a
+      # cold full build that compiles cargo-audit from source and runs near the
+      # job timeout.
+      #
+      # The cache it reads is the one `docker-publish.yml` already writes on main
+      # (`type=gha,scope=linux-amd64`); a PR build can read its base branch's
+      # caches, so the nightly image build warms every PR for free. `ubuntu-latest`
+      # is amd64, which is why that scope and not the arm64 one.
+      #
+      # Deliberately cache-from ONLY. A `mode=max` export of THIS image would be
+      # several GB against a 10GB repo-wide quota, so writing one per PR would
+      # evict the very main-branch caches these builds depend on -- it would buy
+      # a warm second push to one PR by making every nightly build cold.
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
       - name: Build Dockerfile
-        run: docker build -f Dockerfile -t panopticon-tools:latest .
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: Dockerfile
+          # Dockerfile.fixtures is `FROM panopticon-tools:latest`, so the tools
+          # image has to land in the daemon, not just in the build cache.
+          load: true
+          tags: panopticon-tools:latest
+          cache-from: type=gha,scope=linux-amd64
 
       - name: Lint Dockerfile.fixtures
         run: hadolint Dockerfile.fixtures

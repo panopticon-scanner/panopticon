@@ -42,6 +42,15 @@ Homepage = "https://github.com/panopticon-scanner/panopticon"
 Repository = "https://github.com/panopticon-scanner/panopticon"
 Issues = "https://github.com/panopticon-scanner/panopticon/issues"
 
+[tool.pytest.ini_options]
+markers = [
+    # #1515: the ONLY tests allowed to reach the Docker daemon. Everything else
+    # gets run_tools.docker_available() -> False from the autouse fixture in
+    # tests/conftest.py, so the unit suite runs the same branch on a workstation
+    # as it does on a bare CI runner.
+    "docker: test genuinely needs the Docker daemon (excluded from the unit suite's refusal)",
+]
+
 [tool.ruff]
 target-version = "py311"
 extend-exclude = ["*.json"]
