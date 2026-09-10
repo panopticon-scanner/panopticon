@@ -168,6 +168,12 @@ def emit_host_agents(host, out_dir):
         agent = registered_agent_name(role_file)
         charter = _CHARTER % (role, ", ".join(tp["allowed"]),
                       ", ".join(tp["forbidden"]))
+        # The guard above decides WHICH hosts may register shells and now
+        # reads hosts.py; this chain decides HOW each one renders and stays
+        # hardcoded on purpose -- rendering is host-specific work, not an
+        # identity check (#1344 F2 leaves it alone). Keep the two in step by
+        # hand: a host given a shell_format with no branch added here falls
+        # into `else`, silently takes codex's model config, then dies on `fm`.
         if host == "claude":
             # #1036: model_resolver is the single owner of the role->model map
             # for every host (kimi/codex already source from it). registration_
