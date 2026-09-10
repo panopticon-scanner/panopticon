@@ -1,11 +1,11 @@
 import os
 import shutil
 import subprocess
-import sys
 import unittest
 from unittest import mock
 
-from _test_helpers import assert_adapter_finds
+from _test_helpers import (REQUIRE_INTEGRATION_ENV,
+                           assert_adapter_finds, skip_or_fail)
 from .conftest import FIXTURE_ROOT, OK_SCAN_EXIT_CODES
 
 # #run8 TST-F1A: the only END-TO-END cargo-audit RUSTSEC test used to hide behind
@@ -20,16 +20,16 @@ from .conftest import FIXTURE_ROOT, OK_SCAN_EXIT_CODES
 # precondition from a silent skip into a hard FAILURE, so the test can never
 # silently pass-by-skipping where it is supposed to execute. Unset (dev machines,
 # the standard runner) keeps the clean skip.
-_REQUIRE_INTEGRATION = os.environ.get("PANOPTICON_REQUIRE_INTEGRATION") == "1"
+#
+# #1422 generalised this file's local pattern into _test_helpers.skip_or_fail and
+# applied it to every other adapter test, so the duplicate lives there now. The
+# flag is also read at CALL time rather than captured at import, which is what
+# lets a test set it.
 
 
 class TestRustIntegration(unittest.TestCase):
     def _skip_or_fail(self, reason):
-        # Strict mode turns an unmet precondition into a diagnosable failure;
-        # otherwise it stays a soft skip (see module docstring, #run8 TST-F1A).
-        if _REQUIRE_INTEGRATION:
-            self.fail("PANOPTICON_REQUIRE_INTEGRATION=1 but " + reason)
-        self.skipTest(reason)
+        skip_or_fail(self, reason)
 
     def test_cargo_audit_finds_rustsec_advisories(self):
         if not shutil.which("cargo"):
@@ -62,7 +62,12 @@ class TestRustIntegrationStrictModeMeta(unittest.TestCase):
 
     def _run_missing_toolchain(self, strict):
         case = TestRustIntegration("test_cargo_audit_finds_rustsec_advisories")
-        with mock.patch.object(sys.modules[__name__], "_REQUIRE_INTEGRATION", strict), \
+        # Drive the REAL switch -- the environment variable -- rather than a
+        # module constant standing in for it. The old form could only work
+        # because the flag was captured at import; now that it is read at call
+        # time, the test exercises what CI actually sets.
+        with mock.patch.dict(os.environ,
+                             {REQUIRE_INTEGRATION_ENV: "1" if strict else "0"}), \
              mock.patch.object(shutil, "which", return_value=None):
             case.test_cargo_audit_finds_rustsec_advisories()
 

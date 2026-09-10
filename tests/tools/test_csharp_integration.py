@@ -2,6 +2,7 @@ import os
 import unittest
 
 from scripts.tools import ADAPTERS
+from _test_helpers import skip_or_fail
 from tests.tools.conftest import FIXTURE_ROOT
 
 
@@ -32,9 +33,10 @@ class TestCSharpIntegration(unittest.TestCase):
         # runs inside the fixtures image, where the adapter and the baked
         # AspGoat fixture exist).
         if "roslyn-secguard" not in ADAPTERS:
-            self.skipTest("roslyn-secguard adapter not registered")
+            skip_or_fail(self, "roslyn-secguard adapter not registered")
         if not os.path.isdir(target):
-            self.skipTest("AspGoat fixture not vendored (run inside the fixtures image)")
+            skip_or_fail(self, "AspGoat fixture not vendored "
+                         "(run inside the fixtures image)")
         # Past the fixture gate we ARE in the integration environment, so the
         # remaining conditions are real failures, not skips (#581): a
         # non-applicable fixture or a tool crash must not masquerade as

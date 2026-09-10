@@ -2,6 +2,7 @@ import os
 import unittest
 
 from scripts.tools import ADAPTERS
+from _test_helpers import skip_or_fail
 from tests.tools.conftest import FIXTURE_ROOT
 
 
@@ -36,7 +37,8 @@ class TestJavaIntegration(unittest.TestCase):
         target = self._target("WebGoat")
         adapter = ADAPTERS["spotbugs"]
         if not os.path.isdir(target):
-            self.skipTest("WebGoat fixture not vendored (run inside the fixtures image)")
+            skip_or_fail(self, "WebGoat fixture not vendored "
+                         "(run inside the fixtures image)")
         self.assertTrue(adapter.is_applicable(target),
                         "spotbugs should apply to the WebGoat Java project")
         raw, rc = adapter.invoke(target)
@@ -56,7 +58,8 @@ class TestJavaIntegration(unittest.TestCase):
         target = self._target("WebGoat")
         adapter = ADAPTERS["dependency-check"]
         if not os.path.isdir(target):
-            self.skipTest("WebGoat fixture not vendored (run inside the fixtures image)")
+            skip_or_fail(self, "WebGoat fixture not vendored "
+                         "(run inside the fixtures image)")
         self.assertTrue(adapter.is_applicable(target),
                         "dependency-check should apply to the WebGoat Java project")
         raw, rc = adapter.invoke(target)

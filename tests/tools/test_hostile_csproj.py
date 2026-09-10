@@ -21,6 +21,8 @@ from _test_helpers import first
 import socket
 import unittest
 
+from _test_helpers import skip_or_fail
+
 from scripts.tools import ADAPTERS
 
 FIXTURE = os.path.join(os.path.dirname(__file__), os.pardir,
@@ -100,17 +102,22 @@ class TestHostileCsproj(unittest.TestCase):
         if decision is not None:
             kind, msg = decision
             if kind == "skip":
-                self.skipTest(msg)
+                # The containment probe is a deliberate opt-in
+                # (PANOPTICON_CONTAINMENT_PROBE=1) because it EXECUTES hostile
+                # build logic and must only run inside the no-egress container.
+                # Requiring it under integration strictness would force that
+                # execution wherever the integration job runs.
+                self.skipTest(msg)  # strict-skip-exempt: opt-in containment probe
             self.fail(msg)  # kind == "fail": containment could not be verified
         adapter = ADAPTERS["roslyn-secguard"]
         if not os.path.isdir(FIXTURE):
-            self.skipTest("hostile-csproj fixture missing")
+            skip_or_fail(self, "hostile-csproj fixture missing")
         if not adapter.is_applicable(FIXTURE):
-            self.skipTest("no csproj visible")
+            skip_or_fail(self, "no csproj visible")
         try:
             raw, rc = adapter.invoke(FIXTURE)
         except FileNotFoundError:
-            self.skipTest("dotnet not installed on this host")
+            skip_or_fail(self, "dotnet not installed on this host")
         self.assertIn(rc, (0, 1))
         findings = adapter.parse(raw, "g")
         self.assertTrue(findings, "expected SCS findings from the hostile csproj")
