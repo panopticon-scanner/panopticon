@@ -1,4 +1,5 @@
 import contextlib
+import dataclasses
 import io
 import json
 import os
@@ -8,6 +9,7 @@ from unittest import mock
 
 import scripts.dispatch as dispatch
 import scripts.evidence as evidence
+from scripts import hosts
 
 
 class TestDetectHost(unittest.TestCase):
@@ -423,9 +425,14 @@ class TestEmitHostAgents(unittest.TestCase):
             dispatch.emit_host_agents("generic", "/tmp/x")
 
     def test_cli_kimi_defaults_to_kimi_agents_dir(self):
-        with tempfile.TemporaryDirectory() as d, \
-             mock.patch.object(dispatch, "KIMI_AGENTS_DIR", d):
-            rc = dispatch.main(["--emit-host-agents", "kimi"])
+        # #1344 F2: the default now lives in hosts.HOSTS, not a dispatch-module
+        # global -- patch the registry row itself rather than the (now inert)
+        # re-exported dispatch.KIMI_AGENTS_DIR, so this stays hermetic instead
+        # of writing into the real ~/.kimi-code/agents.
+        with tempfile.TemporaryDirectory() as d:
+            patched = dataclasses.replace(hosts.HOSTS["kimi"], registration_dir=d)
+            with mock.patch.dict(hosts.HOSTS, {"kimi": patched}):
+                rc = dispatch.main(["--emit-host-agents", "kimi"])
             self.assertEqual(rc, 0)
             for fname in (
                 "panopticon-scout.md",
@@ -546,4 +553,49 @@ class TestAgentsDirIsHonoured(unittest.TestCase):
                            "--out", out, "--agents-dir", agents])
             self.assertTrue(os.listdir(out))
             self.assertEqual([], os.listdir(agents))
+
+
+class TestDispatchReadsTheHostRegistry(unittest.TestCase):
+    """#1344 F2: dispatch stops carrying its own idea of which hosts exist."""
+
+    def test_registration_dir_comes_from_the_registry(self):
+        for name in ("claude", "kimi", "codex"):
+            with self.subTest(host=name):
+                self.assertEqual(hosts.spec(name).registration_dir,
+                                 dispatch._registration_dir(name, None))
+
+    def test_an_unknown_host_still_has_no_registration_dir(self):
+        self.assertIsNone(dispatch._registration_dir("no-such-host", None))
+
+    def test_an_explicit_dir_still_wins(self):
+        self.assertEqual("/tmp/elsewhere",
+                         dispatch._registration_dir("claude", "/tmp/elsewhere"))
+
+    def test_shell_suffix_comes_from_the_registry(self):
+        self.assertTrue(
+            dispatch.registered_agent_filename("codex", "scout.md")
+            .endswith(".toml"))
+        self.assertTrue(
+            dispatch.registered_agent_filename("claude", "scout.md")
+            .endswith(".md"))
+
+    def test_emit_refuses_a_host_that_registers_no_shells(self):
+        # gemini and generic have no shell format; the refusal must name them
+        # rather than raising something opaque.
+        for name in ("gemini", "generic"):
+            with self.subTest(host=name):
+                with self.assertRaises(ValueError) as caught:
+                    dispatch.emit_host_agents(name, "/tmp/never-written")
+                self.assertIn(name, str(caught.exception))
+
+    def test_detect_host_returns_only_hosts_the_registry_knows(self):
+        for env, expected in (({"CODEX_SANDBOX": "1"}, "codex"),
+                              ({"KIMI_SESSION_ID": "x"}, "kimi"),
+                              ({"CLAUDECODE": "1"}, "claude"),
+                              ({}, "generic")):
+            with self.subTest(env=env):
+                with mock.patch.dict(os.environ, env, clear=True):
+                    detected = dispatch._detect_host()
+                self.assertEqual(expected, detected)
+                self.assertIn(detected, hosts.known_hosts())
 

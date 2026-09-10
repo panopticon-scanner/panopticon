@@ -14,8 +14,12 @@ import os
 import re
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))         # skill/scripts
+sys.path.insert(0, os.path.dirname(os.path.dirname(                    # skill
+    os.path.abspath(__file__))))
 import model_resolver
+
+from scripts import hosts
 
 
 TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -98,10 +102,12 @@ PLACEHOLDER_RE = re.compile(r"\{([a-z_]+)\}")
 ROLE_FILES = {"scout": "scout.md", "advisor": "advisor.md",
               "domain_panel": "domain-panel.md",
               "domain_advisor": "domain-advisor.md"}
-CLAUDE_AGENTS_DIR = os.path.join(os.path.expanduser("~"), ".claude", "agents")
-KIMI_AGENTS_DIR = os.path.join(os.path.expanduser("~"), ".kimi-code", "agents")
-CODEX_HOME = os.path.expanduser(os.environ.get("CODEX_HOME", "~/.codex"))
-CODEX_AGENTS_DIR = os.path.join(CODEX_HOME, "agents")
+# Re-exported from the registry so `dispatch.CLAUDE_AGENTS_DIR` keeps working
+# for setup_flow and the existing tests, while hosts.py owns the values.
+CLAUDE_AGENTS_DIR = hosts.CLAUDE_AGENTS_DIR
+KIMI_AGENTS_DIR = hosts.KIMI_AGENTS_DIR
+CODEX_HOME = hosts.CODEX_HOME
+CODEX_AGENTS_DIR = hosts.CODEX_AGENTS_DIR
 
 # #run10: REVIEWER_ROLES lived here -- the roles whose findings gate
 # merge/release decisions (#275), consulted by the plan emitter and verifier to
@@ -130,10 +136,14 @@ def registered_agent_name(role_file):
     return "panopticon-" + role_file[:-len(".md")]
 
 
+def _shell_suffix(host):
+    fmt = (hosts.spec(host).shell_format if hosts.spec(host) else "") or "md"
+    return "." + fmt
+
+
 def registered_agent_filename(host, role_file):
     """Host-native filename for one registered enforcement profile."""
-    suffix = ".toml" if host == "codex" else ".md"
-    return registered_agent_name(role_file) + suffix
+    return registered_agent_name(role_file) + _shell_suffix(host)
 
 
 def emit_host_agents(host, out_dir):
@@ -145,8 +155,11 @@ def emit_host_agents(host, out_dir):
     do, never what it is asked to do. Fail-fast on template errors (shipped
     assets); idempotent for unchanged templates.
     """
-    if host not in ("claude", "kimi", "codex"):
-        raise ValueError("emit-host-agents: unsupported host %r (claude|kimi|codex)" % host)
+    row = hosts.spec(host)
+    if not row or not row.shell_format:
+        registrable = sorted(n for n, h in hosts.HOSTS.items() if h.shell_format)
+        raise ValueError("emit-host-agents: host %r registers no shells (%s)"
+                         % (host, "|".join(registrable)))
     os.makedirs(out_dir, exist_ok=True)
     written = []
     for role, role_file in sorted(ROLE_FILES.items()):
@@ -224,7 +237,7 @@ def _prune_retired_shells(host, out_dir, written):
     touched. Each removal is announced; a file that cannot be removed is
     reported and skipped rather than aborting an otherwise-successful emission.
     """
-    suffix = ".toml" if host == "codex" else ".md"
+    suffix = _shell_suffix(host)
     keep = {os.path.basename(p) for p in written}
     removed = []
     try:
@@ -293,17 +306,19 @@ def render_prompt(role_file, mapping, host=None):
 def _detect_host():
     """Best-effort host detection from environment.
 
-    Fallback only — the orchestrating agent should pass --host explicitly.
+    Fallback only -- the orchestrating agent should pass --host explicitly.
+    Order is fixed (codex, kimi, claude) rather than dict order, because a
+    session can legitimately carry more than one family's variables and the
+    historical precedence is load-bearing (tests/test_dispatch.py pins it).
     """
-    warning = "WARNING: host detected from environment; pass --host explicitly for stable behavior"
-    if os.environ.get("CODEX_SANDBOX") or os.environ.get("CODEX_SANDBOX_NETWORK_DISABLED"):
-        print(warning, file=sys.stderr)
-        return "codex"
-    if os.environ.get("KIMI_CODE_VERSION") or os.environ.get("KIMI_SESSION_ID"):
-        print(warning, file=sys.stderr)
-        return "kimi"
-    if os.environ.get("CLAUDECODE") or any(
-            k.startswith("CLAUDE_CODE_") for k in os.environ):
+    warning = ("WARNING: host detected from environment; pass --host "
+               "explicitly for stable behavior")
+    for name in ("codex", "kimi", "claude"):
+        row = hosts.spec(name)
+        if any(os.environ.get(var) for var in row.detect_env):
+            print(warning, file=sys.stderr)
+            return name
+    if any(k.startswith("CLAUDE_CODE_") for k in os.environ):
         print(warning, file=sys.stderr)
         return "claude"
     return "generic"
@@ -312,19 +327,11 @@ def _detect_host():
 
 
 def _registration_dir(host, agents_dir):
-    """Explicit dir wins; otherwise fall back to the host's default agents dir.
-
-    Unknown hosts return ``None``.
-    """
+    """Explicit dir wins; otherwise the host's default. Unknown -> None."""
     if agents_dir:
         return agents_dir
-    if host == "claude":
-        return CLAUDE_AGENTS_DIR
-    if host == "kimi":
-        return KIMI_AGENTS_DIR
-    if host == "codex":
-        return CODEX_AGENTS_DIR
-    return None
+    row = hosts.spec(host)
+    return (row.registration_dir or None) if row else None
 
 
 def _is_registered(reg_dir, role_file, host=None):
@@ -432,8 +439,9 @@ def main(argv=None):
                     help="Output directory for --render-advisor")
     ap.add_argument("--render-advisor", metavar="QUEUE", default=None,
                     help="Render advisor prompts from a verify-queue JSON into --out DIR")
+    _REGISTRABLE = sorted(n for n, h in hosts.HOSTS.items() if h.shell_format)
     ap.add_argument("--emit-host-agents", metavar="HOST",
-                    choices=["claude", "kimi", "codex"], default=None)
+                    choices=_REGISTRABLE, default=None)
     ap.add_argument("--agents-dir", default=None,
                     help="Directory containing registered agent .md files")
     args = ap.parse_args(argv)
