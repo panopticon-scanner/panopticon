@@ -519,3 +519,31 @@ class TestPruneRetiredShells(unittest.TestCase):
         self.assertIn("could not remove retired shell", err.getvalue())
 
 
+class TestAgentsDirIsHonoured(unittest.TestCase):
+    """#1344 F1 drive-by: the flag was parsed and never read, while README
+    documented it as the install override."""
+
+    def test_emit_writes_to_the_requested_directory(self):
+        with tempfile.TemporaryDirectory() as d, \
+                tempfile.TemporaryDirectory() as home:
+            # Pin the host default at a temp dir. Post-fix this changes
+            # nothing -- `--agents-dir` wins either way. Pre-fix it is what
+            # lets the RED be OBSERVED rather than reasoned, without the
+            # failing run scribbling shells into the developer's real
+            # ~/.claude/agents.
+            with mock.patch.object(dispatch, "CLAUDE_AGENTS_DIR", home):
+                rc = dispatch.main(["--emit-host-agents", "claude",
+                                    "--agents-dir", d])
+            self.assertEqual(0, rc)
+            written = sorted(os.listdir(d))
+            self.assertTrue(written, "--agents-dir was ignored")
+            self.assertTrue(all(n.startswith("panopticon-") for n in written))
+
+    def test_out_still_wins_when_both_are_given(self):
+        with tempfile.TemporaryDirectory() as out, \
+                tempfile.TemporaryDirectory() as agents:
+            dispatch.main(["--emit-host-agents", "claude",
+                           "--out", out, "--agents-dir", agents])
+            self.assertTrue(os.listdir(out))
+            self.assertEqual([], os.listdir(agents))
+
