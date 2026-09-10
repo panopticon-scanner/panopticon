@@ -210,8 +210,7 @@ class TestUnknownHostsStayUnknown(unittest.TestCase):
 
     def test_a_host_the_registry_does_not_know_resolves_to_no_model(self):
         self.assertEqual({"model": None},
-                         mr._hardcoded_fallback("no-such-host",
-                                                            "scout"))
+                         mr._hardcoded_fallback("no-such-host", "scout"))
 
     def test_a_known_host_with_no_fallback_table_also_resolves_to_no_model(self):
         # gemini and generic are in the registry and have no table. Falling

@@ -4,10 +4,14 @@ import json
 import os
 import sys
 
+# This repo has two directories named `scripts` with no __init__.py. When imported flat
+# (skill/scripts on sys.path), the try arm raises ModuleNotFoundError. When run from a
+# context where cwd is also in sys.path, Python resolves the repo-root namespace package
+# and the import raises bare ImportError instead. The fallback handles both.
 try:
     from scripts import _version
     from scripts import hosts
-except (ModuleNotFoundError, ImportError):  # imported flat, with skill/scripts itself on sys.path
+except ImportError:
     import _version
     import hosts
 
