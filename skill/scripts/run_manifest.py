@@ -14,6 +14,8 @@ import subprocess
 import re
 import uuid
 
+from scripts import hosts
+
 MANIFEST_NAME = "run-manifest.json"
 SCHEMA_VERSION = 1
 
@@ -36,7 +38,6 @@ def validate_host(host):
     decision downstream; a typo that reaches this far would silently produce
     an unenforced run under a plausible-looking directory (#1344).
     """
-    from scripts import hosts
     if hosts.spec(host) is None:
         raise ValueError("unknown host %r (known: %s)"
                          % (host, "|".join(hosts.known_hosts())))
