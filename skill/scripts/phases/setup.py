@@ -102,6 +102,27 @@ def _clear_setup_artifacts(review_root):
         except OSError:
             pass
 
+def _limitations_clause(limitations):
+    """Render the readiness checks that gate nothing (`ok is None`).
+
+    Spec §5.1: "If there are limitations by host then we should LOUDLY declare
+    them", and "absence of warnings must mean 'measured and proven', never
+    'nobody looked'". A check whose `ok` is None was never measured against a
+    pass/fail bar -- gemini registering no enforcement shells is a FACT, not a
+    fault. So it must not join `gaps` (those gate READY and carry a remedy),
+    and it must not be swallowed either: `readiness OK` on a host that cannot
+    enforce is exactly the ambiguity §5.1 forbids. Its own clause, carrying the
+    check's own detail, which already names the capability and the host.
+    """
+    return "limitations: " + ", ".join("%s (%s)" % (name, detail)
+                                       for name, detail in limitations)
+
+def _stored_limitations(marker):
+    """The `limitations` pairs from a setup-complete.json, or []. Tolerates a
+    marker written before the key existed, and any row that is not a pair."""
+    return [(row[0], row[1]) for row in ((marker or {}).get("limitations") or [])
+            if isinstance(row, (list, tuple)) and len(row) == 2]
+
 def _scan_fallback(review_root, manifest, host, note=None):
     """Vocab-absent path (parity with orchestrator.run_setup): flat top-dir seed
     + readiness gate, then a fallback-complete marker so both setup phases'
@@ -110,13 +131,20 @@ def _scan_fallback(review_root, manifest, host, note=None):
     path, created, names = setup_flow.seed_flat_manifest(review_root)
     checks = setup_flow.readiness(review_root, host=host)
     gaps = [c[0] for c in checks if c[1] is False]
+    # ok is None is NOT-APPLICABLE, a third answer the renderer used to collapse
+    # into "fine". Recorded under its own key so a consumer can tell "not
+    # applicable" from "measured and passed" (§5.1).
+    limitations = [(c[0], c[2]) for c in checks if c[1] is None]
     runio._write_json(runio._pano(review_root, "setup-complete.json"), {
         "schema_version": 1,
         "mode": "fallback", "seed": path, "created": created, "groups": names,
         "readiness": [[c[0], c[1], c[2]] for c in checks],
-        "gaps": gaps, "run_id": manifest["run_id"]})
+        "gaps": gaps, "limitations": [[n, d] for n, d in limitations],
+        "run_id": manifest["run_id"]})
     msg = ("setup: vocab-absent fallback — flat seed %s; readiness %s"
            % (path, "OK" if not gaps else "gaps: " + ", ".join(gaps)))
+    if limitations:
+        msg += " — " + _limitations_clause(limitations)
     if note:   # #1135: surface the "groups.yml needs `git add -f`" note
         msg += " — " + note
     return engine.PhaseResult(kind="advanced", message=msg)
@@ -191,9 +219,17 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES):
         else:
             msg = ("setup complete — vocab-absent fallback seeded a flat "
                   ".panopticon/groups.yml; review, edit, and commit it")
-            gaps = (runio._load_json(runio._pano(review_root, "setup-complete.json")) or {}).get("gaps") or []
+            marker = runio._load_json(
+                runio._pano(review_root, "setup-complete.json")) or {}
+            gaps = marker.get("gaps") or []
             if gaps:
                 msg += (" — readiness gaps: %s (fix before running a review)"
                        % ", ".join(gaps))
+            # This is the message the operator actually reads -- _scan_fallback's
+            # is replaced here -- so the limitations clause has to be restated,
+            # or declaring it there would be declaring it to nobody (§5.1).
+            limitations = _stored_limitations(marker)
+            if limitations:
+                msg += " — " + _limitations_clause(limitations)
             result["message"] = msg
     return result

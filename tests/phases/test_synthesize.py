@@ -140,6 +140,19 @@ class TestHostUsageCollection(unittest.TestCase):
                 synthesize._collect_host_usage(d, self._manifest(host="generic")))
         run.assert_not_called()
 
+    def test_a_host_less_manifest_does_not_collect_usage(self):
+        # synthesize.py reads `manifest.get("host")` with NO default, unlike
+        # every other posture site (`get("host", "claude")`). Behavior is
+        # preserved today only because nothing pins it: add the default and a
+        # host-less manifest starts collecting usage from the Claude
+        # transcripts, and the whole suite stays green. This is that pin.
+        m = self._manifest()
+        del m["host"]
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch("scripts.phases.runio._run_child") as run:
+            self.assertIsNone(synthesize._collect_host_usage(d, m))
+        run.assert_not_called()
+
     def test_existing_usage_is_never_overwritten_on_resume(self):
         with tempfile.TemporaryDirectory() as d, \
              mock.patch("scripts.phases.runio._run_child") as run:

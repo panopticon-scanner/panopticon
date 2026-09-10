@@ -6,6 +6,7 @@ import scripts.coverage_model as coverage_model
 import scripts.dispatch as dispatch
 import scripts.groups_schema as groups_schema
 import scripts.run_tools as run_tools
+from scripts import hosts
 from . import engine
 from . import runio
 from . import requests
@@ -43,7 +44,7 @@ def _scout_entry(review_root, manifest, group, files, host, registry_tools=None)
                 "registry — these are the only scanners that can run. Emit `[]` "
                 "if none apply; never invent a tool name:\n%s\n" % registry
               + "\nReturn the ScopeProfile JSON for this group.")
-    enforced = host == "claude"
+    enforced = hosts.declares(host, hosts.TOOL_POLICY_ENFORCED)
     return {"id": "scout-%s" % group,
             "agent": dispatch.registered_agent_name("scout.md") if enforced else None,
             "enforced": enforced,

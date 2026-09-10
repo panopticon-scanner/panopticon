@@ -4,10 +4,16 @@ import json
 import os
 import sys
 
+# This repo has two directories named `scripts` with no __init__.py. When imported flat
+# (skill/scripts on sys.path), the try arm raises ModuleNotFoundError. When run from a
+# context where cwd is also in sys.path, Python resolves the repo-root namespace package
+# and the import raises bare ImportError instead. The fallback handles both.
 try:
     from scripts import _version
-except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
+    from scripts import hosts
+except ImportError:
     import _version
+    import hosts
 
 
 def _load_profiles():
@@ -88,11 +94,16 @@ _CODEX_FALLBACK = {
 def _hardcoded_fallback(host, role):
     """Last-resort role->model mapping when profiles are unavailable.
 
-    Unknown hosts resolve to model=None, meaning "inherit the session's
-    model" — never silently assume kimi.
+    A host the registry does not know, or a known host with no table of its
+    own, resolves to model=None -- "inherit the session's model". Never
+    silently assume another host's tiers (#1344: the registry is now the one
+    definition of which hosts exist).
     """
+    if hosts.spec(host) is None:
+        return {"model": None}
     if host == "kimi":
-        return _KIMI_FALLBACK.get(role, {"model": "primary", "alias": "kimi-for-coding",
+        return _KIMI_FALLBACK.get(role, {"model": "primary",
+                                         "alias": "kimi-for-coding",
                                          "max_context_size": 131072,
                                          "max_output_size": 8192})
     if host == "claude":

@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) 
 import scripts.diff_map as diff_map  # noqa: E402
 import scripts.plan_contract as plan_contract  # noqa: E402
 import scripts.run_manifest as run_manifest  # noqa: E402
+from scripts import hosts  # noqa: E402
 import scripts.phases.engine as engine
 import scripts.phases.runio as runio
 import scripts.phases.coverage as coverage
@@ -145,7 +146,7 @@ def build_parser():
     for verb in ("run",):
         p = sub.add_parser(verb)
         p.add_argument("target", nargs="?", default=".")
-        p.add_argument("--host", default=None, choices=["claude", "generic", "gemini"])
+        p.add_argument("--host", default=None, choices=list(hosts.driver_hosts()))
         p.add_argument("--security", default=None, choices=["standard", "redteam"])
         p.add_argument("--base", default=None)
         p.add_argument("--pr", type=int, default=None)
@@ -188,7 +189,7 @@ def build_parser():
         scope.add_argument("--files", dest="scope_files", nargs="+", default=None)
     sp = sub.add_parser("setup")
     sp.add_argument("target", nargs="?", default=".")
-    sp.add_argument("--host", default=None, choices=["claude", "generic", "gemini"])
+    sp.add_argument("--host", default=None, choices=list(hosts.driver_hosts()))
     sp.add_argument("--reset", action="store_true")
     # 5.2 size policy (spec §5.3): files per dispatch unit and the leaf
     # ceiling. Unset = .panopticon/config.json (max_per_group / max_groups),

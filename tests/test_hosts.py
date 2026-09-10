@@ -142,6 +142,30 @@ class TestPostureFailsClosed(unittest.TestCase):
         self.assertEqual(sorted(hosts.unproven(posture)),
                          hosts.unproven(posture))
 
+    def test_a_malformed_per_capability_entry_is_unknown_not_a_crash(self):
+        # F3 feeds this from runs/<tag>/host-capabilities.json -- a file on
+        # disk, i.e. untrusted input. A truncated or tampered artifact whose
+        # entry is not a dict must resolve to UNKNOWN. Crashing the run is not
+        # failing closed; it is failing.
+        for bad in ("a string", ["a", "list"], 7, None, True):
+            with self.subTest(entry=bad):
+                result = hosts.posture(
+                    "claude", {hosts.TOOL_POLICY_ENFORCED: bad})
+                self.assertEqual({hosts.UNKNOWN}, set(result.values()))
+
+    def test_an_entry_dict_without_a_state_key_is_unknown(self):
+        self.assertEqual(
+            hosts.UNKNOWN,
+            hosts.posture("claude", {hosts.TOOL_POLICY_ENFORCED: {}})[
+                hosts.TOOL_POLICY_ENFORCED])
+
+    def test_a_non_dict_evidence_container_is_unknown_not_a_crash(self):
+        for bad in ("not-a-dict", ["a", "list"], 7, True, object()):
+            with self.subTest(evidence=bad):
+                result = hosts.posture("claude", bad)
+                self.assertEqual(sorted(hosts.CAPABILITIES), sorted(result))
+                self.assertEqual({hosts.UNKNOWN}, set(result.values()))
+
 
 class TestTheModuleStaysPure(unittest.TestCase):
     """hosts.py is imported by phases/*; it must stay cheap and I/O-free.

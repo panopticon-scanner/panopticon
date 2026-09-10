@@ -8,6 +8,7 @@ import scripts.dispatch as dispatch
 import scripts.group_runner as group_runner
 import scripts.synth.integrity as integrity_mod
 import scripts.synth.plan as plan_mod
+from scripts import hosts
 from . import runio
 from . import coverage
 
@@ -112,7 +113,8 @@ def _driver_plan_entries(review_root, manifest):
     plan_mod.derive_tool_policy_mode reports the run's real posture rather than
     defaulting to "advisory". No `files`/`role` -- this is a declaration of
     which out_files must exist, not a scope grant or a cost row."""
-    enforced = manifest.get("host", "claude") == "claude"
+    enforced = hosts.declares(manifest.get("host", "claude"),
+                              hosts.TOOL_POLICY_ENFORCED)
     entries = []
     for group, _files in coverage._discovered_groups(review_root):
         for domain in coverage._effective_domains(review_root, group):
@@ -160,14 +162,22 @@ def require_unenforced_ack(review_root, manifest, entries):
     """Refuse to dispatch write-capable reviewers on a host that cannot mediate
     Write, unless the operator accepted the risk explicitly (#1519, AGT-B1A).
 
-    `enforced` is `host == "claude"` throughout the driver, because the
-    write-guard is a Claude Code PreToolUse hook and `dispatch.emit_host_agents`
-    can only build a scoped shell for claude/kimi/codex. So on `--host generic`
-    or `--host gemini` -- both first-class CLI values -- a domain-panel or
-    domain-advisor `Write` has NO mediation whatsoever: no registered shell, no
-    hook, nothing but the advisory prose `_tool_policy_line` appends. And a
-    write that lands OUTSIDE review_root is invisible to every integrity check
-    here, because validate's clean-tree diff is scoped to review_root.
+    The gate reads one capability: the host's ARTIFACT_WRITE_GUARD -- can its
+    hook mediate a reviewer's `Write` and confine it to the declared out_file?
+    That is a NARROWER question than whether the host enforces a reviewer tool
+    policy at all (TOOL_POLICY_ENFORCED), and it is the only one that matters
+    here: the write-guard is a Claude Code PreToolUse hook, so a host can
+    enforce a registered shell's tool list perfectly well and still have
+    nothing standing between a domain-panel `Write` and the filesystem. The
+    two questions were extensionally identical over today's hosts, which is
+    exactly why the distinction has to be written down.
+
+    On a host that does not declare it -- `--host generic` and `--host gemini`,
+    both first-class CLI values -- a domain-panel or domain-advisor `Write` has
+    NO mediation whatsoever: no hook, nothing but the advisory prose
+    `_tool_policy_line` appends. And a write that lands OUTSIDE review_root is
+    invisible to every integrity check here, because validate's clean-tree diff
+    is scoped to review_root.
 
     dispatch.py used to refuse exactly this by default, with --allow-unenforced
     as the explicit, recorded opt-in. That flag and its ack writer were retired
@@ -182,21 +192,22 @@ def require_unenforced_ack(review_root, manifest, entries):
 
     Returns the ack path when one was written, else None.
     """
-    if manifest.get("host", "claude") == "claude":
+    if hosts.declares(manifest.get("host", "claude"), hosts.ARTIFACT_WRITE_GUARD):
         return None                    # the hook mediates Write for this host
     if not entries:
         return None                    # no cells declared: no risk to accept
     if not (manifest.get("flags") or {}).get("allow_unenforced"):
+        guarded = [name for name in hosts.driver_hosts()
+                   if hosts.declares(name, hosts.ARTIFACT_WRITE_GUARD)]
         raise runio.DriverError(
-            "host %r cannot enforce the reviewer tool policy: %s are granted "
-            "Write, and on this host there is no registered agent shell and no "
-            "PreToolUse hook to confine it to the declared out_file -- only "
-            "prompt text. A write outside the reviewed tree would also be "
-            "invisible to the clean-tree check. Re-run with --allow-unenforced "
-            "to accept that explicitly (it is recorded in %s), or use "
-            "--host claude."
+            "host %r declares no artifact write guard: %s are granted Write, "
+            "and this host has no PreToolUse hook to confine that Write to the "
+            "declared out_file -- only prompt text. A write outside the "
+            "reviewed tree would also be invisible to the clean-tree check. "
+            "Re-run with --allow-unenforced to accept that explicitly (it is "
+            "recorded in %s), or use one of: %s."
             % (manifest.get("host"), ", ".join(sorted(write_capable_roles())),
-               UNENFORCED_ACK))
+               UNENFORCED_ACK, ", ".join("--host " + n for n in guarded)))
     path = runio._pano(review_root, UNENFORCED_ACK)
     if os.path.isfile(path):
         return path                    # idempotent across resumes

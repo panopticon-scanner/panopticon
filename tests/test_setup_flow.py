@@ -919,3 +919,72 @@ class TestDraftPreservesTopLevelKeys(unittest.TestCase):
         globs, errors = groups_schema.parse_exclude_paths(doc)
         self.assertEqual(errors, [])
         self.assertEqual(globs, ["tests/fixtures/**"])
+
+
+class TestReadinessCannotAssertWhatItDidNotCheck(unittest.TestCase):
+    """#1344 F2: P2/P3 cease to be expressible."""
+
+    def _check(self, host):
+        return dict((name, (ok, detail))
+                    for name, ok, detail in
+                    setup_flow._check_host_shells(host, lambda *a, **k: None))
+
+    def test_codex_no_longer_claims_enforcement_it_never_verified(self):
+        # #1344 F2: pin this against real registration state, not whatever
+        # happens to be under ~/.codex/agents on the machine running the
+        # suite -- a developer box that has ever run `--emit-host-agents
+        # codex` for real would otherwise make `ok` legitimately True and
+        # the assertion below flaky-by-environment rather than a check on
+        # the code.
+        import dispatch
+        with mock.patch.object(dispatch, "_is_registered", return_value=False):
+            ok, detail = self._check("codex")["enforced-shells"]
+        self.assertIsNot(ok, True,
+                         "readiness asserted enforcement without checking it")
+        self.assertNotIn("codex_exec", detail,
+                         "codex_exec was removed; readiness must not cite it")
+
+    def test_codex_reports_enforced_when_its_shells_really_are_registered(self):
+        # The other half of test_codex_no_longer_claims_enforcement_it_never
+        # _verified. That one proves the hardcoded True is gone; this one
+        # proves a REAL True still arrives, so "derived from a check" is
+        # demonstrated in both directions rather than asserted in a docstring.
+        import dispatch
+        with mock.patch.object(dispatch, "_is_registered", return_value=True):
+            ok, detail = self._check("codex")["enforced-shells"]
+        self.assertTrue(ok)
+        self.assertNotIn("codex_exec", detail)
+
+    def test_gemini_is_not_told_to_run_a_command_that_raises(self):
+        ok, detail = self._check("gemini")["enforced-shells"]
+        self.assertNotIn("--emit-host-agents gemini", detail)
+        self.assertIsNot(ok, True)
+
+    def test_a_host_that_registers_no_shells_says_so_honestly(self):
+        for name in ("gemini", "generic"):
+            with self.subTest(host=name):
+                ok, detail = self._check(name)["enforced-shells"]
+                self.assertIsNone(ok, "not-applicable is None, not False")
+                self.assertIn("registers no", detail)
+
+    def test_claude_still_reports_its_shells(self):
+        # The one host with real shells must keep the check it already had.
+        result = self._check("claude")
+        self.assertIn("enforced-shells", result)
+
+    def test_codex_still_reports_whether_the_cli_is_there(self):
+        # The one honest check in the old codex branch. It must survive the
+        # rewrite that deletes the dishonest one next to it.
+        calls = []
+
+        def runner(cmd, **kwargs):
+            calls.append(cmd)
+            raise OSError("not installed")
+
+        result = dict((name, (ok, detail)) for name, ok, detail
+                      in setup_flow._check_host_shells("codex", runner))
+        self.assertIn(["codex", "--version"], calls,
+                      "readiness stopped probing for the Codex CLI")
+        ok, detail = result["codex-cli"]
+        self.assertFalse(ok)
+        self.assertIn("Codex CLI unavailable", detail)
