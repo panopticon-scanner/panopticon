@@ -538,10 +538,22 @@ class TestAgentsDirIsHonoured(unittest.TestCase):
             # lets the RED be OBSERVED rather than reasoned, without the
             # failing run scribbling shells into the developer's real
             # ~/.claude/agents.
-            with mock.patch.object(dispatch, "CLAUDE_AGENTS_DIR", home):
+            #
+            # #1344 F2: the default lives in hosts.HOSTS now, so patch the
+            # REGISTRY ROW (as test_cli_kimi_defaults_to_kimi_agents_dir
+            # does). `mock.patch.object(dispatch, "CLAUDE_AGENTS_DIR", ...)`
+            # patched a re-export that `_registration_dir` stopped reading --
+            # it was inert, and the containment this test claims was fiction.
+            # The assertion below is the proof, not the patch.
+            patched = dataclasses.replace(hosts.HOSTS["claude"],
+                                          registration_dir=home)
+            with mock.patch.dict(hosts.HOSTS, {"claude": patched}):
+                self.assertEqual(home,
+                                 dispatch._registration_dir("claude", None))
                 rc = dispatch.main(["--emit-host-agents", "claude",
                                     "--agents-dir", d])
             self.assertEqual(0, rc)
+            self.assertEqual([], os.listdir(home))   # nothing escaped there
             written = sorted(os.listdir(d))
             self.assertTrue(written, "--agents-dir was ignored")
             self.assertTrue(all(n.startswith("panopticon-") for n in written))
