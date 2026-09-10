@@ -102,12 +102,13 @@ PLACEHOLDER_RE = re.compile(r"\{([a-z_]+)\}")
 ROLE_FILES = {"scout": "scout.md", "advisor": "advisor.md",
               "domain_panel": "domain-panel.md",
               "domain_advisor": "domain-advisor.md"}
-# Re-exported from the registry so `dispatch.CLAUDE_AGENTS_DIR` keeps working
-# for setup_flow and the existing tests, while hosts.py owns the values.
-CLAUDE_AGENTS_DIR = hosts.CLAUDE_AGENTS_DIR
-KIMI_AGENTS_DIR = hosts.KIMI_AGENTS_DIR
-CODEX_HOME = hosts.CODEX_HOME
-CODEX_AGENTS_DIR = hosts.CODEX_AGENTS_DIR
+# #1344 F2: the four registration-directory constants were re-exported from
+# hosts.py "so setup_flow and existing tests keep importing them". setup_flow
+# imported none of them, KIMI_AGENTS_DIR / CODEX_HOME / CODEX_AGENTS_DIR had no
+# consumer anywhere in the repo, and CLAUDE_AGENTS_DIR's one consumer was a
+# mock that patched it and thereby patched nothing. A second name for a fact
+# hosts.py owns is exactly what this epic removes -- read them off the registry
+# row (`hosts.spec(host).registration_dir`) instead.
 
 # #run10: REVIEWER_ROLES lived here -- the roles whose findings gate
 # merge/release decisions (#275), consulted by the plan emitter and verifier to

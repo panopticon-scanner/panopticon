@@ -425,10 +425,10 @@ class TestEmitHostAgents(unittest.TestCase):
             dispatch.emit_host_agents("generic", "/tmp/x")
 
     def test_cli_kimi_defaults_to_kimi_agents_dir(self):
-        # #1344 F2: the default now lives in hosts.HOSTS, not a dispatch-module
-        # global -- patch the registry row itself rather than the (now inert)
-        # re-exported dispatch.KIMI_AGENTS_DIR, so this stays hermetic instead
-        # of writing into the real ~/.kimi-code/agents.
+        # #1344 F2: the default lives in hosts.HOSTS, not a dispatch-module
+        # global -- patch the registry row itself. Patching the old
+        # dispatch.KIMI_AGENTS_DIR re-export (since deleted) was inert and let
+        # a failing run write into the real ~/.kimi-code/agents.
         with tempfile.TemporaryDirectory() as d:
             patched = dataclasses.replace(hosts.HOSTS["kimi"], registration_dir=d)
             with mock.patch.dict(hosts.HOSTS, {"kimi": patched}):
@@ -543,8 +543,9 @@ class TestAgentsDirIsHonoured(unittest.TestCase):
             # REGISTRY ROW (as test_cli_kimi_defaults_to_kimi_agents_dir
             # does). `mock.patch.object(dispatch, "CLAUDE_AGENTS_DIR", ...)`
             # patched a re-export that `_registration_dir` stopped reading --
-            # it was inert, and the containment this test claims was fiction.
-            # The assertion below is the proof, not the patch.
+            # it was inert, the containment this test claims was fiction, and
+            # the re-export has since been deleted. The assertion below is the
+            # proof, not the patch.
             patched = dataclasses.replace(hosts.HOSTS["claude"],
                                           registration_dir=home)
             with mock.patch.dict(hosts.HOSTS, {"claude": patched}):
