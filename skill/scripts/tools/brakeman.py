@@ -57,6 +57,29 @@ _BRAKEMAN_CWE = {
 }
 
 
+
+def _cwe_citations(w, wtype):
+    """CWE ids for one warning: the tool's own answer first, the map second.
+
+    Brakeman reports `cwe_id` on every warning it raises, and has for years.
+    _BRAKEMAN_CWE predates that and re-derives it by hand -- which is why it had
+    to be extended twice (railsgoat, then solidus; both recorded above) and was
+    stale again by brakeman 8.0.6, whose `Unmaintained Dependency` (CWE-1104)
+    landed uncitable. It also DISAGREES on four types it does cover, and
+    brakeman is the more precise one each time, because it knows which check
+    fired: Command Injection 77 not 78, Remote Code Execution 502 not 94,
+    Session Setting 1004 not 614, Dangerous Send 77 not 470.
+
+    So the map stays only as the fallback for warnings that carry no cwe_id --
+    an older brakeman, and every hand-built fixture in the test suite.
+    """
+    ids = w.get("cwe_id")
+    if isinstance(ids, (int, str)):
+        ids = [ids]          # a scalar is one id, not a sequence of characters
+    cited = ["CWE-%s" % i for i in (ids or []) if str(i).strip()]
+    return cited or as_list(_BRAKEMAN_CWE.get(wtype))
+
+
 _BRAKEMAN_SEVERITY = {
     "Remote Code Execution": "CRITICAL",
     "Dangerous Eval": "HIGH",
@@ -181,7 +204,7 @@ class BrakemanAdapter:
         n = 1
         for w in data.get("warnings", []):
             wtype = w.get("warning_type", "")
-            cwe = _BRAKEMAN_CWE.get(wtype)
+            cwe = _cwe_citations(w, wtype)
             if wtype not in _BRAKEMAN_SEVERITY:
                 print(f"brakeman: unmapped warning_type {wtype!r}; using MEDIUM", file=sys.stderr)
             sev = _BRAKEMAN_SEVERITY.get(wtype, "MEDIUM")
@@ -199,7 +222,7 @@ class BrakemanAdapter:
                 impact=f"Rails security issue of type {wtype}.",
                 remediation="Review the linked Brakeman documentation and refactor the affected code.",
                 references=as_list(w.get("link")),
-                citations={"cwe": as_list(cwe)},
+                citations={"cwe": cwe},
                 tool_evidence=omit_none({"rule_id": wtype, "advisory_url": w.get("link")}),
             ))
             n += 1
