@@ -10,6 +10,7 @@ class TestRustCsIntegration(unittest.TestCase):
         adapter = ADAPTERS.get(adapter_name) or ADAPTERS[adapter_name]
         self.assertIsNotNone(adapter)
         if shutil.which(tool_cmd):
+            # strict-skip-exempt: inverse probe -- asserts the NO-toolchain path
             raise unittest.SkipTest(
                 f"{tool_cmd} is available; run full fixture test instead")
 
