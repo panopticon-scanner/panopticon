@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import scripts.dispatch as dispatch
 import scripts.model_resolver as mr
+from scripts import hosts
 
 
 class TestFallbackMatchesProfiles(unittest.TestCase):
@@ -201,3 +202,28 @@ class TestModelResolver(unittest.TestCase):
         with patch.object(mr, "_PROFILES", {}):   # yml absent -> fallback
             self.assertEqual(mr.registration_model("claude", "domain_panel"), "sonnet")
             self.assertEqual(mr.registration_model("claude", "domain_advisor"), "opus")
+
+
+class TestUnknownHostsStayUnknown(unittest.TestCase):
+    """#1344 F2: the resolver's 'never silently assume kimi' rule now has one
+    definition of 'unknown host' rather than an implicit else-branch."""
+
+    def test_a_host_the_registry_does_not_know_resolves_to_no_model(self):
+        self.assertEqual({"model": None},
+                         mr._hardcoded_fallback("no-such-host",
+                                                            "scout"))
+
+    def test_a_known_host_with_no_fallback_table_also_resolves_to_no_model(self):
+        # gemini and generic are in the registry and have no table. Falling
+        # through to another host's table would be the bug this guards.
+        for name in ("gemini", "generic"):
+            with self.subTest(host=name):
+                self.assertEqual({"model": None},
+                                 mr._hardcoded_fallback(name, "scout"))
+
+    def test_every_registry_host_resolves_without_raising(self):
+        for name in hosts.known_hosts():
+            for role in ("scout", "advisor", "domain_panel", "domain_advisor"):
+                with self.subTest(host=name, role=role):
+                    self.assertIsInstance(
+                        mr._hardcoded_fallback(name, role), dict)
