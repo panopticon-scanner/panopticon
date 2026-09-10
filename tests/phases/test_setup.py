@@ -484,3 +484,82 @@ class TestSetupScanExecuteUsesTheNamespace(unittest.TestCase):
             self.skipTest("vocab-absent fallback path")
         self.assertTrue(result.dispatch_request.endswith(
             ".panopticon/setup-dispatch-request.json"), result.dispatch_request)
+
+
+class TestReadinessLimitationsAreLoud(unittest.TestCase):
+    """Spec §5.1: "If there are limitations by host then we should LOUDLY
+    declare them", and "absence of warnings must mean 'measured and proven',
+    never 'nobody looked'".
+
+    Before #1344 F2, gemini's `enforced-shells` check was `False`, so it landed
+    in `gaps` and the operator saw `readiness gaps: enforced-shells` -- loud,
+    but wrong: the remedy it named (`--emit-host-agents gemini`) raises. Task 6
+    made it `None`, which is right and was silent: `gaps` filters on `is
+    False`, so the operator got a plain `readiness OK` on a host that cannot
+    enforce anything, and the honest line reached `setup-complete.json` alone.
+    A limitation is not a gap and it is not nothing.
+    """
+
+    def _repo(self):
+        return make_git_repo(
+            test_case=self, files={"src/checkout/pay.py": "x = 1\n"},
+            branch="main", user_email="t@t", user_name="t")
+
+    def _fallback(self, checks, host=None):
+        """A vocab-absent `driver setup` whose readiness answers `checks`."""
+        d = self._repo()
+        argv = ["setup", d] + (["--host", host] if host else [])
+        args = driver.build_parser().parse_args(argv)
+        with mock.patch("scripts.setup_flow.load_bundled_vocabulary",
+                        return_value=({"names": []}, False)), \
+             mock.patch("scripts.setup_flow.readiness", return_value=checks):
+            status = setup.run_setup_flow(args)
+        self.assertEqual("complete", status["status"])
+        marker = runio._load_json(runio._pano(d, "setup-complete.json"))
+        return status["message"], marker
+
+    # gemini's REAL answer, computed by the registry-backed check itself rather
+    # than restated here, so a reworded detail cannot make this test pass on
+    # prose that no longer matches what setup emits.
+    GEMINI_CHECKS = setup_flow._check_host_shells("gemini", None)
+
+    def test_the_gemini_limitation_reaches_the_operator(self):
+        self.assertEqual([("enforced-shells", None,
+                           "gemini registers no enforcement shells; reviewers "
+                           "run with a prompt-advisory tool policy")],
+                         list(self.GEMINI_CHECKS))
+        msg, marker = self._fallback(self.GEMINI_CHECKS, host="gemini")
+        self.assertIn("limitations", msg)
+        self.assertIn("enforced-shells", msg)
+        self.assertIn("gemini registers no enforcement shells", msg)
+        self.assertEqual([["enforced-shells",
+                           self.GEMINI_CHECKS[0][2]]], marker["limitations"])
+
+    def test_a_limitation_never_becomes_a_gap(self):
+        # It must not gate READY: `gaps` stays empty and the readiness verdict
+        # stays OK. Distinct clause, distinct key -- a consumer can tell "not
+        # applicable" from "fine".
+        msg, marker = self._fallback(self.GEMINI_CHECKS, host="gemini")
+        self.assertEqual([], marker["gaps"])
+        self.assertNotIn("readiness gaps", msg)
+
+    def test_a_fully_registered_claude_run_reports_neither(self):
+        checks = [("docker", True, "ok"), ("target-root", True, "ok"),
+                  ("enforced-shells", True, "ok"),
+                  ("groups-manifest", True, "1 group(s)")]
+        msg, marker = self._fallback(checks, host="claude")
+        self.assertNotIn("limitations", msg)
+        self.assertNotIn("readiness gaps", msg)
+        self.assertEqual([], marker["gaps"])
+        self.assertEqual([], marker["limitations"])
+
+    def test_a_real_gap_is_still_reported_as_a_gap(self):
+        checks = [("docker", False, "docker unavailable -- install/start Docker"),
+                  ("enforced-shells", None, "gemini registers no enforcement "
+                                            "shells; reviewers run with a "
+                                            "prompt-advisory tool policy")]
+        msg, marker = self._fallback(checks, host="gemini")
+        self.assertEqual(["docker"], marker["gaps"])
+        self.assertIn("readiness gaps: docker", msg)
+        self.assertIn("limitations", msg)
+        self.assertIn("enforced-shells", msg)
