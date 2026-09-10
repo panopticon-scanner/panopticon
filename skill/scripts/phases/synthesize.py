@@ -4,6 +4,7 @@ import datetime
 import os
 import sys
 
+from scripts import hosts
 from . import engine
 from . import runio
 from . import requests
@@ -32,7 +33,7 @@ def _collect_host_usage(review_root, manifest):
     absent number stays absent -- this must never be able to fail a run, and
     must never invent a figure.
     """
-    if manifest.get("host") != "claude":
+    if not hosts.declares(manifest.get("host"), hosts.USAGE_LEDGER):
         return None          # other hosts write their own usage.json, or none
     if os.path.isfile(runio._pano(review_root, "usage.json")):
         return None          # already collected (resume) -- never overwrite

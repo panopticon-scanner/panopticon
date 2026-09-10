@@ -8,6 +8,7 @@ import scripts.dispatch as dispatch
 import scripts.group_runner as group_runner
 import scripts.synth.integrity as integrity_mod
 import scripts.synth.plan as plan_mod
+from scripts import hosts
 from . import runio
 from . import coverage
 
@@ -112,7 +113,8 @@ def _driver_plan_entries(review_root, manifest):
     plan_mod.derive_tool_policy_mode reports the run's real posture rather than
     defaulting to "advisory". No `files`/`role` -- this is a declaration of
     which out_files must exist, not a scope grant or a cost row."""
-    enforced = manifest.get("host", "claude") == "claude"
+    enforced = hosts.declares(manifest.get("host", "claude"),
+                              hosts.TOOL_POLICY_ENFORCED)
     entries = []
     for group, _files in coverage._discovered_groups(review_root):
         for domain in coverage._effective_domains(review_root, group):
@@ -182,7 +184,7 @@ def require_unenforced_ack(review_root, manifest, entries):
 
     Returns the ack path when one was written, else None.
     """
-    if manifest.get("host", "claude") == "claude":
+    if hosts.declares(manifest.get("host", "claude"), hosts.ARTIFACT_WRITE_GUARD):
         return None                    # the hook mediates Write for this host
     if not entries:
         return None                    # no cells declared: no risk to accept
