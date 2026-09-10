@@ -1,3 +1,6 @@
+import contextlib
+import io
+import json
 import os
 import tempfile
 import unittest
@@ -163,6 +166,11 @@ class TestRunManifest(unittest.TestCase):
 
 
 class TestManifestRejectsAnUnknownHost(unittest.TestCase):
+    def setUp(self):
+        self._d = tempfile.TemporaryDirectory()
+        self.root = self._d.name
+        self.addCleanup(self._d.cleanup)
+
     def test_a_host_the_registry_does_not_know_is_refused(self):
         with self.assertRaises(ValueError) as caught:
             rm.validate_host("no-such-host")
@@ -172,6 +180,45 @@ class TestManifestRejectsAnUnknownHost(unittest.TestCase):
         for name in hosts.driver_hosts():
             with self.subTest(host=name):
                 self.assertEqual(name, rm.validate_host(name))
+
+    def test_an_unknown_host_in_a_stored_manifest_does_not_crash_path_resolution(self):
+        # run_tag is called on every artifact path resolution, including the
+        # --reset recovery path (driver._clear_run_artifacts -> runio._run_tag).
+        # It must never raise: a function that computes a path is on every code
+        # path, recovery included.
+        m = {"host": "evilhost", "run_id": "r1", "created": "2026-09-10"}
+        self.assertEqual("evilhost-standard-repo-20260910-r1", rm.run_tag(m))
+
+    def test_a_stored_manifest_with_an_unknown_host_is_discarded_not_trusted(self):
+        # Unusable, exactly like a corrupt one: load_manifest returns None so
+        # the driver clears artifacts and rebuilds from CLI args, rather than
+        # resuming an unenforced run under a plausible directory name.
+        path = rm.manifest_path(self.root)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"host": "evilhost", "run_id": "r1",
+                       "created": "2026-09-10T00:00:00Z"}, fh)
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertIsNone(rm.load_manifest(self.root))
+        self.assertIn("evilhost", err.getvalue())
+        self.assertIn("run-manifest.json", err.getvalue())
+
+    def test_a_known_host_in_a_stored_manifest_is_loaded_silently(self):
+        rm.write_manifest(self.root, rm.build_manifest(
+            target=self.root, review_root=self.root, host="claude",
+            security_mode="standard"))
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            loaded = rm.load_manifest(self.root)
+        self.assertEqual("claude", loaded["host"])
+        self.assertEqual("", err.getvalue())
+
+    def test_build_manifest_refuses_an_unknown_host(self):
+        # The WRITE path: a new run's host comes from CLI args, so raising here
+        # is reachable only by a programming error -- unlike run_tag, which
+        # reads whatever is already on disk.
+        with self.assertRaises(ValueError):
+            rm.build_manifest(target=".", review_root=self.root,
+                              host="evilhost", security_mode="standard")
 
 
 if __name__ == "__main__":

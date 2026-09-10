@@ -12,6 +12,7 @@ import json
 import os
 import subprocess
 import re
+import sys
 import uuid
 
 from scripts import hosts
@@ -49,11 +50,20 @@ def run_tag(manifest):
 
     Derived entirely from the write-once manifest, so it is byte-identical across
     every resume of the same run (the per-run folder never moves mid-run). Returns
-    None for a falsy/None manifest so callers fall back to the flat top-level."""
+    None for a falsy/None manifest so callers fall back to the flat top-level.
+
+    PURE SLUGGING -- this never raises, and must not. `phases/runio._run_tag`
+    calls it on EVERY artifact path resolution (`_pano`, `_report_out`,
+    `_ensure_run_symlinks`), including `driver._clear_run_artifacts`, which is
+    the --reset RECOVERY path. A host check here turned a poisoned
+    `run-manifest.json` on disk into an uncaught ValueError in the middle of
+    path computation that --reset could not clear. The registry check lives on
+    the two paths that can act on the answer instead: `build_manifest` (the
+    write path, where the host comes from CLI args) and `load_manifest` (the
+    read path, which discards an unusable manifest exactly like a corrupt one).
+    """
     if not manifest:
         return None
-    if manifest.get("host") is not None:
-        validate_host(manifest["host"])
     host = _slug(manifest.get("host"), "host")
     mode = _slug(manifest.get("security_mode"), "standard")
     scope = _slug((manifest.get("scope") or {}).get("mode"), "repo")
@@ -107,6 +117,10 @@ def _target_provenance(target, runner=subprocess.run):
 def build_manifest(*, target, review_root, host, security_mode, base=None,
                    flags=None, run_id=None, worktree=None, scope=None, pr=None,
                    pr_base=None, created=None):
+    # The WRITE path: this host came from CLI args, so a host the registry does
+    # not know is a programming error and raising is both correct and the only
+    # place it is reachable from (#1344).
+    validate_host(host)
     flags = flags or {}
     _commit, _dirty = _target_provenance(os.path.abspath(target))
     return {
@@ -150,13 +164,32 @@ def write_manifest(review_root, manifest):
 
 
 def load_manifest(review_root):
-    """Return the manifest dict, or None if absent/unparseable."""
+    """Return the manifest dict, or None if absent/unparseable/unusable.
+
+    A host the registry does not know makes the manifest UNUSABLE, which is
+    what "corrupt" already means here: every posture decision downstream reads
+    that key, so resuming on it would produce an unenforced run under a
+    plausible-looking directory name. An ABSENT host key is a different thing
+    and is left alone: every consumer reads it as `get("host", "claude")`, so a
+    manifest written before the key existed still resolves -- unknown is not
+    absent. Returning None puts it on the path the
+    driver already has for a corrupt manifest -- clear the derived artifacts
+    and rebuild from the real CLI args -- instead of raising from a path
+    helper (#1344). Announced on stderr, never silently.
+    """
     try:
         with open(manifest_path(review_root), encoding="utf-8") as fh:
             data = json.load(fh)
     except (OSError, ValueError):
         return None
-    return data if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        return None
+    if data.get("host") is not None and hosts.spec(data["host"]) is None:
+        print("driver: discarding run-manifest.json naming unknown host %r "
+              "(known: %s)" % (data.get("host"), "|".join(hosts.known_hosts())),
+              file=sys.stderr, flush=True)
+        return None
+    return data
 
 
 def conflicting_flags(manifest, *, host=None, security_mode=None, base=None,
