@@ -348,6 +348,47 @@ class TestDockerBuildPrWorkflow(unittest.TestCase):
         self.assertIn(".github/workflows/docker-build-pr.yml", paths)
         self.assertIn("skill/scripts/**", paths)
 
+    def test_tools_build_reads_the_main_branch_layer_cache(self):
+        # #1421: this workflow fires on skill/scripts/**, so most PRs pay for it,
+        # and a plain `docker build` has no layer cache -- each qualifying PR was
+        # a cold full build compiling cargo-audit from source. It now reads the
+        # gha cache docker-publish.yml writes on main.
+        build = next((s for s in self.wf["jobs"]["build"]["steps"]
+                      if s.get("name") == "Build Dockerfile"), None)
+        self.assertIsNotNone(build, "no 'Build Dockerfile' step")
+        self.assertIn("docker/build-push-action", build.get("uses", ""),
+                      "the tools build is not a cache-aware buildx build")
+        self.assertIn("type=gha", build["with"]["cache-from"])
+        # The scope must be the one docker-publish.yml writes for THIS runner's
+        # architecture, or the cache is real but always empty.
+        self.assertIn("scope=linux-amd64", build["with"]["cache-from"])
+
+    def test_buildx_is_set_up_before_the_cached_build(self):
+        names = [s.get("name") for s in self.wf["jobs"]["build"]["steps"]]
+        self.assertIn("Set up Buildx", names)
+        self.assertLess(names.index("Set up Buildx"),
+                        names.index("Build Dockerfile"))
+
+    def test_the_tools_image_is_loaded_for_the_fixtures_build(self):
+        # Dockerfile.fixtures is `FROM panopticon-tools:latest`. buildx does NOT
+        # export to the docker daemon by default, so dropping `load` would leave
+        # the tools build green and the fixtures build failing on a base image
+        # that is only in the build cache.
+        build = next(s for s in self.wf["jobs"]["build"]["steps"]
+                     if s.get("name") == "Build Dockerfile")
+        self.assertTrue(build["with"].get("load"), "tools image is not loaded")
+        self.assertIn("panopticon-tools:latest", str(build["with"]["tags"]))
+
+    def test_the_pr_build_writes_no_layer_cache(self):
+        # Deliberate, and worth a test because "add cache-to as well" is the
+        # obvious-looking follow-up: a mode=max export of this image is several
+        # GB against a 10GB repo-wide quota, so writing one per PR would evict
+        # the main-branch caches these builds read.
+        for step in self.wf["jobs"]["build"]["steps"]:
+            self.assertNotIn("cache-to", step.get("with") or {},
+                             "a PR build exporting a layer cache will evict the "
+                             "main-branch cache it depends on")
+
     def test_dockerfile_fixtures_is_trigger_and_built(self):
         on = self.wf.get(True, {})
         paths = on.get("pull_request", {}).get("paths", [])
