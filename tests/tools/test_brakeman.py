@@ -7,7 +7,7 @@ import shutil
 import unittest
 from unittest import mock
 
-from _test_helpers import FakePopen, first
+from _test_helpers import FakePopen, first, only
 import scripts.tools.brakeman as br
 from tests.tools.conftest import FIXTURE_ROOT
 
@@ -26,6 +26,69 @@ BRAKEMAN_SAMPLE = json.dumps({
         }
     ]
 }).encode()
+
+
+def _warning(**over):
+    w = {"warning_type": "SQL Injection", "message": "m",
+         "file": "app/x.rb", "line": 1, "confidence": "High"}
+    w.update(over)
+    return json.dumps({"warnings": [w]}).encode()
+
+
+class TestCweComesFromTheTool(unittest.TestCase):
+    """Brakeman reports `cwe_id` on every warning it raises. The adapter kept a
+    hand-written warning_type -> CWE map instead, which had to be extended by
+    hand twice already (once for railsgoat, once for solidus -- both recorded in
+    the map's own comments) and STILL went stale: brakeman 8.0.6 on railsgoat
+    emits `Unmaintained Dependency` (cwe 1104), which the map does not know, so
+    those findings reached synthesis uncitable.
+
+    Worse than incomplete, it disagrees. On the four types where both have an
+    opinion, brakeman's is the more precise one for what it actually detects:
+    Command Injection 77 not 78, Remote Code Execution 502 not 94, Session
+    Setting 1004 not 614, Dangerous Send 77 not 470.
+    """
+
+    def setUp(self):
+        self.adapter = br.BrakemanAdapter()
+
+    def _cwe(self, raw):
+        return only(self.adapter.parse(raw, "g1"))["citations"]["cwe"]
+
+    def test_a_warning_type_the_map_never_heard_of_is_still_cited(self):
+        # The live failure: railsgoat + brakeman 8.0.6.
+        self.assertEqual(
+            ["CWE-1104"],
+            self._cwe(_warning(warning_type="Unmaintained Dependency",
+                               cwe_id=[1104])))
+
+    def test_the_tools_own_cwe_outranks_the_static_map(self):
+        self.assertEqual(
+            ["CWE-77"],
+            self._cwe(_warning(warning_type="Command Injection", cwe_id=[77])))
+
+    def test_every_reported_cwe_is_cited_not_just_the_first(self):
+        self.assertEqual(["CWE-22", "CWE-73"],
+                         self._cwe(_warning(cwe_id=[22, 73])))
+
+    def test_a_scalar_cwe_id_is_accepted(self):
+        # Defensive: the field is a list today, but a scalar must not become
+        # "CWE-8, CWE-9" by iterating a string's characters (cf. COD-D3C).
+        self.assertEqual(["CWE-89"], self._cwe(_warning(cwe_id=89)))
+
+    def test_the_map_still_covers_a_warning_carrying_no_cwe_id(self):
+        # Older brakeman, and every hand-built fixture in this file.
+        self.assertEqual(["CWE-89"], self._cwe(_warning()))
+
+    def test_an_unmapped_type_with_no_cwe_id_cites_nothing_and_says_so(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            f = only(self.adapter.parse(
+                _warning(warning_type="Brand New Check"), "g1"))
+        # An empty citations block is OMITTED, not emitted empty -- the same
+        # contract #1522 settled for location. Assert the absence, not a [].
+        self.assertFalse((f.get("citations") or {}).get("cwe"))
+        self.assertIn("unmapped warning_type", err.getvalue())
 
 
 class TestBrakemanAdapter(unittest.TestCase):
