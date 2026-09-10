@@ -40,8 +40,10 @@ PROVEN, REFUTED, UNKNOWN = "proven", "refuted", "unknown"
 STATES = (PROVEN, REFUTED, UNKNOWN)
 
 # --- registration directories ---------------------------------------------
-# Moved here from dispatch.py so the table is the single source; dispatch.py
-# re-exports them for its existing importers.
+# Defined here and nowhere else. dispatch.py briefly re-exported them; nothing
+# ever imported the copies, and a second name for a fact this table owns is
+# exactly what #1344 removes. Consumers read the row instead:
+# `spec(host).registration_dir`.
 CLAUDE_AGENTS_DIR = os.path.join(os.path.expanduser("~"), ".claude", "agents")
 KIMI_AGENTS_DIR = os.path.join(os.path.expanduser("~"), ".kimi-code", "agents")
 CODEX_HOME = os.path.expanduser(os.environ.get("CODEX_HOME", "~/.codex"))
