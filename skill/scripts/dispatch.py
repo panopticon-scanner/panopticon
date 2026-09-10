@@ -439,9 +439,8 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     if args.emit_host_agents:
-        defaults = {"claude": CLAUDE_AGENTS_DIR, "kimi": KIMI_AGENTS_DIR,
-                "codex": CODEX_AGENTS_DIR}
-        out_dir = args.out or defaults[args.emit_host_agents]
+        out_dir = (args.out
+                   or _registration_dir(args.emit_host_agents, args.agents_dir))
         try:
             written = emit_host_agents(args.emit_host_agents, out_dir)
         except ValueError as e:
