@@ -85,6 +85,113 @@ def _workflow_files():
         if n.endswith((".yml", ".yaml")))
 
 
+# --- #1529: fetch-and-exec inside a `run:` step -------------------------------
+# A workflow can reach outside the supply chain the pin rule above governs, by
+# curling a binary and running it. The Dockerfile was hardened for exactly this
+# (10 artifact fetches, all `sha256sum -c`'d) and `tests/test_dockerfile.py`
+# guards it; nothing guarded the workflows, where the same act is written in
+# shell instead of Dockerfile syntax.
+_FETCH_TO_FILE = re.compile(r"\b(?:curl|wget)\b[^|;&\n]*?\s-[oO]\s+(\S+)")
+_VERIFIES = re.compile(r"\b(?:sha256sum|shasum)\b[^\n]*\s-c\b")
+_INTERPRETERS = ("python3", "python", "bash", "dash", "perl", "ruby", "node",
+                 "zsh", "ksh", "sh")
+
+
+def _join_continuations(script):
+    return re.sub(r"\\\n\s*", " ", script)
+
+
+def fetch_exec_defect(script):
+    """Why this `run:` script fetches and executes without verifying, or None.
+
+    Scoped to the shape that actually occurs: a fetch landing in a file which
+    the same script then makes executable or hands to an interpreter. A fetch
+    that is only read (a key piped to `gpg`, a tarball unpacked) is a different
+    act and is not this rule's business.
+    """
+    joined = _join_continuations(script)
+    fetched = set(_FETCH_TO_FILE.findall(joined))
+    if not fetched:
+        return None
+    executed = {}
+    for path in fetched:
+        m = (re.search(r"chmod\s+\+x\s+%s\b" % re.escape(path), joined)
+             or re.search(r"\b(?:%s)\s+%s\b"
+                          % ("|".join(_INTERPRETERS), re.escape(path)), joined))
+        if m:
+            executed[path] = m.start()
+    if not executed:
+        return None
+    verify = _VERIFIES.search(joined)
+    if not verify:
+        return ("fetches and executes %s with nothing verifying what arrived"
+                % ", ".join(sorted(executed)))
+    # Ordering is the substance: a checksum that runs after the bytes are made
+    # runnable is theatre. Nothing unverified may become executable.
+    late = sorted(p for p, at in executed.items() if at < verify.start())
+    if late:
+        return ("verifies %s only AFTER making it executable"
+                % ", ".join(late))
+    return None
+
+
+class TestFetchExecRule(unittest.TestCase):
+    """Both answers, on the real script this rule was written for."""
+
+    HADOLINT = ("curl -sfL --connect-timeout 5 --max-time 60 --retry 3 \\\n"
+                "  -o /tmp/hadolint \\\n"
+                "  https://example.test/hadolint-Linux-x86_64\n"
+                "chmod +x /tmp/hadolint\n"
+                "sudo mv /tmp/hadolint /usr/local/bin/hadolint\n")
+
+    def test_the_unverified_fetch_and_exec_is_a_defect(self):
+        self.assertIn("/tmp/hadolint", fetch_exec_defect(self.HADOLINT))
+
+    def test_a_checksum_clears_it(self):
+        verified = self.HADOLINT.replace(
+            "chmod +x", 'echo "$SHA  /tmp/hadolint" | sha256sum -c -\nchmod +x')
+        self.assertIsNone(fetch_exec_defect(verified))
+
+    def test_a_checksum_after_the_chmod_is_still_a_defect(self):
+        late = self.HADOLINT.replace(
+            "sudo mv", 'echo "$SHA  /tmp/hadolint" | sha256sum -c -\nsudo mv')
+        self.assertIn("only AFTER", fetch_exec_defect(late))
+
+    def test_an_interpreter_invocation_counts_as_executing(self):
+        script = ("curl -sfL https://example.test/i.py -o /tmp/i.py\n"
+                  "python3 /tmp/i.py\n")
+        self.assertIn("/tmp/i.py", fetch_exec_defect(script))
+
+    def test_a_fetch_that_is_never_executed_is_left_alone(self):
+        script = ("curl -sfL https://example.test/data.json -o /tmp/d.json\n"
+                  "jq . /tmp/d.json\n")
+        self.assertIsNone(fetch_exec_defect(script))
+
+    def test_a_script_with_no_fetch_is_left_alone(self):
+        self.assertIsNone(fetch_exec_defect("make test\nchmod +x ./run.sh\n"))
+
+
+class TestNoWorkflowFetchesAndExecutesUnverified(unittest.TestCase):
+    def test_every_run_step_verifies_what_it_executes(self):
+        defects = []
+        for path in _workflow_files():
+            with open(path, encoding="utf-8") as fh:
+                doc = yaml.safe_load(fh.read()) or {}
+            for job in (doc.get("jobs") or {}).values():
+                if not isinstance(job, dict):
+                    continue
+                for step in job.get("steps") or []:
+                    if not isinstance(step, dict) or not step.get("run"):
+                        continue
+                    why = fetch_exec_defect(step["run"])
+                    if why:
+                        defects.append("%s / %s -- %s" % (
+                            os.path.basename(path),
+                            step.get("name") or "<unnamed step>", why))
+        self.assertEqual([], defects, "unverified fetch-and-exec:\n" +
+                         "\n".join(defects))
+
+
 class TestPinDefectRule(unittest.TestCase):
     """The rule itself, exercised on both answers. A guard that only ever runs
     over a clean tree cannot fail, so it proves nothing until something proves

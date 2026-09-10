@@ -19,6 +19,18 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Lint Dockerfile
+        env:
+          # #1529: this binary is fetched and then EXECUTED, so what arrives has
+          # to be verified -- the Dockerfile's ten artifact fetches are all
+          # `sha256sum -c`'d and this step was the last one that was not.
+          #
+          # The digest was read from upstream's own hadolint-Linux-x86_64.sha256
+          # AND recomputed from the downloaded artifact, which is the rule
+          # scripts/bump_pins.py states for the Dockerfile's pins: never guess a
+          # checksum. bump_pins itself is rustup-shaped today and does not cover
+          # this file; bumping the version here means re-reading both.
+          HADOLINT_VERSION: "2.12.0"
+          HADOLINT_SHA256: 56de6d5e5ec427e17b74fa48d51271c7fc0d61244bf5c90e828aab8362d55010
         run: |
           # #run10 OPS-A1A: bound + fail-fast this fetch. It was the last
           # unbounded external download in the repo -- every curl in the
@@ -29,7 +41,11 @@ jobs:
           # writing an error page to /tmp/hadolint and exec'ing it.
           curl -sfL --connect-timeout 5 --max-time 60 --retry 3 \
             -o /tmp/hadolint \
-            https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64
+            "https://github.com/hadolint/hadolint/releases/download/v${HADOLINT_VERSION}/hadolint-Linux-x86_64"
+          # Before chmod, not after: the point is that nothing unverified is
+          # ever made runnable. Runners default to `bash -e -o pipefail`, so a
+          # mismatch fails the job here.
+          echo "${HADOLINT_SHA256}  /tmp/hadolint" | sha256sum -c -
           chmod +x /tmp/hadolint
           sudo mv /tmp/hadolint /usr/local/bin/hadolint
           hadolint Dockerfile
