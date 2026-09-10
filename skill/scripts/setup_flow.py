@@ -17,6 +17,7 @@ import plan_contract  # noqa: E402
 import discovery  # noqa: E402  (P6.5 Slice A: discovery primitives, moved off orchestrator)
 import grouping_engine  # noqa: E402  (5.2: stage-3 size policy + setup report)
 import coverage_model  # noqa: E402  (5.2: the surfaces enum for the brief)
+from scripts import hosts  # noqa: E402  (#1344 F2: host readiness reads the registry)
 
 
 # #1135: the committable block ignores run artifacts under .panopticon/ while
@@ -268,42 +269,67 @@ def _check_nvd_key(repo, env):
 
 
 def _check_host_shells(host, runner):
+    """Report what this host's registration actually looks like.
+
+    Rebuilt on the registry (#1344 F2). Previously this function asserted
+    ("enforced-shells", True, "codex_exec enforces read-only execution") for
+    codex -- an execution path that had been removed, for a host --host does
+    not accept -- and sent gemini into the shell-registration branch, whose
+    remedy line told the operator to run `--emit-host-agents gemini`, which
+    raises. Neither is expressible now: a host either declares a shell format
+    and gets checked, or declares none and says so.
+
+    `ok=None` means NOT APPLICABLE, not "failed". setup's renderer already
+    distinguishes the three.
+    """
     import dispatch  # noqa: E402
     resolved_host = host or dispatch._detect_host()
+    row = hosts.spec(resolved_host)
     checks = []
+
+    if row is None:
+        checks.append(("enforced-shells", False,
+                       "unknown host %r -- known hosts are %s"
+                       % (resolved_host, "|".join(hosts.known_hosts()))))
+        return checks
+
+    # The one check the old codex branch actually performed, kept. F3 moves
+    # this to a registry `probes` field; until then it is a named exception
+    # with a reason, not a stray host test. `codex` is reachable here even
+    # though `--host codex` is refused, because `_detect_host()` can return it
+    # from a live Codex session.
     if resolved_host == "codex":
         codex = _probe(runner, ["codex", "--version"])
         codex_ok = getattr(codex, "returncode", 1) == 0
         checks.append(("codex-cli", codex_ok,
                        "ok" if codex_ok else
-                       "Codex CLI unavailable -- install/authenticate `codex`; "
-                       "role TOML profiles are optional for codex_exec"))
-        checks.append(("enforced-shells", True,
-                       "codex_exec enforces read-only execution; role TOML profiles optional"))
-    elif resolved_host == "generic":
+                       "Codex CLI unavailable -- install/authenticate `codex`"))
+
+    if not row.shell_format:
         checks.append(("enforced-shells", None,
-                       "generic host runs reviewers unenforced (prompt-advisory "
-                       "tool policy); no shell registration to verify"))
-    else:
-        reg_dir = dispatch._registration_dir(resolved_host, None)
-        _driver_roles = ("scout", "domain_panel", "domain_advisor")
-        # #run7 ARC-A4C: this is a hand-maintained shadow of the ACTIVE driver
-        # roles. If a role is renamed/removed in dispatch.ROLE_FILES, the filter
-        # below would silently drop its shell from the readiness check. Trip
-        # loudly instead so the drift is caught at the source.
-        _unknown_roles = [r for r in _driver_roles if r not in dispatch.ROLE_FILES]
-        if _unknown_roles:
-            raise RuntimeError(
-                "setup_flow._driver_roles out of sync with dispatch.ROLE_FILES: %s"
-                % ", ".join(_unknown_roles))
-        missing_shells = [role for role, rf in sorted(dispatch.ROLE_FILES.items())
-                          if role in _driver_roles
-                          and not dispatch._is_registered(reg_dir, rf, resolved_host)]
-        checks.append(("enforced-shells", not missing_shells,
-                       "ok" if not missing_shells else
-                       "unregistered reviewer shell(s): %s -- run python3 "
-                       "skill/scripts/dispatch.py --emit-host-agents <host> and "
-                       "start a fresh session" % ", ".join(missing_shells)))
+                       "%s registers no enforcement shells; reviewers run "
+                       "with a prompt-advisory tool policy" % resolved_host))
+        return checks
+
+    reg_dir = dispatch._registration_dir(resolved_host, None)
+    _driver_roles = ("scout", "domain_panel", "domain_advisor")
+    # #run7 ARC-A4C: a hand-maintained shadow of the ACTIVE driver roles. If a
+    # role is renamed/removed in dispatch.ROLE_FILES the filter below would
+    # silently drop its shell from the readiness check. Trip loudly instead.
+    _unknown_roles = [r for r in _driver_roles if r not in dispatch.ROLE_FILES]
+    if _unknown_roles:
+        raise RuntimeError(
+            "setup_flow._driver_roles out of sync with dispatch.ROLE_FILES: %s"
+            % ", ".join(_unknown_roles))
+    missing_shells = [role for role, rf in sorted(dispatch.ROLE_FILES.items())
+                      if role in _driver_roles
+                      and not dispatch._is_registered(reg_dir, rf, resolved_host)]
+    checks.append(("enforced-shells", not missing_shells,
+                   "ok" if not missing_shells else
+                   "unregistered reviewer shell(s): %s -- run python3 "
+                   "skill/scripts/dispatch.py --emit-host-agents %s and start "
+                   "a fresh session"
+                   % (", ".join(missing_shells), resolved_host)))
     return checks
 
 
