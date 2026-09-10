@@ -33,6 +33,14 @@ def _collect_host_usage(review_root, manifest):
     absent number stays absent -- this must never be able to fail a run, and
     must never invent a figure.
     """
+    # NO "claude" default, deliberately -- unlike the six other posture sites,
+    # which read `manifest.get("host", "claude")`. A manifest with no host key
+    # is one this driver did not write, and collecting a token ledger off the
+    # local Claude transcripts for a run whose host is unstated would invent a
+    # figure rather than report one. Add the default and such a run silently
+    # starts billing itself against transcripts that may not be its own;
+    # test_a_host_less_manifest_does_not_collect_usage pins the absence,
+    # because the suite alone will not.
     if not hosts.declares(manifest.get("host"), hosts.USAGE_LEDGER):
         return None          # other hosts write their own usage.json, or none
     if os.path.isfile(runio._pano(review_root, "usage.json")):
