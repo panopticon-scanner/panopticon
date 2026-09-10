@@ -14,6 +14,7 @@ integration test cannot quietly reintroduce a silent skip.
 """
 import os
 import re
+import tempfile
 import unittest
 from unittest import mock
 
@@ -28,7 +29,10 @@ TOOLS_TESTS = os.path.join(REPO_ROOT, "tests", "tools")
 # so the exemption travels with the code instead of living in a list here that
 # drifts from it.
 _EXEMPT = "strict-skip-exempt:"
-_SKIP_CALL = re.compile(r"\.skipTest\(")
+# Both spellings. `raise unittest.SkipTest(...)` is exactly as invisible as
+# `self.skipTest(...)`, and matching only the latter let two live sites through
+# (found by the #1528 in-image run, not by this guard).
+_SKIP_CALL = re.compile(r"\.skipTest\(|\bSkipTest\(")
 
 
 class TestRequireIntegrationFlag(unittest.TestCase):
@@ -85,6 +89,53 @@ class TestAssertAdapterFindsHonoursTheFlag(unittest.TestCase):
         with mock.patch.object(helpers, "require_integration", return_value=False):
             with self.assertRaises(unittest.SkipTest):
                 helpers.assert_adapter_finds(self, "brakeman", "no-such-fixture")
+
+
+class TestFixtureResolution(unittest.TestCase):
+    """#1528: FIXTURE_ROOT is the IMAGE's corpus, not the repo's.
+
+    Measured in strict mode inside the fixtures image: four tests failed on
+    fixtures that were present in the checkout mounted at /work the whole time.
+    Only fixtures needing a build step (vulnerable-rust) or an external clone
+    (the goats) are copied into the image; the static ones are read from the
+    mount, so resolution has to look in both places.
+    """
+
+    # Vendored in the repo and deliberately NOT copied into the image.
+    REPO_ONLY = ("insecure-js", "vulnerable-node", "vulnerable-python")
+
+    def test_the_repo_vendored_fixtures_are_still_there(self):
+        # Guards the guard: if these were renamed, the resolution tests below
+        # would pass over nothing.
+        for name in self.REPO_ONLY:
+            self.assertTrue(
+                os.path.isdir(os.path.join(helpers.REPO_FIXTURES, name)),
+                "%s is gone from tests/fixtures/" % name)
+
+    def test_they_resolve_when_fixture_root_is_the_image(self):
+        image_root = os.path.join(tempfile.gettempdir(), "no-such-image-root")
+        with mock.patch.object(helpers, "_FIXTURE_ROOTS",
+                               (image_root, helpers.REPO_FIXTURES)):
+            for name in self.REPO_ONLY:
+                with self.subTest(fixture=name):
+                    self.assertEqual(
+                        helpers.fixture_path(name),
+                        os.path.join(helpers.REPO_FIXTURES, name))
+
+    def test_the_image_copy_wins_where_both_carry_it(self):
+        # vulnerable-rust lives in both, and only the image's has been built --
+        # cargo-audit needs the lockfile's dependency graph, not bare source.
+        with tempfile.TemporaryDirectory() as image_root, \
+                tempfile.TemporaryDirectory() as repo_root:
+            for root in (image_root, repo_root):
+                os.mkdir(os.path.join(root, "vulnerable-rust"))
+            with mock.patch.object(helpers, "_FIXTURE_ROOTS",
+                                   (image_root, repo_root)):
+                self.assertEqual(helpers.fixture_path("vulnerable-rust"),
+                                 os.path.join(image_root, "vulnerable-rust"))
+
+    def test_an_absent_fixture_resolves_to_nothing(self):
+        self.assertIsNone(helpers.fixture_path("no-such-fixture"))
 
 
 class TestNoSilentSkipsRemain(unittest.TestCase):
@@ -151,6 +202,14 @@ class TestThereIsSomewhereTheyAreRequiredToRun(unittest.TestCase):
         self.assertIn("FIXTURE_ROOT=/opt/panopticon-fixtures", run,
                       "without FIXTURE_ROOT the image-only fixtures are "
                       "invisible and strict mode fails on all of them")
+
+    def test_it_mounts_the_checkout(self):
+        # Not just for the test code: insecure-js, vulnerable-node and
+        # vulnerable-python are read from the mounted repo rather than copied
+        # into the image, so without the mount they resolve nowhere.
+        run = self.run_step["run"]
+        self.assertIn('-v "$PWD:/work:ro"', run)
+        self.assertIn("-w /work", run)
 
     def test_it_runs_the_whole_tools_tree_not_an_integration_glob(self):
         # test_brakeman.py's railsgoat probe -- the one that caught the stale

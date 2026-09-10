@@ -1,7 +1,7 @@
 """Shared test helpers used across multiple test modules."""
 import os
 
-from conftest import FIXTURE_ROOT  # noqa: E402
+from conftest import FIXTURE_ROOT, REPO_ROOT  # noqa: E402
 
 
 # --- #1422: strict mode for the live-tool tests -----------------------------
@@ -119,6 +119,33 @@ def touch(root, rel, content=""):
         fh.write(content)
 
 
+# --- #1528: fixtures live in TWO places, and only one of them is the image ---
+# `FIXTURE_ROOT` is the fixtures image's own corpus: the three goat checkouts it
+# clones, plus `vulnerable-rust`, which is COPYed in solely because cargo-audit
+# needs a `cargo build` that a read-only mount cannot produce at runtime.
+#
+# The repo's other fixtures -- insecure-js, vulnerable-node, vulnerable-python --
+# are static files that need no build step, so they are NOT copied in; the image
+# runs with the repo mounted read-only at /work precisely so the harness uses the
+# checkout's own code. Resolving them through FIXTURE_ROOT alone made every
+# adapter that targets one fail in strict mode against a fixture sitting three
+# directories away (measured: eslint-security, trivy, and two of osv-scanner's
+# three ecosystems).
+#
+# Image first, so a built or cloned copy always wins over the raw source.
+REPO_FIXTURES = os.path.join(REPO_ROOT, "tests", "fixtures")
+_FIXTURE_ROOTS = (FIXTURE_ROOT, REPO_FIXTURES)
+
+
+def fixture_path(name):
+    """The fixture's directory, or None when neither root carries it."""
+    for root in _FIXTURE_ROOTS:
+        candidate = os.path.join(root, name)
+        if os.path.isdir(candidate):
+            return candidate
+    return None
+
+
 def assert_adapter_finds(test_case, adapter_name, target_name, group="g1",
                          ok_codes=(0, 1)):
     """Run an adapter against a fixture and assert it produces findings.
@@ -130,23 +157,43 @@ def assert_adapter_finds(test_case, adapter_name, target_name, group="g1",
     a tool crash is always a real failure, not a skip that would leave coverage
     silently empty (#583).
     """
-    from scripts.tools import ADAPTERS
-
-    target = os.path.join(FIXTURE_ROOT, target_name)
-    adapter = ADAPTERS[adapter_name]
-    if not os.path.isdir(target):
+    target = fixture_path(target_name)
+    if target is None:
         skip_or_fail(
             test_case,
-            f"{target_name} fixture not vendored (run inside the fixtures image)"
+            "%s fixture in neither %s nor %s (run inside the fixtures image)"
+            % ((target_name,) + _FIXTURE_ROOTS)
         )
+    return assert_adapter_finds_at(test_case, adapter_name, target,
+                                   group=group, ok_codes=ok_codes,
+                                   label=target_name)
+
+
+def assert_adapter_finds_at(test_case, adapter_name, target, group="g1",
+                            ok_codes=(0, 1), label=None):
+    """The same assertions against an ARBITRARY directory.
+
+    Split out for the adapters whose target is generated rather than vendored
+    (#1528). Three of the nine need that -- a secret for gitleaks, a Go module
+    for gosec, insecure Python for bandit -- and generating them means no
+    credential-shaped string is ever committed to a public repo, which after the
+    NVD_API_KEY incident is worth more than the convenience of a fixture dir.
+    semgrep needs it for a different reason: its default ignore list drops
+    `tests/` and `test/` RELATIVE TO THE PROJECT ROOT, so a fixture committed
+    under `tests/fixtures/` is invisible to it however it is reached.
+    """
+    from scripts.tools import ADAPTERS
+
+    label = label or os.path.basename(target.rstrip(os.sep))
+    adapter = ADAPTERS[adapter_name]
     test_case.assertTrue(
         adapter.is_applicable(target),
-        f"{adapter_name} should apply to the {target_name} project",
+        f"{adapter_name} should apply to the {label} project",
     )
     raw, rc = adapter.invoke(target)
     test_case.assertIn(
-        rc, ok_codes, f"{adapter_name} errored (rc {rc}) on {target_name}"
+        rc, ok_codes, f"{adapter_name} errored (rc {rc}) on {label}"
     )
     findings = adapter.parse(raw, group)
-    test_case.assertTrue(findings, f"expected {adapter_name} findings against {target_name}")
+    test_case.assertTrue(findings, f"expected {adapter_name} findings against {label}")
     return findings
