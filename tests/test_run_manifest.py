@@ -4,6 +4,7 @@ import unittest
 from unittest import mock
 
 import scripts.run_manifest as rm
+from scripts import hosts
 
 
 class TestRunManifest(unittest.TestCase):
@@ -159,6 +160,18 @@ class TestRunManifest(unittest.TestCase):
         # conflicting_flags key (only pr/scope/base gate drift).
         m = rm.build_manifest(**self._params(), pr_base="main")
         self.assertEqual(rm.conflicting_flags(m), [])
+
+
+class TestManifestRejectsAnUnknownHost(unittest.TestCase):
+    def test_a_host_the_registry_does_not_know_is_refused(self):
+        with self.assertRaises(ValueError) as caught:
+            rm.validate_host("no-such-host")
+        self.assertIn("no-such-host", str(caught.exception))
+
+    def test_every_driver_host_is_accepted(self):
+        for name in hosts.driver_hosts():
+            with self.subTest(host=name):
+                self.assertEqual(name, rm.validate_host(name))
 
 
 if __name__ == "__main__":

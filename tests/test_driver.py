@@ -29,6 +29,7 @@ import scripts.diff_map as diff_map
 import scripts.groups_schema as groups_schema
 import scripts.plan_contract as plan_contract
 import scripts.run_manifest as run_manifest
+from scripts import hosts
 
 from tools.git_repo import make_git_repo
 
@@ -1317,6 +1318,62 @@ class TestDriverHardening(unittest.TestCase):
                                      "app", "SEC", ["a.py"], cell, "claude", b,
                                      "primary")
         self.assertIn("CRITSENTINEL", entry["prompt"])
+
+
+class TestHostChoicesComeFromTheRegistry(unittest.TestCase):
+    # R3: parser._subparsers._group_actions[0] is unverified; walk parser._actions
+    # for the (single) action whose .choices is a dict -- that is the subparsers
+    # action -- then read each subcommand's --host action off of it.
+    def _host_choices(self):
+        """Every subcommand's --host choices, by subcommand name."""
+        parser = driver.build_parser()
+        found = {}
+        for action in parser._actions:
+            if not isinstance(getattr(action, "choices", None), dict):
+                continue                      # not the subparser action
+            for name, sub in action.choices.items():
+                for act in sub._actions:
+                    if act.dest == "host":
+                        found[name] = tuple(sorted(act.choices))
+        return found
+
+    def test_run_and_setup_offer_the_same_hosts(self):
+        found = self._host_choices()
+        self.assertIn("run", found)
+        self.assertIn("setup", found)
+        self.assertEqual(found["run"], found["setup"],
+                         "run and setup must not disagree about hosts")
+
+    def test_they_are_exactly_the_registry_selectable_hosts(self):
+        for name, choices in self._host_choices().items():
+            with self.subTest(subcommand=name):
+                self.assertEqual(tuple(sorted(hosts.driver_hosts())), choices)
+
+    def test_the_helper_actually_found_something(self):
+        # Guards the guard: an empty dict would pass the loop above over
+        # nothing.
+        self.assertGreaterEqual(len(self._host_choices()), 2)
+
+    def test_kimi_and_codex_are_still_not_selectable(self):
+        # Task 4 migrated five call sites from `host == "claude"` to
+        # `hosts.declares(host, hosts.TOOL_POLICY_ENFORCED)`. kimi and codex both
+        # CLAIM TOOL_POLICY_ENFORCED in the registry (they register shells and
+        # advertise the capability), so declares() already returns True for them
+        # -- it just never runs, because both are driver_selectable=False and
+        # `--host` refuses to name them.
+        #
+        # That gap is dead code only as long as this test holds. The instant
+        # either becomes driver-selectable, the five sites Task 4 migrated start
+        # granting them an ENFORCED run on the strength of an unverified claim --
+        # exactly the silent-unenforced-run bug this epic (#1344) exists to
+        # kill. F3 closes the gap for real by swapping declares() for a verified
+        # posture() check; until F3 lands, this test is the only thing standing
+        # between "flip driver_selectable=True" and that bug shipping by
+        # accident. It must fail loudly the day someone flips the flag without
+        # also doing F3's work.
+        for name in ("kimi", "codex"):
+            with self.subTest(host=name):
+                self.assertNotIn(name, hosts.driver_hosts())
 
 
 if __name__ == "__main__":

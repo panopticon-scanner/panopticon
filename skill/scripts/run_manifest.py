@@ -29,6 +29,20 @@ def _slug(value, default):
     return s or default
 
 
+def validate_host(host):
+    """Refuse a host the registry does not know.
+
+    The manifest's host key drives the per-run folder name and every posture
+    decision downstream; a typo that reaches this far would silently produce
+    an unenforced run under a plausible-looking directory (#1344).
+    """
+    from scripts import hosts
+    if hosts.spec(host) is None:
+        raise ValueError("unknown host %r (known: %s)"
+                         % (host, "|".join(hosts.known_hosts())))
+    return host
+
+
 def run_tag(manifest):
     """The stable per-run folder name: ``<host>-<mode>-<scope>-<yyyymmdd>-<runid8>``.
 
@@ -37,6 +51,8 @@ def run_tag(manifest):
     None for a falsy/None manifest so callers fall back to the flat top-level."""
     if not manifest:
         return None
+    if manifest.get("host") is not None:
+        validate_host(manifest["host"])
     host = _slug(manifest.get("host"), "host")
     mode = _slug(manifest.get("security_mode"), "standard")
     scope = _slug((manifest.get("scope") or {}).get("mode"), "repo")
