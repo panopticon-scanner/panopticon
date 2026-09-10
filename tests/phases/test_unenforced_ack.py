@@ -1,8 +1,10 @@
 """#1519 (AGT-B1A): the write-capable-on-unenforced-host gate.
 
-`enforced` is `host == "claude"`, because the write-guard is a Claude Code
-PreToolUse hook and `dispatch.emit_host_agents` can only build a scoped shell
-for claude/kimi/codex. On `--host generic|gemini` -- both first-class CLI
+The gate reads the host's ARTIFACT_WRITE_GUARD claim -- can its hook mediate a
+reviewer's Write? -- not TOOL_POLICY_ENFORCED and not a host name, because the
+write-guard is a Claude Code PreToolUse hook and a host can enforce a shell's
+tool list while mediating no Write at all. On `--host generic|gemini` -- both
+first-class CLI
 values -- a domain-panel/domain-advisor `Write` has NO mediation at all: no
 registered shell, no hook, only prompt prose. A write outside review_root is
 invisible to every integrity check, since validate's clean-tree diff is scoped
@@ -18,6 +20,7 @@ import tempfile
 import unittest
 
 import scripts.dispatch as dispatch
+from scripts import hosts
 import scripts.phases.requests as requests
 import scripts.phases.runio as runio
 import scripts.synth.integrity as integrity
@@ -129,6 +132,33 @@ class TestTheAckIsReadableBySynthesize(unittest.TestCase):
             ack = integrity.read_unenforced_ack(path)
             other = [dict(ENTRIES[0], group="Billing")]
             self.assertNotEqual(ack["plan_sha256"], integrity._plan_hash(other))
+
+
+class TestTheGateSaysWhatItActuallyTests(unittest.TestCase):
+    """The AST guard in test_host_posture_wiring.py deliberately cannot see
+    prose, so a docstring left describing the retired `host == "claude"` idiom
+    can never be caught mechanically. It is also the most misleading kind of
+    stale comment: it names a DIFFERENT capability from the one the gate reads,
+    so a reader concludes the wrong thing about what a passing gate proved."""
+
+    def test_the_docstring_describes_the_write_guard_not_a_host_name(self):
+        doc = requests.require_unenforced_ack.__doc__ or ""
+        self.assertNotIn('host == "claude"', doc)
+        # Names the capability the gate actually reads, and says it is not the
+        # tool-policy one -- the two were extensionally identical, so a reader
+        # cannot infer the difference from behaviour.
+        self.assertIn(hosts.ARTIFACT_WRITE_GUARD.upper(), doc)
+        self.assertIn(hosts.TOOL_POLICY_ENFORCED.upper(), doc)
+
+    def test_the_refusal_explains_write_mediation_not_tool_policy(self):
+        root = tempfile.mkdtemp()
+        os.makedirs(os.path.join(root, ".panopticon"), exist_ok=True)
+        with self.assertRaises(runio.DriverError) as caught:
+            requests.require_unenforced_ack(root, _manifest("generic"), ENTRIES)
+        message = str(caught.exception)
+        self.assertNotIn("tool policy", message)
+        self.assertIn("Write", message)
+        self.assertIn("--allow-unenforced", message)
 
 
 class TestWriteGuardDocstringIsNotStale(unittest.TestCase):
