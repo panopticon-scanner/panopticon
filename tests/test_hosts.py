@@ -116,13 +116,39 @@ class TestPostureFailsClosed(unittest.TestCase):
         self.assertEqual(hosts.PROVEN,
                          hosts.posture("claude", evidence)[hosts.TOOL_POLICY_ENFORCED])
 
-    def test_evidence_for_an_unclaimed_capability_is_refused(self):
+    def test_proven_evidence_for_an_unclaimed_capability_is_refused(self):
         # gemini claims nothing. Evidence asserting otherwise must not be
         # honoured -- the artifact is written by us, but a stale one from a
         # different host's run must not grant a capability.
         evidence = {hosts.TOOL_POLICY_ENFORCED: {"state": hosts.PROVEN}}
         self.assertEqual(hosts.UNKNOWN,
                          hosts.posture("gemini", evidence)[hosts.TOOL_POLICY_ENFORCED])
+
+    def test_refuted_evidence_survives_the_unclaimed_mask(self):
+        # I5. The mask above is written for the GRANTING direction, but it was
+        # applied symmetrically and so threw refutations away too. §7.3 makes
+        # `refuted` the STRONGER answer, and a refutation grants nothing, so
+        # letting it through is strictly non-permissive. Latent only because
+        # gemini and generic have empty project_scope_dirs; live the moment a
+        # family PR flips kimi or codex to driver_selectable -- and F5's
+        # entry-criterion test reads posture(), so a genuinely refuted host
+        # would read `unknown` and fail the bar for the wrong stated reason.
+        evidence = {hosts.TOOL_POLICY_ENFORCED: {"state": hosts.REFUTED}}
+        for host in ("gemini", "generic"):
+            with self.subTest(host=host):
+                self.assertFalse(hosts.declares(host, hosts.TOOL_POLICY_ENFORCED))
+                self.assertEqual(
+                    hosts.REFUTED,
+                    hosts.posture(host, evidence)[hosts.TOOL_POLICY_ENFORCED])
+
+    def test_refuted_survives_the_mask_for_a_host_the_registry_never_heard_of(self):
+        # The `not row` half of the same condition -- a different branch, and
+        # the one a stale artifact from a retired host name lands on.
+        evidence = {hosts.TOOL_POLICY_ENFORCED: {"state": hosts.REFUTED}}
+        self.assertIsNone(hosts.spec("no-such-host"))
+        self.assertEqual(
+            hosts.REFUTED,
+            hosts.posture("no-such-host", evidence)[hosts.TOOL_POLICY_ENFORCED])
 
     def test_an_unrecognised_state_is_unknown_not_trusted(self):
         evidence = {hosts.TOOL_POLICY_ENFORCED: {"state": "probably-fine"}}

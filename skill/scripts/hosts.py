@@ -151,8 +151,17 @@ def posture(host, evidence):
 
     * No evidence for a capability -> UNKNOWN. An absent artifact is not
       benign (A1's `_owes_a_snapshot`).
-    * Evidence for a capability the host does not CLAIM -> UNKNOWN. A stale
-      artifact from another host's run must not grant anything.
+    * PROVEN evidence for a capability the host does not CLAIM -> UNKNOWN. A
+      stale artifact from another host's run must not GRANT anything. REFUTED
+      passes the mask untouched (I5): the rule is written for the granting
+      direction but applied symmetrically it discarded refutations, and §7.3
+      makes refuted the STRONGER answer. A refutation grants nothing, so
+      letting it through is strictly non-permissive. It was latent only
+      because gemini and generic have empty `project_scope_dirs`; it goes
+      live the moment a family PR flips kimi or codex to driver_selectable,
+      and F5's entry-criterion test reads `posture()` -- so a genuinely
+      refuted host would have read `unknown` and failed the bar for the wrong
+      stated reason.
     * A state string this module does not recognise -> UNKNOWN. Never trust an
       unparseable value; that is how `noscan` became `empty` in #1335.
     * An unreadable SHAPE -> UNKNOWN. `evidence` that is not a mapping, or a
@@ -172,12 +181,18 @@ def posture(host, evidence):
     row = HOSTS.get(host)
     result = {}
     for capability in CAPABILITIES:
-        if not row or capability not in row.claims:
-            result[capability] = UNKNOWN
-            continue
         entry = evidence.get(capability)
         state = entry.get("state") if isinstance(entry, dict) else None
-        result[capability] = state if state in STATES else UNKNOWN
+        state = state if state in STATES else UNKNOWN
+        # The claim mask applies to GRANTS only -- see the REFUTED rule in the
+        # docstring. (The normalisation above runs first, but the two orders
+        # are equivalent: an unrecognised state becomes UNKNOWN either way,
+        # and a mutation check confirmed swapping them changes nothing. Said
+        # here because a comment claiming the order is load-bearing would be
+        # exactly the kind of false note this fix round is cleaning up.)
+        if state != REFUTED and (not row or capability not in row.claims):
+            state = UNKNOWN
+        result[capability] = state
     return result
 
 
