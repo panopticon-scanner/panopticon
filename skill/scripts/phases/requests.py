@@ -113,8 +113,9 @@ def _driver_plan_entries(review_root, manifest):
     plan_mod.derive_tool_policy_mode reports the run's real posture rather than
     defaulting to "advisory". No `files`/`role` -- this is a declaration of
     which out_files must exist, not a scope grant or a cost row."""
-    enforced = hosts.declares(manifest.get("host", "claude"),
-                              hosts.TOOL_POLICY_ENFORCED)
+    enforced = (hosts.posture(manifest.get("host", "claude"),
+                              runio.host_evidence(review_root))
+                [hosts.TOOL_POLICY_ENFORCED] == hosts.PROVEN)
     entries = []
     for group, _files in coverage._discovered_groups(review_root):
         for domain in coverage._effective_domains(review_root, group):
@@ -192,11 +193,17 @@ def require_unenforced_ack(review_root, manifest, entries):
 
     Returns the ack path when one was written, else None.
     """
-    if hosts.declares(manifest.get("host", "claude"), hosts.ARTIFACT_WRITE_GUARD):
+    if (hosts.posture(manifest.get("host", "claude"),
+                      runio.host_evidence(review_root))
+            [hosts.ARTIFACT_WRITE_GUARD] == hosts.PROVEN):
         return None                    # the hook mediates Write for this host
     if not entries:
         return None                    # no cells declared: no risk to accept
     if not (manifest.get("flags") or {}).get("allow_unenforced"):
+        # declares(), NOT posture(): this asks which hosts CLAIM the guard, to
+        # build the "or use one of: --host claude" hint. We have no evidence
+        # for a host we are not running, so posture() would answer unknown for
+        # all of them and the hint would go empty.
         guarded = [name for name in hosts.driver_hosts()
                    if hosts.declares(name, hosts.ARTIFACT_WRITE_GUARD)]
         raise runio.DriverError(

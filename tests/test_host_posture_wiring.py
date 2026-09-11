@@ -1,9 +1,28 @@
-"""#1344 F2: the seven sites that decide a run's posture read ONE source.
+"""#1344 F2/F3: the seven sites that decide a run's posture read ONE source.
 
-This file exists to be rewritten by F3. When probe evidence lands, every
-assertion here becomes an assertion about `posture()` instead of `declares()`,
-and the behavior change spec §7.1 describes shows up as edits to exactly this
-file. Keeping the sites uniform is what makes that swap mechanical.
+F2 pinned that source as `hosts.declares()` -- the bare claim -- and said
+this file would be rewritten once probe evidence landed. F3 (this file's
+current state) is that rewrite: the seven sites now read `hosts.posture()`,
+which is proof, not a claim, and every class below was updated to match:
+
+* `TestNoSiteTestsAHostName` is the one class F3 does not touch. No site
+  compares a host NAME either before or after; the guard stays green
+  unchanged, and if it ever fails it means this task added a name comparison
+  it should not have.
+* `TestTheAnswersAreUnchangedGivenProof` (renamed from `...AreUnchanged`) is
+  the direct consequence of F3's whole point: the seven sites' answers for
+  "claude" are unchanged ONLY when a probe has proven the capability, not
+  merely claimed it. A claude run with no evidence now answers the opposite
+  way -- that reversal is spec §7.1, and it is the bug this epic exists to
+  fix, not a regression. Keeping the old name after wiring it to prove-then-
+  match would have told a future reader the F1/F2 answers survived
+  unconditionally, which is no longer true.
+* `TestTheThreeCapabilitiesAreNotInterchangeable` survives F3 by adding one
+  fixture write (an all-PROVEN host-capabilities.json in `setUp`): its
+  synthetic single-capability probe hosts already made TOOL_POLICY_ENFORCED,
+  ARTIFACT_WRITE_GUARD and USAGE_LEDGER non-co-extensive by CLAIM, and
+  `posture()` requires the claim AND the evidence, so proving everything
+  leaves the claim doing all the same discriminating it always did.
 
 The guard below is AST-based, not text-based. Two text-based versions were
 tried and rejected in review: a raw regex scan flags requests.py's own
@@ -115,36 +134,74 @@ class TestNoSiteTestsAHostName(unittest.TestCase):
         self.assertEqual([], _host_name_comparisons(probe))
 
 
-class TestTheAnswersAreUnchanged(unittest.TestCase):
-    """F2 is a refactor. These pin the answers the seven sites gave before it."""
+class TestTheAnswersAreUnchangedGivenProof(unittest.TestCase):
+    """F2 pinned these four answers against `hosts.declares()` -- the bare
+    claim. F3 moved the seven sites to `hosts.posture()`, so the SAME four
+    answers now hold only when a probe has PROVEN the capability, not merely
+    when claude claims it; the final test below pins the other half, that
+    absent a probe the answer flips. Renamed from `TestTheAnswersAreUnchanged`,
+    which would otherwise assert unconditional parity that no longer exists --
+    exactly the lie spec section 7.1 exists to end."""
+
+    @staticmethod
+    def _proof(**states):
+        """A `posture()` evidence mapping proving exactly the given states."""
+        return {name: {"state": state, "by": "fixture", "detail": "fixture"}
+                for name, state in states.items()}
 
     def test_claude_enforces_and_nothing_else_the_driver_accepts_does(self):
-        self.assertTrue(hosts.declares("claude", hosts.TOOL_POLICY_ENFORCED))
+        proof = self._proof(**{hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN})
+        self.assertEqual(
+            hosts.PROVEN,
+            hosts.posture("claude", proof)[hosts.TOOL_POLICY_ENFORCED])
         for name in ("generic", "gemini"):
             with self.subTest(host=name):
-                self.assertFalse(
-                    hosts.declares(name, hosts.TOOL_POLICY_ENFORCED))
+                self.assertNotEqual(
+                    hosts.PROVEN,
+                    hosts.posture(name, proof)[hosts.TOOL_POLICY_ENFORCED])
 
     def test_only_claude_collects_usage(self):
-        self.assertTrue(hosts.declares("claude", hosts.USAGE_LEDGER))
+        proof = self._proof(**{hosts.USAGE_LEDGER: hosts.PROVEN})
+        self.assertEqual(
+            hosts.PROVEN, hosts.posture("claude", proof)[hosts.USAGE_LEDGER])
         for name in ("generic", "gemini"):
             with self.subTest(host=name):
-                self.assertFalse(hosts.declares(name, hosts.USAGE_LEDGER))
+                self.assertNotEqual(
+                    hosts.PROVEN, hosts.posture(name, proof)[hosts.USAGE_LEDGER])
 
     def test_an_absent_host_key_is_treated_as_claude(self):
         # requests.py reads `manifest.get("host", "claude")`. Preserve that
         # default exactly -- a manifest written before the key existed must
-        # keep resolving the same way.
-        self.assertTrue(
-            hosts.declares({}.get("host", "claude"), hosts.TOOL_POLICY_ENFORCED))
+        # keep resolving the same way, given proof.
+        proof = self._proof(**{hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN})
+        self.assertEqual(
+            hosts.PROVEN,
+            hosts.posture({}.get("host", "claude"), proof)[hosts.TOOL_POLICY_ENFORCED])
 
     def test_only_claude_has_a_write_guard(self):
         # requests.py:185 -- require_unenforced_ack returns early when the
-        # host's hook mediates Write. Same answer as before the migration.
-        self.assertTrue(hosts.declares("claude", hosts.ARTIFACT_WRITE_GUARD))
+        # host's hook mediates Write AND a probe has proven it. Same answer
+        # as before the migration, given proof.
+        proof = self._proof(**{hosts.ARTIFACT_WRITE_GUARD: hosts.PROVEN})
+        self.assertEqual(
+            hosts.PROVEN,
+            hosts.posture("claude", proof)[hosts.ARTIFACT_WRITE_GUARD])
         for name in ("generic", "gemini"):
             with self.subTest(host=name):
-                self.assertFalse(hosts.declares(name, hosts.ARTIFACT_WRITE_GUARD))
+                self.assertNotEqual(
+                    hosts.PROVEN,
+                    hosts.posture(name, proof)[hosts.ARTIFACT_WRITE_GUARD])
+
+    def test_claude_with_no_evidence_answers_the_opposite_way(self):
+        # Spec 7.1, the reason this class was renamed: absent a probe,
+        # "claude enforces" no longer holds for any of the three capabilities
+        # the sites above read. A class still called "...AreUnchanged" that
+        # only ever supplied proof would hide this from a future reader.
+        for capability in (hosts.TOOL_POLICY_ENFORCED, hosts.ARTIFACT_WRITE_GUARD,
+                           hosts.USAGE_LEDGER):
+            with self.subTest(capability=capability):
+                self.assertNotEqual(
+                    hosts.PROVEN, hosts.posture("claude", {})[capability])
 
 
 class TestTheThreeCapabilitiesAreNotInterchangeable(unittest.TestCase):
@@ -181,6 +238,26 @@ class TestTheThreeCapabilitiesAreNotInterchangeable(unittest.TestCase):
         self.root = os.path.realpath(self._t.name)
         os.makedirs(runio._pano(self.root))
         self.addCleanup(self._t.cleanup)
+        # #1344 F3: every site below now reads posture(), which requires
+        # PROVEN evidence as well as the claim. An all-proven artifact makes
+        # the probe hosts' single-capability CLAIMS keep doing all the
+        # discriminating -- the whole point of this class -- while evidence
+        # merely stops blocking it. No manifest is written in this class, so
+        # this lands at the flat top-level path, exactly where
+        # `runio.host_evidence` will look for it below too.
+        # #1344 F3: every site below now reads posture(), which requires
+        # PROVEN evidence as well as the claim. An all-proven artifact makes
+        # the probe hosts' single-capability CLAIMS keep doing all the
+        # discriminating -- the whole point of this class -- while evidence
+        # merely stops blocking it. No manifest is written in this class, so
+        # this lands at the flat top-level path, exactly where
+        # `runio.host_evidence` will look for it below too.
+        runio._write_json(
+            runio._pano(self.root, runio.HOST_CAPABILITIES),
+            {"schema_version": 1, "host": "probe", "probed_at": "2026-09-10T00:00:00Z",
+             "capabilities": {name: {"state": hosts.PROVEN, "by": "fixture",
+                                     "detail": "fixture"}
+                              for name in hosts.CAPABILITIES}})
         self.files = ["src/pay.py"]
         self.cell = [{"id": "F1", "code": "SEC-A1A", "severity": "HIGH",
                       "title": "t", "category": "SEC",

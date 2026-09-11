@@ -19,6 +19,7 @@ import os
 import tempfile
 import unittest
 
+from conftest import write_host_evidence
 import scripts.dispatch as dispatch
 from scripts import hosts
 import scripts.phases.requests as requests
@@ -57,6 +58,9 @@ class TestGate(unittest.TestCase):
 
     def test_claude_is_enforced_and_writes_no_ack(self):
         root = self._root()
+        # #1344 F3: the gate now reads posture(), which requires PROVEN
+        # evidence, not just claude's claim -- prove the write guard.
+        write_host_evidence(root, {hosts.ARTIFACT_WRITE_GUARD: hosts.PROVEN})
         self.assertIsNone(
             requests.require_unenforced_ack(root, _manifest("claude"), ENTRIES))
         self.assertFalse(os.path.exists(
@@ -70,6 +74,12 @@ class TestGate(unittest.TestCase):
         self.assertIn("generic", message)
         self.assertIn("--allow-unenforced", message)
         self.assertIn("Write", message)
+        # #1344 F3: the "or use one of: --host claude" hint is built from
+        # hosts.declares() (a CLAIM), deliberately not posture() -- there is
+        # no evidence in `root` for a host this run is not even running, so a
+        # posture()-based hint would come back empty. No evidence is written
+        # here, so this fails if requests.py:201 is ever swapped to posture().
+        self.assertIn("--host claude", message)
 
     def test_gemini_without_the_flag_refuses_too(self):
         root = self._root()

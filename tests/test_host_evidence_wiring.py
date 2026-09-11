@@ -49,6 +49,17 @@ def _register_perfect_shells(directory):
                      "---\n\nbody\n" % (name[:-3], ", ".join(allowed)))
 
 
+def _write_evidence(review_root, states):
+    """A host-capabilities.json whose capabilities carry the given states."""
+    capabilities = {name: {"state": states.get(name, hosts.UNKNOWN),
+                           "by": "fixture", "detail": "fixture"}
+                    for name in hosts.CAPABILITIES}
+    return runio._write_json(
+        runio._pano(review_root, runio.HOST_CAPABILITIES),
+        {"schema_version": 1, "host": "claude", "probed_at": "2026-09-10T00:00:00Z",
+         "capabilities": capabilities})
+
+
 class TestThePostureIsEstablishedEveryInvocation(unittest.TestCase):
     """#1344 F3a, spec 5.2: probe on every invocation and compare rather than
     overwrite. Setup-time-only evidence is unbounded in age."""
@@ -262,6 +273,159 @@ class TestThePostureIsEstablishedEveryInvocation(unittest.TestCase):
             flat = os.path.join(review_root, ".panopticon", runio.HOST_CAPABILITIES)
             self.assertFalse(os.path.isfile(flat),
                              "artifact leaked into the flat top-level path")
+
+
+class TestNothingIsEnforcedWithoutEvidence(unittest.TestCase):
+    """Spec 9.2: with no host-capabilities.json every capability is unknown
+    and every entry is enforced:false -- on CLAUDE, not only on an exotic
+    host. This is the test that would have caught 7.1."""
+
+    def test_claude_with_no_evidence_is_not_enforced(self):
+        from scripts.phases import coverage
+        with tempfile.TemporaryDirectory() as review_root:
+            manifest = {"host": "claude", "run_id": "r" * 8,
+                        "security_mode": "standard"}
+            entry = coverage._scout_entry(review_root, manifest, "g", ["a.py"],
+                                          "claude")
+            self.assertFalse(entry["enforced"])
+            self.assertIsNone(entry["agent"])
+
+    def test_claude_with_proven_evidence_is_enforced(self):
+        from scripts.phases import coverage
+        with tempfile.TemporaryDirectory() as review_root:
+            manifest = {"host": "claude", "run_id": "r" * 8,
+                        "security_mode": "standard"}
+            _write_evidence(review_root, {hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN})
+            entry = coverage._scout_entry(review_root, manifest, "g", ["a.py"],
+                                          "claude")
+            self.assertTrue(entry["enforced"])
+            self.assertIsNotNone(entry["agent"])
+
+    def test_a_claimed_but_unproven_capability_is_not_enforced(self):
+        # Spec 9.3, "claiming is not evidence" -- the test that would have
+        # caught P2. claude CLAIMS tool_policy_enforced; unknown evidence must
+        # not let the claim through.
+        from scripts.phases import coverage
+        with tempfile.TemporaryDirectory() as review_root:
+            manifest = {"host": "claude", "run_id": "r" * 8,
+                        "security_mode": "standard"}
+            _write_evidence(review_root, {hosts.TOOL_POLICY_ENFORCED: hosts.UNKNOWN})
+            self.assertTrue(hosts.declares("claude", hosts.TOOL_POLICY_ENFORCED))
+            entry = coverage._scout_entry(review_root, manifest, "g", ["a.py"],
+                                          "claude")
+            self.assertFalse(entry["enforced"])
+
+    def test_a_refuted_capability_is_not_enforced(self):
+        from scripts.phases import coverage
+        with tempfile.TemporaryDirectory() as review_root:
+            manifest = {"host": "claude", "run_id": "r" * 8,
+                        "security_mode": "standard"}
+            _write_evidence(review_root, {hosts.TOOL_POLICY_ENFORCED: hosts.REFUTED})
+            entry = coverage._scout_entry(review_root, manifest, "g", ["a.py"],
+                                          "claude")
+            self.assertFalse(entry["enforced"])
+
+    def test_the_hint_list_still_reads_claims_not_proof(self):
+        # requests.py:201 asks which hosts CLAIM the guard, to build the
+        # "or use one of: --host claude" hint. There is no evidence for a host
+        # you are not running, so posture() would empty the hint.
+        guarded = [n for n in hosts.driver_hosts()
+                   if hosts.declares(n, hosts.ARTIFACT_WRITE_GUARD)]
+        self.assertIn("claude", guarded)
+
+
+class TestTheOtherFourSitesAlsoRequireEvidence(unittest.TestCase):
+    """The brief's own class above exercises the pattern once, on
+    `coverage._scout_entry`, because the docstring at requests.py:180 says all
+    seven TOOL_POLICY_ENFORCED/ARTIFACT_WRITE_GUARD/USAGE_LEDGER sites are
+    "written identically, so a future change is mechanical." Mechanically
+    identical code is not mechanically identical TEST COVERAGE: reverting any
+    one of `review._cell_entry`, `verify._verify_entry`,
+    `verify._tool_verify_entry` or `requests._driver_plan_entries` back to
+    `hosts.declares()` alone -- confirmed by hand during verification, then
+    reverted -- left the full suite green, because
+    `TestTheThreeCapabilitiesAreNotInterchangeable` (test_host_posture_wiring.py)
+    always supplies PROVEN evidence in its fixture and no other test calls
+    these four with none. These four close that gap the same way the class
+    above closes it for the scout. (The write-guard and usage-ledger sites --
+    requests.require_unenforced_ack and synthesize._collect_host_usage -- are
+    NOT repeated here: TestTheThreeCapabilitiesAreNotInterchangeable's own
+    no-evidence-by-default hosts already exercise those two live, via
+    test_unenforced_ack.py and test_synthesize.py respectively.)"""
+
+    def _manifest(self):
+        return {"host": "claude", "run_id": "r" * 8, "security_mode": "standard"}
+
+    def test_review_cell_entry_is_not_enforced_without_evidence(self):
+        from scripts.phases import review
+        import scripts.ocrdb as ocrdb
+        with tempfile.TemporaryDirectory() as review_root:
+            entry = review._cell_entry(review_root, self._manifest(), "g", "SEC",
+                                       ["a.py"], [], "claude", ocrdb.load_bundle())
+            self.assertFalse(entry["enforced"])
+            self.assertIsNone(entry["agent"])
+
+    def test_verify_entry_is_not_enforced_without_evidence(self):
+        from scripts.phases import verify
+        import scripts.ocrdb as ocrdb
+        with tempfile.TemporaryDirectory() as review_root:
+            entry = verify._verify_entry(review_root, self._manifest(), "g", "SEC",
+                                         ["a.py"], [], "claude", ocrdb.load_bundle(),
+                                         "primary")
+            self.assertFalse(entry["enforced"])
+            self.assertIsNone(entry["agent"])
+
+    def test_tool_verify_entry_is_not_enforced_without_evidence(self):
+        from scripts.phases import verify
+        with tempfile.TemporaryDirectory() as review_root:
+            entry = verify._tool_verify_entry(
+                review_root, self._manifest(), "q1",
+                {"id": "T-1", "severity": "HIGH"}, "claude")
+            self.assertFalse(entry["enforced"])
+            self.assertIsNone(entry["agent"])
+
+    def test_driver_plan_entries_are_not_enforced_without_evidence(self):
+        from scripts.phases import requests as requests_mod
+        with tempfile.TemporaryDirectory() as review_root:
+            runio._write_json(runio._pano(review_root, "groups.json"),
+                              {"groups": [{"name": "g", "files": ["a.py"]}]})
+            runio._write_json(runio._pano(review_root, "coverage-g.json"),
+                              {"effective": ["SEC"]})
+            entries = requests_mod._driver_plan_entries(review_root, self._manifest())
+            self.assertTrue(entries)
+            self.assertFalse(entries[0]["enforced"])
+
+
+class TestTheWriteGuardAndUsageLedgerAlsoRequireEvidence(unittest.TestCase):
+    """Closes the same gap as `TestTheOtherFourSitesAlsoRequireEvidence` above
+    for the two remaining posture sites, `requests.require_unenforced_ack`
+    (ARTIFACT_WRITE_GUARD) and `synthesize._collect_host_usage`
+    (USAGE_LEDGER). Neither is caught by any existing test without these:
+    `test_unenforced_ack.py::test_claude_is_enforced_and_writes_no_ack` and
+    every `test_synthesize.py::TestHostUsageCollection` test supply PROVEN
+    evidence (they exist to test what happens once posture holds, not
+    whether it is required) -- confirmed by hand during verification,
+    mutating each site back to `hosts.declares()` and watching the WHOLE
+    suite of 2899 tests stay green, then reverted."""
+
+    def test_write_guard_refuses_claude_with_no_evidence(self):
+        from scripts.phases import requests as requests_mod
+        entries = [{"group": "g", "domain": "SEC", "enforced": False,
+                   "out_file": "/abs/findings-g-SEC.json"}]
+        with tempfile.TemporaryDirectory() as review_root:
+            with self.assertRaises(runio.DriverError):
+                requests_mod.require_unenforced_ack(
+                    review_root, {"host": "claude", "flags": {}}, entries)
+
+    def test_usage_ledger_does_not_collect_for_claude_with_no_evidence(self):
+        from scripts.phases import synthesize
+        with tempfile.TemporaryDirectory() as review_root:
+            with mock.patch("scripts.phases.runio._run_child") as run:
+                result = synthesize._collect_host_usage(
+                    review_root, {"host": "claude", "run_id": "r1",
+                                 "created": "2026-09-10T00:00:00Z"})
+        self.assertIsNone(result)
+        run.assert_not_called()
 
 
 if __name__ == "__main__":

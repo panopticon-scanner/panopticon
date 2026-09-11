@@ -24,14 +24,54 @@ import scripts.phases.verify as verify
 import scripts.phases.synthesize as synthesize
 import scripts.phases.validate as validate_phase
 
+from conftest import write_host_evidence
 import scripts.driver as driver
 import scripts.diff_map as diff_map
 import scripts.groups_schema as groups_schema
+import scripts.host_probes as host_probes
 import scripts.plan_contract as plan_contract
 import scripts.run_manifest as run_manifest
 from scripts import hosts
 
 from tools.git_repo import make_git_repo
+
+
+_ALL_PROVEN = {c: hosts.PROVEN for c in hosts.CAPABILITIES}
+
+
+def _all_proven_artifact(host="claude"):
+    """A host-capabilities.json body proving every capability `host` claims."""
+    return {"schema_version": 1, "host": host,
+            "probed_at": "2026-09-10T00:00:00Z",
+            "capabilities": {c: {"state": hosts.PROVEN, "by": "fixture",
+                                 "detail": "fixture"}
+                             for c in hosts.CAPABILITIES}}
+
+
+_run_probes_patch = None
+
+
+def setUpModule():
+    # #1344 F3: driver.run() calls host_probes.run_probes() for REAL on every
+    # invocation (spec 5.2), and the real probe reads THIS MACHINE's
+    # ~/.claude/agents. This file exercises the phase ORCHESTRATION, not the
+    # probes themselves (that is test_host_probes.py / test_host_evidence_
+    # wiring.py's job) -- every class below runs the same unstated
+    # `--host claude` default, so left unmocked, every enforced / write-guard
+    # assertion in this file would pass or fail depending on whether the
+    # developer's machine happens to have panopticon's shells registered,
+    # exactly the machine-dependence test_host_evidence_wiring.py's
+    # `_pinned_registration` exists to remove. Patched once at module scope
+    # rather than per-class because the hazard is identical everywhere here.
+    global _run_probes_patch
+    _run_probes_patch = mock.patch(
+        "scripts.host_probes.run_probes",
+        side_effect=lambda host, target, **kw: _all_proven_artifact(host))
+    _run_probes_patch.start()
+
+
+def tearDownModule():
+    _run_probes_patch.stop()
 
 
 class TestDriverCLIAndEndToEnd(unittest.TestCase):
@@ -378,6 +418,7 @@ class TestVerifyMatrixEndToEnd(unittest.TestCase):
         with open(os.path.join(d, "src", "app.py"), "w") as fh:
             fh.write("def f():\n    return 1\n")
         os.makedirs(os.path.join(d, ".panopticon"))
+        write_host_evidence(d, _ALL_PROVEN)
         runio._write_json(runio._pano(d, "groups.json"),
                            {"groups": [{"name": "app", "files": ["src/app.py"]}]})
         with open(runio._pano(d, "groups.yml"), "w") as fh:
@@ -497,6 +538,7 @@ class TestDriverRunLoopEndToEnd(unittest.TestCase):
         with open(os.path.join(d, "src", "app.py"), "w") as fh:
             fh.write("def f():\n    return 1\n")
         os.makedirs(os.path.join(d, ".panopticon"))
+        write_host_evidence(d, _ALL_PROVEN)
         runio._write_json(runio._pano(d, "groups.json"),
                            {"groups": [{"name": "app", "files": ["src/app.py"]}]})
         with open(runio._pano(d, "groups.yml"), "w") as fh:
@@ -625,6 +667,7 @@ class TestDriverSingleScopeEndToEnd(unittest.TestCase):
             with open(full, "w") as fh:
                 fh.write("def f():\n    return 1\n")
         os.makedirs(os.path.join(d, ".panopticon"))
+        write_host_evidence(d, _ALL_PROVEN)
         with open(runio._pano(d, "groups.yml"), "w") as fh:
             # #5.0-11: GLOBAL_FLOOR folds ARC/COD/DAT/TST into every group's
             # effective panel set; exclude all four so each group's fixture
@@ -779,6 +822,7 @@ class TestDriverDeltaEndToEnd(unittest.TestCase):
         with open(pay_path, "w") as fh:
             fh.write("\n".join(pay_lines) + "\n")
         os.makedirs(os.path.join(d, ".panopticon"))
+        write_host_evidence(d, _ALL_PROVEN)
         with open(runio._pano(d, "groups.yml"), "w") as fh:
             # #5.0-11: GLOBAL_FLOOR folds ARC/COD/DAT/TST into every group's
             # effective panel set. Deliberately NOT excluded here (unlike the
@@ -1107,6 +1151,10 @@ class TestDriverIntegrityWiring(unittest.TestCase):
         run_manifest.write_manifest(d, self._m)
         self._run_dir = os.path.join(d, ".panopticon", "runs",
                                      run_manifest.run_tag(self._m))
+        # #1344 F3: host-capabilities.json is itself a per-run artifact once a
+        # manifest is on disk -- write it AFTER write_manifest above, or it
+        # lands beside the run folder instead of inside it, same as #1511.
+        write_host_evidence(d, _ALL_PROVEN)
         runio._write_json(runio._pano(d, "groups.json"),
                            {"groups": [{"name": "app", "files": ["src/app.py"]}]})
         with open(runio._pano(d, "groups.yml"), "w") as fh:

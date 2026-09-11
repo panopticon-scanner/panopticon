@@ -44,7 +44,8 @@ def _scout_entry(review_root, manifest, group, files, host, registry_tools=None)
                 "registry — these are the only scanners that can run. Emit `[]` "
                 "if none apply; never invent a tool name:\n%s\n" % registry
               + "\nReturn the ScopeProfile JSON for this group.")
-    enforced = hosts.declares(host, hosts.TOOL_POLICY_ENFORCED)
+    enforced = (hosts.posture(host, runio.host_evidence(review_root))
+                [hosts.TOOL_POLICY_ENFORCED] == hosts.PROVEN)
     return {"id": "scout-%s" % group,
             "agent": dispatch.registered_agent_name("scout.md") if enforced else None,
             "enforced": enforced,

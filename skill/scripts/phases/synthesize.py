@@ -41,7 +41,8 @@ def _collect_host_usage(review_root, manifest):
     # starts billing itself against transcripts that may not be its own;
     # test_a_host_less_manifest_does_not_collect_usage pins the absence,
     # because the suite alone will not.
-    if not hosts.declares(manifest.get("host"), hosts.USAGE_LEDGER):
+    if (hosts.posture(manifest.get("host"), runio.host_evidence(review_root))
+            [hosts.USAGE_LEDGER] != hosts.PROVEN):
         return None          # other hosts write their own usage.json, or none
     if os.path.isfile(runio._pano(review_root, "usage.json")):
         return None          # already collected (resume) -- never overwrite
