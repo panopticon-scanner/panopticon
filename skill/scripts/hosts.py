@@ -22,7 +22,7 @@ is the single intended behavior change and it is tested on its own. A capability
 that is claimed but unproven is `UNKNOWN`, and `UNKNOWN` gates as `REFUTED`.
 """
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 # --- capabilities ----------------------------------------------------------
 TOOL_POLICY_ENFORCED = "tool_policy_enforced"
@@ -70,6 +70,7 @@ class HostSpec:
     project_scope_dirs: tuple = ()
     detect_env: tuple = ()          # env vars that identify an active session
     driver_selectable: bool = False
+    probes: dict = field(default_factory=dict)
 
 
 HOSTS = {
@@ -81,7 +82,10 @@ HOSTS = {
         shell_format="md",
         project_scope_dirs=(os.path.join(".claude", "agents"),),
         detect_env=("CLAUDECODE",),
-        driver_selectable=True),
+        driver_selectable=True,
+        probes={TOOL_POLICY_ENFORCED: "registered-shell-tools",
+                ARTIFACT_WRITE_GUARD: "write-guard-armed",
+                USAGE_LEDGER: "transcript-dir"}),
     "kimi": HostSpec(
         name="kimi",
         claims=frozenset({TOOL_POLICY_ENFORCED, MODEL_BINDING}),
@@ -175,6 +179,24 @@ def posture(host, evidence):
         state = entry.get("state") if isinstance(entry, dict) else None
         result[capability] = state if state in STATES else UNKNOWN
     return result
+
+
+def resolve_state(states):
+    """One capability's answer when several probes touched it.
+
+    refuted > proven > unknown. Two probes can now bear on
+    `tool_policy_enforced` -- `registered-shell-tools`, which can prove it, and
+    `shadow-shell-scan`, which can only refute it -- so the precedence has to
+    be written down rather than left to whichever ran last. A proof of
+    registration does not survive evidence that the target is shadowing it.
+    Anything unrecognised is ignored rather than believed.
+    """
+    seen = [s for s in states if s in STATES]
+    if REFUTED in seen:
+        return REFUTED
+    if PROVEN in seen:
+        return PROVEN
+    return UNKNOWN
 
 
 def unproven(posture_map):

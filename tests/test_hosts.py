@@ -225,5 +225,72 @@ class TestTheModuleStaysPure(unittest.TestCase):
         self.assertIn("expanduser", self._called())
 
 
+class TestTheRegistryNamesItsProbes(unittest.TestCase):
+    """#1344 F3a: a capability a host claims must say how it would be proved."""
+
+    def test_claude_names_a_probe_for_every_security_capability_it_claims(self):
+        row = hosts.spec("claude")
+        for capability in (hosts.TOOL_POLICY_ENFORCED, hosts.ARTIFACT_WRITE_GUARD,
+                           hosts.USAGE_LEDGER):
+            with self.subTest(capability=capability):
+                self.assertIn(capability, row.probes)
+                self.assertTrue(row.probes[capability])
+
+    def test_probe_ids_are_strings_not_callables(self):
+        # hosts.py must never import host_probes -- that is what keeps it
+        # I/O-free and keeps TestTheModuleStaysPure satisfiable.
+        for name in hosts.known_hosts():
+            for capability, probe_id in (hosts.spec(name).probes or {}).items():
+                with self.subTest(host=name, capability=capability):
+                    self.assertIsInstance(probe_id, str)
+
+    def test_every_probed_capability_is_a_real_capability(self):
+        for name in hosts.known_hosts():
+            for capability in (hosts.spec(name).probes or {}):
+                with self.subTest(host=name, capability=capability):
+                    self.assertIn(capability, hosts.CAPABILITIES)
+
+    def test_a_host_only_probes_what_it_claims(self):
+        # Probing a capability you do not claim is incoherent: posture() would
+        # report unknown regardless, so the probe could never change an answer.
+        for name in hosts.known_hosts():
+            row = hosts.spec(name)
+            for capability in (row.probes or {}):
+                with self.subTest(host=name, capability=capability):
+                    self.assertIn(capability, row.claims)
+
+    def test_the_table_is_not_empty(self):
+        # Guards the guard: a renamed constant must not make the loops above
+        # pass over nothing.
+        self.assertTrue(any(hosts.spec(n).probes for n in hosts.known_hosts()))
+
+
+class TestRefutedBeatsProven(unittest.TestCase):
+    """#1344 F3a, spec 7.3: two probes can touch one capability, so the
+    precedence has to be written down rather than left to dict order."""
+
+    def test_a_single_state_is_itself(self):
+        for state in hosts.STATES:
+            with self.subTest(state=state):
+                self.assertEqual(state, hosts.resolve_state([state]))
+
+    def test_refuted_beats_proven(self):
+        self.assertEqual(hosts.REFUTED,
+                         hosts.resolve_state([hosts.PROVEN, hosts.REFUTED]))
+        self.assertEqual(hosts.REFUTED,
+                         hosts.resolve_state([hosts.REFUTED, hosts.PROVEN]))
+
+    def test_proven_beats_unknown(self):
+        self.assertEqual(hosts.PROVEN,
+                         hosts.resolve_state([hosts.UNKNOWN, hosts.PROVEN]))
+
+    def test_nothing_at_all_is_unknown(self):
+        self.assertEqual(hosts.UNKNOWN, hosts.resolve_state([]))
+
+    def test_an_unrecognised_state_is_ignored_not_trusted(self):
+        self.assertEqual(hosts.UNKNOWN, hosts.resolve_state(["banana"]))
+        self.assertEqual(hosts.PROVEN, hosts.resolve_state(["banana", hosts.PROVEN]))
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
