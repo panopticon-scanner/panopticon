@@ -171,8 +171,8 @@ def probe_write_guard_armed(host, session_root=None):
     probe that proves a file nothing arms proves nothing. `install()` applies
     its #1493 existence check only when `used_defaults` is set; this probe
     applies it unconditionally, which is the fail-CLOSED direction (stricter
-    than install(), never laxer). test_the_probe_and_install_resolve_the_same
-    _settings_file pins both halves.
+    than install(), never laxer). Both halves are pinned by
+    TestWriteGuardArmedProbe's resolve-the-same-settings-file tests.
 
     NOT "the guard is armed right now". The host arms it during fan-out --
     `write_guard_hook.install` writes the PreToolUse entry and `uninstall`
