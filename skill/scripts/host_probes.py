@@ -493,6 +493,22 @@ def capabilities_of(artifact):
 
     Deliberately drops `probed_at`: it changes on every probe by design, and
     comparing it would make 5.2's resume check fire merely because time passed.
+
+    FAIL-CLOSED on a truthy non-mapping `artifact`. `(artifact or {})` only
+    catches the FALSY case -- `[]`, `0`, `""`, `False` -- by falling through to
+    `{}` before `.get` is ever called; a truthy non-dict (a non-empty list, a
+    string, a nonzero number) sailed past that `or` unchanged and `.get(
+    "capabilities")` on it raised AttributeError. The caller here is
+    `driver._establish_host_posture`, feeding this `stored` -- the parsed
+    contents of `host-capabilities.json`, a file a hostile target can plant or
+    truncate -- so a corrupt artifact produced a mid-run traceback instead of a
+    refusal. `hosts.posture()` and `runio.host_evidence()` were both hardened
+    against exactly this shape already ("a crash mid-run is not failing closed
+    -- it is failing"); this was the one spot still missed.
     """
-    return {name: (body or {}).get("state")
-            for name, body in ((artifact or {}).get("capabilities") or {}).items()}
+    if not isinstance(artifact, dict):
+        artifact = {}
+    caps = artifact.get("capabilities")
+    if not isinstance(caps, dict):
+        caps = {}
+    return {name: (body or {}).get("state") for name, body in caps.items()}

@@ -742,6 +742,25 @@ class TestRunProbesBuildsTheArtifact(unittest.TestCase):
             self.assertEqual(host_probes.capabilities_of(first),
                              host_probes.capabilities_of(second))
 
+    def test_capabilities_of_fails_closed_on_a_truthy_non_mapping_artifact(self):
+        # R18: `(artifact or {})` only catches the FALSY case. A truthy
+        # non-dict -- a non-empty list, a non-empty string, a nonzero number
+        # -- sailed past that `or` unchanged and `.get("capabilities")` on it
+        # raised AttributeError. The caller is
+        # `driver._establish_host_posture`, feeding this `stored` --
+        # `runio._load_json()`'s parse of host-capabilities.json, a file a
+        # hostile target can plant or truncate -- so a crash here is a
+        # mid-run traceback rather than a refusal. `hosts.posture()` and
+        # `runio.host_evidence()` were both hardened against exactly this
+        # shape already; this was the spot still missed. The falsy cases
+        # ([], 0, "", False, None) already degraded to {} before this fix;
+        # they are included here so the fix is proven not to have narrowed
+        # that existing behaviour.
+        for bad in (["not", "a", "dict"], "not-a-dict", 7,
+                    [], 0, "", False, None):
+            with self.subTest(artifact=bad):
+                self.assertEqual({}, host_probes.capabilities_of(bad))
+
     def test_a_host_the_registry_does_not_know_probes_to_all_unknown(self):
         with tempfile.TemporaryDirectory() as target:
             art = host_probes.run_probes("no-such-host", target)
