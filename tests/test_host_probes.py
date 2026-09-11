@@ -298,19 +298,31 @@ class TestTranscriptDirProbe(unittest.TestCase):
             state, _by, detail = host_probes.probe_transcript_dir(
                 "claude", project, home=home)
             self.assertEqual(hosts.REFUTED, state)
-            self.assertIn(".claude", detail)
+            self.assertEqual("transcript-dir", _by)
+            # The phrase only the isdir branch emits. Asserting on ".claude"
+            # instead passes either way: the not-readable branch formats the
+            # same `directory` string, and os.access() on a nonexistent path
+            # also returns False, so deleting the isdir branch would leave this
+            # test green while the message became factually wrong.
+            self.assertIn("no transcript directory", detail)
 
     def test_an_unreadable_transcript_dir_is_refuted(self):
+        # Skip if running as root (os.access returns True anyway).
+        import getpass
+        if getpass.getuser() == "root":
+            self.skipTest("running as root, os.access ignores permissions")
         with tempfile.TemporaryDirectory() as home, \
                 tempfile.TemporaryDirectory() as project:
             d = self._transcripts(home, project)
             os.chmod(d, 0o000)
             try:
-                state, _by, _detail = host_probes.probe_transcript_dir(
+                state, by, detail = host_probes.probe_transcript_dir(
                     "claude", project, home=home)
             finally:
                 os.chmod(d, 0o700)
             self.assertEqual(hosts.REFUTED, state)
+            self.assertEqual("transcript-dir", by)
+            self.assertIn(d, detail)
 
     def test_a_host_that_claims_no_usage_ledger_is_unknown(self):
         for name in ("gemini", "generic", "codex"):
@@ -318,3 +330,7 @@ class TestTranscriptDirProbe(unittest.TestCase):
                 state, by, _detail = host_probes.probe_transcript_dir(name, ".")
                 self.assertEqual(hosts.UNKNOWN, state)
                 self.assertIsNone(by)
+
+    def test_the_transcript_probe_id_matches_the_registry_row(self):
+        self.assertEqual(host_probes.TRANSCRIPT_DIR,
+                         hosts.spec("claude").probes[hosts.USAGE_LEDGER])
