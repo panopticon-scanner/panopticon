@@ -11,7 +11,19 @@ the fix for it.
 5.1's wording rule, verbatim: "name the capability, the host, the probe, and
 the remedy. 'unenforced' alone is not a disclosure; it is a mood."
 """
-import hosts
+# This repo has two directories named `scripts` with no __init__.py (repo-root
+# scripts/ and skill/scripts/). When imported flat (skill/scripts on
+# sys.path -- the standalone-script shape), the try arm raises
+# ModuleNotFoundError. When `scripts` resolves as a namespace package (pytest
+# via conftest.py, or driver.py's own bootstrap), it succeeds and binds the
+# SAME module object every other caller sees. A bare `import hosts` would
+# still resolve (skill/scripts is on sys.path either way) but as a SECOND,
+# non-identical module with its own HOSTS dict -- see model_resolver.py for
+# the same fallback on the same seam.
+try:
+    from scripts import hosts
+except ImportError:
+    import hosts
 
 ALL_PROVEN = ("host capabilities: all measured and PROVEN -- "
               "every control this run relies on was verified, not assumed")

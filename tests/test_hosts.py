@@ -6,7 +6,7 @@ matching today's behavior exactly -- not about any host doing anything.
 import ast
 import unittest
 
-from scripts import hosts
+from scripts import host_disclosure, hosts
 
 
 class TestTotality(unittest.TestCase):
@@ -194,7 +194,14 @@ class TestPostureFailsClosed(unittest.TestCase):
 
 
 class TestTheModuleStaysPure(unittest.TestCase):
-    """hosts.py is imported by phases/*; it must stay cheap and I/O-free.
+    """hosts.py is imported by phases/*; host_disclosure.py formats hosts.py's
+    output for four rendering surfaces (#1344 F3b spec 5.1). Both must stay
+    cheap and I/O-free, for the same reason and by the same argument -- so
+    this parameterises over both modules rather than forking a second,
+    copy-pasted class. A copy invites exactly the drift this repo keeps
+    finding: nothing stops a second class from silently going stale the first
+    time one of the two source files changes shape and nobody remembers to
+    update the twin.
 
     AST-based, deliberately. The first draft of this guard was a substring
     search, and it failed on the module it was guarding: hosts.py's own
@@ -208,23 +215,29 @@ class TestTheModuleStaysPure(unittest.TestCase):
     _FORBIDDEN_MODULES = {"subprocess", "shutil", "socket", "urllib", "json"}
     _FORBIDDEN_CALLS = {"open", "listdir", "isfile", "isdir", "exists",
                         "makedirs", "walk", "run", "popen"}
+    # (module, an import name it must contain, a call name it must contain)
+    # -- guards the guard PER module: an analyser returning empty sets would
+    # pass every assertion below over nothing, and that failure is invisible
+    # unless each module supplies its own known-present sentinel.
+    _TARGETS = ((hosts, "os", "expanduser"),
+               (host_disclosure, "hosts", "get"))
 
-    def _tree(self):
-        with open(hosts.__file__, encoding="utf-8") as fh:
+    def _tree(self, module):
+        with open(module.__file__, encoding="utf-8") as fh:
             return ast.parse(fh.read())
 
-    def _imported(self):
+    def _imported(self, module):
         names = set()
-        for node in ast.walk(self._tree()):
+        for node in ast.walk(self._tree(module)):
             if isinstance(node, ast.Import):
                 names |= {a.name.split(".")[0] for a in node.names}
             elif isinstance(node, ast.ImportFrom) and node.module:
                 names.add(node.module.split(".")[0])
         return names
 
-    def _called(self):
+    def _called(self, module):
         names = set()
-        for node in ast.walk(self._tree()):
+        for node in ast.walk(self._tree(module)):
             if not isinstance(node, ast.Call):
                 continue
             fn = node.func
@@ -233,22 +246,30 @@ class TestTheModuleStaysPure(unittest.TestCase):
         return names
 
     def test_it_imports_no_io_module(self):
-        offenders = sorted(self._imported() & self._FORBIDDEN_MODULES)
-        self.assertEqual([], offenders,
-                         "hosts.py must stay pure data; %s belongs in "
-                         "host_probes.py (F3)" % ", ".join(offenders))
+        for module, _, _ in self._TARGETS:
+            with self.subTest(module=module.__name__):
+                offenders = sorted(self._imported(module) & self._FORBIDDEN_MODULES)
+                self.assertEqual([], offenders,
+                                 "%s must stay pure data; %s belongs in "
+                                 "host_probes.py (F3)"
+                                 % (module.__name__, ", ".join(offenders)))
 
     def test_it_calls_no_io_function(self):
-        offenders = sorted(self._called() & self._FORBIDDEN_CALLS)
-        self.assertEqual([], offenders,
-                         "hosts.py must stay pure data; %s belongs in "
-                         "host_probes.py (F3)" % ", ".join(offenders))
+        for module, _, _ in self._TARGETS:
+            with self.subTest(module=module.__name__):
+                offenders = sorted(self._called(module) & self._FORBIDDEN_CALLS)
+                self.assertEqual([], offenders,
+                                 "%s must stay pure data; %s belongs in "
+                                 "host_probes.py (F3)"
+                                 % (module.__name__, ", ".join(offenders)))
 
     def test_the_analyser_actually_sees_the_module(self):
         # Guards the guard: an analyser returning empty sets would pass both
         # assertions above over nothing.
-        self.assertIn("os", self._imported())
-        self.assertIn("expanduser", self._called())
+        for module, import_sentinel, call_sentinel in self._TARGETS:
+            with self.subTest(module=module.__name__):
+                self.assertIn(import_sentinel, self._imported(module))
+                self.assertIn(call_sentinel, self._called(module))
 
 
 class TestTheRegistryNamesItsProbes(unittest.TestCase):

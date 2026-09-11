@@ -78,17 +78,21 @@ class TestTheInverseCarriesEqualWeight(unittest.TestCase):
         # fires, so it patches in a host that claims all five capabilities
         # rather than asserting something the real registry cannot produce.
         #
-        # Patched on `host_disclosure.hosts`, not the `hosts` imported here:
-        # host_disclosure.py does a bare `import hosts`, which -- because
-        # conftest.py puts skill/scripts/ on sys.path for standalone-script
-        # compatibility -- resolves to a DIFFERENT sys.modules entry than
-        # `from scripts import hosts` does in this file. They are two loads
-        # of the same source with two independent `HOSTS` dicts; patching the
-        # wrong one is a silent no-op, not a failure.
+        # Patched on the canonical `hosts.HOSTS` imported here. host_disclosure
+        # now imports `hosts` via the repo's `try: from scripts import hosts /
+        # except ImportError: import hosts` convention (model_resolver.py etc),
+        # so under pytest (conftest.py puts skill/ on sys.path) the try arm
+        # resolves and `host_disclosure.hosts is hosts` here is True -- one
+        # module, one HOSTS dict. (Before that fix, host_disclosure.py's bare
+        # `import hosts` created a second, non-identical module and patching
+        # this `hosts.HOSTS` would have been a silent no-op.)
         all_claims = hosts.HostSpec(name="proves-everything",
                                     claims=frozenset(hosts.CAPABILITIES))
-        with mock.patch.dict(host_disclosure.hosts.HOSTS,
-                             {"proves-everything": all_claims}):
+        assert host_disclosure.hosts is hosts, (
+            "host_disclosure's hosts import has drifted from the canonical "
+            "scripts.hosts module again -- patching hosts.HOSTS below would "
+            "be a silent no-op")
+        with mock.patch.dict(hosts.HOSTS, {"proves-everything": all_claims}):
             env = envelope(host="proves-everything",
                            **{c: (hosts.PROVEN, "p", "d") for c in hosts.CAPABILITIES})
             self.assertEqual([], host_disclosure.lines(env))
@@ -104,6 +108,27 @@ class TestTheInverseCarriesEqualWeight(unittest.TestCase):
             with self.subTest(bad=bad):
                 self.assertEqual(host_disclosure.NO_EVIDENCE,
                                  host_disclosure.headline(bad))
+
+    def test_capabilities_only_malformed_still_reads_as_nobody_looked(self):
+        # `lines()` and `headline()` each guard with `caps is None or host is
+        # None`. Every case in test_a_malformed_envelope_reads_as_nobody_looked
+        # fails BOTH arms at once -- the envelope is either not a dict at all,
+        # or (for {"capabilities": 7}) lacks a "host" key entirely, so host is
+        # also None. None of them can catch a regression from `or` to `and`
+        # that only breaks the `caps is None` arm. This envelope has a
+        # perfectly valid host and only an unusable `capabilities`, so it
+        # isolates that arm.
+        bad = {"host": "claude", "capabilities": "garbage"}
+        self.assertEqual([], host_disclosure.lines(bad))
+        self.assertEqual(host_disclosure.NO_EVIDENCE, host_disclosure.headline(bad))
+
+    def test_host_only_malformed_still_reads_as_nobody_looked(self):
+        # The mirror of the case above: capabilities is a valid (if empty)
+        # dict, and only the host is unusable (not a string). Isolates the
+        # `host is None` arm.
+        bad = {"host": 123, "capabilities": {}}
+        self.assertEqual([], host_disclosure.lines(bad))
+        self.assertEqual(host_disclosure.NO_EVIDENCE, host_disclosure.headline(bad))
 
 
 class TestTheHeadline(unittest.TestCase):
