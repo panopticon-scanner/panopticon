@@ -120,6 +120,14 @@ class TestTheWordingRule(unittest.TestCase):
         self.assertEqual(len(hosts.CAPABILITIES), len(set(remedies.values())),
                          "two capabilities share a remedy: %r" % (remedies,))
 
+    def test_the_model_binding_remedy_names_the_real_fix(self):
+        # Until F4 the remedy honestly said "nothing to do in this release".
+        # Now there is something to do, and "nothing to do" would be false.
+        text = host_disclosure.remedy(hosts.MODEL_BINDING, "claude")
+        self.assertNotIn("nothing to do", text)
+        self.assertIn("--emit-host-agents claude", text)
+        self.assertIn("PANOPTICON_MODEL_", text)
+
 
 class TestTheInverseCarriesEqualWeight(unittest.TestCase):
     def test_an_all_proven_host_says_so_explicitly(self):

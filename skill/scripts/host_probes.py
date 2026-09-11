@@ -24,7 +24,8 @@ import os
 import stat
 import tempfile
 
-from scripts import collect_usage, dispatch, hosts, run_manifest, write_guard_hook
+from scripts import (collect_usage, dispatch, hosts, model_resolver,
+                    run_manifest, write_guard_hook)
 
 # The roles the DRIVER dispatches and therefore needs registered shells for.
 # `advisor` is deliberately absent -- it is dispatched by the host, not the
@@ -113,6 +114,115 @@ def probe_registered_shell_tools(host, registration_dir=None):
     return (hosts.PROVEN, REGISTERED_SHELL_TOOLS,
             "%d/%d driver roles registered in %s; tools match their templates"
             % (checked, len(DRIVER_ROLES), directory))
+
+
+ENTRY_MODEL_BOUND = "entry-model-bound"
+
+
+def _frontmatter_model(path):
+    """The `model:` binding inside a registered shell's frontmatter, or None.
+
+    Frontmatter ONLY: the charter body is prose and may contain the word.
+    Stops at the closing fence rather than scanning the whole file, which is
+    the one way this differs from `_frontmatter_tools`. That stop is
+    load-bearing, not an optimisation -- the match below tests `fences >= 1`
+    rather than `fences == 1`: the latter would double as its own implicit
+    "still inside the frontmatter" guard (it goes false the moment the second
+    fence is seen, whether or not the early return exists) and make the early
+    return provably dead code, so a mutant that deletes it would change
+    nothing this file's tests could observe. With `fences >= 1`, the early
+    return is the ONLY thing standing between a shell that binds no model and
+    a body `model:` line rescuing it as if it had.
+
+    None for an absent line, an empty value, or an unreadable file
+    (`ValueError` covers a non-UTF-8 shell) -- a probe that raises is worse
+    than one that reports.
+    """
+    try:
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except (OSError, ValueError):
+        return None
+    fences = 0
+    for line in lines:
+        if line.strip() == "---":
+            fences += 1
+            if fences == 2:
+                return None
+            continue
+        if fences >= 1 and line.startswith("model:"):
+            return line.split(":", 1)[1].strip() or None
+    return None
+
+
+def probe_entry_model_bound(host, registration_dir=None):
+    """Every REGISTERED shell binds the model dispatch will request (F4).
+
+    The entry's model comes from model_resolver.resolve_model, which honours
+    PANOPTICON_MODEL_* overrides. The shell's `model:` comes from
+    registration_model, which is override-free BY DESIGN so a persisted file
+    never carries one run's ambient override. On an enforced dispatch the
+    host binds the SHELL's model, so wherever the two differ the entry is a
+    claim the run does not keep -- registration silently wins. That is the
+    refutation; a shell binding NO model is the same refutation (the session's
+    model wins instead). A role with no shell dispatches general-purpose and
+    carries its model on the entry itself, so it is named in the detail and
+    not counted against the proof. No shell at all is UNKNOWN: nothing here
+    can prove the host honours the entry's model, and a vacuous PROVEN is the
+    fail-open this epic exists to remove.
+
+    A missing REGISTRATION DIRECTORY is also UNKNOWN, not REFUTED, even
+    though the sibling `probe_registered_shell_tools` refutes on the same
+    condition: that probe's question is "did the host register its shells at
+    all", where an absent directory IS the answer (never registered, REFUTE).
+    This probe's question is narrower -- "does what WAS registered bind the
+    right model" -- and an absent directory means there is nothing to compare
+    against, which is unmeasured rather than measured-and-broken. Harmonising
+    the two would turn "nobody has run --emit-host-agents yet" into a claim
+    that model binding specifically is broken, which is not what was found.
+
+    Compares SOURCES rather than dispatch entries because this runs pre-phase
+    (spec 5.2), before any entry exists. requests.bound_model is what makes
+    the two equivalent, and its tests pin that every builder calls it.
+    """
+    row = hosts.spec(host)
+    if not row or not row.shell_format:
+        return (hosts.UNKNOWN, None,
+                "host %r registers no enforcement shells, so no shell binds a model"
+                % host)
+    directory = registration_dir or row.registration_dir
+    if not directory or not os.path.isdir(directory):
+        return (hosts.UNKNOWN, ENTRY_MODEL_BOUND,
+                "no registration directory at %s: nothing registered binds a model, "
+                "and nothing here proves the host honours the entry's" % directory)
+    faults, matched, absent = [], [], []
+    for role, role_file in sorted(dispatch.ROLE_FILES.items()):
+        path = os.path.join(directory,
+                            dispatch.registered_agent_filename(host, role_file))
+        if not os.path.isfile(path):
+            absent.append(role)
+            continue
+        resolved = model_resolver.resolve_model(host, role).get("model")
+        bound = _frontmatter_model(path)
+        if bound is None:
+            faults.append("%s: shell at %s binds no model, so the session's model "
+                          "silently wins over the entry's %r" % (role, path, resolved))
+        elif bound != resolved:
+            faults.append("%s: shell binds %r but dispatch resolves %r -- "
+                          "registration silently wins" % (role, bound, resolved))
+        else:
+            matched.append(role)
+    if faults:
+        return (hosts.REFUTED, ENTRY_MODEL_BOUND, "; ".join(faults))
+    if not matched:
+        return (hosts.UNKNOWN, ENTRY_MODEL_BOUND,
+                "no role is registered in %s, so nothing binds a model" % directory)
+    detail = ("%d/%d roles registered in %s bind the model dispatch resolves"
+              % (len(matched), len(dispatch.ROLE_FILES), directory))
+    if absent:
+        detail += ("; unregistered, model bound on the entry itself: %s"
+                   % ", ".join(absent))
+    return (hosts.PROVEN, ENTRY_MODEL_BOUND, detail)
 
 
 WRITE_GUARD_ARMED = "write-guard-armed"
@@ -360,13 +470,14 @@ def probe_shadow_shells(host, review_root):
 
 SCHEMA_VERSION = 1
 
-# Capabilities with no probe in F3a, and the reason each says so. 5.1 requires
+# Capabilities with no probe at all, and the reason each says so. 5.1 requires
 # "nobody looked" to be written down rather than inferred from an absent key.
+# model_binding shipped its probe in F4 (entry-model-bound) and is no longer
+# here; kimi still CLAIMS it with no probe of its own, which is what sends it
+# through `_no_probe_reason` below instead.
 _NO_PROBE = {
     hosts.READ_SCOPE_CONFINED:
         "no probe: no host implements a read-confinement control (spec 7.2)",
-    hosts.MODEL_BINDING:
-        "no probe in F3a: dispatch entries still carry model=None (spec 8, F4)",
 }
 
 
@@ -444,6 +555,8 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
             lambda: probe_write_guard_armed(host, session_root=session_root),
         TRANSCRIPT_DIR:
             lambda: probe_transcript_dir(host, session_root, home=home),
+        ENTRY_MODEL_BOUND:
+            lambda: probe_entry_model_bound(host, registration_dir),
     }
     for capability, probe_id in ((row.probes if row else None) or {}).items():
         runner = runners.get(probe_id)

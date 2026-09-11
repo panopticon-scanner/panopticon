@@ -47,8 +47,10 @@ _REMEDY = {
         "nothing to do: no host implements a read-confinement control yet "
         "(spec 7.2), so this stays unknown by design",
     hosts.MODEL_BINDING:
-        "nothing to do in this release: dispatch entries carry model=None "
-        "until F4 binds them (spec 8)",
+        "re-run `python3 skill/scripts/dispatch.py --emit-host-agents %(host)s` so "
+        "every registered shell binds the model in skill/reference/model-profiles.yml, "
+        "and unset any PANOPTICON_MODEL_* override -- an enforced dispatch binds the "
+        "shell's model, never the override's",
 }
 
 

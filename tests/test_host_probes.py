@@ -5,7 +5,7 @@ import threading
 import unittest
 from unittest import mock
 
-from scripts import host_probes, hosts, write_guard_hook
+from scripts import dispatch, host_probes, hosts, model_resolver, write_guard_hook
 
 
 @contextlib.contextmanager
@@ -204,6 +204,146 @@ class TestRegisteredShellToolsProbe(unittest.TestCase):
         self.assertEqual(hosts.REFUTED, state)
         self.assertEqual("registered-shell-tools", by)
         self.assertIn("no registration directory", detail)
+
+
+def _model_shell(directory, host, role_file, model, tools="Read, Grep, Glob",
+                 body_decoy="NOT-FRONTMATTER"):
+    """A registered shell that BINDS a model, in claude's emitted shape.
+
+    `body_decoy` lands in the charter BODY as `model: <body_decoy>`, never in
+    the frontmatter -- it exists so a test can plant a value there that must
+    be ignored (the default) or, for the fenced-scan regression test, one
+    that must NOT be picked up even though it happens to be the correct one.
+    """
+    path = os.path.join(directory, dispatch.registered_agent_filename(host, role_file))
+    fm = ["---", "name: %s" % dispatch.registered_agent_name(role_file),
+          "description: fixture", "tools: %s" % tools]
+    if model is not None:
+        fm.append("model: %s" % model)
+    fm += ["---", "", "charter body", "model: %s" % body_decoy]
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(fm) + "\n")
+    return path
+
+
+class TestEntryModelBoundProbe(unittest.TestCase):
+    """#1344 F4: registration must bind the model dispatch resolves, or an
+    enforced dispatch runs on the shell's choice while the entry claims another.
+    """
+
+    def _register_all(self, d, host="claude"):
+        for role, role_file in dispatch.ROLE_FILES.items():
+            _model_shell(d, host, role_file,
+                         model_resolver.resolve_model(host, role)["model"])
+
+    def test_every_registered_shell_binding_the_resolved_model_is_proven(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._register_all(d)
+            state, by, detail = host_probes.probe_entry_model_bound("claude", d)
+        self.assertEqual((hosts.PROVEN, host_probes.ENTRY_MODEL_BOUND), (state, by))
+        self.assertIn("%d/%d" % (len(dispatch.ROLE_FILES), len(dispatch.ROLE_FILES)), detail)
+
+    def test_an_ambient_override_the_shell_cannot_see_is_refuted(self):
+        # THE case the probe exists for: resolve_model honours
+        # PANOPTICON_MODEL_*, registration_model does not (by design), so the
+        # entry requests one model and the enforced shell runs another.
+        with tempfile.TemporaryDirectory() as d:
+            self._register_all(d)
+            with mock.patch.dict(os.environ, {"PANOPTICON_MODEL_DOMAIN_PANEL": "OVERRIDE-X"}):
+                state, by, detail = host_probes.probe_entry_model_bound("claude", d)
+        self.assertEqual((hosts.REFUTED, host_probes.ENTRY_MODEL_BOUND), (state, by))
+        self.assertIn("domain_panel", detail)
+        self.assertIn("OVERRIDE-X", detail)
+
+    def test_a_shell_that_binds_no_model_is_refuted_not_unknown(self):
+        # No `model:` line means the host inherits the SESSION's model for that
+        # role -- which silently overrides whatever the entry requested. That
+        # is measured, not unmeasured: refuted.
+        with tempfile.TemporaryDirectory() as d:
+            self._register_all(d)
+            _model_shell(d, "claude", "domain-advisor.md", model=None)
+            state, _by, detail = host_probes.probe_entry_model_bound("claude", d)
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("domain_advisor", detail)
+
+    def test_a_model_line_in_the_charter_body_does_not_rescue_a_shell_that_binds_none(self):
+        # The obvious version of this test -- register every role correctly,
+        # then check PROVEN -- cannot fail its own mutation: every shell
+        # _register_all writes binds a frontmatter model, so
+        # `_frontmatter_model` returns at that match before it ever reaches
+        # the closing fence, and a scanner that read past the fence would
+        # never be exercised by any fixture here.
+        #
+        # Overwrite ONE shell instead so it binds NO frontmatter model, but
+        # its BODY carries the CORRECT resolved value for that same role.
+        # The frontmatter-only scanner must still call this REFUTED (no
+        # binding was made); only a scanner that reads past the closing fence
+        # would be fooled into reporting it PROVEN off the body's decoy.
+        with tempfile.TemporaryDirectory() as d:
+            self._register_all(d)
+            resolved = model_resolver.resolve_model("claude", "domain_advisor")["model"]
+            _model_shell(d, "claude", "domain-advisor.md", model=None,
+                         body_decoy=resolved)
+            state, _by, detail = host_probes.probe_entry_model_bound("claude", d)
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("domain_advisor", detail)
+
+    def test_no_registered_shell_is_unknown_never_vacuously_proven(self):
+        with tempfile.TemporaryDirectory() as d:
+            state, by, _detail = host_probes.probe_entry_model_bound("claude", d)
+        self.assertEqual((hosts.UNKNOWN, host_probes.ENTRY_MODEL_BOUND), (state, by))
+
+    def test_a_missing_registration_directory_is_unknown(self):
+        nonexistent = os.path.join(tempfile.gettempdir(), "no-such-dir-%d" % os.getpid())
+        state, _by, _detail = host_probes.probe_entry_model_bound("claude", nonexistent)
+        self.assertEqual(hosts.UNKNOWN, state)
+
+    def test_a_partially_registered_host_is_proven_on_what_is_registered(self):
+        # An unregistered role dispatches general-purpose and carries its model
+        # on the entry itself (docs/PANOPTICON.md), so it cannot be silently
+        # overridden by registration -- there is none. It is named, not hidden.
+        with tempfile.TemporaryDirectory() as d:
+            _model_shell(d, "claude", "domain-panel.md",
+                         model_resolver.resolve_model("claude", "domain_panel")["model"])
+            state, _by, detail = host_probes.probe_entry_model_bound("claude", d)
+        self.assertEqual(hosts.PROVEN, state)
+        self.assertIn("1/%d" % len(dispatch.ROLE_FILES), detail)
+        self.assertIn("scout", detail)          # the absent ones are listed
+
+    def test_a_host_without_shells_is_unknown(self):
+        state, by, _detail = host_probes.probe_entry_model_bound("gemini")
+        self.assertEqual((hosts.UNKNOWN, None), (state, by))
+
+    def test_the_probe_compares_against_resolve_model_not_the_profile_file(self):
+        # Sentinel: patch the resolver to disagree with every shell. If the
+        # probe read model-profiles.yml or registration_model directly, the
+        # shells (written from the real resolver) would still match and this
+        # would pass while the probe measured the wrong thing.
+        with tempfile.TemporaryDirectory() as d:
+            self._register_all(d)
+            with mock.patch.object(model_resolver, "resolve_model",
+                                   return_value={"model": "SENTINEL"}):
+                state, _by, detail = host_probes.probe_entry_model_bound("claude", d)
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("SENTINEL", detail)
+
+    def test_the_registry_names_this_probe_for_claude(self):
+        self.assertEqual(host_probes.ENTRY_MODEL_BOUND,
+                         hosts.spec("claude").probes[hosts.MODEL_BINDING])
+
+    def test_run_probes_records_it_under_model_binding(self):
+        # Mirror the existing run_probes test's fixture arguments in this file
+        # (registration_dir, session_root, home all pointed at temp dirs so no
+        # live state is touched).
+        with tempfile.TemporaryDirectory() as reg, \
+             tempfile.TemporaryDirectory() as target, \
+             tempfile.TemporaryDirectory() as home:
+            self._register_all(reg)
+            env = host_probes.run_probes("claude", target, session_root=target,
+                                         registration_dir=reg, home=home)
+        row = env["capabilities"][hosts.MODEL_BINDING]
+        self.assertEqual(host_probes.ENTRY_MODEL_BOUND, row["by"])
+        self.assertIn(row["state"], (hosts.PROVEN, hosts.REFUTED))   # measured, not unknown
 
 
 class TestWriteGuardArmedProbe(unittest.TestCase):
@@ -647,7 +787,11 @@ class TestRunProbesBuildsTheArtifact(unittest.TestCase):
 
     def test_every_capability_gets_a_row_even_unprobed_ones(self):
         # 5.1: "nobody looked" is written down, never inferred from an absent
-        # key. read_scope_confined and model_binding have no probe in F3a.
+        # key. read_scope_confined has no probe (spec 7.2); model_binding
+        # gained one in F4 (entry-model-bound) and is exercised for real here
+        # against whatever this machine's own registration looks like, which
+        # is why this assertion stays broad (any real STATE) rather than
+        # pinning UNKNOWN the way the F3a-era version did.
         with tempfile.TemporaryDirectory() as target:
             art = host_probes.run_probes("claude", target)
             self.assertEqual(sorted(hosts.CAPABILITIES),
@@ -658,15 +802,17 @@ class TestRunProbesBuildsTheArtifact(unittest.TestCase):
                     self.assertIn(row["state"], hosts.STATES)
                     self.assertTrue(row["detail"])
 
-    def test_the_two_unprobed_capabilities_say_why(self):
+    def test_the_unprobed_capability_says_why(self):
+        # F4 shipped entry-model-bound, so model_binding is no longer in this
+        # set (TestEntryModelBoundProbe covers its real behaviour against
+        # controlled fixtures); read_scope_confined is the one capability
+        # left with no probe of any kind (spec 7.2).
         with tempfile.TemporaryDirectory() as target:
             art = host_probes.run_probes("claude", target)
-            for capability in (hosts.READ_SCOPE_CONFINED, hosts.MODEL_BINDING):
-                with self.subTest(capability=capability):
-                    row = art["capabilities"][capability]
-                    self.assertEqual(hosts.UNKNOWN, row["state"])
-                    self.assertIsNone(row["by"])
-                    self.assertIn("no probe", row["detail"])
+            row = art["capabilities"][hosts.READ_SCOPE_CONFINED]
+            self.assertEqual(hosts.UNKNOWN, row["state"])
+            self.assertIsNone(row["by"])
+            self.assertIn("no probe", row["detail"])
 
     def test_an_unclaimed_capability_is_not_described_as_claimed(self):
         # Minor 1. One sentence covered both no-probe cases and said the host
