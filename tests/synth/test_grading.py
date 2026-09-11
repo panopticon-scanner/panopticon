@@ -4,8 +4,11 @@ import os
 import tempfile
 import unittest
 
+import scripts.hosts as hosts_mod
+import scripts.synth.findings as findings_mod
 import scripts.synth.grading as grading_mod
 import scripts.synth.render as render_mod
+import scripts.synth.report as report_mod
 
 
 class TestGrading(unittest.TestCase):
@@ -318,3 +321,55 @@ print(json.dumps({"keys": list(graded.groups[0]["panel_grades"]),
                   encoding="utf-8") as fh:
             hits = [ln.strip() for ln in fh if "PYTHONHASHSEED" in ln]
         self.assertEqual(hits, [], "replay_report.py still pins the hash seed")
+
+
+class TestDisclosureDoesNotGate(unittest.TestCase):
+    """§5.1: disclosure is "deliberately NOT gating, for now", and §8 gives
+    F3b "behavior change: none". read_scope_confined is unknown on every host
+    today, so a posture that reached the gate would make every run
+    INCONCLUSIVE and block the milestone behind a control no host has yet.
+
+    Whole-dict equality on purpose, not a hand-picked key list: this exists to
+    catch a FUTURE change, and a future gating path would go through whatever
+    key its author chose, not the ones enumerated today. meta.host_capabilities
+    is the one field that is SUPPOSED to differ -- it is surface 2 -- so it is
+    the only key excluded.
+    """
+
+    def _report(self, state):
+        caps = {c: {"state": state, "by": "a-probe", "detail": "a detail"}
+                for c in hosts_mod.CAPABILITIES}
+        return report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(
+                target="target",
+                fail_on="high",
+                timestamp="2026-08-03T00:00:00Z",
+                host_capabilities={"schema_version": 1, "host": "claude",
+                                   "probed_at": "T", "capabilities": caps},
+            ),
+            findings=findings_mod.FindingSet(findings=[]),
+        ))
+
+    @staticmethod
+    def _meta_without_the_posture(report):
+        return {k: v for k, v in report["meta"].items()
+                if k != "host_capabilities"}
+
+    def test_no_posture_changes_the_gate_certification_or_any_other_field(self):
+        proven = self._report(hosts_mod.PROVEN)
+        for state in (hosts_mod.UNKNOWN, hosts_mod.REFUTED):
+            with self.subTest(state=state):
+                other = self._report(state)
+                self.assertEqual(proven["summary"], other["summary"])
+                self.assertEqual(self._meta_without_the_posture(proven),
+                                 self._meta_without_the_posture(other))
+
+    def test_the_posture_itself_still_differs_between_the_two_reports(self):
+        # Guards the guard: if host_capabilities stopped reaching meta at all,
+        # the test above would pass vacuously -- two identical reports with no
+        # posture in either. This is the fixture-cannot-express-the-bug
+        # failure mode that cost F3a two Criticals.
+        proven = self._report(hosts_mod.PROVEN)
+        refuted = self._report(hosts_mod.REFUTED)
+        self.assertNotEqual(proven["meta"]["host_capabilities"],
+                            refuted["meta"]["host_capabilities"])
