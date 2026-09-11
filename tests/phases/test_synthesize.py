@@ -8,10 +8,14 @@ import tempfile
 import unittest
 from unittest import mock
 
+from scripts import hosts
+from conftest import write_host_evidence
 import scripts.phases.runio as runio
 import scripts.phases.synthesize as synthesize
 
 import scripts.driver as driver
+
+_UL_PROVEN = {hosts.USAGE_LEDGER: hosts.PROVEN}
 
 
 class TestHostUsageCollection(unittest.TestCase):
@@ -27,6 +31,7 @@ class TestHostUsageCollection(unittest.TestCase):
     def test_collects_before_synthesize_with_an_explicit_window(self):
         with tempfile.TemporaryDirectory() as d, \
              mock.patch("scripts.phases.runio._run_child") as run:
+            write_host_evidence(d, _UL_PROVEN)
             run.return_value = mock.Mock(returncode=0)
             synthesize._collect_host_usage(d, self._manifest())
         cmd = run.call_args[0][0]   # the argv passed to _run_child
@@ -48,6 +53,7 @@ class TestHostUsageCollection(unittest.TestCase):
         # reintroducing `tokens: null`. It must be the session directory.
         with tempfile.TemporaryDirectory() as d, \
              mock.patch("scripts.phases.runio._run_child") as run:
+            write_host_evidence(d, _UL_PROVEN)
             run.return_value = mock.Mock(returncode=0)
             synthesize._collect_host_usage(d, self._manifest())
         cmd = run.call_args[0][0]
@@ -65,6 +71,7 @@ class TestHostUsageCollection(unittest.TestCase):
         # is, since the driver cannot deduce it.
         with tempfile.TemporaryDirectory() as d, \
              mock.patch("scripts.phases.runio._run_child") as run:
+            write_host_evidence(d, _UL_PROVEN)
             run.return_value = mock.Mock(returncode=0)
             synthesize._collect_host_usage(
                 d, self._manifest(session_dir="/somewhere/session"))
@@ -76,6 +83,7 @@ class TestHostUsageCollection(unittest.TestCase):
         # slug for "" and reproduce the silent-null it exists to prevent.
         with tempfile.TemporaryDirectory() as d, \
              mock.patch("scripts.phases.runio._run_child") as run:
+            write_host_evidence(d, _UL_PROVEN)
             run.return_value = mock.Mock(returncode=0)
             synthesize._collect_host_usage(d, self._manifest(session_dir=""))
         cmd = run.call_args[0][0]
@@ -88,6 +96,7 @@ class TestHostUsageCollection(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d, \
              mock.patch("scripts.phases.runio._run_child") as run, \
              contextlib.redirect_stderr(buf):
+            write_host_evidence(d, _UL_PROVEN)
             run.return_value = mock.Mock(returncode=1)
             synthesize._collect_host_usage(
                 d, self._manifest(session_dir="/somewhere/session"))
@@ -154,8 +163,13 @@ class TestHostUsageCollection(unittest.TestCase):
         run.assert_not_called()
 
     def test_existing_usage_is_never_overwritten_on_resume(self):
+        # #1344 F3: without proven evidence this would short-circuit on the
+        # posture check above and pass for the WRONG reason, no longer
+        # exercising the resume early-return this test names. Prove the
+        # capability so the file-exists branch is what actually runs.
         with tempfile.TemporaryDirectory() as d, \
              mock.patch("scripts.phases.runio._run_child") as run:
+            write_host_evidence(d, _UL_PROVEN)
             path = runio._pano(d, "usage.json")
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w", encoding="utf-8") as fh:
@@ -170,6 +184,7 @@ class TestHostUsageCollection(unittest.TestCase):
              mock.patch("scripts.phases.runio._run_child",
                         side_effect=runio.DriverError("boom")), \
              contextlib.redirect_stderr(io.StringIO()) as err:
+            write_host_evidence(d, _UL_PROVEN)
             self.assertIsNone(synthesize._collect_host_usage(d, self._manifest()))
         self.assertIn("meta.cost.tokens stays null", err.getvalue())
 
@@ -178,6 +193,7 @@ class TestHostUsageCollection(unittest.TestCase):
              mock.patch("scripts.phases.runio._run_child",
                         return_value=mock.Mock(returncode=1)), \
              contextlib.redirect_stderr(io.StringIO()) as err:
+            write_host_evidence(d, _UL_PROVEN)
             synthesize._collect_host_usage(d, self._manifest())
         self.assertIn("produced nothing", err.getvalue())
 

@@ -41,7 +41,8 @@ def _collect_host_usage(review_root, manifest):
     # starts billing itself against transcripts that may not be its own;
     # test_a_host_less_manifest_does_not_collect_usage pins the absence,
     # because the suite alone will not.
-    if not hosts.declares(manifest.get("host"), hosts.USAGE_LEDGER):
+    if (hosts.posture(manifest.get("host"), runio.host_evidence(review_root))
+            [hosts.USAGE_LEDGER] != hosts.PROVEN):
         return None          # other hosts write their own usage.json, or none
     if os.path.isfile(runio._pano(review_root, "usage.json")):
         return None          # already collected (resume) -- never overwrite
@@ -63,7 +64,10 @@ def _collect_host_usage(review_root, manifest):
     # silently stays null on a 612M-token run. The driver cannot infer the session
     # root, so let the operator state it; getcwd() remains the default because it
     # is right for the documented invocation.
-    session_dir = manifest.get("session_dir") or os.getcwd()
+    # runio.session_dir is the SINGLE source (C2): host_probes.probe_transcript_dir
+    # gates this collection off the same expression, so the two cannot drift
+    # into asking about different transcripts again.
+    session_dir = runio.session_dir(manifest)
     cmd = [sys.executable, runio._script("collect_usage.py"),
            "--run-dir", run_dir,
            "--project-dir", session_dir]

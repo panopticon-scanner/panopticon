@@ -208,7 +208,8 @@ def _verify_entry(review_root, manifest, group, domain, files, cell, host,
     prompt = ("Repo root: %s\nEvery relative path in the claims below resolves "
               "against this root -- read files THERE, never in your session's "
               "default checkout.\n\n%s" % (os.path.abspath(review_root), prompt))
-    enforced = hosts.declares(host, hosts.TOOL_POLICY_ENFORCED)
+    enforced = (hosts.posture(host, runio.host_evidence(review_root))
+                [hosts.TOOL_POLICY_ENFORCED] == hosts.PROVEN)
     return {"id": "verify-%s-%s-%s%s" % (group, domain, stage,
                                          "" if not part else "-part%d" % part),
             "agent": dispatch.registered_agent_name("domain-advisor.md") if enforced else None,
@@ -515,7 +516,8 @@ def _tool_verify_entry(review_root, manifest, queue_id, finding, host):
     prompt = ("Repo root: %s\nEvery relative path in the claim below resolves "
               "against this root -- read files THERE, never in your session's "
               "default checkout.\n\n%s" % (os.path.abspath(review_root), prompt))
-    enforced = hosts.declares(host, hosts.TOOL_POLICY_ENFORCED)
+    enforced = (hosts.posture(host, runio.host_evidence(review_root))
+                [hosts.TOOL_POLICY_ENFORCED] == hosts.PROVEN)
     return {"id": "verify-tool-%s" % queue_id,
             "agent": dispatch.registered_agent_name("advisor.md") if enforced else None,
             "enforced": enforced, "model": None, "prompt": prompt,

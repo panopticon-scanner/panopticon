@@ -116,13 +116,39 @@ class TestPostureFailsClosed(unittest.TestCase):
         self.assertEqual(hosts.PROVEN,
                          hosts.posture("claude", evidence)[hosts.TOOL_POLICY_ENFORCED])
 
-    def test_evidence_for_an_unclaimed_capability_is_refused(self):
+    def test_proven_evidence_for_an_unclaimed_capability_is_refused(self):
         # gemini claims nothing. Evidence asserting otherwise must not be
         # honoured -- the artifact is written by us, but a stale one from a
         # different host's run must not grant a capability.
         evidence = {hosts.TOOL_POLICY_ENFORCED: {"state": hosts.PROVEN}}
         self.assertEqual(hosts.UNKNOWN,
                          hosts.posture("gemini", evidence)[hosts.TOOL_POLICY_ENFORCED])
+
+    def test_refuted_evidence_survives_the_unclaimed_mask(self):
+        # I5. The mask above is written for the GRANTING direction, but it was
+        # applied symmetrically and so threw refutations away too. §7.3 makes
+        # `refuted` the STRONGER answer, and a refutation grants nothing, so
+        # letting it through is strictly non-permissive. Latent only because
+        # gemini and generic have empty project_scope_dirs; live the moment a
+        # family PR flips kimi or codex to driver_selectable -- and F5's
+        # entry-criterion test reads posture(), so a genuinely refuted host
+        # would read `unknown` and fail the bar for the wrong stated reason.
+        evidence = {hosts.TOOL_POLICY_ENFORCED: {"state": hosts.REFUTED}}
+        for host in ("gemini", "generic"):
+            with self.subTest(host=host):
+                self.assertFalse(hosts.declares(host, hosts.TOOL_POLICY_ENFORCED))
+                self.assertEqual(
+                    hosts.REFUTED,
+                    hosts.posture(host, evidence)[hosts.TOOL_POLICY_ENFORCED])
+
+    def test_refuted_survives_the_mask_for_a_host_the_registry_never_heard_of(self):
+        # The `not row` half of the same condition -- a different branch, and
+        # the one a stale artifact from a retired host name lands on.
+        evidence = {hosts.TOOL_POLICY_ENFORCED: {"state": hosts.REFUTED}}
+        self.assertIsNone(hosts.spec("no-such-host"))
+        self.assertEqual(
+            hosts.REFUTED,
+            hosts.posture("no-such-host", evidence)[hosts.TOOL_POLICY_ENFORCED])
 
     def test_an_unrecognised_state_is_unknown_not_trusted(self):
         evidence = {hosts.TOOL_POLICY_ENFORCED: {"state": "probably-fine"}}
@@ -223,6 +249,83 @@ class TestTheModuleStaysPure(unittest.TestCase):
         # assertions above over nothing.
         self.assertIn("os", self._imported())
         self.assertIn("expanduser", self._called())
+
+
+class TestTheRegistryNamesItsProbes(unittest.TestCase):
+    """#1344 F3a: a capability a host claims must say how it would be proved."""
+
+    def test_claude_names_a_probe_for_every_security_capability_it_claims(self):
+        row = hosts.spec("claude")
+        # Assert the exact probes map, not just existence and truthiness.
+        # This catches typos and swapped probe IDs.
+        self.assertEqual(
+            {hosts.TOOL_POLICY_ENFORCED: "registered-shell-tools",
+             hosts.ARTIFACT_WRITE_GUARD: "write-guard-armed",
+             hosts.USAGE_LEDGER: "transcript-dir"},
+            row.probes)
+
+    def test_probe_ids_are_strings_not_callables(self):
+        # hosts.py must never import host_probes -- that is what keeps it
+        # I/O-free and keeps TestTheModuleStaysPure satisfiable.
+        for name in hosts.known_hosts():
+            for capability, probe_id in (hosts.spec(name).probes or {}).items():
+                with self.subTest(host=name, capability=capability):
+                    self.assertIsInstance(probe_id, str)
+
+    def test_every_probed_capability_is_a_real_capability(self):
+        for name in hosts.known_hosts():
+            for capability in (hosts.spec(name).probes or {}):
+                with self.subTest(host=name, capability=capability):
+                    self.assertIn(capability, hosts.CAPABILITIES)
+
+    def test_a_host_only_probes_what_it_claims(self):
+        # Probing a capability you do not claim is incoherent: posture() would
+        # report unknown regardless, so the probe could never change an answer.
+        for name in hosts.known_hosts():
+            row = hosts.spec(name)
+            for capability in (row.probes or {}):
+                with self.subTest(host=name, capability=capability):
+                    self.assertIn(capability, row.claims)
+
+    def test_the_probes_table_is_not_empty(self):
+        # Guards the guard: a renamed constant must not make the loops above
+        # pass over nothing.
+        self.assertTrue(any(hosts.spec(n).probes for n in hosts.known_hosts()))
+
+
+class TestRefutedBeatsProven(unittest.TestCase):
+    """#1344 F3a, spec 7.3: two probes can touch one capability, so the
+    precedence has to be written down rather than left to dict order."""
+
+    def test_a_single_state_is_itself(self):
+        for state in hosts.STATES:
+            with self.subTest(state=state):
+                self.assertEqual(state, hosts.resolve_state([state]))
+
+    def test_refuted_beats_proven(self):
+        self.assertEqual(hosts.REFUTED,
+                         hosts.resolve_state([hosts.PROVEN, hosts.REFUTED]))
+        self.assertEqual(hosts.REFUTED,
+                         hosts.resolve_state([hosts.REFUTED, hosts.PROVEN]))
+
+    def test_refuted_beats_unknown(self):
+        # The key case: shell probe is inconclusive (UNKNOWN) while shadow
+        # scan refutes. Refutation survives uncertainty.
+        self.assertEqual(hosts.REFUTED,
+                         hosts.resolve_state([hosts.REFUTED, hosts.UNKNOWN]))
+        self.assertEqual(hosts.REFUTED,
+                         hosts.resolve_state([hosts.UNKNOWN, hosts.REFUTED]))
+
+    def test_proven_beats_unknown(self):
+        self.assertEqual(hosts.PROVEN,
+                         hosts.resolve_state([hosts.UNKNOWN, hosts.PROVEN]))
+
+    def test_nothing_at_all_is_unknown(self):
+        self.assertEqual(hosts.UNKNOWN, hosts.resolve_state([]))
+
+    def test_an_unrecognised_state_is_ignored_not_trusted(self):
+        self.assertEqual(hosts.UNKNOWN, hosts.resolve_state(["banana"]))
+        self.assertEqual(hosts.PROVEN, hosts.resolve_state(["banana", hosts.PROVEN]))
 
 
 if __name__ == "__main__":  # pragma: no cover

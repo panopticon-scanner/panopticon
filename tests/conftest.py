@@ -50,6 +50,31 @@ import pytest  # noqa: E402
 
 import scripts.run_tools as _run_tools  # noqa: E402
 import scripts.setup_flow as _setup_flow  # noqa: E402
+from scripts import hosts as _hosts  # noqa: E402
+from scripts.phases import runio as _runio  # noqa: E402
+
+
+# --- #1344 F3: consumers now read posture(), which is proof, not a claim -----
+# Every phase test that built a "claude" (or synthetic-probe) manifest and
+# expected `enforced: True` / a write-guard early-return / a usage collection
+# used to get that answer from the bare claim (`hosts.declares`). Now it also
+# needs evidence a probe actually proved the capability, or `posture()`
+# reports UNKNOWN and every one of those sites goes the other way. This is the
+# one place that writes it, so every phase test states the same fixture the
+# same way rather than five near-identical inline JSON blobs.
+def write_host_evidence(review_root, states, host="claude"):
+    """A host-capabilities.json proving exactly `states` (a
+    {capability: state} mapping); every other capability is UNKNOWN. Lands
+    wherever `runio.host_evidence(review_root)` will look for it -- the
+    per-run folder once a manifest is on disk, the flat top-level path
+    otherwise -- so a test needs no manifest just to prove a capability."""
+    capabilities = {name: {"state": states.get(name, _hosts.UNKNOWN),
+                           "by": "fixture", "detail": "fixture"}
+                    for name in _hosts.CAPABILITIES}
+    return _runio._write_json(
+        _runio._pano(review_root, _runio.HOST_CAPABILITIES),
+        {"schema_version": 1, "host": host, "probed_at": "2026-09-10T00:00:00Z",
+         "capabilities": capabilities})
 
 REAL_DOCKER_AVAILABLE = _run_tools.docker_available
 

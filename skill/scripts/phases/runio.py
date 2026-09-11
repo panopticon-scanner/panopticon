@@ -71,6 +71,8 @@ _TOP_LEVEL = frozenset({
     "report.json", "report.json.html",
 })
 
+HOST_CAPABILITIES = "host-capabilities.json"
+
 def _run_tag(review_root):
     """The active run's folder name from the manifest, or None before one exists
     (setup / pre-discovery) — callers then fall back to the flat top-level."""
@@ -204,6 +206,48 @@ def _write_json(path, data):
     with _open_w_nofollow(path) as fh:
         json.dump(data, fh, indent=2, sort_keys=True)
     return path
+
+def session_dir(manifest):
+    """Where the HOST SESSION runs -- NOT the review root, NOT the target.
+
+    See synthesize.py's #calibration-2/#calibration-4 comment; this is that
+    expression, single-sourced so the PROBE that gates the token ledger
+    (host_probes.probe_transcript_dir, via driver._establish_host_posture) and
+    the COLLECTOR that builds it (synthesize._collect_host_usage) cannot
+    disagree about which transcript they mean. They did disagree: the probe
+    was handed `args.target` and refuted off the scanned repo's slug, which
+    took `meta.cost.tokens` to null on every external-target run while the
+    collector was looking somewhere else entirely.
+
+    `session_dir` is deliberately not a manifest FIELD in the anti-drift sense
+    -- driver.run() assigns it in memory after write_manifest -- so a resume
+    that needs it passes --session-dir again. cwd is the default because it is
+    correct for the documented `driver run <target>` invocation.
+    """
+    return (manifest or {}).get("session_dir") or os.getcwd()
+
+def host_evidence(review_root):
+    """This run's capability evidence, or {} when there is none.
+
+    {} is not an error path: `hosts.posture()` turns it into all-unknown, which
+    means nothing is enforced. An absent or unreadable artifact must fail
+    CLOSED (spec 5, 9.2) -- on claude as much as on any exotic host -- and
+    that is the whole reason this returns a mapping rather than raising.
+
+    I3: the old one-liner promised that and did not deliver it. `or {}` only
+    covers a FALSY parse -- null, 0, "", [], {} -- so a JSON body that parsed
+    to a truthy non-mapping went straight into `.get` and raised
+    AttributeError: `[1,2]`, `"hello"` and `5` all crashed the run, and
+    `{"capabilities": 7}` returned the integer 7 as though it were evidence.
+    `hosts.posture` was hardened for exactly this shape ("a crash mid-run is
+    not failing closed -- it is failing"), but the LOADER that feeds it was
+    not, and `requests.require_unenforced_ack` consumes this output raw. This
+    file is written to a `.panopticon` path a hostile target can pre-commit,
+    so "unparseable value" and "unparseable container" are the same defect.
+    """
+    body = _load_json(_pano(review_root, HOST_CAPABILITIES))
+    caps = body.get("capabilities") if isinstance(body, dict) else None
+    return caps if isinstance(caps, dict) else {}
 
 def _json_parses(path):
     return _load_json(path) is not None

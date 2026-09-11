@@ -15,6 +15,8 @@ import shutil
 import tempfile
 import unittest
 from unittest import mock
+from conftest import write_host_evidence
+from scripts import hosts
 import scripts.phases.runio as runio
 import scripts.phases.verify as verify
 import scripts.phases.synthesize as synthesize
@@ -53,6 +55,11 @@ class _ToolVerifyBase(unittest.TestCase):
         os.makedirs(os.path.join(d, "src"))
         with open(os.path.join(d, "src", "app.py"), "w") as fh:
             fh.write("import os\nx = 1\ny = 2\nz = 3\npw = 'dummy'\n")
+        # #1344 F3: the tool-verify advisor's `enforced` now reads posture(),
+        # which requires PROVEN evidence, not the bare claim -- no manifest is
+        # ever persisted in this suite, so this lands in the flat top-level
+        # layout, exactly where `runio.host_evidence` will look for it here too.
+        write_host_evidence(d, {hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN})
         os.makedirs(runio._pano(d, "tools"))
         with open(runio._pano(d, "tools", "semgrep.sarif"), "w") as fh:
             json.dump(_semgrep_sarif(results), fh)
