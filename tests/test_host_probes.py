@@ -267,3 +267,54 @@ class TestWriteGuardArmedProbe(unittest.TestCase):
         before = write_guard_hook.guard_state()
         host_probes.probe_write_guard_armed("claude")
         self.assertEqual(before, write_guard_hook.guard_state())
+
+
+class TestTranscriptDirProbe(unittest.TestCase):
+    """#1344 F3a: usage_ledger is operational, not security (8.1 excludes it
+    from F5's bar), but an unprobed capability must still say so."""
+
+    def _transcripts(self, home, project_dir):
+        from scripts import collect_usage
+        d = os.path.join(home, ".claude", "projects",
+                         collect_usage.project_slug(project_dir))
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def test_a_readable_transcript_dir_is_proven(self):
+        with tempfile.TemporaryDirectory() as home, \
+                tempfile.TemporaryDirectory() as project:
+            d = self._transcripts(home, project)
+            state, by, detail = host_probes.probe_transcript_dir(
+                "claude", project, home=home)
+            self.assertEqual(hosts.PROVEN, state)
+            self.assertEqual("transcript-dir", by)
+            self.assertIn(d, detail)
+
+    def test_an_absent_transcript_dir_is_refuted(self):
+        # THE negative fixture. A host that claims a usage ledger and has no
+        # transcripts cannot produce one.
+        with tempfile.TemporaryDirectory() as home, \
+                tempfile.TemporaryDirectory() as project:
+            state, _by, detail = host_probes.probe_transcript_dir(
+                "claude", project, home=home)
+            self.assertEqual(hosts.REFUTED, state)
+            self.assertIn(".claude", detail)
+
+    def test_an_unreadable_transcript_dir_is_refuted(self):
+        with tempfile.TemporaryDirectory() as home, \
+                tempfile.TemporaryDirectory() as project:
+            d = self._transcripts(home, project)
+            os.chmod(d, 0o000)
+            try:
+                state, _by, _detail = host_probes.probe_transcript_dir(
+                    "claude", project, home=home)
+            finally:
+                os.chmod(d, 0o700)
+            self.assertEqual(hosts.REFUTED, state)
+
+    def test_a_host_that_claims_no_usage_ledger_is_unknown(self):
+        for name in ("gemini", "generic", "codex"):
+            with self.subTest(host=name):
+                state, by, _detail = host_probes.probe_transcript_dir(name, ".")
+                self.assertEqual(hosts.UNKNOWN, state)
+                self.assertIsNone(by)

@@ -23,7 +23,7 @@ does it inside a `tempfile.TemporaryDirectory()`.
 import os
 import tempfile
 
-from scripts import dispatch, hosts, write_guard_hook
+from scripts import collect_usage, dispatch, hosts, write_guard_hook
 
 # The roles the DRIVER dispatches and therefore needs registered shells for.
 # `advisor` is deliberately absent -- it is dispatched by the host, not the
@@ -190,3 +190,32 @@ def probe_write_guard_armed(host, session_root=None):
         return (hosts.REFUTED, WRITE_GUARD_ARMED, detail)
     return (hosts.PROVEN, WRITE_GUARD_ARMED,
             "%s; the host will arm at %s" % (detail, settings_path))
+
+
+TRANSCRIPT_DIR = "transcript-dir"
+
+
+def probe_transcript_dir(host, project_dir, home=None):
+    """The host's own transcript directory for this project exists and reads.
+
+    Operational rather than security -- 8.1 excludes usage_ledger from F5's
+    bar, and it gates nothing. It is probed so the posture is COMPLETE: 5.1
+    requires that absence of a warning mean "measured and proven", never
+    "nobody looked", and that only works if every claimed capability answers.
+
+    The path mangling belongs to collect_usage.project_slug; re-deriving it
+    here would be a second definition that could drift from the reader's.
+    """
+    if not hosts.declares(host, hosts.USAGE_LEDGER):
+        return (hosts.UNKNOWN, None, "host %r claims no usage ledger" % host)
+    root = home or os.path.expanduser("~")
+    directory = os.path.join(root, ".claude", "projects",
+                             collect_usage.project_slug(project_dir))
+    if not os.path.isdir(directory):
+        return (hosts.REFUTED, TRANSCRIPT_DIR,
+                "no transcript directory at %s; the cost ledger will report "
+                "null rather than a figure" % directory)
+    if not os.access(directory, os.R_OK):
+        return (hosts.REFUTED, TRANSCRIPT_DIR,
+                "%s is not readable" % directory)
+    return (hosts.PROVEN, TRANSCRIPT_DIR, "%s is readable" % directory)
