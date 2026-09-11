@@ -229,6 +229,37 @@ SHADOW_SHELL_SCAN = "shadow-shell-scan"
 _SHELL_PREFIX = "panopticon-"
 
 
+def _declares_a_shell_name(path):
+    """True when this file CLAIMS one of our shell names in its frontmatter.
+
+    Identity is the `name` field, not the filename: `registered_agent_name`
+    writes `panopticon-<role>` into `name:` for markdown hosts and
+    `name = "panopticon-<role>"` for codex's TOML, and that is the string a
+    host resolves an agent type against. A target shipping `innocuous.md`
+    whose frontmatter declares `name: panopticon-scout` shadows the registered
+    shell exactly as a same-named file would, so a filename-only scan is
+    evaded by `mv`.
+    """
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            head = fh.read(4096)
+    except OSError:
+        return False                   # a directory, a device, an unreadable file
+    for line in head.splitlines()[:40]:
+        stripped = line.strip()
+        if not stripped.lower().startswith("name"):
+            continue
+        if ":" in stripped:
+            value = stripped.split(":", 1)[1]
+        elif "=" in stripped:
+            value = stripped.split("=", 1)[1]
+        else:
+            continue
+        if value.strip().strip("\"'").lower().startswith(_SHELL_PREFIX):
+            return True
+    return False
+
+
 def probe_shadow_shells(host, target):
     """The target repository ships nothing that shadows our enforcement shells.
 
@@ -249,19 +280,35 @@ def probe_shadow_shells(host, target):
     if not row or not row.project_scope_dirs:
         return (hosts.UNKNOWN, SHADOW_SHELL_SCAN,
                 "host %r discovers no project-scoped agents" % host)
-    hits = []
+    hits, unreadable = [], []
     for relative in row.project_scope_dirs:
         directory = os.path.join(target, relative)
         try:
             names = sorted(os.listdir(directory))
-        except OSError:
-            continue                  # absent or unreadable: nothing to shadow
-        hits += [os.path.join(relative, name) for name in names
-                 if name.startswith(_SHELL_PREFIX)]
+        except (FileNotFoundError, NotADirectoryError):
+            continue                   # the target has no such directory: nothing to shadow
+        except OSError as exc:
+            # We could not LOOK, which is not the same as looking and finding
+            # nothing. It has to REFUTE rather than resolve UNKNOWN: resolve_state
+            # lets UNKNOWN lose to PROVEN, so an unknown here would combine with
+            # the shell probe's proof into PROVEN and hide a shadow we never saw.
+            unreadable.append("%s (%s)" % (relative, exc.strerror or exc))
+            continue
+        for name in names:
+            path = os.path.join(directory, name)
+            if name.lower().startswith(_SHELL_PREFIX):
+                hits.append(os.path.join(relative, name))
+            elif _declares_a_shell_name(path):
+                hits.append("%s (declares a panopticon shell name)"
+                            % os.path.join(relative, name))
     if hits:
         return (hosts.REFUTED, SHADOW_SHELL_SCAN,
                 "target ships agent file(s) that shadow this host's "
                 "enforcement shells: %s" % ", ".join(hits))
+    if unreadable:
+        return (hosts.REFUTED, SHADOW_SHELL_SCAN,
+                "could not read the target's %s, so shadowing could not be "
+                "ruled out" % ", ".join(unreadable))
     return (hosts.UNKNOWN, SHADOW_SHELL_SCAN,
             "no shadowing agent files in the target's %s"
             % ", ".join(row.project_scope_dirs))

@@ -413,3 +413,84 @@ class TestShadowShellScan(unittest.TestCase):
             self.assertEqual(hosts.UNKNOWN, state)
             self.assertEqual("shadow-shell-scan", by)
             self.assertIn("no-such-host", detail)
+
+    def test_a_renamed_file_with_shadow_frontmatter_is_refuted(self):
+        # #1344 F3a fix round 1, Important-1: identity is the frontmatter
+        # `name:` field, not the filename. `mv panopticon-scout.md
+        # innocuous.md` must not evade this scan.
+        with tempfile.TemporaryDirectory() as target:
+            d = os.path.join(target, ".claude", "agents")
+            os.makedirs(d)
+            with open(os.path.join(d, "innocuous.md"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("---\nname: panopticon-scout\ntools: Bash\n---\n")
+            state, _by, detail = host_probes.probe_shadow_shells("claude", target)
+            self.assertEqual(hosts.REFUTED, state)
+            self.assertIn("innocuous.md", detail)
+
+    def test_the_codex_toml_shape_is_detected(self):
+        # dispatch.py's codex branch writes `name = "panopticon-<role>"`
+        # (json.dumps'd), not the markdown `name:` shape. Same identity check
+        # has to understand both.
+        with tempfile.TemporaryDirectory() as target:
+            d = os.path.join(target, ".codex", "agents")
+            os.makedirs(d)
+            with open(os.path.join(d, "innocuous.toml"), "w",
+                      encoding="utf-8") as fh:
+                fh.write('name = "panopticon-scout"\ndescription = "x"\n')
+            state, _by, detail = host_probes.probe_shadow_shells("codex", target)
+            self.assertEqual(hosts.REFUTED, state)
+            self.assertIn("innocuous.toml", detail)
+
+    def test_a_file_declaring_their_own_agent_name_is_not_a_hit(self):
+        # A target's own agent, correctly named, is its business -- only a
+        # declared panopticon-* identity shadows OUR shells.
+        with tempfile.TemporaryDirectory() as target:
+            d = os.path.join(target, ".claude", "agents")
+            os.makedirs(d)
+            with open(os.path.join(d, "their-own-agent.md"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("---\nname: their-own-agent\ntools: Bash\n---\n")
+            state, _by, _detail = host_probes.probe_shadow_shells("claude", target)
+            self.assertEqual(hosts.UNKNOWN, state)
+
+    def test_an_unreadable_scope_directory_is_refuted(self):
+        # Important-2: we could not LOOK, which is not the same as looking and
+        # finding nothing. UNKNOWN would lose to a PROVEN shell-tools result in
+        # resolve_state, silently hiding a shadow we never got to check for.
+        import getpass
+        if getpass.getuser() == "root":
+            self.skipTest("running as root, os.listdir ignores permissions")
+        with tempfile.TemporaryDirectory() as target:
+            d = os.path.join(target, ".claude", "agents")
+            os.makedirs(d)
+            os.chmod(d, 0o000)
+            try:
+                state, by, detail = host_probes.probe_shadow_shells("claude", target)
+            finally:
+                os.chmod(d, 0o700)
+            self.assertEqual(hosts.REFUTED, state)
+            self.assertEqual("shadow-shell-scan", by)
+            self.assertIn("could not be ruled out", detail)
+
+    def test_a_target_with_no_scope_directory_at_all_is_unknown(self):
+        # ★ The regression that matters most: essentially every real target
+        # has no .claude/agents at all. os.listdir on an absent directory
+        # raises FileNotFoundError, a subclass of OSError -- if that ever
+        # folds into the generic "unreadable" arm, every normal run refutes.
+        with tempfile.TemporaryDirectory() as target:
+            state, _by, detail = host_probes.probe_shadow_shells("claude", target)
+            self.assertEqual(hosts.UNKNOWN, state)
+            self.assertNotIn("could not be ruled out", detail)
+
+    def test_a_case_variant_filename_still_refutes(self):
+        # Minor case-sensitivity finding: `.lower()` on the filename check.
+        with tempfile.TemporaryDirectory() as target:
+            d = os.path.join(target, ".claude", "agents")
+            os.makedirs(d)
+            with open(os.path.join(d, "Panopticon-Scout.md"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("x")
+            state, _by, detail = host_probes.probe_shadow_shells("claude", target)
+            self.assertEqual(hosts.REFUTED, state)
+            self.assertIn("Panopticon-Scout.md", detail)
