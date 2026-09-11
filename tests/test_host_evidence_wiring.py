@@ -291,16 +291,19 @@ class TestThePostureIsEstablishedEveryInvocation(unittest.TestCase):
         # unknown -> proven is the only real difference (artifact_write_guard
         # legitimately also moves unknown -> proven here, which is fine: it is
         # improvement too, not degradation).
-        with tempfile.TemporaryDirectory() as review_root:
+        with tempfile.TemporaryDirectory() as review_root, \
+                tempfile.TemporaryDirectory() as registration:
             manifest = self._manifest(session_dir=review_root)
             args = self._args()
-            first = host_probes.run_probes("claude", review_root)
+            first = host_probes.run_probes("claude", review_root,
+                                           registration_dir=registration)
             for row in first["capabilities"].values():
                 row["state"] = hosts.UNKNOWN
                 row["by"] = None
             runio._write_json(
                 runio._pano(review_root, runio.HOST_CAPABILITIES), first)
-            better = host_probes.run_probes("claude", review_root)
+            better = host_probes.run_probes("claude", review_root,
+                                            registration_dir=registration)
             for name, row in better["capabilities"].items():
                 if name != hosts.TOOL_POLICY_ENFORCED:
                     row["state"], row["by"] = hosts.UNKNOWN, None
@@ -588,9 +591,11 @@ class TestTheProbesReadTheRightTree(unittest.TestCase):
         # UNKNOWN here.
         sentinel = (hosts.REFUTED, host_probes.SHADOW_SHELL_SCAN,
                     "threaded-scan-sentinel")
-        with tempfile.TemporaryDirectory() as review_root:
+        with tempfile.TemporaryDirectory() as review_root, \
+                tempfile.TemporaryDirectory() as registration:
             art = host_probes.run_probes("claude", review_root,
                                          session_root=review_root,
+                                         registration_dir=registration,
                                          shadow=sentinel)
             row = art["capabilities"][hosts.TOOL_POLICY_ENFORCED]
             self.assertEqual(hosts.REFUTED, row["state"])
@@ -606,14 +611,16 @@ class TestTheProbesReadTheRightTree(unittest.TestCase):
         # session dir == target there.
         with tempfile.TemporaryDirectory() as review_root, \
                 tempfile.TemporaryDirectory() as session, \
-                tempfile.TemporaryDirectory() as home:
+                tempfile.TemporaryDirectory() as home, \
+                tempfile.TemporaryDirectory() as registration:
             session_slug = collect_usage.project_slug(session)
             self.assertNotEqual(session_slug,
                                 collect_usage.project_slug(review_root))
             # transcripts exist for the SESSION's slug and nothing else
             os.makedirs(os.path.join(home, ".claude", "projects", session_slug))
             art = host_probes.run_probes("claude", review_root,
-                                         session_root=session, home=home)
+                                         session_root=session, home=home,
+                                         registration_dir=registration)
             row = art["capabilities"][hosts.USAGE_LEDGER]
             self.assertEqual(hosts.PROVEN, row["state"])
             # Asserted against collect_usage.project_slug, the collector's own

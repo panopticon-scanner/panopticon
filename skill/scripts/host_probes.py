@@ -194,7 +194,8 @@ def probe_entry_model_bound(host, registration_dir=None):
     if not directory or not os.path.isdir(directory):
         return (hosts.UNKNOWN, ENTRY_MODEL_BOUND,
                 "no registration directory at %s: nothing registered binds a model, "
-                "and nothing here proves the host honours the entry's" % directory)
+                "and nothing here proves the host honours the entry's model"
+                % directory)
     faults, matched, absent = [], [], []
     for role, role_file in sorted(dispatch.ROLE_FILES.items()):
         path = os.path.join(directory,

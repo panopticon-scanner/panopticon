@@ -788,12 +788,15 @@ class TestRunProbesBuildsTheArtifact(unittest.TestCase):
     def test_every_capability_gets_a_row_even_unprobed_ones(self):
         # 5.1: "nobody looked" is written down, never inferred from an absent
         # key. read_scope_confined has no probe (spec 7.2); model_binding
-        # gained one in F4 (entry-model-bound) and is exercised for real here
-        # against whatever this machine's own registration looks like, which
-        # is why this assertion stays broad (any real STATE) rather than
-        # pinning UNKNOWN the way the F3a-era version did.
-        with tempfile.TemporaryDirectory() as target:
-            art = host_probes.run_probes("claude", target)
+        # gained one in F4 (entry-model-bound). `registration_dir` is pinned
+        # to an empty temp dir -- not left to default to this machine's real
+        # ~/.claude/agents -- so the probe never touches live state and the
+        # assertions stay broad (any real STATE) rather than depending on
+        # what happens to be registered on whichever machine runs this.
+        with tempfile.TemporaryDirectory() as target, \
+                tempfile.TemporaryDirectory() as registration:
+            art = host_probes.run_probes("claude", target,
+                                         registration_dir=registration)
             self.assertEqual(sorted(hosts.CAPABILITIES),
                              sorted(art["capabilities"]))
             for capability in hosts.CAPABILITIES:
@@ -806,9 +809,13 @@ class TestRunProbesBuildsTheArtifact(unittest.TestCase):
         # F4 shipped entry-model-bound, so model_binding is no longer in this
         # set (TestEntryModelBoundProbe covers its real behaviour against
         # controlled fixtures); read_scope_confined is the one capability
-        # left with no probe of any kind (spec 7.2).
-        with tempfile.TemporaryDirectory() as target:
-            art = host_probes.run_probes("claude", target)
+        # left with no probe of any kind (spec 7.2). `registration_dir` is
+        # pinned to an empty temp dir so this call never reads the real
+        # ~/.claude/agents.
+        with tempfile.TemporaryDirectory() as target, \
+                tempfile.TemporaryDirectory() as registration:
+            art = host_probes.run_probes("claude", target,
+                                         registration_dir=registration)
             row = art["capabilities"][hosts.READ_SCOPE_CONFINED]
             self.assertEqual(hosts.UNKNOWN, row["state"])
             self.assertIsNone(row["by"])
@@ -874,16 +881,20 @@ class TestRunProbesBuildsTheArtifact(unittest.TestCase):
             self.assertIn("panopticon-scout.md", row["detail"])
 
     def test_the_schema_is_stamped_and_the_host_recorded(self):
-        with tempfile.TemporaryDirectory() as target:
-            art = host_probes.run_probes("claude", target)
+        with tempfile.TemporaryDirectory() as target, \
+                tempfile.TemporaryDirectory() as registration:
+            art = host_probes.run_probes("claude", target,
+                                         registration_dir=registration)
             self.assertEqual(1, art["schema_version"])
             self.assertEqual("claude", art["host"])
             self.assertTrue(art["probed_at"])
 
     def test_capabilities_of_ignores_the_timestamp(self):
         # The comparison on resume must not fire merely because time passed.
-        with tempfile.TemporaryDirectory() as target:
-            first = host_probes.run_probes("claude", target)
+        with tempfile.TemporaryDirectory() as target, \
+                tempfile.TemporaryDirectory() as registration:
+            first = host_probes.run_probes("claude", target,
+                                           registration_dir=registration)
             second = dict(first, probed_at="1999-01-01T00:00:00Z")
             self.assertEqual(host_probes.capabilities_of(first),
                              host_probes.capabilities_of(second))
