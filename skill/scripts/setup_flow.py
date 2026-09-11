@@ -18,6 +18,8 @@ import discovery  # noqa: E402  (P6.5 Slice A: discovery primitives, moved off o
 import grouping_engine  # noqa: E402  (5.2: stage-3 size policy + setup report)
 import coverage_model  # noqa: E402  (5.2: the surfaces enum for the brief)
 from scripts import hosts  # noqa: E402  (#1344 F2: host readiness reads the registry)
+from scripts import host_probes  # noqa: E402  (#1344 F3b: readiness probes live posture)
+from scripts import host_disclosure  # noqa: E402  (#1344 F3b: one voice for the posture)
 
 
 # #1135: the committable block ignores run artifacts under .panopticon/ while
@@ -272,8 +274,10 @@ def _check_nvd_key(repo, env):
             "NVD_API_KEY or add it to .env (never commit it)")
 
 
-def _check_host_shells(host, runner):
-    """Report what this host's registration actually looks like.
+def _check_host_shells(host, runner, repo_root=None):
+    """Report what this host's registration actually looks like, and -- for a
+    host with a real shell format -- what its capability posture proves right
+    now.
 
     Rebuilt on the registry (#1344 F2). Previously this function asserted
     ("enforced-shells", True, "codex_exec enforces read-only execution") for
@@ -285,6 +289,17 @@ def _check_host_shells(host, runner):
 
     `ok=None` means NOT APPLICABLE, not "failed". setup's renderer already
     distinguishes the three.
+
+    `repo_root` defaults to None on purpose: `_check_host_shells` has call
+    sites that cannot supply it (a module-level fixture in
+    tests/phases/test_setup.py evaluates this at collection time, before any
+    mock is in place) and the brief's own fixture-driven tests call this with
+    just (host, runner). A missing repo_root is not a silent guess -- it is
+    handed straight to `host_probes.run_probes` as `review_root`, and a probe
+    that cannot resolve a real tree (`probe_shadow_shells` joins it with a
+    relative path) raises, which the try/except below turns into an honest
+    "could not be probed" rather than a crash. The one production caller,
+    `setup_readiness`, always has a real repo and passes it.
     """
     import dispatch  # noqa: E402
     resolved_host = host or dispatch._detect_host()
@@ -333,6 +348,32 @@ def _check_host_shells(host, runner):
                    "skill/scripts/dispatch.py --emit-host-agents %s and start "
                    "a fresh session"
                    % (", ".join(missing_shells), resolved_host)))
+
+    # 5.1 surface 4. `driver setup` has no run directory, so there is no
+    # artifact to read -- readiness PROBES. That is the point: this is where
+    # an operator looks before a run to find out what to fix, and the remedy
+    # is the reason the line exists at all.
+    try:
+        fresh = host_probes.run_probes(resolved_host, repo_root)
+    except Exception as exc:            # noqa: BLE001 -- readiness never crashes
+        checks.append(("host-capabilities", None,
+                       "posture could not be probed: %s" % exc))
+        return checks
+    gaps = host_disclosure.lines(fresh)
+    if not gaps:
+        checks.append(("host-capabilities", True, host_disclosure.ALL_PROVEN))
+        return checks
+    checks.append(("host-capabilities", None, host_disclosure.headline(fresh)))
+    caps = fresh.get("capabilities") or {}
+    for capability in hosts.unproven(hosts.posture(resolved_host, caps)):
+        state = (caps.get(capability) or {}).get("state")
+        # refuted is a fault the operator can act on; unknown is NOT
+        # APPLICABLE -- read_scope_confined is unknown on every host today and
+        # must not report as a failure nobody can clear.
+        ok = False if state == hosts.REFUTED else None
+        line = [g for g in gaps if g.startswith(capability)]
+        checks.append(("host-capability:" + capability, ok,
+                       line[0] if line else capability))
     return checks
 
 
@@ -366,7 +407,7 @@ def setup_readiness(repo, host=None, runner=subprocess.run, environ=None):
     checks.extend(_check_docker(runner))
     checks.append(_check_git_root(repo))
     checks.append(_check_nvd_key(repo, env))
-    checks.extend(_check_host_shells(host, runner))
+    checks.extend(_check_host_shells(host, runner, repo))
     checks.append(_check_groups_manifest(repo))
     return checks
 
