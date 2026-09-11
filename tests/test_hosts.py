@@ -230,11 +230,13 @@ class TestTheRegistryNamesItsProbes(unittest.TestCase):
 
     def test_claude_names_a_probe_for_every_security_capability_it_claims(self):
         row = hosts.spec("claude")
-        for capability in (hosts.TOOL_POLICY_ENFORCED, hosts.ARTIFACT_WRITE_GUARD,
-                           hosts.USAGE_LEDGER):
-            with self.subTest(capability=capability):
-                self.assertIn(capability, row.probes)
-                self.assertTrue(row.probes[capability])
+        # Assert the exact probes map, not just existence and truthiness.
+        # This catches typos and swapped probe IDs.
+        self.assertEqual(
+            {hosts.TOOL_POLICY_ENFORCED: "registered-shell-tools",
+             hosts.ARTIFACT_WRITE_GUARD: "write-guard-armed",
+             hosts.USAGE_LEDGER: "transcript-dir"},
+            row.probes)
 
     def test_probe_ids_are_strings_not_callables(self):
         # hosts.py must never import host_probes -- that is what keeps it
@@ -259,7 +261,7 @@ class TestTheRegistryNamesItsProbes(unittest.TestCase):
                 with self.subTest(host=name, capability=capability):
                     self.assertIn(capability, row.claims)
 
-    def test_the_table_is_not_empty(self):
+    def test_the_probes_table_is_not_empty(self):
         # Guards the guard: a renamed constant must not make the loops above
         # pass over nothing.
         self.assertTrue(any(hosts.spec(n).probes for n in hosts.known_hosts()))
@@ -279,6 +281,14 @@ class TestRefutedBeatsProven(unittest.TestCase):
                          hosts.resolve_state([hosts.PROVEN, hosts.REFUTED]))
         self.assertEqual(hosts.REFUTED,
                          hosts.resolve_state([hosts.REFUTED, hosts.PROVEN]))
+
+    def test_refuted_beats_unknown(self):
+        # The key case: shell probe is inconclusive (UNKNOWN) while shadow
+        # scan refutes. Refutation survives uncertainty.
+        self.assertEqual(hosts.REFUTED,
+                         hosts.resolve_state([hosts.REFUTED, hosts.UNKNOWN]))
+        self.assertEqual(hosts.REFUTED,
+                         hosts.resolve_state([hosts.UNKNOWN, hosts.REFUTED]))
 
     def test_proven_beats_unknown(self):
         self.assertEqual(hosts.PROVEN,
