@@ -1,5 +1,4 @@
 import os
-import stat
 import tempfile
 import unittest
 
@@ -64,7 +63,11 @@ class TestRegisteredShellToolsProbe(unittest.TestCase):
             self.assertIn("domain_panel", detail)
 
     def test_a_shell_granting_a_forbidden_tool_is_refuted(self):
-        # The failure that matters most: a shell that exists but grants Bash.
+        # This branch changes the MESSAGE, not the VERDICT. Because allowed and
+        # forbidden are disjoint in every template, the equality check would
+        # refute this shell anyway. The branch exists so an operator reading
+        # spec 7.1's refusal learns that a FORBIDDEN tool leaked into a
+        # registered shell, rather than being handed two lists to diff by eye.
         from scripts import dispatch
         with tempfile.TemporaryDirectory() as d:
             self._fully_registered(d)
@@ -74,7 +77,11 @@ class TestRegisteredShellToolsProbe(unittest.TestCase):
             state, _by, detail = host_probes.probe_registered_shell_tools("claude", d)
             self.assertEqual(hosts.REFUTED, state)
             self.assertIn("scout", detail)
-            self.assertIn("Bash", detail)
+            # The token that ONLY the forbidden branch emits. Asserting on
+            # "Bash" instead would pass either way: allowed and forbidden are
+            # disjoint, so a forbidden grant also trips the equality check,
+            # whose message formats sorted(granted) -- which contains "Bash".
+            self.assertIn("forbidden", detail)
 
     def test_a_shell_with_no_tools_line_is_refuted(self):
         from scripts import dispatch
