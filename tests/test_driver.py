@@ -28,7 +28,6 @@ from conftest import write_host_evidence
 import scripts.driver as driver
 import scripts.diff_map as diff_map
 import scripts.groups_schema as groups_schema
-import scripts.host_probes as host_probes
 import scripts.plan_contract as plan_contract
 import scripts.run_manifest as run_manifest
 from scripts import hosts
