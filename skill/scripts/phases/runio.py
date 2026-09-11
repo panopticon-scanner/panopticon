@@ -233,9 +233,21 @@ def host_evidence(review_root):
     means nothing is enforced. An absent or unreadable artifact must fail
     CLOSED (spec 5, 9.2) -- on claude as much as on any exotic host -- and
     that is the whole reason this returns a mapping rather than raising.
+
+    I3: the old one-liner promised that and did not deliver it. `or {}` only
+    covers a FALSY parse -- null, 0, "", [], {} -- so a JSON body that parsed
+    to a truthy non-mapping went straight into `.get` and raised
+    AttributeError: `[1,2]`, `"hello"` and `5` all crashed the run, and
+    `{"capabilities": 7}` returned the integer 7 as though it were evidence.
+    `hosts.posture` was hardened for exactly this shape ("a crash mid-run is
+    not failing closed -- it is failing"), but the LOADER that feeds it was
+    not, and `requests.require_unenforced_ack` consumes this output raw. This
+    file is written to a `.panopticon` path a hostile target can pre-commit,
+    so "unparseable value" and "unparseable container" are the same defect.
     """
-    return (_load_json(_pano(review_root, HOST_CAPABILITIES)) or {}).get(
-        "capabilities") or {}
+    body = _load_json(_pano(review_root, HOST_CAPABILITIES))
+    caps = body.get("capabilities") if isinstance(body, dict) else None
+    return caps if isinstance(caps, dict) else {}
 
 def _json_parses(path):
     return _load_json(path) is not None

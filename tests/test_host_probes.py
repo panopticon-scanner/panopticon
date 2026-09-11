@@ -918,3 +918,42 @@ class TestTheEvidenceLoader(unittest.TestCase):
             self.assertEqual(
                 hosts.PROVEN,
                 hosts.posture("claude", evidence)[hosts.TOOL_POLICY_ENFORCED])
+
+    def test_a_truthy_non_mapping_body_reads_as_no_evidence(self):
+        # I3. The docstring promised fail-closed; `or {}` delivered it only for
+        # a FALSY parse. A body that parsed to a truthy non-mapping went into
+        # `.get` and raised AttributeError -- measured on the pre-fix tree for
+        # all three of these -- which is not failing closed, it is failing. The
+        # artifact lives at a `.panopticon` path a hostile target can
+        # pre-commit, and `requests.require_unenforced_ack` consumes this
+        # output raw at requests.py:209.
+        from scripts.phases import runio
+        for body in ("[1,2]", '"hello"', "5", "true"):
+            with self.subTest(body=body):
+                with tempfile.TemporaryDirectory() as review_root:
+                    path = runio._pano(review_root, runio.HOST_CAPABILITIES)
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    with open(path, "w", encoding="utf-8") as fh:
+                        fh.write(body)
+                    self.assertEqual({}, runio.host_evidence(review_root))
+
+    def test_a_non_mapping_capabilities_value_reads_as_no_evidence(self):
+        # The subtler half: the envelope IS a dict, so the isinstance check on
+        # the body alone passes it -- and the pre-fix loader then RETURNED the
+        # integer 7 as this run's evidence. `hosts.posture` would go on to call
+        # `.get` on it. Both shapes have to be checked, which is why the fix is
+        # two isinstance tests rather than one.
+        from scripts.phases import runio
+        for value in (7, "capabilities", [1, 2], None):
+            with self.subTest(value=value):
+                with tempfile.TemporaryDirectory() as review_root:
+                    runio._write_json(
+                        runio._pano(review_root, runio.HOST_CAPABILITIES),
+                        {"schema_version": 1, "host": "claude",
+                         "capabilities": value})
+                    evidence = runio.host_evidence(review_root)
+                    self.assertEqual({}, evidence)
+                    # and the consumer stays fail-closed on it
+                    self.assertEqual(
+                        {hosts.UNKNOWN},
+                        set(hosts.posture("claude", evidence).values()))
