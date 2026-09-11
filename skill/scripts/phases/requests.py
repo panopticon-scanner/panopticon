@@ -159,6 +159,11 @@ def write_capable_roles():
                            ["tool_policy"].get("allowed") or [])]
 
 
+# Refreshed on every invocation rather than written once: these describe what
+# the CURRENT probe found, not what the operator agreed to. See the merge below.
+_ACK_DISCLOSURE = (hosts.TOOL_POLICY_ENFORCED, "tool_policy_detail")
+
+
 def require_unenforced_ack(review_root, manifest, entries):
     """Refuse to dispatch write-capable reviewers on a host that cannot mediate
     Write, unless the operator accepted the risk explicitly (#1519, AGT-B1A).
@@ -287,11 +292,20 @@ def _record_unenforced_ack(review_root, manifest, entries, evidence, posture,
     path = runio._pano(review_root, UNENFORCED_ACK)
     stored = runio._load_json(path)
     if isinstance(stored, dict):
-        added = {k: v for k, v in body.items() if k not in stored}
-        if not added:
+        merged = dict(stored)
+        # Never-overwrite protects the BINDING -- plan_sha256 above all, whose
+        # whole job (#493 R2) is to stay as the earlier invocation wrote it so a
+        # changed plan reads as stale. It must not also freeze the DISCLOSURE.
+        # A second shadowing file appearing after the first ack leaves the state
+        # alone (refuted -> refuted), so capabilities_of() sees no drift and the
+        # run continues; if the detail were pinned to the first write, the ack
+        # would name one path forever while the tree shipped several -- losing
+        # the exact fact 7.3 requires it to record.
+        merged.update({k: v for k, v in body.items() if k not in stored})
+        merged.update({k: body[k] for k in _ACK_DISCLOSURE if k in body})
+        if merged == stored:
             return path                # idempotent across resumes
-        stored.update(added)
-        body = stored
+        body = merged
     return runio._write_json(path, body)
 
 

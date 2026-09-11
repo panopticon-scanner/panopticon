@@ -218,6 +218,32 @@ class TestTheAckRecordsAShadowedOverride(unittest.TestCase):
         self.assertEqual("written by the earlier invocation", ack["note"])
         self.assertIn("panopticon-scout.md", ack["tool_policy_detail"])
 
+    def test_a_second_shadow_file_reaches_the_ack_on_a_later_invocation(self):
+        # 7.3 promises the ack records THE SHADOWING PATHS -- plural, and
+        # current. A second file appearing after the first ack was written
+        # leaves the STATE alone (refuted -> refuted), so the posture-drift
+        # refusal never fires and nothing else in the run would ever notice.
+        # The never-overwrite rule protects the #493 plan binding; it must not
+        # also freeze the disclosure it was never meant to cover.
+        root = self._root(hosts.REFUTED, detail=self.SHADOW)
+        first = requests.require_unenforced_ack(
+            root, _manifest("claude", allow=True), ENTRIES)
+        with open(first, encoding="utf-8") as fh:
+            binding = json.load(fh)["plan_sha256"]
+        path = runio._pano(root, runio.HOST_CAPABILITIES)
+        body = runio._load_json(path)
+        body["capabilities"][hosts.TOOL_POLICY_ENFORCED]["detail"] = (
+            self.SHADOW + ", .claude/agents/panopticon-domain-panel.md")
+        runio._write_json(path, body)
+        requests.require_unenforced_ack(
+            root, _manifest("claude", allow=True), ENTRIES)
+        with open(first, encoding="utf-8") as fh:
+            ack = json.load(fh)
+        self.assertIn("panopticon-domain-panel.md", ack["tool_policy_detail"])
+        self.assertIn("panopticon-scout.md", ack["tool_policy_detail"])
+        # the binding the never-overwrite rule exists for still survives
+        self.assertEqual(binding, ack["plan_sha256"])
+
     def test_a_refutation_with_no_recorded_detail_still_says_so(self):
         root = self._root(hosts.REFUTED)          # conftest's detail: "fixture"
         path = runio._pano(root, runio.HOST_CAPABILITIES)
