@@ -222,7 +222,8 @@ def _cell_entry(review_root, manifest, group, domain, files, tests, host, bundle
             "enforced": enforced, "model": requests.bound_model(host, "domain_panel"),
             "prompt": prefix + prompt,
             "out_file": out_file, "run_id": manifest["run_id"],
-            "group": group, "domain": domain}
+            "group": group, "domain": domain,
+            "files": [os.path.abspath(os.path.join(review_root, f)) for f in files]}
     if mode:
         entry["delivery"] = mode
     return entry

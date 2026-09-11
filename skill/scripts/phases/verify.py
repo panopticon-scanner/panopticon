@@ -218,7 +218,8 @@ def _verify_entry(review_root, manifest, group, domain, files, cell, host,
                                          "" if not part else "-part%d" % part),
             "agent": dispatch.registered_agent_name("domain-advisor.md") if enforced else None,
             "enforced": enforced, "model": requests.bound_model(host, "domain_advisor"),
-            "prompt": prefix + prompt, "out_file": out_file}
+            "prompt": prefix + prompt, "out_file": out_file,
+            "files": [os.path.abspath(os.path.join(review_root, f)) for f in files]}
     if mode:
         entry["delivery"] = mode
     return entry

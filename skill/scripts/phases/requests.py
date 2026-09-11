@@ -175,8 +175,9 @@ def _driver_plan_entries(review_root, manifest):
     out_file spelling _cell_entry uses, so synth.integrity.reconcile_findings_files
     sees no missing/unexpected on a clean run. `enforced` mirrors _cell_entry so
     plan_mod.derive_tool_policy_mode reports the run's real posture rather than
-    defaulting to "advisory". No `files`/`role` -- this is a declaration of
-    which out_files must exist, not a scope grant or a cost row."""
+    defaulting to "advisory". No `files`/`role`/`model` -- this is a
+    declaration of which out_files must exist, not a scope grant or a cost row;
+    the dispatch entries carry scope (F4) and this deliberately does not."""
     enforced = (hosts.posture(manifest.get("host", "claude"),
                               runio.host_evidence(review_root))
                 [hosts.TOOL_POLICY_ENFORCED] == hosts.PROVEN)

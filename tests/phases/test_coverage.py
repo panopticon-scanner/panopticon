@@ -71,6 +71,24 @@ class TestCoveragePhase(unittest.TestCase):
         self.assertEqual("SENTINEL-SCOUT", entry["model"])
         rm.assert_any_call(self.manifest.get("host", "claude"), "scout")
 
+    def test_scout_entries_carry_their_scope_as_absolute_paths(self):
+        # spec 7.2: machine-readable, exactly as out_file is for the write
+        # guard. Same resolution the prose list uses, so the two cannot name
+        # different trees.
+        self._groups_json([{"name": "Auth", "files": ["a.py"]}])
+        self._groups_yml("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n")
+        with mock.patch("scripts.dispatch.render_prompt", return_value="SCOUT-BODY"), \
+             mock.patch("scripts.dispatch.registered_agent_name",
+                        return_value="panopticon-scout"):
+            coverage.coverage_execute(self.root, self.manifest)
+        req = runio._load_json(runio._pano(self.root, "dispatch-request.json"))
+        expected = [os.path.abspath(os.path.join(self.root, "a.py"))]
+        for e in req["entries"]:
+            with self.subTest(entry=e["id"]):
+                self.assertEqual(expected, e["files"])
+                for f in e["files"]:
+                    self.assertTrue(f.startswith(os.path.abspath(self.root) + os.sep))
+
     def test_batches_all_pending_scouts_into_one_checkpoint(self):
         # #1056: every group's scout goes in ONE checkpoint (they are
         # independent) so they dispatch concurrently, not 21 sequential

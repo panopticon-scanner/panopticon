@@ -128,6 +128,28 @@ class TestVerifyPrimary(unittest.TestCase):
         self.assertEqual("SENTINEL-ADVISOR", e["model"])
         rm.assert_any_call(self.manifest.get("host", "claude"), "domain_advisor")
 
+    def test_verify_entries_carry_their_scope_as_absolute_paths(self):
+        # spec 7.2: machine-readable, exactly as out_file is for the write
+        # guard. Same resolution the prose list uses, so the two cannot name
+        # different trees.
+        _cell(self.root, "app", "SEC", [{"domain": "SEC", "code": "SEC-A1A",
+              "severity": "HIGH", "title": "t", "category": "x",
+              "location": {"file": "a.py", "line_start": 1}}])
+        with (
+            mock.patch("scripts.dispatch.render_prompt", return_value="BODY"),
+            mock.patch("scripts.dispatch.registered_agent_name",
+                       return_value="panopticon-domain-advisor"),
+            mock.patch("scripts.ocrdb.load_bundle", return_value={"domains": {}})
+        ):
+            verify.verify_execute(self.root, self.manifest)
+        req = runio._load_json(runio._pano(self.root, "dispatch-request.json"))
+        expected = [os.path.abspath(os.path.join(self.root, "a.py"))]
+        for e in req["entries"]:
+            with self.subTest(entry=e["id"]):
+                self.assertEqual(expected, e["files"])
+                for f in e["files"]:
+                    self.assertTrue(f.startswith(os.path.abspath(self.root) + os.sep))
+
     def test_all_below_gate_advances(self):
         _cell(self.root, "app", "SEC", [{"domain": "SEC", "severity": "LOW",
               "title": "t", "category": "x", "location": {"file": "a.py", "line_start": 1}}])

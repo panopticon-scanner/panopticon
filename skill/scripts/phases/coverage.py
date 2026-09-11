@@ -51,7 +51,8 @@ def _scout_entry(review_root, manifest, group, files, host, registry_tools=None)
             "enforced": enforced,
             "model": requests.bound_model(host, "scout"),
             "prompt": prompt,
-            "out_file": os.path.abspath(runio._pano(review_root, "scout-%s.json" % group))}
+            "out_file": os.path.abspath(runio._pano(review_root, "scout-%s.json" % group)),
+            "files": [os.path.abspath(os.path.join(review_root, f)) for f in files]}
 
 def coverage_done(review_root, manifest):
     # Vacuously done when discovery produced no groups (empty target); otherwise

@@ -187,3 +187,21 @@ class TestDelivery(unittest.TestCase):
         self.assertIn("do NOT write", prefix)
         self.assertIn("final message", prefix)
         self.assertTrue(prefix.endswith("\n\n"), "preamble must separate from the body")
+
+
+class TestDriverPlanEntries(unittest.TestCase):
+    def test_the_declaration_plan_carries_no_scope(self):
+        # Its docstring says so: "a declaration of which out_files must exist,
+        # not a scope grant". Pinned so the plan and the entries do not drift
+        # into looking alike -- reconcile reads one, a confinement primitive
+        # will read the other.
+        with tempfile.TemporaryDirectory() as root:
+            os.makedirs(runio._pano(root))
+            manifest = {"run_id": "R", "security_mode": "standard", "host": "claude"}
+            runio._write_json(runio._pano(root, "groups.json"),
+                             {"groups": [{"name": "Auth", "files": ["a.py"]}]})
+            runio._write_json(runio._pano(root, "coverage-Auth.json"),
+                             {"effective": ["SEC"]})
+            for entry in requests._driver_plan_entries(root, manifest):
+                self.assertNotIn("files", entry)
+                self.assertNotIn("model", entry)

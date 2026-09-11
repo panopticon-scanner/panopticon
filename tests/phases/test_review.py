@@ -125,3 +125,21 @@ class TestCellFanOut(unittest.TestCase):
             with self.subTest(entry=e["id"]):
                 self.assertNotIn("delivery", e)
                 self.assertNotIn("DELIVERY: return-persist", e["prompt"])
+
+    def test_cell_entries_carry_their_scope_as_absolute_paths(self):
+        # spec 7.2: machine-readable, exactly as out_file is for the write
+        # guard. Same resolution the prose list uses, so the two cannot name
+        # different trees.
+        with self._menu_stub(), \
+             mock.patch("scripts.dispatch.render_prompt", return_value="BODY"), \
+             mock.patch("scripts.dispatch.registered_agent_name",
+                        return_value="panopticon-domain-panel"), \
+             mock.patch("scripts.ocrdb.load_bundle", return_value={"domains": {}}):
+            review.review_execute(self.root, self.manifest)
+        req = runio._load_json(runio._pano(self.root, "dispatch-request.json"))
+        expected = [os.path.abspath(os.path.join(self.root, "a.py"))]
+        for e in req["entries"]:
+            with self.subTest(entry=e["id"]):
+                self.assertEqual(expected, e["files"])
+                for f in e["files"]:
+                    self.assertTrue(f.startswith(os.path.abspath(self.root) + os.sep))
