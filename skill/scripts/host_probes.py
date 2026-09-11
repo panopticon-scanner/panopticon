@@ -26,27 +26,43 @@ from scripts import dispatch, hosts
 
 # The roles the DRIVER dispatches and therefore needs registered shells for.
 # `advisor` is deliberately absent -- it is dispatched by the host, not the
-# driver. Mirrors setup_flow._driver_roles, which trips loudly on drift.
+# driver. Protected by test_the_driver_roles_match_setup_flows.
 DRIVER_ROLES = ("scout", "domain_panel", "domain_advisor")
 
 REGISTERED_SHELL_TOOLS = "registered-shell-tools"
 
 
 def _frontmatter_tools(path):
-    """The `tools:` line of a registered shell as a list, or None.
+    """The `tools:` grant of a registered shell as a list, or None.
 
-    Deliberately a line scan rather than a YAML parse: the frontmatter is
-    emitted by `dispatch.emit_host_agents` in a fixed shape, stdlib has no YAML,
-    and a dependency here would violate the plan's stdlib-only constraint.
+    Understands BOTH shapes this repo emits: the inline form claude's
+    registration writes (`tools: Read, Grep, Glob`, dispatch.py:187) and the
+    YAML block list kimi's writes (`tools:` then `  - Read`, dispatch.py:196).
+    A line scan rather than a YAML parse: stdlib has no YAML, and a dependency
+    here would break the plan's stdlib-only constraint.
+
+    Returns None when the file cannot be read or carries no grant at all.
+    `ValueError` is caught alongside `OSError` because a non-UTF-8 file raises
+    UnicodeDecodeError, and a probe that raises is worse than one that guesses.
     """
     try:
         with open(path, encoding="utf-8") as fh:
-            for line in fh:
-                if line.startswith("tools:"):
-                    return [t.strip() for t in line.split(":", 1)[1].split(",")
-                            if t.strip()]
-    except OSError:
+            lines = fh.read().splitlines()
+    except (OSError, ValueError):
         return None
+    for index, line in enumerate(lines):
+        if not line.startswith("tools:"):
+            continue
+        inline = line.split(":", 1)[1].strip()
+        if inline:
+            return [t.strip() for t in inline.split(",") if t.strip()]
+        block = []
+        for follow in lines[index + 1:]:
+            stripped = follow.strip()
+            if not stripped.startswith("- "):
+                break
+            block.append(stripped[2:].strip())
+        return block or None
     return None
 
 
@@ -63,6 +79,13 @@ def probe_registered_shell_tools(host, registration_dir=None):
     if not directory:
         return (hosts.UNKNOWN, None,
                 "host %r has no registration directory" % host)
+    if not os.path.isdir(directory):
+        return (hosts.REFUTED, REGISTERED_SHELL_TOOLS,
+                "no registration directory at %s: this host's enforcement "
+                "shells were never emitted" % directory)
+    if not os.access(directory, os.R_OK):
+        return (hosts.UNKNOWN, REGISTERED_SHELL_TOOLS,
+                "cannot read %s, so nothing could be checked" % directory)
     faults, checked = [], 0
     for role in DRIVER_ROLES:
         role_file = dispatch.ROLE_FILES[role]
@@ -74,14 +97,15 @@ def probe_registered_shell_tools(host, registration_dir=None):
         checked += 1
         policy = dispatch.load_template(role_file)[0]["tool_policy"]
         granted = _frontmatter_tools(path)
+        forbidden = sorted(set(granted or []) & set(policy["forbidden"] or []))
         if granted is None:
-            faults.append("%s: shell has no `tools:` line" % role)
-        elif granted != list(policy["allowed"]):
+            faults.append("%s: shell has no readable `tools:` grant" % role)
+        elif forbidden:
+            faults.append("%s: shell grants forbidden tool(s) %s"
+                          % (role, ", ".join(forbidden)))
+        elif sorted(granted) != sorted(policy["allowed"]):
             faults.append("%s: shell grants %s, template allows %s"
-                          % (role, granted, list(policy["allowed"])))
-        elif set(granted) & set(policy["forbidden"] or []):
-            faults.append("%s: shell grants a forbidden tool (%s)"
-                          % (role, sorted(set(granted) & set(policy["forbidden"]))))
+                          % (role, sorted(granted), sorted(policy["allowed"])))
     if faults:
         return (hosts.REFUTED, REGISTERED_SHELL_TOOLS, "; ".join(faults))
     return (hosts.PROVEN, REGISTERED_SHELL_TOOLS,

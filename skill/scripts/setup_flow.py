@@ -63,6 +63,10 @@ _CONTENTS_FORM_RE = re.compile(r"^/?(\*\*/)?\.panopticon/\*{1,2}$")
 
 _CHECK_IGNORE_LINE = re.compile(r"^(.*):(\d+):(.*)$")
 
+# The roles the DRIVER dispatches and therefore needs registered shells for.
+# Kept in sync with host_probes.DRIVER_ROLES by a test in test_host_probes.py.
+_driver_roles = ("scout", "domain_panel", "domain_advisor")
+
 
 def _git_blanket_pattern(repo, runner=subprocess.run):
     """The .gitignore pattern git says ignores `.panopticon/groups.yml`.
@@ -312,7 +316,6 @@ def _check_host_shells(host, runner):
         return checks
 
     reg_dir = dispatch._registration_dir(resolved_host, None)
-    _driver_roles = ("scout", "domain_panel", "domain_advisor")
     # #run7 ARC-A4C: a hand-maintained shadow of the ACTIVE driver roles. If a
     # role is renamed/removed in dispatch.ROLE_FILES the filter below would
     # silently drop its shell from the readiness check. Trip loudly instead.
