@@ -216,7 +216,8 @@ def _cell_entry(review_root, manifest, group, domain, files, tests, host, bundle
     # same three fields the domain-panel template requires in its output.
     return {"id": "review-%s-%s" % (group, domain),
             "agent": dispatch.registered_agent_name("domain-panel.md") if enforced else None,
-            "enforced": enforced, "model": None, "prompt": prompt,
+            "enforced": enforced, "model": requests.bound_model(host, "domain_panel"),
+            "prompt": prompt,
             "out_file": out_file, "run_id": manifest["run_id"],
             "group": group, "domain": domain}
 

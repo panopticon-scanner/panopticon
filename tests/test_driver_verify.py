@@ -3,6 +3,7 @@ from unittest import mock
 import scripts.phases.runio as runio
 import scripts.phases.review as review
 import scripts.phases.verify as verify
+import scripts.model_resolver as model_resolver
 
 def _manifest(root):
     return {"run_id": "RID", "host": "claude", "security_mode": "standard"}
@@ -52,6 +53,23 @@ class TestVerifyPrimary(unittest.TestCase):
         self.assertTrue(e["out_file"].endswith(".json"))
         self.assertEqual(e["out_file"], os.path.abspath(e["out_file"]))
         self.assertNotIn("delivery", e)                            # host-agnostic
+
+    def test_verify_entries_bind_the_resolved_model(self):
+        _cell(self.root, "app", "SEC", [{"domain": "SEC", "code": "SEC-A1A",
+              "severity": "HIGH", "title": "t", "category": "x",
+              "location": {"file": "a.py", "line_start": 1}}])
+        with (
+            mock.patch("scripts.dispatch.render_prompt", return_value="BODY"),
+            mock.patch("scripts.dispatch.registered_agent_name",
+                       return_value="panopticon-domain-advisor"),
+            mock.patch("scripts.ocrdb.load_bundle", return_value={"domains": {}}),
+            mock.patch.object(model_resolver, "resolve_model",
+                              return_value={"model": "SENTINEL-ADVISOR"}) as rm,
+        ):
+            verify.verify_execute(self.root, self.manifest)
+        e = runio._load_json(runio._pano(self.root, "dispatch-request.json"))["entries"][0]
+        self.assertEqual("SENTINEL-ADVISOR", e["model"])
+        rm.assert_any_call(self.manifest.get("host", "claude"), "domain_advisor")
 
     def test_all_below_gate_advances(self):
         _cell(self.root, "app", "SEC", [{"domain": "SEC", "severity": "LOW",

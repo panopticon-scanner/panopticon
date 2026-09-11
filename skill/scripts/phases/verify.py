@@ -213,7 +213,8 @@ def _verify_entry(review_root, manifest, group, domain, files, cell, host,
     return {"id": "verify-%s-%s-%s%s" % (group, domain, stage,
                                          "" if not part else "-part%d" % part),
             "agent": dispatch.registered_agent_name("domain-advisor.md") if enforced else None,
-            "enforced": enforced, "model": None, "prompt": prompt, "out_file": out_file}
+            "enforced": enforced, "model": requests.bound_model(host, "domain_advisor"),
+            "prompt": prompt, "out_file": out_file}
 
 def verify_execute(review_root, manifest):
     # #5.0-16 H3: snapshot every declared cell's bytes at the review->verify
@@ -520,7 +521,8 @@ def _tool_verify_entry(review_root, manifest, queue_id, finding, host):
                 [hosts.TOOL_POLICY_ENFORCED] == hosts.PROVEN)
     return {"id": "verify-tool-%s" % queue_id,
             "agent": dispatch.registered_agent_name("advisor.md") if enforced else None,
-            "enforced": enforced, "model": None, "prompt": prompt,
+            "enforced": enforced, "model": requests.bound_model(host, "advisor"),
+            "prompt": prompt,
             "out_file": out_file, "delivery": "return_json"}
 
 def _verify_tools_execute(review_root, manifest, host):

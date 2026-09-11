@@ -9,11 +9,30 @@ import scripts.group_runner as group_runner
 import scripts.synth.integrity as integrity_mod
 import scripts.synth.plan as plan_mod
 from scripts import hosts
+from scripts import model_resolver
 from . import runio
 from . import coverage
 
 
 _PROMPT_FILE_SAFE = re.compile(r"[^A-Za-z0-9._-]")
+
+def bound_model(host, role):
+    """The model this entry REQUESTS, as a string, from the one resolver.
+
+    #1344 F4 (b). Every builder used to write the literal `"model": None`, which
+    docs/PANOPTICON.md defines as "inherit the session's model" -- so the
+    session's model, not the role's policy, was what an UNENFORCED dispatch
+    ran on, and the registry's `model_binding` capability had nothing on the
+    entry to be a claim about. `resolve_model` honours PANOPTICON_MODEL_*
+    overrides; the registered shell (registration_model) does not, and that
+    gap is exactly what host_probes.probe_entry_model_bound measures.
+
+    The string, not the whole config dict: a family that needs more than a
+    model id on the entry (kimi's tier aliases and context sizes) adds it in
+    its own PR. A host with no model policy resolves to None -- gemini and
+    generic today -- which is the value they already dispatch with.
+    """
+    return model_resolver.resolve_model(host, role).get("model")
 
 def _prompts_dir(namespace=None):
     """`_prompts/` for a run, `<namespace>-prompts/` otherwise (#1507)."""

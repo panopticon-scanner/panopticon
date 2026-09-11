@@ -11,6 +11,7 @@ import scripts.phases.runio as runio
 import scripts.phases.review as review
 
 import scripts.ocrdb as ocrdb
+import scripts.model_resolver as model_resolver
 
 
 class TestCellFanOut(unittest.TestCase):
@@ -51,6 +52,21 @@ class TestCellFanOut(unittest.TestCase):
         for e in req["entries"]:
             self.assertEqual(e["out_file"], os.path.abspath(e["out_file"]))
             self.assertNotIn("delivery", e)   # host-agnostic
+
+    def test_cell_entries_bind_the_resolved_model(self):
+        with self._menu_stub(), \
+             mock.patch("scripts.dispatch.render_prompt", return_value="BODY"), \
+             mock.patch("scripts.dispatch.registered_agent_name",
+                        return_value="panopticon-domain-panel"), \
+             mock.patch("scripts.ocrdb.load_bundle", return_value={"domains": {}}), \
+             mock.patch.object(model_resolver, "resolve_model",
+                               return_value={"model": "SENTINEL-PANEL"}) as rm:
+            review.review_execute(self.root, self.manifest)
+        req = runio._load_json(runio._pano(self.root, "dispatch-request.json"))
+        for e in req["entries"]:
+            with self.subTest(entry=e["id"]):
+                self.assertEqual("SENTINEL-PANEL", e["model"])
+        rm.assert_any_call(self.manifest.get("host", "claude"), "domain_panel")
 
     def test_review_done_requires_all_cells(self):
         self.assertFalse(review.review_done(self.root, self.manifest))

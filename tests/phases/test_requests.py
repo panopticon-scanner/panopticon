@@ -5,6 +5,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 import scripts.phases.runio as runio
 import scripts.phases.requests as requests
@@ -13,6 +14,7 @@ import scripts.phases.review as review
 import scripts.phases.verify as verify
 
 import scripts.ocrdb as ocrdb
+import scripts.model_resolver as model_resolver
 
 
 class TestWriteDispatchRequest(unittest.TestCase):
@@ -92,3 +94,34 @@ class TestReviewerFileListsAreAbsolute(unittest.TestCase):
         expected_header = "Repo root: %s" % os.path.abspath(self.root)
         # startswith is strictly stronger than assertIn (present AND at pos 0).
         self.assertTrue(self._make_verify_entry()["prompt"].startswith(expected_header))
+
+
+class TestBoundModel(unittest.TestCase):
+    """#1344 F4 (b): the entry's model comes from model_resolver, not a literal.
+
+    One helper so five builders cannot resolve five ways. The value is the
+    STRING model id, not resolve_model's whole config dict: docs/PANOPTICON.md
+    defines entry["model"] as "the model named by entry['model'] (omit when
+    null)". Kimi's max_context_size/alias extras are that family's PR to carry.
+    """
+
+    def test_returns_the_resolved_model_string(self):
+        with mock.patch.object(model_resolver, "resolve_model",
+                               return_value={"model": "SENTINEL", "alias": "x"}) as rm:
+            self.assertEqual("SENTINEL", requests.bound_model("claude", "domain_panel"))
+        rm.assert_called_once_with("claude", "domain_panel")
+
+    def test_a_host_with_no_model_policy_binds_none(self):
+        # gemini/generic: registry row, no profile table, no fallback table.
+        # None means "inherit the session's model" and is what those hosts
+        # dispatch with today -- unchanged by this plan (R-F4-1).
+        for host in ("gemini", "generic"):
+            with self.subTest(host=host):
+                self.assertIsNone(requests.bound_model(host, "domain_panel"))
+
+    def test_claude_binds_the_profile_model_not_the_session_default(self):
+        # Oracle is resolve_model itself, not a literal: model-profiles.yml is
+        # the owner of the value and this test must not become a second copy.
+        expected = model_resolver.resolve_model("claude", "domain_panel")["model"]
+        self.assertIsNotNone(expected, "fixture precondition: claude has a profile")
+        self.assertEqual(expected, requests.bound_model("claude", "domain_panel"))

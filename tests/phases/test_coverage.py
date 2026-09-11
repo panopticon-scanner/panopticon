@@ -14,6 +14,7 @@ import scripts.phases.runio as runio
 import scripts.phases.requests as requests
 import scripts.phases.coverage as coverage
 import scripts.phases.review as review
+import scripts.model_resolver as model_resolver
 
 
 class TestCoveragePhase(unittest.TestCase):
@@ -54,6 +55,21 @@ class TestCoveragePhase(unittest.TestCase):
         self.assertEqual(entry["out_file"], os.path.abspath(entry["out_file"]))
         self.assertTrue(entry["enforced"])              # claude host
         self.assertNotIn("delivery", entry)             # host-agnostic
+
+    def test_scout_entry_binds_the_resolved_model(self):
+        # #1344 F4 (b). Sentinel, not a literal: a builder that hard-coded the
+        # profile's value would pass a literal and still not be bound.
+        self._groups_json([{"name": "Auth", "files": ["a.py"]}])
+        self._groups_yml("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n")
+        with mock.patch("scripts.dispatch.render_prompt", return_value="SCOUT-BODY"), \
+             mock.patch("scripts.dispatch.registered_agent_name",
+                        return_value="panopticon-scout"), \
+             mock.patch.object(model_resolver, "resolve_model",
+                               return_value={"model": "SENTINEL-SCOUT"}) as rm:
+            coverage.coverage_execute(self.root, self.manifest)
+        entry = runio._load_json(runio._pano(self.root, "dispatch-request.json"))["entries"][0]
+        self.assertEqual("SENTINEL-SCOUT", entry["model"])
+        rm.assert_any_call(self.manifest.get("host", "claude"), "scout")
 
     def test_batches_all_pending_scouts_into_one_checkpoint(self):
         # #1056: every group's scout goes in ONE checkpoint (they are

@@ -49,7 +49,7 @@ def _scout_entry(review_root, manifest, group, files, host, registry_tools=None)
     return {"id": "scout-%s" % group,
             "agent": dispatch.registered_agent_name("scout.md") if enforced else None,
             "enforced": enforced,
-            "model": None,
+            "model": requests.bound_model(host, "scout"),
             "prompt": prompt,
             "out_file": os.path.abspath(runio._pano(review_root, "scout-%s.json" % group))}
 

@@ -19,6 +19,7 @@ import scripts.coverage_model as coverage_model
 import scripts.host_disclosure as host_disclosure
 import scripts.hosts as hosts
 import scripts.setup_flow as setup_flow
+import scripts.model_resolver as model_resolver
 
 from tools.git_repo import make_git_repo
 
@@ -49,6 +50,19 @@ class TestDriverSetup(unittest.TestCase):
         self.assertEqual(entry["id"], "setup-scan")
         self.assertTrue(entry["out_file"].endswith("setup-proposal.json"))
         self.assertTrue(os.path.isfile(runio._pano(d, "setup-scan-brief.md")))
+
+    def test_setup_scan_is_deliberately_not_model_bound(self):
+        # R-F4-2. setup-scan has no role in dispatch.ROLE_FILES and no profile
+        # entry; resolve_model would hand it the host's catch-all default and
+        # silently move the one judgement-heavy, one-off `driver setup`
+        # dispatch off the session's model. The exception is pinned so it
+        # stays a decision rather than becoming an omission.
+        d = self._repo()
+        with mock.patch.object(model_resolver, "resolve_model",
+                               return_value={"model": "SENTINEL"}) as rm:
+            entry = setup._setup_scan_entry(d, "PROMPT")
+        self.assertIsNone(entry["model"])
+        rm.assert_not_called()
 
     def test_scan_leaves_blanket_gitignore_and_notes_forced_add(self):
         # #1135: a repo already blanket-ignoring .panopticon/ keeps its
