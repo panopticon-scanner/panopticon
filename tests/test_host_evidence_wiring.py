@@ -9,7 +9,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-from scripts import collect_usage, driver, host_probes, hosts, run_manifest
+from scripts import (collect_usage, driver, host_disclosure, host_probes,
+                     hosts, run_manifest)
 from scripts.phases import runio
 
 
@@ -453,9 +454,30 @@ class TestThePostureIsEstablishedEveryInvocation(unittest.TestCase):
         # 5.1's inverse: silence must never be the all-proven signal. This
         # fixture is deliberately NOT mixed -- it exists to prove the
         # all-proven sentence itself renders, which a mixed fixture cannot do.
-        with tempfile.TemporaryDirectory() as review_root:
-            manifest = self._manifest(session_dir=review_root)
-            artifact = self._artifact(hosts.PROVEN)
+        #
+        # Fix round 1: no host in today's registry claims read_scope_confined
+        # (spec 7.2 -- nobody implements read-confinement yet), so
+        # hosts.posture()'s claim-mask forces it to UNKNOWN regardless of what
+        # the evidence says -- an artifact with every capability marked PROVEN
+        # for a REAL host ("claude") still renders the NOT-PROVEN headline,
+        # which the old `assertIn("PROVEN", ...)` could not tell apart from
+        # ALL_PROVEN ("NOT PROVEN" contains "PROVEN" as a substring). Patch in
+        # a synthetic host that claims all five, exactly as
+        # test_host_disclosure.py's TestTheInverseCarriesEqualWeight does, so
+        # this fixture genuinely reaches zero gaps under the real posture()
+        # rather than merely asserting a substring that any NOT-PROVEN
+        # headline also satisfies.
+        all_claims = hosts.HostSpec(name="proves-everything",
+                                    claims=frozenset(hosts.CAPABILITIES))
+        assert host_disclosure.hosts is hosts, (
+            "host_disclosure's hosts import has drifted from the canonical "
+            "scripts.hosts module -- patching hosts.HOSTS below would be a "
+            "silent no-op")
+        with tempfile.TemporaryDirectory() as review_root, \
+                mock.patch.dict(hosts.HOSTS, {"proves-everything": all_claims}):
+            manifest = self._manifest(host="proves-everything",
+                                      session_dir=review_root)
+            artifact = self._artifact(hosts.PROVEN, host="proves-everything")
             for row in artifact["capabilities"].values():
                 row["state"] = hosts.PROVEN
             buf = io.StringIO()
@@ -465,7 +487,12 @@ class TestThePostureIsEstablishedEveryInvocation(unittest.TestCase):
                 err = driver._establish_host_posture(
                     review_root, manifest, self._args())
             self.assertIsNone(err)
-            self.assertIn("PROVEN", buf.getvalue())
+            out = buf.getvalue()
+            # The literal constant, not the bare word: "NOT PROVEN" also
+            # contains "PROVEN" as a substring, which is exactly how the
+            # pre-fix assertion passed without ever reaching this branch.
+            self.assertIn(host_disclosure.ALL_PROVEN, out)
+            self.assertNotIn("NOT PROVEN", out)
 
 
 class TestTheProbesReadTheRightTree(unittest.TestCase):
