@@ -24,7 +24,7 @@ import os
 import stat
 import tempfile
 
-from scripts import collect_usage, dispatch, hosts, write_guard_hook
+from scripts import collect_usage, dispatch, hosts, run_manifest, write_guard_hook
 
 # The roles the DRIVER dispatches and therefore needs registered shells for.
 # `advisor` is deliberately absent -- it is dispatched by the host, not the
@@ -322,3 +322,81 @@ def probe_shadow_shells(host, target):
     return (hosts.UNKNOWN, SHADOW_SHELL_SCAN,
             "no shadowing agent files in the target's %s"
             % ", ".join(row.project_scope_dirs))
+
+
+SCHEMA_VERSION = 1
+
+# Capabilities with no probe in F3a, and the reason each says so. 5.1 requires
+# "nobody looked" to be written down rather than inferred from an absent key.
+_NO_PROBE = {
+    hosts.READ_SCOPE_CONFINED:
+        "no probe: no host implements a read-confinement control (spec 7.2)",
+    hosts.MODEL_BINDING:
+        "no probe in F3a: dispatch entries still carry model=None (spec 8, F4)",
+}
+
+
+def _row(state, by, detail):
+    return {"state": state, "by": by, "detail": detail}
+
+
+def run_probes(host, target, session_root=None, home=None,
+               registration_dir=None):
+    """Establish this host's posture now, and return the artifact body.
+
+    Runs every probe the registry names for `host`, plus the shadow-shell scan
+    which runs for any host with project scope. Where two probes bear on one
+    capability, `hosts.resolve_state` ranks them: refuted beats proven beats
+    unknown.
+
+    `session_root`, `home` and `registration_dir` exist for fixtures; production
+    callers pass `target` and, when the operator supplied --session-dir,
+    `session_root`.
+    """
+    findings = {}          # capability -> list of (state, by, detail)
+
+    def record(capability, result):
+        findings.setdefault(capability, []).append(result)
+
+    row = hosts.spec(host)
+    probes = (row.probes if row else None) or {}
+    if REGISTERED_SHELL_TOOLS in probes.values():
+        record(hosts.TOOL_POLICY_ENFORCED,
+               probe_registered_shell_tools(host, registration_dir))
+    if WRITE_GUARD_ARMED in probes.values():
+        record(hosts.ARTIFACT_WRITE_GUARD,
+               probe_write_guard_armed(host, session_root=session_root))
+    if TRANSCRIPT_DIR in probes.values():
+        record(hosts.USAGE_LEDGER, probe_transcript_dir(host, target, home=home))
+    # Not in `probes`: it runs for any host with project scope, claim or no
+    # claim, and it can only refute.
+    record(hosts.TOOL_POLICY_ENFORCED, probe_shadow_shells(host, target))
+
+    capabilities = {}
+    for capability in hosts.CAPABILITIES:
+        results = findings.get(capability) or []
+        if not results:
+            capabilities[capability] = _row(
+                hosts.UNKNOWN, None,
+                _NO_PROBE.get(capability,
+                              "no probe: host %r claims this capability's "
+                              "proof is not shipped yet" % host))
+            continue
+        state = hosts.resolve_state([r[0] for r in results])
+        # Report the probe that DECIDED, so `by` and `detail` always agree with
+        # `state` -- naming a probe that lost the precedence would be worse
+        # than naming none.
+        deciding = next((r for r in results if r[0] == state), results[0])
+        capabilities[capability] = _row(state, deciding[1], deciding[2])
+    return {"schema_version": SCHEMA_VERSION, "host": host,
+            "probed_at": run_manifest._now_iso(), "capabilities": capabilities}
+
+
+def capabilities_of(artifact):
+    """The capability -> state map, for comparing two probe runs.
+
+    Deliberately drops `probed_at`: it changes on every probe by design, and
+    comparing it would make 5.2's resume check fire merely because time passed.
+    """
+    return {name: (body or {}).get("state")
+            for name, body in ((artifact or {}).get("capabilities") or {}).items()}

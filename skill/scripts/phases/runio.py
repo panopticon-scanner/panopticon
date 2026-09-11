@@ -71,6 +71,8 @@ _TOP_LEVEL = frozenset({
     "report.json", "report.json.html",
 })
 
+HOST_CAPABILITIES = "host-capabilities.json"
+
 def _run_tag(review_root):
     """The active run's folder name from the manifest, or None before one exists
     (setup / pre-discovery) — callers then fall back to the flat top-level."""
@@ -204,6 +206,17 @@ def _write_json(path, data):
     with _open_w_nofollow(path) as fh:
         json.dump(data, fh, indent=2, sort_keys=True)
     return path
+
+def host_evidence(review_root):
+    """This run's capability evidence, or {} when there is none.
+
+    {} is not an error path: `hosts.posture()` turns it into all-unknown, which
+    means nothing is enforced. An absent or unreadable artifact must fail
+    CLOSED (spec 5, 9.2) -- on claude as much as on any exotic host -- and
+    that is the whole reason this returns a mapping rather than raising.
+    """
+    return (_load_json(_pano(review_root, HOST_CAPABILITIES)) or {}).get(
+        "capabilities") or {}
 
 def _json_parses(path):
     return _load_json(path) is not None

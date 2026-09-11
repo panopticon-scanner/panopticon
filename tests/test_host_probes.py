@@ -531,3 +531,125 @@ class TestShadowShellScan(unittest.TestCase):
             state, _by, detail = host_probes.probe_shadow_shells("claude", target)
             self.assertEqual(hosts.REFUTED, state)
             self.assertIn("panopticon-scout.md", detail)
+
+
+class TestRunProbesBuildsTheArtifact(unittest.TestCase):
+
+    def test_every_capability_gets_a_row_even_unprobed_ones(self):
+        # 5.1: "nobody looked" is written down, never inferred from an absent
+        # key. read_scope_confined and model_binding have no probe in F3a.
+        with tempfile.TemporaryDirectory() as target:
+            art = host_probes.run_probes("claude", target)
+            self.assertEqual(sorted(hosts.CAPABILITIES),
+                             sorted(art["capabilities"]))
+            for capability in hosts.CAPABILITIES:
+                with self.subTest(capability=capability):
+                    row = art["capabilities"][capability]
+                    self.assertIn(row["state"], hosts.STATES)
+                    self.assertTrue(row["detail"])
+
+    def test_the_two_unprobed_capabilities_say_why(self):
+        with tempfile.TemporaryDirectory() as target:
+            art = host_probes.run_probes("claude", target)
+            for capability in (hosts.READ_SCOPE_CONFINED, hosts.MODEL_BINDING):
+                with self.subTest(capability=capability):
+                    row = art["capabilities"][capability]
+                    self.assertEqual(hosts.UNKNOWN, row["state"])
+                    self.assertIsNone(row["by"])
+                    self.assertIn("no probe", row["detail"])
+
+    def test_a_shadowed_target_refutes_tool_policy_even_when_shells_are_perfect(self):
+        # The precedence rule, end to end: registered-shell-tools may prove it,
+        # shadow-shell-scan refutes it, and refuted wins.
+        from scripts import dispatch
+        with tempfile.TemporaryDirectory() as target, \
+                tempfile.TemporaryDirectory() as registration:
+            for role in host_probes.DRIVER_ROLES:
+                role_file = dispatch.ROLE_FILES[role]
+                allowed = dispatch.load_template(role_file)[0]["tool_policy"]["allowed"]
+                _shell(registration,
+                       dispatch.registered_agent_filename("claude", role_file),
+                       allowed)
+            shadow = os.path.join(target, ".claude", "agents")
+            os.makedirs(shadow)
+            with open(os.path.join(shadow, "panopticon-scout.md"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("x")
+            art = host_probes.run_probes("claude", target,
+                                         registration_dir=registration)
+            row = art["capabilities"][hosts.TOOL_POLICY_ENFORCED]
+            self.assertEqual(hosts.REFUTED, row["state"])
+            self.assertIn("panopticon-scout.md", row["detail"])
+
+    def test_the_schema_is_stamped_and_the_host_recorded(self):
+        with tempfile.TemporaryDirectory() as target:
+            art = host_probes.run_probes("claude", target)
+            self.assertEqual(1, art["schema_version"])
+            self.assertEqual("claude", art["host"])
+            self.assertTrue(art["probed_at"])
+
+    def test_capabilities_of_ignores_the_timestamp(self):
+        # The comparison on resume must not fire merely because time passed.
+        with tempfile.TemporaryDirectory() as target:
+            first = host_probes.run_probes("claude", target)
+            second = dict(first, probed_at="1999-01-01T00:00:00Z")
+            self.assertEqual(host_probes.capabilities_of(first),
+                             host_probes.capabilities_of(second))
+
+    def test_a_host_the_registry_does_not_know_probes_to_all_unknown(self):
+        with tempfile.TemporaryDirectory() as target:
+            art = host_probes.run_probes("no-such-host", target)
+            self.assertEqual({hosts.UNKNOWN},
+                             {r["state"] for r in art["capabilities"].values()})
+
+
+class TestTheEvidenceLoader(unittest.TestCase):
+
+    def test_an_absent_artifact_reads_as_no_evidence(self):
+        # Fail-closed by absence (9.2): {} feeds posture(), which returns
+        # all-unknown, which means nothing is enforced.
+        from scripts.phases import runio
+        with tempfile.TemporaryDirectory() as review_root:
+            self.assertEqual({}, runio.host_evidence(review_root))
+            self.assertEqual(
+                {hosts.UNKNOWN},
+                set(hosts.posture("claude",
+                                  runio.host_evidence(review_root)).values()))
+
+    def test_a_corrupt_artifact_reads_as_no_evidence(self):
+        from scripts.phases import runio
+        with tempfile.TemporaryDirectory() as review_root:
+            path = runio._pano(review_root, runio.HOST_CAPABILITIES)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("{ this is not json")
+            self.assertEqual({}, runio.host_evidence(review_root))
+
+    def test_a_present_artifact_reads_as_its_capabilities_map_not_the_envelope(self):
+        # The trap this task's brief calls out by name: `host_evidence` must
+        # return the inner `capabilities` map, not the whole artifact.
+        # hosts.posture() reads `evidence.get(capability)` -- handing it the
+        # envelope would make every capability resolve UNKNOWN, because the
+        # envelope's top level has no key named e.g. tool_policy_enforced (it
+        # has "schema_version", "host", "probed_at", "capabilities" instead).
+        # Neither of the two tests above can catch this: an absent or corrupt
+        # artifact collapses to {} under BOTH the correct and the trap form.
+        from scripts.phases import runio
+        with tempfile.TemporaryDirectory() as review_root:
+            artifact = {
+                "schema_version": 1, "host": "claude",
+                "probed_at": "2026-09-10T00:00:00Z",
+                "capabilities": {
+                    hosts.TOOL_POLICY_ENFORCED: {
+                        "state": hosts.PROVEN, "by": "registered-shell-tools",
+                        "detail": "ok"},
+                },
+            }
+            runio._write_json(runio._pano(review_root, runio.HOST_CAPABILITIES),
+                              artifact)
+            evidence = runio.host_evidence(review_root)
+            self.assertEqual(artifact["capabilities"], evidence)
+            self.assertNotIn("schema_version", evidence)
+            self.assertEqual(
+                hosts.PROVEN,
+                hosts.posture("claude", evidence)[hosts.TOOL_POLICY_ENFORCED])
