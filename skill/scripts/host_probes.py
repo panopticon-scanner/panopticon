@@ -125,13 +125,19 @@ def _round_trip_denies_an_outside_write():
     run entirely against paths inside a TemporaryDirectory. Returns
     (ok, detail).
     """
-    with tempfile.TemporaryDirectory() as sandbox:
-        settings = os.path.join(sandbox, "settings.json")
-        allowlist = os.path.join(sandbox, "allowlist.json")
-        declared = os.path.join(sandbox, "findings-probe.json")
-        with open(declared, "w", encoding="utf-8") as fh:
-            fh.write("{}")
-        try:
+    # Minor 6: the `try` opens BEFORE TemporaryDirectory(), not inside it. This
+    # runs inside driver.run() on EVERY invocation now, and an OSError from the
+    # constructor itself (no space on the temp filesystem, TMPDIR gone, the
+    # process out of file descriptors) would otherwise escape as a traceback and
+    # abort the whole run -- violating this module's contract that a probe which
+    # cannot run resolves to a STATE rather than raising.
+    try:
+        with tempfile.TemporaryDirectory() as sandbox:
+            settings = os.path.join(sandbox, "settings.json")
+            allowlist = os.path.join(sandbox, "allowlist.json")
+            declared = os.path.join(sandbox, "findings-probe.json")
+            with open(declared, "w", encoding="utf-8") as fh:
+                fh.write("{}")
             write_guard_hook.install([{"out_file": declared}],
                                      settings_path=settings,
                                      allowlist_path=allowlist)
@@ -149,13 +155,24 @@ def _round_trip_denies_an_outside_write():
                 return False, "the guard ALLOWED a write outside the allowlist"
             write_guard_hook.uninstall(settings_path=settings,
                                        allowlist_path=allowlist)
-        except OSError as exc:
-            return False, "sandbox round-trip could not run: %s" % exc
+    except OSError as exc:
+        return False, "sandbox round-trip could not run: %s" % exc
     return True, "arm/deny round-trip ok"
 
 
 def probe_write_guard_armed(host, session_root=None):
     """This host CAN mediate a reviewer's Write when it fans out.
+
+    COUPLING, and it is load-bearing: the subject of this probe is whatever
+    `write_guard_hook._resolve(None, None, session_root)` names -- the SAME
+    resolver `write_guard_hook.install()` calls when the host arms the guard
+    during fan-out. Re-deriving `.claude/settings.local.json` here instead
+    would be a second definition free to drift from the one that arms, and a
+    probe that proves a file nothing arms proves nothing. `install()` applies
+    its #1493 existence check only when `used_defaults` is set; this probe
+    applies it unconditionally, which is the fail-CLOSED direction (stricter
+    than install(), never laxer). test_the_probe_and_install_resolve_the_same
+    _settings_file pins both halves.
 
     NOT "the guard is armed right now". The host arms it during fan-out --
     `write_guard_hook.install` writes the PreToolUse entry and `uninstall`
@@ -196,13 +213,23 @@ def probe_write_guard_armed(host, session_root=None):
 TRANSCRIPT_DIR = "transcript-dir"
 
 
-def probe_transcript_dir(host, project_dir, home=None):
-    """The host's own transcript directory for this project exists and reads.
+def probe_transcript_dir(host, session_dir, home=None):
+    """The host's own transcript directory for this SESSION exists and reads.
 
     Operational rather than security -- 8.1 excludes usage_ledger from F5's
-    bar, and it gates nothing. It is probed so the posture is COMPLETE: 5.1
-    requires that absence of a warning mean "measured and proven", never
-    "nobody looked", and that only works if every claimed capability answers.
+    bar, and it gates nothing directly. But it DOES gate
+    `synthesize._collect_host_usage`, so the directory it asks about has to be
+    the one that collector will read.
+
+    `session_dir` is where the HOST SESSION runs -- NOT the review root, and
+    NOT the target. synthesize.py:52-66 spends fourteen lines
+    (#calibration-2, #calibration-4) establishing that these are deliberately
+    different directories on every external-target run; passing the target
+    here resolved a slug with no transcripts, refuted, and took
+    `meta.cost.tokens` to null on every calibration run while a self-scan
+    (session dir == target) hid it. `phases.runio.session_dir` is the single
+    source both this probe and the collector read, so the gate and the
+    collector cannot disagree about which transcript they mean.
 
     The path mangling belongs to collect_usage.project_slug; re-deriving it
     here would be a second definition that could drift from the reader's.
@@ -211,7 +238,7 @@ def probe_transcript_dir(host, project_dir, home=None):
         return (hosts.UNKNOWN, None, "host %r claims no usage ledger" % host)
     root = home or os.path.expanduser("~")
     directory = os.path.join(root, ".claude", "projects",
-                             collect_usage.project_slug(project_dir))
+                             collect_usage.project_slug(session_dir))
     if not os.path.isdir(directory):
         return (hosts.REFUTED, TRANSCRIPT_DIR,
                 "no transcript directory at %s; the cost ledger will report "
@@ -270,8 +297,14 @@ def _declares_a_shell_name(path):
     return False
 
 
-def probe_shadow_shells(host, target):
-    """The target repository ships nothing that shadows our enforcement shells.
+def probe_shadow_shells(host, review_root):
+    """The REVIEWED tree ships nothing that shadows our enforcement shells.
+
+    `review_root` is the tree under review -- `runio.resolve_review_root`'s
+    answer, which for `--pr` is the PR WORKTREE and from a subdirectory is the
+    git toplevel. It is emphatically not `args.target`: scanning that scanned
+    the operator's own checkout, the one tree guaranteed clean, while the
+    hostile `.claude/agents/panopticon-scout.md` sat unread in the worktree.
 
     Spec 7.3. Kimi's agent discovery precedence is Explicit > Project > Extra >
     User, so a target repo's `.agents/agents/panopticon-scout.md` silently
@@ -292,7 +325,7 @@ def probe_shadow_shells(host, target):
                 "host %r discovers no project-scoped agents" % host)
     hits, unreadable = [], []
     for relative in row.project_scope_dirs:
-        directory = os.path.join(target, relative)
+        directory = os.path.join(review_root, relative)
         try:
             names = sorted(os.listdir(directory))
         except (FileNotFoundError, NotADirectoryError):
@@ -313,14 +346,15 @@ def probe_shadow_shells(host, target):
                             % os.path.join(relative, name))
     if hits:
         return (hosts.REFUTED, SHADOW_SHELL_SCAN,
-                "target ships agent file(s) that shadow this host's "
-                "enforcement shells: %s" % ", ".join(hits))
+                "the reviewed tree (%s) ships agent file(s) that shadow this "
+                "host's enforcement shells: %s"
+                % (review_root, ", ".join(hits)))
     if unreadable:
         return (hosts.REFUTED, SHADOW_SHELL_SCAN,
-                "could not read the target's %s, so shadowing could not be "
-                "ruled out" % ", ".join(unreadable))
+                "could not read the reviewed tree's %s, so shadowing could not "
+                "be ruled out" % ", ".join(unreadable))
     return (hosts.UNKNOWN, SHADOW_SHELL_SCAN,
-            "no shadowing agent files in the target's %s"
+            "no shadowing agent files in the reviewed tree's %s"
             % ", ".join(row.project_scope_dirs))
 
 
@@ -340,20 +374,59 @@ def _row(state, by, detail):
     return {"state": state, "by": by, "detail": detail}
 
 
-def run_probes(host, target, session_root=None, home=None,
-               registration_dir=None):
+def _no_probe_reason(row, capability, host):
+    """Why a capability got no probe -- split on whether it is even CLAIMED.
+
+    Minor 1: one sentence used to cover both, and it said the host "claims
+    this capability's proof is not shipped yet". For gemini -- which claims
+    NOTHING -- that was simply false, in the one artifact whose entire purpose
+    is separating claims from proof. A host that does not claim a capability
+    is not waiting on a probe; there is nothing to prove.
+    """
+    if row and capability in row.claims:
+        return ("no probe: host %r claims this capability's proof is not "
+                "shipped yet" % host)
+    return ("no probe: host %r does not claim this capability, so there is "
+            "nothing to prove" % host)
+
+
+def run_probes(host, review_root, session_root=None, registration_dir=None,
+               home=None, shadow=None):
     """Establish this host's posture now, and return the artifact body.
+
+    THREE DIFFERENT TREES, and collapsing them is what produced both of this
+    branch's Criticals. One `target` argument used to answer all three:
+
+      * `review_root`  -- the REVIEWED tree. What the shadow-shell scan reads:
+        the PR worktree under `--pr`, the git toplevel from a subdirectory.
+        Never `args.target`, which under `--pr` is the operator's own checkout
+        -- the one tree guaranteed clean (C1).
+      * `session_root` -- where the HOST SESSION runs. What the write-guard
+        probe and the transcript probe read. On every external-target run this
+        is a DIFFERENT directory from the reviewed tree, which is the whole
+        subject of synthesize.py's #calibration-2/#calibration-4 comment (C2).
+        Defaults to cwd, exactly as `runio.session_dir` does; note that
+        `write_guard_hook._resolve(None, None, os.getcwd())` and
+        `_resolve(None, None, None)` name the same settings file (one
+        absolute, one cwd-relative), so defaulting it here does not move the
+        write-guard probe's subject -- measured, not assumed.
+      * `registration_dir` -- where the USER's shells are registered. Defaults
+        to the host row's own.
 
     Runs every probe the registry's `HostSpec.probes` maps for `host`, plus
     the shadow-shell scan which runs for any host with project scope. Where
     two probes bear on one capability, `hosts.resolve_state` ranks them:
     refuted beats proven beats unknown.
 
-    `session_root`, `home` and `registration_dir` exist for fixtures; production
-    callers pass `target` and, when the operator supplied --session-dir,
-    `session_root`.
+    `shadow` lets a caller that must ALSO decide from the shadow scan's own
+    `(state, by, detail)` -- driver._shadow_refusal, which may not read it
+    back off the artifact's `by` field -- hand in the single result it already
+    computed. Without it the scan ran twice per invocation: duplicate work,
+    and a TOCTOU window in which the artifact and the refusal could disagree
+    about the same tree. `home` exists for fixtures.
     """
     findings = {}          # capability -> list of (state, by, detail)
+    session_root = session_root or os.getcwd()
 
     def record(capability, result):
         findings.setdefault(capability, []).append(result)
@@ -370,7 +443,7 @@ def run_probes(host, target, session_root=None, home=None,
         WRITE_GUARD_ARMED:
             lambda: probe_write_guard_armed(host, session_root=session_root),
         TRANSCRIPT_DIR:
-            lambda: probe_transcript_dir(host, target, home=home),
+            lambda: probe_transcript_dir(host, session_root, home=home),
     }
     for capability, probe_id in ((row.probes if row else None) or {}).items():
         runner = runners.get(probe_id)
@@ -380,8 +453,12 @@ def run_probes(host, target, session_root=None, home=None,
             continue
         record(capability, runner())
     # Not in any row's `probes`: it runs for any host with project scope, claim
-    # or no claim, and it can only refute.
-    record(hosts.TOOL_POLICY_ENFORCED, probe_shadow_shells(host, target))
+    # or no claim, and it can only refute. Minor 4: run ONCE per invocation --
+    # the caller that also needs the raw tuple passes its own result in rather
+    # than making us scan the tree a second time.
+    record(hosts.TOOL_POLICY_ENFORCED,
+           shadow if shadow is not None
+           else probe_shadow_shells(host, review_root))
 
     capabilities = {}
     for capability in hosts.CAPABILITIES:
@@ -389,9 +466,7 @@ def run_probes(host, target, session_root=None, home=None,
         if not results:
             capabilities[capability] = _row(
                 hosts.UNKNOWN, None,
-                _NO_PROBE.get(capability,
-                              "no probe: host %r claims this capability's "
-                              "proof is not shipped yet" % host))
+                _NO_PROBE.get(capability, _no_probe_reason(row, capability, host)))
             continue
         state = hosts.resolve_state([r[0] for r in results])
         agreeing = [r for r in results if r[0] == state] or results[:1]

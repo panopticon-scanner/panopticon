@@ -207,6 +207,25 @@ def _write_json(path, data):
         json.dump(data, fh, indent=2, sort_keys=True)
     return path
 
+def session_dir(manifest):
+    """Where the HOST SESSION runs -- NOT the review root, NOT the target.
+
+    See synthesize.py's #calibration-2/#calibration-4 comment; this is that
+    expression, single-sourced so the PROBE that gates the token ledger
+    (host_probes.probe_transcript_dir, via driver._establish_host_posture) and
+    the COLLECTOR that builds it (synthesize._collect_host_usage) cannot
+    disagree about which transcript they mean. They did disagree: the probe
+    was handed `args.target` and refuted off the scanned repo's slug, which
+    took `meta.cost.tokens` to null on every external-target run while the
+    collector was looking somewhere else entirely.
+
+    `session_dir` is deliberately not a manifest FIELD in the anti-drift sense
+    -- driver.run() assigns it in memory after write_manifest -- so a resume
+    that needs it passes --session-dir again. cwd is the default because it is
+    correct for the documented `driver run <target>` invocation.
+    """
+    return (manifest or {}).get("session_dir") or os.getcwd()
+
 def host_evidence(review_root):
     """This run's capability evidence, or {} when there is none.
 

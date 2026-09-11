@@ -225,37 +225,94 @@ def _establish_host_posture(review_root, manifest, args):
     still leaves the entries already dispatched under the weaker posture, so
     the honest answer to both is a fresh run.
 
+    `args` is accepted and deliberately READ FOR NOTHING TREE-SHAPED. It is
+    kept as a test seam: `args.target` is the operator's own checkout, which
+    under `--pr` is emphatically not the tree being reviewed, and passing it
+    to the shadow scan is C1. The regression test hands this function a
+    `target` that DIFFERS from `review_root` and requires the refusal to fire
+    off `review_root`, which is only a test that can fail while the parameter
+    is still here to get wrong.
+
     Returns an error message when the run must stop, else None.
     """
     host = manifest.get("host", "claude")
-    # session_dir off the MANIFEST, not args: driver.py:286 stores the abspath
-    # there at build time, and on a resume the operator need not repeat the
-    # flag. Reading args would silently probe a different settings file than
-    # the one fan-out will arm -- which is #1493 all over again.
-    fresh = host_probes.run_probes(
-        host, args.target, session_root=manifest.get("session_dir"))
+    # THREE trees, three arguments -- see run_probes' docstring. `review_root`
+    # is the REVIEWED tree (the --pr worktree, or the git toplevel), which is
+    # what the shadow scan must read; `args.target` is the operator's own
+    # checkout and scanning it left a hostile PR's planted shell unread (C1).
+    # The session root comes from runio.session_dir, the single expression
+    # synthesize._collect_host_usage also reads, so the probe that GATES the
+    # token ledger and the collector that BUILDS it cannot drift apart (C2).
+    # session_dir is read off the MANIFEST rather than args because driver.run()
+    # assigns it there (in memory, after write_manifest) -- but it is NOT
+    # persisted, so a resume without the flag legitimately falls back to cwd.
+    # `_posture_drift` names --session-dir when that is what moved.
+    session_root = runio.session_dir(manifest)
+    # Probed directly, and ONCE (Minor 4): _shadow_refusal may not read the
+    # verdict back off the artifact's `by` field (see its docstring), and
+    # running the scan a second time inside run_probes was both duplicate work
+    # and a window in which the artifact and the refusal could disagree about
+    # the same tree.
+    shadow = host_probes.probe_shadow_shells(host, review_root)
+    fresh = host_probes.run_probes(host, review_root, session_root=session_root,
+                                   shadow=shadow)
+    # I6 / spec 5.2: evaluated on EVERY invocation, not only the first. When
+    # tool_policy_enforced is already REFUTED for an unrelated reason -- no
+    # registration directory, i.e. every machine that has not run `driver
+    # setup` -- a shadow file planted mid-run gives refuted -> refuted, no
+    # mismatch, and a refusal evaluated only under `stored is None` would never
+    # look at it again.
+    refusal = _shadow_refusal(shadow, manifest)
+    if refusal:
+        return refusal
     path = runio._pano(review_root, runio.HOST_CAPABILITIES)
     stored = runio._load_json(path)
     if stored is None:
-        # Probed directly, NOT read back off `fresh["capabilities"]`: see
-        # _shadow_refusal's docstring for why the artifact's `by` field cannot
-        # be trusted to say whether shadow-shell-scan is the one that refuted.
-        shadow = host_probes.probe_shadow_shells(host, args.target)
-        refusal = _shadow_refusal(shadow, manifest)
-        if refusal:
-            return refusal
         runio._write_json(path, fresh)
         return None
     was, now = host_probes.capabilities_of(stored), host_probes.capabilities_of(fresh)
     if was != now:
-        moved = ["%s: %s -> %s" % (name, was.get(name), now.get(name))
-                 for name in sorted(set(was) | set(now))
-                 if was.get(name) != now.get(name)]
-        return ("host posture changed mid-run (%s). Entries already dispatched "
-                "were built under the previous posture, so this run's report "
-                "would disagree with itself about what was enforced. Start a "
-                "fresh run with --reset." % "; ".join(moved))
+        return _posture_drift(was, now, manifest)
     return None
+
+
+# The capabilities whose probes resolve off the SESSION root rather than the
+# reviewed tree, so a difference in either can be explained by a --session-dir
+# that was passed on one invocation and omitted on the next.
+_SESSION_DERIVED = (hosts.ARTIFACT_WRITE_GUARD, hosts.USAGE_LEDGER)
+
+
+def _posture_drift(was, now, manifest):
+    """The mid-run posture-change refusal, naming the likeliest remedy first.
+
+    I2: `session_dir` is deliberately NOT a manifest field (driver.run() sets
+    it in memory after write_manifest), so a run started with `--session-dir /s`
+    and resumed WITHOUT it re-resolves the write-guard and transcript probes
+    against cwd -- a perfectly ordinary operator slip that flips those two
+    capabilities and lands here. Telling that operator to discard the run with
+    --reset, while naming neither the flag nor the option of simply passing it
+    again, is a worse answer than the mistake. So when a session-derived
+    capability moved and this invocation carries no --session-dir, that remedy
+    goes first. Otherwise --reset stands: an improved posture still leaves
+    entries dispatched under the weaker one.
+    """
+    moved = ["%s: %s -> %s" % (name, was.get(name), now.get(name))
+             for name in sorted(set(was) | set(now))
+             if was.get(name) != now.get(name)]
+    message = ("host posture changed mid-run (%s). Entries already dispatched "
+               "were built under the previous posture, so this run's report "
+               "would disagree with itself about what was enforced."
+               % "; ".join(moved))
+    session_moved = sorted(name for name in _SESSION_DERIVED
+                           if was.get(name) != now.get(name))
+    if session_moved and not (manifest or {}).get("session_dir"):
+        return ("%s If the earlier invocation ran with --session-dir, pass the "
+                "same --session-dir again: %s resolve off the session root, "
+                "which defaults to the current directory (%s) when the flag is "
+                "absent, and the flag is deliberately not stored in the "
+                "manifest. Otherwise start a fresh run with --reset."
+                % (message, ", ".join(session_moved), os.getcwd()))
+    return "%s Start a fresh run with --reset." % message
 
 
 def _shadow_refusal(shadow, manifest):

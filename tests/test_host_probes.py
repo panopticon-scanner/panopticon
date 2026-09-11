@@ -1,9 +1,28 @@
+import contextlib
 import os
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
-from scripts import host_probes, hosts
+from scripts import host_probes, hosts, write_guard_hook
+
+
+@contextlib.contextmanager
+def _in(path):
+    """Run the block with `path` as the process cwd, always restoring it.
+
+    The write-guard probe's DEFAULT subject is cwd-relative (that is what
+    `write_guard_hook._resolve(None, None, None)` returns), so pinning it
+    means controlling cwd -- and controlling cwd is also what keeps these
+    tests off the operator's real `.claude/settings.local.json`.
+    """
+    previous = os.getcwd()
+    os.chdir(path)
+    try:
+        yield
+    finally:
+        os.chdir(previous)
 
 
 def _shell(directory, name, tools, block_list=False):
@@ -262,12 +281,103 @@ class TestWriteGuardArmedProbe(unittest.TestCase):
                 self.assertEqual(hosts.UNKNOWN, state)
                 self.assertIsNone(by)
 
-    def test_the_probe_leaves_live_settings_untouched(self):
-        # The probe must never write to the operator's real session settings.
-        from scripts import write_guard_hook
-        before = write_guard_hook.guard_state()
-        host_probes.probe_write_guard_armed("claude")
-        self.assertEqual(before, write_guard_hook.guard_state())
+    def test_the_probe_leaves_the_sessions_settings_untouched(self):
+        # The probe must never write to the session's settings: it proves the
+        # MECHANISM in a sandbox, and merely LOOKS at the place the host will
+        # arm. Minor 2: this test used to call the probe with no session_root,
+        # which resolves `.claude/settings.local.json` CWD-relative -- a file
+        # that is untracked in this repo, so on a fresh checkout or CI runner
+        # the probe short-circuited at the `isfile` check and the round-trip
+        # this test exists to guard never ran. It passed, hollowly, exactly
+        # where it mattered. Asserting PROVEN makes the precondition
+        # load-bearing, and a temp session root guarantees it rather than
+        # inheriting it from the checkout.
+        with tempfile.TemporaryDirectory() as session_root:
+            self._session_root(session_root)
+            before = write_guard_hook.guard_state(session_root=session_root)
+            state, _by, _detail = host_probes.probe_write_guard_armed(
+                "claude", session_root=session_root)
+            self.assertEqual(hosts.PROVEN, state)
+            self.assertEqual(
+                before, write_guard_hook.guard_state(session_root=session_root))
+
+    def test_the_probe_and_install_resolve_the_same_settings_file(self):
+        # I1: the probe's SUBJECT must be the file `install()` will arm. The
+        # coupling is `write_guard_hook._resolve`, called by both; re-deriving
+        # the path here would be a second definition free to drift, and a
+        # probe that proves a file nothing arms proves nothing. Pinned by
+        # REMOVING exactly the file _resolve names and watching the verdict
+        # flip -- a detail-string match alone would not show the probe reads
+        # that file rather than some other one with the same name.
+        with tempfile.TemporaryDirectory() as session_root:
+            self._session_root(session_root)
+            resolved, _allowlist, _defaults = write_guard_hook._resolve(
+                None, None, session_root)
+            state, _by, detail = host_probes.probe_write_guard_armed(
+                "claude", session_root=session_root)
+            self.assertEqual(hosts.PROVEN, state)
+            self.assertIn(resolved, detail)
+            os.remove(resolved)
+            state, _by, detail = host_probes.probe_write_guard_armed(
+                "claude", session_root=session_root)
+            self.assertEqual(hosts.REFUTED, state)
+            self.assertIn(os.path.abspath(resolved), detail)
+
+    def test_the_default_subject_is_the_file_install_resolves_from_cwd(self):
+        # The other half of I1: no session_root at all. install()'s default is
+        # CWD-relative, so the probe's must be too -- and this runs entirely
+        # inside a temp cwd, which is also why it never reads the operator's
+        # real settings file.
+        with tempfile.TemporaryDirectory() as cwd, _in(cwd):
+            resolved, _allowlist, used_defaults = write_guard_hook._resolve(
+                None, None, None)
+            self.assertTrue(used_defaults)
+            self.assertFalse(os.path.isabs(resolved))   # cwd-relative by design
+            state, _by, detail = host_probes.probe_write_guard_armed("claude")
+            self.assertEqual(hosts.REFUTED, state)
+            self.assertIn(os.path.abspath(resolved), detail)
+            os.makedirs(os.path.dirname(resolved), exist_ok=True)
+            with open(resolved, "w", encoding="utf-8") as fh:
+                fh.write("{}")
+            state, _by, _detail = host_probes.probe_write_guard_armed("claude")
+            self.assertEqual(hosts.PROVEN, state)
+
+    def test_defaulting_the_session_root_to_cwd_does_not_move_the_subject(self):
+        # `run_probes` now always passes a session_root, defaulting it to cwd.
+        # That is only safe because _resolve(None, None, os.getcwd()) and
+        # _resolve(None, None, None) name the SAME file -- one absolute, one
+        # cwd-relative. Measured here rather than assumed: the two differ in
+        # `used_defaults`, which is what makes it worth checking.
+        with tempfile.TemporaryDirectory() as cwd, _in(cwd):
+            self._session_root(cwd)
+            default = write_guard_hook._resolve(None, None, None)
+            explicit = write_guard_hook._resolve(None, None, os.getcwd())
+            self.assertEqual(os.path.abspath(default[0]),
+                             os.path.abspath(explicit[0]))
+            self.assertEqual(os.path.abspath(default[1]),
+                             os.path.abspath(explicit[1]))
+            self.assertNotEqual(default[2], explicit[2])   # used_defaults does differ
+            self.assertEqual(
+                host_probes.probe_write_guard_armed("claude")[0],
+                host_probes.probe_write_guard_armed(
+                    "claude", session_root=os.getcwd())[0])
+
+    def test_a_sandbox_that_cannot_be_created_refutes_rather_than_raising(self):
+        # Minor 6: the round-trip's try/except did not wrap
+        # TemporaryDirectory() itself. This runs inside driver.run() on EVERY
+        # invocation now, so an OSError from the constructor (no space, TMPDIR
+        # gone, out of descriptors) aborted the whole run with a traceback --
+        # violating this module's contract that a probe which cannot run
+        # resolves to a STATE.
+        with tempfile.TemporaryDirectory() as session_root:
+            self._session_root(session_root)
+            with mock.patch.object(host_probes.tempfile, "TemporaryDirectory",
+                                   side_effect=OSError("no space left")):
+                state, by, detail = host_probes.probe_write_guard_armed(
+                    "claude", session_root=session_root)
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertEqual(host_probes.WRITE_GUARD_ARMED, by)
+        self.assertIn("no space left", detail)
 
 
 class TestTranscriptDirProbe(unittest.TestCase):
@@ -557,6 +667,41 @@ class TestRunProbesBuildsTheArtifact(unittest.TestCase):
                     self.assertEqual(hosts.UNKNOWN, row["state"])
                     self.assertIsNone(row["by"])
                     self.assertIn("no probe", row["detail"])
+
+    def test_an_unclaimed_capability_is_not_described_as_claimed(self):
+        # Minor 1. One sentence covered both no-probe cases and said the host
+        # "claims this capability's proof is not shipped yet". gemini claims
+        # NOTHING, so its artifact asserted a claim it never made -- for two
+        # capabilities -- in the one artifact whose entire purpose is
+        # separating claims from proof.
+        with tempfile.TemporaryDirectory() as target:
+            art = host_probes.run_probes("gemini", target)
+            unclaimed = [c for c in (hosts.ARTIFACT_WRITE_GUARD,
+                                     hosts.USAGE_LEDGER)
+                         if not hosts.declares("gemini", c)]
+            self.assertEqual(2, len(unclaimed))   # the fixture is the real row
+            for capability in unclaimed:
+                with self.subTest(capability=capability):
+                    detail = art["capabilities"][capability]["detail"]
+                    self.assertIn("no probe", detail)
+                    self.assertNotIn("claims", detail)
+                    self.assertIn("does not claim", detail)
+
+    def test_a_claimed_capability_with_no_probe_still_says_so(self):
+        # The other side of the split, and what makes the assertion above
+        # non-vacuous: a message that dropped the word "claims" everywhere
+        # would pass that test while losing the distinction it exists to draw.
+        # A host that DOES claim a capability but ships no probe for it is
+        # waiting on the probe, and the artifact has to say that.
+        from unittest import mock as _mock
+        row = hosts.HostSpec(name="claims-but-unprobed",
+                             claims=frozenset({hosts.ARTIFACT_WRITE_GUARD}))
+        with _mock.patch.dict(hosts.HOSTS, {"claims-but-unprobed": row}), \
+                tempfile.TemporaryDirectory() as target:
+            art = host_probes.run_probes("claims-but-unprobed", target)
+            detail = art["capabilities"][hosts.ARTIFACT_WRITE_GUARD]["detail"]
+            self.assertIn("claims", detail)
+            self.assertIn("not shipped yet", detail)
 
     def test_a_shadowed_target_refutes_tool_policy_even_when_shells_are_perfect(self):
         # The precedence rule, end to end: registered-shell-tools may prove it,
