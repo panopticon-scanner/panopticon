@@ -237,9 +237,13 @@ def _establish_host_posture(review_root, manifest, args):
     path = runio._pano(review_root, runio.HOST_CAPABILITIES)
     stored = runio._load_json(path)
     if stored is None:
-        shadow = _shadow_refusal(fresh, manifest)
-        if shadow:
-            return shadow
+        # Probed directly, NOT read back off `fresh["capabilities"]`: see
+        # _shadow_refusal's docstring for why the artifact's `by` field cannot
+        # be trusted to say whether shadow-shell-scan is the one that refuted.
+        shadow = host_probes.probe_shadow_shells(host, args.target)
+        refusal = _shadow_refusal(shadow, manifest)
+        if refusal:
+            return refusal
         runio._write_json(path, fresh)
         return None
     was, now = host_probes.capabilities_of(stored), host_probes.capabilities_of(fresh)
@@ -254,18 +258,29 @@ def _establish_host_posture(review_root, manifest, args):
     return None
 
 
-def _shadow_refusal(artifact, manifest):
+def _shadow_refusal(shadow, manifest):
     """Spec 7.3: a target shipping panopticon-* agent files refuses the run.
 
+    `shadow` is `host_probes.probe_shadow_shells`'s OWN `(state, by, detail)`
+    result -- never the artifact's `capabilities[tool_policy_enforced]` row.
+    That row's `by` names whichever probe `run_probes` recorded FIRST among
+    those that reached the resolved state, so on a host whose
+    registered-shell-tools probe ALSO refutes (no registration directory at
+    all -- every machine that has not run `driver setup`), `by` would read
+    "registered-shell-tools" even though shadow-shell-scan is the one that
+    found the hostile file. Keying this refusal off `by` silently dropped the
+    shadow finding on exactly the machines a hostile target is most likely to
+    be pointed at: an unregistered first run. Deciding from the probe's own
+    result is immune to whatever else ties with it.
+
     `--allow-unenforced` downgrades rather than silences: the run proceeds with
-    tool_policy_enforced REFUTED, which drives enforced:false onto every entry.
-    Refuted is STRONGER than unknown -- the operator who takes the opt-in gets
-    a run that says plainly it was not enforced.
+    tool_policy_enforced REFUTED (resolve_state ranks refuted over proven), so
+    the report says plainly it was not enforced. Both REFUTED reasons a shadow
+    probe can return -- a shadowing file was found, or a scope directory could
+    not be read so shadowing could not be ruled out -- refuse the same way.
     """
-    row = (artifact.get("capabilities") or {}).get(hosts.TOOL_POLICY_ENFORCED) or {}
-    if row.get("by") != host_probes.SHADOW_SHELL_SCAN:
-        return None
-    if row.get("state") != hosts.REFUTED:
+    state, _by, detail = shadow
+    if state != hosts.REFUTED:
         return None
     if (manifest.get("flags") or {}).get("allow_unenforced"):
         return None
@@ -273,7 +288,7 @@ def _shadow_refusal(artifact, manifest):
             "over the registered enforcement shell, so this target would be "
             "reviewing itself with reviewers it supplied. Remove the file(s), "
             "or re-run with --allow-unenforced to proceed with enforcement "
-            "explicitly refuted." % row.get("detail"))
+            "explicitly refuted." % detail)
 
 
 def run(args, runner=subprocess.run, phases=PHASES):

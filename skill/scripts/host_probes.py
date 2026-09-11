@@ -394,17 +394,21 @@ def run_probes(host, target, session_root=None, home=None,
                               "proof is not shipped yet" % host))
             continue
         state = hosts.resolve_state([r[0] for r in results])
-        # Report the probe that DECIDED, so `by` and `detail` always agree with
-        # `state` -- naming a probe that lost the precedence would be worse
-        # than naming none. When two results TIE on the decided state (e.g.
-        # both REFUTED), the FIRST recorded wins: for tool_policy_enforced
-        # that means a registry-mapped probe (walked above) is reported ahead
-        # of the unconditional shadow-shell-scan call that follows it. Both
-        # facts stay true in the resolved STATE either way; only which
-        # `detail` string surfaces is decided by this order, and it is
-        # pinned deliberately here rather than left to accident.
-        deciding = next((r for r in results if r[0] == state), results[0])
-        capabilities[capability] = _row(state, deciding[1], deciding[2])
+        agreeing = [r for r in results if r[0] == state] or results[:1]
+        # `by` names the probe that decided, so it stays the FIRST agreeing
+        # result -- for tool_policy_enforced that means a registry-mapped
+        # probe (walked above) is reported ahead of the unconditional
+        # shadow-shell-scan call that follows it, exactly as before. `detail`
+        # now carries EVERY probe that reached that verdict, joined: reporting
+        # only the first silently DROPPED the shadow-shell finding whenever
+        # the shell probe also refuted (an empty/absent registration
+        # directory) -- which is every machine that has not run `driver
+        # setup`, i.e. exactly where a hostile target is most likely to be
+        # reviewed. A caller that must decide from the shadow probe alone
+        # (driver._shadow_refusal) calls it directly rather than trusting
+        # this join order; this field is disclosure, not a decision input.
+        capabilities[capability] = _row(
+            state, agreeing[0][1], "; ".join(r[2] for r in agreeing))
     return {"schema_version": SCHEMA_VERSION, "host": host,
             "probed_at": run_manifest._now_iso(), "capabilities": capabilities}
 

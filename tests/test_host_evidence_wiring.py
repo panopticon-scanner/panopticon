@@ -1,3 +1,4 @@
+import dataclasses
 import os
 import tempfile
 import unittest
@@ -10,6 +11,42 @@ from scripts.phases import runio
 class _Args:
     def __init__(self, **kw):
         self.__dict__.update(kw)
+
+
+def _pinned_registration(directory):
+    """Patch the registry's `claude` row so `registration_dir` points at
+    `directory` for the `with` block, regardless of what this machine's real
+    ~/.claude/agents holds.
+
+    Fix-round 1: these wiring tests passed on the author's machine only
+    because it happens to have 3/3 driver-role shells registered. On a
+    machine that has never run `driver setup` (any CI runner, any fresh
+    checkout), registered-shell-tools ALSO refutes (no registration
+    directory), and the pre-fix `_shadow_refusal` -- which decided from the
+    artifact's `by` field rather than the shadow probe's own result -- named
+    whichever probe `run_probes` recorded first, silently dropping the
+    shadow finding. Pinning here removes the machine as a variable; the
+    dedicated unregistered-machine test below pins it open on purpose.
+    """
+    return mock.patch.dict(
+        hosts.HOSTS,
+        {"claude": dataclasses.replace(hosts.HOSTS["claude"],
+                                       registration_dir=directory)})
+
+
+def _register_perfect_shells(directory):
+    """Every driver-role shell, exactly matching its template, so
+    registered-shell-tools PROVES -- isolating a REFUTED tool_policy_enforced
+    to the shadow scan alone."""
+    from scripts import dispatch
+    os.makedirs(directory, exist_ok=True)
+    for role in host_probes.DRIVER_ROLES:
+        role_file = dispatch.ROLE_FILES[role]
+        allowed = dispatch.load_template(role_file)[0]["tool_policy"]["allowed"]
+        name = dispatch.registered_agent_filename("claude", role_file)
+        with open(os.path.join(directory, name), "w", encoding="utf-8") as fh:
+            fh.write("---\nname: %s\ndescription: probe fixture\ntools: %s\n"
+                     "---\n\nbody\n" % (name[:-3], ", ".join(allowed)))
 
 
 class TestThePostureIsEstablishedEveryInvocation(unittest.TestCase):
@@ -121,23 +158,60 @@ class TestThePostureIsEstablishedEveryInvocation(unittest.TestCase):
 
     def test_a_shadowed_target_refuses_the_run(self):
         # Spec 7.3, the owner's ruling: refuse, naming the offending path.
-        with tempfile.TemporaryDirectory() as review_root:
+        # Shells are PERFECTLY registered here (pinned, not this machine's
+        # real state) so the refusal is attributable to the shadow scan
+        # alone, not to an incidental registration gap.
+        with tempfile.TemporaryDirectory() as review_root, \
+                tempfile.TemporaryDirectory() as registration:
+            _register_perfect_shells(registration)
             d = os.path.join(review_root, ".claude", "agents")
             os.makedirs(d)
             with open(os.path.join(d, "panopticon-scout.md"), "w",
                       encoding="utf-8") as fh:
                 fh.write("x")
-            err = driver._establish_host_posture(
-                review_root, self._manifest(session_dir=review_root),
-                _Args(target=review_root, session_dir=None))
+            with _pinned_registration(registration):
+                err = driver._establish_host_posture(
+                    review_root, self._manifest(session_dir=review_root),
+                    _Args(target=review_root, session_dir=None))
+            self.assertIsNotNone(err)
+            self.assertIn("panopticon-scout.md", err)
+
+    def test_a_shadowed_target_is_refused_even_when_shells_are_unregistered(self):
+        # The machine-independence bug (fix round 1): both probes refute, the
+        # tie-break in run_probes names registered-shell-tools (the first
+        # recorded), and a _shadow_refusal that keyed off the artifact's `by`
+        # field let the run proceed while dropping the shadow finding from
+        # the artifact entirely. An unregistered machine is the COMMON case
+        # for a first run -- any CI runner, any checkout that has never run
+        # `driver setup` -- and a hostile target is exactly what it is most
+        # likely to be pointed at. _shadow_refusal must decide from the
+        # shadow probe's own result, never from which probe `run_probes`
+        # happened to report first.
+        with tempfile.TemporaryDirectory() as review_root, \
+                tempfile.TemporaryDirectory() as registration:
+            # `registration` exists but is EMPTY: registered-shell-tools also
+            # REFUTES ("no shell at ..." for every driver role), tying with
+            # shadow-shell-scan's own refutation.
+            d = os.path.join(review_root, ".claude", "agents")
+            os.makedirs(d)
+            with open(os.path.join(d, "panopticon-scout.md"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("x")
+            with _pinned_registration(registration):
+                err = driver._establish_host_posture(
+                    review_root, self._manifest(session_dir=review_root),
+                    _Args(target=review_root, session_dir=None))
             self.assertIsNotNone(err)
             self.assertIn("panopticon-scout.md", err)
 
     def test_allow_unenforced_downgrades_the_refusal(self):
         # It papers over nothing: the run proceeds with the capability REFUTED,
         # which is stronger than unknown -- the report says plainly it was not
-        # enforced rather than quietly forgetting.
-        with tempfile.TemporaryDirectory() as review_root:
+        # enforced rather than quietly forgetting. Shells pinned perfect, same
+        # reasoning as test_a_shadowed_target_refuses_the_run.
+        with tempfile.TemporaryDirectory() as review_root, \
+                tempfile.TemporaryDirectory() as registration:
+            _register_perfect_shells(registration)
             d = os.path.join(review_root, ".claude", "agents")
             os.makedirs(d)
             with open(os.path.join(d, "panopticon-scout.md"), "w",
@@ -145,8 +219,10 @@ class TestThePostureIsEstablishedEveryInvocation(unittest.TestCase):
                 fh.write("x")
             manifest = self._manifest(session_dir=review_root)
             manifest["flags"] = {"allow_unenforced": True}
-            err = driver._establish_host_posture(
-                review_root, manifest, _Args(target=review_root, session_dir=None))
+            with _pinned_registration(registration):
+                err = driver._establish_host_posture(
+                    review_root, manifest,
+                    _Args(target=review_root, session_dir=None))
             self.assertIsNone(err)
             evidence = runio.host_evidence(review_root)
             self.assertEqual(
