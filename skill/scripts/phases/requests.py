@@ -191,15 +191,42 @@ def require_unenforced_ack(review_root, manifest, entries):
     Interim, per the approved 5.2 strategy: real per-host write mediation is
     #1344. This makes the unenforced path loud again, not safe.
 
+    I4, and it is a DISCLOSURE rather than a second gate: §7.3 promises that
+    `--allow-unenforced` "papers over nothing ... and the ack file records the
+    shadowing paths". It did not. This function returned at its first line
+    whenever ARTIFACT_WRITE_GUARD is PROVEN -- the normal Claude case -- so an
+    operator who overrode a §7.3 refusal on a shadowed target left NOTHING
+    durable behind saying so. Now, when the flag is set and
+    TOOL_POLICY_ENFORCED is REFUTED, the ack is written (or extended) with the
+    refuting detail.
+
+    It must NEVER become a refusal on TOOL_POLICY_ENFORCED. That capability is
+    REFUTED on every machine that has not run `driver setup` -- there is no
+    registration directory to find shells in -- so raising on it would refuse
+    ordinary runs everywhere. Adding disclosure is in scope; adding a gate is
+    not. `test_an_unregistered_machine_without_the_flag_still_runs` pins that.
+
     Returns the ack path when one was written, else None.
     """
     evidence = runio.host_evidence(review_root)
     posture = hosts.posture(manifest.get("host", "claude"), evidence)
+    allow = bool((manifest.get("flags") or {}).get("allow_unenforced"))
+    # An explicit override of a §7.3 refusal. `entries` is required for the
+    # same reason the write-guard branch requires it: with no cell declared no
+    # reviewer runs, so there is nothing to disclose and no plan to bind to.
+    overrode_tool_policy = bool(
+        allow and entries
+        and posture[hosts.TOOL_POLICY_ENFORCED] == hosts.REFUTED)
     if posture[hosts.ARTIFACT_WRITE_GUARD] == hosts.PROVEN:
-        return None                    # the hook mediates Write for this host
+        # The hook mediates Write for this host -- no write-guard risk to
+        # accept. The §7.3 override, if there was one, still gets recorded.
+        if not overrode_tool_policy:
+            return None
+        return _record_unenforced_ack(review_root, manifest, entries, evidence,
+                                      posture, guard_mediates=True)
     if not entries:
         return None                    # no cells declared: no risk to accept
-    if not (manifest.get("flags") or {}).get("allow_unenforced"):
+    if not allow:
         # declares(), NOT posture(): this asks which hosts CLAIM the guard, to
         # build the "or use one of: --host claude" hint. We have no evidence
         # for a host we are not running, so posture() would answer unknown for
@@ -218,10 +245,22 @@ def require_unenforced_ack(review_root, manifest, entries):
                row.get("detail") or "no evidence",
                ", ".join(sorted(write_capable_roles())), UNENFORCED_ACK,
                ", ".join("--host " + n for n in guarded)))
-    path = runio._pano(review_root, UNENFORCED_ACK)
-    if os.path.isfile(path):
-        return path                    # idempotent across resumes
-    return runio._write_json(path, {
+    return _record_unenforced_ack(review_root, manifest, entries, evidence,
+                                  posture, guard_mediates=False)
+
+
+def _record_unenforced_ack(review_root, manifest, entries, evidence, posture,
+                           guard_mediates):
+    """Write the ack, or ADD to one that is already there. Never overwrite.
+
+    Additive by construction: a key the stored ack already carries is left
+    exactly as written -- the #493 R2 `plan_sha256` binding above all, which
+    must keep naming the plan that was actually acknowledged. Only disclosures
+    the earlier write did not carry are added, which is what makes this safe
+    to call on a resume that has learned something new (a shadow file planted
+    mid-run) without invalidating the ack's binding to this run.
+    """
+    body = {
         "acknowledged": True,
         "host": manifest.get("host"),
         # Binds the ack to THIS run's plan (#493 R2): a stale ack from an
@@ -229,10 +268,31 @@ def require_unenforced_ack(review_root, manifest, entries):
         "plan_sha256": integrity_mod._plan_hash(entries),
         "roles": sorted(write_capable_roles()),
         "write_guard_covers_bash": False,
-        "note": "Reviewer Write is unmediated on this host: no registered "
-                "shell, no PreToolUse hook. The operator accepted this with "
-                "--allow-unenforced.",
-    })
+        "note": ("Tool policy enforcement is REFUTED for this run and the "
+                 "operator overrode the spec 7.3 refusal with "
+                 "--allow-unenforced. The host's write guard DOES mediate "
+                 "reviewer Write; the refuting detail is recorded below."
+                 if guard_mediates else
+                 "Reviewer Write is unmediated on this host: no registered "
+                 "shell, no PreToolUse hook. The operator accepted this with "
+                 "--allow-unenforced."),
+        hosts.TOOL_POLICY_ENFORCED: posture[hosts.TOOL_POLICY_ENFORCED],
+    }
+    if posture[hosts.TOOL_POLICY_ENFORCED] == hosts.REFUTED:
+        # §7.3's "the ack file records the shadowing paths". The detail is the
+        # probe's own sentence, which names every scope-directory hit.
+        body["tool_policy_detail"] = (
+            (evidence.get(hosts.TOOL_POLICY_ENFORCED) or {}).get("detail")
+            or "refuted, but the artifact recorded no detail")
+    path = runio._pano(review_root, UNENFORCED_ACK)
+    stored = runio._load_json(path)
+    if isinstance(stored, dict):
+        added = {k: v for k, v in body.items() if k not in stored}
+        if not added:
+            return path                # idempotent across resumes
+        stored.update(added)
+        body = stored
+    return runio._write_json(path, body)
 
 
 def _snapshot_review_out_files(review_root, manifest):

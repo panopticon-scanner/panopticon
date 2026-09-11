@@ -16,6 +16,7 @@ them as the compensating control. The risk has been taken silently ever since.
 """
 import json
 import os
+import shutil
 import tempfile
 import unittest
 
@@ -110,6 +111,124 @@ class TestGate(unittest.TestCase):
         self.assertFalse(ack["write_guard_covers_bash"])
         self.assertEqual(ack["plan_sha256"], integrity._plan_hash(ENTRIES))
         self.assertIn("no registered shell", ack["note"])
+
+
+class TestTheAckRecordsAShadowedOverride(unittest.TestCase):
+    """I4. §7.3 promises `--allow-unenforced` "papers over nothing ... and the
+    ack file records the shadowing paths". `require_unenforced_ack` returned
+    at its FIRST line when ARTIFACT_WRITE_GUARD is PROVEN -- the normal Claude
+    case -- so on a shadowed target with --allow-unenforced no ack was written
+    and nothing durable recorded that an operator had overridden a §7.3
+    refusal."""
+
+    SHADOW = ("the reviewed tree (/tmp/hostile) ships agent file(s) that "
+              "shadow this host's enforcement shells: "
+              ".claude/agents/panopticon-scout.md")
+
+    def _root(self, tool_policy, detail=None, guard=hosts.PROVEN):
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        os.makedirs(os.path.join(root, ".panopticon"), exist_ok=True)
+        write_host_evidence(root, {hosts.ARTIFACT_WRITE_GUARD: guard,
+                                   hosts.TOOL_POLICY_ENFORCED: tool_policy})
+        if detail is not None:
+            path = runio._pano(root, runio.HOST_CAPABILITIES)
+            body = runio._load_json(path)
+            body["capabilities"][hosts.TOOL_POLICY_ENFORCED]["detail"] = detail
+            runio._write_json(path, body)
+        return root
+
+    def test_a_shadowed_override_is_recorded_even_though_write_is_mediated(self):
+        root = self._root(hosts.REFUTED, detail=self.SHADOW)
+        path = requests.require_unenforced_ack(
+            root, _manifest("claude", allow=True), ENTRIES)
+        self.assertIsNotNone(path)
+        with open(path, encoding="utf-8") as fh:
+            ack = json.load(fh)
+        self.assertTrue(ack["acknowledged"])
+        self.assertEqual(hosts.REFUTED, ack[hosts.TOOL_POLICY_ENFORCED])
+        # The shadowing PATH, not merely the fact of a refusal.
+        self.assertIn("panopticon-scout.md", ack["tool_policy_detail"])
+        # And the note must not claim Write was unmediated: on this host it
+        # was. A single note for both branches would say something false in
+        # exactly the case this test exists for.
+        self.assertNotIn("no PreToolUse hook", ack["note"])
+        self.assertIn("--allow-unenforced", ack["note"])
+
+    def test_the_recorded_override_reads_back_through_synthesize(self):
+        # Worthless unless the reader honours it: integrity's #493 plan-hash
+        # binding has to match, or meta.integrity reports it stale.
+        root = self._root(hosts.REFUTED, detail=self.SHADOW)
+        path = requests.require_unenforced_ack(
+            root, _manifest("claude", allow=True), ENTRIES)
+        ack = integrity.read_unenforced_ack(path)
+        self.assertTrue(ack)
+        self.assertEqual(ack["plan_sha256"], integrity._plan_hash(ENTRIES))
+
+    def test_no_flag_means_no_ack_even_when_tool_policy_is_refuted(self):
+        # The ack records an OVERRIDE. With no --allow-unenforced there was no
+        # override to record, and a run that reached here at all was not
+        # refused (see the next test).
+        root = self._root(hosts.REFUTED, detail=self.SHADOW)
+        self.assertIsNone(requests.require_unenforced_ack(
+            root, _manifest("claude"), ENTRIES))
+        self.assertFalse(os.path.exists(runio._pano(root, requests.UNENFORCED_ACK)))
+
+    def test_the_flag_alone_does_not_manufacture_an_ack(self):
+        # The condition is REFUTED, not "the flag is set". Without this, a
+        # disclosure keyed off the flag alone would write an ack on every
+        # --allow-unenforced run on a fully enforced host, and
+        # meta.integrity.unenforced_acknowledged would go true for a run
+        # nothing was overridden in.
+        for state in (hosts.PROVEN, hosts.UNKNOWN):
+            with self.subTest(tool_policy=state):
+                root = self._root(state)
+                self.assertIsNone(requests.require_unenforced_ack(
+                    root, _manifest("claude", allow=True), ENTRIES))
+                self.assertFalse(os.path.exists(
+                    runio._pano(root, requests.UNENFORCED_ACK)))
+
+    def test_an_unregistered_machine_without_the_flag_still_runs(self):
+        # THE constraint on this change, and it is load-bearing:
+        # tool_policy_enforced is REFUTED on every machine that has never run
+        # `driver setup` -- no registration directory, so no shells to find.
+        # Turning this disclosure into a gate would refuse ordinary runs
+        # everywhere. Disclosure is in scope; a refusal is not.
+        root = self._root(hosts.REFUTED,
+                          detail="no registration directory at /nope: this "
+                                 "host's enforcement shells were never emitted")
+        self.assertIsNone(requests.require_unenforced_ack(
+            root, _manifest("claude"), ENTRIES))
+
+    def test_a_resume_extends_the_ack_without_disturbing_its_binding(self):
+        # Additive: a shadow file that appears mid-run adds its disclosure,
+        # and the #493 plan binding recorded earlier is left exactly as it
+        # was. Rewriting the ack wholesale would re-hash against whatever the
+        # plan looks like now and quietly re-bless a changed plan.
+        root = self._root(hosts.REFUTED, detail=self.SHADOW)
+        path = runio._pano(root, requests.UNENFORCED_ACK)
+        runio._write_json(path, {"acknowledged": True, "host": "claude",
+                                 "plan_sha256": "earlier-binding",
+                                 "note": "written by the earlier invocation"})
+        self.assertEqual(path, requests.require_unenforced_ack(
+            root, _manifest("claude", allow=True), ENTRIES))
+        with open(path, encoding="utf-8") as fh:
+            ack = json.load(fh)
+        self.assertEqual("earlier-binding", ack["plan_sha256"])
+        self.assertEqual("written by the earlier invocation", ack["note"])
+        self.assertIn("panopticon-scout.md", ack["tool_policy_detail"])
+
+    def test_a_refutation_with_no_recorded_detail_still_says_so(self):
+        root = self._root(hosts.REFUTED)          # conftest's detail: "fixture"
+        path = runio._pano(root, runio.HOST_CAPABILITIES)
+        body = runio._load_json(path)
+        del body["capabilities"][hosts.TOOL_POLICY_ENFORCED]["detail"]
+        runio._write_json(path, body)
+        written = requests.require_unenforced_ack(
+            root, _manifest("claude", allow=True), ENTRIES)
+        with open(written, encoding="utf-8") as fh:
+            ack = json.load(fh)
+        self.assertIn("no detail", ack["tool_policy_detail"])
 
 
 class TestTheAckIsReadableBySynthesize(unittest.TestCase):
