@@ -163,6 +163,22 @@ def _host_capabilities_verbatim(host_capabilities):
     return caps if isinstance(caps, dict) else {}
 
 
+def _host_capabilities_field(host_capabilities, key):
+    """One scalar field off the artifact, or None when it is not readable.
+
+    `None` -- never a default, never a raise -- on an artifact that is absent,
+    not a dict, or simply missing the key. A fabricated `probed_at` would be
+    the worst possible answer here: 5.2's entire argument for re-probing on
+    every invocation is that setup-time-only evidence is unbounded in age, so
+    "measured at 04:05" and "nobody wrote down when" have to stay
+    distinguishable. `meta.timestamp` cannot stand in -- that is SYNTHESIS
+    time, a different moment from the probe on any resumed run.
+    """
+    if not isinstance(host_capabilities, dict):
+        return None
+    return host_capabilities.get(key)
+
+
 def assemble(run, resolved, reconciled, graded, cost):
     """Lay the computed sections out as the CodeReviewReport envelope. Key
     order is part of the artifact (write_report dumps insertion order)."""
@@ -196,8 +212,17 @@ def assemble(run, resolved, reconciled, graded, cost):
             # {} synthesize.py already uses for "absent or corrupt". A dict
             # `capabilities` value survives untouched -- state/by/detail all
             # carried, per capability -- for a consumer diffing runs.
+            # `probed_at` and `schema_version` ride along for the same reason
+            # and with the same fail-closed treatment (None, never a default):
+            # WHEN the posture was measured is part of the posture, and the
+            # schema the artifact was written in is what a consumer diffing
+            # two runs needs to know it may compare them at all.
             "host_capabilities": {
                 "host": host_disclosure.host_of(run.host_capabilities),
+                "schema_version": _host_capabilities_field(
+                    run.host_capabilities, "schema_version"),
+                "probed_at": _host_capabilities_field(
+                    run.host_capabilities, "probed_at"),
                 "capabilities": _host_capabilities_verbatim(run.host_capabilities),
             },
         },

@@ -72,6 +72,27 @@ class TestTheWordingRule(unittest.TestCase):
         self.assertFalse([x for x in host_disclosure.lines(MIXED)
                           if hosts.ARTIFACT_WRITE_GUARD in x])
 
+    def test_every_capability_has_a_real_remedy(self):
+        # The one thing nothing else in this file can check. `remedy()` falls
+        # back to "no remedy recorded for <capability>", which satisfies every
+        # other assertion here: `assertIn("fix:", line)` still passes, and so
+        # does the cross-surface `assertIn(remedy(capability, "claude"), text)`
+        # below -- because that test asks remedy() for the same fallback string
+        # it then looks for. Deleting the READ_SCOPE_CONFINED entry from
+        # _REMEDY left all 2976 tests green while every surface rendered
+        # "fix: no remedy recorded for read_scope_confined".
+        #
+        # 5.1's wording rule is "name the capability, the host, the probe, and
+        # THE REMEDY". "No remedy recorded" is the absence of one, and the
+        # consistency tests only prove the surfaces agree -- not that what they
+        # agree on is a disclosure.
+        self.assertEqual(sorted(hosts.CAPABILITIES),
+                         sorted(host_disclosure._REMEDY))
+        for capability in hosts.CAPABILITIES:
+            with self.subTest(capability=capability):
+                self.assertNotIn("no remedy recorded",
+                                 host_disclosure.remedy(capability, "claude"))
+
 
 class TestTheInverseCarriesEqualWeight(unittest.TestCase):
     def test_an_all_proven_host_says_so_explicitly(self):
@@ -144,7 +165,10 @@ class TestTheHeadline(unittest.TestCase):
     def test_it_counts_the_unproven_and_names_the_host(self):
         head = host_disclosure.headline(MIXED)
         self.assertIn("claude", head)
-        self.assertIn("4", head)          # refuted + 3 unknown, not the proven one
+        # "4 of 5", not a bare "4": a lone "4" is satisfied by any digit the
+        # sentence happens to contain, including the 5 in "of 5" flipping
+        # places, so it does not actually pin the count.
+        self.assertIn("4 of 5", head)     # refuted + 3 unknown, not the proven one
 
 
 def _runner_ok(cmd, **kwargs):
@@ -160,10 +184,11 @@ class TestTheFourSurfacesSayTheSameThing(unittest.TestCase):
     reads ONE posture and asserts every surface names the same capability, the
     same probe and the same remedy.
 
-    The fourth surface (X0X/meta) is the same envelope the body renders from,
-    so it is exercised through the report build here rather than as a fifth
-    string: the body surface is built by the REAL pipeline
-    (build_report -> render_summary), which is what carries meta.host_capabilities.
+    Surface 2 (`meta.host_capabilities`) is the same envelope the body renders
+    from, so it is exercised through the report build here rather than as a
+    separate string: the body surface is built by the REAL pipeline
+    (build_report -> render_summary), which is what carries
+    meta.host_capabilities.
     """
 
     def _surfaces(self, envelope):

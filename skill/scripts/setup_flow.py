@@ -324,30 +324,37 @@ def _check_host_shells(host, runner, repo_root=None):
                        "ok" if codex_ok else
                        "Codex CLI unavailable -- install/authenticate `codex`"))
 
+    # Registering no enforcement shells is a fact about ONE check, not an
+    # exemption from disclosure. This used to `return checks` here, so gemini
+    # and generic -- the two driver-selectable hosts that claim NOTHING, and
+    # therefore the two whose whole story is five-of-five-unproven -- left
+    # readiness with a single line naming the host and no capability, no probe
+    # and no remedy. 5.1 names no shell-less exemption. Control falls through
+    # to the probing block below instead, which is written once and runs for
+    # every known host.
     if not row.shell_format:
         checks.append(("enforced-shells", None,
                        "%s registers no enforcement shells; reviewers run "
                        "with a prompt-advisory tool policy" % resolved_host))
-        return checks
-
-    reg_dir = dispatch._registration_dir(resolved_host, None)
-    # #run7 ARC-A4C: a hand-maintained shadow of the ACTIVE driver roles. If a
-    # role is renamed/removed in dispatch.ROLE_FILES the filter below would
-    # silently drop its shell from the readiness check. Trip loudly instead.
-    _unknown_roles = [r for r in _driver_roles if r not in dispatch.ROLE_FILES]
-    if _unknown_roles:
-        raise RuntimeError(
-            "setup_flow._driver_roles out of sync with dispatch.ROLE_FILES: %s"
-            % ", ".join(_unknown_roles))
-    missing_shells = [role for role, rf in sorted(dispatch.ROLE_FILES.items())
-                      if role in _driver_roles
-                      and not dispatch._is_registered(reg_dir, rf, resolved_host)]
-    checks.append(("enforced-shells", not missing_shells,
-                   "ok" if not missing_shells else
-                   "unregistered reviewer shell(s): %s -- run python3 "
-                   "skill/scripts/dispatch.py --emit-host-agents %s and start "
-                   "a fresh session"
-                   % (", ".join(missing_shells), resolved_host)))
+    else:
+        reg_dir = dispatch._registration_dir(resolved_host, None)
+        # #run7 ARC-A4C: a hand-maintained shadow of the ACTIVE driver roles. If
+        # a role is renamed/removed in dispatch.ROLE_FILES the filter below
+        # would silently drop its shell from the readiness check. Trip loudly.
+        _unknown_roles = [r for r in _driver_roles if r not in dispatch.ROLE_FILES]
+        if _unknown_roles:
+            raise RuntimeError(
+                "setup_flow._driver_roles out of sync with dispatch.ROLE_FILES: %s"
+                % ", ".join(_unknown_roles))
+        missing_shells = [role for role, rf in sorted(dispatch.ROLE_FILES.items())
+                          if role in _driver_roles
+                          and not dispatch._is_registered(reg_dir, rf, resolved_host)]
+        checks.append(("enforced-shells", not missing_shells,
+                       "ok" if not missing_shells else
+                       "unregistered reviewer shell(s): %s -- run python3 "
+                       "skill/scripts/dispatch.py --emit-host-agents %s and start "
+                       "a fresh session"
+                       % (", ".join(missing_shells), resolved_host)))
 
     # 5.1 surface 4. `driver setup` has no run directory, so there is no
     # artifact to read -- readiness PROBES. That is the point: this is where
@@ -359,18 +366,37 @@ def _check_host_shells(host, runner, repo_root=None):
         checks.append(("host-capabilities", None,
                        "posture could not be probed: %s" % exc))
         return checks
+    # THREE outcomes, read off host_disclosure's own contract rather than
+    # re-derived from `lines()`. `lines()` returns [] for two different
+    # reasons -- everything is proven, and the envelope is unreadable -- and
+    # `if not gaps: ALL_PROVEN` collapsed them, reporting a probe that produced
+    # nothing as a PASSING check that everything was verified. That is the
+    # exact inversion headline()'s docstring exists to forbid.
+    head = host_disclosure.headline(fresh)
     gaps = host_disclosure.lines(fresh)
-    if not gaps:
-        checks.append(("host-capabilities", True, host_disclosure.ALL_PROVEN))
+    if head == host_disclosure.ALL_PROVEN:
+        checks.append(("host-capabilities", True, head))
         return checks
-    checks.append(("host-capabilities", None, host_disclosure.headline(fresh)))
-    caps = fresh.get("capabilities") or {}
-    for capability in hosts.unproven(hosts.posture(resolved_host, caps)):
-        state = (caps.get(capability) or {}).get("state")
+    checks.append(("host-capabilities", None, head))
+    if head == host_disclosure.NO_EVIDENCE:
+        # Nothing was measured, so there is no per-capability verdict to
+        # report. Enumerating five capabilities against an envelope that
+        # yielded no posture would print five lines that name a capability and
+        # nothing else -- "unenforced" alone, which 5.1 calls a mood.
+        return checks
+    # Past the NO_EVIDENCE branch `fresh` is necessarily a dict with a string
+    # host and a dict `capabilities` -- headline() would have returned
+    # NO_EVIDENCE otherwise -- so this read cannot raise.
+    posture = hosts.posture(resolved_host, fresh.get("capabilities"))
+    for capability in hosts.unproven(posture):
+        # The state comes off the POSTURE map, not off raw `capabilities`: the
+        # masked posture is the one every other surface renders, and a second
+        # derivation of one fact is free to drift from it.
+        #
         # refuted is a fault the operator can act on; unknown is NOT
         # APPLICABLE -- read_scope_confined is unknown on every host today and
         # must not report as a failure nobody can clear.
-        ok = False if state == hosts.REFUTED else None
+        ok = False if posture[capability] == hosts.REFUTED else None
         line = [g for g in gaps if g.startswith(capability)]
         checks.append(("host-capability:" + capability, ok,
                        line[0] if line else capability))

@@ -1964,14 +1964,22 @@ class TestHostCapabilitiesMeta(unittest.TestCase):
                                       "by": None,
                                       "detail": "model=None until F4 binds them"},
         }
-        env = {"schema_version": 1, "host": "claude", "probed_at": "T",
-               "capabilities": caps}
+        env = {"schema_version": 1, "host": "claude",
+               "probed_at": "2026-09-11T04:05:06Z", "capabilities": caps}
         report = self._build(host_capabilities=env)
         hc = report["meta"]["host_capabilities"]
         self.assertEqual("claude", hc["host"])
         # verbatim: the REASON survives, not just the verdict -- by/detail
         # included, nothing re-keyed, nothing summarised.
         self.assertEqual(env["capabilities"], hc["capabilities"])
+        # ...and WHEN, and in which schema. 5.2 re-probes on every invocation
+        # precisely because setup-time-only evidence is unbounded in age; a
+        # consumer that cannot read the probe time cannot tell a posture
+        # measured at this invocation from a stale one. `meta.timestamp` does
+        # not answer it -- that is SYNTHESIS time, which on a resumed run is a
+        # different moment from the probe.
+        self.assertEqual("2026-09-11T04:05:06Z", hc["probed_at"])
+        self.assertEqual(1, hc["schema_version"])
 
     def test_meta_says_nobody_looked_when_the_artifact_is_absent(self):
         # synthesize.py's own absent/corrupt-artifact branch normalises to
@@ -1980,6 +1988,10 @@ class TestHostCapabilitiesMeta(unittest.TestCase):
         hc = report["meta"]["host_capabilities"]
         self.assertIsNone(hc["host"])
         self.assertEqual({}, hc["capabilities"])
+        # None, not a fabricated "now": a probe time nobody recorded must not
+        # read as a probe that happened.
+        self.assertIsNone(hc["probed_at"])
+        self.assertIsNone(hc["schema_version"])
 
     def test_meta_fails_closed_on_a_non_dict_artifact(self):
         # The artifact is a file on disk and therefore untrusted: a
@@ -1992,6 +2004,8 @@ class TestHostCapabilitiesMeta(unittest.TestCase):
                 hc = report["meta"]["host_capabilities"]
                 self.assertIsNone(hc["host"])
                 self.assertEqual({}, hc["capabilities"])
+                self.assertIsNone(hc["probed_at"])
+                self.assertIsNone(hc["schema_version"])
 
     def test_meta_fails_closed_when_capabilities_key_is_not_a_dict(self):
         # Isolates the OTHER arm: `host` is a valid, readable string but

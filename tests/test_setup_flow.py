@@ -1038,6 +1038,44 @@ def _all_proven_artifact(host):
     }
 
 
+def _shell_less_artifact(host):
+    """What `run_probes` really returns for a host that registers no shells and
+    claims nothing: five honest unknowns, each with its OWN reason.
+
+    Not mixed across STATES, because gemini/generic cannot reach a mixed one --
+    `hosts.posture()`'s claim-mask forces every non-refuted state to unknown
+    for a host that claims nothing, so a proven entry here would be a fixture
+    asserting something the registry cannot produce. Mixed where it can be:
+    five different details, and one capability whose `by` names a probe that
+    actually ran (the shadow scan runs for any host, claim or no claim), so a
+    renderer that hard-codes one capability's shape fails on the other four.
+    """
+    return {
+        "schema_version": 1, "host": host, "probed_at": "T",
+        "capabilities": {
+            hosts.TOOL_POLICY_ENFORCED: {
+                "state": hosts.UNKNOWN, "by": "shadow-shell-scan",
+                "detail": "host %r discovers no project-scoped agents" % host},
+            hosts.ARTIFACT_WRITE_GUARD: {
+                "state": hosts.UNKNOWN, "by": None,
+                "detail": "no probe: host %r does not claim this capability, "
+                          "so there is nothing to prove" % host},
+            hosts.USAGE_LEDGER: {
+                "state": hosts.UNKNOWN, "by": None,
+                "detail": "no probe: host %r does not claim this capability, "
+                          "so there is nothing to prove" % host},
+            hosts.READ_SCOPE_CONFINED: {
+                "state": hosts.UNKNOWN, "by": None,
+                "detail": "no probe: no host implements a read-confinement "
+                          "control (spec 7.2)"},
+            hosts.MODEL_BINDING: {
+                "state": hosts.UNKNOWN, "by": None,
+                "detail": "no probe in F3a: dispatch entries still carry "
+                          "model=None (spec 8, F4)"},
+        },
+    }
+
+
 def _runner_ok(cmd, **kwargs):
     """A `runner` that never touches a real process. The new host-capability
     probing code does not take `runner` at all (host_probes.run_probes is
@@ -1110,3 +1148,91 @@ class TestReadinessProbesThePostureAndNamesTheFix(unittest.TestCase):
         row = {c[0]: c for c in checks}["host-capabilities"]
         self.assertIsNone(row[1])
         self.assertIn("could not be probed", row[2])
+
+
+class TestReadinessNeverReadsAnUnreadableEnvelopeAsProof(unittest.TestCase):
+    """`host_disclosure.lines()` returns [] for TWO different reasons -- every
+    capability is proven, AND the envelope is unreadable (`caps is None or host
+    is None`). Readiness collapsed them into one `ok=True, ALL_PROVEN` row,
+    which is precisely what `headline()`'s docstring says must never happen:
+    "an empty result from a missing artifact would render as the all-proven
+    case and turn 5.1's guarantee inside out". It also rendered as a PASSING
+    readiness check rather than a limitation.
+
+    Readiness reads the module's three-outcome contract instead of re-deriving
+    a two-outcome one from `lines()`.
+    """
+
+    BAD = {
+        "host is not a string": {"host": None, "capabilities": {
+            hosts.TOOL_POLICY_ENFORCED: {"state": hosts.REFUTED,
+                                         "by": "shadow-shell-scan",
+                                         "detail": "ships panopticon-scout.md"}}},
+        "capabilities is not a mapping": {"host": "claude",
+                                          "capabilities": "garbage"},
+        "the artifact is not a dict at all": "not-a-dict",
+        "the artifact is empty": {},
+    }
+
+    def test_an_unreadable_envelope_reports_no_evidence_not_all_proven(self):
+        for name, bad in self.BAD.items():
+            with self.subTest(envelope=name):
+                with mock.patch.object(host_probes, "run_probes",
+                                       return_value=bad):
+                    checks = setup_flow._check_host_shells("claude", _runner_ok)
+                row = {c[0]: c for c in checks}["host-capabilities"]
+                # By EQUALITY against the module's own constants: "1 of 5 NOT
+                # PROVEN" contains "PROVEN", so no substring test here can tell
+                # the two apart.
+                self.assertEqual(("host-capabilities", None,
+                                  host_disclosure.NO_EVIDENCE), row)
+
+    def test_no_evidence_emits_no_per_capability_rows(self):
+        # Nothing was measured, so there is no per-capability verdict to
+        # report. Five rows whose detail is a bare capability name would be
+        # "unenforced alone" -- a mood, not a disclosure (5.1).
+        with mock.patch.object(host_probes, "run_probes", return_value={}):
+            checks = setup_flow._check_host_shells("claude", _runner_ok)
+        self.assertEqual([], [c for c in checks
+                              if c[0].startswith("host-capability:")])
+
+
+class TestShellLessHostsGetTheWholeDisclosure(unittest.TestCase):
+    """`gemini` and `generic` are the two driver-selectable hosts that claim
+    NOTHING, so five-of-five-unproven is their entire story -- and the
+    `enforced-shells` early return handed them one line that named the host
+    and no capability, no probe and no remedy. 5.1 names no exemption for
+    shell-less hosts.
+    """
+
+    def _rows(self, host):
+        with mock.patch.object(host_probes, "run_probes",
+                               return_value=_shell_less_artifact(host)):
+            return dict((c[0], c) for c in
+                        setup_flow._check_host_shells(host, _runner_ok, "."))
+
+    def test_the_enforced_shells_row_it_already_had_survives(self):
+        for host in ("gemini", "generic"):
+            with self.subTest(host=host):
+                row = self._rows(host)["enforced-shells"]
+                self.assertIsNone(row[1])
+                self.assertIn("registers no", row[2])
+
+    def test_it_gets_a_headline_and_a_row_per_capability_with_the_remedy(self):
+        for host in ("gemini", "generic"):
+            with self.subTest(host=host):
+                rows = self._rows(host)
+                head = rows["host-capabilities"]
+                self.assertIsNone(head[1])
+                self.assertNotEqual(host_disclosure.ALL_PROVEN, head[2])
+                self.assertNotEqual(host_disclosure.NO_EVIDENCE, head[2])
+                for capability in hosts.CAPABILITIES:
+                    with self.subTest(capability=capability):
+                        row = rows["host-capability:" + capability]
+                        self.assertIn(capability, row[2])
+                        self.assertIn(host, row[2])
+                        # the remedy VERBATIM, per capability -- five distinct
+                        # strings, so a surface that rendered one of them for
+                        # all five fails here.
+                        self.assertIn(host_disclosure.remedy(capability, host),
+                                      row[2])
