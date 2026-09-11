@@ -1,8 +1,10 @@
 import contextlib
 import copy
 import dataclasses
+import io
 import os
 import shutil
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -420,6 +422,50 @@ class TestThePostureIsEstablishedEveryInvocation(unittest.TestCase):
             flat = os.path.join(review_root, ".panopticon", runio.HOST_CAPABILITIES)
             self.assertFalse(os.path.isfile(flat),
                              "artifact leaked into the flat top-level path")
+
+    def test_the_posture_is_announced_on_stderr_before_anything_dispatches(self):
+        # F3b surface 1, spec 5.1. `_artifact()` gives a genuinely mixed
+        # fixture; pinned here so the REFUTED capability is the one this test
+        # asserts appears (with its real probe id) and the PROVEN one is the
+        # one it asserts does NOT.
+        with tempfile.TemporaryDirectory() as review_root:
+            manifest = self._manifest(session_dir=review_root)
+            artifact = self._artifact(hosts.REFUTED)
+            artifact["capabilities"][hosts.TOOL_POLICY_ENFORCED]["by"] = (
+                host_probes.SHADOW_SHELL_SCAN)
+            artifact["capabilities"][hosts.ARTIFACT_WRITE_GUARD] = {
+                "state": hosts.PROVEN, "by": "fixture", "detail": "proven"}
+            buf = io.StringIO()
+            with mock.patch.object(host_probes, "run_probes",
+                                   return_value=artifact), \
+                    mock.patch.object(sys, "stderr", buf):
+                err = driver._establish_host_posture(
+                    review_root, manifest, self._args())
+            self.assertIsNone(err)
+            out = buf.getvalue()
+            self.assertIn("driver: host capabilities", out)
+            self.assertIn(hosts.TOOL_POLICY_ENFORCED, out)  # the refuted one
+            self.assertIn("shadow-shell-scan", out)         # the probe
+            self.assertIn("fix:", out)                      # the remedy
+            self.assertNotIn(hosts.ARTIFACT_WRITE_GUARD, out)  # proven: silent
+
+    def test_an_all_proven_host_still_says_so_on_stderr(self):
+        # 5.1's inverse: silence must never be the all-proven signal. This
+        # fixture is deliberately NOT mixed -- it exists to prove the
+        # all-proven sentence itself renders, which a mixed fixture cannot do.
+        with tempfile.TemporaryDirectory() as review_root:
+            manifest = self._manifest(session_dir=review_root)
+            artifact = self._artifact(hosts.PROVEN)
+            for row in artifact["capabilities"].values():
+                row["state"] = hosts.PROVEN
+            buf = io.StringIO()
+            with mock.patch.object(host_probes, "run_probes",
+                                   return_value=artifact), \
+                    mock.patch.object(sys, "stderr", buf):
+                err = driver._establish_host_posture(
+                    review_root, manifest, self._args())
+            self.assertIsNone(err)
+            self.assertIn("PROVEN", buf.getvalue())
 
 
 class TestTheProbesReadTheRightTree(unittest.TestCase):

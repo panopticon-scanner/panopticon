@@ -27,6 +27,7 @@ import scripts.diff_map as diff_map  # noqa: E402
 import scripts.plan_contract as plan_contract  # noqa: E402
 import scripts.run_manifest as run_manifest  # noqa: E402
 from scripts import hosts  # noqa: E402
+import scripts.host_disclosure as host_disclosure  # noqa: E402
 import scripts.host_probes as host_probes  # noqa: E402
 import scripts.phases.engine as engine
 import scripts.phases.runio as runio
@@ -212,6 +213,27 @@ def _positive_int(text):
     return value
 
 
+def _emit_posture_disclosure(envelope):
+    """5.1 surface 1: stderr, before anything dispatches.
+
+    Same channel and register as phases/tools.py's "driver: tool scan CRASHED
+    (rc=...)" -- `driver: ` prefixed lines on stderr. `host_disclosure`
+    composes the sentence; this picks the channel and writes it, once per
+    call, and nothing else -- see host_disclosure.py's module docstring on
+    why no caller is allowed to write its own wording. A named function
+    (rather than the write inlined at the call site) so a cross-surface
+    consistency test can call it directly with a hand-built envelope, without
+    also having to fake a whole `_establish_host_posture` invocation.
+
+    `envelope` is a `run_probes()`-shaped dict; `host_disclosure.headline`/
+    `lines` already degrade an unreadable envelope to NO_EVIDENCE / no lines
+    rather than raising, so this function does not re-validate it.
+    """
+    sys.stderr.write("driver: %s\n" % host_disclosure.headline(envelope))
+    for line in host_disclosure.lines(envelope):
+        sys.stderr.write("driver:   %s\n" % line)
+
+
 def _establish_host_posture(review_root, manifest, args):
     """Probe this host now; write the evidence, or refuse if it moved.
 
@@ -256,6 +278,17 @@ def _establish_host_posture(review_root, manifest, args):
     shadow = host_probes.probe_shadow_shells(host, review_root)
     fresh = host_probes.run_probes(host, review_root, session_root=session_root,
                                    shadow=shadow)
+    # 5.1 surface 1. Emitted here -- after `fresh` is computed, before the
+    # artifact is written or compared, and before the shadow refusal below --
+    # rather than at the dispatch sites, because 5.2 already puts this step
+    # before `coverage` dispatches the scout (so it runs before anything
+    # dispatches, satisfying the "at the first dispatch" half of spec 5.1),
+    # and because emitting once per INVOCATION here (not once per dispatched
+    # cell) is what "once per run" rules out. A resumed invocation
+    # re-announces deliberately: the operator resuming needs the posture they
+    # are resuming under. Emitted even when the shadow refusal below is about
+    # to stop the run, so the operator sees the posture the refusal is about.
+    _emit_posture_disclosure(fresh)
     # I6 / spec 5.2: evaluated on EVERY invocation, not only the first. When
     # tool_policy_enforced is already REFUTED for an unrelated reason -- no
     # registration directory, i.e. every machine that has not run `driver
