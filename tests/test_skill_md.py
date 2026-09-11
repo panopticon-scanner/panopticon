@@ -3,6 +3,7 @@ import re
 import unittest
 
 from conftest import SKILL_ROOT as ROOT   # #run7 TST-G1B: shared path anchor
+import scripts.hosts as hosts
 
 # #run7 QAL-D1C: the PANOPTICON.md guide was re-opened inline in 10 places.
 _DOC_PATH = os.path.join(ROOT, os.pardir, "docs", "PANOPTICON.md")
@@ -63,6 +64,27 @@ class TestSkillMd(unittest.TestCase):
         # 4.3.2: meta.cost is the measured 4.x baseline for 5.x economics.
         self.assertIn("meta.cost", self.text)
         self.assertIn("{phase, role, model, count}", self.text)
+
+    def test_documents_the_host_capability_disclosure_and_that_it_does_not_gate(self):
+        # #1344 F3b. This file is the operator-facing contract: it already
+        # documents meta.cost, meta.coverage, meta.integrity and even the
+        # terminal summary's `**Resume:**` presence/absence semantics as
+        # consumer guarantees. F3b adds a fifth meta section and three more
+        # surfaces, and a guarantee nobody wrote down is not one.
+        for token in ["meta.host_capabilities", "host-capabilities.json",
+                      "probed_at", "`**Host capabilities:**`",
+                      "driver: host capabilities:", "host-capability:"]:
+            self.assertIn(token, self.text, token)
+        section = _section(self.text, "## Host capabilities (5.2)", "\n## ")
+        # It DISCLOSES; it does not gate. Said out loud, because the ratchet to
+        # gating is a real later decision (spec 12) and an operator reading
+        # "refuted" has to know whether their build just broke.
+        self.assertIn("not gating", section)
+        # Every capability the registry measures, named -- so adding one to
+        # hosts.CAPABILITIES without documenting it fails here.
+        for capability in hosts.CAPABILITIES:
+            with self.subTest(capability=capability):
+                self.assertIn(capability, section)
 
     def test_documents_unloadable_verdicts_gate_enforced(self):
         # #979: un-loadable verdicts are not just surfaced — they dent the gate.

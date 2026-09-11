@@ -1,4 +1,5 @@
 import contextlib
+import html
 import io
 import subprocess
 import unittest
@@ -7,6 +8,7 @@ from unittest import mock
 from scripts import host_disclosure, hosts
 import scripts.driver as driver
 import scripts.host_probes as host_probes
+import scripts.html_report as html_report
 import scripts.setup_flow as setup_flow
 import scripts.synth.findings as findings_mod
 import scripts.synth.render as render_mod
@@ -206,11 +208,18 @@ class TestTheFourSurfacesSayTheSameThing(unittest.TestCase):
             rows = setup_flow._check_host_shells("claude", _runner_ok, ".")
         return {"stderr": err.getvalue(),
                 "body": render_mod.render_summary(report),
+                # The body surface again, in the artifact an operator actually
+                # opens. Read through html.unescape: `_escape` is doing its job
+                # on the quotes in `on host 'claude'`, and comparing against
+                # pre-escaped copies of host_disclosure's strings here would be
+                # a second spelling of the wording rule -- the very thing this
+                # test exists to forbid.
+                "html": html.unescape(html_report.render(report)),
                 "readiness": "\n".join(r[2] for r in rows)}
 
     def test_every_surface_names_the_same_capability_probe_and_remedy(self):
         surfaces = self._surfaces(MIXED)
-        self.assertEqual({"stderr", "body", "readiness"}, set(surfaces))
+        self.assertEqual({"stderr", "body", "html", "readiness"}, set(surfaces))
         for name, text in surfaces.items():
             for capability in hosts.unproven(
                     hosts.posture("claude", MIXED["capabilities"])):
