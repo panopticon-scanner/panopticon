@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from scripts import hosts
+from conftest import write_host_evidence
 import scripts.phases.runio as runio
 import scripts.phases.requests as requests
 import scripts.phases.coverage as coverage
@@ -54,6 +56,11 @@ class TestReviewerFileListsAreAbsolute(unittest.TestCase):
         os.makedirs(runio._pano(self.root))
         self.addCleanup(self._t.cleanup)
         self.manifest = {"run_id": "R", "security_mode": "standard", "host": "claude"}
+        # #1344 F4 (a): _cell_entry/_verify_entry now derive `delivery` from
+        # the host's proven write guard -- this class is about the #975 file
+        # list/repo-root pin, not the bridge, so prove it PROVEN and keep
+        # exercising the enforced/self-write path these tests were written for.
+        write_host_evidence(self.root, {c: hosts.PROVEN for c in hosts.CAPABILITIES})
         self.assertNotEqual(self.root, os.path.realpath(os.getcwd()))
         self.files = ["src/checkout/pay.py"]
         self.abs_file = os.path.abspath(os.path.join(self.root, self.files[0]))
@@ -125,3 +132,58 @@ class TestBoundModel(unittest.TestCase):
         expected = model_resolver.resolve_model("claude", "domain_panel")["model"]
         self.assertIsNotNone(expected, "fixture precondition: claude has a profile")
         self.assertEqual(expected, requests.bound_model("claude", "domain_panel"))
+
+
+class TestDelivery(unittest.TestCase):
+    """#1344 F4 (a): delivery is DERIVED from the role's Write grant and the
+    host's proven write guard, in one place. It used to be a literal set at
+    exactly one builder (the tool-advisor) while the two write-capable
+    builders never set it -- so a host with no write guard got unguarded
+    self-write.
+    """
+
+    def _evidence(self, guard):
+        # MIXED, and specifically tool_policy PROVEN with the guard varying:
+        # an enforced shell with no write guard is the case the bridge is for.
+        return {hosts.TOOL_POLICY_ENFORCED: {"state": hosts.PROVEN, "by": "x", "detail": "x"},
+                hosts.ARTIFACT_WRITE_GUARD: {"state": guard, "by": "x", "detail": "x"},
+                hosts.USAGE_LEDGER: {"state": hosts.UNKNOWN, "by": None, "detail": "x"}}
+
+    def test_a_write_role_on_a_guarded_host_self_writes(self):
+        mode, prefix = requests.delivery("claude", self._evidence(hosts.PROVEN),
+                                         "domain-panel.md", "/abs/out.json")
+        self.assertIsNone(mode)
+        self.assertEqual("", prefix)
+
+    def test_a_write_role_on_an_unguarded_host_is_bridged_with_the_preamble(self):
+        for guard in (hosts.REFUTED, hosts.UNKNOWN):
+            with self.subTest(guard=guard):
+                mode, prefix = requests.delivery("claude", self._evidence(guard),
+                                                 "domain-panel.md", "/abs/out.json")
+                self.assertEqual("return_json", mode)
+                self.assertEqual(requests.RETURN_PERSIST_PREAMBLE
+                                 % {"out_file": "/abs/out.json"}, prefix)
+
+    def test_a_read_only_role_is_return_persist_with_no_preamble(self):
+        # advisor.md grants no Write: there is nothing to override, so the
+        # template's own "return" instruction stands and no preamble is added
+        # -- on a guarded host AND an unguarded one.
+        for guard in (hosts.PROVEN, hosts.REFUTED):
+            with self.subTest(guard=guard):
+                mode, prefix = requests.delivery("claude", self._evidence(guard),
+                                                 "advisor.md", "/abs/v.json")
+                self.assertEqual(("return_json", ""), (mode, prefix))
+
+    def test_a_host_that_claims_no_guard_is_bridged(self):
+        # gemini/generic: driver-selectable today, prove nothing. R-F4-4.
+        for host in ("gemini", "generic"):
+            with self.subTest(host=host):
+                mode, _prefix = requests.delivery(host, {}, "domain-advisor.md", "/abs/o")
+                self.assertEqual("return_json", mode)
+
+    def test_the_preamble_names_the_out_file_and_forbids_the_write(self):
+        prefix = requests.RETURN_PERSIST_PREAMBLE % {"out_file": "/abs/out.json"}
+        self.assertIn("/abs/out.json", prefix)
+        self.assertIn("do NOT write", prefix)
+        self.assertIn("final message", prefix)
+        self.assertTrue(prefix.endswith("\n\n"), "preamble must separate from the body")

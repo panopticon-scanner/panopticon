@@ -171,6 +171,19 @@ class TestToolVerifyDispatch(_ToolVerifyBase):
         self.assertEqual(entry["out_file"], os.path.abspath(entry["out_file"]))
         self.assertIn("Repo root:", entry["prompt"])  # advisor root pin
 
+    def test_tool_advisor_carries_no_preamble_whatever_the_guard(self):
+        # advisor.md has no Write; its return_json is derived from that, not
+        # from the guard, and there is nothing to override in its prompt.
+        d = self._repo([_result("r1", "src/app.py", 1, level="note")])
+        m = self._manifest()
+        write_host_evidence(d, {hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN,
+                                hosts.ARTIFACT_WRITE_GUARD: hosts.REFUTED})
+        with self._bundle():
+            verify.verify_execute(d, m)
+        entry = runio._load_json(runio._pano(d, "dispatch-request.json"))["entries"][0]
+        self.assertEqual("return_json", entry["delivery"])
+        self.assertNotIn("DELIVERY: return-persist", entry["prompt"])
+
     def test_tool_advisor_entry_binds_the_resolved_model(self):
         d = self._repo([_result("r1", "src/app.py", 1, level="note")])
         m = self._manifest()

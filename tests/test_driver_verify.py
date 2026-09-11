@@ -1,8 +1,11 @@
 import json, os, tempfile, unittest
 from unittest import mock
+from conftest import write_host_evidence
+from scripts import hosts
 import scripts.phases.runio as runio
 import scripts.phases.review as review
 import scripts.phases.verify as verify
+import scripts.phases.requests as requests
 import scripts.model_resolver as model_resolver
 
 def _manifest(root):
@@ -26,6 +29,14 @@ class TestVerifyPrimary(unittest.TestCase):
         self.manifest = _manifest(self.root)
         _write(self.root, "groups.json", {"groups": [{"name": "app", "files": ["a.py"]}]})
         _write(self.root, "coverage-app.json", {"effective": ["SEC", "QAL"]})
+        # #1344 F4 (a): _verify_entry now derives `delivery` from the host's
+        # PROVEN write guard, not an absent-evidence UNKNOWN -- prove it here
+        # so this fixture keeps exercising the enforced/self-write path it was
+        # written for. test_an_enforced_advisor_with_no_write_guard_is_return_persist
+        # and test_a_guarded_advisor_self_writes_with_no_preamble below overwrite
+        # this with the MIXED fixture to show the guard varying.
+        write_host_evidence(self.root, {hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN,
+                                        hosts.ARTIFACT_WRITE_GUARD: hosts.PROVEN})
     def tearDown(self):
         self.tmp.cleanup()
 
@@ -53,6 +64,52 @@ class TestVerifyPrimary(unittest.TestCase):
         self.assertTrue(e["out_file"].endswith(".json"))
         self.assertEqual(e["out_file"], os.path.abspath(e["out_file"]))
         self.assertNotIn("delivery", e)                            # host-agnostic
+
+    def test_an_enforced_advisor_with_no_write_guard_is_return_persist(self):
+        # enforced stays True (the shell exists); delivery flips (nothing
+        # confines its Write). Both facts on one entry -- an all-refuted or
+        # all-proven fixture cannot show this.
+        write_host_evidence(self.root, {hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN,
+                                        hosts.ARTIFACT_WRITE_GUARD: hosts.REFUTED})
+        _cell(self.root, "app", "SEC", [{"domain": "SEC", "code": "SEC-A1A",
+              "severity": "HIGH", "title": "t", "category": "x",
+              "location": {"file": "a.py", "line_start": 1}}])
+        with (
+            mock.patch("scripts.dispatch.render_prompt", return_value="BODY"),
+            mock.patch("scripts.dispatch.registered_agent_name",
+                       return_value="panopticon-domain-advisor"),
+            mock.patch("scripts.ocrdb.load_bundle", return_value={"domains": {}})
+        ):
+            verify.verify_execute(self.root, self.manifest)
+        req = runio._load_json(runio._pano(self.root, "dispatch-request.json"))
+        outs = [os.path.basename(e["out_file"]) for e in req["entries"]]
+        self.assertEqual(outs, ["verdicts-app-SEC.json"])          # only engaged
+        e = req["entries"][0]
+        self.assertTrue(e["enforced"])
+        self.assertEqual("return_json", e["delivery"])
+        self.assertTrue(e["prompt"].startswith(
+            requests.RETURN_PERSIST_PREAMBLE % {"out_file": e["out_file"]}))
+
+    def test_a_guarded_advisor_self_writes_with_no_preamble(self):
+        # setUp already proves ARTIFACT_WRITE_GUARD -- restated for clarity.
+        write_host_evidence(self.root, {hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN,
+                                        hosts.ARTIFACT_WRITE_GUARD: hosts.PROVEN})
+        _cell(self.root, "app", "SEC", [{"domain": "SEC", "code": "SEC-A1A",
+              "severity": "HIGH", "title": "t", "category": "x",
+              "location": {"file": "a.py", "line_start": 1}}])
+        with (
+            mock.patch("scripts.dispatch.render_prompt", return_value="BODY"),
+            mock.patch("scripts.dispatch.registered_agent_name",
+                       return_value="panopticon-domain-advisor"),
+            mock.patch("scripts.ocrdb.load_bundle", return_value={"domains": {}})
+        ):
+            verify.verify_execute(self.root, self.manifest)
+        req = runio._load_json(runio._pano(self.root, "dispatch-request.json"))
+        outs = [os.path.basename(e["out_file"]) for e in req["entries"]]
+        self.assertEqual(outs, ["verdicts-app-SEC.json"])          # only engaged
+        e = req["entries"][0]
+        self.assertNotIn("delivery", e)
+        self.assertNotIn("DELIVERY: return-persist", e["prompt"])
 
     def test_verify_entries_bind_the_resolved_model(self):
         _cell(self.root, "app", "SEC", [{"domain": "SEC", "code": "SEC-A1A",

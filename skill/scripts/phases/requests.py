@@ -34,6 +34,51 @@ def bound_model(host, role):
     """
     return model_resolver.resolve_model(host, role).get("model")
 
+
+# #1344 F4 (a). The ONE wording for the return-persist instruction. Two builders
+# prepend it; neither may compose its own (the host_disclosure lesson: two
+# copies of one rule drift, and each surface's own test keeps passing).
+# It is PREPENDED by the builder, exactly as _verify_entry prepends the #975
+# repo-root pin -- spec 7.4 forbids editing the templates, and this edits none.
+RETURN_PERSIST_PREAMBLE = (
+    "DELIVERY: return-persist. This host has not proven it can confine your "
+    "Write to %(out_file)s, so do NOT write that file. Produce exactly the JSON "
+    "object the Output section below describes and return it as your final "
+    "message; the controller persists it to that path after confirming it "
+    "parses.\n\n")
+
+
+def delivery(host, evidence, role_file, out_file):
+    """(mode, prefix): how this entry's output reaches its out_file.
+
+    `mode` is "return_json" -- the HOST persists what the agent returns -- or
+    None, meaning the agent self-writes under the write guard. `prefix` is the
+    preamble to prepend to the prompt, or "".
+
+    Three cases, derived rather than declared per builder:
+      * the role's template grants no Write (advisor.md): return_json, no
+        preamble -- the template already says "return", nothing to override;
+      * the template grants Write and the host has PROVEN artifact_write_guard:
+        self-write, exactly as today;
+      * the template grants Write and the guard is NOT proven (refuted or
+        unknown -- gemini, generic, or a claude run that took
+        --allow-unenforced): return_json WITH the preamble, because the
+        template's own instruction says "Write your findings to {out_file}" and
+        an agent that obeys it self-writes unguarded while the controller waits
+        for JSON that never comes.
+
+    This does NOT bypass require_unenforced_ack (spec 10). The shell still
+    grants Write, so an agent asked to return may still write; the gate is
+    the operator's acceptance of that, and it stays.
+    """
+    allowed = dispatch.load_template(role_file)[0]["tool_policy"].get("allowed") or []
+    if "Write" not in allowed:
+        return "return_json", ""
+    if hosts.posture(host, evidence)[hosts.ARTIFACT_WRITE_GUARD] == hosts.PROVEN:
+        return None, ""
+    return "return_json", RETURN_PERSIST_PREAMBLE % {"out_file": out_file}
+
+
 def _prompts_dir(namespace=None):
     """`_prompts/` for a run, `<namespace>-prompts/` otherwise (#1507)."""
     return "_prompts" if not namespace else "%s-prompts" % namespace
