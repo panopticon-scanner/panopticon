@@ -161,13 +161,17 @@ def build_parser():
         tools_group.add_argument("--tools", action="store_true")
         tools_group.add_argument("--no-tools", action="store_true")
         p.add_argument("--include-fixtures", action="store_true")
-        # #1519: on a host that cannot mediate the reviewer Write grant (today,
-        # anything but claude), dispatching write-capable cells is refused
-        # unless the operator accepts the residual risk here. Anti-drift, so a
-        # resume cannot quietly drop the acceptance.
+        # #1519: when this invocation's MEASURED artifact_write_guard posture
+        # is not proven, dispatching write-capable cells is refused unless the
+        # operator accepts the residual risk here. Keyed on the capability, NOT
+        # on the host's name (#1344 F3a): a claude run on a machine where the
+        # probe refutes -- no settings file at the path the host would arm --
+        # is refused on identical terms. Anti-drift, so a resume cannot quietly
+        # drop the acceptance.
         p.add_argument("--allow-unenforced", action="store_true",
-                       help="accept that reviewer Write is unmediated on a "
-                            "non-claude host; recorded in unenforced-ack.json")
+                       help="accept unmediated reviewer Write when "
+                            "artifact_write_guard is not proven, on any host; "
+                            "recorded in unenforced-ack.json")
         # The directory the HOST SESSION runs in, used only to locate its
         # transcripts for the cost ledger. Defaults to cwd (#calibration-4).
         p.add_argument("--session-dir", default=None)
