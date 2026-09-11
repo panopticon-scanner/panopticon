@@ -564,12 +564,28 @@ def _render_header(report):
 
 
 def _render_compare_summary(label, report):
+    """One panel of the --compare view, including THIS report's host posture.
+
+    `render()` branches away from `_render_header` entirely on the compare
+    path, so surface 3's block reaches this view only if rendered here. Two
+    compared runs can hold different postures -- which is the cross-run diff
+    spec 5.1 says `meta.host_capabilities` exists to enable ("so a consumer can
+    diff posture across runs without re-deriving it"). A compare view showing
+    one posture, or none, would answer the question it exists to raise.
+
+    Each panel takes its OWN report's meta. `--compare` is also the documented
+    route by which a FOREIGN report.json reaches this renderer, so the envelope
+    here is less trustworthy than the main path's, not more -- everything goes
+    through the same escaping and the same fail-closed handling.
+    """
     summary = report.get("summary", {})
     stats = summary.get("stats", {})
     stat_cards = " ".join(
         f"<span class='stat-mini {_severity_class(sev)}'>{sev} {_stat_value(stats, sev)}</span>"
         for sev in _SEV_ORDER
     )
+    meta = report.get("meta")
+    host_caps = _render_host_capabilities(meta if isinstance(meta, dict) else {})
     return f"""
 <div class="compare-panel">
 <h3>{_escape(label)}</h3>
@@ -579,6 +595,7 @@ def _render_compare_summary(label, report):
 <span class="badge {_gate_class(summary.get('gate', 'OFF'))}">Gate: {_escape(summary.get('gate', 'OFF'))}</span>
 </div>
 <div class="stat-minis">{stat_cards}</div>
+{host_caps}
 </div>
 """
 
