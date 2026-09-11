@@ -1,13 +1,16 @@
 import contextlib
 import copy
 import dataclasses
+import io
 import os
 import shutil
+import sys
 import tempfile
 import unittest
 from unittest import mock
 
-from scripts import collect_usage, driver, host_probes, hosts, run_manifest
+from scripts import (collect_usage, driver, host_disclosure, host_probes,
+                     hosts, run_manifest)
 from scripts.phases import runio
 
 
@@ -117,6 +120,110 @@ class TestThePostureIsEstablishedEveryInvocation(unittest.TestCase):
                 fh.write("{}")
             manifest["session_dir"] = session_dir
         return manifest
+
+    def _artifact(self, focus_state, detail="fixture",
+                  focus=hosts.TOOL_POLICY_ENFORCED, host="claude"):
+        """A `run_probes()`-shaped artifact with `focus` at `focus_state`, and
+        every OTHER capability cycled across proven/refuted/unknown so the
+        fixture is genuinely mixed no matter what `focus_state` is.
+
+        An all-one-state fixture cannot catch code that hard-codes a single
+        capability's state -- that exact shape cost F3a two Criticals that
+        five separate mutation checks missed, because the fixture had erased
+        the distinction the bugs lived in. Cycling the four OTHER capabilities
+        guarantees proven, refuted AND unknown are each present on a different
+        capability every time this is called, independent of `focus`/`focus_state`.
+        """
+        baseline = (hosts.PROVEN, hosts.REFUTED, hosts.UNKNOWN)
+        others = [name for name in hosts.CAPABILITIES if name != focus]
+        capabilities = {
+            name: {"state": baseline[i % len(baseline)], "by": "fixture",
+                   "detail": "baseline-%s" % baseline[i % len(baseline)]}
+            for i, name in enumerate(others)
+        }
+        capabilities[focus] = {"state": focus_state, "by": "fixture",
+                               "detail": detail}
+        return {"schema_version": 1, "host": host,
+                "probed_at": "2026-09-11T00:00:00Z",
+                "capabilities": capabilities}
+
+    def _run_with_posture_established(self):
+        """A (review_root, manifest) pair with `host-capabilities.json`
+        already on disk, via a REAL first invocation of
+        `_establish_host_posture` whose `run_probes` is swapped for
+        `_artifact`'s deterministic, genuinely-mixed fixture -- so the stored
+        baseline does not depend on what THIS machine's live probes happen to
+        find (registration dir, transcripts, ...).
+        """
+        review_root = tempfile.mkdtemp(prefix="review-root-")
+        self.addCleanup(shutil.rmtree, review_root, ignore_errors=True)
+        manifest = self._manifest(session_dir=review_root)
+        with mock.patch.object(host_probes, "run_probes",
+                               return_value=self._artifact(hosts.PROVEN)):
+            err = driver._establish_host_posture(
+                review_root, manifest, self._args())
+        self.assertIsNone(err)
+        return review_root, manifest
+
+    def test_a_changed_reason_refreshes_the_artifact_without_refusing(self):
+        # The refusal is keyed to STATE. A capability that stays refuted for a
+        # NEW reason must update what the report will render, and must not cost
+        # the operator a run they can do nothing about.
+        review_root, manifest = self._run_with_posture_established()
+        path = runio._pano(review_root, runio.HOST_CAPABILITIES)
+        stored = runio._load_json(path)
+        stored["capabilities"][hosts.TOOL_POLICY_ENFORCED].update(
+            {"state": hosts.REFUTED, "detail": "the FIRST reason"})
+        runio._write_json(path, stored)
+
+        with mock.patch.object(host_probes, "run_probes",
+                               return_value=self._artifact(
+                                   hosts.REFUTED, detail="the SECOND reason")):
+            err = driver._establish_host_posture(
+                review_root, manifest, self._args())
+
+        self.assertIsNone(err, "a changed reason at the same state must not refuse")
+        refreshed = runio._load_json(path)
+        detail = refreshed["capabilities"][hosts.TOOL_POLICY_ENFORCED]["detail"]
+        self.assertIn("SECOND", detail)
+        self.assertNotIn("FIRST", detail)
+
+    def test_a_changed_timestamp_alone_does_not_rewrite_the_artifact(self):
+        # Fix round 1: `probed_at` (run_manifest._now_iso(), second
+        # resolution) is stamped fresh on EVERY probe and is not part of
+        # `capabilities`. A guard that compared the whole artifact rather than
+        # just `capabilities` would rewrite on essentially every real
+        # invocation regardless of whether anything an operator cares about
+        # changed -- widening, on every turn of a resumable loop, the window
+        # in which a killed process could leave THIS artifact (which the
+        # mid-run refusal a few lines above reads) truncated. A mutation to
+        # `if True:` passed 209 tests across six files with nothing pinning
+        # this before this test existed.
+        #
+        # Real (unmocked) run_probes, twice in a row against an unchanged
+        # review_root/session_root, is proven deterministic by
+        # test_a_second_invocation_with_the_same_posture_is_silent above; the
+        # only thing that legitimately varies invocation to invocation is the
+        # timestamp, so only _now_iso is controlled here.
+        with tempfile.TemporaryDirectory() as review_root:
+            manifest = self._manifest(session_dir=review_root)
+            args = self._args()
+            with mock.patch.object(run_manifest, "_now_iso",
+                                   return_value="2026-01-01T00:00:00Z"):
+                self.assertIsNone(driver._establish_host_posture(
+                    review_root, manifest, args))
+            path = runio._pano(review_root, runio.HOST_CAPABILITIES)
+            before = runio._load_json(path)
+
+            with mock.patch.object(run_manifest, "_now_iso",
+                                   return_value="2099-01-01T00:00:00Z"):
+                err = driver._establish_host_posture(review_root, manifest, args)
+
+            self.assertIsNone(err)
+            after = runio._load_json(path)
+            self.assertEqual(before, after,
+                             "a changed probed_at alone must not rewrite the artifact")
+            self.assertEqual("2026-01-01T00:00:00Z", after["probed_at"])
 
     def test_the_first_invocation_writes_the_artifact(self):
         with tempfile.TemporaryDirectory() as review_root:
@@ -316,6 +423,76 @@ class TestThePostureIsEstablishedEveryInvocation(unittest.TestCase):
             flat = os.path.join(review_root, ".panopticon", runio.HOST_CAPABILITIES)
             self.assertFalse(os.path.isfile(flat),
                              "artifact leaked into the flat top-level path")
+
+    def test_the_posture_is_announced_on_stderr_before_anything_dispatches(self):
+        # F3b surface 1, spec 5.1. `_artifact()` gives a genuinely mixed
+        # fixture; pinned here so the REFUTED capability is the one this test
+        # asserts appears (with its real probe id) and the PROVEN one is the
+        # one it asserts does NOT.
+        with tempfile.TemporaryDirectory() as review_root:
+            manifest = self._manifest(session_dir=review_root)
+            artifact = self._artifact(hosts.REFUTED)
+            artifact["capabilities"][hosts.TOOL_POLICY_ENFORCED]["by"] = (
+                host_probes.SHADOW_SHELL_SCAN)
+            artifact["capabilities"][hosts.ARTIFACT_WRITE_GUARD] = {
+                "state": hosts.PROVEN, "by": "fixture", "detail": "proven"}
+            buf = io.StringIO()
+            with mock.patch.object(host_probes, "run_probes",
+                                   return_value=artifact), \
+                    mock.patch.object(sys, "stderr", buf):
+                err = driver._establish_host_posture(
+                    review_root, manifest, self._args())
+            self.assertIsNone(err)
+            out = buf.getvalue()
+            self.assertIn("driver: host capabilities", out)
+            self.assertIn(hosts.TOOL_POLICY_ENFORCED, out)  # the refuted one
+            self.assertIn("shadow-shell-scan", out)         # the probe
+            self.assertIn("fix:", out)                      # the remedy
+            self.assertNotIn(hosts.ARTIFACT_WRITE_GUARD, out)  # proven: silent
+
+    def test_an_all_proven_host_still_says_so_on_stderr(self):
+        # 5.1's inverse: silence must never be the all-proven signal. This
+        # fixture is deliberately NOT mixed -- it exists to prove the
+        # all-proven sentence itself renders, which a mixed fixture cannot do.
+        #
+        # Fix round 1: no host in today's registry claims read_scope_confined
+        # (spec 7.2 -- nobody implements read-confinement yet), so
+        # hosts.posture()'s claim-mask forces it to UNKNOWN regardless of what
+        # the evidence says -- an artifact with every capability marked PROVEN
+        # for a REAL host ("claude") still renders the NOT-PROVEN headline,
+        # which the old `assertIn("PROVEN", ...)` could not tell apart from
+        # ALL_PROVEN ("NOT PROVEN" contains "PROVEN" as a substring). Patch in
+        # a synthetic host that claims all five, exactly as
+        # test_host_disclosure.py's TestTheInverseCarriesEqualWeight does, so
+        # this fixture genuinely reaches zero gaps under the real posture()
+        # rather than merely asserting a substring that any NOT-PROVEN
+        # headline also satisfies.
+        all_claims = hosts.HostSpec(name="proves-everything",
+                                    claims=frozenset(hosts.CAPABILITIES))
+        assert host_disclosure.hosts is hosts, (
+            "host_disclosure's hosts import has drifted from the canonical "
+            "scripts.hosts module -- patching hosts.HOSTS below would be a "
+            "silent no-op")
+        with tempfile.TemporaryDirectory() as review_root, \
+                mock.patch.dict(hosts.HOSTS, {"proves-everything": all_claims}):
+            manifest = self._manifest(host="proves-everything",
+                                      session_dir=review_root)
+            artifact = self._artifact(hosts.PROVEN, host="proves-everything")
+            for row in artifact["capabilities"].values():
+                row["state"] = hosts.PROVEN
+            buf = io.StringIO()
+            with mock.patch.object(host_probes, "run_probes",
+                                   return_value=artifact), \
+                    mock.patch.object(sys, "stderr", buf):
+                err = driver._establish_host_posture(
+                    review_root, manifest, self._args())
+            self.assertIsNone(err)
+            out = buf.getvalue()
+            # The literal constant, not the bare word: "NOT PROVEN" also
+            # contains "PROVEN" as a substring, which is exactly how the
+            # pre-fix assertion passed without ever reaching this branch.
+            self.assertIn(host_disclosure.ALL_PROVEN, out)
+            self.assertNotIn("NOT PROVEN", out)
 
 
 class TestTheProbesReadTheRightTree(unittest.TestCase):

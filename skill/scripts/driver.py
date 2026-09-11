@@ -27,6 +27,7 @@ import scripts.diff_map as diff_map  # noqa: E402
 import scripts.plan_contract as plan_contract  # noqa: E402
 import scripts.run_manifest as run_manifest  # noqa: E402
 from scripts import hosts  # noqa: E402
+import scripts.host_disclosure as host_disclosure  # noqa: E402
 import scripts.host_probes as host_probes  # noqa: E402
 import scripts.phases.engine as engine
 import scripts.phases.runio as runio
@@ -160,13 +161,17 @@ def build_parser():
         tools_group.add_argument("--tools", action="store_true")
         tools_group.add_argument("--no-tools", action="store_true")
         p.add_argument("--include-fixtures", action="store_true")
-        # #1519: on a host that cannot mediate the reviewer Write grant (today,
-        # anything but claude), dispatching write-capable cells is refused
-        # unless the operator accepts the residual risk here. Anti-drift, so a
-        # resume cannot quietly drop the acceptance.
+        # #1519: when this invocation's MEASURED artifact_write_guard posture
+        # is not proven, dispatching write-capable cells is refused unless the
+        # operator accepts the residual risk here. Keyed on the capability, NOT
+        # on the host's name (#1344 F3a): a claude run on a machine where the
+        # probe refutes -- no settings file at the path the host would arm --
+        # is refused on identical terms. Anti-drift, so a resume cannot quietly
+        # drop the acceptance.
         p.add_argument("--allow-unenforced", action="store_true",
-                       help="accept that reviewer Write is unmediated on a "
-                            "non-claude host; recorded in unenforced-ack.json")
+                       help="accept unmediated reviewer Write when "
+                            "artifact_write_guard is not proven, on any host; "
+                            "recorded in unenforced-ack.json")
         # The directory the HOST SESSION runs in, used only to locate its
         # transcripts for the cost ledger. Defaults to cwd (#calibration-4).
         p.add_argument("--session-dir", default=None)
@@ -210,6 +215,27 @@ def _positive_int(text):
     if value < 1:
         raise argparse.ArgumentTypeError("expected a positive integer, got %r" % text)
     return value
+
+
+def _emit_posture_disclosure(envelope):
+    """5.1 surface 1: stderr, before anything dispatches.
+
+    Same channel and register as phases/tools.py's "driver: tool scan CRASHED
+    (rc=...)" -- `driver: ` prefixed lines on stderr. `host_disclosure`
+    composes the sentence; this picks the channel and writes it, once per
+    call, and nothing else -- see host_disclosure.py's module docstring on
+    why no caller is allowed to write its own wording. A named function
+    (rather than the write inlined at the call site) so a cross-surface
+    consistency test can call it directly with a hand-built envelope, without
+    also having to fake a whole `_establish_host_posture` invocation.
+
+    `envelope` is a `run_probes()`-shaped dict; `host_disclosure.headline`/
+    `lines` already degrade an unreadable envelope to NO_EVIDENCE / no lines
+    rather than raising, so this function does not re-validate it.
+    """
+    sys.stderr.write("driver: host capabilities: %s\n" % host_disclosure.headline(envelope))
+    for line in host_disclosure.lines(envelope):
+        sys.stderr.write("driver:   %s\n" % line)
 
 
 def _establish_host_posture(review_root, manifest, args):
@@ -256,6 +282,17 @@ def _establish_host_posture(review_root, manifest, args):
     shadow = host_probes.probe_shadow_shells(host, review_root)
     fresh = host_probes.run_probes(host, review_root, session_root=session_root,
                                    shadow=shadow)
+    # 5.1 surface 1. Emitted here -- after `fresh` is computed, before the
+    # artifact is written or compared, and before the shadow refusal below --
+    # rather than at the dispatch sites, because 5.2 already puts this step
+    # before `coverage` dispatches the scout (so it runs before anything
+    # dispatches, satisfying the "at the first dispatch" half of spec 5.1),
+    # and because emitting once per INVOCATION here (not once per dispatched
+    # cell) is what "once per run" rules out. A resumed invocation
+    # re-announces deliberately: the operator resuming needs the posture they
+    # are resuming under. Emitted even when the shadow refusal below is about
+    # to stop the run, so the operator sees the posture the refusal is about.
+    _emit_posture_disclosure(fresh)
     # I6 / spec 5.2: evaluated on EVERY invocation, not only the first. When
     # tool_policy_enforced is already REFUTED for an unrelated reason -- no
     # registration directory, i.e. every machine that has not run `driver
@@ -273,6 +310,31 @@ def _establish_host_posture(review_root, manifest, args):
     was, now = host_probes.capabilities_of(stored), host_probes.capabilities_of(fresh)
     if was != now:
         return _posture_drift(was, now, manifest)
+    # States agree, so the posture did NOT move and the run continues. The
+    # REASON may still have moved -- a capability refuted for "no shell at X" on
+    # invocation 1 and for "grants forbidden tool Bash" on invocation 5 is
+    # refuted both times. F3b renders `detail` on three surfaces, so a stale
+    # reason is now a wrong disclosure rather than a cosmetic one. Refresh the
+    # record; do NOT refuse, because the operator can do nothing about a reason
+    # that changed underneath an unchanged verdict.
+    #
+    # Gated on the CAPABILITIES map, not the whole artifact: `fresh["probed_at"]`
+    # is stamped fresh on every call (run_manifest._now_iso(), second
+    # resolution), so comparing whole dicts degenerates to "always write" on
+    # essentially every real invocation -- rewriting, on every turn of a
+    # resumable loop, the very artifact the mid-run refusal above reads, which
+    # widens rather than shrinks the window in which a killed process could
+    # leave it truncated. `was`/`now` above are STATE-only and already equal
+    # by construction here, so gating on those instead would mean `detail`
+    # never refreshes -- defeating this whole fix. `capabilities` carries the
+    # per-capability state/by/detail triples and excludes probed_at/
+    # schema_version/host, which is exactly the "did anything an operator
+    # cares about change" question.
+    if stored.get("capabilities") != fresh.get("capabilities"):
+        # Write the FULL fresh payload (not just the capabilities key) so
+        # `probed_at` on disk stays honest about when the record was last
+        # actually written.
+        runio._write_json(path, fresh)
     return None
 
 

@@ -7,8 +7,10 @@ import re
 
 try:
     import scripts.evidence as evidence
+    import scripts.host_disclosure as host_disclosure
 except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
     import evidence
+    import host_disclosure
 
 _CSS = """
 :root {
@@ -84,6 +86,13 @@ h2 { font-size: 18px; font-weight: 600; }
 .badge.gate-inconclusive { background: #8a6d1f; color: #faf8f2; }
 .not-certified { margin: 8px 0; padding: 8px 12px; border-left: 4px solid #8a6d1f;
   background: #2e2814; color: #e8d9a0; font-weight: 600; }
+/* Spec 5.1 surface 3. Deliberately not styled as a warning: it renders on
+   EVERY report, and the all-proven case is a statement, not an alarm. */
+.host-caps { margin: 8px 0; padding: 8px 12px; border-left: 4px solid var(--accent-border);
+  background: var(--panel); color: var(--ink2); font-size: 12px; }
+.host-caps ul { margin: .45rem 0 0; padding-left: 1.1rem; }
+.host-caps li { font-family: var(--mono); font-size: 11px; color: var(--muted);
+  margin-top: .25rem; line-height: 1.5; }
 .panel-code { background: var(--panel-code); }
 .panel-test { background: var(--panel-test); }
 .panel-security { background: var(--panel-security); }
@@ -433,6 +442,47 @@ def _stat_value(stats, severity):
     return _escape(stats.get(severity.lower(), 0)) if isinstance(stats, dict) else "0"
 
 
+def _render_host_capabilities(meta):
+    """Spec 5.1 surface 3: the host posture, in the artifact a person opens.
+
+    `render_summary`'s "**Host capabilities:**" line goes to the synthesize
+    child's STDOUT, and `driver run` runs that child with
+    `capture_output=True` and touches `proc.stdout` only on the report-absent
+    error path -- so on the canonical driver path surface 3 existed solely in a
+    captured-and-discarded pipe while report.json.html said nothing. 5.1's
+    requirement is "a person reading the report must meet the limitation
+    without opening JSON", and the HTML report is what a person opens.
+
+    The WORDING is `host_disclosure`'s and never this module's. Four
+    hand-written copies of 5.1's rule drift within a release and each surface's
+    own test keeps passing while they do -- the exact failure 5.1 exists to
+    prevent, reproduced inside the fix for it. This function chooses markup and
+    escapes; it composes no sentence.
+
+    Rendered on EVERY report, the all-proven one included: 5.1's inverse says
+    the absence of a warning must mean "measured and proven", which only holds
+    if the proven case is stated rather than left implicit.
+
+    Fails closed exactly as render_summary does. `host_capabilities` may be
+    absent, None, or a malformed non-dict -- a foreign report.json fed to
+    `--compare`, a truncated artifact -- and `host_disclosure` then fails
+    closed again on a non-str host / non-dict capabilities. Every interpolated
+    value is escaped: `detail` quotes the REVIEWED tree's own paths and
+    filenames, which a hostile target chooses.
+    """
+    hc = meta.get("host_capabilities")
+    hc = hc if isinstance(hc, dict) else {}
+    envelope = {"host": hc.get("host"), "capabilities": hc.get("capabilities")}
+    parts = ["<div class='host-caps'><b>Host capabilities:</b> %s"
+             % _escape(host_disclosure.headline(envelope))]
+    gaps = host_disclosure.lines(envelope)
+    if gaps:
+        parts.append("<ul>%s</ul>"
+                     % "".join("<li>%s</li>" % _escape(gap) for gap in gaps))
+    parts.append("</div>")
+    return "".join(parts)
+
+
 def _render_header(report):
     meta = report.get("meta", {})
     summary = report.get("summary", {})
@@ -495,6 +545,7 @@ def _render_header(report):
         note = summary.get("coverage_note") or "gate-relevant coverage did not complete"
         parts.append("<div class='not-certified'>NOT CERTIFIED &mdash; %s</div>"
                      % _escape(note))
+    parts.append(_render_host_capabilities(meta))
     ev = summary.get("evidence_stats") or {}
     verified = int(ev.get("advisor_confirmed", 0)) + int(ev.get("tool_confirmed", 0))
     unverified = int(ev.get("unverified", 0))

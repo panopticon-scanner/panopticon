@@ -9,6 +9,11 @@ import unittest
 from unittest import mock
 
 import scripts.synth.render as render_mod
+from scripts import host_disclosure, hosts
+
+# Sentinel distinguishing "meta.host_capabilities key omitted entirely" from
+# an explicit None value -- both are shapes render_summary must survive.
+_OMIT = object()
 
 
 class TestCompareParts(unittest.TestCase):
@@ -131,6 +136,117 @@ class TestRenderDelta(unittest.TestCase):
         out = render_mod.render_summary(r)
         self.assertNotIn("On-diff", out)
         self.assertNotIn("Pre-existing", out)
+
+class TestHostCapabilitiesSurface(unittest.TestCase):
+    """F3b Task 5, spec 5.1 surface 3: a person reading the report body must
+    meet the host-capability limitation without opening JSON. Rendered
+    through host_disclosure so this surface speaks with the same voice as
+    the other three (driver stderr, meta.host_capabilities, X0X)."""
+
+    def _report_with_posture(self, host_capabilities):
+        meta = {"target": "t"}
+        # Distinguish "key omitted entirely" from "key present but None" --
+        # both are shapes render_summary must survive, and a bare
+        # `meta["host_capabilities"] = host_capabilities` would collapse the
+        # omitted case into an explicit None every time this helper is called
+        # with None.
+        if host_capabilities is not _OMIT:
+            meta["host_capabilities"] = host_capabilities
+        return {
+            "meta": meta,
+            "summary": {"overall_grade": "B", "risk_level": "MEDIUM", "gate": "PASS",
+                       "stats": {}, "evidence_stats": {}},
+            "groups": [],
+            "findings": [],
+        }
+
+    def test_the_body_names_the_unproven_capabilities(self):
+        # Genuinely mixed (plan Global Constraints): all five capabilities
+        # named explicitly, spread across proven/refuted/unknown on
+        # DIFFERENT capabilities, so this cannot pass by hard-coding one.
+        md = render_mod.render_summary(self._report_with_posture({
+            "host": "claude",
+            "capabilities": {
+                hosts.TOOL_POLICY_ENFORCED: {
+                    "state": hosts.REFUTED, "by": "shadow-shell-scan",
+                    "detail": "ships panopticon-scout.md"},
+                hosts.ARTIFACT_WRITE_GUARD: {
+                    "state": hosts.PROVEN, "by": "write-guard-armed",
+                    "detail": "round-trip denied"},
+                hosts.USAGE_LEDGER: {
+                    "state": hosts.UNKNOWN, "by": None,
+                    "detail": "no transcript directory"},
+                hosts.READ_SCOPE_CONFINED: {
+                    "state": hosts.UNKNOWN, "by": None,
+                    "detail": "no read-confinement control yet"},
+                hosts.MODEL_BINDING: {
+                    "state": hosts.UNKNOWN, "by": None,
+                    "detail": "model=None until F4 binds them"},
+            },
+        }))
+        self.assertIn("**Host capabilities:**", md)
+        self.assertIn(hosts.TOOL_POLICY_ENFORCED, md)
+        # "shadow-shell-scan" (the `by` probe id) only appears in the
+        # per-capability GAP line, never in the headline -- this is what
+        # discriminates "headline rendered, gap lines dropped" (M2) from a
+        # correct render.
+        self.assertIn("shadow-shell-scan", md)
+        self.assertIn(hosts.USAGE_LEDGER, md)
+        # the proven one is not listed as a gap
+        gap_block = md.split("**Host capabilities:**")[1].split("\n\n")[0]
+        self.assertNotIn(hosts.ARTIFACT_WRITE_GUARD, gap_block)
+
+    def test_an_all_proven_report_states_it_rather_than_staying_silent(self):
+        # No real host can ever be all-proven: nobody in the registry claims
+        # read_scope_confined, so hosts.posture()'s claim-mask forces it to
+        # unknown no matter what the evidence says. Patch in a synthetic
+        # host that claims all five, same pattern as test_host_disclosure.py
+        # / test_host_evidence_wiring.py, so this fixture genuinely reaches
+        # zero gaps under the real posture().
+        all_claims = hosts.HostSpec(name="proves-everything",
+                                    claims=frozenset(hosts.CAPABILITIES))
+        assert host_disclosure.hosts is hosts, (
+            "host_disclosure's hosts import has drifted from the canonical "
+            "scripts.hosts module -- patching hosts.HOSTS below would be a "
+            "silent no-op")
+        with mock.patch.dict(hosts.HOSTS, {"proves-everything": all_claims}):
+            md = render_mod.render_summary(self._report_with_posture({
+                "host": "proves-everything",
+                "capabilities": {c: {"state": hosts.PROVEN, "by": "p", "detail": "d"}
+                                 for c in hosts.CAPABILITIES},
+            }))
+        self.assertIn("**Host capabilities:**", md)
+        # The literal constant, not the bare word "PROVEN": "NOT PROVEN"
+        # contains "PROVEN" as a substring, so a report that is actually 1 of
+        # 5 NOT PROVEN would satisfy assertIn("PROVEN", md) too and prove
+        # nothing. The full ALL_PROVEN sentence is unique to the zero-gap
+        # branch; assertNotIn("NOT PROVEN") closes the substring escape hatch
+        # from the other side.
+        self.assertIn(host_disclosure.ALL_PROVEN, md)
+        self.assertNotIn("NOT PROVEN", md)
+
+    def test_a_report_with_no_posture_says_nobody_looked(self):
+        md = render_mod.render_summary(self._report_with_posture(None))
+        self.assertIn(host_disclosure.NO_EVIDENCE, md)
+
+    def test_an_omitted_host_capabilities_key_also_says_nobody_looked(self):
+        # meta.host_capabilities being ABSENT (a report.json older than this
+        # feature, or any hand-built summary) is a distinct shape from an
+        # explicit None -- `.get("host_capabilities")` must survive both, not
+        # just the one the brief spelled out.
+        md = render_mod.render_summary(self._report_with_posture(_OMIT))
+        self.assertIn(host_disclosure.NO_EVIDENCE, md)
+
+    def test_a_malformed_host_capabilities_does_not_crash(self):
+        # meta.host_capabilities is a FILE ON DISK's parsed JSON, reachable
+        # from --compare on a foreign report -- it can be any JSON shape, not
+        # only the dict report.py's own assemble() always produces. Must
+        # render "nobody looked", never raise mid-render.
+        for bad in ([1, 2, 3], "garbage", 5):
+            with self.subTest(bad=bad):
+                md = render_mod.render_summary(self._report_with_posture(bad))
+                self.assertIn(host_disclosure.NO_EVIDENCE, md)
+
 
 class TestReportSecretRedaction(unittest.TestCase):
     """#run7 SEC-B2C: secrets a reviewer quoted-but-didn't-redact must be masked

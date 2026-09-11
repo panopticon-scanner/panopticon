@@ -1,7 +1,12 @@
+import dataclasses
+import html
 import os
 import tempfile
 import unittest
+from unittest import mock
 
+import scripts.host_disclosure as host_disclosure
+import scripts.hosts as hosts
 import scripts.html_report as hr
 
 
@@ -974,3 +979,121 @@ class TestCoverageHonesty(unittest.TestCase):
         self.assertNotIn("NOT CERTIFIED", out)
         self.assertNotIn("(provisional)", out)
         self.assertIn("gate-pass", out)
+
+
+_NO_KEY = object()
+
+_HOSTILE_TREE_CAPS = {
+    hosts.TOOL_POLICY_ENFORCED: {
+        "state": hosts.REFUTED, "by": "shadow-shell-scan",
+        "detail": "the reviewed tree ships .claude/agents/panopticon-scout.md"},
+    hosts.ARTIFACT_WRITE_GUARD: {
+        "state": hosts.PROVEN, "by": "write-guard-armed",
+        "detail": "round-trip denied"},
+    hosts.USAGE_LEDGER: {
+        "state": hosts.UNKNOWN, "by": None,
+        "detail": "no transcript directory"},
+    hosts.READ_SCOPE_CONFINED: {
+        "state": hosts.UNKNOWN, "by": None,
+        "detail": "no read-confinement control yet"},
+    hosts.MODEL_BINDING: {
+        "state": hosts.UNKNOWN, "by": None,
+        "detail": "model=None until F4 binds them"},
+}
+
+
+class TestHostCapabilityDisclosure(unittest.TestCase):
+    """Spec 5.1 surface 3, in the artifact a person actually opens.
+
+    `render_summary`'s "**Host capabilities:**" line is printed to the
+    synthesize child's STDOUT; `driver run` runs that child with
+    capture_output=True and reads `proc.stdout` only on the report-absent error
+    path. So on the canonical driver path surface 3 lived entirely in a
+    captured-and-discarded pipe, and report.json.html -- the thing an operator
+    opens -- said nothing about the posture at all.
+
+    Asserted against host_disclosure's own output, never against restated
+    prose: this module must compose no sentence of its own. Read through
+    html.unescape because `_escape` is doing its job on the quotes in
+    `on host 'claude'`.
+    """
+
+    def _report(self, host_capabilities=_NO_KEY):
+        meta = {"target": "t", "coverage": {}}
+        if host_capabilities is not _NO_KEY:
+            meta["host_capabilities"] = host_capabilities
+        return {"meta": meta,
+                "summary": {"overall_grade": "B", "risk_level": "MEDIUM",
+                            "gate": "PASS", "coverage_certified": True},
+                "findings": [], "groups": []}
+
+    def _rendered(self, host_capabilities=_NO_KEY):
+        return html.unescape(hr.render(self._report(host_capabilities)))
+
+    def test_a_mixed_posture_renders_the_headline_and_every_gap(self):
+        # MIXED on purpose (plan Global Constraints): one proven, one refuted,
+        # three unknown, on five different capabilities. An all-proven or
+        # all-unknown fixture passes a renderer that hard-codes one of them.
+        envelope = {"host": "claude", "capabilities": _HOSTILE_TREE_CAPS}
+        out = self._rendered(envelope)
+        self.assertIn(host_disclosure.headline(envelope), out)
+        gaps = host_disclosure.lines(envelope)
+        self.assertEqual(4, len(gaps))          # the proven one earns no line
+        for gap in gaps:
+            with self.subTest(gap=gap):
+                self.assertIn(gap, out)
+
+    def test_every_gap_carries_its_remedy(self):
+        envelope = {"host": "claude", "capabilities": _HOSTILE_TREE_CAPS}
+        out = self._rendered(envelope)
+        for capability in hosts.unproven(
+                hosts.posture("claude", _HOSTILE_TREE_CAPS)):
+            with self.subTest(capability=capability):
+                # VERBATIM, and five distinct strings -- a block that rendered
+                # one remedy for every capability fails here.
+                self.assertIn(host_disclosure.remedy(capability, "claude"), out)
+
+    def test_a_proven_capability_is_not_warned_about(self):
+        out = self._rendered({"host": "claude", "capabilities": _HOSTILE_TREE_CAPS})
+        self.assertNotIn(hosts.ARTIFACT_WRITE_GUARD, out)
+
+    def test_an_all_proven_report_says_so_rather_than_rendering_nothing(self):
+        # 5.1's inverse: the absence of a warning must mean "measured and
+        # proven", which only holds if the proven case is stated. No real host
+        # claims read_scope_confined (spec 7.2), so posture()'s claim-mask
+        # forces it unknown for any real host -- patch claude's claims rather
+        # than assert something the registry cannot produce.
+        claiming = dataclasses.replace(hosts.HOSTS["claude"],
+                                       claims=frozenset(hosts.CAPABILITIES))
+        caps = {c: {"state": hosts.PROVEN, "by": "fixture", "detail": "proven"}
+                for c in hosts.CAPABILITIES}
+        with mock.patch.dict(hosts.HOSTS, {"claude": claiming}):
+            out = self._rendered({"host": "claude", "capabilities": caps})
+        self.assertIn(host_disclosure.ALL_PROVEN, out)
+
+    def test_a_report_with_no_posture_says_nobody_looked(self):
+        out = self._rendered()
+        self.assertIn(host_disclosure.NO_EVIDENCE, out)
+        self.assertNotIn(host_disclosure.ALL_PROVEN, out)
+
+    def test_a_malformed_posture_fails_closed_and_never_raises(self):
+        # A foreign report.json fed to --compare, or a truncated artifact that
+        # reached meta. Every one of these must read as "nobody looked".
+        for bad in (None, "garbage", [1, 2], 5, {},
+                    {"host": "claude", "capabilities": "not-a-mapping"},
+                    {"host": 123, "capabilities": {}}):
+            with self.subTest(bad=bad):
+                out = self._rendered(bad)
+                self.assertIn(host_disclosure.NO_EVIDENCE, out)
+                self.assertNotIn(host_disclosure.ALL_PROVEN, out)
+
+    def test_a_hostile_detail_is_escaped_rather_than_injected(self):
+        # `detail` quotes the REVIEWED tree -- paths and filenames a hostile
+        # target chooses. It reaches this page through host-capabilities.json,
+        # a file on disk, so it is untrusted input to the renderer.
+        caps = {hosts.TOOL_POLICY_ENFORCED: {
+            "state": hosts.REFUTED, "by": "shadow-shell-scan",
+            "detail": "<script>alert(1)</script>"}}
+        raw = hr.render(self._report({"host": "claude", "capabilities": caps}))
+        self.assertNotIn("<script>alert(1)</script>", raw)
+        self.assertIn("&lt;script&gt;", raw)

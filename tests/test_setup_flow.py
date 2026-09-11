@@ -1,11 +1,16 @@
+import dataclasses
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
 
 import scripts.coverage_model as coverage_model
 import scripts.grouping_engine as grouping_engine
+import scripts.host_disclosure as host_disclosure
+import scripts.host_probes as host_probes
+import scripts.hosts as hosts
 import scripts.setup_flow as setup_flow
 import shutil
 
@@ -988,3 +993,246 @@ class TestReadinessCannotAssertWhatItDidNotCheck(unittest.TestCase):
         ok, detail = result["codex-cli"]
         self.assertFalse(ok)
         self.assertIn("Codex CLI unavailable", detail)
+
+
+def _mixed_artifact(host):
+    """A host-capabilities.json envelope with a genuinely MIXED posture: one
+    proven, one refuted, three unknown -- each on a DIFFERENT capability, per
+    the plan's Global Constraint. Same shape as
+    tests/test_host_disclosure.py's module-level MIXED fixture, redefined
+    locally rather than imported so this file does not reach into another
+    test module for its data."""
+    return {
+        "schema_version": 1, "host": host, "probed_at": "T",
+        "capabilities": {
+            hosts.TOOL_POLICY_ENFORCED: {
+                "state": hosts.REFUTED, "by": "shadow-shell-scan",
+                "detail": "the reviewed tree ships .claude/agents/panopticon-scout.md"},
+            hosts.ARTIFACT_WRITE_GUARD: {
+                "state": hosts.PROVEN, "by": "write-guard-armed",
+                "detail": "round-trip denied"},
+            hosts.USAGE_LEDGER: {
+                "state": hosts.UNKNOWN, "by": None,
+                "detail": "no transcript directory"},
+            hosts.READ_SCOPE_CONFINED: {
+                "state": hosts.UNKNOWN, "by": None,
+                "detail": "no host implements a read-confinement control yet"},
+            hosts.MODEL_BINDING: {
+                "state": hosts.UNKNOWN, "by": None,
+                "detail": "dispatch entries carry model=None until F4 binds them"},
+        },
+    }
+
+
+def _all_proven_artifact(host):
+    """Every capability PROVEN, for pairing with a host that CLAIMS all five
+    (see test_an_all_proven_host_says_so_rather_than_reporting_nothing) -- an
+    all-proven artifact alone is not enough: no REAL host claims
+    read_scope_confined, so hosts.posture()'s claim-mask would still force
+    that one to unknown and the NOT-PROVEN headline would fire regardless of
+    what this fixture says."""
+    return {
+        "schema_version": 1, "host": host, "probed_at": "T",
+        "capabilities": {cap: {"state": hosts.PROVEN, "by": "fixture",
+                               "detail": "proven"} for cap in hosts.CAPABILITIES},
+    }
+
+
+def _shell_less_artifact(host):
+    """What `run_probes` really returns for a host that registers no shells and
+    claims nothing: five honest unknowns, each with its OWN reason.
+
+    Not mixed across STATES, because gemini/generic cannot reach a mixed one --
+    `hosts.posture()`'s claim-mask forces every non-refuted state to unknown
+    for a host that claims nothing, so a proven entry here would be a fixture
+    asserting something the registry cannot produce. Mixed where it can be:
+    five different details, and one capability whose `by` names a probe that
+    actually ran (the shadow scan runs for any host, claim or no claim), so a
+    renderer that hard-codes one capability's shape fails on the other four.
+    """
+    return {
+        "schema_version": 1, "host": host, "probed_at": "T",
+        "capabilities": {
+            hosts.TOOL_POLICY_ENFORCED: {
+                "state": hosts.UNKNOWN, "by": "shadow-shell-scan",
+                "detail": "host %r discovers no project-scoped agents" % host},
+            hosts.ARTIFACT_WRITE_GUARD: {
+                "state": hosts.UNKNOWN, "by": None,
+                "detail": "no probe: host %r does not claim this capability, "
+                          "so there is nothing to prove" % host},
+            hosts.USAGE_LEDGER: {
+                "state": hosts.UNKNOWN, "by": None,
+                "detail": "no probe: host %r does not claim this capability, "
+                          "so there is nothing to prove" % host},
+            hosts.READ_SCOPE_CONFINED: {
+                "state": hosts.UNKNOWN, "by": None,
+                "detail": "no probe: no host implements a read-confinement "
+                          "control (spec 7.2)"},
+            hosts.MODEL_BINDING: {
+                "state": hosts.UNKNOWN, "by": None,
+                "detail": "no probe in F3a: dispatch entries still carry "
+                          "model=None (spec 8, F4)"},
+        },
+    }
+
+
+def _runner_ok(cmd, **kwargs):
+    """A `runner` that never touches a real process. The new host-capability
+    probing code does not take `runner` at all (host_probes.run_probes is
+    mocked directly in these tests); this only stands in for the codex-cli
+    `_probe` call other hosts' checks make, which none of these tests reach."""
+    return subprocess.CompletedProcess(cmd, 0, "", "")
+
+
+class TestReadinessProbesThePostureAndNamesTheFix(unittest.TestCase):
+    """#1344 F3b Task 6, surface 4 (spec 5.1). `driver setup` has no run
+    directory, so there is no artifact to read -- readiness must probe. All
+    assertions here go through host_disclosure's own constants/behaviour
+    rather than hand-rolled substrings, per the plan's standing rule: "NOT
+    PROVEN" contains "PROVEN" as a substring, so a bare `assertIn("PROVEN",
+    ...)` cannot tell the all-proven case from a 1-of-5 NOT-PROVEN case."""
+
+    def test_readiness_reports_every_unproven_capability_with_its_remedy(self):
+        with mock.patch.object(host_probes, "run_probes",
+                               return_value=_mixed_artifact("claude")):
+            checks = setup_flow._check_host_shells("claude", _runner_ok)
+        named = {c[0]: c for c in checks}
+        refuted = named["host-capability:" + hosts.TOOL_POLICY_ENFORCED]
+        self.assertIs(False, refuted[1])
+        self.assertIn("shadow-shell-scan", refuted[2])
+        self.assertIn("fix:", refuted[2])
+        unknown = named["host-capability:" + hosts.USAGE_LEDGER]
+        self.assertIsNone(unknown[1], "unknown is NOT APPLICABLE, not failed")
+
+    def test_a_proven_capability_gets_no_readiness_row(self):
+        with mock.patch.object(host_probes, "run_probes",
+                               return_value=_mixed_artifact("claude")):
+            checks = setup_flow._check_host_shells("claude", _runner_ok)
+        self.assertNotIn("host-capability:" + hosts.ARTIFACT_WRITE_GUARD,
+                         [c[0] for c in checks])
+
+    def test_an_all_proven_host_says_so_rather_than_reporting_nothing(self):
+        # 5.1's inverse: absence of warnings must mean "measured and proven",
+        # never "nobody looked". No host in today's registry claims
+        # read_scope_confined (spec 7.2), so hosts.posture()'s claim-mask
+        # forces it to unknown for any REAL host no matter what the evidence
+        # says -- test_host_disclosure.py's TestTheInverseCarriesEqualWeight
+        # hits the identical trap and resolves it the same way: patch a real
+        # host's claims to all five rather than asserting something the real
+        # registry cannot produce. Claude's claims are patched (not a wholly
+        # synthetic host name) so shell_format/registration_dir stay real and
+        # _check_host_shells still reaches the probing code -- a synthetic
+        # HostSpec with no shell_format would return from the enforced-shells
+        # branch before ever getting there, proving nothing about this
+        # surface.
+        assert setup_flow.hosts is hosts, (
+            "setup_flow's hosts import has drifted from the canonical "
+            "scripts.hosts module -- patching hosts.HOSTS below would be a "
+            "silent no-op")
+        claiming = dataclasses.replace(hosts.HOSTS["claude"],
+                                       claims=frozenset(hosts.CAPABILITIES))
+        with mock.patch.dict(hosts.HOSTS, {"claude": claiming}), \
+                mock.patch.object(host_probes, "run_probes",
+                                  return_value=_all_proven_artifact("claude")):
+            checks = setup_flow._check_host_shells("claude", _runner_ok)
+        row = {c[0]: c for c in checks}["host-capabilities"]
+        self.assertIs(True, row[1])
+        self.assertEqual(host_disclosure.ALL_PROVEN, row[2])
+
+    def test_a_probe_failure_does_not_crash_readiness(self):
+        # Readiness must survive a probe that raises; a setup command that
+        # tracebacks tells the operator nothing about what to fix.
+        with mock.patch.object(host_probes, "run_probes",
+                               side_effect=OSError("boom")):
+            checks = setup_flow._check_host_shells("claude", _runner_ok)
+        row = {c[0]: c for c in checks}["host-capabilities"]
+        self.assertIsNone(row[1])
+        self.assertIn("could not be probed", row[2])
+
+
+class TestReadinessNeverReadsAnUnreadableEnvelopeAsProof(unittest.TestCase):
+    """`host_disclosure.lines()` returns [] for TWO different reasons -- every
+    capability is proven, AND the envelope is unreadable (`caps is None or host
+    is None`). Readiness collapsed them into one `ok=True, ALL_PROVEN` row,
+    which is precisely what `headline()`'s docstring says must never happen:
+    "an empty result from a missing artifact would render as the all-proven
+    case and turn 5.1's guarantee inside out". It also rendered as a PASSING
+    readiness check rather than a limitation.
+
+    Readiness reads the module's three-outcome contract instead of re-deriving
+    a two-outcome one from `lines()`.
+    """
+
+    BAD = {
+        "host is not a string": {"host": None, "capabilities": {
+            hosts.TOOL_POLICY_ENFORCED: {"state": hosts.REFUTED,
+                                         "by": "shadow-shell-scan",
+                                         "detail": "ships panopticon-scout.md"}}},
+        "capabilities is not a mapping": {"host": "claude",
+                                          "capabilities": "garbage"},
+        "the artifact is not a dict at all": "not-a-dict",
+        "the artifact is empty": {},
+    }
+
+    def test_an_unreadable_envelope_reports_no_evidence_not_all_proven(self):
+        for name, bad in self.BAD.items():
+            with self.subTest(envelope=name):
+                with mock.patch.object(host_probes, "run_probes",
+                                       return_value=bad):
+                    checks = setup_flow._check_host_shells("claude", _runner_ok)
+                row = {c[0]: c for c in checks}["host-capabilities"]
+                # By EQUALITY against the module's own constants: "1 of 5 NOT
+                # PROVEN" contains "PROVEN", so no substring test here can tell
+                # the two apart.
+                self.assertEqual(("host-capabilities", None,
+                                  host_disclosure.NO_EVIDENCE), row)
+
+    def test_no_evidence_emits_no_per_capability_rows(self):
+        # Nothing was measured, so there is no per-capability verdict to
+        # report. Five rows whose detail is a bare capability name would be
+        # "unenforced alone" -- a mood, not a disclosure (5.1).
+        with mock.patch.object(host_probes, "run_probes", return_value={}):
+            checks = setup_flow._check_host_shells("claude", _runner_ok)
+        self.assertEqual([], [c for c in checks
+                              if c[0].startswith("host-capability:")])
+
+
+class TestShellLessHostsGetTheWholeDisclosure(unittest.TestCase):
+    """`gemini` and `generic` are the two driver-selectable hosts that claim
+    NOTHING, so five-of-five-unproven is their entire story -- and the
+    `enforced-shells` early return handed them one line that named the host
+    and no capability, no probe and no remedy. 5.1 names no exemption for
+    shell-less hosts.
+    """
+
+    def _rows(self, host):
+        with mock.patch.object(host_probes, "run_probes",
+                               return_value=_shell_less_artifact(host)):
+            return dict((c[0], c) for c in
+                        setup_flow._check_host_shells(host, _runner_ok, "."))
+
+    def test_the_enforced_shells_row_it_already_had_survives(self):
+        for host in ("gemini", "generic"):
+            with self.subTest(host=host):
+                row = self._rows(host)["enforced-shells"]
+                self.assertIsNone(row[1])
+                self.assertIn("registers no", row[2])
+
+    def test_it_gets_a_headline_and_a_row_per_capability_with_the_remedy(self):
+        for host in ("gemini", "generic"):
+            with self.subTest(host=host):
+                rows = self._rows(host)
+                head = rows["host-capabilities"]
+                self.assertIsNone(head[1])
+                self.assertNotEqual(host_disclosure.ALL_PROVEN, head[2])
+                self.assertNotEqual(host_disclosure.NO_EVIDENCE, head[2])
+                for capability in hosts.CAPABILITIES:
+                    with self.subTest(capability=capability):
+                        row = rows["host-capability:" + capability]
+                        self.assertIn(capability, row[2])
+                        self.assertIn(host, row[2])
+                        # the remedy VERBATIM, per capability -- five distinct
+                        # strings, so a surface that rendered one of them for
+                        # all five fails here.
+                        self.assertIn(host_disclosure.remedy(capability, host),
+                                      row[2])

@@ -153,7 +153,29 @@ def main(argv=None):
     # loading verdicts before that branch runs would let stale state leak into
     # verdict_run_id, resume and invalid_verify_queue on the "nothing to queue
     # this run" path.
-    run = report_mod.RunConfig.from_args(args, gj, ts)
+    # 5.1 surface 2. host-capabilities.json is a RUN artifact: F3a writes it
+    # into the run folder, so it resolves under `run_dir` exactly like the
+    # dispatch plans, the verify queue, the tools manifest and groups.json
+    # itself -- one resolution for every run-scoped artifact, settled above.
+    # It must NOT be re-derived from `args.groups`: that ignores both
+    # `--run-dir` and the AUTO-DISCOVERED groups path, and with `--groups`
+    # omitted `dirname(abspath("."))` names the PARENT of the cwd -- which for
+    # the synthesize child (`cwd=review_root`) is the directory above the
+    # reviewed tree, where anyone's host-capabilities.json would have been read
+    # as this run's posture. The artifact is a file on disk and therefore
+    # untrusted: absent, truncated or corrupt JSON all fall back to {} --
+    # "nobody looked" -- rather than raising a traceback mid-synthesis or
+    # fabricating a posture.
+    _hc_path = os.path.join(run_dir, "host-capabilities.json")
+    try:
+        with open(_hc_path, encoding="utf-8") as fh:
+            host_capabilities = json.load(fh)
+    except (OSError, ValueError):
+        host_capabilities = {}          # absent or corrupt -> "nobody looked"
+    if not isinstance(host_capabilities, dict):
+        host_capabilities = {}
+
+    run = report_mod.RunConfig.from_args(args, gj, ts, host_capabilities=host_capabilities)
     plans = plan_mod.load_dispatch_plans_detailed(panopticon_dir=run_dir)
     tool_findings, dispositions, tools_ran = plan_mod.ingest_tool_findings(args)
     tools = plan_mod.ToolAxis.load(args, run_dir, plans[0], dispositions, tools_ran)

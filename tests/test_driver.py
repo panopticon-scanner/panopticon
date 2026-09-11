@@ -1425,3 +1425,56 @@ class TestHostChoicesComeFromTheRegistry(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAllowUnenforcedHelpNamesTheCapability(unittest.TestCase):
+    """`--help` is a contract too, and this one encoded the pre-F1 "claude is
+    special" model #1344 retired.
+
+    The refusal `--allow-unenforced` overrides is keyed on the MEASURED
+    `artifact_write_guard` posture for THIS invocation (phases.requests.
+    require_unenforced_ack), not on the host's name: a claude run on a machine
+    where the probe refutes -- no settings file at the path the host would arm
+    -- is refused on identical terms. "unmediated on a non-claude host" is a
+    sentence the code stopped implementing at F3a.
+
+    The parser walk follows TestHostChoicesComeFromTheRegistry's: find the one
+    action whose `.choices` is a dict (the subparsers action) rather than
+    reaching into `_subparsers._group_actions[0]`.
+    """
+
+    def _flag_help(self):
+        for action in driver.build_parser()._actions:
+            if not isinstance(getattr(action, "choices", None), dict):
+                continue                      # not the subparser action
+            for act in action.choices["run"]._actions:
+                if "--allow-unenforced" in (act.option_strings or ()):
+                    return act.help
+        self.fail("--allow-unenforced is no longer a `driver run` flag")
+
+    def test_it_names_the_capability_rather_than_a_host(self):
+        text = self._flag_help()
+        self.assertIn(hosts.ARTIFACT_WRITE_GUARD, text)
+        # Catches "non-claude" and any other host-specific rewording. The
+        # capability is the whole point: it is what the refusal reads.
+        self.assertNotIn("claude", text)
+
+    def test_it_still_says_where_the_acceptance_is_recorded(self):
+        # The half of the old string that was true. An operator who passes this
+        # flag needs to know something durable records it.
+        self.assertIn("unenforced-ack.json", self._flag_help())
+
+    def test_the_string_reaches_driver_run_help(self):
+        # Proves the two tests above are asserting on text an operator can
+        # actually read, not on a dead attribute.
+        buf = io.StringIO()
+        # Pin the width: argparse wraps help through textwrap, which splits
+        # long words by default, and the capability name is one long word. On
+        # a narrow terminal an unpinned assertion would fail on formatting
+        # rather than on content. (The old string wrapped as "non-\nclaude".)
+        with mock.patch.dict(os.environ, {"COLUMNS": "100"}), \
+                contextlib.redirect_stdout(buf), self.assertRaises(SystemExit):
+            driver.build_parser().parse_args(["run", "--help"])
+        rendered = buf.getvalue()
+        self.assertIn("--allow-unenforced", rendered)
+        self.assertIn(hosts.ARTIFACT_WRITE_GUARD, rendered)

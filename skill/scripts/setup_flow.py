@@ -18,6 +18,8 @@ import discovery  # noqa: E402  (P6.5 Slice A: discovery primitives, moved off o
 import grouping_engine  # noqa: E402  (5.2: stage-3 size policy + setup report)
 import coverage_model  # noqa: E402  (5.2: the surfaces enum for the brief)
 from scripts import hosts  # noqa: E402  (#1344 F2: host readiness reads the registry)
+from scripts import host_probes  # noqa: E402  (#1344 F3b: readiness probes live posture)
+from scripts import host_disclosure  # noqa: E402  (#1344 F3b: one voice for the posture)
 
 
 # #1135: the committable block ignores run artifacts under .panopticon/ while
@@ -272,8 +274,10 @@ def _check_nvd_key(repo, env):
             "NVD_API_KEY or add it to .env (never commit it)")
 
 
-def _check_host_shells(host, runner):
-    """Report what this host's registration actually looks like.
+def _check_host_shells(host, runner, repo_root=None):
+    """Report what this host's registration actually looks like, and -- for a
+    host with a real shell format -- what its capability posture proves right
+    now.
 
     Rebuilt on the registry (#1344 F2). Previously this function asserted
     ("enforced-shells", True, "codex_exec enforces read-only execution") for
@@ -285,6 +289,17 @@ def _check_host_shells(host, runner):
 
     `ok=None` means NOT APPLICABLE, not "failed". setup's renderer already
     distinguishes the three.
+
+    `repo_root` defaults to None on purpose: `_check_host_shells` has call
+    sites that cannot supply it (a module-level fixture in
+    tests/phases/test_setup.py evaluates this at collection time, before any
+    mock is in place) and the brief's own fixture-driven tests call this with
+    just (host, runner). A missing repo_root is not a silent guess -- it is
+    handed straight to `host_probes.run_probes` as `review_root`, and a probe
+    that cannot resolve a real tree (`probe_shadow_shells` joins it with a
+    relative path) raises, which the try/except below turns into an honest
+    "could not be probed" rather than a crash. The one production caller,
+    `setup_readiness`, always has a real repo and passes it.
     """
     import dispatch  # noqa: E402
     resolved_host = host or dispatch._detect_host()
@@ -309,30 +324,82 @@ def _check_host_shells(host, runner):
                        "ok" if codex_ok else
                        "Codex CLI unavailable -- install/authenticate `codex`"))
 
+    # Registering no enforcement shells is a fact about ONE check, not an
+    # exemption from disclosure. This used to `return checks` here, so gemini
+    # and generic -- the two driver-selectable hosts that claim NOTHING, and
+    # therefore the two whose whole story is five-of-five-unproven -- left
+    # readiness with a single line naming the host and no capability, no probe
+    # and no remedy. 5.1 names no shell-less exemption. Control falls through
+    # to the probing block below instead, which is written once and runs for
+    # every known host.
     if not row.shell_format:
         checks.append(("enforced-shells", None,
                        "%s registers no enforcement shells; reviewers run "
                        "with a prompt-advisory tool policy" % resolved_host))
-        return checks
+    else:
+        reg_dir = dispatch._registration_dir(resolved_host, None)
+        # #run7 ARC-A4C: a hand-maintained shadow of the ACTIVE driver roles. If
+        # a role is renamed/removed in dispatch.ROLE_FILES the filter below
+        # would silently drop its shell from the readiness check. Trip loudly.
+        _unknown_roles = [r for r in _driver_roles if r not in dispatch.ROLE_FILES]
+        if _unknown_roles:
+            raise RuntimeError(
+                "setup_flow._driver_roles out of sync with dispatch.ROLE_FILES: %s"
+                % ", ".join(_unknown_roles))
+        missing_shells = [role for role, rf in sorted(dispatch.ROLE_FILES.items())
+                          if role in _driver_roles
+                          and not dispatch._is_registered(reg_dir, rf, resolved_host)]
+        checks.append(("enforced-shells", not missing_shells,
+                       "ok" if not missing_shells else
+                       "unregistered reviewer shell(s): %s -- run python3 "
+                       "skill/scripts/dispatch.py --emit-host-agents %s and start "
+                       "a fresh session"
+                       % (", ".join(missing_shells), resolved_host)))
 
-    reg_dir = dispatch._registration_dir(resolved_host, None)
-    # #run7 ARC-A4C: a hand-maintained shadow of the ACTIVE driver roles. If a
-    # role is renamed/removed in dispatch.ROLE_FILES the filter below would
-    # silently drop its shell from the readiness check. Trip loudly instead.
-    _unknown_roles = [r for r in _driver_roles if r not in dispatch.ROLE_FILES]
-    if _unknown_roles:
-        raise RuntimeError(
-            "setup_flow._driver_roles out of sync with dispatch.ROLE_FILES: %s"
-            % ", ".join(_unknown_roles))
-    missing_shells = [role for role, rf in sorted(dispatch.ROLE_FILES.items())
-                      if role in _driver_roles
-                      and not dispatch._is_registered(reg_dir, rf, resolved_host)]
-    checks.append(("enforced-shells", not missing_shells,
-                   "ok" if not missing_shells else
-                   "unregistered reviewer shell(s): %s -- run python3 "
-                   "skill/scripts/dispatch.py --emit-host-agents %s and start "
-                   "a fresh session"
-                   % (", ".join(missing_shells), resolved_host)))
+    # 5.1 surface 4. `driver setup` has no run directory, so there is no
+    # artifact to read -- readiness PROBES. That is the point: this is where
+    # an operator looks before a run to find out what to fix, and the remedy
+    # is the reason the line exists at all.
+    try:
+        fresh = host_probes.run_probes(resolved_host, repo_root)
+    except Exception as exc:            # noqa: BLE001 -- readiness never crashes
+        checks.append(("host-capabilities", None,
+                       "posture could not be probed: %s" % exc))
+        return checks
+    # THREE outcomes, read off host_disclosure's own contract rather than
+    # re-derived from `lines()`. `lines()` returns [] for two different
+    # reasons -- everything is proven, and the envelope is unreadable -- and
+    # `if not gaps: ALL_PROVEN` collapsed them, reporting a probe that produced
+    # nothing as a PASSING check that everything was verified. That is the
+    # exact inversion headline()'s docstring exists to forbid.
+    head = host_disclosure.headline(fresh)
+    gaps = host_disclosure.lines(fresh)
+    if head == host_disclosure.ALL_PROVEN:
+        checks.append(("host-capabilities", True, head))
+        return checks
+    checks.append(("host-capabilities", None, head))
+    if head == host_disclosure.NO_EVIDENCE:
+        # Nothing was measured, so there is no per-capability verdict to
+        # report. Enumerating five capabilities against an envelope that
+        # yielded no posture would print five lines that name a capability and
+        # nothing else -- "unenforced" alone, which 5.1 calls a mood.
+        return checks
+    # Past the NO_EVIDENCE branch `fresh` is necessarily a dict with a string
+    # host and a dict `capabilities` -- headline() would have returned
+    # NO_EVIDENCE otherwise -- so this read cannot raise.
+    posture = hosts.posture(resolved_host, fresh.get("capabilities"))
+    for capability in hosts.unproven(posture):
+        # The state comes off the POSTURE map, not off raw `capabilities`: the
+        # masked posture is the one every other surface renders, and a second
+        # derivation of one fact is free to drift from it.
+        #
+        # refuted is a fault the operator can act on; unknown is NOT
+        # APPLICABLE -- read_scope_confined is unknown on every host today and
+        # must not report as a failure nobody can clear.
+        ok = False if posture[capability] == hosts.REFUTED else None
+        line = [g for g in gaps if g.startswith(capability)]
+        checks.append(("host-capability:" + capability, ok,
+                       line[0] if line else capability))
     return checks
 
 
@@ -366,7 +433,7 @@ def setup_readiness(repo, host=None, runner=subprocess.run, environ=None):
     checks.extend(_check_docker(runner))
     checks.append(_check_git_root(repo))
     checks.append(_check_nvd_key(repo, env))
-    checks.extend(_check_host_shells(host, runner))
+    checks.extend(_check_host_shells(host, runner, repo))
     checks.append(_check_groups_manifest(repo))
     return checks
 
