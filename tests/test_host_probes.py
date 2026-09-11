@@ -1,5 +1,6 @@
 import os
 import tempfile
+import threading
 import unittest
 
 from scripts import host_probes, hosts
@@ -494,3 +495,39 @@ class TestShadowShellScan(unittest.TestCase):
             state, _by, detail = host_probes.probe_shadow_shells("claude", target)
             self.assertEqual(hosts.REFUTED, state)
             self.assertIn("Panopticon-Scout.md", detail)
+
+    def test_a_named_pipe_does_not_hang_the_scan(self):
+        # A hostile target can plant a FIFO in a scope directory. open() on a
+        # named pipe blocks until a writer attaches, which would hang this scan
+        # forever. Run on a daemon thread so a regression FAILS the suite
+        # instead of freezing it -- a frozen suite has no verdict at all.
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("platform has no named pipes")
+        with tempfile.TemporaryDirectory() as target:
+            directory = os.path.join(target, ".claude", "agents")
+            os.makedirs(directory)
+            os.mkfifo(os.path.join(directory, "evil.md"))
+            box = {}
+            worker = threading.Thread(
+                target=lambda: box.update(
+                    result=host_probes.probe_shadow_shells("claude", target)),
+                daemon=True)
+            worker.start()
+            worker.join(timeout=10)
+            self.assertFalse(worker.is_alive(),
+                             "probe hung on a named pipe planted by the target")
+            self.assertEqual(hosts.UNKNOWN, box["result"][0])
+
+    def test_a_named_pipe_named_like_a_shell_still_refutes(self):
+        # The filename branch runs BEFORE any open(), so a FIFO named
+        # panopticon-scout.md is still caught by the cheap check and never
+        # reaches the content scan that the S_ISREG guard protects.
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("platform has no named pipes")
+        with tempfile.TemporaryDirectory() as target:
+            directory = os.path.join(target, ".claude", "agents")
+            os.makedirs(directory)
+            os.mkfifo(os.path.join(directory, "panopticon-scout.md"))
+            state, _by, detail = host_probes.probe_shadow_shells("claude", target)
+            self.assertEqual(hosts.REFUTED, state)
+            self.assertIn("panopticon-scout.md", detail)

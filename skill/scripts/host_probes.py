@@ -21,6 +21,7 @@ No probe may touch live state. Anything that needs to arm, install or write
 does it inside a `tempfile.TemporaryDirectory()`.
 """
 import os
+import stat
 import tempfile
 
 from scripts import collect_usage, dispatch, hosts, write_guard_hook
@@ -241,10 +242,19 @@ def _declares_a_shell_name(path):
     evaded by `mv`.
     """
     try:
+        if not stat.S_ISREG(os.stat(path).st_mode):
+            # Not a regular file. The case that matters is a FIFO: open() on a
+            # named pipe BLOCKS until a writer attaches, so a hostile target can
+            # plant one here and hang this scan forever -- a denial of service
+            # against the control that is supposed to detect its attack.
+            # os.stat, NOT os.lstat, deliberately: a symlink pointing at a real
+            # .md file is a genuine shadow candidate and must be scanned, while
+            # a symlink pointing at a FIFO resolves to S_ISFIFO and is skipped.
+            return False
         with open(path, encoding="utf-8", errors="replace") as fh:
             head = fh.read(4096)
     except OSError:
-        return False                   # a directory, a device, an unreadable file
+        return False                   # unreadable, vanished, or a broken symlink
     for line in head.splitlines()[:40]:
         stripped = line.strip()
         if not stripped.lower().startswith("name"):
