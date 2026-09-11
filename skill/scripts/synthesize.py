@@ -153,7 +153,23 @@ def main(argv=None):
     # loading verdicts before that branch runs would let stale state leak into
     # verdict_run_id, resume and invalid_verify_queue on the "nothing to queue
     # this run" path.
-    run = report_mod.RunConfig.from_args(args, gj, ts)
+    # 5.1 surface 2. dirname(--groups) IS the per-run folder (the same
+    # resolution used for --run-dir above), and host-capabilities.json is a
+    # non-top-level artifact, so it sits beside groups.json. The artifact is
+    # a file on disk and therefore untrusted: absent, truncated or corrupt
+    # JSON all fall back to {} -- "nobody looked" -- rather than raising a
+    # traceback mid-synthesis or fabricating a posture.
+    _hc_path = os.path.join(os.path.dirname(os.path.abspath(args.groups or ".")),
+                            "host-capabilities.json")
+    try:
+        with open(_hc_path, encoding="utf-8") as fh:
+            host_capabilities = json.load(fh)
+    except (OSError, ValueError):
+        host_capabilities = {}          # absent or corrupt -> "nobody looked"
+    if not isinstance(host_capabilities, dict):
+        host_capabilities = {}
+
+    run = report_mod.RunConfig.from_args(args, gj, ts, host_capabilities=host_capabilities)
     plans = plan_mod.load_dispatch_plans_detailed(panopticon_dir=run_dir)
     tool_findings, dispositions, tools_ran = plan_mod.ingest_tool_findings(args)
     tools = plan_mod.ToolAxis.load(args, run_dir, plans[0], dispositions, tools_ran)

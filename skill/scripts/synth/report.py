@@ -6,6 +6,7 @@ try:
 except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
     from _version import __version__
 import scripts.evidence as evidence_mod
+import scripts.host_disclosure as host_disclosure
 import scripts.ocrdb as ocrdb
 from . import findings as findings_mod
 from . import delta as delta_mod
@@ -84,14 +85,21 @@ class RunConfig:
     gate_unverified: bool = False
     max_verify: int | None = None
     gate_scope: str = "on-diff"
+    # 5.1 surface 2: the posture VERBATIM off the artifact, so a consumer can
+    # diff it across runs. Not summarised -- `detail` is what tells a reader
+    # which of several refutation reasons applied on this run.
+    host_capabilities: dict = field(default_factory=dict)
 
     @classmethod
-    def from_args(cls, args, groups_json, timestamp):
+    def from_args(cls, args, groups_json, timestamp, host_capabilities=None):
         """The CLI flags resolved against the run's groups.json (WS-0 S3):
         an explicit --changes wins over a discovered mode (a groups.json mode
         must not flip an explicitly-requested changes review back to repo);
         --security wins over the file's security_mode; both default to
-        repo / standard. `groups_json` is {} when there is no readable file."""
+        repo / standard. `groups_json` is {} when there is no readable file.
+        `host_capabilities` is the parsed host-capabilities.json artifact (or
+        {} when absent/corrupt); the caller reads it, this classmethod only
+        threads it through."""
         review_type = "changes" if args.changes else "repo"
         if not args.changes:
             review_type = findings_mod.MODE_TO_REVIEW_TYPE.get(groups_json.get("mode"),
@@ -104,7 +112,8 @@ class RunConfig:
         return cls(target=args.target, fail_on=args.fail_on, timestamp=timestamp,
                    review_type=review_type, security_mode=security_mode,
                    gate_unverified=args.gate_unverified, max_verify=args.max_verify,
-                   gate_scope=args.gate_scope)
+                   gate_scope=args.gate_scope,
+                   host_capabilities=host_capabilities or {})
 
 
 @dataclass(frozen=True)
@@ -138,6 +147,22 @@ def build_report(inp):
     return assemble(inp.run, resolved, reconciled, graded, cost)
 
 
+def _host_capabilities_verbatim(host_capabilities):
+    """The artifact's `capabilities` map, unchanged, or {} on anything that
+    is not readable as one.
+
+    Fail-closed like the rest of this branch's host-evidence handling: an
+    artifact that is absent, truncated or tampered with must never surface as
+    a fabricated posture, and the "nothing measured" case must be
+    distinguishable in shape ({} is diffable; None forces every caller to
+    branch on it first).
+    """
+    if not isinstance(host_capabilities, dict):
+        return {}
+    caps = host_capabilities.get("capabilities")
+    return caps if isinstance(caps, dict) else {}
+
+
 def assemble(run, resolved, reconciled, graded, cost):
     """Lay the computed sections out as the CodeReviewReport envelope. Key
     order is part of the artifact (write_report dumps insertion order)."""
@@ -161,6 +186,20 @@ def assemble(run, resolved, reconciled, graded, cost):
             "coverage": reconciled.coverage,
             "integrity": reconciled.integrity,
             "cost": cost,
+            # 5.1 surface 2: the verified host posture, verbatim off the
+            # artifact -- host_disclosure.host_of() fails closed (None) on
+            # anything that is not a dict with a string "host", so a
+            # malformed/absent artifact renders as "nobody looked" here too,
+            # never a traceback mid-synthesis. `capabilities` gets the same
+            # fail-closed treatment: default {} (not None) so an absent or
+            # unreadable artifact reads as "nothing to diff", matching the
+            # {} synthesize.py already uses for "absent or corrupt". A dict
+            # `capabilities` value survives untouched -- state/by/detail all
+            # carried, per capability -- for a consumer diffing runs.
+            "host_capabilities": {
+                "host": host_disclosure.host_of(run.host_capabilities),
+                "capabilities": _host_capabilities_verbatim(run.host_capabilities),
+            },
         },
         "summary": graded.summary,
         "groups": graded.groups,
