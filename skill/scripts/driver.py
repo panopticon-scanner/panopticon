@@ -27,6 +27,7 @@ import scripts.diff_map as diff_map  # noqa: E402
 import scripts.plan_contract as plan_contract  # noqa: E402
 import scripts.run_manifest as run_manifest  # noqa: E402
 from scripts import hosts  # noqa: E402
+import scripts.host_probes as host_probes  # noqa: E402
 import scripts.phases.engine as engine
 import scripts.phases.runio as runio
 import scripts.phases.coverage as coverage
@@ -211,6 +212,70 @@ def _positive_int(text):
     return value
 
 
+def _establish_host_posture(review_root, manifest, args):
+    """Probe this host now; write the evidence, or refuse if it moved.
+
+    Spec 5.2. Runs on EVERY invocation, not once per run: `driver run` is a
+    resumable loop, and setup-time-only evidence is unbounded in age -- a
+    write-guard hook uninstalled after setup would read `proven` forever.
+
+    First invocation writes `runs/<tag>/host-capabilities.json`. Every later
+    one re-probes and COMPARES. Any difference refuses the run in both
+    directions: a posture that degraded is alarming, and one that improved
+    still leaves the entries already dispatched under the weaker posture, so
+    the honest answer to both is a fresh run.
+
+    Returns an error message when the run must stop, else None.
+    """
+    host = manifest.get("host", "claude")
+    # session_dir off the MANIFEST, not args: driver.py:286 stores the abspath
+    # there at build time, and on a resume the operator need not repeat the
+    # flag. Reading args would silently probe a different settings file than
+    # the one fan-out will arm -- which is #1493 all over again.
+    fresh = host_probes.run_probes(
+        host, args.target, session_root=manifest.get("session_dir"))
+    path = runio._pano(review_root, runio.HOST_CAPABILITIES)
+    stored = runio._load_json(path)
+    if stored is None:
+        shadow = _shadow_refusal(fresh, manifest)
+        if shadow:
+            return shadow
+        runio._write_json(path, fresh)
+        return None
+    was, now = host_probes.capabilities_of(stored), host_probes.capabilities_of(fresh)
+    if was != now:
+        moved = ["%s: %s -> %s" % (name, was.get(name), now.get(name))
+                 for name in sorted(set(was) | set(now))
+                 if was.get(name) != now.get(name)]
+        return ("host posture changed mid-run (%s). Entries already dispatched "
+                "were built under the previous posture, so this run's report "
+                "would disagree with itself about what was enforced. Start a "
+                "fresh run with --reset." % "; ".join(moved))
+    return None
+
+
+def _shadow_refusal(artifact, manifest):
+    """Spec 7.3: a target shipping panopticon-* agent files refuses the run.
+
+    `--allow-unenforced` downgrades rather than silences: the run proceeds with
+    tool_policy_enforced REFUTED, which drives enforced:false onto every entry.
+    Refuted is STRONGER than unknown -- the operator who takes the opt-in gets
+    a run that says plainly it was not enforced.
+    """
+    row = (artifact.get("capabilities") or {}).get(hosts.TOOL_POLICY_ENFORCED) or {}
+    if row.get("by") != host_probes.SHADOW_SHELL_SCAN:
+        return None
+    if row.get("state") != hosts.REFUTED:
+        return None
+    if (manifest.get("flags") or {}).get("allow_unenforced"):
+        return None
+    return ("refusing to run: %s. A project-scoped agent file takes precedence "
+            "over the registered enforcement shell, so this target would be "
+            "reviewing itself with reviewers it supplied. Remove the file(s), "
+            "or re-run with --allow-unenforced to proceed with enforcement "
+            "explicitly refuted." % row.get("detail"))
+
+
 def run(args, runner=subprocess.run, phases=PHASES):
     # #5.0-14: resolving the review root can fail loudly for a --pr run (gh
     # auth/network, a bad PR number, worktree acquisition) — keep it inside the
@@ -307,6 +372,13 @@ def run(args, runner=subprocess.run, phases=PHASES):
     # normal resume, but self-heals a baseline that a mid-first-run interrupt
     # left missing (which had silently disabled the clean-tree guard).
     validate.capture_tree_baseline(review_root, runner=runner)
+    # 5.2: establish this host's capability posture BEFORE any phase can build
+    # a dispatch entry, and re-establish it on every resume. Not an
+    # engine.Phase: phases are skipped once their done-predicate holds, which
+    # is exactly the resume where re-probing matters.
+    posture_error = _establish_host_posture(review_root, manifest, args)
+    if posture_error:
+        return runio._error_status(posture_error)
     try:
         result = engine.run_engine(review_root, manifest, phases)
     except runio.DriverError as exc:
