@@ -118,6 +118,73 @@ class TestThePostureIsEstablishedEveryInvocation(unittest.TestCase):
             manifest["session_dir"] = session_dir
         return manifest
 
+    def _artifact(self, focus_state, detail="fixture",
+                  focus=hosts.TOOL_POLICY_ENFORCED, host="claude"):
+        """A `run_probes()`-shaped artifact with `focus` at `focus_state`, and
+        every OTHER capability cycled across proven/refuted/unknown so the
+        fixture is genuinely mixed no matter what `focus_state` is.
+
+        An all-one-state fixture cannot catch code that hard-codes a single
+        capability's state -- that exact shape cost F3a two Criticals that
+        five separate mutation checks missed, because the fixture had erased
+        the distinction the bugs lived in. Cycling the four OTHER capabilities
+        guarantees proven, refuted AND unknown are each present on a different
+        capability every time this is called, independent of `focus`/`focus_state`.
+        """
+        baseline = (hosts.PROVEN, hosts.REFUTED, hosts.UNKNOWN)
+        others = [name for name in hosts.CAPABILITIES if name != focus]
+        capabilities = {
+            name: {"state": baseline[i % len(baseline)], "by": "fixture",
+                   "detail": "baseline-%s" % baseline[i % len(baseline)]}
+            for i, name in enumerate(others)
+        }
+        capabilities[focus] = {"state": focus_state, "by": "fixture",
+                               "detail": detail}
+        return {"schema_version": 1, "host": host,
+                "probed_at": "2026-09-11T00:00:00Z",
+                "capabilities": capabilities}
+
+    def _run_with_posture_established(self):
+        """A (review_root, manifest) pair with `host-capabilities.json`
+        already on disk, via a REAL first invocation of
+        `_establish_host_posture` whose `run_probes` is swapped for
+        `_artifact`'s deterministic, genuinely-mixed fixture -- so the stored
+        baseline does not depend on what THIS machine's live probes happen to
+        find (registration dir, transcripts, ...).
+        """
+        review_root = tempfile.mkdtemp(prefix="review-root-")
+        self.addCleanup(shutil.rmtree, review_root, ignore_errors=True)
+        manifest = self._manifest(session_dir=review_root)
+        with mock.patch.object(host_probes, "run_probes",
+                               return_value=self._artifact(hosts.PROVEN)):
+            err = driver._establish_host_posture(
+                review_root, manifest, self._args())
+        self.assertIsNone(err)
+        return review_root, manifest
+
+    def test_a_changed_reason_refreshes_the_artifact_without_refusing(self):
+        # The refusal is keyed to STATE. A capability that stays refuted for a
+        # NEW reason must update what the report will render, and must not cost
+        # the operator a run they can do nothing about.
+        review_root, manifest = self._run_with_posture_established()
+        path = runio._pano(review_root, runio.HOST_CAPABILITIES)
+        stored = runio._load_json(path)
+        stored["capabilities"][hosts.TOOL_POLICY_ENFORCED].update(
+            {"state": hosts.REFUTED, "detail": "the FIRST reason"})
+        runio._write_json(path, stored)
+
+        with mock.patch.object(host_probes, "run_probes",
+                               return_value=self._artifact(
+                                   hosts.REFUTED, detail="the SECOND reason")):
+            err = driver._establish_host_posture(
+                review_root, manifest, self._args())
+
+        self.assertIsNone(err, "a changed reason at the same state must not refuse")
+        refreshed = runio._load_json(path)
+        detail = refreshed["capabilities"][hosts.TOOL_POLICY_ENFORCED]["detail"]
+        self.assertIn("SECOND", detail)
+        self.assertNotIn("FIRST", detail)
+
     def test_the_first_invocation_writes_the_artifact(self):
         with tempfile.TemporaryDirectory() as review_root:
             manifest = self._manifest(session_dir=review_root)

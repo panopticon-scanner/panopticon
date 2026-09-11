@@ -273,6 +273,15 @@ def _establish_host_posture(review_root, manifest, args):
     was, now = host_probes.capabilities_of(stored), host_probes.capabilities_of(fresh)
     if was != now:
         return _posture_drift(was, now, manifest)
+    # States agree, so the posture did NOT move and the run continues. The
+    # REASON may still have moved -- a capability refuted for "no shell at X" on
+    # invocation 1 and for "grants forbidden tool Bash" on invocation 5 is
+    # refuted both times. F3b renders `detail` on three surfaces, so a stale
+    # reason is now a wrong disclosure rather than a cosmetic one. Refresh the
+    # record; do NOT refuse, because the operator can do nothing about a reason
+    # that changed underneath an unchanged verdict.
+    if stored != fresh:
+        runio._write_json(path, fresh)
     return None
 
 
