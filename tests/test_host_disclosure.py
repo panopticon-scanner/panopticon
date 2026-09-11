@@ -1,7 +1,16 @@
+import contextlib
+import io
+import subprocess
 import unittest
 from unittest import mock
 
 from scripts import host_disclosure, hosts
+import scripts.driver as driver
+import scripts.host_probes as host_probes
+import scripts.setup_flow as setup_flow
+import scripts.synth.findings as findings_mod
+import scripts.synth.render as render_mod
+import scripts.synth.report as report_mod
 
 
 def envelope(host="claude", **states):
@@ -136,3 +145,59 @@ class TestTheHeadline(unittest.TestCase):
         head = host_disclosure.headline(MIXED)
         self.assertIn("claude", head)
         self.assertIn("4", head)          # refuted + 3 unknown, not the proven one
+
+
+def _runner_ok(cmd, **kwargs):
+    """A `runner` that never touches a real process. The capability probing
+    does not take `runner` at all (run_probes is mocked); this only stands in
+    for the codex-cli `_probe` call, which the claude path never reaches."""
+    return subprocess.CompletedProcess(cmd, 0, "", "")
+
+
+class TestTheFourSurfacesSayTheSameThing(unittest.TestCase):
+    """§5.1 mandates four surfaces. Four hand-written copies of the wording
+    rule drift, and each surface's own test keeps passing while they do. This
+    reads ONE posture and asserts every surface names the same capability, the
+    same probe and the same remedy.
+
+    The fourth surface (X0X/meta) is the same envelope the body renders from,
+    so it is exercised through the report build here rather than as a fifth
+    string: the body surface is built by the REAL pipeline
+    (build_report -> render_summary), which is what carries meta.host_capabilities.
+    """
+
+    def _surfaces(self, envelope):
+        """{name: rendered text} for every surface, from ONE posture."""
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            driver._emit_posture_disclosure(envelope)
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(
+                target="target", fail_on="high",
+                timestamp="2026-08-03T00:00:00Z",
+                host_capabilities=envelope),
+            findings=findings_mod.FindingSet(findings=[])))
+        with mock.patch.object(host_probes, "run_probes", return_value=envelope):
+            rows = setup_flow._check_host_shells("claude", _runner_ok, ".")
+        return {"stderr": err.getvalue(),
+                "body": render_mod.render_summary(report),
+                "readiness": "\n".join(r[2] for r in rows)}
+
+    def test_every_surface_names_the_same_capability_probe_and_remedy(self):
+        surfaces = self._surfaces(MIXED)
+        self.assertEqual({"stderr", "body", "readiness"}, set(surfaces))
+        for name, text in surfaces.items():
+            for capability in hosts.unproven(
+                    hosts.posture("claude", MIXED["capabilities"])):
+                with self.subTest(surface=name, capability=capability):
+                    self.assertIn(capability, text)
+                    # the REMEDY verbatim -- not a prefix. One surface
+                    # paraphrasing the fix is exactly the drift this catches.
+                    self.assertIn(host_disclosure.remedy(capability, "claude"), text)
+            with self.subTest(surface=name, probe="shadow-shell-scan"):
+                self.assertIn("shadow-shell-scan", text)
+
+    def test_no_surface_warns_about_a_proven_capability(self):
+        for name, text in self._surfaces(MIXED).items():
+            with self.subTest(surface=name):
+                self.assertNotIn(hosts.ARTIFACT_WRITE_GUARD, text)
