@@ -219,3 +219,49 @@ def probe_transcript_dir(host, project_dir, home=None):
         return (hosts.REFUTED, TRANSCRIPT_DIR,
                 "%s is not readable" % directory)
     return (hosts.PROVEN, TRANSCRIPT_DIR, "%s is readable" % directory)
+
+
+SHADOW_SHELL_SCAN = "shadow-shell-scan"
+
+# The prefix `dispatch.registered_agent_name` gives every emitted shell. A
+# TARGET file with this prefix in a project-scoped agent directory replaces the
+# user-level shell rather than adding to it.
+_SHELL_PREFIX = "panopticon-"
+
+
+def probe_shadow_shells(host, target):
+    """The target repository ships nothing that shadows our enforcement shells.
+
+    Spec 7.3. Kimi's agent discovery precedence is Explicit > Project > Extra >
+    User, so a target repo's `.agents/agents/panopticon-scout.md` silently
+    replaces the registered shell -- an attack on the enforcement mechanism
+    itself, aimed at a tool whose stated purpose is reviewing possibly-hostile
+    repositories. Several hosts discover project-scoped agents, so this is a
+    registry-driven check rather than a per-family one: a host with no
+    `project_scope_dirs` is a no-op and costs nothing.
+
+    Can only REFUTE. A clean scan is UNKNOWN, not PROVEN -- finding no
+    shadowing file says nothing about whether the host enforces anything, which
+    is `registered-shell-tools`' question. `hosts.resolve_state` combines the
+    two, and refuted beats proven.
+    """
+    row = hosts.spec(host)
+    if not row or not row.project_scope_dirs:
+        return (hosts.UNKNOWN, SHADOW_SHELL_SCAN,
+                "host %r discovers no project-scoped agents" % host)
+    hits = []
+    for relative in row.project_scope_dirs:
+        directory = os.path.join(target, relative)
+        try:
+            names = sorted(os.listdir(directory))
+        except OSError:
+            continue                  # absent or unreadable: nothing to shadow
+        hits += [os.path.join(relative, name) for name in names
+                 if name.startswith(_SHELL_PREFIX)]
+    if hits:
+        return (hosts.REFUTED, SHADOW_SHELL_SCAN,
+                "target ships agent file(s) that shadow this host's "
+                "enforcement shells: %s" % ", ".join(hits))
+    return (hosts.UNKNOWN, SHADOW_SHELL_SCAN,
+            "no shadowing agent files in the target's %s"
+            % ", ".join(row.project_scope_dirs))

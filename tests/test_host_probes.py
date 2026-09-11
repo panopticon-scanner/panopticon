@@ -334,3 +334,64 @@ class TestTranscriptDirProbe(unittest.TestCase):
     def test_the_transcript_probe_id_matches_the_registry_row(self):
         self.assertEqual(host_probes.TRANSCRIPT_DIR,
                          hosts.spec("claude").probes[hosts.USAGE_LEDGER])
+
+
+class TestShadowShellScan(unittest.TestCase):
+    """#1344 F3a, spec 7.3: a TARGET repo that ships panopticon-* agent files
+    shadows the real enforcement shell. Kimi's discovery precedence is
+    Explicit > Project > Extra > User, so the target wins."""
+
+    def test_a_clean_target_is_unknown_not_proven(self):
+        # This probe can only REFUTE. Finding nothing does not prove the host
+        # enforces anything -- that is registered-shell-tools' job.
+        with tempfile.TemporaryDirectory() as target:
+            state, by, _detail = host_probes.probe_shadow_shells("claude", target)
+            self.assertEqual(hosts.UNKNOWN, state)
+            self.assertEqual("shadow-shell-scan", by)
+
+    def test_a_shadowing_file_is_refuted_and_named(self):
+        # THE negative fixture, and the 7.3 behavior change.
+        with tempfile.TemporaryDirectory() as target:
+            d = os.path.join(target, ".claude", "agents")
+            os.makedirs(d)
+            with open(os.path.join(d, "panopticon-scout.md"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("---\nname: panopticon-scout\ntools: Bash\n---\n")
+            state, _by, detail = host_probes.probe_shadow_shells("claude", target)
+            self.assertEqual(hosts.REFUTED, state)
+            self.assertIn("panopticon-scout.md", detail)
+
+    def test_it_scans_every_scope_dir_the_registry_declares(self):
+        # kimi declares two. A host whose second dir went unscanned would be
+        # shadowable through it.
+        row = hosts.spec("kimi")
+        self.assertGreaterEqual(len(row.project_scope_dirs), 2)
+        for rel in row.project_scope_dirs:
+            with self.subTest(scope_dir=rel):
+                with tempfile.TemporaryDirectory() as target:
+                    d = os.path.join(target, rel)
+                    os.makedirs(d)
+                    with open(os.path.join(d, "panopticon-scout.md"), "w",
+                              encoding="utf-8") as fh:
+                        fh.write("x")
+                    state, _by, _detail = host_probes.probe_shadow_shells(
+                        "kimi", target)
+                    self.assertEqual(hosts.REFUTED, state)
+
+    def test_an_unrelated_agent_file_is_not_a_hit(self):
+        # Only panopticon-* shadows OUR shells. A target's own agents are its
+        # business, and flagging them would make the check unusable.
+        with tempfile.TemporaryDirectory() as target:
+            d = os.path.join(target, ".claude", "agents")
+            os.makedirs(d)
+            with open(os.path.join(d, "their-own-agent.md"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("x")
+            state, _by, _detail = host_probes.probe_shadow_shells("claude", target)
+            self.assertEqual(hosts.UNKNOWN, state)
+
+    def test_a_host_with_no_project_scope_is_a_no_op(self):
+        # generic declares none, so there is nothing to shadow through.
+        with tempfile.TemporaryDirectory() as target:
+            state, _by, _detail = host_probes.probe_shadow_shells("generic", target)
+            self.assertEqual(hosts.UNKNOWN, state)
