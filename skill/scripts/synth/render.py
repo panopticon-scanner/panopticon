@@ -4,6 +4,7 @@ import os
 import sys
 import uuid
 
+import scripts.host_disclosure as host_disclosure
 import scripts.redact as redact
 from . import findings as findings_mod
 from . import grading as grading_mod
@@ -152,6 +153,22 @@ def render_summary(report):
         lines.insert(3, "**Integrity:** MISLABELED FILES — %s (the `_panopticon` cell "
                         "stamp disagrees with the filename; possible mis-targeted "
                         "write; run not certified)" % ", ".join(mislabeled))
+    # 5.1 surface 3: a person reading the report must meet the host-capability
+    # limitation without opening JSON -- the same reason tools_absent and
+    # produced_noscan are surfaced in the body rather than buried in the
+    # JSON. Rendered on EVERY report, including the all-proven one: 5.1's
+    # inverse says the absence of a warning must mean "measured and proven",
+    # which only holds if the proven case is stated here rather than left
+    # implicit. `host_capabilities` may be absent, None, or a malformed
+    # non-dict shape (a foreign report.json fed to --compare, or a hand-built
+    # test fixture) -- fail closed to {} rather than raising; host_disclosure
+    # itself then fails closed on a non-str host / non-dict capabilities.
+    hc = report["meta"].get("host_capabilities")
+    hc = hc if isinstance(hc, dict) else {}
+    envelope = {"host": hc.get("host"), "capabilities": hc.get("capabilities")}
+    lines.insert(3, "**Host capabilities:** %s" % host_disclosure.headline(envelope))
+    for gap in reversed(host_disclosure.lines(envelope)):
+        lines.insert(4, "  - %s" % gap)
     xdom = integ.get("cross_domain_findings") or []
     if xdom:
         # Deliberately not an integrity failure and deliberately not gating:
