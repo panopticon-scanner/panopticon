@@ -185,6 +185,43 @@ class TestThePostureIsEstablishedEveryInvocation(unittest.TestCase):
         self.assertIn("SECOND", detail)
         self.assertNotIn("FIRST", detail)
 
+    def test_a_changed_timestamp_alone_does_not_rewrite_the_artifact(self):
+        # Fix round 1: `probed_at` (run_manifest._now_iso(), second
+        # resolution) is stamped fresh on EVERY probe and is not part of
+        # `capabilities`. A guard that compared the whole artifact rather than
+        # just `capabilities` would rewrite on essentially every real
+        # invocation regardless of whether anything an operator cares about
+        # changed -- widening, on every turn of a resumable loop, the window
+        # in which a killed process could leave THIS artifact (which the
+        # mid-run refusal a few lines above reads) truncated. A mutation to
+        # `if True:` passed 209 tests across six files with nothing pinning
+        # this before this test existed.
+        #
+        # Real (unmocked) run_probes, twice in a row against an unchanged
+        # review_root/session_root, is proven deterministic by
+        # test_a_second_invocation_with_the_same_posture_is_silent above; the
+        # only thing that legitimately varies invocation to invocation is the
+        # timestamp, so only _now_iso is controlled here.
+        with tempfile.TemporaryDirectory() as review_root:
+            manifest = self._manifest(session_dir=review_root)
+            args = self._args()
+            with mock.patch.object(run_manifest, "_now_iso",
+                                   return_value="2026-01-01T00:00:00Z"):
+                self.assertIsNone(driver._establish_host_posture(
+                    review_root, manifest, args))
+            path = runio._pano(review_root, runio.HOST_CAPABILITIES)
+            before = runio._load_json(path)
+
+            with mock.patch.object(run_manifest, "_now_iso",
+                                   return_value="2099-01-01T00:00:00Z"):
+                err = driver._establish_host_posture(review_root, manifest, args)
+
+            self.assertIsNone(err)
+            after = runio._load_json(path)
+            self.assertEqual(before, after,
+                             "a changed probed_at alone must not rewrite the artifact")
+            self.assertEqual("2026-01-01T00:00:00Z", after["probed_at"])
+
     def test_the_first_invocation_writes_the_artifact(self):
         with tempfile.TemporaryDirectory() as review_root:
             manifest = self._manifest(session_dir=review_root)

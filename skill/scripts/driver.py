@@ -280,7 +280,23 @@ def _establish_host_posture(review_root, manifest, args):
     # reason is now a wrong disclosure rather than a cosmetic one. Refresh the
     # record; do NOT refuse, because the operator can do nothing about a reason
     # that changed underneath an unchanged verdict.
-    if stored != fresh:
+    #
+    # Gated on the CAPABILITIES map, not the whole artifact: `fresh["probed_at"]`
+    # is stamped fresh on every call (run_manifest._now_iso(), second
+    # resolution), so comparing whole dicts degenerates to "always write" on
+    # essentially every real invocation -- rewriting, on every turn of a
+    # resumable loop, the very artifact the mid-run refusal above reads, which
+    # widens rather than shrinks the window in which a killed process could
+    # leave it truncated. `was`/`now` above are STATE-only and already equal
+    # by construction here, so gating on those instead would mean `detail`
+    # never refreshes -- defeating this whole fix. `capabilities` carries the
+    # per-capability state/by/detail triples and excludes probed_at/
+    # schema_version/host, which is exactly the "did anything an operator
+    # cares about change" question.
+    if stored.get("capabilities") != fresh.get("capabilities"):
+        # Write the FULL fresh payload (not just the capabilities key) so
+        # `probed_at` on disk stays honest about when the record was last
+        # actually written.
         runio._write_json(path, fresh)
     return None
 
