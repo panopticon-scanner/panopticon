@@ -153,14 +153,20 @@ def main(argv=None):
     # loading verdicts before that branch runs would let stale state leak into
     # verdict_run_id, resume and invalid_verify_queue on the "nothing to queue
     # this run" path.
-    # 5.1 surface 2. dirname(--groups) IS the per-run folder (the same
-    # resolution used for --run-dir above), and host-capabilities.json is a
-    # non-top-level artifact, so it sits beside groups.json. The artifact is
-    # a file on disk and therefore untrusted: absent, truncated or corrupt
-    # JSON all fall back to {} -- "nobody looked" -- rather than raising a
-    # traceback mid-synthesis or fabricating a posture.
-    _hc_path = os.path.join(os.path.dirname(os.path.abspath(args.groups or ".")),
-                            "host-capabilities.json")
+    # 5.1 surface 2. host-capabilities.json is a RUN artifact: F3a writes it
+    # into the run folder, so it resolves under `run_dir` exactly like the
+    # dispatch plans, the verify queue, the tools manifest and groups.json
+    # itself -- one resolution for every run-scoped artifact, settled above.
+    # It must NOT be re-derived from `args.groups`: that ignores both
+    # `--run-dir` and the AUTO-DISCOVERED groups path, and with `--groups`
+    # omitted `dirname(abspath("."))` names the PARENT of the cwd -- which for
+    # the synthesize child (`cwd=review_root`) is the directory above the
+    # reviewed tree, where anyone's host-capabilities.json would have been read
+    # as this run's posture. The artifact is a file on disk and therefore
+    # untrusted: absent, truncated or corrupt JSON all fall back to {} --
+    # "nobody looked" -- rather than raising a traceback mid-synthesis or
+    # fabricating a posture.
+    _hc_path = os.path.join(run_dir, "host-capabilities.json")
     try:
         with open(_hc_path, encoding="utf-8") as fh:
             host_capabilities = json.load(fh)

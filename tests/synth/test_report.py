@@ -780,6 +780,110 @@ class TestSynthesizeLoadsHostCapabilities(unittest.TestCase):
         self.assertIsNone(hc["host"])
         self.assertEqual({}, hc["capabilities"])
 
+def _hc_envelope(host="claude"):
+    """A MIXED host-capabilities.json body: one proven, one refuted, three
+    unknown, each on a different capability (plan Global Constraints). An
+    all-proven or all-unknown fixture would pass a loader that dropped a
+    capability."""
+    return {
+        "schema_version": 1, "host": host, "probed_at": "T",
+        "capabilities": {
+            hosts_mod.TOOL_POLICY_ENFORCED: {
+                "state": hosts_mod.REFUTED, "by": "shadow-shell-scan",
+                "detail": "ships panopticon-scout.md"},
+            hosts_mod.ARTIFACT_WRITE_GUARD: {
+                "state": hosts_mod.PROVEN, "by": "write-guard-armed",
+                "detail": "round-trip denied"},
+            hosts_mod.USAGE_LEDGER: {
+                "state": hosts_mod.UNKNOWN, "by": None,
+                "detail": "no transcript directory"},
+            hosts_mod.READ_SCOPE_CONFINED: {
+                "state": hosts_mod.UNKNOWN, "by": None,
+                "detail": "no read-confinement control yet"},
+            hosts_mod.MODEL_BINDING: {
+                "state": hosts_mod.UNKNOWN, "by": None,
+                "detail": "model=None until F4 binds them"},
+        },
+    }
+
+
+class TestHostCapabilitiesResolvesUnderTheRunDir(unittest.TestCase):
+    """`host-capabilities.json` is a RUN artifact and resolves under `run_dir`,
+    like groups.json, the dispatch plans, the verify queue and the tools
+    manifest.
+
+    TestSynthesizeLoadsHostCapabilities above always passes `--groups`, and
+    `--groups` is the single invocation shape in which `dirname(--groups)` and
+    `run_dir` agree -- so its fixture cannot express this at all. These three
+    exercise the shapes where they diverge: the auto-discovered groups path, an
+    explicit `--run-dir`, and the directory ABOVE the cwd (which
+    `dirname(abspath(args.groups or "."))` resolved to, and which for the
+    synthesize child -- `cwd=review_root` -- is the parent of the reviewed
+    tree).
+    """
+
+    def _seed_run(self, run_dir, envelope=None):
+        os.makedirs(run_dir, exist_ok=True)
+        with open(os.path.join(run_dir, "groups.json"), "w") as fh:
+            json.dump({"mode": "repo", "groups": [{"name": "g1", "files": ["a.py"]}]}, fh)
+        if envelope is not None:
+            with open(os.path.join(run_dir, "host-capabilities.json"), "w") as fh:
+                json.dump(envelope, fh)
+
+    def _synth(self, argv):
+        """Run synthesize in the CURRENT directory and return the report."""
+        with open("findings-g1-code.json", "w") as fh:
+            json.dump({"findings": []}, fh)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            syn.main(argv + ["findings-g1-code.json"])
+        with open("report.json") as fh:
+            return json.load(fh)
+
+    def test_without_groups_it_reads_beside_the_discovered_groups_json(self):
+        with tempfile.TemporaryDirectory() as parent:
+            tree = os.path.join(parent, "tree")
+            os.makedirs(tree)
+            self._seed_run(os.path.join(tree, ".panopticon"), _hc_envelope())
+            with _chdir(tree):
+                report = self._synth(["--target", "src", "--out", "report.json"])
+        hc = report["meta"]["host_capabilities"]
+        self.assertEqual("claude", hc["host"])
+        self.assertEqual(_hc_envelope()["capabilities"], hc["capabilities"])
+
+    def test_run_dir_names_the_directory_the_artifact_comes_from(self):
+        with tempfile.TemporaryDirectory() as parent:
+            tree = os.path.join(parent, "tree")
+            run = os.path.join(tree, ".panopticon", "runs", "claude-redteam-repo-x")
+            self._seed_run(run, _hc_envelope())
+            with _chdir(tree):
+                report = self._synth(["--target", "src", "--run-dir", run,
+                                      "--out", "report.json"])
+        hc = report["meta"]["host_capabilities"]
+        self.assertEqual("claude", hc["host"])
+        self.assertEqual(_hc_envelope()["capabilities"], hc["capabilities"])
+
+    def test_an_artifact_in_the_parent_of_the_cwd_is_never_read(self):
+        # The reviewed tree's PARENT is not a run directory and nothing in it
+        # is a run artifact. A file planted there is another project's, or an
+        # attacker's -- either way reading it fabricates a posture for this run.
+        forged = {"schema_version": 1, "host": "PLANTED-FROM-PARENT-DIR",
+                  "probed_at": "T",
+                  "capabilities": {hosts_mod.TOOL_POLICY_ENFORCED: {
+                      "state": hosts_mod.PROVEN, "by": "forged",
+                      "detail": "planted in the parent directory"}}}
+        with tempfile.TemporaryDirectory() as parent:
+            tree = os.path.join(parent, "tree")
+            self._seed_run(os.path.join(tree, ".panopticon"))   # no artifact of its own
+            with open(os.path.join(parent, "host-capabilities.json"), "w") as fh:
+                json.dump(forged, fh)
+            with _chdir(tree):
+                report = self._synth(["--target", "src", "--out", "report.json"])
+        hc = report["meta"]["host_capabilities"]
+        self.assertIsNone(hc["host"])
+        self.assertEqual({}, hc["capabilities"])
+
+
 class TestReconciliation(unittest.TestCase):
     def test_normalize_backfills_title_category(self):
         f = findings_mod.normalize_finding({"description": "First line.\nSecond", "severity": "LOW"})
