@@ -25,9 +25,9 @@ try:
 except ImportError:
     import hosts
 
-ALL_PROVEN = ("host capabilities: all measured and PROVEN -- "
+ALL_PROVEN = ("all measured and PROVEN -- "
               "every control this run relies on was verified, not assumed")
-NO_EVIDENCE = ("host capabilities: NO EVIDENCE -- nobody looked. Nothing this "
+NO_EVIDENCE = ("NO EVIDENCE -- nobody looked. Nothing this "
                "run reports about enforcement is verified (spec 5.1)")
 
 # The remedy is the whole point of the line. A capability nobody can act on
@@ -87,11 +87,12 @@ def lines(envelope):
     for capability in hosts.unproven(posture):
         row = caps.get(capability)
         row = row if isinstance(row, dict) else {}
-        by = row.get("by") or "no probe ran"
+        by = row.get("by")
+        probe_clause = ("probe %s" % by) if by else "no probe ran"
         detail = row.get("detail") or "no detail recorded"
-        out.append("%s is %s on host %r -- probe %s: %s. fix: %s"
-                   % (capability, posture[capability], host, by, detail,
-                      remedy(capability, host)))
+        out.append("%s is %s on host %r -- %s: %s. fix: %s"
+                   % (capability, posture[capability], host, probe_clause,
+                      detail, remedy(capability, host)))
     return out
 
 
@@ -111,7 +112,7 @@ def headline(envelope):
     if not gaps:
         return ALL_PROVEN
     posture = hosts.posture(host, caps)
-    return ("host capabilities: %d of %d NOT PROVEN on host %r (%s) -- this run "
+    return ("%d of %d NOT PROVEN on host %r (%s) -- this run "
             "does not verify them; see the lines below"
             % (len(gaps), len(hosts.CAPABILITIES), host,
                ", ".join(hosts.unproven(posture))))

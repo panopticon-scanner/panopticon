@@ -229,7 +229,7 @@ def _emit_posture_disclosure(envelope):
     `lines` already degrade an unreadable envelope to NO_EVIDENCE / no lines
     rather than raising, so this function does not re-validate it.
     """
-    sys.stderr.write("driver: %s\n" % host_disclosure.headline(envelope))
+    sys.stderr.write("driver: host capabilities: %s\n" % host_disclosure.headline(envelope))
     for line in host_disclosure.lines(envelope):
         sys.stderr.write("driver:   %s\n" % line)
 
