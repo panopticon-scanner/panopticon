@@ -1097,3 +1097,88 @@ class TestHostCapabilityDisclosure(unittest.TestCase):
         raw = hr.render(self._report({"host": "claude", "capabilities": caps}))
         self.assertNotIn("<script>alert(1)</script>", raw)
         self.assertIn("&lt;script&gt;", raw)
+
+
+class TestComparePostureIsPerReport(unittest.TestCase):
+    """`--compare` renders TWO reports side by side, and their postures can
+    differ -- which is exactly the cross-run diff `meta.host_capabilities` was
+    specified to enable (spec 5.1: "so a consumer can diff posture across runs
+    without re-deriving it"). A compare view that showed one posture, or none,
+    would answer the question it exists to raise.
+
+    The main report's own surface-3 block is `_render_header`'s, and `render()`
+    branches away from `_render_header` entirely on the compare path -- so the
+    posture reaches the compare view only if `_render_compare_summary` renders
+    it itself. Each panel must carry ITS OWN report's posture, not the other's
+    and not one of them twice.
+    """
+
+    @staticmethod
+    def _report(host_capabilities=_NO_KEY):
+        meta = {"target": "t", "coverage": {}}
+        if host_capabilities is not _NO_KEY:
+            meta["host_capabilities"] = host_capabilities
+        return {"meta": meta,
+                "summary": {"overall_grade": "B", "risk_level": "MEDIUM",
+                            "gate": "PASS", "coverage_certified": True},
+                "findings": [], "groups": []}
+
+    @staticmethod
+    def _envelope(**states):
+        caps = {cap: {"state": state, "by": by, "detail": detail}
+                for cap, (state, by, detail) in states.items()}
+        return {"host": "claude", "capabilities": caps}
+
+    def _rendered(self, base_caps, head_caps):
+        return html.unescape(hr.render(self._report(head_caps),
+                                       compare_report=self._report(base_caps)))
+
+    def test_each_panel_carries_its_own_report_posture(self):
+        # Deliberately DIFFERENT postures, mixed on both sides and differing on
+        # a capability that appears in both. Two identical fixtures would pass
+        # against a renderer that read one report twice -- the single most
+        # likely way to get this wrong.
+        base = self._envelope(**{
+            hosts.TOOL_POLICY_ENFORCED: (hosts.REFUTED, "shadow-shell-scan",
+                                         "base tree ships panopticon-scout.md"),
+            hosts.ARTIFACT_WRITE_GUARD: (hosts.PROVEN, "write-guard-armed",
+                                         "round-trip denied")})
+        head = self._envelope(**{
+            hosts.TOOL_POLICY_ENFORCED: (hosts.PROVEN, "shadow-shell-scan",
+                                         "no shadowing shells found"),
+            hosts.ARTIFACT_WRITE_GUARD: (hosts.REFUTED, "write-guard-armed",
+                                         "head tree left the guard unarmed")})
+        out = self._rendered(base, head)
+
+        self.assertNotEqual(host_disclosure.headline(base),
+                            host_disclosure.headline(head),
+                            "fixture is not exercising a posture DIFFERENCE")
+        for label, envelope in (("base", base), ("head", head)):
+            with self.subTest(panel=label):
+                self.assertIn(host_disclosure.headline(envelope), out)
+                for gap in host_disclosure.lines(envelope):
+                    self.assertIn(gap, out)
+
+    def test_a_posture_absent_from_one_side_reads_as_nobody_looked(self):
+        # The asymmetric case is the real one: comparing a run from this
+        # version against an older report.json that predates the artifact. The
+        # side with no posture must say NO EVIDENCE, not inherit the other's.
+        head = self._envelope(**{
+            hosts.TOOL_POLICY_ENFORCED: (hosts.REFUTED, "shadow-shell-scan",
+                                         "ships panopticon-scout.md")})
+        out = self._rendered(_NO_KEY, head)
+        self.assertIn(host_disclosure.NO_EVIDENCE, out)
+        self.assertIn(host_disclosure.headline(head), out)
+
+    def test_a_hostile_detail_is_escaped_on_the_compare_path_too(self):
+        # `detail` quotes the REVIEWED tree, and --compare is the documented
+        # way a FOREIGN report.json reaches this renderer -- so the compare
+        # path is the likelier hostile-input route of the two, not the safer.
+        caps = {hosts.TOOL_POLICY_ENFORCED: {
+            "state": hosts.REFUTED, "by": "shadow-shell-scan",
+            "detail": "<script>alert(1)</script>"}}
+        raw = hr.render(self._report({"host": "claude", "capabilities": caps}),
+                        compare_report=self._report(
+                            {"host": "claude", "capabilities": caps}))
+        self.assertNotIn("<script>alert(1)</script>", raw)
+        self.assertIn("&lt;script&gt;", raw)
