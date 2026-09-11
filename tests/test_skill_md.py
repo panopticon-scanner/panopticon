@@ -80,6 +80,16 @@ class TestSkillMd(unittest.TestCase):
         # gating is a real later decision (spec 12) and an operator reading
         # "refuted" has to know whether their build just broke.
         self.assertIn("not gating", section)
+        # `probed_at` names when the posture was ESTABLISHED and has held from
+        # -- an interval -- not when the probes last ran.
+        # driver._establish_host_posture rewrites the artifact only when
+        # `capabilities` moves, so on a resume a "when the probes ran" reading
+        # is simply false: the stamp is the first invocation's. The interval
+        # reading is the stronger claim as well as the true one, and this pins
+        # the file against quietly reverting to the weaker, false one.
+        self.assertIn("established", section)
+        self.assertIn("continuously from `probed_at`", section)
+        self.assertNotIn("`probed_at` is when the PROBES ran", section)
         # Every capability the registry measures, named -- so adding one to
         # hosts.CAPABILITIES without documenting it fails here.
         for capability in hosts.CAPABILITIES:

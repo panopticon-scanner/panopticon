@@ -88,12 +88,37 @@ class TestTheWordingRule(unittest.TestCase):
         # THE REMEDY". "No remedy recorded" is the absence of one, and the
         # consistency tests only prove the surfaces agree -- not that what they
         # agree on is a disclosure.
+        # Totality first: every capability has an ENTRY.
         self.assertEqual(sorted(hosts.CAPABILITIES),
                          sorted(host_disclosure._REMEDY))
+        # ...then that the entry is worth having. Membership alone is half a
+        # guard, and this test was shipped as that half: given the assertEqual
+        # above, `remedy()`'s "no remedy recorded" fallback can never fire, so
+        # an `assertNotIn` on it proved nothing. Measured -- set
+        # _REMEDY[READ_SCOPE_CONFINED] = "" and all 2996 tests passed while
+        # every surface rendered "... fix: " with nothing after it. A guard
+        # written to close the "assertion that cannot fail" class must not be
+        # one itself.
+        remedies = {}
         for capability in hosts.CAPABILITIES:
             with self.subTest(capability=capability):
-                self.assertNotIn("no remedy recorded",
-                                 host_disclosure.remedy(capability, "claude"))
+                text = host_disclosure.remedy(capability, "claude")
+                self.assertTrue(text.strip(), "blank remedy")
+                # Long enough to be an instruction. The shortest real one is 93
+                # characters ("nothing to do in this release: ..."), so 30 is a
+                # floor a placeholder -- "", " ", "TODO", "-", "n/a" -- cannot
+                # clear and no genuine remedy is near.
+                self.assertGreater(
+                    len(text.strip()), 30,
+                    "remedy for %s is a placeholder, not an instruction: %r"
+                    % (capability, text))
+                remedies[capability] = text.strip()
+        # Five DISTINCT strings. One remedy pasted across all five satisfies
+        # every per-capability check above while telling four of them to do the
+        # wrong thing -- and the cross-surface test would still pass, because it
+        # asks remedy() for whatever string it then looks for.
+        self.assertEqual(len(hosts.CAPABILITIES), len(set(remedies.values())),
+                         "two capabilities share a remedy: %r" % (remedies,))
 
 
 class TestTheInverseCarriesEqualWeight(unittest.TestCase):
