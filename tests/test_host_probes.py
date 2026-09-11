@@ -393,5 +393,23 @@ class TestShadowShellScan(unittest.TestCase):
     def test_a_host_with_no_project_scope_is_a_no_op(self):
         # generic declares none, so there is nothing to shadow through.
         with tempfile.TemporaryDirectory() as target:
-            state, _by, _detail = host_probes.probe_shadow_shells("generic", target)
+            state, by, detail = host_probes.probe_shadow_shells("generic", target)
             self.assertEqual(hosts.UNKNOWN, state)
+            self.assertEqual("shadow-shell-scan", by)
+            # The phrase only the early-return guard emits. Without this, the
+            # guard can be deleted and this test stays green: for a host with
+            # an empty project_scope_dirs the loop simply iterates nothing and
+            # falls through to the clean-scan branch, which also returns
+            # UNKNOWN -- a different code path reaching the same verdict.
+            self.assertIn("discovers no project-scoped agents", detail)
+
+    def test_an_unregistered_host_name_is_unknown_not_a_crash(self):
+        # The `not row` half of the guard. hosts.spec() returns None for a name
+        # the registry does not know, and a probe that raises is a third
+        # outcome the contract forbids: it must resolve to a state.
+        with tempfile.TemporaryDirectory() as target:
+            state, by, detail = host_probes.probe_shadow_shells(
+                "no-such-host", target)
+            self.assertEqual(hosts.UNKNOWN, state)
+            self.assertEqual("shadow-shell-scan", by)
+            self.assertIn("no-such-host", detail)
