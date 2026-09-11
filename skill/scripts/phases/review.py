@@ -208,7 +208,8 @@ def _cell_entry(review_root, manifest, group, domain, files, tests, host, bundle
         "tool_hits": _tool_hits_for_cell(review_root, manifest, domain, files),
         "security_checklist": _render_security_checklist(domain),
         "out_file": out_file}, host)
-    enforced = hosts.declares(host, hosts.TOOL_POLICY_ENFORCED)
+    enforced = (hosts.posture(host, runio.host_evidence(review_root))
+                [hosts.TOOL_POLICY_ENFORCED] == hosts.PROVEN)
     # run_id/group/domain restate the cell this entry IS, so a host can check a
     # findings file's own `_panopticon` stamp against the entry that asked for
     # it (group_runner.entry_is_done) instead of trusting the path alone. The

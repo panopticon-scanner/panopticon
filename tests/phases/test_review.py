@@ -5,6 +5,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from scripts import hosts
+from conftest import write_host_evidence
 import scripts.phases.runio as runio
 import scripts.phases.review as review
 
@@ -18,6 +20,11 @@ class TestCellFanOut(unittest.TestCase):
         os.makedirs(runio._pano(self.root))
         self.addCleanup(self._t.cleanup)
         self.manifest = {"run_id": "R", "security_mode": "standard", "host": "claude"}
+        # #1344 F3: review_execute's driver-plan write gates on PROVEN evidence
+        # now, not the bare claim -- prove everything claude claims so this
+        # claude-host fixture keeps exercising the enforced/guarded path it
+        # was written for.
+        write_host_evidence(self.root, {c: hosts.PROVEN for c in hosts.CAPABILITIES})
         runio._write_json(runio._pano(self.root, "groups.json"),
                            {"groups": [{"name": "Auth", "files": ["a.py"]}]})
         with open(runio._pano(self.root, "groups.yml"), "w") as fh:

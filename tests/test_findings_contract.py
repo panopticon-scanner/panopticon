@@ -19,6 +19,8 @@ import scripts.phases.review as review
 import scripts.synth.findings as findings_mod
 import scripts.synthesize as syn
 import shutil
+from conftest import write_host_evidence
+from scripts import hosts
 import scripts.phases.runio as runio
 import scripts.phases.requests as requests
 
@@ -138,6 +140,9 @@ class BoundedRedispatchTest(unittest.TestCase):
         with open(os.path.join(d, "src", "app.py"), "w") as fh:
             fh.write("x = 1\n")
         os.makedirs(os.path.join(d, ".panopticon"))
+        # #1344 F3: review_execute's driver-plan write gates on PROVEN
+        # evidence now, not the bare claim.
+        write_host_evidence(d, {c: hosts.PROVEN for c in hosts.CAPABILITIES})
         runio._write_json(runio._pano(d, "groups.json"),
                           {"groups": [{"name": "app", "files": ["src/app.py"]}]})
         with open(runio._pano(d, "groups.yml"), "w") as fh:

@@ -8,6 +8,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from scripts import hosts
+from conftest import write_host_evidence
 import scripts.phases.runio as runio
 import scripts.phases.requests as requests
 import scripts.phases.coverage as coverage
@@ -21,6 +23,11 @@ class TestCoveragePhase(unittest.TestCase):
         os.makedirs(runio._pano(self.root))
         self.addCleanup(self._t.cleanup)
         self.manifest = {"run_id": "R", "security_mode": "standard", "host": "claude"}
+        # #1344 F3: this suite exercises a "claude" host and expects the old
+        # enforced/guarded answers; that now requires PROVEN evidence, not just
+        # the claim. Prove every capability claude claims once, here, so every
+        # test in this class keeps asserting what it always meant to assert.
+        write_host_evidence(self.root, {c: hosts.PROVEN for c in hosts.CAPABILITIES})
 
     def _groups_json(self, groups):
         runio._write_json(runio._pano(self.root, "groups.json"), {"groups": groups})

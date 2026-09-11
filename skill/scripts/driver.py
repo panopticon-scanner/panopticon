@@ -27,6 +27,7 @@ import scripts.diff_map as diff_map  # noqa: E402
 import scripts.plan_contract as plan_contract  # noqa: E402
 import scripts.run_manifest as run_manifest  # noqa: E402
 from scripts import hosts  # noqa: E402
+import scripts.host_probes as host_probes  # noqa: E402
 import scripts.phases.engine as engine
 import scripts.phases.runio as runio
 import scripts.phases.coverage as coverage
@@ -211,6 +212,142 @@ def _positive_int(text):
     return value
 
 
+def _establish_host_posture(review_root, manifest, args):
+    """Probe this host now; write the evidence, or refuse if it moved.
+
+    Spec 5.2. Runs on EVERY invocation, not once per run: `driver run` is a
+    resumable loop, and setup-time-only evidence is unbounded in age -- a
+    write-guard hook uninstalled after setup would read `proven` forever.
+
+    First invocation writes `runs/<tag>/host-capabilities.json`. Every later
+    one re-probes and COMPARES. Any difference refuses the run in both
+    directions: a posture that degraded is alarming, and one that improved
+    still leaves the entries already dispatched under the weaker posture, so
+    the honest answer to both is a fresh run.
+
+    `args` is accepted and deliberately READ FOR NOTHING TREE-SHAPED. It is
+    kept as a test seam: `args.target` is the operator's own checkout, which
+    under `--pr` is emphatically not the tree being reviewed, and passing it
+    to the shadow scan is C1. The regression test hands this function a
+    `target` that DIFFERS from `review_root` and requires the refusal to fire
+    off `review_root`, which is only a test that can fail while the parameter
+    is still here to get wrong.
+
+    Returns an error message when the run must stop, else None.
+    """
+    host = manifest.get("host", "claude")
+    # THREE trees, three arguments -- see run_probes' docstring. `review_root`
+    # is the REVIEWED tree (the --pr worktree, or the git toplevel), which is
+    # what the shadow scan must read; `args.target` is the operator's own
+    # checkout and scanning it left a hostile PR's planted shell unread (C1).
+    # The session root comes from runio.session_dir, the single expression
+    # synthesize._collect_host_usage also reads, so the probe that GATES the
+    # token ledger and the collector that BUILDS it cannot drift apart (C2).
+    # session_dir is read off the MANIFEST rather than args because driver.run()
+    # assigns it there (in memory, after write_manifest) -- but it is NOT
+    # persisted, so a resume without the flag legitimately falls back to cwd.
+    # `_posture_drift` names --session-dir when that is what moved.
+    session_root = runio.session_dir(manifest)
+    # Probed directly, and ONCE (Minor 4): _shadow_refusal may not read the
+    # verdict back off the artifact's `by` field (see its docstring), and
+    # running the scan a second time inside run_probes was both duplicate work
+    # and a window in which the artifact and the refusal could disagree about
+    # the same tree.
+    shadow = host_probes.probe_shadow_shells(host, review_root)
+    fresh = host_probes.run_probes(host, review_root, session_root=session_root,
+                                   shadow=shadow)
+    # I6 / spec 5.2: evaluated on EVERY invocation, not only the first. When
+    # tool_policy_enforced is already REFUTED for an unrelated reason -- no
+    # registration directory, i.e. every machine that has not run `driver
+    # setup` -- a shadow file planted mid-run gives refuted -> refuted, no
+    # mismatch, and a refusal evaluated only under `stored is None` would never
+    # look at it again.
+    refusal = _shadow_refusal(shadow, manifest)
+    if refusal:
+        return refusal
+    path = runio._pano(review_root, runio.HOST_CAPABILITIES)
+    stored = runio._load_json(path)
+    if stored is None:
+        runio._write_json(path, fresh)
+        return None
+    was, now = host_probes.capabilities_of(stored), host_probes.capabilities_of(fresh)
+    if was != now:
+        return _posture_drift(was, now, manifest)
+    return None
+
+
+# The capabilities whose probes resolve off the SESSION root rather than the
+# reviewed tree, so a difference in either can be explained by a --session-dir
+# that was passed on one invocation and omitted on the next.
+_SESSION_DERIVED = (hosts.ARTIFACT_WRITE_GUARD, hosts.USAGE_LEDGER)
+
+
+def _posture_drift(was, now, manifest):
+    """The mid-run posture-change refusal, naming the likeliest remedy first.
+
+    I2: `session_dir` is deliberately NOT a manifest field (driver.run() sets
+    it in memory after write_manifest), so a run started with `--session-dir /s`
+    and resumed WITHOUT it re-resolves the write-guard and transcript probes
+    against cwd -- a perfectly ordinary operator slip that flips those two
+    capabilities and lands here. Telling that operator to discard the run with
+    --reset, while naming neither the flag nor the option of simply passing it
+    again, is a worse answer than the mistake. So when a session-derived
+    capability moved and this invocation carries no --session-dir, that remedy
+    goes first. Otherwise --reset stands: an improved posture still leaves
+    entries dispatched under the weaker one.
+    """
+    moved = ["%s: %s -> %s" % (name, was.get(name), now.get(name))
+             for name in sorted(set(was) | set(now))
+             if was.get(name) != now.get(name)]
+    message = ("host posture changed mid-run (%s). Entries already dispatched "
+               "were built under the previous posture, so this run's report "
+               "would disagree with itself about what was enforced."
+               % "; ".join(moved))
+    session_moved = sorted(name for name in _SESSION_DERIVED
+                           if was.get(name) != now.get(name))
+    if session_moved and not (manifest or {}).get("session_dir"):
+        return ("%s If the earlier invocation ran with --session-dir, pass the "
+                "same --session-dir again: %s resolve off the session root, "
+                "which defaults to the current directory (%s) when the flag is "
+                "absent, and the flag is deliberately not stored in the "
+                "manifest. Otherwise start a fresh run with --reset."
+                % (message, ", ".join(session_moved), os.getcwd()))
+    return "%s Start a fresh run with --reset." % message
+
+
+def _shadow_refusal(shadow, manifest):
+    """Spec 7.3: a target shipping panopticon-* agent files refuses the run.
+
+    `shadow` is `host_probes.probe_shadow_shells`'s OWN `(state, by, detail)`
+    result -- never the artifact's `capabilities[tool_policy_enforced]` row.
+    That row's `by` names whichever probe `run_probes` recorded FIRST among
+    those that reached the resolved state, so on a host whose
+    registered-shell-tools probe ALSO refutes (no registration directory at
+    all -- every machine that has not run `driver setup`), `by` would read
+    "registered-shell-tools" even though shadow-shell-scan is the one that
+    found the hostile file. Keying this refusal off `by` silently dropped the
+    shadow finding on exactly the machines a hostile target is most likely to
+    be pointed at: an unregistered first run. Deciding from the probe's own
+    result is immune to whatever else ties with it.
+
+    `--allow-unenforced` downgrades rather than silences: the run proceeds with
+    tool_policy_enforced REFUTED (resolve_state ranks refuted over proven), so
+    the report says plainly it was not enforced. Both REFUTED reasons a shadow
+    probe can return -- a shadowing file was found, or a scope directory could
+    not be read so shadowing could not be ruled out -- refuse the same way.
+    """
+    state, _by, detail = shadow
+    if state != hosts.REFUTED:
+        return None
+    if (manifest.get("flags") or {}).get("allow_unenforced"):
+        return None
+    return ("refusing to run: %s. A project-scoped agent file takes precedence "
+            "over the registered enforcement shell, so this target would be "
+            "reviewing itself with reviewers it supplied. Remove the file(s), "
+            "or re-run with --allow-unenforced to proceed with enforcement "
+            "explicitly refuted." % detail)
+
+
 def run(args, runner=subprocess.run, phases=PHASES):
     # #5.0-14: resolving the review root can fail loudly for a --pr run (gh
     # auth/network, a bad PR number, worktree acquisition) — keep it inside the
@@ -307,6 +444,13 @@ def run(args, runner=subprocess.run, phases=PHASES):
     # normal resume, but self-heals a baseline that a mid-first-run interrupt
     # left missing (which had silently disabled the clean-tree guard).
     validate.capture_tree_baseline(review_root, runner=runner)
+    # 5.2: establish this host's capability posture BEFORE any phase can build
+    # a dispatch entry, and re-establish it on every resume. Not an
+    # engine.Phase: phases are skipped once their done-predicate holds, which
+    # is exactly the resume where re-probing matters.
+    posture_error = _establish_host_posture(review_root, manifest, args)
+    if posture_error:
+        return runio._error_status(posture_error)
     try:
         result = engine.run_engine(review_root, manifest, phases)
     except runio.DriverError as exc:
