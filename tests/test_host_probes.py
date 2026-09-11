@@ -579,6 +579,7 @@ class TestRunProbesBuildsTheArtifact(unittest.TestCase):
                                          registration_dir=registration)
             row = art["capabilities"][hosts.TOOL_POLICY_ENFORCED]
             self.assertEqual(hosts.REFUTED, row["state"])
+            self.assertEqual(host_probes.SHADOW_SHELL_SCAN, row["by"])
             self.assertIn("panopticon-scout.md", row["detail"])
 
     def test_the_schema_is_stamped_and_the_host_recorded(self):
@@ -601,6 +602,111 @@ class TestRunProbesBuildsTheArtifact(unittest.TestCase):
             art = host_probes.run_probes("no-such-host", target)
             self.assertEqual({hosts.UNKNOWN},
                              {r["state"] for r in art["capabilities"].values()})
+            # `state` alone cannot tell "nothing probed this" from "a probe
+            # ran and landed on unknown" -- assert `by` too. The shadow scan
+            # runs for every host, even one the registry has never heard of,
+            # and reports that it had nowhere to look; nothing else runs.
+            self.assertEqual(
+                host_probes.SHADOW_SHELL_SCAN,
+                art["capabilities"][hosts.TOOL_POLICY_ENFORCED]["by"])
+            for capability in hosts.CAPABILITIES:
+                if capability == hosts.TOOL_POLICY_ENFORCED:
+                    continue
+                with self.subTest(capability=capability):
+                    self.assertIsNone(art["capabilities"][capability]["by"])
+
+    def test_a_known_host_that_claims_nothing_probes_to_all_unknown(self):
+        # Distinct from the unknown-host-NAME case above: "gemini" IS a real
+        # row in the registry (unlike "no-such-host"), but it claims no
+        # capabilities and maps no probes. This path -- a known host with an
+        # empty `probes` mapping -- was otherwise never exercised.
+        with tempfile.TemporaryDirectory() as target:
+            art = host_probes.run_probes("gemini", target)
+            self.assertIsNotNone(hosts.spec("gemini"))
+            self.assertEqual({hosts.UNKNOWN},
+                             {r["state"] for r in art["capabilities"].values()})
+            self.assertEqual(
+                host_probes.SHADOW_SHELL_SCAN,
+                art["capabilities"][hosts.TOOL_POLICY_ENFORCED]["by"])
+            for capability in hosts.CAPABILITIES:
+                if capability == hosts.TOOL_POLICY_ENFORCED:
+                    continue
+                with self.subTest(capability=capability):
+                    self.assertIsNone(art["capabilities"][capability]["by"])
+
+    def test_when_both_probes_refute_the_first_recorded_wins_the_tie(self):
+        # Important-2: an empty registration dir makes registered-shell-tools
+        # refute, and an unreadable scope dir makes shadow-shell-scan refute
+        # -- both at once. Both facts are true; only one detail can surface.
+        # run_probes walks the registry's `probes` mapping (which runs
+        # registered-shell-tools) BEFORE the unconditional shadow-shell-scan
+        # call, so registered-shell-tools' refutal is the one reported. This
+        # pins that order rather than leaving it to accident.
+        import getpass
+        if getpass.getuser() == "root":
+            self.skipTest("running as root, os.listdir ignores permissions")
+        with tempfile.TemporaryDirectory() as target, \
+                tempfile.TemporaryDirectory() as registration:
+            # registration dir exists but is empty -> registered-shell-tools
+            # refutes ("no shell at ..." for every driver role).
+            shadow = os.path.join(target, ".claude", "agents")
+            os.makedirs(shadow)
+            os.chmod(shadow, 0o000)
+            try:
+                art = host_probes.run_probes("claude", target,
+                                             registration_dir=registration)
+            finally:
+                os.chmod(shadow, 0o700)
+            row = art["capabilities"][hosts.TOOL_POLICY_ENFORCED]
+            self.assertEqual(hosts.REFUTED, row["state"])
+            self.assertEqual(host_probes.REGISTERED_SHELL_TOOLS, row["by"])
+            self.assertIn("no shell at", row["detail"])
+
+    def test_the_registry_mapping_drives_which_capability_a_probe_lands_on(self):
+        # Important-4: `HostSpec.probes` must DRIVE dispatch, not just gate a
+        # hard-coded capability. Every REAL row in hosts.HOSTS happens to map
+        # registered-shell-tools to tool_policy_enforced, so a hard-coded
+        # capability would pass every other test in this file. A synthetic
+        # row that maps it to usage_ledger instead is the only way to prove
+        # the mapping is load-bearing.
+        from unittest import mock
+        from scripts import dispatch
+        mismatched = "probe-mismatch"
+        row = hosts.HostSpec(
+            name=mismatched, claims=frozenset({hosts.USAGE_LEDGER}),
+            shell_format="md",
+            probes={hosts.USAGE_LEDGER: host_probes.REGISTERED_SHELL_TOOLS})
+        with mock.patch.dict(hosts.HOSTS, {mismatched: row}), \
+                tempfile.TemporaryDirectory() as target, \
+                tempfile.TemporaryDirectory() as registration:
+            for role in host_probes.DRIVER_ROLES:
+                role_file = dispatch.ROLE_FILES[role]
+                allowed = dispatch.load_template(role_file)[0]["tool_policy"]["allowed"]
+                _shell(registration,
+                       dispatch.registered_agent_filename(mismatched, role_file),
+                       allowed)
+            art = host_probes.run_probes(mismatched, target,
+                                         registration_dir=registration)
+            usage = art["capabilities"][hosts.USAGE_LEDGER]
+            self.assertEqual(hosts.PROVEN, usage["state"])
+            self.assertEqual(host_probes.REGISTERED_SHELL_TOOLS, usage["by"])
+            # And NOT under the hard-coded capability the old code used.
+            tpe = art["capabilities"][hosts.TOOL_POLICY_ENFORCED]
+            self.assertNotEqual(host_probes.REGISTERED_SHELL_TOOLS, tpe["by"])
+
+    def test_an_unrecognised_probe_id_resolves_to_unknown_with_a_reason(self):
+        from unittest import mock
+        ghost = "probe-ghost"
+        row = hosts.HostSpec(
+            name=ghost, claims=frozenset({hosts.ARTIFACT_WRITE_GUARD}),
+            probes={hosts.ARTIFACT_WRITE_GUARD: "no-such-probe"})
+        with mock.patch.dict(hosts.HOSTS, {ghost: row}), \
+                tempfile.TemporaryDirectory() as target:
+            art = host_probes.run_probes(ghost, target)
+            result = art["capabilities"][hosts.ARTIFACT_WRITE_GUARD]
+            self.assertEqual(hosts.UNKNOWN, result["state"])
+            self.assertIsNone(result["by"])
+            self.assertIn("no implementation", result["detail"])
 
 
 class TestTheEvidenceLoader(unittest.TestCase):

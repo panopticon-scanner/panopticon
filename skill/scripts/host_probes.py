@@ -344,10 +344,10 @@ def run_probes(host, target, session_root=None, home=None,
                registration_dir=None):
     """Establish this host's posture now, and return the artifact body.
 
-    Runs every probe the registry names for `host`, plus the shadow-shell scan
-    which runs for any host with project scope. Where two probes bear on one
-    capability, `hosts.resolve_state` ranks them: refuted beats proven beats
-    unknown.
+    Runs every probe the registry's `HostSpec.probes` maps for `host`, plus
+    the shadow-shell scan which runs for any host with project scope. Where
+    two probes bear on one capability, `hosts.resolve_state` ranks them:
+    refuted beats proven beats unknown.
 
     `session_root`, `home` and `registration_dir` exist for fixtures; production
     callers pass `target` and, when the operator supplied --session-dir,
@@ -359,17 +359,28 @@ def run_probes(host, target, session_root=None, home=None,
         findings.setdefault(capability, []).append(result)
 
     row = hosts.spec(host)
-    probes = (row.probes if row else None) or {}
-    if REGISTERED_SHELL_TOOLS in probes.values():
-        record(hosts.TOOL_POLICY_ENFORCED,
-               probe_registered_shell_tools(host, registration_dir))
-    if WRITE_GUARD_ARMED in probes.values():
-        record(hosts.ARTIFACT_WRITE_GUARD,
-               probe_write_guard_armed(host, session_root=session_root))
-    if TRANSCRIPT_DIR in probes.values():
-        record(hosts.USAGE_LEDGER, probe_transcript_dir(host, target, home=home))
-    # Not in `probes`: it runs for any host with project scope, claim or no
-    # claim, and it can only refute.
+    # The registry's capability -> probe-id mapping DRIVES this, rather than
+    # being consulted for membership while the capability is hard-coded here.
+    # A row that maps a probe to a different capability must record it there;
+    # otherwise `HostSpec.probes` is decorative and a mis-mapped row fails
+    # silently -- the defect this epic exists to remove.
+    runners = {
+        REGISTERED_SHELL_TOOLS:
+            lambda: probe_registered_shell_tools(host, registration_dir),
+        WRITE_GUARD_ARMED:
+            lambda: probe_write_guard_armed(host, session_root=session_root),
+        TRANSCRIPT_DIR:
+            lambda: probe_transcript_dir(host, target, home=home),
+    }
+    for capability, probe_id in ((row.probes if row else None) or {}).items():
+        runner = runners.get(probe_id)
+        if runner is None:
+            record(capability, (hosts.UNKNOWN, None,
+                                "no implementation for probe %r" % probe_id))
+            continue
+        record(capability, runner())
+    # Not in any row's `probes`: it runs for any host with project scope, claim
+    # or no claim, and it can only refute.
     record(hosts.TOOL_POLICY_ENFORCED, probe_shadow_shells(host, target))
 
     capabilities = {}
@@ -385,7 +396,13 @@ def run_probes(host, target, session_root=None, home=None,
         state = hosts.resolve_state([r[0] for r in results])
         # Report the probe that DECIDED, so `by` and `detail` always agree with
         # `state` -- naming a probe that lost the precedence would be worse
-        # than naming none.
+        # than naming none. When two results TIE on the decided state (e.g.
+        # both REFUTED), the FIRST recorded wins: for tool_policy_enforced
+        # that means a registry-mapped probe (walked above) is reported ahead
+        # of the unconditional shadow-shell-scan call that follows it. Both
+        # facts stay true in the resolved STATE either way; only which
+        # `detail` string surfaces is decided by this order, and it is
+        # pinned deliberately here rather than left to accident.
         deciding = next((r for r in results if r[0] == state), results[0])
         capabilities[capability] = _row(state, deciding[1], deciding[2])
     return {"schema_version": SCHEMA_VERSION, "host": host,
