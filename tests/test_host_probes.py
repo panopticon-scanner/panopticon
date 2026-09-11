@@ -637,11 +637,15 @@ class TestRunProbesBuildsTheArtifact(unittest.TestCase):
     def test_when_both_probes_refute_the_first_recorded_wins_the_tie(self):
         # Important-2: an empty registration dir makes registered-shell-tools
         # refute, and an unreadable scope dir makes shadow-shell-scan refute
-        # -- both at once. Both facts are true; only one detail can surface.
-        # run_probes walks the registry's `probes` mapping (which runs
-        # registered-shell-tools) BEFORE the unconditional shadow-shell-scan
-        # call, so registered-shell-tools' refutal is the one reported. This
-        # pins that order rather than leaving it to accident.
+        # -- both at once. Both facts are true, and BOTH survive into
+        # `detail` (joined) -- only `by` picks a single winner (the first
+        # recorded, i.e. registered-shell-tools, since run_probes walks the
+        # registry's `probes` mapping before the unconditional
+        # shadow-shell-scan call). Fix round 1 on #1344 F3a: reporting only
+        # the first probe's detail silently dropped the shadow-shell finding
+        # from the artifact on exactly the machines (no registered shells)
+        # where a hostile target is most likely to be reviewed -- this test
+        # must fail if that regresses.
         import getpass
         if getpass.getuser() == "root":
             self.skipTest("running as root, os.listdir ignores permissions")
@@ -660,7 +664,17 @@ class TestRunProbesBuildsTheArtifact(unittest.TestCase):
             row = art["capabilities"][hosts.TOOL_POLICY_ENFORCED]
             self.assertEqual(hosts.REFUTED, row["state"])
             self.assertEqual(host_probes.REGISTERED_SHELL_TOOLS, row["by"])
+            # The JOIN, not just the winner. Asserting only on the first
+            # probe's text passes whether or not the join exists -- and
+            # losing the join is precisely how a shadowing target went
+            # undisclosed on a machine with no registered shells (fix round
+            # 1). "shadow" appears only in shadow-shell-scan's own detail
+            # ("...so shadowing could not be ruled out"), never in
+            # registered-shell-tools' "no shell at ..." text, so this fails
+            # if the join is reverted to reporting a single winner.
             self.assertIn("no shell at", row["detail"])
+            self.assertIn("shadow", row["detail"])
+            self.assertEqual(host_probes.REGISTERED_SHELL_TOOLS, row["by"])
 
     def test_the_registry_mapping_drives_which_capability_a_probe_lands_on(self):
         # Important-4: `HostSpec.probes` must DRIVE dispatch, not just gate a
