@@ -184,3 +184,86 @@ class TestRegisteredShellToolsProbe(unittest.TestCase):
         self.assertEqual(hosts.REFUTED, state)
         self.assertEqual("registered-shell-tools", by)
         self.assertIn("no registration directory", detail)
+
+
+class TestWriteGuardArmedProbe(unittest.TestCase):
+    """#1344 F3a: proves the host CAN mediate Write, not that it is doing so
+    right now -- the guard is armed by the host during fan-out, so at run
+    start it is legitimately not registered."""
+
+    def _session_root(self, root):
+        """A session root shaped the way write_guard_hook.install() demands.
+
+        install() refuses to arm when the settings file does not already exist
+        (#1493): a missing one means the caller is in the wrong directory and
+        the guard would never be consulted. The probe must apply the same rule,
+        so the fixture must satisfy it.
+        """
+        claude = os.path.join(root, ".claude")
+        os.makedirs(claude, exist_ok=True)
+        with open(os.path.join(claude, "settings.local.json"), "w",
+                  encoding="utf-8") as fh:
+            fh.write("{}")
+        return claude
+
+    def test_a_working_guard_and_a_writable_settings_root_is_proven(self):
+        with tempfile.TemporaryDirectory() as session_root:
+            self._session_root(session_root)
+            state, by, detail = host_probes.probe_write_guard_armed(
+                "claude", session_root=session_root)
+            self.assertEqual(hosts.PROVEN, state)
+            self.assertEqual("write-guard-armed", by)
+            self.assertIn(session_root, detail)   # #1493: name the resolved path
+
+    def test_it_does_not_require_the_guard_to_be_armed_right_now(self):
+        # THE regression this probe exists to avoid. A prototype that gated on
+        # live arming returned REFUTED on a correctly configured machine,
+        # which would have made require_unenforced_ack refuse every Claude run.
+        from scripts import write_guard_hook
+        with tempfile.TemporaryDirectory() as session_root:
+            self._session_root(session_root)
+            live = write_guard_hook.guard_state(session_root=session_root)
+            self.assertFalse(live["armed"], "fixture precondition: not armed")
+            state, _by, _detail = host_probes.probe_write_guard_armed(
+                "claude", session_root=session_root)
+            self.assertEqual(hosts.PROVEN, state)
+
+    def test_a_missing_settings_file_is_refuted(self):
+        # THE #1493 fixture. install() REFUSES to arm when the settings file
+        # does not already exist, because a missing one means the caller is in
+        # the wrong directory and the guard would arm where nothing reads it.
+        # A probe that proved the capability here would prove something
+        # install() will then refuse to do.
+        with tempfile.TemporaryDirectory() as session_root:
+            os.makedirs(os.path.join(session_root, ".claude"), exist_ok=True)
+            state, _by, detail = host_probes.probe_write_guard_armed(
+                "claude", session_root=session_root)
+            self.assertEqual(hosts.REFUTED, state)
+            self.assertIn("settings.local.json", detail)
+
+    def test_an_unwritable_settings_root_is_refuted(self):
+        # THE negative fixture: the host cannot arm what it cannot write.
+        with tempfile.TemporaryDirectory() as session_root:
+            claude_dir = self._session_root(session_root)
+            os.chmod(claude_dir, 0o500)          # r-x: no writes
+            try:
+                state, _by, detail = host_probes.probe_write_guard_armed(
+                    "claude", session_root=session_root)
+            finally:
+                os.chmod(claude_dir, 0o700)      # restore so cleanup succeeds
+            self.assertEqual(hosts.REFUTED, state)
+            self.assertIn(claude_dir, detail)
+
+    def test_a_host_that_claims_no_write_guard_is_unknown(self):
+        for name in ("gemini", "generic"):
+            with self.subTest(host=name):
+                state, by, _detail = host_probes.probe_write_guard_armed(name)
+                self.assertEqual(hosts.UNKNOWN, state)
+                self.assertIsNone(by)
+
+    def test_the_probe_leaves_live_settings_untouched(self):
+        # The probe must never write to the operator's real session settings.
+        from scripts import write_guard_hook
+        before = write_guard_hook.guard_state()
+        host_probes.probe_write_guard_armed("claude")
+        self.assertEqual(before, write_guard_hook.guard_state())

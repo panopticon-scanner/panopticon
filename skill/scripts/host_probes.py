@@ -21,8 +21,9 @@ No probe may touch live state. Anything that needs to arm, install or write
 does it inside a `tempfile.TemporaryDirectory()`.
 """
 import os
+import tempfile
 
-from scripts import dispatch, hosts
+from scripts import dispatch, hosts, write_guard_hook
 
 # The roles the DRIVER dispatches and therefore needs registered shells for.
 # `advisor` is deliberately absent -- it is dispatched by the host, not the
@@ -111,3 +112,81 @@ def probe_registered_shell_tools(host, registration_dir=None):
     return (hosts.PROVEN, REGISTERED_SHELL_TOOLS,
             "%d/%d driver roles registered in %s; tools match their templates"
             % (checked, len(DRIVER_ROLES), directory))
+
+
+WRITE_GUARD_ARMED = "write-guard-armed"
+
+
+def _round_trip_denies_an_outside_write():
+    """Arm the guard in a throwaway sandbox and confirm it actually denies.
+
+    Never touches the session's real settings or allowlist: install/uninstall
+    run entirely against paths inside a TemporaryDirectory. Returns
+    (ok, detail).
+    """
+    with tempfile.TemporaryDirectory() as sandbox:
+        settings = os.path.join(sandbox, "settings.json")
+        allowlist = os.path.join(sandbox, "allowlist.json")
+        declared = os.path.join(sandbox, "findings-probe.json")
+        with open(declared, "w", encoding="utf-8") as fh:
+            fh.write("{}")
+        try:
+            write_guard_hook.install([{"out_file": declared}],
+                                     settings_path=settings,
+                                     allowlist_path=allowlist)
+            state = write_guard_hook.guard_state(settings_path=settings,
+                                                 allowlist_path=allowlist)
+            if not state["armed"]:
+                return False, "install() did not register the PreToolUse hook"
+            granted = write_guard_hook._read_allowlist(allowlist)
+            allowed, _why = write_guard_hook.decide("Write", declared, granted)
+            denied, _why = write_guard_hook.decide(
+                "Write", os.path.join(sandbox, "not-declared.json"), granted)
+            if not allowed:
+                return False, "the guard denied a write to a DECLARED out_file"
+            if denied:
+                return False, "the guard ALLOWED a write outside the allowlist"
+            write_guard_hook.uninstall(settings_path=settings,
+                                       allowlist_path=allowlist)
+        except OSError as exc:
+            return False, "sandbox round-trip could not run: %s" % exc
+    return True, "arm/deny round-trip ok"
+
+
+def probe_write_guard_armed(host, session_root=None):
+    """This host CAN mediate a reviewer's Write when it fans out.
+
+    NOT "the guard is armed right now". The host arms it during fan-out --
+    `write_guard_hook.install` writes the PreToolUse entry and `uninstall`
+    removes it -- so at run start, which is when 5.2 probes, it is legitimately
+    absent. A probe that gated on live arming was measured returning REFUTED on
+    a correctly configured machine, which would have made require_unenforced_ack
+    refuse every Claude run.
+
+    So: prove the mechanism mediates (in a sandbox), and prove the place the
+    host will arm is writable. #1493 -- a guard armed at a path nothing reads is
+    worse than no guard -- so the resolved path is named either way.
+    """
+    if not hosts.declares(host, hosts.ARTIFACT_WRITE_GUARD):
+        return (hosts.UNKNOWN, None,
+                "host %r claims no artifact write guard" % host)
+    settings_path, _allowlist_path, _defaults = write_guard_hook._resolve(
+        None, None, session_root)
+    settings_dir = os.path.dirname(os.path.abspath(settings_path)) or "."
+    if not os.path.isfile(settings_path):
+        # install()'s OWN fail-closed rule (#1493): a settings file that does
+        # not exist means the caller is in the wrong directory, so arming would
+        # write a file nothing reads. Proving the capability here would prove
+        # something install() is about to refuse.
+        return (hosts.REFUTED, WRITE_GUARD_ARMED,
+                "the host would arm its guard at %s, which does not exist -- "
+                "install() refuses that (#1493), so no Write would be mediated"
+                % os.path.abspath(settings_path))
+    if not os.access(settings_dir, os.W_OK):
+        return (hosts.REFUTED, WRITE_GUARD_ARMED,
+                "the host cannot arm its guard: %s is not writable" % settings_dir)
+    ok, detail = _round_trip_denies_an_outside_write()
+    if not ok:
+        return (hosts.REFUTED, WRITE_GUARD_ARMED, detail)
+    return (hosts.PROVEN, WRITE_GUARD_ARMED,
+            "%s; the host will arm at %s" % (detail, settings_path))
