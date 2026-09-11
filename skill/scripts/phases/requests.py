@@ -193,9 +193,9 @@ def require_unenforced_ack(review_root, manifest, entries):
 
     Returns the ack path when one was written, else None.
     """
-    if (hosts.posture(manifest.get("host", "claude"),
-                      runio.host_evidence(review_root))
-            [hosts.ARTIFACT_WRITE_GUARD] == hosts.PROVEN):
+    evidence = runio.host_evidence(review_root)
+    posture = hosts.posture(manifest.get("host", "claude"), evidence)
+    if posture[hosts.ARTIFACT_WRITE_GUARD] == hosts.PROVEN:
         return None                    # the hook mediates Write for this host
     if not entries:
         return None                    # no cells declared: no risk to accept
@@ -206,15 +206,18 @@ def require_unenforced_ack(review_root, manifest, entries):
         # all of them and the hint would go empty.
         guarded = [name for name in hosts.driver_hosts()
                    if hosts.declares(name, hosts.ARTIFACT_WRITE_GUARD)]
+        row = evidence.get(hosts.ARTIFACT_WRITE_GUARD) or {}
         raise runio.DriverError(
-            "host %r declares no artifact write guard: %s are granted Write, "
-            "and this host has no PreToolUse hook to confine that Write to the "
-            "declared out_file -- only prompt text. A write outside the "
-            "reviewed tree would also be invisible to the clean-tree check. "
-            "Re-run with --allow-unenforced to accept that explicitly (it is "
-            "recorded in %s), or use one of: %s."
-            % (manifest.get("host"), ", ".join(sorted(write_capable_roles())),
-               UNENFORCED_ACK, ", ".join("--host " + n for n in guarded)))
+            "%s is %s on host %r -- probe %s: %s. %s are granted Write, and "
+            "nothing would confine that Write to the declared out_file; a "
+            "write outside the reviewed tree is invisible to the clean-tree "
+            "check too. Re-run with --allow-unenforced to accept that "
+            "explicitly (it is recorded in %s), or use one of: %s."
+            % (hosts.ARTIFACT_WRITE_GUARD, posture[hosts.ARTIFACT_WRITE_GUARD],
+               manifest.get("host"), row.get("by") or "none ran",
+               row.get("detail") or "no evidence",
+               ", ".join(sorted(write_capable_roles())), UNENFORCED_ACK,
+               ", ".join("--host " + n for n in guarded)))
     path = runio._pano(review_root, UNENFORCED_ACK)
     if os.path.isfile(path):
         return path                    # idempotent across resumes

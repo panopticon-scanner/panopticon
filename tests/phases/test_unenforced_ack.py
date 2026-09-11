@@ -198,3 +198,46 @@ class TestResumeIsGatedToo(unittest.TestCase):
                 json.dump(ENTRIES, fh)
             with self.assertRaises(runio.DriverError):
                 requests.require_unenforced_ack(root, _manifest("generic"), ENTRIES)
+
+
+class TestTheRefusalNamesTheGap(unittest.TestCase):
+    """#1344 F3a: the message names the capability THIS gate reads, with that
+    capability's own probe and detail -- not the host, and not a different
+    capability."""
+
+    def test_it_names_the_capability_its_probe_and_the_remedy(self):
+        from scripts.phases import requests, runio
+        from scripts import hosts
+        with tempfile.TemporaryDirectory() as review_root:
+            path = runio._pano(review_root, runio.HOST_CAPABILITIES)
+            runio._write_json(path, {
+                "schema_version": 1, "host": "claude",
+                "probed_at": "2026-09-10T00:00:00Z",
+                "capabilities": {name: {
+                    "state": hosts.UNKNOWN,
+                    "by": "write-guard-armed" if name == hosts.ARTIFACT_WRITE_GUARD else None,
+                    "detail": "no PreToolUse hook covering Write"
+                              if name == hosts.ARTIFACT_WRITE_GUARD else "x"}
+                    for name in hosts.CAPABILITIES}})
+            manifest = {"host": "claude", "flags": {}}
+            with self.assertRaises(runio.DriverError) as caught:
+                requests.require_unenforced_ack(
+                    review_root, manifest, [{"id": "cell-1"}])
+            message = str(caught.exception)
+            self.assertIn(hosts.ARTIFACT_WRITE_GUARD, message)
+            self.assertIn("write-guard-armed", message)
+            self.assertIn("no PreToolUse hook covering Write", message)
+            self.assertIn("--allow-unenforced", message)
+
+    def test_it_does_not_name_the_wrong_capability(self):
+        # The spec's original example said tool_policy_enforced. This gate
+        # reads artifact_write_guard, a distinction F2 spent a docstring
+        # making; docs PR #45 corrected the spec.
+        from scripts.phases import requests, runio
+        from scripts import hosts
+        with tempfile.TemporaryDirectory() as review_root:
+            manifest = {"host": "gemini", "flags": {}}
+            with self.assertRaises(runio.DriverError) as caught:
+                requests.require_unenforced_ack(
+                    review_root, manifest, [{"id": "cell-1"}])
+            self.assertNotIn(hosts.TOOL_POLICY_ENFORCED, str(caught.exception))

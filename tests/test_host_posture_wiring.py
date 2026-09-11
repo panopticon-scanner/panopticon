@@ -245,13 +245,6 @@ class TestTheThreeCapabilitiesAreNotInterchangeable(unittest.TestCase):
         # merely stops blocking it. No manifest is written in this class, so
         # this lands at the flat top-level path, exactly where
         # `runio.host_evidence` will look for it below too.
-        # #1344 F3: every site below now reads posture(), which requires
-        # PROVEN evidence as well as the claim. An all-proven artifact makes
-        # the probe hosts' single-capability CLAIMS keep doing all the
-        # discriminating -- the whole point of this class -- while evidence
-        # merely stops blocking it. No manifest is written in this class, so
-        # this lands at the flat top-level path, exactly where
-        # `runio.host_evidence` will look for it below too.
         runio._write_json(
             runio._pano(self.root, runio.HOST_CAPABILITIES),
             {"schema_version": 1, "host": "probe", "probed_at": "2026-09-10T00:00:00Z",
