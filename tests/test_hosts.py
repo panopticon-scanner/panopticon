@@ -52,6 +52,17 @@ class TestQueries(unittest.TestCase):
     def test_driver_hosts_is_a_subset_of_known_hosts(self):
         self.assertTrue(set(hosts.driver_hosts()) <= set(hosts.known_hosts()))
 
+    def test_only_generic_is_deprecated(self):
+        # D4. gemini also claims nothing, but its shortfall is for its family
+        # PR to close -- it is not the deprecated fallback. A predicate that
+        # broadened to "claims nothing" would deprecate gemini by accident.
+        self.assertTrue(hosts.is_deprecated("generic"))
+        for host in hosts.known_hosts():
+            if host != "generic":
+                with self.subTest(host=host):
+                    self.assertFalse(hosts.is_deprecated(host))
+        self.assertFalse(hosts.is_deprecated("no-such-host"))
+
 
 class TestTodaysBehaviourIsPreserved(unittest.TestCase):
     """The whole point of F1/F2: the table must encode what the code does
