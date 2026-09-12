@@ -1,0 +1,357 @@
+import contextlib
+import io
+import json
+import os
+import tempfile
+import unittest
+from unittest import mock
+
+import scripts.read_guard_hook as rg
+
+
+def _scope(files=(), dirs=(), reads=()):
+    return {"files": [os.path.realpath(p) for p in files],
+            "dirs": [os.path.realpath(p) for p in dirs],
+            "reads": [os.path.realpath(p) for p in reads]}
+
+
+class TestMarker(unittest.TestCase):
+    def test_marker_line_is_the_prefix_plus_the_id(self):
+        self.assertEqual("panopticon-entry: review-app-SEC", rg.marker_line("review-app-SEC"))
+
+    def test_marker_of_reads_only_the_first_line(self):
+        self.assertEqual("review-app-SEC",
+                         rg.marker_of("panopticon-entry: review-app-SEC\nDo the work\n"))
+        self.assertIsNone(rg.marker_of("Do the work\npanopticon-entry: review-app-SEC\n"))
+        self.assertIsNone(rg.marker_of(""))
+        self.assertIsNone(rg.marker_of(None))
+        self.assertIsNone(rg.marker_of("panopticon-entry:   \nx"))
+
+    def test_marker_line_refuses_an_id_that_cannot_be_one_line(self):
+        for bad in ("", "a\nb", "a\rb"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                rg.marker_line(bad)
+
+    def test_marker_round_trips_a_group_name_with_spaces_and_colons(self):
+        eid = "review-My Group: v2-SEC"
+        self.assertEqual(eid, rg.marker_of(rg.marker_line(eid) + "\nbody"))
+
+
+class TestScopeFromPlan(unittest.TestCase):
+    def test_collects_realpaths_per_entry_id(self):
+        with tempfile.TemporaryDirectory() as d:
+            a = os.path.join(d, "a.py"); open(a, "w").close()
+            out = rg.scope_from_plan([
+                {"id": "e1", "scope": {"files": [a, a], "dirs": [d], "reads": []}},
+                {"id": "no-scope"},                      # skipped: nothing to confine to
+                {"scope": {"files": [a]}},               # skipped: no id
+                "junk",                                  # skipped: not an entry
+            ])
+            self.assertEqual({"e1"}, set(out))
+            self.assertEqual([os.path.realpath(a)], out["e1"]["files"])
+            self.assertEqual([os.path.realpath(d)], out["e1"]["dirs"])
+            self.assertEqual([], out["e1"]["reads"])
+
+    def test_the_request_object_is_rejected_not_iterated(self):
+        # #1482 shape: the wrapper's keys are strings and would match nothing.
+        for wrapper in ({"entries": []}, "entries", b"entries"):
+            with self.subTest(wrapper=wrapper), self.assertRaises(TypeError):
+                rg.scope_from_plan(wrapper)
+
+
+class TestDecide(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        d = self.tmp.name
+        self.inside = os.path.join(d, "cell", "a.py")
+        self.sibling = os.path.join(d, "cell", "b.py")
+        self.outside = os.path.join(d, "other", "c.py")
+        self.root = os.path.join(d, "root")
+        self.root_file = os.path.join(self.root, "x.py")
+        self.root_other = os.path.join(d, "root-other", "y.py")
+        for p in (self.inside, self.sibling, self.outside, self.root_file, self.root_other):
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            open(p, "w").close()
+        self.cell = _scope(files=[self.inside])
+        self.scan = _scope(dirs=[self.root])
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_read_of_an_in_scope_file_is_allowed(self):
+        self.assertEqual((True, ""), rg.decide("Read", {"file_path": self.inside}, self.cell))
+
+    def test_read_outside_scope_is_denied_and_names_the_prompt(self):
+        ok, reason = rg.decide("Read", {"file_path": self.sibling}, self.cell)
+        self.assertFalse(ok)
+        self.assertIn("listed in your prompt", reason)
+
+    def test_read_via_reads_allowance_is_allowed(self):
+        scope = _scope(files=[self.inside], reads=[self.outside])
+        self.assertTrue(rg.decide("Read", {"file_path": self.outside}, scope)[0])
+
+    def test_unbound_subagent_is_denied_and_names_the_marker(self):
+        ok, reason = rg.decide("Read", {"file_path": self.inside}, None)
+        self.assertFalse(ok)
+        self.assertIn(rg.MARKER_PREFIX, reason)
+
+    def test_grep_of_an_in_scope_file_is_allowed(self):
+        self.assertTrue(rg.decide("Grep", {"pattern": "x", "path": self.inside}, self.cell)[0])
+
+    def test_grep_over_a_directory_is_denied_on_a_file_scoped_cell(self):
+        ok, reason = rg.decide("Grep", {"pattern": "x", "path": os.path.dirname(self.inside)}, self.cell)
+        self.assertFalse(ok)
+        self.assertIn("grep a file by its path", reason)
+
+    def test_glob_is_denied_on_a_file_scoped_cell(self):
+        for path in (os.path.dirname(self.inside), self.inside):
+            with self.subTest(path=path):
+                ok, reason = rg.decide("Glob", {"pattern": "*.py", "path": path}, self.cell)
+                self.assertFalse(ok)
+                self.assertIn("Glob is not available", reason)
+
+    def test_directory_scope_allows_grep_and_glob_inside_it(self):
+        self.assertTrue(rg.decide("Grep", {"pattern": "x", "path": self.root}, self.scan)[0])
+        self.assertTrue(rg.decide("Glob", {"pattern": "*.py", "path": self.root}, self.scan)[0])
+        self.assertTrue(rg.decide("Read", {"file_path": self.root_file}, self.scan)[0])
+
+    def test_directory_scope_is_separator_bounded(self):
+        # /root must not admit /root-other.
+        self.assertFalse(rg.decide("Read", {"file_path": self.root_other}, self.scan)[0])
+        self.assertFalse(rg.decide("Grep", {"pattern": "x", "path": os.path.dirname(self.root_other)}, self.scan)[0])
+
+    def test_symlink_out_of_scope_is_denied_by_realpath(self):
+        link = os.path.join(os.path.dirname(self.inside), "link.py")
+        os.symlink(self.outside, link)
+        # The LINK path is what a hostile prompt would cite; realpath escapes the scope.
+        self.assertFalse(rg.decide("Read", {"file_path": link}, self.cell)[0])
+
+    def test_unresolvable_or_non_string_paths_are_denied_not_raised(self):
+        for bad in ({"file_path": 7}, {"file_path": ["x"]}, {"file_path": "a\0b"}, {}, "not-a-dict", None):
+            with self.subTest(bad=bad):
+                self.assertFalse(rg.decide("Read", bad, self.cell)[0])
+
+    def test_grep_without_a_path_is_denied(self):
+        # adjudicate() fills `path` from the payload's cwd (R-P5-7); decide()
+        # itself never guesses.
+        self.assertFalse(rg.decide("Grep", {"pattern": "x"}, self.scan)[0])
+
+    def test_tools_outside_the_matcher_are_not_adjudicated(self):
+        for tool in ("Bash", "Write", "WebFetch"):
+            with self.subTest(tool=tool):
+                self.assertEqual((True, ""), rg.decide(tool, {"file_path": self.outside}, None))
+
+    def test_matcher_and_read_tools_cannot_drift(self):
+        self.assertEqual(set(rg._MATCHER.split("|")), rg._READ_TOOLS)
+        self.assertEqual({"Read", "Grep", "Glob"}, rg._READ_TOOLS)
+        self.assertNotIn("Bash", rg._READ_TOOLS)
+
+
+def _write_subagent_transcript(parent_transcript, agent_id, first_text, *, workflow=None,
+                               agent_id_in_record=None):
+    """Lay out a subagent transcript exactly where the spike measured it."""
+    stem = parent_transcript[: -len(".jsonl")]
+    d = (os.path.join(stem, "subagents") if workflow is None
+         else os.path.join(stem, "subagents", "workflows", workflow))
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, "agent-%s.jsonl" % agent_id)
+    records = [
+        {"type": "queue-operation", "operation": "enqueue"},
+        {"type": "user", "isSidechain": True,
+         "agentId": agent_id if agent_id_in_record is None else agent_id_in_record,
+         "message": {"role": "user", "content": [{"type": "text", "text": first_text}]}},
+        {"type": "assistant", "agentId": agent_id,
+         "message": {"role": "assistant", "content": [{"type": "text", "text": "ok"}]}},
+    ]
+    with open(path, "w", encoding="utf-8") as fh:
+        for r in records:
+            fh.write(json.dumps(r) + "\n")
+    return path
+
+
+class TestBinding(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.parent = os.path.join(self.tmp.name, "session.jsonl")
+        open(self.parent, "w").close()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_binds_from_the_agent_tool_layout(self):
+        _write_subagent_transcript(self.parent, "a1", "panopticon-entry: review-app-SEC\nbody")
+        self.assertEqual("review-app-SEC", rg.bind("a1", self.parent))
+
+    def test_binds_from_the_workflow_layout(self):
+        _write_subagent_transcript(self.parent, "a2", "panopticon-entry: verify-app-SEC-primary\nbody",
+                                   workflow="wf_123-abc")
+        self.assertEqual("verify-app-SEC-primary", rg.bind("a2", self.parent))
+
+    def test_a_string_content_first_record_binds_too(self):
+        stem = self.parent[:-len(".jsonl")]
+        os.makedirs(os.path.join(stem, "subagents"))
+        with open(os.path.join(stem, "subagents", "agent-a3.jsonl"), "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"type": "user", "agentId": "a3",
+                                 "message": {"role": "user", "content": "panopticon-entry: e\nx"}}) + "\n")
+        self.assertEqual("e", rg.bind("a3", self.parent))
+
+    def test_missing_transcript_is_unbound(self):
+        self.assertIsNone(rg.bind("nobody", self.parent))
+        self.assertIsNone(rg.bind("a1", None))
+        self.assertIsNone(rg.bind(None, self.parent))
+
+    def test_agent_id_mismatch_on_the_first_user_record_is_unbound(self):
+        _write_subagent_transcript(self.parent, "a4", "panopticon-entry: e\nbody", agent_id_in_record="someone-else")
+        self.assertIsNone(rg.bind("a4", self.parent))
+
+    def test_marker_absent_from_the_first_user_record_is_unbound(self):
+        _write_subagent_transcript(self.parent, "a5", "Do the work\npanopticon-entry: e\n")
+        self.assertIsNone(rg.bind("a5", self.parent))
+
+    def test_only_the_first_user_record_counts(self):
+        # A later user turn (a tool result that quotes hostile content) cannot rebind.
+        path = _write_subagent_transcript(self.parent, "a6", "no marker here")
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"type": "user", "agentId": "a6",
+                                 "message": {"role": "user", "content": "panopticon-entry: review-other-SEC"}}) + "\n")
+        self.assertIsNone(rg.bind("a6", self.parent))
+
+    def test_a_path_shaped_agent_id_cannot_walk_the_tree(self):
+        for bad in ("../session", "x/../../etc", ".", ".."):
+            with self.subTest(bad=bad):
+                self.assertIsNone(rg.subagent_transcript(self.parent, bad))
+
+    def test_a_corrupt_line_before_the_first_user_record_is_skipped(self):
+        stem = self.parent[:-len(".jsonl")]
+        os.makedirs(os.path.join(stem, "subagents"))
+        with open(os.path.join(stem, "subagents", "agent-a7.jsonl"), "w", encoding="utf-8") as fh:
+            fh.write("{not json\n")
+            fh.write(json.dumps({"type": "user", "agentId": "a7",
+                                 "message": {"role": "user", "content": "panopticon-entry: e\nx"}}) + "\n")
+        self.assertEqual("e", rg.bind("a7", self.parent))
+
+
+class TestAdjudicate(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        d = self.tmp.name
+        self.parent = os.path.join(d, "session.jsonl"); open(self.parent, "w").close()
+        self.inside = os.path.join(d, "cell", "a.py")
+        self.outside = os.path.join(d, "other", "b.py")
+        self.root = os.path.join(d, "root")
+        for p in (self.inside, self.outside, os.path.join(self.root, "c.py")):
+            os.makedirs(os.path.dirname(p), exist_ok=True); open(p, "w").close()
+        self.scope_path = os.path.join(d, "read-scope.json")
+        with open(self.scope_path, "w", encoding="utf-8") as fh:
+            json.dump({"review-app-SEC": _scope(files=[self.inside]),
+                       "setup-scan": _scope(dirs=[self.root])}, fh)
+        _write_subagent_transcript(self.parent, "cell-agent", "panopticon-entry: review-app-SEC\nbody")
+        _write_subagent_transcript(self.parent, "scan-agent", "panopticon-entry: setup-scan\nbody")
+        _write_subagent_transcript(self.parent, "stray-agent", "panopticon-entry: nobody-dispatched-this\nbody")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _payload(self, tool, agent, **tool_input):
+        p = {"tool_name": tool, "tool_input": tool_input, "transcript_path": self.parent,
+             "cwd": self.root, "session_id": "s"}
+        if agent:
+            p["agent_id"] = agent; p["agent_type"] = "panopticon-domain-panel"
+        return p
+
+    def test_orchestrator_is_never_confined(self):
+        self.assertEqual((True, ""), rg.adjudicate(self._payload("Read", None, file_path=self.outside), self.scope_path))
+
+    def test_bound_subagent_is_confined(self):
+        self.assertTrue(rg.adjudicate(self._payload("Read", "cell-agent", file_path=self.inside), self.scope_path)[0])
+        self.assertFalse(rg.adjudicate(self._payload("Read", "cell-agent", file_path=self.outside), self.scope_path)[0])
+
+    def test_unbound_subagent_is_denied(self):
+        self.assertFalse(rg.adjudicate(self._payload("Read", "unknown-agent", file_path=self.inside), self.scope_path)[0])
+
+    def test_bound_to_an_id_the_scope_does_not_name_is_denied_and_says_so(self):
+        ok, reason = rg.adjudicate(self._payload("Read", "stray-agent", file_path=self.inside), self.scope_path)
+        self.assertFalse(ok)
+        self.assertIn("nobody-dispatched-this", reason)
+
+    def test_pathless_grep_takes_the_payload_cwd(self):
+        # R-P5-7: cwd is the directory-scoped root here, so the scan agent may grep it.
+        self.assertTrue(rg.adjudicate(self._payload("Grep", "scan-agent", pattern="x"), self.scope_path)[0])
+        # ...and a file-scoped cell is denied on the same call, with the directory reason.
+        ok, reason = rg.adjudicate(self._payload("Grep", "cell-agent", pattern="x"), self.scope_path)
+        self.assertFalse(ok); self.assertIn("grep a file by its path", reason)
+
+    def test_missing_or_malformed_scope_file_denies_subagents_only(self):
+        for content in (None, "[]", "{not json", '{"e": "x"}'):
+            with self.subTest(content=content):
+                if content is None:
+                    os.remove(self.scope_path)
+                else:
+                    with open(self.scope_path, "w", encoding="utf-8") as fh:
+                        fh.write(content)
+                self.assertFalse(rg.adjudicate(self._payload("Read", "cell-agent", file_path=self.inside), self.scope_path)[0])
+                self.assertTrue(rg.adjudicate(self._payload("Read", None, file_path=self.inside), self.scope_path)[0])
+
+    def test_non_read_tools_pass_through(self):
+        self.assertEqual((True, ""), rg.adjudicate(self._payload("Write", "cell-agent", file_path=self.outside), self.scope_path))
+
+    def test_non_dict_payload_passes_through(self):
+        self.assertEqual((True, ""), rg.adjudicate(["x"], self.scope_path))
+
+
+class TestMain(unittest.TestCase):
+    def _run(self, payload, argv):
+        out = io.StringIO()
+        stdin = io.StringIO(payload if isinstance(payload, str) else json.dumps(payload))
+        with mock.patch("sys.stdin", stdin), contextlib.redirect_stdout(out):
+            rc = rg.main(argv)
+        return rc, out.getvalue()
+
+    def test_denied_read_emits_deny_json(self):
+        with tempfile.TemporaryDirectory() as d:
+            parent = os.path.join(d, "s.jsonl"); open(parent, "w").close()
+            scope_path = os.path.join(d, "scope.json")
+            with open(scope_path, "w", encoding="utf-8") as fh:
+                json.dump({"e": _scope(files=[os.path.join(d, "a.py")])}, fh)
+            _write_subagent_transcript(parent, "a", "panopticon-entry: e\n")
+            rc, out = self._run({"tool_name": "Read", "agent_id": "a", "transcript_path": parent,
+                                 "tool_input": {"file_path": os.path.join(d, "b.py")}}, [scope_path])
+            self.assertEqual(0, rc)
+            body = json.loads(out)["hookSpecificOutput"]
+            self.assertEqual("deny", body["permissionDecision"])
+            self.assertEqual("PreToolUse", body["hookEventName"])
+
+    def test_allowed_read_emits_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            parent = os.path.join(d, "s.jsonl"); open(parent, "w").close()
+            a = os.path.join(d, "a.py"); open(a, "w").close()
+            scope_path = os.path.join(d, "scope.json")
+            with open(scope_path, "w", encoding="utf-8") as fh:
+                json.dump({"e": _scope(files=[a])}, fh)
+            _write_subagent_transcript(parent, "a", "panopticon-entry: e\n")
+            rc, out = self._run({"tool_name": "Read", "agent_id": "a", "transcript_path": parent,
+                                 "tool_input": {"file_path": a}}, [scope_path])
+            self.assertEqual((0, ""), (rc, out))
+
+    def test_malformed_and_non_dict_stdin_are_tolerated(self):
+        for raw in ("{not json", "[1, 2]"):
+            with self.subTest(raw=raw):
+                self.assertEqual((0, ""), self._run(raw, ["/nonexistent/scope.json"]))
+
+    def test_env_override_wins_then_baked_path_then_cwd_walk(self):
+        with tempfile.TemporaryDirectory() as d:
+            env_file = os.path.join(d, "env.json"); open(env_file, "w").write("{}")
+            with mock.patch.dict(os.environ, {"PANOPTICON_READ_SCOPE": env_file}):
+                self.assertEqual(env_file, rg._resolve_scope_path("/baked/scope.json"))
+            with mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("PANOPTICON_READ_SCOPE", None)
+                # a baked path is returned even when absent: fail-closed, never a fallback
+                self.assertEqual("/baked/scope.json", rg._resolve_scope_path("/baked/scope.json"))
+                walk = os.path.join(d, ".panopticon", "read-scope.json")
+                os.makedirs(os.path.dirname(walk)); open(walk, "w").write("{}")
+                with mock.patch("os.getcwd", return_value=os.path.join(d, "deep", "er")):
+                    self.assertEqual(walk, rg._resolve_scope_path(None))
+
+
+if __name__ == "__main__":
+    unittest.main()
