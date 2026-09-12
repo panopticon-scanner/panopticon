@@ -377,6 +377,11 @@ class TestTheEntryVariesWithTheHostOnlyWhereF4SaysItDoes(unittest.TestCase):
     claude evidence is the one non-mixed fixture this plan permits, because
     the subject here is the *difference* between two postures and the gemini
     side is all-unknown by construction (`{}` claims nothing).
+
+    Both hosts run in ONE review root; `requests._write_driver_plan` is
+    write-once, so `dispatch-plan-driver.json` keeps the first (claude) run's
+    entries -- nothing here reads it, and an assertion that does must run
+    gemini first.
     """
 
     _HOST_FIELDS = {"agent", "enforced", "model", "delivery"}

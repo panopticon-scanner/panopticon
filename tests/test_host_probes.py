@@ -345,6 +345,16 @@ class TestEntryModelBoundProbe(unittest.TestCase):
         self.assertEqual(host_probes.ENTRY_MODEL_BOUND, row["by"])
         self.assertIn(row["state"], (hosts.PROVEN, hosts.REFUTED))   # measured, not unknown
 
+    def test_a_freshly_emitted_registration_proves(self):
+        # The probe parses a format dispatch.emit_host_agents writes. Every
+        # other fixture here hand-writes shells; this one uses the real
+        # emitter so a change to the emitted frontmatter (quoting, indent,
+        # key order) cannot silently flip a correct machine to REFUTED.
+        with tempfile.TemporaryDirectory() as d:
+            dispatch.emit_host_agents("claude", d)
+            state, _by, _detail = host_probes.probe_entry_model_bound("claude", d)
+        self.assertEqual(hosts.PROVEN, state)
+
 
 class TestWriteGuardArmedProbe(unittest.TestCase):
     """#1344 F3a: proves the host CAN mediate Write, not that it is doing so
