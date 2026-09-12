@@ -121,7 +121,12 @@ class TestSkillMd(unittest.TestCase):
         # #1608: every return-persist entry carries the key; absence means
         # self-write. The token below exists only in the sentence this task adds.
         self.assertIn("absent means the agent self-writes", self.text)
-        self.assertNotIn("the two return-persist rounds", self.text)
+        # Markdown emphasis must not hide a stale phrase from this guard -- the
+        # retired sentence read "the two **return-persist** rounds", and a
+        # literal substring check on raw text would let `**` split it right
+        # past assertNotIn. Normalize before asserting.
+        flat = self.text.replace("**", "")
+        self.assertNotIn("the two return-persist rounds", flat)
 
     def test_documents_unloadable_verdicts_gate_enforced(self):
         # #979: un-loadable verdicts are not just surfaced — they dent the gate.
