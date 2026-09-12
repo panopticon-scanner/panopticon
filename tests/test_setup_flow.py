@@ -567,19 +567,17 @@ class TestSetupFlow(unittest.TestCase):
         self.assertFalse(checks["tools-image"][0])
         self.assertIn("image absent", checks["tools-image"][1])
 
-    def test_readiness_driver_roles_parity_guard_trips_on_drift(self):
-        # #run7 ARC-A4C: _driver_roles is a hand-maintained shadow of the active
-        # dispatch.ROLE_FILES roles. If a role is renamed/removed there, readiness
-        # must fail loudly rather than silently drop that shell from the check.
+    def test_readiness_driver_roles_are_derived_not_shadowed(self):
+        # #run7 ARC-A4C once guarded a hand-maintained shadow of
+        # dispatch.ROLE_FILES against drift with a RuntimeError. #1606 removed
+        # the shadow: _driver_roles IS host_probes.DRIVER_ROLES, which derives
+        # from ROLE_FILES, so drift cannot happen and the trip is gone. Pinned
+        # so a future "local copy" cannot quietly reintroduce the gap that
+        # left `advisor` unchecked.
         import dispatch
-        d = _repo(self)
-        shrunk = {k: v for k, v in dispatch.ROLE_FILES.items()
-                  if k != "domain_advisor"}
-        with mock.patch.object(dispatch, "ROLE_FILES", shrunk):
-            with self.assertRaises(RuntimeError):
-                setup_flow.readiness(
-                    d, host="claude",
-                    runner=lambda *a, **k: type("R", (), {"returncode": 0})())
+        from scripts import host_probes
+        self.assertIs(host_probes.DRIVER_ROLES, setup_flow._driver_roles)
+        self.assertEqual(tuple(sorted(dispatch.ROLE_FILES)), setup_flow._driver_roles)
 
     def test_ingest_missing_bundled_data_fails_no_draft(self):
         # #run7 TST-A2B: the bundled-vocabulary-missing branch (a broken install)

@@ -27,10 +27,14 @@ import tempfile
 from scripts import (collect_usage, dispatch, hosts, model_resolver,
                     run_manifest, write_guard_hook)
 
-# The roles the DRIVER dispatches and therefore needs registered shells for.
-# `advisor` is deliberately absent -- it is dispatched by the host, not the
-# driver. Protected by test_the_driver_roles_match_setup_flows.
-DRIVER_ROLES = ("scout", "domain_panel", "domain_advisor")
+# The roles the DRIVER dispatches and therefore needs registered shells for:
+# every template in dispatch.ROLE_FILES. #1606: this used to be a hand-kept
+# three-tuple that excluded `advisor` on the claim the host dispatched it, not
+# the driver -- false since the 5.1 tool-verify round, whose
+# phases/verify.py::_tool_verify_entry dispatches panopticon-advisor ENFORCED
+# on the strength of the other three shells' proof. Derived, so no role the
+# driver dispatches can be left unchecked by an edit to one tuple.
+DRIVER_ROLES = tuple(sorted(dispatch.ROLE_FILES))
 
 REGISTERED_SHELL_TOOLS = "registered-shell-tools"
 

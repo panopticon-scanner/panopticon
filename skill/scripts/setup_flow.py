@@ -66,8 +66,11 @@ _CONTENTS_FORM_RE = re.compile(r"^/?(\*\*/)?\.panopticon/\*{1,2}$")
 _CHECK_IGNORE_LINE = re.compile(r"^(.*):(\d+):(.*)$")
 
 # The roles the DRIVER dispatches and therefore needs registered shells for.
-# Kept in sync with host_probes.DRIVER_ROLES by a test in test_host_probes.py.
-_driver_roles = ("scout", "domain_panel", "domain_advisor")
+# #1606: was a hand-kept three-tuple shadowing host_probes.DRIVER_ROLES and
+# leaving `advisor` unchecked; now the same object, one source of truth
+# (dispatch.ROLE_FILES, via host_probes -- dispatch itself is imported lazily
+# below, script-style).
+_driver_roles = host_probes.DRIVER_ROLES
 
 
 def _git_blanket_pattern(repo, runner=subprocess.run):
@@ -338,14 +341,8 @@ def _check_host_shells(host, runner, repo_root=None):
                        "with a prompt-advisory tool policy" % resolved_host))
     else:
         reg_dir = dispatch._registration_dir(resolved_host, None)
-        # #run7 ARC-A4C: a hand-maintained shadow of the ACTIVE driver roles. If
-        # a role is renamed/removed in dispatch.ROLE_FILES the filter below
-        # would silently drop its shell from the readiness check. Trip loudly.
-        _unknown_roles = [r for r in _driver_roles if r not in dispatch.ROLE_FILES]
-        if _unknown_roles:
-            raise RuntimeError(
-                "setup_flow._driver_roles out of sync with dispatch.ROLE_FILES: %s"
-                % ", ".join(_unknown_roles))
+        # (#run7 ARC-A4C's out-of-sync trip is gone: _driver_roles derives from
+        # dispatch.ROLE_FILES, so it cannot name a role that does not exist.)
         missing_shells = [role for role, rf in sorted(dispatch.ROLE_FILES.items())
                           if role in _driver_roles
                           and not dispatch._is_registered(reg_dir, rf, resolved_host)]

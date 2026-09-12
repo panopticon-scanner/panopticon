@@ -56,13 +56,38 @@ class TestRegisteredShellToolsProbe(unittest.TestCase):
             _shell(directory, dispatch.registered_agent_filename("claude", role_file),
                    allowed)
 
+    def test_the_driver_roles_are_every_role_the_driver_dispatches(self):
+        # #1606: `advisor` was excluded on the claim that the host, not the
+        # driver, dispatches it. False -- phases/verify.py::_tool_verify_entry
+        # writes a driver entry with agent=panopticon-advisor whenever
+        # tool_policy_enforced is PROVEN, a proof this probe established from
+        # the OTHER three shells. Derived from ROLE_FILES so no hand-kept
+        # tuple can quietly leave a dispatched role unchecked again.
+        from scripts import dispatch
+        self.assertEqual(tuple(sorted(dispatch.ROLE_FILES)), host_probes.DRIVER_ROLES)
+        self.assertIn("advisor", host_probes.DRIVER_ROLES)
+
+    def test_a_missing_advisor_shell_is_refuted(self):
+        # The fixture #1606 is about: three perfect shells, no advisor shell.
+        # Before the fix this was PROVEN and tool-verify dispatched
+        # panopticon-advisor enforced into a shell that did not exist.
+        from scripts import dispatch
+        with tempfile.TemporaryDirectory() as d:
+            self._fully_registered(d)
+            os.remove(os.path.join(
+                d, dispatch.registered_agent_filename("claude", "advisor.md")))
+            state, _by, detail = host_probes.probe_registered_shell_tools("claude", d)
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("advisor: no shell at", detail)
+
     def test_a_complete_correct_registration_is_proven(self):
         with tempfile.TemporaryDirectory() as d:
             self._fully_registered(d)
             state, by, detail = host_probes.probe_registered_shell_tools("claude", d)
             self.assertEqual(hosts.PROVEN, state)
             self.assertEqual("registered-shell-tools", by)
-            self.assertIn("3/3", detail)
+            self.assertIn("%d/%d" % (len(host_probes.DRIVER_ROLES),
+                                     len(host_probes.DRIVER_ROLES)), detail)
 
     def test_an_empty_registration_dir_is_refuted(self):
         # THE negative fixture. This is the 7.1 case: a Claude run whose

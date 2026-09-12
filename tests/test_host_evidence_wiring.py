@@ -41,7 +41,7 @@ def _pinned_registration(directory):
     ~/.claude/agents holds.
 
     Fix-round 1: these wiring tests passed on the author's machine only
-    because it happens to have 3/3 driver-role shells registered. On a
+    because it happens to have every driver-role shell registered. On a
     machine that has never run `driver setup` (any CI runner, any fresh
     checkout), registered-shell-tools ALSO refutes (no registration
     directory), and the pre-fix `_shadow_refusal` -- which decided from the
