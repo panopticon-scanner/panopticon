@@ -117,6 +117,12 @@ class TestSkillMd(unittest.TestCase):
         self.assertIn("profile model", section)
         self.assertIn("calling session's model", section)
 
+    def test_documents_delivery_as_the_complete_return_persist_contract(self):
+        # #1608: every return-persist entry carries the key; absence means
+        # self-write. The token below exists only in the sentence this task adds.
+        self.assertIn("absent means the agent self-writes", self.text)
+        self.assertNotIn("the two return-persist rounds", self.text)
+
     def test_documents_unloadable_verdicts_gate_enforced(self):
         # #979: un-loadable verdicts are not just surfaced — they dent the gate.
         self.assertIn("meta.coverage.verdicts.unloadable", self.text)

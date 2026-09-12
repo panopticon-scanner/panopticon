@@ -44,17 +44,25 @@ def _scout_entry(review_root, manifest, group, files, host, registry_tools=None)
                 "registry — these are the only scanners that can run. Emit `[]` "
                 "if none apply; never invent a tool name:\n%s\n" % registry
               + "\nReturn the ScopeProfile JSON for this group.")
-    enforced = (hosts.posture(host, runio.host_evidence(review_root))
-                [hosts.TOOL_POLICY_ENFORCED] == hosts.PROVEN)
-    return {"id": "scout-%s" % group,
-            "agent": dispatch.registered_agent_name("scout.md") if enforced else None,
-            "enforced": enforced,
-            "model": requests.bound_model(host, "scout"),
-            "prompt": prompt,
-            "out_file": os.path.abspath(runio._pano(review_root, "scout-%s.json" % group)),
-            # raw paths, deliberately not _prompt_safe'd: a confinement primitive
-            # must match them byte-for-byte (spec 7.2); never paste them into a prompt.
-            "files": [os.path.abspath(os.path.join(review_root, f)) for f in files]}
+    host_ev = runio.host_evidence(review_root)
+    enforced = hosts.posture(host, host_ev)[hosts.TOOL_POLICY_ENFORCED] == hosts.PROVEN
+    out_file = os.path.abspath(runio._pano(review_root, "scout-%s.json" % group))
+    # #1608: return-persist by construction (scout.md grants no Write), and the
+    # entry now carries the key that says so -- one field for every entry a host
+    # must persist, the scout included. The prefix is empty for a no-Write role.
+    mode, prefix = requests.delivery(host, host_ev, "scout.md", out_file)
+    entry = {"id": "scout-%s" % group,
+             "agent": dispatch.registered_agent_name("scout.md") if enforced else None,
+             "enforced": enforced,
+             "model": requests.bound_model(host, "scout"),
+             "prompt": prefix + prompt,
+             "out_file": out_file,
+             # raw paths, deliberately not _prompt_safe'd: a confinement primitive
+             # must match them byte-for-byte (spec 7.2); never paste them into a prompt.
+             "files": [os.path.abspath(os.path.join(review_root, f)) for f in files]}
+    if mode:
+        entry["delivery"] = mode
+    return entry
 
 def coverage_done(review_root, manifest):
     # Vacuously done when discovery produced no groups (empty target); otherwise
