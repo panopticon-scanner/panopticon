@@ -109,9 +109,13 @@ class TestSkillMd(unittest.TestCase):
         self.assertNotIn("`model_binding` have no probe yet", section)
         self.assertIn("registration silently wins", section)
         # R-F4-1: the one claude behaviour change is written down where an
-        # operator will read it, not only in a plan file.
-        self.assertIn("unenforced", section)
-        self.assertIn("session", section)
+        # operator will read it, not only in a plan file. Both "unenforced"
+        # and "session" already occur elsewhere in this section (the
+        # host_disclosure mood-quote, usage_ledger's transcript-session
+        # sentence) so those tokens alone pass vacuously -- pin phrasing that
+        # only the R-F4-1 sentence itself contains.
+        self.assertIn("profile model", section)
+        self.assertIn("calling session's model", section)
 
     def test_documents_unloadable_verdicts_gate_enforced(self):
         # #979: un-loadable verdicts are not just surfaced — they dent the gate.
