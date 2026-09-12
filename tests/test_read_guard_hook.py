@@ -477,9 +477,19 @@ class TestInstallUninstall(unittest.TestCase):
         # against the REAL process cwd -- and this repo's root has that file --
         # so this test chdirs into a tempdir rather than mocking os.getcwd
         # (which would arm the guard into the repo's own real settings file).
+        #
+        # That real file is GITIGNORED (#436), so it may be ABSENT on a fresh
+        # clone or in CI -- capture "bytes, or None" rather than assuming it
+        # exists, so this test proves non-modification everywhere instead of
+        # erroring on a clean checkout.
+        def _state(path):
+            try:
+                with open(path, "rb") as fh:
+                    return fh.read()
+            except FileNotFoundError:
+                return None
         real_settings = os.path.abspath(".claude/settings.local.json")
-        with open(real_settings, "rb") as fh:
-            real_bytes = fh.read()
+        before = _state(real_settings)
         original = os.getcwd()
         with tempfile.TemporaryDirectory() as d:
             try:
@@ -491,8 +501,7 @@ class TestInstallUninstall(unittest.TestCase):
                 self.assertFalse(os.path.exists(rg.DEFAULT_SETTINGS_PATH))
             finally:
                 os.chdir(original)
-        with open(real_settings, "rb") as fh:
-            self.assertEqual(real_bytes, fh.read())
+        self.assertEqual(_state(real_settings), before)
 
     def test_session_root_resolves_both_paths_under_it(self):
         with tempfile.TemporaryDirectory() as root:
