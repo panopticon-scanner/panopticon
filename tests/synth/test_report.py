@@ -799,7 +799,7 @@ def _hc_envelope(host="claude"):
                 "detail": "no transcript directory"},
             hosts_mod.READ_SCOPE_CONFINED: {
                 "state": hosts_mod.UNKNOWN, "by": None,
-                "detail": "no read-confinement control yet"},
+                "detail": "claude proves this since plan 5; other hosts do not claim it"},
             hosts_mod.MODEL_BINDING: {
                 "state": hosts_mod.UNKNOWN, "by": None,
                 "detail": "model=None until F4 binds them"},
@@ -1959,7 +1959,7 @@ class TestHostCapabilitiesMeta(unittest.TestCase):
                                      "detail": "no transcript directory"},
             hosts_mod.READ_SCOPE_CONFINED: {"state": hosts_mod.UNKNOWN,
                                             "by": None,
-                                            "detail": "no read-confinement control yet"},
+                                            "detail": "claude proves this since plan 5; other hosts do not claim it"},
             hosts_mod.MODEL_BINDING: {"state": hosts_mod.UNKNOWN,
                                       "by": None,
                                       "detail": "model=None until F4 binds them"},

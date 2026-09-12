@@ -458,13 +458,14 @@ class TestThePostureIsEstablishedEveryInvocation(unittest.TestCase):
         # fixture is deliberately NOT mixed -- it exists to prove the
         # all-proven sentence itself renders, which a mixed fixture cannot do.
         #
-        # Fix round 1: no host in today's registry claims read_scope_confined
-        # (spec 7.2 -- nobody implements read-confinement yet), so
-        # hosts.posture()'s claim-mask forces it to UNKNOWN regardless of what
-        # the evidence says -- an artifact with every capability marked PROVEN
-        # for a REAL host ("claude") still renders the NOT-PROVEN headline,
-        # which the old `assertIn("PROVEN", ...)` could not tell apart from
-        # ALL_PROVEN ("NOT PROVEN" contains "PROVEN" as a substring). Patch in
+        # Fix round 1: the synthetic fixture pins the shape -- claude proves
+        # read_scope_confined since plan 5, other hosts do not claim it, and
+        # hosts.posture()'s claim-mask forces an unclaimed capability to
+        # UNKNOWN regardless of what the evidence says, so an artifact with
+        # every capability marked PROVEN for a REAL host that does not claim
+        # them all still renders the NOT-PROVEN headline, which the old
+        # `assertIn("PROVEN", ...)` could not tell apart from ALL_PROVEN
+        # ("NOT PROVEN" contains "PROVEN" as a substring). Patch in
         # a synthetic host that claims all five, exactly as
         # test_host_disclosure.py's TestTheInverseCarriesEqualWeight does, so
         # this fixture genuinely reaches zero gaps under the real posture()

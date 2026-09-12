@@ -7,6 +7,8 @@ import scripts.hosts as hosts
 
 # #run7 QAL-D1C: the PANOPTICON.md guide was re-opened inline in 10 places.
 _DOC_PATH = os.path.join(ROOT, os.pardir, "docs", "PANOPTICON.md")
+# #1344 plan 5 T5: shared anchor for the dispatched-role template files.
+AGENTS_DIR = os.path.join(ROOT, "agents")
 
 
 def _read_doc():
@@ -123,6 +125,22 @@ class TestSkillMd(unittest.TestCase):
         self.assertIn("test_generic_retirement_bar", section)
         self.assertIn("deprecated", section)
         self.assertIn("#1070", section)
+
+    def test_documents_the_read_guard(self):
+        # #1344 plan 5: the read guard is a host duty alongside the write
+        # guard, and read_scope_confined moves from unprobed-everywhere to
+        # proven-on-claude. Both surfaces must say so.
+        doc = _read_doc().replace("**", "")
+        fanout = doc[doc.index("Fan-out (per checkpoint)"):doc.index("A malformed self-write")]
+        self.assertIn('read_guard_hook.install(req["entries"])', fanout)
+        self.assertIn("panopticon-entry:", fanout)
+        self.assertIn('entry["marker"]', fanout)
+        self.assertIn("read_guard_hook.uninstall", fanout)
+        caps = doc[doc.index("## Host capabilities (5.2)"):doc.index("## Code layout (5.2)")]
+        self.assertIn("read-guard-armed", caps)
+        self.assertNotIn("`read_scope_confined` is `unknown` on every host today", caps)
+        self.assertNotIn("fails the deletion on `read_scope_confined` everywhere", caps)
+        self.assertIn("on gemini", caps)
 
     def test_documents_delivery_as_the_complete_return_persist_contract(self):
         # #1608: every return-persist entry carries the key; absence means
@@ -369,6 +387,20 @@ class TestReviewerScopeFence(unittest.TestCase):
         for name in ("domain-panel.md",):
             with open(os.path.join(ROOT, "agents", name), encoding="utf-8") as fh:
                 self.assertIn("Scope fence", fh.read(), name)
+
+    def test_every_confined_role_states_the_enforced_fence(self):
+        # Plan 5: the fence is host-enforced on claude (read_guard_hook); each
+        # template tells the agent so, in words the denial reason echoes.
+        roles = ("domain-panel.md", "domain-advisor.md", "scout.md", "advisor.md")
+        for name in roles:
+            with self.subTest(template=name), open(os.path.join(AGENTS_DIR, name), encoding="utf-8") as fh:
+                body = fh.read().replace("**", "")
+                self.assertIn("confined", body)
+                self.assertIn("Glob is not available", body)
+                self.assertIn("grep a file by its path", body)
+        with open(os.path.join(AGENTS_DIR, "setup-scan.md"), encoding="utf-8") as fh:
+            body = fh.read().replace("**", "")
+            self.assertIn("confined to the repository root", body)
 
 
 class TestIntegrityResidualDocs(unittest.TestCase):
