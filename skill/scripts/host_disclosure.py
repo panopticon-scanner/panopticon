@@ -34,7 +34,7 @@ NO_EVIDENCE = ("NO EVIDENCE -- nobody looked. Nothing this "
 # `driver run` / `driver setup` under --host generic. It is a notice, not a
 # gate (spec 10): the run proceeds, ack-gated and disclosed exactly as before.
 GENERIC_DEPRECATION = (
-    "NOTICE: --host generic is deprecated -- it claims no capability, so every "
+    "driver: NOTICE: --host generic is deprecated -- it claims no capability, so every "
     "dispatch under it is unenforced. It is removed once every remaining host "
     "clears the retirement bar (spec 8.1, test_generic_retirement_bar).")
 

@@ -259,6 +259,11 @@ def _establish_host_posture(review_root, manifest, args):
     off `review_root`, which is only a test that can fail while the parameter
     is still here to get wrong.
 
+    Also prints the `--host generic` deprecation notice (spec D4) when the
+    resolved host is deprecated -- this is the one place the manifest's host
+    is resolved before any phase dispatches, so it is the only call site that
+    can print it once per invocation regardless of entrypoint or resume state.
+
     Returns an error message when the run must stop, else None.
     """
     host = manifest.get("host", "claude")

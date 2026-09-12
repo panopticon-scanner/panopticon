@@ -327,11 +327,22 @@ def probe_write_guard_armed(host, session_root=None):
 
 TRANSCRIPT_DIR = "transcript-dir"
 
-# Every probe id run_probes can run. The retirement bar
-# (tests/test_generic_retirement_bar.py) reads this as "the shipped probes"
-# (spec 8.1), so it must not drift from the runner table: run_probes refuses
-# to build a table that disagrees with it.
+# Every probe id a registry row may map to and get a runner for; the
+# shadow-shell scan runs unconditionally and is not a mappable probe. The
+# retirement bar (tests/test_generic_retirement_bar.py) reads this as "the
+# shipped probes" (spec 8.1), so it must not drift from the runner table:
+# run_probes refuses to build a table that disagrees with it.
 PROBE_IDS = (REGISTERED_SHELL_TOOLS, WRITE_GUARD_ARMED, TRANSCRIPT_DIR, ENTRY_MODEL_BOUND)
+
+# Which capability each shipped probe MEASURES. The retirement bar reads this
+# so a row cannot satisfy spec 8.1 by mapping a security capability to a
+# shipped probe that proves something else (READ_SCOPE_CONFINED ->
+# "registered-shell-tools" would otherwise pass both the bar and, because
+# run_probes is row-driven, the live posture).
+PROBE_CAPABILITY = {REGISTERED_SHELL_TOOLS: hosts.TOOL_POLICY_ENFORCED,
+                    WRITE_GUARD_ARMED: hosts.ARTIFACT_WRITE_GUARD,
+                    TRANSCRIPT_DIR: hosts.USAGE_LEDGER,
+                    ENTRY_MODEL_BOUND: hosts.MODEL_BINDING}
 
 
 def probe_transcript_dir(host, session_dir, home=None):

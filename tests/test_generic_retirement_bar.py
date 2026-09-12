@@ -18,6 +18,8 @@ proves that once; the per-host shortfall is then the two security
 capabilities. model_binding and usage_ledger are excluded by D5.
 """
 import dataclasses
+import glob
+import os
 import unittest
 from unittest import mock
 
@@ -30,7 +32,7 @@ DEPRECATED = "generic"
 
 def _statically_proven(row, capability):
     return (capability in row.claims
-            and row.probes.get(capability) in host_probes.PROBE_IDS)
+            and host_probes.PROBE_CAPABILITY.get(row.probes.get(capability)) == capability)
 
 
 def retirement_shortfalls():
@@ -95,15 +97,34 @@ class TestGenericRetirementBar(unittest.TestCase):
             self.assertEqual([hosts.READ_SCOPE_CONFINED],
                              retirement_shortfalls()["claimant"])
 
+    def test_a_mismapped_probe_fails_the_bar(self):
+        # Item 1: a row cannot satisfy spec 8.1 by mapping a security
+        # capability to a shipped probe that measures something else. Both
+        # capabilities claim the SAME probe id here -- tool_policy_enforced
+        # correctly (registered-shell-tools is what it measures) and
+        # read_scope_confined incorrectly (registered-shell-tools does not
+        # measure it) -- so only the mismapped one falls into the shortfall.
+        claimed = dataclasses.replace(
+            hosts.spec("gemini"), name="claimant",
+            claims=frozenset({hosts.TOOL_POLICY_ENFORCED, hosts.READ_SCOPE_CONFINED}),
+            probes={hosts.TOOL_POLICY_ENFORCED: host_probes.REGISTERED_SHELL_TOOLS,
+                    hosts.READ_SCOPE_CONFINED: host_probes.REGISTERED_SHELL_TOOLS})
+        with mock.patch.dict(hosts.HOSTS, {"claimant": claimed}):
+            self.assertEqual([hosts.READ_SCOPE_CONFINED],
+                             retirement_shortfalls()["claimant"])
+
     def test_the_write_guard_clause_is_bridged_by_construction(self):
         # R-F5-2. Under an all-unknown posture (no evidence), every role file --
         # the four in ROLE_FILES and setup-scan -- resolves to return_json on
         # every driver host, so no host can reach a self-write it has not
         # proven it can guard. This is what makes "explicitly bridged" a
         # property of the shared layer rather than a per-row claim.
-        role_files = sorted(set(dispatch.ROLE_FILES.values()) | {"setup-scan.md"})
+        role_files = sorted(os.path.basename(p)
+                            for p in glob.glob(os.path.join(dispatch.TEMPLATE_DIR, "*.md")))
         self.assertTrue(role_files)
-        for host in hosts.driver_hosts():
+        driver = hosts.driver_hosts()
+        self.assertTrue(driver)
+        for host in driver:
             for role_file in role_files:
                 with self.subTest(host=host, role_file=role_file):
                     mode, _prefix = requests.delivery(host, {}, role_file, "/abs/out.json")

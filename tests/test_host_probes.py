@@ -409,6 +409,21 @@ class TestEntryModelBoundProbe(unittest.TestCase):
                 with self.subTest(host=row.name, capability=capability):
                     self.assertIn(probe_id, host_probes.PROBE_IDS)
 
+    def test_every_registry_mapping_names_the_probe_that_measures_it(self):
+        # Item 1: `in PROBE_IDS` alone lets a row map a capability to a
+        # shipped probe that proves something ELSE (the retirement bar's
+        # gap this closes). Every registry (capability, probe_id) pair must
+        # also satisfy PROBE_CAPABILITY[probe_id] == capability.
+        rows = [row for row in hosts.HOSTS.values() if row.probes]
+        self.assertTrue(rows)                                    # guards the guard
+        for row in rows:
+            for capability, probe_id in row.probes.items():
+                with self.subTest(host=row.name, capability=capability):
+                    self.assertEqual(capability, host_probes.PROBE_CAPABILITY[probe_id])
+
+    def test_probe_capability_covers_exactly_the_shipped_probes(self):
+        self.assertEqual(set(host_probes.PROBE_CAPABILITY), set(host_probes.PROBE_IDS))
+
 
 class TestWriteGuardArmedProbe(unittest.TestCase):
     """#1344 F3a: proves the host CAN mediate Write, not that it is doing so
