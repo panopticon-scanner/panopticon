@@ -351,8 +351,10 @@ def _establish_host_posture(review_root, manifest, args):
 
 # The capabilities whose probes resolve off the SESSION root rather than the
 # reviewed tree, so a difference in either can be explained by a --session-dir
-# that was passed on one invocation and omitted on the next.
-_SESSION_DERIVED = (hosts.ARTIFACT_WRITE_GUARD, hosts.USAGE_LEDGER)
+# that was passed on one invocation and omitted on the next. read_scope_confined
+# joins the other two here because host_probes.probe_read_guard_armed resolves
+# off session_root exactly like probe_write_guard_armed does (I3).
+_SESSION_DERIVED = (hosts.ARTIFACT_WRITE_GUARD, hosts.USAGE_LEDGER, hosts.READ_SCOPE_CONFINED)
 
 
 def _posture_drift(was, now, manifest):
