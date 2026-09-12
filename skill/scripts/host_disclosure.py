@@ -30,6 +30,14 @@ ALL_PROVEN = ("all measured and PROVEN -- "
 NO_EVIDENCE = ("NO EVIDENCE -- nobody looked. Nothing this "
                "run reports about enforcement is verified (spec 5.1)")
 
+# Spec D4: "deprecate now, remove when the families land". Printed once per
+# `driver run` / `driver setup` under --host generic. It is a notice, not a
+# gate (spec 10): the run proceeds, ack-gated and disclosed exactly as before.
+GENERIC_DEPRECATION = (
+    "driver: NOTICE: --host generic is deprecated -- it claims no capability, so every "
+    "dispatch under it is unenforced. It is removed once every remaining host "
+    "clears the retirement bar (spec 8.1, test_generic_retirement_bar).")
+
 # The remedy is the whole point of the line. A capability nobody can act on
 # gets an honest "there is nothing to do yet" rather than an invented command.
 _REMEDY = {

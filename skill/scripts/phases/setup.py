@@ -3,6 +3,8 @@ import os
 import subprocess
 import sys
 
+from scripts import hosts
+import scripts.host_disclosure as host_disclosure
 import scripts.run_manifest as run_manifest
 import scripts.setup_flow as setup_flow
 from . import engine
@@ -22,26 +24,34 @@ def _read_text(path):
     with open(path, encoding="utf-8") as fh:
         return fh.read()
 
-def _setup_scan_entry(review_root, prompt):
+def _setup_scan_entry(review_root, prompt, host):
     """One return-persist dispatch entry for the read-only setup-scan agent
     (mirrors _scout_entry): the host dispatches it, gets proposal JSON back, and
-    persists it to out_file.
+    persists it to out_file. #1608: the entry carries `delivery` saying so.
 
     Unlike scout/panel/advisor roles, setup-scan is NEVER enforced: it is not in
     dispatch.ROLE_FILES, so no `panopticon-setup-scan` shell is ever registered
-    for any host — dispatching it as "enforced" would ask the host to invoke a
+    for any host -- dispatching it as "enforced" would ask the host to invoke a
     subagent that doesn't exist. It is read-only + return-persist by template
     tool_policy (Read/Grep/Glob only), so a plain general-purpose dispatch is
     sufficient and safe.
     """
-    return {"id": "setup-scan",
-            "agent": None,
-            "enforced": False,
-            # R-F4-2: deliberately unbound -- no ROLE_FILES entry, no profile;
-            # see test_setup_scan_is_deliberately_not_model_bound.
-            "model": None,
-            "prompt": prompt,
-            "out_file": os.path.abspath(runio._pano(review_root, "setup-proposal.json"))}
+    out_file = os.path.abspath(runio._pano(review_root, "setup-proposal.json"))
+    # No run exists at setup time, so there is no evidence artifact; {} is the
+    # all-unknown posture. setup-scan.md grants no Write, so delivery() answers
+    # before it ever consults the posture -- return_json, empty prefix.
+    mode, prefix = requests.delivery(host, {}, "setup-scan.md", out_file)
+    entry = {"id": "setup-scan",
+             "agent": None,
+             "enforced": False,
+             # R-F4-2: deliberately unbound -- no ROLE_FILES entry, no profile;
+             # see test_setup_scan_is_deliberately_not_model_bound.
+             "model": None,
+             "prompt": prefix + prompt,
+             "out_file": out_file}
+    if mode:
+        entry["delivery"] = mode
+    return entry
 
 def scan_done(review_root, manifest):
     return (runio._json_parses(runio._pano(review_root, "setup-proposal.json"))
@@ -63,7 +73,7 @@ def scan_execute(review_root, manifest):
     setup_flow.write_spine(review_root, spine)
     layers, _ = setup_flow.load_bundled_layers()
     brief_path = setup_flow.render_scan_brief(review_root, vocab, layers=layers, spine=spine)
-    entry = _setup_scan_entry(review_root, _read_text(brief_path))
+    entry = _setup_scan_entry(review_root, _read_text(brief_path), host)
     # #1507: setup's own namespace -- never the per-run resolver, which routed
     # this into whatever runs/latest pointed at and clobbered that run's request.
     req = requests.write_dispatch_request(review_root, manifest["run_id"], "scan",
@@ -206,6 +216,15 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES):
                                       or overrides["max_per_group"]),
                     "max_groups": getattr(args, "max_groups", None) or overrides["max_groups"]}
         runio._write_json(_setup_manifest_path(review_root), manifest)
+    host = manifest.get("host", runio._DEFAULTS["host"])
+    if hosts.is_deprecated(host):
+        # D4, mirroring driver.run()'s _establish_host_posture: printed from
+        # the RESOLVED host (the manifest, whether just minted from args.host
+        # or loaded from a prior invocation), once per `driver setup` call,
+        # before either setup phase runs. `hosts.is_deprecated` (not a bare
+        # `host == "generic"`) because tests/test_host_posture_wiring.py's
+        # AST guard forbids phases/ deciding anything from a host's NAME.
+        print(host_disclosure.GENERIC_DEPRECATION, file=sys.stderr)
     try:
         result = engine.run_engine(review_root, manifest, phases)
     except runio.DriverError as exc:

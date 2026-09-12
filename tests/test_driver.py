@@ -28,6 +28,7 @@ from conftest import write_host_evidence
 import scripts.driver as driver
 import scripts.diff_map as diff_map
 import scripts.groups_schema as groups_schema
+import scripts.host_disclosure as host_disclosure
 import scripts.plan_contract as plan_contract
 import scripts.run_manifest as run_manifest
 from scripts import hosts
@@ -260,6 +261,34 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
             rc = driver.main(["run", d])
         self.assertEqual(rc, 0)
         self.assertEqual(json.loads(buf.getvalue())["status"], "checkpoint")
+
+    def test_host_generic_prints_the_deprecation_once(self):
+        # D4: this fixture's first checkpoint is `scout`, which carries no
+        # write-capable role, so the unenforced-ack gate (review-only) never
+        # fires and --allow-unenforced is not needed to reach it.
+        d = self._repo()
+        err, out = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stderr(err), mock.patch("sys.stdout", out):
+            driver.main(["run", d, "--host", "generic"])
+        self.assertEqual(1, err.getvalue().count(host_disclosure.GENERIC_DEPRECATION))
+
+    def test_a_resumed_generic_run_prints_it_again_without_the_flag(self):
+        # Resume path: --host is absent and the manifest is authoritative. The
+        # notice comes from the RESOLVED host, not from argv.
+        d = self._repo()
+        err, out = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stderr(io.StringIO()), mock.patch("sys.stdout", out):
+            driver.main(["run", d, "--host", "generic"])
+        with contextlib.redirect_stderr(err), mock.patch("sys.stdout", out):
+            driver.main(["run", d])
+        self.assertEqual(1, err.getvalue().count(host_disclosure.GENERIC_DEPRECATION))
+
+    def test_host_claude_prints_no_deprecation(self):
+        d = self._repo()
+        err, out = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stderr(err), mock.patch("sys.stdout", out):
+            driver.main(["run", d])
+        self.assertNotIn(host_disclosure.GENERIC_DEPRECATION, err.getvalue())
 
     def test_pr_acquires_worktree_and_records_manifest(self):
         # C1 flip: driver --pr now acquires the deterministic PR worktree via

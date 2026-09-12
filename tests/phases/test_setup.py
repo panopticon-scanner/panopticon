@@ -50,6 +50,19 @@ class TestDriverSetup(unittest.TestCase):
         self.assertEqual(entry["id"], "setup-scan")
         self.assertTrue(entry["out_file"].endswith("setup-proposal.json"))
         self.assertTrue(os.path.isfile(runio._pano(d, "setup-scan-brief.md")))
+        self.assertEqual("return_json", entry["delivery"])
+
+    def test_setup_host_generic_prints_the_deprecation_once(self):
+        # D4: run_setup_flow resolves `host` itself (a manifest field it pins
+        # at creation, not driver.py's run() path), so the notice is printed
+        # here rather than from driver.py. Pin the count, not presence: a
+        # single `driver setup` invocation must not repeat it per phase.
+        d = self._repo()
+        args = driver.build_parser().parse_args(["setup", d, "--host", "generic"])
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            setup.run_setup_flow(args)
+        self.assertEqual(1, err.getvalue().count(host_disclosure.GENERIC_DEPRECATION))
 
     def test_setup_scan_is_deliberately_not_model_bound(self):
         # R-F4-2. setup-scan has no role in dispatch.ROLE_FILES and no profile
@@ -60,9 +73,28 @@ class TestDriverSetup(unittest.TestCase):
         d = self._repo()
         with mock.patch.object(model_resolver, "resolve_model",
                                return_value={"model": "SENTINEL"}) as rm:
-            entry = setup._setup_scan_entry(d, "PROMPT")
+            entry = setup._setup_scan_entry(d, "PROMPT", "claude")
         self.assertIsNone(entry["model"])
         rm.assert_not_called()
+
+    def test_setup_scan_entry_is_return_persist_and_says_so(self):
+        # #1608. Its docstring always said "return-persist"; now the entry does.
+        d = self._repo()
+        with mock.patch.object(requests, "delivery",
+                               return_value=("SENTINEL-MODE", "")) as dl:
+            entry = setup._setup_scan_entry(d, "PROMPT", "claude")
+        self.assertEqual("SENTINEL-MODE", entry["delivery"])
+        self.assertFalse(entry["enforced"])       # unchanged: no shell exists for it
+        self.assertIsNone(entry["model"])         # unchanged: R-F4-2
+        (host, _evidence, role_file, out_file), _kw = dl.call_args
+        self.assertEqual(("claude", "setup-scan.md", entry["out_file"]),
+                         (host, role_file, out_file))
+
+    def test_setup_scan_entry_unpatched_is_return_json_with_no_preamble(self):
+        d = self._repo()
+        entry = setup._setup_scan_entry(d, "PROMPT", "claude")
+        self.assertEqual("return_json", entry["delivery"])
+        self.assertEqual("PROMPT", entry["prompt"])
 
     def test_scan_leaves_blanket_gitignore_and_notes_forced_add(self):
         # #1135: a repo already blanket-ignoring .panopticon/ keeps its

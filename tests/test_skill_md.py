@@ -117,6 +117,24 @@ class TestSkillMd(unittest.TestCase):
         self.assertIn("profile model", section)
         self.assertIn("calling session's model", section)
 
+    def test_documents_the_retirement_bar_and_the_generic_deprecation(self):
+        section = _section(self.text, "## Host capabilities (5.2)", "\n## ")
+        # Tokens that exist only in the sentences this task adds.
+        self.assertIn("test_generic_retirement_bar", section)
+        self.assertIn("deprecated", section)
+        self.assertIn("#1070", section)
+
+    def test_documents_delivery_as_the_complete_return_persist_contract(self):
+        # #1608: every return-persist entry carries the key; absence means
+        # self-write. The token below exists only in the sentence this task adds.
+        self.assertIn("absent means the agent self-writes", self.text)
+        # Markdown emphasis must not hide a stale phrase from this guard -- the
+        # retired sentence read "the two **return-persist** rounds", and a
+        # literal substring check on raw text would let `**` split it right
+        # past assertNotIn. Normalize before asserting.
+        flat = self.text.replace("**", "")
+        self.assertNotIn("the two return-persist rounds", flat)
+
     def test_documents_unloadable_verdicts_gate_enforced(self):
         # #979: un-loadable verdicts are not just surfaced — they dent the gate.
         self.assertIn("meta.coverage.verdicts.unloadable", self.text)

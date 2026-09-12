@@ -259,9 +259,20 @@ def _establish_host_posture(review_root, manifest, args):
     off `review_root`, which is only a test that can fail while the parameter
     is still here to get wrong.
 
+    Also prints the `--host generic` deprecation notice (spec D4) when the
+    resolved host is deprecated -- this is the one place the manifest's host
+    is resolved before any phase dispatches, so it is the only call site that
+    can print it once per invocation regardless of entrypoint or resume state.
+
     Returns an error message when the run must stop, else None.
     """
     host = manifest.get("host", "claude")
+    if hosts.is_deprecated(host):
+        # D4: printed from the RESOLVED host, not from argv, so a resumed run
+        # (--host absent, the manifest authoritative) prints it too. Every
+        # invocation reaches here before any phase dispatches (spec 10: a
+        # notice, not a gate -- nothing about the run below this line changes).
+        print(host_disclosure.GENERIC_DEPRECATION, file=sys.stderr)
     # THREE trees, three arguments -- see run_probes' docstring. `review_root`
     # is the REVIEWED tree (the --pr worktree, or the git toplevel), which is
     # what the shadow scan must read; `args.target` is the operator's own

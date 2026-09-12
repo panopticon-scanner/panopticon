@@ -54,7 +54,28 @@ class TestCoveragePhase(unittest.TestCase):
         self.assertTrue(entry["out_file"].endswith("scout-Auth.json"))
         self.assertEqual(entry["out_file"], os.path.abspath(entry["out_file"]))
         self.assertTrue(entry["enforced"])              # claude host
-        self.assertNotIn("delivery", entry)             # host-agnostic
+        # #1608: return-persist by construction, and the entry now SAYS so --
+        # an adapter keys on one field for every entry it must persist.
+        self.assertEqual("return_json", entry["delivery"])
+        self.assertNotIn("DELIVERY: return-persist", entry["prompt"])   # no Write, no preamble
+
+    def test_scout_entry_derives_delivery_through_the_helper(self):
+        # Sentinel: a builder that hard-codes "return_json" passes the literal
+        # assertion above and is still not derived. Patch the helper.
+        self._groups_json([{"name": "Auth", "files": ["a.py"]}])
+        self._groups_yml("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n")
+        with mock.patch("scripts.dispatch.render_prompt", return_value="SCOUT-BODY"), \
+             mock.patch("scripts.dispatch.registered_agent_name",
+                        return_value="panopticon-scout"), \
+             mock.patch.object(requests, "delivery",
+                               return_value=("SENTINEL-MODE", "SENTINEL-PREFIX ")) as dl:
+            coverage.coverage_execute(self.root, self.manifest)
+        entry = runio._load_json(runio._pano(self.root, "dispatch-request.json"))["entries"][0]
+        self.assertEqual("SENTINEL-MODE", entry["delivery"])
+        self.assertTrue(entry["prompt"].startswith("SENTINEL-PREFIX "))
+        (host, _evidence, role_file, out_file), _kw = dl.call_args
+        self.assertEqual((self.manifest.get("host", "claude"), "scout.md", entry["out_file"]),
+                         (host, role_file, out_file))
 
     def test_scout_entry_binds_the_resolved_model(self):
         # #1344 F4 (b). Sentinel, not a literal: a builder that hard-coded the
