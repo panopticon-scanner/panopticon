@@ -392,6 +392,7 @@ class TestReviewerScopeFence(unittest.TestCase):
         # Plan 5: the fence is host-enforced on claude (read_guard_hook); each
         # template tells the agent so, in words the denial reason echoes.
         roles = ("domain-panel.md", "domain-advisor.md", "scout.md", "advisor.md")
+        self.assertTrue(roles, "a fence check over zero roles proves nothing")
         for name in roles:
             with self.subTest(template=name), open(os.path.join(AGENTS_DIR, name), encoding="utf-8") as fh:
                 body = fh.read().replace("**", "")
