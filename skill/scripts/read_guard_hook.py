@@ -49,8 +49,13 @@ SCOPE_KEYS = ("files", "dirs", "reads")
 def marker_line(entry_id):
     """Line 1 of an entry's prompt, WITHOUT its newline (the builder adds it).
 
-    Any single-line id round-trips -- group names may carry spaces or colons
-    -- so the only thing refused is an id that cannot be one line."""
+    Entry ids are DRIVER-GENERATED, never user input, and already constrained
+    to `^[A-Za-z0-9._:-]+$` in practice (design spec 4.4; groups_schema's
+    `_GROUP_NAME_RE` forbids both spaces and colons in a group name, so no
+    real id ever carries either) -- but this function does not enforce that
+    grammar. It is permissive BY DESIGN: any single-line id round-trips, and
+    the only thing refused is an id that cannot be one line, so a future id
+    shape needs no change here to keep working."""
     entry_id = "" if entry_id is None else str(entry_id)
     if not entry_id or "\n" in entry_id or "\r" in entry_id:
         raise ValueError("entry id must be a non-empty single line: %r" % entry_id)

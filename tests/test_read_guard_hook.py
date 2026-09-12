@@ -2,10 +2,18 @@ import contextlib
 import io
 import json
 import os
+import re
 import tempfile
 import unittest
 from unittest import mock
 
+from conftest import write_host_evidence
+from scripts import hosts
+import scripts.ocrdb as ocrdb
+import scripts.phases.coverage as coverage
+import scripts.phases.review as review
+import scripts.phases.setup as setup
+import scripts.phases.verify as verify_phase
 import scripts.read_guard_hook as rg
 
 
@@ -32,9 +40,19 @@ class TestMarker(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 rg.marker_line(bad)
 
-    def test_marker_round_trips_a_group_name_with_spaces_and_colons(self):
-        eid = "review-My Group: v2-SEC"
-        self.assertEqual(eid, rg.marker_of(rg.marker_line(eid) + "\nbody"))
+    def test_marker_round_trips_any_driver_generated_id(self):
+        # marker_line is permissive BY DESIGN, not because a real driver id
+        # ever needs it: every id the driver actually generates already
+        # matches `^[A-Za-z0-9._:-]+$` (groups_schema._GROUP_NAME_RE forbids
+        # spaces/colons in a group name), pinned separately by
+        # test_entry_ids_match_the_spec_id_grammar below. This proves the
+        # MECHANISM round-trips any single-line id, realistic shapes and an
+        # adversarial one alike -- so a future id shape needs no change here.
+        for eid in ("review-Auth-SEC", "verify-app-SEC-primary-part2",
+                   "verify-tool-q1", "scout-Auth", "setup-scan",
+                   "review-My Group: v2-SEC"):
+            with self.subTest(eid=eid):
+                self.assertEqual(eid, rg.marker_of(rg.marker_line(eid) + "\nbody"))
 
 
 class TestScopeFromPlan(unittest.TestCase):
@@ -614,6 +632,49 @@ class TestInstallUninstall(unittest.TestCase):
     def test_hook_cmd_is_absolute_and_quoted(self):
         self.assertTrue(rg._HOOK_CMD.startswith('python3 "/'))
         self.assertIn(os.path.abspath(rg.__file__), rg._HOOK_CMD)
+
+
+class TestEntryIdsMatchTheSpecIdGrammar(unittest.TestCase):
+    """M3 / design spec 4.4: "a test pins that every id matches
+    `^[A-Za-z0-9._:-]+$`". marker_line() itself is deliberately more
+    permissive than this (test_marker_round_trips_any_driver_generated_id
+    above) -- this test pins the OTHER half: every id a real builder actually
+    produces stays inside that grammar, one entry of each kind."""
+
+    _ID_RE = re.compile(r"^[A-Za-z0-9._:-]+$")
+
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self._t.name)
+        os.makedirs(os.path.join(self.root, ".panopticon"))
+        self.addCleanup(self._t.cleanup)
+        write_host_evidence(self.root, {c: hosts.PROVEN for c in hosts.CAPABILITIES})
+        self.manifest = {"run_id": "R", "security_mode": "standard", "host": "claude"}
+        self.files = ["a.py"]
+        self.bundle = ocrdb.load_bundle()
+        self.cell = [{"id": "F1", "code": "SEC-A1A", "severity": "HIGH", "title": "t",
+                      "category": "SEC", "location": {"file": "a.py", "line": 1},
+                      "description": "d"}]
+
+    def test_entry_ids_match_the_spec_id_grammar(self):
+        entries = {
+            "scout": coverage._scout_entry(
+                self.root, self.manifest, "Auth", self.files, "claude"),
+            "cell": review._cell_entry(
+                self.root, self.manifest, "Auth", "SEC", self.files, [], "claude", self.bundle),
+            "verify": verify_phase._verify_entry(
+                self.root, self.manifest, "Auth", "SEC", self.files, self.cell, "claude",
+                self.bundle, "primary"),
+            "tool-verify": verify_phase._tool_verify_entry(
+                self.root, self.manifest, "q1",
+                {"id": "T-1", "severity": "HIGH",
+                 "location": {"file": "a.py", "line_start": 1}}, "claude"),
+            "setup-scan": setup._setup_scan_entry(self.root, "BRIEF", "claude"),
+        }
+        self.assertEqual({"scout", "cell", "verify", "tool-verify", "setup-scan"}, set(entries))
+        for kind, entry in entries.items():
+            with self.subTest(kind=kind):
+                self.assertRegex(entry["id"], self._ID_RE)
 
 
 if __name__ == "__main__":
