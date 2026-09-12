@@ -93,11 +93,12 @@ class TestTodaysBehaviourIsPreserved(unittest.TestCase):
                 self.assertTrue(hosts.spec(name).registration_dir)
                 self.assertNotIn(name, hosts.driver_hosts())
 
-    def test_no_host_claims_read_scope_confinement(self):
-        # Spec §7.2: no host has this control today, Claude included.
+    def test_only_claude_claims_read_scope_confinement(self):
+        # Spec §7.2 / plan 5: claude ships the read guard; every other host's
+        # family PR must bring its own primitive before claiming this.
         claiming = [h for h in hosts.known_hosts()
                     if hosts.declares(h, hosts.READ_SCOPE_CONFINED)]
-        self.assertEqual([], claiming)
+        self.assertEqual(["claude"], claiming)
 
 
 class TestPostureFailsClosed(unittest.TestCase):
@@ -294,7 +295,8 @@ class TestTheRegistryNamesItsProbes(unittest.TestCase):
             {hosts.TOOL_POLICY_ENFORCED: "registered-shell-tools",
              hosts.ARTIFACT_WRITE_GUARD: "write-guard-armed",
              hosts.MODEL_BINDING: "entry-model-bound",
-             hosts.USAGE_LEDGER: "transcript-dir"},
+             hosts.USAGE_LEDGER: "transcript-dir",
+             hosts.READ_SCOPE_CONFINED: "read-guard-armed"},
             row.probes)
 
     def test_probe_ids_are_strings_not_callables(self):

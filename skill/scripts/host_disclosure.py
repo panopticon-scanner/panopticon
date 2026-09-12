@@ -52,8 +52,10 @@ _REMEDY = {
         "pass --session-dir naming the directory the %(host)s session runs in, "
         "so its transcript can be found",
     hosts.READ_SCOPE_CONFINED:
-        "nothing to do: no host implements a read-confinement control yet "
-        "(spec 7.2), so this stays unknown by design",
+        "ensure the host session's .claude/settings.local.json exists and its "
+        "transcript directory is readable (pass --session-dir if the session runs "
+        "outside the reviewed tree): the read guard binds each subagent to its "
+        "entry through the subagent's transcript, and arms in that settings file",
     hosts.MODEL_BINDING:
         "re-run `python3 skill/scripts/dispatch.py --emit-host-agents %(host)s` so "
         "every registered shell binds the model in skill/reference/model-profiles.yml, "

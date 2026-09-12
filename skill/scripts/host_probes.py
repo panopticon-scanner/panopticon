@@ -20,12 +20,13 @@ Confusing the two is the failure this whole spec exists to prevent.
 No probe may touch live state. Anything that needs to arm, install or write
 does it inside a `tempfile.TemporaryDirectory()`.
 """
+import json
 import os
 import stat
 import tempfile
 
 from scripts import (collect_usage, dispatch, hosts, model_resolver,
-                    run_manifest, write_guard_hook)
+                    read_guard_hook, run_manifest, write_guard_hook)
 
 # The roles the DRIVER dispatches and therefore needs registered shells for:
 # every template in dispatch.ROLE_FILES. #1606: this used to be a hand-kept
@@ -325,6 +326,107 @@ def probe_write_guard_armed(host, session_root=None):
             "%s; the host will arm at %s" % (detail, settings_path))
 
 
+READ_GUARD_ARMED = "read-guard-armed"
+
+
+def _fake_subagent(parent_transcript, agent_id, entry_id):
+    """A subagent transcript in the Agent-tool layout the spike measured: the
+    first user record is the dispatch prompt, marker on line 1."""
+    stem = parent_transcript[:-len(".jsonl")]
+    directory = os.path.join(stem, "subagents")
+    os.makedirs(directory, exist_ok=True)
+    record = {"type": "user", "isSidechain": True, "agentId": agent_id,
+              "message": {"role": "user", "content": [
+                  {"type": "text", "text": read_guard_hook.marker_line(entry_id) + "\nDo the work."}]}}
+    with open(os.path.join(directory, "agent-%s.jsonl" % agent_id), "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(record) + "\n")
+
+
+def _round_trip_confines_reads():
+    """Arm the read guard in a throwaway sandbox, bind two fake subagents
+    through fake transcripts, and drive the ten payloads of design spec 5
+    through adjudicate(). Never touches the session's real settings, scope
+    file or transcripts. Returns (ok, detail)."""
+    try:
+        with tempfile.TemporaryDirectory() as sandbox:
+            settings = os.path.join(sandbox, "settings.json")
+            scope_file = os.path.join(sandbox, "read-scope.json")
+            inside = os.path.join(sandbox, "cell", "a.py")
+            outside = os.path.join(sandbox, "elsewhere", "b.py")
+            root = os.path.join(sandbox, "root")
+            for p in (inside, outside, os.path.join(root, "c.py")):
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                with open(p, "w", encoding="utf-8") as fh:
+                    fh.write("")
+            parent = os.path.join(sandbox, "session.jsonl")
+            with open(parent, "w", encoding="utf-8") as fh:
+                fh.write("")
+            _fake_subagent(parent, "agent-x", "probe-cell")
+            _fake_subagent(parent, "agent-z", "probe-scan")
+            read_guard_hook.install(
+                [{"id": "probe-cell", "scope": {"files": [inside], "dirs": [], "reads": []}},
+                 {"id": "probe-scan", "scope": {"files": [], "dirs": [root], "reads": []}}],
+                settings_path=settings, scope_path=scope_file)
+            if not read_guard_hook.guard_state(settings_path=settings, scope_path=scope_file)["armed"]:
+                return False, "install() did not register the PreToolUse hook"
+
+            def call(tool, agent, **tool_input):
+                payload = {"tool_name": tool, "tool_input": tool_input,
+                           "transcript_path": parent, "cwd": sandbox}
+                if agent:
+                    payload["agent_id"] = agent
+                return read_guard_hook.adjudicate(payload, scope_file)[0]
+
+            cell_dir = os.path.dirname(inside)
+            rows = (
+                ("bound Read inside scope", call("Read", "agent-x", file_path=inside), True),
+                ("bound Read outside scope", call("Read", "agent-x", file_path=outside), False),
+                ("bound Grep of an in-scope file", call("Grep", "agent-x", pattern="x", path=inside), True),
+                ("bound Grep over a directory", call("Grep", "agent-x", pattern="x", path=cell_dir), False),
+                ("bound Glob", call("Glob", "agent-x", pattern="*.py", path=cell_dir), False),
+                ("unbound subagent Read", call("Read", "agent-y", file_path=inside), False),
+                ("orchestrator Read outside any scope", call("Read", None, file_path=outside), True),
+                ("directory-scoped Grep inside its dir", call("Grep", "agent-z", pattern="x", path=root), True),
+                ("directory-scoped Glob inside its dir", call("Glob", "agent-z", pattern="*.py", path=root), True),
+                ("directory-scoped Read outside its dir", call("Read", "agent-z", file_path=outside), False),
+            )
+            for name, got, want in rows:
+                if got != want:
+                    return False, "the guard %s: %s" % ("ALLOWED" if got else "DENIED", name)
+            read_guard_hook.uninstall(settings_path=settings, scope_path=scope_file)
+    except OSError as exc:
+        return False, "sandbox round-trip could not run: %s" % exc
+    return True, "arm/bind/deny round-trip ok (10 rows)"
+
+
+def probe_read_guard_armed(host, session_root=None):
+    """This host CAN confine a dispatched subagent's reads to its entry.
+
+    Same coupling as probe_write_guard_armed, for the same reason: the
+    subject is whatever read_guard_hook._resolve(None, None, session_root)
+    names -- the file install() will arm -- and the #1493 existence check is
+    applied unconditionally (fail-closed). NOT "armed right now": the host
+    arms it per fan-out, so at run start it is legitimately absent."""
+    if not hosts.declares(host, hosts.READ_SCOPE_CONFINED):
+        return (hosts.UNKNOWN, None,
+                "host %r claims no read-scope confinement" % host)
+    settings_path, _scope_path, _defaults = read_guard_hook._resolve(None, None, session_root)
+    settings_dir = os.path.dirname(os.path.abspath(settings_path)) or "."
+    if not os.path.isfile(settings_path):
+        return (hosts.REFUTED, READ_GUARD_ARMED,
+                "the host would arm its read guard at %s, which does not exist -- "
+                "install() refuses that (#1493), so no read would be confined"
+                % os.path.abspath(settings_path))
+    if not os.access(settings_dir, os.W_OK):
+        return (hosts.REFUTED, READ_GUARD_ARMED,
+                "the host cannot arm its read guard: %s is not writable" % settings_dir)
+    ok, detail = _round_trip_confines_reads()
+    if not ok:
+        return (hosts.REFUTED, READ_GUARD_ARMED, detail)
+    return (hosts.PROVEN, READ_GUARD_ARMED,
+            "%s; the host will arm at %s" % (detail, settings_path))
+
+
 TRANSCRIPT_DIR = "transcript-dir"
 
 # Every probe id a registry row may map to and get a runner for; the
@@ -332,7 +434,8 @@ TRANSCRIPT_DIR = "transcript-dir"
 # retirement bar (tests/test_generic_retirement_bar.py) reads this as "the
 # shipped probes" (spec 8.1), so it must not drift from the runner table:
 # run_probes refuses to build a table that disagrees with it.
-PROBE_IDS = (REGISTERED_SHELL_TOOLS, WRITE_GUARD_ARMED, TRANSCRIPT_DIR, ENTRY_MODEL_BOUND)
+PROBE_IDS = (REGISTERED_SHELL_TOOLS, WRITE_GUARD_ARMED, TRANSCRIPT_DIR,
+            ENTRY_MODEL_BOUND, READ_GUARD_ARMED)
 
 # Which capability each shipped probe MEASURES. The retirement bar reads this
 # so a row cannot satisfy spec 8.1 by mapping a security capability to a
@@ -342,7 +445,8 @@ PROBE_IDS = (REGISTERED_SHELL_TOOLS, WRITE_GUARD_ARMED, TRANSCRIPT_DIR, ENTRY_MO
 PROBE_CAPABILITY = {REGISTERED_SHELL_TOOLS: hosts.TOOL_POLICY_ENFORCED,
                     WRITE_GUARD_ARMED: hosts.ARTIFACT_WRITE_GUARD,
                     TRANSCRIPT_DIR: hosts.USAGE_LEDGER,
-                    ENTRY_MODEL_BOUND: hosts.MODEL_BINDING}
+                    ENTRY_MODEL_BOUND: hosts.MODEL_BINDING,
+                    READ_GUARD_ARMED: hosts.READ_SCOPE_CONFINED}
 
 
 def probe_transcript_dir(host, session_dir, home=None):
@@ -492,15 +596,11 @@ def probe_shadow_shells(host, review_root):
 
 SCHEMA_VERSION = 1
 
-# Capabilities with no probe at all, and the reason each says so. 5.1 requires
-# "nobody looked" to be written down rather than inferred from an absent key.
-# model_binding shipped its probe in F4 (entry-model-bound) and is no longer
-# here; kimi still CLAIMS it with no probe of its own, which is what sends it
-# through `_no_probe_reason` below instead.
-_NO_PROBE = {
-    hosts.READ_SCOPE_CONFINED:
-        "no probe: no host implements a read-confinement control (spec 7.2)",
-}
+# Capabilities with no probe at all. Empty since plan 5 shipped
+# read-guard-armed; kept so a future capability that genuinely has no probe
+# yet is written down here rather than inferred from an absent key (5.1). A
+# host that does not CLAIM a capability goes through `_no_probe_reason`.
+_NO_PROBE = {}
 
 
 def _row(state, by, detail):
@@ -579,6 +679,8 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
             lambda: probe_transcript_dir(host, session_root, home=home),
         ENTRY_MODEL_BOUND:
             lambda: probe_entry_model_bound(host, registration_dir),
+        READ_GUARD_ARMED:
+            lambda: probe_read_guard_armed(host, session_root=session_root),
     }
     if set(runners) != set(PROBE_IDS):
         raise RuntimeError("host_probes.PROBE_IDS is out of step with run_probes' runner "

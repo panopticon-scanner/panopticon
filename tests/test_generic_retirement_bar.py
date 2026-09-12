@@ -76,13 +76,13 @@ class TestGenericRetirementBar(unittest.TestCase):
             self.assertNotEqual({}, retirement_shortfalls())
 
     def test_todays_shortfall_is_pinned_so_it_moves_consciously(self):
-        # R-F5-5. MIXED by construction: claude PASSES tool_policy_enforced
-        # (claimed + registered-shell-tools) and FAILS read_scope_confined (no
-        # probe on any host, spec 7.2 / #1070); gemini claims nothing. A family
-        # PR that ships a probe edits this expectation in the same PR.
-        self.assertEqual({"claude": [hosts.READ_SCOPE_CONFINED],
-                          "gemini": [hosts.TOOL_POLICY_ENFORCED, hosts.READ_SCOPE_CONFINED]},
-                         retirement_shortfalls())
+        # R-F5-5 / plan 5 R-P5-3: claude clears the bar (read-guard-armed
+        # shipped); gemini claims nothing. The Gemini family PR edits this
+        # expectation in the same PR that ships its probes.
+        shortfalls = retirement_shortfalls()
+        self.assertNotIn("claude", shortfalls)
+        self.assertEqual({"gemini": [hosts.TOOL_POLICY_ENFORCED, hosts.READ_SCOPE_CONFINED]},
+                         shortfalls)
 
     def test_a_claim_without_a_shipped_probe_fails_the_bar_as_unknown(self):
         # spec 8.1's last sentence. A row that CLAIMS both security capabilities
