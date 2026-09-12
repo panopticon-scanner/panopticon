@@ -327,6 +327,12 @@ def probe_write_guard_armed(host, session_root=None):
 
 TRANSCRIPT_DIR = "transcript-dir"
 
+# Every probe id run_probes can run. The retirement bar
+# (tests/test_generic_retirement_bar.py) reads this as "the shipped probes"
+# (spec 8.1), so it must not drift from the runner table: run_probes refuses
+# to build a table that disagrees with it.
+PROBE_IDS = (REGISTERED_SHELL_TOOLS, WRITE_GUARD_ARMED, TRANSCRIPT_DIR, ENTRY_MODEL_BOUND)
+
 
 def probe_transcript_dir(host, session_dir, home=None):
     """The host's own transcript directory for this SESSION exists and reads.
@@ -563,6 +569,9 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
         ENTRY_MODEL_BOUND:
             lambda: probe_entry_model_bound(host, registration_dir),
     }
+    if set(runners) != set(PROBE_IDS):
+        raise RuntimeError("host_probes.PROBE_IDS is out of step with run_probes' runner "
+                           "table: %s" % sorted(set(runners) ^ set(PROBE_IDS)))
     for capability, probe_id in ((row.probes if row else None) or {}).items():
         runner = runners.get(probe_id)
         if runner is None:

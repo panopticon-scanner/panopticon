@@ -380,6 +380,35 @@ class TestEntryModelBoundProbe(unittest.TestCase):
             state, _by, _detail = host_probes.probe_entry_model_bound("claude", d)
         self.assertEqual(hosts.PROVEN, state)
 
+    def test_probe_ids_name_exactly_the_shipped_runners(self):
+        # The retirement bar (tests/test_generic_retirement_bar.py) reads
+        # PROBE_IDS as "the shipped probes" (spec 8.1). A runner that exists
+        # but is not listed would make the bar stricter than reality; a listed
+        # id with no runner would make it vacuous. run_probes refuses to build
+        # a table that disagrees, so the constant cannot rot in either direction.
+        self.assertEqual(sorted(host_probes.PROBE_IDS),
+                         sorted({host_probes.REGISTERED_SHELL_TOOLS,
+                                 host_probes.WRITE_GUARD_ARMED,
+                                 host_probes.TRANSCRIPT_DIR,
+                                 host_probes.ENTRY_MODEL_BOUND}))
+        with tempfile.TemporaryDirectory() as reg, \
+             tempfile.TemporaryDirectory() as target, \
+             tempfile.TemporaryDirectory() as home:
+            with mock.patch.object(host_probes, "PROBE_IDS", host_probes.PROBE_IDS[:-1]):
+                with self.assertRaises(RuntimeError):
+                    host_probes.run_probes("claude", target, session_root=target,
+                                           registration_dir=reg, home=home)
+
+    def test_every_probe_id_in_the_registry_is_shipped(self):
+        # spec 9.1 registry totality, the other half: hosts.py cannot import
+        # host_probes (purity), so the join is asserted here.
+        rows = [row for row in hosts.HOSTS.values() if row.probes]
+        self.assertTrue(rows)                                    # guards the guard
+        for row in rows:
+            for capability, probe_id in row.probes.items():
+                with self.subTest(host=row.name, capability=capability):
+                    self.assertIn(probe_id, host_probes.PROBE_IDS)
+
 
 class TestWriteGuardArmedProbe(unittest.TestCase):
     """#1344 F3a: proves the host CAN mediate Write, not that it is doing so
