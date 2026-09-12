@@ -456,12 +456,44 @@ class TestInstallUninstall(unittest.TestCase):
         rg.uninstall(settings_path=self.settings, scope_path=self.scope_path, plan=[_entry("e2")])
         self.assertEqual((False, 0), rg.is_armed(settings_path=self.settings, scope_path=self.scope_path))
 
-    def test_install_that_grants_nothing_refuses_instead_of_wiping(self):
+    def test_install_still_refuses_a_plan_with_no_scope_dicts(self):
+        # No entry carried a `scope` dict at all -- scope_from_plan(plan) is
+        # empty, and arming zero ids is a caller mistake, not a plan that
+        # legitimately confines some ids to nothing (C1).
         rg.install([_entry("e1", files=[self.a])], settings_path=self.settings, scope_path=self.scope_path)
-        for plan in ([], [{"id": "x"}], [_entry("e3")]):
+        for plan in ([], [{"id": "x"}]):
             with self.subTest(plan=plan), self.assertRaises(ValueError):
                 rg.install(plan, settings_path=self.settings, scope_path=self.scope_path)
         self.assertEqual({"e1"}, set(rg._read_scope_file(self.scope_path)))
+
+    def test_install_arms_deny_all_when_every_entry_scope_is_empty(self):
+        # A plan whose only entry carries an EMPTY scope dict must still arm
+        # (no ValueError) -- decide() denies everything for that id, which is
+        # what an intentionally-empty scope means (R-P5-2), not a hole.
+        rg.install([_entry("e1")], settings_path=self.settings, scope_path=self.scope_path)
+        self.assertEqual((True, 1), rg.is_armed(settings_path=self.settings, scope_path=self.scope_path))
+        self.assertEqual({"e1": {"files": [], "dirs": [], "reads": []}},
+                         rg._read_scope_file(self.scope_path))
+
+    def test_install_overwrites_a_planted_row_under_a_dispatched_empty_scope_id(self):
+        # C1: a row planted on disk under an id the driver is ABOUT TO
+        # dispatch with an empty scope (e.g. verify-tool-<fingerprint> for a
+        # redacted/absent finding location) must not survive install()'s
+        # merge -- otherwise the planted grant silently widens that agent's
+        # reads.
+        with open(self.scope_path, "w", encoding="utf-8") as fh:
+            json.dump({"verify-tool-X": _scope(dirs=[self.tmp.name])}, fh)
+        rg.install([_entry("verify-tool-X")], settings_path=self.settings, scope_path=self.scope_path)
+        on_disk = rg._read_scope_file(self.scope_path)
+        self.assertEqual({"files": [], "dirs": [], "reads": []}, on_disk["verify-tool-X"])
+        # ...and adjudicate() actually denies a read of a file that used to be
+        # inside the planted grant, for a subagent bound to that id.
+        parent = os.path.join(self.tmp.name, "session.jsonl")
+        open(parent, "w").close()
+        _write_subagent_transcript(parent, "a1", "panopticon-entry: verify-tool-X\nbody")
+        payload = {"tool_name": "Read", "agent_id": "a1", "transcript_path": parent,
+                   "tool_input": {"file_path": self.a}, "cwd": self.tmp.name}
+        self.assertFalse(rg.adjudicate(payload, self.scope_path)[0])
 
     def test_the_request_object_is_rejected(self):
         with self.assertRaises(TypeError):

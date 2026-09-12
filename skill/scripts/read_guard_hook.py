@@ -403,7 +403,17 @@ def install(plan, settings_path=None, scope_path=None, *, session_root=None):
     """Arm the read guard for `plan`'s entries. UNIONS by entry id with any
     scope already on disk (#11: a concurrent fan-out's grants survive), ours
     winning on a shared id (R-P5-4: an id we dispatch is never left to a
-    planted entry). Returns the {id: scope} map this call added."""
+    planted entry) -- INCLUDING an entry whose scope is empty: a dispatched
+    id with an empty scope (e.g. a verify-tool-<fingerprint> advisor for a
+    redacted/absent finding location) must overwrite any planted row for
+    that id too, since decide() denies everything for an empty scope and
+    that IS what "confines to nothing" (R-P5-2) intends -- never a hole that
+    lets a planted grant survive under an id we are dispatching. Returns the
+    {id: scope} map this call added (now including empty ones). Refuses
+    only when `scope_from_plan(plan)` is itself empty -- no entry in `plan`
+    carried a `scope` dict at all (e.g. a driver-plan checkpoint) -- since
+    arming zero ids is a caller mistake, not a plan that legitimately
+    confines some ids to nothing."""
     settings_path, scope_path, used_defaults = _resolve(settings_path, scope_path, session_root)
     if used_defaults and not os.path.exists(settings_path):
         raise ValueError(
@@ -414,11 +424,10 @@ def install(plan, settings_path=None, scope_path=None, *, session_root=None):
             "started in>, or explicit settings_path/scope_path if you really mean "
             "this location." % (os.path.abspath(settings_path), os.path.abspath(os.curdir)))
     added = scope_from_plan(plan)
-    added = {eid: s for eid, s in added.items() if any(s[k] for k in SCOPE_KEYS)}
     if not added:
         raise ValueError(
             "refusing to install a read-guard that confines nothing: no entry "
-            "declared a non-empty scope. Use uninstall() to tear the guard down.")
+            "carried a `scope` dict. Use uninstall() to tear the guard down.")
     merged = dict(_read_scope_file(scope_path))
     merged.update(added)
     _atomic_write_json(scope_path, merged)
