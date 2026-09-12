@@ -142,6 +142,19 @@ class TestSkillMd(unittest.TestCase):
         self.assertNotIn("fails the deletion on `read_scope_confined` everywhere", caps)
         self.assertIn("on gemini", caps)
 
+    def test_documents_the_read_guard_on_scout_and_setup_scan_checkpoints(self):
+        # I4: coverage._scout_entry and setup._setup_scan_entry also emit
+        # markers+scopes and their templates tell the agent the fence is
+        # host-enforced -- the arming duty must be stated at those two
+        # checkpoints too, not only in the fan-out bullet that covers
+        # review/verify.
+        doc = _read_doc().replace("**", "")
+        scout_para = doc[doc.index("At the `scout` checkpoint"):doc.index("Fan-out (per checkpoint)")]
+        self.assertIn("read_guard_hook.install", scout_para)
+        self.assertIn("read_guard_hook.uninstall", scout_para)
+        setup_para = doc[doc.index("1. scan —"):doc.index("2. ingest —")]
+        self.assertIn("read_guard_hook.install", setup_para)
+
     def test_documents_delivery_as_the_complete_return_persist_contract(self):
         # #1608: every return-persist entry carries the key; absence means
         # self-write. The token below exists only in the sentence this task adds.
