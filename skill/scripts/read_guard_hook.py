@@ -69,8 +69,10 @@ def marker_of(text):
 
 
 def _realpaths(paths):
+    if not isinstance(paths, (list, tuple)):
+        paths = []
     out = set()
-    for p in paths or []:
+    for p in paths:
         if isinstance(p, str) and p:
             try:
                 out.add(os.path.realpath(os.path.abspath(p)))
@@ -238,8 +240,16 @@ def _load_scope(scope_path):
     for eid, scope in loaded.items():
         if not isinstance(eid, str) or not isinstance(scope, dict):
             return None, "read guard scope is malformed"
-        out[eid] = {k: [p for p in (scope.get(k) or []) if isinstance(p, str)]
-                    for k in SCOPE_KEYS}
+        entry = {}
+        for k in SCOPE_KEYS:
+            val = scope.get(k)
+            if val is None:
+                entry[k] = []
+                continue
+            if not isinstance(val, list):
+                return None, "read guard scope is malformed"
+            entry[k] = [p for p in val if isinstance(p, str)]
+        out[eid] = entry
     return out, ""
 
 

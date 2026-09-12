@@ -58,6 +58,12 @@ class TestScopeFromPlan(unittest.TestCase):
             with self.subTest(wrapper=wrapper), self.assertRaises(TypeError):
                 rg.scope_from_plan(wrapper)
 
+    def test_non_list_scope_value_yields_empty_for_that_key(self):
+        # A well-typed-but-malformed dispatch plan must degrade to an empty
+        # scope for that key, never raise.
+        out = rg.scope_from_plan([{"id": "e", "scope": {"files": 5}}])
+        self.assertEqual({"files": [], "dirs": [], "reads": []}, out["e"])
+
 
 class TestDecide(unittest.TestCase):
     def setUp(self):
@@ -292,6 +298,17 @@ class TestAdjudicate(unittest.TestCase):
                 self.assertFalse(rg.adjudicate(self._payload("Read", "cell-agent", file_path=self.inside), self.scope_path)[0])
                 self.assertTrue(rg.adjudicate(self._payload("Read", None, file_path=self.inside), self.scope_path)[0])
 
+    def test_non_list_scope_values_deny_not_crash(self):
+        # A well-typed-but-malformed scope file (a per-key value that isn't a
+        # list) must deny every bound subagent, never raise out of adjudicate.
+        for content in ('{"review-app-SEC": {"files": 5, "dirs": [], "reads": []}}',
+                        '{"review-app-SEC": {"files": "a.py"}}'):
+            with self.subTest(content=content):
+                with open(self.scope_path, "w", encoding="utf-8") as fh:
+                    fh.write(content)
+                self.assertFalse(rg.adjudicate(self._payload("Read", "cell-agent", file_path=self.inside), self.scope_path)[0])
+                self.assertTrue(rg.adjudicate(self._payload("Read", None, file_path=self.inside), self.scope_path)[0])
+
     def test_non_read_tools_pass_through(self):
         self.assertEqual((True, ""), rg.adjudicate(self._payload("Write", "cell-agent", file_path=self.outside), self.scope_path))
 
@@ -320,6 +337,19 @@ class TestMain(unittest.TestCase):
             body = json.loads(out)["hookSpecificOutput"]
             self.assertEqual("deny", body["permissionDecision"])
             self.assertEqual("PreToolUse", body["hookEventName"])
+
+    def test_non_list_scope_value_denies_without_crashing(self):
+        with tempfile.TemporaryDirectory() as d:
+            parent = os.path.join(d, "s.jsonl"); open(parent, "w").close()
+            scope_path = os.path.join(d, "scope.json")
+            with open(scope_path, "w", encoding="utf-8") as fh:
+                json.dump({"e": {"files": 5}}, fh)
+            _write_subagent_transcript(parent, "a", "panopticon-entry: e\n")
+            rc, out = self._run({"tool_name": "Read", "agent_id": "a", "transcript_path": parent,
+                                 "tool_input": {"file_path": os.path.join(d, "b.py")}}, [scope_path])
+            self.assertEqual(0, rc)
+            body = json.loads(out)["hookSpecificOutput"]
+            self.assertEqual("deny", body["permissionDecision"])
 
     def test_allowed_read_emits_nothing(self):
         with tempfile.TemporaryDirectory() as d:
