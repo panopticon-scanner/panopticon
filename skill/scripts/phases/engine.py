@@ -18,7 +18,8 @@ _PHASE_RESULT_KINDS = ("advanced", "checkpoint")
 # `uninstall` is a no-op when nothing is installed -- and it must run from the
 # SESSION root, since hook registration is session-rooted (#calibration-4).
 TEARDOWN_DIRECTIVE = (
-    "write_guard_hook.uninstall()  # from the SESSION root; safe if not armed")
+    "write_guard_hook.uninstall(); read_guard_hook.uninstall()  "
+    "# both from the SESSION root; safe if not armed")
 
 @dataclasses.dataclass
 class PhaseResult:

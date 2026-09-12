@@ -294,6 +294,181 @@ def _deny_response(reason):
     })
 
 
+# #495: self-locate, quoted -- the install path may contain spaces.
+_HOOK_CMD = 'python3 "%s"' % os.path.abspath(__file__)
+_HOOK_ENTRY = {"matcher": _MATCHER,
+               "hooks": [{"type": "command", "command": _HOOK_CMD}]}
+
+DEFAULT_SETTINGS_PATH = ".claude/settings.local.json"
+DEFAULT_SCOPE_PATH = ".panopticon/read-scope.json"
+
+
+def _hook_entry(scope_path=None):
+    """The PreToolUse entry to register; with `scope_path` the absolute scope
+    file is baked into the command so the hook never infers it from CWD."""
+    if not scope_path:
+        return _HOOK_ENTRY
+    cmd = '%s "%s"' % (_HOOK_CMD, os.path.abspath(scope_path))
+    return {"matcher": _MATCHER, "hooks": [{"type": "command", "command": cmd}]}
+
+
+def _is_our_entry(entry):
+    """True for any PreToolUse entry that runs THIS module (never the write
+    guard's -- the two coexist in one settings file, each keyed on its own
+    script path)."""
+    if not isinstance(entry, dict):
+        return False
+    for h in entry.get("hooks", []) or []:
+        if isinstance(h, dict) and os.path.abspath(__file__) in str(h.get("command", "")):
+            return True
+    return False
+
+
+def _load(settings_path):
+    try:
+        with open(settings_path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        # #1098: never re-serialize over a file we could not read.
+        raise RuntimeError(
+            "refusing to overwrite unreadable %s: %s" % (settings_path, exc)) from exc
+
+
+def _atomic_write_json(path, data, indent=None):
+    parent = os.path.dirname(path) or "."
+    os.makedirs(parent, exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=indent)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+
+
+def _write_hook_entry(settings_path, scope_path=None):
+    settings = _load(settings_path)
+    hooks = settings.setdefault("hooks", {})
+    pre = [h for h in hooks.get("PreToolUse", []) if not _is_our_entry(h)]
+    pre.append(_hook_entry(scope_path))
+    hooks["PreToolUse"] = pre
+    _atomic_write_json(settings_path, settings, indent=2)
+
+
+def _remove_hook_entry(settings_path):
+    settings = _load(settings_path)
+    hooks = settings.get("hooks", {})
+    if "PreToolUse" not in hooks:
+        return
+    hooks["PreToolUse"] = [h for h in hooks["PreToolUse"] if not _is_our_entry(h)]
+    if not hooks["PreToolUse"]:
+        del hooks["PreToolUse"]
+    if not hooks:
+        settings.pop("hooks", None)
+    _atomic_write_json(settings_path, settings, indent=2)
+
+
+def _read_scope_file(scope_path):
+    """The on-disk {entry id: scope} map, or {} when absent or malformed.
+    (Enforcement fails closed on a malformed file in `_load_scope`; this only
+    feeds the union arithmetic.)"""
+    try:
+        with open(scope_path, encoding="utf-8") as fh:
+            loaded = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(loaded, dict):
+        return {}
+    return {k: v for k, v in loaded.items() if isinstance(k, str) and isinstance(v, dict)}
+
+
+def _resolve(settings_path, scope_path, session_root):
+    """(settings_path, scope_path, used_defaults) -- write_guard_hook._resolve's
+    rules, verbatim (#1493): session_root OR explicit paths, never both."""
+    explicit = settings_path is not None or scope_path is not None
+    if session_root is not None:
+        if explicit:
+            raise ValueError(
+                "pass session_root OR explicit settings_path/scope_path, not both "
+                "-- they resolve to different files and the guard would arm "
+                "somewhere other than where it was checked")
+        return (os.path.join(session_root, DEFAULT_SETTINGS_PATH),
+                os.path.join(session_root, DEFAULT_SCOPE_PATH), False)
+    return (settings_path or DEFAULT_SETTINGS_PATH,
+            scope_path or DEFAULT_SCOPE_PATH, not explicit)
+
+
+def install(plan, settings_path=None, scope_path=None, *, session_root=None):
+    """Arm the read guard for `plan`'s entries. UNIONS by entry id with any
+    scope already on disk (#11: a concurrent fan-out's grants survive), ours
+    winning on a shared id (R-P5-4: an id we dispatch is never left to a
+    planted entry). Returns the {id: scope} map this call added."""
+    settings_path, scope_path, used_defaults = _resolve(settings_path, scope_path, session_root)
+    if used_defaults and not os.path.exists(settings_path):
+        raise ValueError(
+            "refusing to arm the read-guard at %s: that settings file does not "
+            "exist, so this would CREATE one -- which means the current directory "
+            "(%s) is almost certainly not the session root, and the guard would "
+            "never be consulted. Pass session_root=<the directory the session was "
+            "started in>, or explicit settings_path/scope_path if you really mean "
+            "this location." % (os.path.abspath(settings_path), os.path.abspath(os.curdir)))
+    added = scope_from_plan(plan)
+    added = {eid: s for eid, s in added.items() if any(s[k] for k in SCOPE_KEYS)}
+    if not added:
+        raise ValueError(
+            "refusing to install a read-guard that confines nothing: no entry "
+            "declared a non-empty scope. Use uninstall() to tear the guard down.")
+    merged = dict(_read_scope_file(scope_path))
+    merged.update(added)
+    _atomic_write_json(scope_path, merged)
+    _write_hook_entry(settings_path, scope_path)
+    return added
+
+
+def guard_state(settings_path=None, scope_path=None, *, session_root=None):
+    settings_path, scope_path, _ = _resolve(settings_path, scope_path, session_root)
+    armed, entries = is_armed(settings_path, scope_path)
+    return {"armed": armed, "entries": entries,
+            "settings_path": os.path.abspath(settings_path),
+            "scope_path": os.path.abspath(scope_path),
+            "settings_exists": os.path.exists(settings_path)}
+
+
+def is_armed(settings_path=None, scope_path=None, *, session_root=None):
+    """(armed, entries): is the guard registered, and over how many entries?"""
+    settings_path, scope_path, _ = _resolve(settings_path, scope_path, session_root)
+    try:
+        with open(settings_path, encoding="utf-8") as fh:
+            settings = json.load(fh)
+    except (OSError, ValueError):
+        return False, 0
+    hooks = (settings.get("hooks") or {}).get("PreToolUse") or []
+    armed = any(_is_our_entry(entry) for entry in hooks)
+    if not armed:
+        return False, 0
+    return True, len(_read_scope_file(scope_path))
+
+
+def uninstall(settings_path=None, scope_path=None, *, plan=None, session_root=None):
+    """With `plan`, drop only that fan-out's entry ids and keep the guard
+    armed while any other fan-out's remain (#11); without it, tear the whole
+    guard down."""
+    settings_path, scope_path, _ = _resolve(settings_path, scope_path, session_root)
+    if plan is not None:
+        remaining = _read_scope_file(scope_path)
+        for eid in scope_from_plan(plan):
+            remaining.pop(eid, None)
+        if remaining:
+            _atomic_write_json(scope_path, remaining)
+            return
+    _remove_hook_entry(settings_path)
+    try:
+        os.remove(scope_path)
+    except OSError:
+        pass
+
+
 def _resolve_scope_path(argv_path=None):
     """Env override, then the absolute path install() baked into the hook
     command (returned even when absent: fail-closed), then a CWD walk --

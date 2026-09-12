@@ -383,5 +383,161 @@ class TestMain(unittest.TestCase):
                     self.assertEqual(walk, rg._resolve_scope_path(None))
 
 
+import scripts.write_guard_hook as wg  # noqa: E402  (coexistence tests)
+
+
+def _entry(eid, files=(), dirs=()):
+    return {"id": eid, "scope": {"files": list(files), "dirs": list(dirs), "reads": []}}
+
+
+class TestInstallUninstall(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        d = self.tmp.name
+        self.settings = os.path.join(d, "settings.json")
+        self.scope_path = os.path.join(d, "read-scope.json")
+        self.a = os.path.join(d, "a.py"); open(self.a, "w").close()
+        self.b = os.path.join(d, "b.py"); open(self.b, "w").close()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _settings(self):
+        with open(self.settings, encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def test_install_writes_the_scope_and_registers_the_hook(self):
+        added = rg.install([_entry("e1", files=[self.a])],
+                           settings_path=self.settings, scope_path=self.scope_path)
+        self.assertEqual({"e1"}, set(added))
+        self.assertEqual({"e1": {"files": [os.path.realpath(self.a)], "dirs": [], "reads": []}},
+                         rg._read_scope_file(self.scope_path))
+        hooks = self._settings()["hooks"]["PreToolUse"]
+        self.assertEqual(1, len(hooks))
+        self.assertEqual(rg._MATCHER, hooks[0]["matcher"])
+        cmd = hooks[0]["hooks"][0]["command"]
+        self.assertTrue(cmd.startswith(rg._HOOK_CMD))
+        self.assertIn('"%s"' % os.path.abspath(self.scope_path), cmd)
+        self.assertEqual((True, 1), rg.is_armed(settings_path=self.settings, scope_path=self.scope_path))
+
+    def test_install_is_idempotent(self):
+        for _ in range(2):
+            rg.install([_entry("e1", files=[self.a])], settings_path=self.settings, scope_path=self.scope_path)
+        self.assertEqual(1, len(self._settings()["hooks"]["PreToolUse"]))
+
+    def test_uninstall_removes_the_hook_and_the_scope(self):
+        rg.install([_entry("e1", files=[self.a])], settings_path=self.settings, scope_path=self.scope_path)
+        rg.uninstall(settings_path=self.settings, scope_path=self.scope_path)
+        self.assertNotIn("hooks", self._settings())
+        self.assertFalse(os.path.exists(self.scope_path))
+        self.assertEqual((False, 0), rg.is_armed(settings_path=self.settings, scope_path=self.scope_path))
+
+    def test_uninstall_is_safe_when_nothing_is_installed(self):
+        rg.uninstall(settings_path=self.settings, scope_path=self.scope_path)   # no raise
+        self.assertFalse(os.path.exists(self.settings))
+
+    def test_reinstall_unions_by_id_and_ours_wins(self):
+        # #11: a concurrent fan-out's grant survives; R-P5-4: an id we are
+        # dispatching is REPLACED, so a planted entry for a dispatched id is
+        # overwritten on arm rather than unioned in.
+        rg.install([_entry("e1", files=[self.a]), _entry("e2", files=[self.b])],
+                   settings_path=self.settings, scope_path=self.scope_path)
+        rg.install([_entry("e2", files=[self.a])], settings_path=self.settings, scope_path=self.scope_path)
+        on_disk = rg._read_scope_file(self.scope_path)
+        self.assertEqual({"e1", "e2"}, set(on_disk))
+        self.assertEqual([os.path.realpath(self.a)], on_disk["e2"]["files"])
+
+    def test_scoped_uninstall_keeps_the_other_fan_out_armed(self):
+        rg.install([_entry("e1", files=[self.a])], settings_path=self.settings, scope_path=self.scope_path)
+        rg.install([_entry("e2", files=[self.b])], settings_path=self.settings, scope_path=self.scope_path)
+        rg.uninstall(settings_path=self.settings, scope_path=self.scope_path, plan=[_entry("e1")])
+        self.assertEqual((True, 1), rg.is_armed(settings_path=self.settings, scope_path=self.scope_path))
+        self.assertEqual({"e2"}, set(rg._read_scope_file(self.scope_path)))
+        rg.uninstall(settings_path=self.settings, scope_path=self.scope_path, plan=[_entry("e2")])
+        self.assertEqual((False, 0), rg.is_armed(settings_path=self.settings, scope_path=self.scope_path))
+
+    def test_install_that_grants_nothing_refuses_instead_of_wiping(self):
+        rg.install([_entry("e1", files=[self.a])], settings_path=self.settings, scope_path=self.scope_path)
+        for plan in ([], [{"id": "x"}], [_entry("e3")]):
+            with self.subTest(plan=plan), self.assertRaises(ValueError):
+                rg.install(plan, settings_path=self.settings, scope_path=self.scope_path)
+        self.assertEqual({"e1"}, set(rg._read_scope_file(self.scope_path)))
+
+    def test_the_request_object_is_rejected(self):
+        with self.assertRaises(TypeError):
+            rg.install({"entries": [_entry("e1", files=[self.a])]},
+                       settings_path=self.settings, scope_path=self.scope_path)
+        with self.assertRaises(TypeError):
+            rg.uninstall(settings_path=self.settings, scope_path=self.scope_path, plan={"entries": []})
+
+    def test_install_refuses_to_create_a_settings_file_from_the_wrong_cwd(self):
+        # #1493, verbatim from the write guard: a missing settings file at the
+        # DEFAULT path means the caller is not at the session root. install()'s
+        # check is a RELATIVE-path os.path.exists(".claude/settings.local.json")
+        # against the REAL process cwd -- and this repo's root has that file --
+        # so this test chdirs into a tempdir rather than mocking os.getcwd
+        # (which would arm the guard into the repo's own real settings file).
+        real_settings = os.path.abspath(".claude/settings.local.json")
+        with open(real_settings, "rb") as fh:
+            real_bytes = fh.read()
+        original = os.getcwd()
+        with tempfile.TemporaryDirectory() as d:
+            try:
+                os.chdir(d)
+                self.assertFalse(os.path.exists(rg.DEFAULT_SETTINGS_PATH))
+                with self.assertRaises(ValueError) as ctx:
+                    rg.install([_entry("e1", files=[self.a])])
+                self.assertIn("session root", str(ctx.exception))
+                self.assertFalse(os.path.exists(rg.DEFAULT_SETTINGS_PATH))
+            finally:
+                os.chdir(original)
+        with open(real_settings, "rb") as fh:
+            self.assertEqual(real_bytes, fh.read())
+
+    def test_session_root_resolves_both_paths_under_it(self):
+        with tempfile.TemporaryDirectory() as root:
+            os.makedirs(os.path.join(root, ".claude"))
+            open(os.path.join(root, rg.DEFAULT_SETTINGS_PATH), "w").write("{}")
+            rg.install([_entry("e1", files=[self.a])], session_root=root)
+            state = rg.guard_state(session_root=root)
+            self.assertTrue(state["armed"])
+            self.assertEqual(os.path.abspath(os.path.join(root, rg.DEFAULT_SETTINGS_PATH)), state["settings_path"])
+            self.assertEqual(os.path.abspath(os.path.join(root, rg.DEFAULT_SCOPE_PATH)), state["scope_path"])
+            rg.uninstall(session_root=root)
+            self.assertFalse(rg.guard_state(session_root=root)["armed"])
+
+    def test_session_root_and_explicit_paths_together_are_refused(self):
+        with self.assertRaises(ValueError):
+            rg._resolve(self.settings, None, "/some/root")
+
+    def test_corrupt_settings_are_never_overwritten(self):
+        with open(self.settings, "w", encoding="utf-8") as fh:
+            fh.write("{not json")
+        with self.assertRaises(RuntimeError):
+            rg.install([_entry("e1", files=[self.a])], settings_path=self.settings, scope_path=self.scope_path)
+        self.assertEqual("{not json", open(self.settings, encoding="utf-8").read())
+
+    def test_both_guards_coexist_in_one_settings_file(self):
+        # The write guard keys its entry on ITS script path and this guard on
+        # its own, so each install/uninstall leaves the other's entry alone.
+        allowlist = os.path.join(self.tmp.name, "allowlist.json")
+        out_file = os.path.join(self.tmp.name, ".panopticon", "findings-g-D.json")
+        os.makedirs(os.path.dirname(out_file)); open(out_file, "w").write("{}")
+        wg.install([{"out_file": out_file}], settings_path=self.settings, allowlist_path=allowlist)
+        rg.install([_entry("e1", files=[self.a])], settings_path=self.settings, scope_path=self.scope_path)
+        hooks = self._settings()["hooks"]["PreToolUse"]
+        self.assertEqual(2, len(hooks))
+        self.assertEqual({wg._MATCHER, rg._MATCHER}, {h["matcher"] for h in hooks})
+        self.assertEqual([True, False], [wg._is_our_entry(h) for h in sorted(hooks, key=lambda h: h["matcher"] != wg._MATCHER)])
+        rg.uninstall(settings_path=self.settings, scope_path=self.scope_path)
+        self.assertEqual((True, 1), wg.is_armed(settings_path=self.settings, allowlist_path=allowlist))
+        wg.uninstall(settings_path=self.settings, allowlist_path=allowlist)
+        self.assertNotIn("hooks", self._settings())
+
+    def test_hook_cmd_is_absolute_and_quoted(self):
+        self.assertTrue(rg._HOOK_CMD.startswith('python3 "/'))
+        self.assertIn(os.path.abspath(rg.__file__), rg._HOOK_CMD)
+
+
 if __name__ == "__main__":
     unittest.main()
