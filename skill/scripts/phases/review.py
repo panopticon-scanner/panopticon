@@ -9,6 +9,7 @@ import scripts.ocrdb as ocrdb
 import scripts.synth.findings as findings_mod
 import scripts._version as _version
 from scripts import hosts
+from scripts import read_guard_hook
 from . import engine
 import scripts.findings_contract as findings_contract
 
@@ -217,15 +218,19 @@ def _cell_entry(review_root, manifest, group, domain, files, tests, host, bundle
     # findings file's own `_panopticon` stamp against the entry that asked for
     # it (group_runner.entry_is_done) instead of trusting the path alone. The
     # same three fields the domain-panel template requires in its output.
-    entry = {"id": "review-%s-%s" % (group, domain),
+    entry_id = "review-%s-%s" % (group, domain)
+    # raw paths, deliberately not _prompt_safe'd: the read guard matches them
+    # byte-for-byte after realpath (spec 7.2); never paste them into a prompt.
+    abs_files = [os.path.abspath(os.path.join(review_root, f)) for f in files]
+    entry = {"id": entry_id,
             "agent": dispatch.registered_agent_name("domain-panel.md") if enforced else None,
             "enforced": enforced, "model": requests.bound_model(host, "domain_panel"),
-            "prompt": prefix + prompt,
+            "prompt": requests.entry_marker(entry_id) + prefix + prompt,
+            "marker": read_guard_hook.marker_line(entry_id),
             "out_file": out_file, "run_id": manifest["run_id"],
             "group": group, "domain": domain,
-            # raw paths, deliberately not _prompt_safe'd: a confinement primitive
-            # must match them byte-for-byte (spec 7.2); never paste them into a prompt.
-            "files": [os.path.abspath(os.path.join(review_root, f)) for f in files]}
+            "files": abs_files,
+            "scope": requests.scope(files=abs_files)}
     if mode:
         entry["delivery"] = mode
     return entry

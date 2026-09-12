@@ -390,7 +390,8 @@ class TestEntryModelBoundProbe(unittest.TestCase):
                          sorted({host_probes.REGISTERED_SHELL_TOOLS,
                                  host_probes.WRITE_GUARD_ARMED,
                                  host_probes.TRANSCRIPT_DIR,
-                                 host_probes.ENTRY_MODEL_BOUND}))
+                                 host_probes.ENTRY_MODEL_BOUND,
+                                 host_probes.READ_GUARD_ARMED}))
         with tempfile.TemporaryDirectory() as reg, \
              tempfile.TemporaryDirectory() as target, \
              tempfile.TemporaryDirectory() as home:
@@ -866,8 +867,9 @@ class TestRunProbesBuildsTheArtifact(unittest.TestCase):
 
     def test_every_capability_gets_a_row_even_unprobed_ones(self):
         # 5.1: "nobody looked" is written down, never inferred from an absent
-        # key. read_scope_confined has no probe (spec 7.2); model_binding
-        # gained one in F4 (entry-model-bound). `registration_dir` is pinned
+        # key. read_scope_confined has a probe now too (read-guard-armed,
+        # plan 5); model_binding gained one in F4 (entry-model-bound).
+        # `registration_dir` is pinned
         # to an empty temp dir -- not left to default to this machine's real
         # ~/.claude/agents -- so the probe never touches live state and the
         # assertions stay broad (any real STATE) rather than depending on
@@ -885,20 +887,16 @@ class TestRunProbesBuildsTheArtifact(unittest.TestCase):
                     self.assertTrue(row["detail"])
 
     def test_the_unprobed_capability_says_why(self):
-        # F4 shipped entry-model-bound, so model_binding is no longer in this
-        # set (TestEntryModelBoundProbe covers its real behaviour against
-        # controlled fixtures); read_scope_confined is the one capability
-        # left with no probe of any kind (spec 7.2). `registration_dir` is
-        # pinned to an empty temp dir so this call never reads the real
-        # ~/.claude/agents.
-        with tempfile.TemporaryDirectory() as target, \
-                tempfile.TemporaryDirectory() as registration:
-            art = host_probes.run_probes("claude", target,
-                                         registration_dir=registration)
+        # Plan 5 shipped read-guard-armed for claude, so no capability is
+        # probe-less by design any more (_NO_PROBE is empty); a host that
+        # does not CLAIM one still gets the honest "nothing to prove" row.
+        with tempfile.TemporaryDirectory() as target:
+            art = host_probes.run_probes("gemini", target)
             row = art["capabilities"][hosts.READ_SCOPE_CONFINED]
             self.assertEqual(hosts.UNKNOWN, row["state"])
             self.assertIsNone(row["by"])
-            self.assertIn("no probe", row["detail"])
+            self.assertIn("does not claim", row["detail"])
+        self.assertEqual({}, host_probes._NO_PROBE)
 
     def test_an_unclaimed_capability_is_not_described_as_claimed(self):
         # Minor 1. One sentence covered both no-probe cases and said the host
@@ -1229,3 +1227,94 @@ class TestTheEvidenceLoader(unittest.TestCase):
                     self.assertEqual(
                         {hosts.UNKNOWN},
                         set(hosts.posture("claude", evidence).values()))
+
+
+class TestReadGuardArmedProbe(unittest.TestCase):
+    """Plan 5: proves the host CAN bind a subagent to its entry and confine
+    its reads -- in a sandbox, at run start, when the guard is legitimately
+    not armed (the host arms it per fan-out, like the write guard)."""
+
+    def _session_root(self, root):
+        claude = os.path.join(root, ".claude")
+        os.makedirs(claude, exist_ok=True)
+        with open(os.path.join(claude, "settings.local.json"), "w", encoding="utf-8") as fh:
+            fh.write("{}")
+        return claude
+
+    def test_a_working_guard_and_a_writable_settings_root_is_proven(self):
+        with tempfile.TemporaryDirectory() as session_root:
+            self._session_root(session_root)
+            state, by, detail = host_probes.probe_read_guard_armed("claude", session_root=session_root)
+            self.assertEqual(hosts.PROVEN, state)
+            self.assertEqual("read-guard-armed", by)
+            self.assertIn(session_root, detail)
+            self.assertIn("10 rows", detail)
+
+    def test_it_does_not_require_the_guard_to_be_armed_right_now(self):
+        from scripts import read_guard_hook
+        with tempfile.TemporaryDirectory() as session_root:
+            self._session_root(session_root)
+            self.assertFalse(read_guard_hook.guard_state(session_root=session_root)["armed"])
+            state, _by, _detail = host_probes.probe_read_guard_armed("claude", session_root=session_root)
+            self.assertEqual(hosts.PROVEN, state)
+
+    def test_a_missing_settings_file_is_refuted(self):
+        with tempfile.TemporaryDirectory() as session_root:
+            os.makedirs(os.path.join(session_root, ".claude"), exist_ok=True)
+            state, _by, detail = host_probes.probe_read_guard_armed("claude", session_root=session_root)
+            self.assertEqual(hosts.REFUTED, state)
+            self.assertIn("settings.local.json", detail)
+
+    def test_an_unwritable_settings_root_is_refuted(self):
+        with tempfile.TemporaryDirectory() as session_root:
+            claude_dir = self._session_root(session_root)
+            os.chmod(claude_dir, 0o500)
+            try:
+                state, _by, detail = host_probes.probe_read_guard_armed("claude", session_root=session_root)
+            finally:
+                os.chmod(claude_dir, 0o700)
+            self.assertEqual(hosts.REFUTED, state)
+            self.assertIn(claude_dir, detail)
+
+    def test_a_host_that_claims_no_read_confinement_is_unknown(self):
+        for name in ("gemini", "generic", "kimi", "codex"):
+            with self.subTest(host=name):
+                state, by, _detail = host_probes.probe_read_guard_armed(name)
+                self.assertEqual(hosts.UNKNOWN, state)
+                self.assertIsNone(by)
+
+    def test_each_round_trip_row_can_refute(self):
+        # Spec 5: a probe that cannot fail is the defect this epic exists to
+        # prevent. Break the guard three ways; each must REFUTE and name a row.
+        from scripts import read_guard_hook
+        with tempfile.TemporaryDirectory() as session_root:
+            self._session_root(session_root)
+            cases = {
+                "decide allows everything": mock.patch.object(read_guard_hook, "decide", return_value=(True, "")),
+                "decide denies everything": mock.patch.object(read_guard_hook, "decide", return_value=(False, "x")),
+                "bind never binds": mock.patch.object(read_guard_hook, "bind", return_value=None),
+            }
+            for name, patch in cases.items():
+                with self.subTest(case=name), patch:
+                    state, by, detail = host_probes.probe_read_guard_armed("claude", session_root=session_root)
+                    self.assertEqual(hosts.REFUTED, state)
+                    self.assertEqual("read-guard-armed", by)
+                    self.assertIn("the guard", detail)
+
+    def test_the_probe_leaves_the_sessions_settings_untouched(self):
+        with tempfile.TemporaryDirectory() as session_root:
+            self._session_root(session_root)
+            settings = os.path.join(session_root, ".claude", "settings.local.json")
+            host_probes.probe_read_guard_armed("claude", session_root=session_root)
+            self.assertEqual("{}", open(settings, encoding="utf-8").read())
+            self.assertFalse(os.path.exists(os.path.join(session_root, ".panopticon", "read-scope.json")))
+
+    def test_run_probes_reports_read_scope_confined_by_this_probe_on_claude(self):
+        with tempfile.TemporaryDirectory() as target, tempfile.TemporaryDirectory() as registration, \
+                tempfile.TemporaryDirectory() as session_root:
+            self._session_root(session_root)
+            art = host_probes.run_probes("claude", target, session_root=session_root,
+                                         registration_dir=registration)
+            row = art["capabilities"][hosts.READ_SCOPE_CONFINED]
+            self.assertEqual(hosts.PROVEN, row["state"])
+            self.assertEqual("read-guard-armed", row["by"])

@@ -995,7 +995,7 @@ _HOSTILE_TREE_CAPS = {
         "detail": "no transcript directory"},
     hosts.READ_SCOPE_CONFINED: {
         "state": hosts.UNKNOWN, "by": None,
-        "detail": "no read-confinement control yet"},
+        "detail": "claude proves this since plan 5; other hosts do not claim it"},
     hosts.MODEL_BINDING: {
         "state": hosts.UNKNOWN, "by": None,
         "detail": "model=None until F4 binds them"},
@@ -1059,10 +1059,10 @@ class TestHostCapabilityDisclosure(unittest.TestCase):
 
     def test_an_all_proven_report_says_so_rather_than_rendering_nothing(self):
         # 5.1's inverse: the absence of a warning must mean "measured and
-        # proven", which only holds if the proven case is stated. No real host
-        # claims read_scope_confined (spec 7.2), so posture()'s claim-mask
-        # forces it unknown for any real host -- patch claude's claims rather
-        # than assert something the registry cannot produce.
+        # proven", which only holds if the proven case is stated. The
+        # synthetic fixture pins the shape; claude proves this capability
+        # since plan 5, other hosts do not claim it -- patch claude's claims
+        # rather than assert something the registry cannot produce.
         claiming = dataclasses.replace(hosts.HOSTS["claude"],
                                        claims=frozenset(hosts.CAPABILITIES))
         caps = {c: {"state": hosts.PROVEN, "by": "fixture", "detail": "proven"}

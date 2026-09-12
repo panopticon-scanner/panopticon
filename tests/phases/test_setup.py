@@ -94,7 +94,13 @@ class TestDriverSetup(unittest.TestCase):
         d = self._repo()
         entry = setup._setup_scan_entry(d, "PROMPT", "claude")
         self.assertEqual("return_json", entry["delivery"])
-        self.assertEqual("PROMPT", entry["prompt"])
+        self.assertEqual(requests.entry_marker("setup-scan") + "PROMPT", entry["prompt"])
+
+    def test_setup_scan_entry_is_directory_scoped_to_the_review_root(self):
+        d = self._repo()
+        entry = setup._setup_scan_entry(d, "PROMPT", "claude")
+        self.assertEqual("panopticon-entry: setup-scan", entry["marker"])
+        self.assertEqual(requests.scope(dirs=[os.path.abspath(d)]), entry["scope"])
 
     def test_scan_leaves_blanket_gitignore_and_notes_forced_add(self):
         # #1135: a repo already blanket-ignoring .panopticon/ keeps its

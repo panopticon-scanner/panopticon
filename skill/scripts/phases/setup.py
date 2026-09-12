@@ -4,6 +4,7 @@ import subprocess
 import sys
 
 from scripts import hosts
+from scripts import read_guard_hook
 import scripts.host_disclosure as host_disclosure
 import scripts.run_manifest as run_manifest
 import scripts.setup_flow as setup_flow
@@ -47,8 +48,12 @@ def _setup_scan_entry(review_root, prompt, host):
              # R-F4-2: deliberately unbound -- no ROLE_FILES entry, no profile;
              # see test_setup_scan_is_deliberately_not_model_bound.
              "model": None,
-             "prompt": prefix + prompt,
-             "out_file": out_file}
+             "prompt": requests.entry_marker("setup-scan") + prefix + prompt,
+             "marker": read_guard_hook.marker_line("setup-scan"),
+             "out_file": out_file,
+             # O2: the scan reads the repository by design -- a DIRECTORY scope
+             # over the review root, nothing outside it.
+             "scope": requests.scope(dirs=[os.path.abspath(review_root)])}
     if mode:
         entry["delivery"] = mode
     return entry

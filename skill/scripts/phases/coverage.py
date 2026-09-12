@@ -7,6 +7,7 @@ import scripts.dispatch as dispatch
 import scripts.groups_schema as groups_schema
 import scripts.run_tools as run_tools
 from scripts import hosts
+from scripts import read_guard_hook
 from . import engine
 from . import runio
 from . import requests
@@ -18,6 +19,21 @@ def _discovered_groups(review_root):
     return [(g.get("name"), g.get("files") or [])
             for g in (data.get("groups") or [])
             if isinstance(g, dict) and g.get("name")]
+
+def group_files_containing(review_root, rel_file):
+    """Absolute file list of the discovered group containing `rel_file`
+    (repo-relative), for the tool-advisor's scope (R-P5-2): tool findings
+    carry no group by construction (_tool_verify_queue ingests with
+    group=None), so the cell is found by its file. An ungrouped file confines
+    to itself; no file confines to nothing."""
+    if not isinstance(rel_file, str) or not rel_file:
+        return []
+    target = os.path.abspath(os.path.join(review_root, rel_file))
+    for _name, files in _discovered_groups(review_root):
+        abs_files = [os.path.abspath(os.path.join(review_root, f)) for f in files]
+        if target in abs_files:
+            return abs_files
+    return [target]
 
 def _scout_entry(review_root, manifest, group, files, host, registry_tools=None):
     """One host-agnostic scout dispatch entry (spec §4). The scout body +
@@ -51,15 +67,19 @@ def _scout_entry(review_root, manifest, group, files, host, registry_tools=None)
     # entry now carries the key that says so -- one field for every entry a host
     # must persist, the scout included. The prefix is empty for a no-Write role.
     mode, prefix = requests.delivery(host, host_ev, "scout.md", out_file)
-    entry = {"id": "scout-%s" % group,
+    entry_id = "scout-%s" % group
+    # raw paths, deliberately not _prompt_safe'd: the read guard matches them
+    # byte-for-byte after realpath (spec 7.2); never paste them into a prompt.
+    abs_files = [os.path.abspath(os.path.join(review_root, f)) for f in files]
+    entry = {"id": entry_id,
              "agent": dispatch.registered_agent_name("scout.md") if enforced else None,
              "enforced": enforced,
              "model": requests.bound_model(host, "scout"),
-             "prompt": prefix + prompt,
+             "prompt": requests.entry_marker(entry_id) + prefix + prompt,
+             "marker": read_guard_hook.marker_line(entry_id),
              "out_file": out_file,
-             # raw paths, deliberately not _prompt_safe'd: a confinement primitive
-             # must match them byte-for-byte (spec 7.2); never paste them into a prompt.
-             "files": [os.path.abspath(os.path.join(review_root, f)) for f in files]}
+             "files": abs_files,
+             "scope": requests.scope(files=abs_files)}
     if mode:
         entry["delivery"] = mode
     return entry

@@ -9,6 +9,7 @@ import scripts.ingest_tools as ingest_tools
 import scripts.score_gate as score_gate
 import scripts.synth.findings as findings_mod
 from scripts import hosts
+from scripts import read_guard_hook
 from . import engine
 from . import runio
 from . import coverage
@@ -214,14 +215,19 @@ def _verify_entry(review_root, manifest, group, domain, files, cell, host,
     # instead of unguarded self-write -- see requests.delivery. This preamble
     # goes OUTSIDE (before) the #975 repo-root pin above.
     mode, prefix = requests.delivery(host, host_ev, "domain-advisor.md", out_file)
-    entry = {"id": "verify-%s-%s-%s%s" % (group, domain, stage,
-                                         "" if not part else "-part%d" % part),
+    entry_id = "verify-%s-%s-%s%s" % (group, domain, stage,
+                                      "" if not part else "-part%d" % part)
+    # raw paths, deliberately not _prompt_safe'd: the read guard matches them
+    # byte-for-byte after realpath (spec 7.2); never paste them into a prompt.
+    abs_files = [os.path.abspath(os.path.join(review_root, f)) for f in files]
+    entry = {"id": entry_id,
             "agent": dispatch.registered_agent_name("domain-advisor.md") if enforced else None,
             "enforced": enforced, "model": requests.bound_model(host, "domain_advisor"),
-            "prompt": prefix + prompt, "out_file": out_file,
-            # raw paths, deliberately not _prompt_safe'd: a confinement primitive
-            # must match them byte-for-byte (spec 7.2); never paste them into a prompt.
-            "files": [os.path.abspath(os.path.join(review_root, f)) for f in files]}
+            "prompt": requests.entry_marker(entry_id) + prefix + prompt,
+            "marker": read_guard_hook.marker_line(entry_id),
+            "out_file": out_file,
+            "files": abs_files,
+            "scope": requests.scope(files=abs_files)}
     if mode:
         entry["delivery"] = mode
     return entry
@@ -534,11 +540,24 @@ def _tool_verify_entry(review_root, manifest, queue_id, finding, host):
     # but the derivation is the one this module shares with the two
     # write-capable builders rather than a copy that could drift from it.
     mode, prefix = requests.delivery(host, host_ev, "advisor.md", out_file)
-    entry = {"id": "verify-tool-%s" % queue_id,
+    # R-P5-2: the tool finding carries no group by construction, so its scope
+    # is found by reverse-looking-up the cell containing its file. A redacted
+    # (hostile/escaping) location confines to nothing rather than to the
+    # redaction placeholder string.
+    located = None
+    if isinstance(safe_finding, dict) and isinstance(safe_finding.get("location"), dict):
+        located = safe_finding["location"].get("file")
+    if located == _REDACTED_CLAIM_PATH:
+        located = None
+    abs_files = coverage.group_files_containing(review_root, located)
+    entry_id = "verify-tool-%s" % queue_id
+    entry = {"id": entry_id,
             "agent": dispatch.registered_agent_name("advisor.md") if enforced else None,
             "enforced": enforced, "model": requests.bound_model(host, "advisor"),
-            "prompt": prefix + prompt,
-            "out_file": out_file}
+            "prompt": requests.entry_marker(entry_id) + prefix + prompt,
+            "marker": read_guard_hook.marker_line(entry_id),
+            "out_file": out_file,
+            "scope": requests.scope(files=abs_files)}
     if mode:
         entry["delivery"] = mode
     return entry
