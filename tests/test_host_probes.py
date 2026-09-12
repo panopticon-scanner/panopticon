@@ -867,8 +867,9 @@ class TestRunProbesBuildsTheArtifact(unittest.TestCase):
 
     def test_every_capability_gets_a_row_even_unprobed_ones(self):
         # 5.1: "nobody looked" is written down, never inferred from an absent
-        # key. read_scope_confined has no probe (spec 7.2); model_binding
-        # gained one in F4 (entry-model-bound). `registration_dir` is pinned
+        # key. read_scope_confined has a probe now too (read-guard-armed,
+        # plan 5); model_binding gained one in F4 (entry-model-bound).
+        # `registration_dir` is pinned
         # to an empty temp dir -- not left to default to this machine's real
         # ~/.claude/agents -- so the probe never touches live state and the
         # assertions stay broad (any real STATE) rather than depending on

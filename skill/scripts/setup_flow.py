@@ -391,8 +391,9 @@ def _check_host_shells(host, runner, repo_root=None):
         # derivation of one fact is free to drift from it.
         #
         # refuted is a fault the operator can act on; unknown is NOT
-        # APPLICABLE -- read_scope_confined is unknown on every host today and
-        # must not report as a failure nobody can clear.
+        # APPLICABLE -- read_scope_confined is proven on claude (read-guard-
+        # armed) and unknown on every other host, and an unknown must not
+        # report as a failure nobody can clear.
         ok = False if posture[capability] == hosts.REFUTED else None
         line = [g for g in gaps if g.startswith(capability)]
         checks.append(("host-capability:" + capability, ok,
