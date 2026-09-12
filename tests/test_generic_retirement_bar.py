@@ -20,11 +20,20 @@ capabilities. model_binding and usage_ledger are excluded by D5.
 import dataclasses
 import glob
 import os
+import tempfile
 import unittest
 from unittest import mock
 
+from conftest import write_host_evidence
 from scripts import dispatch, hosts, host_probes
+import scripts.ocrdb as ocrdb
+import scripts.phases.coverage as coverage
 import scripts.phases.requests as requests
+import scripts.phases.review as review
+import scripts.phases.runio as runio
+import scripts.phases.setup as setup
+import scripts.phases.verify as verify
+import scripts.read_guard_hook as read_guard_hook
 
 SECURITY_BAR = (hosts.TOOL_POLICY_ENFORCED, hosts.READ_SCOPE_CONFINED)
 DEPRECATED = "generic"
@@ -129,3 +138,60 @@ class TestGenericRetirementBar(unittest.TestCase):
                 with self.subTest(host=host, role_file=role_file):
                     mode, _prefix = requests.delivery(host, {}, role_file, "/abs/out.json")
                     self.assertEqual("return_json", mode)
+
+
+class TestTheReadClauseIsProvenByConstruction(unittest.TestCase):
+    """Spec §6: the read analogue of test_the_write_guard_clause_is_bridged_by_
+    construction. For every template in `dispatch.TEMPLATE_DIR`, the SAME
+    builder the driver dispatches through must emit an entry whose prompt
+    begins with ITS OWN marker line and whose `scope` dict has exactly the
+    three SCOPE_KEYS -- a sixth role added later fails this test until its
+    builder carries marker+scope too (I5)."""
+
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self._t.name)
+        os.makedirs(runio._pano(self.root))
+        self.addCleanup(self._t.cleanup)
+        write_host_evidence(self.root, {c: hosts.PROVEN for c in hosts.CAPABILITIES})
+        self.manifest = {"run_id": "R", "security_mode": "standard", "host": "claude"}
+        self.files = ["a.py"]
+        self.bundle = ocrdb.load_bundle()
+        self.cell = [{"id": "F1", "code": "SEC-A1A", "severity": "HIGH", "title": "t",
+                      "category": "SEC", "location": {"file": "a.py", "line": 1},
+                      "description": "d"}]
+
+    def _entries_by_role_file(self):
+        """{role file: the entry ITS builder produces} -- the driver's own
+        table, one builder call per template. A new template with no row here
+        fails test_every_template_file_is_covered before it can hide."""
+        return {
+            "scout.md": coverage._scout_entry(
+                self.root, self.manifest, "Auth", self.files, "claude"),
+            "domain-panel.md": review._cell_entry(
+                self.root, self.manifest, "Auth", "SEC", self.files, [], "claude", self.bundle),
+            "domain-advisor.md": verify._verify_entry(
+                self.root, self.manifest, "Auth", "SEC", self.files, self.cell, "claude",
+                self.bundle, "primary"),
+            "advisor.md": verify._tool_verify_entry(
+                self.root, self.manifest, "q1",
+                {"id": "T-1", "severity": "HIGH",
+                 "location": {"file": "a.py", "line_start": 1}}, "claude"),
+            "setup-scan.md": setup._setup_scan_entry(self.root, "BRIEF", "claude"),
+        }
+
+    def test_every_template_file_is_covered(self):
+        # The table's keys must equal the template directory's actual files --
+        # a new template file with no builder row fails HERE, loudly, instead
+        # of the per-role test below silently iterating one role short.
+        role_files = set(os.path.basename(p)
+                         for p in glob.glob(os.path.join(dispatch.TEMPLATE_DIR, "*.md")))
+        self.assertTrue(role_files)
+        self.assertEqual(role_files, set(self._entries_by_role_file()))
+
+    def test_every_role_entry_carries_its_own_marker_and_a_well_shaped_scope(self):
+        for role_file, entry in self._entries_by_role_file().items():
+            with self.subTest(role_file=role_file):
+                self.assertTrue(entry["prompt"].startswith(
+                    read_guard_hook.marker_line(entry["id"]) + "\n"))
+                self.assertEqual(set(read_guard_hook.SCOPE_KEYS), set(entry["scope"]))
