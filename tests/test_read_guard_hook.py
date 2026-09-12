@@ -363,6 +363,42 @@ class TestMain(unittest.TestCase):
                                  "tool_input": {"file_path": a}}, [scope_path])
             self.assertEqual((0, ""), (rc, out))
 
+    def test_main_denies_when_adjudication_raises(self):
+        # I2: main() must fail CLOSED (a deny response, exit 0 -- a non-2 exit
+        # is non-blocking in Claude Code and the tool would proceed) rather
+        # than crash out with a bare traceback and an unhandled exit code
+        # when adjudicate() raises for any reason.
+        with tempfile.TemporaryDirectory() as d:
+            scope_path = os.path.join(d, "scope.json")
+            with open(scope_path, "w", encoding="utf-8") as fh:
+                json.dump({"e": _scope()}, fh)
+            # Real repro: a NUL byte in transcript_path reaches glob.glob /
+            # os.path.isfile via subagent_transcript() and raises ValueError.
+            payload = {"tool_name": "Read", "agent_id": "a", "transcript_path": "bad\x00path.jsonl",
+                       "tool_input": {"file_path": os.path.join(d, "x")}}
+            rc, out = self._run(payload, [scope_path])
+            self.assertEqual(0, rc)
+            body = json.loads(out)["hookSpecificOutput"]
+            self.assertEqual("deny", body["permissionDecision"])
+            self.assertIn("read guard crashed", body["permissionDecisionReason"])
+
+        # Belt-and-suspenders: any other exception from adjudicate() too.
+        with tempfile.TemporaryDirectory() as d:
+            parent = os.path.join(d, "s.jsonl"); open(parent, "w").close()
+            scope_path = os.path.join(d, "scope.json")
+            with open(scope_path, "w", encoding="utf-8") as fh:
+                json.dump({"e": _scope()}, fh)
+            _write_subagent_transcript(parent, "a", "panopticon-entry: e\n")
+            payload = {"tool_name": "Read", "agent_id": "a", "transcript_path": parent,
+                       "tool_input": {"file_path": os.path.join(d, "x")}}
+            with mock.patch.object(rg, "adjudicate", side_effect=RuntimeError("boom")):
+                rc, out = self._run(payload, [scope_path])
+            self.assertEqual(0, rc)
+            body = json.loads(out)["hookSpecificOutput"]
+            self.assertEqual("deny", body["permissionDecision"])
+            self.assertIn("read guard crashed", body["permissionDecisionReason"])
+            self.assertIn("boom", body["permissionDecisionReason"])
+
     def test_malformed_and_non_dict_stdin_are_tolerated(self):
         for raw in ("{not json", "[1, 2]"):
             with self.subTest(raw=raw):
