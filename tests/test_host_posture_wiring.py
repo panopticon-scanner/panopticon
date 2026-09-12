@@ -455,8 +455,11 @@ class TestTheEntryVariesWithTheHostOnlyWhereF4SaysItDoes(unittest.TestCase):
                 self.assertEqual("return_json", g["delivery"])
                 # and the prompt BODY is identical once gemini's preamble is stripped
                 prefix = requests.RETURN_PERSIST_PREAMBLE % {"out_file": g["out_file"]}
-                self.assertTrue(g["prompt"].startswith(prefix))
-                self.assertEqual(c["prompt"], g["prompt"][len(prefix):])
+                marker = requests.entry_marker(c["id"])
+                self.assertEqual(marker, requests.entry_marker(g["id"]))
+                self.assertTrue(c["prompt"].startswith(marker))
+                self.assertTrue(g["prompt"].startswith(marker + prefix))
+                self.assertEqual(c["prompt"][len(marker):], g["prompt"][len(marker) + len(prefix):])
 
 
 if __name__ == "__main__":  # pragma: no cover

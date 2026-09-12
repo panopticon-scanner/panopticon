@@ -100,7 +100,8 @@ class TestReviewerFileListsAreAbsolute(unittest.TestCase):
         # dispatch.render_advisor_prompts' #975 "Repo root:" prepend).
         expected_header = "Repo root: %s" % os.path.abspath(self.root)
         # startswith is strictly stronger than assertIn (present AND at pos 0).
-        self.assertTrue(self._make_verify_entry()["prompt"].startswith(expected_header))
+        entry = self._make_verify_entry()
+        self.assertTrue(entry["prompt"].startswith(requests.entry_marker(entry["id"]) + expected_header))
 
 
 class TestBoundModel(unittest.TestCase):
@@ -206,3 +207,31 @@ class TestDriverPlanEntries(unittest.TestCase):
             for entry in entries:
                 self.assertNotIn("files", entry)
                 self.assertNotIn("model", entry)
+
+    def test_driver_plan_entries_carry_no_scope(self):
+        # R-P5-6: a declaration of which out_files must exist, not a scope grant.
+        with tempfile.TemporaryDirectory() as root:
+            manifest = {"run_id": "R", "security_mode": "standard", "host": "claude"}
+            runio._write_json(runio._pano(root, "groups.json"),
+                             {"groups": [{"name": "Auth", "files": ["a.py"]}]})
+            runio._write_json(runio._pano(root, "coverage-Auth.json"),
+                             {"effective": ["SEC"]})
+            entries = list(requests._driver_plan_entries(root, manifest))
+            self.assertTrue(entries)
+            for entry in entries:
+                self.assertNotIn("scope", entry)
+                self.assertNotIn("marker", entry)
+
+
+class TestEntryMarkerAndScope(unittest.TestCase):
+    def test_entry_marker_is_the_hooks_marker_line_plus_newline(self):
+        from scripts import read_guard_hook
+        self.assertEqual(read_guard_hook.marker_line("review-app-SEC") + "\n",
+                         requests.entry_marker("review-app-SEC"))
+        self.assertEqual("review-app-SEC",
+                         read_guard_hook.marker_of(requests.entry_marker("review-app-SEC") + "body"))
+
+    def test_scope_has_exactly_the_three_keys(self):
+        from scripts import read_guard_hook
+        self.assertEqual({"files": ["/a"], "dirs": [], "reads": []}, requests.scope(files=["/a"]))
+        self.assertEqual(set(read_guard_hook.SCOPE_KEYS), set(requests.scope()))
