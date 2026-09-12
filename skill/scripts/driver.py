@@ -262,6 +262,12 @@ def _establish_host_posture(review_root, manifest, args):
     Returns an error message when the run must stop, else None.
     """
     host = manifest.get("host", "claude")
+    if hosts.is_deprecated(host):
+        # D4: printed from the RESOLVED host, not from argv, so a resumed run
+        # (--host absent, the manifest authoritative) prints it too. Every
+        # invocation reaches here before any phase dispatches (spec 10: a
+        # notice, not a gate -- nothing about the run below this line changes).
+        print(host_disclosure.GENERIC_DEPRECATION, file=sys.stderr)
     # THREE trees, three arguments -- see run_probes' docstring. `review_root`
     # is the REVIEWED tree (the --pr worktree, or the git toplevel), which is
     # what the shadow scan must read; `args.target` is the operator's own

@@ -3,6 +3,8 @@ import os
 import subprocess
 import sys
 
+from scripts import hosts
+import scripts.host_disclosure as host_disclosure
 import scripts.run_manifest as run_manifest
 import scripts.setup_flow as setup_flow
 from . import engine
@@ -214,6 +216,15 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES):
                                       or overrides["max_per_group"]),
                     "max_groups": getattr(args, "max_groups", None) or overrides["max_groups"]}
         runio._write_json(_setup_manifest_path(review_root), manifest)
+    host = manifest.get("host", runio._DEFAULTS["host"])
+    if hosts.is_deprecated(host):
+        # D4, mirroring driver.run()'s _establish_host_posture: printed from
+        # the RESOLVED host (the manifest, whether just minted from args.host
+        # or loaded from a prior invocation), once per `driver setup` call,
+        # before either setup phase runs. `hosts.is_deprecated` (not a bare
+        # `host == "generic"`) because tests/test_host_posture_wiring.py's
+        # AST guard forbids phases/ deciding anything from a host's NAME.
+        print(host_disclosure.GENERIC_DEPRECATION, file=sys.stderr)
     try:
         result = engine.run_engine(review_root, manifest, phases)
     except runio.DriverError as exc:

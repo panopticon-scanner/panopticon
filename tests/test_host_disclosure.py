@@ -128,6 +128,16 @@ class TestTheWordingRule(unittest.TestCase):
         self.assertIn("--emit-host-agents claude", text)
         self.assertIn("PANOPTICON_MODEL_", text)
 
+    def test_the_generic_deprecation_says_what_and_when(self):
+        # D4: "deprecate now, remove when the families land". The line must
+        # name the flag, say it is deprecated, say why it is unsafe to rely on,
+        # and name the bar that removes it.
+        text = host_disclosure.GENERIC_DEPRECATION
+        for token in ("--host generic", "deprecated", "unenforced",
+                      "retirement bar", "test_generic_retirement_bar"):
+            self.assertIn(token, text, token)
+        self.assertLess(len(text), 400, "one line, not a paragraph")
+
 
 class TestTheInverseCarriesEqualWeight(unittest.TestCase):
     def test_an_all_proven_host_says_so_explicitly(self):

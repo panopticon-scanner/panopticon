@@ -117,6 +117,13 @@ class TestSkillMd(unittest.TestCase):
         self.assertIn("profile model", section)
         self.assertIn("calling session's model", section)
 
+    def test_documents_the_retirement_bar_and_the_generic_deprecation(self):
+        section = _section(self.text, "## Host capabilities (5.2)", "\n## ")
+        # Tokens that exist only in the sentences this task adds.
+        self.assertIn("test_generic_retirement_bar", section)
+        self.assertIn("deprecated", section)
+        self.assertIn("#1070", section)
+
     def test_documents_delivery_as_the_complete_return_persist_contract(self):
         # #1608: every return-persist entry carries the key; absence means
         # self-write. The token below exists only in the sentence this task adds.

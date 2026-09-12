@@ -131,6 +131,22 @@ def spec(host):
     return HOSTS.get(host)
 
 
+def is_deprecated(host):
+    """Spec D4: `--host generic` is deprecated now, deleted once every
+    remaining driver-selectable host clears the retirement bar (spec 8.1;
+    see `test_generic_retirement_bar`).
+
+    A named predicate rather than a bare `host == "generic"` at each call
+    site: `tests/test_host_posture_wiring.py`'s AST guard exists precisely so
+    nothing under `phases/` decides behaviour from a host's NAME, and this
+    registry -- "the one table that knows what a host is" -- is where that
+    one comparison belongs. `gemini` also claims nothing but is not this: its
+    fate is a separate, still-open owner decision (see the plan's "What the
+    deletion still needs").
+    """
+    return host == "generic"
+
+
 def declares(host, capability):
     """Does this host CLAIM the capability?
 
