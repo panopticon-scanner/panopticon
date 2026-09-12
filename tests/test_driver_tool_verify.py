@@ -97,6 +97,19 @@ class _ToolVerifyBase(unittest.TestCase):
         # tool round never touches it. Stub it out for speed/isolation.
         return mock.patch("scripts.ocrdb.load_bundle", return_value={"domains": {}})
 
+    def _tool_entry(self, **repo_kwargs):
+        """Build one real tool-advisor dispatch entry via verify_execute, for
+        tests about the entry's shape rather than its downstream effects.
+        Sets self.root and self.tool_finding_file for the caller."""
+        self.tool_finding_file = "src/app.py"
+        self.root = self._repo(
+            [_result("r1", self.tool_finding_file, 1, level="note")], **repo_kwargs)
+        m = self._manifest()
+        with self._bundle():
+            verify.verify_execute(self.root, m)
+        return runio._load_json(
+            runio._pano(self.root, "dispatch-request.json"))["entries"][0]
+
 
 class TestToolQueueParity(_ToolVerifyBase):
     """The crux: the driver's tool-finding queue_ids AND finding ids equal
@@ -195,6 +208,14 @@ class TestToolVerifyDispatch(_ToolVerifyBase):
         entry = runio._load_json(runio._pano(d, "dispatch-request.json"))["entries"][0]
         self.assertEqual("SENTINEL-TOOL-ADVISOR", entry["model"])
         rm.assert_any_call(m.get("host", "claude"), "advisor")
+
+    def test_tool_advisor_entry_is_scoped_to_its_originating_cell(self):
+        e = self._tool_entry()
+        self.assertEqual("panopticon-entry: " + e["id"], e["marker"])
+        self.assertTrue(e["prompt"].startswith(e["marker"] + "\n"))
+        located = os.path.abspath(os.path.join(self.root, self.tool_finding_file))
+        self.assertIn(located, e["scope"]["files"])
+        self.assertEqual([], e["scope"]["dirs"])
 
     def test_generic_host_unenforced_entry(self):
         d = self._repo([_result("r1", "src/app.py", 1, level="note")])

@@ -76,8 +76,8 @@ class HostSpec:
 HOSTS = {
     "claude": HostSpec(
         name="claude",
-        claims=frozenset({TOOL_POLICY_ENFORCED, ARTIFACT_WRITE_GUARD,
-                          MODEL_BINDING, USAGE_LEDGER}),
+        claims=frozenset({TOOL_POLICY_ENFORCED, READ_SCOPE_CONFINED,
+                          ARTIFACT_WRITE_GUARD, MODEL_BINDING, USAGE_LEDGER}),
         registration_dir=CLAUDE_AGENTS_DIR,
         shell_format="md",
         project_scope_dirs=(os.path.join(".claude", "agents"),),
@@ -86,7 +86,8 @@ HOSTS = {
         probes={TOOL_POLICY_ENFORCED: "registered-shell-tools",
                 ARTIFACT_WRITE_GUARD: "write-guard-armed",
                 MODEL_BINDING: "entry-model-bound",
-                USAGE_LEDGER: "transcript-dir"}),
+                USAGE_LEDGER: "transcript-dir",
+                READ_SCOPE_CONFINED: "read-guard-armed"}),
     "kimi": HostSpec(
         name="kimi",
         claims=frozenset({TOOL_POLICY_ENFORCED, MODEL_BINDING}),

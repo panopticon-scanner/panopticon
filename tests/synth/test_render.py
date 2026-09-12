@@ -178,7 +178,7 @@ class TestHostCapabilitiesSurface(unittest.TestCase):
                     "detail": "no transcript directory"},
                 hosts.READ_SCOPE_CONFINED: {
                     "state": hosts.UNKNOWN, "by": None,
-                    "detail": "no read-confinement control yet"},
+                    "detail": "claude proves this since plan 5; other hosts do not claim it"},
                 hosts.MODEL_BINDING: {
                     "state": hosts.UNKNOWN, "by": None,
                     "detail": "model=None until F4 binds them"},
@@ -197,10 +197,11 @@ class TestHostCapabilitiesSurface(unittest.TestCase):
         self.assertNotIn(hosts.ARTIFACT_WRITE_GUARD, gap_block)
 
     def test_an_all_proven_report_states_it_rather_than_staying_silent(self):
-        # No real host can ever be all-proven: nobody in the registry claims
-        # read_scope_confined, so hosts.posture()'s claim-mask forces it to
-        # unknown no matter what the evidence says. Patch in a synthetic
-        # host that claims all five, same pattern as test_host_disclosure.py
+        # The synthetic fixture pins the shape; claude proves read_scope_confined
+        # since plan 5, other hosts do not claim it, and hosts.posture()'s
+        # claim-mask forces an unclaimed capability to unknown no matter what
+        # the evidence says. Patch in a synthetic host that claims all five,
+        # same pattern as test_host_disclosure.py
         # / test_host_evidence_wiring.py, so this fixture genuinely reaches
         # zero gaps under the real posture().
         all_claims = hosts.HostSpec(name="proves-everything",

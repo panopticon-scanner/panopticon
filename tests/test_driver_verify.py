@@ -88,7 +88,8 @@ class TestVerifyPrimary(unittest.TestCase):
         self.assertTrue(e["enforced"])
         self.assertEqual("return_json", e["delivery"])
         self.assertTrue(e["prompt"].startswith(
-            requests.RETURN_PERSIST_PREAMBLE % {"out_file": e["out_file"]}))
+            requests.entry_marker(e["id"])
+            + requests.RETURN_PERSIST_PREAMBLE % {"out_file": e["out_file"]}))
 
     def test_a_guarded_advisor_self_writes_with_no_preamble(self):
         # setUp already proves ARTIFACT_WRITE_GUARD -- restated for clarity.

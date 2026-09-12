@@ -118,13 +118,25 @@ class TestCellFanOut(unittest.TestCase):
                 self.assertTrue(e["enforced"])
                 self.assertEqual("return_json", e["delivery"])
                 self.assertTrue(e["prompt"].startswith(
-                    requests.RETURN_PERSIST_PREAMBLE % {"out_file": e["out_file"]}))
+                    requests.entry_marker(e["id"])
+                    + requests.RETURN_PERSIST_PREAMBLE % {"out_file": e["out_file"]}))
 
     def test_a_guarded_cell_self_writes_with_no_preamble(self):
         for e in self._run_review_with_guard(hosts.PROVEN):
             with self.subTest(entry=e["id"]):
                 self.assertNotIn("delivery", e)
                 self.assertNotIn("DELIVERY: return-persist", e["prompt"])
+
+    def test_every_cell_entry_carries_marker_and_scope(self):
+        entries = self._run_review_with_guard(hosts.PROVEN)
+        self.assertTrue(entries)
+        for e in entries:
+            with self.subTest(entry=e["id"]):
+                self.assertEqual(requests.entry_marker(e["id"]).rstrip("\n"), e["marker"])
+                self.assertTrue(e["prompt"].startswith(e["marker"] + "\n"))
+                self.assertEqual(requests.scope(files=e["files"]), e["scope"])
+                self.assertTrue(e["scope"]["files"])
+                self.assertTrue(all(os.path.isabs(p) for p in e["scope"]["files"]))
 
     def test_cell_entries_carry_their_scope_as_absolute_paths(self):
         # spec 7.2: machine-readable, exactly as out_file is for the write

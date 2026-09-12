@@ -128,6 +128,14 @@ class TestTheWordingRule(unittest.TestCase):
         self.assertIn("--emit-host-agents claude", text)
         self.assertIn("PANOPTICON_MODEL_", text)
 
+    def test_the_read_scope_remedy_names_the_real_fix(self):
+        # Until plan 5 the remedy honestly said "nothing to do: no host
+        # implements a read-confinement control yet". claude ships one now.
+        remedy = host_disclosure._REMEDY[hosts.READ_SCOPE_CONFINED] % {"host": "claude"}
+        self.assertNotIn("nothing to do", remedy)
+        self.assertIn("settings.local.json", remedy)
+        self.assertIn("transcript", remedy)
+
     def test_the_generic_deprecation_says_what_and_when(self):
         # D4: "deprecate now, remove when the families land". The line must
         # name the flag, say it is deprecated, say why it is unsafe to rely on,
@@ -144,14 +152,16 @@ class TestTheInverseCarriesEqualWeight(unittest.TestCase):
         # 5.1: absence of warnings must mean "measured and proven", never
         # "nobody looked".
         #
-        # No host in today's registry actually claims `read_scope_confined`
-        # (spec 7.2 -- no host implements read-confinement yet), so
-        # `hosts.posture()`'s claim-mask forces it to UNKNOWN for every real
-        # host no matter what the evidence says. That is a fact about today's
-        # registry, not a fact host_disclosure should be judged against: this
-        # test needs a posture that genuinely has no gaps to prove ALL_PROVEN
-        # fires, so it patches in a host that claims all five capabilities
-        # rather than asserting something the real registry cannot produce.
+        # Claiming a capability is not proving it: even now that claude
+        # claims `read_scope_confined` (plan 5) and, incidentally, every
+        # other capability in hosts.CAPABILITIES too, `hosts.posture()` still
+        # reads its state from the EVIDENCE an envelope reports, not from the
+        # claim. This test needs a posture that is genuinely PROVEN across
+        # all five to make ALL_PROVEN fire, which depends on a real probe run
+        # rather than a claim -- so it patches in a synthetic host and hands
+        # it an envelope where every capability already reports PROVEN. The
+        # synthetic host is what makes the all-proven case testable without a
+        # live run; it is not evidence that no real host claims the capability.
         #
         # Patched on the canonical `hosts.HOSTS` imported here. host_disclosure
         # now imports `hosts` via the repo's `try: from scripts import hosts /

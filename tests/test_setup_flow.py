@@ -1014,7 +1014,7 @@ def _mixed_artifact(host):
                 "detail": "no transcript directory"},
             hosts.READ_SCOPE_CONFINED: {
                 "state": hosts.UNKNOWN, "by": None,
-                "detail": "no host implements a read-confinement control yet"},
+                "detail": "claude proves this since plan 5; other hosts do not claim it"},
             hosts.MODEL_BINDING: {
                 "state": hosts.UNKNOWN, "by": None,
                 "detail": "dispatch entries carry model=None until F4 binds them"},
@@ -1025,10 +1025,11 @@ def _mixed_artifact(host):
 def _all_proven_artifact(host):
     """Every capability PROVEN, for pairing with a host that CLAIMS all five
     (see test_an_all_proven_host_says_so_rather_than_reporting_nothing) -- an
-    all-proven artifact alone is not enough: no REAL host claims
-    read_scope_confined, so hosts.posture()'s claim-mask would still force
-    that one to unknown and the NOT-PROVEN headline would fire regardless of
-    what this fixture says."""
+    all-proven artifact alone is not enough: the synthetic fixture pins the
+    shape; claude proves read_scope_confined since plan 5, other hosts do
+    not claim it, so hosts.posture()'s claim-mask would still force that one
+    to unknown on a host that does not claim it, and the NOT-PROVEN headline
+    would fire regardless of what this fixture says."""
     return {
         "schema_version": 1, "host": host, "probed_at": "T",
         "capabilities": {cap: {"state": hosts.PROVEN, "by": "fixture",
@@ -1064,8 +1065,8 @@ def _shell_less_artifact(host):
                           "so there is nothing to prove" % host},
             hosts.READ_SCOPE_CONFINED: {
                 "state": hosts.UNKNOWN, "by": None,
-                "detail": "no probe: no host implements a read-confinement "
-                          "control (spec 7.2)"},
+                "detail": "no probe: host %r does not claim this capability, "
+                          "so there is nothing to prove" % host},
             hosts.MODEL_BINDING: {
                 "state": hosts.UNKNOWN, "by": None,
                 "detail": "no probe in F3a: dispatch entries still carry "
@@ -1111,10 +1112,9 @@ class TestReadinessProbesThePostureAndNamesTheFix(unittest.TestCase):
 
     def test_an_all_proven_host_says_so_rather_than_reporting_nothing(self):
         # 5.1's inverse: absence of warnings must mean "measured and proven",
-        # never "nobody looked". No host in today's registry claims
-        # read_scope_confined (spec 7.2), so hosts.posture()'s claim-mask
-        # forces it to unknown for any REAL host no matter what the evidence
-        # says -- test_host_disclosure.py's TestTheInverseCarriesEqualWeight
+        # never "nobody looked". The synthetic fixture pins the shape; claude
+        # proves this capability since plan 5, other hosts do not claim it
+        # -- test_host_disclosure.py's TestTheInverseCarriesEqualWeight
         # hits the identical trap and resolves it the same way: patch a real
         # host's claims to all five rather than asserting something the real
         # registry cannot produce. Claude's claims are patched (not a wholly

@@ -72,10 +72,31 @@ class TestCoveragePhase(unittest.TestCase):
             coverage.coverage_execute(self.root, self.manifest)
         entry = runio._load_json(runio._pano(self.root, "dispatch-request.json"))["entries"][0]
         self.assertEqual("SENTINEL-MODE", entry["delivery"])
-        self.assertTrue(entry["prompt"].startswith("SENTINEL-PREFIX "))
+        self.assertTrue(entry["prompt"].startswith(requests.entry_marker(entry["id"]) + "SENTINEL-PREFIX "))
         (host, _evidence, role_file, out_file), _kw = dl.call_args
         self.assertEqual((self.manifest.get("host", "claude"), "scout.md", entry["out_file"]),
                          (host, role_file, out_file))
+
+    def test_scout_entry_carries_marker_and_file_scope(self):
+        self._groups_json([{"name": "Auth", "files": ["a.py"]}])
+        self._groups_yml("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n")
+        with mock.patch("scripts.dispatch.render_prompt", return_value="SCOUT-BODY"):
+            coverage.coverage_execute(self.root, self.manifest)
+        entry = runio._load_json(runio._pano(self.root, "dispatch-request.json"))["entries"][0]
+        self.assertEqual("panopticon-entry: " + entry["id"], entry["marker"])
+        self.assertTrue(entry["prompt"].startswith(entry["marker"] + "\n"))
+        self.assertEqual(requests.scope(files=entry["files"]), entry["scope"])
+
+    def test_group_files_containing_reverse_looks_up_the_group(self):
+        # coverage_execute does not itself run discovery (that's a separate
+        # phase); write groups.json directly, the shape group_files_containing reads.
+        self._groups_json([{"name": "Auth", "files": ["a.py"]}])
+        a = os.path.abspath(os.path.join(self.root, "a.py"))
+        self.assertEqual([a], coverage.group_files_containing(self.root, "a.py"))
+        # R-P5-2: an ungrouped file confines to itself; no location confines to nothing
+        stray = os.path.abspath(os.path.join(self.root, "nowhere.py"))
+        self.assertEqual([stray], coverage.group_files_containing(self.root, "nowhere.py"))
+        self.assertEqual([], coverage.group_files_containing(self.root, None))
 
     def test_scout_entry_binds_the_resolved_model(self):
         # #1344 F4 (b). Sentinel, not a literal: a builder that hard-coded the

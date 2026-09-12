@@ -10,6 +10,7 @@ import scripts.synth.integrity as integrity_mod
 import scripts.synth.plan as plan_mod
 from scripts import hosts
 from scripts import model_resolver
+from scripts import read_guard_hook
 from . import runio
 from . import coverage
 
@@ -33,6 +34,25 @@ def bound_model(host, role):
     generic today -- which is the value they already dispatch with.
     """
     return model_resolver.resolve_model(host, role).get("model")
+
+
+def entry_marker(entry_id):
+    """Line 1 of EVERY dispatch entry's prompt, newline included (read-
+    confinement design 4.4). Rendered here and prepended by each builder as
+    the OUTERMOST wrap -- before the return-persist preamble and before the
+    verify builders' `Repo root:` pin -- never by a template. The read guard
+    reads it back from the subagent's transcript to bind the agent to this
+    entry; `entry["marker"]` carries the same line for a host that dispatches
+    from `prompt_file` (R-P5-1)."""
+    return read_guard_hook.marker_line(entry_id) + "\n"
+
+
+def scope(files=(), dirs=(), reads=()):
+    """An entry's read scope: absolute, byte-exact paths the read guard
+    matches after realpath. `files` duplicates entry["files"] on purpose (the
+    guard reads one key of one shape); `dirs` is a directory scope (setup-
+    scan); `reads` is the extra-file allowance, [] on every entry today."""
+    return {"files": list(files), "dirs": list(dirs), "reads": list(reads)}
 
 
 # #1344 F4 (a). The ONE wording for the return-persist instruction. Two builders
@@ -177,7 +197,8 @@ def _driver_plan_entries(review_root, manifest):
     plan_mod.derive_tool_policy_mode reports the run's real posture rather than
     defaulting to "advisory". No `files`/`role`/`model` -- this is a
     declaration of which out_files must exist, not a scope grant or a cost row;
-    the dispatch entries carry scope (F4) and this deliberately does not."""
+    the dispatch entries carry scope (F4 `files`, plan 5 `scope`) and this
+    deliberately does not (R-P5-6)."""
     enforced = (hosts.posture(manifest.get("host", "claude"),
                               runio.host_evidence(review_root))
                 [hosts.TOOL_POLICY_ENFORCED] == hosts.PROVEN)
