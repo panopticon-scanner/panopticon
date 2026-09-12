@@ -208,17 +208,27 @@ def _cell_entry(review_root, manifest, group, domain, files, tests, host, bundle
         "tool_hits": _tool_hits_for_cell(review_root, manifest, domain, files),
         "security_checklist": _render_security_checklist(domain),
         "out_file": out_file}, host)
-    enforced = (hosts.posture(host, runio.host_evidence(review_root))
-                [hosts.TOOL_POLICY_ENFORCED] == hosts.PROVEN)
+    host_ev = runio.host_evidence(review_root)
+    enforced = hosts.posture(host, host_ev)[hosts.TOOL_POLICY_ENFORCED] == hosts.PROVEN
+    # #1344 F4 (a): a host with no PROVEN artifact_write_guard gets return-persist
+    # instead of unguarded self-write -- see requests.delivery.
+    mode, prefix = requests.delivery(host, host_ev, "domain-panel.md", out_file)
     # run_id/group/domain restate the cell this entry IS, so a host can check a
     # findings file's own `_panopticon` stamp against the entry that asked for
     # it (group_runner.entry_is_done) instead of trusting the path alone. The
     # same three fields the domain-panel template requires in its output.
-    return {"id": "review-%s-%s" % (group, domain),
+    entry = {"id": "review-%s-%s" % (group, domain),
             "agent": dispatch.registered_agent_name("domain-panel.md") if enforced else None,
-            "enforced": enforced, "model": None, "prompt": prompt,
+            "enforced": enforced, "model": requests.bound_model(host, "domain_panel"),
+            "prompt": prefix + prompt,
             "out_file": out_file, "run_id": manifest["run_id"],
-            "group": group, "domain": domain}
+            "group": group, "domain": domain,
+            # raw paths, deliberately not _prompt_safe'd: a confinement primitive
+            # must match them byte-for-byte (spec 7.2); never paste them into a prompt.
+            "files": [os.path.abspath(os.path.join(review_root, f)) for f in files]}
+    if mode:
+        entry["delivery"] = mode
+    return entry
 
 def _load_cell_findings(review_root, manifest, group, domain):
     """The cell's reviewer findings, normalized + id-assigned exactly as

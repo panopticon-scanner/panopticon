@@ -9,8 +9,10 @@ from scripts import hosts
 from conftest import write_host_evidence
 import scripts.phases.runio as runio
 import scripts.phases.review as review
+import scripts.phases.requests as requests
 
 import scripts.ocrdb as ocrdb
+import scripts.model_resolver as model_resolver
 
 
 class TestCellFanOut(unittest.TestCase):
@@ -52,6 +54,21 @@ class TestCellFanOut(unittest.TestCase):
             self.assertEqual(e["out_file"], os.path.abspath(e["out_file"]))
             self.assertNotIn("delivery", e)   # host-agnostic
 
+    def test_cell_entries_bind_the_resolved_model(self):
+        with self._menu_stub(), \
+             mock.patch("scripts.dispatch.render_prompt", return_value="BODY"), \
+             mock.patch("scripts.dispatch.registered_agent_name",
+                        return_value="panopticon-domain-panel"), \
+             mock.patch("scripts.ocrdb.load_bundle", return_value={"domains": {}}), \
+             mock.patch.object(model_resolver, "resolve_model",
+                               return_value={"model": "SENTINEL-PANEL"}) as rm:
+            review.review_execute(self.root, self.manifest)
+        req = runio._load_json(runio._pano(self.root, "dispatch-request.json"))
+        for e in req["entries"]:
+            with self.subTest(entry=e["id"]):
+                self.assertEqual("SENTINEL-PANEL", e["model"])
+        rm.assert_any_call(self.manifest.get("host", "claude"), "domain_panel")
+
     def test_review_done_requires_all_cells(self):
         self.assertFalse(review.review_done(self.root, self.manifest))
         for dom in ("SEC", "DAT"):
@@ -73,3 +90,56 @@ class TestCellFanOut(unittest.TestCase):
         entry = review._cell_entry(self.root, self.manifest, "Auth", "SEC",
                                     ["a.py"], [], "claude", ocrdb.load_bundle())
         self.assertIn(entry["out_file"], entry["prompt"])
+
+    def _run_review_with_guard(self, guard):
+        write_host_evidence(self.root, {hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN,
+                                        hosts.ARTIFACT_WRITE_GUARD: guard})
+        # require_unenforced_ack (#1519) runs on every review_execute call,
+        # independent of delivery -- a REFUTED guard with no override would
+        # refuse the whole checkpoint before a single cell entry is built,
+        # which is a DIFFERENT test (test_unenforced_ack.py). Accepting the
+        # risk here isolates the thing THIS test is about: the shape of the
+        # entry the bridge produces once dispatch is allowed to proceed.
+        manifest = dict(self.manifest, flags={"allow_unenforced": True})
+        with self._menu_stub(), \
+             mock.patch("scripts.dispatch.render_prompt", return_value="BODY"), \
+             mock.patch("scripts.dispatch.registered_agent_name",
+                        return_value="panopticon-domain-panel"), \
+             mock.patch("scripts.ocrdb.load_bundle", return_value={"domains": {}}):
+            review.review_execute(self.root, manifest)
+        return runio._load_json(runio._pano(self.root, "dispatch-request.json"))["entries"]
+
+    def test_an_enforced_cell_with_no_write_guard_is_return_persist(self):
+        # enforced stays True (the shell exists); delivery flips (nothing
+        # confines its Write). Both facts on one entry -- an all-refuted or
+        # all-proven fixture cannot show this.
+        for e in self._run_review_with_guard(hosts.REFUTED):
+            with self.subTest(entry=e["id"]):
+                self.assertTrue(e["enforced"])
+                self.assertEqual("return_json", e["delivery"])
+                self.assertTrue(e["prompt"].startswith(
+                    requests.RETURN_PERSIST_PREAMBLE % {"out_file": e["out_file"]}))
+
+    def test_a_guarded_cell_self_writes_with_no_preamble(self):
+        for e in self._run_review_with_guard(hosts.PROVEN):
+            with self.subTest(entry=e["id"]):
+                self.assertNotIn("delivery", e)
+                self.assertNotIn("DELIVERY: return-persist", e["prompt"])
+
+    def test_cell_entries_carry_their_scope_as_absolute_paths(self):
+        # spec 7.2: machine-readable, exactly as out_file is for the write
+        # guard. Same resolution the prose list uses, so the two cannot name
+        # different trees.
+        with self._menu_stub(), \
+             mock.patch("scripts.dispatch.render_prompt", return_value="BODY"), \
+             mock.patch("scripts.dispatch.registered_agent_name",
+                        return_value="panopticon-domain-panel"), \
+             mock.patch("scripts.ocrdb.load_bundle", return_value={"domains": {}}):
+            review.review_execute(self.root, self.manifest)
+        req = runio._load_json(runio._pano(self.root, "dispatch-request.json"))
+        expected = [os.path.abspath(os.path.join(self.root, "a.py"))]
+        for e in req["entries"]:
+            with self.subTest(entry=e["id"]):
+                self.assertEqual(expected, e["files"])
+                for f in e["files"]:
+                    self.assertTrue(f.startswith(os.path.abspath(self.root) + os.sep))

@@ -39,8 +39,9 @@ import tempfile
 import unittest
 from unittest import mock
 
-from conftest import REPO_ROOT
+from conftest import REPO_ROOT, write_host_evidence
 from scripts import hosts
+import scripts.model_resolver as model_resolver
 import scripts.ocrdb as ocrdb
 import scripts.phases.coverage as coverage
 import scripts.phases.requests as requests
@@ -361,6 +362,101 @@ class TestTheThreeCapabilitiesAreNotInterchangeable(unittest.TestCase):
         for host in (self.PROBE_TPE, self.PROBE_AWG):
             with self.subTest(host=host):
                 self.assertFalse(self._usage_ran(host))
+
+
+class TestTheEntryVariesWithTheHostOnlyWhereF4SaysItDoes(unittest.TestCase):
+    """One review root, two hosts, one diff. Everything that is about the CELL
+    (id, out_file, files, run_id, group, domain, the prompt body) is
+    byte-identical; everything that is about the HOST (agent, enforced, model,
+    delivery, the preamble) differs exactly as F4 specifies. A builder that let
+    host identity leak anywhere else fails here and nowhere else.
+
+    #1344 F4/§9.6. `_entries` is `tests/phases/test_review.py`'s
+    `TestCellFanOut.setUp` verbatim, parameterised on `host`: the manifest's
+    `"host"` key and `write_host_evidence`'s `host=` kwarg. The all-PROVEN
+    claude evidence is the one non-mixed fixture this plan permits, because
+    the subject here is the *difference* between two postures and the gemini
+    side is all-unknown by construction (`{}` claims nothing).
+
+    Both hosts run in ONE review root; `requests._write_driver_plan` is
+    write-once, so `dispatch-plan-driver.json` keeps the first (claude) run's
+    entries -- nothing here reads it, and an assertion that does must run
+    gemini first.
+    """
+
+    _HOST_FIELDS = {"agent", "enforced", "model", "delivery"}
+
+    def setUp(self):
+        # ONE review root shared by both hosts -- §9.6's "one fixture, two
+        # postures". out_file/files are built from review_root, so two
+        # separate temp dirs would make even the host-agnostic CELL fields
+        # differ by path alone, for a reason that has nothing to do with F4.
+        # groups.json/groups.yml/coverage-Auth.json are host-independent, so
+        # they are written once here; _entries writes only the per-host
+        # evidence + manifest and re-runs review_execute against this same
+        # root. MAX_CELL_ATTEMPTS is 3 (review.py) and neither cell ever
+        # produces a findings file in this test, so the second call's
+        # attempt-count bump (1 -> 2) never trips _cell_exhausted and both
+        # calls see the same two domains pending.
+        self._t = tempfile.TemporaryDirectory()
+        self.addCleanup(self._t.cleanup)
+        self.root = os.path.realpath(self._t.name)
+        os.makedirs(runio._pano(self.root))
+        runio._write_json(runio._pano(self.root, "groups.json"),
+                           {"groups": [{"name": "Auth", "files": ["a.py"]}]})
+        with open(runio._pano(self.root, "groups.yml"), "w") as fh:
+            fh.write("groups:\n  Auth:\n    match: ['a.py']\n")
+        runio._write_json(runio._pano(self.root, "coverage-Auth.json"),
+                           {"group": "Auth", "effective": ["SEC", "DAT"], "run_id": "R"})
+
+    def _entries(self, host, states):
+        root = self.root
+        # gemini's all-unknown ARTIFACT_WRITE_GUARD would otherwise make
+        # require_unenforced_ack (#1519) refuse the checkpoint before a
+        # single cell entry is built -- a DIFFERENT question from this
+        # test's (the shape of the entry once dispatch is allowed to
+        # proceed), so accept the risk exactly as
+        # test_review.py's _run_review_with_guard does. Harmless for claude:
+        # its write guard is PROVEN, so require_unenforced_ack returns at its
+        # first line regardless of this flag.
+        manifest = {"run_id": "R", "security_mode": "standard", "host": host,
+                    "flags": {"allow_unenforced": True}}
+        write_host_evidence(root, states, host=host)
+        menu_stub = mock.patch(
+            "scripts.ocrdb.domain_menu",
+            return_value=[{"code": "SEC-A1A", "name": "x", "severity": "HIGH", "cwe": []}])
+        with menu_stub, \
+             mock.patch("scripts.dispatch.render_prompt", return_value="BODY"), \
+             mock.patch("scripts.dispatch.registered_agent_name",
+                        return_value="panopticon-domain-panel"), \
+             mock.patch("scripts.ocrdb.load_bundle", return_value={"domains": {}}):
+            review.review_execute(root, manifest)
+        req = runio._load_json(runio._pano(root, "dispatch-request.json"))
+        return req["entries"]
+
+    def test_claude_and_gemini_differ_only_in_the_host_fields(self):
+        claude = self._entries("claude", {c: hosts.PROVEN for c in hosts.CAPABILITIES})
+        gemini = self._entries("gemini", {})                    # claims nothing
+        self.assertEqual(len(claude), len(gemini))
+        for c, g in zip(sorted(claude, key=lambda e: e["id"]),
+                        sorted(gemini, key=lambda e: e["id"])):
+            with self.subTest(entry=c["id"]):
+                cell_c = {k: v for k, v in c.items() if k not in self._HOST_FIELDS | {"prompt"}}
+                cell_g = {k: v for k, v in g.items() if k not in self._HOST_FIELDS | {"prompt"}}
+                self.assertEqual(cell_c, cell_g)                  # the CELL is host-agnostic
+                self.assertEqual(c["files"], g["files"])          # scope does not depend on host
+                # the host fields, exactly as F4 specifies each side
+                self.assertTrue(c["enforced"]);  self.assertFalse(g["enforced"])
+                self.assertIsNotNone(c["agent"]); self.assertIsNone(g["agent"])
+                self.assertEqual(model_resolver.resolve_model("claude", "domain_panel")["model"],
+                                 c["model"])
+                self.assertIsNone(g["model"])
+                self.assertNotIn("delivery", c)
+                self.assertEqual("return_json", g["delivery"])
+                # and the prompt BODY is identical once gemini's preamble is stripped
+                prefix = requests.RETURN_PERSIST_PREAMBLE % {"out_file": g["out_file"]}
+                self.assertTrue(g["prompt"].startswith(prefix))
+                self.assertEqual(c["prompt"], g["prompt"][len(prefix):])
 
 
 if __name__ == "__main__":  # pragma: no cover

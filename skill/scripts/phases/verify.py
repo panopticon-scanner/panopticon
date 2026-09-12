@@ -208,12 +208,23 @@ def _verify_entry(review_root, manifest, group, domain, files, cell, host,
     prompt = ("Repo root: %s\nEvery relative path in the claims below resolves "
               "against this root -- read files THERE, never in your session's "
               "default checkout.\n\n%s" % (os.path.abspath(review_root), prompt))
-    enforced = (hosts.posture(host, runio.host_evidence(review_root))
-                [hosts.TOOL_POLICY_ENFORCED] == hosts.PROVEN)
-    return {"id": "verify-%s-%s-%s%s" % (group, domain, stage,
+    host_ev = runio.host_evidence(review_root)
+    enforced = hosts.posture(host, host_ev)[hosts.TOOL_POLICY_ENFORCED] == hosts.PROVEN
+    # #1344 F4 (a): a host with no PROVEN artifact_write_guard gets return-persist
+    # instead of unguarded self-write -- see requests.delivery. This preamble
+    # goes OUTSIDE (before) the #975 repo-root pin above.
+    mode, prefix = requests.delivery(host, host_ev, "domain-advisor.md", out_file)
+    entry = {"id": "verify-%s-%s-%s%s" % (group, domain, stage,
                                          "" if not part else "-part%d" % part),
             "agent": dispatch.registered_agent_name("domain-advisor.md") if enforced else None,
-            "enforced": enforced, "model": None, "prompt": prompt, "out_file": out_file}
+            "enforced": enforced, "model": requests.bound_model(host, "domain_advisor"),
+            "prompt": prefix + prompt, "out_file": out_file,
+            # raw paths, deliberately not _prompt_safe'd: a confinement primitive
+            # must match them byte-for-byte (spec 7.2); never paste them into a prompt.
+            "files": [os.path.abspath(os.path.join(review_root, f)) for f in files]}
+    if mode:
+        entry["delivery"] = mode
+    return entry
 
 def verify_execute(review_root, manifest):
     # #5.0-16 H3: snapshot every declared cell's bytes at the review->verify
@@ -516,12 +527,21 @@ def _tool_verify_entry(review_root, manifest, queue_id, finding, host):
     prompt = ("Repo root: %s\nEvery relative path in the claim below resolves "
               "against this root -- read files THERE, never in your session's "
               "default checkout.\n\n%s" % (os.path.abspath(review_root), prompt))
-    enforced = (hosts.posture(host, runio.host_evidence(review_root))
-                [hosts.TOOL_POLICY_ENFORCED] == hosts.PROVEN)
-    return {"id": "verify-tool-%s" % queue_id,
+    host_ev = runio.host_evidence(review_root)
+    enforced = hosts.posture(host, host_ev)[hosts.TOOL_POLICY_ENFORCED] == hosts.PROVEN
+    # #1344 F4 (a): derived, not a literal -- advisor.md grants no Write, so
+    # requests.delivery always answers "return_json" with no preamble here,
+    # but the derivation is the one this module shares with the two
+    # write-capable builders rather than a copy that could drift from it.
+    mode, prefix = requests.delivery(host, host_ev, "advisor.md", out_file)
+    entry = {"id": "verify-tool-%s" % queue_id,
             "agent": dispatch.registered_agent_name("advisor.md") if enforced else None,
-            "enforced": enforced, "model": None, "prompt": prompt,
-            "out_file": out_file, "delivery": "return_json"}
+            "enforced": enforced, "model": requests.bound_model(host, "advisor"),
+            "prompt": prefix + prompt,
+            "out_file": out_file}
+    if mode:
+        entry["delivery"] = mode
+    return entry
 
 def _verify_tools_execute(review_root, manifest, host):
     """Emit the tool-finding verify checkpoint when any tool finding still lacks

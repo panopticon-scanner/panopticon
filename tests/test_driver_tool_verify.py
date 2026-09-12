@@ -22,6 +22,7 @@ import scripts.phases.verify as verify
 import scripts.phases.synthesize as synthesize
 
 import scripts.evidence as evidence
+import scripts.model_resolver as model_resolver
 
 RUN_ID = "RID"
 
@@ -169,6 +170,31 @@ class TestToolVerifyDispatch(_ToolVerifyBase):
         )
         self.assertEqual(entry["out_file"], os.path.abspath(entry["out_file"]))
         self.assertIn("Repo root:", entry["prompt"])  # advisor root pin
+
+    def test_tool_advisor_carries_no_preamble_whatever_the_guard(self):
+        # Guards against a builder that composes the return-persist preamble
+        # itself instead of taking it from `requests.delivery()` -- advisor.md
+        # grants no Write, so the helper never hands one back, and a preamble
+        # here can only have been hand-rolled.
+        d = self._repo([_result("r1", "src/app.py", 1, level="note")])
+        m = self._manifest()
+        write_host_evidence(d, {hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN,
+                                hosts.ARTIFACT_WRITE_GUARD: hosts.REFUTED})
+        with self._bundle():
+            verify.verify_execute(d, m)
+        entry = runio._load_json(runio._pano(d, "dispatch-request.json"))["entries"][0]
+        self.assertNotIn("DELIVERY: return-persist", entry["prompt"])
+
+    def test_tool_advisor_entry_binds_the_resolved_model(self):
+        d = self._repo([_result("r1", "src/app.py", 1, level="note")])
+        m = self._manifest()
+        with self._bundle(), \
+             mock.patch.object(model_resolver, "resolve_model",
+                               return_value={"model": "SENTINEL-TOOL-ADVISOR"}) as rm:
+            verify.verify_execute(d, m)
+        entry = runio._load_json(runio._pano(d, "dispatch-request.json"))["entries"][0]
+        self.assertEqual("SENTINEL-TOOL-ADVISOR", entry["model"])
+        rm.assert_any_call(m.get("host", "claude"), "advisor")
 
     def test_generic_host_unenforced_entry(self):
         d = self._repo([_result("r1", "src/app.py", 1, level="note")])

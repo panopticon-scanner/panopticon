@@ -96,6 +96,27 @@ class TestSkillMd(unittest.TestCase):
             with self.subTest(capability=capability):
                 self.assertIn(capability, section)
 
+    def test_documents_f4_model_binding_scope_and_the_return_persist_bridge(self):
+        # #1344 F4. Three contract sentences changed: the entry shape gained
+        # `files` and a derived `delivery`; the return-persist exception is no
+        # longer one role but any write-capable role on a host that has not
+        # proven artifact_write_guard; and model_binding now HAS a probe.
+        for token in ["entry-model-bound", "`files`", "return_json",
+                      "artifact_write_guard", "PANOPTICON_MODEL_"]:
+            self.assertIn(token, self.text, token)
+        section = _section(self.text, "## Host capabilities (5.2)", "\n## ")
+        # The F3b sentence this plan makes false must be gone, not amended around.
+        self.assertNotIn("`model_binding` have no probe yet", section)
+        self.assertIn("registration silently wins", section)
+        # R-F4-1: the one claude behaviour change is written down where an
+        # operator will read it, not only in a plan file. Both "unenforced"
+        # and "session" already occur elsewhere in this section (the
+        # host_disclosure mood-quote, usage_ledger's transcript-session
+        # sentence) so those tokens alone pass vacuously -- pin phrasing that
+        # only the R-F4-1 sentence itself contains.
+        self.assertIn("profile model", section)
+        self.assertIn("calling session's model", section)
+
     def test_documents_unloadable_verdicts_gate_enforced(self):
         # #979: un-loadable verdicts are not just surfaced — they dent the gate.
         self.assertIn("meta.coverage.verdicts.unloadable", self.text)

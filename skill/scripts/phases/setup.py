@@ -37,6 +37,8 @@ def _setup_scan_entry(review_root, prompt):
     return {"id": "setup-scan",
             "agent": None,
             "enforced": False,
+            # R-F4-2: deliberately unbound -- no ROLE_FILES entry, no profile;
+            # see test_setup_scan_is_deliberately_not_model_bound.
             "model": None,
             "prompt": prompt,
             "out_file": os.path.abspath(runio._pano(review_root, "setup-proposal.json"))}

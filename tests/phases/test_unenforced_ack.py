@@ -25,6 +25,8 @@ import scripts.dispatch as dispatch
 from scripts import hosts
 import scripts.phases.requests as requests
 import scripts.phases.runio as runio
+import scripts.phases.review as review
+import scripts.ocrdb as ocrdb
 import scripts.synth.integrity as integrity
 
 ENTRIES = [{"group": "Auth", "domain": "SEC", "enforced": False,
@@ -111,6 +113,38 @@ class TestGate(unittest.TestCase):
         self.assertFalse(ack["write_guard_covers_bash"])
         self.assertEqual(ack["plan_sha256"], integrity._plan_hash(ENTRIES))
         self.assertIn("no registered shell", ack["note"])
+
+
+class TestTheBridgeDoesNotBypassTheUnenforcedAck(unittest.TestCase):
+    """spec 10: extended, not deleted. #1344 F4 (a) makes an unguarded host's
+    write-capable cells return-persist instead of unmediated self-write, but
+    the shell still GRANTS Write -- require_unenforced_ack's refusal is about
+    that grant, not about how the entry's output reaches disk, so it must
+    still fire on an entry that now carries `delivery`.
+    """
+
+    def _root(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        os.makedirs(os.path.join(d, ".panopticon"), exist_ok=True)
+        return d
+
+    def test_the_bridge_does_not_bypass_the_unenforced_ack(self):
+        # An unguarded host's cells are now return-persist, but the shell
+        # still grants Write, so the refusal without --allow-unenforced
+        # stands exactly as before.
+        root = self._root()
+        write_host_evidence(root, {hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN,
+                                   hosts.ARTIFACT_WRITE_GUARD: hosts.REFUTED})
+        manifest_without_the_flag = {"host": "claude", "run_id": "R",
+                                     "security_mode": "standard", "flags": {}}
+        # Built through the REAL builder path, not a hand-authored dict, so the
+        # entry actually carries the bridge's delivery + preamble.
+        entries = [review._cell_entry(root, manifest_without_the_flag, "Auth", "SEC",
+                                      [], [], "claude", ocrdb.load_bundle())]
+        self.assertEqual("return_json", entries[0]["delivery"])  # the bridge fired
+        with self.assertRaises(runio.DriverError):
+            requests.require_unenforced_ack(root, manifest_without_the_flag, entries)
 
 
 class TestTheAckRecordsAShadowedOverride(unittest.TestCase):
