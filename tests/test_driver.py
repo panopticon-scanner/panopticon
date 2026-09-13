@@ -1507,3 +1507,39 @@ class TestAllowUnenforcedHelpNamesTheCapability(unittest.TestCase):
         rendered = buf.getvalue()
         self.assertIn("--allow-unenforced", rendered)
         self.assertIn(hosts.ARTIFACT_WRITE_GUARD, rendered)
+
+
+class TestDriverPersistCLI(unittest.TestCase):
+    def _repo(self):
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        os.makedirs(os.path.join(d, ".panopticon", "runs", "t"))
+        return d
+
+    def _request(self, d, entries):
+        runio._write_json(os.path.join(d, ".panopticon", "dispatch-request.json"),
+                          {"schema_version": 1, "run_id": "RID", "checkpoint": "scout",
+                           "group": None, "entries": entries})
+
+    def test_persist_writes_the_named_entry_from_a_file(self):
+        d = self._repo()
+        out = os.path.join(d, ".panopticon", "runs", "t", "scout-app.json")
+        self._request(d, [{"id": "scout-app", "out_file": out, "delivery": "return_json"}])
+        reply = os.path.join(d, "reply.txt")
+        with open(reply, "w", encoding="utf-8") as fh:
+            fh.write('```json\n{"domains": [], "files": [], "tools": []}\n```')
+        with mock.patch("scripts.phases.requests.request_path",
+                        return_value=os.path.join(d, ".panopticon", "dispatch-request.json")):
+            rc = driver.main(["persist", "scout-app", "--file", reply, d])
+        self.assertEqual(rc, 0)
+        self.assertTrue(os.path.isfile(out))
+
+    def test_persist_refuses_an_unknown_entry_with_exit_1(self):
+        d = self._repo()
+        self._request(d, [])
+        with mock.patch("scripts.phases.requests.request_path",
+                        return_value=os.path.join(d, ".panopticon", "dispatch-request.json")), \
+             contextlib.redirect_stderr(io.StringIO()) as err:
+            rc = driver.main(["persist", "scout-app", "--file", os.devnull, d])
+        self.assertEqual(rc, 1)
+        self.assertIn("scout-app", err.getvalue())

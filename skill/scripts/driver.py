@@ -202,6 +202,12 @@ def build_parser():
     # else the defaults (48; max(4, 2 x ceil(code_files / cap))).
     sp.add_argument("--max-per-group", type=_positive_int, default=None)
     sp.add_argument("--max-groups", type=_positive_int, default=None)
+    pp = sub.add_parser("persist")
+    pp.add_argument("entry_id")
+    pp.add_argument("target", nargs="?", default=".")
+    pp.add_argument("--file", default=None, help="the reply text; stdin when absent")
+    pp.add_argument("--setup", action="store_true",
+                    help="the entry belongs to `driver setup`'s scan checkpoint")
     return parser
 
 
@@ -539,6 +545,9 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     if args.verb == "setup":
         return engine.emit_status(setup.run_setup_flow(args))
+    if args.verb in ("loop", "persist"):
+        import scripts.orchestrate as orchestrate   # R-P6-2: lazy, no cycle
+        return orchestrate.main_verb(args)
     return engine.emit_status(run(args))
 
 
