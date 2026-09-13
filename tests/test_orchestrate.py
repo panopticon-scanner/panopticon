@@ -123,10 +123,15 @@ class LoopCase(unittest.TestCase):
     def _seed_coverage(self, d, floor):
         # discovery/coverage would dispatch a scout; seed coverage so the first
         # checkpoint is review (the scout path is covered by TestScoutRoundTrip).
+        # Returns True: this seam mutated review_root, so `loop` must re-derive
+        # `status` with a second driver.run call to see the review checkpoint
+        # (production's `_after_first_run` always returns False -- see its
+        # docstring for why an unconditional second call would be a bug).
         manifest = driver.run_manifest.load_manifest(d)
         runio._write_json(runio._pano(d, "coverage-app.json"),
                           {"group": "app", "floor": floor, "effective": floor,
                            "run_id": manifest["run_id"]})
+        return True
 
 
 class TestHeadlessLoop(LoopCase):
@@ -223,10 +228,16 @@ class TestHeadlessLoop(LoopCase):
         d, floor = self._repo()
         runner = FakeRunner()
         runner.run_entry = lambda entry, env: base.RunResult.failed(entry["id"], "always")
-        status = self._run(d, floor, runner, "--max-iterations", "3")
+        # 2, not 3: review's own MAX_CELL_ATTEMPTS retry budget is also 3, and
+        # colliding with it would let the ENGINE reach `complete` on its own
+        # (cell exhaustion counts as done) before this cap gets a chance to
+        # fire -- a plan error, not a reason to change --max-iterations'
+        # semantics (it must permit exactly N iterations, tripping on the
+        # (N+1)th).
+        status = self._run(d, floor, runner, "--max-iterations", "2")
         self.assertEqual(status["status"], "error")
         self.assertIn("review-app-SEC", status["message"])
-        self.assertIn("3", status["message"])
+        self.assertIn("2", status["message"])
 
     def test_max_budget_stops_new_launches_and_exits_error_with_the_ledger(self):
         d, floor = self._repo()
@@ -255,6 +266,96 @@ class TestHeadlessLoop(LoopCase):
         status = self._run(d, floor, FakeRunner())        # already complete, no --reset
         self.assertEqual(status["status"], "error")
         self.assertIn("--reset", status["message"])
+
+    def test_an_unexpected_exception_disarms_and_reports_without_raising(self):
+        # `loop` never raises: any bug in the loop body (not just Ctrl-C) must
+        # still land the run in a reported error with both guards torn down --
+        # never a traceback with the guards left armed over the rest of the
+        # session (review round 1, item 3).
+        d, floor = self._repo()
+        runner = FakeRunner()
+        with mock.patch.object(orchestrate, "write_usage", side_effect=RuntimeError("boom")):
+            status = self._run(d, floor, runner)
+        self.assertEqual(status["status"], "error")
+        self.assertIn("RuntimeError", status["message"])
+        self.assertIn("boom", status["message"])
+        settings = os.path.join(runner.run_dir, base.SETTINGS_FILE)
+        self.assertFalse(write_guard_hook.is_armed(settings, os.path.join(runner.run_dir, "write-allowlist.json"))[0])
+        self.assertFalse(read_guard_hook.is_armed(settings, os.path.join(runner.run_dir, "read-scope.json"))[0])
+
+    def test_a_failed_return_persist_result_never_reaches_write_reply(self):
+        # review round 1, item 4: `if result.ok and delivery == "return_json"`
+        # must stay an AND -- a failed launch's RunResult (empty text, ok=False)
+        # must never be handed to persist.write_reply, and the retry that
+        # eventually succeeds must be the ONLY thing that produces the file.
+        d, floor = self._repo()
+        runner = FakeRunner(); runner.fail_once.add("review-app-SEC")
+
+        def _write_guard_not_proven(host, target, **kw):
+            body = _all_proven_artifact(host)
+            body["capabilities"][hosts.ARTIFACT_WRITE_GUARD] = {
+                "state": hosts.UNKNOWN, "by": None,
+                "detail": "fixture: write guard deliberately not proven"}
+            return body
+
+        seen = []
+        orig_write_reply = orchestrate.persist.write_reply   # captured BEFORE patching
+
+        def _tracking_write_reply(entry, text):
+            seen.append((entry["id"], os.path.exists(entry["out_file"])))
+            return orig_write_reply(entry, text)
+
+        with mock.patch("scripts.host_probes.run_probes",
+                        side_effect=_write_guard_not_proven), \
+             mock.patch("scripts.phases.persist.write_reply",
+                        side_effect=_tracking_write_reply):
+            status = self._run(d, floor, runner, "--allow-unenforced")
+        self.assertEqual(status["status"], "complete", status)
+        self.assertEqual(runner.launched.count("review-app-SEC"), 2)   # failed once, then a real retry
+        review_calls = [c for c in seen if c[0] == "review-app-SEC"]
+        self.assertEqual(len(review_calls), 1)          # write_reply only for the ok result
+        self.assertFalse(review_calls[0][1])             # the out_file did not exist before that call
+
+
+class TestNoRedundantReDeriveOnReview(LoopCase):
+    """review round 1, item 2 (plan-mandated bug): `_after_first_run`'s seam
+    must gate the second `driver.run` call -- an UNCONDITIONAL one burns a
+    cell's cell-attempts.json retry budget on every resume that lands on the
+    `review` checkpoint, with zero launches in between."""
+
+    def test_a_review_checkpoint_reached_by_first_run_burns_no_attempt_without_a_launch(self):
+        d, floor = self._repo()
+        args = self._args(d)
+        # Simulate a resume: an earlier process already minted the manifest
+        # and got coverage established (e.g. a prior `driver loop` that
+        # crashed after coverage but before any review launch), so THIS new
+        # orchestrate.loop() call's very first driver.run() lands directly on
+        # the review checkpoint. `_after_first_run` is left UNPATCHED here
+        # (the production no-op) -- if `loop` still re-derived unconditionally,
+        # it would call review_execute a second time with no launch at all,
+        # inflating cell-attempts.json.
+        driver.run(args)                        # mints the manifest, dispatches the scout
+        self._seed_coverage(d, floor)
+        runner = FakeRunner(); runner.fail_once.add("review-app-SEC")
+        with mock.patch("scripts.runners.base.runner_for", return_value=runner), \
+             contextlib.redirect_stdout(io.StringIO()):
+            status = orchestrate.loop(args)
+        self.assertEqual(status["status"], "complete", status)
+        attempts = runio._load_json(runio._pano(d, "cell-attempts.json"))
+        review_launches = runner.launched.count("review-app-SEC")
+        self.assertEqual(review_launches, 2)     # failed once, then a real retry
+        self.assertEqual(attempts["app/SEC"], review_launches)
+
+
+class TestLoopParser(unittest.TestCase):
+    """review round 1, item 6: `--max-per-group` (shared with `setup`, for
+    symmetry with `--max-groups`) parses on the `loop` verb."""
+
+    def test_max_per_group_and_max_groups_are_both_accepted(self):
+        args = driver.build_parser().parse_args(
+            ["loop", ".", "--max-per-group", "10", "--max-groups", "5"])
+        self.assertEqual(args.max_per_group, 10)
+        self.assertEqual(args.max_groups, 5)
 
 
 class TestScoutRoundTrip(LoopCase):

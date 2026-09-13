@@ -256,6 +256,55 @@ class TestArtifactWriteSymlinkSafety(unittest.TestCase):
             with open(p) as fh:
                 self.assertEqual(json.load(fh), {"n": 2})
 
+class TestArtifactAppendSymlinkSafety(unittest.TestCase):
+    """#1095, plan 6 review round 1: the O_APPEND analogue of
+    TestArtifactWriteSymlinkSafety above. Ledger.record must add a line to
+    dispatch-ledger.jsonl without ever truncating what is already there, so it
+    opens through `_open_a_nofollow` rather than `_open_w_nofollow` -- but the
+    same symlink-safety contract applies: a hostile pre-planted symlink at the
+    ledger path is never written through, and an intermediate symlinked
+    `.panopticon` directory is refused before anything is created."""
+
+    def test_append_does_not_follow_symlink(self):
+        with tempfile.TemporaryDirectory() as d:
+            victim = os.path.join(d, "victim.txt")
+            with open(victim, "w") as fh:
+                fh.write("SECRET")
+            artifact = os.path.join(d, "dispatch-ledger.jsonl")
+            os.symlink(victim, artifact)          # hostile pre-planted symlink
+            with runio._open_a_nofollow(artifact) as fh:
+                fh.write("line1\n")
+            with open(victim) as fh:
+                self.assertEqual(fh.read(), "SECRET")   # target untouched
+            self.assertFalse(os.path.islink(artifact))  # link replaced by a real file
+            with open(artifact) as fh:
+                self.assertEqual(fh.read(), "line1\n")
+
+    def test_append_adds_lines_without_truncating(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "a.jsonl")
+            with runio._open_a_nofollow(p) as fh:
+                fh.write("one\n")
+            with runio._open_a_nofollow(p) as fh:
+                fh.write("two\n")
+            with open(p) as fh:
+                self.assertEqual(fh.read(), "one\ntwo\n")
+
+    def test_append_rejects_symlinked_intermediate_panopticon_dir(self):
+        # #run9 SEC-X0X, mirrored for the append path: an intermediate
+        # `.panopticon/runs -> /elsewhere` symlink must be refused before any
+        # directory is created or any line is written.
+        with tempfile.TemporaryDirectory() as root, \
+             tempfile.TemporaryDirectory() as outside:
+            os.makedirs(os.path.join(root, ".panopticon"))
+            os.symlink(outside, os.path.join(root, ".panopticon", "runs"))   # planted
+            escaping = os.path.join(root, ".panopticon", "runs", "tag",
+                                    "dispatch-ledger.jsonl")
+            with self.assertRaises(ValueError):
+                runio._open_a_nofollow(escaping)
+            self.assertEqual(os.listdir(outside), [])            # nothing escaped
+
+
 class TestArtifactConfinement(unittest.TestCase):
     def _args(self, target, *extra):
         return driver.build_parser().parse_args(["run", target, *extra])

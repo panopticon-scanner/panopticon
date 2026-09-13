@@ -28,8 +28,23 @@ DEFAULT_MAX_ITERATIONS = 50
 
 
 def _after_first_run(review_root):
-    """Test seam: called once, after the first driver.run of a loop. A no-op
-    in production; never patched outside tests/test_orchestrate.py."""
+    """Test seam: called once, after the first driver.run of a loop. Returns
+    whether `loop` must re-derive `status` with another `driver.run` call
+    before entering the while loop.
+
+    Production always returns False -- a no-op, never patched outside
+    tests/test_orchestrate.py. This is load-bearing, not decorative: a resume
+    whose very first `driver.run` already lands on the `review` checkpoint
+    (coverage was established by an earlier, now-dead process) would, with an
+    UNCONDITIONAL second call here, re-run `review_execute` a second time with
+    ZERO launches in between -- and `review_execute` bumps
+    `cell-attempts.json` on every call that finds a cell pending, launch or
+    no launch. That burns one third of a cell's `MAX_CELL_ATTEMPTS` retry
+    budget for nothing, on every single resume that happens to land on
+    `review`. Only the test seam, which mutates review_root BETWEEN the two
+    calls (seeding coverage so the checkpoint the test observes is `review`
+    rather than `scout`), has a reason to ask for the second derive."""
+    return False
 
 
 class Guards:
@@ -89,8 +104,10 @@ class Ledger:
                 "usage": {k: int(result.usage.get(k, 0) or 0) for k in USAGE_FIELDS} if result.usage else {},
                 "cost_usd": result.cost_usd, "duration_ms": duration_ms,
                 "session_id": result.session_id, "denials": result.denials, "error": result.error}
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
-        with open(self.path, "a", encoding="utf-8") as fh:
+        # #1095, plan 6 review round 1: the ledger path is a `.panopticon`
+        # artifact like any other; a plain `open(path, "a")` bypasses the
+        # symlink confinement every other run-folder write goes through.
+        with runio._open_a_nofollow(self.path) as fh:
             fh.write(json.dumps(line, sort_keys=True) + "\n")
 
     def lines(self):
@@ -153,8 +170,8 @@ def loop(args):
     if status.get("status") != "checkpoint":
         return _finish(status, args, guards, ledger, namespace)
     review_root = _review_root(args)
-    _after_first_run(review_root)
-    status = _run(args, namespace)                    # re-derive after the seam
+    if _after_first_run(review_root):
+        status = _run(args, namespace)                # re-derive after the seam
     run_dir = os.path.dirname(runio._pano(review_root, runners_base.SETTINGS_FILE))
     runner.prepare(run_dir, review_root)
     for attr in ("max_turns", "entry_timeout"):
@@ -178,14 +195,7 @@ def loop(args):
             entries = [e for e in req.get("entries") or [] if isinstance(e, dict)]
             pending = _pending(entries)
             pending_ids = ", ".join(e.get("id") for e in pending)
-            # `>=`, not `>`: a cell's own retry budget (MAX_CELL_ATTEMPTS) can
-            # exhaust and let the ENGINE reach `complete` on its own after
-            # `max_iterations` launches of one stuck entry -- checking after
-            # incrementing but before spending this iteration's launch stops
-            # us one launch short of that race, so `--max-iterations N`
-            # reliably reports N iterations without completing rather than
-            # occasionally losing to the engine's own exhaustion path.
-            if iterations >= max_iterations:
+            if iterations > max_iterations:
                 return _finish(_status("error", "driver loop: %d iterations without "
                                        "completing; still pending: %s"
                                        % (max_iterations, pending_ids)),
@@ -213,6 +223,8 @@ def loop(args):
             status = _run(args, namespace)
     except KeyboardInterrupt:
         status = _status("error", "interrupted (Ctrl-C); guards disarmed; re-run to resume from disk")
+    except Exception as exc:                # noqa: BLE001 -- `loop` never raises (review round 1, item 3)
+        status = _status("error", "driver loop: %s: %s" % (type(exc).__name__, exc))
     return _finish(status, args, guards, ledger, namespace)
 
 
