@@ -120,3 +120,25 @@ def _no_live_scanner_containers(request, monkeypatch):
         return                      # opted in with @pytest.mark.docker
     monkeypatch.setattr(_run_tools, "docker_available", _refuse_docker)
     monkeypatch.setattr(_setup_flow, "_check_docker", _refuse_setup_docker)
+
+
+# --- Claude family PR (#1344, family guardrails section 3, #1616): the suite
+# must never launch the real `claude` binary. Until now that guarantee was
+# per-test discipline (every runner test passes `runner=<fake>`, every loop
+# test patches `runners.base.runner_for`); a forgotten fake would have spent
+# real money on a real launch and stayed green. Now the Runner's default
+# launcher is a module attribute read at construction, and this swaps it for a
+# refusal on every test -- there is no opt-in, because there is no test that
+# should ever want the real thing.
+import scripts.runners.claude as _claude_runner  # noqa: E402
+
+
+def _refuse_live_claude(cmd, **kwargs):
+    raise RuntimeError("the test suite must never launch the real `claude` binary "
+                       "(family guardrails section 3): pass runner=<fake> to "
+                       "Runner(...) or patch scripts.runners.base.runner_for")
+
+
+@pytest.fixture(autouse=True)
+def _no_live_claude_launches(monkeypatch):
+    monkeypatch.setattr(_claude_runner, "DEFAULT_RUNNER", _refuse_live_claude)

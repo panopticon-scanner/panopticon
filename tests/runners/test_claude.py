@@ -180,3 +180,23 @@ class TestPrepare(unittest.TestCase):
             with open(settings, encoding="utf-8") as fh:
                 self.assertEqual(len(json.load(fh)["hooks"]["PreToolUse"]), 2)
             self.assertFalse(os.path.exists(settings + ".tmp"))
+
+
+class TestTheSuiteNeverLaunchesTheRealCli(unittest.TestCase):
+    def test_a_runner_built_without_a_fake_refuses_to_launch(self):
+        # Structural, not per-test discipline (family guardrails section 3,
+        # #1616): conftest swaps the module's DEFAULT_RUNNER for a refusal, so a
+        # Runner that nobody handed a fake fails its launch loudly instead of
+        # spending money -- and run_entry's never-raise contract turns that
+        # refusal into a failed RunResult naming the rule.
+        with tempfile.TemporaryDirectory() as d:
+            r = claude_runner.Runner("claude")
+            r.prepare(d, review_root=d)
+            res = r.run_entry(_entry(True), {})
+        self.assertFalse(res.ok)
+        self.assertIn("never launch the real", res.error)
+
+    def test_an_injected_runner_is_used_verbatim(self):
+        def fake(cmd, **kw):
+            raise AssertionError("unreachable")
+        self.assertIs(fake, claude_runner.Runner("claude", runner=fake).runner)
