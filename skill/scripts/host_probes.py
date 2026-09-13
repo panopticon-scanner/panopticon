@@ -234,6 +234,30 @@ def probe_entry_model_bound(host, registration_dir=None):
 WRITE_GUARD_ARMED = "write-guard-armed"
 
 
+def headless_settings_path(review_root):
+    """The settings file the headless runner will arm: runs/<tag>/host-settings.json
+    once a manifest exists, flat top-level during setup (R-P6-5). Resolved
+    through runio._pano so the probe and the runner name the same file."""
+    import scripts.phases.runio as runio
+    import scripts.runners.base as runners_base
+    return os.path.abspath(runio._pano(review_root, runners_base.SETTINGS_FILE))
+
+
+def _headless_subject_ok(settings_path):
+    """(ok, detail): the runner creates the file itself, so demand only that
+    its directory exists or can be created, and is writable."""
+    settings_dir = os.path.dirname(os.path.abspath(settings_path)) or "."
+    probe_dir = settings_dir
+    while not os.path.isdir(probe_dir):
+        parent = os.path.dirname(probe_dir)
+        if parent == probe_dir:
+            break
+        probe_dir = parent
+    if not os.access(probe_dir, os.W_OK):
+        return False, "the runner cannot arm its guards: %s is not writable" % probe_dir
+    return True, ""
+
+
 def _round_trip_denies_an_outside_write():
     """Arm the guard in a throwaway sandbox and confirm it actually denies.
 
@@ -276,7 +300,7 @@ def _round_trip_denies_an_outside_write():
     return True, "arm/deny round-trip ok"
 
 
-def probe_write_guard_armed(host, session_root=None):
+def probe_write_guard_armed(host, session_root=None, settings_path=None):
     """This host CAN mediate a reviewer's Write when it fans out.
 
     COUPLING, and it is load-bearing: the subject of this probe is whatever
@@ -300,10 +324,22 @@ def probe_write_guard_armed(host, session_root=None):
     So: prove the mechanism mediates (in a sandbox), and prove the place the
     host will arm is writable. #1493 -- a guard armed at a path nothing reads is
     worse than no guard -- so the resolved path is named either way.
+
+    With `settings_path` (headless), the subject is that file; the runner
+    creates it, so only its directory is checked (spec 5.4).
     """
     if not hosts.declares(host, hosts.ARTIFACT_WRITE_GUARD):
         return (hosts.UNKNOWN, None,
                 "host %r claims no artifact write guard" % host)
+    if settings_path is not None:
+        ok, detail = _headless_subject_ok(settings_path)
+        if not ok:
+            return (hosts.REFUTED, WRITE_GUARD_ARMED, detail)
+        ok, detail = _round_trip_denies_an_outside_write()
+        if not ok:
+            return (hosts.REFUTED, WRITE_GUARD_ARMED, detail)
+        return (hosts.PROVEN, WRITE_GUARD_ARMED,
+                "%s; the runner will arm at %s" % (detail, os.path.abspath(settings_path)))
     settings_path, _allowlist_path, _defaults = write_guard_hook._resolve(
         None, None, session_root)
     settings_dir = os.path.dirname(os.path.abspath(settings_path)) or "."
@@ -427,17 +463,30 @@ def _round_trip_confines_reads():
     return True, "arm/bind/deny round-trip ok (%d rows)" % (len(rows) + len(env_rows))
 
 
-def probe_read_guard_armed(host, session_root=None):
+def probe_read_guard_armed(host, session_root=None, settings_path=None):
     """This host CAN confine a dispatched subagent's reads to its entry.
 
     Same coupling as probe_write_guard_armed, for the same reason: the
     subject is whatever read_guard_hook._resolve(None, None, session_root)
     names -- the file install() will arm -- and the #1493 existence check is
     applied unconditionally (fail-closed). NOT "armed right now": the host
-    arms it per fan-out, so at run start it is legitimately absent."""
+    arms it per fan-out, so at run start it is legitimately absent.
+
+    With `settings_path` (headless), the subject is that file; the runner
+    creates it, so only its directory is checked (spec 5.4).
+    """
     if not hosts.declares(host, hosts.READ_SCOPE_CONFINED):
         return (hosts.UNKNOWN, None,
                 "host %r claims no read-scope confinement" % host)
+    if settings_path is not None:
+        ok, detail = _headless_subject_ok(settings_path)
+        if not ok:
+            return (hosts.REFUTED, READ_GUARD_ARMED, detail)
+        ok, detail = _round_trip_confines_reads()
+        if not ok:
+            return (hosts.REFUTED, READ_GUARD_ARMED, detail)
+        return (hosts.PROVEN, READ_GUARD_ARMED,
+                "%s; the runner will arm at %s" % (detail, os.path.abspath(settings_path)))
     settings_path, _scope_path, _defaults = read_guard_hook._resolve(None, None, session_root)
     settings_dir = os.path.dirname(os.path.abspath(settings_path)) or "."
     if not os.path.isfile(settings_path):
@@ -652,7 +701,7 @@ def _no_probe_reason(row, capability, host):
 
 
 def run_probes(host, review_root, session_root=None, registration_dir=None,
-               home=None, shadow=None):
+               home=None, shadow=None, settings_path=None):
     """Establish this host's posture now, and return the artifact body.
 
     THREE DIFFERENT TREES, and collapsing them is what produced both of this
@@ -685,6 +734,11 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
     computed. Without it the scan ran twice per invocation: duplicate work,
     and a TOCTOU window in which the artifact and the refusal could disagree
     about the same tree. `home` exists for fixtures.
+
+    `settings_path` (plan 6, spec 5.4) names the file a HEADLESS runner will
+    arm; when given, it is the two guard probes' subject INSTEAD of
+    `session_root`. `None` (session mode, or plain `driver run`) leaves them
+    probing the session root exactly as before.
     """
     findings = {}          # capability -> list of (state, by, detail)
     session_root = session_root or os.getcwd()
@@ -702,13 +756,15 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
         REGISTERED_SHELL_TOOLS:
             lambda: probe_registered_shell_tools(host, registration_dir),
         WRITE_GUARD_ARMED:
-            lambda: probe_write_guard_armed(host, session_root=session_root),
+            lambda: probe_write_guard_armed(host, session_root=session_root,
+                                            settings_path=settings_path),
         TRANSCRIPT_DIR:
             lambda: probe_transcript_dir(host, session_root, home=home),
         ENTRY_MODEL_BOUND:
             lambda: probe_entry_model_bound(host, registration_dir),
         READ_GUARD_ARMED:
-            lambda: probe_read_guard_armed(host, session_root=session_root),
+            lambda: probe_read_guard_armed(host, session_root=session_root,
+                                           settings_path=settings_path),
     }
     if set(runners) != set(PROBE_IDS):
         raise RuntimeError("host_probes.PROBE_IDS is out of step with run_probes' runner "

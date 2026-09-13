@@ -297,8 +297,14 @@ def _establish_host_posture(review_root, manifest, args):
     # and a window in which the artifact and the refusal could disagree about
     # the same tree.
     shadow = host_probes.probe_shadow_shells(host, review_root)
+    # Plan 6 (spec 5.4): in headless mode the guards are armed into the run
+    # folder's host-settings.json, never the session root -- so that file,
+    # not the session's, is what the guard probes must prove. `mode` is a
+    # `driver loop` flag; `driver run` has none and probes the session root.
+    settings_path = (host_probes.headless_settings_path(review_root)
+                     if getattr(args, "mode", None) == "headless" else None)
     fresh = host_probes.run_probes(host, review_root, session_root=session_root,
-                                   shadow=shadow)
+                                   shadow=shadow, settings_path=settings_path)
     # 5.1 surface 1. Emitted here -- after `fresh` is computed, before the
     # artifact is written or compared, and before the shadow refusal below --
     # rather than at the dispatch sites, because 5.2 already puts this step
