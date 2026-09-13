@@ -22,8 +22,10 @@ does it inside a `tempfile.TemporaryDirectory()`.
 """
 import json
 import os
+import re
 import shutil
 import stat
+import subprocess
 import tempfile
 
 from scripts import (collect_usage, dispatch, hosts, model_resolver,
@@ -563,19 +565,100 @@ PROBE_CAPABILITY = {REGISTERED_SHELL_TOOLS: hosts.TOOL_POLICY_ENFORCED,
                     READ_GUARD_ARMED: hosts.READ_SCOPE_CONFINED}
 
 
+CLI_HELP_TIMEOUT = 30    # seconds; a CLI that cannot print --help inside this is unmeasurable
+
+
+def _flag_advertised(flag, text):
+    """Is `flag` a standalone token of `text`? `-p` must not match inside
+    `--print` or `--permission-mode`; `--output-format=stream-json` still
+    advertises `--output-format`."""
+    return re.search(r"(?<![\w-])%s(?![\w-])" % re.escape(flag), text) is not None
+
+
+def _cli_advertises(launch, found, flags):
+    """(verdict, why): does `<found> --help`, run through the RUNNER's own
+    launcher, exit 0 and advertise every flag in `flags`? None means it could
+    not be run at all -- a probe that cannot measure says UNKNOWN, never
+    guesses. Going through the runner's launcher rather than subprocess.run
+    is deliberate: it is the one seam the suite refuses real launches at
+    (tests/conftest.py), so a test that reaches this without a fake fails
+    loudly instead of running the real binary."""
+    try:
+        proc = launch([found, "--help"], capture_output=True, text=True,
+                      timeout=CLI_HELP_TIMEOUT)
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        return None, "`%s --help` could not run: %s" % (found, exc)
+    if proc.returncode != 0:
+        return False, ("`%s --help` exited %s: not a CLI the headless runner can drive"
+                       % (found, proc.returncode))
+    text = "%s\n%s" % (proc.stdout or "", proc.stderr or "")
+    missing = [f for f in flags if not _flag_advertised(f, text)]
+    if missing:
+        return False, ("`%s --help` does not advertise %s, so a launch would print no "
+                       "JSON envelope to read usage from" % (found, ", ".join(missing)))
+    return True, "`%s --help` advertises %s" % (found, ", ".join(flags))
+
+
+def _ledger_carries_usage(ledger):
+    """(verdict, how) from the rows the loop has ALREADY written to `ledger`
+    for this run -- the surface this probe names as its evidence, read back
+    on every re-probe. None: no ledger yet, or no successful launch in it
+    (nothing to measure). False: successful launches, and not one envelope
+    carried a usage figure -- the capability, measured and absent. True
+    otherwise. A single odd row never refutes; systematic absence does."""
+    try:
+        with open(ledger, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return None, "no launch ledgered yet"
+    ok_rows = []
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and row.get("ok"):
+            ok_rows.append(row)
+    if not ok_rows:
+        return None, "no successful launch ledgered yet"
+
+    def carried(row):
+        usage = row.get("usage")
+        return isinstance(usage, dict) and any(
+            isinstance(v, (int, float)) and v > 0 for v in usage.values())
+    with_usage = sum(1 for r in ok_rows if carried(r))
+    if not with_usage:
+        return False, ("%d successful launch(es) ledgered at %s and not one envelope "
+                       "carried a usage figure: this CLI's envelope reports none"
+                       % (len(ok_rows), ledger))
+    return True, "%d of %d successful launches ledgered so far carried usage" % (with_usage, len(ok_rows))
+
+
 def _headless_usage_source(host, settings_path):
     """The headless half of `probe_usage_source`: can the loop ledger what
     the runner's envelope reports?
 
-    Two things and only two are measured, and each can refute. The run
-    folder must be able to hold the ledger the loop appends after every
-    launch (`runners.base.LEDGER_FILE`, beside `settings_path`), and the CLI
-    the host's headless runner launches must be findable on PATH -- no
-    launch, no envelope, no figure. The CLI's name is the runner's own
-    (`Runner.CLI`), never re-spelled here, so a family that renames its
-    binary moves this probe with it. A claiming host with no headless runner
-    is UNKNOWN: nothing here can name a CLI to look for, and a vacuous
-    PROVEN is the fail-open this epic exists to remove."""
+    Each measurement can refute. The run folder must be able to hold the
+    ledger the loop appends after every launch (`runners.base.LEDGER_FILE`,
+    beside `settings_path`). The CLI the host's headless runner launches
+    must be on PATH -- no launch, no envelope, no figure -- and must be the
+    thing the runner drives: its `--help` runs and advertises the runner's
+    own `ENVELOPE_FLAGS`, the tokens that make a launch print the envelope.
+    Existence alone was this branch's review objection: any executable
+    named `claude` proved the ledger. And once the loop has ledgered
+    successful launches, their envelopes are the evidence: if not one of
+    them carried usage, the capability is refuted on what was measured, not
+    on what a launch might do. Name, flags and launcher are all the runner's
+    own (`Runner.CLI`, `Runner.ENVELOPE_FLAGS`, `Runner.runner`), never
+    re-spelled here, so a family that renames its binary or a flag moves
+    this probe with it -- and the launcher is the seam the suite refuses
+    real launches at.
+
+    A claiming host with no usable headless runner is UNKNOWN whatever makes
+    it unusable (no module, a module that fails to import, a Runner without
+    the three attributes): nothing here can name a CLI to look for, a
+    vacuous PROVEN is the fail-open this epic exists to remove, and a probe
+    reports rather than raises."""
     import scripts.runners.base as runners_base
     writable, probe_dir = _headless_subject_dir(settings_path)
     ledger = os.path.join(os.path.dirname(os.path.abspath(settings_path)),
@@ -585,21 +668,31 @@ def _headless_usage_source(host, settings_path):
                 "the loop cannot write its dispatch ledger at %s: %s is not writable"
                 % (ledger, probe_dir))
     try:
-        cli = runners_base.runner_for(host, "headless").CLI
-    except (ValueError, AttributeError):
+        runner = runners_base.runner_for(host, "headless")
+        cli, flags, launch = runner.CLI, tuple(runner.ENVELOPE_FLAGS), runner.runner
+    except Exception as exc:          # noqa: BLE001 -- a probe reports, never raises
         return (hosts.UNKNOWN, USAGE_SOURCE,
-                "host %r has no headless runner naming a CLI, so nothing here "
-                "proves a launch envelope will carry usage" % host)
+                "host %r has no usable headless runner naming a CLI, its envelope flags "
+                "and a launcher (%s: %s), so nothing here proves a launch envelope will "
+                "carry usage" % (host, type(exc).__name__, exc))
     found = shutil.which(cli)
     if not found:
         return (hosts.REFUTED, USAGE_SOURCE,
                 "no `%s` on PATH: the headless runner cannot launch, so no "
                 "envelope will ever carry usage and the ledger at %s stays empty"
                 % (cli, ledger))
+    advertised, why = _cli_advertises(launch, found, flags)
+    if advertised is None:
+        return (hosts.UNKNOWN, USAGE_SOURCE, why)
+    if not advertised:
+        return (hosts.REFUTED, USAGE_SOURCE, why)
+    ledgered, how = _ledger_carries_usage(ledger)
+    if ledgered is False:
+        return (hosts.REFUTED, USAGE_SOURCE, how)
     return (hosts.PROVEN, USAGE_SOURCE,
             "headless: usage is read from the JSON envelope of every `%s` launch "
-            "(%s) and ledgered at %s; the session's transcripts are not consulted"
-            % (cli, found, ledger))
+            "(%s; %s) and ledgered at %s (%s); the session's transcripts are not consulted"
+            % (cli, found, why, ledger, how))
 
 
 def probe_usage_source(host, session_dir, home=None, settings_path=None):

@@ -46,6 +46,18 @@ class TestCommand(unittest.TestCase):
         cmd = self.r.command(_entry(False, model=None), "/run/host-settings.json", max_turns=40)
         self.assertNotIn("--model", cmd); self.assertNotIn("--agent", cmd)
 
+    def test_the_envelope_flags_are_on_every_argv(self):
+        # ENVELOPE_FLAGS is the runner's own spelling of what makes a launch
+        # print the envelope, read by the usage probe; a flag listed there
+        # that `command` does not put on the argv would have the probe
+        # proving a launch shape nothing uses.
+        for enforced in (True, False):
+            cmd = self.r.command(_entry(enforced), "/s.json", max_turns=40)
+            for flag in claude_runner.Runner.ENVELOPE_FLAGS:
+                with self.subTest(enforced=enforced, flag=flag):
+                    self.assertIn(flag, cmd)
+        self.assertEqual(("-p", "--output-format"), claude_runner.Runner.ENVELOPE_FLAGS)
+
     def test_no_per_entry_budget_arm_exists(self):
         # M3 (final review): `--max-budget-usd` is a WHOLE-RUN knob the loop
         # enforces off its own ledger (spec 4.3). `command` carried a

@@ -1,4 +1,5 @@
 import contextlib
+import json
 import os
 import tempfile
 import threading
@@ -676,6 +677,9 @@ class TestUsageSourceProbe(unittest.TestCase):
         return d
 
     def _cli_on_path(self, bin_dir, name="claude"):
+        """An executable file for shutil.which to find. Never run: every
+        launch in the suite goes through the runner's launcher, which
+        tests/conftest.py refuses unless a test injects a fake (`_help`)."""
         os.makedirs(bin_dir, exist_ok=True)
         path = os.path.join(bin_dir, name)
         with open(path, "w", encoding="utf-8") as fh:
@@ -683,8 +687,32 @@ class TestUsageSourceProbe(unittest.TestCase):
         os.chmod(path, 0o755)
         return path
 
+    def _help(self, text=None, returncode=0):
+        """Patch the runner's default launcher with a fake `claude --help`
+        that prints `text` (the intact shape advertises the runner's own
+        envelope flags) and exits `returncode`."""
+        import subprocess
+        import scripts.runners.claude as claude_runner
+        if text is None:
+            text = "Usage: claude [options]\n  -p, --print   Print\n  --output-format <format>\n"
+        self.help_calls = []
+
+        def fake(cmd, **kwargs):
+            self.help_calls.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, returncode, stdout=text, stderr="")
+        return mock.patch.object(claude_runner, "DEFAULT_RUNNER", fake)
+
     def _headless_settings(self, project):
         return os.path.join(project, ".panopticon", "runs", "tag", "host-settings.json")
+
+    def _ledger(self, settings, rows):
+        import scripts.runners.base as runners_base
+        path = os.path.join(os.path.dirname(settings), runners_base.LEDGER_FILE)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            for row in rows:
+                fh.write(json.dumps(row) + "\n")
+        return path
 
     # -- session mode: the transcript directory is the subject ---------------
 
@@ -755,15 +783,19 @@ class TestUsageSourceProbe(unittest.TestCase):
                 tempfile.TemporaryDirectory() as bin_dir:
             cli = self._cli_on_path(bin_dir)
             settings = self._headless_settings(project)
-            with mock.patch.dict(os.environ, {"PATH": bin_dir}):
+            with mock.patch.dict(os.environ, {"PATH": bin_dir}), self._help():
                 state, by, detail = host_probes.probe_usage_source(
                     "claude", project, home=home, settings_path=settings)
             self.assertEqual(hosts.PROVEN, state)
             self.assertEqual("usage-source", by)
             self.assertIn(cli, detail)
             self.assertIn(os.path.join(os.path.dirname(settings), "dispatch-ledger.jsonl"), detail)
+            self.assertIn("advertises -p, --output-format", detail)
+            self.assertIn("no launch ledgered yet", detail)
             self.assertNotIn("transcript directory", detail)
             self.assertFalse(os.path.isdir(os.path.join(home, ".claude")))
+            # The interrogation is `<found cli> --help`, through the launcher.
+            self.assertEqual([[cli, "--help"]], self.help_calls)
 
     def test_headless_refutes_when_no_cli_is_on_path(self):
         # THE headless negative fixture. Transcripts present, CLI absent: the
@@ -781,6 +813,120 @@ class TestUsageSourceProbe(unittest.TestCase):
             self.assertEqual("usage-source", by)
             self.assertIn("claude", detail)
             self.assertIn("PATH", detail)
+
+    def test_headless_refutes_a_cli_that_does_not_advertise_the_envelope_flags(self):
+        # Review of this branch: existence alone let any executable named
+        # `claude` prove the ledger. The probe now drives `<cli> --help` and
+        # requires the runner's own ENVELOPE_FLAGS; a CLI advertising neither,
+        # or exiting non-zero, is refuted and the missing flags are named.
+        with tempfile.TemporaryDirectory() as project, \
+                tempfile.TemporaryDirectory() as bin_dir:
+            settings = self._headless_settings(project)
+            self._cli_on_path(bin_dir)
+            with mock.patch.dict(os.environ, {"PATH": bin_dir}), \
+                    self._help("usage: something-else [--verbose] [--print]"):
+                state, by, detail = host_probes.probe_usage_source(
+                    "claude", project, settings_path=settings)
+            self.assertEqual(hosts.REFUTED, state)
+            self.assertEqual("usage-source", by)
+            self.assertIn("does not advertise -p, --output-format", detail)   # --print is not -p
+            with mock.patch.dict(os.environ, {"PATH": bin_dir}), self._help(returncode=3):
+                state, _by, detail = host_probes.probe_usage_source(
+                    "claude", project, settings_path=settings)
+            self.assertEqual(hosts.REFUTED, state)
+            self.assertIn("exited 3", detail)
+
+    def test_headless_refutes_a_ledger_whose_successful_launches_carried_no_usage(self):
+        # The evidence surface the probe names is read back on every
+        # re-probe: successful launches whose envelopes carried no figure at
+        # all refute the ledger on what was measured (a re-probe after batch
+        # one, so the mid-run posture check sees it), while a single odd row
+        # among launches that did carry usage does not.
+        with tempfile.TemporaryDirectory() as project, \
+                tempfile.TemporaryDirectory() as bin_dir:
+            settings = self._headless_settings(project)
+            self._cli_on_path(bin_dir)
+            empty = {"ok": True, "usage": {}}
+            counted = {"ok": True, "usage": {"input_tokens": 12, "output_tokens": 3}}
+            failed = {"ok": False, "usage": {}, "error": "timed out"}
+            self._ledger(settings, [empty, empty, failed])
+            with mock.patch.dict(os.environ, {"PATH": bin_dir}), self._help():
+                state, by, detail = host_probes.probe_usage_source(
+                    "claude", project, settings_path=settings)
+            self.assertEqual(hosts.REFUTED, state)
+            self.assertEqual("usage-source", by)
+            self.assertIn("2 successful launch(es)", detail)
+            self.assertIn("not one envelope carried a usage figure", detail)
+            self._ledger(settings, [empty, counted, failed])
+            with mock.patch.dict(os.environ, {"PATH": bin_dir}), self._help():
+                state, _by, detail = host_probes.probe_usage_source(
+                    "claude", project, settings_path=settings)
+            self.assertEqual(hosts.PROVEN, state)
+            self.assertIn("1 of 2 successful launches", detail)
+            self._ledger(settings, [failed])                 # nothing succeeded yet: no verdict
+            with mock.patch.dict(os.environ, {"PATH": bin_dir}), self._help():
+                state, _by, detail = host_probes.probe_usage_source(
+                    "claude", project, settings_path=settings)
+            self.assertEqual(hosts.PROVEN, state)
+            self.assertIn("no successful launch ledgered yet", detail)
+
+    def test_headless_is_unknown_when_the_cli_cannot_even_print_help(self):
+        # Could not measure is not "measured and broken": a `--help` the
+        # launcher cannot complete (here: a timeout) is UNKNOWN with the reason.
+        import subprocess
+        import scripts.runners.claude as claude_runner
+
+        def hangs(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+        with tempfile.TemporaryDirectory() as project, \
+                tempfile.TemporaryDirectory() as bin_dir:
+            self._cli_on_path(bin_dir)
+            with mock.patch.dict(os.environ, {"PATH": bin_dir}), \
+                    mock.patch.object(claude_runner, "DEFAULT_RUNNER", hangs):
+                state, by, detail = host_probes.probe_usage_source(
+                    "claude", project, settings_path=self._headless_settings(project))
+            self.assertEqual(hosts.UNKNOWN, state)
+            self.assertEqual("usage-source", by)
+            self.assertIn("could not run", detail)
+
+    def test_the_interrogation_goes_through_the_launcher_the_suite_refuses(self):
+        # The seam, proved from the suite's side: with no fake injected, the
+        # probe's `--help` reaches tests/conftest.py's refusal and fails
+        # loudly, instead of running whatever `claude` is on PATH. A forgotten
+        # fake is a failed test, never a real launch.
+        with tempfile.TemporaryDirectory() as project, \
+                tempfile.TemporaryDirectory() as bin_dir:
+            self._cli_on_path(bin_dir)
+            with mock.patch.dict(os.environ, {"PATH": bin_dir}), \
+                    self.assertRaisesRegex(RuntimeError, "never launch the real `claude` binary"):
+                host_probes.probe_usage_source(
+                    "claude", project, settings_path=self._headless_settings(project))
+
+    def test_a_flag_is_advertised_only_as_a_standalone_token(self):
+        self.assertTrue(host_probes._flag_advertised("-p", "  -p, --print   Print response"))
+        self.assertTrue(host_probes._flag_advertised("--output-format", "--output-format=stream-json"))
+        self.assertFalse(host_probes._flag_advertised("-p", "  --print   Print response"))
+        self.assertFalse(host_probes._flag_advertised("-p", "  --permission-mode <mode>"))
+        self.assertFalse(host_probes._flag_advertised("--output-format", "--output-formats"))
+
+    def test_headless_is_unknown_on_a_claiming_host_whose_runner_module_is_broken(self):
+        # A probe reports, never raises: a runners/<host>.py that exists but
+        # fails to import (base._headless_module re-raises that on purpose)
+        # is the family's bug, reported as UNKNOWN naming the exception
+        # rather than as a traceback out of driver.run.
+        import dataclasses
+        import scripts.runners.base as runners_base
+        ghost = dataclasses.replace(hosts.spec("claude"), name="ghost")
+        with tempfile.TemporaryDirectory() as project, \
+                mock.patch.dict(hosts.HOSTS, {"ghost": ghost}), \
+                mock.patch.object(runners_base, "runner_for",
+                                  side_effect=ImportError("runners/ghost.py: no module named yaml")):
+            state, by, detail = host_probes.probe_usage_source(
+                "ghost", project, settings_path=self._headless_settings(project))
+        self.assertEqual(hosts.UNKNOWN, state)
+        self.assertEqual("usage-source", by)
+        self.assertIn("ImportError", detail)
+        self.assertIn("no usable headless runner", detail)
 
     def test_headless_refutes_when_the_run_folder_cannot_hold_the_ledger(self):
         import getpass
@@ -815,7 +961,7 @@ class TestUsageSourceProbe(unittest.TestCase):
                 "ghost", project, settings_path=self._headless_settings(project))
         self.assertEqual(hosts.UNKNOWN, state)
         self.assertEqual("usage-source", by)
-        self.assertIn("no headless runner", detail)
+        self.assertIn("no usable headless runner", detail)
 
 
 class TestShadowShellScan(unittest.TestCase):

@@ -19,6 +19,13 @@ DEFAULT_RUNNER = subprocess.run
 
 class Runner(base.HostRunner):
     CLI = "claude"
+    # The two argv tokens that make a launch print the JSON envelope `usage`
+    # is read from (`command` below puts both on every argv). The usage probe
+    # asks the CLI it finds on PATH to advertise exactly these, so any
+    # executable that happens to be called `claude` no longer proves the
+    # ledger; the rest of the argv (`--max-turns`, e.g.) is not in `--help`
+    # and not the envelope's business.
+    ENVELOPE_FLAGS = ("-p", "--output-format")
     mode = "headless"
     default_concurrency = 8
 
