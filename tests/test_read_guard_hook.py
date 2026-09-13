@@ -454,6 +454,18 @@ class TestEnvBinding(unittest.TestCase):
 
 
 class TestMain(unittest.TestCase):
+    def setUp(self):
+        # main() intentionally reads the real os.environ (spec 5.3) via the
+        # two-arg adjudicate(payload, path) call inside it -- every test here
+        # except test_main_reads_the_real_environment (TestEnvBinding, which
+        # patches its own known value) relies on NO env binding applying, so
+        # a stray PANOPTICON_ENTRY_ID in the operator's shell must be scrubbed
+        # the same way as TestAdjudicate.setUp / TestInstallUninstall.setUp.
+        patcher = mock.patch.dict(os.environ)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        os.environ.pop(read_guard_hook.ENV_ENTRY_ID, None)
+
     def _run(self, payload, argv):
         out = io.StringIO()
         stdin = io.StringIO(payload if isinstance(payload, str) else json.dumps(payload))
