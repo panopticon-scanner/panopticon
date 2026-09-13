@@ -246,8 +246,26 @@ def validate_command(argv, env, review_root):
     broker = expected["mcp_servers"]["panopticon_scope"]
     broker["env"] = {**{key: env[key] for key in ENV_KEYS},
                      "PANOPTICON_REVIEW_ROOT": str(Path(review_root).resolve())}
-    if config.get("mcp_servers") != {"panopticon_scope": broker}:
+    surface = set(broker.pop("enabled_tools"))
+    servers = config.get("mcp_servers")
+    launched = servers.get("panopticon_scope") if isinstance(servers, dict) else None
+    if (not isinstance(servers, dict) or set(servers) != {"panopticon_scope"}
+            or not isinstance(launched, dict)
+            or {key: value for key, value in launched.items() if key != "enabled_tools"} != broker):
         raise ValueError("Codex command does not bind exactly the scope-only read broker")
+    # I-2: the allowlist is a non-empty SUBSET, not an equality. The emitter
+    # narrows it per role from that role's template (Read/Grep/Glob ->
+    # read_file/search/list_files), so demanding the full list in TOOLS order
+    # made that narrowing dead code AND meant the day a template drops Glob or
+    # reorders `allowed:`, every launch of that role fails with a message
+    # blaming the broker rather than the template. Order is irrelevant; what
+    # matters is that nothing outside the scope-only surface gets enabled and
+    # that the role is left with at least one read tool.
+    enabled = launched.get("enabled_tools")
+    if (not isinstance(enabled, list) or not enabled
+            or any(not isinstance(name, str) for name in enabled)
+            or not set(enabled) <= surface):
+        raise ValueError("Codex command does not bind exactly the scope-only read broker's tools")
     return config
 
 

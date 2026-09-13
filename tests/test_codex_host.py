@@ -370,3 +370,55 @@ def test_the_unregistered_reviewer_error_names_the_emit_command(tmp_path):
         codex_host.command(entry, env, root, root, registration_dir=root)
     assert ("run: python3 skill/scripts/dispatch.py --emit-host-agents codex"
             in str(caught.value))
+
+
+# --- I-2: the emitter narrows per role; the validator must accept that -------
+
+
+def test_every_emitted_role_shell_builds_and_validates_a_real_launch(tmp_path):
+    from scripts import dispatch
+    registered = tmp_path / "registered"
+    dispatch.emit_host_agents("codex", str(registered))
+    root, _entry, env = _case(tmp_path)
+    for role, role_file in sorted(dispatch.ROLE_FILES.items()):
+        entry = {"id": "review-" + role, "model": "gpt-test",
+                 "agent": dispatch.registered_agent_name(role_file)}
+        bound = dict(env, PANOPTICON_ENTRY_ID=entry["id"])
+        argv = codex_host.command(entry, bound, root, root / "run", runner=_fake_catalog,
+                                  registration_dir=registered)
+        try:
+            assert codex_host.validate_command(argv, bound, root)
+        finally:
+            codex_host.cleanup_command(argv)
+
+
+def test_a_role_registering_fewer_read_tools_still_launches(tmp_path):
+    root, entry, env = _case(tmp_path)
+    entry["agent"] = "panopticon-scout"
+    _register(root, mutation=lambda config: config["mcp_servers"]["panopticon_scope"].update(
+        enabled_tools=["search", "read_file"]))
+    argv = codex_host.command(entry, env, root, root / "run", runner=_fake_catalog,
+                              registration_dir=root)
+    try:
+        config = codex_host.validate_command(argv, env, root)
+        assert config["mcp_servers"]["panopticon_scope"]["enabled_tools"] == ["search", "read_file"]
+    finally:
+        codex_host.cleanup_command(argv)
+
+
+@pytest.mark.parametrize("enabled", [[], ["read_file", "shell"], "read_file"])
+def test_an_empty_or_foreign_read_tool_allowlist_still_refuses(tmp_path, enabled):
+    root, entry, env = _case(tmp_path)
+    entry["agent"] = "panopticon-scout"
+    _register(root, mutation=lambda config: config["mcp_servers"]["panopticon_scope"].update(
+        enabled_tools=enabled))
+    try:
+        argv = codex_host.command(entry, env, root, root / "run", runner=_fake_catalog,
+                                  registration_dir=root)
+    except ValueError:
+        return                          # refused before any launch is built
+    try:
+        with pytest.raises(ValueError, match="scope-only"):
+            codex_host.validate_command(argv, env, root)
+    finally:
+        codex_host.cleanup_command(argv)
