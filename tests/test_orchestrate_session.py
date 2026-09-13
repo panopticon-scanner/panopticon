@@ -15,6 +15,7 @@ import tempfile
 from unittest import mock
 
 import scripts.driver as driver
+import scripts.host_probes as host_probes
 import scripts.orchestrate as orchestrate
 import scripts.phases.runio as runio
 import scripts.read_guard_hook as read_guard_hook
@@ -41,17 +42,6 @@ class TestSessionMode(LoopCase):
         with contextlib.redirect_stdout(io.StringIO()) as out:
             status = orchestrate.loop(args)
         return status, out.getvalue()
-
-    def _session_root(self, d):
-        # session mode arms the SESSION root's settings file (spec 5.1); the
-        # tests point it at a sandbox via --session-dir so the real file is
-        # never touched, and pre-create the file install() requires (#1493).
-        s = os.path.realpath(tempfile.mkdtemp())
-        self.addCleanup(lambda: shutil.rmtree(s, ignore_errors=True))
-        os.makedirs(os.path.join(s, ".claude"))
-        with open(os.path.join(s, ".claude", "settings.local.json"), "w") as fh:
-            fh.write("{}")
-        return s
 
     def _armed_read_ids(self, s):
         # read_guard_hook.is_armed() answers (armed, COUNT), not the id set
@@ -227,13 +217,6 @@ class TestSessionMode(LoopCase):
         self.assertFalse(write_guard_hook.is_armed(session_root=s)[0])
         self.assertFalse(read_guard_hook.is_armed(session_root=s)[0])
 
-    def test_headless_on_a_host_without_a_runner_is_an_error_naming_session_mode(self):
-        d, _ = self._repo()
-        args = self._args(d, "--host", "gemini")
-        with contextlib.redirect_stdout(io.StringIO()):
-            status = orchestrate.loop(args)
-        self.assertEqual(status["status"], "error")
-        self.assertIn("--mode session", status["message"])
 
 
 class TestSetupSessionMode(LoopCase):
@@ -365,3 +348,109 @@ class TestSetupOnRails(LoopCase):
         self.assertTrue(os.path.isfile(flat_ledger))
         self.assertTrue(os.path.isfile(flat_usage))
         self.assertNotEqual(os.path.realpath(flat_usage), os.path.realpath(stale_usage_path))
+
+
+class TestHostAndModeResolution(LoopCase):
+    """I5 + I8 (final review): which host the loop dispatches for, and which
+    mode it runs in when `--mode` is absent."""
+
+    def _spy(self, calls, runner=None):
+        real = base.runner_for
+
+        def _runner_for(host, mode):
+            calls.append((host, mode))
+            return real(host, mode) if runner is None else runner
+        return mock.patch("scripts.runners.base.runner_for", side_effect=_runner_for)
+
+    def _gemini_run(self, d, s):
+        """Mint a real run-manifest whose host is gemini, the way a first
+        `driver loop --host gemini` would."""
+        args = driver.build_parser().parse_args(
+            ["loop", d, "--no-tools", "--fail-on", "high", "--host", "gemini",
+             "--mode", "session", "--session-dir", s])
+        with contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()):
+            driver.run(args)
+        self.assertEqual(driver.run_manifest.load_manifest(d)["host"], "gemini")
+
+    def test_a_resume_without_host_dispatches_for_the_runs_own_host(self):
+        # I5: `driver.run` treats an omitted `--host` as manifest-authoritative
+        # -- it refuses a contradicting `--host` as flag drift -- so a resume
+        # without the flag is still a gemini run. The loop resolved its runner
+        # off `runio._DEFAULTS["host"]` instead and would have dispatched
+        # CLAUDE agents at it, with no refusal anywhere on the path.
+        d, _ = self._repo(); s = self._session_root(d)
+        self._gemini_run(d, s)
+        calls = []
+        with self._spy(calls), contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()):
+            orchestrate.loop(self._args(d, "--mode", "session", "--session-dir", s))
+        self.assertEqual(calls, [("gemini", "session")])
+
+    def test_a_host_with_no_headless_runner_degrades_to_session_with_a_reason(self):
+        # I8, spec 4.4: "A host with no headless runner registered gets session
+        # mode with a stderr line saying so." `--mode` defaulted to headless,
+        # so `driver loop --host gemini` errored out instead of degrading.
+        d, _ = self._repo(); s = self._session_root(d)
+        calls = []
+        err = io.StringIO()
+        with self._spy(calls), contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(err):
+            status = orchestrate.loop(
+                self._args(d, "--host", "gemini", "--session-dir", s))
+        self.assertEqual(calls, [("gemini", "session")])
+        self.assertEqual(status["status"], "dispatch", status)
+        self.assertIn("gemini", err.getvalue())
+        self.assertIn("session mode", err.getvalue())
+
+    def test_an_explicit_headless_on_such_a_host_is_an_error_not_a_traceback(self):
+        # I8: "`--mode headless` on such a host is an error" -- the operator
+        # asked for a runner that does not exist, which is not something to
+        # paper over with a silent downgrade.
+        d, _ = self._repo()
+        with contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()):
+            status = orchestrate.loop(
+                self._args(d, "--host", "gemini", "--mode", "headless"))
+        self.assertEqual(status["status"], "error", status)
+        self.assertIn("--mode session", status["message"])
+
+    def test_a_host_with_a_runner_still_defaults_to_headless(self):
+        d, floor = self._repo()
+        runner = FakeRunner()
+        calls = []
+        with self._spy(calls, runner), \
+             mock.patch.object(orchestrate, "_after_first_run",
+                               side_effect=lambda rr: self._seed_coverage(rr, floor)), \
+             contextlib.redirect_stdout(io.StringIO()):
+            status = orchestrate.loop(self._args(d))
+        self.assertEqual(calls, [("claude", "headless")])
+        self.assertEqual(status["status"], "complete", status)
+
+    def test_the_resolved_mode_reaches_the_posture_probe_on_the_very_first_run(self):
+        # Writing the resolved mode back onto `args` before `_first_run` is
+        # load-bearing, not tidiness. `driver._establish_host_posture` reads
+        # `args.mode` to choose WHICH settings file the guard probes measure
+        # (spec 5.4: the run folder's in headless mode, the session root's
+        # otherwise), and it runs on EVERY driver.run call. If the first call
+        # saw the parser's bare default and later calls saw the resolved mode,
+        # the two would disagree about artifact_write_guard on any machine
+        # whose session root has no settings file (#1493) -- and the run would
+        # refuse ITSELF as mid-run posture drift on its second invocation.
+        d, floor = self._repo()
+        runner = FakeRunner()
+        seen = []
+
+        def _probe(host, target, **kw):
+            seen.append(kw.get("settings_path"))
+            return _all_proven_artifact(host)
+
+        with mock.patch("scripts.host_probes.run_probes", side_effect=_probe), \
+             mock.patch.object(orchestrate, "_after_first_run",
+                               side_effect=lambda rr: self._seed_coverage(rr, floor)), \
+             mock.patch("scripts.runners.base.runner_for", return_value=runner), \
+             contextlib.redirect_stdout(io.StringIO()):
+            status = orchestrate.loop(self._args(d))
+        self.assertEqual(status["status"], "complete", status)
+        self.assertTrue(seen)
+        self.assertEqual(set(seen), {host_probes.headless_settings_path(d)})

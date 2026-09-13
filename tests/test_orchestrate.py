@@ -135,6 +135,17 @@ class LoopCase(unittest.TestCase):
         return driver.build_parser().parse_args(
             ["loop", d, "--no-tools", "--fail-on", "high", *extra])
 
+    def _session_root(self, d):
+        # session mode arms the SESSION root's settings file (spec 5.1); the
+        # tests point it at a sandbox via --session-dir so the real file is
+        # never touched, and pre-create the file install() requires (#1493).
+        s = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(s, ignore_errors=True))
+        os.makedirs(os.path.join(s, ".claude"))
+        with open(os.path.join(s, ".claude", "settings.local.json"), "w") as fh:
+            fh.write("{}")
+        return s
+
     def _seed_coverage(self, d, floor):
         # discovery/coverage would dispatch a scout; seed coverage so the first
         # checkpoint is review (the scout path is covered by TestScoutRoundTrip).

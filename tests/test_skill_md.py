@@ -310,6 +310,9 @@ class TestSkillMd(unittest.TestCase):
         # -- so the guide must send a session host to `dispatch_request`
         # rather than to a path it would hard-code and get wrong.
         self.assertIn("`dispatch_request` field", loop)
+        # I8: same for the guide -- the documented default names the condition.
+        self.assertIn("default: headless when the host has a headless runner, "
+                      "otherwise session", loop)
         # unified guard-confined self-write (no write_mode/return handshake)
         self.assertIn("write-guard", loop)
         self.assertIn("self-write", loop)
@@ -671,3 +674,7 @@ class TestDriverLoopContract(unittest.TestCase):
         self.assertIn("driver loop", skill)
         self.assertIn("driver persist", skill)
         self.assertIn("--mode {headless,session}", skill)
+        # I8 (plan 6 final review): the mode DEFAULT is host-dependent --
+        # headless where a runner exists, session where none does -- so a
+        # reader must not be left assuming `driver loop --host gemini` errors.
+        self.assertIn("defaults to headless when the host has a headless", skill)

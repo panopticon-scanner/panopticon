@@ -1555,7 +1555,12 @@ class TestDriverLoopCLI(unittest.TestCase):
         self.assertEqual((args.mode, args.concurrency, args.max_iterations, args.max_budget_usd,
                           args.max_turns, args.entry_timeout, args.scope_group),
                          ("session", 4, 7, 2.5, 30, 600, "Auth"))
-        self.assertEqual(driver.build_parser().parse_args(["loop", "x"]).mode, "headless")
+        # I8: no literal default -- the parser leaves `--mode` unset and
+        # `orchestrate.loop` resolves it from the host (headless where a
+        # runner exists, session where none does). A "headless" default here
+        # is what made `driver loop --host gemini` an error instead of the
+        # documented degrade to session mode.
+        self.assertIsNone(driver.build_parser().parse_args(["loop", "x"]).mode)
 
     def test_loop_modes_match_the_runner_seam(self):
         import scripts.runners.base as runners_base

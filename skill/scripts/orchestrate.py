@@ -18,6 +18,7 @@ import scripts.phases.persist as persist
 import scripts.phases.requests as requests
 import scripts.phases.runio as runio
 import scripts.read_guard_hook as read_guard_hook
+import scripts.run_manifest as run_manifest
 import scripts.runners.base as runners_base
 import scripts.write_guard_hook as write_guard_hook
 
@@ -204,13 +205,51 @@ def _disarm_previous(guards, prev_req):
         guards.disarm(entries)
 
 
+def _resolve_host(args, review_root):
+    """Which host this invocation dispatches for (I5).
+
+    `--host` when given; otherwise the RUN's own host, off its manifest.
+    `driver.run` is manifest-authoritative about this -- it refuses a `--host`
+    that contradicts the manifest as flag drift -- so a resume WITHOUT the flag
+    is still a gemini (or kimi, or generic) run. Resolving off
+    `runio._DEFAULTS["host"]` instead dispatched claude agents into it, with
+    no refusal anywhere on the path.
+
+    A `--reset` run re-mints the manifest from argv, so the OUTGOING manifest
+    must not steer this invocation: fall through to the default, which is what
+    `driver.run` is about to write.
+    """
+    if getattr(args, "host", None):
+        return args.host
+    if not getattr(args, "reset", False):
+        host = (run_manifest.load_manifest(review_root) or {}).get("host")
+        if host:
+            return host
+    return runio._DEFAULTS["host"]
+
+
+def _resolve_mode(args, host):
+    """(mode, stderr_note) -- spec 4.4 (I8).
+
+    `--mode` when the operator gave one. Otherwise headless when this host has
+    a runner and session when it does not: "A host with no headless runner
+    registered gets session mode with a stderr line saying so; `--mode
+    headless` on such a host is an error." That last case is left to
+    `runner_for`, which refuses with the sentence naming `--mode session`.
+    """
+    mode = getattr(args, "mode", None)
+    if mode:
+        return mode, None
+    if runners_base.headless_available(host):
+        return "headless", None
+    return "session", (
+        "driver loop: no headless runner for host %r (no skill/scripts/runners/%s.py); "
+        "running in session mode -- the loop will print each batch for you to "
+        "dispatch. Pass --mode headless to require a runner instead." % (host, host))
+
+
 def loop(args):
     """spec 4.3. Returns the final status dict; never exits (the CLI owns exit)."""
-    mode = getattr(args, "mode", "headless")
-    try:
-        runner = runners_base.runner_for(args.host or runio._DEFAULTS["host"], mode)
-    except ValueError as exc:
-        return _status("error", str(exc))
     max_iterations = getattr(args, "max_iterations", None) or DEFAULT_MAX_ITERATIONS
     budget = getattr(args, "max_budget_usd", None)
     namespace = "setup" if getattr(args, "setup", False) else None
@@ -227,6 +266,29 @@ def loop(args):
         review_root = _review_root(args)
     except (RuntimeError, ValueError, OSError) as exc:
         return _status("error", "driver loop: could not resolve review root: %s" % exc)
+    # I5 then I8: the mode fallback asks whether THIS host has a runner, so the
+    # host has to be resolved first.
+    host = _resolve_host(args, review_root)
+    mode, note = _resolve_mode(args, host)
+    if note:
+        print(note, file=sys.stderr, flush=True)
+    # Both are resolved BEFORE `_first_run`, and the resolved mode is written
+    # back onto `args`, deliberately. `driver._establish_host_posture` reads
+    # `args.mode` to decide WHICH settings file the guard probes measure (spec
+    # 5.4: the run folder's in headless mode, the session root's otherwise),
+    # and it runs on EVERY `driver.run` call. Leaving `args.mode` at None for
+    # the first call and resolving afterwards would probe the session root once
+    # and the run folder from then on -- and on any machine whose session root
+    # has no settings file (the #1493 case) those two disagree about
+    # artifact_write_guard, so the run would refuse ITSELF as mid-run posture
+    # drift on its second invocation. This is why host resolution reads the
+    # manifest here rather than after `_first_run`; `--reset` is handled in
+    # `_resolve_host` so the outgoing manifest cannot steer a re-minted run.
+    args.mode = mode
+    try:
+        runner = runners_base.runner_for(host, mode)
+    except ValueError as exc:
+        return _status("error", str(exc))
     # R-P6 Task 5 ruling 1: the SAME rule driver.run() applies to
     # manifest["session_dir"] -- never read off the on-disk manifest, which
     # never persists it (driver.run() sets it in memory, post write-manifest,

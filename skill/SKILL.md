@@ -45,7 +45,9 @@ resolve against cwd; only the script path substitutes.
 - `driver loop [target] [driver run flags] [--mode {headless,session}] [--concurrency N]
   [--max-iterations N] [--max-budget-usd X] [--setup]` — the whole review on rails (the host
   contract); session mode prints `dispatch` and you `driver persist <id> --file <reply>` each
-  return-persist reply, then re-run.
+  return-persist reply, then re-run. `--mode` defaults to headless when the host has a headless
+  runner and session when it does not (every host but Claude today) — `--mode headless` on such
+  a host is an error, not a silent downgrade.
 - `driver persist ENTRY_ID [--file PATH] [--setup] [target]` — persist one return-persist reply
   (session mode).
 - `driver run [target] [flags]` — the single-step primitive `driver loop` calls; drive by hand

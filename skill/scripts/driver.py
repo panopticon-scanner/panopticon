@@ -208,7 +208,11 @@ def build_parser():
             # None of these become manifest anti-drift keys (_cli_flags/
             # run_manifest._FLAG_KEYS never read them) -- a resume may freely
             # change concurrency/budget/timeouts without tripping flag drift.
-            p.add_argument("--mode", default="headless", choices=list(hosts_runner_modes()))
+            # Default None, resolved in `orchestrate.loop` (I8, spec 4.4):
+            # headless when the resolved host has a runner, session when it
+            # does not. A literal "headless" default here made `driver loop
+            # --host gemini` an error instead of the documented degrade.
+            p.add_argument("--mode", default=None, choices=list(hosts_runner_modes()))
             p.add_argument("--concurrency", type=_positive_int, default=None)
             p.add_argument("--max-iterations", type=_positive_int, default=None)
             p.add_argument("--max-budget-usd", type=float, default=None)
