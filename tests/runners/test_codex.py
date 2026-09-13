@@ -75,6 +75,30 @@ def test_failed_launch_keeps_preceding_usage_and_denials():
     assert result.denials == [denied]
 
 
+def test_native_failed_mcp_item_retains_denial_without_is_error_flag():
+    # Captured shape from codex-cli 0.153.4, including calls nested in Code
+    # Mode: isError is absent and error is null even when the broker denies.
+    allowed = {
+        "type": "mcp_tool_call", "server": "panopticon_scope", "tool": "read_file",
+        "status": "completed", "error": None,
+        "result": {"content": [{"type": "text", "text": "inside.txt:1:allowed"}],
+                   "structured_content": None},
+    }
+    denied = {
+        "type": "mcp_tool_call", "server": "panopticon_scope", "tool": "read_file",
+        "status": "failed", "error": None,
+        "result": {"content": [{"type": "text", "text":
+                    "Read tool refused: Denied: outside.txt is outside this entry's read scope"}],
+                   "structured_content": None},
+    }
+    result = codex.Runner.parse_envelope("e", envelope(
+        START, {"type": "item.completed", "item": allowed},
+        {"type": "item.completed", "item": denied}, REPLY, DONE), 0)
+    assert result.ok
+    assert result.denials == [denied]
+    assert result.usage["output_tokens"] == 20
+
+
 def entry():
     return {"id": "review-app-SEC", "agent": "panopticon-domain-panel",
             "enforced": True, "model": "fixture-model", "delivery": "return_json",

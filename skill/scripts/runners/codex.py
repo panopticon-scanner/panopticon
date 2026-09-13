@@ -80,8 +80,10 @@ class Runner(base.HostRunner):
                             raise ValueError("agent message is not text")
                     elif item.get("type") == "mcp_tool_call":
                         result = item.get("result") or {}
-                        if item.get("error") or (isinstance(result, dict)
-                                                  and result.get("isError")):
+                        # Native exec omits MCP isError from the result and
+                        # marks the completed item's status failed instead.
+                        if (item.get("status") == "failed" or item.get("error")
+                                or (isinstance(result, dict) and result.get("isError"))):
                             denials.append(item)
             if returncode:
                 error = error or "codex exited with status %s" % returncode
