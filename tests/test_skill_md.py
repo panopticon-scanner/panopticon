@@ -71,6 +71,11 @@ class TestSkillMd(unittest.TestCase):
         # 4.3.2: meta.cost is the measured 4.x baseline for 5.x economics.
         self.assertIn("meta.cost", self.text)
         self.assertIn("{phase, role, model, count}", self.text)
+        # Fix round 1: the ledger's own field is `denials` (what
+        # Ledger.record writes) -- `permission_denials` names only the
+        # incoming host envelope this field carries, and the doc must not
+        # claim that's the key on disk.
+        self.assertIn("denials", self.text)
 
     def test_documents_the_host_capability_disclosure_and_that_it_does_not_gate(self):
         # #1344 F3b. This file is the operator-facing contract: it already
@@ -142,6 +147,13 @@ class TestSkillMd(unittest.TestCase):
         run_loop = doc[doc.index("## Driver run-loop"):doc.index("## Driver setup")]
         self.assertIn("read_guard_hook.install", run_loop)
         self.assertIn("read_guard_hook.uninstall", run_loop)
+        # Fix round 1: the marker-line binding contract (still live code --
+        # read_guard_hook.adjudicate falls back to the transcript marker
+        # whenever PANOPTICON_ENTRY_ID is absent) was dropped with the
+        # deleted fan-out list and never re-homed. Session mode is exactly
+        # where a host still spells this out by hand, so it belongs there.
+        self.assertIn("panopticon-entry:", run_loop)
+        self.assertIn('entry["marker"]', run_loop)
         caps = doc[doc.index("## Host capabilities (5.2)"):doc.index("## Code layout (5.2)")]
         self.assertIn("read-guard-armed", caps)
         self.assertNotIn("`read_scope_confined` is `unknown` on every host today", caps)
