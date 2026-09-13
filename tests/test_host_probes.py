@@ -391,7 +391,9 @@ class TestEntryModelBoundProbe(unittest.TestCase):
                                  host_probes.WRITE_GUARD_ARMED,
                                  host_probes.TRANSCRIPT_DIR,
                                  host_probes.ENTRY_MODEL_BOUND,
-                                 host_probes.READ_GUARD_ARMED}))
+                                 host_probes.READ_GUARD_ARMED,
+                                 host_probes.CODEX_EFFECTIVE_TOOLS,
+                                 host_probes.CODEX_READ_SCOPE}))
         with tempfile.TemporaryDirectory() as reg, \
              tempfile.TemporaryDirectory() as target, \
              tempfile.TemporaryDirectory() as home:
@@ -1344,7 +1346,9 @@ class TestReadGuardArmedProbe(unittest.TestCase):
             self.assertIn(claude_dir, detail)
 
     def test_a_host_that_claims_no_read_confinement_is_unknown(self):
-        for name in ("gemini", "generic", "kimi", "codex"):
+        # Codex now claims its own primitive; this Claude-probe early-return
+        # check still covers every family with no read-confinement claim.
+        for name in ("gemini", "generic", "kimi"):
             with self.subTest(host=name):
                 state, by, _detail = host_probes.probe_read_guard_armed(name)
                 self.assertEqual(hosts.UNKNOWN, state)

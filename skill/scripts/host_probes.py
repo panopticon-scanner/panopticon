@@ -521,13 +521,141 @@ def probe_read_guard_armed(host, session_root=None, settings_path=None):
 
 TRANSCRIPT_DIR = "transcript-dir"
 
+CODEX_EFFECTIVE_TOOLS = "codex-effective-tools"
+CODEX_READ_SCOPE = "codex-read-scope"
+
+
+def _codex_surfaces(registration_dir=None, inspector=None):
+    """Measure each role in the real Codex runtime, without a paid model call.
+
+    A localhost Responses fixture enumerates the effective tools and attempts
+    two synthetic reads through the SAME launcher used by the runner. No target
+    content participates. Only run_probes' caller-local cache shares results;
+    every driver invocation inspects the current runtime and registered shells.
+    """
+    from scripts import codex_host
+    inspector = inspector or codex_host.inspect_surface
+    directory = registration_dir or hosts.spec("codex").registration_dir
+    surfaces = []
+    with tempfile.TemporaryDirectory(prefix="panopticon-codex-probe-") as temporary:
+        root = os.path.realpath(temporary)
+        cell = os.path.join(root, "in-scope")
+        os.mkdir(cell)
+        inside, outside = os.path.join(cell, "inside.txt"), os.path.join(root, "outside.txt")
+        for path in (inside, outside):
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("Panopticon synthetic confinement fixture\n")
+        for role in (*DRIVER_ROLES, "setup-scan"):
+            setup = role == "setup-scan"
+            role_file = None if setup else dispatch.ROLE_FILES[role]
+            shell = ("setup-scan (native default model and directory scope)" if setup else
+                     os.path.join(directory, dispatch.registered_agent_filename("codex", role_file)))
+            if not setup and not os.path.isfile(shell):
+                raise FileNotFoundError("Codex reviewer shell is missing: %s" % shell)
+            entry = {"id": "setup-scan" if setup else "probe-" + role,
+                     "agent": None if setup else dispatch.registered_agent_name(role_file),
+                     "enforced": not setup, "delivery": "return_json",
+                     "model": None if setup else model_resolver.resolve_model("codex", role).get("model"),
+                     "prompt": "Measure the available reviewer tools; return JSON.",
+                     "scope": {"files": [] if setup else [inside], "dirs": [cell] if setup else [], "reads": []}}
+            scope_path, allow_path = (os.path.join(root, name) for name in ("scope.json", "allowlist.json"))
+            with open(scope_path, "w", encoding="utf-8") as fh:
+                json.dump({entry["id"]: entry["scope"]}, fh)
+            with open(allow_path, "w", encoding="utf-8") as fh:
+                json.dump([], fh)
+            env = dict(os.environ, PANOPTICON_ENTRY_ID=entry["id"],
+                       PANOPTICON_READ_SCOPE=scope_path, PANOPTICON_WRITE_ALLOWLIST=allow_path)
+            surface = inspector(entry, env, cell if setup else root, root, registration_dir=directory,
+                                probe_paths=(inside, outside))
+            surfaces.append((shell, surface))
+    return surfaces
+
+
+def _codex_measure(probe_id, settings_path, registration_dir, measure):
+    if settings_path is None:
+        return None, (hosts.UNKNOWN, probe_id,
+                      "Codex confinement is measured for driver loop --mode headless only; "
+                      "a parent session may override native child-agent permissions")
+    try:
+        return (measure() if measure else _codex_surfaces(registration_dir)), None
+    except FileNotFoundError as exc:
+        # Missing registration is broken; missing CLI is an unavailable test.
+        state = hosts.REFUTED if "reviewer shell is missing" in str(exc) else hosts.UNKNOWN
+        return None, (state, probe_id, str(exc))
+    except Exception as exc:
+        return None, (hosts.UNKNOWN, probe_id,
+                      "effective Codex inspection could not run: %s: %s" % (type(exc).__name__, exc))
+
+
+def _codex_surface_problem(surface):
+    expected = {"mcp__panopticon_scope__read_file", "mcp__panopticon_scope__search",
+                "mcp__panopticon_scope__list_files", "list_mcp_resources",
+                "list_mcp_resource_templates", "read_mcp_resource"}
+    forbidden = surface.get("forbidden") or {}
+    if (set(surface.get("tools", [])) != expected
+            or set(surface.get("direct_tools", [])) != {
+                "functions.exec", "functions.wait", "functions.request_user_input"}
+            or set(forbidden) != {"exec", "patch", "spawn", "fetch", "process", "require"}
+            or any(value != "undefined" for value in forbidden.values())):
+        return "effective Codex surface is not the confined read-only tool set"
+    return None
+
+
+def probe_codex_tool_policy(host, registration_dir=None, settings_path=None, measure=None):
+    """Prove omission on Codex's effective V8 surface, not TOML prose."""
+    surfaces, failure = _codex_measure(CODEX_EFFECTIVE_TOOLS, settings_path, registration_dir, measure)
+    if failure:
+        return failure
+    paths = []
+    for path, surface in surfaces:
+        paths.append(path)
+        problem = _codex_surface_problem(surface)
+        if problem:
+            return (hosts.REFUTED, CODEX_EFFECTIVE_TOOLS,
+                    "%s: %s: %s" % (path, problem, json.dumps(surface, sort_keys=True)))
+    if len(paths) != len(DRIVER_ROLES) + 1:
+        return (hosts.UNKNOWN, CODEX_EFFECTIVE_TOOLS, "not every registered role was inspected")
+    return (hosts.PROVEN, CODEX_EFFECTIVE_TOOLS,
+            "effective Codex V8 ALL_TOOLS and forbidden globals inspected via localhost-only "
+            "Responses fixture; shell/patch/agents/network absent; shells: %s" % ", ".join(paths))
+
+
+def probe_codex_read_scope(host, registration_dir=None, settings_path=None, measure=None):
+    """Exercise the actual MCP read path; disallow every alternate I/O tool."""
+    surfaces, failure = _codex_measure(CODEX_READ_SCOPE, settings_path, registration_dir, measure)
+    if failure:
+        return failure
+    paths = []
+    for path, surface in surfaces:
+        paths.append(path)
+        problem = _codex_surface_problem(surface)
+        if problem:
+            return hosts.REFUTED, CODEX_READ_SCOPE, "%s: %s" % (path, problem)
+        reads = surface.get("reads")
+        if not isinstance(reads, list) or len(reads) != 2:
+            return (hosts.UNKNOWN, CODEX_READ_SCOPE, "%s: runtime returned no two-read measurement" % path)
+        inside, outside = reads
+        if (not isinstance(inside, dict) or not isinstance(outside, dict)
+                or inside.get("isError") is not False or outside.get("isError") is not True
+                or "outside" not in json.dumps(outside).lower()
+                or "scope" not in json.dumps(outside).lower()):
+            return (hosts.REFUTED, CODEX_READ_SCOPE,
+                    "%s: actual MCP in-scope allow / out-of-scope deny failed: %s"
+                    % (path, json.dumps(reads, sort_keys=True)))
+    if len(paths) != len(DRIVER_ROLES) + 1:
+        return (hosts.UNKNOWN, CODEX_READ_SCOPE, "not every registered role was inspected")
+    return (hosts.PROVEN, CODEX_READ_SCOPE,
+            "actual Codex MCP read_file allowed the exact entry file and denied its outside-scope "
+            "sibling; PANOPTICON_ENTRY_ID / PANOPTICON_READ_SCOPE bound to temporary grants; "
+            "shells: %s" % ", ".join(paths))
+
 # Every probe id a registry row may map to and get a runner for; the
 # shadow-shell scan runs unconditionally and is not a mappable probe. The
 # retirement bar (tests/test_generic_retirement_bar.py) reads this as "the
 # shipped probes" (spec 8.1), so it must not drift from the runner table:
 # run_probes refuses to build a table that disagrees with it.
 PROBE_IDS = (REGISTERED_SHELL_TOOLS, WRITE_GUARD_ARMED, TRANSCRIPT_DIR,
-            ENTRY_MODEL_BOUND, READ_GUARD_ARMED)
+            ENTRY_MODEL_BOUND, READ_GUARD_ARMED, CODEX_EFFECTIVE_TOOLS, CODEX_READ_SCOPE)
 
 # Which capability each shipped probe MEASURES. The retirement bar reads this
 # so a row cannot satisfy spec 8.1 by mapping a security capability to a
@@ -538,7 +666,9 @@ PROBE_CAPABILITY = {REGISTERED_SHELL_TOOLS: hosts.TOOL_POLICY_ENFORCED,
                     WRITE_GUARD_ARMED: hosts.ARTIFACT_WRITE_GUARD,
                     TRANSCRIPT_DIR: hosts.USAGE_LEDGER,
                     ENTRY_MODEL_BOUND: hosts.MODEL_BINDING,
-                    READ_GUARD_ARMED: hosts.READ_SCOPE_CONFINED}
+                    READ_GUARD_ARMED: hosts.READ_SCOPE_CONFINED,
+                    CODEX_EFFECTIVE_TOOLS: hosts.TOOL_POLICY_ENFORCED,
+                    CODEX_READ_SCOPE: hosts.READ_SCOPE_CONFINED}
 
 
 def probe_transcript_dir(host, session_dir, home=None):
@@ -767,6 +897,13 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
     # A row that maps a probe to a different capability must record it there;
     # otherwise `HostSpec.probes` is decorative and a mis-mapped row fails
     # silently -- the defect this epic exists to remove.
+    codex_measurement = []
+
+    def codex_measure():
+        if not codex_measurement:
+            codex_measurement.append(_codex_surfaces(registration_dir))
+        return codex_measurement[0]
+
     runners = {
         REGISTERED_SHELL_TOOLS:
             lambda: probe_registered_shell_tools(host, registration_dir),
@@ -780,6 +917,10 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
         READ_GUARD_ARMED:
             lambda: probe_read_guard_armed(host, session_root=session_root,
                                            settings_path=settings_path),
+        CODEX_EFFECTIVE_TOOLS:
+            lambda: probe_codex_tool_policy(host, registration_dir, settings_path, codex_measure),
+        CODEX_READ_SCOPE:
+            lambda: probe_codex_read_scope(host, registration_dir, settings_path, codex_measure),
     }
     if set(runners) != set(PROBE_IDS):
         raise RuntimeError("host_probes.PROBE_IDS is out of step with run_probes' runner "

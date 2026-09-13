@@ -46,8 +46,15 @@ resolve against cwd; only the script path substitutes.
   [--max-iterations N] [--max-budget-usd X] [--setup]` — the whole review on rails (the host
   contract); session mode prints `dispatch` and you `driver persist <id> --file <reply>` each
   return-persist reply, then re-run. `--mode` defaults to headless when the host has a headless
-  runner and session when it does not (every host but Claude today) — `--mode headless` on such
+  runner and session when it does not (Claude and Codex have headless runners) — `--mode headless` on such
   a host is an error, not a silent downgrade.
+- `driver loop [target] --host codex --mode headless` — Codex's first-class path through
+  the same loop, with scoped read/search/list tools and every role returning JSON for the
+  loop to persist. Register the Codex shells first (see the guide). Manual session mode
+  cannot prove these controls. The shared review gate still requires `--allow-unenforced`
+  when `artifact_write_guard` is unproven; obtain the operator's explicit acceptance before
+  using it. Codex reports tokens but not cost or effective model identity: dollar budgets
+  cannot bound its spend, so also set `--max-iterations` and `--entry-timeout` and narrow scope.
 - `driver persist ENTRY_ID [--file PATH] [--setup] [--pr N] [--base REF] [target]` — persist one
   return-persist reply (session mode). On a `--pr`/`--base` run pass the same `--pr`/`--base`:
   persist has to resolve the same review root the loop did (a PR run's is the PR worktree), or it

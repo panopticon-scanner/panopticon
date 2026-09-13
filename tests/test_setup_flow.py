@@ -15,6 +15,19 @@ import scripts.setup_flow as setup_flow
 import shutil
 
 
+def _isolate_codex_probes(test_case):
+    """Readiness assertions must never invoke a real Codex runtime probe."""
+    for name, probe_id in (
+        ("probe_codex_tool_policy", "codex-effective-tools"),
+        ("probe_codex_read_scope", "codex-read-scope"),
+    ):
+        patcher = mock.patch.object(
+            host_probes, name,
+            return_value=(hosts.UNKNOWN, probe_id, "isolated test fixture"))
+        patcher.start()
+        test_case.addCleanup(patcher.stop)
+
+
 def _repo(test_case, with_committed=False):
     d = os.path.realpath(tempfile.mkdtemp())
     os.makedirs(os.path.join(d, "src", "checkout"))
@@ -38,6 +51,9 @@ def test_check_groups_manifest_reports_corrupt_yaml(tmp_path):
 
 
 class TestSetupFlow(unittest.TestCase):
+    def setUp(self):
+        _isolate_codex_probes(self)
+
     def _gitignore(self, repo):
         with open(os.path.join(repo, ".gitignore"), encoding="utf-8") as fh:
             return fh.read()
@@ -926,6 +942,9 @@ class TestDraftPreservesTopLevelKeys(unittest.TestCase):
 
 class TestReadinessCannotAssertWhatItDidNotCheck(unittest.TestCase):
     """#1344 F2: P2/P3 cease to be expressible."""
+
+    def setUp(self):
+        _isolate_codex_probes(self)
 
     def _check(self, host):
         return dict((name, (ok, detail))
