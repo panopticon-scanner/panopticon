@@ -23,10 +23,24 @@ import scripts.hosts as hosts
 
 
 ENV_KEYS = ("PANOPTICON_ENTRY_ID", "PANOPTICON_WRITE_ALLOWLIST", "PANOPTICON_READ_SCOPE")
+# Same reason as runners/codex.DEFAULT_RUNNER: a module attribute the suite can
+# swap for a refusal, where a default argument could not be reached.
+DEFAULT_RUNNER = subprocess.run
 MAX_BYTES = 8 * 1024 * 1024
 PROBE_TIMEOUT = 45
 _COMMAND_DIRS = set()
 _COMMAND_LOCK = threading.Lock()
+
+
+class LaunchRefused(RuntimeError):
+    """The suite's guard refusing to start the real CLI (tests/conftest.py).
+
+    Its own type, deliberately: `_codex_measure` maps every other exception to
+    UNKNOWN, which would turn a test that actually reached a live `codex` into
+    a green "runtime unavailable". This one is re-raised instead.
+    """
+
+
 _POLICY_FEATURES = (
     "shell_tool", "unified_exec", "shell_snapshot", "apps", "plugins", "hooks",
     "multi_agent", "multi_agent_v2", "browser_use", "computer_use", "image_generation",
@@ -121,8 +135,9 @@ def _catalog(model, directory, runner, env):
     return str(path)
 
 
-def command(entry, env, review_root, run_dir, runner=subprocess.run, registration_dir=None):
+def command(entry, env, review_root, run_dir, runner=None, registration_dir=None):
     """Build one stdin-prompt launch from its registered, effective policy."""
+    runner = DEFAULT_RUNNER if runner is None else runner
     config = _shell(entry, registration_dir)
     model = entry.get("model")
     if model is not None and (not isinstance(model, str) or not model or any(c in model for c in "\r\n\0")):
@@ -333,13 +348,14 @@ def _surface_result(requests):
     raise ValueError("Codex effective tool enumeration was absent or malformed")
 
 
-def inspect_surface(entry, env, review_root, run_dir, runner=subprocess.run,
+def inspect_surface(entry, env, review_root, run_dir, runner=None,
                     registration_dir=None, probe_paths=None):
     """Interrogate the same native launch, replacing only its model endpoint.
 
     All real-runtime work is explicit here, never in unit tests. Callers map
     unavailable localhost/runtime facilities to unknown rather than guessing.
     """
+    runner = DEFAULT_RUNNER if runner is None else runner
     argv = command(entry, env, review_root, run_dir, runner, registration_dir)
     try:
         requests = _capture_requests(argv, env, runner, _probe_script(probe_paths))

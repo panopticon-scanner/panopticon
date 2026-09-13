@@ -116,3 +116,14 @@ def test_registry_dispatch_shares_measurement_only_within_one_invocation(tmp_pat
             for capability in (hosts.TOOL_POLICY_ENFORCED, hosts.READ_SCOPE_CONFINED):
                 assert artifact["capabilities"][capability]["state"] == hosts.PROVEN
         assert measure.call_count == 2
+
+
+def test_the_probe_never_swallows_the_suites_launch_guard(tmp_path):
+    # I-5: _codex_measure maps any exception to UNKNOWN, so a test that reached
+    # a live `codex` and failed would still read as a clean "unavailable".
+    from scripts import codex_host
+
+    for probe in (host_probes.probe_codex_tool_policy, host_probes.probe_codex_read_scope):
+        with pytest.raises(codex_host.LaunchRefused):
+            probe("codex", settings_path=str(tmp_path / "settings.json"),
+                  measure=mock.Mock(side_effect=codex_host.LaunchRefused("refused")))

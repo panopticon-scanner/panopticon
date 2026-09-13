@@ -162,3 +162,45 @@ def test_prepare_is_idempotent_and_leaves_guard_arming_to_the_loop(tmp_path):
     runner.prepare(str(tmp_path), str(tmp_path))
     runner.prepare(str(tmp_path), str(tmp_path))
     assert list(tmp_path.iterdir()) == []
+
+
+# --- I-5 / M-5: the seam's launcher is a module attribute, and the suite
+# refuses to reach the real CLI through it ------------------------------------
+
+
+def test_the_launcher_is_a_module_attribute_read_at_construction(monkeypatch):
+    def sentinel(*args, **kwargs):
+        raise AssertionError("never called")
+
+    monkeypatch.setattr(codex, "DEFAULT_RUNNER", sentinel)
+    assert codex.Runner().runner is sentinel
+
+
+def test_the_seam_names_its_cli_and_the_flags_that_print_the_envelope(tmp_path):
+    from types import SimpleNamespace as NS
+
+    from scripts import codex_host
+
+    def catalog(argv, **kwargs):
+        return NS(returncode=0, stdout=json.dumps({"models": [{"slug": "m"}]}), stderr="")
+
+    root = tmp_path / "review"
+    root.mkdir()
+    env = {"PANOPTICON_ENTRY_ID": "setup-scan",
+           "PANOPTICON_WRITE_ALLOWLIST": str(root / "w.json"),
+           "PANOPTICON_READ_SCOPE": str(root / "s.json")}
+    argv = codex_host.command({"id": "setup-scan", "agent": None, "model": "m"},
+                              env, root, tmp_path / "run", runner=catalog)
+    codex_host.cleanup_command(argv)
+    assert argv[0] == codex.Runner.CLI
+    assert codex.Runner.ENVELOPE_FLAGS
+    assert all(flag in argv for flag in codex.Runner.ENVELOPE_FLAGS)
+
+
+def test_the_suite_guard_refuses_a_live_codex_launch():
+    from scripts import codex_host
+
+    for module in (codex, codex_host):
+        with pytest.raises(codex_host.LaunchRefused):
+            module.DEFAULT_RUNNER(["codex", "--version"])
+    assert codex.Runner().runner is not subprocess.run

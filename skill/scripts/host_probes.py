@@ -572,6 +572,7 @@ def _codex_surfaces(registration_dir=None, inspector=None):
 
 
 def _codex_measure(probe_id, settings_path, registration_dir, measure):
+    from scripts import codex_host
     if settings_path is None:
         return None, (hosts.UNKNOWN, probe_id,
                       "Codex confinement is measured for driver loop --mode headless only; "
@@ -582,6 +583,11 @@ def _codex_measure(probe_id, settings_path, registration_dir, measure):
         # Missing registration is broken; missing CLI is an unavailable test.
         state = hosts.REFUTED if "reviewer shell is missing" in str(exc) else hosts.UNKNOWN
         return None, (state, probe_id, str(exc))
+    except codex_host.LaunchRefused:
+        # I-5: the suite's no-live-launch guard. Everything else here becomes
+        # an honest UNKNOWN; this one must escape, or a test that reached a
+        # real `codex` would read as "runtime unavailable" and stay green.
+        raise
     except Exception as exc:
         return None, (hosts.UNKNOWN, probe_id,
                       "effective Codex inspection could not run: %s: %s" % (type(exc).__name__, exc))

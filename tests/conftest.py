@@ -48,7 +48,9 @@ import subprocess  # noqa: E402
 
 import pytest  # noqa: E402
 
+import scripts.codex_host as _codex_host  # noqa: E402
 import scripts.run_tools as _run_tools  # noqa: E402
+import scripts.runners.codex as _codex_runner  # noqa: E402
 import scripts.setup_flow as _setup_flow  # noqa: E402
 from scripts import hosts as _hosts  # noqa: E402
 from scripts.phases import runio as _runio  # noqa: E402
@@ -120,3 +122,24 @@ def _no_live_scanner_containers(request, monkeypatch):
         return                      # opted in with @pytest.mark.docker
     monkeypatch.setattr(_run_tools, "docker_available", _refuse_docker)
     monkeypatch.setattr(_setup_flow, "_check_docker", _refuse_setup_docker)
+
+
+# --- #1344: no live `codex` launches from the unit suite ---------------------
+# The guardrails say the suite must never start a host binary, and until now
+# that was per-test discipline only: both Codex launch seams defaulted to
+# subprocess.run bound as a DEFAULT ARGUMENT, unreachable by a patch, and
+# host_probes._codex_measure mapped any exception to UNKNOWN -- so a test that
+# did reach a live `codex` and failed would still have passed. Both seams now
+# read a module-level DEFAULT_RUNNER, and this swaps each for a refusal whose
+# own type (_codex_host.LaunchRefused) the probe re-raises rather than
+# swallowing. A test that means to exercise a launch injects its own runner=
+# and never sees this. Named for its host so it coexists with the Claude
+# family's equivalent guard.
+def _refuse_codex_launch(*_args, **_kwargs):
+    raise _codex_host.LaunchRefused("test tried to launch the real codex CLI")
+
+
+@pytest.fixture(autouse=True)
+def _no_live_codex_launches(monkeypatch):
+    monkeypatch.setattr(_codex_host, "DEFAULT_RUNNER", _refuse_codex_launch)
+    monkeypatch.setattr(_codex_runner, "DEFAULT_RUNNER", _refuse_codex_launch)

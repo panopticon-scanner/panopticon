@@ -7,13 +7,26 @@ from scripts import codex_host
 import scripts.runners.base as base
 
 
+# The launcher, as a MODULE attribute rather than a default argument, so a
+# single monkeypatch can refuse every un-injected launch in the suite (the
+# autouse `_no_live_codex_launches` fixture in tests/conftest.py does exactly
+# that). A default argument is bound at import and cannot be swapped.
+DEFAULT_RUNNER = subprocess.run
+
+
 class Runner(base.HostRunner):
     host = "codex"
     default_concurrency = 4
+    # The seam's identity, mirrored from what codex_host.command() actually
+    # emits: `codex exec ... --json` is what prints the JSONL envelope
+    # parse_envelope reads. test_the_seam_names_its_cli_and_the_flags_that_
+    # print_the_envelope binds these two constants to that argv.
+    CLI = "codex"
+    ENVELOPE_FLAGS = ("exec", "--json")
 
-    def __init__(self, host="codex", runner=subprocess.run):
+    def __init__(self, host="codex", runner=None):
         super().__init__(host)
-        self._run = runner
+        self.runner = DEFAULT_RUNNER if runner is None else runner
         self.run_dir = None
         self.review_root = None
         self.entry_timeout = 1800
@@ -110,9 +123,9 @@ class Runner(base.HostRunner):
             if entry.get("delivery") != "return_json":
                 raise ValueError("Codex requires delivery: return_json; it cannot self-write")
             command = codex_host.command(entry, child_env, self.review_root, self.run_dir,
-                                         runner=self._run)
+                                         runner=self.runner)
             codex_host.validate_command(command, child_env, self.review_root)
-            proc = self._run(command, input=entry["prompt"], text=True,
+            proc = self.runner(command, input=entry["prompt"], text=True,
                              capture_output=True, cwd=self.review_root,
                              env=child_env, timeout=self.entry_timeout)
             return self.parse_envelope(entry_id, proc.stdout, proc.returncode)
