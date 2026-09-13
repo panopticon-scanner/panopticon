@@ -12,6 +12,8 @@ import scripts.runners.base as base
 # autouse `_no_live_codex_launches` fixture in tests/conftest.py does exactly
 # that). A default argument is bound at import and cannot be swapped.
 DEFAULT_RUNNER = subprocess.run
+# The loop's value for `runner.namespace` under `--setup` (runners/base.py).
+SETUP_NAMESPACE = "setup"
 
 
 class Runner(base.HostRunner):
@@ -38,7 +40,13 @@ class Runner(base.HostRunner):
         # every entry fail its three launches on a missing shell: `prepare`
         # runs before the first batch, so the loop reports one `error` naming
         # the remedy instead of 3xN launches naming an entry id.
-        codex_host.require_registered_shells()
+        #
+        # Except under `--setup`, whose only entry is `setup-scan`: it carries
+        # no `agent`, launches off safety_config() alone, and is how a fresh
+        # machine starts -- before `--emit-host-agents codex` has ever run.
+        # Refusing there would break the documented first command.
+        if self.namespace != SETUP_NAMESPACE:
+            codex_host.require_registered_shells()
         self.run_dir = os.path.abspath(run_dir)
         self.review_root = os.path.abspath(review_root)
 

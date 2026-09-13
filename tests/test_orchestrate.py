@@ -180,6 +180,25 @@ class TestHeadlessLoop(LoopCase):
              contextlib.redirect_stdout(io.StringIO()):
             return orchestrate.loop(args)
 
+    def test_the_loop_hands_the_runner_its_namespace_before_preparing(self):
+        # A runner cannot decide what to arm without knowing WHICH namespace
+        # it is preparing for: the Codex runner's enforced-only refusal has to
+        # stand down for `--setup`, whose only entry needs no registered
+        # shell. Both facts were handed over one line AFTER prepare().
+        class Recording(FakeRunner):
+            seen = "unset"
+
+            def prepare(self, run_dir, review_root):
+                Recording.seen = (self.namespace, self.dispatch_request)
+                super().prepare(run_dir, review_root)
+
+        d, floor = self._repo()
+        self._run(d, floor, Recording())
+        namespace, request = Recording.seen
+        self.assertIsNone(namespace)                     # a review run
+        self.assertIsNotNone(request)                    # ...but both were handed over
+        self.assertTrue(request.endswith("dispatch-request.json"), request)
+
     def test_max_turns_warns_when_the_runner_cannot_honour_it(self):
         # M-9: orchestrate sets `runner.max_turns` unconditionally and the
         # Codex runner never reads it -- accepted, then silently ignored.

@@ -557,6 +557,13 @@ class TestCodexHostDocs(unittest.TestCase):
         # and neither surface said so.
         for text in (_read_doc(), _read_skill_md()):
             self.assertIn("enforced-only", text)
+        # ...and that the up-front refusal stands down for `--setup`, whose
+        # single setup-scan entry needs no registered shell -- a fresh machine
+        # runs setup BEFORE it registers anything.
+        exemption = next(line for line in _read_doc().splitlines()
+                         if "enforced-only" in line)
+        self.assertIn("`--setup` is exempt", exemption)
+        self.assertIn("except under `--setup`", _read_skill_md())
 
 
 class TestGuardFailClosedDocs(unittest.TestCase):

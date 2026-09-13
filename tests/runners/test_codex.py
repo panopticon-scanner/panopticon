@@ -254,6 +254,22 @@ def test_prepare_accepts_a_fully_registered_directory(tmp_path, registered):
     codex.Runner(runner=mock.Mock()).prepare(str(tmp_path), str(tmp_path))
 
 
+def test_prepare_skips_the_shell_check_for_the_setup_namespace(tmp_path, registered):
+    # setup-scan is dispatched with no `agent` and runs off safety_config()
+    # alone, so `driver loop --setup --host codex` is exactly how a fresh
+    # machine is meant to start -- before anything is registered. The
+    # enforced-only refusal is about REVIEWER entries and must not fire here.
+    from scripts import dispatch
+    for role_file in dispatch.ROLE_FILES.values():
+        (registered / dispatch.registered_agent_filename("codex", role_file)).unlink()
+    runner = codex.Runner(runner=mock.Mock(side_effect=AssertionError("must not launch")))
+    runner.namespace = "setup"
+    runner.prepare(str(tmp_path), str(tmp_path))
+    runner.namespace = None
+    with pytest.raises(ValueError, match="enforced-only"):
+        runner.prepare(str(tmp_path), str(tmp_path))
+
+
 # --- M-2: a transient error the turn recovered from is not a failed entry ----
 
 

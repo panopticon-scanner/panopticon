@@ -412,15 +412,20 @@ def loop(args):
         # host-settings.json/dispatch-ledger.jsonl/usage.json into that run's
         # runs/<tag>/ folder.
         run_dir = os.path.dirname(host_probes.headless_settings_path(review_root, namespace))
-        runner.prepare(run_dir, review_root)
         # C2/M4: the session runner prints the batch itself, so it needs the
         # two facts only the loop holds -- which request file these entries
         # came from, and whether this is the setup namespace (which every
-        # command it hints at must carry as `--setup`). Set unconditionally: a
-        # headless runner simply carries two attributes it never reads.
+        # command it hints at must carry as `--setup`). Set unconditionally.
+        #
+        # BEFORE prepare(), not after: a headless runner does read `namespace`
+        # there. The Codex runner's enforced-only preflight has to stand down
+        # for `--setup`, whose single entry is dispatched with no registered
+        # shell by design -- a fresh machine runs setup before it registers
+        # anything.
         runner.dispatch_request = os.path.abspath(
             requests.request_path(review_root, namespace))
         runner.namespace = namespace
+        runner.prepare(run_dir, review_root)
         for attr in ("max_turns", "entry_timeout"):
             if getattr(args, attr, None):
                 setattr(runner, attr, getattr(args, attr))
