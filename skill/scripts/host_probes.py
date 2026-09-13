@@ -20,6 +20,7 @@ Confusing the two is the failure this whole spec exists to prevent.
 No probe may touch live state. Anything that needs to arm, install or write
 does it inside a `tempfile.TemporaryDirectory()`.
 """
+import concurrent.futures
 import json
 import os
 import stat
@@ -525,18 +526,23 @@ CODEX_EFFECTIVE_TOOLS = "codex-effective-tools"
 CODEX_READ_SCOPE = "codex-read-scope"
 
 
-def _codex_surfaces(registration_dir=None, inspector=None):
+def _codex_surfaces(registration_dir=None, inspector=None, runner=None):
     """Measure each role in the real Codex runtime, without a paid model call.
 
     A localhost Responses fixture enumerates the effective tools and attempts
     two synthetic reads through the SAME launcher used by the runner. No target
     content participates. Only run_probes' caller-local cache shares results;
     every driver invocation inspects the current runtime and registered shells.
+
+    I-6: the five role inspections are independent, so they run concurrently,
+    and the bundled model catalog -- identical for all of them -- is dumped
+    once per call instead of once per role. Each role still gets its own
+    launch, its own scope file and its own grants; nothing is shared that a
+    mutation could hide behind.
     """
     from scripts import codex_host
     inspector = inspector or codex_host.inspect_surface
     directory = registration_dir or hosts.spec("codex").registration_dir
-    surfaces = []
     with tempfile.TemporaryDirectory(prefix="panopticon-codex-probe-") as temporary:
         root = os.path.realpath(temporary)
         cell = os.path.join(root, "in-scope")
@@ -545,6 +551,7 @@ def _codex_surfaces(registration_dir=None, inspector=None):
         for path in (inside, outside):
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write("Panopticon synthetic confinement fixture\n")
+        jobs = []
         for role in (*DRIVER_ROLES, "setup-scan"):
             setup = role == "setup-scan"
             role_file = None if setup else dispatch.ROLE_FILES[role]
@@ -558,17 +565,26 @@ def _codex_surfaces(registration_dir=None, inspector=None):
                      "model": None if setup else model_resolver.resolve_model("codex", role).get("model"),
                      "prompt": "Measure the available reviewer tools; return JSON.",
                      "scope": {"files": [] if setup else [inside], "dirs": [cell] if setup else [], "reads": []}}
-            scope_path, allow_path = (os.path.join(root, name) for name in ("scope.json", "allowlist.json"))
+            # Per ROLE, not per call: concurrent inspections would otherwise
+            # overwrite one another's grants between write and launch.
+            scope_path, allow_path = (os.path.join(root, "%s-%s.json" % (name, entry["id"]))
+                                      for name in ("scope", "allowlist"))
             with open(scope_path, "w", encoding="utf-8") as fh:
                 json.dump({entry["id"]: entry["scope"]}, fh)
             with open(allow_path, "w", encoding="utf-8") as fh:
                 json.dump([], fh)
             env = dict(os.environ, PANOPTICON_ENTRY_ID=entry["id"],
                        PANOPTICON_READ_SCOPE=scope_path, PANOPTICON_WRITE_ALLOWLIST=allow_path)
-            surface = inspector(entry, env, cell if setup else root, root, registration_dir=directory,
-                                probe_paths=(inside, outside))
-            surfaces.append((shell, surface))
-    return surfaces
+            jobs.append((shell, entry, env, cell if setup else root))
+        catalog = codex_host.catalog_loader(runner)
+
+        def measure(job):
+            shell, entry, env, review_root = job
+            return shell, inspector(entry, env, review_root, root, registration_dir=directory,
+                                    probe_paths=(inside, outside), catalog=catalog)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+            return list(pool.map(measure, jobs))
 
 
 def _codex_measure(probe_id, settings_path, registration_dir, measure):

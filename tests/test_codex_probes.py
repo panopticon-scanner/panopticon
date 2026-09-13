@@ -127,3 +127,44 @@ def test_the_probe_never_swallows_the_suites_launch_guard(tmp_path):
         with pytest.raises(codex_host.LaunchRefused):
             probe("codex", settings_path=str(tmp_path / "settings.json"),
                   measure=mock.Mock(side_effect=codex_host.LaunchRefused("refused")))
+
+
+def test_the_bundled_catalog_is_dumped_once_per_probe_run(tmp_path):
+    # I-6: _catalog() ran inside command(), so the probe launched `codex debug
+    # models --bundled` once PER ROLE -- five per run_probes, and driver loop
+    # probes on every iteration.
+    import json as _json
+    from types import SimpleNamespace
+
+    registered = tmp_path / "registered"
+    dispatch.emit_host_agents("codex", str(registered))
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append(list(argv))
+        return SimpleNamespace(returncode=0, stderr="",
+                               stdout=_json.dumps({"models": [{"slug": "m"}]}))
+
+    def inspect(entry, env, root, run_dir, **kwargs):
+        kwargs["catalog"]()          # what command() does on the real path
+        return surfaces()[0][1]
+
+    measured = host_probes._codex_surfaces(str(registered), inspector=inspect, runner=runner)
+    assert len(measured) == len(host_probes.DRIVER_ROLES) + 1
+    assert calls == [["codex", "debug", "models", "--bundled"]]
+
+
+def test_the_role_inspections_run_concurrently(tmp_path):
+    import threading
+
+    registered = tmp_path / "registered"
+    dispatch.emit_host_agents("codex", str(registered))
+    barrier = threading.Barrier(len(host_probes.DRIVER_ROLES) + 1, timeout=20)
+
+    def inspect(entry, env, root, run_dir, **kwargs):
+        barrier.wait()               # sequential inspection cannot get here
+        return surfaces()[0][1]
+
+    measured = host_probes._codex_surfaces(str(registered), inspector=inspect,
+                                           runner=mock.Mock())
+    assert len(measured) == len(host_probes.DRIVER_ROLES) + 1

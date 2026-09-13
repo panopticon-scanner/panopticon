@@ -142,12 +142,46 @@ def _overrides(config, prefix=""):
             yield path + "=" + ("{}" if value == {} else json.dumps(value))
 
 
-def _catalog(model, directory, runner, env):
-    proc = runner(["codex", "debug", "models", "--bundled"], text=True,
-                  capture_output=True, timeout=PROBE_TIMEOUT, cwd=str(directory), env=env)
+def _dump_catalog(runner, env=None):
+    """One `codex debug models --bundled` launch, parsed.
+
+    cwd is a fresh empty temp directory rather than the run-owned entry folder
+    it used to be: that folder sits under the reviewed tree's `.panopticon/`,
+    from which the CLI can discover the target's ancestor `.codex` config --
+    the same hazard the launch's `--cd` exists to avoid.
+    """
+    with tempfile.TemporaryDirectory(prefix="panopticon-codex-catalog-") as scratch:
+        proc = runner(["codex", "debug", "models", "--bundled"], text=True,
+                      capture_output=True, timeout=PROBE_TIMEOUT, cwd=scratch, env=env)
     if proc.returncode or len(proc.stdout) > MAX_BYTES:
         raise ValueError("Codex bundled catalog unavailable")
     models = json.loads(proc.stdout).get("models", [])
+    return models if isinstance(models, list) else []
+
+
+def catalog_loader(runner=None, env=None):
+    """A memoising, thread-safe catalog reader shared across one probe run.
+
+    I-6: the dump is a local JSON print, but it was one process launch PER
+    ROLE inside `command()` -- five per `run_probes`, and `driver loop` probes
+    on every iteration. Every role reads the same installed catalog, so one
+    dump per call is enough. Returned as a callable rather than a value so a
+    caller that never reaches a launch (an injected inspector, a missing
+    shell) never pays for it either.
+    """
+    runner = DEFAULT_RUNNER if runner is None else runner
+    cache, lock = [], threading.Lock()
+
+    def load():
+        with lock:
+            if not cache:
+                cache.append(_dump_catalog(runner, env))
+            return cache[0]
+    return load
+
+
+def _catalog(model, directory, runner, env, models=None):
+    models = _dump_catalog(runner, env) if models is None else models
     selected = [copy.deepcopy(row) for row in models
                 if isinstance(row, dict) and (model is None or row.get("slug") == model)]
     if not selected or (model is not None and len(selected) != 1):
@@ -168,7 +202,8 @@ def _catalog(model, directory, runner, env):
     return str(path)
 
 
-def command(entry, env, review_root, run_dir, runner=None, registration_dir=None):
+def command(entry, env, review_root, run_dir, runner=None, registration_dir=None,
+            catalog=None):
     """Build one stdin-prompt launch from its registered, effective policy."""
     runner = DEFAULT_RUNNER if runner is None else runner
     config = _shell(entry, registration_dir)
@@ -195,7 +230,8 @@ def command(entry, env, review_root, run_dir, runner=None, registration_dir=None
                      "PANOPTICON_REVIEW_ROOT": str(Path(review_root).resolve())}
     config["mcp_servers"] = {"panopticon_scope": broker}
     directory = Path(tempfile.mkdtemp(prefix="codex-entry-", dir=run_path))
-    config.update({"model_catalog_json": _catalog(model, directory, runner, env),
+    config.update({"model_catalog_json": _catalog(model, directory, runner, env,
+                                                  catalog() if catalog is not None else None),
                    "log_dir": str(directory / "logs"), "sqlite_home": str(directory / "sqlite")})
     overrides = list(_overrides(config))
     # A fresh cwd UNDER the target would still discover its ancestor .codex
@@ -413,14 +449,14 @@ def _surface_result(requests):
 
 
 def inspect_surface(entry, env, review_root, run_dir, runner=None,
-                    registration_dir=None, probe_paths=None):
+                    registration_dir=None, probe_paths=None, catalog=None):
     """Interrogate the same native launch, replacing only its model endpoint.
 
     All real-runtime work is explicit here, never in unit tests. Callers map
     unavailable localhost/runtime facilities to unknown rather than guessing.
     """
     runner = DEFAULT_RUNNER if runner is None else runner
-    argv = command(entry, env, review_root, run_dir, runner, registration_dir)
+    argv = command(entry, env, review_root, run_dir, runner, registration_dir, catalog)
     try:
         requests = _capture_requests(argv, env, runner, _probe_script(probe_paths))
         return _surface_result(requests)

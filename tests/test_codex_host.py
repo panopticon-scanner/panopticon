@@ -22,9 +22,10 @@ def _only_test_owned_cwds(tmp_path, monkeypatch):
     # Even launch scratch directories stay under this test's temp fixture.
     original = codex_host.tempfile.mkdtemp
 
-    def temporary(*args, **kwargs):
-        kwargs.setdefault("dir", tmp_path)
-        return original(*args, **kwargs)
+    def temporary(suffix=None, prefix=None, dir=None):
+        # Spelled out rather than *args/**kwargs: TemporaryDirectory calls
+        # mkdtemp POSITIONALLY, so a setdefault("dir", ...) collides with it.
+        return original(suffix, prefix, tmp_path if dir is None else dir)
 
     monkeypatch.setattr(codex_host.tempfile, "mkdtemp", temporary)
     yield
@@ -153,9 +154,8 @@ def test_target_local_scratch_root_is_rejected(tmp_path, monkeypatch):
     root, entry, env = _case(tmp_path)
     original = codex_host.tempfile.mkdtemp
 
-    def target_local(*args, **kwargs):
-        kwargs.setdefault("dir", root)
-        return original(*args, **kwargs)
+    def target_local(suffix=None, prefix=None, dir=None):
+        return original(suffix, prefix, root if dir is None else dir)
 
     monkeypatch.setattr(codex_host.tempfile, "mkdtemp", target_local)
     with pytest.raises(ValueError, match="outside the review root"):
