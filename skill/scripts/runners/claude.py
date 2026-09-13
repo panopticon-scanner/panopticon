@@ -35,10 +35,13 @@ class Runner(base.HostRunner):
             write_guard_hook._hook_entry(self.allowlist_path),
             read_guard_hook._hook_entry(self.scope_path)]}}
         os.makedirs(run_dir, exist_ok=True)
-        tmp = self.settings_path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(settings, fh, indent=2)
-        os.replace(tmp, self.settings_path)
+        # I7: through the write guard's own atomic writer, which refuses to
+        # follow a symlink planted at `host-settings.json.tmp`. That path is
+        # INSIDE the scanned tree, so on a redteam target the link is the
+        # attacker's to plant; this module already imports the hook for
+        # `_hook_entry`, so there is one hardened writer rather than a second
+        # open()/replace() pair here to keep in step with it.
+        write_guard_hook._atomic_write_json(self.settings_path, settings, indent=2)
 
     def command(self, entry, settings_path, max_turns):
         """The argv for one entry. No per-entry budget arm (M5, final review):

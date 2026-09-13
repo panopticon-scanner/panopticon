@@ -159,3 +159,24 @@ class TestPrepare(unittest.TestCase):
             r.prepare(d, review_root=d)                              # idempotent
             with open(path, encoding="utf-8") as fh:
                 self.assertEqual(settings, json.load(fh))
+
+    def test_prepare_never_writes_through_a_symlinked_tmp(self):
+        # I7 (plan 6 final review): `prepare` staged host-settings.json at
+        # `<path>.tmp` with a plain open(), INSIDE the scanned tree. A redteam
+        # target can commit that exact name as a symlink to anything the
+        # invoking user can write, and the runner would have written the
+        # settings JSON straight through it.
+        with tempfile.TemporaryDirectory() as d:
+            outside = os.path.join(d, "outside.txt")
+            with open(outside, "w", encoding="utf-8") as fh:
+                fh.write("PRECIOUS")
+            settings = os.path.join(d, base.SETTINGS_FILE)
+            os.symlink(outside, settings + ".tmp")
+            claude_runner.Runner("claude").prepare(d, review_root=d)
+            with open(outside, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), "PRECIOUS")
+            self.assertFalse(os.path.islink(settings))
+            self.assertTrue(os.path.isfile(settings))
+            with open(settings, encoding="utf-8") as fh:
+                self.assertEqual(len(json.load(fh)["hooks"]["PreToolUse"]), 2)
+            self.assertFalse(os.path.exists(settings + ".tmp"))

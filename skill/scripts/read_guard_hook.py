@@ -370,10 +370,32 @@ def _load(settings_path):
 
 
 def _atomic_write_json(path, data, indent=None):
+    """Stage at `<path>.tmp`, then rename -- never writing THROUGH a symlink
+    planted at that temp name (I7).
+
+    A plain `open(tmp, "w")` follows a link. The settings, allowlist and scope
+    files this writes all live where an untrusted target can reach: the run
+    folder sits inside the scanned tree, and a redteam target can commit
+    `<name>.tmp` as a link to any file the invoking user can write (a dotfile,
+    authorized_keys), whose contents this would then replace with the guard's
+    own JSON. Same class as #run9 SEC-X0X, which `runio._open_w_nofollow`
+    closed for `.panopticon` artifacts.
+
+    Spelled with os flags rather than by calling that helper: a guard hook is
+    executed as its own subprocess by the host's PreToolUse command and has to
+    import standing alone, so it may not reach into the driver's packages.
+    O_EXCL|O_NOFOLLOW refuses both a symlink and a stale regular leftover, so
+    the leftover is removed first and the open then creates a fresh file or
+    fails loudly -- it never silently writes somewhere else.
+    """
     parent = os.path.dirname(path) or "."
     os.makedirs(parent, exist_ok=True)
     tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
+    if os.path.islink(tmp) or os.path.exists(tmp):
+        os.unlink(tmp)                  # drop the LINK, never follow it
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                 | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=indent)
         fh.flush()
         os.fsync(fh.fileno())

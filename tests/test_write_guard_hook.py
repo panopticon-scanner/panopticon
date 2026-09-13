@@ -853,3 +853,47 @@ class TestWriteGuardHookLive(unittest.TestCase):
         self.assertEqual(proc.returncode, 0)
         self.assertEqual(proc.stdout, "")
         self.assertEqual(proc.stderr, "")
+
+
+class TestAtomicWriteRefusesASymlinkedTmp(unittest.TestCase):
+    """I7 (plan 6 final review): `_atomic_write_json` staged every settings,
+    allowlist and scope write at `<path>.tmp` with a plain `open(tmp, "w")`.
+
+    A redteam target is untrusted, and the run folder it is scanned in sits
+    inside it: a pre-planted `<path>.tmp` symlink pointing anywhere the
+    invoking user can write -- a dotfile, authorized_keys -- was FOLLOWED, and
+    the guard's own JSON clobbered that file. Same class of bug as #run9
+    SEC-X0X, which `runio._open_w_nofollow` closed for `.panopticon`
+    artifacts; the hooks must stay standalone (they run as their own
+    subprocess and may not import the driver's packages), so they carry the
+    os-flag form themselves."""
+
+    def _planted(self, d, name):
+        outside = os.path.join(d, "outside.txt")
+        with open(outside, "w", encoding="utf-8") as fh:
+            fh.write("PRECIOUS")
+        target = os.path.join(d, name)
+        with open(target, "w", encoding="utf-8") as fh:
+            fh.write("{}")
+        os.symlink(outside, target + ".tmp")
+        return outside, target
+
+    def test_the_planted_link_is_neutralized_and_its_target_untouched(self):
+        with tempfile.TemporaryDirectory() as d:
+            outside, target = self._planted(d, "settings.json")
+            wg._atomic_write_json(target, {"hooks": {"PreToolUse": []}}, indent=2)
+            with open(outside, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), "PRECIOUS")
+            self.assertFalse(os.path.islink(target))
+            self.assertEqual(json.load(open(target, encoding="utf-8")),
+                             {"hooks": {"PreToolUse": []}})
+            self.assertFalse(os.path.exists(target + ".tmp"))
+
+    def test_the_real_writer_that_arms_the_guard_refuses_it_too(self):
+        with tempfile.TemporaryDirectory() as d:
+            outside, settings = self._planted(d, "settings.json")
+            wg._write_hook_entry(settings, os.path.join(d, "write-allowlist.json"))
+            with open(outside, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), "PRECIOUS")
+            with open(settings, encoding="utf-8") as fh:
+                self.assertIn("PreToolUse", fh.read())
