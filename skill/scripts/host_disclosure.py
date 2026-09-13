@@ -64,6 +64,39 @@ _REMEDY = {
 }
 
 
+# I-4: _REMEDY above is keyed by CAPABILITY, and its texts are Claude's --
+# a settings file and a transcript directory. Rendered on a Codex run they
+# named artefacts that host does not have, on one of 5.1's four mandatory
+# surfaces, every time. A host whose answer differs records it here; anything
+# absent falls through to the shared text, so a new host inherits the generic
+# remedy rather than a silently wrong one.
+_REMEDY_BY_HOST = {
+    "codex": {
+        hosts.ARTIFACT_WRITE_GUARD:
+            "Codex has no write guard; every role is return_json and the loop "
+            "writes the artifact -- expected, nothing to do",
+        hosts.USAGE_LEDGER:
+            "Codex reports tokens but no dollars or model identity; bound the "
+            "run with --max-iterations / --entry-timeout",
+        hosts.MODEL_BINDING:
+            "Codex does not bind the model per entry; the registered shell's "
+            "model is advisory -- set PANOPTICON_MODEL_<ROLE> to override",
+        # Codex CLAIMS this one, so it is normally proven rather than
+        # disclosed -- but when its probe answers unknown the generic text
+        # would send the operator to Claude's settings file and transcript,
+        # neither of which exists here. The primitive is the scope-bound MCP
+        # read broker, and only a headless launch arms it.
+        hosts.READ_SCOPE_CONFINED:
+            "Codex confines reads through its scope-bound MCP read broker, "
+            "which only a headless launch arms: register the shells with "
+            "`python3 skill/scripts/dispatch.py --emit-host-agents codex` and "
+            "run `driver loop --host codex --mode headless` -- a parent "
+            "session can override a child's native permissions, so session "
+            "mode cannot prove it",
+    },
+}
+
+
 def host_of(envelope):
     """The host the artifact was written for, or None if it is unreadable."""
     if not isinstance(envelope, dict):
@@ -80,8 +113,9 @@ def _capabilities(envelope):
 
 
 def remedy(capability, host):
-    return _REMEDY.get(capability, "no remedy recorded for %s" % capability) % {
-        "host": host or "this host"}
+    override = _REMEDY_BY_HOST.get(host, {}).get(capability)
+    text = override or _REMEDY.get(capability, "no remedy recorded for %s" % capability)
+    return text % {"host": host or "this host"}
 
 
 def lines(envelope):
