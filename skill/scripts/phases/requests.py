@@ -51,7 +51,10 @@ def scope(files=(), dirs=(), reads=()):
     """An entry's read scope: absolute, byte-exact paths the read guard
     matches after realpath. `files` duplicates entry["files"] on purpose (the
     guard reads one key of one shape); `dirs` is a directory scope (setup-
-    scan); `reads` is the extra-file allowance, [] on every entry today."""
+    scan); `reads` is the extra-file allowance -- [] as built, and then the
+    entry's own `prompt_file` once `_materialize_prompts` stamps one, so a
+    host that dispatches from the file (marker line first, pointer second)
+    is not denied its own prompt by the read guard."""
     return {"files": list(files), "dirs": list(dirs), "reads": list(reads)}
 
 
@@ -142,6 +145,19 @@ def _materialize_prompts(review_root, entries, namespace=None):
                 with runio._open_w_nofollow(path) as fh:
                     fh.write(prompt)
                 entry["prompt_file"] = os.path.abspath(path)
+                # The read guard confines a bound agent to its entry's scope,
+                # so an agent pointed at `prompt_file` (the documented
+                # alternative to echoing the prompt) must be allowed to read
+                # it: grant the file through `reads`, the allowance the scope
+                # shape reserved for exactly this. Copied, never mutated in
+                # place -- the caller's scope dict is not ours -- and
+                # idempotent across a re-stamp.
+                scope = entry.get("scope")
+                if isinstance(scope, dict):
+                    reads = [r for r in (scope.get("reads") or []) if isinstance(r, str)]
+                    if entry["prompt_file"] not in reads:
+                        reads.append(entry["prompt_file"])
+                    entry["scope"] = dict(scope, reads=reads)
             except (OSError, ValueError) as exc:
                 print("driver: could not materialize prompt for %s (%s); the "
                       "inline prompt still stands" % (eid, exc),
