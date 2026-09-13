@@ -316,6 +316,37 @@ class TestHeadlessLoop(LoopCase):
         self.assertEqual(len(review_calls), 1)          # write_reply only for the ok result
         self.assertFalse(review_calls[0][1])             # the out_file did not exist before that call
 
+    def test_finish_writes_usage_on_error_even_when_a_mid_batch_exception_skipped_it(self):
+        # review round 2: an exception firing between `ledger.record` and the
+        # loop's own in-batch `write_usage` call (the round-1 catch-all's
+        # blind spot) must not leave usage.json stale -- `_finish` must
+        # attempt write_usage on EVERY terminal status (complete AND error),
+        # not just complete, so the ledger line that already landed is always
+        # reflected.
+        d, floor = self._repo()
+        runner = FakeRunner()
+        calls = {"n": 0}
+        orig_write_usage = orchestrate.write_usage
+
+        def _fail_first_call(review_root, ledger):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("boom")
+            return orig_write_usage(review_root, ledger)
+
+        with mock.patch.object(orchestrate, "write_usage", side_effect=_fail_first_call):
+            status = self._run(d, floor, runner)
+        self.assertEqual(status["status"], "error")
+        self.assertIn("RuntimeError", status["message"])
+        self.assertIn("boom", status["message"])
+        usage_path = os.path.join(runner.run_dir, "usage.json")
+        self.assertTrue(os.path.exists(usage_path))
+        usage = runio._load_json(usage_path)
+        with open(os.path.join(runner.run_dir, "dispatch-ledger.jsonl"), encoding="utf-8") as fh:
+            lines = [json.loads(x) for x in fh if x.strip()]
+        ok_lines = [row for row in lines if row["ok"]]
+        self.assertEqual(usage["total"], sum(sum(row["usage"].values()) for row in ok_lines))
+
 
 class TestNoRedundantReDeriveOnReview(LoopCase):
     """review round 1, item 2 (plan-mandated bug): `_after_first_run`'s seam

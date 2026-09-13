@@ -254,12 +254,21 @@ def _dispatch_exit(req, pending, namespace):
 
 
 def _finish(status, args, guards, ledger, namespace):
-    if status.get("status") == "complete" and guards is not None:
-        guards.disarm()                                          # the terminal teardown, executed
-        if ledger is not None:
-            write_usage(_review_root(args), ledger)
-    elif status.get("status") == "error" and guards is not None:
+    """The terminal teardown, executed for every non-checkpoint status. Disarm
+    first, then attempt a final write_usage on BOTH `complete` and `error`
+    (review round 2): the `except Exception` catch-all (round 1, item 3) can
+    land here after a batch already recorded a ledger line but before that
+    iteration's own in-loop write_usage ran, and a `complete`-only write would
+    leave usage.json stale against the ledger. Wrapped so a failure here can
+    never mask the real status -- it is appended to the message instead."""
+    if status.get("status") in ("complete", "error") and guards is not None:
         guards.disarm()
+    if status.get("status") in ("complete", "error") and ledger is not None:
+        try:
+            write_usage(_review_root(args), ledger)
+        except Exception as exc:      # noqa: BLE001 -- must not mask the original status
+            status["message"] = "%s; usage.json not written: %s: %s" % (
+                status.get("message"), type(exc).__name__, exc)
     return status
 
 
