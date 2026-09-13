@@ -791,7 +791,7 @@ class TestUsageSourceProbe(unittest.TestCase):
             self.assertIn(cli, detail)
             self.assertIn(os.path.join(os.path.dirname(settings), "dispatch-ledger.jsonl"), detail)
             self.assertIn("advertises -p, --output-format", detail)
-            self.assertIn("no launch ledgered yet", detail)
+            self.assertIn("every successful launch ledgered there carrying its figure", detail)
             self.assertNotIn("transcript directory", detail)
             self.assertFalse(os.path.isdir(os.path.join(home, ".claude")))
             # The interrogation is `<found cli> --help`, through the launcher.
@@ -859,16 +859,39 @@ class TestUsageSourceProbe(unittest.TestCase):
             self.assertIn("not one envelope carried a usage figure", detail)
             self._ledger(settings, [empty, counted, failed])
             with mock.patch.dict(os.environ, {"PATH": bin_dir}), self._help():
-                state, _by, detail = host_probes.probe_usage_source(
+                state, _by, _detail = host_probes.probe_usage_source(
                     "claude", project, settings_path=settings)
             self.assertEqual(hosts.PROVEN, state)
-            self.assertIn("1 of 2 successful launches", detail)
             self._ledger(settings, [failed])                 # nothing succeeded yet: no verdict
             with mock.patch.dict(os.environ, {"PATH": bin_dir}), self._help():
-                state, _by, detail = host_probes.probe_usage_source(
+                state, _by, _detail = host_probes.probe_usage_source(
                     "claude", project, settings_path=settings)
             self.assertEqual(hosts.PROVEN, state)
-            self.assertIn("no successful launch ledgered yet", detail)
+
+    def test_the_proven_detail_is_the_same_before_and_after_launches(self):
+        # driver._establish_host_posture rewrites host-capabilities.json
+        # whenever a detail changes (a stale reason is a wrong disclosure),
+        # and its comment names "always write on every turn of the loop" as
+        # the hazard that rule must not become. A running launch count in the
+        # proven detail was exactly that: measured on a real run, `probed_at`
+        # moved to the last iteration. The proven detail is one string for
+        # the whole run; only the refutation carries numbers.
+        with tempfile.TemporaryDirectory() as project, \
+                tempfile.TemporaryDirectory() as bin_dir:
+            settings = self._headless_settings(project)
+            self._cli_on_path(bin_dir)
+            with mock.patch.dict(os.environ, {"PATH": bin_dir}), self._help():
+                before = host_probes.probe_usage_source("claude", project, settings_path=settings)
+            self._ledger(settings, [{"ok": True, "usage": {"input_tokens": 12, "output_tokens": 3}},
+                                    {"ok": False, "usage": {}, "error": "timed out"}])
+            with mock.patch.dict(os.environ, {"PATH": bin_dir}), self._help():
+                after_one = host_probes.probe_usage_source("claude", project, settings_path=settings)
+            self._ledger(settings, [{"ok": True, "usage": {"input_tokens": 1}} for _ in range(15)])
+            with mock.patch.dict(os.environ, {"PATH": bin_dir}), self._help():
+                after_many = host_probes.probe_usage_source("claude", project, settings_path=settings)
+        self.assertEqual(hosts.PROVEN, before[0])
+        self.assertEqual(before, after_one)
+        self.assertEqual(before, after_many)
 
     def test_headless_is_unknown_when_the_cli_cannot_even_print_help(self):
         # Could not measure is not "measured and broken": a `--help` the

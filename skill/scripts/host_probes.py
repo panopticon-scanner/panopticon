@@ -605,7 +605,14 @@ def _ledger_carries_usage(ledger):
     on every re-probe. None: no ledger yet, or no successful launch in it
     (nothing to measure). False: successful launches, and not one envelope
     carried a usage figure -- the capability, measured and absent. True
-    otherwise. A single odd row never refutes; systematic absence does."""
+    otherwise. A single odd row never refutes; systematic absence does.
+
+    `how` is worded for the REFUTATION. The proven detail must not carry a
+    running count: `driver._establish_host_posture` rewrites the evidence
+    artifact whenever any capability's detail changes, and a count that
+    grows with every batch would make that an "always write" on every turn
+    of the loop -- the very hazard its comment says it avoids -- and move
+    `probed_at` to the last iteration rather than the run's start."""
     try:
         with open(ledger, encoding="utf-8") as fh:
             lines = fh.read().splitlines()
@@ -689,10 +696,13 @@ def _headless_usage_source(host, settings_path):
     ledgered, how = _ledger_carries_usage(ledger)
     if ledgered is False:
         return (hosts.REFUTED, USAGE_SOURCE, how)
+    # One detail for the whole run, before the first launch and after the
+    # last: see _ledger_carries_usage on why no count appears here.
     return (hosts.PROVEN, USAGE_SOURCE,
             "headless: usage is read from the JSON envelope of every `%s` launch "
-            "(%s; %s) and ledgered at %s (%s); the session's transcripts are not consulted"
-            % (cli, found, why, ledger, how))
+            "(%s; %s) and ledgered at %s, every successful launch ledgered there "
+            "carrying its figure; the session's transcripts are not consulted"
+            % (cli, found, why, ledger))
 
 
 def probe_usage_source(host, session_dir, home=None, settings_path=None):
