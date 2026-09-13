@@ -6,6 +6,8 @@ import tempfile
 import unittest
 
 import scripts.phases.persist as persist
+import scripts.phases.verify as verify
+import scripts.ocrdb as ocrdb
 
 
 def _entry(out_file, delivery="return_json", **extra):
@@ -102,17 +104,20 @@ class TestWriteReply(unittest.TestCase):
         self.assertTrue(ok, reason)
 
     def test_a_verify_cell_reply_with_a_wrong_stamp_is_refused_for_a_real_shaped_entry(self):
-        # fix round 1: verify._verify_entry is the only builder of verify-cell
-        # entries; this pins the ACTUAL key set it emits (id, agent, enforced,
-        # model, prompt, marker, out_file, run_id, group, domain, stage, files,
-        # scope, delivery) rather than a hand-picked subset, so a future drift
-        # in that shape is caught here too.
-        e = {"id": "verify-app-SEC-primary", "agent": "panopticon-domain-advisor",
-             "enforced": True, "model": "claude-opus", "prompt": "p",
-             "marker": "m", "out_file": self._out("verdicts", "verdicts-app-SEC.json"),
-             "run_id": "RID", "group": "app", "domain": "SEC", "stage": "primary",
-             "files": ["/r/a.py"], "scope": {"files": ["/r/a.py"]},
-             "delivery": "return_json"}
+        # fix round 1: the entry comes from verify._verify_entry itself -- the
+        # only builder of verify-cell entries -- not a hand-picked subset of
+        # keys, so a regression in what that function stamps on the entry
+        # fails HERE as well as in test_verify.py's own pin.
+        manifest = {"run_id": "RID", "host": "claude",
+                    "security_mode": "standard", "flags": {}}
+        files = ["src/pay.py"]
+        cell = [{"id": "F1", "code": "SEC-A1A", "severity": "HIGH",
+                 "title": "t", "category": "SEC",
+                 "location": {"file": files[0], "line": 1},
+                 "description": "d"}]
+        bundle = ocrdb.load_bundle()
+        e = verify._verify_entry(self.d, manifest, "app", "SEC", files, cell,
+                                 "claude", bundle, "primary")
         body = {"verdicts": [], "_panopticon": {"run_id": "OTHER", "group": "app",
                                                 "domain": "SEC", "stage": "primary"}}
         ok, reason = persist.write_reply(e, json.dumps(body))
