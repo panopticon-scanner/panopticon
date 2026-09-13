@@ -132,7 +132,9 @@ _CODEX_CHARTER = (
     "For a file-scoped review, search must name one granted file and listing "
     "is unavailable; never execute target code or access the network. "
     "Return the exact requested JSON as your final message, even when a role "
-    "template says Write: the controller persists it. Do not write artifacts.\n")
+    "template says Write: the controller persists it. Include the task's "
+    "`_panopticon` block verbatim in that JSON -- a reply without it is "
+    "DISCARDED and the cell is treated as not done. Do not write artifacts.\n")
 
 
 def registered_agent_name(role_file):

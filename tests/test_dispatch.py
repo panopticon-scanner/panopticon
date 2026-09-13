@@ -380,6 +380,19 @@ class TestEmitHostAgents(unittest.TestCase):
             self.assertIn('sandbox_mode = "read-only"', text)
             self.assertIn("never execute target code", text)
 
+    def test_the_codex_charter_names_the_panopticon_stamp(self):
+        # M-10: one of eleven launches in the PR's own paid run was refused
+        # with "reply carries no _panopticon stamp". The charter's closing
+        # "return the exact requested JSON ... even when a role template says
+        # Write" competes for the model's attention with the return-persist
+        # preamble's stamp instruction, and never named the stamp itself.
+        self.assertIn("_panopticon", dispatch._CODEX_CHARTER)
+        with tempfile.TemporaryDirectory() as d:
+            dispatch.emit_host_agents("codex", d)
+            for name in ("panopticon-domain-panel", "panopticon-scout"):
+                with open(os.path.join(d, name + ".toml"), encoding="utf-8") as fh:
+                    self.assertIn("_panopticon", fh.read(), name)
+
     def test_a_shell_format_with_no_emit_branch_refuses_by_name(self):
         # M-1: the pre-existing `else` became `elif host == "codex"`, so a host
         # given a shell_format with no branch here died on an UnboundLocalError
