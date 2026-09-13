@@ -53,6 +53,13 @@ class Guards:
 
     def __init__(self, mode, run_dir=None, session_root=None):
         self.mode = mode
+        # I4: the union of entries THIS process armed, in arm() order. Session
+        # mode is the only mode whose grants outlive an invocation (a
+        # `dispatch` exit returns without disarming, by design), so an
+        # invocation that errors must drop exactly what it armed -- nothing,
+        # when it never got that far -- and leave the previous fan-out's
+        # grants standing. `complete` still disarms totally (spec 5.1).
+        self.armed_entries = []
         if mode == "headless":
             self.settings_path = os.path.join(run_dir, runners_base.SETTINGS_FILE)
             self.allowlist_path = os.path.join(run_dir, runners_base.ALLOWLIST_FILE)
@@ -65,6 +72,9 @@ class Guards:
     def arm(self, entries):
         if not entries:
             return
+        armed = {e.get("id") for e in self.armed_entries}
+        self.armed_entries += [e for e in entries
+                               if isinstance(e, dict) and e.get("id") not in armed]
         if self.mode == "headless":
             write_guard_hook.install(entries, settings_path=self.settings_path,
                                      allowlist_path=self.allowlist_path)
@@ -76,14 +86,14 @@ class Guards:
 
     def disarm(self, entries=None):
         """Scoped to `entries` when given (another fan-out may still be live), else total."""
-        kw = ({"settings_path": self.settings_path} if self.mode == "headless"
-              else {"session_root": self.session_root})
         if self.mode == "headless":
-            write_guard_hook.uninstall(plan=entries, allowlist_path=self.allowlist_path, **kw)
-            read_guard_hook.uninstall(plan=entries, scope_path=self.scope_path, **kw)
+            write_guard_hook.uninstall(plan=entries, settings_path=self.settings_path,
+                                       allowlist_path=self.allowlist_path)
+            read_guard_hook.uninstall(plan=entries, settings_path=self.settings_path,
+                                      scope_path=self.scope_path)
         else:
-            write_guard_hook.uninstall(plan=entries, **kw)
-            read_guard_hook.uninstall(plan=entries, **kw)
+            write_guard_hook.uninstall(plan=entries, session_root=self.session_root)
+            read_guard_hook.uninstall(plan=entries, session_root=self.session_root)
 
     def env_for(self, entry):
         return {runners_base.ENV_ENTRY_ID: entry["id"],
@@ -180,7 +190,15 @@ def _disarm_previous(guards, prev_req):
     invocation's own `driver.run`/`run_setup_flow` call rewrote
     dispatch-request.json (`loop` reads it first thing, before `_first_run`)
     -- reading it fresh here instead would see the very request this same
-    invocation just produced, never the previous one, and disarm nothing."""
+    invocation just produced, never the previous one, and disarm nothing.
+
+    I4: CALLED only once this invocation has a live checkpoint of its own. An
+    invocation that lands on complete/error instead never reaches here, so an
+    errored re-entry (flag drift, a bad --pr) leaves the previous fan-out's
+    grants exactly as it found them -- that fan-out is still running under
+    them. Deferring the teardown past `_first_run`'s posture probe changes
+    nothing that probe measures: probe_write_guard_armed proves the MECHANISM
+    and the settings file, explicitly not live arming."""
     entries = [e for e in (prev_req or {}).get("entries") or [] if isinstance(e, dict)]
     if entries:
         guards.disarm(entries)
@@ -217,58 +235,71 @@ def loop(args):
     # silently resolve the OPERATOR's real session root in session mode.
     session_root = (os.path.abspath(args.session_dir) if getattr(args, "session_dir", None)
                     else os.getcwd())
+    # The OUTGOING dispatch request, read BEFORE `_first_run` rewrites it
+    # (R-P6-6): reading it afterwards would see the very request this same
+    # invocation just produced and disarm nothing. Read in every mode -- it is
+    # one JSON load -- so that the READ and the ACT can sit on opposite sides
+    # of `_first_run`, which I4 requires.
+    prev_req = requests.load_dispatch_request(review_root, namespace) or {}
     if mode == "session":
         # Guards constructed HERE, before `_first_run`, and unconditionally --
         # not only once this invocation reaches a fresh checkpoint. Session
         # mode is the only mode whose guards can stay armed ACROSS
         # invocations (a `dispatch` exit returns before ever disarming, by
         # design -- the host has not run anything yet), so an invocation
-        # whose OWN `_first_run` lands directly on complete/error -- the
-        # run's last checkpoint having been finished externally, with no
-        # `while` iteration of THIS call to disarm it -- would otherwise
-        # leave the PREVIOUS invocation's grants armed forever: `_finish` can
-        # only disarm a `guards` it was handed, and building one only after a
+        # whose OWN `_first_run` lands directly on complete -- the run's last
+        # checkpoint having been finished externally, with no `while`
+        # iteration of THIS call to disarm it -- would otherwise leave the
+        # PREVIOUS invocation's grants armed forever: `_finish` can only
+        # disarm a `guards` it was handed, and building one only after a
         # checkpoint survives skips exactly this case. `run_dir` is not
         # needed here: `Guards` ignores it outside headless mode, and the
         # settings/allowlist/scope paths it resolves depend only on
         # `session_root`, which does not change across a run.
-        #
-        # `_disarm_previous` reads the request as it stood BEFORE the
-        # `_first_run` call below rewrites it (R-P6-6): an entry now done
-        # falls away; one still pending is re-armed a few lines later by this
-        # same iteration's own `guards.arm(pending)`, computed from the FRESH
-        # request `_first_run` just wrote (Task 6 ruling 3).
         guards = Guards(mode, session_root=session_root)
-        prev_req = requests.load_dispatch_request(review_root, namespace) or {}
-        _disarm_previous(guards, prev_req)
     status = _first_run(args, namespace)
     if status.get("status") != "checkpoint":
-        return _finish(status, args, guards, ledger, namespace)
+        return _finish(status, args, guards, ledger, namespace, mode)
+    if mode == "session":
+        # I4: only now. This invocation has a live checkpoint of its own, so
+        # its pending set is the authority on what is still running. An entry
+        # now done falls away here; one still pending is re-armed below by
+        # this iteration's own `guards.arm(pending)`, computed from the FRESH
+        # request `_first_run` just wrote (Task 6 ruling 3).
+        _disarm_previous(guards, prev_req)
     if _after_first_run(review_root):
         status = _run(args, namespace)                # re-derive after the seam
-    # Task 6 fix round 1, item 2: derived through host_probes.headless_settings_path
-    # (namespace-aware), never a bare `runio._pano(review_root, SETTINGS_FILE)`
-    # -- for namespace == "setup" that would follow whatever run-manifest.json
-    # a PRIOR review run left on review_root and route setup's own
-    # host-settings.json/dispatch-ledger.jsonl/usage.json into that run's
-    # runs/<tag>/ folder.
-    run_dir = os.path.dirname(host_probes.headless_settings_path(review_root, namespace))
-    runner.prepare(run_dir, review_root)
-    # C2/M4: the session runner prints the batch itself, so it needs the two
-    # facts only the loop holds -- which request file these entries came from,
-    # and whether this is the setup namespace (which every hinted command must
-    # carry as `--setup`). Set unconditionally: a headless runner simply
-    # carries two attributes it never reads.
-    runner.dispatch_request = os.path.abspath(requests.request_path(review_root, namespace))
-    runner.namespace = namespace
-    for attr in ("max_turns", "entry_timeout"):
-        if getattr(args, attr, None):
-            setattr(runner, attr, getattr(args, attr))
-    if mode != "session":
-        guards = Guards(mode, run_dir=run_dir, session_root=session_root)
-    ledger = Ledger(run_dir)
     iterations = 0
     try:
+        # M8: the pre-loop setup lives INSIDE the try. `loop` never raises
+        # (review round 1, item 3), but every line of it touches the
+        # filesystem -- resolving the run folder, writing host-settings.json,
+        # resolving the guard paths -- and an OSError (a read-only run folder,
+        # an unwritable settings path) escaped as a traceback rather than the
+        # reported `error` status every other failure here produces.
+        #
+        # Task 6 fix round 1, item 2: derived through host_probes.headless_settings_path
+        # (namespace-aware), never a bare `runio._pano(review_root, SETTINGS_FILE)`
+        # -- for namespace == "setup" that would follow whatever run-manifest.json
+        # a PRIOR review run left on review_root and route setup's own
+        # host-settings.json/dispatch-ledger.jsonl/usage.json into that run's
+        # runs/<tag>/ folder.
+        run_dir = os.path.dirname(host_probes.headless_settings_path(review_root, namespace))
+        runner.prepare(run_dir, review_root)
+        # C2/M4: the session runner prints the batch itself, so it needs the
+        # two facts only the loop holds -- which request file these entries
+        # came from, and whether this is the setup namespace (which every
+        # command it hints at must carry as `--setup`). Set unconditionally: a
+        # headless runner simply carries two attributes it never reads.
+        runner.dispatch_request = os.path.abspath(
+            requests.request_path(review_root, namespace))
+        runner.namespace = namespace
+        for attr in ("max_turns", "entry_timeout"):
+            if getattr(args, attr, None):
+                setattr(runner, attr, getattr(args, attr))
+        if mode != "session":
+            guards = Guards(mode, run_dir=run_dir, session_root=session_root)
+        ledger = Ledger(run_dir)
         while status.get("status") == "checkpoint":
             iterations += 1
             req = requests.load_dispatch_request(review_root, namespace) or {}
@@ -279,12 +310,12 @@ def loop(args):
                 return _finish(_status("error", "driver loop: %d iterations without "
                                        "completing; still pending: %s"
                                        % (max_iterations, pending_ids)),
-                               args, guards, ledger, namespace)
+                               args, guards, ledger, namespace, mode)
             if budget is not None and ledger.total_cost() >= float(budget):
                 return _finish(_status("error", "driver loop: --max-budget-usd %s reached; "
                                        "ledger at %s; still pending: %s"
                                        % (budget, ledger.path, pending_ids)),
-                               args, guards, ledger, namespace)
+                               args, guards, ledger, namespace, mode)
             guards.arm(pending)
             results = runner.run_batch(pending, getattr(args, "concurrency", None), guards.env_for)
             if results is None:                                 # session mode (Task 6)
@@ -305,7 +336,7 @@ def loop(args):
         status = _status("error", "interrupted (Ctrl-C); guards disarmed; re-run to resume from disk")
     except Exception as exc:                # noqa: BLE001 -- `loop` never raises (review round 1, item 3)
         status = _status("error", "driver loop: %s: %s" % (type(exc).__name__, exc))
-    return _finish(status, args, guards, ledger, namespace)
+    return _finish(status, args, guards, ledger, namespace, mode)
 
 
 def _review_root(args):
@@ -350,7 +381,7 @@ def _dispatch_exit(review_root, req, pending, namespace):
                    checkpoint=req.get("checkpoint"))
 
 
-def _finish(status, args, guards, ledger, namespace):
+def _finish(status, args, guards, ledger, namespace, mode="headless"):
     """The terminal teardown, executed for every non-checkpoint status. Disarm
     first, then attempt a final write_usage on BOTH `complete` and `error`
     (review round 2): the `except Exception` catch-all (round 1, item 3) can
@@ -358,9 +389,23 @@ def _finish(status, args, guards, ledger, namespace):
     iteration's own in-loop write_usage ran, and a `complete`-only write would
     leave usage.json stale against the ledger. Wrapped so a failure here can
     never mask the real status -- it is appended to the message instead."""
-    if status.get("status") in ("complete", "error") and guards is not None:
-        guards.disarm()
-    if status.get("status") in ("complete", "error") and ledger is not None:
+    if guards is not None:
+        if status.get("status") == "complete":
+            guards.disarm()                          # total (spec 5.1)
+        elif status.get("status") == "error" and guards.armed_entries:
+            # I4: exactly what THIS invocation armed, and nothing else. In
+            # session mode the grants outlive an invocation, so a total
+            # teardown here would revoke a fan-out the PREVIOUS invocation
+            # started and that is still running. An invocation that armed
+            # nothing (an errored re-entry) disarms nothing.
+            guards.disarm(guards.armed_entries)
+    # M9: the ledger-derived usage.json belongs to headless runs only. In
+    # session mode the loop launches nothing, so the ledger is empty and this
+    # document is all zeros -- while the run's REAL figures come from the
+    # host's own transcripts via collect_usage, which synthesize wires in and
+    # which deliberately never overwrites an existing usage.json. Writing here
+    # would replace the real counts with zeros.
+    if mode == "headless" and status.get("status") in ("complete", "error") and ledger is not None:
         try:
             write_usage(_review_root(args), ledger, namespace)
         except Exception as exc:      # noqa: BLE001 -- must not mask the original status

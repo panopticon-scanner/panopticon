@@ -149,6 +149,65 @@ class TestSessionMode(LoopCase):
         self.assertIn("verify-app-SEC-primary", s2["pending"])
         self.assertIn("verify-app-SEC-primary", self._armed_read_ids(s))
 
+    def _armed_write_paths(self, s):
+        _settings, allowlist_path, _ = write_guard_hook._resolve(None, None, s)
+        return set(write_guard_hook._read_allowlist(allowlist_path))
+
+    def test_an_errored_re_entry_leaves_the_previous_dispatchs_grants_armed(self):
+        # I4 (final review): session mode is the one mode whose guards stay
+        # armed ACROSS invocations -- a `dispatch` exit returns without
+        # disarming, by design, because the host has not run the agents yet.
+        # So an invocation that errors before it arms anything of its own
+        # (flag drift, a bad --pr) must not tear down grants the live fan-out
+        # from the PREVIOUS invocation is still writing and reading under.
+        # `_finish` used to call the TOTAL `guards.disarm()` on error.
+        d, floor = self._repo(); s = self._session_root(d)
+        with mock.patch.object(orchestrate, "_after_first_run",
+                               side_effect=lambda rr: self._seed_coverage(rr, floor)):
+            s1, _ = self._loop(d, "--session-dir", s)
+        self.assertEqual(s1["status"], "dispatch", s1)
+        self.assertIn("review-app-SEC", self._armed_read_ids(s))
+        armed_writes = self._armed_write_paths(s)
+        self.assertTrue(armed_writes)
+
+        # a flag this run was not started with -> driver.run refuses as drift
+        args = driver.build_parser().parse_args(
+            ["loop", d, "--no-tools", "--fail-on", "critical",
+             "--mode", "session", "--session-dir", s])
+        with contextlib.redirect_stdout(io.StringIO()):
+            s2 = orchestrate.loop(args)
+        self.assertEqual(s2["status"], "error", s2)
+        self.assertIn("flag drift", s2["message"])
+        # the first invocation's fan-out is still running: its grants stand
+        self.assertTrue(write_guard_hook.is_armed(session_root=s)[0])
+        self.assertTrue(read_guard_hook.is_armed(session_root=s)[0])
+        self.assertIn("review-app-SEC", self._armed_read_ids(s))
+        self.assertEqual(self._armed_write_paths(s), armed_writes)
+
+    def test_an_errored_session_invocation_does_not_clobber_the_hosts_usage_file(self):
+        # M9 (final review): in session mode the loop launches nothing, so its
+        # dispatch ledger is empty and a ledger-derived usage.json is all
+        # zeros. The real figures come from the host's own transcripts
+        # (collect_usage, wired into synthesize), which deliberately never
+        # overwrites an existing usage.json -- so a `_finish` that writes over
+        # it replaces the run's real token counts with zeros. `_finish` is
+        # reached with a live ledger in session mode via the catch-all (a
+        # `dispatch` exit returns before it), which is what this drives.
+        d, floor = self._repo(); s = self._session_root(d)
+        with mock.patch.object(orchestrate, "_after_first_run",
+                               side_effect=lambda rr: self._seed_coverage(rr, floor)):
+            s1, _ = self._loop(d, "--session-dir", s)
+        self.assertEqual(s1["status"], "dispatch", s1)
+        usage_path = runio._pano(d, "usage.json")
+        sentinel = {"schema_version": 1, "total": 4321, "source": "host transcripts"}
+        runio._write_json(usage_path, sentinel)
+        with mock.patch("scripts.runners.session.SessionRunner.run_batch",
+                        side_effect=RuntimeError("boom")):
+            s2, _ = self._loop(d, "--session-dir", s)
+        self.assertEqual(s2["status"], "error", s2)
+        self.assertIn("boom", s2["message"])
+        self.assertEqual(runio._load_json(usage_path), sentinel)
+
     def test_complete_disarms_both_guards_unconditionally(self):
         d, floor = self._repo(); s = self._session_root(d)
         with mock.patch.object(orchestrate, "_after_first_run",

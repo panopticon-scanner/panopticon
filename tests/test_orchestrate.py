@@ -179,6 +179,12 @@ class TestHeadlessLoop(LoopCase):
         settings = os.path.join(runner.run_dir, base.SETTINGS_FILE)
         self.assertFalse(write_guard_hook.is_armed(settings, os.path.join(runner.run_dir, "write-allowlist.json"))[0])
         self.assertFalse(read_guard_hook.is_armed(settings, os.path.join(runner.run_dir, "read-scope.json"))[0])
+        # M12: the run folder's allowlist and scope FILES are gone too, not
+        # merely the hook entry -- `Guards.disarm` has to hand `uninstall` the
+        # RUN-FOLDER paths for that, and dropping either one resolves the
+        # cwd-relative default instead, leaving the real file behind.
+        for name in (base.ALLOWLIST_FILE, base.SCOPE_FILE):
+            self.assertFalse(os.path.exists(os.path.join(runner.run_dir, name)), name)
         # the target's own settings file was never created (D3)
         self.assertFalse(os.path.exists(os.path.join(d, ".claude", "settings.local.json")))
 
@@ -316,6 +322,23 @@ class TestHeadlessLoop(LoopCase):
         review_calls = [c for c in seen if c[0] == "review-app-SEC"]
         self.assertEqual(len(review_calls), 1)          # write_reply only for the ok result
         self.assertFalse(review_calls[0][1])             # the out_file did not exist before that call
+
+    def test_a_failure_preparing_the_run_folder_is_an_error_not_a_traceback(self):
+        # M8 (final review): `loop` never raises (review round 1, item 3), but
+        # the pre-loop setup -- resolving the run folder, `runner.prepare`,
+        # constructing Guards -- sat OUTSIDE the try that makes that true. A
+        # read-only run folder or an unwritable settings path escaped as a
+        # traceback instead of a reported `error` status.
+        d, floor = self._repo()
+        runner = FakeRunner()
+
+        def boom(run_dir, review_root):
+            raise OSError("read-only file system")
+        runner.prepare = boom
+        status = self._run(d, floor, runner)
+        self.assertEqual(status["status"], "error", status)
+        self.assertIn("OSError", status["message"])
+        self.assertIn("read-only file system", status["message"])
 
     def test_finish_writes_usage_on_error_even_when_a_mid_batch_exception_skipped_it(self):
         # review round 2: an exception firing between `ledger.record` and the
