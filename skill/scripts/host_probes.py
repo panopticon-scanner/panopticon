@@ -22,7 +22,10 @@ does it inside a `tempfile.TemporaryDirectory()`.
 """
 import json
 import os
+import re
 import stat
+import subprocess
+import sys
 import tempfile
 
 from scripts import (collect_usage, dispatch, hosts, model_resolver,
@@ -519,6 +522,345 @@ def probe_read_guard_armed(host, session_root=None, settings_path=None):
             "%s; the host will arm at %s" % (detail, settings_path))
 
 
+# --- kimi family probes (#1344) ---------------------------------------------
+# The kimi runner confines reviewers through a per-run KIMI_CODE_HOME whose
+# config registers kimi_guard_hook.py (see runners/kimi.py's docstring for the
+# whole design). These probes prove the pieces: the shells' tool surface, the
+# two guard round-trips through the REAL hook protocol (a subprocess, exactly
+# as the CLI invokes it), the model-alias binding, and the wire-file usage
+# channel.
+
+KIMI_SHELL_SURFACE = "kimi-shell-surface"
+KIMI_READ_GUARD = "kimi-read-guard-armed"
+KIMI_WRITE_GUARD = "kimi-write-guard-armed"
+KIMI_MODEL_ALIAS = "kimi-model-alias-bound"
+KIMI_USAGE_WIRE = "kimi-usage-wire"
+
+# The CLI's builtin tool vocabulary by major.minor, measured from a live
+# session's `llm.tools_snapshot` wire record on 0.42.0. A version this table
+# does not cover resolves UNKNOWN, never a guess: a tool name that matches
+# nothing in the installed CLI is warned about and restricts NOTHING
+# (FAMILY-PR-GUARDRAILS, the recorded kimi finding), so a stale table must
+# not wave the shells through.
+_KIMI_TOOL_VOCABULARY = {
+    "0.42": frozenset({
+        "Agent", "AgentSwarm", "AskUserQuestion", "Bash", "CreateGoal",
+        "CronCreate", "CronDelete", "CronList", "Edit", "EnterPlanMode",
+        "ExitPlanMode", "FetchURL", "GetGoal", "Glob", "Grep", "Read",
+        "ReadMediaFile", "SetGoalBudget", "Skill", "TaskList", "TaskOutput",
+        "TaskStop", "TodoList", "UpdateGoal", "WaitFor", "WebSearch", "Write",
+    }),
+}
+
+
+def _kimi_version(runner):
+    """The installed CLI's major.minor ("0.42"), or None."""
+    try:
+        proc = runner(["kimi", "--version"], capture_output=True, text=True, timeout=15)
+    except Exception:  # noqa: BLE001 -- a probe reports, never raises
+        return None
+    text = (proc.stdout or "") + (proc.stderr or "")
+    match = re.search(r"(\d+)\.(\d+)\.\d+", text)
+    return "%s.%s" % (match.group(1), match.group(2)) if match else None
+
+
+def probe_kimi_shell_surface(host, registration_dir=None, version=None, runner=None):
+    """The registered shells restrict tools on the EFFECTIVE surface.
+
+    Two halves, both required. First the template check the shipped
+    `probe_registered_shell_tools` already performs (it understands kimi's
+    block-list frontmatter): every driver role's shell exists and grants
+    exactly its template's tools. Then the kimi-specific half the guardrails
+    demand: every tool name those shells ALLOW or FORBID must exist in the
+    installed CLI's vocabulary, because a name that matches nothing is warned
+    about and restricts nothing. The vocabulary is the measured per-version
+    table above; the live run's wire `llm.tools_snapshot` is the effective-
+    surface confirmation (a writer-role child measured carrying exactly
+    ['Read', 'Write']).
+    """
+    base_state, base_by, base_detail = probe_registered_shell_tools(host, registration_dir)
+    if base_state != hosts.PROVEN:
+        # A host that registers no shells at all gets the base probe's own
+        # (UNKNOWN, None, ...) untouched: nothing ran that can be named.
+        return (base_state, base_by if base_by is None else KIMI_SHELL_SURFACE, base_detail)
+    if version is None:
+        version = _kimi_version(runner or subprocess.run)
+    if version is None:
+        return (hosts.UNKNOWN, KIMI_SHELL_SURFACE,
+                "shells match their templates, but the installed kimi version "
+                "could not be determined, so its tool vocabulary is unverified")
+    vocabulary = _KIMI_TOOL_VOCABULARY.get(version)
+    if vocabulary is None:
+        return (hosts.UNKNOWN, KIMI_SHELL_SURFACE,
+                "shells match their templates, but the probe's vocabulary table "
+                "does not cover kimi %s -- upgrade the table before trusting "
+                "the shells' tool surface" % version)
+    faults = []
+    for role in DRIVER_ROLES:
+        policy = dispatch.load_template(dispatch.ROLE_FILES[role])[0]["tool_policy"]
+        for direction in ("allowed", "forbidden"):
+            unknown = sorted(set(policy[direction] or []) - vocabulary)
+            if unknown:
+                faults.append("%s: %s tool name(s) match nothing in kimi %s: %s"
+                              % (role, direction, version, ", ".join(unknown)))
+    if faults:
+        return (hosts.REFUTED, KIMI_SHELL_SURFACE, "; ".join(faults))
+    return (hosts.PROVEN, KIMI_SHELL_SURFACE,
+            "%s; every tool name exists in kimi %s's builtin vocabulary"
+            % (base_detail, version))
+
+
+def _guard_round_trip(mode, data_path, rows, guard_path=None, runner=subprocess.run):
+    """Drive payloads through the guard as a subprocess -- the real hook
+    protocol, not an import. `rows` is (name, payload, env_id, want_allow).
+    Returns (ok, detail). Everything happens inside the caller's tempdir."""
+    import scripts.kimi_guard_hook as kimi_guard_hook
+    guard_path = guard_path or os.path.abspath(kimi_guard_hook.__file__)
+    for name, payload, env_id, want_allow in rows:
+        env = {"PATH": os.environ.get("PATH", "")}
+        if env_id:
+            env[kimi_guard_hook.ENV_ENTRY_ID] = env_id
+        try:
+            proc = runner([sys.executable, guard_path, mode, data_path],
+                          input=json.dumps(payload), capture_output=True,
+                          text=True, timeout=30, env=env)
+        except Exception as exc:  # noqa: BLE001 -- report, never raise
+            return False, "guard subprocess could not run: %s" % exc
+        out = (proc.stdout or "").strip()
+        denied = '"permissionDecision": "deny"' in out
+        if denied == want_allow:
+            return False, ("the guard %s: %s" % ("DENIED" if denied else "ALLOWED", name)
+                           + (" (stdout: %s)" % out[:160] if out and not denied else ""))
+    return True, "%s round-trip ok (%d rows)" % (mode, len(rows))
+
+
+def _kimi_home_builds_and_validates(runner=subprocess.run):
+    """Build a per-run home from a MINIMAL fixture config inside a tempdir and
+    have `kimi doctor` validate the generated config.toml -- the exact file
+    the runner will arm. Never touches the operator's real home."""
+    import scripts.runners.kimi as kimi_runner
+    try:
+        with tempfile.TemporaryDirectory() as sandbox:
+            fixture_home = os.path.join(sandbox, "fixture-home")
+            os.makedirs(fixture_home)
+            with open(os.path.join(fixture_home, "config.toml"), "w", encoding="utf-8") as fh:
+                fh.write('default_model = "kimi-code/k3"\n')
+            run_dir = os.path.join(sandbox, "run")
+            os.makedirs(run_dir)
+            home = kimi_runner.build_kimi_home(
+                run_dir, os.path.join(run_dir, "read-scope.json"),
+                os.path.join(run_dir, "write-allowlist.json"),
+                real_home=fixture_home)
+            env = dict(os.environ, KIMI_CODE_HOME=home)
+            proc = runner(["kimi", "doctor"], capture_output=True, text=True,
+                          timeout=60, env=env)
+    except OSError as exc:
+        return None, "kimi doctor could not run: %s" % exc
+    if proc.returncode != 0 or "OK config.toml" not in (proc.stdout or ""):
+        return False, ("kimi doctor rejected the generated per-run config: %s%s"
+                       % (proc.stdout or "", proc.stderr or ""))[:300]
+    return True, "per-run home builds and kimi doctor validates its config"
+
+
+def probe_kimi_read_guard(host, runner=subprocess.run, doctor_runner=None):
+    """Kimi can confine a dispatched reviewer's reads to its entry's scope.
+
+    Proves the mechanism end to end: the guard subprocess allows an in-scope
+    read and denies outside reads, unbound sessions, unknown entries, and a
+    malformed scope file; and the per-run home the runner arms builds and
+    validates. NOT "armed right now" -- the loop arms the scope file per
+    batch, so at run start it is legitimately absent.
+
+    `runner` drives the guard subprocess (plain python; tests use the real
+    one). `doctor_runner` drives `kimi doctor` and is injected separately so
+    the suite never launches the real host binary (FAMILY-PR-GUARDRAILS,
+    Suite rules); it defaults to `runner` in production.
+    """
+    if not hosts.declares(host, hosts.READ_SCOPE_CONFINED):
+        return (hosts.UNKNOWN, None,
+                "host %r claims no read-scope confinement" % host)
+    try:
+        with tempfile.TemporaryDirectory() as sandbox:
+            inside = os.path.realpath(os.path.join(sandbox, "cell", "a.py"))
+            outside = os.path.realpath(os.path.join(sandbox, "elsewhere", "b.py"))
+            for p in (inside, outside):
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                with open(p, "w", encoding="utf-8") as fh:
+                    fh.write("")
+            scope_path = os.path.join(sandbox, "read-scope.json")
+            with open(scope_path, "w", encoding="utf-8") as fh:
+                json.dump({"probe-cell": {"files": [inside], "dirs": [], "reads": []}}, fh)
+            rows = (
+                ("bound Read inside scope",
+                 {"tool_name": "Read", "tool_input": {"path": inside}}, "probe-cell", True),
+                ("bound Read outside scope",
+                 {"tool_name": "Read", "tool_input": {"path": outside}}, "probe-cell", False),
+                ("bound Grep of an in-scope file",
+                 {"tool_name": "Grep", "tool_input": {"pattern": "x", "path": inside}}, "probe-cell", True),
+                ("bound Grep over a directory",
+                 {"tool_name": "Grep", "tool_input": {"pattern": "x", "path": os.path.dirname(inside)}}, "probe-cell", False),
+                ("bound Glob",
+                 {"tool_name": "Glob", "tool_input": {"pattern": "*.py", "path": os.path.dirname(inside)}}, "probe-cell", False),
+                ("unbound session Read",
+                 {"tool_name": "Read", "tool_input": {"path": inside}}, None, False),
+                ("unknown entry Read",
+                 {"tool_name": "Read", "tool_input": {"path": inside}}, "not-armed", False),
+            )
+            ok, detail = _guard_round_trip("read", scope_path, rows, runner=runner)
+            if not ok:
+                return (hosts.REFUTED, KIMI_READ_GUARD, detail)
+            with open(scope_path, "w", encoding="utf-8") as fh:
+                fh.write("not json")
+            ok, detail = _guard_round_trip(
+                "read", scope_path,
+                (("malformed scope file",
+                  {"tool_name": "Read", "tool_input": {"path": inside}}, "probe-cell", False),),
+                runner=runner)
+            if not ok:
+                return (hosts.REFUTED, KIMI_READ_GUARD, detail)
+    except OSError as exc:
+        return (hosts.UNKNOWN, KIMI_READ_GUARD,
+                "sandbox round-trip could not run: %s" % exc)
+    ok, detail = _kimi_home_builds_and_validates(doctor_runner or runner)
+    if ok is None:
+        return (hosts.UNKNOWN, KIMI_READ_GUARD,
+                "guard round-trip ok, but %s" % detail)
+    if not ok:
+        return (hosts.REFUTED, KIMI_READ_GUARD, detail)
+    return (hosts.PROVEN, KIMI_READ_GUARD,
+            "read round-trip ok (8 rows); %s" % detail)
+
+
+def probe_kimi_write_guard(host, runner=subprocess.run):
+    """Kimi can mediate a self-writing reviewer's Write/Edit.
+
+    Same shape as the read probe: declared out_file allowed, everything else
+    denied, symlinks denied, malformed allowlist denied. The allowlist is the
+    file the loop arms per batch (orchestrate.Guards), so it is legitimately
+    absent at probe time.
+    """
+    if not hosts.declares(host, hosts.ARTIFACT_WRITE_GUARD):
+        return (hosts.UNKNOWN, None,
+                "host %r claims no artifact write guard" % host)
+    try:
+        with tempfile.TemporaryDirectory() as sandbox:
+            declared = os.path.realpath(os.path.join(sandbox, "findings-probe.json"))
+            other = os.path.realpath(os.path.join(sandbox, "not-declared.json"))
+            with open(declared, "w", encoding="utf-8") as fh:
+                fh.write("{}")
+            allowlist_path = os.path.join(sandbox, "write-allowlist.json")
+            with open(allowlist_path, "w", encoding="utf-8") as fh:
+                json.dump([declared], fh)
+            rows = (
+                ("Write to the declared out_file",
+                 {"tool_name": "Write", "tool_input": {"path": declared, "content": "{}"}}, "probe-cell", True),
+                ("Write outside the allowlist",
+                 {"tool_name": "Write", "tool_input": {"path": other, "content": "{}"}}, "probe-cell", False),
+                ("Edit outside the allowlist",
+                 {"tool_name": "Edit", "tool_input": {"path": other}}, "probe-cell", False),
+                ("unbound session Write",
+                 {"tool_name": "Write", "tool_input": {"path": declared, "content": "{}"}}, None, False),
+            )
+            ok, detail = _guard_round_trip("write", allowlist_path, rows, runner=runner)
+            if not ok:
+                return (hosts.REFUTED, KIMI_WRITE_GUARD, detail)
+            with open(allowlist_path, "w", encoding="utf-8") as fh:
+                fh.write("not json")
+            ok, detail = _guard_round_trip(
+                "write", allowlist_path,
+                (("malformed allowlist",
+                  {"tool_name": "Write", "tool_input": {"path": declared, "content": "{}"}}, "probe-cell", False),),
+                runner=runner)
+            if not ok:
+                return (hosts.REFUTED, KIMI_WRITE_GUARD, detail)
+    except OSError as exc:
+        return (hosts.UNKNOWN, KIMI_WRITE_GUARD,
+                "sandbox round-trip could not run: %s" % exc)
+    return (hosts.PROVEN, KIMI_WRITE_GUARD,
+            "write round-trip ok (5 rows); the runner arms the hook in the "
+            "per-run home's config.toml under the run directory")
+
+
+def probe_kimi_model_alias(host, configured=None):
+    """Every role's entry model resolves to an alias the installed CLI has.
+
+    The runner binds `-m <alias>` on every entry (Kimi agent files cannot
+    bind a model), so the question is exactly the runner's: does the tier the
+    entry carries resolve through model-profiles.yml to an alias present in
+    the installed config's [models] table. An unresolvable role is a
+    refutation -- that entry would fail at launch rather than silently run
+    the session's default model.
+    """
+    import scripts.runners.kimi as kimi_runner
+    if not hosts.declares(host, hosts.MODEL_BINDING):
+        return (hosts.UNKNOWN, None, "host %r claims no model binding" % host)
+    if configured is None:
+        configured = kimi_runner.configured_models()
+    if not configured:
+        return (hosts.REFUTED, KIMI_MODEL_ALIAS,
+                "no [models] table is readable in the installed kimi config, "
+                "so no entry model can bind")
+    faults, bound = [], []
+    for role in DRIVER_ROLES:
+        tier = model_resolver.resolve_model(host, role).get("model")
+        alias = kimi_runner.resolve_cli_alias(tier, configured)
+        if alias is None:
+            faults.append("%s: entry model %r resolves to no configured alias" % (role, tier))
+        else:
+            bound.append("%s->%s" % (role, alias))
+    if faults:
+        return (hosts.REFUTED, KIMI_MODEL_ALIAS, "; ".join(faults))
+    return (hosts.PROVEN, KIMI_MODEL_ALIAS,
+            "%d/%d roles bind a configured alias: %s"
+            % (len(bound), len(DRIVER_ROLES), ", ".join(bound)))
+
+
+def probe_kimi_usage_wire(host, home=None):
+    """The usage ledger's channel: the wire parser works and this machine's
+    kimi writes session transcripts.
+
+    Headless children write their wire files into the per-run home, so the
+    probe proves the MECHANISM on a synthetic wire file and treats the real
+    home's sessions directory as evidence the CLI persists sessions here at
+    all -- the same shape as the claude transcript-dir probe.
+    """
+    import scripts.runners.kimi as kimi_runner
+    if not hosts.declares(host, hosts.USAGE_LEDGER):
+        return (hosts.UNKNOWN, None, "host %r claims no usage ledger" % host)
+    try:
+        with tempfile.TemporaryDirectory() as sandbox:
+            wire = os.path.join(sandbox, "wire.jsonl")
+            records = [
+                {"type": "usage.record", "model": "kimi-code/k3", "usageScope": "turn",
+                 "usage": {"inputOther": 10, "output": 3, "inputCacheRead": 5, "inputCacheCreation": 2}},
+                {"type": "usage.record", "model": "kimi-code/k3", "usageScope": "turn",
+                 "usage": {"inputOther": 7, "output": 1, "inputCacheRead": 0, "inputCacheCreation": 0}},
+                {"type": "usage.record", "model": "kimi-code/k3", "usageScope": "session",
+                 "usage": {"inputOther": 999, "output": 999, "inputCacheRead": 999, "inputCacheCreation": 999}},
+            ]
+            with open(wire, "w", encoding="utf-8") as fh:
+                for record in records:
+                    fh.write(json.dumps(record) + "\n")
+            usage, model = kimi_runner.parse_wire(wire)
+    except OSError as exc:
+        return (hosts.UNKNOWN, KIMI_USAGE_WIRE,
+                "synthetic wire round-trip could not run: %s" % exc)
+    expected = {"input_tokens": 17, "output_tokens": 4,
+                "cache_read_input_tokens": 5, "cache_creation_input_tokens": 2}
+    if usage != expected or model != "kimi-code/k3":
+        return (hosts.REFUTED, KIMI_USAGE_WIRE,
+                "the wire parser returned %r (model %r) for a synthetic wire "
+                "file, expected %r" % (usage, model, expected))
+    root = home or os.environ.get("KIMI_CODE_HOME") or os.path.expanduser("~/.kimi-code")
+    directory = os.path.join(root, "sessions")
+    if not os.path.isdir(directory):
+        return (hosts.REFUTED, KIMI_USAGE_WIRE,
+                "the wire parser is sound, but no sessions directory at %s; "
+                "the cost ledger will report null rather than a figure" % directory)
+    return (hosts.PROVEN, KIMI_USAGE_WIRE,
+            "wire parser verified on a synthetic file; %s is readable" % directory)
+
+
 TRANSCRIPT_DIR = "transcript-dir"
 
 # Every probe id a registry row may map to and get a runner for; the
@@ -527,7 +869,9 @@ TRANSCRIPT_DIR = "transcript-dir"
 # shipped probes" (spec 8.1), so it must not drift from the runner table:
 # run_probes refuses to build a table that disagrees with it.
 PROBE_IDS = (REGISTERED_SHELL_TOOLS, WRITE_GUARD_ARMED, TRANSCRIPT_DIR,
-            ENTRY_MODEL_BOUND, READ_GUARD_ARMED)
+            ENTRY_MODEL_BOUND, READ_GUARD_ARMED,
+            KIMI_SHELL_SURFACE, KIMI_READ_GUARD, KIMI_WRITE_GUARD,
+            KIMI_MODEL_ALIAS, KIMI_USAGE_WIRE)
 
 # Which capability each shipped probe MEASURES. The retirement bar reads this
 # so a row cannot satisfy spec 8.1 by mapping a security capability to a
@@ -538,7 +882,12 @@ PROBE_CAPABILITY = {REGISTERED_SHELL_TOOLS: hosts.TOOL_POLICY_ENFORCED,
                     WRITE_GUARD_ARMED: hosts.ARTIFACT_WRITE_GUARD,
                     TRANSCRIPT_DIR: hosts.USAGE_LEDGER,
                     ENTRY_MODEL_BOUND: hosts.MODEL_BINDING,
-                    READ_GUARD_ARMED: hosts.READ_SCOPE_CONFINED}
+                    READ_GUARD_ARMED: hosts.READ_SCOPE_CONFINED,
+                    KIMI_SHELL_SURFACE: hosts.TOOL_POLICY_ENFORCED,
+                    KIMI_READ_GUARD: hosts.READ_SCOPE_CONFINED,
+                    KIMI_WRITE_GUARD: hosts.ARTIFACT_WRITE_GUARD,
+                    KIMI_MODEL_ALIAS: hosts.MODEL_BINDING,
+                    KIMI_USAGE_WIRE: hosts.USAGE_LEDGER}
 
 
 def probe_transcript_dir(host, session_dir, home=None):
@@ -780,6 +1129,16 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
         READ_GUARD_ARMED:
             lambda: probe_read_guard_armed(host, session_root=session_root,
                                            settings_path=settings_path),
+        KIMI_SHELL_SURFACE:
+            lambda: probe_kimi_shell_surface(host, registration_dir),
+        KIMI_READ_GUARD:
+            lambda: probe_kimi_read_guard(host),
+        KIMI_WRITE_GUARD:
+            lambda: probe_kimi_write_guard(host),
+        KIMI_MODEL_ALIAS:
+            lambda: probe_kimi_model_alias(host),
+        KIMI_USAGE_WIRE:
+            lambda: probe_kimi_usage_wire(host, home=home),
     }
     if set(runners) != set(PROBE_IDS):
         raise RuntimeError("host_probes.PROBE_IDS is out of step with run_probes' runner "

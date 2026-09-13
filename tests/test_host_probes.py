@@ -391,7 +391,14 @@ class TestEntryModelBoundProbe(unittest.TestCase):
                                  host_probes.WRITE_GUARD_ARMED,
                                  host_probes.TRANSCRIPT_DIR,
                                  host_probes.ENTRY_MODEL_BOUND,
-                                 host_probes.READ_GUARD_ARMED}))
+                                 host_probes.READ_GUARD_ARMED,
+                                 # #1344 kimi family PR: the five probes the
+                                 # kimi row maps its five claims to.
+                                 host_probes.KIMI_SHELL_SURFACE,
+                                 host_probes.KIMI_READ_GUARD,
+                                 host_probes.KIMI_WRITE_GUARD,
+                                 host_probes.KIMI_MODEL_ALIAS,
+                                 host_probes.KIMI_USAGE_WIRE}))
         with tempfile.TemporaryDirectory() as reg, \
              tempfile.TemporaryDirectory() as target, \
              tempfile.TemporaryDirectory() as home:
@@ -1344,7 +1351,10 @@ class TestReadGuardArmedProbe(unittest.TestCase):
             self.assertIn(claude_dir, detail)
 
     def test_a_host_that_claims_no_read_confinement_is_unknown(self):
-        for name in ("gemini", "generic", "kimi", "codex"):
+        # kimi left this tuple in the kimi family PR (#1344): it now claims
+        # READ_SCOPE_CONFINED and ships its own probe (kimi-read-guard-armed),
+        # so the claude-shaped probe must never run for it.
+        for name in ("gemini", "generic", "codex"):
             with self.subTest(host=name):
                 state, by, _detail = host_probes.probe_read_guard_armed(name)
                 self.assertEqual(hosts.UNKNOWN, state)
@@ -1463,3 +1473,214 @@ class TestHeadlessSettingsPathIsNamespaceAware(unittest.TestCase):
             self.assertEqual(
                 host_probes.headless_settings_path("/repo", "setup"),
                 os.path.abspath(os.path.join("/repo", ".panopticon", "host-settings.json")))
+
+
+# --- kimi family probes (#1344) -----------------------------------------------
+
+
+def _kimi_fully_registered(directory):
+    """Register all four driver shells in kimi's block-list dialect, granting
+    exactly each template's tool policy (the state --emit-host-agents kimi
+    produces)."""
+    for role in host_probes.DRIVER_ROLES:
+        role_file = dispatch.ROLE_FILES[role]
+        allowed = dispatch.load_template(role_file)[0]["tool_policy"]["allowed"]
+        _shell(directory, dispatch.registered_agent_filename("kimi", role_file),
+               allowed, block_list=True)
+
+
+class _DoctorFake:
+    """A runner= stand-in for `kimi doctor` -- the suite never launches the
+    real host binary (FAMILY-PR-GUARDRAILS, Suite rules)."""
+
+    def __init__(self, ok=True, stdout="OK config.toml  /x/config.toml\n"):
+        self.ok = ok
+        self.stdout = stdout
+
+    def __call__(self, cmd, **kw):
+        class P:
+            stderr = ""
+        p = P()
+        p.returncode = 0 if self.ok else 1
+        p.stdout = self.stdout if self.ok else "config.toml is invalid TOML"
+        return p
+
+
+class TestKimiShellSurfaceProbe(unittest.TestCase):
+    """The kimi tool_policy_enforced probe: template parity AND the installed
+    CLI's tool vocabulary, because a name that matches nothing restricts
+    nothing (the recorded kimi finding in the guardrails)."""
+
+    def test_fully_registered_shells_on_a_known_version_are_proven(self):
+        with tempfile.TemporaryDirectory() as d:
+            _kimi_fully_registered(d)
+            state, by, detail = host_probes.probe_kimi_shell_surface(
+                "kimi", registration_dir=d, version="0.42")
+        self.assertEqual(hosts.PROVEN, state)
+        self.assertEqual(host_probes.KIMI_SHELL_SURFACE, by)
+        self.assertIn("0.42", detail)
+
+    def test_missing_shells_are_refuted_by_the_template_half(self):
+        with tempfile.TemporaryDirectory() as d:
+            state, by, detail = host_probes.probe_kimi_shell_surface(
+                "kimi", registration_dir=d, version="0.42")
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertEqual(host_probes.KIMI_SHELL_SURFACE, by)
+        self.assertIn("no shell", detail)
+
+    def test_a_shell_grant_the_template_forbids_is_refuted(self):
+        with tempfile.TemporaryDirectory() as d:
+            _kimi_fully_registered(d)
+            _shell(d, dispatch.registered_agent_filename("kimi", "scout.md"),
+                   ["Read", "Grep", "Glob", "Bash"], block_list=True)
+            state, _by, detail = host_probes.probe_kimi_shell_surface(
+                "kimi", registration_dir=d, version="0.42")
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("Bash", detail)
+
+    def test_a_tool_name_the_cli_does_not_have_is_refuted(self):
+        # The mutation the guardrails demand: narrow the vocabulary table and
+        # the probe must flip to refuted rather than wave the shells through.
+        with tempfile.TemporaryDirectory() as d:
+            _kimi_fully_registered(d)
+            narrow = {"0.42": host_probes._KIMI_TOOL_VOCABULARY["0.42"] - {"Read", "Bash"}}
+            with mock.patch.dict(host_probes._KIMI_TOOL_VOCABULARY, narrow):
+                state, _by, detail = host_probes.probe_kimi_shell_surface(
+                    "kimi", registration_dir=d, version="0.42")
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("match nothing", detail)
+
+    def test_an_uncovered_cli_version_is_unknown_never_a_guess(self):
+        with tempfile.TemporaryDirectory() as d:
+            _kimi_fully_registered(d)
+            state, _by, detail = host_probes.probe_kimi_shell_surface(
+                "kimi", registration_dir=d, version="9.99")
+        self.assertEqual(hosts.UNKNOWN, state)
+        self.assertIn("9.99", detail)
+
+    def test_an_unparseable_cli_version_is_unknown(self):
+        def garbage(cmd, **kw):
+            class P:
+                returncode = 0
+                stdout = "not a version"
+                stderr = ""
+            return P()
+        with tempfile.TemporaryDirectory() as d:
+            _kimi_fully_registered(d)
+            state, _by, _detail = host_probes.probe_kimi_shell_surface(
+                "kimi", registration_dir=d, runner=garbage)
+        self.assertEqual(hosts.UNKNOWN, state)
+
+    def test_a_host_that_registers_no_shells_is_unknown(self):
+        state, by, _detail = host_probes.probe_kimi_shell_surface("gemini", version="0.42")
+        self.assertEqual(hosts.UNKNOWN, state)
+        self.assertIsNone(by)
+
+
+class TestKimiReadGuardProbe(unittest.TestCase):
+    """The kimi read_scope_confined probe: the real guard subprocess round-trip
+    (plain python -- not the host binary) plus a faked doctor validation."""
+
+    def test_the_round_trip_and_a_valid_home_are_proven(self):
+        state, by, detail = host_probes.probe_kimi_read_guard(
+            "kimi", doctor_runner=_DoctorFake())
+        self.assertEqual(hosts.PROVEN, state)
+        self.assertEqual(host_probes.KIMI_READ_GUARD, by)
+        self.assertIn("round-trip", detail)
+
+    def test_a_doctor_rejection_is_refuted(self):
+        state, _by, detail = host_probes.probe_kimi_read_guard(
+            "kimi", doctor_runner=_DoctorFake(ok=False))
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("doctor", detail)
+
+    def test_a_missing_cli_is_unknown_not_refuted(self):
+        def no_binary(cmd, **kw):
+            raise FileNotFoundError("kimi")
+        state, _by, detail = host_probes.probe_kimi_read_guard(
+            "kimi", doctor_runner=no_binary)
+        self.assertEqual(hosts.UNKNOWN, state)
+        self.assertIn("could not run", detail)
+
+    def test_a_guard_failure_is_refuted_with_the_row_named(self):
+        # The mutation, at the probe's own seam: a guard that allows an
+        # outside read must flip the probe to refuted.
+        with mock.patch.object(host_probes, "_guard_round_trip",
+                               return_value=(False, "the guard ALLOWED: bound Read outside scope")):
+            state, _by, detail = host_probes.probe_kimi_read_guard(
+                "kimi", doctor_runner=_DoctorFake())
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("ALLOWED", detail)
+
+    def test_a_host_that_claims_no_read_confinement_is_unknown(self):
+        state, by, _detail = host_probes.probe_kimi_read_guard("gemini")
+        self.assertEqual(hosts.UNKNOWN, state)
+        self.assertIsNone(by)
+
+
+class TestKimiWriteGuardProbe(unittest.TestCase):
+    def test_the_write_round_trip_is_proven(self):
+        state, by, detail = host_probes.probe_kimi_write_guard("kimi")
+        self.assertEqual(hosts.PROVEN, state)
+        self.assertEqual(host_probes.KIMI_WRITE_GUARD, by)
+        self.assertIn("round-trip", detail)
+
+    def test_a_guard_failure_is_refuted_with_the_row_named(self):
+        with mock.patch.object(host_probes, "_guard_round_trip",
+                               return_value=(False, "the guard ALLOWED: Write outside the allowlist")):
+            state, _by, detail = host_probes.probe_kimi_write_guard("kimi")
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("ALLOWED", detail)
+
+    def test_a_host_that_claims_no_write_guard_is_unknown(self):
+        state, by, _detail = host_probes.probe_kimi_write_guard("gemini")
+        self.assertEqual(hosts.UNKNOWN, state)
+        self.assertIsNone(by)
+
+
+class TestKimiModelAliasProbe(unittest.TestCase):
+    CONFIGURED = frozenset({"kimi-code/k3", "kimi-code/kimi-for-coding"})
+
+    def test_every_role_binding_a_configured_alias_is_proven(self):
+        state, by, detail = host_probes.probe_kimi_model_alias(
+            "kimi", configured=self.CONFIGURED)
+        self.assertEqual(hosts.PROVEN, state)
+        self.assertEqual(host_probes.KIMI_MODEL_ALIAS, by)
+        self.assertIn("kimi-code/k3", detail)
+
+    def test_an_unresolvable_role_is_refuted_and_named(self):
+        state, _by, detail = host_probes.probe_kimi_model_alias(
+            "kimi", configured=frozenset({"kimi-code/k3"}))
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("scout", detail)
+
+    def test_no_readable_model_table_is_refuted(self):
+        state, _by, detail = host_probes.probe_kimi_model_alias("kimi", configured=frozenset())
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("no [models] table", detail)
+
+    def test_a_host_that_claims_no_model_binding_is_unknown(self):
+        state, by, _detail = host_probes.probe_kimi_model_alias("gemini")
+        self.assertEqual(hosts.UNKNOWN, state)
+        self.assertIsNone(by)
+
+
+class TestKimiUsageWireProbe(unittest.TestCase):
+    def test_a_working_parser_and_a_sessions_dir_are_proven(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "sessions"))
+            state, by, detail = host_probes.probe_kimi_usage_wire("kimi", home=d)
+        self.assertEqual(hosts.PROVEN, state)
+        self.assertEqual(host_probes.KIMI_USAGE_WIRE, by)
+        self.assertIn("sessions", detail)
+
+    def test_no_sessions_dir_is_refuted(self):
+        with tempfile.TemporaryDirectory() as d:
+            state, _by, detail = host_probes.probe_kimi_usage_wire("kimi", home=d)
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("sessions", detail)
+
+    def test_a_host_that_claims_no_usage_ledger_is_unknown(self):
+        state, by, _detail = host_probes.probe_kimi_usage_wire("gemini")
+        self.assertEqual(hosts.UNKNOWN, state)
+        self.assertIsNone(by)
