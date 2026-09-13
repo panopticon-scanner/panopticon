@@ -55,8 +55,8 @@ class Guards:
         self.mode = mode
         if mode == "headless":
             self.settings_path = os.path.join(run_dir, runners_base.SETTINGS_FILE)
-            self.allowlist_path = os.path.join(run_dir, "write-allowlist.json")
-            self.scope_path = os.path.join(run_dir, "read-scope.json")
+            self.allowlist_path = os.path.join(run_dir, runners_base.ALLOWLIST_FILE)
+            self.scope_path = os.path.join(run_dir, runners_base.SCOPE_FILE)
         else:
             self.session_root = session_root
             self.settings_path, self.allowlist_path, _ = write_guard_hook._resolve(None, None, session_root)

@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 import scripts.read_guard_hook as read_guard_hook
 import scripts.runners.base as base
@@ -45,9 +46,15 @@ class TestCommand(unittest.TestCase):
         cmd = self.r.command(_entry(False, model=None), "/run/host-settings.json", max_turns=40)
         self.assertNotIn("--model", cmd); self.assertNotIn("--agent", cmd)
 
-    def test_per_entry_budget_is_passed_when_set(self):
-        cmd = self.r.command(_entry(True), "/s.json", max_turns=40, budget_usd=0.5)
-        self.assertIn("--max-budget-usd", cmd); self.assertIn("0.5", cmd)
+    def test_no_per_entry_budget_arm_exists(self):
+        # M3 (final review): `--max-budget-usd` is a WHOLE-RUN knob the loop
+        # enforces off its own ledger (spec 4.3). `command` carried a
+        # per-entry budget parameter nothing ever set, so the flag it built
+        # could never reach a real launch -- dead weight that reads like a
+        # live per-entry cap.
+        cmd = self.r.command(_entry(True), "/s.json", max_turns=40)
+        self.assertNotIn("--max-budget-usd", cmd)
+        self.assertFalse(hasattr(self.r, "per_entry_budget_usd"))
 
 
 class TestEnvelope(unittest.TestCase):
@@ -73,24 +80,38 @@ class TestEnvelope(unittest.TestCase):
 
 
 class TestRunEntry(unittest.TestCase):
-    def test_run_entry_invokes_the_cli_in_the_review_root_with_the_bindings_and_without_claudecode(self):
+    def test_run_entry_inherits_the_process_environment_and_overlays_the_bindings(self):
+        # C1 (final review): `env_for` is a three-key OVERLAY, not a whole
+        # environment. A runner that only FILTERED it launched `claude` with
+        # no PATH and no HOME -- FileNotFoundError on every entry, for the
+        # whole run. The previous version of this test hand-supplied HOME in
+        # `env` and then asserted HOME came back, so it asserted a mock
+        # against itself and stayed green with the filter-only line. This one
+        # clears os.environ to a known fixture and requires the inherited
+        # keys -- which are NOT in `env` -- to reach the child.
         seen = {}
         def fake_run(cmd, **kw):
             seen["cmd"], seen["kw"] = cmd, kw
             class P: returncode = 0; stdout = json.dumps(ENVELOPE); stderr = ""
             return P()
-        with tempfile.TemporaryDirectory() as d:
+        env = {base.ENV_ENTRY_ID: "review-app-SEC",
+               base.ENV_WRITE_ALLOWLIST: "/w.json", base.ENV_READ_SCOPE: "/s.json"}
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.dict(os.environ, {"PATH": "/p", "HOME": "/h", "CLAUDECODE": "1"},
+                             clear=True):
             r = claude_runner.Runner("claude", runner=fake_run)
             r.prepare(d, review_root=d)
             r.max_turns = 12
-            env = {"CLAUDECODE": "1", "HOME": "/h", base.ENV_ENTRY_ID: "review-app-SEC",
-                   base.ENV_WRITE_ALLOWLIST: "/w.json", base.ENV_READ_SCOPE: "/s.json"}
             res = r.run_entry(_entry(True), env)
         self.assertTrue(res.ok)
         self.assertEqual(seen["kw"]["cwd"], d)
-        self.assertNotIn("CLAUDECODE", seen["kw"]["env"])
-        self.assertEqual(seen["kw"]["env"][base.ENV_ENTRY_ID], "review-app-SEC")
-        self.assertEqual(seen["kw"]["env"]["HOME"], "/h")
+        child_env = seen["kw"]["env"]
+        self.assertEqual(child_env["PATH"], "/p")        # inherited, never in `env`
+        self.assertEqual(child_env["HOME"], "/h")        # inherited, never in `env`
+        self.assertNotIn("CLAUDECODE", child_env)        # a nested `claude -p` refuses to start
+        self.assertEqual(child_env[base.ENV_ENTRY_ID], "review-app-SEC")
+        self.assertEqual(child_env[base.ENV_WRITE_ALLOWLIST], "/w.json")
+        self.assertEqual(child_env[base.ENV_READ_SCOPE], "/s.json")
         self.assertIn("--max-turns", seen["cmd"]); self.assertIn("12", seen["cmd"])
         self.assertEqual(seen["kw"]["timeout"], r.entry_timeout)
 

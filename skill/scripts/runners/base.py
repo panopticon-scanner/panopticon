@@ -19,6 +19,13 @@ ENV_ENTRY_ID = read_guard_hook.ENV_ENTRY_ID
 ENV_WRITE_ALLOWLIST = "PANOPTICON_WRITE_ALLOWLIST"
 ENV_READ_SCOPE = "PANOPTICON_READ_SCOPE"
 SETTINGS_FILE = "host-settings.json"
+# M5: the two guard files the loop writes into the run folder and the
+# runner bakes into host-settings.json's hook commands. Both sides have to
+# name the SAME file -- the guards are fail-closed while registered, so a
+# hook pointed at a path nothing writes denies every guarded Read and Write
+# in the fan-out. One owner, read by module attribute (layout rule 1).
+ALLOWLIST_FILE = "write-allowlist.json"
+SCOPE_FILE = "read-scope.json"
 MODES = ("headless", "session")
 
 

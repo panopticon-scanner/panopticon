@@ -23,15 +23,14 @@ class Runner(base.HostRunner):
         self.review_root = None
         self.max_turns = 60
         self.entry_timeout = 1800          # seconds per entry; a stuck agent is a failed entry
-        self.per_entry_budget_usd = None
 
     def prepare(self, run_dir, review_root):
         """Write <run_dir>/host-settings.json: both guards' PreToolUse entries
         with absolute allowlist/scope paths baked in, nothing else (D3)."""
         self.review_root = os.path.abspath(review_root)
         self.settings_path = os.path.join(run_dir, base.SETTINGS_FILE)
-        self.allowlist_path = os.path.join(run_dir, "write-allowlist.json")
-        self.scope_path = os.path.join(run_dir, "read-scope.json")
+        self.allowlist_path = os.path.join(run_dir, base.ALLOWLIST_FILE)
+        self.scope_path = os.path.join(run_dir, base.SCOPE_FILE)
         settings = {"hooks": {"PreToolUse": [
             write_guard_hook._hook_entry(self.allowlist_path),
             read_guard_hook._hook_entry(self.scope_path)]}}
@@ -41,15 +40,18 @@ class Runner(base.HostRunner):
             json.dump(settings, fh, indent=2)
         os.replace(tmp, self.settings_path)
 
-    def command(self, entry, settings_path, max_turns, budget_usd=None):
+    def command(self, entry, settings_path, max_turns):
+        """The argv for one entry. No per-entry budget arm (M5, final review):
+        `--max-budget-usd` is a WHOLE-RUN knob the loop enforces itself off
+        the dispatch ledger (spec 4.3), and the per-entry parameter this used
+        to carry was set by nobody -- a flag that could never reach a launch,
+        reading like a live cap."""
         cmd = [self.CLI, "-p", "--settings", settings_path, "--output-format", "json",
                "--no-session-persistence", "--max-turns", str(int(max_turns))]
         if entry.get("enforced") and entry.get("agent"):
             cmd += ["--agent", entry["agent"]]
         elif entry.get("model"):
             cmd += ["--model", entry["model"]]
-        if budget_usd is not None:
-            cmd += ["--max-budget-usd", str(budget_usd)]
         cmd.append(entry["prompt"])
         return cmd
 
@@ -75,11 +77,21 @@ class Runner(base.HostRunner):
                                session_id=data.get("session_id"), denials=denials, error=error)
 
     def run_entry(self, entry, env):
+        # C1 (final review): `env` is the loop's three-key BINDING OVERLAY
+        # (spec 4.4), never a whole environment -- so the child inherits this
+        # process's os.environ and the overlay goes ON TOP. Replacing the
+        # environment with the overlay alone left the child with no PATH and
+        # no HOME, and `claude` was then unfindable: every entry of every run
+        # failed with FileNotFoundError.
+        #
         # A nested `claude -p` refuses to start inside a Claude Code session,
         # so the marker that says "you're already inside one" must not survive
-        # into the child's environment.
-        run_env = {k: v for k, v in dict(env).items() if k != "CLAUDECODE"}
-        cmd = self.command(entry, self.settings_path, self.max_turns, self.per_entry_budget_usd)
+        # into the child's environment -- dropped AFTER the merge, since it is
+        # os.environ that carries it.
+        run_env = dict(os.environ)
+        run_env.update(env)
+        run_env.pop("CLAUDECODE", None)
+        cmd = self.command(entry, self.settings_path, self.max_turns)
         try:
             proc = self.runner(cmd, cwd=self.review_root, env=run_env, capture_output=True,
                                 text=True, timeout=self.entry_timeout)

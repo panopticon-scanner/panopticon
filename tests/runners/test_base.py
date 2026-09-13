@@ -81,3 +81,32 @@ class TestBrokenHeadlessModule(unittest.TestCase):
 
         with self.assertRaises(ModuleNotFoundError):
             base.headless_available("brokenhost")
+
+
+class TestGuardFileNameConstants(unittest.TestCase):
+    """M5 (final review): the allowlist/scope file NAMES have ONE owner here,
+    read by module attribute everywhere else. Two writers have to agree on
+    them byte-for-byte -- `runners/claude.py`'s `prepare`, which bakes them
+    into the hook commands it writes into host-settings.json, and
+    `orchestrate.Guards`, which writes the files themselves -- and they used
+    to spell both strings separately in three places. A rename that missed
+    one would arm a hook against a file nothing ever writes: fail-closed, so
+    every guarded Read and Write in the fan-out would be denied."""
+
+    def test_the_names_are_owned_by_base_and_read_by_attribute(self):
+        import tempfile
+        from unittest import mock
+        import scripts.orchestrate as orchestrate
+        import scripts.runners.claude as claude_runner
+        self.assertEqual(base.ALLOWLIST_FILE, "write-allowlist.json")
+        self.assertEqual(base.SCOPE_FILE, "read-scope.json")
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(base, "ALLOWLIST_FILE", "renamed-allowlist.json"), \
+             mock.patch.object(base, "SCOPE_FILE", "renamed-scope.json"):
+            runner = claude_runner.Runner("claude")
+            runner.prepare(d, review_root=d)
+            guards = orchestrate.Guards("headless", run_dir=d)
+            for path in (runner.allowlist_path, guards.allowlist_path):
+                self.assertEqual(path, os.path.join(d, "renamed-allowlist.json"))
+            for path in (runner.scope_path, guards.scope_path):
+                self.assertEqual(path, os.path.join(d, "renamed-scope.json"))
