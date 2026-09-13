@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -32,7 +33,10 @@ DEFAULT_RUNNER = subprocess.run
 REGISTER_REMEDY = "run: python3 skill/scripts/dispatch.py --emit-host-agents codex"
 MAX_BYTES = 8 * 1024 * 1024
 PROBE_TIMEOUT = 45
-_COMMAND_DIRS = set()
+# Everything one launch allocated, keyed by the scratch cwd -- the one path
+# cleanup can recover from argv. The value is (per-entry runtime dir, run
+# path): BOTH are removed, and only ever when this module recorded them.
+_COMMAND_DIRS = {}
 _COMMAND_LOCK = threading.Lock()
 
 
@@ -199,31 +203,44 @@ def command(entry, env, review_root, run_dir, runner=None, registration_dir=None
     cwd = str(Path(tempfile.mkdtemp(prefix="panopticon-codex-cwd-")).resolve())
     if Path(cwd).is_relative_to(Path(review_root).resolve()):
         os.rmdir(cwd)
+        shutil.rmtree(directory, ignore_errors=True)     # refused: leave nothing behind
         raise ValueError("Codex scratch cwd must be outside the review root; choose an external TMPDIR")
     with _COMMAND_LOCK:
-        _COMMAND_DIRS.add(cwd)
+        _COMMAND_DIRS[cwd] = (str(directory), str(run_path))
     return ["codex", "exec", "--ignore-user-config", "--ignore-rules", "--ephemeral",
             "--strict-config", "--sandbox", "read-only", "--skip-git-repo-check",
             "--cd", cwd, *(["--model", model] if model else []), "--json", *overrides, "-"]
 
 
 def cleanup_command(argv):
-    """Release only an empty-cwd temporary directory allocated by this module."""
+    """Release BOTH temporary directories this module allocated for one launch.
+
+    I-7: the per-entry runtime folder (the launch-local catalog copy, `logs/`
+    and `sqlite/`) used to survive every launch, so a real run accumulated
+    hundreds of them -- carrying Codex logs -- under the run folder.
+
+    Deletion targets come from this process's own registry, never from argv:
+    the only thing read off argv is the `--cd` value used to LOOK UP what was
+    recorded. The runtime folder is additionally required to still sit
+    directly under the run path it was allocated in, so a registry entry
+    cannot be talked into deleting anything else.
+    """
     if not argv or "--cd" not in argv:
         return
     cwd = argv[argv.index("--cd") + 1]
     with _COMMAND_LOCK:
-        if cwd not in _COMMAND_DIRS:
-            return
-        _COMMAND_DIRS.remove(cwd)
-    # Never accept an arbitrary argv path as a deletion target. Only this
-    # process's recorded, unpredictable temp allocation is owned by us.
+        allocated = _COMMAND_DIRS.pop(cwd, None)
+    if allocated is None:
+        return
+    directory, run_path = allocated
     try:
         os.rmdir(cwd)
     except OSError:
         # Do not recursively remove unexpected files, and never turn cleanup
         # failure into an exception escaping Runner.run_entry's contract.
         pass
+    if str(Path(directory).parent) == run_path:
+        shutil.rmtree(directory, ignore_errors=True)
 
 
 def validate_command(argv, env, review_root):

@@ -422,3 +422,37 @@ def test_an_empty_or_foreign_read_tool_allowlist_still_refuses(tmp_path, enabled
             codex_host.validate_command(argv, env, root)
     finally:
         codex_host.cleanup_command(argv)
+
+
+def test_cleanup_releases_the_per_entry_runtime_directory(tmp_path):
+    # I-7: command() creates one codex-entry-* folder per launch, holding the
+    # catalog copy, logs/ and sqlite/. cleanup_command removed only the --cd
+    # scratch, so a real run left hundreds of them -- with Codex logs in them --
+    # under .panopticon/runs/<tag>/.
+    root, entry, env = _case(tmp_path)
+    run = root / "run"
+    argv = codex_host.command(entry, env, root, run, runner=_fake_catalog)
+    directory = Path(_config(argv)["model_catalog_json"]).parent
+    (directory / "logs").mkdir(parents=True, exist_ok=True)
+    (directory / "logs" / "codex.log").write_text("reply text", encoding="utf-8")
+    assert directory.is_dir()
+    codex_host.cleanup_command(argv)
+    assert not directory.exists()
+    assert list(run.iterdir()) == []
+    codex_host.cleanup_command(argv)            # idempotent
+
+
+def test_cleanup_never_removes_a_directory_this_module_did_not_allocate(tmp_path):
+    root, entry, env = _case(tmp_path)
+    argv = codex_host.command(entry, env, root, root / "run", runner=_fake_catalog)
+    directory = Path(_config(argv)["model_catalog_json"]).parent
+    foreign = tmp_path / "not-ours"
+    foreign.mkdir()
+    (foreign / "keep").write_text("precious", encoding="utf-8")
+    codex_host.cleanup_command(["--cd", str(foreign)])
+    assert (foreign / "keep").read_text() == "precious"
+    # An argv naming an allocated cwd but pointing the runtime dir elsewhere
+    # cannot redirect the rmtree: the target comes from the registry, not argv.
+    codex_host.cleanup_command([*argv[:-1], "-c", "log_dir=%s" % json.dumps(str(foreign)), "-"])
+    assert (foreign / "keep").read_text() == "precious"
+    assert not directory.exists()
