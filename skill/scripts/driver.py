@@ -585,8 +585,29 @@ def run(args, runner=subprocess.run, phases=PHASES):
     return result
 
 
+def parse_cli(argv=None):
+    """`build_parser().parse_args`, plus one portability rule for `persist`:
+    a single trailing bare word after the options is the `target`.
+
+    argparse before 3.12 binds an optional positional (`target`, nargs="?")
+    the moment it consumes `entry_id`, so `driver persist ID --file F TARGET`
+    -- the documented order -- fails with "unrecognized arguments: TARGET"
+    on Python 3.11 while 3.12+ accept it. Folding exactly one leftover word
+    into `target` makes both orders parse on every supported interpreter;
+    anything else left over is still the parser's own error."""
+    parser = build_parser()
+    args, extra = parser.parse_known_args(argv)
+    if (extra and args.verb == "persist" and len(extra) == 1
+            and not extra[0].startswith("-") and args.target == "."):
+        args.target = extra[0]
+        extra = []
+    if extra:
+        parser.error("unrecognized arguments: %s" % " ".join(extra))
+    return args
+
+
 def main(argv=None):
-    args = build_parser().parse_args(argv)
+    args = parse_cli(argv)
     if args.verb == "setup":
         return engine.emit_status(setup.run_setup_flow(args))
     if args.verb in ("loop", "persist"):

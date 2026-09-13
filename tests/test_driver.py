@@ -1534,6 +1534,27 @@ class TestDriverPersistCLI(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertTrue(os.path.isfile(out))
 
+    def test_persist_accepts_the_target_after_the_options_on_every_python(self):
+        # CI (Python 3.11): argparse < 3.12 binds the optional `target`
+        # positional when it first sees `entry_id`, so a target given AFTER
+        # `--file`/`--pr` -- the documented `driver persist ENTRY_ID [--file
+        # PATH] ... [target]` order -- came back "unrecognized arguments".
+        # `driver.parse_cli` folds one trailing bare word into `target` on
+        # the persist verb only, so both orders parse on 3.11 and 3.14 alike.
+        a = driver.parse_cli(["persist", "scout-app", "--file", "/dev/null", "/tmp/t"])
+        self.assertEqual((a.verb, a.entry_id, a.file, a.target),
+                         ("persist", "scout-app", "/dev/null", "/tmp/t"))
+        b = driver.parse_cli(["persist", "scout-app", "/tmp/t", "--file", "/dev/null"])
+        self.assertEqual(b.target, "/tmp/t")
+        c = driver.parse_cli(["persist", "scout-app", "--pr", "42", "--base", "origin/main", "/tmp/t"])
+        self.assertEqual((c.pr, c.base, c.target), (42, "origin/main", "/tmp/t"))
+        # a second bare word is still an error, and so is any leftover on
+        # another verb -- the fold is persist-only and one word wide
+        with self.assertRaises(SystemExit):
+            driver.parse_cli(["persist", "scout-app", "/tmp/t", "/tmp/u"])
+        with self.assertRaises(SystemExit):
+            driver.parse_cli(["run", ".", "--host", "claude", "extra"])
+
     def test_persist_reaches_a_pr_runs_review_root(self):
         # I6 (plan 6 final review): a `--pr` run's review root is the PR
         # WORKTREE, not the operator's checkout -- `driver run` resolves it
@@ -1542,7 +1563,7 @@ class TestDriverPersistCLI(unittest.TestCase):
         # request in the wrong tree and refused every entry with "no entry in
         # the current dispatch request". The persist verb had no way to say
         # which run it meant.
-        parser_args = driver.build_parser().parse_args(
+        parser_args = driver.parse_cli(
             ["persist", "scout-app", "--pr", "42", "--base", "origin/main", "."])
         self.assertEqual((parser_args.pr, parser_args.base), (42, "origin/main"))
         d = self._repo()
