@@ -27,6 +27,11 @@ PHASE_OF_CHECKPOINT = {"scout": "scout", "review": "review", "verify": "verify",
 USAGE_FIELDS = ("input_tokens", "output_tokens",
                 "cache_creation_input_tokens", "cache_read_input_tokens")
 DEFAULT_MAX_ITERATIONS = 50
+# Consecutive failed launches of ONE entry before the loop gives up on the run
+# (fix round 2). Not a CLI flag: it is a safety rail, not a tuning knob --
+# an operator who wants a fourth attempt re-runs, which resumes from disk and
+# starts every streak at zero.
+MAX_ENTRY_FAILURES = 3
 
 
 def _after_first_run(review_root):
@@ -108,14 +113,25 @@ class Ledger:
     def __init__(self, run_dir):
         self.path = os.path.join(run_dir, "dispatch-ledger.jsonl")
 
-    def record(self, entry, checkpoint, result, mode, host, duration_ms):
+    def record(self, entry, checkpoint, result, mode, host, duration_ms, refusal=None):
+        """One line per runner call.
+
+        `refusal` (fix round 2) overrides the LAUNCH's own verdict. A
+        return-persist reply that persist refused came back from a runner that
+        reported success -- `result.ok` is True -- but the entry did not
+        advance, so a row saying `ok: true` would both overstate the run and
+        disagree with the per-entry failure cap that is about to count it. The
+        usage and cost stay the real launch's: those tokens were spent whatever
+        the reply turned out to be (M2)."""
         line = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "entry_id": entry.get("id"), "checkpoint": checkpoint,
                 "phase": PHASE_OF_CHECKPOINT.get(checkpoint, "unattributed"),
-                "mode": mode, "host": host, "model": result.model, "ok": result.ok,
+                "mode": mode, "host": host, "model": result.model,
+                "ok": result.ok and refusal is None,
                 "usage": {k: int(result.usage.get(k, 0) or 0) for k in USAGE_FIELDS} if result.usage else {},
                 "cost_usd": result.cost_usd, "duration_ms": duration_ms,
-                "session_id": result.session_id, "denials": result.denials, "error": result.error}
+                "session_id": result.session_id, "denials": result.denials,
+                "error": refusal if refusal is not None else result.error}
         # #1095, plan 6 review round 1: the ledger path is a `.panopticon`
         # artifact like any other; a plain `open(path, "a")` bypasses the
         # symlink confinement every other run-folder write goes through.
@@ -338,6 +354,19 @@ def loop(args):
     if _after_first_run(review_root):
         status = _run(args, namespace)                # re-derive after the seam
     iterations = 0
+    # Consecutive failed launches per entry id, and that entry's last failure
+    # message (fix round 2). A launch the runner failed and a reply persist
+    # refused both count: neither advanced the entry, and neither gets likelier
+    # on the fortieth attempt. A clean, accepted launch clears the streak --
+    # this bounds an entry that is STUCK, not one that is merely flaky.
+    #
+    # In memory, and per INVOCATION. In session mode that means a re-entry
+    # starts every entry at zero, deliberately: nothing there advances except a
+    # human persisting a reply that passes the phase's own done predicate, so
+    # the disk-evidence gate already bounds it -- there is no runaway to cap,
+    # and a streak that survived across invocations would refuse an operator
+    # their fourth honest attempt at a cell.
+    failures, last_error = {}, {}
     try:
         # M8: the pre-loop setup lives INSIDE the try. `loop` never raises
         # (review round 1, item 3), but every line of it touches the
@@ -384,19 +413,38 @@ def loop(args):
                                        "ledger at %s; still pending: %s"
                                        % (budget, ledger.path, pending_ids)),
                                args, guards, ledger, namespace, mode)
+            stuck = [e for e in pending
+                     if failures.get(e.get("id"), 0) >= MAX_ENTRY_FAILURES]
+            if stuck:
+                eid = stuck[0].get("id")
+                return _finish(_status("error", "driver loop: entry %s failed %d consecutive "
+                                       "launches; last: %s"
+                                       % (eid, failures[eid], last_error.get(eid))),
+                               args, guards, ledger, namespace, mode)
             guards.arm(pending)
             results = runner.run_batch(pending, getattr(args, "concurrency", None), guards.env_for)
             if results is None:                                 # session mode (Task 6)
                 return _dispatch_exit(review_root, req, pending, namespace)
             for entry, result in zip(pending, results):
-                ledger.record(entry, req.get("checkpoint"), result, mode, runner.host, None)
+                eid = entry.get("id")
+                # The reply is persisted BEFORE the ledger row is written, so
+                # the row can record a refusal as the failed launch it is.
+                refusal = None
                 if result.ok and entry.get("delivery") == "return_json":
                     ok, reason = persist.write_reply(entry, result.text)
                     if not ok:
+                        refusal = "persist refused: %s" % (reason or "shape check failed")
                         print("driver loop: %s" % reason, file=sys.stderr, flush=True)
                 elif not result.ok:
-                    print("driver loop: entry %s failed: %s" % (entry.get("id"), result.error),
+                    print("driver loop: entry %s failed: %s" % (eid, result.error),
                           file=sys.stderr, flush=True)
+                ledger.record(entry, req.get("checkpoint"), result, mode, runner.host, None,
+                              refusal=refusal)
+                if result.ok and refusal is None:
+                    failures.pop(eid, None)           # clean launch: streak cleared
+                else:
+                    failures[eid] = failures.get(eid, 0) + 1
+                    last_error[eid] = refusal or result.error
             write_usage(review_root, ledger, namespace)
             guards.disarm(pending)
             status = _run(args, namespace)

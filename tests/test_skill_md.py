@@ -310,6 +310,11 @@ class TestSkillMd(unittest.TestCase):
         # -- so the guide must send a session host to `dispatch_request`
         # rather than to a path it would hard-code and get wrong.
         self.assertIn("`dispatch_request` field", loop)
+        # Fix round 2: the per-entry failure cap is a documented termination
+        # condition, not an implementation detail -- an operator whose run
+        # stops after three launches of one cell has to be able to find out
+        # why, and that it is not something a flag can raise.
+        self.assertIn("per-entry cap of 3 consecutive", loop)
         # I8: same for the guide -- the documented default names the condition.
         self.assertIn("default: headless when the host has a headless runner, "
                       "otherwise session", loop)
