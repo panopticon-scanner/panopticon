@@ -139,13 +139,23 @@ def _clear_run_artifacts(review_root):
         shutil.rmtree(os.path.join(base, sub), ignore_errors=True)
 
 
+def hosts_runner_modes():
+    """The `--mode` choices for `driver loop`: a literal tuple, not derived by
+    importing scripts.runners.base at driver module scope (that package is
+    host machinery loaded lazily; driver.py's own import graph must not gain a
+    dependency on it merely to spell two strings). Pinned against
+    runners_base.MODES by a parity test in Task 6."""
+    return ("headless", "session")
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog="driver")
     sub = parser.add_subparsers(dest="verb", required=True)
     # #1033: `next` was a silent, undifferentiated alias of `run` (run() is
     # already idempotent + resumes from disk), so it's removed rather than kept
-    # as a confusing second spelling.
-    for verb in ("run",):
+    # as a confusing second spelling. `loop` (plan 6) drives the SAME `run`
+    # shape headlessly -- see the loop-only flags appended after scope below.
+    for verb in ("run", "loop"):
         p = sub.add_parser(verb)
         p.add_argument("target", nargs="?", default=".")
         p.add_argument("--host", default=None, choices=list(hosts.driver_hosts()))
@@ -193,6 +203,23 @@ def build_parser():
         scope.add_argument("-c", "--changes", dest="scope_changed",
                            action="store_true")
         scope.add_argument("--files", dest="scope_files", nargs="+", default=None)
+        if verb == "loop":
+            # Plan 6, spec 4.3/5.4: the in-process headless loop's own knobs.
+            # None of these become manifest anti-drift keys (_cli_flags/
+            # run_manifest._FLAG_KEYS never read them) -- a resume may freely
+            # change concurrency/budget/timeouts without tripping flag drift.
+            p.add_argument("--mode", default="headless", choices=list(hosts_runner_modes()))
+            p.add_argument("--concurrency", type=_positive_int, default=None)
+            p.add_argument("--max-iterations", type=_positive_int, default=None)
+            p.add_argument("--max-budget-usd", type=float, default=None)
+            p.add_argument("--max-turns", type=_positive_int, default=None)
+            p.add_argument("--entry-timeout", type=_positive_int, default=None)
+            # `setup`'s own leaf-ceiling knob (see the `setup` verb below),
+            # exposed here too since `driver loop --setup` runs that flow on
+            # rails instead of a review.
+            p.add_argument("--max-groups", type=_positive_int, default=None)
+            p.add_argument("--setup", action="store_true",
+                           help="run `driver setup`'s flow on rails instead of a review")
     sp = sub.add_parser("setup")
     sp.add_argument("target", nargs="?", default=".")
     sp.add_argument("--host", default=None, choices=list(hosts.driver_hosts()))
