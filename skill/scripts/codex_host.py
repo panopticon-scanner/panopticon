@@ -185,7 +185,11 @@ def _catalog(model, directory, runner, env, models=None):
     selected = [copy.deepcopy(row) for row in models
                 if isinstance(row, dict) and (model is None or row.get("slug") == model)]
     if not selected or (model is not None and len(selected) != 1):
-        raise ValueError("entry model %r is absent or ambiguous in Codex bundled catalog" % model)
+        raise ValueError(
+            "entry model %r is absent or ambiguous in Codex bundled catalog; if your Codex "
+            "build spells the tier differently, set PANOPTICON_MODEL_<ROLE> (e.g. "
+            "PANOPTICON_MODEL_DOMAIN_PANEL) to a slug `codex debug models --bundled` lists"
+            % model)
     # Feature flags alone do not remove these metadata-forced tools. Keep the
     # requested model, reasoning, prompt and every other catalog field intact.
     for row in selected:

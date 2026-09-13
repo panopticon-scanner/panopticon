@@ -528,6 +528,16 @@ class TestCodexHostDocs(unittest.TestCase):
         self.assertIn("generic", skill)
 
 
+    def test_the_codex_model_pin_documents_its_override(self):
+        # I-8: the advisor slug is pinned to the installed build's bundled
+        # catalog, and an absent slug fails every entry of that role closed.
+        # Scoped to the sentence that states the fail-closed behaviour, not
+        # the whole guide: PANOPTICON_MODEL_* is named elsewhere for a
+        # different reason, so a doc-wide search would pass without the line.
+        sentence = next(line for line in _read_doc().splitlines()
+                        if "fails closed rather than silently selecting" in line)
+        self.assertIn("PANOPTICON_MODEL_", sentence)
+
     def test_codex_is_documented_as_enforced_only(self):
         # I-1: a Codex reviewer entry without a registered shell cannot run at
         # all -- there is no unenforced fallback the way there is on Claude --

@@ -247,8 +247,11 @@ def test_absent_or_ambiguous_model_fails_closed(tmp_path, catalog):
     def fake(*args, **kwargs):
         return SimpleNamespace(returncode=0, stdout=json.dumps(catalog))
 
-    with pytest.raises(ValueError, match="absent or ambiguous"):
+    with pytest.raises(ValueError, match="absent or ambiguous") as caught:
         codex_host.command(entry, env, root, root, runner=fake)
+    # I-8: the pin is to one CLI build's bundled catalog, and the failure is
+    # fatal for every entry of that role. Name the way out.
+    assert "PANOPTICON_MODEL_" in str(caught.value)
 
 
 def _requests(extra_tool=None):
