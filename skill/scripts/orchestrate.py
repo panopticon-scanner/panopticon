@@ -13,6 +13,7 @@ import time
 
 import scripts.driver as driver
 import scripts.host_probes as host_probes
+import scripts.hosts as hosts
 import scripts.phases.engine as engine
 import scripts.phases.persist as persist
 import scripts.phases.requests as requests
@@ -306,6 +307,16 @@ def loop(args):
     mode, note = _resolve_mode(args, host)
     if note:
         print(note, file=sys.stderr, flush=True)
+    # I-3: the budget branch below reads the ledger's cumulative cost, and a
+    # host that reports no dollars leaves that at 0 for ever -- so the flag is
+    # accepted and then does nothing. Say so once, here, rather than letting an
+    # operator believe an unbounded run is bounded. Keyed on the CLAIM, not a
+    # host name: declaring no usage_ledger IS the statement that no cost comes
+    # back.
+    if budget is not None and not hosts.declares(host, hosts.USAGE_LEDGER):
+        print("driver loop: --max-budget-usd has no effect on host %r (no usage ledger); "
+              "bound the run with --max-iterations and --entry-timeout" % host,
+              file=sys.stderr, flush=True)
     # Both are resolved BEFORE `_first_run`, and the resolved mode is written
     # back onto `args`, deliberately. `driver._establish_host_posture` reads
     # `args.mode` to decide WHICH settings file the guard probes measure (spec

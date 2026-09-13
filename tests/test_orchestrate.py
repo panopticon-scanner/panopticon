@@ -180,6 +180,30 @@ class TestHeadlessLoop(LoopCase):
              contextlib.redirect_stdout(io.StringIO()):
             return orchestrate.loop(args)
 
+    def test_max_budget_warns_on_a_host_that_reports_no_dollars(self):
+        # I-3: parse_envelope refuses to fabricate a cost, so cost_usd is
+        # always None on Codex, the ledger total stays 0 and the budget branch
+        # never trips. The flag was accepted without a word.
+        d, floor = self._repo()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            # --allow-unenforced: codex claims no artifact_write_guard, so the
+            # shared §7.3 gate refuses the plan without it (I-9).
+            status = self._run(d, floor, FakeRunner("codex"), "--allow-unenforced",
+                               "--host", "codex", "--max-budget-usd", "5")
+        self.assertEqual(status["status"], "complete", status)
+        self.assertIn("--max-budget-usd has no effect on host 'codex' "
+                      "(no usage ledger)", err.getvalue())
+        self.assertIn("--max-iterations", err.getvalue())
+        self.assertIn("--entry-timeout", err.getvalue())
+
+    def test_max_budget_is_silent_on_a_host_that_keeps_a_usage_ledger(self):
+        d, floor = self._repo()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self._run(d, floor, FakeRunner(), "--max-budget-usd", "5")
+        self.assertNotIn("no usage ledger", err.getvalue())
+
     def test_the_loop_reaches_complete_through_review_and_verify(self):
         d, floor = self._repo()
         runner = FakeRunner()
