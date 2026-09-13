@@ -28,6 +28,21 @@ def _all_proven_artifact(host="claude"):
                              for c in hosts.CAPABILITIES}}
 
 
+def _write_guard_not_proven(host, target, **kw):
+    """host_probes.run_probes stand-in: every capability PROVEN except
+    artifact_write_guard, left UNKNOWN -- drives the not-proven write-guard
+    posture through the probe (Task 5 ruling 2), never through
+    write_host_evidence: driver.run re-probes on every invocation via this
+    same patched function and overwrites the evidence artifact, so a
+    write_host_evidence call would be silently undone the moment the first
+    driver.run() executes."""
+    body = _all_proven_artifact(host)
+    body["capabilities"][hosts.ARTIFACT_WRITE_GUARD] = {
+        "state": hosts.UNKNOWN, "by": None,
+        "detail": "fixture: write guard deliberately not proven"}
+    return body
+
+
 def setUpModule():
     global _patch
     _patch = mock.patch("scripts.host_probes.run_probes",
@@ -185,13 +200,6 @@ class TestHeadlessLoop(LoopCase):
         # re-probes on every invocation via the module-patched run_probes and
         # overwrites the evidence artifact, so a write_host_evidence call here
         # would be silently undone the moment the first driver.run() executes.
-        def _write_guard_not_proven(host, target, **kw):
-            body = _all_proven_artifact(host)
-            body["capabilities"][hosts.ARTIFACT_WRITE_GUARD] = {
-                "state": hosts.UNKNOWN, "by": None,
-                "detail": "fixture: write guard deliberately not proven"}
-            return body
-
         with mock.patch("scripts.host_probes.run_probes",
                         side_effect=_write_guard_not_proven), \
              mock.patch("scripts.phases.persist.write_reply",
@@ -290,13 +298,6 @@ class TestHeadlessLoop(LoopCase):
         # eventually succeeds must be the ONLY thing that produces the file.
         d, floor = self._repo()
         runner = FakeRunner(); runner.fail_once.add("review-app-SEC")
-
-        def _write_guard_not_proven(host, target, **kw):
-            body = _all_proven_artifact(host)
-            body["capabilities"][hosts.ARTIFACT_WRITE_GUARD] = {
-                "state": hosts.UNKNOWN, "by": None,
-                "detail": "fixture: write guard deliberately not proven"}
-            return body
 
         seen = []
         orig_write_reply = orchestrate.persist.write_reply   # captured BEFORE patching
@@ -409,3 +410,183 @@ class TestScoutRoundTrip(LoopCase):
         self.assertEqual(status["status"], "complete", status)
         self.assertEqual(runner.launched[0], "scout-app")
         self.assertTrue(os.path.isfile(runio._pano(d, "scout-app.json")))
+
+
+class TestPendingFilter(unittest.TestCase):
+    """Direct unit coverage for `_pending`'s persist.is_done filter (Task 6
+    ruling 2's mutation gate: `_pending` returning `entries` unfiltered must
+    make a test fail).
+
+    This CANNOT be observed through TestSessionMode's re-entry test: every
+    phase's own `execute()` already rebuilds dispatch-request.json with only
+    not-yet-done entries on EVERY call (review_execute filters `_cell_done`
+    cells before writing, and the request is a single shared path per run --
+    verify's rewrite replaces review's entirely), so by the time `loop()`
+    reads the request, a just-persisted entry is already absent from it --
+    there is nothing left for `_pending` to drop. Confirmed empirically:
+    mutating `_pending` to `return entries` left every existing test green.
+    Only a direct call, handed a done and a pending entry in the SAME list,
+    actually exercises the filter -- so this is the "strengthen the test ...
+    until it does" fallback ruling 2 names, done as a dedicated unit test
+    rather than inside the integration test (see the Task 6 report)."""
+
+    def test_pending_drops_a_done_entry_and_keeps_a_pending_one(self):
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        done_out = os.path.join(d, "scout-done.json")
+        runio._write_json(done_out, {"domains": [], "files": [], "tools": []})
+        pending_out = os.path.join(d, "scout-pending.json")   # never written
+        done_entry = {"id": "scout-done", "out_file": done_out}
+        pending_entry = {"id": "scout-pending", "out_file": pending_out}
+        self.assertTrue(orchestrate.persist.is_done(done_entry))
+        self.assertFalse(orchestrate.persist.is_done(pending_entry))
+        result = orchestrate._pending([done_entry, pending_entry])
+        self.assertEqual([e["id"] for e in result], ["scout-pending"])
+
+
+class TestSessionMode(LoopCase):
+    def _loop(self, d, *extra):
+        args = self._args(d, "--mode", "session", *extra)
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            status = orchestrate.loop(args)
+        return status, out.getvalue()
+
+    def _session_root(self, d):
+        # session mode arms the SESSION root's settings file (spec 5.1); the
+        # tests point it at a sandbox via --session-dir so the real file is
+        # never touched, and pre-create the file install() requires (#1493).
+        s = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(s, ignore_errors=True))
+        os.makedirs(os.path.join(s, ".claude"))
+        with open(os.path.join(s, ".claude", "settings.local.json"), "w") as fh:
+            fh.write("{}")
+        return s
+
+    def _armed_read_ids(self, s):
+        # read_guard_hook.is_armed() answers (armed, COUNT), not the id set
+        # (#1493 guard_state has the same shape) -- reach into the private
+        # scope file directly, exactly as tests/test_read_guard_hook.py does
+        # (e.g. `set(rg._read_scope_file(self.scope_path))`), to assert WHICH
+        # ids are armed rather than merely how many.
+        _settings, scope_path, _ = read_guard_hook._resolve(None, None, s)
+        return set(read_guard_hook._read_scope_file(scope_path))
+
+    def test_the_loop_exits_dispatch_with_the_pending_ids_and_leaves_guards_armed(self):
+        d, floor = self._repo(); s = self._session_root(d)
+        with mock.patch.object(orchestrate, "_after_first_run",
+                               side_effect=lambda rr: self._seed_coverage(rr, floor)):
+            status, out = self._loop(d, "--session-dir", s)
+        self.assertEqual(status["status"], "dispatch", status)
+        self.assertEqual(status["pending"], ["review-app-SEC"])
+        printed = [json.loads(line) for line in out.splitlines() if line.startswith("{")]
+        self.assertTrue(any(p.get("status") == "dispatch" and p.get("pending") == ["review-app-SEC"]
+                            for p in printed))
+        self.assertTrue(write_guard_hook.is_armed(session_root=s)[0])
+        self.assertTrue(read_guard_hook.is_armed(session_root=s)[0])
+        self.assertIn("review-app-SEC", self._armed_read_ids(s))
+
+    def test_re_entry_with_nothing_done_re_emits_the_same_set(self):
+        d, floor = self._repo(); s = self._session_root(d)
+        with mock.patch.object(orchestrate, "_after_first_run",
+                               side_effect=lambda rr: self._seed_coverage(rr, floor)):
+            s1, _ = self._loop(d, "--session-dir", s)
+        s2, _ = self._loop(d, "--session-dir", s)
+        self.assertEqual((s1["status"], s1["pending"]), (s2["status"], s2["pending"]))
+        # nothing advanced, so the id must still be armed after the re-entry
+        # disarms-then-rearms it (R-P6-6) -- never left armed-over-nothing.
+        self.assertIn("review-app-SEC", self._armed_read_ids(s))
+
+    def test_re_entry_after_persisting_every_entry_advances_and_disarms_the_done_ones(self):
+        d, floor = self._repo(); s = self._session_root(d)
+        # Ruling 1: drive the not-proven write-guard posture (so the review
+        # cell is return-persist, not self-write) through the run_probes
+        # patch -- never write_host_evidence, which driver.run's own re-probe
+        # on every invocation would silently undo.
+        with mock.patch("scripts.host_probes.run_probes", side_effect=_write_guard_not_proven), \
+             mock.patch.object(orchestrate, "_after_first_run",
+                               side_effect=lambda rr: self._seed_coverage(rr, floor)):
+            s1, _ = self._loop(d, "--session-dir", s, "--allow-unenforced")
+        self.assertEqual(s1["status"], "dispatch")
+        self.assertEqual(s1["pending"], ["review-app-SEC"])
+        self.assertIn("review-app-SEC", self._armed_read_ids(s))
+        req = orchestrate.requests.load_dispatch_request(d)
+        entry = next(e for e in req["entries"] if e["id"] == "review-app-SEC")
+        body = {"findings": [{"title": "issue", "severity": "HIGH", "domain": "SEC", "code": "SEC-A1A",
+                              "category": "authz", "location": {"file": "src/app.py", "line_start": 1}}],
+                "_panopticon": {"run_id": entry["run_id"], "role": "domain_panel",
+                                "domain": "SEC", "group": "app"}}
+        reply = os.path.join(d, "reply.txt")
+        with open(reply, "w", encoding="utf-8") as fh:
+            fh.write("```json\n" + json.dumps(body) + "\n```")
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = driver.main(["persist", "review-app-SEC", "--file", reply, d])
+        self.assertEqual(rc, 0)
+        with mock.patch("scripts.host_probes.run_probes", side_effect=_write_guard_not_proven):
+            s2, _ = self._loop(d, "--session-dir", s, "--allow-unenforced")
+        self.assertEqual(s2["status"], "dispatch")
+        self.assertEqual(s2["checkpoint"], "verify")                    # advanced past review
+        # the persisted entry must not be re-listed as pending, and must be
+        # disarmed -- the mutation gate this test exists to catch (Task 6
+        # ruling 2): a `_pending` that stopped filtering by persist.is_done
+        # would re-list "review-app-SEC" here and never disarm it.
+        self.assertNotIn("review-app-SEC", s2["pending"])
+        self.assertNotIn("review-app-SEC", self._armed_read_ids(s))
+        self.assertIn("verify-app-SEC-primary", s2["pending"])
+        self.assertIn("verify-app-SEC-primary", self._armed_read_ids(s))
+
+    def test_complete_disarms_both_guards_unconditionally(self):
+        d, floor = self._repo(); s = self._session_root(d)
+        with mock.patch.object(orchestrate, "_after_first_run",
+                               side_effect=lambda rr: self._seed_coverage(rr, floor)):
+            self._loop(d, "--session-dir", s)
+        # drive review + verify to done by self-writing exactly as a session would
+        runner = FakeRunner(); runner.prepare(os.path.dirname(runio._pano(d, "x")), d)
+        for _ in range(3):
+            req = orchestrate.requests.load_dispatch_request(d) or {}
+            for e in req.get("entries") or []:
+                if not orchestrate.persist.is_done(e):
+                    runner.run_entry(e, {})
+            status, _ = self._loop(d, "--session-dir", s)
+            if status["status"] == "complete":
+                break
+        self.assertEqual(status["status"], "complete", status)
+        self.assertFalse(write_guard_hook.is_armed(session_root=s)[0])
+        self.assertFalse(read_guard_hook.is_armed(session_root=s)[0])
+
+    def test_headless_on_a_host_without_a_runner_is_an_error_naming_session_mode(self):
+        d, _ = self._repo()
+        args = self._args(d, "--host", "gemini")
+        with contextlib.redirect_stdout(io.StringIO()):
+            status = orchestrate.loop(args)
+        self.assertEqual(status["status"], "error")
+        self.assertIn("--mode session", status["message"])
+
+
+class TestSetupOnRails(LoopCase):
+    def test_setup_scan_is_run_through_the_runner_and_the_loop_stops_at_the_draft(self):
+        d, _ = self._repo()
+
+        class SetupRunner(FakeRunner):
+            def run_entry(self, entry, env):
+                self.launched.append(entry["id"])
+                assert entry["id"] == "setup-scan"
+                # setup_proposal.validate_proposal requires `groups` to be a
+                # LIST of {"capability", "match", ...} mappings (the brief's
+                # snippet nested them under a name key instead, which
+                # validate_proposal rejects with "'groups' must be a
+                # non-empty list" -- deviation, see the task report).
+                proposal = {"groups": [{"capability": "custom:App", "match": ["src/**"], "tests": [],
+                                        "profile": {"purpose": "app", "surfaces": [], "entry_points": [],
+                                                    "trust_boundaries": []}}]}
+                return base.RunResult(entry_id="setup-scan", ok=True, text=json.dumps(proposal),
+                                      usage={}, cost_usd=0.0, model=None, session_id=None, denials=[], error=None)
+        runner = SetupRunner()
+        args = driver.build_parser().parse_args(["loop", d, "--setup"])
+        with mock.patch("scripts.runners.base.runner_for", return_value=runner), \
+             contextlib.redirect_stdout(io.StringIO()):
+            status = orchestrate.loop(args)
+        self.assertEqual(status["status"], "complete", status)
+        self.assertEqual(runner.launched, ["setup-scan"])
+        self.assertIn("setup-report.md", status["message"])
+        self.assertIn("groups.yml.draft", status["message"])
+        self.assertTrue(os.path.isfile(runio._pano(d, "setup-proposal.json")))

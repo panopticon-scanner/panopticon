@@ -1543,3 +1543,32 @@ class TestDriverPersistCLI(unittest.TestCase):
             rc = driver.main(["persist", "scout-app", "--file", os.devnull, d])
         self.assertEqual(rc, 1)
         self.assertIn("scout-app", err.getvalue())
+
+
+class TestDriverLoopCLI(unittest.TestCase):
+    def test_loop_accepts_every_run_flag_plus_its_own(self):
+        args = driver.build_parser().parse_args(
+            ["loop", "x", "--host", "claude", "--security", "redteam", "--no-tools", "-g", "Auth",
+             "--mode", "session", "--concurrency", "4", "--max-iterations", "7",
+             "--max-budget-usd", "2.5", "--max-turns", "30", "--entry-timeout", "600"])
+        self.assertEqual(args.verb, "loop")
+        self.assertEqual((args.mode, args.concurrency, args.max_iterations, args.max_budget_usd,
+                          args.max_turns, args.entry_timeout, args.scope_group),
+                         ("session", 4, 7, 2.5, 30, 600, "Auth"))
+        self.assertEqual(driver.build_parser().parse_args(["loop", "x"]).mode, "headless")
+
+    def test_loop_modes_match_the_runner_seam(self):
+        import scripts.runners.base as runners_base
+        self.assertEqual(tuple(driver.hosts_runner_modes()), runners_base.MODES)
+
+    def test_run_has_no_mode_flag(self):
+        with self.assertRaises(SystemExit):
+            driver.build_parser().parse_args(["run", "x", "--mode", "session"])
+        self.assertFalse(hasattr(driver.build_parser().parse_args(["run", "x"]), "mode"))
+
+    def test_loop_verb_dispatches_into_orchestrate(self):
+        with mock.patch("scripts.orchestrate.loop", return_value={"status": "complete"}) as lp, \
+             contextlib.redirect_stdout(io.StringIO()):
+            rc = driver.main(["loop", "x"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(lp.call_args.args[0].verb, "loop")
