@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased — 5.2 Claude first-class host (#1344, family PR)
+
+The Claude family's first-class-host PR under `docs/FAMILY-PR-GUARDRAILS.md`:
+Claude already shipped its runner, probes, emit branch, registry row and both
+guards, so this PR is the evidence a real `driver loop` gives, plus what that
+evidence exposed.
+
+- **`usage_ledger` follows the mode.** The probe is now `usage-source` (was
+  `transcript-dir`): in headless mode it measures the launch envelope path —
+  the host CLI on PATH and a run folder that can hold `dispatch-ledger.jsonl`
+  — and never consults transcripts; in session mode it measures the session's
+  transcript directory exactly as before. A headless run launched from any
+  directory without transcripts (every fresh target) used to be *refuted* while
+  its ledger was exact. `runners.base.LEDGER_FILE` is the one owner of the
+  ledger's name; the remedy line names both modes' fixes.
+- **`prompt_file` is granted to the entry's read scope.** The guide let a host
+  point an agent at `prompt_file` (marker line first, pointer second), but every
+  entry's `scope.reads` was empty, so the read guard denied the agent its own
+  prompt. Stamping the file now grants it through `reads`.
+- **Session-mode dispatch on Claude Code is templated.** `skill/workflows/dispatch.js`
+  runs one workflow subagent per pending entry inside its registered shell,
+  marker line first, and returns replies keyed by id; SKILL.md mandates it over
+  one-off Agent calls. The read-guard probe's round trip now also binds a fake
+  subagent through the Workflow transcript layout (16 rows).
+- **The suite structurally cannot launch the real `claude` binary.**
+  `runners.claude.DEFAULT_RUNNER` is read at construction and `tests/conftest.py`
+  swaps it for a refusal on every test (was per-test discipline; #1616).
+
 ## Unreleased — 5.2 grouping engine, plan 1
 
 Setup now front-loads the grouping work so every later run reuses it
