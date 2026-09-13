@@ -252,3 +252,22 @@ def test_prepare_refuses_once_when_a_role_shell_is_missing(tmp_path, registered)
 
 def test_prepare_accepts_a_fully_registered_directory(tmp_path, registered):
     codex.Runner(runner=mock.Mock()).prepare(str(tmp_path), str(tmp_path))
+
+
+# --- M-2: a transient error the turn recovered from is not a failed entry ----
+
+
+def test_a_recovered_turn_clears_an_earlier_transient_error():
+    for event in ({"type": "error", "message": "stream reset"},
+                  {"type": "turn.failed", "error": {"message": "retrying"}}):
+        result = codex.Runner.parse_envelope("e", envelope(START, event, REPLY, DONE), 0)
+        assert result.ok, result.error
+        assert result.error is None
+        assert result.text == REPLY["item"]["text"]
+
+
+def test_a_failure_after_the_completed_turn_still_fails():
+    result = codex.Runner.parse_envelope("e", envelope(
+        START, REPLY, DONE, {"type": "turn.failed", "error": "transport failed"}), 0)
+    assert not result.ok
+    assert "transport failed" in result.error

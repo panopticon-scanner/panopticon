@@ -64,6 +64,14 @@ class Runner(base.HostRunner):
                     session_id = event.get("thread_id")
                 elif kind == "turn.completed":
                     completed = True
+                    if text:
+                        # M-2: a `turn.failed`/`error` event the turn then
+                        # RECOVERED from is not a failed entry. Leaving it set
+                        # cost a retry and a strike against the three-launch
+                        # cap for a turn that produced its final message. A
+                        # failure AFTER this point still fails, because it
+                        # sets `error` again below.
+                        error = None
                     reported = event.get("usage")
                     if reported is None or reported == {}:
                         continue
