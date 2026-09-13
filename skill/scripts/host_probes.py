@@ -494,6 +494,18 @@ def probe_read_guard_armed(host, session_root=None, settings_path=None):
     if not hosts.declares(host, hosts.READ_SCOPE_CONFINED):
         return (hosts.UNKNOWN, None,
                 "host %r claims no read-scope confinement" % host)
+    # M-11: the claim alone stopped being enough the moment a second host
+    # claimed read confinement through a different primitive. Everything below
+    # measures CLAUDE's read guard -- the settings file it would arm, the
+    # hook's round-trip -- so a row that maps this capability to some other
+    # probe (codex -> codex-read-scope) would get a refutation about a file it
+    # never arms. Unreachable while run_probes dispatches by the row's own
+    # probe id; latent until someone calls this directly.
+    if (hosts.spec(host).probes if hosts.spec(host) else {}).get(
+            hosts.READ_SCOPE_CONFINED) != READ_GUARD_ARMED:
+        return (hosts.UNKNOWN, None,
+                "host %r does not measure read-scope confinement with %s"
+                % (host, READ_GUARD_ARMED))
     if settings_path is not None:
         ok, detail = _headless_subject_ok(settings_path)
         if not ok:

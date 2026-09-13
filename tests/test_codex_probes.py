@@ -168,3 +168,20 @@ def test_the_role_inspections_run_concurrently(tmp_path):
     measured = host_probes._codex_surfaces(str(registered), inspector=inspect,
                                            runner=mock.Mock())
     assert len(measured) == len(host_probes.DRIVER_ROLES) + 1
+
+
+def test_claudes_read_guard_probe_stays_unknown_for_a_row_that_does_not_map_it(tmp_path):
+    # M-11: codex now DECLARES read_scope_confined, so this probe's
+    # declares() early-return stopped firing and it fell through to Claude's
+    # settings-file logic, answering `refuted` about a file Codex never arms.
+    # Unreachable in practice (run_probes dispatches by the row's probe id),
+    # so this closes it latently -- the probe answers about the capability it
+    # was MAPPED to measure, or not at all.
+    state, by, detail = host_probes.probe_read_guard_armed(
+        "codex", session_root=str(tmp_path))
+    assert state == hosts.UNKNOWN, (state, by, detail)
+    assert ".claude" not in detail
+    # Claude's row maps it, so nothing about the real subject moves.
+    assert hosts.spec("claude").probes[hosts.READ_SCOPE_CONFINED] == host_probes.READ_GUARD_ARMED
+    assert host_probes.probe_read_guard_armed(
+        "claude", session_root=str(tmp_path))[0] != hosts.UNKNOWN
