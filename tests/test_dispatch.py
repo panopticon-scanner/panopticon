@@ -380,6 +380,25 @@ class TestEmitHostAgents(unittest.TestCase):
             self.assertIn('sandbox_mode = "read-only"', text)
             self.assertIn("never execute target code", text)
 
+    def test_codex_registration_advertises_no_broker_path(self):
+        # M-6: emission used to bake the EMITTING interpreter's sys.executable
+        # and the emitting checkout's codex_read_tools.py into every shell,
+        # while command() discards both and rebuilds the broker from the
+        # RUNNING safety_config(). The registered file advertised a broker that
+        # never launches and went stale the moment that checkout was retired.
+        import sys
+        import tomllib
+        with tempfile.TemporaryDirectory() as d:
+            dispatch.emit_host_agents("codex", d)
+            path = os.path.join(d, "panopticon-scout.toml")
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+            server = tomllib.loads(text)["mcp_servers"]["panopticon_scope"]
+            self.assertEqual(["enabled_tools"], sorted(server))
+            self.assertTrue(server["enabled_tools"])
+            self.assertNotIn(sys.executable, text)
+            self.assertNotIn("codex_read_tools.py", text)
+
     def test_kimi_agent_file_includes_model_preference_and_when_to_use(self):
         with tempfile.TemporaryDirectory() as d:
             paths = dispatch.emit_host_agents("kimi", d)

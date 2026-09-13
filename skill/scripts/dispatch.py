@@ -216,8 +216,13 @@ def emit_host_agents(host, out_dir):
             # Host vocabulary belongs here, not in the neutral role templates.
             # Write is deliberately omitted: every Codex role is return-persist.
             mapping = {"Read": "read_file", "Grep": "search", "Glob": "list_files"}
-            policy["mcp_servers"]["panopticon_scope"]["enabled_tools"] = [
-                mapping[tool] for tool in tp["allowed"] if tool in mapping]
+            # M-6: `enabled_tools` is the ONLY field of this block command()
+            # reads -- it rebuilds the broker's command/args from the RUNNING
+            # safety_config(). Emitting them here baked this interpreter and
+            # this checkout's codex_read_tools.py into a file that outlives
+            # both, advertising a broker path that never launches.
+            policy["mcp_servers"] = {"panopticon_scope": {"enabled_tools": [
+                mapping[tool] for tool in tp["allowed"] if tool in mapping]}}
             lines = []
 
             def emit_values(values, prefix=()):
