@@ -528,6 +528,19 @@ class TestCodexHostDocs(unittest.TestCase):
         self.assertIn("generic", skill)
 
 
+    def test_the_read_confinement_limit_is_recorded(self):
+        # M-3: O_NOFOLLOW stops symlinks, not HARD links. A target that ships
+        # a hard link to a file outside a directory grant is readable through
+        # it. Inherent to path-based confinement (Claude's read guard has the
+        # same property), so it is recorded rather than fixed -- but recorded.
+        self.assertIn("hard link", _read_doc())
+
+    def test_the_headless_runner_sentence_has_its_antecedent(self):
+        # M-8: "...session when it does not (Claude and Codex have headless
+        # runners) -- `--mode headless` on such a host is an error". The
+        # parenthetical replaced the phrase "such a host" referred to.
+        self.assertIn("on a host without one", _read_skill_md())
+
     def test_the_codex_model_pin_documents_its_override(self):
         # I-8: the advisor slug is pinned to the installed build's bundled
         # catalog, and an absent slug fails every entry of that role closed.

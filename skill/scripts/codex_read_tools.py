@@ -68,7 +68,17 @@ def _under(path, directory):
 
 @contextmanager
 def _open(path, *, directory=False):
-    """Open a regular file/directory without any symlink traversal, even races."""
+    """Open a regular file/directory without any symlink traversal, even races.
+
+    M-3, recorded limit: O_NOFOLLOW stops SYMlinks, not HARD links. A target
+    repository that ships a hard link inside a directory grant to a file
+    outside it stays readable through that grant, because the link is the
+    file. This is inherent to path-based confinement -- Claude's read guard
+    has the same property -- and closing it would mean refusing st_nlink > 1
+    inside a directory grant, which also refuses ordinary hard-linked build
+    output. Not fixed here; documented in docs/PANOPTICON.md's Codex section
+    so it is a known boundary rather than an assumed one.
+    """
     if (os.name != "posix" or not hasattr(os, "O_NOFOLLOW")
             or os.open not in os.supports_dir_fd or os.scandir not in os.supports_fd):
         raise ValueError("secure read scope opens unavailable on this platform")

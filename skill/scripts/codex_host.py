@@ -102,6 +102,17 @@ def _shell(entry, registration_dir):
         raise ValueError("Codex registered shell name mismatch")
     # Never load arbitrary provider, notification or hook commands from a
     # registration file. The effective probe still sees changes to its policy.
+    #
+    # M-7: `model` is deliberately NOT in this set while `model_reasoning_
+    # effort` is, so the two halves of one decision come from two places. The
+    # entry's model wins because it is override-aware (`resolve_model` honours
+    # PANOPTICON_MODEL_<ROLE>; a persisted shell must not, or an ambient
+    # override would outlive the run that set it) and because `command()`
+    # fails closed on a slug the installed catalog does not list -- which the
+    # entry's value can be corrected for and a file on disk cannot. Reasoning
+    # effort has no such override and no catalog to disagree with, so it stays
+    # where emission put it. The emitted TOML therefore advertises a `model`
+    # that never binds; `model_binding` is unclaimed precisely because of this.
     permitted = set(safety_config()) | {"developer_instructions", "model_reasoning_effort"}
     return {key: value for key, value in config.items() if key in permitted}
 
