@@ -1448,3 +1448,18 @@ class TestReadGuardArmedProbe(unittest.TestCase):
                 state, _by, _d = host_probes.probe_read_guard_armed(
                     "claude", settings_path=os.path.join(run_dir, "host-settings.json"))
             self.assertEqual(hosts.PROVEN, state)
+
+
+class TestHeadlessSettingsPathIsNamespaceAware(unittest.TestCase):
+    def test_setup_namespace_bypasses_the_manifest_tag_lookup(self):
+        # Task 6 fix round 1, item 2: setup keeps its OWN setup-manifest.json,
+        # never run-manifest.json, so a stale run-manifest.json's tag from an
+        # earlier review run must never steer setup's settings path into that
+        # run's runs/<tag>/ folder -- unlike namespace=None (a review run),
+        # which DOES follow the manifest tag through runio._pano.
+        with mock.patch("scripts.phases.runio._run_tag", return_value="stale-tag"):
+            self.assertTrue(host_probes.headless_settings_path("/repo", None)
+                            .endswith(os.path.join("runs", "stale-tag", "host-settings.json")))
+            self.assertEqual(
+                host_probes.headless_settings_path("/repo", "setup"),
+                os.path.abspath(os.path.join("/repo", ".panopticon", "host-settings.json")))

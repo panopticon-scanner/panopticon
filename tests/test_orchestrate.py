@@ -329,11 +329,11 @@ class TestHeadlessLoop(LoopCase):
         calls = {"n": 0}
         orig_write_usage = orchestrate.write_usage
 
-        def _fail_first_call(review_root, ledger):
+        def _fail_first_call(review_root, ledger, namespace=None):
             calls["n"] += 1
             if calls["n"] == 1:
                 raise RuntimeError("boom")
-            return orig_write_usage(review_root, ledger)
+            return orig_write_usage(review_root, ledger, namespace)
 
         with mock.patch.object(orchestrate, "write_usage", side_effect=_fail_first_call):
             status = self._run(d, floor, runner)
@@ -590,3 +590,70 @@ class TestSetupOnRails(LoopCase):
         self.assertIn("setup-report.md", status["message"])
         self.assertIn("groups.yml.draft", status["message"])
         self.assertTrue(os.path.isfile(runio._pano(d, "setup-proposal.json")))
+
+    def test_setup_vocab_absent_fallback_keeps_its_own_complete_message(self):
+        # Fix round 1, item 1: the vocab-absent fallback (phases/setup.py's
+        # _scan_fallback) seeds groups.yml directly and writes neither
+        # setup-report.md nor groups.yml.draft -- _finish must leave
+        # run_setup_flow's own "complete" message alone rather than naming
+        # files that were never written.
+        d, _ = self._repo()
+        args = driver.build_parser().parse_args(["loop", d, "--setup"])
+        with mock.patch("scripts.setup_flow.load_bundled_vocabulary",
+                        return_value=({"names": []}, False)), \
+             contextlib.redirect_stdout(io.StringIO()):
+            status = orchestrate.loop(args)
+        self.assertEqual(status["status"], "complete", status)
+        self.assertNotIn("groups.yml.draft", status["message"])
+        self.assertIn("vocab-absent fallback", status["message"])
+        self.assertFalse(os.path.isfile(runio._pano(d, "groups.yml.draft")))
+        self.assertTrue(os.path.isfile(runio._pano(d, "groups.yml")))
+
+    def test_setup_never_writes_into_a_stale_review_runs_folder(self):
+        # Fix round 1, item 2: a PRIOR review run's run-manifest.json (and its
+        # runs/<tag>/ folder) must not steer `driver loop --setup`'s own
+        # host-settings.json / dispatch-ledger.jsonl / usage.json into that
+        # folder -- setup keeps its own setup-manifest.json and never mints,
+        # reads, or should disturb, a run-manifest.json.
+        d, floor = self._repo()
+        review_runner = FakeRunner()
+        with mock.patch.object(orchestrate, "_after_first_run",
+                               side_effect=lambda rr: self._seed_coverage(rr, floor)), \
+             mock.patch("scripts.runners.base.runner_for", return_value=review_runner), \
+             contextlib.redirect_stdout(io.StringIO()):
+            review_status = orchestrate.loop(self._args(d))
+        self.assertEqual(review_status["status"], "complete", review_status)
+        review_run_id = driver.run_manifest.load_manifest(d)["run_id"]
+        stale_usage_path = runio._pano(d, "usage.json")
+        self.assertTrue(os.path.isfile(stale_usage_path))
+        with open(stale_usage_path, encoding="utf-8") as fh:
+            stale_usage_before = fh.read()
+
+        class SetupRunner(FakeRunner):
+            def run_entry(self, entry, env):
+                self.launched.append(entry["id"])
+                proposal = {"groups": [{"capability": "custom:App", "match": ["src/**"], "tests": []}]}
+                return base.RunResult(entry_id=entry["id"], ok=True, text=json.dumps(proposal),
+                                      usage={}, cost_usd=0.0, model=None, session_id=None,
+                                      denials=[], error=None)
+        setup_runner = SetupRunner()
+        setup_args = driver.build_parser().parse_args(["loop", d, "--setup"])
+        with mock.patch("scripts.runners.base.runner_for", return_value=setup_runner), \
+             contextlib.redirect_stdout(io.StringIO()):
+            setup_status = orchestrate.loop(setup_args)
+        self.assertEqual(setup_status["status"], "complete", setup_status)
+
+        # no NEW run-manifest was minted; the review's own is untouched
+        self.assertEqual(driver.run_manifest.load_manifest(d)["run_id"], review_run_id)
+        # the stale review run's own usage.json is byte-for-byte untouched
+        with open(stale_usage_path, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), stale_usage_before)
+        # setup's own artifacts land under the FLAT .panopticon/, never the
+        # stale review's runs/<tag>/ folder
+        flat_settings = os.path.join(d, ".panopticon", "host-settings.json")
+        flat_ledger = os.path.join(d, ".panopticon", "dispatch-ledger.jsonl")
+        flat_usage = os.path.join(d, ".panopticon", "usage.json")
+        self.assertTrue(os.path.isfile(flat_settings))
+        self.assertTrue(os.path.isfile(flat_ledger))
+        self.assertTrue(os.path.isfile(flat_usage))
+        self.assertNotEqual(os.path.realpath(flat_usage), os.path.realpath(stale_usage_path))

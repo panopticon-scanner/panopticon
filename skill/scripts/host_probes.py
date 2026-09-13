@@ -234,12 +234,27 @@ def probe_entry_model_bound(host, registration_dir=None):
 WRITE_GUARD_ARMED = "write-guard-armed"
 
 
-def headless_settings_path(review_root):
+def headless_settings_path(review_root, namespace=None):
     """The settings file the headless runner will arm: runs/<tag>/host-settings.json
-    once a manifest exists, flat top-level during setup (R-P6-5). Resolved
-    through runio._pano so the probe and the runner name the same file."""
+    once a manifest exists, flat top-level for `namespace == "setup"` (R-P6-5;
+    namespace-aware since Task 6 fix round 1, item 2).
+
+    Setup keeps its OWN manifest (setup-manifest.json), never
+    run-manifest.json -- so if this review_root already holds a run-manifest.json
+    from an EARLIER review run (a realistic sequence: review first, refresh
+    groups.yml with `driver loop --setup` later), routing setup's settings
+    path through `runio._pano`'s manifest-tag lookup would resolve it into
+    that PRIOR run's `runs/<tag>/` folder and clobber its host-settings.json/
+    dispatch-ledger.jsonl/usage.json. `namespace == "setup"` bypasses the tag
+    lookup entirely and resolves directly to the flat top-level path, so
+    setup never depends on -- or disturbs -- whatever other run's manifest
+    happens to be lying around. Every other namespace (a review run) still
+    resolves through `runio._pano`, so the probe and the runner name the
+    same file."""
     import scripts.phases.runio as runio
     import scripts.runners.base as runners_base
+    if namespace == "setup":
+        return os.path.abspath(os.path.join(review_root, ".panopticon", runners_base.SETTINGS_FILE))
     return os.path.abspath(runio._pano(review_root, runners_base.SETTINGS_FILE))
 
 

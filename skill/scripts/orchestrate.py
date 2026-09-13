@@ -12,6 +12,7 @@ import sys
 import time
 
 import scripts.driver as driver
+import scripts.host_probes as host_probes
 import scripts.phases.engine as engine
 import scripts.phases.persist as persist
 import scripts.phases.requests as requests
@@ -137,10 +138,22 @@ class Ledger:
                               "entry launch, summed over the four usage fields"}
 
 
-def write_usage(review_root, ledger):
+def write_usage(review_root, ledger, namespace=None):
     """R-P6-4: rewritten after every batch so synthesize (which runs inside the
-    engine, before `complete`) finds it; never estimated."""
-    runio._write_json(runio._pano(review_root, "usage.json"), ledger.usage_document())
+    engine, before `complete`) finds it; never estimated.
+
+    `namespace` mirrors `host_probes.headless_settings_path`'s namespace-aware
+    resolution (Task 6 fix round 1, item 2): `runio._pano(review_root,
+    "usage.json")` alone follows whatever run-manifest.json happens to be on
+    review_root, and for `namespace == "setup"` that can be a STALE review
+    run's manifest, routing usage.json into that prior run's `runs/<tag>/`
+    folder and clobbering it. Deriving the directory from
+    `headless_settings_path` instead -- the SAME helper `loop`'s `run_dir`
+    and the guard probes consult -- keeps this write in the one folder
+    everything else for this invocation already agrees on: the flat
+    `.panopticon/` for setup, the per-run tag folder for a review."""
+    run_dir = os.path.dirname(host_probes.headless_settings_path(review_root, namespace))
+    runio._write_json(os.path.join(run_dir, "usage.json"), ledger.usage_document())
 
 
 def _pending(entries):
@@ -233,7 +246,13 @@ def loop(args):
         return _finish(status, args, guards, ledger, namespace)
     if _after_first_run(review_root):
         status = _run(args, namespace)                # re-derive after the seam
-    run_dir = os.path.dirname(runio._pano(review_root, runners_base.SETTINGS_FILE))
+    # Task 6 fix round 1, item 2: derived through host_probes.headless_settings_path
+    # (namespace-aware), never a bare `runio._pano(review_root, SETTINGS_FILE)`
+    # -- for namespace == "setup" that would follow whatever run-manifest.json
+    # a PRIOR review run left on review_root and route setup's own
+    # host-settings.json/dispatch-ledger.jsonl/usage.json into that run's
+    # runs/<tag>/ folder.
+    run_dir = os.path.dirname(host_probes.headless_settings_path(review_root, namespace))
     runner.prepare(run_dir, review_root)
     for attr in ("max_turns", "entry_timeout"):
         if getattr(args, attr, None):
@@ -272,7 +291,7 @@ def loop(args):
                 elif not result.ok:
                     print("driver loop: entry %s failed: %s" % (entry.get("id"), result.error),
                           file=sys.stderr, flush=True)
-            write_usage(review_root, ledger)
+            write_usage(review_root, ledger, namespace)
             guards.disarm(pending)
             status = _run(args, namespace)
     except KeyboardInterrupt:
@@ -319,7 +338,7 @@ def _finish(status, args, guards, ledger, namespace):
         guards.disarm()
     if status.get("status") in ("complete", "error") and ledger is not None:
         try:
-            write_usage(_review_root(args), ledger)
+            write_usage(_review_root(args), ledger, namespace)
         except Exception as exc:      # noqa: BLE001 -- must not mask the original status
             status["message"] = "%s; usage.json not written: %s: %s" % (
                 status.get("message"), type(exc).__name__, exc)
@@ -328,12 +347,24 @@ def _finish(status, args, guards, ledger, namespace):
         # the promotion command, superseding whatever message run_setup_flow's
         # own `complete` branch composed (that wording is for `driver setup`
         # run directly, not for `driver loop --setup`'s on-rails contract).
+        #
+        # Fix round 1, item 1: ONLY when a draft actually exists -- the
+        # vocab-absent fallback (phases/setup.py's _scan_fallback) seeds
+        # groups.yml directly and writes NEITHER setup-report.md NOR
+        # groups.yml.draft, so unconditionally naming them here would send
+        # the operator to files that were never written and a promotion `mv`
+        # that would fail. run_setup_flow's own `complete` branch already
+        # composed the right message for that path (readiness gaps and
+        # limitations included) -- leave `status["message"]` exactly as it
+        # is when there is no draft to promote.
         review_root = _review_root(args)
-        status = dict(status, message=(
-            "setup complete: read %s, review %s, then promote it: mv %s %s (setup never "
-            "overwrites a committed groups.yml)" % (
-                runio._pano(review_root, "setup-report.md"), runio._pano(review_root, "groups.yml.draft"),
-                runio._pano(review_root, "groups.yml.draft"), runio._pano(review_root, "groups.yml"))))
+        draft = runio._pano(review_root, "groups.yml.draft")
+        if os.path.isfile(draft):
+            status = dict(status, message=(
+                "setup complete: read %s, review %s, then promote it: mv %s %s (setup never "
+                "overwrites a committed groups.yml)" % (
+                    runio._pano(review_root, "setup-report.md"), draft, draft,
+                    runio._pano(review_root, "groups.yml"))))
     return status
 
 
