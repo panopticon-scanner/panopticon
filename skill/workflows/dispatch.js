@@ -8,8 +8,8 @@
 // model host-bound), with the entry's marker line FIRST so the read guard
 // binds the subagent to its entry through the workflow transcript layout
 // (`<session>/subagents/workflows/<run>/agent-<id>.jsonl`), and a pointer to
-// the entry's `prompt_file` second -- the one extra file the entry's read
-// scope grants (`scope.reads`). Replies come back keyed by entry id; the
+// the entry's `prompt_file` second -- granted, with whatever else the builder
+// granted, through the entry's `scope.reads`. Replies come back keyed by id; the
 // session persists each return-persist one with `driver persist <id> --file
 // <reply>` and re-runs `driver loop --mode session`. Nothing here advances the
 // run: the engine's done predicates on disk are the only way forward.
@@ -57,18 +57,23 @@ const results = await parallel(entries.map(e => () => {
     opts.model = e.model              // unenforced: the entry's model, no shell
   }
   // Marker line FIRST (the binding), the pointer second -- docs/PANOPTICON.md,
-  // "Driver run-loop", session mode. The prompt file is the single extra read
-  // the entry's scope grants; everything else the agent may read is listed
-  // inside that file.
+  // "Driver run-loop", session mode. The prompt file is granted through the
+  // entry's `scope.reads`, alongside whatever else the builder granted there
+  // (a SEC cell's security checklist); everything else the agent may read is
+  // listed inside the file.
   const prompt = e.marker + '\n' +
     'Your dispatch prompt is the file ' + e.prompt_file + ' -- Read it and follow it exactly. ' +
-    'It is the one file outside the scope it lists that you may read.'
-  return agent(prompt, opts).then(text => ({
+    'Read nothing outside the scope it lists.'
+  // agent() RESOLVES to null when the user skips the subagent or it dies on
+  // a terminal API error (only a thrown thunk is nulled by parallel()), so
+  // a null reply is dropped here and lands in `missing` below -- never in
+  // `persist` or `self_wrote` as a reply with an empty text.
+  return agent(prompt, opts).then(text => (typeof text === 'string' ? {
     id: e.id,
     delivery: e.delivery || 'self_write',
     out_file: e.out_file || null,
-    text: typeof text === 'string' ? text : '',
-  }))
+    text,
+  } : null))
 }))
 
 const replies = results.filter(Boolean)
