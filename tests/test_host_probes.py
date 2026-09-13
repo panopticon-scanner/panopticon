@@ -1318,3 +1318,18 @@ class TestReadGuardArmedProbe(unittest.TestCase):
             row = art["capabilities"][hosts.READ_SCOPE_CONFINED]
             self.assertEqual(hosts.PROVEN, row["state"])
             self.assertEqual("read-guard-armed", row["by"])
+
+    def test_the_round_trip_proves_the_env_binding(self):
+        # Spec 5.3 / 7.5: the probe drives an env-bound payload (allowed inside,
+        # denied outside) and an agent_type-only payload (denied). Pinned by
+        # mutating adjudicate to ignore `env` and watching the verdict flip.
+        from scripts import read_guard_hook
+        ok, detail = host_probes._round_trip_confines_reads()
+        self.assertTrue(ok, detail)
+        real = read_guard_hook.adjudicate
+        def ignores_env(payload, scope_path, env=None):
+            return real(payload, scope_path, env={})
+        with mock.patch.object(read_guard_hook, "adjudicate", ignores_env):
+            ok, detail = host_probes._round_trip_confines_reads()
+        self.assertFalse(ok)
+        self.assertIn("env", detail)

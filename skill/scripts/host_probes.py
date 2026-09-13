@@ -344,9 +344,10 @@ def _fake_subagent(parent_transcript, agent_id, entry_id):
 
 def _round_trip_confines_reads():
     """Arm the read guard in a throwaway sandbox, bind two fake subagents
-    through fake transcripts, and drive the ten payloads of design spec 5
-    through adjudicate(). Never touches the session's real settings, scope
-    file or transcripts. Returns (ok, detail)."""
+    through fake transcripts, and drive the ten payloads of design spec 5,
+    plus three env-binding payloads of spec 5.3 (plan 6), through
+    adjudicate(). Never touches the session's real settings, scope file or
+    transcripts. Returns (ok, detail)."""
     try:
         with tempfile.TemporaryDirectory() as sandbox:
             settings = os.path.join(sandbox, "settings.json")
@@ -375,7 +376,9 @@ def _round_trip_confines_reads():
                            "transcript_path": parent, "cwd": sandbox}
                 if agent:
                     payload["agent_id"] = agent
-                return read_guard_hook.adjudicate(payload, scope_file)[0]
+                # A stray PANOPTICON_ENTRY_ID in the operator's shell must
+                # never change this probe's verdict -- env is explicit here.
+                return read_guard_hook.adjudicate(payload, scope_file, env={})[0]
 
             cell_dir = os.path.dirname(inside)
             rows = (
@@ -393,6 +396,24 @@ def _round_trip_confines_reads():
             for name, got, want in rows:
                 if got != want:
                     return False, "the guard %s: %s" % ("ALLOWED" if got else "DENIED", name)
+
+            # Spec 5.3 (plan 6): the env binding the headless runner relies on.
+            env_rows = (
+                ("env-bound read inside its entry",
+                 {"tool_name": "Read", "tool_input": {"file_path": inside}},
+                 {read_guard_hook.ENV_ENTRY_ID: "probe-cell"}, True),
+                ("env-bound read outside its entry",
+                 {"tool_name": "Read", "tool_input": {"file_path": outside}},
+                 {read_guard_hook.ENV_ENTRY_ID: "probe-cell"}, False),
+                ("agent_type with no binding",
+                 {"tool_name": "Read", "tool_input": {"file_path": inside},
+                  "agent_type": "panopticon-scout"}, {}, False),
+            )
+            for name, env_payload, env, want in env_rows:
+                got = read_guard_hook.adjudicate(env_payload, scope_file, env=env)[0]
+                if got != want:
+                    return False, "env binding: the guard %s: %s" % (
+                        "ALLOWED" if got else "DENIED", name)
             read_guard_hook.uninstall(settings_path=settings, scope_path=scope_file)
     except OSError as exc:
         return False, "sandbox round-trip could not run: %s" % exc
