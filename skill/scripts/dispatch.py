@@ -176,8 +176,10 @@ def emit_host_agents(host, out_dir):
         # reads hosts.py; this chain decides HOW each one renders and stays
         # hardcoded on purpose -- rendering is host-specific work, not an
         # identity check (#1344 F2 leaves it alone). Keep the two in step by
-        # hand: a host given a shell_format with no branch added here falls
-        # into `else`, silently takes codex's model config, then dies on `fm`.
+        # hand: M-1, a host given a shell_format with no branch added here
+        # used to die on an UnboundLocalError for `lines`/`fm` several lines
+        # later. It now refuses by name, which is what the next family PR to
+        # add a row before its branch will read.
         if host == "claude":
             # #1036: model_resolver is the single owner of the role->model map
             # for every host (kimi/codex already source from it). registration_
@@ -236,6 +238,10 @@ def emit_host_agents(host, out_dir):
                                                   json.dumps(value)))
 
             emit_values(policy)
+        else:
+            raise ValueError("emit-host-agents: no emit branch for host %r "
+                             "(it declares shell_format %r but nothing here "
+                             "renders it)" % (host, row.shell_format))
         path = os.path.join(out_dir, registered_agent_filename(host, role_file))
         with open(path, "w", encoding="utf-8") as fh:
             if host == "codex":

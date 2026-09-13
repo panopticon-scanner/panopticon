@@ -380,6 +380,19 @@ class TestEmitHostAgents(unittest.TestCase):
             self.assertIn('sandbox_mode = "read-only"', text)
             self.assertIn("never execute target code", text)
 
+    def test_a_shell_format_with_no_emit_branch_refuses_by_name(self):
+        # M-1: the pre-existing `else` became `elif host == "codex"`, so a host
+        # given a shell_format with no branch here died on an UnboundLocalError
+        # for `lines`/`fm` -- and the comment above the chain still described
+        # the vanished `else`. The Gemini family PR reads that comment.
+        row = dataclasses.replace(hosts.spec("codex"), name="newfamily")
+        with mock.patch.dict(hosts.HOSTS, {"newfamily": row}), \
+                tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(ValueError) as caught:
+                dispatch.emit_host_agents("newfamily", d)
+        self.assertIn("newfamily", str(caught.exception))
+        self.assertIn("emit branch", str(caught.exception))
+
     def test_codex_registration_advertises_no_broker_path(self):
         # M-6: emission used to bake the EMITTING interpreter's sys.executable
         # and the emitting checkout's codex_read_tools.py into every shell,
