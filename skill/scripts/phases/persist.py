@@ -8,14 +8,18 @@ never writes a findings file by hand. Refusals write nothing.
 """
 import json
 import os
+import re
 import tempfile
 
 import scripts.evidence as evidence
 import scripts.findings_contract as findings_contract
 import scripts.group_runner as group_runner
+import scripts.run_manifest as run_manifest
 from . import coverage
 from . import requests
+from . import review
 from . import runio
+from . import verify
 
 ROLES = ("scout", "setup-scan", "review-cell", "verify-cell", "tool-advisor")
 _STAMP_KEYS = ("run_id", "group", "domain", "stage")
@@ -74,10 +78,94 @@ def accepts(entry, data):
     if role == "verify-cell":
         if not (isinstance(data, dict) and isinstance(data.get("verdicts"), list)):
             return False, "a verdict bundle must carry a `verdicts` list"
-        return _stamp_matches(entry, data)
+        return _verify_accepts(entry, data)
     verdict = str(data.get("verdict", "")).upper() if isinstance(data, dict) else ""
     if verdict not in evidence.VERDICT_VALUES:
         return False, "verdict %r is not one of %s" % (verdict, sorted(evidence.VERDICT_VALUES))
+    return True, ""
+
+
+# `verdicts-<group>-<domain>[-backup][-partN].json` (verify._verify_out_file):
+# part 0 keeps the unsuffixed name, so an absent suffix IS part 0.
+_VERIFY_PART = re.compile(r"-part(\d+)\.json$")
+
+
+def _verify_cell_of(entry):
+    """(review_root, manifest, group, domain, stage, part) for a verify-cell
+    entry, or None when it cannot be placed on disk.
+
+    Entry-anchored, exactly as the review-cell rule is: `run_id` comes off the
+    entry that ASKED for this bundle -- the same key `_stamp_matches` checks --
+    and `review_root` off the artifact path it was told to write, the segment
+    above its own `.panopticon` (the anchor `runio._confine_artifact_path`
+    already uses). The verify phase reads only `run_id` off the manifest, so
+    that one key is the whole manifest these predicates need.
+
+    None is fail-closed at both call sites: a bundle nobody can place is
+    refused, and an entry nobody can place is never `done`.
+    """
+    out_file = os.path.abspath(entry.get("out_file") or "")
+    parts = out_file.split(os.sep)
+    if ".panopticon" not in parts or not entry.get("group") or not entry.get("domain"):
+        return None
+    review_root = os.sep.join(parts[:parts.index(".panopticon")]) or os.sep
+    run_id = entry.get("run_id")
+    if run_id is None:
+        run_id = (run_manifest.load_manifest(review_root) or {}).get("run_id")
+    match = _VERIFY_PART.search(os.path.basename(out_file))
+    return (review_root, {"run_id": run_id}, entry["group"], entry["domain"],
+            entry.get("stage") or "primary", int(match.group(1)) if match else 0)
+
+
+def _verify_claims(review_root, manifest, group, domain, stage):
+    """The claim set this cell's advisor was handed, re-derived the way the
+    phase derives it: the review cell for `primary`, and for `backup` the
+    backup round's OWN severity-gated scope -- loading the review cell there
+    would demand verdicts nobody asked for (verify._verify_cell_done's note)."""
+    if stage == "backup":
+        return verify._cell_backup_findings(review_root, manifest, group, domain)
+    return review._load_cell_findings(review_root, manifest, group, domain)
+
+
+def _verify_accepts(entry, data):
+    """(ok, reason) for a verdict bundle, applying the verify phase's own
+    completeness rule to the file this reply WOULD write (I3, spec 4.5).
+
+    Per-PART rather than per-cell because #1521 chunks an oversized cell
+    across several advisors: `verify._part_done` -- the predicate
+    `verify_execute` re-dispatches on -- asks only whether THIS slice's claims
+    came back, and a cell split across parts can only ever be completed one
+    part at a time. Accepting less would write a bundle the phase immediately
+    re-dispatches, and A2 (run-9) is what happens when the gap is not caught:
+    an advisor re-coded a cell's findings, ten claims came back as nine
+    verdicts, and two went unadjudicated behind a bundle that looked fine.
+    """
+    ok, reason = _stamp_matches(entry, data)
+    if not ok:
+        return False, reason
+    placed = _verify_cell_of(entry)
+    if placed is None:
+        return False, ("cannot place verdict bundle %r against a review root"
+                       % entry.get("out_file"))
+    review_root, manifest, group, domain, stage, part = placed
+    if stage != "primary":
+        # verify._part_done: a backup bundle is answered once it is LABELED
+        # for its cell, and the stamp check above is that label, entry-anchored.
+        return True, ""
+    chunks = verify._cell_chunks(
+        _verify_claims(review_root, manifest, group, domain, stage))
+    if part >= len(chunks):
+        return False, ("bundle is part %d of a cell with %d chunk(s)"
+                       % (part, len(chunks)))
+    mine = [v for v in data.get("verdicts") or [] if isinstance(v, dict)]
+    # Parts strictly BEFORE this one, from disk -- `_part_done` merges parts
+    # 0..part and this reply stands in for part `part` itself.
+    earlier = (verify._cell_verdicts(review_root, group, domain, stage, part)
+               if part else [])
+    if not verify._chunk_answered(chunks[part], earlier + mine):
+        return False, ("does not adjudicate every claim it was handed "
+                       "(%d verdict(s) for %d claim(s) in part %d)"
+                       % (len(mine), len(chunks[part]), part))
     return True, ""
 
 
@@ -92,6 +180,18 @@ def is_done(entry):
         return data is not None and accepts(entry, data)[0]
     if role == "review-cell":
         return group_runner.entry_is_done(out_file, entry)
+    if role == "verify-cell":
+        # I3, spec 4.5: the verify PHASE's own done predicate, verbatim --
+        # `_pending` filters on this, so anything looser drops a cell the
+        # engine still wants and the loop launches nothing for it. Mirrors
+        # how `review-cell` delegates to group_runner.entry_is_done.
+        placed = _verify_cell_of(entry)
+        if placed is None:
+            return False
+        review_root, manifest, group, domain, stage, _part = placed
+        return verify._verify_cell_done(
+            review_root, manifest, group, domain, stage,
+            cell=_verify_claims(review_root, manifest, group, domain, stage))
     data = runio._load_return_json(out_file)
     return data is not None and accepts(entry, data)[0]
 

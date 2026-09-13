@@ -442,3 +442,69 @@ class TestPendingFilter(unittest.TestCase):
         self.assertFalse(orchestrate.persist.is_done(pending_entry))
         result = orchestrate._pending([done_entry, pending_entry])
         self.assertEqual([e["id"] for e in result], ["scout-pending"])
+
+
+class TestVerifyBundleCompletenessGatesResume(LoopCase):
+    """I3 (final review), the loop half: `_pending` must keep re-launching a
+    verify cell the ENGINE still considers pending.
+
+    `persist.is_done` accepted a verdict bundle on shape + stamp alone, while
+    the engine's predicate (`verify._verify_cell_done`) also requires every
+    dispatched claim to come back adjudicated. A short bundle therefore read
+    as done HERE and pending THERE: `_pending` returned [], `run_batch([])`
+    launched nothing, and each `driver.run` charged one of the cell's three
+    re-dispatch attempts for a round trip that re-ran no advisor. The retry
+    budget was spent without a single retry."""
+
+    def test_a_short_verdict_bundle_keeps_the_cell_pending_and_re_launched(self):
+        d, floor = self._repo()
+
+        class ShortVerifyRunner(FakeRunner):
+            """Self-writes a bundle that adjudicates NONE of the cell's claims
+            -- the A2 (run-9) failure, where an advisor re-coded findings and
+            returned fewer verdicts than it was handed."""
+
+            def run_entry(self, entry, env):
+                if not entry["id"].startswith("verify-"):
+                    return super().run_entry(entry, env)
+                self.launched.append(entry["id"])
+                runio._write_json(entry["out_file"], {
+                    "verdicts": [],
+                    "_panopticon": {"run_id": entry.get("run_id"),
+                                    "role": "domain_advisor",
+                                    "domain": entry["domain"], "group": entry["group"],
+                                    "stage": entry.get("stage", "primary")}})
+                return base.RunResult(entry_id=entry["id"], ok=True, text="written",
+                                      usage={}, cost_usd=0.0, model=None,
+                                      session_id=None, denials=[], error=None)
+
+        runner = ShortVerifyRunner()
+        pending_seen = []
+        real_pending = orchestrate._pending
+
+        def _record(entries):
+            out = real_pending(entries)
+            pending_seen.append([e.get("id") for e in out])
+            return out
+
+        args = self._args(d)
+        with mock.patch.object(orchestrate, "_after_first_run",
+                               side_effect=lambda rr: self._seed_coverage(rr, floor)), \
+             mock.patch.object(orchestrate, "_pending", side_effect=_record), \
+             mock.patch("scripts.runners.base.runner_for", return_value=runner), \
+             contextlib.redirect_stdout(io.StringIO()):
+            status = orchestrate.loop(args)
+        # The bounded A2 budget still terminates the run -- but only after the
+        # advisor was actually re-dispatched, which is the whole point of it.
+        self.assertEqual(status["status"], "complete", status)
+        self.assertGreaterEqual(runner.launched.count("verify-app-SEC-primary"), 2)
+        # The defect was an empty pending set on EVERY iteration after the
+        # first short bundle: the cell's whole re-dispatch budget spent on
+        # round trips that launched nothing. The one empty set that remains is
+        # the handoff at the cap -- `verify_execute` bumps to
+        # `_MAX_VERIFY_ATTEMPTS` and writes the request in the SAME call, then
+        # disowns the cell on the next one, so the loop is right to decline an
+        # entry the engine has already given up on.
+        self.assertTrue(pending_seen)
+        self.assertEqual(pending_seen[-1], [])
+        self.assertNotIn([], pending_seen[:-1])
