@@ -528,6 +528,14 @@ class TestCodexHostDocs(unittest.TestCase):
         self.assertIn("generic", skill)
 
 
+    def test_codex_is_documented_as_enforced_only(self):
+        # I-1: a Codex reviewer entry without a registered shell cannot run at
+        # all -- there is no unenforced fallback the way there is on Claude --
+        # and neither surface said so.
+        for text in (_read_doc(), _read_skill_md()):
+            self.assertIn("enforced-only", text)
+
+
 class TestGuardFailClosedDocs(unittest.TestCase):
     def test_skill_documents_fail_closed_guard(self):
         self.assertIn("fail-closed while registered", _read_doc())

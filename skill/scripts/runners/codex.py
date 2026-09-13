@@ -32,6 +32,11 @@ class Runner(base.HostRunner):
         self.entry_timeout = 1800
 
     def prepare(self, run_dir, review_root):
+        # Codex is enforced-only (I-1). Refuse here, once, rather than letting
+        # every entry fail its three launches on a missing shell: `prepare`
+        # runs before the first batch, so the loop reports one `error` naming
+        # the remedy instead of 3xN launches naming an entry id.
+        codex_host.require_registered_shells()
         self.run_dir = os.path.abspath(run_dir)
         self.review_root = os.path.abspath(review_root)
 

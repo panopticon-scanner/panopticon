@@ -9,6 +9,28 @@ import pytest
 from scripts.runners import base, codex
 
 
+@pytest.fixture(autouse=True)
+def registered(tmp_path, monkeypatch):
+    """A registration directory holding every role shell.
+
+    Autouse so no test in this file can read the operator's real
+    ~/.codex/agents: Codex is enforced-only (I-1), so `prepare` now refuses a
+    directory that is missing a driver role's shell, and that answer must come
+    from this fixture rather than from whatever the machine happens to have.
+    """
+    import dataclasses
+
+    from scripts import dispatch, hosts
+    directory = tmp_path / "codex-agents"
+    directory.mkdir()
+    for role_file in dispatch.ROLE_FILES.values():
+        (directory / dispatch.registered_agent_filename("codex", role_file)).write_text(
+            "", encoding="utf-8")
+    monkeypatch.setitem(hosts.HOSTS, "codex", dataclasses.replace(
+        hosts.spec("codex"), registration_dir=str(directory)))
+    return directory
+
+
 def envelope(*events):
     return "\n".join(json.dumps(event) for event in events)
 
@@ -158,10 +180,14 @@ def test_missing_preparation_binding_or_return_delivery_never_launches(tmp_path)
 
 
 def test_prepare_is_idempotent_and_leaves_guard_arming_to_the_loop(tmp_path):
+    # The subject is the RUN directory, which is what prepare is handed and
+    # what it must leave untouched; the registration fixture lives beside it.
+    run = tmp_path / "run"
+    run.mkdir()
     runner = codex.Runner(runner=mock.Mock())
-    runner.prepare(str(tmp_path), str(tmp_path))
-    runner.prepare(str(tmp_path), str(tmp_path))
-    assert list(tmp_path.iterdir()) == []
+    runner.prepare(str(run), str(tmp_path))
+    runner.prepare(str(run), str(tmp_path))
+    assert list(run.iterdir()) == []
 
 
 # --- I-5 / M-5: the seam's launcher is a module attribute, and the suite
@@ -204,3 +230,25 @@ def test_the_suite_guard_refuses_a_live_codex_launch():
         with pytest.raises(codex_host.LaunchRefused):
             module.DEFAULT_RUNNER(["codex", "--version"])
     assert codex.Runner().runner is not subprocess.run
+
+
+# --- I-1: Codex is enforced-only, and says so once, up front -----------------
+
+
+def test_prepare_refuses_once_when_a_role_shell_is_missing(tmp_path, registered):
+    from scripts import dispatch
+    missing = registered / dispatch.registered_agent_filename("codex", "scout.md")
+    missing.unlink()
+    launcher = mock.Mock(side_effect=AssertionError("must not launch"))
+    runner = codex.Runner(runner=launcher)
+    with pytest.raises(ValueError) as caught:
+        runner.prepare(str(tmp_path), str(tmp_path))
+    message = str(caught.value)
+    assert "enforced-only" in message
+    assert missing.name in message
+    assert "python3 skill/scripts/dispatch.py --emit-host-agents codex" in message
+    launcher.assert_not_called()
+
+
+def test_prepare_accepts_a_fully_registered_directory(tmp_path, registered):
+    codex.Runner(runner=mock.Mock()).prepare(str(tmp_path), str(tmp_path))

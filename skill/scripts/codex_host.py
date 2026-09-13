@@ -26,6 +26,10 @@ ENV_KEYS = ("PANOPTICON_ENTRY_ID", "PANOPTICON_WRITE_ALLOWLIST", "PANOPTICON_REA
 # Same reason as runners/codex.DEFAULT_RUNNER: a module attribute the suite can
 # swap for a refusal, where a default argument could not be reached.
 DEFAULT_RUNNER = subprocess.run
+# The one remedy for every "no registered shell" refusal, spelled the way an
+# operator can paste it. Codex is ENFORCED-ONLY: unlike Claude there is no
+# unenforced fallback, so an unregistered machine has to be told what to run.
+REGISTER_REMEDY = "run: python3 skill/scripts/dispatch.py --emit-host-agents codex"
 MAX_BYTES = 8 * 1024 * 1024
 PROBE_TIMEOUT = 45
 _COMMAND_DIRS = set()
@@ -76,7 +80,7 @@ def _shell(entry, registration_dir):
     agent = entry.get("agent")
     if not agent:
         if entry.get("id") != "setup-scan":
-            raise ValueError("Codex reviewer requires a registered shell")
+            raise ValueError("Codex reviewer requires a registered shell; " + REGISTER_REMEDY)
         return safety_config()
     if not isinstance(agent, str) or not re.fullmatch(r"panopticon-[a-z0-9-]+", agent):
         raise ValueError("invalid Codex registered shell name")
@@ -96,6 +100,31 @@ def _shell(entry, registration_dir):
     # registration file. The effective probe still sees changes to its policy.
     permitted = set(safety_config()) | {"developer_instructions", "model_reasoning_effort"}
     return {key: value for key, value in config.items() if key in permitted}
+
+
+def require_registered_shells(registration_dir=None):
+    """Refuse ONCE, before any launch, when a driver role has no shell.
+
+    Codex is enforced-only: `_shell` raises for every reviewer entry whose
+    shell is absent, so on a machine that has not run `--emit-host-agents
+    codex` -- or after a CLI upgrade that leaves the tool-policy probe
+    unproven, which sets `entry["agent"] = None` for every entry -- the loop
+    produced three failed launches per entry and an `error` naming the entry
+    rather than the remedy. The runner calls this from `prepare`, so the
+    operator gets one refusal naming the command that fixes it.
+    """
+    from scripts import dispatch
+    directory = (registration_dir if registration_dir is not None
+                 else hosts.spec("codex").registration_dir)
+    missing = sorted(
+        dispatch.registered_agent_filename("codex", role_file)
+        for role_file in dispatch.ROLE_FILES.values()
+        if not os.path.isfile(os.path.join(
+            directory, dispatch.registered_agent_filename("codex", role_file))))
+    if missing:
+        raise ValueError(
+            "Codex is enforced-only: %d registered shell(s) missing from %s (%s); %s"
+            % (len(missing), directory, ", ".join(missing), REGISTER_REMEDY))
 
 
 def _overrides(config, prefix=""):

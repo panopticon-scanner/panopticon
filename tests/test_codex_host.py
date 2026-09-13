@@ -359,3 +359,14 @@ def test_launch_diagnostic_is_bounded_and_redacts_credentials():
     assert "private-secret" not in detail
     assert "123456789secret" not in detail
     assert len(detail) < 2100
+
+
+def test_the_unregistered_reviewer_error_names_the_emit_command(tmp_path):
+    # I-1: "Codex reviewer requires a registered shell" named no remedy, and
+    # the loop repeated it three times per entry.
+    root, entry, env = _case(tmp_path)
+    entry["id"] = "review-entry"
+    with pytest.raises(ValueError) as caught:
+        codex_host.command(entry, env, root, root, registration_dir=root)
+    assert ("run: python3 skill/scripts/dispatch.py --emit-host-agents codex"
+            in str(caught.value))

@@ -50,7 +50,8 @@ resolve against cwd; only the script path substitutes.
   a host is an error, not a silent downgrade.
 - `driver loop [target] --host codex --mode headless` — Codex's first-class path through
   the same loop, with scoped read/search/list tools and every role returning JSON for the
-  loop to persist. Register the Codex shells first (see the guide). Manual session mode
+  loop to persist. Register the Codex shells first (see the guide): Codex is enforced-only, so
+  the loop refuses up front when a role's shell is missing. Manual session mode
   cannot prove these controls. The shared review gate still requires `--allow-unenforced`
   when `artifact_write_guard` is unproven; obtain the operator's explicit acceptance before
   using it. Codex reports tokens but not cost or effective model identity: dollar budgets
