@@ -48,8 +48,10 @@ resolve against cwd; only the script path substitutes.
   return-persist reply, then re-run. `--mode` defaults to headless when the host has a headless
   runner and session when it does not (every host but Claude today) — `--mode headless` on such
   a host is an error, not a silent downgrade.
-- `driver persist ENTRY_ID [--file PATH] [--setup] [target]` — persist one return-persist reply
-  (session mode).
+- `driver persist ENTRY_ID [--file PATH] [--setup] [--pr N] [--base REF] [target]` — persist one
+  return-persist reply (session mode). On a `--pr`/`--base` run pass the same `--pr`/`--base`:
+  persist has to resolve the same review root the loop did (a PR run's is the PR worktree), or it
+  reads a different tree's dispatch request and finds no such entry.
 - `driver run [target] [flags]` — the single-step primitive `driver loop` calls; drive by hand
   only when debugging a phase.
 - Key flags: `--host NAME`, `--security {standard,redteam}`,

@@ -240,13 +240,25 @@ def _resolve_host(args, review_root):
     A `--reset` run re-mints the manifest from argv, so the OUTGOING manifest
     must not steer this invocation: fall through to the default, which is what
     `driver.run` is about to write.
+
+    A FOREIGN manifest is ignored on exactly the terms `driver.run` ignores it
+    (#1093 / #run8 AGT-C1A, `runio._foreign_manifest`): a target can
+    force-commit its own `.panopticon/run-manifest.json`, and driver.run
+    discards such a file and rebuilds from the real CLI args. Reading it here
+    unconditionally handed the TARGET the choice of which family's agents got
+    dispatched at it -- a committed `"host": "gemini"` steered this
+    invocation's runner while the run itself proceeded as claude. Same check,
+    same call shape, so the two cannot drift on what "the run's host" means.
     """
     if getattr(args, "host", None):
         return args.host
     if not getattr(args, "reset", False):
-        host = (run_manifest.load_manifest(review_root) or {}).get("host")
-        if host:
-            return host
+        manifest = run_manifest.load_manifest(review_root)
+        if not runio._foreign_manifest(manifest, review_root,
+                                       run_manifest.manifest_path(review_root)):
+            host = (manifest or {}).get("host")
+            if host:
+                return host
     return runio._DEFAULTS["host"]
 
 

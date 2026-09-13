@@ -315,6 +315,10 @@ class TestSkillMd(unittest.TestCase):
         # stops after three launches of one cell has to be able to find out
         # why, and that it is not something a flag can raise.
         self.assertIn("per-entry cap of 3 consecutive", loop)
+        # I6 (fix round 3): `driver persist` grew `--pr`/`--base` because a PR
+        # run's review root is the worktree; a session host that does not pass
+        # them gets "no entry in the current dispatch request" and no clue why.
+        self.assertIn("pass the same `--pr`/`--base` to **both**", loop)
         # I8: same for the guide -- the documented default names the condition.
         self.assertIn("default: headless when the host has a headless runner, "
                       "otherwise session", loop)
@@ -683,3 +687,6 @@ class TestDriverLoopContract(unittest.TestCase):
         # headless where a runner exists, session where none does -- so a
         # reader must not be left assuming `driver loop --host gemini` errors.
         self.assertIn("defaults to headless when the host has a headless", skill)
+        # I6 (fix round 3): the persist verb's own --pr/--base, in the line a
+        # reader copies the invocation from.
+        self.assertIn("[--pr N] [--base REF]", skill)

@@ -392,6 +392,25 @@ class TestHostAndModeResolution(LoopCase):
             orchestrate.loop(self._args(d, "--mode", "session", "--session-dir", s))
         self.assertEqual(calls, [("gemini", "session")])
 
+    def test_a_target_committed_manifest_does_not_choose_the_host(self):
+        # Fix round 3: I5 reads the run's host off run-manifest.json, but
+        # `driver.run` does NOT trust every manifest it finds -- #1093 / #run8
+        # AGT-C1A -- because a hostile target can force-commit its own
+        # `.panopticon/run-manifest.json`. driver.run discards a foreign one
+        # and rebuilds from the real CLI args; `_resolve_host` read it
+        # unconditionally, so a committed `"host": "gemini"` steered THIS
+        # invocation's runner while the run itself proceeded as claude. The
+        # target got to pick which family's agents were dispatched at it.
+        d, _ = self._repo(); s = self._session_root(d)
+        runio._write_json(driver.run_manifest.manifest_path(d),
+                          {"schema_version": 1, "run_id": "r" * 8, "host": "gemini",
+                           "review_root": "/somewhere/else", "flags": {}})
+        calls = []
+        with self._spy(calls), contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()):
+            orchestrate.loop(self._args(d, "--mode", "session", "--session-dir", s))
+        self.assertEqual(calls, [(runio._DEFAULTS["host"], "session")])
+
     def test_a_host_with_no_headless_runner_degrades_to_session_with_a_reason(self):
         # I8, spec 4.4: "A host with no headless runner registered gets session
         # mode with a stderr line saying so." `--mode` defaulted to headless,
