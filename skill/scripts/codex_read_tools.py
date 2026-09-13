@@ -21,18 +21,31 @@ MAX_DIRECTORIES = 512
 MAX_ENTRIES = 20000
 MAX_SEARCH_BYTES = 8 * MAX_FILE_BYTES
 SCOPE_KEYS = ("files", "dirs", "reads")
-# Directory NAMES the walk skips at every depth. A directory grant is the whole
-# repository for the setup scan, and a checkout's VCS store and vendored trees
-# hold far more entries than its source does -- enumerating them exhausts the
-# caps below before a single reviewable file is reached, which is what made
-# list_files unusable on any real target. None of them is review material, so
-# skipping them costs no coverage; a reviewer that genuinely needs one still
-# has read_file on an explicitly granted path.
+# Directory NAMES and basename GLOBS the walk skips at every depth. A directory
+# grant is the whole repository for the setup scan, and a checkout's VCS store
+# and dependency trees hold far more entries than its source does -- walking
+# them exhausts the caps below before a single reviewable file is reached,
+# which is what made list_files unusable on any real target.
+#
+# These MUST stay equal to discovery.EXCLUDE_DIRS / EXCLUDE_DIR_GLOBS, which
+# say what the agentic scan prunes and carry the "single maintenance point"
+# comment: a name here that is not there means Codex and Claude cover the same
+# tree differently, silently. They are duplicated rather than imported because
+# codex_host.safety_config() launches this module as `sys.executable -I
+# <path>`, and -I implies -P: the script's directory is off sys.path, so the
+# broker is stdlib-only by construction. tests/test_codex_read_tools.py::
+# test_the_exclusion_list_matches_the_one_discovery_prunes pins the equality.
+#
+# The two additions are `.panopticon` and `.worktrees`. Discovery reaches the
+# same answer through git -- its surface is `git ls-files --exclude-standard`,
+# so everything the target ignores is already gone -- and the broker has no
+# git; both are in this repo's .gitignore, which that same test checks.
 EXCLUDED_DIRECTORIES = (
-    ".git", ".hg", ".svn", "node_modules", "vendor", ".venv", "venv",
-    "__pycache__", ".worktrees", ".panopticon", ".tox", ".mypy_cache",
-    ".ruff_cache", ".pytest_cache", "dist", "build", "target",
+    ".eggs", ".git", ".hg", ".mypy_cache", ".panopticon", ".pytest_cache",
+    ".ruff_cache", ".svn", ".tox", ".venv", ".worktrees", "__pycache__",
+    "htmlcov", "node_modules", "tmp", "venv",
 )
+EXCLUDED_DIRECTORY_GLOBS = ("*.egg-info",)
 TRUNCATION_NOTE = "[truncated: %d of %d entries shown; pass path= to narrow]"
 
 
@@ -54,6 +67,12 @@ TOOLS = [
           "Pass path to list one granted subdirectory.", {
         "pattern": {"type": "string"}, "path": {"type": "string"}}),
 ]
+
+
+def _excluded_dir(name):
+    """Discovery's `_is_excluded_dir`, over the copies above."""
+    return (name in EXCLUDED_DIRECTORIES
+            or any(fnmatch.fnmatchcase(name, glob) for glob in EXCLUDED_DIRECTORY_GLOBS))
 
 
 def _path(value, cwd):
@@ -167,7 +186,7 @@ class Reader:
                         break
                     path = os.path.join(directory, entry.name)
                     if entry.is_dir(follow_symlinks=False):
-                        if entry.name not in EXCLUDED_DIRECTORIES:
+                        if not _excluded_dir(entry.name):
                             pending.append(path)
                     elif entry.is_file(follow_symlinks=False):
                         found.add(path)

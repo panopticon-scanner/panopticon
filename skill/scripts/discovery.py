@@ -88,7 +88,10 @@ def panels_in_priority_order(panels):
 # artifacts, dependency trees, caches, VCS internals, and scratch/audit copies
 # that otherwise dominate the discovered group set (real runs: ~90% of files
 # venv/cache trees; 34 of 63 groups stale tmp/audit-* copies). Matched by exact
-# basename at every depth. Keep this list as the single maintenance point.
+# basename at every depth. Keep this list as the single maintenance point:
+# codex_read_tools.EXCLUDED_DIRECTORIES is a stdlib-only COPY of it (that
+# broker launches under `python -I` and cannot import this module), and a
+# parity test fails if the two drift apart.
 EXCLUDE_DIRS = frozenset({
     ".git", ".hg", ".svn",          # VCS internals
     ".venv", "venv", "node_modules",  # dependency / virtualenv trees

@@ -332,11 +332,79 @@ def test_exceeding_an_enumeration_cap_truncates_rather_than_refusing(tree, monke
 
 
 def test_the_repository_checkout_itself_is_listable_under_production_caps():
+    # N-I2: everything here is judged on paths RELATIVE to the checkout, and
+    # the root is realpath'd. Asserting over the joined absolute text made the
+    # answer depend on where the repo lives -- a checkout under `.worktrees/`
+    # (this repo reserves it) or `/tmp` (now an excluded name) failed the
+    # exclusion loop, and a path reached through a symlinked component made
+    # every O_NOFOLLOW open fail, because Reader realpaths its cwd but leaves
+    # scope["dirs"] at abspath.
     from conftest import REPO_ROOT
-    reader = read_tools.Reader({"files": [], "dirs": [REPO_ROOT], "reads": []}, REPO_ROOT)
+    root = os.path.realpath(REPO_ROOT)
+    reader = read_tools.Reader({"files": [], "dirs": [root], "reads": []}, root)
+
+    marker = reader.call("list_files", {"pattern": "*codex_read_tools.py"})
+    assert marker["isError"] is False, body(marker)
+    assert "skill/scripts/codex_read_tools.py" in body(marker).replace(os.sep, "/")
+
     listed = reader.call("list_files", {"pattern": "*"})
-    assert listed["isError"] is False
-    text = body(listed)
-    assert "skill/scripts/codex_read_tools.py" in text
-    for name in read_tools.EXCLUDED_DIRECTORIES:
-        assert (os.sep + name + os.sep) not in text
+    assert listed["isError"] is False, body(listed)
+    inside = [line for line in body(listed).splitlines()
+              if line.startswith(root + os.sep)]
+    assert inside
+    for line in inside:
+        relative = os.path.relpath(line, root)
+        for segment in relative.split(os.sep)[:-1]:
+            assert not read_tools._excluded_dir(segment), (segment, relative)
+
+
+# --- N-I1: one maintenance point for what a walk prunes ---------------------
+
+
+def test_the_exclusion_list_matches_the_one_discovery_prunes():
+    """The broker cannot IMPORT discovery.EXCLUDE_DIRS.
+
+    `codex_host.safety_config()` launches this module as
+    `sys.executable -I <path>`, and `-I` implies `-P`: the script's directory
+    is not on sys.path, so the broker is a standalone stdlib-only process by
+    construction (a `from scripts import discovery` there would break every
+    Codex read). The list is therefore duplicated, and this is what keeps the
+    duplicate honest -- Codex's enumeration and Claude's agentic scan must
+    prune the same names, or the two hosts cover the same tree differently.
+    """
+    from conftest import REPO_ROOT
+    from scripts import discovery
+
+    # Discovery's primary surface is `git ls-files --exclude-standard`, so it
+    # also drops everything the target's .gitignore drops. The broker has no
+    # git; these two names are how it reaches the same answer, and they are
+    # only legitimate while the repo really does ignore them.
+    gitignore_parity = {".panopticon", ".worktrees"}
+    assert set(read_tools.EXCLUDED_DIRECTORIES) == set(discovery.EXCLUDE_DIRS) | gitignore_parity
+    assert read_tools.EXCLUDED_DIRECTORY_GLOBS == discovery.EXCLUDE_DIR_GLOBS
+    with open(os.path.join(REPO_ROOT, ".gitignore"), encoding="utf-8") as fh:
+        ignored = fh.read()
+    for name in gitignore_parity:
+        assert name in ignored
+
+
+def test_a_reviewable_build_directory_is_no_longer_hidden(tree):
+    # The wave's own list added `build`/`dist`/`target`/`vendor`, which
+    # discovery does NOT prune: a target keeping packaging code under build/
+    # was reviewed by Claude and invisible to Codex.
+    _root, source, _first, _second, _outside = tree
+    for name in ("build", "dist", "target", "vendor"):
+        (source / name).mkdir()
+        (source / name / "packaging.py").write_text("reviewable\n", encoding="utf-8")
+    listed = body(reader_for(tree, directories=True).call("list_files", {"pattern": "*.py"}))
+    for name in ("build", "dist", "target", "vendor"):
+        assert name + "/packaging.py" in listed.replace(os.sep, "/"), name
+
+
+def test_the_walk_prunes_discoverys_directory_globs_too(tree):
+    _root, source, _first, _second, _outside = tree
+    egg = source / "panopticon.egg-info"
+    egg.mkdir()
+    (egg / "SOURCES.py").write_text("generated\n", encoding="utf-8")
+    listed = body(reader_for(tree, directories=True).call("list_files", {"pattern": "*"}))
+    assert "egg-info" not in listed
