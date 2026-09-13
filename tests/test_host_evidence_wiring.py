@@ -82,6 +82,20 @@ def _write_evidence(review_root, states):
          "capabilities": capabilities})
 
 
+def _all_proven_artifact(host="claude"):
+    """A host-capabilities.json body proving every capability `host` claims.
+
+    Mirrors test_driver.py's fixture of the same name (kept local rather than
+    imported: test_layout's flat-import rule aside, these two test modules do
+    not otherwise share fixtures, and this one is small enough that a shared
+    import would cost more coupling than it saves)."""
+    return {"schema_version": 1, "host": host,
+            "probed_at": "2026-09-10T00:00:00Z",
+            "capabilities": {c: {"state": hosts.PROVEN, "by": "fixture",
+                                 "detail": "fixture"}
+                             for c in hosts.CAPABILITIES}}
+
+
 class TestThePostureIsEstablishedEveryInvocation(unittest.TestCase):
     """#1344 F3a, spec 5.2: probe on every invocation and compare rather than
     overwrite. Setup-time-only evidence is unbounded in age."""
@@ -928,6 +942,43 @@ class TestTheWriteGuardAndUsageLedgerAlsoRequireEvidence(unittest.TestCase):
                                  "created": "2026-09-10T00:00:00Z"})
         self.assertIsNone(result)
         run.assert_not_called()
+
+
+class TestTheGuardProbesFollowTheRunnersMode(unittest.TestCase):
+    """Plan 6 spec 5.4: in headless mode the guards arm into the run folder's
+    host-settings.json, never the session root, so `_establish_host_posture`
+    must hand the probes THAT path -- and only in headless mode. `driver run`
+    (session mode) has no `mode` attribute at all today; `driver loop` (task 5)
+    is what sets it to "headless"."""
+
+    def _repo(self):
+        d = tempfile.mkdtemp(prefix="review-root-")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        return d
+
+    def _manifest(self):
+        return {"host": "claude", "run_id": "r1" * 4, "created": "2026-09-10",
+                "security_mode": "standard"}
+
+    def test_headless_mode_probes_the_run_folders_host_settings(self):
+        d = self._repo()                       # this class's own repo fixture
+        manifest = self._manifest()            # this class's own manifest fixture
+        args = driver.build_parser().parse_args(["run", d])
+        args.mode = "headless"
+        with mock.patch("scripts.host_probes.run_probes",
+                        return_value=_all_proven_artifact("claude")) as rp:
+            driver._establish_host_posture(d, manifest, args)
+        self.assertEqual(rp.call_args.kwargs.get("settings_path"),
+                         host_probes.headless_settings_path(d))
+        self.assertTrue(host_probes.headless_settings_path(d).endswith("host-settings.json"))
+
+    def test_session_mode_probes_pass_no_settings_path(self):
+        d = self._repo(); manifest = self._manifest()
+        args = driver.build_parser().parse_args(["run", d])
+        with mock.patch("scripts.host_probes.run_probes",
+                        return_value=_all_proven_artifact("claude")) as rp:
+            driver._establish_host_posture(d, manifest, args)
+        self.assertIsNone(rp.call_args.kwargs.get("settings_path"))
 
 
 if __name__ == "__main__":

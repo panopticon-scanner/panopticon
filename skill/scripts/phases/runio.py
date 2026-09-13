@@ -200,6 +200,28 @@ def _open_w_nofollow(path):
             raise
     return os.fdopen(fd, "w", encoding="utf-8")
 
+def _open_a_nofollow(path):
+    """Open `path` for APPENDING, refusing to follow a symlink at the final
+    path component -- the O_APPEND analogue of `_open_w_nofollow` (#1095,
+    plan 6 review round 1) for a caller that must ADD a line without ever
+    truncating what is already there (Ledger.record's dispatch-ledger.jsonl,
+    one line per launch). Folds the confine-then-makedirs sequence
+    `_write_json` applies around `_open_w_nofollow` INTO this call, so a
+    caller needs neither a separate `_confine_artifact_path` nor its own
+    `os.makedirs` -- `Ledger.record` no longer carries either."""
+    _confine_artifact_path(path)              # SEC-X0X: before makedirs, which would
+    os.makedirs(os.path.dirname(path), exist_ok=True)   # otherwise follow a symlinked dir
+    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags, 0o644)
+    except OSError:
+        if os.path.islink(path):
+            os.unlink(path)                       # neutralize the link, never follow it
+            fd = os.open(path, flags, 0o644)
+        else:
+            raise
+    return os.fdopen(fd, "a", encoding="utf-8")
+
 def _write_json(path, data):
     _confine_artifact_path(path)              # SEC-X0X: before makedirs, which would
     os.makedirs(os.path.dirname(path), exist_ok=True)   # otherwise follow a symlinked dir

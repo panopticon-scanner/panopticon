@@ -8,13 +8,14 @@ import unittest
 from unittest import mock
 
 from conftest import write_host_evidence
-from scripts import hosts
+from scripts import host_probes, hosts
 import scripts.ocrdb as ocrdb
 import scripts.phases.coverage as coverage
 import scripts.phases.review as review
 import scripts.phases.setup as setup
 import scripts.phases.verify as verify_phase
 import scripts.read_guard_hook as rg
+from scripts import read_guard_hook
 
 
 def _scope(files=(), dirs=(), reads=()):
@@ -257,6 +258,14 @@ class TestBinding(unittest.TestCase):
 
 class TestAdjudicate(unittest.TestCase):
     def setUp(self):
+        # These tests call the two-arg adjudicate(payload, scope_path), which
+        # defaults `env` to the real os.environ (spec 5.3) -- a stray
+        # PANOPTICON_ENTRY_ID in the operator's shell must never leak into
+        # what these tests exercise (the transcript-binding path).
+        patcher = mock.patch.dict(os.environ)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        os.environ.pop(read_guard_hook.ENV_ENTRY_ID, None)
         self.tmp = tempfile.TemporaryDirectory()
         d = self.tmp.name
         self.parent = os.path.join(d, "session.jsonl"); open(self.parent, "w").close()
@@ -334,7 +343,129 @@ class TestAdjudicate(unittest.TestCase):
         self.assertEqual((True, ""), rg.adjudicate(["x"], self.scope_path))
 
 
+class TestEnvBinding(unittest.TestCase):
+    """Spec 5.3: env first, transcript second, agent_type-without-binding
+    denied, nothing -> the orchestrator."""
+
+    def _scoped(self, d, entry_id, allowed_file):
+        # realpath'd on write, matching _scope() above and scope_from_plan()'s
+        # own normalisation -- adjudicate() always realpaths the query path,
+        # and on macOS $TMPDIR resolves through a /var -> /private/var symlink.
+        scope_path = os.path.join(d, "read-scope.json")
+        with open(scope_path, "w", encoding="utf-8") as fh:
+            json.dump({entry_id: {"files": [os.path.realpath(allowed_file)],
+                                  "dirs": [], "reads": []}}, fh)
+        return scope_path
+
+    def test_env_bound_call_is_confined_to_that_entry(self):
+        with tempfile.TemporaryDirectory() as d:
+            inside = os.path.join(d, "a.py"); open(inside, "w").close()
+            outside = os.path.join(d, "b.py"); open(outside, "w").close()
+            scope = self._scoped(d, "cell-1", inside)
+            env = {read_guard_hook.ENV_ENTRY_ID: "cell-1"}
+            ok, _ = read_guard_hook.adjudicate(
+                {"tool_name": "Read", "tool_input": {"file_path": inside}}, scope, env=env)
+            self.assertTrue(ok)
+            ok, reason = read_guard_hook.adjudicate(
+                {"tool_name": "Read", "tool_input": {"file_path": outside}}, scope, env=env)
+            self.assertFalse(ok)
+            self.assertIn("cell-1", reason)
+
+    def test_env_wins_when_agent_type_is_also_present(self):
+        # The real headless payload shape: a `claude -p` session reports its
+        # own agent_type (e.g. panopticon-domain-panel) AND is env-bound by
+        # the runner. The env binding governs exactly as when agent_type is
+        # absent -- agent_type only matters when NOTHING else bound the call.
+        with tempfile.TemporaryDirectory() as d:
+            inside = os.path.join(d, "a.py"); open(inside, "w").close()
+            outside = os.path.join(d, "b.py"); open(outside, "w").close()
+            scope = self._scoped(d, "cell-1", inside)
+            env = {read_guard_hook.ENV_ENTRY_ID: "cell-1"}
+            ok, _ = read_guard_hook.adjudicate(
+                {"tool_name": "Read", "tool_input": {"file_path": inside},
+                 "agent_type": "panopticon-domain-panel"}, scope, env=env)
+            self.assertTrue(ok)
+            ok, reason = read_guard_hook.adjudicate(
+                {"tool_name": "Read", "tool_input": {"file_path": outside},
+                 "agent_type": "panopticon-domain-panel"}, scope, env=env)
+            self.assertFalse(ok)
+            self.assertIn("cell-1", reason)
+
+    def test_env_wins_over_a_transcript_bound_agent_id(self):
+        # A subagent spawned INSIDE a headless entry inherits the entry's
+        # confinement even though its own transcript would bind elsewhere.
+        with tempfile.TemporaryDirectory() as d:
+            inside = os.path.join(d, "a.py"); open(inside, "w").close()
+            other = os.path.join(d, "c.py"); open(other, "w").close()
+            scope_path = os.path.join(d, "read-scope.json")
+            with open(scope_path, "w", encoding="utf-8") as fh:
+                json.dump({"cell-1": {"files": [os.path.realpath(inside)], "dirs": [], "reads": []},
+                           "cell-2": {"files": [os.path.realpath(other)], "dirs": [], "reads": []}}, fh)
+            parent = os.path.join(d, "parent.jsonl"); open(parent, "w").close()
+            host_probes._fake_subagent(parent, "agent-x", "cell-2")
+            payload = {"tool_name": "Read", "tool_input": {"file_path": other},
+                       "agent_id": "agent-x", "transcript_path": parent}
+            ok, _ = read_guard_hook.adjudicate(payload, scope_path, env={})
+            self.assertTrue(ok)                       # transcript binds to cell-2
+            ok, _ = read_guard_hook.adjudicate(
+                payload, scope_path, env={read_guard_hook.ENV_ENTRY_ID: "cell-1"})
+            self.assertFalse(ok)                      # env re-binds to cell-1
+
+    def test_agent_type_without_any_binding_is_denied(self):
+        with tempfile.TemporaryDirectory() as d:
+            inside = os.path.join(d, "a.py"); open(inside, "w").close()
+            scope = self._scoped(d, "cell-1", inside)
+            ok, reason = read_guard_hook.adjudicate(
+                {"tool_name": "Read", "tool_input": {"file_path": inside},
+                 "agent_type": "panopticon-domain-panel"}, scope, env={})
+            self.assertFalse(ok)
+            self.assertIn("agent_type", reason)
+
+    def test_nothing_bound_is_the_orchestrator_and_allowed(self):
+        with tempfile.TemporaryDirectory() as d:
+            inside = os.path.join(d, "a.py"); open(inside, "w").close()
+            scope = self._scoped(d, "cell-1", inside)
+            ok, _ = read_guard_hook.adjudicate(
+                {"tool_name": "Read", "tool_input": {"file_path": "/etc/hosts"}}, scope, env={})
+            self.assertTrue(ok)
+
+    def test_env_bound_to_an_unarmed_id_is_denied(self):
+        with tempfile.TemporaryDirectory() as d:
+            inside = os.path.join(d, "a.py"); open(inside, "w").close()
+            scope = self._scoped(d, "cell-1", inside)
+            ok, reason = read_guard_hook.adjudicate(
+                {"tool_name": "Read", "tool_input": {"file_path": inside}}, scope,
+                env={read_guard_hook.ENV_ENTRY_ID: "cell-9"})
+            self.assertFalse(ok)
+            self.assertIn("cell-9", reason)
+
+    def test_main_reads_the_real_environment(self):
+        with tempfile.TemporaryDirectory() as d:
+            inside = os.path.join(d, "a.py"); open(inside, "w").close()
+            outside = os.path.join(d, "b.py"); open(outside, "w").close()
+            scope = self._scoped(d, "cell-1", inside)
+            payload = json.dumps({"tool_name": "Read", "tool_input": {"file_path": outside}})
+            with mock.patch.dict(os.environ, {read_guard_hook.ENV_ENTRY_ID: "cell-1"}), \
+                 mock.patch("sys.stdin", io.StringIO(payload)), \
+                 contextlib.redirect_stdout(io.StringIO()) as out:
+                rc = read_guard_hook.main([scope])
+            self.assertEqual(rc, 0)
+            self.assertEqual(json.loads(out.getvalue())["hookSpecificOutput"]["permissionDecision"], "deny")
+
+
 class TestMain(unittest.TestCase):
+    def setUp(self):
+        # main() intentionally reads the real os.environ (spec 5.3) via the
+        # two-arg adjudicate(payload, path) call inside it -- every test here
+        # except test_main_reads_the_real_environment (TestEnvBinding, which
+        # patches its own known value) relies on NO env binding applying, so
+        # a stray PANOPTICON_ENTRY_ID in the operator's shell must be scrubbed
+        # the same way as TestAdjudicate.setUp / TestInstallUninstall.setUp.
+        patcher = mock.patch.dict(os.environ)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        os.environ.pop(read_guard_hook.ENV_ENTRY_ID, None)
+
     def _run(self, payload, argv):
         out = io.StringIO()
         stdin = io.StringIO(payload if isinstance(payload, str) else json.dumps(payload))
@@ -446,6 +577,13 @@ def _entry(eid, files=(), dirs=()):
 
 class TestInstallUninstall(unittest.TestCase):
     def setUp(self):
+        # test_install_overwrites_a_planted_row_under_a_dispatched_empty_scope_id
+        # below calls the two-arg adjudicate(payload, scope_path); guard the
+        # same ambient-env leak as TestAdjudicate.setUp.
+        patcher = mock.patch.dict(os.environ)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        os.environ.pop(read_guard_hook.ENV_ENTRY_ID, None)
         self.tmp = tempfile.TemporaryDirectory()
         d = self.tmp.name
         self.settings = os.path.join(d, "settings.json")
@@ -679,3 +817,47 @@ class TestEntryIdsMatchTheSpecIdGrammar(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAtomicWriteRefusesASymlinkedTmp(unittest.TestCase):
+    """I7 (plan 6 final review): `_atomic_write_json` staged every settings,
+    allowlist and scope write at `<path>.tmp` with a plain `open(tmp, "w")`.
+
+    A redteam target is untrusted, and the run folder it is scanned in sits
+    inside it: a pre-planted `<path>.tmp` symlink pointing anywhere the
+    invoking user can write -- a dotfile, authorized_keys -- was FOLLOWED, and
+    the guard's own JSON clobbered that file. Same class of bug as #run9
+    SEC-X0X, which `runio._open_w_nofollow` closed for `.panopticon`
+    artifacts; the hooks must stay standalone (they run as their own
+    subprocess and may not import the driver's packages), so they carry the
+    os-flag form themselves."""
+
+    def _planted(self, d, name):
+        outside = os.path.join(d, "outside.txt")
+        with open(outside, "w", encoding="utf-8") as fh:
+            fh.write("PRECIOUS")
+        target = os.path.join(d, name)
+        with open(target, "w", encoding="utf-8") as fh:
+            fh.write("{}")
+        os.symlink(outside, target + ".tmp")
+        return outside, target
+
+    def test_the_planted_link_is_neutralized_and_its_target_untouched(self):
+        with tempfile.TemporaryDirectory() as d:
+            outside, target = self._planted(d, "settings.json")
+            rg._atomic_write_json(target, {"hooks": {"PreToolUse": []}}, indent=2)
+            with open(outside, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), "PRECIOUS")
+            self.assertFalse(os.path.islink(target))
+            self.assertEqual(json.load(open(target, encoding="utf-8")),
+                             {"hooks": {"PreToolUse": []}})
+            self.assertFalse(os.path.exists(target + ".tmp"))
+
+    def test_the_real_writer_that_arms_the_guard_refuses_it_too(self):
+        with tempfile.TemporaryDirectory() as d:
+            outside, settings = self._planted(d, "settings.json")
+            rg._write_hook_entry(settings, os.path.join(d, "read-scope.json"))
+            with open(outside, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), "PRECIOUS")
+            with open(settings, encoding="utf-8") as fh:
+                self.assertIn("PreToolUse", fh.read())

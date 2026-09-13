@@ -1,4 +1,5 @@
-"""Layout rules for the `scripts.synth` / `scripts.phases` packages (WS-0).
+"""Layout rules for the `scripts.synth` / `scripts.phases` / `scripts.runners`
+packages (WS-0).
 
 AST-based, loud on purpose: every rule names the file, line and statement it
 rejects. Spec: panopticon-docs superpowers/specs/2026-09-06-panopticon-5.2-
@@ -45,7 +46,7 @@ from conftest import REPO_ROOT, SKILL_ROOT
 
 SCRIPTS = os.path.join(SKILL_ROOT, "scripts")
 TESTS = os.path.join(REPO_ROOT, "tests")
-PACKAGES = ("synth", "phases")          # rules apply to whichever exist
+PACKAGES = ("synth", "phases", "runners")   # rules apply to whichever exist
 # Rule 3, per package: what this package may never import. Both directions of
 # the synth/phases boundary, plus each package's own entry script -- importing
 # it back is the cycle the packages exist to break. The bare forms catch a flat
@@ -53,10 +54,13 @@ PACKAGES = ("synth", "phases")          # rules apply to whichever exist
 FORBIDDEN_IMPORTS = {
     "synth": ("scripts.driver", "scripts.phases", "scripts.synthesize",
               "driver", "phases", "synthesize"),
-    "phases": ("scripts.driver", "scripts.synthesize", "driver", "synthesize"),
+    "phases": ("scripts.driver", "scripts.synthesize", "scripts.orchestrate",
+               "driver", "synthesize", "orchestrate"),
+    "runners": ("scripts.driver", "scripts.synthesize", "scripts.orchestrate",
+                "scripts.phases", "driver", "synthesize", "orchestrate", "phases"),
 }
-EXPECTED_PACKAGES = ("synth", "phases")  # S1 lands synth; D1 adds phases
-ENTRY_SCRIPTS = ("synthesize.py", "driver.py")
+EXPECTED_PACKAGES = ("synth", "phases", "runners")  # S1 lands synth; D1 adds phases; P6 adds runners
+ENTRY_SCRIPTS = ("synthesize.py", "driver.py", "orchestrate.py")
 LINE_CEILING = 700
 _SKIP_DIRS = {"fixtures", "goldens", "__pycache__"}
 

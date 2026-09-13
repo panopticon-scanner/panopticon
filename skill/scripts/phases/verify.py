@@ -68,6 +68,18 @@ def _cell_verdicts(review_root, group, domain, stage, parts=1):
     return merged
 
 
+def _chunk_answered(chunk, verdicts):
+    """Every claim in this slice adjudicated somewhere in `verdicts` (A2).
+
+    Extracted from `_part_done` so `phases/persist.py` can apply the SAME rule
+    to a bundle that is not on disk yet -- the reply a return-persist advisor
+    just handed back (spec 4.5). Two copies of one rule drift; this is the one
+    copy, and `persist` reads it by module attribute."""
+    got = {str(v.get("finding_id")) for v in verdicts
+           if isinstance(v, dict) and v.get("finding_id") is not None}
+    return {str(f["id"]) for f in chunk}.issubset(got)
+
+
 def _part_done(review_root, manifest, group, domain, stage, part, chunk):
     """One chunk's advisor answered it: bundle labeled, and (primary) every
     claim in THIS slice adjudicated somewhere in the cell's bundles."""
@@ -76,10 +88,8 @@ def _part_done(review_root, manifest, group, domain, stage, part, chunk):
         return False
     if stage != "primary":
         return True
-    merged = _cell_verdicts(review_root, group, domain, stage, part + 1)
-    got = {str(v.get("finding_id")) for v in merged
-           if v.get("finding_id") is not None}
-    return {str(f["id"]) for f in chunk}.issubset(got)
+    return _chunk_answered(
+        chunk, _cell_verdicts(review_root, group, domain, stage, part + 1))
 
 
 def _cell_parts_complete(review_root, manifest, group, domain, stage, cell):
@@ -226,6 +236,11 @@ def _verify_entry(review_root, manifest, group, domain, files, cell, host,
             "prompt": requests.entry_marker(entry_id) + prefix + prompt,
             "marker": read_guard_hook.marker_line(entry_id),
             "out_file": out_file,
+            # run_id/group/domain/stage restate the cell this entry IS, so
+            # persist/entry_is_done can check a bundle's `_panopticon` stamp
+            # against the entry that asked for it (mirrors review._cell_entry).
+            "run_id": manifest["run_id"], "group": group, "domain": domain,
+            "stage": stage,
             "files": abs_files,
             "scope": requests.scope(files=abs_files)}
     if mode:

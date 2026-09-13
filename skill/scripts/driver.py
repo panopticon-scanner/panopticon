@@ -139,13 +139,23 @@ def _clear_run_artifacts(review_root):
         shutil.rmtree(os.path.join(base, sub), ignore_errors=True)
 
 
+def hosts_runner_modes():
+    """The `--mode` choices for `driver loop`: a literal tuple, not derived by
+    importing scripts.runners.base at driver module scope (that package is
+    host machinery loaded lazily; driver.py's own import graph must not gain a
+    dependency on it merely to spell two strings). Pinned against
+    runners_base.MODES by a parity test in Task 6."""
+    return ("headless", "session")
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog="driver")
     sub = parser.add_subparsers(dest="verb", required=True)
     # #1033: `next` was a silent, undifferentiated alias of `run` (run() is
     # already idempotent + resumes from disk), so it's removed rather than kept
-    # as a confusing second spelling.
-    for verb in ("run",):
+    # as a confusing second spelling. `loop` (plan 6) drives the SAME `run`
+    # shape headlessly -- see the loop-only flags appended after scope below.
+    for verb in ("run", "loop"):
         p = sub.add_parser(verb)
         p.add_argument("target", nargs="?", default=".")
         p.add_argument("--host", default=None, choices=list(hosts.driver_hosts()))
@@ -193,6 +203,27 @@ def build_parser():
         scope.add_argument("-c", "--changes", dest="scope_changed",
                            action="store_true")
         scope.add_argument("--files", dest="scope_files", nargs="+", default=None)
+        if verb == "loop":
+            # Plan 6, spec 4.3/5.4: the in-process headless loop's own knobs.
+            # None of these become manifest anti-drift keys (_cli_flags/
+            # run_manifest._FLAG_KEYS never read them) -- a resume may freely
+            # change concurrency/budget/timeouts without tripping flag drift.
+            # Default None, resolved in `orchestrate.loop` (I8, spec 4.4):
+            # headless when the resolved host has a runner, session when it
+            # does not. A literal "headless" default here made `driver loop
+            # --host gemini` an error instead of the documented degrade.
+            p.add_argument("--mode", default=None, choices=list(hosts_runner_modes()))
+            p.add_argument("--concurrency", type=_positive_int, default=None)
+            p.add_argument("--max-iterations", type=_positive_int, default=None)
+            p.add_argument("--max-budget-usd", type=float, default=None)
+            p.add_argument("--max-turns", type=_positive_int, default=None)
+            p.add_argument("--entry-timeout", type=_positive_int, default=None)
+            # `setup`'s own leaf-ceiling knob (see the `setup` verb below),
+            # exposed here too since `driver loop --setup` runs that flow on
+            # rails instead of a review.
+            p.add_argument("--max-groups", type=_positive_int, default=None)
+            p.add_argument("--setup", action="store_true",
+                           help="run `driver setup`'s flow on rails instead of a review")
     sp = sub.add_parser("setup")
     sp.add_argument("target", nargs="?", default=".")
     sp.add_argument("--host", default=None, choices=list(hosts.driver_hosts()))
@@ -202,6 +233,19 @@ def build_parser():
     # else the defaults (48; max(4, 2 x ceil(code_files / cap))).
     sp.add_argument("--max-per-group", type=_positive_int, default=None)
     sp.add_argument("--max-groups", type=_positive_int, default=None)
+    pp = sub.add_parser("persist")
+    pp.add_argument("entry_id")
+    pp.add_argument("target", nargs="?", default=".")
+    pp.add_argument("--file", default=None, help="the reply text; stdin when absent")
+    pp.add_argument("--setup", action="store_true",
+                    help="the entry belongs to `driver setup`'s scan checkpoint")
+    # I6: the same two flags `run`/`loop` take, for the same reason. A `--pr`
+    # run's review root is the PR WORKTREE, so a persist that resolved
+    # `target` alone read the dispatch request out of the operator's own
+    # checkout and refused every entry as unknown. Threaded verbatim into
+    # resolve_review_root.
+    pp.add_argument("--base", default=None)
+    pp.add_argument("--pr", type=int, default=None)
     return parser
 
 
@@ -291,8 +335,14 @@ def _establish_host_posture(review_root, manifest, args):
     # and a window in which the artifact and the refusal could disagree about
     # the same tree.
     shadow = host_probes.probe_shadow_shells(host, review_root)
+    # Plan 6 (spec 5.4): in headless mode the guards are armed into the run
+    # folder's host-settings.json, never the session root -- so that file,
+    # not the session's, is what the guard probes must prove. `mode` is a
+    # `driver loop` flag; `driver run` has none and probes the session root.
+    settings_path = (host_probes.headless_settings_path(review_root)
+                     if getattr(args, "mode", None) == "headless" else None)
     fresh = host_probes.run_probes(host, review_root, session_root=session_root,
-                                   shadow=shadow)
+                                   shadow=shadow, settings_path=settings_path)
     # 5.1 surface 1. Emitted here -- after `fresh` is computed, before the
     # artifact is written or compared, and before the shadow refusal below --
     # rather than at the dispatch sites, because 5.2 already puts this step
@@ -535,10 +585,34 @@ def run(args, runner=subprocess.run, phases=PHASES):
     return result
 
 
+def parse_cli(argv=None):
+    """`build_parser().parse_args`, plus one portability rule for `persist`:
+    a single trailing bare word after the options is the `target`.
+
+    argparse before 3.12 binds an optional positional (`target`, nargs="?")
+    the moment it consumes `entry_id`, so `driver persist ID --file F TARGET`
+    -- the documented order -- fails with "unrecognized arguments: TARGET"
+    on Python 3.11 while 3.12+ accept it. Folding exactly one leftover word
+    into `target` makes both orders parse on every supported interpreter;
+    anything else left over is still the parser's own error."""
+    parser = build_parser()
+    args, extra = parser.parse_known_args(argv)
+    if (extra and args.verb == "persist" and len(extra) == 1
+            and not extra[0].startswith("-") and args.target == "."):
+        args.target = extra[0]
+        extra = []
+    if extra:
+        parser.error("unrecognized arguments: %s" % " ".join(extra))
+    return args
+
+
 def main(argv=None):
-    args = build_parser().parse_args(argv)
+    args = parse_cli(argv)
     if args.verb == "setup":
         return engine.emit_status(setup.run_setup_flow(args))
+    if args.verb in ("loop", "persist"):
+        import scripts.orchestrate as orchestrate   # R-P6-2: lazy, no cycle
+        return orchestrate.main_verb(args)
     return engine.emit_status(run(args))
 
 

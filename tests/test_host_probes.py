@@ -599,6 +599,62 @@ class TestWriteGuardArmedProbe(unittest.TestCase):
         self.assertEqual(host_probes.WRITE_GUARD_ARMED, by)
         self.assertIn("no space left", detail)
 
+    def test_an_explicit_settings_path_is_the_subject_and_need_not_exist_yet(self):
+        # Spec 5.4 / R-P6-5: in headless mode the runner CREATES the settings
+        # file after the first probe, so the probe must not demand it exists;
+        # it demands the directory can be written. Same verdict before and
+        # after the file appears, or posture drift would refuse iteration 2.
+        with tempfile.TemporaryDirectory() as run_dir:
+            path = os.path.join(run_dir, "host-settings.json")
+            state1, by, detail1 = host_probes.probe_write_guard_armed("claude", settings_path=path)
+            self.assertEqual(hosts.PROVEN, state1)
+            self.assertIn(path, detail1)
+            with open(path, "w") as fh:
+                fh.write("{}")
+            state2, _by, _d = host_probes.probe_write_guard_armed("claude", settings_path=path)
+            self.assertEqual(state1, state2)
+
+    def test_an_unwritable_headless_directory_refutes(self):
+        # try/finally rather than addCleanup, matching this class's own
+        # test_an_unwritable_settings_root_is_refuted above: the `with`
+        # TemporaryDirectory block ends INSIDE this method, so an addCleanup
+        # chmod would run after `run_dir` (and `locked` within it) is already
+        # removed, raising a spurious FileNotFoundError -- measured, not
+        # assumed (shutil.rmtree deletes a 0500 child fine; it is the
+        # PARENT's write bit that governs unlink, not the child's own mode).
+        with tempfile.TemporaryDirectory() as run_dir:
+            locked = os.path.join(run_dir, "ro"); os.makedirs(locked); os.chmod(locked, 0o500)
+            try:
+                if os.access(locked, os.W_OK):
+                    self.skipTest("running as a user who can write a 0500 directory")
+                state, _by, detail = host_probes.probe_write_guard_armed(
+                    "claude", settings_path=os.path.join(locked, "host-settings.json"))
+            finally:
+                os.chmod(locked, 0o700)
+            self.assertEqual(hosts.REFUTED, state)
+            self.assertIn("not writable", detail)
+
+    def test_the_probe_reads_its_settings_path_argument(self):
+        # Mutation gate (spec 7.6): a probe that ignores settings_path must
+        # fail this. The patch is signature-conditional: it raises ONLY for
+        # the probe's session-root fallback call, `_resolve(None, None,
+        # <anything>)`; the sandbox round trip's own explicit-path calls
+        # (through install()/guard_state()/uninstall()) pass through to the
+        # real function, since it legitimately calls _resolve with explicit
+        # paths and an always-raise patch would fail this test falsely.
+        real_resolve = host_probes.write_guard_hook._resolve
+        def fallback_only(settings_path, allowlist_path, session_root):
+            if settings_path is None and allowlist_path is None:
+                raise AssertionError(
+                    "must not fall back to _resolve when settings_path is given")
+            return real_resolve(settings_path, allowlist_path, session_root)
+        with tempfile.TemporaryDirectory() as run_dir:
+            with mock.patch.object(host_probes.write_guard_hook, "_resolve",
+                                   side_effect=fallback_only):
+                state, _by, _d = host_probes.probe_write_guard_armed(
+                    "claude", settings_path=os.path.join(run_dir, "host-settings.json"))
+            self.assertEqual(hosts.PROVEN, state)
+
 
 class TestTranscriptDirProbe(unittest.TestCase):
     """#1344 F3a: usage_ledger is operational, not security (8.1 excludes it
@@ -1137,6 +1193,17 @@ class TestRunProbesBuildsTheArtifact(unittest.TestCase):
             self.assertIsNone(result["by"])
             self.assertIn("no implementation", result["detail"])
 
+    def test_run_probes_hands_settings_path_to_both_guard_probes(self):
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(host_probes, "probe_write_guard_armed",
+                               return_value=(hosts.PROVEN, "write-guard-armed", "x")) as w, \
+             mock.patch.object(host_probes, "probe_read_guard_armed",
+                               return_value=(hosts.PROVEN, "read-guard-armed", "x")) as r:
+            host_probes.run_probes("claude", d, session_root=d, settings_path="/run/host-settings.json",
+                                   shadow=(hosts.UNKNOWN, None, "fixture"))
+        self.assertEqual(w.call_args.kwargs.get("settings_path"), "/run/host-settings.json")
+        self.assertEqual(r.call_args.kwargs.get("settings_path"), "/run/host-settings.json")
+
 
 class TestTheEvidenceLoader(unittest.TestCase):
 
@@ -1248,7 +1315,7 @@ class TestReadGuardArmedProbe(unittest.TestCase):
             self.assertEqual(hosts.PROVEN, state)
             self.assertEqual("read-guard-armed", by)
             self.assertIn(session_root, detail)
-            self.assertIn("10 rows", detail)
+            self.assertIn("14 rows", detail)
 
     def test_it_does_not_require_the_guard_to_be_armed_right_now(self):
         from scripts import read_guard_hook
@@ -1318,3 +1385,81 @@ class TestReadGuardArmedProbe(unittest.TestCase):
             row = art["capabilities"][hosts.READ_SCOPE_CONFINED]
             self.assertEqual(hosts.PROVEN, row["state"])
             self.assertEqual("read-guard-armed", row["by"])
+
+    def test_the_round_trip_proves_the_env_binding(self):
+        # Spec 5.3 / 7.5: the probe drives an env-bound payload (allowed inside,
+        # denied outside) and an agent_type-only payload (denied). Pinned by
+        # mutating adjudicate to ignore `env` and watching the verdict flip.
+        from scripts import read_guard_hook
+        ok, detail = host_probes._round_trip_confines_reads()
+        self.assertTrue(ok, detail)
+        real = read_guard_hook.adjudicate
+        def ignores_env(payload, scope_path, env=None):
+            return real(payload, scope_path, env={})
+        with mock.patch.object(read_guard_hook, "adjudicate", ignores_env):
+            ok, detail = host_probes._round_trip_confines_reads()
+        self.assertFalse(ok)
+        self.assertIn("env", detail)
+
+    def test_an_explicit_settings_path_is_the_subject_and_need_not_exist_yet(self):
+        # Spec 5.4 / R-P6-5: in headless mode the runner CREATES the settings
+        # file after the first probe, so the probe must not demand it exists;
+        # it demands the directory can be written. Same verdict before and
+        # after the file appears, or posture drift would refuse iteration 2.
+        with tempfile.TemporaryDirectory() as run_dir:
+            path = os.path.join(run_dir, "host-settings.json")
+            state1, by, detail1 = host_probes.probe_read_guard_armed("claude", settings_path=path)
+            self.assertEqual(hosts.PROVEN, state1)
+            self.assertIn(path, detail1)
+            with open(path, "w") as fh:
+                fh.write("{}")
+            state2, _by, _d = host_probes.probe_read_guard_armed("claude", settings_path=path)
+            self.assertEqual(state1, state2)
+
+    def test_an_unwritable_headless_directory_refutes(self):
+        # try/finally, not addCleanup -- see the write-probe mirror above.
+        with tempfile.TemporaryDirectory() as run_dir:
+            locked = os.path.join(run_dir, "ro"); os.makedirs(locked); os.chmod(locked, 0o500)
+            try:
+                if os.access(locked, os.W_OK):
+                    self.skipTest("running as a user who can write a 0500 directory")
+                state, _by, detail = host_probes.probe_read_guard_armed(
+                    "claude", settings_path=os.path.join(locked, "host-settings.json"))
+            finally:
+                os.chmod(locked, 0o700)
+            self.assertEqual(hosts.REFUTED, state)
+            self.assertIn("not writable", detail)
+
+    def test_the_probe_reads_its_settings_path_argument(self):
+        # Mutation gate (spec 7.6): a probe that ignores settings_path must
+        # fail this. Signature-conditional, as for the write probe: raises
+        # ONLY for the session-root fallback call `_resolve(None, None,
+        # <anything>)`; the sandbox round trip's explicit-path calls pass
+        # through to the real function.
+        real_resolve = host_probes.read_guard_hook._resolve
+        def fallback_only(settings_path, allowlist_path, session_root):
+            if settings_path is None and allowlist_path is None:
+                raise AssertionError(
+                    "must not fall back to _resolve when settings_path is given")
+            return real_resolve(settings_path, allowlist_path, session_root)
+        with tempfile.TemporaryDirectory() as run_dir:
+            with mock.patch.object(host_probes.read_guard_hook, "_resolve",
+                                   side_effect=fallback_only):
+                state, _by, _d = host_probes.probe_read_guard_armed(
+                    "claude", settings_path=os.path.join(run_dir, "host-settings.json"))
+            self.assertEqual(hosts.PROVEN, state)
+
+
+class TestHeadlessSettingsPathIsNamespaceAware(unittest.TestCase):
+    def test_setup_namespace_bypasses_the_manifest_tag_lookup(self):
+        # Task 6 fix round 1, item 2: setup keeps its OWN setup-manifest.json,
+        # never run-manifest.json, so a stale run-manifest.json's tag from an
+        # earlier review run must never steer setup's settings path into that
+        # run's runs/<tag>/ folder -- unlike namespace=None (a review run),
+        # which DOES follow the manifest tag through runio._pano.
+        with mock.patch("scripts.phases.runio._run_tag", return_value="stale-tag"):
+            self.assertTrue(host_probes.headless_settings_path("/repo", None)
+                            .endswith(os.path.join("runs", "stale-tag", "host-settings.json")))
+            self.assertEqual(
+                host_probes.headless_settings_path("/repo", "setup"),
+                os.path.abspath(os.path.join("/repo", ".panopticon", "host-settings.json")))

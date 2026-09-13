@@ -1507,3 +1507,131 @@ class TestAllowUnenforcedHelpNamesTheCapability(unittest.TestCase):
         rendered = buf.getvalue()
         self.assertIn("--allow-unenforced", rendered)
         self.assertIn(hosts.ARTIFACT_WRITE_GUARD, rendered)
+
+
+class TestDriverPersistCLI(unittest.TestCase):
+    def _repo(self):
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        os.makedirs(os.path.join(d, ".panopticon", "runs", "t"))
+        return d
+
+    def _request(self, d, entries):
+        runio._write_json(os.path.join(d, ".panopticon", "dispatch-request.json"),
+                          {"schema_version": 1, "run_id": "RID", "checkpoint": "scout",
+                           "group": None, "entries": entries})
+
+    def test_persist_writes_the_named_entry_from_a_file(self):
+        d = self._repo()
+        out = os.path.join(d, ".panopticon", "runs", "t", "scout-app.json")
+        self._request(d, [{"id": "scout-app", "out_file": out, "delivery": "return_json"}])
+        reply = os.path.join(d, "reply.txt")
+        with open(reply, "w", encoding="utf-8") as fh:
+            fh.write('```json\n{"domains": [], "files": [], "tools": []}\n```')
+        with mock.patch("scripts.phases.requests.request_path",
+                        return_value=os.path.join(d, ".panopticon", "dispatch-request.json")):
+            rc = driver.main(["persist", "scout-app", "--file", reply, d])
+        self.assertEqual(rc, 0)
+        self.assertTrue(os.path.isfile(out))
+
+    def test_persist_accepts_the_target_after_the_options_on_every_python(self):
+        # CI (Python 3.11): argparse < 3.12 binds the optional `target`
+        # positional when it first sees `entry_id`, so a target given AFTER
+        # `--file`/`--pr` -- the documented `driver persist ENTRY_ID [--file
+        # PATH] ... [target]` order -- came back "unrecognized arguments".
+        # `driver.parse_cli` folds one trailing bare word into `target` on
+        # the persist verb only, so both orders parse on 3.11 and 3.14 alike.
+        a = driver.parse_cli(["persist", "scout-app", "--file", "/dev/null", "/tmp/t"])
+        self.assertEqual((a.verb, a.entry_id, a.file, a.target),
+                         ("persist", "scout-app", "/dev/null", "/tmp/t"))
+        b = driver.parse_cli(["persist", "scout-app", "/tmp/t", "--file", "/dev/null"])
+        self.assertEqual(b.target, "/tmp/t")
+        c = driver.parse_cli(["persist", "scout-app", "--pr", "42", "--base", "origin/main", "/tmp/t"])
+        self.assertEqual((c.pr, c.base, c.target), (42, "origin/main", "/tmp/t"))
+        # a second bare word is still an error, and so is any leftover on
+        # another verb -- the fold is persist-only and one word wide
+        with self.assertRaises(SystemExit):
+            driver.parse_cli(["persist", "scout-app", "/tmp/t", "/tmp/u"])
+        with self.assertRaises(SystemExit):
+            driver.parse_cli(["run", ".", "--host", "claude", "extra"])
+
+    def test_persist_reaches_a_pr_runs_review_root(self):
+        # I6 (plan 6 final review): a `--pr` run's review root is the PR
+        # WORKTREE, not the operator's checkout -- `driver run` resolves it
+        # with base/pr and pins it in the manifest. `driver persist` resolved
+        # `args.target` alone, so on a `--pr` run it looked for the dispatch
+        # request in the wrong tree and refused every entry with "no entry in
+        # the current dispatch request". The persist verb had no way to say
+        # which run it meant.
+        parser_args = driver.parse_cli(
+            ["persist", "scout-app", "--pr", "42", "--base", "origin/main", "."])
+        self.assertEqual((parser_args.pr, parser_args.base), (42, "origin/main"))
+        d = self._repo()
+        self._request(d, [])
+        with mock.patch("scripts.phases.runio.resolve_review_root",
+                        return_value=(d, None, None)) as rr, \
+             contextlib.redirect_stderr(io.StringIO()):
+            driver.main(["persist", "scout-app", "--pr", "42", "--base", "origin/main", d])
+        self.assertEqual(rr.call_args.args, (d,))
+        self.assertEqual(rr.call_args.kwargs, {"base": "origin/main", "pr": 42})
+
+    def test_persist_refuses_an_unknown_entry_with_exit_1(self):
+        d = self._repo()
+        self._request(d, [])
+        with mock.patch("scripts.phases.requests.request_path",
+                        return_value=os.path.join(d, ".panopticon", "dispatch-request.json")), \
+             contextlib.redirect_stderr(io.StringIO()) as err:
+            rc = driver.main(["persist", "scout-app", "--file", os.devnull, d])
+        self.assertEqual(rc, 1)
+        self.assertIn("scout-app", err.getvalue())
+
+
+class TestDriverLoopCLI(unittest.TestCase):
+    def test_loop_accepts_every_run_flag_plus_its_own(self):
+        args = driver.build_parser().parse_args(
+            ["loop", "x", "--host", "claude", "--security", "redteam", "--no-tools", "-g", "Auth",
+             "--mode", "session", "--concurrency", "4", "--max-iterations", "7",
+             "--max-budget-usd", "2.5", "--max-turns", "30", "--entry-timeout", "600"])
+        self.assertEqual(args.verb, "loop")
+        self.assertEqual((args.mode, args.concurrency, args.max_iterations, args.max_budget_usd,
+                          args.max_turns, args.entry_timeout, args.scope_group),
+                         ("session", 4, 7, 2.5, 30, 600, "Auth"))
+        # I8: no literal default -- the parser leaves `--mode` unset and
+        # `orchestrate.loop` resolves it from the host (headless where a
+        # runner exists, session where none does). A "headless" default here
+        # is what made `driver loop --host gemini` an error instead of the
+        # documented degrade to session mode.
+        self.assertIsNone(driver.build_parser().parse_args(["loop", "x"]).mode)
+
+    def test_no_loop_only_flag_is_an_anti_drift_key(self):
+        # M15 (plan 6 final review): spec 4.3/5.4 -- the loop's own knobs say
+        # HOW this invocation runs entries, not WHAT the run is, so a resume
+        # must be free to change concurrency, the budget or the timeouts
+        # without `conflicting_flags` refusing it as drift. Nothing enforced
+        # that; a later flag added to `_cli_flags` by habit would have wedged
+        # every resume that spelled it differently.
+        loop_only = ("mode", "concurrency", "max_iterations", "max_budget_usd",
+                     "max_turns", "entry_timeout", "setup", "max_groups")
+        overlap = sorted(set(loop_only) & set(driver.run_manifest._FLAG_KEYS))
+        self.assertEqual(overlap, [])
+        # and they really are loop-only: `driver run` does not take them
+        run_args = driver.build_parser().parse_args(["run", "x"])
+        for flag in loop_only:
+            with self.subTest(flag=flag):
+                self.assertFalse(hasattr(run_args, flag), flag)
+
+    def test_loop_modes_match_the_runner_seam(self):
+        import scripts.runners.base as runners_base
+        self.assertEqual(tuple(driver.hosts_runner_modes()), runners_base.MODES)
+
+    def test_run_has_no_mode_flag(self):
+        with self.assertRaises(SystemExit):
+            driver.build_parser().parse_args(["run", "x", "--mode", "session"])
+        self.assertFalse(hasattr(driver.build_parser().parse_args(["run", "x"]), "mode"))
+
+    def test_loop_verb_dispatches_into_orchestrate(self):
+        with mock.patch("scripts.orchestrate.loop", return_value={"status": "complete"}) as lp, \
+             contextlib.redirect_stdout(io.StringIO()):
+            rc = driver.main(["loop", "x"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(lp.call_args.args[0].verb, "loop")

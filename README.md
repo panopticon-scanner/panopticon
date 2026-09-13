@@ -70,7 +70,8 @@ Invoke it with `$panopticon` or select it from `/skills`. This registers Codex's
 read-only role profiles for the 5.x roles. **The Codex execution adapter is being
 rebuilt for 5.2** — `codex_runner.py` drove the retired 4.x `panel_review`/
 `lens_sweep` roles and was removed with them. Until then, drive a Codex session
-through `driver run --host generic` (see `docs/PANOPTICON.md`, "Modes").
+through `driver loop --mode session --host generic` (see `docs/PANOPTICON.md`,
+"Modes" and "Driver run-loop").
 
 ### Python Package / CLI (Development & Direct Use)
 

@@ -234,6 +234,45 @@ def probe_entry_model_bound(host, registration_dir=None):
 WRITE_GUARD_ARMED = "write-guard-armed"
 
 
+def headless_settings_path(review_root, namespace=None):
+    """The settings file the headless runner will arm: runs/<tag>/host-settings.json
+    once a manifest exists, flat top-level for `namespace == "setup"` (R-P6-5;
+    namespace-aware since Task 6 fix round 1, item 2).
+
+    Setup keeps its OWN manifest (setup-manifest.json), never
+    run-manifest.json -- so if this review_root already holds a run-manifest.json
+    from an EARLIER review run (a realistic sequence: review first, refresh
+    groups.yml with `driver loop --setup` later), routing setup's settings
+    path through `runio._pano`'s manifest-tag lookup would resolve it into
+    that PRIOR run's `runs/<tag>/` folder and clobber its host-settings.json/
+    dispatch-ledger.jsonl/usage.json. `namespace == "setup"` bypasses the tag
+    lookup entirely and resolves directly to the flat top-level path, so
+    setup never depends on -- or disturbs -- whatever other run's manifest
+    happens to be lying around. Every other namespace (a review run) still
+    resolves through `runio._pano`, so the probe and the runner name the
+    same file."""
+    import scripts.phases.runio as runio
+    import scripts.runners.base as runners_base
+    if namespace == "setup":
+        return os.path.abspath(os.path.join(review_root, ".panopticon", runners_base.SETTINGS_FILE))
+    return os.path.abspath(runio._pano(review_root, runners_base.SETTINGS_FILE))
+
+
+def _headless_subject_ok(settings_path):
+    """(ok, detail): the runner creates the file itself, so demand only that
+    its directory exists or can be created, and is writable."""
+    settings_dir = os.path.dirname(os.path.abspath(settings_path)) or "."
+    probe_dir = settings_dir
+    while not os.path.isdir(probe_dir):
+        parent = os.path.dirname(probe_dir)
+        if parent == probe_dir:
+            break
+        probe_dir = parent
+    if not os.access(probe_dir, os.W_OK):
+        return False, "the runner cannot arm its guards: %s is not writable" % probe_dir
+    return True, ""
+
+
 def _round_trip_denies_an_outside_write():
     """Arm the guard in a throwaway sandbox and confirm it actually denies.
 
@@ -276,7 +315,7 @@ def _round_trip_denies_an_outside_write():
     return True, "arm/deny round-trip ok"
 
 
-def probe_write_guard_armed(host, session_root=None):
+def probe_write_guard_armed(host, session_root=None, settings_path=None):
     """This host CAN mediate a reviewer's Write when it fans out.
 
     COUPLING, and it is load-bearing: the subject of this probe is whatever
@@ -300,10 +339,22 @@ def probe_write_guard_armed(host, session_root=None):
     So: prove the mechanism mediates (in a sandbox), and prove the place the
     host will arm is writable. #1493 -- a guard armed at a path nothing reads is
     worse than no guard -- so the resolved path is named either way.
+
+    With `settings_path` (headless), the subject is that file; the runner
+    creates it, so only its directory is checked (spec 5.4).
     """
     if not hosts.declares(host, hosts.ARTIFACT_WRITE_GUARD):
         return (hosts.UNKNOWN, None,
                 "host %r claims no artifact write guard" % host)
+    if settings_path is not None:
+        ok, detail = _headless_subject_ok(settings_path)
+        if not ok:
+            return (hosts.REFUTED, WRITE_GUARD_ARMED, detail)
+        ok, detail = _round_trip_denies_an_outside_write()
+        if not ok:
+            return (hosts.REFUTED, WRITE_GUARD_ARMED, detail)
+        return (hosts.PROVEN, WRITE_GUARD_ARMED,
+                "%s; the runner will arm at %s" % (detail, os.path.abspath(settings_path)))
     settings_path, _allowlist_path, _defaults = write_guard_hook._resolve(
         None, None, session_root)
     settings_dir = os.path.dirname(os.path.abspath(settings_path)) or "."
@@ -344,9 +395,10 @@ def _fake_subagent(parent_transcript, agent_id, entry_id):
 
 def _round_trip_confines_reads():
     """Arm the read guard in a throwaway sandbox, bind two fake subagents
-    through fake transcripts, and drive the ten payloads of design spec 5
-    through adjudicate(). Never touches the session's real settings, scope
-    file or transcripts. Returns (ok, detail)."""
+    through fake transcripts, and drive the ten payloads of design spec 5,
+    plus four env-binding payloads of spec 5.3 (plan 6), through
+    adjudicate(). Never touches the session's real settings, scope file or
+    transcripts. Returns (ok, detail)."""
     try:
         with tempfile.TemporaryDirectory() as sandbox:
             settings = os.path.join(sandbox, "settings.json")
@@ -375,7 +427,9 @@ def _round_trip_confines_reads():
                            "transcript_path": parent, "cwd": sandbox}
                 if agent:
                     payload["agent_id"] = agent
-                return read_guard_hook.adjudicate(payload, scope_file)[0]
+                # A stray PANOPTICON_ENTRY_ID in the operator's shell must
+                # never change this probe's verdict -- env is explicit here.
+                return read_guard_hook.adjudicate(payload, scope_file, env={})[0]
 
             cell_dir = os.path.dirname(inside)
             rows = (
@@ -393,23 +447,61 @@ def _round_trip_confines_reads():
             for name, got, want in rows:
                 if got != want:
                     return False, "the guard %s: %s" % ("ALLOWED" if got else "DENIED", name)
+
+            # Spec 5.3 (plan 6): the env binding the headless runner relies on.
+            env_rows = (
+                ("env-bound read inside its entry",
+                 {"tool_name": "Read", "tool_input": {"file_path": inside}},
+                 {read_guard_hook.ENV_ENTRY_ID: "probe-cell"}, True),
+                ("env-bound read outside its entry",
+                 {"tool_name": "Read", "tool_input": {"file_path": outside}},
+                 {read_guard_hook.ENV_ENTRY_ID: "probe-cell"}, False),
+                ("agent_type with no binding",
+                 {"tool_name": "Read", "tool_input": {"file_path": inside},
+                  "agent_type": "panopticon-scout"}, {}, False),
+                # The real headless payload shape: agent_type AND the env id
+                # both present. The env binding governs either way (#1344
+                # plan 6 review finding 1).
+                ("env-bound read inside its entry despite agent_type",
+                 {"tool_name": "Read", "tool_input": {"file_path": inside},
+                  "agent_type": "panopticon-domain-panel"},
+                 {read_guard_hook.ENV_ENTRY_ID: "probe-cell"}, True),
+            )
+            for name, env_payload, env, want in env_rows:
+                got = read_guard_hook.adjudicate(env_payload, scope_file, env=env)[0]
+                if got != want:
+                    return False, "env binding: the guard %s: %s" % (
+                        "ALLOWED" if got else "DENIED", name)
             read_guard_hook.uninstall(settings_path=settings, scope_path=scope_file)
     except OSError as exc:
         return False, "sandbox round-trip could not run: %s" % exc
-    return True, "arm/bind/deny round-trip ok (10 rows)"
+    return True, "arm/bind/deny round-trip ok (%d rows)" % (len(rows) + len(env_rows))
 
 
-def probe_read_guard_armed(host, session_root=None):
+def probe_read_guard_armed(host, session_root=None, settings_path=None):
     """This host CAN confine a dispatched subagent's reads to its entry.
 
     Same coupling as probe_write_guard_armed, for the same reason: the
     subject is whatever read_guard_hook._resolve(None, None, session_root)
     names -- the file install() will arm -- and the #1493 existence check is
     applied unconditionally (fail-closed). NOT "armed right now": the host
-    arms it per fan-out, so at run start it is legitimately absent."""
+    arms it per fan-out, so at run start it is legitimately absent.
+
+    With `settings_path` (headless), the subject is that file; the runner
+    creates it, so only its directory is checked (spec 5.4).
+    """
     if not hosts.declares(host, hosts.READ_SCOPE_CONFINED):
         return (hosts.UNKNOWN, None,
                 "host %r claims no read-scope confinement" % host)
+    if settings_path is not None:
+        ok, detail = _headless_subject_ok(settings_path)
+        if not ok:
+            return (hosts.REFUTED, READ_GUARD_ARMED, detail)
+        ok, detail = _round_trip_confines_reads()
+        if not ok:
+            return (hosts.REFUTED, READ_GUARD_ARMED, detail)
+        return (hosts.PROVEN, READ_GUARD_ARMED,
+                "%s; the runner will arm at %s" % (detail, os.path.abspath(settings_path)))
     settings_path, _scope_path, _defaults = read_guard_hook._resolve(None, None, session_root)
     settings_dir = os.path.dirname(os.path.abspath(settings_path)) or "."
     if not os.path.isfile(settings_path):
@@ -624,7 +716,7 @@ def _no_probe_reason(row, capability, host):
 
 
 def run_probes(host, review_root, session_root=None, registration_dir=None,
-               home=None, shadow=None):
+               home=None, shadow=None, settings_path=None):
     """Establish this host's posture now, and return the artifact body.
 
     THREE DIFFERENT TREES, and collapsing them is what produced both of this
@@ -657,6 +749,11 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
     computed. Without it the scan ran twice per invocation: duplicate work,
     and a TOCTOU window in which the artifact and the refusal could disagree
     about the same tree. `home` exists for fixtures.
+
+    `settings_path` (plan 6, spec 5.4) names the file a HEADLESS runner will
+    arm; when given, it is the two guard probes' subject INSTEAD of
+    `session_root`. `None` (session mode, or plain `driver run`) leaves them
+    probing the session root exactly as before.
     """
     findings = {}          # capability -> list of (state, by, detail)
     session_root = session_root or os.getcwd()
@@ -674,13 +771,15 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
         REGISTERED_SHELL_TOOLS:
             lambda: probe_registered_shell_tools(host, registration_dir),
         WRITE_GUARD_ARMED:
-            lambda: probe_write_guard_armed(host, session_root=session_root),
+            lambda: probe_write_guard_armed(host, session_root=session_root,
+                                            settings_path=settings_path),
         TRANSCRIPT_DIR:
             lambda: probe_transcript_dir(host, session_root, home=home),
         ENTRY_MODEL_BOUND:
             lambda: probe_entry_model_bound(host, registration_dir),
         READ_GUARD_ARMED:
-            lambda: probe_read_guard_armed(host, session_root=session_root),
+            lambda: probe_read_guard_armed(host, session_root=session_root,
+                                           settings_path=settings_path),
     }
     if set(runners) != set(PROBE_IDS):
         raise RuntimeError("host_probes.PROBE_IDS is out of step with run_probes' runner "

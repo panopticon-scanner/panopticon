@@ -19,8 +19,12 @@ cannot re-bind it.
 
 SCOPE, STATED PLAINLY: this covers `_READ_TOOLS` only. No fan-out shell grants
 Bash (`registered-shell-tools` proves that), so Bash needs no adjudication
-here and gets none. The orchestrator -- a payload with no `agent_id` -- is
-never confined, exactly as the write guard trusts it: it runs the driver.
+here and gets none. The orchestrator -- a payload with no `agent_id` and no
+`agent_type` -- is never confined, exactly as the write guard trusts it: it
+runs the driver. Plan 6 adds a second identity, `agent_type` with no
+`agent_id`: the headless runner's `claude -p` process IS the reviewer, so
+this payload shape is a session nothing bound, not the orchestrator, and
+ENV_ENTRY_ID (below) is how the runner binds it (spec 5.3).
 
 FAIL-CLOSED WHILE ARMED: a subagent that cannot be bound, an entry id the
 armed scope does not name, an unresolvable path, or a missing/malformed scope
@@ -44,6 +48,12 @@ _MATCHER = "|".join(_READ_TOOLS_LIST)
 
 MARKER_PREFIX = "panopticon-entry: "
 SCOPE_KEYS = ("files", "dirs", "reads")
+
+# Spec 5.3 (plan 6): the headless runner exports this per subprocess. It is
+# the FIRST binding source -- a headless `claude -p` session is the reviewer
+# itself (agent_type, no agent_id), so a transcript-only rule would fail
+# OPEN for every headless entry.
+ENV_ENTRY_ID = "PANOPTICON_ENTRY_ID"
 
 
 def marker_line(entry_id):
@@ -258,17 +268,27 @@ def _load_scope(scope_path):
     return out, ""
 
 
-def adjudicate(payload, scope_path):
+def adjudicate(payload, scope_path, env=None):
     """(allow, reason) for one hook payload against the scope file at
-    `scope_path`. The orchestrator (no `agent_id`) is never confined; every
-    subagent is, fail-closed."""
+    `scope_path`. Binding order (spec 5.3): the environment's ENV_ENTRY_ID,
+    else the subagent transcript marker, else an `agent_type` with no binding
+    is DENIED, else the orchestrator is never confined. `env` defaults to
+    os.environ; the probe and the tests pass their own."""
     if not isinstance(payload, dict):
         return True, ""
     tool_name = payload.get("tool_name", "")
     if tool_name not in _READ_TOOLS:
         return True, ""
+    env = os.environ if env is None else env
+    env_id = env.get(ENV_ENTRY_ID)
     agent_id = payload.get("agent_id")
-    if not agent_id:
+    agent_type = payload.get("agent_type")
+    if not env_id and not agent_id:
+        if agent_type:
+            return False, ("%s is denied: this session runs as agent_type %r but "
+                           "nothing bound it to a panopticon entry (no %s in the "
+                           "environment, no subagent transcript)"
+                           % (tool_name, agent_type, ENV_ENTRY_ID))
         return True, ""
     scopes, error = _load_scope(scope_path)
     if scopes is None:
@@ -279,14 +299,22 @@ def adjudicate(payload, scope_path):
     if (isinstance(tool_input, dict) and tool_name in ("Grep", "Glob")
             and not tool_input.get("path")):
         tool_input = dict(tool_input, path=payload.get("cwd") or os.getcwd())
-    entry_id = bind(agent_id, payload.get("transcript_path"))
+    if env_id:
+        entry_id = env_id if isinstance(env_id, str) else None
+    else:
+        entry_id = bind(agent_id, payload.get("transcript_path"))
     if entry_id is None:
         return decide(tool_name, tool_input, None)
     scope = scopes.get(entry_id)
     if scope is None:
-        return False, ("%s is denied: this subagent is bound to entry %r, which the "
+        return False, ("%s is denied: this agent is bound to entry %r, which the "
                        "armed read scope does not name" % (tool_name, entry_id))
-    return decide(tool_name, tool_input, scope)
+    allow, reason = decide(tool_name, tool_input, scope)
+    if not allow and reason:
+        # decide() is entry-agnostic (plan 5, unchanged); name the bound
+        # entry here so a denial is actionable without re-deriving the bind.
+        reason = "%s (bound to entry %r)" % (reason, entry_id)
+    return allow, reason
 
 
 def _deny_response(reason):
@@ -342,10 +370,32 @@ def _load(settings_path):
 
 
 def _atomic_write_json(path, data, indent=None):
+    """Stage at `<path>.tmp`, then rename -- never writing THROUGH a symlink
+    planted at that temp name (I7).
+
+    A plain `open(tmp, "w")` follows a link. The settings, allowlist and scope
+    files this writes all live where an untrusted target can reach: the run
+    folder sits inside the scanned tree, and a redteam target can commit
+    `<name>.tmp` as a link to any file the invoking user can write (a dotfile,
+    authorized_keys), whose contents this would then replace with the guard's
+    own JSON. Same class as #run9 SEC-X0X, which `runio._open_w_nofollow`
+    closed for `.panopticon` artifacts.
+
+    Spelled with os flags rather than by calling that helper: a guard hook is
+    executed as its own subprocess by the host's PreToolUse command and has to
+    import standing alone, so it may not reach into the driver's packages.
+    O_EXCL|O_NOFOLLOW refuses both a symlink and a stale regular leftover, so
+    the leftover is removed first and the open then creates a fresh file or
+    fails loudly -- it never silently writes somewhere else.
+    """
     parent = os.path.dirname(path) or "."
     os.makedirs(parent, exist_ok=True)
     tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
+    if os.path.islink(tmp) or os.path.exists(tmp):
+        os.unlink(tmp)                  # drop the LINK, never follow it
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                 | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=indent)
         fh.flush()
         os.fsync(fh.fileno())

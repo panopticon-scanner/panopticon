@@ -16,6 +16,11 @@ def _read_doc():
         return fh.read()
 
 
+def _read_skill_md():
+    with open(os.path.join(ROOT, "SKILL.md"), encoding="utf-8") as fh:
+        return fh.read()
+
+
 def _section(text, start, end):
     """Slice `text` between two heading markers, asserting BOTH exist first so a
     renamed marker fails loudly instead of raising an opaque IndexError (missing
@@ -66,6 +71,11 @@ class TestSkillMd(unittest.TestCase):
         # 4.3.2: meta.cost is the measured 4.x baseline for 5.x economics.
         self.assertIn("meta.cost", self.text)
         self.assertIn("{phase, role, model, count}", self.text)
+        # Fix round 1: the ledger's own field is `denials` (what
+        # Ledger.record writes) -- `permission_denials` names only the
+        # incoming host envelope this field carries, and the doc must not
+        # claim that's the key on disk.
+        self.assertIn("denials", self.text)
 
     def test_documents_the_host_capability_disclosure_and_that_it_does_not_gate(self):
         # #1344 F3b. This file is the operator-facing contract: it already
@@ -129,13 +139,21 @@ class TestSkillMd(unittest.TestCase):
     def test_documents_the_read_guard(self):
         # #1344 plan 5: the read guard is a host duty alongside the write
         # guard, and read_scope_confined moves from unprobed-everywhere to
-        # proven-on-claude. Both surfaces must say so.
+        # proven-on-claude. Both surfaces must say so. Plan 6: arming/tearing
+        # down both guards is now the LOOP's job at every checkpoint, not a
+        # hand-run "Fan-out (per checkpoint)" bullet list (deleted) -- anchor
+        # on the run-loop section as a whole instead.
         doc = _read_doc().replace("**", "")
-        fanout = doc[doc.index("Fan-out (per checkpoint)"):doc.index("A malformed self-write")]
-        self.assertIn('read_guard_hook.install(req["entries"])', fanout)
-        self.assertIn("panopticon-entry:", fanout)
-        self.assertIn('entry["marker"]', fanout)
-        self.assertIn("read_guard_hook.uninstall", fanout)
+        run_loop = doc[doc.index("## Driver run-loop"):doc.index("## Driver setup")]
+        self.assertIn("read_guard_hook.install", run_loop)
+        self.assertIn("read_guard_hook.uninstall", run_loop)
+        # Fix round 1: the marker-line binding contract (still live code --
+        # read_guard_hook.adjudicate falls back to the transcript marker
+        # whenever PANOPTICON_ENTRY_ID is absent) was dropped with the
+        # deleted fan-out list and never re-homed. Session mode is exactly
+        # where a host still spells this out by hand, so it belongs there.
+        self.assertIn("panopticon-entry:", run_loop)
+        self.assertIn('entry["marker"]', run_loop)
         caps = doc[doc.index("## Host capabilities (5.2)"):doc.index("## Code layout (5.2)")]
         self.assertIn("read-guard-armed", caps)
         self.assertNotIn("`read_scope_confined` is `unknown` on every host today", caps)
@@ -146,10 +164,12 @@ class TestSkillMd(unittest.TestCase):
         # I4: coverage._scout_entry and setup._setup_scan_entry also emit
         # markers+scopes and their templates tell the agent the fence is
         # host-enforced -- the arming duty must be stated at those two
-        # checkpoints too, not only in the fan-out bullet that covers
-        # review/verify.
+        # checkpoints too, not only generically for review/verify. Plan 6:
+        # the "Fan-out (per checkpoint)" bullet list is gone (the loop does
+        # this now), so the scout paragraph's end anchor is the next kept
+        # paragraph instead.
         doc = _read_doc().replace("**", "")
-        scout_para = doc[doc.index("At the `scout` checkpoint"):doc.index("Fan-out (per checkpoint)")]
+        scout_para = doc[doc.index("At the `scout` checkpoint"):doc.index("A malformed self-write")]
         self.assertIn("read_guard_hook.install", scout_para)
         self.assertIn("read_guard_hook.uninstall", scout_para)
         setup_para = doc[doc.index("1. scan —"):doc.index("2. ingest —")]
@@ -182,11 +202,14 @@ class TestSkillMd(unittest.TestCase):
         # 5.0: the standalone `## Host dispatch` section (keyed to the
         # deleted manual pipeline) is gone -- host dispatch is now a
         # paragraph inside the driver run-loop. `driver run --host` only
-        # accepts claude|generic; Kimi/Codex are named as the generic path's
-        # examples, not as separate --host values.
+        # accepts claude|generic|gemini; Kimi/Codex are named as the generic
+        # path's examples, not as separate --host values. Plan 6: the loop
+        # names Claude as the concrete headless runner and falls back to
+        # session mode (which the generic/gemini/kimi path all use) for
+        # everything else, rather than a per-host dispatch bullet each.
         self.assertNotIn("## Host dispatch", self.text)
         loop = _section(self.text, "## Driver run-loop", "## Output")
-        for host in ("Claude", "Kimi", "generic"):
+        for host in ("Claude", "kimi", "generic"):
             self.assertIn(host, loop, host)
 
     def test_pins_round1_flags_and_render_advisor(self):
@@ -214,7 +237,9 @@ class TestSkillMd(unittest.TestCase):
         self.assertNotIn("their tool policy allows Bash", self.text)
 
     def test_host_dispatch_is_enforcement_conditional(self):
-        for token in ("enforced", "subagent_type", "--agents-dir", "--emit-host-agents"):
+        # Plan 6: the loop dispatches through the runner's CLI (`--agent`),
+        # not an SDK-style `subagent_type:` dispatch a host performed by hand.
+        for token in ("enforced", "--agent", "--agents-dir", "--emit-host-agents"):
             self.assertIn(token, self.text, token)
 
     def test_clean_tree_check_and_hostile_guidance(self):
@@ -272,10 +297,31 @@ class TestSkillMd(unittest.TestCase):
     def test_has_driver_run_loop_section(self):
         self.assertIn("## Driver run-loop", self.text)
         loop = _section(self.text, "## Driver run-loop", "## Output")
-        # the controller loop + status protocol
-        self.assertIn("driver.py run", loop)
+        # the controller loop + status protocol -- plan 6: `driver run` is
+        # named as the primitive the loop calls, not given its own fully
+        # qualified `driver.py run` invocation line (that belongs to `loop`
+        # and `persist` now).
+        self.assertIn("driver run", loop)
         for word in ("checkpoint", "dispatch-request.json", "re-invoke", "complete"):
             self.assertIn(word, loop)
+        # C2 (plan 6 final review): the request path is a FIELD of the printed
+        # `dispatch` status, not a fixed location -- a review's request is
+        # per-run (`runs/<tag>/`) and `--setup`'s is a different file entirely
+        # -- so the guide must send a session host to `dispatch_request`
+        # rather than to a path it would hard-code and get wrong.
+        self.assertIn("`dispatch_request` field", loop)
+        # Fix round 2: the per-entry failure cap is a documented termination
+        # condition, not an implementation detail -- an operator whose run
+        # stops after three launches of one cell has to be able to find out
+        # why, and that it is not something a flag can raise.
+        self.assertIn("per-entry cap of 3 consecutive", loop)
+        # I6 (fix round 3): `driver persist` grew `--pr`/`--base` because a PR
+        # run's review root is the worktree; a session host that does not pass
+        # them gets "no entry in the current dispatch request" and no clue why.
+        self.assertIn("pass the same `--pr`/`--base` to **both**", loop)
+        # I8: same for the guide -- the documented default names the condition.
+        self.assertIn("default: headless when the host has a headless runner, "
+                      "otherwise session", loop)
         # unified guard-confined self-write (no write_mode/return handshake)
         self.assertIn("write-guard", loop)
         self.assertIn("self-write", loop)
@@ -599,3 +645,48 @@ class TestDocsMatchTheTree(unittest.TestCase):
         self.assertIn("CHECKPOINT_KINDS", line[0],
                       "the checkpoint comment should name CHECKPOINT_KINDS "
                       "rather than restate its members: %s" % line[0].strip())
+
+
+class TestDriverLoopContract(unittest.TestCase):
+    def test_driver_loop_is_the_host_contract(self):
+        doc = _read_doc()
+        run_loop = doc[doc.index("## Driver run-loop"):doc.index("## Driver setup")]
+        for token in ("python3 skill/scripts/driver.py loop", "--mode session", "driver persist",
+                      "dispatch-ledger.jsonl", "usage.json", "--max-iterations", "--max-budget-usd",
+                      "host-settings.json", "never touched"):
+            with self.subTest(token=token):
+                self.assertIn(token, run_loop)
+
+    def test_session_mode_contract_names_persist_and_the_gate(self):
+        doc = _read_doc()
+        run_loop = doc[doc.index("## Driver run-loop"):doc.index("## Driver setup")]
+        self.assertIn('`dispatch`', run_loop)
+        self.assertIn("driver persist <id>", run_loop)
+        self.assertIn("refuses to advance", run_loop)
+        self.assertIn("write_guard_hook.install", run_loop.replace("**", ""))  # still documented as what the LOOP does
+        self.assertNotIn("Install the write-guard from the request's entries", run_loop)
+
+    def test_the_thirteen_duties_are_stated_as_the_loops_work(self):
+        doc = _read_doc().replace("**", "")
+        run_loop = doc[doc.index("## Driver run-loop"):doc.index("## Driver setup")]
+        for phrase in ("The loop arms", "The loop persists", "The loop re-checks the pending set",
+                       "The loop tears the guards down", "The loop ledgers"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, run_loop)
+        for stale in ("Then re-invoke `driver run` (step 1)", "run it after `validate` and before re-running synthesize",
+                      "Do not add a second \"persist\" agent per entry"):
+            with self.subTest(stale=stale):
+                self.assertNotIn(stale, run_loop)
+
+    def test_quick_reference_names_loop_and_persist(self):
+        skill = _read_skill_md()
+        self.assertIn("driver loop", skill)
+        self.assertIn("driver persist", skill)
+        self.assertIn("--mode {headless,session}", skill)
+        # I8 (plan 6 final review): the mode DEFAULT is host-dependent --
+        # headless where a runner exists, session where none does -- so a
+        # reader must not be left assuming `driver loop --host gemini` errors.
+        self.assertIn("defaults to headless when the host has a headless", skill)
+        # I6 (fix round 3): the persist verb's own --pr/--base, in the line a
+        # reader copies the invocation from.
+        self.assertIn("[--pr N] [--base REF]", skill)
