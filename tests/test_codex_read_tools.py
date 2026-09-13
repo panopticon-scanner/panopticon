@@ -187,8 +187,12 @@ def test_read_search_and_listing_limits(tree, monkeypatch):
     monkeypatch.setattr(read_tools, "MAX_FILE_BYTES", 10)
     assert "truncated" in body(reader.call("read_file", {"path": "source/first.py"}))
     assert "truncated" in body(reader.call("search", {"pattern": "alpha"}))
+    # C-1: a cap now TRUNCATES the listing instead of refusing it -- the old
+    # refusal made list_files unusable on any repository-sized directory grant.
     monkeypatch.setattr(read_tools, "MAX_FILES", 1)
-    assert reader.call("list_files", {})["isError"] is True
+    listed = reader.call("list_files", {})
+    assert listed["isError"] is False
+    assert "truncated" in body(listed)
 
 
 def test_output_size_is_bounded(tree, monkeypatch):
@@ -272,3 +276,67 @@ def test_malformed_and_oversized_protocol_input(tree, monkeypatch):
     sink = io.StringIO()
     read_tools.serve(reader_for(tree), io.StringIO("x" * 11), sink)
     assert json.loads(sink.getvalue())["error"]["code"] == -32700
+
+
+# --- C-1: enumeration must survive a real repository ------------------------
+
+
+def test_vcs_and_dependency_directories_are_never_walked(tree, monkeypatch):
+    root, source, _first, _second, _outside = tree
+    git = source / ".git"
+    git.mkdir()
+    for number in range(20):
+        (git / ("object-%d" % number)).write_text("x", encoding="utf-8")
+    (source / "node_modules").mkdir()
+    (source / "node_modules" / "dep.py").write_text("vendored", encoding="utf-8")
+    (source / "nested").mkdir()
+    (source / "nested" / "__pycache__").mkdir()
+    (source / "nested" / "__pycache__" / "first.pyc").write_text("x", encoding="utf-8")
+    monkeypatch.setattr(read_tools, "MAX_FILES", 8)
+    listed = reader_for(tree, directories=True).call("list_files", {"pattern": "*"})
+    assert listed["isError"] is False
+    assert "first.py" in body(listed)
+    assert ".git" not in body(listed)
+    assert "node_modules" not in body(listed)
+    assert "__pycache__" not in body(listed)
+    assert "truncated" not in body(listed)
+
+
+def test_list_files_narrows_by_path_and_denies_a_path_outside_the_grant(tree):
+    root, source, _first, _second, _outside = tree
+    nested = source / "nested"
+    nested.mkdir()
+    (nested / "third.py").write_text("gamma\n", encoding="utf-8")
+    reader = reader_for(tree, directories=True)
+    narrowed = reader.call("list_files", {"pattern": "*.py", "path": "source/nested"})
+    assert narrowed["isError"] is False
+    assert "third.py" in body(narrowed)
+    assert "first.py" not in body(narrowed)
+    denied = reader.call("list_files", {"pattern": "*", "path": str(root)})
+    assert denied["isError"] is True
+    assert "outside" in body(denied) and "scope" in body(denied)
+    assert reader_for(tree).call(
+        "list_files", {"pattern": "*", "path": "source"})["isError"] is True
+
+
+def test_exceeding_an_enumeration_cap_truncates_rather_than_refusing(tree, monkeypatch):
+    reader = reader_for(tree, directories=True)
+    monkeypatch.setattr(read_tools, "MAX_FILES", 1)
+    listed = reader.call("list_files", {"pattern": "*"})
+    assert listed["isError"] is False
+    assert "pass path= to narrow" in body(listed)
+    assert "truncated" in body(listed)
+    searched = reader.call("search", {"pattern": "beta"})
+    assert searched["isError"] is False
+    assert "pass path= to narrow" in body(searched)
+
+
+def test_the_repository_checkout_itself_is_listable_under_production_caps():
+    from conftest import REPO_ROOT
+    reader = read_tools.Reader({"files": [], "dirs": [REPO_ROOT], "reads": []}, REPO_ROOT)
+    listed = reader.call("list_files", {"pattern": "*"})
+    assert listed["isError"] is False
+    text = body(listed)
+    assert "skill/scripts/codex_read_tools.py" in text
+    for name in read_tools.EXCLUDED_DIRECTORIES:
+        assert (os.sep + name + os.sep) not in text

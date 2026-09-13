@@ -21,6 +21,19 @@ MAX_DIRECTORIES = 512
 MAX_ENTRIES = 20000
 MAX_SEARCH_BYTES = 8 * MAX_FILE_BYTES
 SCOPE_KEYS = ("files", "dirs", "reads")
+# Directory NAMES the walk skips at every depth. A directory grant is the whole
+# repository for the setup scan, and a checkout's VCS store and vendored trees
+# hold far more entries than its source does -- enumerating them exhausts the
+# caps below before a single reviewable file is reached, which is what made
+# list_files unusable on any real target. None of them is review material, so
+# skipping them costs no coverage; a reviewer that genuinely needs one still
+# has read_file on an explicitly granted path.
+EXCLUDED_DIRECTORIES = (
+    ".git", ".hg", ".svn", "node_modules", "vendor", ".venv", "venv",
+    "__pycache__", ".worktrees", ".panopticon", ".tox", ".mypy_cache",
+    ".ruff_cache", ".pytest_cache", "dist", "build", "target",
+)
+TRUNCATION_NOTE = "[truncated: %d of %d entries shown; pass path= to narrow]"
 
 
 def _tool(name, description, properties, required=()):
@@ -37,8 +50,9 @@ TOOLS = [
         "limit": {"type": "integer", "minimum": 1, "maximum": 1000}}, ("path",)),
     _tool("search", "Literal substring search. File-only scopes require an explicit file path.", {
         "pattern": {"type": "string"}, "path": {"type": "string"}}, ("pattern",)),
-    _tool("list_files", "List files within this entry's directory grants; no file-only listing.", {
-        "pattern": {"type": "string"}}),
+    _tool("list_files", "List files within this entry's directory grants; no file-only listing. "
+          "Pass path to list one granted subdirectory.", {
+        "pattern": {"type": "string"}, "path": {"type": "string"}}),
 ]
 
 
@@ -118,26 +132,50 @@ class Reader:
             raise ValueError("Denied: %s is outside this entry's read scope" % path)
 
     def _files(self, directories):
-        """Bounded descriptor-based enumeration; never walk linked directories."""
+        """Bounded descriptor-based enumeration; never walk linked directories.
+
+        Returns (files, truncated). A cap STOPS the walk and marks the answer
+        truncated rather than refusing it: refusing made the only Glob a Codex
+        reviewer has fail outright on every repository larger than the caps,
+        while advising it to "narrow the path" -- which list_files had no way
+        to accept. A bounded listing plus an explicit truncation line is both
+        honest and actionable; `path` is how the reviewer narrows.
+        """
         pending, found, visited, examined = sorted(directories, reverse=True), set(), 0, 0
-        while pending:
+        truncated = False
+        while pending and not truncated:
             directory = pending.pop()
             visited += 1
             if visited > MAX_DIRECTORIES:
-                raise ValueError("read scope directory enumeration limit exceeded; narrow the path")
+                truncated = True
+                break
             with _open(directory, directory=True) as fd, os.scandir(fd) as entries:
                 for entry in entries:
                     examined += 1
                     if examined > MAX_ENTRIES:
-                        raise ValueError("read scope enumeration limit exceeded; narrow the path")
+                        truncated = True
+                        break
                     path = os.path.join(directory, entry.name)
                     if entry.is_dir(follow_symlinks=False):
-                        pending.append(path)
+                        if entry.name not in EXCLUDED_DIRECTORIES:
+                            pending.append(path)
                     elif entry.is_file(follow_symlinks=False):
                         found.add(path)
-                        if len(found) > MAX_FILES:
-                            raise ValueError("read scope file enumeration limit exceeded; narrow the path")
-        return sorted(found)
+                        if len(found) >= MAX_FILES:
+                            truncated = True
+                            break
+        return sorted(found), truncated
+
+    def _roots(self, arguments):
+        """The directory grants one enumeration walks: all of them, or the
+        single granted subtree `path` names (checked exactly like a read)."""
+        if "path" in arguments:
+            path = _path(arguments["path"], self.cwd)
+            self._require(path, directory=True)
+            return [path]
+        if not self.scope["dirs"]:
+            raise ValueError("listing outside directory scope denied; use an explicit granted file")
+        return sorted(self.scope["dirs"])
 
     def call(self, name, arguments):
         try:
@@ -166,11 +204,14 @@ class Reader:
             if not isinstance(pattern, str) or not pattern or len(pattern) > 4096:
                 raise ValueError("invalid bounded search/list pattern")
             if name == "list_files":
-                if not self.scope["dirs"]:
-                    raise ValueError("listing outside directory scope denied; use an explicit granted file")
-                files = self._files(self.scope["dirs"])
-                return _result("\n".join(path for path in files
-                                         if fnmatch.fnmatchcase(os.path.relpath(path, self.cwd), pattern)))
+                files, truncated = self._files(self._roots(arguments))
+                shown = [path for path in files
+                         if fnmatch.fnmatchcase(os.path.relpath(path, self.cwd), pattern)]
+                text = "\n".join(shown)
+                if truncated:
+                    text += ("\n" if text else "") + TRUNCATION_NOTE % (len(shown), len(files))
+                return _result(text)
+            walk_truncated = False
             if "path" in arguments:
                 path = _path(arguments["path"], self.cwd)
                 self._require(path)
@@ -180,12 +221,11 @@ class Reader:
                         pass
                     files = [path]
                 except (IsADirectoryError, ValueError):
-                    self._require(path, directory=True)
-                    files = self._files([path])
+                    files, walk_truncated = self._files(self._roots(arguments))
             else:
                 if not self.scope["dirs"]:
                     raise ValueError("search outside directory scope denied; supply an explicit granted file")
-                files = self._files(self.scope["dirs"])
+                files, walk_truncated = self._files(self._roots(arguments))
             matches, total = [], 0
             for path in files:
                 self._require(path)
@@ -197,8 +237,11 @@ class Reader:
                         if len(matches) >= 200 or sum(map(len, matches)) >= MAX_OUTPUT_CHARS:
                             return _result("\n".join(matches) + "\n[search truncated]")
                 if truncated or total >= MAX_SEARCH_BYTES:
-                    return _result("\n".join(matches) + "\n[search truncated; narrow the path]")
-            return _result("\n".join(matches))
+                    return _result("\n".join(matches) + "\n[search truncated; pass path= to narrow]")
+            text = "\n".join(matches)
+            if walk_truncated:
+                text += ("\n" if text else "") + TRUNCATION_NOTE % (len(matches), len(files))
+            return _result(text)
         except (OSError, ValueError, TypeError) as exc:
             return _result("Read tool refused: " + str(exc), error=True)
 
