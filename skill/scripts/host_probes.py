@@ -22,6 +22,7 @@ does it inside a `tempfile.TemporaryDirectory()`.
 """
 import json
 import os
+import shutil
 import stat
 import tempfile
 
@@ -258,9 +259,13 @@ def headless_settings_path(review_root, namespace=None):
     return os.path.abspath(runio._pano(review_root, runners_base.SETTINGS_FILE))
 
 
-def _headless_subject_ok(settings_path):
-    """(ok, detail): the runner creates the file itself, so demand only that
-    its directory exists or can be created, and is writable."""
+def _headless_subject_dir(settings_path):
+    """(writable, probe_dir): the run folder the headless loop writes into.
+
+    The runner creates `settings_path` itself, so the question is only
+    whether its directory exists or can be created, and is writable --
+    answered off the nearest existing ancestor. Shared by the two guard
+    probes and the usage probe, which word the failure differently."""
     settings_dir = os.path.dirname(os.path.abspath(settings_path)) or "."
     probe_dir = settings_dir
     while not os.path.isdir(probe_dir):
@@ -268,7 +273,13 @@ def _headless_subject_ok(settings_path):
         if parent == probe_dir:
             break
         probe_dir = parent
-    if not os.access(probe_dir, os.W_OK):
+    return os.access(probe_dir, os.W_OK), probe_dir
+
+
+def _headless_subject_ok(settings_path):
+    """(ok, detail) for the guard probes, off `_headless_subject_dir`."""
+    writable, probe_dir = _headless_subject_dir(settings_path)
+    if not writable:
         return False, "the runner cannot arm its guards: %s is not writable" % probe_dir
     return True, ""
 
@@ -380,11 +391,17 @@ def probe_write_guard_armed(host, session_root=None, settings_path=None):
 READ_GUARD_ARMED = "read-guard-armed"
 
 
-def _fake_subagent(parent_transcript, agent_id, entry_id):
-    """A subagent transcript in the Agent-tool layout the spike measured: the
-    first user record is the dispatch prompt, marker on line 1."""
+def _fake_subagent(parent_transcript, agent_id, entry_id, layout="direct"):
+    """A subagent transcript with the dispatch prompt as its first user
+    record, marker on line 1, in one of the two layouts the read guard binds
+    through: the Agent-tool layout the plan-5 spike measured (`direct`,
+    `<stem>/subagents/agent-<id>.jsonl`) or the Workflow-tool layout the
+    shipped session-mode dispatch workflow relies on (`workflow`,
+    `<stem>/subagents/workflows/<run>/agent-<id>.jsonl`)."""
     stem = parent_transcript[:-len(".jsonl")]
     directory = os.path.join(stem, "subagents")
+    if layout == "workflow":
+        directory = os.path.join(directory, "workflows", "wf-probe")
     os.makedirs(directory, exist_ok=True)
     record = {"type": "user", "isSidechain": True, "agentId": agent_id,
               "message": {"role": "user", "content": [
@@ -415,6 +432,7 @@ def _round_trip_confines_reads():
                 fh.write("")
             _fake_subagent(parent, "agent-x", "probe-cell")
             _fake_subagent(parent, "agent-z", "probe-scan")
+            _fake_subagent(parent, "agent-w", "probe-cell", layout="workflow")
             read_guard_hook.install(
                 [{"id": "probe-cell", "scope": {"files": [inside], "dirs": [], "reads": []}},
                  {"id": "probe-scan", "scope": {"files": [], "dirs": [root], "reads": []}}],
@@ -443,6 +461,10 @@ def _round_trip_confines_reads():
                 ("directory-scoped Grep inside its dir", call("Grep", "agent-z", pattern="x", path=root), True),
                 ("directory-scoped Glob inside its dir", call("Glob", "agent-z", pattern="*.py", path=root), True),
                 ("directory-scoped Read outside its dir", call("Read", "agent-z", file_path=outside), False),
+                # The Workflow-tool transcript layout (Claude family PR): the
+                # shipped dispatch workflow binds every entry through it.
+                ("workflow-layout Read inside scope", call("Read", "agent-w", file_path=inside), True),
+                ("workflow-layout Read outside scope", call("Read", "agent-w", file_path=outside), False),
             )
             for name, got, want in rows:
                 if got != want:
@@ -519,14 +541,14 @@ def probe_read_guard_armed(host, session_root=None, settings_path=None):
             "%s; the host will arm at %s" % (detail, settings_path))
 
 
-TRANSCRIPT_DIR = "transcript-dir"
+USAGE_SOURCE = "usage-source"
 
 # Every probe id a registry row may map to and get a runner for; the
 # shadow-shell scan runs unconditionally and is not a mappable probe. The
 # retirement bar (tests/test_generic_retirement_bar.py) reads this as "the
 # shipped probes" (spec 8.1), so it must not drift from the runner table:
 # run_probes refuses to build a table that disagrees with it.
-PROBE_IDS = (REGISTERED_SHELL_TOOLS, WRITE_GUARD_ARMED, TRANSCRIPT_DIR,
+PROBE_IDS = (REGISTERED_SHELL_TOOLS, WRITE_GUARD_ARMED, USAGE_SOURCE,
             ENTRY_MODEL_BOUND, READ_GUARD_ARMED)
 
 # Which capability each shipped probe MEASURES. The retirement bar reads this
@@ -536,18 +558,67 @@ PROBE_IDS = (REGISTERED_SHELL_TOOLS, WRITE_GUARD_ARMED, TRANSCRIPT_DIR,
 # run_probes is row-driven, the live posture).
 PROBE_CAPABILITY = {REGISTERED_SHELL_TOOLS: hosts.TOOL_POLICY_ENFORCED,
                     WRITE_GUARD_ARMED: hosts.ARTIFACT_WRITE_GUARD,
-                    TRANSCRIPT_DIR: hosts.USAGE_LEDGER,
+                    USAGE_SOURCE: hosts.USAGE_LEDGER,
                     ENTRY_MODEL_BOUND: hosts.MODEL_BINDING,
                     READ_GUARD_ARMED: hosts.READ_SCOPE_CONFINED}
 
 
-def probe_transcript_dir(host, session_dir, home=None):
-    """The host's own transcript directory for this SESSION exists and reads.
+def _headless_usage_source(host, settings_path):
+    """The headless half of `probe_usage_source`: can the loop ledger what
+    the runner's envelope reports?
+
+    Two things and only two are measured, and each can refute. The run
+    folder must be able to hold the ledger the loop appends after every
+    launch (`runners.base.LEDGER_FILE`, beside `settings_path`), and the CLI
+    the host's headless runner launches must be findable on PATH -- no
+    launch, no envelope, no figure. The CLI's name is the runner's own
+    (`Runner.CLI`), never re-spelled here, so a family that renames its
+    binary moves this probe with it. A claiming host with no headless runner
+    is UNKNOWN: nothing here can name a CLI to look for, and a vacuous
+    PROVEN is the fail-open this epic exists to remove."""
+    import scripts.runners.base as runners_base
+    writable, probe_dir = _headless_subject_dir(settings_path)
+    ledger = os.path.join(os.path.dirname(os.path.abspath(settings_path)),
+                         runners_base.LEDGER_FILE)
+    if not writable:
+        return (hosts.REFUTED, USAGE_SOURCE,
+                "the loop cannot write its dispatch ledger at %s: %s is not writable"
+                % (ledger, probe_dir))
+    try:
+        cli = runners_base.runner_for(host, "headless").CLI
+    except (ValueError, AttributeError):
+        return (hosts.UNKNOWN, USAGE_SOURCE,
+                "host %r has no headless runner naming a CLI, so nothing here "
+                "proves a launch envelope will carry usage" % host)
+    found = shutil.which(cli)
+    if not found:
+        return (hosts.REFUTED, USAGE_SOURCE,
+                "no `%s` on PATH: the headless runner cannot launch, so no "
+                "envelope will ever carry usage and the ledger at %s stays empty"
+                % (cli, ledger))
+    return (hosts.PROVEN, USAGE_SOURCE,
+            "headless: usage is read from the JSON envelope of every `%s` launch "
+            "(%s) and ledgered at %s; the session's transcripts are not consulted"
+            % (cli, found, ledger))
+
+
+def probe_usage_source(host, session_dir, home=None, settings_path=None):
+    """Where this host's usage figures come from, and that the source is
+    reachable. The probe follows the MODE, exactly as the two guard probes do
+    (spec 5.4 applied to spec 5.5): `settings_path` names the file a headless
+    runner will arm, and with it the subject is the launch envelope plus the
+    run-folder ledger (`_headless_usage_source`); without it -- session mode,
+    or plain `driver run` -- the subject is the host's own transcript
+    directory for this SESSION, which is what `collect_usage` reads.
+
+    Before the Claude family PR this was `transcript-dir` and knew only the
+    session surface, so a headless run launched from any directory without
+    transcripts (every fresh target) REFUTED a ledger that was exact.
 
     Operational rather than security -- 8.1 excludes usage_ledger from F5's
     bar, and it gates nothing directly. But it DOES gate
-    `synthesize._collect_host_usage`, so the directory it asks about has to be
-    the one that collector will read.
+    `synthesize._collect_host_usage`, so in session mode the directory it
+    asks about has to be the one that collector will read.
 
     `session_dir` is where the HOST SESSION runs -- NOT the review root, and
     NOT the target. synthesize.py:52-66 spends fourteen lines
@@ -564,17 +635,19 @@ def probe_transcript_dir(host, session_dir, home=None):
     """
     if not hosts.declares(host, hosts.USAGE_LEDGER):
         return (hosts.UNKNOWN, None, "host %r claims no usage ledger" % host)
+    if settings_path is not None:
+        return _headless_usage_source(host, settings_path)
     root = home or os.path.expanduser("~")
     directory = os.path.join(root, ".claude", "projects",
                              collect_usage.project_slug(session_dir))
     if not os.path.isdir(directory):
-        return (hosts.REFUTED, TRANSCRIPT_DIR,
+        return (hosts.REFUTED, USAGE_SOURCE,
                 "no transcript directory at %s; the cost ledger will report "
                 "null rather than a figure" % directory)
     if not os.access(directory, os.R_OK):
-        return (hosts.REFUTED, TRANSCRIPT_DIR,
+        return (hosts.REFUTED, USAGE_SOURCE,
                 "%s is not readable" % directory)
-    return (hosts.PROVEN, TRANSCRIPT_DIR, "%s is readable" % directory)
+    return (hosts.PROVEN, USAGE_SOURCE, "session: %s is readable" % directory)
 
 
 SHADOW_SHELL_SCAN = "shadow-shell-scan"
@@ -752,8 +825,10 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
 
     `settings_path` (plan 6, spec 5.4) names the file a HEADLESS runner will
     arm; when given, it is the two guard probes' subject INSTEAD of
-    `session_root`. `None` (session mode, or plain `driver run`) leaves them
-    probing the session root exactly as before.
+    `session_root`, and the usage probe's cue to measure the launch envelope
+    and run-folder ledger instead of the session's transcripts (spec 5.5).
+    `None` (session mode, or plain `driver run`) leaves all three probing the
+    session root exactly as before.
     """
     findings = {}          # capability -> list of (state, by, detail)
     session_root = session_root or os.getcwd()
@@ -773,8 +848,9 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
         WRITE_GUARD_ARMED:
             lambda: probe_write_guard_armed(host, session_root=session_root,
                                             settings_path=settings_path),
-        TRANSCRIPT_DIR:
-            lambda: probe_transcript_dir(host, session_root, home=home),
+        USAGE_SOURCE:
+            lambda: probe_usage_source(host, session_root, home=home,
+                                       settings_path=settings_path),
         ENTRY_MODEL_BOUND:
             lambda: probe_entry_model_bound(host, registration_dir),
         READ_GUARD_ARMED:

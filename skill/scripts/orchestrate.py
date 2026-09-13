@@ -111,7 +111,7 @@ class Ledger:
     """runs/<tag>/dispatch-ledger.jsonl: one line per runner call (spec 4.3)."""
 
     def __init__(self, run_dir):
-        self.path = os.path.join(run_dir, "dispatch-ledger.jsonl")
+        self.path = os.path.join(run_dir, runners_base.LEDGER_FILE)
 
     def record(self, entry, checkpoint, result, mode, host, duration_ms, refusal=None):
         """One line per runner call.

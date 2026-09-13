@@ -617,7 +617,7 @@ class TestTheProbesReadTheRightTree(unittest.TestCase):
             self.assertIn("threaded-scan-sentinel", row["detail"])
 
     def test_the_usage_probe_reads_the_session_transcript_not_the_target(self):
-        # C2. `probe_transcript_dir` received `target`, so on the documented
+        # C2. `probe_usage_source` (then `probe_transcript_dir`) received `target`, so on the documented
         # external invocation (`driver run /tmp/fzf` from the panopticon
         # session) it resolved `~/.claude/projects/-tmp-fzf`, found nothing,
         # REFUTED -- and `_collect_host_usage`, which gates on that posture,
