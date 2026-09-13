@@ -101,6 +101,27 @@ class TestWriteReply(unittest.TestCase):
                                              "domain": "SEC", "stage": "primary"}}))
         self.assertTrue(ok, reason)
 
+    def test_a_verify_cell_reply_with_a_wrong_stamp_is_refused_for_a_real_shaped_entry(self):
+        # fix round 1: verify._verify_entry is the only builder of verify-cell
+        # entries; this pins the ACTUAL key set it emits (id, agent, enforced,
+        # model, prompt, marker, out_file, run_id, group, domain, stage, files,
+        # scope, delivery) rather than a hand-picked subset, so a future drift
+        # in that shape is caught here too.
+        e = {"id": "verify-app-SEC-primary", "agent": "panopticon-domain-advisor",
+             "enforced": True, "model": "claude-opus", "prompt": "p",
+             "marker": "m", "out_file": self._out("verdicts", "verdicts-app-SEC.json"),
+             "run_id": "RID", "group": "app", "domain": "SEC", "stage": "primary",
+             "files": ["/r/a.py"], "scope": {"files": ["/r/a.py"]},
+             "delivery": "return_json"}
+        body = {"verdicts": [], "_panopticon": {"run_id": "OTHER", "group": "app",
+                                                "domain": "SEC", "stage": "primary"}}
+        ok, reason = persist.write_reply(e, json.dumps(body))
+        self.assertFalse(ok)
+        self.assertIn("_panopticon", reason)
+        body["_panopticon"]["run_id"] = "RID"
+        ok, reason = persist.write_reply(e, json.dumps(body))
+        self.assertTrue(ok, reason)
+
     def test_a_tool_advisor_reply_needs_a_valid_verdict_value(self):
         e = _entry(self._out("verdicts", "q-0001.json"))
         ok, _ = persist.write_reply(e, json.dumps({"verdict": "MAYBE"}))

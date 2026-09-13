@@ -9,6 +9,7 @@ import scripts.phases.runio as runio
 import scripts.phases.requests as requests
 import scripts.phases.review as review
 import scripts.phases.verify as verify
+import scripts.phases.persist as persist
 
 import scripts.ocrdb as ocrdb
 
@@ -128,6 +129,27 @@ class TestVerifyBackupNarrowing(unittest.TestCase):
                 root, {"run_id": "r"}, "q1", finding, "kimi")
         self.assertIn(verify._REDACTED_CLAIM_PATH, entry["prompt"])
         self.assertNotIn("id_rsa", entry["prompt"])
+
+    def test_verify_entry_carries_the_stamp_keys_persist_checks(self):
+        # Cross-module contract (fix round 1): persist._stamp_matches reads
+        # run_id/group/domain/stage off the ENTRY (mirroring review._cell_entry),
+        # so the only builder of verify-cell entries must actually set them.
+        manifest = {"run_id": "R", "host": "claude",
+                    "security_mode": "standard", "flags": {}}
+        files = ["src/pay.py"]
+        cell = [{"id": "F1", "code": "SEC-A1A", "severity": "HIGH",
+                 "title": "t", "category": "SEC",
+                 "location": {"file": files[0], "line": 1},
+                 "description": "d"}]
+        bundle = ocrdb.load_bundle()
+        with tempfile.TemporaryDirectory() as root:
+            entry = verify._verify_entry(root, manifest, "Auth", "SEC", files,
+                                         cell, "claude", bundle, "primary")
+        self.assertTrue(set(persist._STAMP_KEYS) <= set(entry))
+        self.assertEqual(entry["run_id"], manifest["run_id"])
+        self.assertEqual(entry["group"], "Auth")
+        self.assertEqual(entry["domain"], "SEC")
+        self.assertEqual(entry["stage"], "primary")
 
     def _manifest(self):
         return {"run_id": self.RUN_ID, "host": "claude",

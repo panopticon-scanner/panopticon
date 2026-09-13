@@ -226,6 +226,11 @@ def _verify_entry(review_root, manifest, group, domain, files, cell, host,
             "prompt": requests.entry_marker(entry_id) + prefix + prompt,
             "marker": read_guard_hook.marker_line(entry_id),
             "out_file": out_file,
+            # run_id/group/domain/stage restate the cell this entry IS, so
+            # persist/entry_is_done can check a bundle's `_panopticon` stamp
+            # against the entry that asked for it (mirrors review._cell_entry).
+            "run_id": manifest["run_id"], "group": group, "domain": domain,
+            "stage": stage,
             "files": abs_files,
             "scope": requests.scope(files=abs_files)}
     if mode:
