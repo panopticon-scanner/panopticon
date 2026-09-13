@@ -180,6 +180,28 @@ class TestHeadlessLoop(LoopCase):
              contextlib.redirect_stdout(io.StringIO()):
             return orchestrate.loop(args)
 
+    def test_max_turns_warns_when_the_runner_cannot_honour_it(self):
+        # M-9: orchestrate sets `runner.max_turns` unconditionally and the
+        # Codex runner never reads it -- accepted, then silently ignored.
+        class NoTurnLimit(FakeRunner):
+            HONOURS_MAX_TURNS = False
+
+        d, floor = self._repo()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            status = self._run(d, floor, NoTurnLimit("codex"), "--allow-unenforced",
+                               "--host", "codex", "--max-turns", "3")
+        self.assertEqual(status["status"], "complete", status)
+        self.assertIn("--max-turns has no effect on host 'codex'", err.getvalue())
+        self.assertIn("--entry-timeout", err.getvalue())
+
+    def test_max_turns_is_silent_on_a_runner_that_honours_it(self):
+        d, floor = self._repo()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self._run(d, floor, FakeRunner(), "--max-turns", "3")
+        self.assertNotIn("--max-turns has no effect", err.getvalue())
+
     def test_max_budget_warns_on_a_host_that_reports_no_dollars(self):
         # I-3: parse_envelope refuses to fabricate a cost, so cost_usd is
         # always None on Codex, the ledger total stays 0 and the budget branch

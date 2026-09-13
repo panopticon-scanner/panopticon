@@ -334,6 +334,13 @@ def loop(args):
         runner = runners_base.runner_for(host, mode)
     except ValueError as exc:
         return _status("error", str(exc))
+    # M-9: the attribute is set on the runner below whether or not the runner
+    # reads it. Say so once here rather than leaving the operator to find out
+    # from the guide.
+    if getattr(args, "max_turns", None) and not getattr(runner, "HONOURS_MAX_TURNS", True):
+        print("driver loop: --max-turns has no effect on host %r (its runner has no native "
+              "turn limit); bound each entry with --entry-timeout" % host,
+              file=sys.stderr, flush=True)
     # R-P6 Task 5 ruling 1: the SAME rule driver.run() applies to
     # manifest["session_dir"] -- never read off the on-disk manifest, which
     # never persists it (driver.run() sets it in memory, post write-manifest,

@@ -51,6 +51,12 @@ class HostRunner:
     host = ""
     mode = "headless"
     default_concurrency = 1
+    # M-9: whether `--max-turns` reaches anything on this host. The loop sets
+    # `runner.max_turns` unconditionally, so a runner with no native turn
+    # limit accepted the flag and ignored it in silence. True by default --
+    # the seam's reference implementation honours it -- and a family that
+    # cannot says so here, once, instead of documenting it in prose.
+    HONOURS_MAX_TURNS = True
 
     def __init__(self, host=None):
         if host:

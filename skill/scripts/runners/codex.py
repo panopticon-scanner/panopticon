@@ -23,6 +23,8 @@ class Runner(base.HostRunner):
     # print_the_envelope binds these two constants to that argv.
     CLI = "codex"
     ENVELOPE_FLAGS = ("exec", "--json")
+    # `codex exec` has no turn cap; an entry is bounded by --entry-timeout.
+    HONOURS_MAX_TURNS = False
 
     def __init__(self, host="codex", runner=None):
         super().__init__(host)

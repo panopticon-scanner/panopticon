@@ -271,3 +271,11 @@ def test_a_failure_after_the_completed_turn_still_fails():
         START, REPLY, DONE, {"type": "turn.failed", "error": "transport failed"}), 0)
     assert not result.ok
     assert "transport failed" in result.error
+
+
+# --- M-9: a flag the runner cannot honour says so ----------------------------
+
+
+def test_the_seam_declares_whether_it_honours_max_turns():
+    assert base.HostRunner.HONOURS_MAX_TURNS is True
+    assert codex.Runner.HONOURS_MAX_TURNS is False
