@@ -51,10 +51,12 @@ def scope(files=(), dirs=(), reads=()):
     """An entry's read scope: absolute, byte-exact paths the read guard
     matches after realpath. `files` duplicates entry["files"] on purpose (the
     guard reads one key of one shape); `dirs` is a directory scope (setup-
-    scan); `reads` is the extra-file allowance -- [] as built, and then the
-    entry's own `prompt_file` once `_materialize_prompts` stamps one, so a
-    host that dispatches from the file (marker line first, pointer second)
-    is not denied its own prompt by the read guard."""
+    scan); `reads` is the extra-file allowance -- whatever the builder grants
+    beyond the entry's files (the SEC cell's security checklist,
+    `review._cell_reads`), plus the entry's own `prompt_file` once
+    `_materialize_prompts` stamps one, so a host that dispatches from the
+    file (marker line first, pointer second) is not denied its own prompt by
+    the read guard."""
     return {"files": list(files), "dirs": list(dirs), "reads": list(reads)}
 
 
@@ -131,7 +133,10 @@ def _materialize_prompts(review_root, entries, namespace=None):
     `prompt` stays inline (unchanged contract, no host is forced to migrate);
     `prompt_file` is the addressable alternative. Best-effort: if the prompts
     directory cannot be written, entries keep their inline prompt and the run
-    proceeds -- this is an ergonomic affordance, never a dispatch precondition."""
+    proceeds -- the ENGINE never makes it a dispatch precondition (a host may
+    hand the agent `prompt` verbatim). The Claude session-mode template,
+    `skill/workflows/dispatch.js`, does require it, because it deliberately
+    never carries the inline prompt into the session's context."""
     out = []
     for entry in entries:
         entry = dict(entry)
