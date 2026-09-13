@@ -136,8 +136,13 @@ class Ledger:
         by_phase = {p: 0 for p in ("scout", "review", "verify", "unattributed")}
         by_field = {k: 0 for k in USAGE_FIELDS}
         for row in self.lines():
-            if not row.get("ok"):
-                continue
+            # M2: a FAILED launch counts too. `claude -p` reports usage on an
+            # is_error envelope exactly as it does on success, and those
+            # tokens were really spent -- a timed-out or errored entry is
+            # often the most expensive one in a run. Skipping them made
+            # usage.json (and meta.cost.tokens, which is read straight off it)
+            # under-report what the run cost, which is the one thing an honest
+            # ledger must never do.
             usage = row.get("usage") or {}
             n = sum(int(usage.get(k, 0) or 0) for k in USAGE_FIELDS)
             by_phase[row.get("phase") or "unattributed"] = by_phase.get(row.get("phase") or "unattributed", 0) + n
@@ -145,8 +150,9 @@ class Ledger:
                 by_field[k] += int(usage.get(k, 0) or 0)
         return {"schema_version": 1, "total": sum(by_phase.values()), "by_phase": by_phase,
                 "by_field": by_field, "source": "dispatch-ledger.jsonl",
-                "definition": "every token the host's envelope reported for each successful "
-                              "entry launch, summed over the four usage fields"}
+                "definition": "every token the host's envelope reported for each entry "
+                              "launch, failed launches included, summed over the four "
+                              "usage fields"}
 
 
 def write_usage(review_root, ledger, namespace=None):

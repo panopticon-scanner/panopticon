@@ -1582,6 +1582,23 @@ class TestDriverLoopCLI(unittest.TestCase):
         # documented degrade to session mode.
         self.assertIsNone(driver.build_parser().parse_args(["loop", "x"]).mode)
 
+    def test_no_loop_only_flag_is_an_anti_drift_key(self):
+        # M15 (plan 6 final review): spec 4.3/5.4 -- the loop's own knobs say
+        # HOW this invocation runs entries, not WHAT the run is, so a resume
+        # must be free to change concurrency, the budget or the timeouts
+        # without `conflicting_flags` refusing it as drift. Nothing enforced
+        # that; a later flag added to `_cli_flags` by habit would have wedged
+        # every resume that spelled it differently.
+        loop_only = ("mode", "concurrency", "max_iterations", "max_budget_usd",
+                     "max_turns", "entry_timeout", "setup", "max_groups")
+        overlap = sorted(set(loop_only) & set(driver.run_manifest._FLAG_KEYS))
+        self.assertEqual(overlap, [])
+        # and they really are loop-only: `driver run` does not take them
+        run_args = driver.build_parser().parse_args(["run", "x"])
+        for flag in loop_only:
+            with self.subTest(flag=flag):
+                self.assertFalse(hasattr(run_args, flag), flag)
+
     def test_loop_modes_match_the_runner_seam(self):
         import scripts.runners.base as runners_base
         self.assertEqual(tuple(driver.hosts_runner_modes()), runners_base.MODES)

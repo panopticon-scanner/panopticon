@@ -86,7 +86,16 @@ class FakeRunner(base.HostRunner):
             return base.RunResult.failed(eid, "concurrency cap")
         if eid in self.fail_once:
             self.fail_once.discard(eid)
-            return base.RunResult.failed(eid, "is_error")
+            # M2: a failed entry still BURNED tokens -- `claude -p` reports
+            # usage on an is_error envelope exactly as it does on success --
+            # so the fake reports them too, and the usage assertions below can
+            # tell a document that counts them from one that drops them.
+            return base.RunResult(entry_id=eid, ok=False, text="",
+                                  usage={"input_tokens": 70, "output_tokens": 3,
+                                         "cache_read_input_tokens": 0,
+                                         "cache_creation_input_tokens": 0},
+                                  cost_usd=0.004, model="claude-sonnet-5",
+                                  session_id="s-" + eid, denials=[], error="is_error")
         run_id = entry.get("run_id")
         if eid.startswith("review-"):
             body = {"findings": [{"title": "issue", "severity": "HIGH", "domain": entry["domain"],
@@ -243,8 +252,12 @@ class TestHeadlessLoop(LoopCase):
         self.assertEqual({row["phase"] for row in lines}, {"review", "verify"})
         self.assertEqual(sum(1 for row in lines if not row["ok"]), 1)
         usage = runio._load_json(os.path.join(runner.run_dir, "usage.json"))
-        ok_lines = [row for row in lines if row["ok"]]
-        self.assertEqual(usage["total"], sum(sum(row["usage"].values()) for row in ok_lines))
+        # M2: EVERY line, not just the ok ones. A launch that failed still
+        # spent the tokens its envelope reported, and a usage document that
+        # silently drops them under-reports what the run cost -- the one thing
+        # an honest ledger must not do.
+        self.assertEqual(usage["total"], sum(sum(row["usage"].values()) for row in lines))
+        self.assertTrue(any(not row["ok"] and sum(row["usage"].values()) for row in lines))
         self.assertEqual(set(usage["by_phase"]), {"scout", "review", "verify", "unattributed"})
         report = runio._load_json(runio._pano(d, "report.json"))
         self.assertEqual(report["meta"]["cost"]["tokens"]["total"], usage["total"])   # R-P6-4
@@ -379,8 +392,7 @@ class TestHeadlessLoop(LoopCase):
         usage = runio._load_json(usage_path)
         with open(os.path.join(runner.run_dir, "dispatch-ledger.jsonl"), encoding="utf-8") as fh:
             lines = [json.loads(x) for x in fh if x.strip()]
-        ok_lines = [row for row in lines if row["ok"]]
-        self.assertEqual(usage["total"], sum(sum(row["usage"].values()) for row in ok_lines))
+        self.assertEqual(usage["total"], sum(sum(row["usage"].values()) for row in lines))
 
 
 class TestNoRedundantReDeriveOnReview(LoopCase):

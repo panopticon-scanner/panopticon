@@ -961,8 +961,8 @@ class TestTheGuardProbesFollowTheRunnersMode(unittest.TestCase):
                 "security_mode": "standard"}
 
     def test_headless_mode_probes_the_run_folders_host_settings(self):
-        d = self._repo()                       # the class's existing repo fixture
-        manifest = self._manifest()            # the class's existing manifest fixture
+        d = self._repo()                       # this class's own repo fixture
+        manifest = self._manifest()            # this class's own manifest fixture
         args = driver.build_parser().parse_args(["run", d])
         args.mode = "headless"
         with mock.patch("scripts.host_probes.run_probes",

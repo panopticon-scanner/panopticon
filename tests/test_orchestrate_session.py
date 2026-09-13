@@ -290,8 +290,13 @@ class TestSetupOnRails(LoopCase):
         # files that were never written.
         d, _ = self._repo()
         args = driver.build_parser().parse_args(["loop", d, "--setup"])
+        # M14: `runner_for` patched like every other loop test. The fallback
+        # completes without a checkpoint today, so no entry is launched -- but
+        # unpatched, this is the one `orchestrate.loop` call in the suite
+        # standing between a refactor and a real `claude -p` subprocess.
         with mock.patch("scripts.setup_flow.load_bundled_vocabulary",
                         return_value=({"names": []}, False)), \
+             mock.patch("scripts.runners.base.runner_for", return_value=FakeRunner()), \
              contextlib.redirect_stdout(io.StringIO()):
             status = orchestrate.loop(args)
         self.assertEqual(status["status"], "complete", status)
