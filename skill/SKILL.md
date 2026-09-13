@@ -52,6 +52,14 @@ resolve against cwd; only the script path substitutes.
   return-persist reply (session mode). On a `--pr`/`--base` run pass the same `--pr`/`--base`:
   persist has to resolve the same review root the loop did (a PR run's is the PR worktree), or it
   reads a different tree's dispatch request and finds no such entry.
+- **Session mode on Claude Code is templated, never ad hoc.** Dispatch the printed batch with the
+  shipped workflow: `Workflow({scriptPath: "skill/workflows/dispatch.js", args: {checkpoint,
+  entries}})`, `entries` being the request's entries reduced to `id, agent, enforced, model,
+  marker, prompt_file, delivery, out_file` (never the inline `prompt`). It runs one subagent per
+  entry inside its registered `panopticon-*` shell, marker line first (the read guard binds
+  through the workflow transcript layout) and `prompt_file` second (granted to the entry's read
+  scope), and returns `persist` (reply text per return-persist id, for `driver persist <id>`),
+  `self_wrote` and `missing`. Do not hand-dispatch entries with one-off Agent calls.
 - `driver run [target] [flags]` — the single-step primitive `driver loop` calls; drive by hand
   only when debugging a phase.
 - Key flags: `--host NAME`, `--security {standard,redteam}`,
