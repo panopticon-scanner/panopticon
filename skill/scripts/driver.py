@@ -239,6 +239,13 @@ def build_parser():
     pp.add_argument("--file", default=None, help="the reply text; stdin when absent")
     pp.add_argument("--setup", action="store_true",
                     help="the entry belongs to `driver setup`'s scan checkpoint")
+    # I6: the same two flags `run`/`loop` take, for the same reason. A `--pr`
+    # run's review root is the PR WORKTREE, so a persist that resolved
+    # `target` alone read the dispatch request out of the operator's own
+    # checkout and refused every entry as unknown. Threaded verbatim into
+    # resolve_review_root.
+    pp.add_argument("--base", default=None)
+    pp.add_argument("--pr", type=int, default=None)
     return parser
 
 

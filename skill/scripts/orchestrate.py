@@ -500,8 +500,17 @@ def _finish(status, args, guards, ledger, namespace, mode="headless"):
 
 
 def persist_cli(args):
-    """`driver persist ENTRY_ID [--file PATH] [--setup] [target]` -> exit code."""
-    review_root, _wt, _pr = runio.resolve_review_root(args.target)
+    """`driver persist ENTRY_ID [--file PATH] [--setup] [--pr N] [--base REF] [target]`
+    -> exit code.
+
+    I6: base/pr are threaded exactly as `driver run` threads them. A `--pr`
+    run's review root is the PR worktree, and resolving `target` alone read
+    the dispatch request from the operator's own checkout instead -- so every
+    persist against a `--pr` run refused with "no entry in the current
+    dispatch request", with nothing to say which run it had looked in.
+    """
+    review_root, _wt, _pr = runio.resolve_review_root(
+        args.target, base=getattr(args, "base", None), pr=getattr(args, "pr", None))
     entry = persist.find_entry(review_root, args.entry_id,
                                namespace="setup" if args.setup else None)
     if entry is None:

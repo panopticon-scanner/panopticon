@@ -1534,6 +1534,26 @@ class TestDriverPersistCLI(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertTrue(os.path.isfile(out))
 
+    def test_persist_reaches_a_pr_runs_review_root(self):
+        # I6 (plan 6 final review): a `--pr` run's review root is the PR
+        # WORKTREE, not the operator's checkout -- `driver run` resolves it
+        # with base/pr and pins it in the manifest. `driver persist` resolved
+        # `args.target` alone, so on a `--pr` run it looked for the dispatch
+        # request in the wrong tree and refused every entry with "no entry in
+        # the current dispatch request". The persist verb had no way to say
+        # which run it meant.
+        parser_args = driver.build_parser().parse_args(
+            ["persist", "scout-app", "--pr", "42", "--base", "origin/main", "."])
+        self.assertEqual((parser_args.pr, parser_args.base), (42, "origin/main"))
+        d = self._repo()
+        self._request(d, [])
+        with mock.patch("scripts.phases.runio.resolve_review_root",
+                        return_value=(d, None, None)) as rr, \
+             contextlib.redirect_stderr(io.StringIO()):
+            driver.main(["persist", "scout-app", "--pr", "42", "--base", "origin/main", d])
+        self.assertEqual(rr.call_args.args, (d,))
+        self.assertEqual(rr.call_args.kwargs, {"base": "origin/main", "pr": 42})
+
     def test_persist_refuses_an_unknown_entry_with_exit_1(self):
         d = self._repo()
         self._request(d, [])
