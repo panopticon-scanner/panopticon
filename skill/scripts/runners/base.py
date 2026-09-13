@@ -79,10 +79,22 @@ class HostRunner:
 
 
 def _headless_module(host):
+    """Import runners/<host>.py, or None when no such module exists.
+
+    Narrow on purpose: a bare `except ImportError` would also swallow a
+    genuinely broken runners/<host>.py (one whose own body fails to import
+    something it needs), reading it as merely absent. Only a
+    ModuleNotFoundError naming THIS module -- "scripts.runners.<host>" is not
+    findable at all -- means "no headless runner"; any other ImportError
+    (including a ModuleNotFoundError for a DIFFERENT, missing dependency
+    inside runners/<host>.py) is the family's bug and must surface."""
+    modname = "scripts.runners.%s" % host
     try:
-        return importlib.import_module("scripts.runners.%s" % host)
-    except ImportError:
-        return None
+        return importlib.import_module(modname)
+    except ModuleNotFoundError as exc:
+        if exc.name == modname:
+            return None
+        raise
 
 
 def headless_available(host):

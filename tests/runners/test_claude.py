@@ -109,6 +109,15 @@ class TestRunEntry(unittest.TestCase):
             res = r.run_entry(_entry(True), {})
         self.assertFalse(res.ok); self.assertIn("claude", res.error)
 
+    def test_any_other_launch_exception_is_a_failed_result(self):
+        def bad_args(cmd, **kw):
+            raise ValueError("bad args")
+        with tempfile.TemporaryDirectory() as d:
+            r = claude_runner.Runner("claude", runner=bad_args); r.prepare(d, review_root=d)
+            res = r.run_entry(_entry(True), {})
+        self.assertFalse(res.ok)
+        self.assertIn("ValueError", res.error)
+
 
 class TestPrepare(unittest.TestCase):
     def test_prepare_writes_both_guard_hooks_with_absolute_paths_and_nothing_else(self):

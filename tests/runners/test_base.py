@@ -1,3 +1,5 @@
+import os
+import sys
 import unittest
 
 import scripts.runners.base as base
@@ -50,3 +52,32 @@ class TestRunnerFor(unittest.TestCase):
     def test_unknown_mode_is_refused(self):
         with self.assertRaises(ValueError):
             base.runner_for("claude", "batch")
+
+
+class TestBrokenHeadlessModule(unittest.TestCase):
+    def test_a_broken_runner_module_raises_instead_of_reading_as_absent(self):
+        pkg_dir = os.path.dirname(os.path.abspath(base.__file__))
+        modname = "scripts.runners.brokenhost"
+        path = os.path.join(pkg_dir, "brokenhost.py")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("import scripts.runners.does_not_exist_xyz\n")
+
+        def _cleanup():
+            if os.path.exists(path):
+                os.remove(path)
+            sys.modules.pop(modname, None)
+            sys.modules.pop("scripts.runners.does_not_exist_xyz", None)
+            cache_dir = os.path.join(pkg_dir, "__pycache__")
+            if os.path.isdir(cache_dir):
+                for f in os.listdir(cache_dir):
+                    if f.startswith("brokenhost."):
+                        os.remove(os.path.join(cache_dir, f))
+
+        self.addCleanup(_cleanup)
+
+        with self.assertRaises(ModuleNotFoundError) as cm:
+            base.runner_for("brokenhost", "headless")
+        self.assertEqual(cm.exception.name, "scripts.runners.does_not_exist_xyz")
+
+        with self.assertRaises(ModuleNotFoundError):
+            base.headless_available("brokenhost")

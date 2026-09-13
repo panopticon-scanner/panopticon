@@ -87,4 +87,7 @@ class Runner(base.HostRunner):
             return base.RunResult.failed(entry.get("id"), "claude -p timed out after %ss" % self.entry_timeout)
         except OSError as exc:
             return base.RunResult.failed(entry.get("id"), "could not launch %s: %s" % (self.CLI, exc))
+        except Exception as exc:          # run_entry never raises (spec 4.4): anything else is a failed entry
+            return base.RunResult.failed(entry.get("id"),
+                                          "claude -p launch raised %s: %s" % (type(exc).__name__, exc))
         return self.parse_envelope(entry.get("id"), proc.stdout, proc.returncode)
