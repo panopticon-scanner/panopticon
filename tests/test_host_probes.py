@@ -1248,7 +1248,7 @@ class TestReadGuardArmedProbe(unittest.TestCase):
             self.assertEqual(hosts.PROVEN, state)
             self.assertEqual("read-guard-armed", by)
             self.assertIn(session_root, detail)
-            self.assertIn("10 rows", detail)
+            self.assertIn("14 rows", detail)
 
     def test_it_does_not_require_the_guard_to_be_armed_right_now(self):
         from scripts import read_guard_hook

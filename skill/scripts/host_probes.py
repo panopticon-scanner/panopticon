@@ -345,7 +345,7 @@ def _fake_subagent(parent_transcript, agent_id, entry_id):
 def _round_trip_confines_reads():
     """Arm the read guard in a throwaway sandbox, bind two fake subagents
     through fake transcripts, and drive the ten payloads of design spec 5,
-    plus three env-binding payloads of spec 5.3 (plan 6), through
+    plus four env-binding payloads of spec 5.3 (plan 6), through
     adjudicate(). Never touches the session's real settings, scope file or
     transcripts. Returns (ok, detail)."""
     try:
@@ -408,6 +408,13 @@ def _round_trip_confines_reads():
                 ("agent_type with no binding",
                  {"tool_name": "Read", "tool_input": {"file_path": inside},
                   "agent_type": "panopticon-scout"}, {}, False),
+                # The real headless payload shape: agent_type AND the env id
+                # both present. The env binding governs either way (#1344
+                # plan 6 review finding 1).
+                ("env-bound read inside its entry despite agent_type",
+                 {"tool_name": "Read", "tool_input": {"file_path": inside},
+                  "agent_type": "panopticon-domain-panel"},
+                 {read_guard_hook.ENV_ENTRY_ID: "probe-cell"}, True),
             )
             for name, env_payload, env, want in env_rows:
                 got = read_guard_hook.adjudicate(env_payload, scope_file, env=env)[0]
@@ -417,7 +424,7 @@ def _round_trip_confines_reads():
             read_guard_hook.uninstall(settings_path=settings, scope_path=scope_file)
     except OSError as exc:
         return False, "sandbox round-trip could not run: %s" % exc
-    return True, "arm/bind/deny round-trip ok (10 rows)"
+    return True, "arm/bind/deny round-trip ok (%d rows)" % (len(rows) + len(env_rows))
 
 
 def probe_read_guard_armed(host, session_root=None):

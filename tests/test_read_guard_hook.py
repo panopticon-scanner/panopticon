@@ -258,6 +258,14 @@ class TestBinding(unittest.TestCase):
 
 class TestAdjudicate(unittest.TestCase):
     def setUp(self):
+        # These tests call the two-arg adjudicate(payload, scope_path), which
+        # defaults `env` to the real os.environ (spec 5.3) -- a stray
+        # PANOPTICON_ENTRY_ID in the operator's shell must never leak into
+        # what these tests exercise (the transcript-binding path).
+        patcher = mock.patch.dict(os.environ)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        os.environ.pop(read_guard_hook.ENV_ENTRY_ID, None)
         self.tmp = tempfile.TemporaryDirectory()
         d = self.tmp.name
         self.parent = os.path.join(d, "session.jsonl"); open(self.parent, "w").close()
@@ -360,6 +368,26 @@ class TestEnvBinding(unittest.TestCase):
             self.assertTrue(ok)
             ok, reason = read_guard_hook.adjudicate(
                 {"tool_name": "Read", "tool_input": {"file_path": outside}}, scope, env=env)
+            self.assertFalse(ok)
+            self.assertIn("cell-1", reason)
+
+    def test_env_wins_when_agent_type_is_also_present(self):
+        # The real headless payload shape: a `claude -p` session reports its
+        # own agent_type (e.g. panopticon-domain-panel) AND is env-bound by
+        # the runner. The env binding governs exactly as when agent_type is
+        # absent -- agent_type only matters when NOTHING else bound the call.
+        with tempfile.TemporaryDirectory() as d:
+            inside = os.path.join(d, "a.py"); open(inside, "w").close()
+            outside = os.path.join(d, "b.py"); open(outside, "w").close()
+            scope = self._scoped(d, "cell-1", inside)
+            env = {read_guard_hook.ENV_ENTRY_ID: "cell-1"}
+            ok, _ = read_guard_hook.adjudicate(
+                {"tool_name": "Read", "tool_input": {"file_path": inside},
+                 "agent_type": "panopticon-domain-panel"}, scope, env=env)
+            self.assertTrue(ok)
+            ok, reason = read_guard_hook.adjudicate(
+                {"tool_name": "Read", "tool_input": {"file_path": outside},
+                 "agent_type": "panopticon-domain-panel"}, scope, env=env)
             self.assertFalse(ok)
             self.assertIn("cell-1", reason)
 
@@ -537,6 +565,13 @@ def _entry(eid, files=(), dirs=()):
 
 class TestInstallUninstall(unittest.TestCase):
     def setUp(self):
+        # test_install_overwrites_a_planted_row_under_a_dispatched_empty_scope_id
+        # below calls the two-arg adjudicate(payload, scope_path); guard the
+        # same ambient-env leak as TestAdjudicate.setUp.
+        patcher = mock.patch.dict(os.environ)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        os.environ.pop(read_guard_hook.ENV_ENTRY_ID, None)
         self.tmp = tempfile.TemporaryDirectory()
         d = self.tmp.name
         self.settings = os.path.join(d, "settings.json")
