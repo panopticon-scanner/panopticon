@@ -304,6 +304,12 @@ class TestSkillMd(unittest.TestCase):
         self.assertIn("driver run", loop)
         for word in ("checkpoint", "dispatch-request.json", "re-invoke", "complete"):
             self.assertIn(word, loop)
+        # C2 (plan 6 final review): the request path is a FIELD of the printed
+        # `dispatch` status, not a fixed location -- a review's request is
+        # per-run (`runs/<tag>/`) and `--setup`'s is a different file entirely
+        # -- so the guide must send a session host to `dispatch_request`
+        # rather than to a path it would hard-code and get wrong.
+        self.assertIn("`dispatch_request` field", loop)
         # unified guard-confined self-write (no write_mode/return handshake)
         self.assertIn("write-guard", loop)
         self.assertIn("self-write", loop)

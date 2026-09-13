@@ -254,6 +254,13 @@ def loop(args):
     # runs/<tag>/ folder.
     run_dir = os.path.dirname(host_probes.headless_settings_path(review_root, namespace))
     runner.prepare(run_dir, review_root)
+    # C2/M4: the session runner prints the batch itself, so it needs the two
+    # facts only the loop holds -- which request file these entries came from,
+    # and whether this is the setup namespace (which every hinted command must
+    # carry as `--setup`). Set unconditionally: a headless runner simply
+    # carries two attributes it never reads.
+    runner.dispatch_request = os.path.abspath(requests.request_path(review_root, namespace))
+    runner.namespace = namespace
     for attr in ("max_turns", "entry_timeout"):
         if getattr(args, attr, None):
             setattr(runner, attr, getattr(args, attr))
@@ -281,7 +288,7 @@ def loop(args):
             guards.arm(pending)
             results = runner.run_batch(pending, getattr(args, "concurrency", None), guards.env_for)
             if results is None:                                 # session mode (Task 6)
-                return _dispatch_exit(req, pending, namespace)
+                return _dispatch_exit(review_root, req, pending, namespace)
             for entry, result in zip(pending, results):
                 ledger.record(entry, req.get("checkpoint"), result, mode, runner.host, None)
                 if result.ok and entry.get("delivery") == "return_json":
@@ -317,12 +324,29 @@ def _first_run(args, namespace):
     return _run(args, namespace)
 
 
-def _dispatch_exit(req, pending, namespace):
+def _dispatch_exit(review_root, req, pending, namespace):
     """Session mode: the runner printed the batch; exit with a dispatch status
-    and leave the guards armed (spec 4.3)."""
+    and leave the guards armed (spec 4.3).
+
+    C2: `dispatch_request` comes from `requests.request_path` -- the one
+    accessor that knows a review's request is per-run
+    (`runs/<tag>/dispatch-request.json`) while setup keeps its own top-level
+    file (#1507). It used to be read off the request DOCUMENT, which carries
+    no such key (schema_version, run_id, checkpoint, group, entries), so the
+    field was None on every dispatch and the host had no path to
+    cross-reference the printed entries against.
+
+    M4: the hints carry `--setup` in the setup namespace. Without it both
+    `driver persist <id>` and the follow-up `driver loop` resolve the REVIEW
+    namespace, where the entry does not exist.
+    """
+    setup = " --setup" if namespace == "setup" else ""
     return _status("dispatch", "session mode: run the printed entries, persist each "
-                   "return-persist reply with `driver persist <id>`, then re-run driver loop",
-                   dispatch_request=req.get("dispatch_request"), pending=[e.get("id") for e in pending],
+                   "return-persist reply with `driver persist <id>%s`, then re-run "
+                   "`driver loop%s --mode session`" % (setup, setup),
+                   dispatch_request=os.path.abspath(
+                       requests.request_path(review_root, namespace)),
+                   pending=[e.get("id") for e in pending],
                    checkpoint=req.get("checkpoint"))
 
 
