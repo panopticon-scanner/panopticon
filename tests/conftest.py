@@ -27,6 +27,39 @@ for _p in reversed((_TESTS,
         sys.path.remove(_p)
     sys.path.insert(0, _p)
 
+# --- Family guardrails section 3, Suite: "tests use temp dirs only ... never
+# a home directory". The session-mode usage probe resolves
+# `~/.claude/projects/<slug>` whenever a caller passes no `home=`, and four
+# `run_probes("claude", ...)` calls in the wiring tests did exactly that -- so
+# on a workstation whose real home held transcripts for the test's cwd the
+# probe answered differently from CI (found by the Claude family PR's review
+# workflow). One throwaway home for the whole process rather than four
+# `home=` arguments: a future caller cannot reach the real one by forgetting.
+# Set HERE, before `scripts.hosts` below expands `~` into the registry's
+# registration dirs at import, so those import-time expansions and every
+# test-time `expanduser("~")` name the same empty directory (a per-test
+# fixture would leave the registry pointing at the real home and the two
+# disagreeing). Tests that commit to temp repos set their identity with
+# `-c user.name=`, so the operator's global config going out of reach
+# changes nothing they measure.
+#
+# Minted ONCE per process and handed on through the environment: this file
+# is imported twice -- as pytest's conftest module and, because tests/ is on
+# sys.path, as `conftest` by the tests that `from conftest import
+# write_host_evidence` -- and a second mkdtemp here moved HOME out from
+# under the registry the first import had already expanded.
+import atexit  # noqa: E402
+import shutil  # noqa: E402
+import tempfile  # noqa: E402
+
+_TEST_HOME = os.environ.get("PANOPTICON_TEST_HOME")
+if not _TEST_HOME:
+    _TEST_HOME = tempfile.mkdtemp(prefix="panopticon-test-home-")
+    os.environ["PANOPTICON_TEST_HOME"] = _TEST_HOME
+    atexit.register(shutil.rmtree, _TEST_HOME, ignore_errors=True)
+os.environ["HOME"] = _TEST_HOME
+os.environ["USERPROFILE"] = _TEST_HOME        # Windows' spelling of the same thing
+
 # Bind tests/tools as the bare `tools` package NOW, while tests/ is at
 # sys.path[0]. Entry scripts (skill/scripts/synthesize.py, driver.py,
 # score_gate.py) each `sys.path.insert(0, skill/scripts)` when imported, after
@@ -142,3 +175,4 @@ def _refuse_live_claude(cmd, **kwargs):
 @pytest.fixture(autouse=True)
 def _no_live_claude_launches(monkeypatch):
     monkeypatch.setattr(_claude_runner, "DEFAULT_RUNNER", _refuse_live_claude)
+
