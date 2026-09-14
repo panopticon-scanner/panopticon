@@ -676,3 +676,38 @@ class TestOperatorConfigShape(unittest.TestCase):
                 config = tomllib.load(fh)
         self.assertIn("Something", config["tools"]["disabled"])
         self.assertEqual(3, len(config["hooks"]))
+
+
+class TestAgentFileChildrenAreBoundGlobally(unittest.TestCase):
+    """The PR claimed, unverified, that `tools.disabled` binds an
+    `--agent-file=` child as well as the default agent. What can be settled
+    without launching the CLI is the half that is ours: the config the runner
+    writes puts the deny-list at the TOP level of the per-run home -- not under
+    any agent-scoped table -- and that home is the one the enforced child is
+    launched with. Whether kimi honours it there is the CLI's half, and stays
+    recorded as unverified."""
+
+    def test_an_enforced_launch_points_at_a_home_whose_deny_list_is_global(self):
+        seen = {}
+
+        def fake(cmd, **kw):
+            seen["cmd"], seen["env"] = cmd, kw["env"]
+            class P:
+                returncode, stdout, stderr = 0, STREAM, ""
+            return P()
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
+            row = dataclasses.replace(hosts.HOSTS["kimi"], registration_dir=d)
+            with open(os.path.join(d, "panopticon-domain-panel.md"), "w", encoding="utf-8") as fh:
+                fh.write("---\nname: panopticon-domain-panel\n---\n")
+            with mock.patch.dict(hosts.HOSTS, {"kimi": row}):
+                r = kimi_runner.Runner("kimi", runner=fake)
+                r.prepare(os.path.join(d, "run"), review_root=d)
+                self.addCleanup(r.teardown, "complete")
+                res = r.run_entry(_entry(True), {})
+            self.assertTrue(res.ok)
+            self.assertTrue(any(a.startswith("--agent-file=") for a in seen["cmd"]))
+            with open(os.path.join(seen["env"]["KIMI_CODE_HOME"], "config.toml"), "rb") as fh:
+                config = tomllib.load(fh)
+        self.assertIn("Bash", config["tools"]["disabled"])          # top-level table
+        self.assertNotIn("agents", config)                          # no per-agent override
