@@ -46,7 +46,10 @@ EXCLUDED_DIRECTORIES = (
     "htmlcov", "node_modules", "tmp", "venv",
 )
 EXCLUDED_DIRECTORY_GLOBS = ("*.egg-info",)
-TRUNCATION_NOTE = "[truncated: %d of %d entries shown; pass path= to narrow]"
+# N-M2: what the walk actually did. The old wording, "N of M entries
+# shown", paired the PATTERN-FILTERED count with the ENUMERATED count --
+# "1 of 5" over a thirteen-file tree -- which is two different questions.
+TRUNCATION_NOTE = "[truncated: enumeration stopped at %d files; pass path= to narrow]"
 
 
 def _tool(name, description, properties, required=()):
@@ -178,6 +181,7 @@ class Reader:
             if visited > MAX_DIRECTORIES:
                 truncated = True
                 break
+            children = []
             with _open(directory, directory=True) as fd, os.scandir(fd) as entries:
                 for entry in entries:
                     examined += 1
@@ -187,12 +191,23 @@ class Reader:
                     path = os.path.join(directory, entry.name)
                     if entry.is_dir(follow_symlinks=False):
                         if not _excluded_dir(entry.name):
-                            pending.append(path)
+                            children.append(path)
                     elif entry.is_file(follow_symlinks=False):
                         found.add(path)
-                        if len(found) >= MAX_FILES:
+                        # N-M1: `>` not `>=`. Stopping ON the MAX_FILES-th
+                        # file marked a listing truncated before anything had
+                        # been dropped, and told the reviewer to narrow a path
+                        # that was already whole.
+                        if len(found) > MAX_FILES:
+                            found.discard(path)
                             truncated = True
                             break
+            # N-M2: `pending` is a LIFO stack, so pushing this directory's
+            # children reverse-sorted makes the walk visit them
+            # lexicographically. Pushing them in os.scandir order left WHICH
+            # files survived a truncated walk unstable across filesystems --
+            # and sorting the survivors afterwards hid that it was arbitrary.
+            pending.extend(sorted(children, reverse=True))
         return sorted(found), truncated
 
     def _roots(self, arguments):
@@ -238,7 +253,7 @@ class Reader:
                          if fnmatch.fnmatchcase(os.path.relpath(path, self.cwd), pattern)]
                 text = "\n".join(shown)
                 if truncated:
-                    text += ("\n" if text else "") + TRUNCATION_NOTE % (len(shown), len(files))
+                    text += ("\n" if text else "") + TRUNCATION_NOTE % len(files)
                 return _result(text)
             walk_truncated = False
             if "path" in arguments:
@@ -269,7 +284,7 @@ class Reader:
                     return _result("\n".join(matches) + "\n[search truncated; pass path= to narrow]")
             text = "\n".join(matches)
             if walk_truncated:
-                text += ("\n" if text else "") + TRUNCATION_NOTE % (len(matches), len(files))
+                text += ("\n" if text else "") + TRUNCATION_NOTE % len(files)
             return _result(text)
         except (OSError, ValueError, TypeError) as exc:
             return _result("Read tool refused: " + str(exc), error=True)

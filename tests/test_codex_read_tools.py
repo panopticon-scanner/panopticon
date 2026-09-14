@@ -408,3 +408,61 @@ def test_the_walk_prunes_discoverys_directory_globs_too(tree):
     (egg / "SOURCES.py").write_text("generated\n", encoding="utf-8")
     listed = body(reader_for(tree, directories=True).call("list_files", {"pattern": "*"}))
     assert "egg-info" not in listed
+
+
+# --- N-M1 / N-M2: truncation must be true, countable and reproducible -------
+
+
+def test_a_complete_listing_is_not_marked_truncated(tree, monkeypatch):
+    # N-M1: the cap fired ON the MAX_FILES-th file, before anything had been
+    # dropped, so a reviewer was told to narrow a path that was already whole.
+    root, source, _first, _second, _outside = tree
+    (source / "third.py").write_text("gamma\n", encoding="utf-8")
+    monkeypatch.setattr(read_tools, "MAX_FILES", 3)
+    listed = reader_for(tree, directories=True).call("list_files", {"pattern": "*"})
+    assert listed["isError"] is False
+    assert "truncated" not in body(listed)
+    assert len(body(listed).splitlines()) == 3
+
+
+def test_the_truncation_note_counts_what_it_actually_stopped_at(tree, monkeypatch):
+    # N-M2: the note read "N of M entries shown" with N the pattern-filtered
+    # count and M the enumerated count -- "1 of 5" over a 13-file tree.
+    _root, source, _first, _second, _outside = tree
+    for number in range(12):
+        (source / ("extra-%02d.txt" % number)).write_text("x\n", encoding="utf-8")
+    monkeypatch.setattr(read_tools, "MAX_FILES", 5)
+    listed = reader_for(tree, directories=True).call("list_files", {"pattern": "*.py"})
+    assert listed["isError"] is False
+    note = body(listed).splitlines()[-1]
+    assert note == "[truncated: enumeration stopped at 5 files; pass path= to narrow]"
+
+
+def test_a_truncated_walk_is_reproducible(tree, monkeypatch):
+    # N-M2: subdirectories were pushed onto the LIFO stack in os.scandir
+    # order, so WHICH files survived a truncated walk was neither
+    # lexicographic nor stable -- and sorting the survivors afterwards hid it.
+    _root, source, _first, _second, _outside = tree
+    for name in ("delta", "alpha", "charlie", "bravo"):
+        (source / name).mkdir()
+        for number in range(3):
+            (source / name / ("f%d.txt" % number)).write_text("x\n", encoding="utf-8")
+    monkeypatch.setattr(read_tools, "MAX_FILES", 6)
+    reader = reader_for(tree, directories=True)
+
+    def listing():
+        # Relative, for the same reason N-I2 exists: this test's own tmp_path
+        # basename contains the word "truncated", so filtering absolute lines
+        # on that word discards every one of them.
+        text = body(reader.call("list_files", {"pattern": "*"}))
+        return [os.path.relpath(line, str(_root)).replace(os.sep, "/")
+                for line in text.splitlines() if line.startswith(str(_root))], text
+
+    kept, text = listing()
+    assert text.splitlines()[-1].startswith("[truncated:")
+    for _ in range(4):
+        assert listing()[0] == kept
+    # ...and the subset it keeps is the lexicographically first subtree, not
+    # whatever the filesystem happened to hand back.
+    assert any(line.startswith("source/alpha/") for line in kept), kept
+    assert not any(line.startswith("source/delta/") for line in kept), kept
