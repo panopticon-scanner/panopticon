@@ -699,6 +699,20 @@ class TestOperatorConfigShape(unittest.TestCase):
         self.assertIn("`tools.disabled`", str(caught.exception))
         self.assertIn("expected an array", str(caught.exception))
 
+    def test_a_disabled_list_holding_non_strings_is_named(self):
+        # N5: `_expect` checked that `tools.disabled` was an ARRAY, not what
+        # was in it, so `[1, 2]` reached `sorted(set(...) | set(...))` and
+        # raised "'<' not supported between instances of 'str' and 'int'" --
+        # the unnamed crash M3 exists to remove.
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(ValueError) as caught:
+                self._build(d, '[tools]\ndisabled = [1, 2]\n')
+        message = str(caught.exception)
+        self.assertIn("config.toml", message)
+        self.assertIn("`tools.disabled`", message)
+        self.assertIn("an array of strings", message)
+        self.assertIn("int", message)
+
     def test_a_hooks_table_is_named_rather_than_silently_dropped(self):
         # `[hooks]` instead of `[[hooks]]`: the old filter iterated the dict's
         # KEYS, discarded them all as non-dicts, and armed a config whose

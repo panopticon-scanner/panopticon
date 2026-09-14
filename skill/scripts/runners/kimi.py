@@ -263,16 +263,28 @@ def _hook_entry(matcher, mode, data_path):
 _SOURCE_DEFAULT = "~/.kimi-code/config.toml"
 
 
-def _expect(source_path, key, value, kinds, what):
+def _expect(source_path, key, value, kinds, what, items=None):
     """M3: the operator's config is THEIR file. A key this merge reads whose
     shape it does not expect must say so in those terms -- `dict()` on an
     array raised "dictionary update sequence element #0 has length 4", which
     is loud (orchestrate reports it as an error status) but tells the operator
-    nothing about which line of which file to look at."""
+    nothing about which line of which file to look at.
+
+    N5: `items` checks what is IN an array, not only that it is one. A
+    `tools.disabled = [1, 2]` passed the array test and then raised "'<' not
+    supported between instances of 'str' and 'int'" from the merge -- the same
+    unnamed crash, one layer further in."""
     if value is not None and not isinstance(value, kinds):
         raise ValueError("%s: expected %s at `%s`, found %s"
                          % (source_path or _SOURCE_DEFAULT, what, key,
                             type(value).__name__))
+    if items is None or not isinstance(value, list):
+        return
+    for element in value:
+        if not isinstance(element, items):
+            raise ValueError("%s: expected %s at `%s`, found %s in it"
+                             % (source_path or _SOURCE_DEFAULT, what, key,
+                                type(element).__name__))
 
 
 def build_merged_config(source, scope_path, allowlist_path, source_path=None):
@@ -281,7 +293,8 @@ def build_merged_config(source, scope_path, allowlist_path, source_path=None):
     tools_in = source.get("tools")
     _expect(source_path, "tools", tools_in, dict, "a table")
     if isinstance(tools_in, dict):
-        _expect(source_path, "tools.disabled", tools_in.get("disabled"), list, "an array")
+        _expect(source_path, "tools.disabled", tools_in.get("disabled"), list,
+                "an array of strings", items=str)
     # `[hooks]` rather than `[[hooks]]` used to iterate the dict's KEYS, drop
     # them all as non-dicts, and arm a config whose operator hooks had silently
     # vanished. Name it instead.
