@@ -185,6 +185,28 @@ def test_registered_shell_policy_and_mutations_reach_effective_launch(tmp_path):
     assert config["mcp_servers"]["panopticon_scope"]["command"] != "/untrusted/server"
 
 
+@pytest.mark.parametrize("agent", [
+    "panopticon-scout", "panopticon-advisor", "panopticon-domain-panel", "panopticon-domain-advisor",
+])
+def test_emitted_role_placeholder_is_replaced_by_scoped_broker(tmp_path, agent):
+    from scripts import dispatch
+
+    root, entry, env = _case(tmp_path)
+    registration_dir = tmp_path / "agents"
+    dispatch.emit_host_agents("codex", registration_dir)
+    entry["agent"] = agent
+    entry["id"] = env["PANOPTICON_ENTRY_ID"] = "review-entry"
+    registered = tomllib.loads((registration_dir / (agent + ".toml")).read_text())
+    argv = codex_host.command(entry, env, root, root / "run", runner=_fake_catalog,
+                              registration_dir=registration_dir)
+    server = codex_host.validate_command(argv, env, root)["mcp_servers"]["panopticon_scope"]
+    expected = codex_host.safety_config()["mcp_servers"]["panopticon_scope"]
+    expected["enabled_tools"] = registered["mcp_servers"]["panopticon_scope"]["enabled_tools"]
+    expected["env"] = {**{key: env[key] for key in codex_host.ENV_KEYS},
+                       "PANOPTICON_REVIEW_ROOT": str(root)}
+    assert server == expected
+
+
 @pytest.mark.parametrize("agent", ["../panopticon-scout", "/panopticon-scout", "panopticon-scout.toml", "other"])
 def test_rejects_shell_path_traversal(tmp_path, agent):
     root, entry, env = _case(tmp_path)

@@ -225,9 +225,15 @@ def emit_host_agents(host, out_dir):
             # safety_config(). Emitting them here baked this interpreter and
             # this checkout's codex_read_tools.py into a file that outlives
             # both, advertising a broker path that never launches.
-            policy["mcp_servers"] = {"panopticon_scope": {"enabled_tools": [
-                mapping[tool] for tool in tp["allowed"] if tool in mapping]}}
-            lines = []
+            # Codex also parses these files during native role discovery, so
+            # an allowlist without a transport is rejected as invalid transport.
+            # Use a required, failing placeholder: direct launches must refuse
+            # until command() binds the real broker and this entry's read scope.
+            policy["mcp_servers"] = {"panopticon_scope": {
+                "command": "/usr/bin/false", "required": True,
+                "enabled_tools": [mapping[tool] for tool in tp["allowed"] if tool in mapping]}}
+            lines = ["# Launch through Panopticon: its runner replaces the required MCP placeholder",
+                     "# with a broker bound to this review entry's read scope."]
 
             def emit_values(values, prefix=()):
                 for key, value in values.items():
