@@ -547,8 +547,9 @@ def _headless_usage_source(host, settings_path):
     # `--help` needs no tree -- so `cwd` falls back to the process's own; it
     # is read off the runner rather than hard-coded to None so a runner that
     # DOES have one is followed.
-    advertised, why = common._cli_advertises(launch, found, flags, env=launch_env,
-                                      cwd=getattr(runner, "review_root", None))
+    advertised, why = common._cli_advertises(
+        launch, found, flags, env=launch_env,
+        cwd=getattr(runner, "review_root", None))
     if advertised is None:
         return (hosts.UNKNOWN, USAGE_SOURCE, why)
     if not advertised:
