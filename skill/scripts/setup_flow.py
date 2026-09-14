@@ -225,6 +225,15 @@ def _seed_config(repo):
 # the getattr(..., "returncode", 1) checks below read as a failed probe.
 _PROBE_TIMEOUT = 30
 
+# The probe launcher, as a MODULE attribute rather than a default argument, so
+# one monkeypatch can refuse every un-injected probe in the suite. Readiness
+# spawns a HOST CLI here (`codex --version` below), which the guardrails forbid
+# a test to reach; with `runner=subprocess.run` in the signature the autouse
+# guard in tests/conftest.py could not see it, and N-M3's own tests walked
+# straight through. tests/test_host_launch_guard.py now finds this seam by
+# walking the AST rather than trusting anyone to remember it.
+DEFAULT_RUNNER = subprocess.run
+
 
 def _probe(runner, cmd):
     try:
@@ -429,12 +438,17 @@ def _check_groups_manifest(repo):
             "group(s) with no match patterns: %s" % ", ".join(map(str, empty)))
 
 
-def setup_readiness(repo, host=None, runner=subprocess.run, environ=None):
+def setup_readiness(repo, host=None, runner=None, environ=None):
     """#485(3): the preflight. Returns a list of (name, ok, detail) checks.
 
     ok is True/False/None -- None means informational (not gating READY).
     Every failing check carries its fix in `detail`.
+
+    `runner` defaults to the module's DEFAULT_RUNNER, read HERE rather than in
+    the signature, because one of the probes below starts a host CLI and the
+    suite's guard has to be able to refuse it.
     """
+    runner = DEFAULT_RUNNER if runner is None else runner
     env = environ if environ is not None else os.environ
     checks = []
     checks.extend(_check_docker(runner))

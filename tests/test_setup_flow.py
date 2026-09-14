@@ -1272,6 +1272,19 @@ class TestReadinessDoesNotSwallowTheLaunchGuard(unittest.TestCase):
         """
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
+    def test_readiness_with_no_injected_runner_cannot_reach_the_real_cli(self):
+        """N-M3 round 2 fixed the two tests below by injecting a runner. That
+        is discipline, and discipline is what failed here: readiness probes
+        `codex --version` through a runner bound as a DEFAULT ARGUMENT, so the
+        autouse guard could not reach it and the NEXT test to forget would
+        launch the real binary and stay green. With the launcher read from a
+        module attribute, forgetting is now loud.
+        """
+        from scripts import codex_host
+        d = _repo(self)
+        with self.assertRaises(codex_host.LaunchRefused):
+            setup_flow.readiness(d, host="codex")
+
     def test_a_refused_live_launch_escapes_readiness(self):
         from scripts import codex_host
         d = _repo(self)

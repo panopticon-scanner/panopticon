@@ -9,14 +9,21 @@ import scripts.runners.base as base
 import scripts.write_guard_hook as write_guard_hook
 
 
+# The launcher, as a MODULE attribute rather than a default argument, for the
+# reason spelled out in runners/codex.py: a default argument is bound at import
+# and no monkeypatch can swap it, so the suite's autouse guard cannot refuse an
+# un-injected launch of the real `claude` binary through this seam.
+DEFAULT_RUNNER = subprocess.run
+
+
 class Runner(base.HostRunner):
     CLI = "claude"
     mode = "headless"
     default_concurrency = 8
 
-    def __init__(self, host="claude", runner=subprocess.run):
+    def __init__(self, host="claude", runner=None):
         super().__init__(host)
-        self.runner = runner
+        self.runner = DEFAULT_RUNNER if runner is None else runner
         self.settings_path = None
         self.allowlist_path = None
         self.scope_path = None

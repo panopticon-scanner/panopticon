@@ -50,6 +50,7 @@ import pytest  # noqa: E402
 
 import scripts.codex_host as _codex_host  # noqa: E402
 import scripts.run_tools as _run_tools  # noqa: E402
+import scripts.runners.claude as _claude_runner  # noqa: E402
 import scripts.runners.codex as _codex_runner  # noqa: E402
 import scripts.setup_flow as _setup_flow  # noqa: E402
 from scripts import hosts as _hosts  # noqa: E402
@@ -110,8 +111,14 @@ class _RefusedProbe:
 
 
 def _refuse_setup_docker(runner):
-    """Swap ONLY the un-injected default; an explicit runner is the caller's."""
-    if runner is subprocess.run:
+    """Swap ONLY the un-injected default; an explicit runner is the caller's.
+
+    `setup_readiness` now resolves its un-injected default from
+    `setup_flow.DEFAULT_RUNNER`, which the launch guard below has already
+    replaced with the refusal -- so "un-injected" is either of those two, and
+    reading only the first would hand the docker probe a launcher that raises.
+    """
+    if runner is subprocess.run or runner is _refuse_host_launch:
         runner = lambda *a, **k: _RefusedProbe()   # noqa: E731
     return REAL_CHECK_DOCKER(runner)
 
@@ -124,22 +131,34 @@ def _no_live_scanner_containers(request, monkeypatch):
     monkeypatch.setattr(_setup_flow, "_check_docker", _refuse_setup_docker)
 
 
-# --- #1344: no live `codex` launches from the unit suite ---------------------
+# --- #1344: no live host-CLI launches from the unit suite --------------------
 # The guardrails say the suite must never start a host binary, and until now
-# that was per-test discipline only: both Codex launch seams defaulted to
+# that was per-test discipline only: the launch seams defaulted to
 # subprocess.run bound as a DEFAULT ARGUMENT, unreachable by a patch, and
 # host_probes._codex_measure mapped any exception to UNKNOWN -- so a test that
-# did reach a live `codex` and failed would still have passed. Both seams now
-# read a module-level DEFAULT_RUNNER, and this swaps each for a refusal whose
-# own type (_codex_host.LaunchRefused) the probe re-raises rather than
-# swallowing. A test that means to exercise a launch injects its own runner=
-# and never sees this. Named for its host so it coexists with the Claude
-# family's equivalent guard.
-def _refuse_codex_launch(*_args, **_kwargs):
-    raise _codex_host.LaunchRefused("test tried to launch the real codex CLI")
+# did reach a live CLI and failed would still have passed. Discipline then
+# failed twice more: `setup_flow.readiness` probes `codex --version` through
+# the same unreachable default (N-M3), and `runners/claude.py` binds its
+# launcher the same way.
+#
+# So the guard is a LIST OF SEAMS, not a list of hosts: every module that
+# starts a host CLI exposes a module-level DEFAULT_RUNNER, and each is swapped
+# here for a refusal whose own type the probes re-raise rather than swallowing.
+# A test that means to exercise a launch injects its own runner= and never sees
+# this. tests/test_host_launch_guard.py walks the AST for modules that launch a
+# registered host's CLI and fails if one of them is missing from this list, so
+# a fifth seam cannot be added silently.
+#
+# LaunchRefused lives in codex_host because that is where it was first needed;
+# nothing about it is Codex-specific and every seam raises the same type.
+LAUNCH_SEAMS = (_codex_host, _codex_runner, _claude_runner, _setup_flow)
+
+
+def _refuse_host_launch(*_args, **_kwargs):
+    raise _codex_host.LaunchRefused("test tried to launch a real host CLI")
 
 
 @pytest.fixture(autouse=True)
-def _no_live_codex_launches(monkeypatch):
-    monkeypatch.setattr(_codex_host, "DEFAULT_RUNNER", _refuse_codex_launch)
-    monkeypatch.setattr(_codex_runner, "DEFAULT_RUNNER", _refuse_codex_launch)
+def _no_live_host_launches(monkeypatch):
+    for seam in LAUNCH_SEAMS:
+        monkeypatch.setattr(seam, "DEFAULT_RUNNER", _refuse_host_launch)
