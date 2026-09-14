@@ -12,6 +12,7 @@ import scripts.host_disclosure as host_disclosure
 import scripts.host_probes as host_probes
 import scripts.hosts as hosts
 import scripts.setup_flow as setup_flow
+import scripts.probes.common as probes_common
 import shutil
 
 
@@ -586,13 +587,12 @@ class TestSetupFlow(unittest.TestCase):
     def test_readiness_driver_roles_are_derived_not_shadowed(self):
         # #run7 ARC-A4C once guarded a hand-maintained shadow of
         # dispatch.ROLE_FILES against drift with a RuntimeError. #1606 removed
-        # the shadow: _driver_roles IS host_probes.DRIVER_ROLES, which derives
+        # the shadow: _driver_roles IS probes.common.DRIVER_ROLES, which derives
         # from ROLE_FILES, so drift cannot happen and the trip is gone. Pinned
         # so a future "local copy" cannot quietly reintroduce the gap that
         # left `advisor` unchecked.
         import dispatch
-        from scripts import host_probes
-        self.assertIs(host_probes.DRIVER_ROLES, setup_flow._driver_roles)
+        self.assertIs(probes_common.DRIVER_ROLES, setup_flow._driver_roles)
         self.assertEqual(tuple(sorted(dispatch.ROLE_FILES)), setup_flow._driver_roles)
 
     def test_ingest_missing_bundled_data_fails_no_draft(self):

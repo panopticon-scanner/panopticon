@@ -5,6 +5,7 @@ from unittest import mock
 import pytest
 
 from scripts import dispatch, host_probes, hosts
+import scripts.probes.common as probes_common
 
 
 def surfaces():
@@ -17,7 +18,7 @@ def surfaces():
         "reads": [{"isError": False, "content": [{"type": "text", "text": "inside fixture"}]},
                   {"isError": True, "content": [{"type": "text", "text": "outside this entry scope"}]}],
     }
-    return [(role + ".toml", copy.deepcopy(surface)) for role in (*host_probes.DRIVER_ROLES, "setup-scan")]
+    return [(role + ".toml", copy.deepcopy(surface)) for role in (*probes_common.DRIVER_ROLES, "setup-scan")]
 
 
 @pytest.mark.parametrize("probe,probe_id", [
@@ -104,8 +105,8 @@ def test_probe_fixture_uses_real_emitter_but_injects_all_runtime_work(tmp_path):
         return surfaces()[0][1]
 
     measured = host_probes._codex_surfaces(str(registered), inspector=inspect)
-    assert len(measured) == len(host_probes.DRIVER_ROLES) + 1
-    assert len(set(seen)) == len(host_probes.DRIVER_ROLES) + 1
+    assert len(measured) == len(probes_common.DRIVER_ROLES) + 1
+    assert len(set(seen)) == len(probes_common.DRIVER_ROLES) + 1
 
 
 def test_registry_dispatch_shares_measurement_only_within_one_invocation(tmp_path):
@@ -150,7 +151,7 @@ def test_the_bundled_catalog_is_dumped_once_per_probe_run(tmp_path):
         return surfaces()[0][1]
 
     measured = host_probes._codex_surfaces(str(registered), inspector=inspect, runner=runner)
-    assert len(measured) == len(host_probes.DRIVER_ROLES) + 1
+    assert len(measured) == len(probes_common.DRIVER_ROLES) + 1
     assert calls == [["codex", "debug", "models", "--bundled"]]
 
 
@@ -159,7 +160,7 @@ def test_the_role_inspections_run_concurrently(tmp_path):
 
     registered = tmp_path / "registered"
     dispatch.emit_host_agents("codex", str(registered))
-    barrier = threading.Barrier(len(host_probes.DRIVER_ROLES) + 1, timeout=20)
+    barrier = threading.Barrier(len(probes_common.DRIVER_ROLES) + 1, timeout=20)
 
     def inspect(entry, env, root, run_dir, **kwargs):
         barrier.wait()               # sequential inspection cannot get here
@@ -167,7 +168,7 @@ def test_the_role_inspections_run_concurrently(tmp_path):
 
     measured = host_probes._codex_surfaces(str(registered), inspector=inspect,
                                            runner=mock.Mock())
-    assert len(measured) == len(host_probes.DRIVER_ROLES) + 1
+    assert len(measured) == len(probes_common.DRIVER_ROLES) + 1
 
 
 def test_claudes_read_guard_probe_stays_unknown_for_a_row_that_does_not_map_it(tmp_path):

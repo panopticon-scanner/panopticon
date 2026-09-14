@@ -12,7 +12,7 @@ import sys
 import time
 
 import scripts.driver as driver
-import scripts.host_probes as host_probes
+import scripts.probes.common as probes_common
 import scripts.hosts as hosts
 import scripts.phases.engine as engine
 import scripts.phases.persist as persist
@@ -176,7 +176,7 @@ def write_usage(review_root, ledger, namespace=None):
     """R-P6-4: rewritten after every batch so synthesize (which runs inside the
     engine, before `complete`) finds it; never estimated.
 
-    `namespace` mirrors `host_probes.headless_settings_path`'s namespace-aware
+    `namespace` mirrors `probes.common.headless_settings_path`'s namespace-aware
     resolution (Task 6 fix round 1, item 2): `runio._pano(review_root,
     "usage.json")` alone follows whatever run-manifest.json happens to be on
     review_root, and for `namespace == "setup"` that can be a STALE review
@@ -186,7 +186,7 @@ def write_usage(review_root, ledger, namespace=None):
     and the guard probes consult -- keeps this write in the one folder
     everything else for this invocation already agrees on: the flat
     `.panopticon/` for setup, the per-run tag folder for a review."""
-    run_dir = os.path.dirname(host_probes.headless_settings_path(review_root, namespace))
+    run_dir = os.path.dirname(probes_common.headless_settings_path(review_root, namespace))
     runio._write_json(os.path.join(run_dir, "usage.json"), ledger.usage_document())
 
 
@@ -442,13 +442,13 @@ def loop(args):
         # an unwritable settings path) escaped as a traceback rather than the
         # reported `error` status every other failure here produces.
         #
-        # Task 6 fix round 1, item 2: derived through host_probes.headless_settings_path
+        # Task 6 fix round 1, item 2: derived through probes.common.headless_settings_path
         # (namespace-aware), never a bare `runio._pano(review_root, SETTINGS_FILE)`
         # -- for namespace == "setup" that would follow whatever run-manifest.json
         # a PRIOR review run left on review_root and route setup's own
         # host-settings.json/dispatch-ledger.jsonl/usage.json into that run's
         # runs/<tag>/ folder.
-        run_dir = os.path.dirname(host_probes.headless_settings_path(review_root, namespace))
+        run_dir = os.path.dirname(probes_common.headless_settings_path(review_root, namespace))
         # C2/M4: the session runner prints the batch itself, so it needs the
         # two facts only the loop holds -- which request file these entries
         # came from, and whether this is the setup namespace (which every

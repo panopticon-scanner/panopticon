@@ -117,7 +117,7 @@ class TestLaunchEnv(unittest.TestCase):
     """#1626 I2: ONE env preparation per runner, reachable by the probes.
 
     `Runner.run_entry` built its child environment inline, so
-    `host_probes._cli_advertises` -- which launches the SAME binary to ask
+    `probes.common._cli_advertises` -- which launches the SAME binary to ask
     what it advertises -- had no way to use it and passed no `env` at all.
     The interrogation therefore ran under an environment the runner never
     uses. `launch_env` is that preparation named once; `run_entry` calls it,

@@ -29,6 +29,7 @@ import scripts.run_manifest as run_manifest  # noqa: E402
 from scripts import hosts  # noqa: E402
 import scripts.host_disclosure as host_disclosure  # noqa: E402
 import scripts.host_probes as host_probes  # noqa: E402
+import scripts.probes.common as probes_common  # noqa: E402
 import scripts.phases.engine as engine
 import scripts.phases.runio as runio
 import scripts.phases.coverage as coverage
@@ -380,12 +381,12 @@ def _establish_host_posture(review_root, manifest, args):
     # running the scan a second time inside run_probes was both duplicate work
     # and a window in which the artifact and the refusal could disagree about
     # the same tree.
-    shadow = host_probes.probe_shadow_shells(host, review_root)
+    shadow = probes_common.probe_shadow_shells(host, review_root)
     # Plan 6 (spec 5.4): in headless mode the guards are armed into the run
     # folder's host-settings.json, never the session root -- so that file,
     # not the session's, is what the guard probes must prove. `mode` is a
     # `driver loop` flag; `driver run` has none and probes the session root.
-    settings_path = (host_probes.headless_settings_path(review_root)
+    settings_path = (probes_common.headless_settings_path(review_root)
                      if getattr(args, "mode", None) == "headless" else None)
     # N2: the live runner's scratch home, when the loop has one. `driver run`
     # on its own never does, and neither does the first invocation of a loop
@@ -528,7 +529,7 @@ def _posture_drift(was, now, manifest):
 def _shadow_refusal(shadow, manifest):
     """Spec 7.3: a target shipping panopticon-* agent files refuses the run.
 
-    `shadow` is `host_probes.probe_shadow_shells`'s OWN `(state, by, detail)`
+    `shadow` is `probes.common.probe_shadow_shells`'s OWN `(state, by, detail)`
     result -- never the artifact's `capabilities[tool_policy_enforced]` row.
     That row's `by` names whichever probe `run_probes` recorded FIRST among
     those that reached the resolved state, so on a host whose

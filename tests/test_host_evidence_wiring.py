@@ -11,6 +11,7 @@ from unittest import mock
 
 from scripts import (collect_usage, driver, host_disclosure, host_probes,
                      hosts, run_manifest)
+import scripts.probes.common as probes_common
 from scripts.phases import runio
 
 
@@ -62,7 +63,7 @@ def _register_perfect_shells(directory):
     to the shadow scan alone."""
     from scripts import dispatch
     os.makedirs(directory, exist_ok=True)
-    for role in host_probes.DRIVER_ROLES:
+    for role in probes_common.DRIVER_ROLES:
         role_file = dispatch.ROLE_FILES[role]
         allowed = dispatch.load_template(role_file)[0]["tool_policy"]["allowed"]
         name = dispatch.registered_agent_filename("claude", role_file)
@@ -459,7 +460,7 @@ class TestThePostureIsEstablishedEveryInvocation(unittest.TestCase):
             manifest = self._manifest(session_dir=review_root)
             artifact = self._artifact(hosts.REFUTED)
             artifact["capabilities"][hosts.TOOL_POLICY_ENFORCED]["by"] = (
-                host_probes.SHADOW_SHELL_SCAN)
+                probes_common.SHADOW_SHELL_SCAN)
             artifact["capabilities"][hosts.ARTIFACT_WRITE_GUARD] = {
                 "state": hosts.PROVEN, "by": "fixture", "detail": "proven"}
             buf = io.StringIO()
@@ -606,8 +607,8 @@ class TestTheProbesReadTheRightTree(unittest.TestCase):
         # disagree about the same tree. The single result is threaded through.
         with tempfile.TemporaryDirectory() as review_root:
             self._settings(review_root)
-            with mock.patch.object(host_probes, "probe_shadow_shells",
-                                   wraps=host_probes.probe_shadow_shells) as scan:
+            with mock.patch.object(probes_common, "probe_shadow_shells",
+                                   wraps=probes_common.probe_shadow_shells) as scan:
                 driver._establish_host_posture(
                     review_root, self._manifest(session_dir=review_root),
                     _Args(target=review_root, session_dir=None))
@@ -620,7 +621,7 @@ class TestTheProbesReadTheRightTree(unittest.TestCase):
         # tree is clean) and require it in the artifact: a `shadow=` argument
         # that were accepted and ignored would silently re-scan and report
         # UNKNOWN here.
-        sentinel = (hosts.REFUTED, host_probes.SHADOW_SHELL_SCAN,
+        sentinel = (hosts.REFUTED, probes_common.SHADOW_SHELL_SCAN,
                     "threaded-scan-sentinel")
         with tempfile.TemporaryDirectory() as review_root, \
                 tempfile.TemporaryDirectory() as registration:
@@ -985,8 +986,8 @@ class TestTheGuardProbesFollowTheRunnersMode(unittest.TestCase):
                         return_value=_all_proven_artifact("claude")) as rp:
             driver._establish_host_posture(d, manifest, args)
         self.assertEqual(rp.call_args.kwargs.get("settings_path"),
-                         host_probes.headless_settings_path(d))
-        self.assertTrue(host_probes.headless_settings_path(d).endswith("host-settings.json"))
+                         probes_common.headless_settings_path(d))
+        self.assertTrue(probes_common.headless_settings_path(d).endswith("host-settings.json"))
 
     def test_session_mode_probes_pass_no_settings_path(self):
         d = self._repo(); manifest = self._manifest()

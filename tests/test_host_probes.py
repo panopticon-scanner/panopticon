@@ -9,6 +9,7 @@ import unittest
 from unittest import mock
 
 from scripts import dispatch, host_probes, hosts, model_resolver, write_guard_hook
+import scripts.probes.common as probes_common
 
 
 @contextlib.contextmanager
@@ -53,7 +54,7 @@ class TestRegisteredShellToolsProbe(unittest.TestCase):
 
     def _fully_registered(self, directory):
         from scripts import dispatch
-        for role in host_probes.DRIVER_ROLES:
+        for role in probes_common.DRIVER_ROLES:
             role_file = dispatch.ROLE_FILES[role]
             allowed = dispatch.load_template(role_file)[0]["tool_policy"]["allowed"]
             _shell(directory, dispatch.registered_agent_filename("claude", role_file),
@@ -67,8 +68,8 @@ class TestRegisteredShellToolsProbe(unittest.TestCase):
         # the OTHER three shells. Derived from ROLE_FILES so no hand-kept
         # tuple can quietly leave a dispatched role unchecked again.
         from scripts import dispatch
-        self.assertEqual(tuple(sorted(dispatch.ROLE_FILES)), host_probes.DRIVER_ROLES)
-        self.assertIn("advisor", host_probes.DRIVER_ROLES)
+        self.assertEqual(tuple(sorted(dispatch.ROLE_FILES)), probes_common.DRIVER_ROLES)
+        self.assertIn("advisor", probes_common.DRIVER_ROLES)
 
     def test_a_missing_advisor_shell_is_refuted(self):
         # The fixture #1606 is about: three perfect shells, no advisor shell.
@@ -79,24 +80,24 @@ class TestRegisteredShellToolsProbe(unittest.TestCase):
             self._fully_registered(d)
             os.remove(os.path.join(
                 d, dispatch.registered_agent_filename("claude", "advisor.md")))
-            state, _by, detail = host_probes.probe_registered_shell_tools("claude", d)
+            state, _by, detail = probes_common.probe_registered_shell_tools("claude", d)
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("advisor: no shell at", detail)
 
     def test_a_complete_correct_registration_is_proven(self):
         with tempfile.TemporaryDirectory() as d:
             self._fully_registered(d)
-            state, by, detail = host_probes.probe_registered_shell_tools("claude", d)
+            state, by, detail = probes_common.probe_registered_shell_tools("claude", d)
             self.assertEqual(hosts.PROVEN, state)
             self.assertEqual("registered-shell-tools", by)
-            self.assertIn("%d/%d" % (len(host_probes.DRIVER_ROLES),
-                                     len(host_probes.DRIVER_ROLES)), detail)
+            self.assertIn("%d/%d" % (len(probes_common.DRIVER_ROLES),
+                                     len(probes_common.DRIVER_ROLES)), detail)
 
     def test_an_empty_registration_dir_is_refuted(self):
         # THE negative fixture. This is the 7.1 case: a Claude run whose
         # shells were never registered must stop claiming enforcement.
         with tempfile.TemporaryDirectory() as d:
-            state, _by, detail = host_probes.probe_registered_shell_tools("claude", d)
+            state, _by, detail = probes_common.probe_registered_shell_tools("claude", d)
             self.assertEqual(hosts.REFUTED, state)
             self.assertIn("scout", detail)
 
@@ -106,7 +107,7 @@ class TestRegisteredShellToolsProbe(unittest.TestCase):
             self._fully_registered(d)
             os.remove(os.path.join(d, dispatch.registered_agent_filename(
                 "claude", dispatch.ROLE_FILES["domain_panel"])))
-            state, _by, detail = host_probes.probe_registered_shell_tools("claude", d)
+            state, _by, detail = probes_common.probe_registered_shell_tools("claude", d)
             self.assertEqual(hosts.REFUTED, state)
             self.assertIn("domain_panel", detail)
 
@@ -122,7 +123,7 @@ class TestRegisteredShellToolsProbe(unittest.TestCase):
             _shell(d, dispatch.registered_agent_filename(
                 "claude", dispatch.ROLE_FILES["scout"]),
                 ["Read", "Grep", "Glob", "Bash"])
-            state, _by, detail = host_probes.probe_registered_shell_tools("claude", d)
+            state, _by, detail = probes_common.probe_registered_shell_tools("claude", d)
             self.assertEqual(hosts.REFUTED, state)
             self.assertIn("scout", detail)
             # The token that ONLY the forbidden branch emits. Asserting on
@@ -139,31 +140,31 @@ class TestRegisteredShellToolsProbe(unittest.TestCase):
                 "claude", dispatch.ROLE_FILES["scout"]))
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write("---\nname: panopticon-scout\n---\n\nbody\n")
-            state, _by, _detail = host_probes.probe_registered_shell_tools("claude", d)
+            state, _by, _detail = probes_common.probe_registered_shell_tools("claude", d)
             self.assertEqual(hosts.REFUTED, state)
 
     def test_a_host_that_registers_no_shells_is_unknown_not_refuted(self):
         # gemini registers nothing. "Not applicable" is unknown; refuted would
         # claim we looked and found the control broken.
-        state, by, _detail = host_probes.probe_registered_shell_tools("gemini")
+        state, by, _detail = probes_common.probe_registered_shell_tools("gemini")
         self.assertEqual(hosts.UNKNOWN, state)
         self.assertIsNone(by)
 
     def test_an_unknown_host_is_unknown(self):
-        state, by, _detail = host_probes.probe_registered_shell_tools("no-such-host")
+        state, by, _detail = probes_common.probe_registered_shell_tools("no-such-host")
         self.assertEqual(hosts.UNKNOWN, state)
         self.assertIsNone(by)
 
     def test_the_probe_id_matches_the_registry_row(self):
         # hosts.py cannot import host_probes (the purity guard), so this
         # literal is typed twice. It is the key Task 6 joins on.
-        self.assertEqual(host_probes.REGISTERED_SHELL_TOOLS,
+        self.assertEqual(probes_common.REGISTERED_SHELL_TOOLS,
                          hosts.spec("claude").probes[hosts.TOOL_POLICY_ENFORCED])
 
     def test_the_driver_roles_match_setup_flows(self):
         from scripts import setup_flow
         self.assertEqual(tuple(setup_flow._driver_roles),
-                         tuple(host_probes.DRIVER_ROLES))
+                         tuple(probes_common.DRIVER_ROLES))
 
     def test_a_block_list_tools_frontmatter_is_proven(self):
         # kimi emits block list format; verify it is recognized.
@@ -175,7 +176,7 @@ class TestRegisteredShellToolsProbe(unittest.TestCase):
             _shell(d, dispatch.registered_agent_filename(
                 "claude", dispatch.ROLE_FILES["scout"]),
                 allowed, block_list=True)
-            state, by, detail = host_probes.probe_registered_shell_tools("claude", d)
+            state, by, detail = probes_common.probe_registered_shell_tools("claude", d)
             self.assertEqual(hosts.PROVEN, state)
             self.assertEqual("registered-shell-tools", by)
 
@@ -190,7 +191,7 @@ class TestRegisteredShellToolsProbe(unittest.TestCase):
             _shell(d, dispatch.registered_agent_filename(
                 "claude", dispatch.ROLE_FILES["scout"]),
                 reordered)
-            state, by, detail = host_probes.probe_registered_shell_tools("claude", d)
+            state, by, detail = probes_common.probe_registered_shell_tools("claude", d)
             self.assertEqual(hosts.PROVEN, state)
             self.assertEqual("registered-shell-tools", by)
 
@@ -204,7 +205,7 @@ class TestRegisteredShellToolsProbe(unittest.TestCase):
                 "claude", dispatch.ROLE_FILES["scout"]))
             with open(path, "wb") as fh:
                 fh.write(b"---\nname: x\ntools: \xff\xfe\n---\n")
-            state, _by, detail = host_probes.probe_registered_shell_tools("claude", d)
+            state, _by, detail = probes_common.probe_registered_shell_tools("claude", d)
             self.assertEqual(hosts.REFUTED, state)
             self.assertIn("scout", detail)
 
@@ -218,7 +219,7 @@ class TestRegisteredShellToolsProbe(unittest.TestCase):
             self._fully_registered(d)
             try:
                 os.chmod(d, 0o000)
-                state, by, detail = host_probes.probe_registered_shell_tools("claude", d)
+                state, by, detail = probes_common.probe_registered_shell_tools("claude", d)
                 self.assertEqual(hosts.UNKNOWN, state)
                 self.assertEqual("registered-shell-tools", by)
                 self.assertIn("cannot read", detail)
@@ -228,7 +229,7 @@ class TestRegisteredShellToolsProbe(unittest.TestCase):
     def test_an_absent_registration_directory_is_refuted(self):
         # No directory at all: that is the "never registered" case (7.1).
         nonexistent = "/nonexistent/path/to/shells"
-        state, by, detail = host_probes.probe_registered_shell_tools("claude", nonexistent)
+        state, by, detail = probes_common.probe_registered_shell_tools("claude", nonexistent)
         self.assertEqual(hosts.REFUTED, state)
         self.assertEqual("registered-shell-tools", by)
         self.assertIn("no registration directory", detail)
@@ -390,7 +391,7 @@ class TestEntryModelBoundProbe(unittest.TestCase):
         # id with no runner would make it vacuous. run_probes refuses to build
         # a table that disagrees, so the constant cannot rot in either direction.
         self.assertEqual(sorted(host_probes.PROBE_IDS),
-                         sorted({host_probes.REGISTERED_SHELL_TOOLS,
+                         sorted({probes_common.REGISTERED_SHELL_TOOLS,
                                  host_probes.WRITE_GUARD_ARMED,
                                  host_probes.USAGE_SOURCE,
                                  host_probes.ENTRY_MODEL_BOUND,
@@ -939,11 +940,11 @@ class TestUsageSourceProbe(unittest.TestCase):
                     "claude", project, settings_path=self._headless_settings(project))
 
     def test_a_flag_is_advertised_only_as_a_standalone_token(self):
-        self.assertTrue(host_probes._flag_advertised("-p", "  -p, --print   Print response"))
-        self.assertTrue(host_probes._flag_advertised("--output-format", "--output-format=stream-json"))
-        self.assertFalse(host_probes._flag_advertised("-p", "  --print   Print response"))
-        self.assertFalse(host_probes._flag_advertised("-p", "  --permission-mode <mode>"))
-        self.assertFalse(host_probes._flag_advertised("--output-format", "--output-formats"))
+        self.assertTrue(probes_common._flag_advertised("-p", "  -p, --print   Print response"))
+        self.assertTrue(probes_common._flag_advertised("--output-format", "--output-format=stream-json"))
+        self.assertFalse(probes_common._flag_advertised("-p", "  --print   Print response"))
+        self.assertFalse(probes_common._flag_advertised("-p", "  --permission-mode <mode>"))
+        self.assertFalse(probes_common._flag_advertised("--output-format", "--output-formats"))
 
     def test_headless_is_unknown_on_a_claiming_host_whose_runner_module_is_broken(self):
         # A probe reports, never raises: a runners/<host>.py that exists but
@@ -1145,7 +1146,7 @@ class TestShadowShellScan(unittest.TestCase):
         # This probe can only REFUTE. Finding nothing does not prove the host
         # enforces anything -- that is registered-shell-tools' job.
         with tempfile.TemporaryDirectory() as target:
-            state, by, _detail = host_probes.probe_shadow_shells("claude", target)
+            state, by, _detail = probes_common.probe_shadow_shells("claude", target)
             self.assertEqual(hosts.UNKNOWN, state)
             self.assertEqual("shadow-shell-scan", by)
 
@@ -1157,7 +1158,7 @@ class TestShadowShellScan(unittest.TestCase):
             with open(os.path.join(d, "panopticon-scout.md"), "w",
                       encoding="utf-8") as fh:
                 fh.write("---\nname: panopticon-scout\ntools: Bash\n---\n")
-            state, _by, detail = host_probes.probe_shadow_shells("claude", target)
+            state, _by, detail = probes_common.probe_shadow_shells("claude", target)
             self.assertEqual(hosts.REFUTED, state)
             self.assertIn("panopticon-scout.md", detail)
 
@@ -1174,7 +1175,7 @@ class TestShadowShellScan(unittest.TestCase):
                     with open(os.path.join(d, "panopticon-scout.md"), "w",
                               encoding="utf-8") as fh:
                         fh.write("x")
-                    state, _by, _detail = host_probes.probe_shadow_shells(
+                    state, _by, _detail = probes_common.probe_shadow_shells(
                         "kimi", target)
                     self.assertEqual(hosts.REFUTED, state)
 
@@ -1187,13 +1188,13 @@ class TestShadowShellScan(unittest.TestCase):
             with open(os.path.join(d, "their-own-agent.md"), "w",
                       encoding="utf-8") as fh:
                 fh.write("x")
-            state, _by, _detail = host_probes.probe_shadow_shells("claude", target)
+            state, _by, _detail = probes_common.probe_shadow_shells("claude", target)
             self.assertEqual(hosts.UNKNOWN, state)
 
     def test_a_host_with_no_project_scope_is_a_no_op(self):
         # generic declares none, so there is nothing to shadow through.
         with tempfile.TemporaryDirectory() as target:
-            state, by, detail = host_probes.probe_shadow_shells("generic", target)
+            state, by, detail = probes_common.probe_shadow_shells("generic", target)
             self.assertEqual(hosts.UNKNOWN, state)
             self.assertEqual("shadow-shell-scan", by)
             # The phrase only the early-return guard emits. Without this, the
@@ -1208,7 +1209,7 @@ class TestShadowShellScan(unittest.TestCase):
         # the registry does not know, and a probe that raises is a third
         # outcome the contract forbids: it must resolve to a state.
         with tempfile.TemporaryDirectory() as target:
-            state, by, detail = host_probes.probe_shadow_shells(
+            state, by, detail = probes_common.probe_shadow_shells(
                 "no-such-host", target)
             self.assertEqual(hosts.UNKNOWN, state)
             self.assertEqual("shadow-shell-scan", by)
@@ -1224,7 +1225,7 @@ class TestShadowShellScan(unittest.TestCase):
             with open(os.path.join(d, "innocuous.md"), "w",
                       encoding="utf-8") as fh:
                 fh.write("---\nname: panopticon-scout\ntools: Bash\n---\n")
-            state, _by, detail = host_probes.probe_shadow_shells("claude", target)
+            state, _by, detail = probes_common.probe_shadow_shells("claude", target)
             self.assertEqual(hosts.REFUTED, state)
             self.assertIn("innocuous.md", detail)
 
@@ -1238,7 +1239,7 @@ class TestShadowShellScan(unittest.TestCase):
             with open(os.path.join(d, "innocuous.toml"), "w",
                       encoding="utf-8") as fh:
                 fh.write('name = "panopticon-scout"\ndescription = "x"\n')
-            state, _by, detail = host_probes.probe_shadow_shells("codex", target)
+            state, _by, detail = probes_common.probe_shadow_shells("codex", target)
             self.assertEqual(hosts.REFUTED, state)
             self.assertIn("innocuous.toml", detail)
 
@@ -1251,7 +1252,7 @@ class TestShadowShellScan(unittest.TestCase):
             with open(os.path.join(d, "their-own-agent.md"), "w",
                       encoding="utf-8") as fh:
                 fh.write("---\nname: their-own-agent\ntools: Bash\n---\n")
-            state, _by, _detail = host_probes.probe_shadow_shells("claude", target)
+            state, _by, _detail = probes_common.probe_shadow_shells("claude", target)
             self.assertEqual(hosts.UNKNOWN, state)
 
     def test_an_unreadable_scope_directory_is_refuted(self):
@@ -1266,7 +1267,7 @@ class TestShadowShellScan(unittest.TestCase):
             os.makedirs(d)
             os.chmod(d, 0o000)
             try:
-                state, by, detail = host_probes.probe_shadow_shells("claude", target)
+                state, by, detail = probes_common.probe_shadow_shells("claude", target)
             finally:
                 os.chmod(d, 0o700)
             self.assertEqual(hosts.REFUTED, state)
@@ -1279,7 +1280,7 @@ class TestShadowShellScan(unittest.TestCase):
         # raises FileNotFoundError, a subclass of OSError -- if that ever
         # folds into the generic "unreadable" arm, every normal run refutes.
         with tempfile.TemporaryDirectory() as target:
-            state, _by, detail = host_probes.probe_shadow_shells("claude", target)
+            state, _by, detail = probes_common.probe_shadow_shells("claude", target)
             self.assertEqual(hosts.UNKNOWN, state)
             self.assertNotIn("could not be ruled out", detail)
 
@@ -1291,7 +1292,7 @@ class TestShadowShellScan(unittest.TestCase):
             with open(os.path.join(d, "Panopticon-Scout.md"), "w",
                       encoding="utf-8") as fh:
                 fh.write("x")
-            state, _by, detail = host_probes.probe_shadow_shells("claude", target)
+            state, _by, detail = probes_common.probe_shadow_shells("claude", target)
             self.assertEqual(hosts.REFUTED, state)
             self.assertIn("Panopticon-Scout.md", detail)
 
@@ -1309,7 +1310,7 @@ class TestShadowShellScan(unittest.TestCase):
             box = {}
             worker = threading.Thread(
                 target=lambda: box.update(
-                    result=host_probes.probe_shadow_shells("claude", target)),
+                    result=probes_common.probe_shadow_shells("claude", target)),
                 daemon=True)
             worker.start()
             worker.join(timeout=10)
@@ -1327,7 +1328,7 @@ class TestShadowShellScan(unittest.TestCase):
             directory = os.path.join(target, ".claude", "agents")
             os.makedirs(directory)
             os.mkfifo(os.path.join(directory, "panopticon-scout.md"))
-            state, _by, detail = host_probes.probe_shadow_shells("claude", target)
+            state, _by, detail = probes_common.probe_shadow_shells("claude", target)
             self.assertEqual(hosts.REFUTED, state)
             self.assertIn("panopticon-scout.md", detail)
 
@@ -1408,7 +1409,7 @@ class TestRunProbesBuildsTheArtifact(unittest.TestCase):
         from scripts import dispatch
         with tempfile.TemporaryDirectory() as target, \
                 tempfile.TemporaryDirectory() as registration:
-            for role in host_probes.DRIVER_ROLES:
+            for role in probes_common.DRIVER_ROLES:
                 role_file = dispatch.ROLE_FILES[role]
                 allowed = dispatch.load_template(role_file)[0]["tool_policy"]["allowed"]
                 _shell(registration,
@@ -1423,7 +1424,7 @@ class TestRunProbesBuildsTheArtifact(unittest.TestCase):
                                          registration_dir=registration)
             row = art["capabilities"][hosts.TOOL_POLICY_ENFORCED]
             self.assertEqual(hosts.REFUTED, row["state"])
-            self.assertEqual(host_probes.SHADOW_SHELL_SCAN, row["by"])
+            self.assertEqual(probes_common.SHADOW_SHELL_SCAN, row["by"])
             self.assertIn("panopticon-scout.md", row["detail"])
 
     def test_the_schema_is_stamped_and_the_host_recorded(self):
@@ -1491,7 +1492,7 @@ class TestRunProbesBuildsTheArtifact(unittest.TestCase):
             # runs for every host, even one the registry has never heard of,
             # and reports that it had nowhere to look; nothing else runs.
             self.assertEqual(
-                host_probes.SHADOW_SHELL_SCAN,
+                probes_common.SHADOW_SHELL_SCAN,
                 art["capabilities"][hosts.TOOL_POLICY_ENFORCED]["by"])
             for capability in hosts.CAPABILITIES:
                 if capability == hosts.TOOL_POLICY_ENFORCED:
@@ -1510,7 +1511,7 @@ class TestRunProbesBuildsTheArtifact(unittest.TestCase):
             self.assertEqual({hosts.UNKNOWN},
                              {r["state"] for r in art["capabilities"].values()})
             self.assertEqual(
-                host_probes.SHADOW_SHELL_SCAN,
+                probes_common.SHADOW_SHELL_SCAN,
                 art["capabilities"][hosts.TOOL_POLICY_ENFORCED]["by"])
             for capability in hosts.CAPABILITIES:
                 if capability == hosts.TOOL_POLICY_ENFORCED:
@@ -1547,7 +1548,7 @@ class TestRunProbesBuildsTheArtifact(unittest.TestCase):
                 os.chmod(shadow, 0o700)
             row = art["capabilities"][hosts.TOOL_POLICY_ENFORCED]
             self.assertEqual(hosts.REFUTED, row["state"])
-            self.assertEqual(host_probes.REGISTERED_SHELL_TOOLS, row["by"])
+            self.assertEqual(probes_common.REGISTERED_SHELL_TOOLS, row["by"])
             # The JOIN, not just the winner. Asserting only on the first
             # probe's text passes whether or not the join exists -- and
             # losing the join is precisely how a shadowing target went
@@ -1558,7 +1559,7 @@ class TestRunProbesBuildsTheArtifact(unittest.TestCase):
             # if the join is reverted to reporting a single winner.
             self.assertIn("no shell at", row["detail"])
             self.assertIn("shadow", row["detail"])
-            self.assertEqual(host_probes.REGISTERED_SHELL_TOOLS, row["by"])
+            self.assertEqual(probes_common.REGISTERED_SHELL_TOOLS, row["by"])
 
     def test_the_registry_mapping_drives_which_capability_a_probe_lands_on(self):
         # Important-4: `HostSpec.probes` must DRIVE dispatch, not just gate a
@@ -1573,11 +1574,11 @@ class TestRunProbesBuildsTheArtifact(unittest.TestCase):
         row = hosts.HostSpec(
             name=mismatched, claims=frozenset({hosts.USAGE_LEDGER}),
             shell_format="md",
-            probes={hosts.USAGE_LEDGER: host_probes.REGISTERED_SHELL_TOOLS})
+            probes={hosts.USAGE_LEDGER: probes_common.REGISTERED_SHELL_TOOLS})
         with mock.patch.dict(hosts.HOSTS, {mismatched: row}), \
                 tempfile.TemporaryDirectory() as target, \
                 tempfile.TemporaryDirectory() as registration:
-            for role in host_probes.DRIVER_ROLES:
+            for role in probes_common.DRIVER_ROLES:
                 role_file = dispatch.ROLE_FILES[role]
                 allowed = dispatch.load_template(role_file)[0]["tool_policy"]["allowed"]
                 _shell(registration,
@@ -1587,10 +1588,10 @@ class TestRunProbesBuildsTheArtifact(unittest.TestCase):
                                          registration_dir=registration)
             usage = art["capabilities"][hosts.USAGE_LEDGER]
             self.assertEqual(hosts.PROVEN, usage["state"])
-            self.assertEqual(host_probes.REGISTERED_SHELL_TOOLS, usage["by"])
+            self.assertEqual(probes_common.REGISTERED_SHELL_TOOLS, usage["by"])
             # And NOT under the hard-coded capability the old code used.
             tpe = art["capabilities"][hosts.TOOL_POLICY_ENFORCED]
-            self.assertNotEqual(host_probes.REGISTERED_SHELL_TOOLS, tpe["by"])
+            self.assertNotEqual(probes_common.REGISTERED_SHELL_TOOLS, tpe["by"])
 
     def test_an_unrecognised_probe_id_resolves_to_unknown_with_a_reason(self):
         from unittest import mock
@@ -1912,10 +1913,10 @@ class TestHeadlessSettingsPathIsNamespaceAware(unittest.TestCase):
         # run's runs/<tag>/ folder -- unlike namespace=None (a review run),
         # which DOES follow the manifest tag through runio._pano.
         with mock.patch("scripts.phases.runio._run_tag", return_value="stale-tag"):
-            self.assertTrue(host_probes.headless_settings_path("/repo", None)
+            self.assertTrue(probes_common.headless_settings_path("/repo", None)
                             .endswith(os.path.join("runs", "stale-tag", "host-settings.json")))
             self.assertEqual(
-                host_probes.headless_settings_path("/repo", "setup"),
+                probes_common.headless_settings_path("/repo", "setup"),
                 os.path.abspath(os.path.join("/repo", ".panopticon", "host-settings.json")))
 
 
@@ -1926,7 +1927,7 @@ def _kimi_fully_registered(directory):
     """Register all four driver shells in kimi's block-list dialect, granting
     exactly each template's tool policy (the state --emit-host-agents kimi
     produces)."""
-    for role in host_probes.DRIVER_ROLES:
+    for role in probes_common.DRIVER_ROLES:
         role_file = dispatch.ROLE_FILES[role]
         allowed = dispatch.load_template(role_file)[0]["tool_policy"]["allowed"]
         _shell(directory, dispatch.registered_agent_filename("kimi", role_file),
