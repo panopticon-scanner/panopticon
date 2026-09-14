@@ -582,29 +582,26 @@ def _kimi_version(runner=None):
 _TOOLS_SNAPSHOT = "llm.tools_snapshot"
 
 
-def _kimi_wire_snapshot(run_dir):
+def _kimi_wire_snapshot(run_home):
     """(tools, agent, wire) from the most recent child's `llm.tools_snapshot`
     under THIS run's per-run home, or (None, None, why).
 
     I5: the effective tool surface of a child that really ran, which is the
-    only thing that answers "did the shell restrict it". The home is found
-    through the run folder's pointer file -- untrusted, because that file
-    lives in the reviewed tree, so `is_temp_home` has to admit it before any
-    of it is read (a pointer aimed at attacker-controlled content would
-    otherwise feed this probe's verdict).
+    only thing that answers "did the shell restrict it". `run_home` is handed
+    in by the loop, off the live runner instance (N2). It is deliberately NOT
+    read back from the run folder's pointer file: that file sits in the
+    reviewed tree, and a target that could rewrite it could point this probe
+    at a directory it had planted -- turning `host-capabilities.json` into a
+    record of a child that never ran.
 
     The record's shape is read tolerantly: `tools` as names or as objects with
     a `name`, and the agent under any of the spellings a snapshot has been
     seen to use. A record this cannot read is "no snapshot", never a
     refutation -- an unrecognised shape is unknown data, not evidence.
     """
-    import scripts.runners.kimi as kimi_runner
-    if not run_dir:
-        return None, None, "no run folder to look in"
-    home = kimi_runner.read_home_pointer(run_dir)
-    if not kimi_runner.is_temp_home(home):
-        return None, None, ("no per-run kimi home is recorded at %s"
-                            % os.path.join(run_dir, kimi_runner.POINTER_FILE))
+    home = run_home
+    if not home or not os.path.isdir(home):
+        return None, None, "this run has no per-run kimi home yet"
     pattern = os.path.join(glob.escape(home), "sessions", "*", "*", "agents", "*", "wire.jsonl")
     try:
         wires = sorted(glob.glob(pattern), key=os.path.getmtime, reverse=True)
@@ -642,7 +639,7 @@ def _kimi_wire_snapshot(run_dir):
 
 
 def probe_kimi_shell_surface(host, registration_dir=None, version=None, runner=None,
-                             run_dir=None):
+                             run_home=None):
     """The registered shells restrict tools on the EFFECTIVE surface.
 
     Two halves, both required. First the template check the shipped
@@ -698,7 +695,7 @@ def probe_kimi_shell_surface(host, registration_dir=None, version=None, runner=N
     # I5: the EFFECTIVE surface, when a child has already run in this run's
     # home. The table above says what the CLI ships; the snapshot says what a
     # launched child was actually given.
-    snapshot, agent, where = _kimi_wire_snapshot(run_dir)
+    snapshot, agent, where = _kimi_wire_snapshot(run_home)
     if snapshot is not None:
         grant = _frontmatter_tools(os.path.join(registration_dir, "%s.md" % agent))
         if grant is None:
@@ -1300,7 +1297,7 @@ def _no_probe_reason(row, capability, host):
 
 
 def run_probes(host, review_root, session_root=None, registration_dir=None,
-               home=None, shadow=None, settings_path=None):
+               home=None, shadow=None, settings_path=None, run_home=None):
     """Establish this host's posture now, and return the artifact body.
 
     THREE DIFFERENT TREES, and collapsing them is what produced both of this
@@ -1338,6 +1335,12 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
     arm; when given, it is the two guard probes' subject INSTEAD of
     `session_root`. `None` (session mode, or plain `driver run`) leaves them
     probing the session root exactly as before.
+
+    `run_home` is the live runner's scratch directory outside the reviewed
+    tree (`HostRunner.run_home`), threaded down from the loop so a probe can
+    measure THIS run's children -- the effective tool surface a launch really
+    had. It is passed in process, never re-derived from a path recorded inside
+    the target (N2). `None` until the loop's `prepare` has run.
     """
     findings = {}          # capability -> list of (state, by, detail)
     session_root = session_root or os.getcwd()
@@ -1365,15 +1368,13 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
             lambda: probe_read_guard_armed(host, session_root=session_root,
                                            settings_path=settings_path),
         KIMI_SHELL_SURFACE:
-            # `settings_path` names the file the HEADLESS runner arms, so its
-            # directory is this run's folder -- where the kimi runner records
-            # the pointer to its per-run home, and therefore where I5's
-            # effective-surface check finds the children's wire files. None in
-            # session mode / plain `driver run`, where no child has run under
-            # a per-run home at all.
-            lambda: probe_kimi_shell_surface(
-                host, registration_dir,
-                run_dir=os.path.dirname(settings_path) if settings_path else None),
+            # `run_home` is the live runner's scratch home, handed down by the
+            # loop (N2) -- never a path read out of the reviewed tree. None
+            # before the first `prepare`, in session mode and under plain
+            # `driver run`, where I5 falls back to the version table and says
+            # so in its detail.
+            lambda: probe_kimi_shell_surface(host, registration_dir,
+                                             run_home=run_home),
         KIMI_READ_GUARD:
             lambda: probe_kimi_read_guard(host),
         KIMI_WRITE_GUARD:

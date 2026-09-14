@@ -1,3 +1,4 @@
+import contextlib
 import dataclasses
 import datetime
 import json
@@ -42,6 +43,24 @@ def _fixture_home(d):
     with open(os.path.join(home, "credentials"), "w", encoding="utf-8") as fh:
         fh.write("fixture")
     return home
+
+
+@contextlib.contextmanager
+def _narrowed_temp_root():
+    """Yield (root, outside): a directory the runner will treat as THE temp
+    root, and a sibling that is therefore outside it.
+
+    Both are real temp directories -- tests write nowhere else -- but the
+    runner's idea of the root is narrowed to the first, so a path can be
+    prefix-matching and still outside the root. That combination is what the
+    root half of `is_temp_home` exists for, and there is no other way to build
+    it without writing outside the temp directory the test owns.
+    """
+    with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as outside:
+        with mock.patch.object(tempfile, "gettempdir", return_value=root), \
+             mock.patch.dict(os.environ):
+            os.environ.pop("XDG_RUNTIME_DIR", None)
+            yield root, outside
 
 
 def _prepared(d, runner=None):
@@ -442,38 +461,58 @@ class TestHomeLocation(unittest.TestCase):
             r.teardown("complete")
             self.assertTrue(os.path.isdir(planted), "teardown deleted a path outside the temp root")
 
-    def test_a_resume_reuses_the_pointed_at_home_and_rebuilds_when_it_is_gone(self):
+    def test_every_prepare_mints_a_fresh_home_even_on_a_resume(self):
+        # N2: nothing is reused. The only record of a previous home is the
+        # pointer file, which lives in the reviewed tree, and reading it back
+        # would make an attacker's file an input to where this run's
+        # credential surface gets written.
         with tempfile.TemporaryDirectory() as d:
             run_dir = os.path.join(d, "run")
             with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
-                r = kimi_runner.Runner("kimi")
-                r.prepare(run_dir, review_root=d)
-                first = r.kimi_home
+                first = kimi_runner.Runner("kimi")
+                first.prepare(run_dir, review_root=d)
+                self.addCleanup(first.teardown, "complete")
                 second = kimi_runner.Runner("kimi")
-                second.prepare(run_dir, review_root=d)          # resume: same run dir
-                self.assertEqual(first, second.kimi_home)
-                second.teardown("complete")
-                self.assertFalse(os.path.exists(first))
-                third = kimi_runner.Runner("kimi")
-                third.prepare(run_dir, review_root=d)           # the home is gone
-                self.addCleanup(third.teardown, "complete")
-                self.assertNotEqual(first, third.kimi_home)
-                self.assertTrue(os.path.isfile(os.path.join(third.kimi_home, "config.toml")))
+                second.prepare(run_dir, review_root=d)         # resume: same run dir
+                self.addCleanup(second.teardown, "complete")
+            self.assertNotEqual(first.kimi_home, second.kimi_home)
+            self.assertTrue(kimi_runner.is_temp_home(second.kimi_home))
+            self.assertTrue(os.path.isfile(os.path.join(second.kimi_home, "config.toml")))
+            with open(os.path.join(run_dir, "kimi-home-path"), encoding="utf-8") as fh:
+                self.assertEqual(second.kimi_home, fh.read().strip())
 
-    def test_a_pointer_file_that_names_a_path_outside_the_temp_root_is_ignored(self):
-        with tempfile.TemporaryDirectory() as d:
+    def test_prepare_never_reads_the_pointer_file(self):
+        # The hostile target is prefix-matching AND pre-created OUTSIDE the
+        # temp root, so nothing about it can be waved through by a name check.
+        with _narrowed_temp_root() as (_root, outside), \
+             tempfile.TemporaryDirectory() as d:
+            hostile = os.path.join(outside, "panopticon-kimi-EVIL")
+            os.makedirs(hostile)
             run_dir = os.path.join(d, "run")
             os.makedirs(run_dir)
-            hostile = os.path.join(d, "attacker-home")
-            os.makedirs(hostile)
             with open(os.path.join(run_dir, "kimi-home-path"), "w", encoding="utf-8") as fh:
                 fh.write(hostile)
             with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
                 r = kimi_runner.Runner("kimi")
                 r.prepare(run_dir, review_root=d)
-            self.addCleanup(r.teardown, "complete")
+                self.addCleanup(r.teardown, "complete")
             self.assertNotEqual(os.path.realpath(hostile), os.path.realpath(r.kimi_home))
-            self.assertFalse(os.path.isfile(os.path.join(hostile, "config.toml")))
+            self.assertEqual([], os.listdir(hostile))       # no config, no credential links
+
+    def test_teardown_refuses_a_prefix_matching_path_outside_the_temp_root(self):
+        # The root half of `is_temp_home`, which the round-1 test did not
+        # reach: its "hostile" path was inside a TemporaryDirectory, i.e.
+        # under the temp root, so the NAME refused it.
+        with _narrowed_temp_root() as (_root, outside):
+            planted = os.path.join(outside, "panopticon-kimi-PLANTED")
+            os.makedirs(planted)
+            with open(os.path.join(planted, "keep-me"), "w", encoding="utf-8") as fh:
+                fh.write("x")
+            self.assertFalse(kimi_runner.is_temp_home(planted))
+            r = kimi_runner.Runner("kimi")
+            r.kimi_home = planted
+            r.teardown("complete")
+            self.assertTrue(os.path.isfile(os.path.join(planted, "keep-me")))
 
 
 class TestHardenedWrites(unittest.TestCase):
@@ -526,7 +565,8 @@ class TestHardenedWrites(unittest.TestCase):
             self.addCleanup(r.teardown, "complete")
             with open(victim, encoding="utf-8") as fh:
                 self.assertEqual("untouched", fh.read())
-            self.assertEqual(r.kimi_home, kimi_runner.read_home_pointer(run_dir))
+            with open(os.path.join(run_dir, "kimi-home-path"), encoding="utf-8") as fh:
+                self.assertEqual(r.kimi_home, fh.read().strip())
 
 
 class TestTomlEmissionRoundTrips(unittest.TestCase):

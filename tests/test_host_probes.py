@@ -1884,16 +1884,13 @@ class TestKimiShellSurfaceReadsTheWire(unittest.TestCase):
     """I5: `tool_policy_enforced` rested on configuration text plus a frozen
     belief about the CLI. The runner already owns per-run wire files, so when
     one exists the probe compares the child's own `llm.tools_snapshot` -- the
-    EFFECTIVE surface -- against that entry's shell grant."""
+    EFFECTIVE surface -- against that entry's shell grant. N2: the home comes
+    from the live runner in process, never from a path recorded in the tree."""
 
-    def _run_dir(self, d, snapshot=None, agent="panopticon-domain-panel"):
-        """A run folder whose pointer names a per-run home holding one child's
-        wire file. Returns (run_dir, registration_dir)."""
+    def _home(self, snapshot=None, agent="panopticon-domain-panel"):
+        """A per-run home holding one child's wire file, as the runner's own
+        `run_home` would be. Returns its path."""
         import scripts.runners.kimi as kimi_runner
-        registration = os.path.join(d, "agents")
-        _kimi_fully_registered(registration)
-        run_dir = os.path.join(d, "run")
-        os.makedirs(run_dir)
         home = tempfile.mkdtemp(prefix=kimi_runner.HOME_PREFIX)
         self.addCleanup(shutil.rmtree, home, True)
         if snapshot is not None:
@@ -1904,56 +1901,62 @@ class TestKimiShellSurfaceReadsTheWire(unittest.TestCase):
                 fh.write(json.dumps({"type": "llm.request", "modelAlias": "k3"}) + "\n")
                 fh.write(json.dumps({"type": "llm.tools_snapshot", "agent": agent,
                                      "tools": list(snapshot)}) + "\n")
-        with open(os.path.join(run_dir, kimi_runner.POINTER_FILE), "w", encoding="utf-8") as fh:
-            fh.write(home)
-        return run_dir, registration
+        return home
 
     def test_a_snapshot_matching_the_shells_grant_is_proven_and_says_so(self):
         with tempfile.TemporaryDirectory() as d:
-            run_dir, registration = self._run_dir(d, snapshot=["Read", "Grep", "Glob", "Write"])
+            _kimi_fully_registered(d)
             state, _by, detail = host_probes.probe_kimi_shell_surface(
-                "kimi", registration_dir=registration, version="0.42", run_dir=run_dir)
+                "kimi", registration_dir=d, version="0.42",
+                run_home=self._home(snapshot=["Read", "Grep", "Glob", "Write"]))
         self.assertEqual(hosts.PROVEN, state)
         self.assertIn("tools_snapshot", detail)
         self.assertIn("panopticon-domain-panel", detail)
 
     def test_a_snapshot_wider_than_the_grant_is_refuted_naming_both_sets(self):
         with tempfile.TemporaryDirectory() as d:
-            run_dir, registration = self._run_dir(
-                d, snapshot=["Read", "Grep", "Glob", "Write", "Bash"])
+            _kimi_fully_registered(d)
             state, _by, detail = host_probes.probe_kimi_shell_surface(
-                "kimi", registration_dir=registration, version="0.42", run_dir=run_dir)
+                "kimi", registration_dir=d, version="0.42",
+                run_home=self._home(snapshot=["Read", "Grep", "Glob", "Write", "Bash"]))
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("Bash", detail)
         self.assertIn("panopticon-domain-panel", detail)
 
     def test_no_wire_file_yet_falls_back_to_the_table_and_says_so(self):
         with tempfile.TemporaryDirectory() as d:
-            run_dir, registration = self._run_dir(d)          # no wire file
+            _kimi_fully_registered(d)
             state, _by, detail = host_probes.probe_kimi_shell_surface(
-                "kimi", registration_dir=registration, version="0.42", run_dir=run_dir)
+                "kimi", registration_dir=d, version="0.42", run_home=self._home())
         self.assertEqual(hosts.PROVEN, state)
         self.assertIn("no child wire file", detail)
         self.assertIn("rests on the version table", detail)
 
-    def test_a_pointer_outside_the_temp_root_is_not_followed(self):
+    def test_no_run_home_at_all_falls_back_rather_than_looking_for_one(self):
+        with tempfile.TemporaryDirectory() as d:
+            _kimi_fully_registered(d)
+            state, _by, detail = host_probes.probe_kimi_shell_surface(
+                "kimi", registration_dir=d, version="0.42")
+        self.assertEqual(hosts.PROVEN, state)
+        self.assertIn("no per-run kimi home yet", detail)
+
+    def test_a_planted_pointer_and_wire_file_in_the_tree_are_never_read(self):
+        # N2, the forged-evidence half. A target that plants both a pointer
+        # file in the run folder and the directory it names cannot make this
+        # probe report an effective surface: there is no code path from a file
+        # in the reviewed tree to `run_home`.
         import scripts.runners.kimi as kimi_runner
+        planted = self._home(snapshot=["Bash", "FetchURL"])
         with tempfile.TemporaryDirectory() as d:
             registration = os.path.join(d, "agents")
             _kimi_fully_registered(registration)
             run_dir = os.path.join(d, "run")
             os.makedirs(run_dir)
-            hostile = os.path.join(d, "hostile-home")
-            wire = os.path.join(hostile, "sessions", "w", "s", "agents", "main", "wire.jsonl")
-            os.makedirs(os.path.dirname(wire))
-            with open(wire, "w", encoding="utf-8") as fh:
-                fh.write(json.dumps({"type": "llm.tools_snapshot",
-                                     "agent": "panopticon-domain-panel",
-                                     "tools": ["Bash"]}) + "\n")
-            with open(os.path.join(run_dir, kimi_runner.POINTER_FILE), "w", encoding="utf-8") as fh:
-                fh.write(hostile)
+            with open(os.path.join(run_dir, kimi_runner.POINTER_FILE), "w",
+                      encoding="utf-8") as fh:
+                fh.write(planted)
             state, _by, detail = host_probes.probe_kimi_shell_surface(
-                "kimi", registration_dir=registration, version="0.42", run_dir=run_dir)
+                "kimi", registration_dir=registration, version="0.42")
         self.assertEqual(hosts.PROVEN, state)
-        self.assertIn("no per-run kimi home is recorded", detail)
-        self.assertNotIn("Bash", detail)          # the planted wire was not read
+        self.assertNotIn("Bash", detail)
+        self.assertNotIn("tools_snapshot for", detail)

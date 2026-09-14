@@ -101,8 +101,13 @@ class LaunchRefused(RuntimeError):
 # setup-scan reviewer (its scope is the whole review root), embedded by any
 # `zip -r` of the run folder, and reachable by the target's own tooling.
 # chmod 700 does not help there: every one of those readers is the same uid.
-# The run folder keeps only POINTER_FILE so a resume and the probes can find
-# the home again.
+# The run folder keeps only POINTER_FILE, and it is INFORMATIONAL ONLY (N2):
+# an operator debugging an errored run needs to know where the home is, but
+# nothing in this module or in the probes ever reads it back. It sits in the
+# reviewed tree, so reading it would make an untrusted file an input to where
+# this run's credential surface gets written and to what the probes call
+# evidence -- the very invariant `teardown` states for its own rmtree. Every
+# `prepare` mints a fresh home instead; nothing is ever reused.
 HOME_PREFIX = "panopticon-kimi-"
 POINTER_FILE = "kimi-home-path"
 _GUARD = os.path.abspath(kimi_guard_hook.__file__)
@@ -396,20 +401,9 @@ def _write_text(path, text):
 
 
 def pointer_path(run_dir):
+    """Where the run folder records this run's home. Write-only, by design
+    (N2): there is deliberately no reader in this module."""
     return os.path.join(run_dir, POINTER_FILE)
-
-
-def read_home_pointer(run_dir):
-    """The per-run home a previous `prepare` recorded under `run_dir`, or None.
-
-    Untrusted input -- the file lives in the reviewed tree -- so the caller
-    must put it through `is_temp_home` before doing anything with it.
-    """
-    try:
-        with open(pointer_path(run_dir), encoding="utf-8") as fh:
-            return fh.read().strip() or None
-    except OSError:
-        return None
 
 
 # --- model aliases ------------------------------------------------------------
@@ -524,6 +518,8 @@ class Runner(base.HostRunner):
         # (I3); an injected fake stays exactly what the caller passed.
         self.runner = runner
         self.kimi_home = None
+        self.run_home = None           # the seam's name for it (base.HostRunner)
+        self.home_pointer = None
         self.review_root = None
         self.configured = None
         self.max_turns = 60
@@ -534,11 +530,12 @@ class Runner(base.HostRunner):
         CLI's model table for alias resolution.
 
         The home lives under the temp root (C1); `run_dir` -- inside the
-        reviewed tree -- keeps only the pointer file that names it, so a
-        resume of this run finds the same home and the probes can read the
-        children's wire files. A resume REUSES the pointed-at home only when
-        `is_temp_home` still admits it; anything else (a removed home, a
-        pointer an untrusted target rewrote) rebuilds from scratch.
+        reviewed tree -- gets a pointer file naming it, for an operator
+        debugging a run, and nothing reads that file back (N2). Every prepare,
+        including a resume's, mints a FRESH home: reuse would have to re-derive
+        the path from that untrusted file, and `mkdtemp`'s exclusivity is the
+        only thing that makes "this directory is ours" true. The probes are
+        handed the live path in-process (`run_home`), never the file.
         """
         self.review_root = os.path.abspath(review_root)
         # C3: a Kimi hook whose interpreter cannot start fails OPEN, so a
@@ -551,11 +548,14 @@ class Runner(base.HostRunner):
                 "reviewers whose read/write confinement would be unarmed" % _GUARD)
         scope_path = os.path.join(run_dir, base.SCOPE_FILE)
         allowlist_path = os.path.join(run_dir, base.ALLOWLIST_FILE)
-        recorded = read_home_pointer(run_dir)
-        home = recorded if is_temp_home(recorded) else new_kimi_home()
-        self.kimi_home = build_kimi_home(home, scope_path, allowlist_path)
+        self.kimi_home = build_kimi_home(new_kimi_home(), scope_path, allowlist_path)
+        # `run_home` is the seam's own name for it: the loop reads it off the
+        # runner and hands it to the probes, so an effective-surface probe can
+        # find this run's children without opening anything in the target.
+        self.run_home = self.kimi_home
+        self.home_pointer = pointer_path(run_dir)
         os.makedirs(run_dir, exist_ok=True)
-        _write_text(pointer_path(run_dir), self.kimi_home + "\n")
+        _write_text(self.home_pointer, self.kimi_home + "\n")
         self.configured = configured_models()
 
     def teardown(self, status=None):

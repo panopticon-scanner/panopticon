@@ -51,6 +51,15 @@ class HostRunner:
     host = ""
     mode = "headless"
     default_concurrency = 1
+    # A scratch directory OUTSIDE the reviewed tree that this runner's children
+    # write into, once `prepare` has made one; None for a host that needs none
+    # (claude arms a settings file in the run folder and keeps nothing else).
+    # The loop reads it off the runner after `prepare` and hands it to the
+    # probes, so an effective-surface probe can find this run's children
+    # without opening a file in the target -- N2: a path recorded in the
+    # reviewed tree is the target's to rewrite, and evidence read through it
+    # is the target's to forge.
+    run_home = None
 
     def __init__(self, host=None):
         if host:

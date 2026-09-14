@@ -415,6 +415,12 @@ def loop(args):
         runner.dispatch_request = os.path.abspath(
             requests.request_path(review_root, namespace))
         runner.namespace = namespace
+        # N2: the runner's scratch home travels to the probes IN PROCESS, on
+        # `args`, because every later `driver.run` in this loop re-establishes
+        # posture and the effective-surface probes need to find this run's
+        # children. Host-agnostic: a runner with no scratch area leaves it
+        # None, and nothing reads a path out of the reviewed tree to get it.
+        args.run_home = getattr(runner, "run_home", None)
         for attr in ("max_turns", "entry_timeout"):
             if getattr(args, attr, None):
                 setattr(runner, attr, getattr(args, attr))

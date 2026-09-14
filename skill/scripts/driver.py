@@ -341,8 +341,13 @@ def _establish_host_posture(review_root, manifest, args):
     # `driver loop` flag; `driver run` has none and probes the session root.
     settings_path = (host_probes.headless_settings_path(review_root)
                      if getattr(args, "mode", None) == "headless" else None)
+    # N2: the live runner's scratch home, when the loop has one. `driver run`
+    # on its own never does, and neither does the first invocation of a loop
+    # (posture is established before `prepare`), so a probe that measures this
+    # run's children legitimately falls back until a child has run.
     fresh = host_probes.run_probes(host, review_root, session_root=session_root,
-                                   shadow=shadow, settings_path=settings_path)
+                                   shadow=shadow, settings_path=settings_path,
+                                   run_home=getattr(args, "run_home", None))
     # 5.1 surface 1. Emitted here -- after `fresh` is computed, before the
     # artifact is written or compared, and before the shadow refusal below --
     # rather than at the dispatch sites, because 5.2 already puts this step
