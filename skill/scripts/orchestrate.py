@@ -319,13 +319,11 @@ def loop(args):
     # registry, never a host-name literal, so a family PR that flips its row
     # needs no edit here. The remedy is the parser's, plus `--reset`, because
     # it is the MANIFEST that has to change.
+    # #1624: the sentence itself lives in the registry, because `driver.run`
+    # now refuses the same manifest on the same grounds and two copies of one
+    # paragraph drift.
     if host not in hosts.driver_hosts():
-        return _status("error",
-                       "driver loop: this run's manifest names host %r, which is "
-                       "registered but no longer driver-selectable (it proves no "
-                       "enforcement capability). Start over with `--host generic "
-                       "--reset` (session mode, unenforced, ack-gated); resuming "
-                       "would dispatch for a host --host refuses to name." % host)
+        return _status("error", hosts.unselectable_host_message(host, "loop"))
     mode, note = _resolve_mode(args, host)
     if note:
         print(note, file=sys.stderr, flush=True)
