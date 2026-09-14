@@ -212,9 +212,9 @@ python -m ruff check skill/scripts/ tests/
 CI runs the same two commands on Python 3.11, 3.12, 3.13, and 3.14. The
 local interpreter is newer than the CI floor, so run at least your own test
 files under 3.11 before pushing (`uv run --python 3.11 --with pytest --with
-pyyaml -q python -m pytest tests/runners tests/test_host_probes.py -q` is
-enough). Argparse and `typing` differ across that range; the 3.11 leg is the
-one that finds it.
+pyyaml -q python -m pytest tests/runners tests/probes tests/test_host_probes.py
+-q` is enough). Argparse and `typing` differ across that range; the 3.11 leg is
+the one that finds it.
 
 Then the evidence only a real run can give:
 
