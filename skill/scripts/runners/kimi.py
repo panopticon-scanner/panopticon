@@ -247,8 +247,32 @@ def _hook_entry(matcher, mode, data_path):
             "timeout": 30}
 
 
-def build_merged_config(source, scope_path, allowlist_path):
+_SOURCE_DEFAULT = "~/.kimi-code/config.toml"
+
+
+def _expect(source_path, key, value, kinds, what):
+    """M3: the operator's config is THEIR file. A key this merge reads whose
+    shape it does not expect must say so in those terms -- `dict()` on an
+    array raised "dictionary update sequence element #0 has length 4", which
+    is loud (orchestrate reports it as an error status) but tells the operator
+    nothing about which line of which file to look at."""
+    if value is not None and not isinstance(value, kinds):
+        raise ValueError("%s: expected %s at `%s`, found %s"
+                         % (source_path or _SOURCE_DEFAULT, what, key,
+                            type(value).__name__))
+
+
+def build_merged_config(source, scope_path, allowlist_path, source_path=None):
     """The operator's config dict plus the per-run deltas (see module docstring)."""
+    _expect(source_path, "config.toml", source, dict, "a table")
+    tools_in = source.get("tools")
+    _expect(source_path, "tools", tools_in, dict, "a table")
+    if isinstance(tools_in, dict):
+        _expect(source_path, "tools.disabled", tools_in.get("disabled"), list, "an array")
+    # `[hooks]` rather than `[[hooks]]` used to iterate the dict's KEYS, drop
+    # them all as non-dicts, and arm a config whose operator hooks had silently
+    # vanished. Name it instead.
+    _expect(source_path, "hooks", source.get("hooks"), list, "an array of tables")
     merged = dict(source)
     merged["merge_all_available_skills"] = False
     merged["builtin_product_skills"] = False
@@ -333,8 +357,9 @@ def build_kimi_home(home, scope_path, allowlist_path, real_home=None):
             os.unlink(link)
         if os.path.exists(source):
             os.symlink(source, link)
-    source, _path = _read_source_config(real_home)
-    merged = build_merged_config(source, scope_path, allowlist_path)
+    source, source_path = _read_source_config(real_home)
+    merged = build_merged_config(source, scope_path, allowlist_path,
+                                 source_path=source_path)
     _write_text(os.path.join(home, "config.toml"), dump_toml(merged))
     return home
 

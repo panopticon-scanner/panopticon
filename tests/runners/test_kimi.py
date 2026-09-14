@@ -621,3 +621,58 @@ class TestDefaultAgentSurface(unittest.TestCase):
     def test_the_read_matcher_covers_every_read_tool_the_hook_adjudicates(self):
         for tool in kimi_guard_hook._READ_TOOLS:
             self.assertIn(tool, kimi_runner.READ_MATCHER.split("|"))
+
+
+class TestOperatorConfigShape(unittest.TestCase):
+    """M3: `~/.kimi-code/config.toml` is the operator's file, not ours. A shape
+    the merge does not expect used to surface as a bare ValueError/TypeError
+    from `dict()` -- loud (orchestrate reports it as an error status) but
+    reading as a crash rather than as "your config has an unexpected shape"."""
+
+    def _fixture(self, d, body):
+        home = os.path.join(d, "real-home")
+        os.makedirs(home, exist_ok=True)
+        with open(os.path.join(home, "config.toml"), "w", encoding="utf-8") as fh:
+            fh.write(body)
+        return home
+
+    def _build(self, d, body):
+        return kimi_runner.build_kimi_home(os.path.join(d, "home"),
+                                           os.path.join(d, "s.json"),
+                                           os.path.join(d, "a.json"),
+                                           real_home=self._fixture(d, body))
+
+    def test_a_tools_array_names_the_file_the_key_and_the_shape(self):
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(ValueError) as caught:
+                self._build(d, 'tools = ["Read"]\n')
+        message = str(caught.exception)
+        self.assertIn("config.toml", message)
+        self.assertIn("`tools`", message)
+        self.assertIn("expected a table", message)
+        self.assertIn("list", message)
+
+    def test_a_disabled_string_is_named(self):
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(ValueError) as caught:
+                self._build(d, '[tools]\ndisabled = "Bash"\n')
+        self.assertIn("`tools.disabled`", str(caught.exception))
+        self.assertIn("expected an array", str(caught.exception))
+
+    def test_a_hooks_table_is_named_rather_than_silently_dropped(self):
+        # `[hooks]` instead of `[[hooks]]`: the old filter iterated the dict's
+        # KEYS, discarded them all as non-dicts, and armed a config whose
+        # operator hooks had vanished without a word.
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(ValueError) as caught:
+                self._build(d, '[hooks]\nevent = "Stop"\n')
+        self.assertIn("`hooks`", str(caught.exception))
+
+    def test_a_config_with_the_expected_shapes_still_builds(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = self._build(d, '[tools]\ndisabled = ["Something"]\n\n'
+                                  '[[hooks]]\nevent = "Stop"\ncommand = "true"\n')
+            with open(os.path.join(home, "config.toml"), "rb") as fh:
+                config = tomllib.load(fh)
+        self.assertIn("Something", config["tools"]["disabled"])
+        self.assertEqual(3, len(config["hooks"]))
