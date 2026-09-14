@@ -148,16 +148,14 @@ def allowed_tool_union():
 
 
 def disabled_tools(vocabulary=None):
-    """The tools the per-run config turns off for every child.
-
-    I1: an ALLOW-LIST expressed as a deny-list -- the CLI's whole vocabulary
-    minus what the templates grant. The old three-name list closed 3 of 24 and
-    left every UNENFORCED entry (the setup scan is always one) holding
-    ReadMediaFile (a read tool the guard did not know), FetchURL/WebSearch
-    (egress, the other half of C1) and CronCreate/CronDelete (persistence on
-    the operator's machine). For an ENFORCED entry the shell's `tools:` grant
-    is the control and this is belt-and-braces.
-    """
+    """The tools the per-run config turns off for every child. I1: an
+    ALLOW-LIST expressed as a deny-list -- the CLI's whole vocabulary minus
+    what the templates grant. The old three-name list closed 3 of 24 and left
+    every UNENFORCED entry (the setup scan is always one) holding ReadMediaFile
+    (a read tool the guard did not know), FetchURL/WebSearch (egress, the other
+    half of C1) and CronCreate/CronDelete (persistence on the operator's
+    machine). For an ENFORCED entry the shell's `tools:` grant is the control
+    and this is belt-and-braces."""
     names = (set(vocabulary) if vocabulary is not None
              else set().union(*TOOL_VOCABULARY.values()))
     return sorted(names - allowed_tool_union())
@@ -180,11 +178,10 @@ def _expect(source_path, key, value, kinds, what, items=None):
     """M3: the operator's config is THEIR file. A key this merge reads whose
     shape it does not expect must say so in those terms -- `dict()` on an array
     raised "dictionary update sequence element #0 has length 4", loud but
-    naming neither file nor key.
-
-    N5: `items` checks what is IN an array, not only that it is one --
-    `tools.disabled = [1, 2]` passed the array test and then raised "'<' not
-    supported between instances of 'str' and 'int'" from the merge."""
+    naming neither file nor key. N5: `items` checks what is IN an array, not
+    only that it is one -- `tools.disabled = [1, 2]` passed the array test and
+    then raised "'<' not supported between instances of 'str' and 'int'" from
+    the merge."""
     if value is not None and not isinstance(value, kinds):
         raise ValueError("%s: expected %s at `%s`, found %s"
                          % (source_path or _SOURCE_DEFAULT, what, key,
@@ -284,32 +281,36 @@ def build_kimi_home(home, scope_path, allowlist_path, real_home=None):
     if os.path.islink(home):
         raise OSError("refusing to build the kimi home through a symlink: %s" % home)
     os.makedirs(home, exist_ok=True)
-    os.chmod(home, 0o700)
-    for item in _CREDENTIAL_ITEMS:
-        source = os.path.join(real_home, item)
-        link = os.path.join(home, item)
-        if os.path.islink(link):
-            os.unlink(link)
-        if os.path.exists(source):
-            os.symlink(source, link)
-    source, source_path = _read_source_config(real_home)
-    merged = build_merged_config(source, scope_path, allowlist_path,
-                                 source_path=source_path)
-    _write_text(os.path.join(home, "config.toml"), kimi_toml.dump_toml(merged))
+    # R3-2: the credential links go in BEFORE the merge can refuse the
+    # operator's config, and a home `prepare` never got to record is one no
+    # teardown reclaims -- so a failure past this point takes the home with it.
+    try:
+        os.chmod(home, 0o700)
+        for item in _CREDENTIAL_ITEMS:
+            source = os.path.join(real_home, item)
+            link = os.path.join(home, item)
+            if os.path.islink(link):
+                os.unlink(link)
+            if os.path.exists(source):
+                os.symlink(source, link)
+        source, source_path = _read_source_config(real_home)
+        merged = build_merged_config(source, scope_path, allowlist_path,
+                                     source_path=source_path)
+        _write_text(os.path.join(home, "config.toml"), kimi_toml.dump_toml(merged))
+    except BaseException:
+        shutil.rmtree(home, ignore_errors=True)
+        raise
     return home
 
 
 def _write_text(path, text):
     """Stage at `<path>.tmp` and rename, mode 0o600, never writing THROUGH a
-    symlink planted at the staging name (I2).
-
-    A private mirror of `write_guard_hook._atomic_write_json`'s flags rather
-    than a call into it: runners/claude.py uses that helper because it ALREADY
-    imports the hook for `_hook_entry`, and this module imports no part of it
-    (kimi's guard is kimi_guard_hook.py). The shared rule is the flags --
-    O_EXCL refuses a stale leftover, O_NOFOLLOW the link, 0o600 whatever the
-    umask says.
-    """
+    symlink planted at the staging name (I2). A private mirror of
+    `write_guard_hook._atomic_write_json`'s flags rather than a call into it:
+    runners/claude.py uses that helper because it ALREADY imports the hook for
+    `_hook_entry`, and this module imports no part of it (kimi's guard is
+    kimi_guard_hook.py). The shared rule is the flags -- O_EXCL refuses a stale
+    leftover, O_NOFOLLOW the link, 0o600 whatever the umask says."""
     tmp = path + ".tmp"
     if os.path.islink(tmp) or os.path.exists(tmp):
         os.unlink(tmp)
@@ -506,20 +507,18 @@ class Runner(base.HostRunner):
             strip_secrets(home)
 
     def _arm_crash_strippers(self):
-        """Strip the secrets on the ways out that never reach `teardown` (R2-2).
-
+        """Strip the secrets on the ways out that never reach `teardown` (R2-2):
         `teardown` runs from orchestrate._finish, so a `kill`, an OOM kill or a
         power loss leaves the home behind -- and since N2 removed reuse, no
         later run adopts it. `atexit` covers a normal-ish exit and an unhandled
-        exception; SIGTERM goes on top, CHAINING to whatever was there. SIGINT
-        is deliberately NOT here (R3-1): KeyboardInterrupt is already routed by
-        orchestrate.loop to teardown("error") AFTER run_batch's pool has
-        drained, and a handler strips BEFORE the drain -- every entry still
-        queued would then launch against a home with no config.toml, i.e. no
-        guard hooks. SIGTERM is safe on this side of the drain because its
-        chain ends in SIG_DFL, which ends the process: nothing launches after
-        it. SIGKILL nobody can catch: that residual is in docs/PANOPTICON.md.
-        """
+        exception; SIGTERM goes on top, CHAINING to whatever was there -- safe
+        on this side of the drain because its chain ends in SIG_DFL, which ends
+        the process: nothing launches after it. SIGINT is deliberately NOT here
+        (R3-1): KeyboardInterrupt is already routed by orchestrate.loop to
+        teardown("error") AFTER run_batch's pool has drained, and a handler
+        strips BEFORE the drain -- every entry still queued would then launch
+        against a home with no config.toml, i.e. no guard hooks. SIGKILL nobody
+        can catch: that residual is in docs/PANOPTICON.md."""
         if self._crash_strip is not None:
             return
         self._crash_strip = self._strip_on_exit
@@ -562,18 +561,14 @@ class Runner(base.HostRunner):
 
     def teardown(self, status=None):
         """Drop the per-run home on a clean finish; keep it, stripped, on an error.
-
         Bounded by `is_temp_home` on the path THIS process built (never on the
         pointer file's contents, which the reviewed tree could have rewritten
-        between prepare and teardown).
-
-        N6: a run that ends any other way than `complete` keeps its home so
-        the children's wire files can be read afterwards -- but the SECRETS go
-        anyway. Nothing prunes a kept home, so its config.toml (`api_key`
-        verbatim) and its OAuth symlinks would otherwise accumulate under a
-        path every process of that uid can see. The debugging value is in the
-        transcripts, not the credential surface.
-        """
+        between prepare and teardown). N6: a run that ends any other way than
+        `complete` keeps its home so the children's wire files can be read
+        afterwards -- but the SECRETS go anyway. Nothing prunes a kept home, so
+        its config.toml (`api_key` verbatim) and its OAuth symlinks would
+        otherwise accumulate under a path every process of that uid can see.
+        The debugging value is in the transcripts, not the credential surface."""
         self._disarm_crash_strippers()
         home = self.kimi_home
         if not home or not is_temp_home(home):

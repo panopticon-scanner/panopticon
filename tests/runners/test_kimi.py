@@ -1,6 +1,7 @@
 import contextlib
 import dataclasses
 import datetime
+import glob
 import io
 import json
 import os
@@ -597,6 +598,33 @@ class TestHomeLocation(unittest.TestCase):
             self.assertTrue(os.path.isfile(config), "config.toml must survive the drain")
             r.teardown("error")                  # the loop's path: strip AFTER the drain
             self.assertFalse(os.path.exists(config))
+
+    def test_a_prepare_that_rejects_the_operator_config_leaves_no_home_behind(self):
+        # R3-2: build_kimi_home mints the directory and links the two
+        # credential stores BEFORE build_merged_config can refuse the
+        # operator's config, and prepare assigns self.kimi_home only on
+        # success -- so an ordinary operator typo used to leave a
+        # panopticon-kimi-* holding live OAuth symlinks that no teardown, exit
+        # handler or later run ever reclaimed.
+        with _narrowed_temp_root() as (root, _outside), tempfile.TemporaryDirectory() as d:
+            fixture = _fixture_home(d)
+            config = os.path.join(fixture, "config.toml")
+            with open(config, encoding="utf-8") as fh:
+                body = fh.read()
+            with open(config, "w", encoding="utf-8") as fh:
+                fh.write("hooks = [1, 2]\n" + body)      # top level, before any table
+            pattern = os.path.join(root, kimi_runner.HOME_PREFIX + "*")
+            self.assertEqual([], glob.glob(pattern))
+            with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": fixture}):
+                r = kimi_runner.Runner("kimi")
+                with self.assertRaises(ValueError) as caught:
+                    r.prepare(os.path.join(d, "run"), review_root=d)
+            self.assertIn("expected an array of tables at `hooks`, found int in it",
+                          str(caught.exception))
+            self.assertIsNone(r.kimi_home)
+            r.teardown("error")
+            self.assertEqual([], glob.glob(pattern),
+                             "prepare orphaned a home holding credential links")
 
     def test_teardown_refuses_a_path_that_is_not_a_temp_home(self):
         with tempfile.TemporaryDirectory() as d:
