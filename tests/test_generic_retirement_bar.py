@@ -77,28 +77,26 @@ class TestGenericRetirementBar(unittest.TestCase):
                              "spec 8.1: --host generic was deleted while a remaining "
                              "host falls short; #1070 must close first (spec 7.2)")
 
-    def test_the_bar_alone_no_longer_blocks_the_deletion(self):
-        # Simulate F5's one-line change on THIS base -- the same removal
-        # `test_the_bar_would_refuse_the_deletion_today` used to simulate, with
-        # the opposite answer. Every host the bar examines now clears it, so
-        # F5's ENTRY CRITERION is met here.
-        #
-        # Met is not due. Deleting `--host generic` is now an OWNER decision
-        # rather than a mechanical consequence of this assertion flipping:
-        # generic is the only path left for a Gemini operator (#1621, retired
-        # 2026-09-13) and for any other host whose family has not shipped a
-        # runner. The bar answers "does a remaining SELECTABLE host still fall
-        # short"; it cannot answer "is there anywhere else for those operators
-        # to go". The deprecated row therefore stays until someone decides it,
-        # not until this test says {}.
-        table = {n: r for n, r in hosts.HOSTS.items() if n != DEPRECATED}
-        with mock.patch.dict(hosts.HOSTS, table, clear=True):
-            self.assertEqual({}, retirement_shortfalls())
-
     def test_todays_shortfall_is_pinned_so_it_moves_consciously(self):
         # gemini left the selectable set (#1621 retired, 2026-09-13); claude
         # clears the bar; the Kimi (#1620) and Codex (#1619) family PRs re-pin
         # this when they flip their rows.
+        #
+        # This `{}` is also F5's ENTRY CRITERION, met. `test_the_bar_would_
+        # refuse_the_deletion_today` used to sit beside this pin and simulate
+        # F5's one-line removal of the deprecated row; its replacement was
+        # deleted rather than kept, because `retirement_shortfalls()` already
+        # skips DEPRECATED (see the `continue` above), so patching that row
+        # out of HOSTS cannot change the answer -- the simulation proved
+        # exactly what this line proves and no more.
+        #
+        # Met is not due. Deleting `--host generic` is an OWNER decision, not
+        # a mechanical consequence of this assertion reading `{}`: generic is
+        # the only path left for a Gemini operator and for any other host
+        # whose family has not shipped a runner. The bar answers "does a
+        # remaining SELECTABLE host still fall short"; it cannot answer "is
+        # there anywhere else for those operators to go". The deprecated row
+        # stays until someone decides it, not until this test says {}.
         shortfalls = retirement_shortfalls()
         self.assertNotIn("claude", shortfalls)
         self.assertEqual({}, shortfalls)
