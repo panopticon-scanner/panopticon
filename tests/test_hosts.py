@@ -53,9 +53,11 @@ class TestQueries(unittest.TestCase):
         self.assertTrue(set(hosts.driver_hosts()) <= set(hosts.known_hosts()))
 
     def test_only_generic_is_deprecated(self):
-        # D4. gemini also claims nothing, but its shortfall is for its family
-        # PR to close -- it is not the deprecated fallback. A predicate that
-        # broadened to "claims nothing" would deprecate gemini by accident.
+        # D4. gemini also claims nothing, and after #1621 is not selectable
+        # either -- but it is still not the deprecated FALLBACK, which is a
+        # distinct role: `is_deprecated` gates the run-time NOTICE, and a
+        # predicate broadened to "claims nothing" (or to "not selectable")
+        # would print that notice for rows it does not describe.
         self.assertTrue(hosts.is_deprecated("generic"))
         for host in hosts.known_hosts():
             if host != "generic":
@@ -69,8 +71,15 @@ class TestTodaysBehaviourIsPreserved(unittest.TestCase):
     today, so routing consumers through it changes nothing."""
 
     def test_the_driver_accepts_exactly_the_hosts_it_accepts_today(self):
-        self.assertEqual(("claude", "gemini", "generic"),
+        # gemini was here until #1621 retired it (2026-09-13): its family PR
+        # failed the gate twice, so the row stays REGISTERED -- known_hosts()
+        # lists it, spec() resolves it, it still claims nothing -- and only
+        # `driver_selectable` flipped. A Gemini operator runs `--host generic`.
+        self.assertEqual(("claude", "generic"),
                          tuple(sorted(hosts.driver_hosts())))
+        self.assertIn("gemini", hosts.known_hosts())
+        self.assertIsNotNone(hosts.spec("gemini"))
+        self.assertEqual(frozenset(), hosts.spec("gemini").claims)
 
     def test_only_claude_declares_tool_policy_enforcement_among_driver_hosts(self):
         # `enforced = host == "claude"` at 5 sites. Any other driver-selectable

@@ -77,28 +77,42 @@ class TestGenericRetirementBar(unittest.TestCase):
                              "spec 8.1: --host generic was deleted while a remaining "
                              "host falls short; #1070 must close first (spec 7.2)")
 
-    def test_the_bar_would_refuse_the_deletion_today(self):
-        # Simulate F5's one-line change on THIS base. If this ever passes the
-        # bar, the shortfall pin below has moved and the deletion is due.
+    def test_the_bar_alone_no_longer_blocks_the_deletion(self):
+        # Simulate F5's one-line change on THIS base -- the same removal
+        # `test_the_bar_would_refuse_the_deletion_today` used to simulate, with
+        # the opposite answer. Every host the bar examines now clears it, so
+        # F5's ENTRY CRITERION is met here.
+        #
+        # Met is not due. Deleting `--host generic` is now an OWNER decision
+        # rather than a mechanical consequence of this assertion flipping:
+        # generic is the only path left for a Gemini operator (#1621, retired
+        # 2026-09-13) and for any other host whose family has not shipped a
+        # runner. The bar answers "does a remaining SELECTABLE host still fall
+        # short"; it cannot answer "is there anywhere else for those operators
+        # to go". The deprecated row therefore stays until someone decides it,
+        # not until this test says {}.
         table = {n: r for n, r in hosts.HOSTS.items() if n != DEPRECATED}
         with mock.patch.dict(hosts.HOSTS, table, clear=True):
-            self.assertNotEqual({}, retirement_shortfalls())
+            self.assertEqual({}, retirement_shortfalls())
 
     def test_todays_shortfall_is_pinned_so_it_moves_consciously(self):
-        # R-F5-5 / plan 5 R-P5-3: claude clears the bar (read-guard-armed
-        # shipped); gemini claims nothing. The Gemini family PR edits this
-        # expectation in the same PR that ships its probes.
+        # gemini left the selectable set (#1621 retired, 2026-09-13); claude
+        # clears the bar; the Kimi (#1620) and Codex (#1619) family PRs re-pin
+        # this when they flip their rows.
         shortfalls = retirement_shortfalls()
         self.assertNotIn("claude", shortfalls)
-        self.assertEqual({"gemini": [hosts.TOOL_POLICY_ENFORCED, hosts.READ_SCOPE_CONFINED]},
-                         shortfalls)
+        self.assertEqual({}, shortfalls)
 
     def test_a_claim_without_a_shipped_probe_fails_the_bar_as_unknown(self):
         # spec 8.1's last sentence. A row that CLAIMS both security capabilities
         # but maps only one to a shipped probe falls short on the other -- a
         # claim is not evidence (spec 9.3).
+        # The row is borrowed for its SHAPE only. `driver_selectable=True` is
+        # spelled out because the bar examines `driver_hosts()`, and gemini's
+        # row stopped being selectable at #1621 -- a candidate host the bar
+        # never looks at proves nothing about the bar.
         claimed = dataclasses.replace(
-            hosts.spec("gemini"), name="claimant",
+            hosts.spec("gemini"), name="claimant", driver_selectable=True,
             claims=frozenset({hosts.TOOL_POLICY_ENFORCED, hosts.READ_SCOPE_CONFINED}),
             probes={hosts.TOOL_POLICY_ENFORCED: host_probes.REGISTERED_SHELL_TOOLS,
                     hosts.READ_SCOPE_CONFINED: "a-probe-nobody-shipped"})
@@ -114,7 +128,7 @@ class TestGenericRetirementBar(unittest.TestCase):
         # read_scope_confined incorrectly (registered-shell-tools does not
         # measure it) -- so only the mismapped one falls into the shortfall.
         claimed = dataclasses.replace(
-            hosts.spec("gemini"), name="claimant",
+            hosts.spec("gemini"), name="claimant", driver_selectable=True,
             claims=frozenset({hosts.TOOL_POLICY_ENFORCED, hosts.READ_SCOPE_CONFINED}),
             probes={hosts.TOOL_POLICY_ENFORCED: host_probes.REGISTERED_SHELL_TOOLS,
                     hosts.READ_SCOPE_CONFINED: host_probes.REGISTERED_SHELL_TOOLS})

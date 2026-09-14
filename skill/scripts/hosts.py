@@ -2,11 +2,13 @@
 """#1344: the one table that knows what a host is.
 
 Before this module, four separate places disagreed about which hosts exist:
-the driver's `--host` choices (claude|generic|gemini), `emit_host_agents`
-(claude|kimi|codex), `_detect_host`'s return values, and `model_resolver`'s
-fallback branches. A host could therefore be first-class in one and absent from
-another -- `gemini` was selectable by the driver while `emit_host_agents`
-raised `ValueError` for it, and setup told operators to run that exact command.
+the driver's `--host` choices, `emit_host_agents` (claude|kimi|codex),
+`_detect_host`'s return values, and `model_resolver`'s fallback branches. A
+host could therefore be first-class in one and absent from another -- `gemini`
+was selectable by the driver while `emit_host_agents` raised `ValueError` for
+it, and setup told operators to run that exact command. That disagreement is
+what this table ends; `driver_selectable` is now one field on one row, and
+gemini's reads False (#1621).
 
 This module is DATA and PURE FUNCTIONS ONLY. It is imported by `phases/*`,
 which must not pay for templates, model resolution or a subprocess to ask
@@ -105,13 +107,20 @@ HOSTS = {
         project_scope_dirs=(os.path.join(".codex", "agents"),),
         detect_env=("CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED"),
         driver_selectable=False),
-    # Selectable today with NO enforcement support of any kind -- the state
-    # this epic exists to end. It claims nothing, so every consumer that reads
-    # the registry treats it as unenforced, which is what already happens.
+    # Registered, not selectable: its family PR did not clear the gate (#1621,
+    # retired 2026-09-13). The row STAYS so the registry still knows the name
+    # -- `known_hosts()` lists it, `spec("gemini")` resolves, it still claims
+    # nothing, and every consumer that reads the registry keeps answering for
+    # it honestly. Operators use `--host generic` (session mode, unenforced,
+    # ack-gated), the same path as any host without a family runner. A future
+    # Gemini PR flips this back as part of proving its capabilities, exactly
+    # as kimi's and codex's rows will.
     "gemini": HostSpec(name="gemini", claims=frozenset(),
-                       driver_selectable=True),
-    # The deprecated fallback (spec D4). Deleted in F5 once every remaining
-    # driver-selectable host clears the bar in spec §8.1.
+                       driver_selectable=False),
+    # The deprecated fallback (spec D4). Its deletion in F5 is an OWNER
+    # decision, not a mechanical one: the spec §8.1 bar is a floor (see
+    # `test_generic_retirement_bar`), and generic is the only path left for
+    # gemini and for any other host without a family runner.
     "generic": HostSpec(name="generic", claims=frozenset(),
                         driver_selectable=True),
 }
@@ -141,9 +150,9 @@ def is_deprecated(host):
     site: `tests/test_host_posture_wiring.py`'s AST guard exists precisely so
     nothing under `phases/` decides behaviour from a host's NAME, and this
     registry -- "the one table that knows what a host is" -- is where that
-    one comparison belongs. `gemini` also claims nothing but is not this: its
-    fate is a separate, still-open owner decision (see the plan's "What the
-    deletion still needs").
+    one comparison belongs. `gemini` also claims nothing, and since #1621 is
+    not selectable either, but it is still not this: this predicate gates the
+    deprecation NOTICE, which describes the fallback specifically.
     """
     return host == "generic"
 
@@ -175,8 +184,9 @@ def posture(host, evidence):
       direction but applied symmetrically it discarded refutations, and §7.3
       makes refuted the STRONGER answer. A refutation grants nothing, so
       letting it through is strictly non-permissive. It was latent only
-      because gemini and generic have empty `project_scope_dirs`; it goes
-      live the moment a family PR flips kimi or codex to driver_selectable,
+      because generic has empty `project_scope_dirs` (so does gemini, which
+      #1621 left registered but unselectable); it goes live the moment a
+      family PR flips kimi or codex to driver_selectable,
       and F5's entry-criterion test reads `posture()` -- so a genuinely
       refuted host would have read `unknown` and failed the bar for the wrong
       stated reason.
