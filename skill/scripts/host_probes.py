@@ -1,10 +1,18 @@
 #!/usr/bin/env python3
 """Establish what a host actually delivers, as opposed to what it claims.
 
-`hosts.py` is the table of claims and stays I/O-free. This module is where the
-filesystem and subprocess live, so it is imported only by the driver's
-pre-phase step and by setup -- never by `phases/*` on the hot path, and never
-by `hosts.py` (that import would break the purity guard).
+`hosts.py` is the table of claims and stays I/O-free. The probes are where
+the filesystem and subprocess live, so this module is imported only by the
+driver's pre-phase step and by setup -- never by `phases/*` on the hot path,
+and never by `hosts.py` (that import would break the purity guard).
+
+This module is the REGISTRY, not the probes: `PROBE_IDS`, `PROBE_CAPABILITY`,
+the id -> runner table `run_probes` walks, and `capabilities_of`. The probes
+themselves live in `scripts/probes/` -- `common` for what every host shares,
+`claude` / `codex` / `kimi` for what each family proves about itself (#1627,
+which split a 1900-line module into four under the package ceiling). They are
+reached by module attribute and never re-exported from here: a name lives in
+exactly one module, so `mock.patch` has exactly one target to aim at.
 
 Every probe returns `(state, by, detail)`:
 
@@ -34,11 +42,13 @@ import scripts.probes.kimi as kimi_probes
 # retirement bar (tests/test_generic_retirement_bar.py) reads this as "the
 # shipped probes" (spec 8.1), so it must not drift from the runner table:
 # run_probes refuses to build a table that disagrees with it.
-PROBE_IDS = (probes_common.REGISTERED_SHELL_TOOLS, claude_probes.WRITE_GUARD_ARMED, claude_probes.USAGE_SOURCE,
+PROBE_IDS = (probes_common.REGISTERED_SHELL_TOOLS,
+            claude_probes.WRITE_GUARD_ARMED, claude_probes.USAGE_SOURCE,
             claude_probes.ENTRY_MODEL_BOUND, claude_probes.READ_GUARD_ARMED,
             codex_probes.CODEX_EFFECTIVE_TOOLS, codex_probes.CODEX_READ_SCOPE,
-            kimi_probes.KIMI_SHELL_SURFACE, kimi_probes.KIMI_READ_GUARD, kimi_probes.KIMI_WRITE_GUARD,
-            kimi_probes.KIMI_MODEL_ALIAS, kimi_probes.KIMI_USAGE_WIRE)
+            kimi_probes.KIMI_SHELL_SURFACE, kimi_probes.KIMI_READ_GUARD,
+            kimi_probes.KIMI_WRITE_GUARD, kimi_probes.KIMI_MODEL_ALIAS,
+            kimi_probes.KIMI_USAGE_WIRE)
 
 # Which capability each shipped probe MEASURES. The retirement bar reads this
 # so a row cannot satisfy spec 8.1 by mapping a security capability to a
@@ -159,28 +169,30 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
         probes_common.REGISTERED_SHELL_TOOLS:
             lambda: probes_common.probe_registered_shell_tools(host, registration_dir),
         claude_probes.WRITE_GUARD_ARMED:
-            lambda: claude_probes.probe_write_guard_armed(host, session_root=session_root,
-                                            settings_path=settings_path),
+            lambda: claude_probes.probe_write_guard_armed(
+                host, session_root=session_root, settings_path=settings_path),
         claude_probes.USAGE_SOURCE:
-            lambda: claude_probes.probe_usage_source(host, session_root, home=home,
-                                       settings_path=settings_path),
+            lambda: claude_probes.probe_usage_source(
+                host, session_root, home=home, settings_path=settings_path),
         claude_probes.ENTRY_MODEL_BOUND:
             lambda: claude_probes.probe_entry_model_bound(host, registration_dir),
         claude_probes.READ_GUARD_ARMED:
-            lambda: claude_probes.probe_read_guard_armed(host, session_root=session_root,
-                                           settings_path=settings_path),
+            lambda: claude_probes.probe_read_guard_armed(
+                host, session_root=session_root, settings_path=settings_path),
         codex_probes.CODEX_EFFECTIVE_TOOLS:
-            lambda: codex_probes.probe_codex_tool_policy(host, registration_dir, settings_path, codex_measure),
+            lambda: codex_probes.probe_codex_tool_policy(
+                host, registration_dir, settings_path, codex_measure),
         codex_probes.CODEX_READ_SCOPE:
-            lambda: codex_probes.probe_codex_read_scope(host, registration_dir, settings_path, codex_measure),
+            lambda: codex_probes.probe_codex_read_scope(
+                host, registration_dir, settings_path, codex_measure),
         kimi_probes.KIMI_SHELL_SURFACE:
             # `run_home` is the live runner's scratch home, handed down by the
             # loop (N2) -- never a path read out of the reviewed tree. None
             # before the first `prepare`, in session mode and under plain
             # `driver run`, where I5 falls back to the version table and says
             # so in its detail.
-            lambda: kimi_probes.probe_kimi_shell_surface(host, registration_dir,
-                                             run_home=run_home),
+            lambda: kimi_probes.probe_kimi_shell_surface(
+                host, registration_dir, run_home=run_home),
         kimi_probes.KIMI_READ_GUARD:
             lambda: kimi_probes.probe_kimi_read_guard(host),
         kimi_probes.KIMI_WRITE_GUARD:
