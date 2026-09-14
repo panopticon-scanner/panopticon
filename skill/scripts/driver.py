@@ -148,6 +148,31 @@ def hosts_runner_modes():
     return ("headless", "session")
 
 
+def _host_choice(text):
+    """argparse `type` for every `--host`: a remedy instead of a word list.
+
+    argparse runs `type` BEFORE `choices`, so this sees the raw value first.
+    Three rows are registered-but-unselectable -- kimi (#1620), codex (#1619)
+    and, since its family PR failed the gate, gemini (#1621) -- and an
+    operator who spells one has named a host this repo genuinely knows, with
+    something to do about it. `choices` alone answers that with the list of
+    hosts that are NOT what was asked for.
+
+    A name the registry has never heard of is a typo, and argparse's own
+    invalid-choice list is the right answer for it, so this returns the value
+    untouched and lets `choices` do the rejecting. The decision reads
+    `known_hosts()`/`driver_hosts()` and never a host-name literal; `generic`
+    appears only inside the remedy PROSE, which is naming a command rather
+    than testing a name.
+    """
+    if text in hosts.known_hosts() and text not in hosts.driver_hosts():
+        raise argparse.ArgumentTypeError(
+            "--host %s is registered but not driver-selectable (it proves no "
+            "enforcement capability); use --host generic (session mode, "
+            "unenforced, ack-gated)" % text)
+    return text
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog="driver")
     sub = parser.add_subparsers(dest="verb", required=True)
@@ -158,7 +183,8 @@ def build_parser():
     for verb in ("run", "loop"):
         p = sub.add_parser(verb)
         p.add_argument("target", nargs="?", default=".")
-        p.add_argument("--host", default=None, choices=list(hosts.driver_hosts()))
+        p.add_argument("--host", default=None, type=_host_choice,
+                       choices=list(hosts.driver_hosts()))
         p.add_argument("--security", default=None, choices=["standard", "redteam"])
         p.add_argument("--base", default=None)
         p.add_argument("--pr", type=int, default=None)
@@ -210,8 +236,8 @@ def build_parser():
             # change concurrency/budget/timeouts without tripping flag drift.
             # Default None, resolved in `orchestrate.loop` (I8, spec 4.4):
             # headless when the resolved host has a runner, session when it
-            # does not. A literal "headless" default here made `driver loop
-            # --host gemini` an error instead of the documented degrade.
+            # does not. A literal "headless" default here made `driver loop`
+            # on a runner-less host an error instead of the documented degrade.
             p.add_argument("--mode", default=None, choices=list(hosts_runner_modes()))
             p.add_argument("--concurrency", type=_positive_int, default=None)
             p.add_argument("--max-iterations", type=_positive_int, default=None)
@@ -226,7 +252,8 @@ def build_parser():
                            help="run `driver setup`'s flow on rails instead of a review")
     sp = sub.add_parser("setup")
     sp.add_argument("target", nargs="?", default=".")
-    sp.add_argument("--host", default=None, choices=list(hosts.driver_hosts()))
+    sp.add_argument("--host", default=None, type=_host_choice,
+                    choices=list(hosts.driver_hosts()))
     sp.add_argument("--reset", action="store_true")
     # 5.2 size policy (spec §5.3): files per dispatch unit and the leaf
     # ceiling. Unset = .panopticon/config.json (max_per_group / max_groups),
@@ -341,8 +368,13 @@ def _establish_host_posture(review_root, manifest, args):
     # `driver loop` flag; `driver run` has none and probes the session root.
     settings_path = (host_probes.headless_settings_path(review_root)
                      if getattr(args, "mode", None) == "headless" else None)
+    # N2: the live runner's scratch home, when the loop has one. `driver run`
+    # on its own never does, and neither does the first invocation of a loop
+    # (posture is established before `prepare`), so a probe that measures this
+    # run's children legitimately falls back until a child has run.
     fresh = host_probes.run_probes(host, review_root, session_root=session_root,
-                                   shadow=shadow, settings_path=settings_path)
+                                   shadow=shadow, settings_path=settings_path,
+                                   run_home=getattr(args, "run_home", None))
     # 5.1 surface 1. Emitted here -- after `fresh` is computed, before the
     # artifact is written or compared, and before the shadow refusal below --
     # rather than at the dispatch sites, because 5.2 already puts this step

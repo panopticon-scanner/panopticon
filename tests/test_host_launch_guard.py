@@ -6,6 +6,10 @@ attribute the autouse fixture in tests/conftest.py can swap. N-M3 then found a
 THIRD door by accident -- `setup_flow.readiness()` probes `codex --version`
 through a runner bound as a DEFAULT ARGUMENT, which no monkeypatch can reach --
 and a fourth is `runners/claude.py`, which binds its launcher the same way.
+The Kimi family PR arrived with a fifth and a sixth: `runners/kimi.py`, and
+`host_probes.py`, where `run_probes("kimi", ...)` spawns `kimi --version` and
+`kimi doctor` -- which is why the walk below is the pin and the count in
+tests/conftest.py is not.
 
 Per-seam discipline is what failed here twice, so this file does not name
 seams. It finds them: a module is a host-CLI launch seam if it imports
@@ -13,7 +17,7 @@ seams. It finds them: a module is a host-CLI launch seam if it imports
 argv in a position an argv can go (handed to a call, or returned from one) or
 declares one as its runner's `CLI` constant, annotated or not. Every module
 the walk finds must read a module-level `DEFAULT_RUNNER`, and every one of
-those must be refusing while the autouse guard is in place. Adding a fifth
+those must be refusing while the autouse guard is in place. Adding a seventh
 seam therefore turns this file red instead of quietly reopening the hole.
 
 The `subprocess` gate is what keeps the walk from mistaking data for a
@@ -142,9 +146,11 @@ class TestEverySeamThatCanStartAHostCliIsCovered(unittest.TestCase):
         """A guard that silently found nothing would pass forever, and one
         that found everything would demand a launcher from data modules."""
         found = sorted(relative for _, relative, _ in _seams())
-        self.assertEqual(found, sorted(["codex_host.py", "setup_flow.py",
+        self.assertEqual(found, sorted(["codex_host.py", "host_probes.py",
+                                        "setup_flow.py",
                                         os.path.join("runners", "claude.py"),
-                                        os.path.join("runners", "codex.py")]))
+                                        os.path.join("runners", "codex.py"),
+                                        os.path.join("runners", "kimi.py")]))
 
     def test_every_seam_reads_a_module_level_launcher(self):
         """A launcher bound as a default argument is unreachable by a patch,
@@ -162,7 +168,7 @@ class TestEverySeamThatCanStartAHostCliIsCovered(unittest.TestCase):
                 % (relative, "; ".join(reasons)))
 
     def test_the_autouse_guard_is_refusing_through_every_seam(self):
-        """Not "the fixture lists four modules" -- the guarantee itself,
+        """Not "the fixture lists six modules" -- the guarantee itself,
         asserted through whatever the walk finds today."""
         for module_name, relative, _ in _seams():
             module = importlib.import_module(module_name)

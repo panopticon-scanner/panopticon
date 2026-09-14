@@ -339,8 +339,8 @@ def _check_host_shells(host, runner, repo_root=None):
 
     # Registering no enforcement shells is a fact about ONE check, not an
     # exemption from disclosure. This used to `return checks` here, so gemini
-    # and generic -- the two driver-selectable hosts that claim NOTHING, and
-    # therefore the two whose whole story is five-of-five-unproven -- left
+    # and generic -- the two registry rows that claim NOTHING, and therefore
+    # the two whose whole story is five-of-five-unproven -- left
     # readiness with a single line naming the host and no capability, no probe
     # and no remedy. 5.1 names no shell-less exemption. Control falls through
     # to the probing block below instead, which is written once and runs for

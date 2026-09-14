@@ -285,8 +285,9 @@ def require_unenforced_ack(review_root, manifest, entries):
     two questions were extensionally identical over today's hosts, which is
     exactly why the distinction has to be written down.
 
-    On a host that does not declare it -- `--host generic` and `--host gemini`,
-    both first-class CLI values -- a domain-panel or domain-advisor `Write` has
+    On a host that does not declare it -- `--host generic`, the one
+    claim-nothing value the CLI still accepts since #1621 retired gemini from
+    the selectable set -- a domain-panel or domain-advisor `Write` has
     NO mediation whatsoever: no hook, nothing but the advisory prose
     `_tool_policy_line` appends. And a write that lands OUTSIDE review_root is
     invisible to every integrity check here, because validate's clean-tree diff

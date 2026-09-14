@@ -4,6 +4,7 @@ skill/scripts/phases/ (WS-0 D5). This file carried a TECH DEBT note about being 
 unsplittable monolith from 5.0 until then.
 """
 import contextlib
+import dataclasses
 import io
 import json
 import os
@@ -1430,18 +1431,105 @@ class TestHostChoicesComeFromTheRegistry(unittest.TestCase):
         # nothing.
         self.assertGreaterEqual(len(self._host_choices()), 2)
 
-    def test_codex_is_selectable_while_kimi_remains_unselectable(self):
-        # The original interlock lasted until F3 replaced declares() with
-        # verified posture checks. F3 is shipped, and the owner authorized the
-        # Codex family PR to retire this stale pin alongside its own probes.
-        self.assertNotIn("kimi", hosts.driver_hosts())
-        self.assertIn("codex", hosts.driver_hosts())
+    def test_kimi_and_codex_are_both_selectable_now(self):
+        # This was "kimi and codex are still not selectable". Task 4 migrated
+        # five call sites from `host == "claude"` to `hosts.declares(host,
+        # hosts.TOOL_POLICY_ENFORCED)`; kimi and codex both CLAIM
+        # TOOL_POLICY_ENFORCED in the registry, so declares() already returned
+        # True for them and only `driver_selectable=False` kept those sites
+        # from granting an ENFORCED run on an unverified claim -- the
+        # silent-unenforced-run bug this epic (#1344) exists to kill.
+        #
+        # The interlock lasted until F3 replaced declares() with verified
+        # posture checks. F3 is shipped, and the owner authorized each family
+        # PR to retire the stale pin alongside its own probes: the Codex family
+        # PR for `codex`, the Kimi family PR for `kimi`. Both now ship the
+        # probes and the runner that make the claim measured, so the five sites
+        # grant neither of them anything unverified. The pin stays, inverted:
+        # it fails loudly the day a family's flag is flipped back or a third
+        # host is flipped on without that work.
+        for name in ("kimi", "codex"):
+            with self.subTest(host=name):
+                self.assertIn(name, hosts.driver_hosts())
         choices_by_command = self._host_choices()
         self.assertTrue(choices_by_command)
         for command, choices in choices_by_command.items():
-            with self.subTest(command=command):
-                self.assertNotIn("kimi", choices)
-                self.assertIn("codex", choices)
+            for name in ("kimi", "codex"):
+                with self.subTest(command=command, host=name):
+                    self.assertIn(name, choices)
+
+
+class TestARegisteredButUnselectableHostGetsARemedy(unittest.TestCase):
+    """#1621: `choices` alone answers a real host name with a list.
+
+    One host is registered-but-unselectable on this tree: gemini, which
+    stopped being selectable when its family PR failed the gate. kimi and
+    codex were in this set until their own family PRs (#1620, #1619) flipped
+    their rows with the probes to back them, which is exactly the exit this
+    class describes -- the set is read off the registry, so a row that earns
+    selection simply drops out of it. An operator who spells a name still in
+    the set has named a host this repo genuinely knows and there IS something
+    to do about it, so the parser says what: `--host generic`, the
+    deprecated-but-present path for any host without a family runner. A name
+    the registry has never heard of is a typo, and argparse's own
+    invalid-choice list is the right answer for it -- so `choices` must still
+    be the thing that rejects it.
+    """
+
+    def _stderr_of(self, argv):
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as caught, \
+             contextlib.redirect_stderr(err):
+            driver.parse_cli(argv)
+        return caught.exception.code, err.getvalue()
+
+    def test_every_unselectable_registered_host_names_the_remedy(self):
+        # Read off the registry, not a literal list: a family PR that flips
+        # its own row simply drops out of this set -- which is what kimi
+        # (#1620) and codex (#1619) did, leaving gemini. gemini is asserted by
+        # name so the loop below can never become vacuous; the rest is
+        # whatever the registry says today.
+        unselectable = [h for h in hosts.known_hosts()
+                        if h not in hosts.driver_hosts()]
+        self.assertIn("gemini", unselectable)
+        for host in unselectable:
+            for verb in ("run", "loop", "setup"):
+                with self.subTest(host=host, verb=verb):
+                    code, err = self._stderr_of([verb, ".", "--host", host])
+                    self.assertNotEqual(0, code)
+                    self.assertIn(
+                        "--host %s is registered but not driver-selectable "
+                        "(it proves no enforcement capability); use --host "
+                        "generic (session mode, unenforced, ack-gated)" % host,
+                        err)
+
+    def test_an_unknown_host_still_gets_the_ordinary_invalid_choice_error(self):
+        # The `type=` callable must let an unknown name through so `choices`
+        # rejects it: swallowing it here would trade a list of the real
+        # answers for a remedy that does not apply.
+        code, err = self._stderr_of(["run", ".", "--host", "nosuchhost"])
+        self.assertNotEqual(0, code)
+        self.assertIn("invalid choice", err)
+        self.assertNotIn("registered but not driver-selectable", err)
+
+    def test_a_selectable_host_still_parses(self):
+        for host in hosts.driver_hosts():
+            for verb in ("run", "loop", "setup"):
+                with self.subTest(host=host, verb=verb):
+                    self.assertEqual(host,
+                                     driver.parse_cli([verb, ".", "--host", host]).host)
+
+    def test_the_helper_decides_from_the_registry_not_a_host_name(self):
+        # The remedy must follow the table. Patch a fictional row in as
+        # selectable and the helper stops objecting to it; nothing about the
+        # decision is spelled against a host's name.
+        row = dataclasses.replace(hosts.spec("gemini"), name="ghost")
+        with mock.patch.dict(hosts.HOSTS, {"ghost": row}):
+            self._stderr_of(["run", ".", "--host", "ghost"])
+        with mock.patch.dict(hosts.HOSTS,
+                             {"ghost": dataclasses.replace(row, driver_selectable=True)}):
+            self.assertEqual("ghost",
+                             driver.parse_cli(["run", ".", "--host", "ghost"]).host)
 
 
 if __name__ == "__main__":
@@ -1591,7 +1679,7 @@ class TestDriverLoopCLI(unittest.TestCase):
         # I8: no literal default -- the parser leaves `--mode` unset and
         # `orchestrate.loop` resolves it from the host (headless where a
         # runner exists, session where none does). A "headless" default here
-        # is what made `driver loop --host gemini` an error instead of the
+        # is what made `driver loop --host generic` an error instead of the
         # documented degrade to session mode.
         self.assertIsNone(driver.build_parser().parse_args(["loop", "x"]).mode)
 

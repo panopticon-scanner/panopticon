@@ -34,6 +34,26 @@ LEDGER_FILE = "dispatch-ledger.jsonl"
 MODES = ("headless", "session")
 
 
+class LaunchRefused(RuntimeError):
+    """The suite's structural guard refusing to start a real host CLI.
+
+    Raised only by the fake `tests/conftest.py` installs over every seam's
+    `DEFAULT_RUNNER` (`LAUNCH_SEAMS`). It lives HERE, on the seam contract,
+    because it is the one exception every family's launch path has to agree
+    about: the Codex family PR first needed it and the Kimi family PR wrote a
+    second class of the same name, and a refusal that two `except` clauses
+    disagree about guarantees nothing. `scripts.codex_host.LaunchRefused`
+    still names this class, so every call site that already caught it is
+    unchanged.
+
+    Its own type, deliberately, and NOT an OSError: the probes map every other
+    exception to UNKNOWN and an `except OSError` on a launch path would
+    swallow it, so a test that actually reached a live `claude` / `codex` /
+    `kimi` would read as a green "runtime unavailable". Every seam re-raises
+    this one instead.
+    """
+
+
 @dataclasses.dataclass
 class RunResult:
     entry_id: str
@@ -56,6 +76,15 @@ class HostRunner:
     host = ""
     mode = "headless"
     default_concurrency = 1
+    # A scratch directory OUTSIDE the reviewed tree that this runner's children
+    # write into, once `prepare` has made one; None for a host that needs none
+    # (claude arms a settings file in the run folder and keeps nothing else).
+    # The loop reads it off the runner after `prepare` and hands it to the
+    # probes, so an effective-surface probe can find this run's children
+    # without opening a file in the target -- N2: a path recorded in the
+    # reviewed tree is the target's to rewrite, and evidence read through it
+    # is the target's to forge.
+    run_home = None
     # Handed over by the loop BEFORE prepare(), so a runner can decide what to
     # arm from the namespace it is preparing for -- `"setup"` under `--setup`,
     # None otherwise -- and can name the request its entries came from.
@@ -76,6 +105,18 @@ class HostRunner:
 
     def prepare(self, run_dir, review_root):
         """Write whatever the host needs before the first entry; idempotent."""
+
+    def teardown(self, status=None):
+        """Release whatever `prepare` acquired. The loop calls it exactly once,
+        from `orchestrate._finish`, on every TERMINAL status -- never between
+        iterations, which must be able to resume.
+
+        `status` is that terminal status ("complete" | "error" | ...) so a
+        runner can drop a scratch area on a clean finish and KEEP it for
+        debugging otherwise; the kimi runner's per-run home (C1) is the first
+        thing that needs it. Claude has nothing to release, so the default is
+        nothing.
+        """
 
     def run_entry(self, entry, env):
         raise NotImplementedError("a host runner must implement run_entry")

@@ -234,13 +234,19 @@ def _resolve_host(args, review_root):
     `--host` when given; otherwise the RUN's own host, off its manifest.
     `driver.run` is manifest-authoritative about this -- it refuses a `--host`
     that contradicts the manifest as flag drift -- so a resume WITHOUT the flag
-    is still a gemini (or kimi, or generic) run. Resolving off
+    is still a generic (or, for a run that predates a retirement, gemini) run.
+    Resolving off
     `runio._DEFAULTS["host"]` instead dispatched claude agents into it, with
     no refusal anywhere on the path.
 
     A `--reset` run re-mints the manifest from argv, so the OUTGOING manifest
     must not steer this invocation: fall through to the default, which is what
     `driver.run` is about to write.
+
+    The host it resolves may no longer be SELECTABLE: a run started before a
+    family PR's row was retired resumes off its own manifest. That is caught
+    by the caller (`loop`), not here, because this returns a name and the
+    refusal is a status document.
 
     A FOREIGN manifest is ignored on exactly the terms `driver.run` ignores it
     (#1093 / #run8 AGT-C1A, `runio._foreign_manifest`): a target can
@@ -304,6 +310,22 @@ def loop(args):
     # I5 then I8: the mode fallback asks whether THIS host has a runner, so the
     # host has to be resolved first.
     host = _resolve_host(args, review_root)
+    # #1621: the resolved host can be one the driver no longer accepts -- a run
+    # started under a row a family PR has since lost (gemini) or never earned
+    # (kimi, codex) resumes off its own manifest, which `driver.run` treats as
+    # authoritative. `runner_for` builds a SessionRunner for ANY string, so
+    # nothing further down would have objected: the loop would have gone on
+    # dispatching for a host `--host` now refuses to name. Read off the
+    # registry, never a host-name literal, so a family PR that flips its row
+    # needs no edit here. The remedy is the parser's, plus `--reset`, because
+    # it is the MANIFEST that has to change.
+    if host not in hosts.driver_hosts():
+        return _status("error",
+                       "driver loop: this run's manifest names host %r, which is "
+                       "registered but no longer driver-selectable (it proves no "
+                       "enforcement capability). Start over with `--host generic "
+                       "--reset` (session mode, unenforced, ack-gated); resuming "
+                       "would dispatch for a host --host refuses to name." % host)
     mode, note = _resolve_mode(args, host)
     if note:
         print(note, file=sys.stderr, flush=True)
@@ -376,13 +398,21 @@ def loop(args):
     # every invocation and the loop hands it the same `args` each iteration,
     # so left set it cleared the run folder and re-minted the manifest on
     # every `_run` below: the run restarted at its first checkpoint forever.
-    # Found by this branch's second real `driver loop --reset`, which
-    # re-launched the same three scouts ten times (30 identical ledger rows)
-    # before it was stopped. From here on the loop resumes the run it just
-    # started, which is what every later iteration is for.
+    # Found twice, independently. By the Claude family PR's second real
+    # `driver loop --reset`, which re-launched the same three scouts ten times
+    # (30 identical ledger rows) before it was stopped; and by the kimi family
+    # PR, where the second call deleted the run folder the runner had just
+    # prepared (the kimi run's kimi-home/config.toml -- every child then
+    # failed "Model ... is not configured"; claude's host-settings.json is the
+    # same file in the same path), re-minted a fresh tag each time, and left
+    # the ledger, runner and guards writing to the first mint's folder while
+    # the manifest pointed at the last. `driver loop --reset` could never have
+    # worked headless; single `driver run --reset` calls never noticed because
+    # they invoke driver.run exactly once. From here on the loop resumes the
+    # run it just started, which is what every later iteration is for.
     args.reset = False
     if status.get("status") != "checkpoint":
-        return _finish(status, args, guards, ledger, namespace, mode)
+        return _finish(status, args, guards, ledger, namespace, mode, runner)
     if mode == "session":
         # I4: only now. This invocation has a live checkpoint of its own, so
         # its pending set is the authority on what is still running. An entry
@@ -435,6 +465,13 @@ def loop(args):
             requests.request_path(review_root, namespace))
         runner.namespace = namespace
         runner.prepare(run_dir, review_root)
+        # N2: the runner's scratch home travels to the probes IN PROCESS, on
+        # `args`, because every later `driver.run` in this loop re-establishes
+        # posture and the effective-surface probes need to find this run's
+        # children. Host-agnostic: a runner with no scratch area leaves it
+        # None, and nothing reads a path out of the reviewed tree to get it.
+        # AFTER prepare(), which is what mints it.
+        args.run_home = getattr(runner, "run_home", None)
         for attr in ("max_turns", "entry_timeout"):
             if getattr(args, attr, None):
                 setattr(runner, attr, getattr(args, attr))
@@ -451,12 +488,12 @@ def loop(args):
                 return _finish(_status("error", "driver loop: %d iterations without "
                                        "completing; still pending: %s"
                                        % (max_iterations, pending_ids)),
-                               args, guards, ledger, namespace, mode)
+                               args, guards, ledger, namespace, mode, runner)
             if budget is not None and ledger.total_cost() >= float(budget):
                 return _finish(_status("error", "driver loop: --max-budget-usd %s reached; "
                                        "ledger at %s; still pending: %s"
                                        % (budget, ledger.path, pending_ids)),
-                               args, guards, ledger, namespace, mode)
+                               args, guards, ledger, namespace, mode, runner)
             stuck = [e for e in pending
                      if failures.get(e.get("id"), 0) >= MAX_ENTRY_FAILURES]
             if stuck:
@@ -464,7 +501,7 @@ def loop(args):
                 return _finish(_status("error", "driver loop: entry %s failed %d consecutive "
                                        "launches; last: %s"
                                        % (eid, failures[eid], last_error.get(eid))),
-                               args, guards, ledger, namespace, mode)
+                               args, guards, ledger, namespace, mode, runner)
             guards.arm(pending)
             results = runner.run_batch(pending, getattr(args, "concurrency", None), guards.env_for)
             if results is None:                                 # session mode (Task 6)
@@ -496,7 +533,7 @@ def loop(args):
         status = _status("error", "interrupted (Ctrl-C); guards disarmed; re-run to resume from disk")
     except Exception as exc:                # noqa: BLE001 -- `loop` never raises (review round 1, item 3)
         status = _status("error", "driver loop: %s: %s" % (type(exc).__name__, exc))
-    return _finish(status, args, guards, ledger, namespace, mode)
+    return _finish(status, args, guards, ledger, namespace, mode, runner)
 
 
 def _review_root(args):
@@ -541,7 +578,7 @@ def _dispatch_exit(review_root, req, pending, namespace):
                    checkpoint=req.get("checkpoint"))
 
 
-def _finish(status, args, guards, ledger, namespace, mode="headless"):
+def _finish(status, args, guards, ledger, namespace, mode="headless", runner=None):
     """The terminal teardown, executed for every non-checkpoint status. Disarm
     first, then attempt a final write_usage on BOTH `complete` and `error`
     (review round 2): the `except Exception` catch-all (round 1, item 3) can
@@ -549,6 +586,20 @@ def _finish(status, args, guards, ledger, namespace, mode="headless"):
     iteration's own in-loop write_usage ran, and a `complete`-only write would
     leave usage.json stale against the ledger. Wrapped so a failure here can
     never mask the real status -- it is appended to the message instead."""
+    # C1 (kimi family PR review): the runner's own terminal hook, on EVERY
+    # terminal status, before the guards are touched -- a host whose runner
+    # holds a scratch area outside the tree (kimi's per-run KIMI_CODE_HOME,
+    # which carries the operator's credential surface and the children's
+    # verbatim wire files) has nowhere else to release it, and `loop` has
+    # exactly one terminal path. Wrapped: a teardown failure must not mask the
+    # run's real status, exactly as the final write_usage below is wrapped.
+    if runner is not None:
+        try:
+            runner.teardown(status.get("status"))
+        except Exception as exc:      # noqa: BLE001 -- never mask the status
+            print("driver loop: %s teardown failed: %s: %s"
+                  % (getattr(runner, "host", "?"), type(exc).__name__, exc),
+                  file=sys.stderr, flush=True)
     if guards is not None:
         if status.get("status") == "complete":
             guards.disarm()                          # total (spec 5.1)

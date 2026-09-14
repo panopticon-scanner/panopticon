@@ -21,6 +21,7 @@ import tomllib
 
 import scripts.codex_read_tools as codex_read_tools
 import scripts.hosts as hosts
+import scripts.runners.base as runners_base
 
 
 ENV_KEYS = ("PANOPTICON_ENTRY_ID", "PANOPTICON_WRITE_ALLOWLIST", "PANOPTICON_READ_SCOPE")
@@ -40,13 +41,18 @@ _COMMAND_DIRS = {}
 _COMMAND_LOCK = threading.Lock()
 
 
-class LaunchRefused(RuntimeError):
-    """The suite's guard refusing to start the real CLI (tests/conftest.py).
-
-    Its own type, deliberately: `_codex_measure` maps every other exception to
-    UNKNOWN, which would turn a test that actually reached a live `codex` into
-    a green "runtime unavailable". This one is re-raised instead.
-    """
+# The suite's guard refusing to start the real CLI (tests/conftest.py). Its own
+# type, deliberately: `_codex_measure` maps every other exception to UNKNOWN,
+# which would turn a test that actually reached a live `codex` into a green
+# "runtime unavailable". This one is re-raised instead.
+#
+# THE class, not a second one: it was first needed here and the Kimi family PR
+# independently wrote one of the same name on its runner, so the definition
+# moved to the seam contract every launch path already shares
+# (`runners/base.py`) and this name is an alias of it. Legal under layout rule
+# 4, which bans only a PACKAGE module re-exporting a SIBLING's name; this
+# module is outside `runners/`.
+LaunchRefused = runners_base.LaunchRefused
 
 
 _POLICY_FEATURES = (

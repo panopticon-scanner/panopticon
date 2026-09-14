@@ -82,9 +82,12 @@ import subprocess  # noqa: E402
 import pytest  # noqa: E402
 
 import scripts.codex_host as _codex_host  # noqa: E402
+import scripts.host_probes as _host_probes  # noqa: E402
 import scripts.run_tools as _run_tools  # noqa: E402
+import scripts.runners.base as _runners_base  # noqa: E402
 import scripts.runners.claude as _claude_runner  # noqa: E402
 import scripts.runners.codex as _codex_runner  # noqa: E402
+import scripts.runners.kimi as _kimi_runner  # noqa: E402
 import scripts.setup_flow as _setup_flow  # noqa: E402
 from scripts import hosts as _hosts  # noqa: E402
 from scripts.phases import runio as _runio  # noqa: E402
@@ -180,7 +183,7 @@ def _no_live_scanner_containers(request, monkeypatch):
 # A test that means to exercise a launch injects its own runner= and never sees
 # this. tests/test_host_launch_guard.py walks the AST for modules that launch a
 # registered host's CLI and fails if one of them is missing from this list, so
-# a fifth seam cannot be added silently.
+# a seventh seam cannot be added silently.
 #
 # The Claude family PR (#1618) arrived at the same construction for its own
 # seam and shipped a claude-only autouse fixture beside it; that fixture is
@@ -190,13 +193,27 @@ def _no_live_scanner_containers(request, monkeypatch):
 # one kept -- it names the rule and both ways out, which "test tried to launch
 # a real host CLI" did not -- with the binary read off the argv the caller was
 # about to spawn rather than hard-coded to `claude`, since one refusal now
-# answers for four seams and three different binaries. Both families read the
+# answers for six seams and three different binaries. Both families read the
 # text back: tests/runners/test_claude.py off the failed RunResult,
 # tests/test_host_probes.py off the raised LaunchRefused.
 #
-# LaunchRefused lives in codex_host because that is where it was first needed;
-# nothing about it is Codex-specific and every seam raises the same type.
-LAUNCH_SEAMS = (_codex_host, _codex_runner, _claude_runner, _setup_flow)
+# The kimi family PR (#1620) shipped the same construction a third time, as
+# `_no_live_kimi_launches`; it is folded in the same way and for the same
+# reason. Its two seams join the tuple: `runners/kimi.py`, and `host_probes`,
+# which is where `run_probes("kimi", ...)` shells out to `kimi --version` and
+# `kimi doctor` -- one module holding every family's probe spawns, so it
+# carries exactly ONE DEFAULT_RUNNER rather than a per-family sibling. The
+# guard-hook round-trips inside those probes are deliberately NOT routed
+# through it: that subprocess is `sys.executable` running the hook's own
+# protocol, and refusing it would delete the proof rather than protect it.
+#
+# LaunchRefused lives on the runner contract (`runners/base.py`), the one
+# module every seam already shares: Codex first needed it and Kimi wrote a
+# second class of the same name, and a refusal that two `except` clauses
+# disagree about is not a guarantee. `codex_host.LaunchRefused` still names
+# it, so every call site that already caught it is unchanged.
+LAUNCH_SEAMS = (_codex_host, _codex_runner, _claude_runner, _setup_flow,
+                _host_probes, _kimi_runner)
 
 
 def _refused_binary(args):
@@ -211,7 +228,7 @@ def _refused_binary(args):
 
 
 def _refuse_host_launch(*args, **_kwargs):
-    raise _codex_host.LaunchRefused(
+    raise _runners_base.LaunchRefused(
         "the test suite must never launch the real %s (family guardrails "
         "section 3): pass runner=<fake> to Runner(...) or patch "
         "scripts.runners.base.runner_for" % _refused_binary(args))

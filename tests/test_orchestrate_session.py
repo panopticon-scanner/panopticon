@@ -20,6 +20,7 @@ import scripts.orchestrate as orchestrate
 import scripts.phases.runio as runio
 import scripts.read_guard_hook as read_guard_hook
 import scripts.runners.base as base
+from scripts import hosts
 import scripts.write_guard_hook as write_guard_hook
 from test_orchestrate import (FakeRunner, LoopCase, _all_proven_artifact,
                               _write_guard_not_proven)
@@ -367,30 +368,90 @@ class TestHostAndModeResolution(LoopCase):
             return real(host, mode) if runner is None else runner
         return mock.patch("scripts.runners.base.runner_for", side_effect=_runner_for)
 
-    def _gemini_run(self, d, s):
-        """Mint a real run-manifest whose host is gemini, the way a first
-        `driver loop --host gemini` would."""
+    def _claim_nothing_run(self, d, s):
+        """Mint a real run-manifest whose host is the claim-nothing selectable
+        one, the way a first `driver loop --host generic` would.
+
+        This was `--host gemini` until gemini was retired from the selectable
+        set (#1621, 2026-09-13). The property under test is a property of a
+        host that claims nothing and has no headless runner, not of gemini,
+        and `generic` is the one such host the driver still accepts.
+        """
         args = driver.build_parser().parse_args(
-            ["loop", d, "--no-tools", "--fail-on", "high", "--host", "gemini",
+            ["loop", d, "--no-tools", "--fail-on", "high", "--host", "generic",
              "--mode", "session", "--session-dir", s])
         with contextlib.redirect_stdout(io.StringIO()), \
              contextlib.redirect_stderr(io.StringIO()):
             driver.run(args)
-        self.assertEqual(driver.run_manifest.load_manifest(d)["host"], "gemini")
+        self.assertEqual(driver.run_manifest.load_manifest(d)["host"], "generic")
 
     def test_a_resume_without_host_dispatches_for_the_runs_own_host(self):
         # I5: `driver.run` treats an omitted `--host` as manifest-authoritative
         # -- it refuses a contradicting `--host` as flag drift -- so a resume
-        # without the flag is still a gemini run. The loop resolved its runner
+        # without the flag is still a generic run. The loop resolved its runner
         # off `runio._DEFAULTS["host"]` instead and would have dispatched
         # CLAUDE agents at it, with no refusal anywhere on the path.
         d, _ = self._repo(); s = self._session_root(d)
-        self._gemini_run(d, s)
+        self._claim_nothing_run(d, s)
         calls = []
         with self._spy(calls), contextlib.redirect_stdout(io.StringIO()), \
              contextlib.redirect_stderr(io.StringIO()):
             orchestrate.loop(self._args(d, "--mode", "session", "--session-dir", s))
-        self.assertEqual(calls, [("gemini", "session")])
+        self.assertEqual(calls, [("generic", "session")])
+
+    def test_a_resume_whose_host_is_no_longer_selectable_is_an_error(self):
+        # #1621: a run STARTED under a host the driver has since retired --
+        # gemini here, and the same holds for any row a family PR has not
+        # earned back -- resumes off its own manifest, which `driver.run`
+        # treats as authoritative. `_resolve_host` handed that name straight
+        # to `runner_for`, which builds a SessionRunner for any string at all,
+        # so the loop went on dispatching for a host `--host` would now refuse
+        # to name. The remedy is the same one the parser gives, plus --reset,
+        # because the manifest is what has to change.
+        d, _ = self._repo(); s = self._session_root(d)
+        self._claim_nothing_run(d, s)
+        path = driver.run_manifest.manifest_path(d)
+        manifest = runio._load_json(path)
+        manifest["host"] = "gemini"
+        runio._write_json(path, manifest)
+        self.assertFalse(runio._foreign_manifest(manifest, d, path),
+                         "fixture precondition: this manifest is the run's own")
+        calls = []
+        with self._spy(calls), contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()):
+            status = orchestrate.loop(self._args(d, "--mode", "session", "--session-dir", s))
+        self.assertEqual(status["status"], "error", status)
+        self.assertIn("gemini", status["message"])
+        self.assertIn("--host generic --reset", status["message"])
+        self.assertEqual([], calls, "nothing may be dispatched for it")
+
+    def test_the_refusal_does_not_fire_for_a_host_that_is_still_selectable(self):
+        # The other half, and it has to run the SAME manipulation as the test
+        # above or it is not a guard: a resume whose manifest was rewritten to
+        # name a different host. The only difference is that the name is the
+        # OTHER selectable row, so the loop must resume through it untouched.
+        #
+        # Re-running `_claim_nothing_run` and re-asserting `("generic",
+        # "session")` -- which is what this test did at first -- is a byte
+        # copy of test_a_resume_without_host_dispatches_for_the_runs_own_host
+        # above: that one mints its host through the CLI and is about manifest
+        # AUTHORITY, and it would keep passing if the #1621 check refused
+        # every manifest-resolved host that was not the one the CLI minted.
+        # Only rewriting the manifest, as the refusal test does, exercises the
+        # `driver_hosts()` membership read.
+        d, _ = self._repo(); s = self._session_root(d)
+        self._claim_nothing_run(d, s)
+        path = driver.run_manifest.manifest_path(d)
+        manifest = runio._load_json(path)
+        self.assertIn("claude", hosts.driver_hosts())
+        manifest["host"] = "claude"
+        runio._write_json(path, manifest)
+        calls = []
+        with self._spy(calls), contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()):
+            status = orchestrate.loop(self._args(d, "--mode", "session", "--session-dir", s))
+        self.assertNotEqual("error", status["status"], status)
+        self.assertEqual(calls, [("claude", "session")])
 
     def test_a_target_committed_manifest_does_not_choose_the_host(self):
         # Fix round 3: I5 reads the run's host off run-manifest.json, but
@@ -401,6 +462,9 @@ class TestHostAndModeResolution(LoopCase):
         # unconditionally, so a committed `"host": "gemini"` steered THIS
         # invocation's runner while the run itself proceeded as claude. The
         # target got to pick which family's agents were dispatched at it.
+        # Still spelled `gemini` after the retirement (#1621): the point is a
+        # name the registry KNOWS but this invocation never chose, and a
+        # foreign manifest is discarded before selectability is ever consulted.
         d, _ = self._repo(); s = self._session_root(d)
         runio._write_json(driver.run_manifest.manifest_path(d),
                           {"schema_version": 1, "run_id": "r" * 8, "host": "gemini",
@@ -414,17 +478,18 @@ class TestHostAndModeResolution(LoopCase):
     def test_a_host_with_no_headless_runner_degrades_to_session_with_a_reason(self):
         # I8, spec 4.4: "A host with no headless runner registered gets session
         # mode with a stderr line saying so." `--mode` defaulted to headless,
-        # so `driver loop --host gemini` errored out instead of degrading.
+        # so a `driver loop` on such a host errored out instead of degrading.
+        # Driven under `generic` since gemini left the selectable set (#1621).
         d, _ = self._repo(); s = self._session_root(d)
         calls = []
         err = io.StringIO()
         with self._spy(calls), contextlib.redirect_stdout(io.StringIO()), \
              contextlib.redirect_stderr(err):
             status = orchestrate.loop(
-                self._args(d, "--host", "gemini", "--session-dir", s))
-        self.assertEqual(calls, [("gemini", "session")])
+                self._args(d, "--host", "generic", "--session-dir", s))
+        self.assertEqual(calls, [("generic", "session")])
         self.assertEqual(status["status"], "dispatch", status)
-        self.assertIn("gemini", err.getvalue())
+        self.assertIn("generic", err.getvalue())
         self.assertIn("session mode", err.getvalue())
 
     def test_an_explicit_headless_on_such_a_host_is_an_error_not_a_traceback(self):
@@ -435,7 +500,7 @@ class TestHostAndModeResolution(LoopCase):
         with contextlib.redirect_stdout(io.StringIO()), \
              contextlib.redirect_stderr(io.StringIO()):
             status = orchestrate.loop(
-                self._args(d, "--host", "gemini", "--mode", "headless"))
+                self._args(d, "--host", "generic", "--mode", "headless"))
         self.assertEqual(status["status"], "error", status)
         self.assertIn("--mode session", status["message"])
 

@@ -1,7 +1,7 @@
 # Family PR guardrails
 
-One document for every agent family (Codex, Gemini, Kimi, and Claude when it
-touches its own host code) that authors its **first-class host** PR. It says
+One document for every agent family (Codex, Kimi, and Claude when it touches
+its own host code) that authors its **first-class host** PR. It says
 what you are building, what you may not break, and how the PR proves itself.
 Everything else about *how* you work is yours to decide.
 
@@ -69,12 +69,15 @@ a probe makes it **proven**. Anything unprobed reads `unknown` forever, and
 Rules that follow from the registry:
 
 - `driver_selectable` flips **in the same PR** that proves the security
-  capabilities (`tool_policy_enforced`, `read_scope_confined`). Gemini is
-  already selectable and proves nothing; that is the deletion blocker for
-  `--host generic`, and `tests/test_generic_retirement_bar.py` pins it by name
-  (`test_todays_shortfall_is_pinned_so_it_moves_consciously`). Your PR moves
-  that assertion for your host, and the sentence in `docs/PANOPTICON.md` that
-  quotes it, in the same commit as the probes that earn it.
+  capabilities (`tool_policy_enforced`, `read_scope_confined`), and never
+  before: a row that is selectable while proving nothing is what #1344 exists
+  to end, and it is what cost Gemini its row (#1621). Today's shortfall is
+  pinned by name in `tests/test_generic_retirement_bar.py`
+  (`test_todays_shortfall_is_pinned_so_it_moves_consciously`), which reads
+  `{}` on this base because every host the bar examines -- claude, codex
+  (#1619) and kimi (#1620) -- clears both. Your PR flips your row into that
+  set and re-pins the assertion, alongside the `--host generic` paragraph in
+  `docs/PANOPTICON.md`, in the same commit as the probes that earn it.
 - Never test a host by name in a phase (`host == "codex"`). Route every
   decision through `hosts.posture()` or `hosts.declares()`; an AST guard in
   `tests/test_host_posture_wiring.py` rejects the comparison.
@@ -105,11 +108,10 @@ Findings already recorded for your family, so you do not rediscover them:
   `.agents/agents/panopticon-scout.md` shadow the registered shell; the
   shadow-shell scan already refutes `tool_policy_enforced` when it sees one,
   and your probe should agree with it.
-- **Gemini.** Nothing exists yet: no `shell_format`, no registration dir, no
-  emit branch, no probes, no model profile. Read confinement by tool omission
-  is the recorded direction. `dispatch.py --emit-host-agents gemini` is an
-  argparse error today because your row has no `shell_format`; adding the
-  branch and the row unlocks it.
+- **Gemini.** Retired 2026-09-13 after #1621 failed its gate review twice; the
+  row is registered but **not** driver-selectable, and Gemini operators run
+  `--host generic`. A future Gemini PR starts from the Kimi/Codex shape and
+  must clear §5 before the row flips back.
 
 ## 3. What you may not do
 
@@ -129,10 +131,10 @@ Repository:
   Never commit shells, settings, or anything else that lives under a home
   directory.
 - Do not weaken a test or a doc guard to make it pass. Update an expectation
-  only when its own comment says your PR is the one that moves it (the
-  retirement bar, the "fails on gemini alone" sentence, the host table in
-  `docs/PANOPTICON.md`). If a guard blocks you for another reason, that is a
-  finding to report, not a line to delete.
+  only when its own comment says your PR is the one that moves it — the
+  retirement-bar pin, the host table in `docs/PANOPTICON.md`, and that
+  document's `gemini` sentence, and nothing else. If a guard blocks you for
+  another reason, that is a finding to report, not a line to delete.
 - Do not `git stash`, do not force-push a shared branch, do not rewrite
   history after a review has started.
 - Text that came out of a scan (findings, agent replies, run logs) goes
@@ -213,8 +215,7 @@ on green CI alone.
 
 ## 6. Launch prompt
 
-What the operator pastes into your CLI. `<host>` is `codex`, `gemini`, or
-`kimi`.
+What the operator pastes into your CLI. `<host>` is `codex` or `kimi`.
 
 ```
 You are the <host> family agent for Panopticon. Your deliverable is the

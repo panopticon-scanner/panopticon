@@ -273,6 +273,33 @@ class TestHeadlessLoop(LoopCase):
         # the target's own settings file was never created (D3)
         self.assertFalse(os.path.exists(os.path.join(d, ".claude", "settings.local.json")))
 
+    def test_reset_is_consumed_by_the_first_run_not_re_applied_each_iteration(self):
+        # 2026-09-13, found by the kimi family PR's first full `loop --reset`:
+        # the loop hands the SAME args to every driver.run call, and with
+        # args.reset left set each iteration re-ran the wipe+re-mint -- the
+        # second call deleted the run folder the runner had just prepared
+        # (kimi-home/config.toml there; claude's host-settings.json is the
+        # same shape in the same place), and the manifest re-minted a new
+        # tag every call while the ledger/runner/guards kept writing to the
+        # first. One reset per loop, consumed by the first driver.run.
+        d, floor = self._repo()
+        runner = FakeRunner()
+        minted = []
+
+        def seed_and_record(review_root):
+            minted.append(driver.run_manifest.load_manifest(review_root)["run_id"])
+            return self._seed_coverage(review_root, floor)
+
+        args = self._args(d, "--reset")
+        with mock.patch.object(orchestrate, "_after_first_run",
+                               side_effect=seed_and_record), \
+             mock.patch("scripts.runners.base.runner_for", return_value=runner), \
+             contextlib.redirect_stdout(io.StringIO()):
+            status = orchestrate.loop(args)
+        self.assertEqual(status["status"], "complete", status)
+        final = driver.run_manifest.load_manifest(d)["run_id"]
+        self.assertEqual(minted[0], final)
+
     def test_every_launch_carries_the_three_bindings(self):
         d, floor = self._repo()
         runner = FakeRunner()
@@ -425,6 +452,37 @@ class TestHeadlessLoop(LoopCase):
         review_calls = [c for c in seen if c[0] == "review-app-SEC"]
         self.assertEqual(len(review_calls), 1)          # write_reply only for the ok result
         self.assertFalse(review_calls[0][1])             # the out_file did not exist before that call
+
+    def test_the_runners_teardown_runs_on_every_terminal_status(self):
+        # C1 (kimi family PR review): the kimi runner's per-run KIMI_CODE_HOME
+        # lives OUTSIDE the reviewed tree -- it carries the operator's
+        # credential surface -- so the loop, which owns the only terminal path,
+        # has to tell the runner when the run is over and how it ended.
+        for expect in ("complete", "error"):
+            with self.subTest(status=expect):
+                d, floor = self._repo()
+                runner = FakeRunner()
+                runner.torn_down = []
+                runner.teardown = runner.torn_down.append
+                if expect == "error":
+                    runner.run_entry = lambda entry, env: base.RunResult.failed(entry["id"], "always")
+                    status = self._run(d, floor, runner, "--max-iterations", "2")
+                else:
+                    status = self._run(d, floor, runner)
+                self.assertEqual(status["status"], expect, status)
+                self.assertEqual(runner.torn_down, [expect])
+
+    def test_a_teardown_failure_never_masks_the_runs_status(self):
+        d, floor = self._repo()
+        runner = FakeRunner()
+
+        def boom(status=None):
+            raise OSError("could not remove the run home")
+        runner.teardown = boom
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            status = self._run(d, floor, runner)
+        self.assertEqual(status["status"], "complete", status)
+        self.assertIn("teardown failed", err.getvalue())
 
     def test_a_failure_preparing_the_run_folder_is_an_error_not_a_traceback(self):
         # M8 (final review): `loop` never raises (review round 1, item 3), but

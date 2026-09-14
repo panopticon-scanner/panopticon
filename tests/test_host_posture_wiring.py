@@ -142,7 +142,14 @@ class TestTheAnswersAreUnchangedGivenProof(unittest.TestCase):
     when claude claims it; the final test below pins the other half, that
     absent a probe the answer flips. Renamed from `TestTheAnswersAreUnchanged`,
     which would otherwise assert unconditional parity that no longer exists --
-    exactly the lie spec section 7.1 exists to end."""
+    exactly the lie spec section 7.1 exists to end.
+
+    The `("generic", "gemini")` pairs below are the registry's two
+    claim-nothing ROWS, not two selectable hosts -- #1621 left gemini
+    registered-only, and the three tests are named for the row property they
+    actually assert (a capability the host does not CLAIM can never read
+    `proven`) rather than for what the driver accepts, which is a different
+    question and no longer the same set."""
 
     @staticmethod
     def _proof(**states):
@@ -150,7 +157,7 @@ class TestTheAnswersAreUnchangedGivenProof(unittest.TestCase):
         return {name: {"state": state, "by": "fixture", "detail": "fixture"}
                 for name, state in states.items()}
 
-    def test_claude_enforces_and_nothing_else_the_driver_accepts_does(self):
+    def test_claude_enforces_and_a_row_that_claims_nothing_never_does(self):
         proof = self._proof(**{hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN})
         self.assertEqual(
             hosts.PROVEN,
@@ -161,7 +168,7 @@ class TestTheAnswersAreUnchangedGivenProof(unittest.TestCase):
                     hosts.PROVEN,
                     hosts.posture(name, proof)[hosts.TOOL_POLICY_ENFORCED])
 
-    def test_only_claude_collects_usage(self):
+    def test_claude_collects_usage_and_a_row_that_claims_nothing_never_does(self):
         proof = self._proof(**{hosts.USAGE_LEDGER: hosts.PROVEN})
         self.assertEqual(
             hosts.PROVEN, hosts.posture("claude", proof)[hosts.USAGE_LEDGER])
@@ -179,7 +186,7 @@ class TestTheAnswersAreUnchangedGivenProof(unittest.TestCase):
             hosts.PROVEN,
             hosts.posture({}.get("host", "claude"), proof)[hosts.TOOL_POLICY_ENFORCED])
 
-    def test_only_claude_has_a_write_guard(self):
+    def test_claude_has_a_write_guard_and_a_row_that_claims_nothing_has_none(self):
         # requests.py:185 -- require_unenforced_ack returns early when the
         # host's hook mediates Write AND a probe has proven it. Same answer
         # as before the migration, given proof.

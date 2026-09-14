@@ -158,7 +158,19 @@ class TestSkillMd(unittest.TestCase):
         self.assertIn("read-guard-armed", caps)
         self.assertNotIn("`read_scope_confined` is `unknown` on every host today", caps)
         self.assertNotIn("fails the deletion on `read_scope_confined` everywhere", caps)
-        self.assertIn("on gemini", caps)
+        # #1621: this used to pin "today it fails the deletion **on gemini**
+        # alone". The section now says the opposite -- the bar is met -- and
+        # the old `assertIn("on gemini", caps)` went on passing on the
+        # past-tense clause that replaced it, guarding nothing. Pin the
+        # paragraph the retirement actually added, and pin the one thing in it
+        # that is easy to overclaim: the stale-manifest refusal is `driver
+        # loop`'s, and `driver run` still proceeds.
+        # (`caps` has already had its `**` stripped by the replace above.)
+        retired = _section(caps, "`gemini` is registered but not driver-selectable",
+                           "\n\n")
+        self.assertIn("`--host generic`", retired)
+        self.assertIn("driver loop", retired)
+        self.assertIn("driver run", retired)
 
     def test_documents_the_read_guard_on_scout_and_setup_scan_checkpoints(self):
         # I4: coverage._scout_entry and setup._setup_scan_entry also emit
@@ -202,11 +214,11 @@ class TestSkillMd(unittest.TestCase):
         # 5.0: the standalone `## Host dispatch` section (keyed to the
         # deleted manual pipeline) is gone -- host dispatch is now a
         # paragraph inside the driver run-loop. `driver run --host` only
-        # accepts claude|generic|gemini; Kimi/Codex are named as the generic
+        # accepts claude|generic; Gemini/Kimi/Codex are named as the generic
         # path's examples, not as separate --host values. Plan 6: the loop
         # names Claude as the concrete headless runner and falls back to
-        # session mode (which the generic/gemini/kimi path all use) for
-        # everything else, rather than a per-host dispatch bullet each.
+        # session mode (which every generic-path host uses) for everything
+        # else, rather than a per-host dispatch bullet each.
         self.assertNotIn("## Host dispatch", self.text)
         loop = _section(self.text, "## Driver run-loop", "## Output")
         for host in ("Claude", "kimi", "generic"):
@@ -723,7 +735,7 @@ class TestDriverLoopContract(unittest.TestCase):
         self.assertIn("--mode {headless,session}", skill)
         # I8 (plan 6 final review): the mode DEFAULT is host-dependent --
         # headless where a runner exists, session where none does -- so a
-        # reader must not be left assuming `driver loop --host gemini` errors.
+        # reader must not be left assuming `driver loop --host generic` errors.
         self.assertIn("defaults to headless when the host has a headless", skill)
         # I6 (fix round 3): the persist verb's own --pr/--base, in the line a
         # reader copies the invocation from.

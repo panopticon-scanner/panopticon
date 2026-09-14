@@ -53,9 +53,11 @@ class TestQueries(unittest.TestCase):
         self.assertTrue(set(hosts.driver_hosts()) <= set(hosts.known_hosts()))
 
     def test_only_generic_is_deprecated(self):
-        # D4. gemini also claims nothing, but its shortfall is for its family
-        # PR to close -- it is not the deprecated fallback. A predicate that
-        # broadened to "claims nothing" would deprecate gemini by accident.
+        # D4. gemini also claims nothing, and after #1621 is not selectable
+        # either -- but it is still not the deprecated FALLBACK, which is a
+        # distinct role: `is_deprecated` gates the run-time NOTICE, and a
+        # predicate broadened to "claims nothing" (or to "not selectable")
+        # would print that notice for rows it does not describe.
         self.assertTrue(hosts.is_deprecated("generic"))
         for host in hosts.known_hosts():
             if host != "generic":
@@ -67,38 +69,61 @@ class TestQueries(unittest.TestCase):
 class TestDriverHostCapabilities(unittest.TestCase):
     """Pin the supported hosts and the capabilities their family PRs earned.
 
-    The owner authorized retiring the F1/F2-only expectations for the Codex
-    first-class-host PR; other families' claims and selection stay unchanged.
+    The owner authorized retiring the F1/F2-only expectations as each
+    first-class-host family PR landed -- Codex in #1619, Kimi in #1620; a
+    family that has not landed yet keeps its claims and selection unchanged.
     """
 
     def test_the_driver_accepts_exactly_the_hosts_it_accepts_today(self):
-        self.assertEqual(("claude", "codex", "gemini", "generic"),
+        # codex and kimi joined the selectable set in their own family PRs
+        # (#1619, #1620), each shipping its probes and runner in the same PR.
+        # gemini went the other way: #1621 retired it (2026-09-13) because its
+        # family PR failed the gate twice, so the row stays REGISTERED --
+        # known_hosts() lists it, spec() resolves it, it still claims nothing
+        # -- and only `driver_selectable` flipped. A Gemini operator runs
+        # `--host generic`.
+        self.assertEqual(("claude", "codex", "generic", "kimi"),
                          tuple(sorted(hosts.driver_hosts())))
+        self.assertIn("gemini", hosts.known_hosts())
+        self.assertIsNotNone(hosts.spec("gemini"))
+        self.assertEqual(frozenset(), hosts.spec("gemini").claims)
 
-    def test_claude_and_codex_declare_tool_policy_enforcement_among_driver_hosts(self):
+    def test_claude_codex_and_kimi_declare_tool_policy_enforcement(self):
         # F3 routes enforcement through proven posture, not a bare claim;
-        # Codex now supplies its own effective-tool-surface probe.
+        # Codex and Kimi each now supply their own tool-surface probe.
         enforcing = [h for h in hosts.driver_hosts()
                      if hosts.declares(h, hosts.TOOL_POLICY_ENFORCED)]
-        self.assertEqual(["claude", "codex"], enforcing)
+        # codex declares it since its family PR proved the effective V8 tool
+        # surface (codex-effective-tools); kimi since its family PR proved the
+        # shells on the effective surface (kimi-shell-surface).
+        self.assertEqual(["claude", "codex", "kimi"], enforcing)
 
-    def test_only_claude_declares_a_usage_ledger_among_driver_hosts(self):
+    def test_claude_and_kimi_declare_a_usage_ledger_among_driver_hosts(self):
         # phases/synthesize.py:35 -- `if manifest.get("host") != "claude"`.
         ledgered = [h for h in hosts.driver_hosts()
                     if hosts.declares(h, hosts.USAGE_LEDGER)]
-        self.assertEqual(["claude"], ledgered)
+        # kimi's ledger is the per-child wire file (kimi-usage-wire probe).
+        self.assertEqual(["claude", "kimi"], ledgered)
 
-    def test_kimi_remains_registrable_but_not_driver_selectable(self):
-        # Codex earned selection in its family PR; Kimi's split is unchanged.
-        self.assertTrue(hosts.spec("kimi").registration_dir)
-        self.assertNotIn("kimi", hosts.driver_hosts())
+    def test_kimi_and_codex_are_registrable_and_now_driver_selectable(self):
+        # This was "registrable but not driver-selectable": dispatch.py could
+        # emit their shells while driver.py's --host refused to pick them, and
+        # preserving that split is what kept F2 behavior-free. Each family PR
+        # then earned the flip with the probes to back it -- Codex in #1619,
+        # Kimi in #1620 -- so the split is closed on both rows and this pin
+        # records the state it closed into rather than the state before.
+        for name in ("kimi", "codex"):
+            with self.subTest(host=name):
+                self.assertTrue(hosts.spec(name).registration_dir)
+                self.assertIn(name, hosts.driver_hosts())
 
-    def test_claude_and_codex_claim_read_scope_confinement(self):
+    def test_claude_codex_and_kimi_claim_read_scope_confinement(self):
         # Spec §7.2 / plan 5: claude ships the read guard; every other host's
-        # family PR must bring its own primitive before claiming this.
+        # family PR must bring its own primitive before claiming this. The
+        # kimi family PR (#1344) brought the per-run-home hook and its probe.
         claiming = [h for h in hosts.known_hosts()
                     if hosts.declares(h, hosts.READ_SCOPE_CONFINED)]
-        self.assertEqual(["claude", "codex"], claiming)
+        self.assertEqual(["claude", "codex", "kimi"], claiming)
 
     def test_codex_is_selectable_with_exactly_its_probed_security_claims(self):
         row = hosts.spec("codex")
@@ -157,10 +182,12 @@ class TestPostureFailsClosed(unittest.TestCase):
         # applied symmetrically and so threw refutations away too. §7.3 makes
         # `refuted` the STRONGER answer, and a refutation grants nothing, so
         # letting it through is strictly non-permissive. Latent only because
-        # gemini and generic have empty project_scope_dirs; live the moment a
-        # family PR flips kimi or codex to driver_selectable -- and F5's
-        # entry-criterion test reads posture(), so a genuinely refuted host
-        # would read `unknown` and fail the bar for the wrong stated reason.
+        # every selectable host had empty project_scope_dirs. It went LIVE
+        # when the family PRs flipped codex (#1619) and kimi (#1620), which
+        # carry scope dirs of their own; gemini and generic, the two rows
+        # below, still claim nothing -- and F5's entry-criterion test reads
+        # posture(), so a genuinely refuted host would read `unknown` and
+        # fail the bar for the wrong stated reason.
         evidence = {hosts.TOOL_POLICY_ENFORCED: {"state": hosts.REFUTED}}
         for host in ("gemini", "generic"):
             with self.subTest(host=host):
