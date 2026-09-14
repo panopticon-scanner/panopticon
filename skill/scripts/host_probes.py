@@ -527,10 +527,10 @@ TRANSCRIPT_DIR = "transcript-dir"
 # shipped probes" (spec 8.1), so it must not drift from the runner table:
 # run_probes refuses to build a table that disagrees with it.
 REGISTERED_SHELL_TOOLS_GEMINI = "registered-shell-tools-gemini"
-TOOL_OMISSION_READ_GUARD = "tool-omission-read-guard"
+GEMINI_HOOK_READ_GUARD = "gemini-hook-read-guard"
 
 PROBE_IDS = (REGISTERED_SHELL_TOOLS, WRITE_GUARD_ARMED, TRANSCRIPT_DIR,
-            ENTRY_MODEL_BOUND, READ_GUARD_ARMED, REGISTERED_SHELL_TOOLS_GEMINI, TOOL_OMISSION_READ_GUARD)
+            ENTRY_MODEL_BOUND, READ_GUARD_ARMED, REGISTERED_SHELL_TOOLS_GEMINI, GEMINI_HOOK_READ_GUARD)
 
 # Which capability each shipped probe MEASURES. The retirement bar reads this
 # so a row cannot satisfy spec 8.1 by mapping a security capability to a
@@ -543,7 +543,7 @@ PROBE_CAPABILITY = {REGISTERED_SHELL_TOOLS: hosts.TOOL_POLICY_ENFORCED,
                     ENTRY_MODEL_BOUND: hosts.MODEL_BINDING,
                     READ_GUARD_ARMED: hosts.READ_SCOPE_CONFINED,
                     REGISTERED_SHELL_TOOLS_GEMINI: hosts.TOOL_POLICY_ENFORCED,
-                    TOOL_OMISSION_READ_GUARD: hosts.READ_SCOPE_CONFINED}
+                    GEMINI_HOOK_READ_GUARD: hosts.READ_SCOPE_CONFINED}
 
 
 def probe_transcript_dir(host, session_dir, home=None):
@@ -721,15 +721,19 @@ def _no_probe_reason(row, capability, host):
 
 def probe_registered_shell_tools_gemini(host, registration_dir=None):
     from . import dispatch
+    from . import hosts
     import glob
-    
+    from .runners.gemini import DEFAULT_RUNNER
+
+    if not hosts.declares(host, hosts.TOOL_POLICY_ENFORCED):
+        return hosts.UNKNOWN, None, "no probe: host %r does not claim this capability, so there is nothing to prove" % host
+
+    registration_dir = registration_dir or hosts.spec(host).registration_dir
     if not registration_dir:
         return hosts.UNKNOWN, REGISTERED_SHELL_TOOLS_GEMINI, "no registration_dir configured"
-        
+
     shells = glob.glob(os.path.join(registration_dir, "panopticon-*.md"))
-    if not shells:
-        return hosts.REFUTED, REGISTERED_SHELL_TOOLS_GEMINI, "no shells found in %s" % registration_dir
-        
+
     shadowed = [f for f in glob.glob(os.path.join(".agents", "agents", "panopticon-*.md"))]
     if shadowed:
         return hosts.REFUTED, REGISTERED_SHELL_TOOLS_GEMINI, "shadow shells discovered: %s" % shadowed
@@ -741,61 +745,107 @@ def probe_registered_shell_tools_gemini(host, registration_dir=None):
         "Bash": "run_command",
         "Write": "write_to_file"
     }
-        
+
     faults = []
+    found_roles = set()
     for path in shells:
         name = os.path.basename(path).replace(".md", "")
         role = name.replace("panopticon-", "")
-        
+
+        if role not in dispatch.DRIVER_ROLES:
+            faults.append("stray shell found mapping to no role: %s" % path)
+            continue
+
+        found_roles.add(role)
+
         role_file = dispatch.ROLE_FILES.get(role)
         if not role_file:
             continue
-            
+
         policy = dispatch.load_template(role_file)[0]["tool_policy"]
-        mapped_policy = [gemini_map.get(t, t) for t in policy["allowed"]]
-        
-        with open(path, "r", encoding="utf-8") as f:
-            content = f.read()
-        granted = []
-        in_tools = False
-        for line in content.splitlines():
-            if line.startswith("tools:"):
-                in_tools = True
-            elif in_tools and line.startswith("  - "):
-                granted.append(line.replace("  - ", "").strip())
-            elif in_tools and line.startswith("- "):
-                granted.append(line.replace("- ", "").strip())
-            elif in_tools and not line.startswith(" "):
-                in_tools = False
-        
-        if sorted(granted) != sorted(mapped_policy):
-            faults.append(f"{role}: shell grants {sorted(granted)}, template allows {sorted(mapped_policy)}")
-            
+        mapped_allowed = [gemini_map.get(t, t) for t in policy["allowed"]]
+        mapped_forbidden = [gemini_map.get(t, t) for t in policy["forbidden"]]
+
+        granted = _frontmatter_tools(path)
+
+        # Intersect granted & forbidden
+        violations = set(granted).intersection(set(mapped_forbidden))
+        if violations:
+            faults.append(f"{role}: shell grants {sorted(granted)}, which contains forbidden tools {sorted(violations)}")
+        elif sorted(granted) != sorted(mapped_allowed):
+            faults.append(f"{role}: shell grants {sorted(granted)}, template allows {sorted(mapped_allowed)}")
+
+    for role in dispatch.DRIVER_ROLES:
+        if role not in found_roles:
+            faults.append("%s: no shell at %s" % (role, os.path.join(registration_dir, f"panopticon-{role}.md")))
+
+    # Effective surface half: agy agents
+    try:
+        proc = DEFAULT_RUNNER(["agy", "agents"], capture_output=True, text=True)
+        if proc.returncode != 0:
+            faults.append("agy agents failed")
+        else:
+            out = proc.stdout
+            for role in dispatch.DRIVER_ROLES:
+                agent_name = f"panopticon-{role}"
+                if agent_name not in out:
+                    faults.append(f"{agent_name} not listed in agy agents output")
+    except Exception as e:
+        faults.append(f"agy agents failed to run: {e}")
+
     if faults:
         return hosts.REFUTED, REGISTERED_SHELL_TOOLS_GEMINI, "; ".join(faults)
-        
+
     return hosts.PROVEN, REGISTERED_SHELL_TOOLS_GEMINI, f"inspected {len(shells)} registered shells"
 
-def probe_tool_omission_read_guard(host, session_root=None):
+
+def probe_gemini_hook_read_guard(host, session_root=None, review_root=None):
     import subprocess
     import tempfile
     import sys
     import json
-    if not session_root:
-        return hosts.UNKNOWN, TOOL_OMISSION_READ_GUARD, "no session_root"
-        
+    import os
+    from scripts import hosts
+    from scripts.runners.gemini import Runner
+
+    if not hosts.declares(host, hosts.READ_SCOPE_CONFINED):
+        return hosts.UNKNOWN, None, f"no probe: host {host!r} does not claim this capability, so there is nothing to prove"
+
+    if not session_root or not review_root:
+        return hosts.UNKNOWN, GEMINI_HOOK_READ_GUARD, "no session_root or review_root"
+
     guard_script = os.path.join(os.path.dirname(__file__), "gemini_guard.py")
     if not os.path.exists(guard_script):
-        return hosts.UNKNOWN, TOOL_OMISSION_READ_GUARD, "gemini_guard.py not found"
+        return hosts.UNKNOWN, GEMINI_HOOK_READ_GUARD, "gemini_guard.py not found"
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        scope_path = os.path.join(tmpdir, "read-scope.json")
-        inside = os.path.abspath(os.path.join(tmpdir, "inside.py"))
-        outside = os.path.abspath(os.path.join(tmpdir, "outside.py"))
-        
+    with tempfile.TemporaryDirectory() as run_dir, tempfile.TemporaryDirectory() as rev_root:
+        # Create .panopticon/read-scope.json in rev_root
+        pano_dir = os.path.join(rev_root, ".panopticon")
+        os.makedirs(pano_dir)
+        scope_path = os.path.join(pano_dir, "read-scope.json")
+        inside = os.path.abspath(os.path.join(rev_root, "inside.py"))
+        outside = os.path.abspath(os.path.join(rev_root, "outside.py"))
+
         with open(scope_path, "w") as f:
-            json.dump({"probe-cell": {"files": [inside]}}, f)
-            
+            json.dump({"probe-cell": {"files": [inside], "dirs": []}}, f)
+
+        runner = Runner()
+        runner.prepare(run_dir, rev_root)
+
+        hooks_json = os.path.join(run_dir, ".agents", "hooks.json")
+        if not os.path.exists(hooks_json):
+            return hosts.REFUTED, GEMINI_HOOK_READ_GUARD, "hooks.json absent"
+
+        try:
+            with open(hooks_json, "r", encoding="utf-8") as f:
+                hooks_data = json.load(f)
+        except ValueError:
+            return hosts.REFUTED, GEMINI_HOOK_READ_GUARD, "hooks.json unparseable"
+
+        cmd_str = hooks_data.get("panopticon-guard", {}).get("PreToolUse", [{}])[0].get("hooks", [{}])[0].get("command", "")
+        if "gemini_guard.py" not in cmd_str:
+            return hosts.REFUTED, GEMINI_HOOK_READ_GUARD, "hook command does not name gemini_guard.py"
+
         def call(path, env_entry_id):
             env = os.environ.copy()
             env["PANOPTICON_READ_SCOPE"] = scope_path
@@ -803,14 +853,18 @@ def probe_tool_omission_read_guard(host, session_root=None):
                 env["PANOPTICON_ENTRY_ID"] = env_entry_id
             elif "PANOPTICON_ENTRY_ID" in env:
                 del env["PANOPTICON_ENTRY_ID"]
-                
+
+            # If unbound, provide agent name payload
             payload = {
                 "toolCall": {
                     "name": "view_file",
                     "args": {"AbsolutePath": path}
                 }
             }
-            proc = subprocess.run([sys.executable, guard_script], 
+            if not env_entry_id:
+                payload["context"] = {"agentName": "panopticon-advisor"}
+
+            proc = subprocess.run([sys.executable, guard_script],
                                   input=json.dumps(payload), text=True, capture_output=True, env=env)
             if proc.returncode != 0:
                 return False
@@ -823,14 +877,15 @@ def probe_tool_omission_read_guard(host, session_root=None):
         rows = (
             ("read inside scope", inside, "probe-cell", True),
             ("read outside scope", outside, "probe-cell", False),
-            ("unbound subagent (no entry id)", outside, None, True),
+            ("unbound subagent (no entry id)", outside, None, False),
         )
         for name, path, entry_id, want in rows:
             got = call(path, entry_id)
             if got != want:
-                return hosts.REFUTED, TOOL_OMISSION_READ_GUARD, f"the guard {'ALLOWED' if got else 'DENIED'}: {name}"
-                
-    return hosts.PROVEN, TOOL_OMISSION_READ_GUARD, "gemini_guard.py verified"
+                return hosts.REFUTED, GEMINI_HOOK_READ_GUARD, f"the guard {'ALLOWED' if got else 'DENIED'}: {name}"
+
+    return hosts.PROVEN, GEMINI_HOOK_READ_GUARD, "gemini_guard.py verified"
+
 
 def run_probes(host, review_root, session_root=None, registration_dir=None,
                home=None, shadow=None, settings_path=None):
@@ -899,8 +954,8 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
                                            settings_path=settings_path),
         REGISTERED_SHELL_TOOLS_GEMINI:
             lambda: probe_registered_shell_tools_gemini(host, registration_dir=registration_dir),
-        TOOL_OMISSION_READ_GUARD:
-            lambda: probe_tool_omission_read_guard(host, session_root=session_root),
+        GEMINI_HOOK_READ_GUARD:
+            lambda: probe_gemini_hook_read_guard(host, session_root=session_root, review_root=review_root),
     }
     if set(runners) != set(PROBE_IDS):
         raise RuntimeError("host_probes.PROBE_IDS is out of step with run_probes' runner "

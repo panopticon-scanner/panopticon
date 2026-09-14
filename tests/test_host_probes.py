@@ -393,7 +393,7 @@ class TestEntryModelBoundProbe(unittest.TestCase):
                                  host_probes.ENTRY_MODEL_BOUND,
                                  host_probes.READ_GUARD_ARMED,
                                  host_probes.REGISTERED_SHELL_TOOLS_GEMINI,
-                                 host_probes.TOOL_OMISSION_READ_GUARD}))
+                                 host_probes.GEMINI_HOOK_READ_GUARD}))
         with tempfile.TemporaryDirectory() as reg, \
              tempfile.TemporaryDirectory() as target, \
              tempfile.TemporaryDirectory() as home:

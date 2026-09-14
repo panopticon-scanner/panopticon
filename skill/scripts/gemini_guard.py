@@ -49,27 +49,27 @@ def main():
     tool_call = payload.get("toolCall", {})
     if not isinstance(tool_call, dict):
         return 0
-    
+
     tool_name = tool_call.get("name", "")
     args = tool_call.get("args", {})
     entry_id = os.environ.get("PANOPTICON_ENTRY_ID")
-    
+
+    if not entry_id:
+        agent_name = payload.get("context", {}).get("agentName", "")
+        if agent_name.startswith("panopticon-") or "panopticon/runs/" in os.path.abspath(os.getcwd()).replace(os.sep, "/"):
+            print(json.dumps({"decision": "deny", "reason": "unbound subagent (no entry id)"}))
+            return 0
+
     # 1. Read Guard
     if tool_name in ("view_file", "grep_search", "find_by_name", "list_dir", "run_command"):
-        # For run_command, we could just block it or rely on it not being in the shell.
-        # But if it's there, we should be careful. Actually, tool_policy_enforced handles Bash.
-        
         scope_path = get_scope_path()
         try:
             with open(scope_path, "r", encoding="utf-8") as f:
                 scope_map = json.load(f)
         except (OSError, ValueError):
             scope_map = {}
-            
+
         if not entry_id:
-            # If no entry ID, it's either the orchestrator or not a confined agent.
-            # We let it pass if it's orchestrator, but typically hooks apply to all.
-            # In panopticon, if no PANOPTICON_ENTRY_ID, we allow it (orchestrator).
             pass
         elif entry_id not in scope_map:
             print(json.dumps({"decision": "deny", "reason": "No read scope defined for this entry"}))
@@ -79,8 +79,7 @@ def main():
             if not scope:
                 print(json.dumps({"decision": "deny", "reason": "Entry is confined to an empty scope"}))
                 return 0
-                
-            # Check paths
+
             path = None
             if tool_name == "view_file":
                 path = args.get("AbsolutePath")
@@ -90,9 +89,8 @@ def main():
                 path = args.get("SearchDirectory")
             elif tool_name == "list_dir":
                 path = args.get("DirectoryPath")
-                
+
             if path:
-                # Path resolution
                 path = os.path.abspath(path)
                 allowed = False
                 for d in scope.get("dirs", []):
@@ -103,7 +101,7 @@ def main():
                     if path == f:
                         allowed = True
                         break
-                
+
                 if not allowed:
                     print(json.dumps({"decision": "deny", "reason": f"Path {path} is outside the allowed read scope"}))
                     return 0
@@ -116,7 +114,7 @@ def main():
                 allowlist_map = json.load(f)
         except (OSError, ValueError):
             allowlist_map = {}
-            
+
         if not entry_id:
             pass
         elif entry_id not in allowlist_map:
@@ -127,7 +125,7 @@ def main():
             if not allowlist:
                 print(json.dumps({"decision": "deny", "reason": "Entry is confined to an empty write allowlist"}))
                 return 0
-            
+
             target = args.get("TargetFile")
             if target:
                 target = os.path.abspath(target)

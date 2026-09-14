@@ -111,12 +111,11 @@ HOSTS = {
     # the registry treats it as unenforced, which is what already happens.
     "gemini": HostSpec(
         name="gemini",
-        claims=frozenset({TOOL_POLICY_ENFORCED, READ_SCOPE_CONFINED}),
+        claims=frozenset({READ_SCOPE_CONFINED}),
         registration_dir=GEMINI_AGENTS_DIR,
         shell_format="md",
         driver_selectable=True,
-        probes={TOOL_POLICY_ENFORCED: "registered-shell-tools-gemini",
-                READ_SCOPE_CONFINED: "tool-omission-read-guard"}),
+        probes={READ_SCOPE_CONFINED: "gemini-hook-read-guard"}),
     # The deprecated fallback (spec D4). Deleted in F5 once every remaining
     # driver-selectable host clears the bar in spec §8.1.
     "generic": HostSpec(name="generic", claims=frozenset(),

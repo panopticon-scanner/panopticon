@@ -110,14 +110,15 @@ def headless_available(host):
 
 
 def runner_for(host, mode):
-    """The runner for (host, mode). Session mode always exists; headless mode
-    exists only when the family shipped runners/<host>.py (spec 4.4, O3)."""
     if mode not in MODES:
         raise ValueError("unknown runner mode %r (expected one of %s)" % (mode, ", ".join(MODES)))
     if mode == "session":
+        if host == "gemini":
+            raise ValueError("gemini does not support session mode")
         import scripts.runners.session as session_runner
         return session_runner.SessionRunner(host)
     mod = _headless_module(host)
     if mod is None or not hasattr(mod, "Runner"):
         raise ValueError("no headless runner for host %r; use --mode session" % host)
     return mod.Runner(host)
+

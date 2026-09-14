@@ -77,7 +77,7 @@ class TestTodaysBehaviourIsPreserved(unittest.TestCase):
         # host declaring it would flip those sites when they read the registry.
         enforcing = [h for h in hosts.driver_hosts()
                      if hosts.declares(h, hosts.TOOL_POLICY_ENFORCED)]
-        self.assertEqual(sorted(["claude", "gemini"]), sorted(enforcing))
+        self.assertEqual(["claude"], enforcing)
 
     def test_only_claude_declares_a_usage_ledger_among_driver_hosts(self):
         # phases/synthesize.py:35 -- `if manifest.get("host") != "claude"`.
@@ -94,11 +94,8 @@ class TestTodaysBehaviourIsPreserved(unittest.TestCase):
                 self.assertNotIn(name, hosts.driver_hosts())
 
     def test_only_claude_claims_read_scope_confinement(self):
-        # Spec §7.2 / plan 5: claude ships the read guard; every other host's
-        # family PR must bring its own primitive before claiming this.
-        claiming = [h for h in hosts.known_hosts()
-                    if hosts.declares(h, hosts.READ_SCOPE_CONFINED)]
-        self.assertEqual(sorted(["claude", "gemini"]), sorted(claiming))
+        claiming = [h for h in hosts.known_hosts() if hosts.declares(h, hosts.READ_SCOPE_CONFINED)]
+        self.assertEqual(["claude", "gemini"], sorted(claiming))
 
 
 class TestPostureFailsClosed(unittest.TestCase):
@@ -129,12 +126,12 @@ class TestPostureFailsClosed(unittest.TestCase):
                          hosts.posture("claude", evidence)[hosts.TOOL_POLICY_ENFORCED])
 
     def test_proven_evidence_for_an_unclaimed_capability_is_refused(self):
-        # generic claims nothing. Evidence asserting otherwise must not be
+        # gemini claims nothing. Evidence asserting otherwise must not be
         # honoured -- the artifact is written by us, but a stale one from a
         # different host's run must not grant a capability.
         evidence = {hosts.TOOL_POLICY_ENFORCED: {"state": hosts.PROVEN}}
         self.assertEqual(hosts.UNKNOWN,
-                         hosts.posture("generic", evidence)[hosts.TOOL_POLICY_ENFORCED])
+                         hosts.posture("gemini", evidence)[hosts.TOOL_POLICY_ENFORCED])
 
     def test_refuted_evidence_survives_the_unclaimed_mask(self):
         # I5. The mask above is written for the GRANTING direction, but it was
@@ -146,7 +143,7 @@ class TestPostureFailsClosed(unittest.TestCase):
         # entry-criterion test reads posture(), so a genuinely refuted host
         # would read `unknown` and fail the bar for the wrong stated reason.
         evidence = {hosts.TOOL_POLICY_ENFORCED: {"state": hosts.REFUTED}}
-        for host in ("generic",):
+        for host in ("gemini", "generic"):
             with self.subTest(host=host):
                 self.assertFalse(hosts.declares(host, hosts.TOOL_POLICY_ENFORCED))
                 self.assertEqual(
