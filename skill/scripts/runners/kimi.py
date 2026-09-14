@@ -588,9 +588,9 @@ class Runner(base.HostRunner):
             self._drop_pointer()
             self.kimi_home = self.run_home = None
             return
-        removed = strip_secrets(home)
-        note = ("its %s removed, so nothing left there carries a credential"
-                % " and ".join(removed)) if removed else "it holds no credential files"
+        removed = strip_secrets(home)     # R3-6: fixed text below, never the names it returned
+        note = ("its config.toml and credential links were removed, so nothing left "
+                "there carries a credential" if removed else "it held no credential files")
         print("driver loop: the kimi run home is kept for debugging at %s; %s"
               % (home, note), file=sys.stderr, flush=True)
 

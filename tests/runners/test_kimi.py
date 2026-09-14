@@ -490,8 +490,30 @@ class TestHomeLocation(unittest.TestCase):
             self.assertFalse(os.path.exists(os.path.join(home, "config.toml")))
             for item in ("credentials", "oauth"):
                 self.assertFalse(os.path.islink(os.path.join(home, item)))
-            self.assertIn(home, err.getvalue())
-            self.assertIn("config.toml", err.getvalue())
+            line = err.getvalue()
+            self.assertIn(home, line)
+            self.assertIn("its config.toml and credential links were removed, so nothing "
+                          "left there carries a credential", line)
+            # R3-6: the names strip_secrets returned are never echoed (CodeQL
+            # read the interpolated list as clear-text logging of a credential).
+            for name in kimi_runner._CREDENTIAL_ITEMS:
+                self.assertNotIn(name, line.replace(home, ""))
+
+    def test_an_errored_teardown_after_a_strip_says_it_held_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
+                r = kimi_runner.Runner("kimi")
+                r.prepare(os.path.join(d, "run"), review_root=d)
+            home = r.kimi_home
+            self.addCleanup(shutil.rmtree, home, True)
+            r._strip_on_exit()                                     # a handler ran first
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                r.teardown("error")
+            line = err.getvalue()
+            self.assertIn(home, line)
+            self.assertIn("; it held no credential files", line)
+            for name in kimi_runner._CREDENTIAL_ITEMS:
+                self.assertNotIn(name, line.replace(home, ""))
 
     def test_a_removed_home_takes_its_pointer_file_with_it(self):
         with tempfile.TemporaryDirectory() as d:
