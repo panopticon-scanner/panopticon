@@ -142,9 +142,12 @@ def spec(host):
 
 
 def is_deprecated(host):
-    """Spec D4: `--host generic` is deprecated now, deleted once every
-    remaining driver-selectable host clears the retirement bar (spec 8.1;
-    see `test_generic_retirement_bar`).
+    """Spec D4: `--host generic` is deprecated now, and remains the fallback
+    for any host without a family runner. Deleting it is an OWNER decision,
+    not something spec 8.1's bar triggers on its own: that bar asks whether a
+    remaining SELECTABLE host falls short (it does not, on this base -- see
+    `test_generic_retirement_bar`), and it cannot ask whether the operators
+    who depend on this row have anywhere else to go.
 
     A named predicate rather than a bare `host == "generic"` at each call
     site: `tests/test_host_posture_wiring.py`'s AST guard exists precisely so
