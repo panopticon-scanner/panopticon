@@ -1663,6 +1663,48 @@ class TestDriverRunRefusesAnUnselectableManifestHost(unittest.TestCase):
         self.assertTrue(self._requests(d),
                         "a still-selectable host's resume dispatches as before")
 
+    def test_a_resume_whose_manifest_host_has_no_registry_row_never_dispatches_for_it(self):
+        # #1624 fix round 1. The refusal above reads `host in known_hosts()
+        # and host not in driver_hosts()`, and the `known_hosts()` half is
+        # what keeps a name with NO ROW out of it -- such a name was never
+        # retired, so "registered but no longer driver-selectable" would be
+        # false and `--host generic` would not be its remedy.
+        #
+        # Dropping that half to catch it anyway would be dead code, and this
+        # test is the proof. `run_manifest.load_manifest` -- which
+        # `driver.run` calls before `_establish_host_posture` ever sees a host
+        # -- discards a manifest naming a host the registry does not know:
+        # UNUSABLE, exactly like a corrupt one, announced on stderr (#1344).
+        # `driver.run` then clears the derived artifacts and rebuilds from the
+        # real CLI args, so the run resumes under a SELECTABLE host and the
+        # unknown name reaches no probe and no dispatch entry.
+        #
+        # Pinned at the entrypoint because the unit test
+        # (test_run_manifest.py::test_a_stored_manifest_with_an_unknown_host_
+        # is_discarded_not_trusted) covers `load_manifest` and this covers the
+        # consequence: delete that branch and the name flows straight into the
+        # posture probes and the run tag.
+        d = self._repo()
+        self._mint(d)
+        self.assertNotIn("nosuchhost", hosts.known_hosts(),
+                         "fixture precondition: the registry has no such row")
+        self._retire_the_requests(d)
+        self._rewrite_host(d, "nosuchhost")
+        args = driver.build_parser().parse_args(["run", d, "--no-tools"])
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            status = driver.run(args)
+        self.assertIn("discarding run-manifest.json", err.getvalue())
+        self.assertIn("nosuchhost", err.getvalue())
+        # Rebuilt from the CLI args, under a host the driver may actually pick.
+        self.assertIn(run_manifest.load_manifest(d)["host"], hosts.driver_hosts())
+        # It is not told the retired-host story, which does not apply to it.
+        self.assertNotIn("no longer driver-selectable", status.get("message") or "")
+        # Whatever the rebuilt run dispatches, none of it is filed under the
+        # unknown name -- the run tag embeds the host, so a request under a
+        # `nosuchhost-*` folder is exactly what "dispatched for it" looks like.
+        self.assertTrue(self._requests(d), "guards the guard: it did dispatch")
+        self.assertEqual([], [r for r in self._requests(d) if "nosuchhost" in r])
+
 
 if __name__ == "__main__":
     unittest.main()
