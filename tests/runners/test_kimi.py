@@ -187,8 +187,15 @@ class TestPrepare(unittest.TestCase):
                 # the fixture's own values survive the merge
                 self.assertEqual(config["models"]["kimi-code/k3"]["model"], "k3")
                 self.assertEqual(r.configured, {"kimi-code/k3", "kimi-code/kimi-for-coding"})
-                r.prepare(run_dir, review_root=d)                 # idempotent
-                with open(os.path.join(home, "config.toml"), "rb") as fh:
+                # Idempotent in the sense that survived N2: a second prepare
+                # arms the same configuration. It does so in a FRESH home --
+                # reuse would have to trust the pointer file -- so the first
+                # one is this runner's to drop.
+                first_home = r.kimi_home
+                r.prepare(run_dir, review_root=d)
+                self.addCleanup(shutil.rmtree, first_home, True)
+                self.assertNotEqual(first_home, r.kimi_home)
+                with open(os.path.join(r.kimi_home, "config.toml"), "rb") as fh:
                     self.assertEqual(config, tomllib.load(fh))
 
     def test_a_source_config_with_hooks_keeps_them(self):
