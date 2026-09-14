@@ -170,6 +170,30 @@ def spec(host):
     return HOSTS.get(host)
 
 
+def unselectable_host_message(host, verb):
+    """The refusal for a run whose MANIFEST names a registered-but-unselectable
+    host, spelled once because two entrypoints have to say it.
+
+    `driver loop` has refused this since #1621 and `driver run` since #1624,
+    and they reach it down the same path: a resume passes no `--host` (a
+    contradicting one is refused as flag drift), so the manifest is
+    authoritative and `driver.py`'s only other read of the selectable set --
+    the parser's `choices`/`type=` -- never sees the name. The remedy is the
+    same for both, because it is the MANIFEST that has to change.
+
+    A second copy of this paragraph is a thing that drifts; an operator who
+    moves between the two entrypoints would then be told two different stories
+    about one registry fact. `verb` is all a call site supplies -- everything
+    after the colon is a property of the `driver_selectable` field above, so
+    it belongs in the table that owns that field.
+    """
+    return ("driver %s: this run's manifest names host %r, which is "
+            "registered but no longer driver-selectable (it proves no "
+            "enforcement capability). Start over with `--host generic "
+            "--reset` (session mode, unenforced, ack-gated); resuming "
+            "would dispatch for a host --host refuses to name." % (verb, host))
+
+
 def is_deprecated(host):
     """Spec D4: `--host generic` is deprecated now, and remains the fallback
     for any host without a family runner. Deleting it is an OWNER decision,

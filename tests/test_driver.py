@@ -5,6 +5,7 @@ unsplittable monolith from 5.0 until then.
 """
 import contextlib
 import dataclasses
+import glob as _glob
 import io
 import json
 import os
@@ -1530,6 +1531,179 @@ class TestARegisteredButUnselectableHostGetsARemedy(unittest.TestCase):
                              {"ghost": dataclasses.replace(row, driver_selectable=True)}):
             self.assertEqual("ghost",
                              driver.parse_cli(["run", ".", "--host", "ghost"]).host)
+
+
+class TestDriverRunRefusesAnUnselectableManifestHost(unittest.TestCase):
+    """#1624: the manifest is authoritative on resume, and `driver run` never
+    asked whether the host it names is still one the driver may pick.
+
+    `driver loop` has refused this since #1621. `driver run` -- the single-step
+    primitive an operator drives by hand to debug a phase -- read
+    `manifest.get("host")`, probed it to all-unknown and went on emitting
+    dispatch entries for a host `--host` would now refuse to name. The
+    selectable set was consulted in `driver.py` only inside the argparse
+    `type=`/`choices`, which a resume never reaches: a resume passes no
+    `--host` (passing a contradicting one is refused as flag drift), so the
+    CLI boundary cannot be where this is caught.
+
+    Keyed on the registry, never on a host name: `gemini` is asserted by name
+    only as today's witness that the unselectable set is non-empty, exactly as
+    `TestARegisteredButUnselectableHostGetsARemedy` above does.
+    """
+
+    def _repo(self):
+        return make_git_repo(
+            test_case=self,
+            files={"src/app.py": "def f():\n    return 1\n"},
+            groups_yml="groups:\n  Core:\n    match: ['src/**']\n    panels: [COD]\n",
+            branch="main",
+            user_email="t@t",
+            user_name="t",
+        )
+
+    def _mint(self, d):
+        """A real run whose manifest names a host the driver still accepts.
+
+        Minting through the CLI rather than hand-writing a manifest is the
+        point: the manifest under test has to be one a real run wrote, or
+        `_foreign_manifest` discards it before the host is ever read and both
+        tests below pass over nothing.
+
+        Minted under `claude` -- which CLAIMS every capability -- so that the
+        pair below can tell selectability from claims. The near-miss this
+        guards is named in `hosts.is_deprecated`'s own docstring: gemini
+        claims nothing AND is unselectable, so a refusal keyed on the claim
+        set passes for exactly the wrong reason. `_untouched` therefore
+        resumes as `generic`, the row that claims nothing and IS selectable,
+        which a claims-keyed refusal would wrongly stop.
+        """
+        args = driver.build_parser().parse_args(
+            ["run", d, "--no-tools", "--host", "claude"])
+        with contextlib.redirect_stderr(io.StringIO()):
+            status = driver.run(args)
+        self.assertEqual("checkpoint", status["status"], status)
+        self.assertEqual("claude", run_manifest.load_manifest(d)["host"])
+
+    def _requests(self, d):
+        """Every dispatch request anywhere under this tree's `.panopticon/`.
+
+        Globbed rather than read off `requests.request_path`, which resolves
+        the CURRENT manifest's per-run folder (`runs/<tag>/`) -- and `<tag>`
+        embeds the host, so rewriting the manifest's host moves the path. A
+        single-path assertion would therefore have held vacuously: the file
+        the refusal must not write is at a name the pre-rewrite path never
+        had. De-duplicated by `realpath` because `runs/latest` is a symlink
+        to one of the run folders, so every request matches twice.
+        """
+        return sorted({os.path.realpath(hit) for hit in
+                       _glob.glob(os.path.join(d, ".panopticon", "**",
+                                               "dispatch-request.json"),
+                                  recursive=True)})
+
+    def _retire_the_requests(self, d):
+        """Remove what the MINTING invocation dispatched.
+
+        A resume with nothing serviced re-emits the same checkpoint (see
+        `test_resume_reemits_same_checkpoint_before_dispatch`), so an empty
+        set afterwards is a statement about THIS invocation rather than a
+        leftover from the last one.
+        """
+        minted = self._requests(d)
+        self.assertTrue(minted,
+                        "fixture precondition: minting emitted a dispatch request")
+        for path in minted:
+            os.remove(path)
+
+    def _rewrite_host(self, d, host):
+        path = run_manifest.manifest_path(d)
+        manifest = runio._load_json(path)
+        manifest["host"] = host
+        runio._write_json(path, manifest)
+        self.assertFalse(runio._foreign_manifest(manifest, d, path),
+                         "fixture precondition: this manifest is the run's own")
+
+    def _resume(self, d):
+        # No `--host`: the resume `driver run` is documented for, and the only
+        # shape in which the manifest gets to choose the host.
+        args = driver.build_parser().parse_args(["run", d, "--no-tools"])
+        with contextlib.redirect_stderr(io.StringIO()):
+            return driver.run(args)
+
+    def test_a_resume_whose_manifest_host_is_no_longer_selectable_is_an_error(self):
+        d = self._repo()
+        self._mint(d)
+        unselectable = [h for h in hosts.known_hosts()
+                        if h not in hosts.driver_hosts()]
+        self.assertIn("gemini", unselectable,
+                      "guards the guard: the unselectable set must be non-empty")
+        self._retire_the_requests(d)
+        self._rewrite_host(d, "gemini")
+        status = self._resume(d)
+        self.assertEqual("error", status["status"], status)
+        self.assertIn("gemini", status["message"])
+        self.assertIn("--host generic --reset", status["message"])
+        self.assertEqual([], self._requests(d),
+                         "nothing may be dispatched for it")
+
+    def test_a_resume_whose_manifest_host_is_still_selectable_is_untouched(self):
+        # The other half, and it runs the SAME manipulation -- only the name
+        # differs -- or it is not a guard: a refusal that fired for every
+        # manifest-resolved host would leave the test above green.
+        d = self._repo()
+        self._mint(d)
+        self.assertIn("generic", hosts.driver_hosts())
+        self.assertFalse(hosts.spec("generic").claims,
+                         "fixture precondition: generic claims nothing and is "
+                         "selectable anyway -- claims are not selectability")
+        self._retire_the_requests(d)
+        self._rewrite_host(d, "generic")
+        status = self._resume(d)
+        self.assertNotEqual("error", status["status"], status)
+        self.assertEqual("checkpoint", status["status"], status)
+        self.assertTrue(self._requests(d),
+                        "a still-selectable host's resume dispatches as before")
+
+    def test_a_resume_whose_manifest_host_has_no_registry_row_never_dispatches_for_it(self):
+        # #1624 fix round 1. The refusal above reads `host in known_hosts()
+        # and host not in driver_hosts()`, and the `known_hosts()` half is
+        # what keeps a name with NO ROW out of it -- such a name was never
+        # retired, so "registered but no longer driver-selectable" would be
+        # false and `--host generic` would not be its remedy.
+        #
+        # Dropping that half to catch it anyway would be dead code, and this
+        # test is the proof. `run_manifest.load_manifest` -- which
+        # `driver.run` calls before `_establish_host_posture` ever sees a host
+        # -- discards a manifest naming a host the registry does not know:
+        # UNUSABLE, exactly like a corrupt one, announced on stderr (#1344).
+        # `driver.run` then clears the derived artifacts and rebuilds from the
+        # real CLI args, so the run resumes under a SELECTABLE host and the
+        # unknown name reaches no probe and no dispatch entry.
+        #
+        # Pinned at the entrypoint because the unit test
+        # (test_run_manifest.py::test_a_stored_manifest_with_an_unknown_host_
+        # is_discarded_not_trusted) covers `load_manifest` and this covers the
+        # consequence: delete that branch and the name flows straight into the
+        # posture probes and the run tag.
+        d = self._repo()
+        self._mint(d)
+        self.assertNotIn("nosuchhost", hosts.known_hosts(),
+                         "fixture precondition: the registry has no such row")
+        self._retire_the_requests(d)
+        self._rewrite_host(d, "nosuchhost")
+        args = driver.build_parser().parse_args(["run", d, "--no-tools"])
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            status = driver.run(args)
+        self.assertIn("discarding run-manifest.json", err.getvalue())
+        self.assertIn("nosuchhost", err.getvalue())
+        # Rebuilt from the CLI args, under a host the driver may actually pick.
+        self.assertIn(run_manifest.load_manifest(d)["host"], hosts.driver_hosts())
+        # It is not told the retired-host story, which does not apply to it.
+        self.assertNotIn("no longer driver-selectable", status.get("message") or "")
+        # Whatever the rebuilt run dispatches, none of it is filed under the
+        # unknown name -- the run tag embeds the host, so a request under a
+        # `nosuchhost-*` folder is exactly what "dispatched for it" looks like.
+        self.assertTrue(self._requests(d), "guards the guard: it did dispatch")
+        self.assertEqual([], [r for r in self._requests(d) if "nosuchhost" in r])
 
 
 if __name__ == "__main__":

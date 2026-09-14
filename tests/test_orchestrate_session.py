@@ -425,6 +425,46 @@ class TestHostAndModeResolution(LoopCase):
         self.assertIn("--host generic --reset", status["message"])
         self.assertEqual([], calls, "nothing may be dispatched for it")
 
+    def test_a_resume_whose_host_the_registry_does_not_know_never_dispatches_for_it(self):
+        # #1624 fix round 1. The #1621 check above is `host not in
+        # driver_hosts()`, which would also catch a name with no ROW at all --
+        # and would then tell that operator the host was "registered but no
+        # longer driver-selectable", which is false twice over: nothing was
+        # ever retired, and `--host generic` is not the specific remedy.
+        #
+        # It never gets the chance, and that is why the refusal above needs no
+        # second branch for it. `run_manifest.load_manifest` discards a
+        # manifest naming a host the registry does not know -- UNUSABLE,
+        # exactly like a corrupt one, announced on stderr (#1344; the unit
+        # test is test_run_manifest.py::test_a_stored_manifest_with_an_
+        # unknown_host_is_discarded_not_trusted) -- so `_resolve_host` reads
+        # None off it and falls through to the default. This pins the
+        # CONSEQUENCE at the entrypoint, which the unit test cannot: delete
+        # that branch and the name reaches `runner_for`, which builds a
+        # SessionRunner for any string at all, and this fails.
+        d, _ = self._repo(); s = self._session_root(d)
+        self._claim_nothing_run(d, s)
+        path = driver.run_manifest.manifest_path(d)
+        manifest = runio._load_json(path)
+        manifest["host"] = "nosuchhost"
+        runio._write_json(path, manifest)
+        self.assertNotIn("nosuchhost", hosts.known_hosts(),
+                         "fixture precondition: the registry has no such row")
+        self.assertFalse(runio._foreign_manifest(manifest, d, path),
+                         "fixture precondition: this manifest is the run's own -- "
+                         "a foreign one is discarded for a different reason")
+        calls = []
+        with self._spy(calls), contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()) as err:
+            status = orchestrate.loop(self._args(d, "--mode", "session", "--session-dir", s))
+        self.assertIn("discarding run-manifest.json", err.getvalue())
+        self.assertIn("nosuchhost", err.getvalue())
+        self.assertEqual([], [h for h, _m in calls if h not in hosts.driver_hosts()],
+                         "no runner may be built for a host with no registry row")
+        self.assertTrue(calls, "guards the guard: the loop must have built one")
+        # ...and it is NOT told the retired-host story, which does not apply.
+        self.assertNotIn("no longer driver-selectable", status.get("message") or "")
+
     def test_the_refusal_does_not_fire_for_a_host_that_is_still_selectable(self):
         # The other half, and it has to run the SAME manipulation as the test
         # above or it is not a guard: a resume whose manifest was rewritten to
