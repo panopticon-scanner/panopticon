@@ -719,7 +719,10 @@ def probe_kimi_shell_surface(host, registration_dir=None, version=None, runner=N
 def _guard_round_trip(mode, data_path, rows, guard_path=None, runner=None):
     """Drive payloads through the guard as a subprocess -- the real hook
     protocol, not an import. `rows` is (name, payload, env_id, want_allow).
-    Returns (ok, detail). Everything happens inside the caller's tempdir."""
+    Returns (ok, detail); the detail names what was driven through what, and
+    the probes compose theirs out of it rather than restating a count of their
+    own (M1: a literal "(8 rows)" beside this function's own answer drifts the
+    moment a row is added). Everything happens inside the caller's tempdir."""
     import scripts.kimi_guard_hook as kimi_guard_hook
     # Plain `subprocess.run`, NOT KIMI_DEFAULT_RUNNER: what this spawns is
     # `sys.executable <the hook> <mode> <data>`, the hook protocol itself.
@@ -740,7 +743,8 @@ def _guard_round_trip(mode, data_path, rows, guard_path=None, runner=None):
         if denied == want_allow:
             return False, ("the guard %s: %s" % ("DENIED" if denied else "ALLOWED", name)
                            + (" (stdout: %s)" % out[:160] if out and not denied else ""))
-    return True, "%s round-trip ok (%d rows)" % (mode, len(rows))
+    return True, ("%s round-trip: %d/%d payloads adjudicated as expected through %s"
+                  % (mode, len(rows), len(rows), os.path.basename(guard_path)))
 
 
 def _kimi_armed_home(sandbox):
@@ -907,7 +911,8 @@ def probe_kimi_read_guard(host, runner=None, doctor_runner=None):
                 runner=runner)
             if not ok:
                 return (hosts.REFUTED, KIMI_READ_GUARD, detail)
-            round_trip_detail = "%s, plus %s" % (round_trip_detail, detail)
+            round_trip_detail = "%s; and, with the data file corrupted, %s" % (
+                round_trip_detail, detail)
     except OSError as exc:
         return (hosts.UNKNOWN, KIMI_READ_GUARD,
                 "sandbox round-trip could not run: %s" % exc)
@@ -969,7 +974,8 @@ def probe_kimi_write_guard(host, runner=None):
                 runner=runner)
             if not ok:
                 return (hosts.REFUTED, KIMI_WRITE_GUARD, detail)
-            round_trip_detail = "%s, plus %s" % (round_trip_detail, detail)
+            round_trip_detail = "%s; and, with the data file corrupted, %s" % (
+                round_trip_detail, detail)
             # C3: the ARMING half, in the same sandbox -- the write probe used
             # to build no home at all, so its detail ("the runner arms the hook
             # in the per-run home's config.toml") named a file it never opened.
