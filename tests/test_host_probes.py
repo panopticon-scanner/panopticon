@@ -1684,3 +1684,45 @@ class TestKimiUsageWireProbe(unittest.TestCase):
         state, by, _detail = host_probes.probe_kimi_usage_wire("gemini")
         self.assertEqual(hosts.UNKNOWN, state)
         self.assertIsNone(by)
+
+
+class TestKimiLaunchGuard(unittest.TestCase):
+    """I3: the suite must never launch the real `kimi` binary, and that must be
+    STRUCTURAL rather than a property of today's call sites.
+
+    Every kimi spawn resolves its runner from a module attribute
+    (`host_probes.KIMI_DEFAULT_RUNNER`, `runners.kimi.DEFAULT_RUNNER`), which
+    tests/conftest.py's autouse `_no_live_kimi_launches` swaps for a refusal.
+    The probes must let that refusal PROPAGATE: mapping it to UNKNOWN would
+    turn "the suite tried to launch kimi" into a quiet probe state.
+    """
+
+    def test_run_probes_refuses_to_launch_the_real_binary(self):
+        import scripts.runners.kimi as kimi_runner
+        with tempfile.TemporaryDirectory() as d:
+            home = os.path.join(d, "fixture-home")
+            os.makedirs(home)
+            with open(os.path.join(home, "config.toml"), "w", encoding="utf-8") as fh:
+                fh.write('default_model = "kimi-code/k3"\n')
+            registration = os.path.join(d, "agents")
+            _kimi_fully_registered(registration)
+            with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": home}), \
+                 self.assertRaises(kimi_runner.LaunchRefused) as caught:
+                host_probes.run_probes("kimi", d, session_root=d,
+                                       registration_dir=registration)
+        self.assertIn("kimi", str(caught.exception))
+
+    def test_the_runner_resolves_its_launcher_from_the_module_attribute(self):
+        import scripts.runners.kimi as kimi_runner
+        with tempfile.TemporaryDirectory() as d:
+            home = os.path.join(d, "fixture-home")
+            os.makedirs(home)
+            with open(os.path.join(home, "config.toml"), "w", encoding="utf-8") as fh:
+                fh.write('default_model = "kimi-code/k3"\n'
+                         '[models."kimi-code/k3"]\nmodel = "k3"\n')
+            with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": home}):
+                runner = kimi_runner.Runner("kimi")           # nothing injected
+                runner.prepare(os.path.join(d, "run"), review_root=d)
+                with self.assertRaises(kimi_runner.LaunchRefused):
+                    runner.run_entry({"id": "e1", "model": "secondary",
+                                      "prompt": "x"}, {})

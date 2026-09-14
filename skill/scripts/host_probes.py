@@ -530,6 +530,16 @@ def probe_read_guard_armed(host, session_root=None, settings_path=None):
 # as the CLI invokes it), the model-alias binding, and the wire-file usage
 # channel.
 
+# I3 (gate review): every spawn of the REAL `kimi` binary in this module
+# resolves its launcher from this module attribute, inside the call, so
+# tests/conftest.py's autouse `_no_live_kimi_launches` can swap it for a
+# refusal. It is named per family rather than `DEFAULT_RUNNER` because one
+# module holds every family's probes and each needs its own patch target.
+# The guard-hook round-trip below is NOT routed through it: that subprocess
+# is `sys.executable`, the hook's own protocol, and refusing it would delete
+# the proof rather than protect it.
+KIMI_DEFAULT_RUNNER = subprocess.run
+
 KIMI_SHELL_SURFACE = "kimi-shell-surface"
 KIMI_READ_GUARD = "kimi-read-guard-armed"
 KIMI_WRITE_GUARD = "kimi-write-guard-armed"
@@ -553,10 +563,14 @@ _KIMI_TOOL_VOCABULARY = {
 }
 
 
-def _kimi_version(runner):
+def _kimi_version(runner=None):
     """The installed CLI's major.minor ("0.42"), or None."""
+    import scripts.runners.kimi as kimi_runner
+    runner = KIMI_DEFAULT_RUNNER if runner is None else runner
     try:
         proc = runner(["kimi", "--version"], capture_output=True, text=True, timeout=15)
+    except kimi_runner.LaunchRefused:  # I3: the suite's guard propagates --
+        raise                          # never reported as "version unknown"
     except Exception:  # noqa: BLE001 -- a probe reports, never raises
         return None
     text = (proc.stdout or "") + (proc.stderr or "")
@@ -584,7 +598,7 @@ def probe_kimi_shell_surface(host, registration_dir=None, version=None, runner=N
         # (UNKNOWN, None, ...) untouched: nothing ran that can be named.
         return (base_state, base_by if base_by is None else KIMI_SHELL_SURFACE, base_detail)
     if version is None:
-        version = _kimi_version(runner or subprocess.run)
+        version = _kimi_version(runner)
     if version is None:
         return (hosts.UNKNOWN, KIMI_SHELL_SURFACE,
                 "shells match their templates, but the installed kimi version "
@@ -610,11 +624,14 @@ def probe_kimi_shell_surface(host, registration_dir=None, version=None, runner=N
             % (base_detail, version))
 
 
-def _guard_round_trip(mode, data_path, rows, guard_path=None, runner=subprocess.run):
+def _guard_round_trip(mode, data_path, rows, guard_path=None, runner=None):
     """Drive payloads through the guard as a subprocess -- the real hook
     protocol, not an import. `rows` is (name, payload, env_id, want_allow).
     Returns (ok, detail). Everything happens inside the caller's tempdir."""
     import scripts.kimi_guard_hook as kimi_guard_hook
+    # Plain `subprocess.run`, NOT KIMI_DEFAULT_RUNNER: what this spawns is
+    # `sys.executable <the hook> <mode> <data>`, the hook protocol itself.
+    runner = subprocess.run if runner is None else runner
     guard_path = guard_path or os.path.abspath(kimi_guard_hook.__file__)
     for name, payload, env_id, want_allow in rows:
         env = {"PATH": os.environ.get("PATH", "")}
@@ -634,11 +651,12 @@ def _guard_round_trip(mode, data_path, rows, guard_path=None, runner=subprocess.
     return True, "%s round-trip ok (%d rows)" % (mode, len(rows))
 
 
-def _kimi_home_builds_and_validates(runner=subprocess.run):
+def _kimi_home_builds_and_validates(runner=None):
     """Build a per-run home from a MINIMAL fixture config inside a tempdir and
     have `kimi doctor` validate the generated config.toml -- the exact file
     the runner will arm. Never touches the operator's real home."""
     import scripts.runners.kimi as kimi_runner
+    runner = KIMI_DEFAULT_RUNNER if runner is None else runner
     try:
         with tempfile.TemporaryDirectory() as sandbox:
             fixture_home = os.path.join(sandbox, "fixture-home")
@@ -662,7 +680,7 @@ def _kimi_home_builds_and_validates(runner=subprocess.run):
     return True, "per-run home builds and kimi doctor validates its config"
 
 
-def probe_kimi_read_guard(host, runner=subprocess.run, doctor_runner=None):
+def probe_kimi_read_guard(host, runner=None, doctor_runner=None):
     """Kimi can confine a dispatched reviewer's reads to its entry's scope.
 
     Proves the mechanism end to end: the guard subprocess allows an in-scope
@@ -672,9 +690,10 @@ def probe_kimi_read_guard(host, runner=subprocess.run, doctor_runner=None):
     batch, so at run start it is legitimately absent.
 
     `runner` drives the guard subprocess (plain python; tests use the real
-    one). `doctor_runner` drives `kimi doctor` and is injected separately so
-    the suite never launches the real host binary (FAMILY-PR-GUARDRAILS,
-    Suite rules); it defaults to `runner` in production.
+    one). `doctor_runner` drives `kimi doctor` and is resolved separately,
+    from KIMI_DEFAULT_RUNNER, so the suite never launches the real host
+    binary (FAMILY-PR-GUARDRAILS, Suite rules; I3): the two spawns are
+    different binaries and must not share one default.
     """
     if not hosts.declares(host, hosts.READ_SCOPE_CONFINED):
         return (hosts.UNKNOWN, None,
@@ -721,7 +740,7 @@ def probe_kimi_read_guard(host, runner=subprocess.run, doctor_runner=None):
     except OSError as exc:
         return (hosts.UNKNOWN, KIMI_READ_GUARD,
                 "sandbox round-trip could not run: %s" % exc)
-    ok, detail = _kimi_home_builds_and_validates(doctor_runner or runner)
+    ok, detail = _kimi_home_builds_and_validates(doctor_runner)
     if ok is None:
         return (hosts.UNKNOWN, KIMI_READ_GUARD,
                 "guard round-trip ok, but %s" % detail)
@@ -731,7 +750,7 @@ def probe_kimi_read_guard(host, runner=subprocess.run, doctor_runner=None):
             "read round-trip ok (8 rows); %s" % detail)
 
 
-def probe_kimi_write_guard(host, runner=subprocess.run):
+def probe_kimi_write_guard(host, runner=None):
     """Kimi can mediate a self-writing reviewer's Write/Edit.
 
     Same shape as the read probe: declared out_file allowed, everything else

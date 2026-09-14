@@ -52,6 +52,26 @@ import scripts.kimi_guard_hook as kimi_guard_hook
 import scripts.model_resolver as model_resolver
 import scripts.runners.base as base
 
+# I3 (gate review): the launcher is a MODULE ATTRIBUTE, never a default
+# argument, and every spawn resolves it inside the body. A default argument
+# binds `subprocess.run` at import time, where `monkeypatch.setattr` cannot
+# reach it -- so tests/conftest.py's autouse `_no_live_kimi_launches` can only
+# refuse a real `kimi` launch if the name is looked up per call, here. The
+# sibling family PRs bind their own module attribute the same way.
+DEFAULT_RUNNER = subprocess.run
+
+
+class LaunchRefused(RuntimeError):
+    """The suite's structural guard refused a real `kimi` launch.
+
+    Raised only by the fake tests/conftest.py installs over `DEFAULT_RUNNER`
+    (and over host_probes.KIMI_DEFAULT_RUNNER). It is deliberately NOT an
+    OSError: every `except OSError` on a launch path would otherwise swallow
+    it and report a probe state, hiding the fact that the suite reached for
+    the real binary. Nothing in production raises it.
+    """
+
+
 KIMI_HOME_DIRNAME = "kimi-home"
 _GUARD = os.path.abspath(kimi_guard_hook.__file__)
 # Symlinked into the per-run home: the OAuth credential stores (file + dir).
@@ -281,8 +301,10 @@ class Runner(base.HostRunner):
     mode = "headless"
     default_concurrency = 4        # the managed gateway rate-limits; 8 bursted into exit-1s (measured)
 
-    def __init__(self, host="kimi", runner=subprocess.run):
+    def __init__(self, host="kimi", runner=None):
         super().__init__(host)
+        # None means "the module's DEFAULT_RUNNER, resolved at launch time"
+        # (I3); an injected fake stays exactly what the caller passed.
         self.runner = runner
         self.kimi_home = None
         self.review_root = None
@@ -369,13 +391,16 @@ class Runner(base.HostRunner):
         for marker in _NESTED_MARKERS:
             run_env.pop(marker, None)
         cmd = self.command(entry, alias)
+        launcher = DEFAULT_RUNNER if self.runner is None else self.runner
         try:
-            proc = self.runner(cmd, cwd=self.review_root, env=run_env, capture_output=True,
-                               text=True, timeout=self.entry_timeout)
+            proc = launcher(cmd, cwd=self.review_root, env=run_env, capture_output=True,
+                            text=True, timeout=self.entry_timeout)
         except subprocess.TimeoutExpired:
             return base.RunResult.failed(entry_id, "kimi -p timed out after %ss" % self.entry_timeout)
         except OSError as exc:
             return base.RunResult.failed(entry_id, "could not launch %s: %s" % (self.CLI, exc))
+        except LaunchRefused:             # I3: the suite's guard, never a run state
+            raise
         except Exception as exc:          # run_entry never raises (spec 4.4)
             return base.RunResult.failed(entry_id,
                                           "kimi -p launch raised %s: %s" % (type(exc).__name__, exc))

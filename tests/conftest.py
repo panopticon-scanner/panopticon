@@ -120,3 +120,34 @@ def _no_live_scanner_containers(request, monkeypatch):
         return                      # opted in with @pytest.mark.docker
     monkeypatch.setattr(_run_tools, "docker_available", _refuse_docker)
     monkeypatch.setattr(_setup_flow, "_check_docker", _refuse_setup_docker)
+
+
+# --- #1344 I3: no live host binaries from the unit suite ---------------------
+# FAMILY-PR-GUARDRAILS, Suite rules: "The test suite must never launch the real
+# host binary." That held on this tree by inspection of every call site, which
+# is not a guard: one `run_probes("kimi", ...)` (or a `driver.run --host kimi`
+# test that does not patch run_probes module-wide) shells out to `kimi
+# --version` and `kimi doctor`. So the two kimi spawn sites resolve their
+# launcher from a MODULE ATTRIBUTE at call time, and this fixture swaps both
+# for a refusal that names the argv it stopped.
+#
+# One fixture per family, no shared state: the codex and gemini family PRs add
+# `_no_live_codex_launches` / `_no_live_gemini_launches` beside this one,
+# patching their own module attributes. A test that needs a fake launcher
+# injects it exactly as before -- an explicitly passed `runner=` never reaches
+# these defaults.
+import scripts.host_probes as _host_probes  # noqa: E402
+import scripts.runners.kimi as _kimi_runner  # noqa: E402
+
+
+def _refuse_kimi_launch(cmd, *args, **kwargs):
+    argv = " ".join(str(c) for c in cmd) if isinstance(cmd, (list, tuple)) else str(cmd)
+    raise _kimi_runner.LaunchRefused(
+        "the test suite may not launch a real host binary: %s (inject a fake "
+        "runner= instead; tests/conftest.py::_no_live_kimi_launches)" % argv)
+
+
+@pytest.fixture(autouse=True)
+def _no_live_kimi_launches(monkeypatch):
+    monkeypatch.setattr(_kimi_runner, "DEFAULT_RUNNER", _refuse_kimi_launch)
+    monkeypatch.setattr(_host_probes, "KIMI_DEFAULT_RUNNER", _refuse_kimi_launch)
