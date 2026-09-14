@@ -805,9 +805,20 @@ def _kimi_generated_disabled():
     return names, "the config.toml the runner generates"
 
 
-def _kimi_hooks_are_armed(sandbox):
-    """(ok, detail): does the config.toml the runner generates REGISTER the
-    guards? `ok` is None when the home could not be built at all.
+_KIMI_GUARD_PROBE = {"read": "read guard probe", "write": "write guard probe"}
+
+
+def _kimi_hooks_are_armed(sandbox, mode):
+    """(ok, detail): does the config.toml the runner generates REGISTER
+    `mode`'s guard? `ok` is None when the home could not be built at all.
+
+    N7: a probe refutes on ITS OWN hook. Both matchers are still inspected --
+    the other one's absence is disclosed in the detail, naming the probe that
+    owns it -- because over-refutation never blesses anything but it does make
+    a reader scanning states alone believe the write guard is broken when only
+    read confinement is. What stays shared is the pair of faults that are not
+    a hook: a config.toml that will not parse (neither hook registers) and a
+    `tools.disabled` that no longer covers the derived set.
 
     C3: both guard probes are named "...-armed", and both used to prove only
     the adjudication -- payloads through the hook script -- while nothing
@@ -836,33 +847,41 @@ def _kimi_hooks_are_armed(sandbox):
     hooks = [h for h in (config.get("hooks") or []) if isinstance(h, dict)]
     tools = config.get("tools") if isinstance(config.get("tools"), dict) else {}
     disabled = set(tools.get("disabled") or [])
-    faults, armed_matchers = [], []
-    for matcher, mode, data_path in ((kimi_runner.READ_MATCHER, "read", scope_path),
-                                     (kimi_runner.WRITE_MATCHER, "write", allowlist_path)):
+    faults, notes, mine, mine_file = [], [], None, ""
+    for matcher, this_mode, data_path in ((kimi_runner.READ_MATCHER, "read", scope_path),
+                                          (kimi_runner.WRITE_MATCHER, "write", allowlist_path)):
+        problems = []
         matching = [h for h in hooks
                     if h.get("event") == "PreToolUse" and h.get("matcher") == matcher]
         if len(matching) != 1:
-            faults.append("%d PreToolUse hooks match %r, expected exactly 1"
-                          % (len(matching), matcher))
-            continue
-        command = matching[0].get("command") or ""
-        for needle, what in ((guard, "the guard script %s" % guard),
-                             (" %s " % mode, "its %s mode argument" % mode),
-                             (os.path.abspath(data_path), "its %s data file" % mode)):
-            if needle not in command:
-                faults.append("the %r hook's command does not name %s: %r"
-                              % (matcher, what, command[:160]))
-        armed_matchers.append(matcher)
+            problems.append("%d PreToolUse hooks match %r, expected exactly 1"
+                            % (len(matching), matcher))
+        else:
+            command = matching[0].get("command") or ""
+            for needle, what in ((guard, "the guard script %s" % guard),
+                                 (" %s " % this_mode, "its %s mode argument" % this_mode),
+                                 (os.path.abspath(data_path), "its %s data file" % this_mode)):
+                if needle not in command:
+                    problems.append("the %r hook's command does not name %s: %r"
+                                    % (matcher, what, command[:160]))
+        if this_mode == mode:
+            mine, mine_file = matcher, os.path.basename(data_path)
+            faults.extend(problems)
+        elif problems:
+            notes.append("%s (the %s owns that one)"
+                         % ("; ".join(problems), _KIMI_GUARD_PROBE[this_mode]))
     missing = sorted(set(kimi_runner.disabled_tools()) - disabled)
     if missing:
         faults.append("tools.disabled omits %s" % ", ".join(missing))
     if faults:
-        return False, ("the config.toml the runner generates does not arm the "
-                       "guards: %s" % "; ".join(faults))
-    return True, ("the config.toml the runner generates registers %s on %s and "
-                  "disables %d tool(s)"
-                  % (os.path.basename(guard), " and ".join(repr(m) for m in armed_matchers),
-                     len(disabled)))
+        return False, ("the config.toml the runner generates does not arm the %s "
+                       "guard: %s" % (mode, "; ".join(faults)))
+    detail = ("the config.toml the runner generates registers %s on %r with this "
+              "run's %s, and disables %d tool(s)"
+              % (os.path.basename(guard), mine, mine_file, len(disabled)))
+    if notes:
+        detail += "; note: %s" % "; ".join(notes)
+    return True, detail
 
 
 def _kimi_home_arms_and_validates(runner=None):
@@ -871,7 +890,7 @@ def _kimi_home_arms_and_validates(runner=None):
     runner = DEFAULT_RUNNER if runner is None else runner
     try:
         with tempfile.TemporaryDirectory() as sandbox:
-            ok, detail = _kimi_hooks_are_armed(sandbox)
+            ok, detail = _kimi_hooks_are_armed(sandbox, "read")
             if ok is not True:
                 return ok, detail
             env = dict(os.environ, KIMI_CODE_HOME=os.path.join(sandbox, "kimi-home"))
@@ -1013,7 +1032,7 @@ def probe_kimi_write_guard(host, runner=None):
             # C3: the ARMING half, in the same sandbox -- the write probe used
             # to build no home at all, so its detail ("the runner arms the hook
             # in the per-run home's config.toml") named a file it never opened.
-            armed, armed_detail = _kimi_hooks_are_armed(sandbox)
+            armed, armed_detail = _kimi_hooks_are_armed(sandbox, "write")
     except OSError as exc:
         return (hosts.UNKNOWN, KIMI_WRITE_GUARD,
                 "sandbox round-trip could not run: %s" % exc)

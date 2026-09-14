@@ -1823,6 +1823,29 @@ class TestKimiGuardArmingIsMeasured(unittest.TestCase):
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("Write", detail)
 
+    def test_dropping_the_read_hook_does_not_refute_the_write_guard(self):
+        # N7: over-refutation never blesses anything, but a reader scanning
+        # STATES would believe artifact_write_guard was broken when only read
+        # confinement is. Each probe owns its own matcher and merely notes the
+        # other's.
+        import scripts.runners.kimi as kimi_runner
+        with mock.patch.object(kimi_runner, "build_merged_config",
+                               side_effect=_kimi_armed_config_without("read")):
+            state, _by, detail = host_probes.probe_kimi_write_guard("kimi")
+        self.assertEqual(hosts.PROVEN, state)
+        self.assertIn("Read", detail)                 # the miss is still disclosed
+        self.assertIn("read guard probe", detail)
+
+    def test_dropping_the_write_hook_does_not_refute_read_confinement(self):
+        import scripts.runners.kimi as kimi_runner
+        with mock.patch.object(kimi_runner, "build_merged_config",
+                               side_effect=_kimi_armed_config_without("write")):
+            state, _by, detail = host_probes.probe_kimi_read_guard(
+                "kimi", doctor_runner=_DoctorFake())
+        self.assertEqual(hosts.PROVEN, state)
+        self.assertIn("Write", detail)
+        self.assertIn("write guard probe", detail)
+
     def test_a_hook_pointing_at_a_nonexistent_script_is_refuted(self):
         import scripts.runners.kimi as kimi_runner
         with mock.patch.object(kimi_runner, "_GUARD", "/nonexistent/kimi_guard_hook.py"):
