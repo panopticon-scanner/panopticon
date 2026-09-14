@@ -136,14 +136,20 @@ class TestTheWordingRule(unittest.TestCase):
         self.assertIn("settings.local.json", remedy)
         self.assertIn("transcript", remedy)
 
-    def test_the_generic_deprecation_says_what_and_when(self):
-        # D4: "deprecate now, remove when the families land". The line must
-        # name the flag, say it is deprecated, say why it is unsafe to rely on,
-        # and name the bar that removes it.
+    def test_the_generic_deprecation_says_what_and_why_it_is_still_here(self):
+        # D4 said "deprecate now, remove when the families land", and the line
+        # said generic was "removed once every remaining host clears the
+        # retirement bar". That became misleading at #1621: the bar is met on
+        # this base (claude alone is examined and clears it) and generic is
+        # still the only path a Gemini operator has. The line must name the
+        # flag, say it is deprecated, say why it is unsafe to rely on, and say
+        # what it is still FOR -- never promise a removal the bar cannot
+        # trigger on its own.
         text = host_disclosure.GENERIC_DEPRECATION
         for token in ("--host generic", "deprecated", "unenforced",
-                      "retirement bar", "test_generic_retirement_bar"):
+                      "ack-gated", "family runner", "gemini"):
             self.assertIn(token, text, token)
+        self.assertNotIn("removed once every remaining host", text)
         self.assertLess(len(text), 400, "one line, not a paragraph")
 
 

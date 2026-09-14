@@ -33,10 +33,19 @@ NO_EVIDENCE = ("NO EVIDENCE -- nobody looked. Nothing this "
 # Spec D4: "deprecate now, remove when the families land". Printed once per
 # `driver run` / `driver setup` under --host generic. It is a notice, not a
 # gate (spec 10): the run proceeds, ack-gated and disclosed exactly as before.
+#
+# It used to end "removed once every remaining host clears the retirement bar".
+# That promise stopped being true at #1621: with gemini out of the selectable
+# set, claude is the only host the bar examines and it clears it -- so the bar
+# is MET while generic is still the only path a Gemini operator has, and the
+# only path for any host whose family has not shipped a runner. A notice that
+# names a trigger which has already fired and changed nothing teaches the
+# operator to ignore the notice. It says what generic is still FOR instead.
 GENERIC_DEPRECATION = (
     "driver: NOTICE: --host generic is deprecated -- it claims no capability, so every "
-    "dispatch under it is unenforced. It is removed once every remaining host "
-    "clears the retirement bar (spec 8.1, test_generic_retirement_bar).")
+    "dispatch under it is unenforced and ack-gated. It remains the path for any host "
+    "with no family runner, gemini among them (#1621), so removing it is an owner "
+    "decision, not something the retirement bar triggers on its own (spec 8.1).")
 
 # The remedy is the whole point of the line. A capability nobody can act on
 # gets an honest "there is nothing to do yet" rather than an invented command.
