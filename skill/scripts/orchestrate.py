@@ -13,6 +13,7 @@ import time
 
 import scripts.driver as driver
 import scripts.host_probes as host_probes
+import scripts.hosts as hosts
 import scripts.phases.engine as engine
 import scripts.phases.persist as persist
 import scripts.phases.requests as requests
@@ -241,6 +242,11 @@ def _resolve_host(args, review_root):
     must not steer this invocation: fall through to the default, which is what
     `driver.run` is about to write.
 
+    The host it resolves may no longer be SELECTABLE: a run started before a
+    family PR's row was retired resumes off its own manifest. That is caught
+    by the caller (`loop`), not here, because this returns a name and the
+    refusal is a status document.
+
     A FOREIGN manifest is ignored on exactly the terms `driver.run` ignores it
     (#1093 / #run8 AGT-C1A, `runio._foreign_manifest`): a target can
     force-commit its own `.panopticon/run-manifest.json`, and driver.run
@@ -303,6 +309,22 @@ def loop(args):
     # I5 then I8: the mode fallback asks whether THIS host has a runner, so the
     # host has to be resolved first.
     host = _resolve_host(args, review_root)
+    # #1621: the resolved host can be one the driver no longer accepts -- a run
+    # started under a row a family PR has since lost (gemini) or never earned
+    # (kimi, codex) resumes off its own manifest, which `driver.run` treats as
+    # authoritative. `runner_for` builds a SessionRunner for ANY string, so
+    # nothing further down would have objected: the loop would have gone on
+    # dispatching for a host `--host` now refuses to name. Read off the
+    # registry, never a host-name literal, so a family PR that flips its row
+    # needs no edit here. The remedy is the parser's, plus `--reset`, because
+    # it is the MANIFEST that has to change.
+    if host not in hosts.driver_hosts():
+        return _status("error",
+                       "driver loop: this run's manifest names host %r, which is "
+                       "registered but no longer driver-selectable (it proves no "
+                       "enforcement capability). Start over with `--host generic "
+                       "--reset` (session mode, unenforced, ack-gated); resuming "
+                       "would dispatch for a host --host refuses to name." % host)
     mode, note = _resolve_mode(args, host)
     if note:
         print(note, file=sys.stderr, flush=True)

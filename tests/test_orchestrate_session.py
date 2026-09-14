@@ -398,6 +398,45 @@ class TestHostAndModeResolution(LoopCase):
             orchestrate.loop(self._args(d, "--mode", "session", "--session-dir", s))
         self.assertEqual(calls, [("generic", "session")])
 
+    def test_a_resume_whose_host_is_no_longer_selectable_is_an_error(self):
+        # #1621: a run STARTED under a host the driver has since retired --
+        # gemini here, and the same holds for any row a family PR has not
+        # earned back -- resumes off its own manifest, which `driver.run`
+        # treats as authoritative. `_resolve_host` handed that name straight
+        # to `runner_for`, which builds a SessionRunner for any string at all,
+        # so the loop went on dispatching for a host `--host` would now refuse
+        # to name. The remedy is the same one the parser gives, plus --reset,
+        # because the manifest is what has to change.
+        d, _ = self._repo(); s = self._session_root(d)
+        self._claim_nothing_run(d, s)
+        path = driver.run_manifest.manifest_path(d)
+        manifest = runio._load_json(path)
+        manifest["host"] = "gemini"
+        runio._write_json(path, manifest)
+        self.assertFalse(runio._foreign_manifest(manifest, d, path),
+                         "fixture precondition: this manifest is the run's own")
+        calls = []
+        with self._spy(calls), contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()):
+            status = orchestrate.loop(self._args(d, "--mode", "session", "--session-dir", s))
+        self.assertEqual(status["status"], "error", status)
+        self.assertIn("gemini", status["message"])
+        self.assertIn("--host generic --reset", status["message"])
+        self.assertEqual([], calls, "nothing may be dispatched for it")
+
+    def test_a_resume_under_a_host_that_is_still_selectable_is_untouched(self):
+        # The other half: the refusal above must key on the REGISTRY, so a
+        # manifest naming a host that is still selectable resumes exactly as
+        # it did before -- this is the guard against the refusal swallowing
+        # every resume.
+        d, _ = self._repo(); s = self._session_root(d)
+        self._claim_nothing_run(d, s)
+        calls = []
+        with self._spy(calls), contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()):
+            orchestrate.loop(self._args(d, "--mode", "session", "--session-dir", s))
+        self.assertEqual(calls, [("generic", "session")])
+
     def test_a_target_committed_manifest_does_not_choose_the_host(self):
         # Fix round 3: I5 reads the run's host off run-manifest.json, but
         # `driver.run` does NOT trust every manifest it finds -- #1093 / #run8
