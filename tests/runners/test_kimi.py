@@ -694,6 +694,31 @@ class TestHomeLocation(unittest.TestCase):
         install.assert_called_once_with(signal.SIGTERM, signal.SIG_DFL)
         kill.assert_called_once_with(os.getpid(), signal.SIGTERM)
 
+    def test_a_disarm_restores_the_default_for_a_c_installed_previous_handler(self):
+        # NEW-6 (round-4 re-review): the disarm handed `ours.previous` straight
+        # to `signal.signal`, and for the C-installed case R3-4 exists for that
+        # value is None, which `signal.signal` rejects with a TypeError the
+        # except tuple does not catch -- so `teardown` aborted BEFORE stripping
+        # the home. None means "the default" here exactly as it does in the
+        # wrapper's own chain. The real `signal.signal` is not touched: the
+        # fake mirrors only its documented refusal of None.
+        r = kimi_runner.Runner("kimi")
+        ours = r._signal_stripper(None)
+        r._signal_handlers = {signal.SIGTERM: ours}
+        installed = []
+
+        def fake_signal(signum, handler):
+            if handler is None:
+                raise TypeError("signal handler must be signal.SIG_IGN, "
+                                "signal.SIG_DFL, or a callable object")
+            installed.append((signum, handler))
+
+        with mock.patch.object(signal, "getsignal", return_value=ours), \
+             mock.patch.object(signal, "signal", side_effect=fake_signal):
+            r._disarm_crash_strippers()
+        self.assertEqual([(signal.SIGTERM, signal.SIG_DFL)], installed)
+        self.assertEqual({}, r._signal_handlers)
+
     def test_teardown_refuses_a_path_that_is_not_a_temp_home(self):
         with tempfile.TemporaryDirectory() as d:
             planted = os.path.join(d, "not-a-temp-home")

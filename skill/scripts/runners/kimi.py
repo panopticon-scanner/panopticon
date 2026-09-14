@@ -559,8 +559,8 @@ class Runner(base.HostRunner):
         for signum, ours in list(self._signal_handlers.items()):
             try:
                 node = signal.getsignal(signum)
-                if node is ours:
-                    signal.signal(signum, ours.previous)
+                if node is ours:      # NEW-6: None (C-installed) means the default
+                    signal.signal(signum, signal.SIG_DFL if ours.previous is None else ours.previous)
                 while callable(node) and hasattr(node, "previous") and node is not ours:
                     if node.previous is ours:
                         node.previous = ours.previous
