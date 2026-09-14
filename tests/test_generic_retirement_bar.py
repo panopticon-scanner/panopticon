@@ -86,7 +86,8 @@ class TestGenericRetirementBar(unittest.TestCase):
 
     def test_todays_shortfall_is_pinned_so_it_moves_consciously(self):
         # R-F5-5 / plan 5 R-P5-3: claude clears the bar (read-guard-armed
-        # shipped); gemini claims nothing. The Gemini family PR edits this
+        # shipped); kimi clears it (its family PR, #1344, shipped all five
+        # probes); gemini claims nothing. The Gemini family PR edits this
         # expectation in the same PR that ships its probes.
         shortfalls = retirement_shortfalls()
         self.assertNotIn("claude", shortfalls)

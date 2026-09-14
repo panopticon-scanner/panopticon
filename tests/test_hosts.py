@@ -69,7 +69,9 @@ class TestTodaysBehaviourIsPreserved(unittest.TestCase):
     today, so routing consumers through it changes nothing."""
 
     def test_the_driver_accepts_exactly_the_hosts_it_accepts_today(self):
-        self.assertEqual(("claude", "gemini", "generic"),
+        # kimi joined the selectable set in the kimi family PR (#1344), which
+        # shipped its probes and runner in the same commit.
+        self.assertEqual(("claude", "gemini", "generic", "kimi"),
                          tuple(sorted(hosts.driver_hosts())))
 
     def test_only_claude_declares_tool_policy_enforcement_among_driver_hosts(self):
@@ -77,28 +79,34 @@ class TestTodaysBehaviourIsPreserved(unittest.TestCase):
         # host declaring it would flip those sites when they read the registry.
         enforcing = [h for h in hosts.driver_hosts()
                      if hosts.declares(h, hosts.TOOL_POLICY_ENFORCED)]
-        self.assertEqual(["claude"], enforcing)
+        # kimi declares it since its family PR proved the shells on the
+        # effective surface (kimi-shell-surface probe).
+        self.assertEqual(["claude", "kimi"], enforcing)
 
     def test_only_claude_declares_a_usage_ledger_among_driver_hosts(self):
         # phases/synthesize.py:35 -- `if manifest.get("host") != "claude"`.
         ledgered = [h for h in hosts.driver_hosts()
                     if hosts.declares(h, hosts.USAGE_LEDGER)]
-        self.assertEqual(["claude"], ledgered)
+        # kimi's ledger is the per-child wire file (kimi-usage-wire probe).
+        self.assertEqual(["claude", "kimi"], ledgered)
 
-    def test_kimi_and_codex_are_registrable_but_not_driver_selectable(self):
-        # dispatch.py can emit their shells; driver.py's --host cannot pick
-        # them. Preserving that split is what keeps F2 behavior-free.
-        for name in ("kimi", "codex"):
+    def test_codex_is_registrable_but_not_driver_selectable(self):
+        # dispatch.py can emit its shells; driver.py's --host cannot pick it.
+        # Preserving that split is what keeps F2 behavior-free. kimi left
+        # this test in its family PR (#1344), which flipped its own row with
+        # the probes to back it.
+        for name in ("codex",):
             with self.subTest(host=name):
                 self.assertTrue(hosts.spec(name).registration_dir)
                 self.assertNotIn(name, hosts.driver_hosts())
 
-    def test_only_claude_claims_read_scope_confinement(self):
+    def test_only_claude_and_kimi_claim_read_scope_confinement(self):
         # Spec §7.2 / plan 5: claude ships the read guard; every other host's
-        # family PR must bring its own primitive before claiming this.
+        # family PR must bring its own primitive before claiming this. The
+        # kimi family PR (#1344) brought the per-run-home hook and its probe.
         claiming = [h for h in hosts.known_hosts()
                     if hosts.declares(h, hosts.READ_SCOPE_CONFINED)]
-        self.assertEqual(["claude"], claiming)
+        self.assertEqual(["claude", "kimi"], claiming)
 
 
 class TestPostureFailsClosed(unittest.TestCase):

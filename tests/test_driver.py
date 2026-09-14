@@ -1430,7 +1430,7 @@ class TestHostChoicesComeFromTheRegistry(unittest.TestCase):
         # nothing.
         self.assertGreaterEqual(len(self._host_choices()), 2)
 
-    def test_kimi_and_codex_are_still_not_selectable(self):
+    def test_codex_is_still_not_selectable(self):
         # Task 4 migrated five call sites from `host == "claude"` to
         # `hosts.declares(host, hosts.TOOL_POLICY_ENFORCED)`. kimi and codex both
         # CLAIM TOOL_POLICY_ENFORCED in the registry (they register shells and
@@ -1446,8 +1446,11 @@ class TestHostChoicesComeFromTheRegistry(unittest.TestCase):
         # posture() check; until F3 lands, this test is the only thing standing
         # between "flip driver_selectable=True" and that bug shipping by
         # accident. It must fail loudly the day someone flips the flag without
-        # also doing F3's work.
-        for name in ("kimi", "codex"):
+        # also doing F3's work. kimi graduated out of this test in its family
+        # PR (#1344): F3 landed and the PR shipped the probes and runner that
+        # make the claim measured, so the five sites grant kimi nothing
+        # unverified.
+        for name in ("codex",):
             with self.subTest(host=name):
                 self.assertNotIn(name, hosts.driver_hosts())
 
