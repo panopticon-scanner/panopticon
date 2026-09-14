@@ -202,11 +202,11 @@ class TestSkillMd(unittest.TestCase):
         # 5.0: the standalone `## Host dispatch` section (keyed to the
         # deleted manual pipeline) is gone -- host dispatch is now a
         # paragraph inside the driver run-loop. `driver run --host` only
-        # accepts claude|generic|gemini; Kimi/Codex are named as the generic
+        # accepts claude|generic; Gemini/Kimi/Codex are named as the generic
         # path's examples, not as separate --host values. Plan 6: the loop
         # names Claude as the concrete headless runner and falls back to
-        # session mode (which the generic/gemini/kimi path all use) for
-        # everything else, rather than a per-host dispatch bullet each.
+        # session mode (which every generic-path host uses) for everything
+        # else, rather than a per-host dispatch bullet each.
         self.assertNotIn("## Host dispatch", self.text)
         loop = _section(self.text, "## Driver run-loop", "## Output")
         for host in ("Claude", "kimi", "generic"):
@@ -685,7 +685,7 @@ class TestDriverLoopContract(unittest.TestCase):
         self.assertIn("--mode {headless,session}", skill)
         # I8 (plan 6 final review): the mode DEFAULT is host-dependent --
         # headless where a runner exists, session where none does -- so a
-        # reader must not be left assuming `driver loop --host gemini` errors.
+        # reader must not be left assuming `driver loop --host generic` errors.
         self.assertIn("defaults to headless when the host has a headless", skill)
         # I6 (fix round 3): the persist verb's own --pr/--base, in the line a
         # reader copies the invocation from.

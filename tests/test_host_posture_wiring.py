@@ -142,7 +142,14 @@ class TestTheAnswersAreUnchangedGivenProof(unittest.TestCase):
     when claude claims it; the final test below pins the other half, that
     absent a probe the answer flips. Renamed from `TestTheAnswersAreUnchanged`,
     which would otherwise assert unconditional parity that no longer exists --
-    exactly the lie spec section 7.1 exists to end."""
+    exactly the lie spec section 7.1 exists to end.
+
+    The `("generic", "gemini")` pairs below are the registry's two
+    claim-nothing ROWS, not two selectable hosts -- #1621 left gemini
+    registered-only. The mask they exercise is a property of the row (a
+    capability the host does not claim can never read `proven`), so both are
+    still the right subjects; the test names are narrower than what they
+    assert rather than wider."""
 
     @staticmethod
     def _proof(**states):

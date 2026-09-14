@@ -234,7 +234,8 @@ def _resolve_host(args, review_root):
     `--host` when given; otherwise the RUN's own host, off its manifest.
     `driver.run` is manifest-authoritative about this -- it refuses a `--host`
     that contradicts the manifest as flag drift -- so a resume WITHOUT the flag
-    is still a gemini (or kimi, or generic) run. Resolving off
+    is still a generic (or, for a run that predates a retirement, gemini) run.
+    Resolving off
     `runio._DEFAULTS["host"]` instead dispatched claude agents into it, with
     no refusal anywhere on the path.
 

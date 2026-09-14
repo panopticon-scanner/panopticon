@@ -176,7 +176,8 @@ class TestDelivery(unittest.TestCase):
                 self.assertEqual(("return_json", ""), (mode, prefix))
 
     def test_a_host_that_claims_no_guard_is_bridged(self):
-        # gemini/generic: driver-selectable today, prove nothing. R-F4-4.
+        # gemini/generic: the registry's two claim-nothing rows -- generic
+        # selectable, gemini registered-only since #1621. R-F4-4.
         for host in ("gemini", "generic"):
             with self.subTest(host=host):
                 mode, _prefix = requests.delivery(host, {}, "domain-advisor.md", "/abs/o")

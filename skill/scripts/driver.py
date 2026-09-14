@@ -236,8 +236,8 @@ def build_parser():
             # change concurrency/budget/timeouts without tripping flag drift.
             # Default None, resolved in `orchestrate.loop` (I8, spec 4.4):
             # headless when the resolved host has a runner, session when it
-            # does not. A literal "headless" default here made `driver loop
-            # --host gemini` an error instead of the documented degrade.
+            # does not. A literal "headless" default here made `driver loop`
+            # on a runner-less host an error instead of the documented degrade.
             p.add_argument("--mode", default=None, choices=list(hosts_runner_modes()))
             p.add_argument("--concurrency", type=_positive_int, default=None)
             p.add_argument("--max-iterations", type=_positive_int, default=None)
