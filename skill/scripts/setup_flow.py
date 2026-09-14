@@ -18,6 +18,7 @@ import discovery  # noqa: E402  (P6.5 Slice A: discovery primitives, moved off o
 import grouping_engine  # noqa: E402  (5.2: stage-3 size policy + setup report)
 import coverage_model  # noqa: E402  (5.2: the surfaces enum for the brief)
 from scripts import hosts  # noqa: E402  (#1344 F2: host readiness reads the registry)
+from scripts import codex_host  # noqa: E402  (#1344: the suite's launch guard type)
 from scripts import host_probes  # noqa: E402  (#1344 F3b: readiness probes live posture)
 from scripts import host_disclosure  # noqa: E402  (#1344 F3b: one voice for the posture)
 
@@ -359,6 +360,14 @@ def _check_host_shells(host, runner, repo_root=None):
     # is the reason the line exists at all.
     try:
         fresh = host_probes.run_probes(resolved_host, repo_root)
+    except codex_host.LaunchRefused:
+        # N-M3: the suite's no-live-launch guard, re-raised exactly as
+        # host_probes._codex_measure re-raises it. Readiness DOES reach a live
+        # Codex probe (it is why tests/test_setup_flow.py has to isolate
+        # them), and swallowing the refusal into a benign row would put back
+        # the hole I-5 exists to close: a test that reached a real `codex` and
+        # failed would read as "posture could not be probed" and stay green.
+        raise
     except Exception as exc:            # noqa: BLE001 -- readiness never crashes
         checks.append(("host-capabilities", None,
                        "posture could not be probed: %s" % exc))

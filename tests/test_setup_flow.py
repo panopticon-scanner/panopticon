@@ -1253,3 +1253,31 @@ class TestShellLessHostsGetTheWholeDisclosure(unittest.TestCase):
                         # all five fails here.
                         self.assertIn(host_disclosure.remedy(capability, host),
                                       row[2])
+
+
+class TestReadinessDoesNotSwallowTheLaunchGuard(unittest.TestCase):
+    """N-M3: readiness's `except Exception` around run_probes turned the
+    suite's no-live-launch refusal into a benign "posture could not be probed"
+    row. That is exactly the failure I-5 exists to remove, on exactly the path
+    that forced `_isolate_codex_probes` to exist -- readiness reaches a live
+    Codex probe. Latent today, because nothing in the suite gets that far;
+    structural, because the guarantee has to hold for the test nobody has
+    written yet."""
+
+    def test_a_refused_live_launch_escapes_readiness(self):
+        from scripts import codex_host
+        d = _repo(self)
+        with mock.patch.object(
+                host_probes, "run_probes",
+                side_effect=codex_host.LaunchRefused("test tried to launch the real codex CLI")):
+            with self.assertRaises(codex_host.LaunchRefused):
+                setup_flow.readiness(d, host="codex")
+
+    def test_every_other_probe_failure_is_still_a_readiness_row(self):
+        d = _repo(self)
+        with mock.patch.object(host_probes, "run_probes",
+                               side_effect=RuntimeError("probe exploded")):
+            rows = setup_flow.readiness(d, host="codex")
+        posture = dict((name, detail) for name, _ok, detail in rows)
+        self.assertIn("host-capabilities", posture)
+        self.assertIn("probe exploded", posture["host-capabilities"])
