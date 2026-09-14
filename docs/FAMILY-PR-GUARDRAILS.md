@@ -172,7 +172,8 @@ registers as `panopticon_scope` with `read_file` / `search` / `list_files` and
 no write tool at all. Evidence: `driver loop . --host codex --mode headless -d
 skill/scripts/runners --no-tools --allow-unenforced` reached `status:
 complete`, with both claimed capabilities `proven` and the three unclaimed ones
-`unknown`, each detail saying which host claims nothing there.
+`unknown`, each detail saying in as many words that the host does not claim it,
+so there is nothing to prove.
 
 **Kimi (#1620)** claims all five, proven by `kimi-shell-surface`,
 `kimi-read-guard-armed`, `kimi-write-guard-armed`, `kimi-model-alias-bound` and
