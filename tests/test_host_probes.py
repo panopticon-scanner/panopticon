@@ -1723,6 +1723,7 @@ class TestKimiLaunchGuard(unittest.TestCase):
             with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": home}):
                 runner = kimi_runner.Runner("kimi")           # nothing injected
                 runner.prepare(os.path.join(d, "run"), review_root=d)
+                self.addCleanup(runner.teardown, "complete")  # C1: a temp home
                 with self.assertRaises(kimi_runner.LaunchRefused):
                     runner.run_entry({"id": "e1", "model": "secondary",
                                       "prompt": "x"}, {})

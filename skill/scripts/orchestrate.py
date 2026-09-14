@@ -367,7 +367,7 @@ def loop(args):
     # never noticed because they invoke driver.run exactly once.
     args.reset = False
     if status.get("status") != "checkpoint":
-        return _finish(status, args, guards, ledger, namespace, mode)
+        return _finish(status, args, guards, ledger, namespace, mode, runner)
     if mode == "session":
         # I4: only now. This invocation has a live checkpoint of its own, so
         # its pending set is the authority on what is still running. An entry
@@ -431,12 +431,12 @@ def loop(args):
                 return _finish(_status("error", "driver loop: %d iterations without "
                                        "completing; still pending: %s"
                                        % (max_iterations, pending_ids)),
-                               args, guards, ledger, namespace, mode)
+                               args, guards, ledger, namespace, mode, runner)
             if budget is not None and ledger.total_cost() >= float(budget):
                 return _finish(_status("error", "driver loop: --max-budget-usd %s reached; "
                                        "ledger at %s; still pending: %s"
                                        % (budget, ledger.path, pending_ids)),
-                               args, guards, ledger, namespace, mode)
+                               args, guards, ledger, namespace, mode, runner)
             stuck = [e for e in pending
                      if failures.get(e.get("id"), 0) >= MAX_ENTRY_FAILURES]
             if stuck:
@@ -444,7 +444,7 @@ def loop(args):
                 return _finish(_status("error", "driver loop: entry %s failed %d consecutive "
                                        "launches; last: %s"
                                        % (eid, failures[eid], last_error.get(eid))),
-                               args, guards, ledger, namespace, mode)
+                               args, guards, ledger, namespace, mode, runner)
             guards.arm(pending)
             results = runner.run_batch(pending, getattr(args, "concurrency", None), guards.env_for)
             if results is None:                                 # session mode (Task 6)
@@ -476,7 +476,7 @@ def loop(args):
         status = _status("error", "interrupted (Ctrl-C); guards disarmed; re-run to resume from disk")
     except Exception as exc:                # noqa: BLE001 -- `loop` never raises (review round 1, item 3)
         status = _status("error", "driver loop: %s: %s" % (type(exc).__name__, exc))
-    return _finish(status, args, guards, ledger, namespace, mode)
+    return _finish(status, args, guards, ledger, namespace, mode, runner)
 
 
 def _review_root(args):
@@ -521,7 +521,7 @@ def _dispatch_exit(review_root, req, pending, namespace):
                    checkpoint=req.get("checkpoint"))
 
 
-def _finish(status, args, guards, ledger, namespace, mode="headless"):
+def _finish(status, args, guards, ledger, namespace, mode="headless", runner=None):
     """The terminal teardown, executed for every non-checkpoint status. Disarm
     first, then attempt a final write_usage on BOTH `complete` and `error`
     (review round 2): the `except Exception` catch-all (round 1, item 3) can
@@ -529,6 +529,20 @@ def _finish(status, args, guards, ledger, namespace, mode="headless"):
     iteration's own in-loop write_usage ran, and a `complete`-only write would
     leave usage.json stale against the ledger. Wrapped so a failure here can
     never mask the real status -- it is appended to the message instead."""
+    # C1 (kimi family PR review): the runner's own terminal hook, on EVERY
+    # terminal status, before the guards are touched -- a host whose runner
+    # holds a scratch area outside the tree (kimi's per-run KIMI_CODE_HOME,
+    # which carries the operator's credential surface and the children's
+    # verbatim wire files) has nowhere else to release it, and `loop` has
+    # exactly one terminal path. Wrapped: a teardown failure must not mask the
+    # run's real status, exactly as the final write_usage below is wrapped.
+    if runner is not None:
+        try:
+            runner.teardown(status.get("status"))
+        except Exception as exc:      # noqa: BLE001 -- never mask the status
+            print("driver loop: %s teardown failed: %s: %s"
+                  % (getattr(runner, "host", "?"), type(exc).__name__, exc),
+                  file=sys.stderr, flush=True)
     if guards is not None:
         if status.get("status") == "complete":
             guards.disarm()                          # total (spec 5.1)

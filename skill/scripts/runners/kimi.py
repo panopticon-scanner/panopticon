@@ -4,10 +4,9 @@ KIMI_CODE_HOME carrying the guard hooks, usage from the session's wire file.
 WHY A PER-RUN KIMI HOME. Kimi Code registers hooks only in
 ``$KIMI_CODE_HOME/config.toml`` -- there is no ``--settings`` flag and no
 project-level hooks file -- and it discovers credentials under the same root.
-So `prepare` builds ``<run_dir>/kimi-home/``: the operator's OAuth stores
-(`credentials`, `oauth`) are SYMLINKED in (never copied: no secret bytes enter
-the run tree), and `config.toml` is regenerated from the operator's own with
-three deltas --
+So `prepare` builds a per-run home: the operator's OAuth stores (`credentials`,
+`oauth`) are SYMLINKED in (never copied: no secret bytes are duplicated), and
+`config.toml` is regenerated from the operator's own with three deltas --
 
   * the two guard hooks (kimi_guard_hook.py read/write) with this run's
     scope/allowlist paths baked into their commands;
@@ -20,9 +19,15 @@ three deltas --
 
 The source config's other values are carried verbatim -- including any
 plaintext `api_key` the operator keeps there (stripping it would break
-api_key-authenticated installs). The home lives under the gitignored
-``.panopticon/runs/<tag>/`` and is chmod 700; PR evidence must quote
-capabilities, never this directory.
+api_key-authenticated installs). BECAUSE it carries that surface, the home is
+built under the operator's temp root (``$XDG_RUNTIME_DIR`` where the platform
+has one), mode 700, with `config.toml` mode 600 -- never inside the tree under
+review, where the always-unenforced setup-scan reviewer's own scope would
+admit it, an archived run folder would embed it, and the children's verbatim
+`wire.jsonl` transcripts would land beside the code being reviewed (C1). The
+run folder keeps one pointer file, ``kimi-home-path``, so a resume finds the
+same home; `teardown` removes it on `complete` and keeps it, loudly, on an
+error. PR evidence must quote capabilities, never this directory.
 
 MODEL BINDING. Entry models are the primary/secondary TIERS
 (phases/requests.bound_model via model_resolver). Kimi agent files cannot
@@ -43,7 +48,11 @@ are the honest cost signal.
 import glob
 import json
 import os
+import shutil
+import stat
 import subprocess
+import sys
+import tempfile
 import tomllib
 
 import scripts.dispatch as dispatch
@@ -72,7 +81,18 @@ class LaunchRefused(RuntimeError):
     """
 
 
-KIMI_HOME_DIRNAME = "kimi-home"
+# C1 (gate review): the per-run home is built under the OPERATOR's temp root,
+# never under `<run_dir>` inside the reviewed tree. What lands in it is the
+# operator's credential surface -- the OAuth stores symlinked in and a
+# config.toml carrying whatever the source config holds, `api_key` included --
+# and a run folder inside the target is readable by the always-unenforced
+# setup-scan reviewer (its scope is the whole review root), embedded by any
+# `zip -r` of the run folder, and reachable by the target's own tooling.
+# chmod 700 does not help there: every one of those readers is the same uid.
+# The run folder keeps only POINTER_FILE so a resume and the probes can find
+# the home again.
+HOME_PREFIX = "panopticon-kimi-"
+POINTER_FILE = "kimi-home-path"
 _GUARD = os.path.abspath(kimi_guard_hook.__file__)
 # Symlinked into the per-run home: the OAuth credential stores (file + dir).
 # Config itself is regenerated, not linked -- the hooks have to merge into it.
@@ -173,10 +193,51 @@ def _read_source_config(real_home):
         return {}, path
 
 
-def build_kimi_home(run_dir, scope_path, allowlist_path, real_home=None):
-    """Create <run_dir>/kimi-home (idempotent) and return its path."""
+def _temp_roots():
+    """The directories a per-run home may legally live under."""
+    roots = [os.environ.get("XDG_RUNTIME_DIR"), tempfile.gettempdir()]
+    return [os.path.realpath(r) for r in roots if r]
+
+
+def is_temp_home(path):
+    """True when `path` is one of OUR per-run homes under a temp root.
+
+    The predicate every destructive step is bounded by (`teardown`), and the
+    one a pointer file's contents must satisfy before `prepare` will reuse
+    them: that file sits in the reviewed tree, so on a hostile target its
+    contents are the attacker's, and a `shutil.rmtree` of whatever it names
+    would be the attacker's delete. A symlink is refused outright (lstat, not
+    stat): it names one path and resolves to another.
+    """
+    if not path or not os.path.basename(os.path.normpath(path)).startswith(HOME_PREFIX):
+        return False
+    try:
+        if not stat.S_ISDIR(os.lstat(path).st_mode):
+            return False
+    except OSError:
+        return False
+    real = os.path.realpath(path)
+    return any(real == root or real.startswith(root + os.sep) for root in _temp_roots())
+
+
+def new_kimi_home():
+    """A fresh per-run home under $XDG_RUNTIME_DIR (when the platform has one)
+    or the temp root, mode 700. `mkdtemp` creates it exclusively, so there is
+    no window in which someone else's file or link holds the name."""
+    home = tempfile.mkdtemp(prefix=HOME_PREFIX,
+                            dir=os.environ.get("XDG_RUNTIME_DIR") or None)
+    os.chmod(home, 0o700)
+    return home
+
+
+def build_kimi_home(home, scope_path, allowlist_path, real_home=None):
+    """Populate `home` with the per-run config and credential links; idempotent.
+
+    `home` is a directory this process owns -- `new_kimi_home()`'s, or the one
+    a previous `prepare` recorded and `is_temp_home` re-admitted. It is never
+    derived from the reviewed tree.
+    """
     real_home = real_home or os.environ.get("KIMI_CODE_HOME") or os.path.expanduser("~/.kimi-code")
-    home = os.path.join(run_dir, KIMI_HOME_DIRNAME)
     os.makedirs(home, exist_ok=True)
     os.chmod(home, 0o700)
     for item in _CREDENTIAL_ITEMS:
@@ -188,11 +249,37 @@ def build_kimi_home(run_dir, scope_path, allowlist_path, real_home=None):
             os.symlink(source, link)
     source, _path = _read_source_config(real_home)
     merged = build_merged_config(source, scope_path, allowlist_path)
-    tmp = os.path.join(home, "config.toml.tmp")
-    with open(tmp, "w", encoding="utf-8") as fh:
-        fh.write(dump_toml(merged))
-    os.replace(tmp, os.path.join(home, "config.toml"))
+    _write_text(os.path.join(home, "config.toml"), dump_toml(merged))
     return home
+
+
+def _write_text(path, text):
+    """Stage and rename, 0o600, refusing to write THROUGH a planted symlink."""
+    tmp = path + ".tmp"
+    if os.path.islink(tmp) or os.path.exists(tmp):
+        os.unlink(tmp)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                 | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    os.replace(tmp, path)
+
+
+def pointer_path(run_dir):
+    return os.path.join(run_dir, POINTER_FILE)
+
+
+def read_home_pointer(run_dir):
+    """The per-run home a previous `prepare` recorded under `run_dir`, or None.
+
+    Untrusted input -- the file lives in the reviewed tree -- so the caller
+    must put it through `is_temp_home` before doing anything with it.
+    """
+    try:
+        with open(pointer_path(run_dir), encoding="utf-8") as fh:
+            return fh.read().strip() or None
+    except OSError:
+        return None
 
 
 # --- model aliases ------------------------------------------------------------
@@ -314,12 +401,43 @@ class Runner(base.HostRunner):
 
     def prepare(self, run_dir, review_root):
         """Build the per-run Kimi home (idempotent) and snapshot the installed
-        CLI's model table for alias resolution."""
+        CLI's model table for alias resolution.
+
+        The home lives under the temp root (C1); `run_dir` -- inside the
+        reviewed tree -- keeps only the pointer file that names it, so a
+        resume of this run finds the same home and the probes can read the
+        children's wire files. A resume REUSES the pointed-at home only when
+        `is_temp_home` still admits it; anything else (a removed home, a
+        pointer an untrusted target rewrote) rebuilds from scratch.
+        """
         self.review_root = os.path.abspath(review_root)
         scope_path = os.path.join(run_dir, base.SCOPE_FILE)
         allowlist_path = os.path.join(run_dir, base.ALLOWLIST_FILE)
-        self.kimi_home = build_kimi_home(run_dir, scope_path, allowlist_path)
+        recorded = read_home_pointer(run_dir)
+        home = recorded if is_temp_home(recorded) else new_kimi_home()
+        self.kimi_home = build_kimi_home(home, scope_path, allowlist_path)
+        os.makedirs(run_dir, exist_ok=True)
+        _write_text(pointer_path(run_dir), self.kimi_home + "\n")
         self.configured = configured_models()
+
+    def teardown(self, status=None):
+        """Drop the per-run home on a clean finish; keep it on an error.
+
+        Bounded by `is_temp_home` on the path THIS process built (never on the
+        pointer file's contents, which the reviewed tree could have rewritten
+        between prepare and teardown): a run that ends any other way than
+        `complete` keeps its home so the wire files and the armed config can
+        be read afterwards, and says once where it is.
+        """
+        home = self.kimi_home
+        if not home or not is_temp_home(home):
+            return
+        if status == "complete":
+            shutil.rmtree(home, ignore_errors=True)
+            self.kimi_home = None
+            return
+        print("driver loop: the kimi run home is kept for debugging at %s" % home,
+              file=sys.stderr, flush=True)
 
     def _shell_path(self, entry):
         directory = hosts.spec(self.host).registration_dir

@@ -374,6 +374,37 @@ class TestHeadlessLoop(LoopCase):
         self.assertEqual(len(review_calls), 1)          # write_reply only for the ok result
         self.assertFalse(review_calls[0][1])             # the out_file did not exist before that call
 
+    def test_the_runners_teardown_runs_on_every_terminal_status(self):
+        # C1 (kimi family PR review): the kimi runner's per-run KIMI_CODE_HOME
+        # lives OUTSIDE the reviewed tree -- it carries the operator's
+        # credential surface -- so the loop, which owns the only terminal path,
+        # has to tell the runner when the run is over and how it ended.
+        for expect in ("complete", "error"):
+            with self.subTest(status=expect):
+                d, floor = self._repo()
+                runner = FakeRunner()
+                runner.torn_down = []
+                runner.teardown = runner.torn_down.append
+                if expect == "error":
+                    runner.run_entry = lambda entry, env: base.RunResult.failed(entry["id"], "always")
+                    status = self._run(d, floor, runner, "--max-iterations", "2")
+                else:
+                    status = self._run(d, floor, runner)
+                self.assertEqual(status["status"], expect, status)
+                self.assertEqual(runner.torn_down, [expect])
+
+    def test_a_teardown_failure_never_masks_the_runs_status(self):
+        d, floor = self._repo()
+        runner = FakeRunner()
+
+        def boom(status=None):
+            raise OSError("could not remove the run home")
+        runner.teardown = boom
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            status = self._run(d, floor, runner)
+        self.assertEqual(status["status"], "complete", status)
+        self.assertIn("teardown failed", err.getvalue())
+
     def test_a_failure_preparing_the_run_folder_is_an_error_not_a_traceback(self):
         # M8 (final review): `loop` never raises (review round 1, item 3), but
         # the pre-loop setup -- resolving the run folder, `runner.prepare`,

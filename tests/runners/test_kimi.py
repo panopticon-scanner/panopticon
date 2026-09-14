@@ -55,6 +55,7 @@ class TestCommand(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.r = _prepared(self.tmp.name)
         self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(self.r.teardown, "complete")   # C1: the home is a temp dir now
 
     def test_enforced_entry_passes_agent_file_and_model(self):
         cmd = self.r.command(_entry(True), "kimi-code/k3")
@@ -131,8 +132,12 @@ class TestPrepare(unittest.TestCase):
                 r = kimi_runner.Runner("kimi")
                 run_dir = os.path.join(d, "run")
                 r.prepare(run_dir, review_root=d)
+                self.addCleanup(r.teardown, "complete")
                 home = r.kimi_home
-                self.assertEqual(home, os.path.join(run_dir, "kimi-home"))
+                # C1: the home is a temp dir outside the reviewed tree; the run
+                # folder keeps only the pointer file that names it.
+                self.assertTrue(kimi_runner.is_temp_home(home))
+                self.assertNotIn(os.path.realpath(d), os.path.realpath(home))
                 self.assertTrue(os.path.islink(os.path.join(home, "credentials")))
                 self.assertEqual(os.readlink(os.path.join(home, "credentials")),
                                  os.path.join(fixture, "credentials"))
@@ -167,6 +172,7 @@ class TestPrepare(unittest.TestCase):
             with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": fixture}):
                 r = kimi_runner.Runner("kimi")
                 r.prepare(os.path.join(d, "run"), review_root=d)
+                self.addCleanup(r.teardown, "complete")
                 with open(os.path.join(r.kimi_home, "config.toml"), "rb") as fh:
                     config = tomllib.load(fh)
             self.assertEqual(len(config["hooks"]), 3)
@@ -258,6 +264,7 @@ class TestRunEntry(unittest.TestCase):
                              clear=True):
             r = kimi_runner.Runner("kimi", runner=self._fake_run(seen))
             r.prepare(os.path.join(d, "run"), review_root=d)
+            self.addCleanup(r.teardown, "complete")
             r.max_turns = 12
             res = r.run_entry(_entry(False), self._env())
         self.assertTrue(res.ok)
@@ -280,6 +287,7 @@ class TestRunEntry(unittest.TestCase):
              mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
             r = kimi_runner.Runner("kimi", runner=self._fake_run(seen))
             r.prepare(os.path.join(d, "run"), review_root=d)
+            self.addCleanup(r.teardown, "complete")
             wire = os.path.join(r.kimi_home, "sessions", "wd_x_1", "session_test-1",
                                 "agents", "main", "wire.jsonl")
             os.makedirs(os.path.dirname(wire))
@@ -302,6 +310,7 @@ class TestRunEntry(unittest.TestCase):
             with mock.patch.dict(hosts.HOSTS, {"kimi": row}):
                 r = kimi_runner.Runner("kimi", runner=self._fake_run({}))
                 r.prepare(os.path.join(d, "run"), review_root=d)
+                self.addCleanup(r.teardown, "complete")
                 res = r.run_entry(_entry(True), self._env())
         self.assertFalse(res.ok)
         self.assertIn("not registered", res.error)
@@ -311,6 +320,7 @@ class TestRunEntry(unittest.TestCase):
              mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
             r = kimi_runner.Runner("kimi", runner=self._fake_run({}))
             r.prepare(os.path.join(d, "run"), review_root=d)
+            self.addCleanup(r.teardown, "complete")
             res = r.run_entry(_entry(False, model="bogus-tier"), self._env())
         self.assertFalse(res.ok)
         self.assertIn("does not resolve", res.error)
@@ -322,6 +332,7 @@ class TestRunEntry(unittest.TestCase):
              mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
             r = kimi_runner.Runner("kimi", runner=boom)
             r.prepare(os.path.join(d, "run"), review_root=d)
+            self.addCleanup(r.teardown, "complete")
             res = r.run_entry(_entry(False), {})
         self.assertFalse(res.ok)
         self.assertIn("timed out", res.error)
@@ -332,6 +343,7 @@ class TestRunEntry(unittest.TestCase):
              mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
             r = kimi_runner.Runner("kimi", runner=missing)
             r.prepare(os.path.join(d, "run"), review_root=d)
+            self.addCleanup(r.teardown, "complete")
             res = r.run_entry(_entry(False), {})
         self.assertFalse(res.ok)
         self.assertIn("kimi", res.error)
@@ -343,6 +355,7 @@ class TestRunEntry(unittest.TestCase):
              mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
             r = kimi_runner.Runner("kimi", runner=bad_args)
             r.prepare(os.path.join(d, "run"), review_root=d)
+            self.addCleanup(r.teardown, "complete")
             res = r.run_entry(_entry(False), {})
         self.assertFalse(res.ok)
         self.assertIn("ValueError", res.error)
@@ -358,3 +371,101 @@ class TestRegistration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestHomeLocation(unittest.TestCase):
+    """C1 (gate review): the per-run Kimi home carries the operator's
+    credential surface -- symlinked OAuth stores and a config.toml holding any
+    plaintext api_key -- so it must not live inside the tree being reviewed,
+    where a prompt-injected reviewer's in-scope Read and a `zip -r` of the run
+    folder both reach it."""
+
+    def _prepare(self, d):
+        with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
+            r = kimi_runner.Runner("kimi")
+            r.prepare(os.path.join(d, ".panopticon", "runs", "t"), review_root=d)
+        self.addCleanup(r.teardown, "complete")
+        return r
+
+    def test_the_home_is_outside_the_reviewed_tree(self):
+        with tempfile.TemporaryDirectory() as d:
+            r = self._prepare(d)
+            review_root = os.path.realpath(d)
+            home = os.path.realpath(r.kimi_home)
+            self.assertFalse(home == review_root or home.startswith(review_root + os.sep),
+                             "the kimi home is inside the reviewed tree: %s" % home)
+            self.assertTrue(os.path.basename(r.kimi_home).startswith("panopticon-kimi-"))
+            self.assertTrue(os.path.isfile(os.path.join(r.kimi_home, "config.toml")))
+
+    def test_the_run_dir_keeps_only_a_pointer_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            r = self._prepare(d)
+            run_dir = os.path.join(d, ".panopticon", "runs", "t")
+            self.assertEqual(sorted(os.listdir(run_dir)), ["kimi-home-path"])
+            with open(os.path.join(run_dir, "kimi-home-path"), encoding="utf-8") as fh:
+                self.assertEqual(fh.read().strip(), r.kimi_home)
+
+    def test_the_home_is_0700_and_the_config_0600(self):
+        with tempfile.TemporaryDirectory() as d:
+            r = self._prepare(d)
+            self.assertEqual(0o700, os.stat(r.kimi_home).st_mode & 0o777)
+            self.assertEqual(0o600, os.stat(os.path.join(r.kimi_home, "config.toml")).st_mode & 0o777)
+
+    def test_credentials_are_still_symlinked_never_copied(self):
+        with tempfile.TemporaryDirectory() as d:
+            r = self._prepare(d)
+            link = os.path.join(r.kimi_home, "credentials")
+            self.assertTrue(os.path.islink(link))
+
+    def test_teardown_removes_the_home_on_complete_and_keeps_it_on_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
+                r = kimi_runner.Runner("kimi")
+                r.prepare(os.path.join(d, "run"), review_root=d)
+            home = r.kimi_home
+            r.teardown("error")
+            self.assertTrue(os.path.isdir(home), "an errored run keeps its home for debugging")
+            r.teardown("complete")
+            self.assertFalse(os.path.exists(home))
+
+    def test_teardown_refuses_a_path_that_is_not_a_temp_home(self):
+        with tempfile.TemporaryDirectory() as d:
+            planted = os.path.join(d, "not-a-temp-home")
+            os.makedirs(planted)
+            r = kimi_runner.Runner("kimi")
+            r.kimi_home = planted
+            r.teardown("complete")
+            self.assertTrue(os.path.isdir(planted), "teardown deleted a path outside the temp root")
+
+    def test_a_resume_reuses_the_pointed_at_home_and_rebuilds_when_it_is_gone(self):
+        with tempfile.TemporaryDirectory() as d:
+            run_dir = os.path.join(d, "run")
+            with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
+                r = kimi_runner.Runner("kimi")
+                r.prepare(run_dir, review_root=d)
+                first = r.kimi_home
+                second = kimi_runner.Runner("kimi")
+                second.prepare(run_dir, review_root=d)          # resume: same run dir
+                self.assertEqual(first, second.kimi_home)
+                second.teardown("complete")
+                self.assertFalse(os.path.exists(first))
+                third = kimi_runner.Runner("kimi")
+                third.prepare(run_dir, review_root=d)           # the home is gone
+                self.addCleanup(third.teardown, "complete")
+                self.assertNotEqual(first, third.kimi_home)
+                self.assertTrue(os.path.isfile(os.path.join(third.kimi_home, "config.toml")))
+
+    def test_a_pointer_file_that_names_a_path_outside_the_temp_root_is_ignored(self):
+        with tempfile.TemporaryDirectory() as d:
+            run_dir = os.path.join(d, "run")
+            os.makedirs(run_dir)
+            hostile = os.path.join(d, "attacker-home")
+            os.makedirs(hostile)
+            with open(os.path.join(run_dir, "kimi-home-path"), "w", encoding="utf-8") as fh:
+                fh.write(hostile)
+            with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
+                r = kimi_runner.Runner("kimi")
+                r.prepare(run_dir, review_root=d)
+            self.addCleanup(r.teardown, "complete")
+            self.assertNotEqual(os.path.realpath(hostile), os.path.realpath(r.kimi_home))
+            self.assertFalse(os.path.isfile(os.path.join(hostile, "config.toml")))

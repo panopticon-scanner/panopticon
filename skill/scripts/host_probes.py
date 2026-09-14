@@ -665,8 +665,12 @@ def _kimi_home_builds_and_validates(runner=None):
                 fh.write('default_model = "kimi-code/k3"\n')
             run_dir = os.path.join(sandbox, "run")
             os.makedirs(run_dir)
+            # C1: the runner's real home is a temp dir outside the tree; the
+            # probe hands `build_kimi_home` a home inside its OWN sandbox so
+            # nothing survives the probe (same function, same config).
             home = kimi_runner.build_kimi_home(
-                run_dir, os.path.join(run_dir, "read-scope.json"),
+                os.path.join(sandbox, "kimi-home"),
+                os.path.join(run_dir, "read-scope.json"),
                 os.path.join(run_dir, "write-allowlist.json"),
                 real_home=fixture_home)
             env = dict(os.environ, KIMI_CODE_HOME=home)

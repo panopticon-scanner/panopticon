@@ -59,6 +59,18 @@ class HostRunner:
     def prepare(self, run_dir, review_root):
         """Write whatever the host needs before the first entry; idempotent."""
 
+    def teardown(self, status=None):
+        """Release whatever `prepare` acquired. The loop calls it exactly once,
+        from `orchestrate._finish`, on every TERMINAL status -- never between
+        iterations, which must be able to resume.
+
+        `status` is that terminal status ("complete" | "error" | ...) so a
+        runner can drop a scratch area on a clean finish and KEEP it for
+        debugging otherwise; the kimi runner's per-run home (C1) is the first
+        thing that needs it. Claude has nothing to release, so the default is
+        nothing.
+        """
+
     def run_entry(self, entry, env):
         raise NotImplementedError("a host runner must implement run_entry")
 
