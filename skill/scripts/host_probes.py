@@ -20,6 +20,7 @@ Confusing the two is the failure this whole spec exists to prevent.
 No probe may touch live state. Anything that needs to arm, install or write
 does it inside a `tempfile.TemporaryDirectory()`.
 """
+import glob
 import json
 import os
 import re
@@ -572,7 +573,67 @@ def _kimi_version(runner=None):
     return "%s.%s" % (match.group(1), match.group(2)) if match else None
 
 
-def probe_kimi_shell_surface(host, registration_dir=None, version=None, runner=None):
+_TOOLS_SNAPSHOT = "llm.tools_snapshot"
+
+
+def _kimi_wire_snapshot(run_dir):
+    """(tools, agent, wire) from the most recent child's `llm.tools_snapshot`
+    under THIS run's per-run home, or (None, None, why).
+
+    I5: the effective tool surface of a child that really ran, which is the
+    only thing that answers "did the shell restrict it". The home is found
+    through the run folder's pointer file -- untrusted, because that file
+    lives in the reviewed tree, so `is_temp_home` has to admit it before any
+    of it is read (a pointer aimed at attacker-controlled content would
+    otherwise feed this probe's verdict).
+
+    The record's shape is read tolerantly: `tools` as names or as objects with
+    a `name`, and the agent under any of the spellings a snapshot has been
+    seen to use. A record this cannot read is "no snapshot", never a
+    refutation -- an unrecognised shape is unknown data, not evidence.
+    """
+    import scripts.runners.kimi as kimi_runner
+    if not run_dir:
+        return None, None, "no run folder to look in"
+    home = kimi_runner.read_home_pointer(run_dir)
+    if not kimi_runner.is_temp_home(home):
+        return None, None, ("no per-run kimi home is recorded at %s"
+                            % os.path.join(run_dir, kimi_runner.POINTER_FILE))
+    pattern = os.path.join(glob.escape(home), "sessions", "*", "*", "agents", "*", "wire.jsonl")
+    wires = sorted(glob.glob(pattern), key=lambda p: os.path.getmtime(p), reverse=True)
+    for wire in wires:
+        tools, agent = None, None
+        try:
+            with open(wire, encoding="utf-8") as fh:
+                for line in fh:
+                    try:
+                        record = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(record, dict) or record.get("type") != _TOOLS_SNAPSHOT:
+                        continue
+                    names = record.get("tools")
+                    if not isinstance(names, list):
+                        continue
+                    tools = {n if isinstance(n, str) else n.get("name")
+                             for n in names if isinstance(n, (str, dict))}
+                    tools.discard(None)
+                    for key in ("agent", "agentName", "agent_file", "agentFile"):
+                        value = record.get(key)
+                        if isinstance(value, str) and value:
+                            agent = os.path.basename(value)
+                            agent = agent[:-3] if agent.endswith(".md") else agent
+                            break
+        except OSError:
+            continue
+        if tools is not None and agent:
+            return tools, agent, wire
+    return None, None, ("no child wire file under %s carries an %s record yet"
+                        % (home, _TOOLS_SNAPSHOT))
+
+
+def probe_kimi_shell_surface(host, registration_dir=None, version=None, runner=None,
+                             run_dir=None):
     """The registered shells restrict tools on the EFFECTIVE surface.
 
     Two halves, both required. First the template check the shipped
@@ -587,6 +648,8 @@ def probe_kimi_shell_surface(host, registration_dir=None, version=None, runner=N
     ['Read', 'Write']).
     """
     import scripts.runners.kimi as kimi_runner
+    registration_dir = registration_dir or (hosts.spec(host).registration_dir
+                                            if hosts.spec(host) else "")
     base_state, base_by, base_detail = probe_registered_shell_tools(host, registration_dir)
     if base_state != hosts.PROVEN:
         # A host that registers no shells at all gets the base probe's own
@@ -623,13 +686,34 @@ def probe_kimi_shell_surface(host, registration_dir=None, version=None, runner=N
         faults.append("neither granted by a template nor in the per-run "
                       "tools.disabled, so live for every unenforced entry: %s"
                       % ", ".join(unaccounted))
+    # I5: the EFFECTIVE surface, when a child has already run in this run's
+    # home. The table above says what the CLI ships; the snapshot says what a
+    # launched child was actually given.
+    snapshot, agent, where = _kimi_wire_snapshot(run_dir)
+    if snapshot is not None:
+        grant = _frontmatter_tools(os.path.join(registration_dir, "%s.md" % agent))
+        if grant is None:
+            measured = ("%s reports %s for %r, which is not a shell registered in "
+                        "%s, so the table above is what this rests on"
+                        % (where, sorted(snapshot), agent, registration_dir))
+        elif set(grant) != snapshot:
+            faults.append("the last child's %s for %r carries %s, its registered "
+                          "shell grants %s" % (_TOOLS_SNAPSHOT, agent,
+                                               sorted(snapshot), sorted(grant)))
+            measured = ""
+        else:
+            measured = ("the last child's %s for %r carries exactly its shell's "
+                        "grant %s (%s)" % (_TOOLS_SNAPSHOT, agent, sorted(grant), where))
+    else:
+        measured = ("%s, so the effective surface rests on the version table"
+                    % where)
     if faults:
         return (hosts.REFUTED, KIMI_SHELL_SURFACE, "; ".join(faults))
     return (hosts.PROVEN, KIMI_SHELL_SURFACE,
             "%s; every tool name exists in kimi %s's builtin vocabulary, and all "
-            "%d of its tools are accounted for (%d granted, %d disabled per run)"
+            "%d of its tools are accounted for (%d granted, %d disabled per run); %s"
             % (base_detail, version, len(vocabulary), len(allowed & set(vocabulary)),
-               len(disabled)))
+               len(disabled), measured))
 
 
 def _guard_round_trip(mode, data_path, rows, guard_path=None, runner=None):
@@ -1266,7 +1350,15 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
             lambda: probe_read_guard_armed(host, session_root=session_root,
                                            settings_path=settings_path),
         KIMI_SHELL_SURFACE:
-            lambda: probe_kimi_shell_surface(host, registration_dir),
+            # `settings_path` names the file the HEADLESS runner arms, so its
+            # directory is this run's folder -- where the kimi runner records
+            # the pointer to its per-run home, and therefore where I5's
+            # effective-surface check finds the children's wire files. None in
+            # session mode / plain `driver run`, where no child has run under
+            # a per-run home at all.
+            lambda: probe_kimi_shell_surface(
+                host, registration_dir,
+                run_dir=os.path.dirname(settings_path) if settings_path else None),
         KIMI_READ_GUARD:
             lambda: probe_kimi_read_guard(host),
         KIMI_WRITE_GUARD:

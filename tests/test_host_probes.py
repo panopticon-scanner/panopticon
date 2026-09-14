@@ -1,5 +1,7 @@
 import contextlib
+import json
 import os
+import shutil
 import tempfile
 import threading
 import unittest
@@ -1864,3 +1866,82 @@ class TestKimiShellSurfaceIsAnAllowList(unittest.TestCase):
                     "kimi", registration_dir=d, version="0.42")
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("FetchURL", detail)
+
+
+class TestKimiShellSurfaceReadsTheWire(unittest.TestCase):
+    """I5: `tool_policy_enforced` rested on configuration text plus a frozen
+    belief about the CLI. The runner already owns per-run wire files, so when
+    one exists the probe compares the child's own `llm.tools_snapshot` -- the
+    EFFECTIVE surface -- against that entry's shell grant."""
+
+    def _run_dir(self, d, snapshot=None, agent="panopticon-domain-panel"):
+        """A run folder whose pointer names a per-run home holding one child's
+        wire file. Returns (run_dir, registration_dir)."""
+        import scripts.runners.kimi as kimi_runner
+        registration = os.path.join(d, "agents")
+        _kimi_fully_registered(registration)
+        run_dir = os.path.join(d, "run")
+        os.makedirs(run_dir)
+        home = tempfile.mkdtemp(prefix=kimi_runner.HOME_PREFIX)
+        self.addCleanup(shutil.rmtree, home, True)
+        if snapshot is not None:
+            wire = os.path.join(home, "sessions", "wd_1", "session_x",
+                                "agents", "main", "wire.jsonl")
+            os.makedirs(os.path.dirname(wire))
+            with open(wire, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps({"type": "llm.request", "modelAlias": "k3"}) + "\n")
+                fh.write(json.dumps({"type": "llm.tools_snapshot", "agent": agent,
+                                     "tools": list(snapshot)}) + "\n")
+        with open(os.path.join(run_dir, kimi_runner.POINTER_FILE), "w", encoding="utf-8") as fh:
+            fh.write(home)
+        return run_dir, registration
+
+    def test_a_snapshot_matching_the_shells_grant_is_proven_and_says_so(self):
+        with tempfile.TemporaryDirectory() as d:
+            run_dir, registration = self._run_dir(d, snapshot=["Read", "Grep", "Glob", "Write"])
+            state, _by, detail = host_probes.probe_kimi_shell_surface(
+                "kimi", registration_dir=registration, version="0.42", run_dir=run_dir)
+        self.assertEqual(hosts.PROVEN, state)
+        self.assertIn("tools_snapshot", detail)
+        self.assertIn("panopticon-domain-panel", detail)
+
+    def test_a_snapshot_wider_than_the_grant_is_refuted_naming_both_sets(self):
+        with tempfile.TemporaryDirectory() as d:
+            run_dir, registration = self._run_dir(
+                d, snapshot=["Read", "Grep", "Glob", "Write", "Bash"])
+            state, _by, detail = host_probes.probe_kimi_shell_surface(
+                "kimi", registration_dir=registration, version="0.42", run_dir=run_dir)
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("Bash", detail)
+        self.assertIn("panopticon-domain-panel", detail)
+
+    def test_no_wire_file_yet_falls_back_to_the_table_and_says_so(self):
+        with tempfile.TemporaryDirectory() as d:
+            run_dir, registration = self._run_dir(d)          # no wire file
+            state, _by, detail = host_probes.probe_kimi_shell_surface(
+                "kimi", registration_dir=registration, version="0.42", run_dir=run_dir)
+        self.assertEqual(hosts.PROVEN, state)
+        self.assertIn("no child wire file", detail)
+        self.assertIn("rests on the version table", detail)
+
+    def test_a_pointer_outside_the_temp_root_is_not_followed(self):
+        import scripts.runners.kimi as kimi_runner
+        with tempfile.TemporaryDirectory() as d:
+            registration = os.path.join(d, "agents")
+            _kimi_fully_registered(registration)
+            run_dir = os.path.join(d, "run")
+            os.makedirs(run_dir)
+            hostile = os.path.join(d, "hostile-home")
+            wire = os.path.join(hostile, "sessions", "w", "s", "agents", "main", "wire.jsonl")
+            os.makedirs(os.path.dirname(wire))
+            with open(wire, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps({"type": "llm.tools_snapshot",
+                                     "agent": "panopticon-domain-panel",
+                                     "tools": ["Bash"]}) + "\n")
+            with open(os.path.join(run_dir, kimi_runner.POINTER_FILE), "w", encoding="utf-8") as fh:
+                fh.write(hostile)
+            state, _by, detail = host_probes.probe_kimi_shell_surface(
+                "kimi", registration_dir=registration, version="0.42", run_dir=run_dir)
+        self.assertEqual(hosts.PROVEN, state)
+        self.assertIn("no per-run kimi home is recorded", detail)
+        self.assertNotIn("Bash", detail)          # the planted wire was not read
