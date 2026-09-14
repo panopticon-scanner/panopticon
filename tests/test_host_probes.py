@@ -1727,3 +1727,98 @@ class TestKimiLaunchGuard(unittest.TestCase):
                 with self.assertRaises(kimi_runner.LaunchRefused):
                     runner.run_entry({"id": "e1", "model": "secondary",
                                       "prompt": "x"}, {})
+
+
+def _kimi_armed_config_without(mode):
+    """A `build_merged_config` that arms every hook EXCEPT `mode`'s -- the
+    mutation the guardrails demand of a probe whose id says "armed"."""
+    import scripts.runners.kimi as kimi_runner
+    real = kimi_runner.build_merged_config
+
+    def mutated(source, scope_path, allowlist_path, *args, **kwargs):
+        merged = real(source, scope_path, allowlist_path, *args, **kwargs)
+        merged["hooks"] = [h for h in merged["hooks"]
+                           if '" %s "' % mode not in (h.get("command") or "")]
+        return merged
+    return mutated
+
+
+class TestKimiGuardArmingIsMeasured(unittest.TestCase):
+    """C3: the two probes are named "...-armed", so they must be able to refute
+    the ARMING, not only the adjudication. With the hooks deleted from
+    `build_merged_config` entirely, both used to return `proven`."""
+
+    def test_a_config_that_arms_no_hooks_refutes_both_probes(self):
+        import scripts.runners.kimi as kimi_runner
+        with mock.patch.object(kimi_runner, "build_merged_config",
+                               side_effect=lambda source, s, a, *x, **k: {"tools": {"disabled": []}}):
+            read = host_probes.probe_kimi_read_guard("kimi", doctor_runner=_DoctorFake())
+            write = host_probes.probe_kimi_write_guard("kimi")
+        for state, by, detail in (read, write):
+            self.assertEqual(hosts.REFUTED, state, detail)
+            self.assertIn("PreToolUse", detail)
+
+    def test_dropping_the_read_hook_refutes_the_read_probe(self):
+        import scripts.runners.kimi as kimi_runner
+        with mock.patch.object(kimi_runner, "build_merged_config",
+                               side_effect=_kimi_armed_config_without("read")):
+            state, _by, detail = host_probes.probe_kimi_read_guard(
+                "kimi", doctor_runner=_DoctorFake())
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("Read", detail)
+
+    def test_dropping_the_write_hook_refutes_the_write_probe(self):
+        import scripts.runners.kimi as kimi_runner
+        with mock.patch.object(kimi_runner, "build_merged_config",
+                               side_effect=_kimi_armed_config_without("write")):
+            state, _by, detail = host_probes.probe_kimi_write_guard("kimi")
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("Write", detail)
+
+    def test_a_hook_pointing_at_a_nonexistent_script_is_refuted(self):
+        import scripts.runners.kimi as kimi_runner
+        with mock.patch.object(kimi_runner, "_GUARD", "/nonexistent/kimi_guard_hook.py"):
+            state, _by, detail = host_probes.probe_kimi_write_guard("kimi")
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("guard script", detail)
+
+    def test_a_config_the_writer_corrupts_is_refuted(self):
+        import scripts.runners.kimi as kimi_runner
+        with mock.patch.object(kimi_runner, "dump_toml",
+                               side_effect=lambda config: "[[mcp]]\nname = \n"):
+            state, _by, detail = host_probes.probe_kimi_write_guard("kimi")
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("valid TOML", detail)
+
+    def test_a_disabled_tool_the_runner_drops_is_refuted(self):
+        import scripts.runners.kimi as kimi_runner
+        real = kimi_runner.build_merged_config
+
+        def without_disabled(source, scope_path, allowlist_path, *args, **kwargs):
+            merged = real(source, scope_path, allowlist_path, *args, **kwargs)
+            merged["tools"] = {"disabled": []}
+            return merged
+        with mock.patch.object(kimi_runner, "build_merged_config",
+                               side_effect=without_disabled):
+            state, _by, detail = host_probes.probe_kimi_write_guard("kimi")
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("tools.disabled", detail)
+
+    def test_the_armed_detail_names_the_config_it_parsed(self):
+        state, _by, detail = host_probes.probe_kimi_write_guard("kimi")
+        self.assertEqual(hosts.PROVEN, state)
+        self.assertIn("config.toml", detail)
+
+    def test_prepare_refuses_to_run_without_the_guard_script(self):
+        import scripts.runners.kimi as kimi_runner
+        with tempfile.TemporaryDirectory() as d:
+            home = os.path.join(d, "fixture-home")
+            os.makedirs(home)
+            with open(os.path.join(home, "config.toml"), "w", encoding="utf-8") as fh:
+                fh.write('default_model = "kimi-code/k3"\n')
+            with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": home}), \
+                 mock.patch.object(kimi_runner, "_GUARD", os.path.join(d, "gone.py")):
+                runner = kimi_runner.Runner("kimi")
+                with self.assertRaises(RuntimeError) as caught:
+                    runner.prepare(os.path.join(d, "run"), review_root=d)
+        self.assertIn("gone.py", str(caught.exception))

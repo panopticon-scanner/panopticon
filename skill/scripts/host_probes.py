@@ -27,6 +27,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import tomllib
 
 from scripts import (collect_usage, dispatch, hosts, model_resolver,
                     read_guard_hook, run_manifest, write_guard_hook)
@@ -651,29 +652,100 @@ def _guard_round_trip(mode, data_path, rows, guard_path=None, runner=None):
     return True, "%s round-trip ok (%d rows)" % (mode, len(rows))
 
 
-def _kimi_home_builds_and_validates(runner=None):
-    """Build a per-run home from a MINIMAL fixture config inside a tempdir and
-    have `kimi doctor` validate the generated config.toml -- the exact file
-    the runner will arm. Never touches the operator's real home."""
+def _kimi_armed_home(sandbox):
+    """Build the per-run home the RUNNER builds, inside `sandbox`, from a
+    minimal fixture operator config. Returns (home, scope_path, allowlist_path).
+
+    The real `build_kimi_home` -- not a re-implementation -- so the file this
+    inspects is the file a run arms. C1 puts the runner's own home under the
+    temp root; the probe passes a home inside its sandbox instead, so nothing
+    survives the probe. The operator's real home is never read.
+    """
     import scripts.runners.kimi as kimi_runner
+    fixture_home = os.path.join(sandbox, "fixture-home")
+    os.makedirs(fixture_home, exist_ok=True)
+    with open(os.path.join(fixture_home, "config.toml"), "w", encoding="utf-8") as fh:
+        fh.write('default_model = "kimi-code/k3"\n')
+    run_dir = os.path.join(sandbox, "run")
+    os.makedirs(run_dir, exist_ok=True)
+    scope_path = os.path.join(run_dir, "read-scope.json")
+    allowlist_path = os.path.join(run_dir, "write-allowlist.json")
+    home = kimi_runner.build_kimi_home(os.path.join(sandbox, "kimi-home"),
+                                       scope_path, allowlist_path,
+                                       real_home=fixture_home)
+    return home, scope_path, allowlist_path
+
+
+def _kimi_hooks_are_armed(sandbox):
+    """(ok, detail): does the config.toml the runner generates REGISTER the
+    guards? `ok` is None when the home could not be built at all.
+
+    C3: both guard probes are named "...-armed", and both used to prove only
+    the adjudication -- payloads through the hook script -- while nothing
+    looked at whether the hook was registered anywhere. With
+    `build_merged_config` replaced by one that arms no hooks, both still
+    returned `proven`. This is the half C2 could break by accident and a
+    refactor could break with no test going red, so it is measured here:
+    the generated file is parsed with `tomllib` and must carry exactly one
+    PreToolUse hook per matcher, each command naming this repo's guard script,
+    its own mode and its own data file, with the runner's disabled-tool set
+    present in `tools.disabled`.
+    """
+    import scripts.kimi_guard_hook as kimi_guard_hook
+    import scripts.runners.kimi as kimi_runner
+    try:
+        home, scope_path, allowlist_path = _kimi_armed_home(sandbox)
+        with open(os.path.join(home, "config.toml"), "rb") as fh:
+            config = tomllib.load(fh)
+    except OSError as exc:
+        return None, "the per-run home could not be built: %s" % exc
+    except tomllib.TOMLDecodeError as exc:
+        return False, ("the config.toml the runner generates is not valid TOML "
+                       "(%s), so the run would start with its guard hooks "
+                       "unregistered" % exc)
+    guard = os.path.abspath(kimi_guard_hook.__file__)
+    hooks = [h for h in (config.get("hooks") or []) if isinstance(h, dict)]
+    tools = config.get("tools") if isinstance(config.get("tools"), dict) else {}
+    disabled = set(tools.get("disabled") or [])
+    faults, armed_matchers = [], []
+    for matcher, mode, data_path in ((kimi_runner.READ_MATCHER, "read", scope_path),
+                                     (kimi_runner.WRITE_MATCHER, "write", allowlist_path)):
+        matching = [h for h in hooks
+                    if h.get("event") == "PreToolUse" and h.get("matcher") == matcher]
+        if len(matching) != 1:
+            faults.append("%d PreToolUse hooks match %r, expected exactly 1"
+                          % (len(matching), matcher))
+            continue
+        command = matching[0].get("command") or ""
+        for needle, what in ((guard, "the guard script %s" % guard),
+                             (" %s " % mode, "its %s mode argument" % mode),
+                             (os.path.abspath(data_path), "its %s data file" % mode)):
+            if needle not in command:
+                faults.append("the %r hook's command does not name %s: %r"
+                              % (matcher, what, command[:160]))
+        armed_matchers.append(matcher)
+    missing = sorted(set(kimi_runner.disabled_tools()) - disabled)
+    if missing:
+        faults.append("tools.disabled omits %s" % ", ".join(missing))
+    if faults:
+        return False, ("the config.toml the runner generates does not arm the "
+                       "guards: %s" % "; ".join(faults))
+    return True, ("the config.toml the runner generates registers %s on %s and "
+                  "disables %d tool(s)"
+                  % (os.path.basename(guard), " and ".join(repr(m) for m in armed_matchers),
+                     len(disabled)))
+
+
+def _kimi_home_arms_and_validates(runner=None):
+    """(ok, detail): the generated per-run config arms both guards AND
+    `kimi doctor` accepts it. `ok` None means nothing could be measured."""
     runner = KIMI_DEFAULT_RUNNER if runner is None else runner
     try:
         with tempfile.TemporaryDirectory() as sandbox:
-            fixture_home = os.path.join(sandbox, "fixture-home")
-            os.makedirs(fixture_home)
-            with open(os.path.join(fixture_home, "config.toml"), "w", encoding="utf-8") as fh:
-                fh.write('default_model = "kimi-code/k3"\n')
-            run_dir = os.path.join(sandbox, "run")
-            os.makedirs(run_dir)
-            # C1: the runner's real home is a temp dir outside the tree; the
-            # probe hands `build_kimi_home` a home inside its OWN sandbox so
-            # nothing survives the probe (same function, same config).
-            home = kimi_runner.build_kimi_home(
-                os.path.join(sandbox, "kimi-home"),
-                os.path.join(run_dir, "read-scope.json"),
-                os.path.join(run_dir, "write-allowlist.json"),
-                real_home=fixture_home)
-            env = dict(os.environ, KIMI_CODE_HOME=home)
+            ok, detail = _kimi_hooks_are_armed(sandbox)
+            if ok is not True:
+                return ok, detail
+            env = dict(os.environ, KIMI_CODE_HOME=os.path.join(sandbox, "kimi-home"))
             proc = runner(["kimi", "doctor"], capture_output=True, text=True,
                           timeout=60, env=env)
     except OSError as exc:
@@ -681,17 +753,19 @@ def _kimi_home_builds_and_validates(runner=None):
     if proc.returncode != 0 or "OK config.toml" not in (proc.stdout or ""):
         return False, ("kimi doctor rejected the generated per-run config: %s%s"
                        % (proc.stdout or "", proc.stderr or ""))[:300]
-    return True, "per-run home builds and kimi doctor validates its config"
+    return True, "%s, and kimi doctor validates it" % detail
 
 
 def probe_kimi_read_guard(host, runner=None, doctor_runner=None):
     """Kimi can confine a dispatched reviewer's reads to its entry's scope.
 
-    Proves the mechanism end to end: the guard subprocess allows an in-scope
-    read and denies outside reads, unbound sessions, unknown entries, and a
-    malformed scope file; and the per-run home the runner arms builds and
-    validates. NOT "armed right now" -- the loop arms the scope file per
-    batch, so at run start it is legitimately absent.
+    Two halves, both required. ADJUDICATION: the guard subprocess allows an
+    in-scope read and denies outside reads, unbound sessions, unknown entries
+    and a malformed scope file. ARMING (C3): the config.toml the runner
+    generates really registers that script as a PreToolUse hook, with this
+    run's scope file bound into its command, in a file `kimi doctor` accepts.
+    NOT "armed right now" -- the loop arms the scope file per batch, so at run
+    start it is legitimately absent.
 
     `runner` drives the guard subprocess (plain python; tests use the real
     one). `doctor_runner` drives `kimi doctor` and is resolved separately,
@@ -732,6 +806,7 @@ def probe_kimi_read_guard(host, runner=None, doctor_runner=None):
             ok, detail = _guard_round_trip("read", scope_path, rows, runner=runner)
             if not ok:
                 return (hosts.REFUTED, KIMI_READ_GUARD, detail)
+            round_trip_detail = detail
             with open(scope_path, "w", encoding="utf-8") as fh:
                 fh.write("not json")
             ok, detail = _guard_round_trip(
@@ -741,26 +816,32 @@ def probe_kimi_read_guard(host, runner=None, doctor_runner=None):
                 runner=runner)
             if not ok:
                 return (hosts.REFUTED, KIMI_READ_GUARD, detail)
+            round_trip_detail = "%s, plus %s" % (round_trip_detail, detail)
     except OSError as exc:
         return (hosts.UNKNOWN, KIMI_READ_GUARD,
                 "sandbox round-trip could not run: %s" % exc)
-    ok, detail = _kimi_home_builds_and_validates(doctor_runner)
-    if ok is None:
+    armed, armed_detail = _kimi_home_arms_and_validates(doctor_runner)
+    if armed is None:
         return (hosts.UNKNOWN, KIMI_READ_GUARD,
-                "guard round-trip ok, but %s" % detail)
-    if not ok:
-        return (hosts.REFUTED, KIMI_READ_GUARD, detail)
-    return (hosts.PROVEN, KIMI_READ_GUARD,
-            "read round-trip ok (8 rows); %s" % detail)
+                "%s, but %s" % (round_trip_detail, armed_detail))
+    if not armed:
+        return (hosts.REFUTED, KIMI_READ_GUARD, armed_detail)
+    # M1: composed from what the two halves REPORTED -- no hardcoded row count
+    # (the old "(8 rows)" was a literal beside `_guard_round_trip`'s own
+    # answer, and drifted the moment a row was added) and no surface this
+    # probe did not open.
+    return (hosts.PROVEN, KIMI_READ_GUARD, "%s; %s" % (round_trip_detail, armed_detail))
 
 
 def probe_kimi_write_guard(host, runner=None):
     """Kimi can mediate a self-writing reviewer's Write/Edit.
 
     Same shape as the read probe: declared out_file allowed, everything else
-    denied, symlinks denied, malformed allowlist denied. The allowlist is the
-    file the loop arms per batch (orchestrate.Guards), so it is legitimately
-    absent at probe time.
+    denied, symlinks denied, malformed allowlist denied -- and then the arming
+    half (C3), which parses the config.toml the runner generates and requires
+    the write hook to be registered there. The allowlist is the file the loop
+    arms per batch (orchestrate.Guards), so it is legitimately absent at probe
+    time.
     """
     if not hosts.declares(host, hosts.ARTIFACT_WRITE_GUARD):
         return (hosts.UNKNOWN, None,
@@ -787,6 +868,7 @@ def probe_kimi_write_guard(host, runner=None):
             ok, detail = _guard_round_trip("write", allowlist_path, rows, runner=runner)
             if not ok:
                 return (hosts.REFUTED, KIMI_WRITE_GUARD, detail)
+            round_trip_detail = detail
             with open(allowlist_path, "w", encoding="utf-8") as fh:
                 fh.write("not json")
             ok, detail = _guard_round_trip(
@@ -796,12 +878,20 @@ def probe_kimi_write_guard(host, runner=None):
                 runner=runner)
             if not ok:
                 return (hosts.REFUTED, KIMI_WRITE_GUARD, detail)
+            round_trip_detail = "%s, plus %s" % (round_trip_detail, detail)
+            # C3: the ARMING half, in the same sandbox -- the write probe used
+            # to build no home at all, so its detail ("the runner arms the hook
+            # in the per-run home's config.toml") named a file it never opened.
+            armed, armed_detail = _kimi_hooks_are_armed(sandbox)
     except OSError as exc:
         return (hosts.UNKNOWN, KIMI_WRITE_GUARD,
                 "sandbox round-trip could not run: %s" % exc)
-    return (hosts.PROVEN, KIMI_WRITE_GUARD,
-            "write round-trip ok (5 rows); the runner arms the hook in the "
-            "per-run home's config.toml under the run directory")
+    if armed is None:
+        return (hosts.UNKNOWN, KIMI_WRITE_GUARD,
+                "%s, but %s" % (round_trip_detail, armed_detail))
+    if not armed:
+        return (hosts.REFUTED, KIMI_WRITE_GUARD, armed_detail)
+    return (hosts.PROVEN, KIMI_WRITE_GUARD, "%s; %s" % (round_trip_detail, armed_detail))
 
 
 def probe_kimi_model_alias(host, configured=None):

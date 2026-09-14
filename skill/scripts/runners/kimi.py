@@ -101,6 +101,17 @@ _CREDENTIAL_ITEMS = ("credentials", "oauth")
 # No fan-out template grants these; disabling them globally confines the
 # UNENFORCED entries (default agent surface) as well.
 _DISABLED_TOOLS = ["Agent", "AgentSwarm", "Bash"]
+# The two PreToolUse matchers the guard registers under. Named here because
+# the arming PROBE reads them back out of the generated config (C3): one
+# owner, so a matcher the runner stops emitting is a refutation rather than a
+# probe that quietly looks for the wrong string.
+READ_MATCHER = "Read|Grep|Glob"
+WRITE_MATCHER = "Write|Edit"
+
+
+def disabled_tools():
+    """The tools the per-run config turns off for every child."""
+    return list(_DISABLED_TOOLS)
 # Session markers of an enclosing Kimi session. A nested `kimi -p` launches
 # fine with them set (measured on 0.42.0), but they are dropped so no future
 # version can read the child as attached to the parent session.
@@ -196,12 +207,12 @@ def build_merged_config(source, scope_path, allowlist_path):
     merged["merge_all_available_skills"] = False
     merged["builtin_product_skills"] = False
     tools = dict(merged.get("tools") or {})
-    disabled = sorted(set(tools.get("disabled") or []) | set(_DISABLED_TOOLS))
+    disabled = sorted(set(tools.get("disabled") or []) | set(disabled_tools()))
     tools["disabled"] = disabled
     merged["tools"] = tools
     hooks = [h for h in (merged.get("hooks") or []) if isinstance(h, dict)]
-    hooks.append(_hook_entry("Read|Grep|Glob", "read", scope_path))
-    hooks.append(_hook_entry("Write|Edit", "write", allowlist_path))
+    hooks.append(_hook_entry(READ_MATCHER, "read", scope_path))
+    hooks.append(_hook_entry(WRITE_MATCHER, "write", allowlist_path))
     merged["hooks"] = hooks
     return merged
 
@@ -451,6 +462,14 @@ class Runner(base.HostRunner):
         pointer an untrusted target rewrote) rebuilds from scratch.
         """
         self.review_root = os.path.abspath(review_root)
+        # C3: a Kimi hook whose interpreter cannot start fails OPEN, so a
+        # missing guard script is a SILENT un-confinement -- the one residual
+        # the hook itself cannot catch. Refuse the run instead; `loop` turns
+        # this into a reported `error` status naming the absent file.
+        if not os.path.isfile(_GUARD):
+            raise RuntimeError(
+                "the kimi guard hook is absent at %s; refusing to launch "
+                "reviewers whose read/write confinement would be unarmed" % _GUARD)
         scope_path = os.path.join(run_dir, base.SCOPE_FILE)
         allowlist_path = os.path.join(run_dir, base.ALLOWLIST_FILE)
         recorded = read_home_pointer(run_dir)
