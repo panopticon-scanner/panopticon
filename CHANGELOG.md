@@ -1,5 +1,55 @@
 # Changelog
 
+## Unreleased — 5.2 Claude first-class host (#1344, family PR)
+
+The Claude family's first-class-host PR under `docs/FAMILY-PR-GUARDRAILS.md`:
+Claude already shipped its runner, probes, emit branch, registry row and both
+guards, so this PR is the evidence a real `driver loop` gives, plus what that
+evidence exposed.
+
+- **`usage_ledger` follows the mode.** The probe is now `usage-source` (was
+  `transcript-dir`): in headless mode it measures the launch envelope path —
+  a run folder that can hold `dispatch-ledger.jsonl`, the host CLI on PATH,
+  that CLI's `--help` advertising the runner's own `ENVELOPE_FLAGS` (`-p`,
+  `--output-format`; an executable merely named `claude` is refuted), and,
+  once launches are ledgered, their envelopes having carried usage — and never
+  consults transcripts; in session mode it measures the session's transcript
+  directory exactly as before. A headless run launched from any directory
+  without transcripts (every fresh target) used to be *refuted* while its
+  ledger was exact. The `--help` interrogation goes through the runner's own
+  launcher, the seam the suite refuses real launches at.
+  `runners.base.LEDGER_FILE` is the one owner of the ledger's name (the
+  `Ledger` and `usage.json`'s `source` both read it); the remedy line names
+  both modes' fixes.
+- **`driver loop --reset` resets once.** The flag reached `driver.run` on every
+  iteration, so each one cleared the run folder and re-minted the manifest and
+  the loop re-launched its first checkpoint until `--max-iterations` (this
+  branch's second real run: the same three scouts ten times). The first call
+  consumes it.
+- **`prompt_file` is granted to the entry's read scope.** The guide let a host
+  point an agent at `prompt_file` (marker line first, pointer second), but every
+  entry's `scope.reads` was empty, so the read guard denied the agent its own
+  prompt. Stamping the file now grants it through `reads`.
+- **The SEC cell may read the checklist its prompt points at.** The first real
+  headless run's ledger recorded the SEC reviewer's Read of
+  `skill/reference/security-checklists.md` as a denial: the prompt named the
+  file, the scope did not. `review._cell_reads` grants it through `reads`,
+  from the one path the pointer is rendered from.
+- **Session-mode dispatch on Claude Code is templated.** `skill/workflows/dispatch.js`
+  runs one workflow subagent per pending entry — inside its registered shell
+  when the entry is enforced, on the entry's model otherwise — marker line
+  first, and returns replies keyed by id, a skipped or dead subagent under
+  `missing`; SKILL.md mandates it over one-off Agent calls. The read-guard
+  probe's round trip now also binds a fake subagent through the Workflow
+  transcript layout (16 rows).
+- **The suite refuses the real `claude` binary by default.**
+  `runners.claude.DEFAULT_RUNNER` is read at construction and `tests/conftest.py`
+  swaps it for a refusal on every test (was per-test discipline; #1616); only a
+  launcher a test injects explicitly runs, and none injects the real one. The
+  same file now also points `HOME` at one throwaway directory for the whole
+  process, before the registry expands `~`, so no probe or test reads the
+  operator's real `~/.claude`.
+
 ## Unreleased — 5.2 grouping engine, plan 1
 
 Setup now front-loads the grouping work so every later run reuses it

@@ -111,7 +111,7 @@ class Ledger:
     """runs/<tag>/dispatch-ledger.jsonl: one line per runner call (spec 4.3)."""
 
     def __init__(self, run_dir):
-        self.path = os.path.join(run_dir, "dispatch-ledger.jsonl")
+        self.path = os.path.join(run_dir, runners_base.LEDGER_FILE)
 
     def record(self, entry, checkpoint, result, mode, host, duration_ms, refusal=None):
         """One line per runner call.
@@ -165,7 +165,7 @@ class Ledger:
             for k in USAGE_FIELDS:
                 by_field[k] += int(usage.get(k, 0) or 0)
         return {"schema_version": 1, "total": sum(by_phase.values()), "by_phase": by_phase,
-                "by_field": by_field, "source": "dispatch-ledger.jsonl",
+                "by_field": by_field, "source": runners_base.LEDGER_FILE,
                 "definition": "every token the host's envelope reported for each entry "
                               "launch, failed launches included, summed over the four "
                               "usage fields"}
@@ -354,6 +354,15 @@ def loop(args):
         # `session_root`, which does not change across a run.
         guards = Guards(mode, session_root=session_root)
     status = _first_run(args, namespace)
+    # `--reset` is CONSUMED by that call. `driver.run` reads `args.reset` on
+    # every invocation and the loop hands it the same `args` each iteration,
+    # so left set it cleared the run folder and re-minted the manifest on
+    # every `_run` below: the run restarted at its first checkpoint forever.
+    # Found by this branch's second real `driver loop --reset`, which
+    # re-launched the same three scouts ten times (30 identical ledger rows)
+    # before it was stopped. From here on the loop resumes the run it just
+    # started, which is what every later iteration is for.
+    args.reset = False
     if status.get("status") != "checkpoint":
         return _finish(status, args, guards, ledger, namespace, mode)
     if mode == "session":

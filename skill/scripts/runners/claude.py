@@ -9,14 +9,29 @@ import scripts.runners.base as base
 import scripts.write_guard_hook as write_guard_hook
 
 
+# The launcher a Runner built without an injected `runner=` uses. Read at
+# CONSTRUCTION, never bound as a default argument: tests/conftest.py swaps it
+# for a refusal for the whole suite (family guardrails section 3, #1616), so
+# forgetting `runner=<fake>` in a test costs one failed RunResult rather than a
+# real `claude -p` launch and the money it spends.
+DEFAULT_RUNNER = subprocess.run
+
+
 class Runner(base.HostRunner):
     CLI = "claude"
+    # The two argv tokens that make a launch print the JSON envelope `usage`
+    # is read from (`command` below puts both on every argv). The usage probe
+    # asks the CLI it finds on PATH to advertise exactly these, so any
+    # executable that happens to be called `claude` no longer proves the
+    # ledger; the rest of the argv (`--max-turns`, e.g.) is not in `--help`
+    # and not the envelope's business.
+    ENVELOPE_FLAGS = ("-p", "--output-format")
     mode = "headless"
     default_concurrency = 8
 
-    def __init__(self, host="claude", runner=subprocess.run):
+    def __init__(self, host="claude", runner=None):
         super().__init__(host)
-        self.runner = runner
+        self.runner = DEFAULT_RUNNER if runner is None else runner
         self.settings_path = None
         self.allowlist_path = None
         self.scope_path = None

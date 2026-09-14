@@ -46,6 +46,18 @@ class TestCommand(unittest.TestCase):
         cmd = self.r.command(_entry(False, model=None), "/run/host-settings.json", max_turns=40)
         self.assertNotIn("--model", cmd); self.assertNotIn("--agent", cmd)
 
+    def test_the_envelope_flags_are_on_every_argv(self):
+        # ENVELOPE_FLAGS is the runner's own spelling of what makes a launch
+        # print the envelope, read by the usage probe; a flag listed there
+        # that `command` does not put on the argv would have the probe
+        # proving a launch shape nothing uses.
+        for enforced in (True, False):
+            cmd = self.r.command(_entry(enforced), "/s.json", max_turns=40)
+            for flag in claude_runner.Runner.ENVELOPE_FLAGS:
+                with self.subTest(enforced=enforced, flag=flag):
+                    self.assertIn(flag, cmd)
+        self.assertEqual(("-p", "--output-format"), claude_runner.Runner.ENVELOPE_FLAGS)
+
     def test_no_per_entry_budget_arm_exists(self):
         # M3 (final review): `--max-budget-usd` is a WHOLE-RUN knob the loop
         # enforces off its own ledger (spec 4.3). `command` carried a
@@ -180,3 +192,23 @@ class TestPrepare(unittest.TestCase):
             with open(settings, encoding="utf-8") as fh:
                 self.assertEqual(len(json.load(fh)["hooks"]["PreToolUse"]), 2)
             self.assertFalse(os.path.exists(settings + ".tmp"))
+
+
+class TestTheSuiteNeverLaunchesTheRealCli(unittest.TestCase):
+    def test_a_runner_built_without_a_fake_refuses_to_launch(self):
+        # Structural, not per-test discipline (family guardrails section 3,
+        # #1616): conftest swaps the module's DEFAULT_RUNNER for a refusal, so a
+        # Runner that nobody handed a fake fails its launch loudly instead of
+        # spending money -- and run_entry's never-raise contract turns that
+        # refusal into a failed RunResult naming the rule.
+        with tempfile.TemporaryDirectory() as d:
+            r = claude_runner.Runner("claude")
+            r.prepare(d, review_root=d)
+            res = r.run_entry(_entry(True), {})
+        self.assertFalse(res.ok)
+        self.assertIn("never launch the real", res.error)
+
+    def test_an_injected_runner_is_used_verbatim(self):
+        def fake(cmd, **kw):
+            raise AssertionError("unreachable")
+        self.assertIs(fake, claude_runner.Runner("claude", runner=fake).runner)
