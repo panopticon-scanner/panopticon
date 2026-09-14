@@ -643,12 +643,12 @@ class Runner(base.HostRunner):
         try:
             proc = launcher(cmd, cwd=self.review_root, env=run_env, capture_output=True,
                             text=True, timeout=self.entry_timeout)
+        except LaunchRefused:             # I3: the suite's guard, never a run state
+            raise                         # (first, so no later clause can absorb it)
         except subprocess.TimeoutExpired:
             return base.RunResult.failed(entry_id, "kimi -p timed out after %ss" % self.entry_timeout)
         except OSError as exc:
             return base.RunResult.failed(entry_id, "could not launch %s: %s" % (self.CLI, exc))
-        except LaunchRefused:             # I3: the suite's guard, never a run state
-            raise
         except Exception as exc:          # run_entry never raises (spec 4.4)
             return base.RunResult.failed(entry_id,
                                           "kimi -p launch raised %s: %s" % (type(exc).__name__, exc))

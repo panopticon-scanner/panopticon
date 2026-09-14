@@ -600,7 +600,10 @@ def _kimi_wire_snapshot(run_dir):
         return None, None, ("no per-run kimi home is recorded at %s"
                             % os.path.join(run_dir, kimi_runner.POINTER_FILE))
     pattern = os.path.join(glob.escape(home), "sessions", "*", "*", "agents", "*", "wire.jsonl")
-    wires = sorted(glob.glob(pattern), key=lambda p: os.path.getmtime(p), reverse=True)
+    try:
+        wires = sorted(glob.glob(pattern), key=os.path.getmtime, reverse=True)
+    except OSError as exc:        # a file that vanished between glob and stat
+        return None, None, "the per-run home's wire files could not be listed: %s" % exc
     for wire in wires:
         tools, agent = None, None
         try:
