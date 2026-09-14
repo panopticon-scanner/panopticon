@@ -265,9 +265,9 @@ python -m pytest tests/ -q
 python -m ruff check skill/scripts/ tests/
 ```
 
-CI runs the same two commands on Python 3.11, 3.12, 3.13, and 3.14. The
-local interpreter is newer than the CI floor, so run at least your own test
-files under 3.11 before pushing (`uv run --python 3.11 --with pytest --with
+CI runs the test command on Python 3.11, 3.12, 3.13 and 3.14, and the lint
+command once on 3.12. The local interpreter is newer than the CI floor, so run
+at least your own test files under 3.11 before pushing (`uv run --python 3.11 --with pytest --with
 pyyaml -q python -m pytest tests/runners tests/probes tests/test_host_probes.py
 -q` is enough). Argparse and `typing` differ across that range; the 3.11 leg is
 the one that finds it.
@@ -291,7 +291,10 @@ on green CI alone.
 
 ## 6. Launch prompt
 
-What the operator pastes into your CLI. `<host>` is `codex` or `kimi`.
+What the operator pastes into your CLI. `<host>` is the host this PR makes
+first-class: a re-attempt for a row that was retired, or a host with no
+registry row yet. Every family recorded in section 2 has already landed its
+own, so their PRs are worked examples to read, not work to repeat.
 
 ```
 You are the <host> family agent for Panopticon. Your deliverable is the
@@ -304,3 +307,24 @@ main with the evidence section 5 asks for, and stop there: the owner reviews
 and merges. If the guardrails and the code disagree, say so in the PR rather
 than picking silently.
 ```
+
+## 7. Open owner decision
+
+Spec 8.1 made deleting `--host generic` (F5) mechanical: it ships once every
+remaining driver-selectable host has `tool_policy_enforced` and
+`read_scope_confined` proven, with `artifact_write_guard` bridged by
+construction. On this base that criterion is **met** -- the pin in section 2
+reads `{}`.
+
+Met is not due. `--host generic` is the only path left for a Gemini operator
+and for any host whose family has not shipped a runner, so deleting it is an
+owner **policy** decision rather than a consequence of the bar clearing: the
+bar can say that no remaining selectable host falls short, but it cannot say
+there is anywhere else for those operators to go. The row is therefore still
+registered, still selectable, and prints a deprecation notice
+(`hosts.is_deprecated`, `host_disclosure.GENERIC_DEPRECATION`).
+
+The decision, its options and a recommendation are written up as section 8.3
+of the first-class-hosts design spec in the private docs repo (panopticon-docs
+#55). Nothing in this document changes until it is made; a family PR that lands
+before then still gets `--host generic` as the fallback it describes.
