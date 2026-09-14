@@ -1,4 +1,5 @@
 import contextlib
+import inspect
 import json
 import os
 import shutil
@@ -1931,6 +1932,38 @@ class TestKimiShellSurfaceIsAnAllowList(unittest.TestCase):
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("FetchURL", detail)
 
+    def test_a_config_the_probe_cannot_generate_is_refuted_not_proven(self):
+        # R2-4: this is OUR writer failing, not third-party data the probe
+        # cannot read (I5's tolerated fallback). A probe that could not build
+        # the artifact it measures may not report `proven` with the reason
+        # tucked into its detail.
+        with tempfile.TemporaryDirectory() as d:
+            _kimi_fully_registered(d)
+            with mock.patch.object(host_probes, "_kimi_armed_home",
+                                   side_effect=OSError("no space left on device")):
+                state, _by, detail = host_probes.probe_kimi_shell_surface(
+                    "kimi", registration_dir=d, version="0.42")
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("no space left on device", detail)
+
+    def test_every_exception_the_writer_raises_is_reported_not_raised(self):
+        # `build_merged_config` raises ValueError (M3/N5) and `dump_toml`
+        # raises TypeError (C2); neither was caught, and `run_probes` wraps no
+        # probe, so posture establishment would have died on a traceback.
+        import scripts.kimi_toml as kimi_toml
+        import scripts.runners.kimi as kimi_runner
+        for target, boom in ((kimi_toml, TypeError("cannot emit TOML")),
+                             (kimi_runner, ValueError("expected a table at `tools`"))):
+            name = "dump_toml" if target is kimi_toml else "build_merged_config"
+            with self.subTest(raises=type(boom).__name__):
+                with tempfile.TemporaryDirectory() as d:
+                    _kimi_fully_registered(d)
+                    with mock.patch.object(target, name, side_effect=boom):
+                        state, _by, detail = host_probes.probe_kimi_shell_surface(
+                            "kimi", registration_dir=d, version="0.42")
+                self.assertEqual(hosts.REFUTED, state)
+                self.assertIn(str(boom), detail)
+
     def test_a_tool_that_is_neither_granted_nor_disabled_is_refuted(self):
         import scripts.runners.kimi as kimi_runner
         with tempfile.TemporaryDirectory() as d:
@@ -2006,8 +2039,15 @@ class TestKimiShellSurfaceReadsTheWire(unittest.TestCase):
     def test_a_planted_pointer_and_wire_file_in_the_tree_are_never_read(self):
         # N2, the forged-evidence half. A target that plants both a pointer
         # file in the run folder and the directory it names cannot make this
-        # probe report an effective surface: there is no code path from a file
-        # in the reviewed tree to `run_home`.
+        # probe report an effective surface.
+        #
+        # R2-1: the round-2 version of this test omitted `run_dir=` -- the
+        # argument the attack needed and the one `run_probes` passed in
+        # production -- so it passed on the vulnerable tree, which is the one
+        # thing a test named for this must not do. The invariant is that the
+        # channel does not EXIST, so that is what is asserted: the keyword is
+        # refused outright, and the call production makes reports nothing the
+        # planted directory contains.
         import scripts.runners.kimi as kimi_runner
         planted = self._home(snapshot=["Bash", "FetchURL"])
         with tempfile.TemporaryDirectory() as d:
@@ -2018,8 +2058,14 @@ class TestKimiShellSurfaceReadsTheWire(unittest.TestCase):
             with open(os.path.join(run_dir, kimi_runner.POINTER_FILE), "w",
                       encoding="utf-8") as fh:
                 fh.write(planted)
+            with self.assertRaises(TypeError):        # no tree-reading channel
+                host_probes.probe_kimi_shell_surface(
+                    "kimi", registration_dir=registration, version="0.42",
+                    run_dir=run_dir)
             state, _by, detail = host_probes.probe_kimi_shell_surface(
                 "kimi", registration_dir=registration, version="0.42")
         self.assertEqual(hosts.PROVEN, state)
         self.assertNotIn("Bash", detail)
         self.assertNotIn("tools_snapshot for", detail)
+        self.assertNotIn("run_dir",
+                         inspect.signature(host_probes.probe_kimi_shell_surface).parameters)

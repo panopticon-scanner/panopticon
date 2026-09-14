@@ -22,24 +22,22 @@ So `prepare` builds a per-run home: the operator's OAuth stores (`credentials`,
 
 The source config's other values are carried verbatim -- including any
 plaintext `api_key` the operator keeps there (stripping it would break
-api_key-authenticated installs). BECAUSE it carries that surface, the home is
+api_key-authenticated installs). BECAUSE it carries that surface the home is
 built under the operator's temp root (``$XDG_RUNTIME_DIR`` where there is one),
 mode 700, `config.toml` mode 600 -- never inside the tree under review, where
-the always-unenforced setup-scan reviewer's scope would admit it, an archived
-run folder would embed it, and the children's verbatim `wire.jsonl` would land
-beside the code being reviewed (C1). `teardown` removes it on `complete` and
-keeps it stripped of its credential files on an error (N6). PR evidence must
-quote capabilities, never this directory.
+the always-unenforced setup scan's own scope would admit it, an archived run
+folder would embed it, and the children's verbatim `wire.jsonl` would land
+beside the code being reviewed (C1). It is removed on `complete`, and stripped
+of its credential files on every other way out (N6, R2-2).
 
 MODEL BINDING. Entry models are the primary/secondary TIERS
-(phases/requests.bound_model via model_resolver). Kimi agent files cannot
-bind a model (unknown frontmatter fields are ignored), so the runner binds
-with ``-m <alias>`` on every entry -- enforced or not -- resolving tier ->
-profile alias -> the full alias the installed config's [models] table
-actually defines (e.g. ``k3`` -> ``kimi-code/k3``). An unresolvable model is a
-failed entry, never a silent session-model fallback. The alias the child
-REALLY ran is read back from the session's wire file (`llm.request` /
-`usage.record` records), which is also the usage ledger's source:
+(phases/requests.bound_model via model_resolver). Kimi agent files cannot bind
+a model (unknown frontmatter fields are ignored), so the runner binds ``-m
+<alias>`` on every entry -- enforced or not -- resolving tier -> profile alias
+-> the full alias the installed config's [models] table defines (``k3`` ->
+``kimi-code/k3``). An unresolvable model is a failed entry, never a silent
+session-model fallback. The alias that REALLY ran is read back from the
+session's wire file, which is also the usage ledger's source:
 ``usage.record{usageScope: "turn"}`` events, one per LLM request, summed.
 
 Residuals, stated plainly: Kimi hooks fail open if the guard's interpreter
@@ -47,10 +45,12 @@ cannot start (kimi_guard_hook.py's docstring); and `kimi -p` gives no USD
 metering on an OAuth plan, so cost_usd is None -- the ledger's token figures
 are the honest cost signal.
 """
+import atexit
 import glob
 import json
 import os
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -209,7 +209,8 @@ def build_merged_config(source, scope_path, allowlist_path, source_path=None):
     # `[hooks]` rather than `[[hooks]]` used to iterate the dict's KEYS, drop
     # them all as non-dicts, and arm a config whose operator hooks had silently
     # vanished. Name it instead.
-    _expect(source_path, "hooks", source.get("hooks"), list, "an array of tables")
+    _expect(source_path, "hooks", source.get("hooks"), list, "an array of tables",
+            items=dict)                                 # R2-3: and what is IN it
     merged = dict(source)
     merged["merge_all_available_skills"] = False
     merged["builtin_product_skills"] = False
@@ -457,6 +458,8 @@ class Runner(base.HostRunner):
         self.kimi_home = None
         self.run_home = None           # the seam's name for it (base.HostRunner)
         self.home_pointer = None
+        self._crash_strip = None       # the atexit callback, while one is armed
+        self._signal_handlers = {}     # {signum: (ours, whatever was there before)}
         self.review_root = None
         self.configured = None
         self.max_turns = 60
@@ -491,7 +494,66 @@ class Runner(base.HostRunner):
         self.home_pointer = pointer_path(run_dir)
         os.makedirs(run_dir, exist_ok=True)
         _write_text(self.home_pointer, self.kimi_home + "\n")
+        self._arm_crash_strippers()
         self.configured = configured_models()
+
+    def _strip_on_exit(self):
+        """Take the credential files out of THIS process's home. Idempotent and
+        bounded by `is_temp_home` exactly as `teardown` is; it touches no other
+        home, so two runs on one machine cannot interfere."""
+        home = self.kimi_home
+        if home and is_temp_home(home):
+            strip_secrets(home)
+
+    def _arm_crash_strippers(self):
+        """Strip the secrets on the ways out that never reach `teardown` (R2-2).
+
+        `teardown` runs from orchestrate._finish, so a `kill`, an OOM kill or a
+        power loss leaves the home behind -- and since N2 removed reuse, no
+        later run adopts it. `atexit` covers a normal-ish exit and an unhandled
+        exception; SIGINT/SIGTERM go on top, CHAINING to whatever was there
+        (the loop's KeyboardInterrupt path is one of those). SIGKILL nobody can
+        catch: that residual is in docs/PANOPTICON.md.
+        """
+        if self._crash_strip is not None:
+            return
+        self._crash_strip = self._strip_on_exit
+        atexit.register(self._crash_strip)
+        for name in ("SIGINT", "SIGTERM"):
+            signum = getattr(signal, name, None)
+            if signum is None:
+                continue
+            try:
+                previous = signal.getsignal(signum)
+                handler = self._signal_stripper(previous)
+                signal.signal(signum, handler)
+            except (ValueError, OSError, RuntimeError):
+                continue          # not the main thread, or no such signal here
+            self._signal_handlers[signum] = (handler, previous)
+
+    def _signal_stripper(self, previous):
+        def handler(signum, frame):
+            self._strip_on_exit()
+            if callable(previous):
+                previous(signum, frame)       # chained: the loop still sees it
+            elif previous == signal.SIG_DFL:
+                signal.signal(signum, signal.SIG_DFL)
+                os.kill(os.getpid(), signum)  # die as we would have
+        return handler
+
+    def _disarm_crash_strippers(self):
+        """The run is over: take ours back off, so a process that prepares more
+        than once does not stack wrappers on SIGINT."""
+        if self._crash_strip is not None:
+            atexit.unregister(self._crash_strip)
+            self._crash_strip = None
+        for signum, (ours, previous) in list(self._signal_handlers.items()):
+            try:
+                if signal.getsignal(signum) is ours:
+                    signal.signal(signum, previous)
+            except (ValueError, OSError, RuntimeError):
+                pass
+        self._signal_handlers.clear()
 
     def teardown(self, status=None):
         """Drop the per-run home on a clean finish; keep it, stripped, on an error.
@@ -507,6 +569,7 @@ class Runner(base.HostRunner):
         path every process of that uid can see. The debugging value is in the
         transcripts, not the credential surface.
         """
+        self._disarm_crash_strippers()
         home = self.kimi_home
         if not home or not is_temp_home(home):
             return
@@ -537,10 +600,9 @@ class Runner(base.HostRunner):
     def command(self, entry, alias):
         """The argv for one entry. `--agent-file=<abs shell>` (equals form:
         0.42.0 misparses the space form after -p) gives the shell EXPLICIT
-        precedence -- above any project-scoped shadow file in the reviewed
-        tree, which is the whole point of registering enforcement shells.
-        `-m` binds the model on EVERY entry that names one: Kimi agent files
-        cannot bind one themselves."""
+        precedence over any project-scoped shadow file in the reviewed tree,
+        which is the point of registering enforcement shells. `-m` binds the
+        model on EVERY entry that names one."""
         cmd = [self.CLI, "--output-format", "stream-json"]
         if entry.get("enforced") and entry.get("agent"):
             cmd.append("--agent-file=%s" % self._shell_path(entry))
@@ -552,9 +614,9 @@ class Runner(base.HostRunner):
     def parse_envelope(self, entry_id, stdout, returncode, stderr=None):
         """stream-json lines: the last assistant content is the reply; the
         session.resume_hint meta names the session id the wire file keys on.
-        A failed launch's reason lives on stderr (an empty stdout tail reads
-        as 'exited 1: ' and diagnoses nothing -- the 2026-09-13 burst-rate
-        limit failure was invisible until stderr was included)."""
+        A failed launch's reason lives on stderr (an empty stdout tail reads as
+        'exited 1: ' and diagnoses nothing -- the 2026-09-13 burst rate-limit
+        failure was invisible until stderr was included)."""
         text, session_id = "", None
         for line in (stdout or "").splitlines():
             try:

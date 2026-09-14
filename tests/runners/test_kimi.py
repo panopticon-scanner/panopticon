@@ -5,6 +5,7 @@ import io
 import json
 import os
 import shutil
+import signal
 import subprocess
 import tempfile
 import tomllib
@@ -499,6 +500,52 @@ class TestHomeLocation(unittest.TestCase):
             self.assertFalse(os.path.exists(r.home_pointer))
             self.assertEqual([], os.listdir(run_dir))
 
+    def test_a_hard_kill_strips_the_secrets_through_the_exit_handler(self):
+        # R2-2: `teardown` runs from orchestrate._finish, which a SIGKILL, an
+        # OOM kill or a power loss never reaches -- and since N2 removed reuse,
+        # nothing ever adopts a crashed run's home again. The exit and signal
+        # handlers are what stand between a crash and a permanent orphan
+        # holding the api_key and live OAuth symlinks. Exercised through the
+        # handler itself: the suite sends no signals.
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
+                r = kimi_runner.Runner("kimi")
+                r.prepare(os.path.join(d, "run"), review_root=d)
+            home = r.kimi_home
+            self.addCleanup(shutil.rmtree, home, True)
+            self.addCleanup(r.teardown, "error")
+            wire = os.path.join(home, "sessions", "w", "s", "agents", "main", "wire.jsonl")
+            os.makedirs(os.path.dirname(wire))
+            with open(wire, "w", encoding="utf-8") as fh:
+                fh.write("{}\n")
+            r._strip_on_exit()
+            self.assertFalse(os.path.exists(os.path.join(home, "config.toml")))
+            for item in ("credentials", "oauth"):
+                self.assertFalse(os.path.islink(os.path.join(home, item)))
+            self.assertTrue(os.path.isfile(wire))       # the transcripts survive
+            r._strip_on_exit()                          # idempotent
+
+    def test_the_signal_handler_strips_then_chains_to_the_previous_one(self):
+        seen = []
+        previous = signal.getsignal(signal.SIGTERM)
+        signal.signal(signal.SIGTERM, lambda signum, frame: seen.append(signum))
+        self.addCleanup(signal.signal, signal.SIGTERM, previous)
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
+                r = kimi_runner.Runner("kimi")
+                r.prepare(os.path.join(d, "run"), review_root=d)
+            home = r.kimi_home
+            self.addCleanup(shutil.rmtree, home, True)
+            installed = signal.getsignal(signal.SIGTERM)
+            self.assertNotEqual(installed, previous)
+            installed(signal.SIGTERM, None)             # no real signal is sent
+            self.assertEqual([signal.SIGTERM], seen)    # chained
+            self.assertFalse(os.path.exists(os.path.join(home, "config.toml")))
+            r.teardown("complete")
+            # the run is over: the handlers come back off, so a suite that
+            # prepares many runners does not stack wrappers on SIGTERM.
+            self.assertIsNone(r._crash_strip)
+
     def test_teardown_refuses_a_path_that_is_not_a_temp_home(self):
         with tempfile.TemporaryDirectory() as d:
             planted = os.path.join(d, "not-a-temp-home")
@@ -768,6 +815,21 @@ class TestOperatorConfigShape(unittest.TestCase):
             with self.assertRaises(ValueError) as caught:
                 self._build(d, '[hooks]\nevent = "Stop"\n')
         self.assertIn("`hooks`", str(caught.exception))
+
+    def test_a_hooks_array_holding_non_tables_is_named(self):
+        # R2-3: N5's `items=` went to `tools.disabled` and not to its twin.
+        # `hooks = [1, 2]` passed the array check and was then silently
+        # discarded by `[h for h in ... if isinstance(h, dict)]` -- the
+        # operator's own hooks gone without a word, which is the failure M3
+        # exists to remove, one level down.
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(ValueError) as caught:
+                self._build(d, 'hooks = [1, 2]\n')
+        message = str(caught.exception)
+        self.assertIn("config.toml", message)
+        self.assertIn("`hooks`", message)
+        self.assertIn("an array of tables", message)
+        self.assertIn("int", message)
 
     def test_a_config_with_the_expected_shapes_still_builds(self):
         with tempfile.TemporaryDirectory() as d:

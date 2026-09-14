@@ -693,17 +693,23 @@ def probe_kimi_shell_surface(host, registration_dir=None, version=None, runner=N
     allowed = kimi_runner.allowed_tool_union()
     disabled, where = _kimi_generated_disabled()
     if disabled is None:
-        surface = "the per-run config's disabled set could not be read: %s" % where
-    else:
-        unaccounted = sorted(set(vocabulary) - allowed - disabled)
-        if unaccounted:
-            faults.append("neither granted by a template nor disabled by %s, so "
-                          "live for every unenforced entry: %s"
-                          % (where, ", ".join(unaccounted)))
-        surface = ("all %d of kimi %s's tools are accounted for (%d granted by a "
-                   "template, %d disabled by %s)"
-                   % (len(vocabulary), version, len(allowed & set(vocabulary)),
-                      len(disabled), where))
+        # R2-4: not a fallback. I5 falls back on an unrecognised record shape --
+        # third-party data -- and says so; this is OUR OWN writer failing, and
+        # a probe that could not build the artifact it measures has measured
+        # nothing. Fail closed rather than report `proven` with the reason
+        # tucked into the detail.
+        return (hosts.REFUTED, KIMI_SHELL_SURFACE,
+                "%s; but the tool surface could not be measured: %s"
+                % (base_detail, where))
+    unaccounted = sorted(set(vocabulary) - allowed - disabled)
+    if unaccounted:
+        faults.append("neither granted by a template nor disabled by %s, so "
+                      "live for every unenforced entry: %s"
+                      % (where, ", ".join(unaccounted)))
+    surface = ("all %d of kimi %s's tools are accounted for (%d granted by a "
+               "template, %d disabled by %s)"
+               % (len(vocabulary), version, len(allowed & set(vocabulary)),
+                  len(disabled), where))
     # I5: the EFFECTIVE surface, when a child has already run in this run's
     # home. The table above says what the CLI ships; the snapshot says what a
     # launched child was actually given.
@@ -790,16 +796,25 @@ def _kimi_armed_home(sandbox):
 def _kimi_generated_disabled():
     """(tools.disabled, where) read out of a config.toml the runner generates,
     or (None, why). The file is built and read inside a sandbox and nothing
-    survives the call."""
+    survives the call.
+
+    R2-4: the except list covers every type the writer it drives can raise --
+    `build_merged_config` raises ValueError (M3/N5's own mechanism) and
+    `dump_toml` raises TypeError (C2's) -- because `run_probes` wraps no probe
+    lambda and `_establish_host_posture` is called unwrapped, so an escape here
+    would abort posture establishment with a traceback. "A probe reports,
+    never raises" is this module's contract, not a tendency.
+    """
     try:
         with tempfile.TemporaryDirectory() as sandbox:
             home, _scope, _allowlist = _kimi_armed_home(sandbox)
             with open(os.path.join(home, "config.toml"), "rb") as fh:
                 config = tomllib.load(fh)
-    except OSError as exc:
-        return None, "the per-run config could not be generated (%s)" % exc
     except tomllib.TOMLDecodeError as exc:
         return None, "the generated config.toml is not valid TOML (%s)" % exc
+    except (OSError, ValueError, TypeError) as exc:
+        return None, ("the per-run config could not be generated (%s: %s)"
+                      % (type(exc).__name__, exc))
     tools = config.get("tools") if isinstance(config.get("tools"), dict) else {}
     names = {t for t in (tools.get("disabled") or []) if isinstance(t, str)}
     return names, "the config.toml the runner generates"
