@@ -163,14 +163,27 @@ class TestSkillMd(unittest.TestCase):
         # the old `assertIn("on gemini", caps)` went on passing on the
         # past-tense clause that replaced it, guarding nothing. Pin the
         # paragraph the retirement actually added, and pin the one thing in it
-        # that is easy to overclaim: the stale-manifest refusal is `driver
-        # loop`'s, and `driver run` still proceeds.
+        # that is easy to overclaim: which entrypoints refuse a stale manifest.
         # (`caps` has already had its `**` stripped by the replace above.)
+        #
+        # #1624 moved that claim: the refusal was `driver loop`'s alone and
+        # `driver run` "still proceeds"; now BOTH refuse it, in one sentence
+        # the registry owns. The three assertions below are kept as they
+        # were -- and they are exactly why the rest are needed, because both
+        # entrypoint names appear under either claim, so a name substring
+        # never said WHICH claim the doc was making. Pin the claim itself,
+        # and pin the retired one as absent so the doc cannot drift back to a
+        # `driver run` that proceeds.
         retired = _section(caps, "`gemini` is registered but not driver-selectable",
                            "\n\n")
         self.assertIn("`--host generic`", retired)
         self.assertIn("driver loop", retired)
         self.assertIn("driver run", retired)
+        self.assertIn("both", retired)
+        self.assertIn("in the same sentence", retired)
+        self.assertIn("`--host generic --reset`", retired)
+        self.assertIn("hosts.unselectable_host_message", retired)
+        self.assertNotIn("still proceeds", retired)
 
     def test_documents_the_read_guard_on_scout_and_setup_scan_checkpoints(self):
         # I4: coverage._scout_entry and setup._setup_scan_entry also emit
