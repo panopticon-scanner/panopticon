@@ -1,4 +1,5 @@
 import dataclasses
+import datetime
 import json
 import os
 import subprocess
@@ -522,3 +523,60 @@ class TestHardenedWrites(unittest.TestCase):
             with open(victim, encoding="utf-8") as fh:
                 self.assertEqual("untouched", fh.read())
             self.assertEqual(r.kimi_home, kimi_runner.read_home_pointer(run_dir))
+
+
+class TestTomlEmissionRoundTrips(unittest.TestCase):
+    """C2: the armed `config.toml` is the ONLY place Kimi's confinement lives,
+    and this writer produces it from whatever the operator's own config holds.
+    A shape it cannot emit is not a cosmetic bug: a config Kimi will not load
+    is a run with the two `[[hooks]]` entries missing."""
+
+    def test_a_nested_array_of_tables_round_trips(self):
+        # `[[mcp.servers]]` is the standard MCP shape. The old writer emitted
+        # the PARENT's path -- `[[mcp]]` -- which tomllib refuses with
+        # "Cannot overwrite a value".
+        config = {"mcp": {"servers": [{"name": "s1", "command": "a"},
+                                      {"name": "s2", "command": "b"}]}}
+        self.assertEqual(config, tomllib.loads(kimi_runner.dump_toml(config)))
+
+    def test_a_scalar_after_an_array_of_tables_stays_in_its_own_table(self):
+        # The old writer emitted array-of-tables headers from INSIDE the scalar
+        # loop, so `y` was swallowed into the last `[[...]]`.
+        config = {"a": {"list": [{"x": 1}], "y": 2}}
+        self.assertEqual(config, tomllib.loads(kimi_runner.dump_toml(config)))
+
+    def test_datetimes_dates_and_times_round_trip(self):
+        config = {"last_update_check": datetime.datetime(2026, 9, 13, 12, 30, 5,
+                                                         tzinfo=datetime.timezone.utc),
+                  "naive": datetime.datetime(2026, 9, 13, 12, 30, 5),
+                  "day": datetime.date(2026, 9, 13),
+                  "clock": datetime.time(7, 5, 1)}
+        self.assertEqual(config, tomllib.loads(kimi_runner.dump_toml(config)))
+
+    def test_tables_three_deep_round_trip(self):
+        config = {"providers": {"managed:kimi-code": {"oauth": {"storage": "file",
+                                                                "key": "x"},
+                                                      "api_key": "k"}},
+                  "top": 1}
+        self.assertEqual(config, tomllib.loads(kimi_runner.dump_toml(config)))
+
+    def test_a_none_value_names_the_key_it_came_from(self):
+        with self.assertRaises(TypeError) as caught:
+            kimi_runner.dump_toml({"tools": {"disabled": None}})
+        self.assertIn("disabled", str(caught.exception))
+
+    def test_the_real_merged_config_round_trips_with_an_mcp_block(self):
+        # End to end through the file the runner actually arms.
+        with tempfile.TemporaryDirectory() as d:
+            fixture = _fixture_home(d)
+            with open(os.path.join(fixture, "config.toml"), "a", encoding="utf-8") as fh:
+                fh.write('\n[[mcp.servers]]\nname = "s1"\n\n[[mcp.servers]]\nname = "s2"\n'
+                         '\n[mcp]\nenabled = true\n')
+            home = os.path.join(d, "home")
+            kimi_runner.build_kimi_home(home, os.path.join(d, "s.json"),
+                                        os.path.join(d, "a.json"), real_home=fixture)
+            with open(os.path.join(home, "config.toml"), "rb") as fh:
+                armed = tomllib.load(fh)
+        self.assertEqual(["s1", "s2"], [s["name"] for s in armed["mcp"]["servers"]])
+        self.assertTrue(armed["mcp"]["enabled"])
+        self.assertEqual(2, len(armed["hooks"]))
