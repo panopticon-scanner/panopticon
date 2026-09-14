@@ -438,31 +438,111 @@ def test_the_truncation_note_counts_what_it_actually_stopped_at(tree, monkeypatc
     assert note == "[truncated: enumeration stopped at 5 files; pass path= to narrow]"
 
 
-def test_a_truncated_walk_is_reproducible(tree, monkeypatch):
-    # N-M2: subdirectories were pushed onto the LIFO stack in os.scandir
-    # order, so WHICH files survived a truncated walk was neither
-    # lexicographic nor stable -- and sorting the survivors afterwards hid it.
+class _Entry:
+    """A directory entry whose type is already decided.
+
+    `os.scandir(fd)` hands back DirEntry objects that resolve their type
+    against the open descriptor; the adversary below has to materialise them
+    before that descriptor closes, so it snapshots the two questions the walk
+    actually asks.
+    """
+
+    def __init__(self, entry):
+        self.name = entry.name
+        self._dir = entry.is_dir(follow_symlinks=False)
+        self._file = entry.is_file(follow_symlinks=False)
+
+    def is_dir(self, follow_symlinks=True):
+        return self._dir
+
+    def is_file(self, follow_symlinks=True):
+        return self._file
+
+
+class _Ordered:
+    """What `os.scandir` returns: a context manager over entries."""
+
+    def __init__(self, entries):
+        self._entries = entries
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def __iter__(self):
+        return iter(self._entries)
+
+
+def _reverse_scandir(monkeypatch):
+    """Hand the walk every directory in REVERSE lexicographic order.
+
+    A filesystem's readdir order is its own business -- APFS returns something
+    hash-shaped, ext4 something else -- so a test that merely runs twice on
+    this machine proves determinism within one process and nothing about the
+    property that matters. Forcing the worst order makes the assertion below
+    discriminate the two implementations on any filesystem, which is the only
+    way this test can be red on the code it was written against.
+
+    Only the fd form is reordered: that is how the walk calls scandir, and
+    every other caller in the process (pytest included) passes a path.
+    """
+    real = os.scandir
+
+    def ordered(target):
+        if not isinstance(target, int):
+            return real(target)
+        with real(target) as entries:
+            return _Ordered(sorted((_Entry(e) for e in entries),
+                                   key=lambda e: e.name, reverse=True))
+
+    monkeypatch.setattr(os, "scandir", ordered)
+    # The broker refuses to open anything unless `os.scandir` is one of the
+    # functions that accept a descriptor (codex_read_tools._open's platform
+    # check). Swapping the function drops it out of that set, so the stand-in
+    # has to be declared fd-capable or every read is denied and the assertion
+    # below would pass for the wrong reason.
+    monkeypatch.setattr(os, "supports_fd", os.supports_fd | {ordered})
+
+
+def test_a_truncated_walk_keeps_the_same_files_on_any_filesystem(tree, monkeypatch):
+    # N-M2 pushed subdirectories onto the LIFO stack reverse-sorted, so the
+    # walk DESCENDS lexicographically. R23-M1: within a directory, files were
+    # still added in os.scandir order and the cap trips mid-directory, so
+    # WHICH files survived from the boundary directory stayed exactly as
+    # filesystem-dependent as before -- and the test that was supposed to
+    # prove otherwise could not tell the two walks apart on APFS.
     _root, source, _first, _second, _outside = tree
     for name in ("delta", "alpha", "charlie", "bravo"):
         (source / name).mkdir()
         for number in range(3):
             (source / name / ("f%d.txt" % number)).write_text("x\n", encoding="utf-8")
     monkeypatch.setattr(read_tools, "MAX_FILES", 6)
-    reader = reader_for(tree, directories=True)
 
     def listing():
         # Relative, for the same reason N-I2 exists: this test's own tmp_path
-        # basename contains the word "truncated", so filtering absolute lines
-        # on that word discards every one of them.
-        text = body(reader.call("list_files", {"pattern": "*"}))
-        return [os.path.relpath(line, str(_root)).replace(os.sep, "/")
-                for line in text.splitlines() if line.startswith(str(_root))], text
+        # basename can contain a word the filter looks for, so judging
+        # absolute lines discards them.
+        text = body(reader_for(tree, directories=True).call("list_files", {"pattern": "*"}))
+        return sorted(os.path.relpath(line, str(_root)).replace(os.sep, "/")
+                      for line in text.splitlines() if line.startswith(str(_root))), text
+
+    # Six names: the two files in `source`, then the lexicographically first
+    # subtree whole, then as much of the next as fits. Not "some alpha file
+    # survived" -- the exact prefix, which is the only claim worth making.
+    expected = ["source/alpha/f0.txt", "source/alpha/f1.txt", "source/alpha/f2.txt",
+                "source/bravo/f0.txt", "source/first.py", "source/second.txt"]
 
     kept, text = listing()
     assert text.splitlines()[-1].startswith("[truncated:")
-    for _ in range(4):
-        assert listing()[0] == kept
-    # ...and the subset it keeps is the lexicographically first subtree, not
-    # whatever the filesystem happened to hand back.
-    assert any(line.startswith("source/alpha/") for line in kept), kept
-    assert not any(line.startswith("source/delta/") for line in kept), kept
+    assert kept == expected
+
+    # The same answer under a filesystem that hands back the worst possible
+    # order. THIS is the assertion that goes red on the pre-fix walk, which
+    # keeps source/bravo/f2.txt here instead of source/bravo/f0.txt.
+    with monkeypatch.context() as adversary:
+        _reverse_scandir(adversary)
+        hostile, hostile_text = listing()
+    assert hostile_text.splitlines()[-1].startswith("[truncated:")
+    assert hostile == expected

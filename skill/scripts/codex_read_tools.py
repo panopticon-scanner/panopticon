@@ -181,7 +181,7 @@ class Reader:
             if visited > MAX_DIRECTORIES:
                 truncated = True
                 break
-            children = []
+            children, here = [], []
             with _open(directory, directory=True) as fd, os.scandir(fd) as entries:
                 for entry in entries:
                     examined += 1
@@ -193,20 +193,27 @@ class Reader:
                         if not _excluded_dir(entry.name):
                             children.append(path)
                     elif entry.is_file(follow_symlinks=False):
-                        found.add(path)
-                        # N-M1: `>` not `>=`. Stopping ON the MAX_FILES-th
-                        # file marked a listing truncated before anything had
-                        # been dropped, and told the reviewer to narrow a path
-                        # that was already whole.
-                        if len(found) > MAX_FILES:
-                            found.discard(path)
-                            truncated = True
-                            break
+                        here.append(path)
+            # R23-M1: the cap trips inside ONE directory, so that directory's
+            # files have to be ordered before the cap sees them or which of
+            # them survives is whatever readdir felt like -- the half of the
+            # stability claim that pushing children reverse-sorted does not
+            # buy. The whole directory is read first because a lexicographic
+            # prefix cannot be known from a partial read.
+            for path in sorted(here):
+                found.add(path)
+                # N-M1: `>` not `>=`. Stopping ON the MAX_FILES-th file marked
+                # a listing truncated before anything had been dropped, and
+                # told the reviewer to narrow a path that was already whole.
+                if len(found) > MAX_FILES:
+                    found.discard(path)
+                    truncated = True
+                    break
             # N-M2: `pending` is a LIFO stack, so pushing this directory's
-            # children reverse-sorted makes the walk visit them
-            # lexicographically. Pushing them in os.scandir order left WHICH
-            # files survived a truncated walk unstable across filesystems --
-            # and sorting the survivors afterwards hid that it was arbitrary.
+            # children reverse-sorted makes the walk DESCEND lexicographically.
+            # With the sort above, a truncated listing is the tree's true
+            # lexicographic prefix on every filesystem, not a sorted view of an
+            # arbitrary subset.
             pending.extend(sorted(children, reverse=True))
         return sorted(found), truncated
 
