@@ -88,6 +88,15 @@ class TestParseEnvelope(unittest.TestCase):
         self.assertFalse(res.ok)
         self.assertIn("exited 2", res.error)
 
+    def test_a_failed_launch_reports_stderr_not_an_empty_tail(self):
+        # 2026-09-13: an 8-wide burst hit the gateway rate limit and every
+        # entry read 'kimi -p exited 1: ' -- stdout empty, the reason on
+        # stderr, invisible. stderr is the failure detail of record.
+        res = kimi_runner.Runner("kimi").parse_envelope(
+            "e1", "", 1, stderr="Error: rate limit exceeded\n")
+        self.assertFalse(res.ok)
+        self.assertIn("rate limit", res.error)
+
     def test_garbage_lines_are_tolerated(self):
         text, session_id = kimi_runner.Runner("kimi").parse_envelope(
             "e1", "not json\n" + STREAM + "\n{broken", 0)

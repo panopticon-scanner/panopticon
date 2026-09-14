@@ -279,7 +279,7 @@ def parse_wire(path):
 class Runner(base.HostRunner):
     CLI = "kimi"
     mode = "headless"
-    default_concurrency = 8
+    default_concurrency = 4        # the managed gateway rate-limits; 8 bursted into exit-1s (measured)
 
     def __init__(self, host="kimi", runner=subprocess.run):
         super().__init__(host)
@@ -318,9 +318,12 @@ class Runner(base.HostRunner):
         cmd += ["-p", entry["prompt"]]
         return cmd
 
-    def parse_envelope(self, entry_id, stdout, returncode):
+    def parse_envelope(self, entry_id, stdout, returncode, stderr=None):
         """stream-json lines: the last assistant content is the reply; the
-        session.resume_hint meta names the session id the wire file keys on."""
+        session.resume_hint meta names the session id the wire file keys on.
+        A failed launch's reason lives on stderr (an empty stdout tail reads
+        as 'exited 1: ' and diagnoses nothing -- the 2026-09-13 burst-rate
+        limit failure was invisible until stderr was included)."""
         text, session_id = "", None
         for line in (stdout or "").splitlines():
             try:
@@ -336,8 +339,9 @@ class Runner(base.HostRunner):
                   and isinstance(record.get("session_id"), str)):
                 session_id = record["session_id"]
         if returncode != 0:
+            detail = text or (stderr or "").strip()
             return base.RunResult.failed(
-                entry_id, "kimi -p exited %s: %s" % (returncode, text[:200]))
+                entry_id, "kimi -p exited %s: %s" % (returncode, detail[:200]))
         return text, session_id
 
     def run_entry(self, entry, env):
@@ -375,7 +379,8 @@ class Runner(base.HostRunner):
         except Exception as exc:          # run_entry never raises (spec 4.4)
             return base.RunResult.failed(entry_id,
                                           "kimi -p launch raised %s: %s" % (type(exc).__name__, exc))
-        parsed = self.parse_envelope(entry_id, proc.stdout, proc.returncode)
+        parsed = self.parse_envelope(entry_id, proc.stdout, proc.returncode,
+                                     stderr=proc.stderr)
         if isinstance(parsed, base.RunResult):
             return parsed
         text, session_id = parsed
