@@ -547,21 +547,14 @@ KIMI_WRITE_GUARD = "kimi-write-guard-armed"
 KIMI_MODEL_ALIAS = "kimi-model-alias-bound"
 KIMI_USAGE_WIRE = "kimi-usage-wire"
 
-# The CLI's builtin tool vocabulary by major.minor, measured from a live
-# session's `llm.tools_snapshot` wire record on 0.42.0. A version this table
-# does not cover resolves UNKNOWN, never a guess: a tool name that matches
-# nothing in the installed CLI is warned about and restricts NOTHING
-# (FAMILY-PR-GUARDRAILS, the recorded kimi finding), so a stale table must
-# not wave the shells through.
-_KIMI_TOOL_VOCABULARY = {
-    "0.42": frozenset({
-        "Agent", "AgentSwarm", "AskUserQuestion", "Bash", "CreateGoal",
-        "CronCreate", "CronDelete", "CronList", "Edit", "EnterPlanMode",
-        "ExitPlanMode", "FetchURL", "GetGoal", "Glob", "Grep", "Read",
-        "ReadMediaFile", "SetGoalBudget", "Skill", "TaskList", "TaskOutput",
-        "TaskStop", "TodoList", "UpdateGoal", "WaitFor", "WebSearch", "Write",
-    }),
-}
+# The CLI's builtin tool vocabulary lives with the RUNNER
+# (runners.kimi.TOOL_VOCABULARY), because the runner is what has to deny it:
+# Kimi's config offers a deny-list and no allow-list, so the per-run
+# `tools.disabled` is derived from that table minus the templates' grants (I1).
+# The probe reads the same table back. A version it does not cover resolves
+# UNKNOWN, never a guess: a tool name that matches nothing in the installed CLI
+# is warned about and restricts NOTHING (FAMILY-PR-GUARDRAILS, the recorded
+# kimi finding), so a stale table must not wave the shells through.
 
 
 def _kimi_version(runner=None):
@@ -593,6 +586,7 @@ def probe_kimi_shell_surface(host, registration_dir=None, version=None, runner=N
     surface confirmation (a writer-role child measured carrying exactly
     ['Read', 'Write']).
     """
+    import scripts.runners.kimi as kimi_runner
     base_state, base_by, base_detail = probe_registered_shell_tools(host, registration_dir)
     if base_state != hosts.PROVEN:
         # A host that registers no shells at all gets the base probe's own
@@ -604,7 +598,7 @@ def probe_kimi_shell_surface(host, registration_dir=None, version=None, runner=N
         return (hosts.UNKNOWN, KIMI_SHELL_SURFACE,
                 "shells match their templates, but the installed kimi version "
                 "could not be determined, so its tool vocabulary is unverified")
-    vocabulary = _KIMI_TOOL_VOCABULARY.get(version)
+    vocabulary = kimi_runner.TOOL_VOCABULARY.get(version)
     if vocabulary is None:
         return (hosts.UNKNOWN, KIMI_SHELL_SURFACE,
                 "shells match their templates, but the probe's vocabulary table "
@@ -618,11 +612,24 @@ def probe_kimi_shell_surface(host, registration_dir=None, version=None, runner=N
             if unknown:
                 faults.append("%s: %s tool name(s) match nothing in kimi %s: %s"
                               % (role, direction, version, ", ".join(unknown)))
+    # I1: the default-agent surface is an ALLOW-LIST, so every name in the
+    # CLI's vocabulary must be either granted by a template or disabled by the
+    # per-run config. Anything in neither set is live for every UNENFORCED
+    # entry -- and the setup scan is always unenforced.
+    allowed = kimi_runner.allowed_tool_union()
+    disabled = set(kimi_runner.disabled_tools(vocabulary))
+    unaccounted = sorted(set(vocabulary) - allowed - disabled)
+    if unaccounted:
+        faults.append("neither granted by a template nor in the per-run "
+                      "tools.disabled, so live for every unenforced entry: %s"
+                      % ", ".join(unaccounted))
     if faults:
         return (hosts.REFUTED, KIMI_SHELL_SURFACE, "; ".join(faults))
     return (hosts.PROVEN, KIMI_SHELL_SURFACE,
-            "%s; every tool name exists in kimi %s's builtin vocabulary"
-            % (base_detail, version))
+            "%s; every tool name exists in kimi %s's builtin vocabulary, and all "
+            "%d of its tools are accounted for (%d granted, %d disabled per run)"
+            % (base_detail, version, len(vocabulary), len(allowed & set(vocabulary)),
+               len(disabled)))
 
 
 def _guard_round_trip(mode, data_path, rows, guard_path=None, runner=None):

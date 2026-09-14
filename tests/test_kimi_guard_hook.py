@@ -222,3 +222,35 @@ class TestMain(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestReadMediaFileIsScopeChecked(unittest.TestCase):
+    """I1: ReadMediaFile is a READ tool. The hook did not know it, so it
+    returned (True, "") -- an unconditional read of any file on the machine,
+    from an entry whose Read was confined."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.inside = os.path.realpath(os.path.join(self.tmp.name, "in.png"))
+        self.outside = os.path.realpath(os.path.join(self.tmp.name, "out.png"))
+        for path in (self.inside, self.outside):
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("")
+        self.scope = os.path.join(self.tmp.name, "read-scope.json")
+        with open(self.scope, "w", encoding="utf-8") as fh:
+            json.dump({"e1": {"files": [self.inside], "dirs": [], "reads": []}}, fh)
+
+    def _adjudicate(self, path):
+        return guard.adjudicate(
+            {"tool_name": "ReadMediaFile", "tool_input": {"path": path}},
+            "read", self.scope, env={guard.ENV_ENTRY_ID: "e1"})
+
+    def test_an_in_scope_media_read_is_allowed(self):
+        allow, _reason = self._adjudicate(self.inside)
+        self.assertTrue(allow)
+
+    def test_a_media_read_outside_the_scope_is_denied(self):
+        allow, reason = self._adjudicate(self.outside)
+        self.assertFalse(allow)
+        self.assertIn("outside your cell's scope", reason)

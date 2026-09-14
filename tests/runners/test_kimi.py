@@ -146,18 +146,22 @@ class TestPrepare(unittest.TestCase):
                     config = tomllib.load(fh)
                 self.assertFalse(config["merge_all_available_skills"])
                 self.assertFalse(config["builtin_product_skills"])
-                for tool in ("Bash", "Agent", "AgentSwarm"):
-                    self.assertIn(tool, config["tools"]["disabled"])
+                for tool in ("Bash", "Agent", "AgentSwarm", "FetchURL", "WebSearch"):
+                    self.assertIn(tool, config["tools"]["disabled"])   # I1
                 hooks = config["hooks"]
                 self.assertEqual(len(hooks), 2)
                 matchers = sorted(h["matcher"] for h in hooks)
-                self.assertEqual(matchers, ["Read|Grep|Glob", "Write|Edit"])
+                # I1 widened the read matcher to carry ReadMediaFile.
+                self.assertEqual(matchers, [kimi_runner.READ_MATCHER,
+                                            kimi_runner.WRITE_MATCHER])
                 for h in hooks:
                     self.assertIn(os.path.abspath(kimi_guard_hook.__file__), h["command"])
                 self.assertIn(os.path.join(run_dir, "read-scope.json"),
-                              [h["command"] for h in hooks if h["matcher"] == "Read|Grep|Glob"][0])
+                              [h["command"] for h in hooks
+                               if h["matcher"] == kimi_runner.READ_MATCHER][0])
                 self.assertIn(os.path.join(run_dir, "write-allowlist.json"),
-                              [h["command"] for h in hooks if h["matcher"] == "Write|Edit"][0])
+                              [h["command"] for h in hooks
+                               if h["matcher"] == kimi_runner.WRITE_MATCHER][0])
                 # the fixture's own values survive the merge
                 self.assertEqual(config["models"]["kimi-code/k3"]["model"], "k3")
                 self.assertEqual(r.configured, {"kimi-code/k3", "kimi-code/kimi-for-coding"})
@@ -580,3 +584,40 @@ class TestTomlEmissionRoundTrips(unittest.TestCase):
         self.assertEqual(["s1", "s2"], [s["name"] for s in armed["mcp"]["servers"]])
         self.assertTrue(armed["mcp"]["enabled"])
         self.assertEqual(2, len(armed["hooks"]))
+
+
+class TestDefaultAgentSurface(unittest.TestCase):
+    """I1: `tools.disabled` is what confines an UNENFORCED entry -- the
+    setup-scan is always unenforced, so this is the default path of every
+    `driver setup`, not a corner. A three-name deny-list left 21 of 24 tools
+    live, including an unguarded read tool and two egress tools."""
+
+    def test_the_disabled_set_is_derived_as_the_complement_of_the_templates(self):
+        vocabulary = set().union(*kimi_runner.TOOL_VOCABULARY.values())
+        allowed = kimi_runner.allowed_tool_union()
+        self.assertEqual(sorted(vocabulary - allowed), kimi_runner.disabled_tools())
+        self.assertEqual({"Read", "Grep", "Glob", "Write"}, allowed)
+
+    def test_the_egress_persistence_and_unguarded_read_tools_are_closed(self):
+        disabled = set(kimi_runner.disabled_tools())
+        for tool in ("FetchURL", "WebSearch", "CronCreate", "CronDelete",
+                     "ReadMediaFile", "Skill", "Agent", "AgentSwarm", "Bash"):
+            self.assertIn(tool, disabled)
+        for tool in ("Read", "Grep", "Glob", "Write"):
+            self.assertNotIn(tool, disabled)
+
+    def test_the_armed_config_disables_everything_no_template_grants(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = os.path.join(d, "home")
+            kimi_runner.build_kimi_home(home, os.path.join(d, "s.json"),
+                                        os.path.join(d, "a.json"),
+                                        real_home=_fixture_home(d))
+            with open(os.path.join(home, "config.toml"), "rb") as fh:
+                config = tomllib.load(fh)
+        vocabulary = set().union(*kimi_runner.TOOL_VOCABULARY.values())
+        self.assertEqual(vocabulary,
+                         set(config["tools"]["disabled"]) | kimi_runner.allowed_tool_union())
+
+    def test_the_read_matcher_covers_every_read_tool_the_hook_adjudicates(self):
+        for tool in kimi_guard_hook._READ_TOOLS:
+            self.assertIn(tool, kimi_runner.READ_MATCHER.split("|"))

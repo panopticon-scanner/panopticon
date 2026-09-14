@@ -1543,8 +1543,9 @@ class TestKimiShellSurfaceProbe(unittest.TestCase):
         # the probe must flip to refuted rather than wave the shells through.
         with tempfile.TemporaryDirectory() as d:
             _kimi_fully_registered(d)
-            narrow = {"0.42": host_probes._KIMI_TOOL_VOCABULARY["0.42"] - {"Read", "Bash"}}
-            with mock.patch.dict(host_probes._KIMI_TOOL_VOCABULARY, narrow):
+            import scripts.runners.kimi as kimi_runner
+            narrow = {"0.42": kimi_runner.TOOL_VOCABULARY["0.42"] - {"Read", "Bash"}}
+            with mock.patch.dict(kimi_runner.TOOL_VOCABULARY, narrow):
                 state, _by, detail = host_probes.probe_kimi_shell_surface(
                     "kimi", registration_dir=d, version="0.42")
         self.assertEqual(hosts.REFUTED, state)
@@ -1822,3 +1823,29 @@ class TestKimiGuardArmingIsMeasured(unittest.TestCase):
                 with self.assertRaises(RuntimeError) as caught:
                     runner.prepare(os.path.join(d, "run"), review_root=d)
         self.assertIn("gone.py", str(caught.exception))
+
+
+class TestKimiShellSurfaceIsAnAllowList(unittest.TestCase):
+    """I1: the probe's job is not only "every name exists" but "every name is
+    accounted for" -- each tool in the CLI's vocabulary is either granted by a
+    template or disabled by the per-run config. A tool in neither set is live
+    on the default-agent surface of every unenforced entry."""
+
+    def test_the_derived_disabled_set_plus_the_grants_covers_the_vocabulary(self):
+        with tempfile.TemporaryDirectory() as d:
+            _kimi_fully_registered(d)
+            state, _by, detail = host_probes.probe_kimi_shell_surface(
+                "kimi", registration_dir=d, version="0.42")
+        self.assertEqual(hosts.PROVEN, state)
+        self.assertIn("accounted for", detail)
+
+    def test_a_tool_that_is_neither_granted_nor_disabled_is_refuted(self):
+        import scripts.runners.kimi as kimi_runner
+        with tempfile.TemporaryDirectory() as d:
+            _kimi_fully_registered(d)
+            with mock.patch.object(kimi_runner, "disabled_tools",
+                                   side_effect=lambda vocabulary=None: ["Bash"]):
+                state, _by, detail = host_probes.probe_kimi_shell_surface(
+                    "kimi", registration_dir=d, version="0.42")
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("FetchURL", detail)

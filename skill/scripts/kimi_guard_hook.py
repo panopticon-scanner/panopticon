@@ -8,7 +8,8 @@ THE SHAPE OF THE THING. Kimi Code registers hooks only in
 (runners/kimi.py) builds a PER-RUN Kimi home whose config names this script
 twice::
 
-    [[hooks]] matcher = "Read|Grep|Glob"  -> python3 <this file> read  <scope path>
+    [[hooks]] matcher = "Read|ReadMediaFile|Grep|Glob"
+                                          -> python3 <this file> read  <scope path>
     [[hooks]] matcher = "Write|Edit"      -> python3 <this file> write <allowlist path>
 
 The scope and allowlist DATA files are the ones the loop already arms through
@@ -45,7 +46,11 @@ import json
 import os
 import sys
 
-_READ_TOOLS = frozenset({"Read", "Grep", "Glob"})
+# ReadMediaFile is a READ tool and belongs here (I1): a read tool the guard
+# does not adjudicate returns (True, "") and reads any file on the machine from
+# an entry whose Read is confined. runners/kimi.py's READ_MATCHER names it so
+# the hook is actually invoked for it.
+_READ_TOOLS = frozenset({"Read", "ReadMediaFile", "Grep", "Glob"})
 _WRITE_TOOLS = frozenset({"Write", "Edit"})
 
 ENV_ENTRY_ID = "PANOPTICON_ENTRY_ID"
@@ -140,19 +145,20 @@ def _decide_read(tool_name, tool_input, scope, cwd):
     if os.path.isdir(target):
         if any(_under(target, d) for d in scope["dirs"]):
             return True, ""
-        if tool_name == "Read":
-            return False, ("Read of directory %s is outside your cell's scope; the "
-                           "files you may read are listed in your prompt" % raw)
+        if tool_name in ("Read", "ReadMediaFile"):
+            return False, ("%s of directory %s is outside your cell's scope; the "
+                           "files you may read are listed in your prompt"
+                           % (tool_name, raw))
         if tool_name == "Grep":
             return False, ("Grep over a directory is denied in a confined cell: grep "
                            "a file by its path; your cell's files are listed in your prompt")
         return False, ("Glob is not available in a confined cell: your file list is "
                        "in your prompt")
-    if tool_name == "Read":
+    if tool_name in ("Read", "ReadMediaFile"):
         if _readable(target, scope):
             return True, ""
-        return False, ("Read of %s is outside your cell's scope; the files you may "
-                       "read are listed in your prompt" % raw)
+        return False, ("%s of %s is outside your cell's scope; the files you may "
+                       "read are listed in your prompt" % (tool_name, raw))
     if tool_name == "Grep":
         if _readable(target, scope):
             return True, ""

@@ -13,9 +13,12 @@ So `prepare` builds a per-run home: the operator's OAuth stores (`credentials`,
   * ``merge_all_available_skills = false`` and ``builtin_product_skills =
     false``, so neither the operator's nor a hostile TARGET's skills can
     inject into a reviewer;
-  * ``tools.disabled = ["Bash", "Agent", "AgentSwarm"]``: no shell grants
-    them (the templates forbid them), and this closes them for UNENFORCED
-    entries too, where the child runs as the default agent.
+  * ``tools.disabled``, DERIVED as the CLI's whole tool vocabulary minus the
+    union of the role templates' allowed lists -- an allow-list expressed in
+    the only form Kimi's config takes. That closes the default-agent surface
+    for UNENFORCED entries too (the setup scan is always one), where a
+    three-name deny-list left an unguarded read tool, two egress tools and a
+    persistence tool live.
 
 The source config's other values are carried verbatim -- including any
 plaintext `api_key` the operator keeps there (stripping it would break
@@ -98,20 +101,63 @@ _GUARD = os.path.abspath(kimi_guard_hook.__file__)
 # Symlinked into the per-run home: the OAuth credential stores (file + dir).
 # Config itself is regenerated, not linked -- the hooks have to merge into it.
 _CREDENTIAL_ITEMS = ("credentials", "oauth")
-# No fan-out template grants these; disabling them globally confines the
-# UNENFORCED entries (default agent surface) as well.
-_DISABLED_TOOLS = ["Agent", "AgentSwarm", "Bash"]
+# The CLI's builtin tool vocabulary by major.minor, measured from a live
+# session's `llm.tools_snapshot` wire record on 0.42.0. It lives HERE, with the
+# runner that must deny them, rather than with the probe that reports on them:
+# Kimi's config offers a deny-list (`tools.disabled`) and no allow-list, so
+# turning the templates' allow-list into a closed surface requires knowing
+# every name the CLI ships. A version this table does not cover still gets the
+# union below (denying a name the CLI does not have is inert); the PROBE is
+# what refuses to bless an uncovered version.
+TOOL_VOCABULARY = {
+    "0.42": frozenset({
+        "Agent", "AgentSwarm", "AskUserQuestion", "Bash", "CreateGoal",
+        "CronCreate", "CronDelete", "CronList", "Edit", "EnterPlanMode",
+        "ExitPlanMode", "FetchURL", "GetGoal", "Glob", "Grep", "Read",
+        "ReadMediaFile", "SetGoalBudget", "Skill", "TaskList", "TaskOutput",
+        "TaskStop", "TodoList", "UpdateGoal", "WaitFor", "WebSearch", "Write",
+    }),
+}
 # The two PreToolUse matchers the guard registers under. Named here because
 # the arming PROBE reads them back out of the generated config (C3): one
 # owner, so a matcher the runner stops emitting is a refutation rather than a
-# probe that quietly looks for the wrong string.
-READ_MATCHER = "Read|Grep|Glob"
+# probe that quietly looks for the wrong string. ReadMediaFile is named
+# explicitly rather than left to a prefix match (I1): it is a read tool, the
+# hook adjudicates it, and the matcher has to deliver it.
+READ_MATCHER = "Read|ReadMediaFile|Grep|Glob"
 WRITE_MATCHER = "Write|Edit"
 
 
-def disabled_tools():
-    """The tools the per-run config turns off for every child."""
-    return list(_DISABLED_TOOLS)
+def allowed_tool_union():
+    """Every tool name the driver's role templates grant, across all roles.
+
+    Derived from the shipped templates (dispatch.load_template's `tool_policy`),
+    which are also what `--emit-host-agents kimi` renders into each shell's
+    `tools:` block -- so the deny-list below cannot drift from the grants.
+    """
+    allowed = set()
+    for role_file in dispatch.ROLE_FILES.values():
+        meta, _body = dispatch.load_template(role_file)
+        allowed |= set(meta["tool_policy"]["allowed"] or [])
+    return allowed
+
+
+def disabled_tools(vocabulary=None):
+    """The tools the per-run config turns off for every child.
+
+    I1: an ALLOW-LIST expressed as a deny-list -- the CLI's whole vocabulary
+    minus what the templates grant -- not a hand-kept three-name deny-list.
+    The old ["Agent", "AgentSwarm", "Bash"] closed 3 of 24 tools and left every
+    UNENFORCED entry (the setup scan is ALWAYS unenforced) holding
+    ReadMediaFile (a read tool the guard did not know), FetchURL and WebSearch
+    (egress, the other half of C1's exfiltration path) and
+    CronCreate/CronDelete (persistence on the operator's machine, from a review
+    of a hostile repo). For an ENFORCED entry the shell's `tools:` grant is the
+    control and this is belt-and-braces.
+    """
+    names = (set(vocabulary) if vocabulary is not None
+             else set().union(*TOOL_VOCABULARY.values()))
+    return sorted(names - allowed_tool_union())
 # Session markers of an enclosing Kimi session. A nested `kimi -p` launches
 # fine with them set (measured on 0.42.0), but they are dropped so no future
 # version can read the child as attached to the parent session.
@@ -207,7 +253,7 @@ def build_merged_config(source, scope_path, allowlist_path):
     merged["merge_all_available_skills"] = False
     merged["builtin_product_skills"] = False
     tools = dict(merged.get("tools") or {})
-    disabled = sorted(set(tools.get("disabled") or []) | set(disabled_tools()))
+    disabled = sorted(set(tools.get("disabled") or []) | set(disabled_tools()))   # I1: derived
     tools["disabled"] = disabled
     merged["tools"] = tools
     hooks = [h for h in (merged.get("hooks") or []) if isinstance(h, dict)]
