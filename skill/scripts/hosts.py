@@ -48,6 +48,7 @@ CLAUDE_AGENTS_DIR = os.path.join(os.path.expanduser("~"), ".claude", "agents")
 KIMI_AGENTS_DIR = os.path.join(os.path.expanduser("~"), ".kimi-code", "agents")
 CODEX_HOME = os.path.expanduser(os.environ.get("CODEX_HOME", "~/.codex"))
 CODEX_AGENTS_DIR = os.path.join(CODEX_HOME, "agents")
+GEMINI_AGENTS_DIR = os.path.join(os.path.expanduser("~"), ".gemini", "agents")
 
 
 @dataclass(frozen=True)
@@ -108,8 +109,14 @@ HOSTS = {
     # Selectable today with NO enforcement support of any kind -- the state
     # this epic exists to end. It claims nothing, so every consumer that reads
     # the registry treats it as unenforced, which is what already happens.
-    "gemini": HostSpec(name="gemini", claims=frozenset(),
-                       driver_selectable=True),
+    "gemini": HostSpec(
+        name="gemini",
+        claims=frozenset({TOOL_POLICY_ENFORCED, READ_SCOPE_CONFINED}),
+        registration_dir=GEMINI_AGENTS_DIR,
+        shell_format="md",
+        driver_selectable=True,
+        probes={TOOL_POLICY_ENFORCED: "registered-shell-tools-gemini",
+                READ_SCOPE_CONFINED: "tool-omission-read-guard"}),
     # The deprecated fallback (spec D4). Deleted in F5 once every remaining
     # driver-selectable host clears the bar in spec §8.1.
     "generic": HostSpec(name="generic", claims=frozenset(),

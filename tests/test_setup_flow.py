@@ -958,13 +958,13 @@ class TestReadinessCannotAssertWhatItDidNotCheck(unittest.TestCase):
         self.assertTrue(ok)
         self.assertNotIn("codex_exec", detail)
 
-    def test_gemini_is_not_told_to_run_a_command_that_raises(self):
-        ok, detail = self._check("gemini")["enforced-shells"]
-        self.assertNotIn("--emit-host-agents gemini", detail)
+    def test_generic_is_not_told_to_run_a_command_that_raises(self):
+        ok, detail = self._check("generic")["enforced-shells"]
+        self.assertNotIn("--emit-host-agents generic", detail)
         self.assertIsNot(ok, True)
 
     def test_a_host_that_registers_no_shells_says_so_honestly(self):
-        for name in ("gemini", "generic"):
+        for name in ("generic",):
             with self.subTest(host=name):
                 ok, detail = self._check(name)["enforced-shells"]
                 self.assertIsNone(ok, "not-applicable is None, not False")
@@ -1210,14 +1210,14 @@ class TestShellLessHostsGetTheWholeDisclosure(unittest.TestCase):
                         setup_flow._check_host_shells(host, _runner_ok, "."))
 
     def test_the_enforced_shells_row_it_already_had_survives(self):
-        for host in ("gemini", "generic"):
+        for host in ("generic",):
             with self.subTest(host=host):
                 row = self._rows(host)["enforced-shells"]
                 self.assertIsNone(row[1])
                 self.assertIn("registers no", row[2])
 
     def test_it_gets_a_headline_and_a_row_per_capability_with_the_remedy(self):
-        for host in ("gemini", "generic"):
+        for host in ("generic",):
             with self.subTest(host=host):
                 rows = self._rows(host)
                 head = rows["host-capabilities"]

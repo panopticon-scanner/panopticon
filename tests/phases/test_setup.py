@@ -572,38 +572,38 @@ class TestReadinessLimitationsAreLoud(unittest.TestCase):
         marker = runio._load_json(runio._pano(d, "setup-complete.json"))
         return status["message"], marker
 
-    # gemini's REAL answer, computed by the registry-backed check itself rather
+    # generic's REAL answer, computed by the registry-backed check itself rather
     # than restated here, so a reworded detail cannot make this test pass on
     # prose that no longer matches what setup emits.
-    GEMINI_CHECKS = setup_flow._check_host_shells("gemini", None)
+    GENERIC_CHECKS = setup_flow._check_host_shells("generic", None)
 
-    def test_the_gemini_limitation_reaches_the_operator(self):
-        rows = {c[0]: c for c in self.GEMINI_CHECKS}
+    def test_the_generic_limitation_reaches_the_operator(self):
+        rows = {c[0]: c for c in self.GENERIC_CHECKS}
         self.assertEqual(("enforced-shells", None,
-                          "gemini registers no enforcement shells; reviewers "
+                          "generic registers no enforcement shells; reviewers "
                           "run with a prompt-advisory tool policy"),
                          rows["enforced-shells"])
-        msg, marker = self._fallback(self.GEMINI_CHECKS, host="gemini")
+        msg, marker = self._fallback(self.GENERIC_CHECKS, host="generic")
         self.assertIn("limitations", msg)
         self.assertIn("enforced-shells", msg)
-        self.assertIn("gemini registers no enforcement shells", msg)
+        self.assertIn("generic registers no enforcement shells", msg)
         self.assertIn(["enforced-shells", rows["enforced-shells"][2]],
                       marker["limitations"])
 
     def test_a_shell_less_host_still_discloses_its_capability_posture(self):
         # F3b: registering no enforcement shells is a fact about ONE check, not
-        # an exemption from §5.1. gemini claims nothing, so five-of-five
+        # an exemption from §5.1. generic claims nothing, so five-of-five
         # unproven IS its whole story -- and the `enforced-shells` early return
         # used to end the check list right here, leaving the operator one line
         # that named the host and no capability, no probe and no remedy.
-        rows = {c[0]: c for c in self.GEMINI_CHECKS}
+        rows = {c[0]: c for c in self.GENERIC_CHECKS}
         self.assertIn("host-capabilities", rows)
         for capability in hosts.CAPABILITIES:
             with self.subTest(capability=capability):
                 row = rows["host-capability:" + capability]
-                self.assertIn(host_disclosure.remedy(capability, "gemini"),
+                self.assertIn(host_disclosure.remedy(capability, "generic"),
                               row[2])
-        msg, marker = self._fallback(self.GEMINI_CHECKS, host="gemini")
+        msg, marker = self._fallback(self.GENERIC_CHECKS, host="generic")
         self.assertIn(["host-capabilities", rows["host-capabilities"][2]],
                       marker["limitations"])
         self.assertIn("host-capabilities", msg)
@@ -612,7 +612,7 @@ class TestReadinessLimitationsAreLoud(unittest.TestCase):
         # It must not gate READY: `gaps` stays empty and the readiness verdict
         # stays OK. Distinct clause, distinct key -- a consumer can tell "not
         # applicable" from "fine".
-        msg, marker = self._fallback(self.GEMINI_CHECKS, host="gemini")
+        msg, marker = self._fallback(self.GENERIC_CHECKS, host="generic")
         self.assertEqual([], marker["gaps"])
         self.assertNotIn("readiness gaps", msg)
 

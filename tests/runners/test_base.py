@@ -44,10 +44,8 @@ class TestRunnerFor(unittest.TestCase):
     def test_headless_resolves_the_host_module_or_refuses(self):
         self.assertTrue(base.headless_available("claude"))
         self.assertEqual(base.runner_for("claude", "headless").mode, "headless")
-        self.assertFalse(base.headless_available("gemini"))
-        with self.assertRaises(ValueError) as cm:
-            base.runner_for("gemini", "headless")
-        self.assertIn("--mode session", str(cm.exception))
+        self.assertTrue(base.headless_available("gemini"))
+        self.assertEqual(base.runner_for("gemini", "headless").mode, "headless")
 
     def test_unknown_mode_is_refused(self):
         with self.assertRaises(ValueError):

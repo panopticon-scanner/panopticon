@@ -593,9 +593,9 @@ class TestDispatchReadsTheHostRegistry(unittest.TestCase):
             .endswith(".md"))
 
     def test_emit_refuses_a_host_that_registers_no_shells(self):
-        # gemini and generic have no shell format; the refusal must name them
+        # generic has no shell format; the refusal must name them
         # rather than raising something opaque.
-        for name in ("gemini", "generic"):
+        for name in ("generic",):
             with self.subTest(host=name):
                 with self.assertRaises(ValueError) as caught:
                     dispatch.emit_host_agents(name, "/tmp/never-written")

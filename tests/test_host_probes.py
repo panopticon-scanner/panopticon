@@ -140,9 +140,9 @@ class TestRegisteredShellToolsProbe(unittest.TestCase):
             self.assertEqual(hosts.REFUTED, state)
 
     def test_a_host_that_registers_no_shells_is_unknown_not_refuted(self):
-        # gemini registers nothing. "Not applicable" is unknown; refuted would
+        # generic registers nothing. "Not applicable" is unknown; refuted would
         # claim we looked and found the control broken.
-        state, by, _detail = host_probes.probe_registered_shell_tools("gemini")
+        state, by, _detail = host_probes.probe_registered_shell_tools("generic")
         self.assertEqual(hosts.UNKNOWN, state)
         self.assertIsNone(by)
 
@@ -336,7 +336,7 @@ class TestEntryModelBoundProbe(unittest.TestCase):
         self.assertIn("scout", detail)          # the absent ones are listed
 
     def test_a_host_without_shells_is_unknown(self):
-        state, by, _detail = host_probes.probe_entry_model_bound("gemini")
+        state, by, _detail = host_probes.probe_entry_model_bound("generic")
         self.assertEqual((hosts.UNKNOWN, None), (state, by))
 
     def test_the_probe_compares_against_resolve_model_not_the_profile_file(self):
@@ -391,7 +391,9 @@ class TestEntryModelBoundProbe(unittest.TestCase):
                                  host_probes.WRITE_GUARD_ARMED,
                                  host_probes.TRANSCRIPT_DIR,
                                  host_probes.ENTRY_MODEL_BOUND,
-                                 host_probes.READ_GUARD_ARMED}))
+                                 host_probes.READ_GUARD_ARMED,
+                                 host_probes.REGISTERED_SHELL_TOOLS_GEMINI,
+                                 host_probes.TOOL_OMISSION_READ_GUARD}))
         with tempfile.TemporaryDirectory() as reg, \
              tempfile.TemporaryDirectory() as target, \
              tempfile.TemporaryDirectory() as home:
@@ -947,7 +949,7 @@ class TestRunProbesBuildsTheArtifact(unittest.TestCase):
         # probe-less by design any more (_NO_PROBE is empty); a host that
         # does not CLAIM one still gets the honest "nothing to prove" row.
         with tempfile.TemporaryDirectory() as target:
-            art = host_probes.run_probes("gemini", target)
+            art = host_probes.run_probes("generic", target)
             row = art["capabilities"][hosts.READ_SCOPE_CONFINED]
             self.assertEqual(hosts.UNKNOWN, row["state"])
             self.assertIsNone(row["by"])
@@ -1087,13 +1089,13 @@ class TestRunProbesBuildsTheArtifact(unittest.TestCase):
                     self.assertIsNone(art["capabilities"][capability]["by"])
 
     def test_a_known_host_that_claims_nothing_probes_to_all_unknown(self):
-        # Distinct from the unknown-host-NAME case above: "gemini" IS a real
+        # Distinct from the unknown-host-NAME case above: "generic" IS a real
         # row in the registry (unlike "no-such-host"), but it claims no
         # capabilities and maps no probes. This path -- a known host with an
         # empty `probes` mapping -- was otherwise never exercised.
         with tempfile.TemporaryDirectory() as target:
-            art = host_probes.run_probes("gemini", target)
-            self.assertIsNotNone(hosts.spec("gemini"))
+            art = host_probes.run_probes("generic", target)
+            self.assertIsNotNone(hosts.spec("generic"))
             self.assertEqual({hosts.UNKNOWN},
                              {r["state"] for r in art["capabilities"].values()})
             self.assertEqual(
@@ -1344,7 +1346,7 @@ class TestReadGuardArmedProbe(unittest.TestCase):
             self.assertIn(claude_dir, detail)
 
     def test_a_host_that_claims_no_read_confinement_is_unknown(self):
-        for name in ("gemini", "generic", "kimi", "codex"):
+        for name in ("generic", "kimi", "codex"):
             with self.subTest(host=name):
                 state, by, _detail = host_probes.probe_read_guard_armed(name)
                 self.assertEqual(hosts.UNKNOWN, state)

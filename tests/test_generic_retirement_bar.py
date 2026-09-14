@@ -77,21 +77,18 @@ class TestGenericRetirementBar(unittest.TestCase):
                              "spec 8.1: --host generic was deleted while a remaining "
                              "host falls short; #1070 must close first (spec 7.2)")
 
-    def test_the_bar_would_refuse_the_deletion_today(self):
-        # Simulate F5's one-line change on THIS base. If this ever passes the
-        # bar, the shortfall pin below has moved and the deletion is due.
+    def test_the_bar_permits_the_deletion_today(self):
+        # Simulate F5's one-line change on THIS base. The bar is now cleared.
         table = {n: r for n, r in hosts.HOSTS.items() if n != DEPRECATED}
         with mock.patch.dict(hosts.HOSTS, table, clear=True):
-            self.assertNotEqual({}, retirement_shortfalls())
+            self.assertEqual({}, retirement_shortfalls())
 
     def test_todays_shortfall_is_pinned_so_it_moves_consciously(self):
         # R-F5-5 / plan 5 R-P5-3: claude clears the bar (read-guard-armed
-        # shipped); gemini claims nothing. The Gemini family PR edits this
-        # expectation in the same PR that ships its probes.
+        # shipped); gemini clears the bar (tool omission read guard shipped).
         shortfalls = retirement_shortfalls()
         self.assertNotIn("claude", shortfalls)
-        self.assertEqual({"gemini": [hosts.TOOL_POLICY_ENFORCED, hosts.READ_SCOPE_CONFINED]},
-                         shortfalls)
+        self.assertNotIn("gemini", shortfalls)
 
     def test_a_claim_without_a_shipped_probe_fails_the_bar_as_unknown(self):
         # spec 8.1's last sentence. A row that CLAIMS both security capabilities

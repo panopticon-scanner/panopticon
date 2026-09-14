@@ -155,7 +155,7 @@ class TestTheAnswersAreUnchangedGivenProof(unittest.TestCase):
         self.assertEqual(
             hosts.PROVEN,
             hosts.posture("claude", proof)[hosts.TOOL_POLICY_ENFORCED])
-        for name in ("generic", "gemini"):
+        for name in ("generic",):
             with self.subTest(host=name):
                 self.assertNotEqual(
                     hosts.PROVEN,

@@ -414,17 +414,17 @@ class TestHostAndModeResolution(LoopCase):
     def test_a_host_with_no_headless_runner_degrades_to_session_with_a_reason(self):
         # I8, spec 4.4: "A host with no headless runner registered gets session
         # mode with a stderr line saying so." `--mode` defaulted to headless,
-        # so `driver loop --host gemini` errored out instead of degrading.
+        # so `driver loop --host generic` errored out instead of degrading.
         d, _ = self._repo(); s = self._session_root(d)
         calls = []
         err = io.StringIO()
         with self._spy(calls), contextlib.redirect_stdout(io.StringIO()), \
              contextlib.redirect_stderr(err):
             status = orchestrate.loop(
-                self._args(d, "--host", "gemini", "--session-dir", s))
-        self.assertEqual(calls, [("gemini", "session")])
+                self._args(d, "--host", "generic", "--session-dir", s))
+        self.assertEqual(calls, [("generic", "session")])
         self.assertEqual(status["status"], "dispatch", status)
-        self.assertIn("gemini", err.getvalue())
+        self.assertIn("generic", err.getvalue())
         self.assertIn("session mode", err.getvalue())
 
     def test_an_explicit_headless_on_such_a_host_is_an_error_not_a_traceback(self):
@@ -435,7 +435,7 @@ class TestHostAndModeResolution(LoopCase):
         with contextlib.redirect_stdout(io.StringIO()), \
              contextlib.redirect_stderr(io.StringIO()):
             status = orchestrate.loop(
-                self._args(d, "--host", "gemini", "--mode", "headless"))
+                self._args(d, "--host", "generic", "--mode", "headless"))
         self.assertEqual(status["status"], "error", status)
         self.assertIn("--mode session", status["message"])
 

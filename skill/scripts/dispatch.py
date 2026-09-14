@@ -203,6 +203,22 @@ def emit_host_agents(host, out_dir):
                   + ["disallowedTools:"]
                   + ["  - %s" % t for t in tp["forbidden"]]
                   + ["---"])
+        elif host == "gemini":
+            model = model_resolver.registration_model("gemini", role)
+            gemini_map = {
+                "Read": "view_file",
+                "Grep": "grep_search",
+                "Glob": "find_by_name",
+                "Bash": "run_command",
+                "Write": "write_to_file"
+            }
+            mapped_tools = [gemini_map.get(t, t) for t in tp["allowed"]]
+            fm = ["---", "name: %s" % agent,
+                  "description: %s" % meta["description"],
+                  "tools:"] + ["  - %s" % t for t in mapped_tools]
+            if model:
+                fm.append("model: %s" % model)
+            fm.append("---")
         else:
             cfg = model_resolver.registration_config("codex", role)
             lines = ["name = %s" % json.dumps(agent),
