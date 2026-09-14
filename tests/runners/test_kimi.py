@@ -657,7 +657,6 @@ class TestHomeLocation(unittest.TestCase):
         # the process's SIGTERM handler. tests/runners/conftest.py guards the
         # same invariant around every test; this is the case that trips it.
         baseline = signal.getsignal(signal.SIGTERM)
-        callbacks = atexit._ncallbacks() if hasattr(atexit, "_ncallbacks") else None
         with tempfile.TemporaryDirectory() as d:
             with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
                 first = kimi_runner.Runner("kimi")
@@ -667,12 +666,17 @@ class TestHomeLocation(unittest.TestCase):
                 second.prepare(os.path.join(d, "run-2"), review_root=d)
                 self.addCleanup(shutil.rmtree, second.kimi_home, True)
             self.assertIsNot(baseline, signal.getsignal(signal.SIGTERM))   # armed
-            first.teardown("complete")
-            second.teardown("complete")
+            armed = [first._crash_strip, second._crash_strip]
+            # The atexit side, measured by the call: `atexit._ncallbacks()`
+            # never shrinks on an unregister before 3.13 (the slot is NULLed,
+            # not compacted), so a count is not a portable measure of it.
+            with mock.patch.object(atexit, "unregister", wraps=atexit.unregister) as unregister:
+                first.teardown("complete")
+                second.teardown("complete")
             self.assertIs(baseline, signal.getsignal(signal.SIGTERM),
                           "a wrapper is still installed after both teardowns")
-            if callbacks is not None:
-                self.assertEqual(callbacks, atexit._ncallbacks(), "an atexit callback leaked")
+            self.assertEqual([mock.call(cb) for cb in armed], unregister.call_args_list)
+            self.assertEqual([None, None], [first._crash_strip, second._crash_strip])
 
     def test_a_c_installed_previous_handler_is_treated_as_the_default(self):
         # R3-4: `signal.getsignal` reports a handler installed from C as None.
