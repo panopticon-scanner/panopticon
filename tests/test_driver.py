@@ -1431,39 +1431,49 @@ class TestHostChoicesComeFromTheRegistry(unittest.TestCase):
         # nothing.
         self.assertGreaterEqual(len(self._host_choices()), 2)
 
-    def test_kimi_and_codex_are_still_not_selectable(self):
-        # Task 4 migrated five call sites from `host == "claude"` to
-        # `hosts.declares(host, hosts.TOOL_POLICY_ENFORCED)`. kimi and codex both
-        # CLAIM TOOL_POLICY_ENFORCED in the registry (they register shells and
-        # advertise the capability), so declares() already returns True for them
-        # -- it just never runs, because both are driver_selectable=False and
-        # `--host` refuses to name them.
+    def test_kimi_and_codex_are_both_selectable_now(self):
+        # This was "kimi and codex are still not selectable". Task 4 migrated
+        # five call sites from `host == "claude"` to `hosts.declares(host,
+        # hosts.TOOL_POLICY_ENFORCED)`; kimi and codex both CLAIM
+        # TOOL_POLICY_ENFORCED in the registry, so declares() already returned
+        # True for them and only `driver_selectable=False` kept those sites
+        # from granting an ENFORCED run on an unverified claim -- the
+        # silent-unenforced-run bug this epic (#1344) exists to kill.
         #
-        # That gap is dead code only as long as this test holds. The instant
-        # either becomes driver-selectable, the five sites Task 4 migrated start
-        # granting them an ENFORCED run on the strength of an unverified claim --
-        # exactly the silent-unenforced-run bug this epic (#1344) exists to
-        # kill. F3 closes the gap for real by swapping declares() for a verified
-        # posture() check; until F3 lands, this test is the only thing standing
-        # between "flip driver_selectable=True" and that bug shipping by
-        # accident. It must fail loudly the day someone flips the flag without
-        # also doing F3's work.
+        # The interlock lasted until F3 replaced declares() with verified
+        # posture checks. F3 is shipped, and the owner authorized each family
+        # PR to retire the stale pin alongside its own probes: the Codex family
+        # PR for `codex`, the Kimi family PR for `kimi`. Both now ship the
+        # probes and the runner that make the claim measured, so the five sites
+        # grant neither of them anything unverified. The pin stays, inverted:
+        # it fails loudly the day a family's flag is flipped back or a third
+        # host is flipped on without that work.
         for name in ("kimi", "codex"):
             with self.subTest(host=name):
-                self.assertNotIn(name, hosts.driver_hosts())
+                self.assertIn(name, hosts.driver_hosts())
+        choices_by_command = self._host_choices()
+        self.assertTrue(choices_by_command)
+        for command, choices in choices_by_command.items():
+            for name in ("kimi", "codex"):
+                with self.subTest(command=command, host=name):
+                    self.assertIn(name, choices)
 
 
 class TestARegisteredButUnselectableHostGetsARemedy(unittest.TestCase):
     """#1621: `choices` alone answers a real host name with a list.
 
-    Three hosts are now registered-but-unselectable -- kimi (#1620) and codex
-    (#1619) have never been selectable, and gemini stopped being so when its
-    family PR failed the gate. An operator who spells one of them has named a
-    host this repo genuinely knows and there IS something to do about it, so
-    the parser says what: `--host generic`, the deprecated-but-present path
-    for any host without a family runner. A name the registry has never heard
-    of is a typo, and argparse's own invalid-choice list is the right answer
-    for it -- so `choices` must still be the thing that rejects it.
+    One host is registered-but-unselectable on this tree: gemini, which
+    stopped being selectable when its family PR failed the gate. kimi and
+    codex were in this set until their own family PRs (#1620, #1619) flipped
+    their rows with the probes to back them, which is exactly the exit this
+    class describes -- the set is read off the registry, so a row that earns
+    selection simply drops out of it. An operator who spells a name still in
+    the set has named a host this repo genuinely knows and there IS something
+    to do about it, so the parser says what: `--host generic`, the
+    deprecated-but-present path for any host without a family runner. A name
+    the registry has never heard of is a typo, and argparse's own
+    invalid-choice list is the right answer for it -- so `choices` must still
+    be the thing that rejects it.
     """
 
     def _stderr_of(self, argv):
@@ -1475,11 +1485,13 @@ class TestARegisteredButUnselectableHostGetsARemedy(unittest.TestCase):
 
     def test_every_unselectable_registered_host_names_the_remedy(self):
         # Read off the registry, not a literal list: a family PR that flips
-        # its own row simply drops out of this set.
+        # its own row simply drops out of this set -- which is what kimi
+        # (#1620) and codex (#1619) did, leaving gemini. gemini is asserted by
+        # name so the loop below can never become vacuous; the rest is
+        # whatever the registry says today.
         unselectable = [h for h in hosts.known_hosts()
                         if h not in hosts.driver_hosts()]
         self.assertIn("gemini", unselectable)
-        self.assertIn("kimi", unselectable)
         for host in unselectable:
             for verb in ("run", "loop", "setup"):
                 with self.subTest(host=host, verb=verb):

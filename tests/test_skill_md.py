@@ -540,6 +540,44 @@ class TestCodexHostDocs(unittest.TestCase):
         self.assertIn("generic", skill)
 
 
+    def test_the_read_confinement_limit_is_recorded(self):
+        # M-3: O_NOFOLLOW stops symlinks, not HARD links. A target that ships
+        # a hard link to a file outside a directory grant is readable through
+        # it. Inherent to path-based confinement (Claude's read guard has the
+        # same property), so it is recorded rather than fixed -- but recorded.
+        self.assertIn("hard link", _read_doc())
+
+    def test_the_headless_runner_sentence_has_its_antecedent(self):
+        # M-8: "...session when it does not (Claude and Codex have headless
+        # runners) -- `--mode headless` on such a host is an error". The
+        # parenthetical replaced the phrase "such a host" referred to.
+        self.assertIn("on a host without one", _read_skill_md())
+
+    def test_the_codex_model_pin_documents_its_override(self):
+        # I-8: the advisor slug is pinned to the installed build's bundled
+        # catalog, and an absent slug fails every entry of that role closed.
+        # Scoped to the sentence that states the fail-closed behaviour, not
+        # the whole guide: PANOPTICON_MODEL_* is named elsewhere for a
+        # different reason, so a doc-wide search would pass without the line.
+        sentence = next(line for line in _read_doc().splitlines()
+                        if "fails closed rather than silently selecting" in line)
+        self.assertIn("PANOPTICON_MODEL_", sentence)
+
+    def test_codex_is_documented_as_enforced_only(self):
+        # I-1: a Codex reviewer entry without a registered shell cannot run at
+        # all -- there is no unenforced fallback the way there is on Claude --
+        # and neither surface said so.
+        for text in (_read_doc(), _read_skill_md()):
+            self.assertIn("enforced-only", text)
+        # ...and that the up-front refusal stands down for `--setup`, whose
+        # single setup-scan entry needs no registered shell -- a fresh machine
+        # runs setup BEFORE it registers anything.
+        exemption = next(line for line in _read_doc().splitlines()
+                         if "enforced-only" in line)
+        self.assertIn("`--setup` is exempt", exemption)
+        self.assertIn("except under `--setup`", _read_skill_md())
+
+
 class TestGuardFailClosedDocs(unittest.TestCase):
     def test_skill_documents_fail_closed_guard(self):
         self.assertIn("fail-closed while registered", _read_doc())
@@ -702,3 +740,41 @@ class TestDriverLoopContract(unittest.TestCase):
         # I6 (fix round 3): the persist verb's own --pr/--base, in the line a
         # reader copies the invocation from.
         self.assertIn("[--pr N] [--base REF]", skill)
+
+
+class TestClaudeSessionModeWorkflowTemplate(unittest.TestCase):
+    """Claude family PR (#1344): session-mode dispatch on Claude Code is a
+    shipped workflow template, mandated by SKILL.md, not an ad-hoc fan-out."""
+
+    WORKFLOW = os.path.join(ROOT, "workflows", "dispatch.js")
+
+    def test_the_dispatch_workflow_ships_with_its_meta_and_the_binding_rules(self):
+        self.assertTrue(os.path.isfile(self.WORKFLOW), self.WORKFLOW)
+        with open(self.WORKFLOW, encoding="utf-8") as fh:
+            js = fh.read()
+        self.assertIn("export const meta = {", js)
+        for token in ("name: 'panopticon-dispatch'", "agentType", "prompt_file",
+                      "e.marker + '\\n'", "return_json", "missing"):
+            with self.subTest(token=token):
+                self.assertIn(token, js)
+
+    def test_the_dispatch_workflow_parses_as_javascript(self):
+        import shutil
+        import subprocess
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is not installed here; CI's runners have it")
+        proc = subprocess.run([node, "--check", self.WORKFLOW], capture_output=True, text=True)
+        self.assertEqual(0, proc.returncode, proc.stderr)
+
+    def test_skill_md_mandates_the_workflow_for_session_mode_on_claude(self):
+        skill = _read_skill_md()
+        self.assertIn("skill/workflows/dispatch.js", skill)
+        self.assertIn("Do not hand-dispatch entries with one-off Agent calls", skill)
+        self.assertIn("marker, prompt_file, delivery, out_file", skill)
+
+    def test_the_guide_names_the_workflow_and_grants_the_prompt_file_to_the_read_scope(self):
+        doc = _read_doc()
+        run_loop = _section(doc, "## Driver run-loop", "## Driver setup")
+        self.assertIn("skill/workflows/dispatch.js", run_loop)
+        self.assertIn("granted to the entry's read scope (`scope.reads`", run_loop)

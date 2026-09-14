@@ -20,10 +20,17 @@ Confusing the two is the failure this whole spec exists to prevent.
 No probe may touch live state. Anything that needs to arm, install or write
 does it inside a `tempfile.TemporaryDirectory()`.
 """
+import concurrent.futures
+import glob
 import json
 import os
+import re
+import shutil
 import stat
+import subprocess
+import sys
 import tempfile
+import tomllib
 
 from scripts import (collect_usage, dispatch, hosts, model_resolver,
                     read_guard_hook, run_manifest, write_guard_hook)
@@ -258,9 +265,13 @@ def headless_settings_path(review_root, namespace=None):
     return os.path.abspath(runio._pano(review_root, runners_base.SETTINGS_FILE))
 
 
-def _headless_subject_ok(settings_path):
-    """(ok, detail): the runner creates the file itself, so demand only that
-    its directory exists or can be created, and is writable."""
+def _headless_subject_dir(settings_path):
+    """(writable, probe_dir): the run folder the headless loop writes into.
+
+    The runner creates `settings_path` itself, so the question is only
+    whether its directory exists or can be created, and is writable --
+    answered off the nearest existing ancestor. Shared by the two guard
+    probes and the usage probe, which word the failure differently."""
     settings_dir = os.path.dirname(os.path.abspath(settings_path)) or "."
     probe_dir = settings_dir
     while not os.path.isdir(probe_dir):
@@ -268,7 +279,13 @@ def _headless_subject_ok(settings_path):
         if parent == probe_dir:
             break
         probe_dir = parent
-    if not os.access(probe_dir, os.W_OK):
+    return os.access(probe_dir, os.W_OK), probe_dir
+
+
+def _headless_subject_ok(settings_path):
+    """(ok, detail) for the guard probes, off `_headless_subject_dir`."""
+    writable, probe_dir = _headless_subject_dir(settings_path)
+    if not writable:
         return False, "the runner cannot arm its guards: %s is not writable" % probe_dir
     return True, ""
 
@@ -380,11 +397,17 @@ def probe_write_guard_armed(host, session_root=None, settings_path=None):
 READ_GUARD_ARMED = "read-guard-armed"
 
 
-def _fake_subagent(parent_transcript, agent_id, entry_id):
-    """A subagent transcript in the Agent-tool layout the spike measured: the
-    first user record is the dispatch prompt, marker on line 1."""
+def _fake_subagent(parent_transcript, agent_id, entry_id, layout="direct"):
+    """A subagent transcript with the dispatch prompt as its first user
+    record, marker on line 1, in one of the two layouts the read guard binds
+    through: the Agent-tool layout the plan-5 spike measured (`direct`,
+    `<stem>/subagents/agent-<id>.jsonl`) or the Workflow-tool layout the
+    shipped session-mode dispatch workflow relies on (`workflow`,
+    `<stem>/subagents/workflows/<run>/agent-<id>.jsonl`)."""
     stem = parent_transcript[:-len(".jsonl")]
     directory = os.path.join(stem, "subagents")
+    if layout == "workflow":
+        directory = os.path.join(directory, "workflows", "wf-probe")
     os.makedirs(directory, exist_ok=True)
     record = {"type": "user", "isSidechain": True, "agentId": agent_id,
               "message": {"role": "user", "content": [
@@ -415,6 +438,7 @@ def _round_trip_confines_reads():
                 fh.write("")
             _fake_subagent(parent, "agent-x", "probe-cell")
             _fake_subagent(parent, "agent-z", "probe-scan")
+            _fake_subagent(parent, "agent-w", "probe-cell", layout="workflow")
             read_guard_hook.install(
                 [{"id": "probe-cell", "scope": {"files": [inside], "dirs": [], "reads": []}},
                  {"id": "probe-scan", "scope": {"files": [], "dirs": [root], "reads": []}}],
@@ -443,6 +467,10 @@ def _round_trip_confines_reads():
                 ("directory-scoped Grep inside its dir", call("Grep", "agent-z", pattern="x", path=root), True),
                 ("directory-scoped Glob inside its dir", call("Glob", "agent-z", pattern="*.py", path=root), True),
                 ("directory-scoped Read outside its dir", call("Read", "agent-z", file_path=outside), False),
+                # The Workflow-tool transcript layout (Claude family PR): the
+                # shipped dispatch workflow binds every entry through it.
+                ("workflow-layout Read inside scope", call("Read", "agent-w", file_path=inside), True),
+                ("workflow-layout Read outside scope", call("Read", "agent-w", file_path=outside), False),
             )
             for name, got, want in rows:
                 if got != want:
@@ -493,6 +521,18 @@ def probe_read_guard_armed(host, session_root=None, settings_path=None):
     if not hosts.declares(host, hosts.READ_SCOPE_CONFINED):
         return (hosts.UNKNOWN, None,
                 "host %r claims no read-scope confinement" % host)
+    # M-11: the claim alone stopped being enough the moment a second host
+    # claimed read confinement through a different primitive. Everything below
+    # measures CLAUDE's read guard -- the settings file it would arm, the
+    # hook's round-trip -- so a row that maps this capability to some other
+    # probe (codex -> codex-read-scope) would get a refutation about a file it
+    # never arms. Unreachable while run_probes dispatches by the row's own
+    # probe id; latent until someone calls this directly.
+    if (hosts.spec(host).probes if hosts.spec(host) else {}).get(
+            hosts.READ_SCOPE_CONFINED) != READ_GUARD_ARMED:
+        return (hosts.UNKNOWN, None,
+                "host %r does not measure read-scope confinement with %s"
+                % (host, READ_GUARD_ARMED))
     if settings_path is not None:
         ok, detail = _headless_subject_ok(settings_path)
         if not ok:
@@ -519,15 +559,802 @@ def probe_read_guard_armed(host, session_root=None, settings_path=None):
             "%s; the host will arm at %s" % (detail, settings_path))
 
 
-TRANSCRIPT_DIR = "transcript-dir"
+USAGE_SOURCE = "usage-source"
+
+CODEX_EFFECTIVE_TOOLS = "codex-effective-tools"
+CODEX_READ_SCOPE = "codex-read-scope"
+
+
+def _codex_surfaces(registration_dir=None, inspector=None, runner=None):
+    """Measure each role in the real Codex runtime, without a paid model call.
+
+    A localhost Responses fixture enumerates the effective tools and attempts
+    two synthetic reads through the SAME launcher used by the runner. No target
+    content participates. Only run_probes' caller-local cache shares results;
+    every driver invocation inspects the current runtime and registered shells.
+
+    I-6: the five role inspections are independent, so they run concurrently,
+    and the bundled model catalog -- identical for all of them -- is dumped
+    once per call instead of once per role. Each role still gets its own
+    launch, its own scope file and its own grants; nothing is shared that a
+    mutation could hide behind.
+    """
+    from scripts import codex_host
+    inspector = inspector or codex_host.inspect_surface
+    directory = registration_dir or hosts.spec("codex").registration_dir
+    with tempfile.TemporaryDirectory(prefix="panopticon-codex-probe-") as temporary:
+        root = os.path.realpath(temporary)
+        cell = os.path.join(root, "in-scope")
+        os.mkdir(cell)
+        inside, outside = os.path.join(cell, "inside.txt"), os.path.join(root, "outside.txt")
+        for path in (inside, outside):
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("Panopticon synthetic confinement fixture\n")
+        jobs = []
+        for role in (*DRIVER_ROLES, "setup-scan"):
+            setup = role == "setup-scan"
+            role_file = None if setup else dispatch.ROLE_FILES[role]
+            shell = ("setup-scan (native default model and directory scope)" if setup else
+                     os.path.join(directory, dispatch.registered_agent_filename("codex", role_file)))
+            if not setup and not os.path.isfile(shell):
+                raise FileNotFoundError("Codex reviewer shell is missing: %s" % shell)
+            entry = {"id": "setup-scan" if setup else "probe-" + role,
+                     "agent": None if setup else dispatch.registered_agent_name(role_file),
+                     "enforced": not setup, "delivery": "return_json",
+                     "model": None if setup else model_resolver.resolve_model("codex", role).get("model"),
+                     "prompt": "Measure the available reviewer tools; return JSON.",
+                     "scope": {"files": [] if setup else [inside], "dirs": [cell] if setup else [], "reads": []}}
+            # Per ROLE, not per call: concurrent inspections would otherwise
+            # overwrite one another's grants between write and launch.
+            scope_path, allow_path = (os.path.join(root, "%s-%s.json" % (name, entry["id"]))
+                                      for name in ("scope", "allowlist"))
+            with open(scope_path, "w", encoding="utf-8") as fh:
+                json.dump({entry["id"]: entry["scope"]}, fh)
+            with open(allow_path, "w", encoding="utf-8") as fh:
+                json.dump([], fh)
+            env = dict(os.environ, PANOPTICON_ENTRY_ID=entry["id"],
+                       PANOPTICON_READ_SCOPE=scope_path, PANOPTICON_WRITE_ALLOWLIST=allow_path)
+            jobs.append((shell, entry, env, cell if setup else root))
+        catalog = codex_host.catalog_loader(runner)
+
+        def measure(job):
+            shell, entry, env, review_root = job
+            return shell, inspector(entry, env, review_root, root, registration_dir=directory,
+                                    probe_paths=(inside, outside), catalog=catalog)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+            return list(pool.map(measure, jobs))
+
+
+def _codex_measure(probe_id, settings_path, registration_dir, measure):
+    from scripts import codex_host
+    if settings_path is None:
+        return None, (hosts.UNKNOWN, probe_id,
+                      "Codex confinement is measured for driver loop --mode headless only; "
+                      "a parent session may override native child-agent permissions")
+    try:
+        return (measure() if measure else _codex_surfaces(registration_dir)), None
+    except FileNotFoundError as exc:
+        # Missing registration is broken; missing CLI is an unavailable test.
+        state = hosts.REFUTED if "reviewer shell is missing" in str(exc) else hosts.UNKNOWN
+        return None, (state, probe_id, str(exc))
+    except codex_host.LaunchRefused:
+        # I-5: the suite's no-live-launch guard. Everything else here becomes
+        # an honest UNKNOWN; this one must escape, or a test that reached a
+        # real `codex` would read as "runtime unavailable" and stay green.
+        raise
+    except Exception as exc:
+        return None, (hosts.UNKNOWN, probe_id,
+                      "effective Codex inspection could not run: %s: %s" % (type(exc).__name__, exc))
+
+
+def _codex_surface_problem(surface):
+    expected = {"mcp__panopticon_scope__read_file", "mcp__panopticon_scope__search",
+                "mcp__panopticon_scope__list_files", "list_mcp_resources",
+                "list_mcp_resource_templates", "read_mcp_resource"}
+    forbidden = surface.get("forbidden") or {}
+    if (set(surface.get("tools", [])) != expected
+            or set(surface.get("direct_tools", [])) != {
+                "functions.exec", "functions.wait", "functions.request_user_input"}
+            or set(forbidden) != {"exec", "patch", "spawn", "fetch", "process", "require"}
+            or any(value != "undefined" for value in forbidden.values())):
+        return "effective Codex surface is not the confined read-only tool set"
+    return None
+
+
+def probe_codex_tool_policy(host, registration_dir=None, settings_path=None, measure=None):
+    """Prove omission on Codex's effective V8 surface, not TOML prose."""
+    surfaces, failure = _codex_measure(CODEX_EFFECTIVE_TOOLS, settings_path, registration_dir, measure)
+    if failure:
+        return failure
+    paths = []
+    for path, surface in surfaces:
+        paths.append(path)
+        problem = _codex_surface_problem(surface)
+        if problem:
+            return (hosts.REFUTED, CODEX_EFFECTIVE_TOOLS,
+                    "%s: %s: %s" % (path, problem, json.dumps(surface, sort_keys=True)))
+    if len(paths) != len(DRIVER_ROLES) + 1:
+        return (hosts.UNKNOWN, CODEX_EFFECTIVE_TOOLS, "not every registered role was inspected")
+    return (hosts.PROVEN, CODEX_EFFECTIVE_TOOLS,
+            "effective Codex V8 ALL_TOOLS and forbidden globals inspected via localhost-only "
+            "Responses fixture; shell/patch/agents/network absent; shells: %s" % ", ".join(paths))
+
+
+def probe_codex_read_scope(host, registration_dir=None, settings_path=None, measure=None):
+    """Exercise the actual MCP read path; disallow every alternate I/O tool."""
+    surfaces, failure = _codex_measure(CODEX_READ_SCOPE, settings_path, registration_dir, measure)
+    if failure:
+        return failure
+    paths = []
+    for path, surface in surfaces:
+        paths.append(path)
+        problem = _codex_surface_problem(surface)
+        if problem:
+            return hosts.REFUTED, CODEX_READ_SCOPE, "%s: %s" % (path, problem)
+        reads = surface.get("reads")
+        if not isinstance(reads, list) or len(reads) != 2:
+            return (hosts.UNKNOWN, CODEX_READ_SCOPE, "%s: runtime returned no two-read measurement" % path)
+        inside, outside = reads
+        if (not isinstance(inside, dict) or not isinstance(outside, dict)
+                or inside.get("isError") is not False or outside.get("isError") is not True
+                or "outside" not in json.dumps(outside).lower()
+                or "scope" not in json.dumps(outside).lower()):
+            return (hosts.REFUTED, CODEX_READ_SCOPE,
+                    "%s: actual MCP in-scope allow / out-of-scope deny failed: %s"
+                    % (path, json.dumps(reads, sort_keys=True)))
+    if len(paths) != len(DRIVER_ROLES) + 1:
+        return (hosts.UNKNOWN, CODEX_READ_SCOPE, "not every registered role was inspected")
+    return (hosts.PROVEN, CODEX_READ_SCOPE,
+            "actual Codex MCP read_file allowed the exact entry file and denied its outside-scope "
+            "sibling; PANOPTICON_ENTRY_ID / PANOPTICON_READ_SCOPE bound to temporary grants; "
+            "shells: %s" % ", ".join(paths))
+
+
+
+# --- kimi family probes (#1344) ---------------------------------------------
+# The kimi runner confines reviewers through a per-run KIMI_CODE_HOME whose
+# config registers kimi_guard_hook.py (see runners/kimi.py's docstring for the
+# whole design). These probes prove the pieces: the shells' tool surface, the
+# two guard round-trips through the REAL hook protocol (a subprocess, exactly
+# as the CLI invokes it), the model-alias binding, and the wire-file usage
+# channel.
+
+# I3 (gate review): every spawn of a REAL host binary in this module resolves
+# its launcher from this ONE module attribute, inside the call, so
+# tests/conftest.py's autouse guard can swap it for a refusal.
+#
+# N1 (re-review): module-scoped, not family-scoped. #1619's launch guard finds
+# seams by AST walk and then asserts `hasattr(module, "DEFAULT_RUNNER")` and
+# refuses through it, so the name is per MODULE -- and this module holds every
+# family's probe spawns, which is still one module. A `DEFAULT_RUNNER`
+# would fail that guard twice on the rebase; the later families' probe spawns
+# read this same attribute rather than adding siblings.
+#
+# The guard-hook round-trip below is NOT routed through it: that subprocess is
+# `sys.executable`, the hook's own protocol, and refusing it would delete the
+# proof rather than protect it.
+DEFAULT_RUNNER = subprocess.run
+
+KIMI_SHELL_SURFACE = "kimi-shell-surface"
+KIMI_READ_GUARD = "kimi-read-guard-armed"
+KIMI_WRITE_GUARD = "kimi-write-guard-armed"
+KIMI_MODEL_ALIAS = "kimi-model-alias-bound"
+KIMI_USAGE_WIRE = "kimi-usage-wire"
+
+# The CLI's builtin tool vocabulary lives with the RUNNER
+# (runners.kimi.TOOL_VOCABULARY), because the runner is what has to deny it:
+# Kimi's config offers a deny-list and no allow-list, so the per-run
+# `tools.disabled` is derived from that table minus the templates' grants (I1).
+# The probe reads the same table back. A version it does not cover resolves
+# UNKNOWN, never a guess: a tool name that matches nothing in the installed CLI
+# is warned about and restricts NOTHING (FAMILY-PR-GUARDRAILS, the recorded
+# kimi finding), so a stale table must not wave the shells through.
+
+
+def _kimi_version(runner=None):
+    """The installed CLI's major.minor ("0.42"), or None."""
+    import scripts.runners.base as runners_base
+    runner = DEFAULT_RUNNER if runner is None else runner
+    try:
+        proc = runner(["kimi", "--version"], capture_output=True, text=True, timeout=15)
+    except runners_base.LaunchRefused:  # I3: the suite's guard propagates --
+        raise                           # never reported as "version unknown"
+    except Exception:  # noqa: BLE001 -- a probe reports, never raises
+        return None
+    text = (proc.stdout or "") + (proc.stderr or "")
+    match = re.search(r"(\d+)\.(\d+)\.\d+", text)
+    return "%s.%s" % (match.group(1), match.group(2)) if match else None
+
+
+_TOOLS_SNAPSHOT = "llm.tools_snapshot"
+
+
+def _kimi_wire_snapshot(run_home):
+    """(tools, agent, wire) from the most recent child's `llm.tools_snapshot`
+    under THIS run's per-run home, or (None, None, why).
+
+    I5: the effective tool surface of a child that really ran, which is the
+    only thing that answers "did the shell restrict it". `run_home` is handed
+    in by the loop, off the live runner instance (N2). It is deliberately NOT
+    read back from the run folder's pointer file: that file sits in the
+    reviewed tree, and a target that could rewrite it could point this probe
+    at a directory it had planted -- turning `host-capabilities.json` into a
+    record of a child that never ran.
+
+    The record's shape is read tolerantly: `tools` as names or as objects with
+    a `name`, and the agent under any of the spellings a snapshot has been
+    seen to use. A record this cannot read is "no snapshot", never a
+    refutation -- an unrecognised shape is unknown data, not evidence.
+    """
+    home = run_home
+    if not home or not os.path.isdir(home):
+        return None, None, "this run has no per-run kimi home yet"
+    pattern = os.path.join(glob.escape(home), "sessions", "*", "*", "agents", "*", "wire.jsonl")
+    try:
+        wires = sorted(glob.glob(pattern), key=os.path.getmtime, reverse=True)
+    except OSError as exc:        # a file that vanished between glob and stat
+        return None, None, "the per-run home's wire files could not be listed: %s" % exc
+    for wire in wires:
+        tools, agent = None, None
+        try:
+            with open(wire, encoding="utf-8") as fh:
+                for line in fh:
+                    try:
+                        record = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(record, dict) or record.get("type") != _TOOLS_SNAPSHOT:
+                        continue
+                    names = record.get("tools")
+                    if not isinstance(names, list):
+                        continue
+                    tools = {n if isinstance(n, str) else n.get("name")
+                             for n in names if isinstance(n, (str, dict))}
+                    tools.discard(None)
+                    for key in ("agent", "agentName", "agent_file", "agentFile"):
+                        value = record.get(key)
+                        if isinstance(value, str) and value:
+                            agent = os.path.basename(value)
+                            agent = agent[:-3] if agent.endswith(".md") else agent
+                            break
+        except OSError:
+            continue
+        if tools is not None and agent:
+            return tools, agent, wire
+    return None, None, ("no child wire file under %s carries an %s record yet"
+                        % (home, _TOOLS_SNAPSHOT))
+
+
+def probe_kimi_shell_surface(host, registration_dir=None, version=None, runner=None,
+                             run_home=None):
+    """The registered shells restrict tools on the EFFECTIVE surface.
+
+    Two halves, both required. First the template check the shipped
+    `probe_registered_shell_tools` already performs (it understands kimi's
+    block-list frontmatter): every driver role's shell exists and grants
+    exactly its template's tools. Then the kimi-specific half the guardrails
+    demand: every tool name those shells ALLOW or FORBID must exist in the
+    installed CLI's vocabulary, because a name that matches nothing is warned
+    about and restricts nothing. The vocabulary is the measured per-version
+    table above; the live run's wire `llm.tools_snapshot` is the effective-
+    surface confirmation (a writer-role child measured carrying exactly
+    ['Read', 'Write']).
+    """
+    import scripts.runners.kimi as kimi_runner
+    registration_dir = registration_dir or (hosts.spec(host).registration_dir
+                                            if hosts.spec(host) else "")
+    base_state, base_by, base_detail = probe_registered_shell_tools(host, registration_dir)
+    if base_state != hosts.PROVEN:
+        # A host that registers no shells at all gets the base probe's own
+        # (UNKNOWN, None, ...) untouched: nothing ran that can be named.
+        return (base_state, base_by if base_by is None else KIMI_SHELL_SURFACE, base_detail)
+    if version is None:
+        version = _kimi_version(runner)
+    if version is None:
+        return (hosts.UNKNOWN, KIMI_SHELL_SURFACE,
+                "shells match their templates, but the installed kimi version "
+                "could not be determined, so its tool vocabulary is unverified")
+    vocabulary = kimi_runner.TOOL_VOCABULARY.get(version)
+    if vocabulary is None:
+        return (hosts.UNKNOWN, KIMI_SHELL_SURFACE,
+                "shells match their templates, but the probe's vocabulary table "
+                "does not cover kimi %s -- upgrade the table before trusting "
+                "the shells' tool surface" % version)
+    faults = []
+    for role in DRIVER_ROLES:
+        policy = dispatch.load_template(dispatch.ROLE_FILES[role])[0]["tool_policy"]
+        for direction in ("allowed", "forbidden"):
+            unknown = sorted(set(policy[direction] or []) - vocabulary)
+            if unknown:
+                faults.append("%s: %s tool name(s) match nothing in kimi %s: %s"
+                              % (role, direction, version, ", ".join(unknown)))
+    # I1: the default-agent surface is an ALLOW-LIST, so every name in the
+    # CLI's vocabulary must be either granted by a template or disabled by the
+    # per-run config. Anything in neither set is live for every UNENFORCED
+    # entry -- and the setup scan is always unenforced.
+    #
+    # N3: the disabled half is read out of a config.toml the RUNNER GENERATES,
+    # not recomputed from `disabled_tools()`. Recomputing subtracted the
+    # templates' union from a vocabulary it had just subtracted the same union
+    # from: empty by construction, an identity wearing a measurement's clothes.
+    allowed = kimi_runner.allowed_tool_union()
+    disabled, where = _kimi_generated_disabled()
+    if disabled is None:
+        # R2-4: not a fallback. I5 falls back on an unrecognised record shape --
+        # third-party data -- and says so; this is OUR OWN writer failing, and
+        # a probe that could not build the artifact it measures has measured
+        # nothing. Fail closed rather than report `proven` with the reason
+        # tucked into the detail.
+        return (hosts.REFUTED, KIMI_SHELL_SURFACE,
+                "%s; but the tool surface could not be measured: %s"
+                % (base_detail, where))
+    unaccounted = sorted(set(vocabulary) - allowed - disabled)
+    if unaccounted:
+        faults.append("neither granted by a template nor disabled by %s, so "
+                      "live for every unenforced entry: %s"
+                      % (where, ", ".join(unaccounted)))
+    surface = ("all %d of kimi %s's tools are accounted for (%d granted by a "
+               "template, %d disabled by %s)"
+               % (len(vocabulary), version, len(allowed & set(vocabulary)),
+                  len(disabled), where))
+    # I5: the EFFECTIVE surface, when a child has already run in this run's
+    # home. The table above says what the CLI ships; the snapshot says what a
+    # launched child was actually given.
+    snapshot, agent, where = _kimi_wire_snapshot(run_home)
+    if snapshot is not None:
+        grant = _frontmatter_tools(os.path.join(registration_dir, "%s.md" % agent))
+        if grant is None:
+            measured = ("%s reports %s for %r, which is not a shell registered in "
+                        "%s, so the table above is what this rests on"
+                        % (where, sorted(snapshot), agent, registration_dir))
+        elif set(grant) != snapshot:
+            faults.append("the last child's %s for %r carries %s, its registered "
+                          "shell grants %s" % (_TOOLS_SNAPSHOT, agent,
+                                               sorted(snapshot), sorted(grant)))
+            measured = ""
+        else:
+            measured = ("the last child's %s for %r carries exactly its shell's "
+                        "grant %s (%s)" % (_TOOLS_SNAPSHOT, agent, sorted(grant), where))
+    else:
+        measured = ("%s, so the effective surface rests on the version table"
+                    % where)
+    if faults:
+        return (hosts.REFUTED, KIMI_SHELL_SURFACE, "; ".join(faults))
+    return (hosts.PROVEN, KIMI_SHELL_SURFACE,
+            "%s; every tool name exists in kimi %s's builtin vocabulary; %s; %s"
+            % (base_detail, version, surface, measured))
+
+
+def _guard_round_trip(mode, data_path, rows, guard_path=None, runner=None):
+    """Drive payloads through the guard as a subprocess -- the real hook
+    protocol, not an import. `rows` is (name, payload, env_id, want_allow).
+    Returns (ok, detail); the detail names what was driven through what, and
+    the probes compose theirs out of it rather than restating a count of their
+    own (M1: a literal "(8 rows)" beside this function's own answer drifts the
+    moment a row is added). Everything happens inside the caller's tempdir."""
+    import scripts.kimi_guard_hook as kimi_guard_hook
+    # Plain `subprocess.run`, NOT DEFAULT_RUNNER: what this spawns is
+    # `sys.executable <the hook> <mode> <data>`, the hook protocol itself.
+    runner = subprocess.run if runner is None else runner
+    guard_path = guard_path or os.path.abspath(kimi_guard_hook.__file__)
+    for name, payload, env_id, want_allow in rows:
+        env = {"PATH": os.environ.get("PATH", "")}
+        if env_id:
+            env[kimi_guard_hook.ENV_ENTRY_ID] = env_id
+        try:
+            proc = runner([sys.executable, guard_path, mode, data_path],
+                          input=json.dumps(payload), capture_output=True,
+                          text=True, timeout=30, env=env)
+        except Exception as exc:  # noqa: BLE001 -- report, never raise
+            return False, "guard subprocess could not run: %s" % exc
+        out = (proc.stdout or "").strip()
+        denied = '"permissionDecision": "deny"' in out
+        if denied == want_allow:
+            return False, ("the guard %s: %s" % ("DENIED" if denied else "ALLOWED", name)
+                           + (" (stdout: %s)" % out[:160] if out and not denied else ""))
+    return True, ("%s round-trip: %d/%d payloads adjudicated as expected through %s"
+                  % (mode, len(rows), len(rows), os.path.basename(guard_path)))
+
+
+def _kimi_armed_home(sandbox):
+    """Build the per-run home the RUNNER builds, inside `sandbox`, from a
+    minimal fixture operator config. Returns (home, scope_path, allowlist_path).
+
+    The real `build_kimi_home` -- not a re-implementation -- so the file this
+    inspects is the file a run arms. C1 puts the runner's own home under the
+    temp root; the probe passes a home inside its sandbox instead, so nothing
+    survives the probe. The operator's real home is never read.
+    """
+    import scripts.runners.kimi as kimi_runner
+    fixture_home = os.path.join(sandbox, "fixture-home")
+    os.makedirs(fixture_home, exist_ok=True)
+    with open(os.path.join(fixture_home, "config.toml"), "w", encoding="utf-8") as fh:
+        fh.write('default_model = "kimi-code/k3"\n')
+    run_dir = os.path.join(sandbox, "run")
+    os.makedirs(run_dir, exist_ok=True)
+    scope_path = os.path.join(run_dir, "read-scope.json")
+    allowlist_path = os.path.join(run_dir, "write-allowlist.json")
+    home = kimi_runner.build_kimi_home(os.path.join(sandbox, "kimi-home"),
+                                       scope_path, allowlist_path,
+                                       real_home=fixture_home)
+    return home, scope_path, allowlist_path
+
+
+def _kimi_generated_disabled():
+    """(tools.disabled, where) read out of a config.toml the runner generates,
+    or (None, why). The file is built and read inside a sandbox and nothing
+    survives the call.
+
+    R2-4: the except list covers every type the writer it drives can raise --
+    `build_merged_config` raises ValueError (M3/N5's own mechanism) and
+    `dump_toml` raises TypeError (C2's) -- because `run_probes` wraps no probe
+    lambda and `_establish_host_posture` is called unwrapped, so an escape here
+    would abort posture establishment with a traceback. "A probe reports,
+    never raises" is this module's contract, not a tendency.
+    """
+    try:
+        with tempfile.TemporaryDirectory() as sandbox:
+            home, _scope, _allowlist = _kimi_armed_home(sandbox)
+            with open(os.path.join(home, "config.toml"), "rb") as fh:
+                config = tomllib.load(fh)
+    except tomllib.TOMLDecodeError as exc:
+        return None, "the generated config.toml is not valid TOML (%s)" % exc
+    except (OSError, ValueError, TypeError) as exc:
+        return None, ("the per-run config could not be generated (%s: %s)"
+                      % (type(exc).__name__, exc))
+    tools = config.get("tools") if isinstance(config.get("tools"), dict) else {}
+    names = {t for t in (tools.get("disabled") or []) if isinstance(t, str)}
+    return names, "the config.toml the runner generates"
+
+
+_KIMI_GUARD_PROBE = {"read": "read guard probe", "write": "write guard probe"}
+
+
+def _kimi_hooks_are_armed(sandbox, mode):
+    """(ok, detail): does the config.toml the runner generates REGISTER
+    `mode`'s guard? `ok` is None when the home could not be built at all.
+
+    N7: a probe refutes on ITS OWN hook. Both matchers are still inspected --
+    the other one's absence is disclosed in the detail, naming the probe that
+    owns it -- because over-refutation never blesses anything but it does make
+    a reader scanning states alone believe the write guard is broken when only
+    read confinement is. What stays shared is the pair of faults that are not
+    a hook: a config.toml that will not parse (neither hook registers) and a
+    `tools.disabled` that no longer covers the derived set.
+
+    C3: both guard probes are named "...-armed", and both used to prove only
+    the adjudication -- payloads through the hook script -- while nothing
+    looked at whether the hook was registered anywhere. With
+    `build_merged_config` replaced by one that arms no hooks, both still
+    returned `proven`. This is the half C2 could break by accident and a
+    refactor could break with no test going red, so it is measured here:
+    the generated file is parsed with `tomllib` and must carry exactly one
+    PreToolUse hook per matcher, each command naming this repo's guard script,
+    its own mode and its own data file, with the runner's disabled-tool set
+    present in `tools.disabled`.
+    """
+    import scripts.kimi_guard_hook as kimi_guard_hook
+    import scripts.runners.kimi as kimi_runner
+    try:
+        home, scope_path, allowlist_path = _kimi_armed_home(sandbox)
+        with open(os.path.join(home, "config.toml"), "rb") as fh:
+            config = tomllib.load(fh)
+    except OSError as exc:
+        return None, "the per-run home could not be built: %s" % exc
+    except tomllib.TOMLDecodeError as exc:
+        return False, ("the config.toml the runner generates is not valid TOML "
+                       "(%s), so the run would start with its guard hooks "
+                       "unregistered" % exc)
+    guard = os.path.abspath(kimi_guard_hook.__file__)
+    hooks = [h for h in (config.get("hooks") or []) if isinstance(h, dict)]
+    tools = config.get("tools") if isinstance(config.get("tools"), dict) else {}
+    disabled = set(tools.get("disabled") or [])
+    faults, notes, mine, mine_file = [], [], None, ""
+    for matcher, this_mode, data_path in ((kimi_runner.READ_MATCHER, "read", scope_path),
+                                          (kimi_runner.WRITE_MATCHER, "write", allowlist_path)):
+        problems = []
+        matching = [h for h in hooks
+                    if h.get("event") == "PreToolUse" and h.get("matcher") == matcher]
+        if len(matching) != 1:
+            problems.append("%d PreToolUse hooks match %r, expected exactly 1"
+                            % (len(matching), matcher))
+        else:
+            command = matching[0].get("command") or ""
+            for needle, what in ((guard, "the guard script %s" % guard),
+                                 (" %s " % this_mode, "its %s mode argument" % this_mode),
+                                 (os.path.abspath(data_path), "its %s data file" % this_mode)):
+                if needle not in command:
+                    problems.append("the %r hook's command does not name %s: %r"
+                                    % (matcher, what, command[:160]))
+        if this_mode == mode:
+            mine, mine_file = matcher, os.path.basename(data_path)
+            faults.extend(problems)
+        elif problems:
+            notes.append("%s (the %s owns that one)"
+                         % ("; ".join(problems), _KIMI_GUARD_PROBE[this_mode]))
+    missing = sorted(set(kimi_runner.disabled_tools()) - disabled)
+    if missing:
+        faults.append("tools.disabled omits %s" % ", ".join(missing))
+    if faults:
+        return False, ("the config.toml the runner generates does not arm the %s "
+                       "guard: %s" % (mode, "; ".join(faults)))
+    detail = ("the config.toml the runner generates registers %s on %r with this "
+              "run's %s, and disables %d tool(s)"
+              % (os.path.basename(guard), mine, mine_file, len(disabled)))
+    if notes:
+        detail += "; note: %s" % "; ".join(notes)
+    return True, detail
+
+
+def _kimi_home_arms_and_validates(runner=None):
+    """(ok, detail): the generated per-run config arms both guards AND
+    `kimi doctor` accepts it. `ok` None means nothing could be measured."""
+    runner = DEFAULT_RUNNER if runner is None else runner
+    try:
+        with tempfile.TemporaryDirectory() as sandbox:
+            ok, detail = _kimi_hooks_are_armed(sandbox, "read")
+            if ok is not True:
+                return ok, detail
+            env = dict(os.environ, KIMI_CODE_HOME=os.path.join(sandbox, "kimi-home"))
+            proc = runner(["kimi", "doctor"], capture_output=True, text=True,
+                          timeout=60, env=env)
+    except OSError as exc:
+        return None, "kimi doctor could not run: %s" % exc
+    if proc.returncode != 0 or "OK config.toml" not in (proc.stdout or ""):
+        return False, ("kimi doctor rejected the generated per-run config: %s%s"
+                       % (proc.stdout or "", proc.stderr or ""))[:300]
+    return True, "%s, and kimi doctor validates it" % detail
+
+
+def probe_kimi_read_guard(host, runner=None, doctor_runner=None):
+    """Kimi can confine a dispatched reviewer's reads to its entry's scope.
+
+    Two halves, both required. ADJUDICATION: the guard subprocess allows an
+    in-scope read and denies outside reads, unbound sessions, unknown entries
+    and a malformed scope file. ARMING (C3): the config.toml the runner
+    generates really registers that script as a PreToolUse hook, with this
+    run's scope file bound into its command, in a file `kimi doctor` accepts.
+    NOT "armed right now" -- the loop arms the scope file per batch, so at run
+    start it is legitimately absent.
+
+    `runner` drives the guard subprocess (plain python; tests use the real
+    one). `doctor_runner` drives `kimi doctor` and is resolved separately,
+    from DEFAULT_RUNNER, so the suite never launches the real host
+    binary (FAMILY-PR-GUARDRAILS, Suite rules; I3): the two spawns are
+    different binaries and must not share one default.
+    """
+    if not hosts.declares(host, hosts.READ_SCOPE_CONFINED):
+        return (hosts.UNKNOWN, None,
+                "host %r claims no read-scope confinement" % host)
+    try:
+        with tempfile.TemporaryDirectory() as sandbox:
+            inside = os.path.realpath(os.path.join(sandbox, "cell", "a.py"))
+            outside = os.path.realpath(os.path.join(sandbox, "elsewhere", "b.py"))
+            for p in (inside, outside):
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                with open(p, "w", encoding="utf-8") as fh:
+                    fh.write("")
+            scope_path = os.path.join(sandbox, "read-scope.json")
+            with open(scope_path, "w", encoding="utf-8") as fh:
+                json.dump({"probe-cell": {"files": [inside], "dirs": [], "reads": []}}, fh)
+            rows = (
+                ("bound Read inside scope",
+                 {"tool_name": "Read", "tool_input": {"path": inside}}, "probe-cell", True),
+                ("bound Read outside scope",
+                 {"tool_name": "Read", "tool_input": {"path": outside}}, "probe-cell", False),
+                ("bound Grep of an in-scope file",
+                 {"tool_name": "Grep", "tool_input": {"pattern": "x", "path": inside}}, "probe-cell", True),
+                ("bound Grep over a directory",
+                 {"tool_name": "Grep", "tool_input": {"pattern": "x", "path": os.path.dirname(inside)}}, "probe-cell", False),
+                ("bound Glob",
+                 {"tool_name": "Glob", "tool_input": {"pattern": "*.py", "path": os.path.dirname(inside)}}, "probe-cell", False),
+                ("unbound session Read",
+                 {"tool_name": "Read", "tool_input": {"path": inside}}, None, False),
+                ("unknown entry Read",
+                 {"tool_name": "Read", "tool_input": {"path": inside}}, "not-armed", False),
+            )
+            ok, detail = _guard_round_trip("read", scope_path, rows, runner=runner)
+            if not ok:
+                return (hosts.REFUTED, KIMI_READ_GUARD, detail)
+            round_trip_detail = detail
+            with open(scope_path, "w", encoding="utf-8") as fh:
+                fh.write("not json")
+            ok, detail = _guard_round_trip(
+                "read", scope_path,
+                (("malformed scope file",
+                  {"tool_name": "Read", "tool_input": {"path": inside}}, "probe-cell", False),),
+                runner=runner)
+            if not ok:
+                return (hosts.REFUTED, KIMI_READ_GUARD, detail)
+            round_trip_detail = "%s; and, with the data file corrupted, %s" % (
+                round_trip_detail, detail)
+    except OSError as exc:
+        return (hosts.UNKNOWN, KIMI_READ_GUARD,
+                "sandbox round-trip could not run: %s" % exc)
+    armed, armed_detail = _kimi_home_arms_and_validates(doctor_runner)
+    if armed is None:
+        return (hosts.UNKNOWN, KIMI_READ_GUARD,
+                "%s, but %s" % (round_trip_detail, armed_detail))
+    if not armed:
+        return (hosts.REFUTED, KIMI_READ_GUARD, armed_detail)
+    # M1: composed from what the two halves REPORTED -- no hardcoded row count
+    # (the old "(8 rows)" was a literal beside `_guard_round_trip`'s own
+    # answer, and drifted the moment a row was added) and no surface this
+    # probe did not open.
+    return (hosts.PROVEN, KIMI_READ_GUARD, "%s; %s" % (round_trip_detail, armed_detail))
+
+
+def probe_kimi_write_guard(host, runner=None):
+    """Kimi can mediate a self-writing reviewer's Write/Edit.
+
+    Same shape as the read probe: declared out_file allowed, everything else
+    denied, symlinks denied, malformed allowlist denied -- and then the arming
+    half (C3), which parses the config.toml the runner generates and requires
+    the write hook to be registered there. The allowlist is the file the loop
+    arms per batch (orchestrate.Guards), so it is legitimately absent at probe
+    time.
+    """
+    if not hosts.declares(host, hosts.ARTIFACT_WRITE_GUARD):
+        return (hosts.UNKNOWN, None,
+                "host %r claims no artifact write guard" % host)
+    try:
+        with tempfile.TemporaryDirectory() as sandbox:
+            declared = os.path.realpath(os.path.join(sandbox, "findings-probe.json"))
+            other = os.path.realpath(os.path.join(sandbox, "not-declared.json"))
+            with open(declared, "w", encoding="utf-8") as fh:
+                fh.write("{}")
+            allowlist_path = os.path.join(sandbox, "write-allowlist.json")
+            with open(allowlist_path, "w", encoding="utf-8") as fh:
+                json.dump([declared], fh)
+            rows = (
+                ("Write to the declared out_file",
+                 {"tool_name": "Write", "tool_input": {"path": declared, "content": "{}"}}, "probe-cell", True),
+                ("Write outside the allowlist",
+                 {"tool_name": "Write", "tool_input": {"path": other, "content": "{}"}}, "probe-cell", False),
+                ("Edit outside the allowlist",
+                 {"tool_name": "Edit", "tool_input": {"path": other}}, "probe-cell", False),
+                ("unbound session Write",
+                 {"tool_name": "Write", "tool_input": {"path": declared, "content": "{}"}}, None, False),
+            )
+            ok, detail = _guard_round_trip("write", allowlist_path, rows, runner=runner)
+            if not ok:
+                return (hosts.REFUTED, KIMI_WRITE_GUARD, detail)
+            round_trip_detail = detail
+            with open(allowlist_path, "w", encoding="utf-8") as fh:
+                fh.write("not json")
+            ok, detail = _guard_round_trip(
+                "write", allowlist_path,
+                (("malformed allowlist",
+                  {"tool_name": "Write", "tool_input": {"path": declared, "content": "{}"}}, "probe-cell", False),),
+                runner=runner)
+            if not ok:
+                return (hosts.REFUTED, KIMI_WRITE_GUARD, detail)
+            round_trip_detail = "%s; and, with the data file corrupted, %s" % (
+                round_trip_detail, detail)
+            # C3: the ARMING half, in the same sandbox -- the write probe used
+            # to build no home at all, so its detail ("the runner arms the hook
+            # in the per-run home's config.toml") named a file it never opened.
+            armed, armed_detail = _kimi_hooks_are_armed(sandbox, "write")
+    except OSError as exc:
+        return (hosts.UNKNOWN, KIMI_WRITE_GUARD,
+                "sandbox round-trip could not run: %s" % exc)
+    if armed is None:
+        return (hosts.UNKNOWN, KIMI_WRITE_GUARD,
+                "%s, but %s" % (round_trip_detail, armed_detail))
+    if not armed:
+        return (hosts.REFUTED, KIMI_WRITE_GUARD, armed_detail)
+    return (hosts.PROVEN, KIMI_WRITE_GUARD, "%s; %s" % (round_trip_detail, armed_detail))
+
+
+def probe_kimi_model_alias(host, configured=None):
+    """Every role's entry model resolves to an alias the installed CLI has.
+
+    The runner binds `-m <alias>` on every entry (Kimi agent files cannot
+    bind a model), so the question is exactly the runner's: does the tier the
+    entry carries resolve through model-profiles.yml to an alias present in
+    the installed config's [models] table. An unresolvable role is a
+    refutation -- that entry would fail at launch rather than silently run
+    the session's default model.
+    """
+    import scripts.runners.kimi as kimi_runner
+    if not hosts.declares(host, hosts.MODEL_BINDING):
+        return (hosts.UNKNOWN, None, "host %r claims no model binding" % host)
+    if configured is None:
+        configured = kimi_runner.configured_models()
+    if not configured:
+        return (hosts.REFUTED, KIMI_MODEL_ALIAS,
+                "no [models] table is readable in the installed kimi config, "
+                "so no entry model can bind")
+    faults, bound = [], []
+    for role in DRIVER_ROLES:
+        tier = model_resolver.resolve_model(host, role).get("model")
+        alias = kimi_runner.resolve_cli_alias(tier, configured)
+        if alias is None:
+            faults.append("%s: entry model %r resolves to no configured alias" % (role, tier))
+        else:
+            bound.append("%s->%s" % (role, alias))
+    if faults:
+        return (hosts.REFUTED, KIMI_MODEL_ALIAS, "; ".join(faults))
+    return (hosts.PROVEN, KIMI_MODEL_ALIAS,
+            "%d/%d roles bind a configured alias: %s"
+            % (len(bound), len(DRIVER_ROLES), ", ".join(bound)))
+
+
+def probe_kimi_usage_wire(host):
+    """The usage ledger's channel, end to end on the layout the runner globs.
+
+    I4: the runner reads `wire_path(self.kimi_home, session_id)` -- a file the
+    CHILD writes under the PER-RUN home, which its own `KIMI_CODE_HOME`
+    override guarantees is not `~/.kimi-code`. The probe therefore builds a
+    per-run home, writes a synthetic session at exactly that layout, and
+    proves `wire_path` + `parse_wire` together: resolution and summation, the
+    two steps a real launch takes between a child finishing and a ledger row
+    existing. It refutes when `wire_path` cannot resolve the layout (the
+    ledger would report null rather than a figure) and when the parser returns
+    anything but the figures the synthetic records carry.
+
+    Everything it writes lives in the tempdir it owns (N4). It deliberately
+    takes no `home` parameter: `run_probes`' `home=` means "a stand-in for ~"
+    to the transcript probe, and taking the same argument here meant one name
+    with two meanings -- and a fixture session left behind in whatever
+    directory the caller had in mind.
+    """
+    import scripts.runners.kimi as kimi_runner
+    if not hosts.declares(host, hosts.USAGE_LEDGER):
+        return (hosts.UNKNOWN, None, "host %r claims no usage ledger" % host)
+    session_id = "session_probe"
+    records = [
+        {"type": "llm.request", "modelAlias": "kimi-code/k3"},
+        {"type": "usage.record", "model": "kimi-code/k3", "usageScope": "turn",
+         "usage": {"inputOther": 10, "output": 3, "inputCacheRead": 5, "inputCacheCreation": 2}},
+        {"type": "usage.record", "model": "kimi-code/k3", "usageScope": "turn",
+         "usage": {"inputOther": 7, "output": 1, "inputCacheRead": 0, "inputCacheCreation": 0}},
+        {"type": "usage.record", "model": "kimi-code/k3", "usageScope": "session",
+         "usage": {"inputOther": 999, "output": 999, "inputCacheRead": 999, "inputCacheCreation": 999}},
+    ]
+    try:
+        with tempfile.TemporaryDirectory() as sandbox:
+            run_home = os.path.join(sandbox, "kimi-home")
+            # The layout `wire_path` globs: <home>/sessions/*/<sid>/agents/main/
+            wire = os.path.join(run_home, "sessions", "wd_probe", session_id,
+                                "agents", "main", "wire.jsonl")
+            os.makedirs(os.path.dirname(wire), exist_ok=True)
+            with open(wire, "w", encoding="utf-8") as fh:
+                for record in records:
+                    fh.write(json.dumps(record) + "\n")
+            resolved = kimi_runner.wire_path(run_home, session_id)
+            usage, model = kimi_runner.parse_wire(resolved) if resolved else ({}, None)
+    except OSError as exc:
+        return (hosts.UNKNOWN, KIMI_USAGE_WIRE,
+                "the per-run wire round-trip could not run: %s" % exc)
+    if resolved is None:
+        return (hosts.REFUTED, KIMI_USAGE_WIRE,
+                "a child's wire.jsonl written at the per-run home's own layout "
+                "(%s) does not resolve through wire_path, so the cost ledger "
+                "would report null rather than a figure" % wire)
+    expected = {"input_tokens": 17, "output_tokens": 4,
+                "cache_read_input_tokens": 5, "cache_creation_input_tokens": 2}
+    if usage != expected or model != "kimi-code/k3":
+        return (hosts.REFUTED, KIMI_USAGE_WIRE,
+                "wire_path resolved %s but parse_wire returned %r (model %r), "
+                "expected %r" % (resolved, usage, model, expected))
+    return (hosts.PROVEN, KIMI_USAGE_WIRE,
+            "a synthetic session under the run home %s resolves through "
+            "wire_path to %s and sums to %d input / %d output tokens, the "
+            "turn-scoped records only" % (run_home, resolved,
+                                          expected["input_tokens"], expected["output_tokens"]))
 
 # Every probe id a registry row may map to and get a runner for; the
 # shadow-shell scan runs unconditionally and is not a mappable probe. The
 # retirement bar (tests/test_generic_retirement_bar.py) reads this as "the
 # shipped probes" (spec 8.1), so it must not drift from the runner table:
 # run_probes refuses to build a table that disagrees with it.
-PROBE_IDS = (REGISTERED_SHELL_TOOLS, WRITE_GUARD_ARMED, TRANSCRIPT_DIR,
-            ENTRY_MODEL_BOUND, READ_GUARD_ARMED)
+PROBE_IDS = (REGISTERED_SHELL_TOOLS, WRITE_GUARD_ARMED, USAGE_SOURCE,
+            ENTRY_MODEL_BOUND, READ_GUARD_ARMED,
+            CODEX_EFFECTIVE_TOOLS, CODEX_READ_SCOPE,
+            KIMI_SHELL_SURFACE, KIMI_READ_GUARD, KIMI_WRITE_GUARD,
+            KIMI_MODEL_ALIAS, KIMI_USAGE_WIRE)
 
 # Which capability each shipped probe MEASURES. The retirement bar reads this
 # so a row cannot satisfy spec 8.1 by mapping a security capability to a
@@ -536,18 +1363,175 @@ PROBE_IDS = (REGISTERED_SHELL_TOOLS, WRITE_GUARD_ARMED, TRANSCRIPT_DIR,
 # run_probes is row-driven, the live posture).
 PROBE_CAPABILITY = {REGISTERED_SHELL_TOOLS: hosts.TOOL_POLICY_ENFORCED,
                     WRITE_GUARD_ARMED: hosts.ARTIFACT_WRITE_GUARD,
-                    TRANSCRIPT_DIR: hosts.USAGE_LEDGER,
+                    USAGE_SOURCE: hosts.USAGE_LEDGER,
                     ENTRY_MODEL_BOUND: hosts.MODEL_BINDING,
-                    READ_GUARD_ARMED: hosts.READ_SCOPE_CONFINED}
+                    READ_GUARD_ARMED: hosts.READ_SCOPE_CONFINED,
+                    CODEX_EFFECTIVE_TOOLS: hosts.TOOL_POLICY_ENFORCED,
+                    CODEX_READ_SCOPE: hosts.READ_SCOPE_CONFINED,
+                    KIMI_SHELL_SURFACE: hosts.TOOL_POLICY_ENFORCED,
+                    KIMI_READ_GUARD: hosts.READ_SCOPE_CONFINED,
+                    KIMI_WRITE_GUARD: hosts.ARTIFACT_WRITE_GUARD,
+                    KIMI_MODEL_ALIAS: hosts.MODEL_BINDING,
+                    KIMI_USAGE_WIRE: hosts.USAGE_LEDGER}
 
 
-def probe_transcript_dir(host, session_dir, home=None):
-    """The host's own transcript directory for this SESSION exists and reads.
+CLI_HELP_TIMEOUT = 30    # seconds; a CLI that cannot print --help inside this is unmeasurable
+
+
+def _flag_advertised(flag, text):
+    """Is `flag` a standalone token of `text`? `-p` must not match inside
+    `--print` or `--permission-mode`; `--output-format=stream-json` still
+    advertises `--output-format`."""
+    return re.search(r"(?<![\w-])%s(?![\w-])" % re.escape(flag), text) is not None
+
+
+def _cli_advertises(launch, found, flags):
+    """(verdict, why): does `<found> --help`, run through the RUNNER's own
+    launcher, exit 0 and advertise every flag in `flags`? None means it could
+    not be run at all -- a probe that cannot measure says UNKNOWN, never
+    guesses. Going through the runner's launcher rather than subprocess.run
+    is deliberate: it is the one seam the suite refuses real launches at
+    (tests/conftest.py), so a test that reaches this without a fake fails
+    loudly instead of running the real binary."""
+    try:
+        proc = launch([found, "--help"], capture_output=True, text=True,
+                      timeout=CLI_HELP_TIMEOUT)
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        return None, "`%s --help` could not run: %s" % (found, exc)
+    if proc.returncode != 0:
+        return False, ("`%s --help` exited %s: not a CLI the headless runner can drive"
+                       % (found, proc.returncode))
+    text = "%s\n%s" % (proc.stdout or "", proc.stderr or "")
+    missing = [f for f in flags if not _flag_advertised(f, text)]
+    if missing:
+        return False, ("`%s --help` does not advertise %s, so a launch would print no "
+                       "JSON envelope to read usage from" % (found, ", ".join(missing)))
+    return True, "`%s --help` advertises %s" % (found, ", ".join(flags))
+
+
+def _ledger_carries_usage(ledger):
+    """(verdict, how) from the rows the loop has ALREADY written to `ledger`
+    for this run -- the surface this probe names as its evidence, read back
+    on every re-probe. None: no ledger yet, or no successful launch in it
+    (nothing to measure). False: successful launches, and not one envelope
+    carried a usage figure -- the capability, measured and absent. True
+    otherwise. A single odd row never refutes; systematic absence does.
+
+    `how` is worded for the REFUTATION. The proven detail must not carry a
+    running count: `driver._establish_host_posture` rewrites the evidence
+    artifact whenever any capability's detail changes, and a count that
+    grows with every batch would make that an "always write" on every turn
+    of the loop -- the very hazard its comment says it avoids -- and move
+    `probed_at` to the last iteration rather than the run's start."""
+    try:
+        with open(ledger, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return None, "no launch ledgered yet"
+    ok_rows = []
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and row.get("ok"):
+            ok_rows.append(row)
+    if not ok_rows:
+        return None, "no successful launch ledgered yet"
+
+    def carried(row):
+        usage = row.get("usage")
+        return isinstance(usage, dict) and any(
+            isinstance(v, (int, float)) and v > 0 for v in usage.values())
+    with_usage = sum(1 for r in ok_rows if carried(r))
+    if not with_usage:
+        return False, ("%d successful launch(es) ledgered at %s and not one envelope "
+                       "carried a usage figure: this CLI's envelope reports none"
+                       % (len(ok_rows), ledger))
+    return True, "%d of %d successful launches ledgered so far carried usage" % (with_usage, len(ok_rows))
+
+
+def _headless_usage_source(host, settings_path):
+    """The headless half of `probe_usage_source`: can the loop ledger what
+    the runner's envelope reports?
+
+    Each measurement can refute. The run folder must be able to hold the
+    ledger the loop appends after every launch (`runners.base.LEDGER_FILE`,
+    beside `settings_path`). The CLI the host's headless runner launches
+    must be on PATH -- no launch, no envelope, no figure -- and must be the
+    thing the runner drives: its `--help` runs and advertises the runner's
+    own `ENVELOPE_FLAGS`, the tokens that make a launch print the envelope.
+    Existence alone was this branch's review objection: any executable
+    named `claude` proved the ledger. And once the loop has ledgered
+    successful launches, their envelopes are the evidence: if not one of
+    them carried usage, the capability is refuted on what was measured, not
+    on what a launch might do. Name, flags and launcher are all the runner's
+    own (`Runner.CLI`, `Runner.ENVELOPE_FLAGS`, `Runner.runner`), never
+    re-spelled here, so a family that renames its binary or a flag moves
+    this probe with it -- and the launcher is the seam the suite refuses
+    real launches at.
+
+    A claiming host with no usable headless runner is UNKNOWN whatever makes
+    it unusable (no module, a module that fails to import, a Runner without
+    the three attributes): nothing here can name a CLI to look for, a
+    vacuous PROVEN is the fail-open this epic exists to remove, and a probe
+    reports rather than raises."""
+    import scripts.runners.base as runners_base
+    writable, probe_dir = _headless_subject_dir(settings_path)
+    ledger = os.path.join(os.path.dirname(os.path.abspath(settings_path)),
+                         runners_base.LEDGER_FILE)
+    if not writable:
+        return (hosts.REFUTED, USAGE_SOURCE,
+                "the loop cannot write its dispatch ledger at %s: %s is not writable"
+                % (ledger, probe_dir))
+    try:
+        runner = runners_base.runner_for(host, "headless")
+        cli, flags, launch = runner.CLI, tuple(runner.ENVELOPE_FLAGS), runner.runner
+    except Exception as exc:          # noqa: BLE001 -- a probe reports, never raises
+        return (hosts.UNKNOWN, USAGE_SOURCE,
+                "host %r has no usable headless runner naming a CLI, its envelope flags "
+                "and a launcher (%s: %s), so nothing here proves a launch envelope will "
+                "carry usage" % (host, type(exc).__name__, exc))
+    found = shutil.which(cli)
+    if not found:
+        return (hosts.REFUTED, USAGE_SOURCE,
+                "no `%s` on PATH: the headless runner cannot launch, so no "
+                "envelope will ever carry usage and the ledger at %s stays empty"
+                % (cli, ledger))
+    advertised, why = _cli_advertises(launch, found, flags)
+    if advertised is None:
+        return (hosts.UNKNOWN, USAGE_SOURCE, why)
+    if not advertised:
+        return (hosts.REFUTED, USAGE_SOURCE, why)
+    ledgered, how = _ledger_carries_usage(ledger)
+    if ledgered is False:
+        return (hosts.REFUTED, USAGE_SOURCE, how)
+    # One detail for the whole run, before the first launch and after the
+    # last: see _ledger_carries_usage on why no count appears here.
+    return (hosts.PROVEN, USAGE_SOURCE,
+            "headless: usage is read from the JSON envelope of every `%s` launch "
+            "(%s; %s) and ledgered at %s, every successful launch ledgered there "
+            "carrying its figure; the session's transcripts are not consulted"
+            % (cli, found, why, ledger))
+
+
+def probe_usage_source(host, session_dir, home=None, settings_path=None):
+    """Where this host's usage figures come from, and that the source is
+    reachable. The probe follows the MODE, exactly as the two guard probes do
+    (spec 5.4 applied to spec 5.5): `settings_path` names the file a headless
+    runner will arm, and with it the subject is the launch envelope plus the
+    run-folder ledger (`_headless_usage_source`); without it -- session mode,
+    or plain `driver run` -- the subject is the host's own transcript
+    directory for this SESSION, which is what `collect_usage` reads.
+
+    Before the Claude family PR this was `transcript-dir` and knew only the
+    session surface, so a headless run launched from any directory without
+    transcripts (every fresh target) REFUTED a ledger that was exact.
 
     Operational rather than security -- 8.1 excludes usage_ledger from F5's
     bar, and it gates nothing directly. But it DOES gate
-    `synthesize._collect_host_usage`, so the directory it asks about has to be
-    the one that collector will read.
+    `synthesize._collect_host_usage`, so in session mode the directory it
+    asks about has to be the one that collector will read.
 
     `session_dir` is where the HOST SESSION runs -- NOT the review root, and
     NOT the target. synthesize.py:52-66 spends fourteen lines
@@ -564,17 +1548,19 @@ def probe_transcript_dir(host, session_dir, home=None):
     """
     if not hosts.declares(host, hosts.USAGE_LEDGER):
         return (hosts.UNKNOWN, None, "host %r claims no usage ledger" % host)
+    if settings_path is not None:
+        return _headless_usage_source(host, settings_path)
     root = home or os.path.expanduser("~")
     directory = os.path.join(root, ".claude", "projects",
                              collect_usage.project_slug(session_dir))
     if not os.path.isdir(directory):
-        return (hosts.REFUTED, TRANSCRIPT_DIR,
+        return (hosts.REFUTED, USAGE_SOURCE,
                 "no transcript directory at %s; the cost ledger will report "
                 "null rather than a figure" % directory)
     if not os.access(directory, os.R_OK):
-        return (hosts.REFUTED, TRANSCRIPT_DIR,
+        return (hosts.REFUTED, USAGE_SOURCE,
                 "%s is not readable" % directory)
-    return (hosts.PROVEN, TRANSCRIPT_DIR, "%s is readable" % directory)
+    return (hosts.PROVEN, USAGE_SOURCE, "session: %s is readable" % directory)
 
 
 SHADOW_SHELL_SCAN = "shadow-shell-scan"
@@ -716,7 +1702,7 @@ def _no_probe_reason(row, capability, host):
 
 
 def run_probes(host, review_root, session_root=None, registration_dir=None,
-               home=None, shadow=None, settings_path=None):
+               home=None, shadow=None, settings_path=None, run_home=None):
     """Establish this host's posture now, and return the artifact body.
 
     THREE DIFFERENT TREES, and collapsing them is what produced both of this
@@ -752,8 +1738,16 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
 
     `settings_path` (plan 6, spec 5.4) names the file a HEADLESS runner will
     arm; when given, it is the two guard probes' subject INSTEAD of
-    `session_root`. `None` (session mode, or plain `driver run`) leaves them
-    probing the session root exactly as before.
+    `session_root`, and the usage probe's cue to measure the launch envelope
+    and run-folder ledger instead of the session's transcripts (spec 5.5).
+    `None` (session mode, or plain `driver run`) leaves all three probing the
+    session root exactly as before.
+
+    `run_home` is the live runner's scratch directory outside the reviewed
+    tree (`HostRunner.run_home`), threaded down from the loop so a probe can
+    measure THIS run's children -- the effective tool surface a launch really
+    had. It is passed in process, never re-derived from a path recorded inside
+    the target (N2). `None` until the loop's `prepare` has run.
     """
     findings = {}          # capability -> list of (state, by, detail)
     session_root = session_root or os.getcwd()
@@ -767,19 +1761,47 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
     # A row that maps a probe to a different capability must record it there;
     # otherwise `HostSpec.probes` is decorative and a mis-mapped row fails
     # silently -- the defect this epic exists to remove.
+    codex_measurement = []
+
+    def codex_measure():
+        if not codex_measurement:
+            codex_measurement.append(_codex_surfaces(registration_dir))
+        return codex_measurement[0]
+
     runners = {
         REGISTERED_SHELL_TOOLS:
             lambda: probe_registered_shell_tools(host, registration_dir),
         WRITE_GUARD_ARMED:
             lambda: probe_write_guard_armed(host, session_root=session_root,
                                             settings_path=settings_path),
-        TRANSCRIPT_DIR:
-            lambda: probe_transcript_dir(host, session_root, home=home),
+        USAGE_SOURCE:
+            lambda: probe_usage_source(host, session_root, home=home,
+                                       settings_path=settings_path),
         ENTRY_MODEL_BOUND:
             lambda: probe_entry_model_bound(host, registration_dir),
         READ_GUARD_ARMED:
             lambda: probe_read_guard_armed(host, session_root=session_root,
                                            settings_path=settings_path),
+        CODEX_EFFECTIVE_TOOLS:
+            lambda: probe_codex_tool_policy(host, registration_dir, settings_path, codex_measure),
+        CODEX_READ_SCOPE:
+            lambda: probe_codex_read_scope(host, registration_dir, settings_path, codex_measure),
+        KIMI_SHELL_SURFACE:
+            # `run_home` is the live runner's scratch home, handed down by the
+            # loop (N2) -- never a path read out of the reviewed tree. None
+            # before the first `prepare`, in session mode and under plain
+            # `driver run`, where I5 falls back to the version table and says
+            # so in its detail.
+            lambda: probe_kimi_shell_surface(host, registration_dir,
+                                             run_home=run_home),
+        KIMI_READ_GUARD:
+            lambda: probe_kimi_read_guard(host),
+        KIMI_WRITE_GUARD:
+            lambda: probe_kimi_write_guard(host),
+        KIMI_MODEL_ALIAS:
+            lambda: probe_kimi_model_alias(host),
+        KIMI_USAGE_WIRE:
+            lambda: probe_kimi_usage_wire(host),
     }
     if set(runners) != set(PROBE_IDS):
         raise RuntimeError("host_probes.PROBE_IDS is out of step with run_probes' runner "

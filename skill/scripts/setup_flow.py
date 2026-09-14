@@ -18,6 +18,7 @@ import discovery  # noqa: E402  (P6.5 Slice A: discovery primitives, moved off o
 import grouping_engine  # noqa: E402  (5.2: stage-3 size policy + setup report)
 import coverage_model  # noqa: E402  (5.2: the surfaces enum for the brief)
 from scripts import hosts  # noqa: E402  (#1344 F2: host readiness reads the registry)
+from scripts import codex_host  # noqa: E402  (#1344: the suite's launch guard type)
 from scripts import host_probes  # noqa: E402  (#1344 F3b: readiness probes live posture)
 from scripts import host_disclosure  # noqa: E402  (#1344 F3b: one voice for the posture)
 
@@ -224,6 +225,15 @@ def _seed_config(repo):
 # the getattr(..., "returncode", 1) checks below read as a failed probe.
 _PROBE_TIMEOUT = 30
 
+# The probe launcher, as a MODULE attribute rather than a default argument, so
+# one monkeypatch can refuse every un-injected probe in the suite. Readiness
+# spawns a HOST CLI here (`codex --version` below), which the guardrails forbid
+# a test to reach; with `runner=subprocess.run` in the signature the autouse
+# guard in tests/conftest.py could not see it, and N-M3's own tests walked
+# straight through. tests/test_host_launch_guard.py now finds this seam by
+# walking the AST rather than trusting anyone to remember it.
+DEFAULT_RUNNER = subprocess.run
+
 
 def _probe(runner, cmd):
     try:
@@ -359,6 +369,14 @@ def _check_host_shells(host, runner, repo_root=None):
     # is the reason the line exists at all.
     try:
         fresh = host_probes.run_probes(resolved_host, repo_root)
+    except codex_host.LaunchRefused:
+        # N-M3: the suite's no-live-launch guard, re-raised exactly as
+        # host_probes._codex_measure re-raises it. Readiness DOES reach a live
+        # Codex probe (it is why tests/test_setup_flow.py has to isolate
+        # them), and swallowing the refusal into a benign row would put back
+        # the hole I-5 exists to close: a test that reached a real `codex` and
+        # failed would read as "posture could not be probed" and stay green.
+        raise
     except Exception as exc:            # noqa: BLE001 -- readiness never crashes
         checks.append(("host-capabilities", None,
                        "posture could not be probed: %s" % exc))
@@ -420,12 +438,17 @@ def _check_groups_manifest(repo):
             "group(s) with no match patterns: %s" % ", ".join(map(str, empty)))
 
 
-def setup_readiness(repo, host=None, runner=subprocess.run, environ=None):
+def setup_readiness(repo, host=None, runner=None, environ=None):
     """#485(3): the preflight. Returns a list of (name, ok, detail) checks.
 
     ok is True/False/None -- None means informational (not gating READY).
     Every failing check carries its fix in `detail`.
+
+    `runner` defaults to the module's DEFAULT_RUNNER, read HERE rather than in
+    the signature, because one of the probes below starts a host CLI and the
+    suite's guard has to be able to refuse it.
     """
+    runner = DEFAULT_RUNNER if runner is None else runner
     env = environ if environ is not None else os.environ
     checks = []
     checks.extend(_check_docker(runner))

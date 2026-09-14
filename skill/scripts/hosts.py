@@ -88,25 +88,33 @@ HOSTS = {
         probes={TOOL_POLICY_ENFORCED: "registered-shell-tools",
                 ARTIFACT_WRITE_GUARD: "write-guard-armed",
                 MODEL_BINDING: "entry-model-bound",
-                USAGE_LEDGER: "transcript-dir",
+                USAGE_LEDGER: "usage-source",
                 READ_SCOPE_CONFINED: "read-guard-armed"}),
     "kimi": HostSpec(
         name="kimi",
-        claims=frozenset({TOOL_POLICY_ENFORCED, MODEL_BINDING}),
+        claims=frozenset({TOOL_POLICY_ENFORCED, READ_SCOPE_CONFINED,
+                          ARTIFACT_WRITE_GUARD, MODEL_BINDING, USAGE_LEDGER}),
         registration_dir=KIMI_AGENTS_DIR,
         shell_format="md",
         project_scope_dirs=(os.path.join(".agents", "agents"),
                             os.path.join(".kimi-code", "agents")),
         detect_env=("KIMI_CODE_VERSION", "KIMI_SESSION_ID"),
-        driver_selectable=False),
+        driver_selectable=True,
+        probes={TOOL_POLICY_ENFORCED: "kimi-shell-surface",
+                READ_SCOPE_CONFINED: "kimi-read-guard-armed",
+                ARTIFACT_WRITE_GUARD: "kimi-write-guard-armed",
+                MODEL_BINDING: "kimi-model-alias-bound",
+                USAGE_LEDGER: "kimi-usage-wire"}),
     "codex": HostSpec(
         name="codex",
-        claims=frozenset({TOOL_POLICY_ENFORCED}),
+        claims=frozenset({TOOL_POLICY_ENFORCED, READ_SCOPE_CONFINED}),
         registration_dir=CODEX_AGENTS_DIR,
         shell_format="toml",
         project_scope_dirs=(os.path.join(".codex", "agents"),),
         detect_env=("CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED"),
-        driver_selectable=False),
+        driver_selectable=True,
+        probes={TOOL_POLICY_ENFORCED: "codex-effective-tools",
+                READ_SCOPE_CONFINED: "codex-read-scope"}),
     # Registered, not selectable: its family PR did not clear the gate (#1621,
     # retired 2026-09-13). The row STAYS so the registry still knows the name
     # -- `known_hosts()` lists it, `spec("gemini")` resolves, it still claims
@@ -114,7 +122,7 @@ HOSTS = {
     # it honestly. Operators use `--host generic` (session mode, unenforced,
     # ack-gated), the same path as any host without a family runner. A future
     # Gemini PR flips this back as part of proving its capabilities, exactly
-    # as kimi's and codex's rows will.
+    # as kimi's and codex's rows did above.
     "gemini": HostSpec(name="gemini", claims=frozenset(),
                        driver_selectable=False),
     # The deprecated fallback (spec D4). Its deletion in F5 is an OWNER
@@ -187,12 +195,13 @@ def posture(host, evidence):
       direction but applied symmetrically it discarded refutations, and §7.3
       makes refuted the STRONGER answer. A refutation grants nothing, so
       letting it through is strictly non-permissive. It was latent only
-      because generic has empty `project_scope_dirs` (so does gemini, which
-      #1621 left registered but unselectable); it goes live the moment a
-      family PR flips kimi or codex to driver_selectable,
-      and F5's entry-criterion test reads `posture()` -- so a genuinely
-      refuted host would have read `unknown` and failed the bar for the wrong
-      stated reason.
+      while every selectable host had empty `project_scope_dirs` -- generic
+      still does, and so does gemini, which #1621 left registered but
+      unselectable. It went LIVE when the family PRs flipped codex (#1619)
+      and kimi (#1620) to driver_selectable with scope dirs of their own, and
+      F5's entry-criterion test reads `posture()` -- so a genuinely refuted
+      host would have read `unknown` and failed the bar for the wrong stated
+      reason.
     * A state string this module does not recognise -> UNKNOWN. Never trust an
       unparseable value; that is how `noscan` became `empty` in #1335.
     * An unreadable SHAPE -> UNKNOWN. `evidence` that is not a mapping, or a

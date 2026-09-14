@@ -78,9 +78,13 @@ class TestGenericRetirementBar(unittest.TestCase):
                              "host falls short; #1070 must close first (spec 7.2)")
 
     def test_todays_shortfall_is_pinned_so_it_moves_consciously(self):
-        # gemini left the selectable set (#1621 retired, 2026-09-13); claude
-        # clears the bar; the Kimi (#1620) and Codex (#1619) family PRs re-pin
-        # this when they flip their rows.
+        # Measured on THIS tree, not inherited from either side of the merge:
+        # every driver-selectable host but the deprecated row clears both
+        # security clauses. claude clears it on read-guard-armed (#1070, plan
+        # 5); codex's family PR (#1619) flipped its row with
+        # codex-effective-tools and codex-read-scope; kimi's (#1620) flipped
+        # its row with all five kimi-* probes; gemini left the selectable set
+        # entirely (#1621, retired 2026-09-13). So the shortfall is {}.
         #
         # This `{}` is also F5's ENTRY CRITERION, met. `test_the_bar_would_
         # refuse_the_deletion_today` used to sit beside this pin and simulate
@@ -97,6 +101,10 @@ class TestGenericRetirementBar(unittest.TestCase):
         # remaining SELECTABLE host still fall short"; it cannot answer "is
         # there anywhere else for those operators to go". The deprecated row
         # stays until someone decides it, not until this test says {}.
+        #
+        # A later family PR that flips a row moves this pin in the same PR.
+        # If it ever reads non-empty, name the host and the capability here
+        # and say that its family PR owns closing it.
         shortfalls = retirement_shortfalls()
         self.assertNotIn("claude", shortfalls)
         self.assertEqual({}, shortfalls)

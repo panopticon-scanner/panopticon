@@ -85,7 +85,10 @@ class TestCoveragePhase(unittest.TestCase):
         entry = runio._load_json(runio._pano(self.root, "dispatch-request.json"))["entries"][0]
         self.assertEqual("panopticon-entry: " + entry["id"], entry["marker"])
         self.assertTrue(entry["prompt"].startswith(entry["marker"] + "\n"))
-        self.assertEqual(requests.scope(files=entry["files"]), entry["scope"])
+        # The stamped prompt file is the one extra read the scope grants
+        # (Claude family PR): the agent may read its own prompt, nothing else.
+        self.assertEqual(requests.scope(files=entry["files"], reads=[entry["prompt_file"]]),
+                         entry["scope"])
 
     def test_group_files_containing_reverse_looks_up_the_group(self):
         # coverage_execute does not itself run discovery (that's a separate
@@ -231,6 +234,26 @@ class TestCoveragePhase(unittest.TestCase):
         with open(entry["prompt_file"], encoding="utf-8") as fh:
             self.assertEqual(fh.read(), entry["prompt"])   # same text, addressable
         self.assertIn("SCOUT-BODY-XYZ", entry["prompt"])   # inline still intact
+
+    def test_the_prompt_file_is_inside_the_entrys_read_scope(self):
+        # Claude family PR: docs/PANOPTICON.md lets a host point an agent at
+        # `prompt_file` instead of echoing the prompt (marker line first,
+        # pointer second) -- but the read guard confines every bound agent to
+        # its entry's scope, and `reads` (the scope's extra-file allowance,
+        # reserved for exactly this) was [] on every entry, so the documented
+        # path was denied its own prompt. Stamping the file grants it; the
+        # caller's scope is copied, not mutated; an entry with no scope is
+        # left alone; a re-stamp does not grow the allowance.
+        scope = {"files": ["/abs/a.py"], "dirs": [], "reads": []}
+        entries = requests._materialize_prompts(
+            self.root, [{"id": "scout-Auth", "prompt": "BODY", "scope": scope},
+                        {"id": "no-scope", "prompt": "BODY"}])
+        self.assertEqual([entries[0]["prompt_file"]], entries[0]["scope"]["reads"])
+        self.assertEqual(["/abs/a.py"], entries[0]["scope"]["files"])
+        self.assertEqual([], scope["reads"])
+        self.assertNotIn("scope", entries[1])
+        again = requests._materialize_prompts(self.root, entries)
+        self.assertEqual([entries[0]["prompt_file"]], again[0]["scope"]["reads"])
 
     def test_prompt_file_name_cannot_escape_the_prompts_dir(self):
         # An entry id embeds an operator-supplied group name; a `/` or `..` in it

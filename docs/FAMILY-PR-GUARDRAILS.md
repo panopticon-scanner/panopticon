@@ -74,10 +74,10 @@ Rules that follow from the registry:
   to end, and it is what cost Gemini its row (#1621). Today's shortfall is
   pinned by name in `tests/test_generic_retirement_bar.py`
   (`test_todays_shortfall_is_pinned_so_it_moves_consciously`), which reads
-  `{}` on this base because claude is the only host the bar examines. Your PR
-  puts your host back into that set and re-pins the assertion, alongside the
-  `--host generic` paragraph in `docs/PANOPTICON.md`, in the same commit as
-  the probes that earn it.
+  `{}` on this base because every host the bar examines -- claude, codex
+  (#1619) and kimi (#1620) -- clears both. Your PR flips your row into that
+  set and re-pins the assertion, alongside the `--host generic` paragraph in
+  `docs/PANOPTICON.md`, in the same commit as the probes that earn it.
 - Never test a host by name in a phase (`host == "codex"`). Route every
   decision through `hosts.posture()` or `hosts.declares()`; an AST guard in
   `tests/test_host_posture_wiring.py` rejects the comparison.

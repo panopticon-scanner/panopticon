@@ -80,6 +80,27 @@ def _get_valid_cell_data(review_root, manifest, group, domain):
 def _cell_done(review_root, manifest, group, domain):
     return _get_valid_cell_data(review_root, manifest, group, domain) is not None
 
+def _security_checklist_path():
+    """The ONE absolute spelling of the SEC checklist. Shared by the prompt
+    pointer (`_render_security_checklist`) and the read grant (`_cell_reads`)
+    so the file the reviewer is told to Read and the file the read guard lets
+    it Read cannot drift apart."""
+    return os.path.abspath(_version.reference_path("security-checklists.md"))
+
+
+def _cell_reads(domain):
+    """The extra files a cell's prompt points its reviewer at, granted through
+    the scope's `reads` allowance so the pointer is not a dead end.
+
+    Surfaced by the Claude family PR's first real headless run (#1344): the
+    SEC prompt handed the reviewer an absolute checklist path and the read
+    guard -- fail-closed, scoped to the cell's files and nothing else --
+    denied it (`permission_denials` in the ledger named the file). Today the
+    SEC checklist is the only such pointer; a future one is added HERE and
+    nowhere else, next to the pointer it serves."""
+    return [_security_checklist_path()] if domain == "SEC" else []
+
+
 def _render_security_checklist(domain):
     """The SEC cell's language-specific checklist pointer, or "" (#run10).
 
@@ -102,7 +123,7 @@ def _render_security_checklist(domain):
         "language(s) actually present in your file list, ignoring the rest. It "
         "enumerates the concrete banned constructs behind several menu codes; "
         "treat a hit as a candidate finding, still graded against the criteria "
-        "above.\n" % os.path.abspath(_version.reference_path("security-checklists.md")))
+        "above.\n" % _security_checklist_path())
 
 def _render_menu(bundle, domain):
     lines = ["%s %s (%s)" % (m["code"], m["name"], m["severity"])
@@ -230,7 +251,7 @@ def _cell_entry(review_root, manifest, group, domain, files, tests, host, bundle
             "out_file": out_file, "run_id": manifest["run_id"],
             "group": group, "domain": domain,
             "files": abs_files,
-            "scope": requests.scope(files=abs_files)}
+            "scope": requests.scope(files=abs_files, reads=_cell_reads(domain))}
     if mode:
         entry["delivery"] = mode
     return entry

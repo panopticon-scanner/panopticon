@@ -1,5 +1,8 @@
 import contextlib
+import inspect
+import json
 import os
+import shutil
 import tempfile
 import threading
 import unittest
@@ -389,9 +392,20 @@ class TestEntryModelBoundProbe(unittest.TestCase):
         self.assertEqual(sorted(host_probes.PROBE_IDS),
                          sorted({host_probes.REGISTERED_SHELL_TOOLS,
                                  host_probes.WRITE_GUARD_ARMED,
-                                 host_probes.TRANSCRIPT_DIR,
+                                 host_probes.USAGE_SOURCE,
                                  host_probes.ENTRY_MODEL_BOUND,
-                                 host_probes.READ_GUARD_ARMED}))
+                                 host_probes.READ_GUARD_ARMED,
+                                 # #1344 codex family PR (#1619): the two
+                                 # probes the codex row maps its claims to.
+                                 host_probes.CODEX_EFFECTIVE_TOOLS,
+                                 host_probes.CODEX_READ_SCOPE,
+                                 # #1344 kimi family PR (#1620): the five
+                                 # probes the kimi row maps its five claims to.
+                                 host_probes.KIMI_SHELL_SURFACE,
+                                 host_probes.KIMI_READ_GUARD,
+                                 host_probes.KIMI_WRITE_GUARD,
+                                 host_probes.KIMI_MODEL_ALIAS,
+                                 host_probes.KIMI_USAGE_WIRE}))
         with tempfile.TemporaryDirectory() as reg, \
              tempfile.TemporaryDirectory() as target, \
              tempfile.TemporaryDirectory() as home:
@@ -656,9 +670,17 @@ class TestWriteGuardArmedProbe(unittest.TestCase):
             self.assertEqual(hosts.PROVEN, state)
 
 
-class TestTranscriptDirProbe(unittest.TestCase):
-    """#1344 F3a: usage_ledger is operational, not security (8.1 excludes it
-    from F5's bar), but an unprobed capability must still say so."""
+class TestUsageSourceProbe(unittest.TestCase):
+    """#1344 F3a, reworked by the Claude family PR: usage_ledger is
+    operational, not security (8.1 excludes it from F5's bar), but an unprobed
+    capability must still say so -- and the probe follows the MODE (spec 5.4's
+    rule applied to usage, spec 5.5). Session mode's figures come from the
+    host's own transcripts, so the session's transcript directory is the
+    subject. Headless mode's come from the JSON envelope of every `claude -p`
+    launch, ledgered into the run folder by the loop, so the CLI on PATH and a
+    run folder that can hold the ledger are the subject and transcripts are
+    never consulted: a fresh target directory has no transcripts and used to
+    REFUTE a headless run whose ledger was exact."""
 
     def _transcripts(self, home, project_dir):
         from scripts import collect_usage
@@ -667,25 +689,65 @@ class TestTranscriptDirProbe(unittest.TestCase):
         os.makedirs(d, exist_ok=True)
         return d
 
+    def _cli_on_path(self, bin_dir, name="claude"):
+        """An executable file for shutil.which to find. Never run: every
+        launch in the suite goes through the runner's launcher, which
+        tests/conftest.py refuses unless a test injects a fake (`_help`)."""
+        os.makedirs(bin_dir, exist_ok=True)
+        path = os.path.join(bin_dir, name)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("#!/bin/sh\nexit 0\n")
+        os.chmod(path, 0o755)
+        return path
+
+    def _help(self, text=None, returncode=0):
+        """Patch the runner's default launcher with a fake `claude --help`
+        that prints `text` (the intact shape advertises the runner's own
+        envelope flags) and exits `returncode`."""
+        import subprocess
+        import scripts.runners.claude as claude_runner
+        if text is None:
+            text = "Usage: claude [options]\n  -p, --print   Print\n  --output-format <format>\n"
+        self.help_calls = []
+
+        def fake(cmd, **kwargs):
+            self.help_calls.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, returncode, stdout=text, stderr="")
+        return mock.patch.object(claude_runner, "DEFAULT_RUNNER", fake)
+
+    def _headless_settings(self, project):
+        return os.path.join(project, ".panopticon", "runs", "tag", "host-settings.json")
+
+    def _ledger(self, settings, rows):
+        import scripts.runners.base as runners_base
+        path = os.path.join(os.path.dirname(settings), runners_base.LEDGER_FILE)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            for row in rows:
+                fh.write(json.dumps(row) + "\n")
+        return path
+
+    # -- session mode: the transcript directory is the subject ---------------
+
     def test_a_readable_transcript_dir_is_proven(self):
         with tempfile.TemporaryDirectory() as home, \
                 tempfile.TemporaryDirectory() as project:
             d = self._transcripts(home, project)
-            state, by, detail = host_probes.probe_transcript_dir(
+            state, by, detail = host_probes.probe_usage_source(
                 "claude", project, home=home)
             self.assertEqual(hosts.PROVEN, state)
-            self.assertEqual("transcript-dir", by)
+            self.assertEqual("usage-source", by)
             self.assertIn(d, detail)
 
     def test_an_absent_transcript_dir_is_refuted(self):
-        # THE negative fixture. A host that claims a usage ledger and has no
-        # transcripts cannot produce one.
+        # THE session-mode negative fixture. A host that claims a usage ledger
+        # and has no transcripts cannot produce one.
         with tempfile.TemporaryDirectory() as home, \
                 tempfile.TemporaryDirectory() as project:
-            state, _by, detail = host_probes.probe_transcript_dir(
+            state, _by, detail = host_probes.probe_usage_source(
                 "claude", project, home=home)
             self.assertEqual(hosts.REFUTED, state)
-            self.assertEqual("transcript-dir", _by)
+            self.assertEqual("usage-source", _by)
             # The phrase only the isdir branch emits. Asserting on ".claude"
             # instead passes either way: the not-readable branch formats the
             # same `directory` string, and os.access() on a nonexistent path
@@ -703,24 +765,239 @@ class TestTranscriptDirProbe(unittest.TestCase):
             d = self._transcripts(home, project)
             os.chmod(d, 0o000)
             try:
-                state, by, detail = host_probes.probe_transcript_dir(
+                state, by, detail = host_probes.probe_usage_source(
                     "claude", project, home=home)
             finally:
                 os.chmod(d, 0o700)
             self.assertEqual(hosts.REFUTED, state)
-            self.assertEqual("transcript-dir", by)
+            self.assertEqual("usage-source", by)
             self.assertIn(d, detail)
 
     def test_a_host_that_claims_no_usage_ledger_is_unknown(self):
         for name in ("gemini", "generic", "codex"):
             with self.subTest(host=name):
-                state, by, _detail = host_probes.probe_transcript_dir(name, ".")
+                state, by, _detail = host_probes.probe_usage_source(name, ".")
                 self.assertEqual(hosts.UNKNOWN, state)
                 self.assertIsNone(by)
 
-    def test_the_transcript_probe_id_matches_the_registry_row(self):
-        self.assertEqual(host_probes.TRANSCRIPT_DIR,
+    def test_the_usage_probe_id_matches_the_registry_row(self):
+        self.assertEqual(host_probes.USAGE_SOURCE,
                          hosts.spec("claude").probes[hosts.USAGE_LEDGER])
+
+    # -- headless mode: the envelope and the ledger are the subject ----------
+
+    def test_headless_proves_the_envelope_path_and_never_consults_transcripts(self):
+        # `home` holds NO transcripts at all, and the probe must not care: the
+        # headless figures never come from there. The detail names the surface
+        # it did inspect -- the CLI it found and the ledger the loop will
+        # write -- as spec 2 of the family guardrails requires.
+        with tempfile.TemporaryDirectory() as home, \
+                tempfile.TemporaryDirectory() as project, \
+                tempfile.TemporaryDirectory() as bin_dir:
+            cli = self._cli_on_path(bin_dir)
+            settings = self._headless_settings(project)
+            with mock.patch.dict(os.environ, {"PATH": bin_dir}), self._help():
+                state, by, detail = host_probes.probe_usage_source(
+                    "claude", project, home=home, settings_path=settings)
+            self.assertEqual(hosts.PROVEN, state)
+            self.assertEqual("usage-source", by)
+            self.assertIn(cli, detail)
+            self.assertIn(os.path.join(os.path.dirname(settings), "dispatch-ledger.jsonl"), detail)
+            self.assertIn("advertises -p, --output-format", detail)
+            self.assertIn("every successful launch ledgered there carrying its figure", detail)
+            self.assertNotIn("transcript directory", detail)
+            self.assertFalse(os.path.isdir(os.path.join(home, ".claude")))
+            # The interrogation is `<found cli> --help`, through the launcher.
+            self.assertEqual([[cli, "--help"]], self.help_calls)
+
+    def test_headless_refutes_when_no_cli_is_on_path(self):
+        # THE headless negative fixture. Transcripts present, CLI absent: the
+        # runner cannot launch, so no envelope will ever carry usage -- and the
+        # session-mode evidence must not rescue it.
+        with tempfile.TemporaryDirectory() as home, \
+                tempfile.TemporaryDirectory() as project, \
+                tempfile.TemporaryDirectory() as empty_bin:
+            self._transcripts(home, project)
+            settings = self._headless_settings(project)
+            with mock.patch.dict(os.environ, {"PATH": empty_bin}):
+                state, by, detail = host_probes.probe_usage_source(
+                    "claude", project, home=home, settings_path=settings)
+            self.assertEqual(hosts.REFUTED, state)
+            self.assertEqual("usage-source", by)
+            self.assertIn("claude", detail)
+            self.assertIn("PATH", detail)
+
+    def test_headless_refutes_a_cli_that_does_not_advertise_the_envelope_flags(self):
+        # Review of this branch: existence alone let any executable named
+        # `claude` prove the ledger. The probe now drives `<cli> --help` and
+        # requires the runner's own ENVELOPE_FLAGS; a CLI advertising neither,
+        # or exiting non-zero, is refuted and the missing flags are named.
+        with tempfile.TemporaryDirectory() as project, \
+                tempfile.TemporaryDirectory() as bin_dir:
+            settings = self._headless_settings(project)
+            self._cli_on_path(bin_dir)
+            with mock.patch.dict(os.environ, {"PATH": bin_dir}), \
+                    self._help("usage: something-else [--verbose] [--print]"):
+                state, by, detail = host_probes.probe_usage_source(
+                    "claude", project, settings_path=settings)
+            self.assertEqual(hosts.REFUTED, state)
+            self.assertEqual("usage-source", by)
+            self.assertIn("does not advertise -p, --output-format", detail)   # --print is not -p
+            with mock.patch.dict(os.environ, {"PATH": bin_dir}), self._help(returncode=3):
+                state, _by, detail = host_probes.probe_usage_source(
+                    "claude", project, settings_path=settings)
+            self.assertEqual(hosts.REFUTED, state)
+            self.assertIn("exited 3", detail)
+
+    def test_headless_refutes_a_ledger_whose_successful_launches_carried_no_usage(self):
+        # The evidence surface the probe names is read back on every
+        # re-probe: successful launches whose envelopes carried no figure at
+        # all refute the ledger on what was measured (a re-probe after batch
+        # one, so the mid-run posture check sees it), while a single odd row
+        # among launches that did carry usage does not.
+        with tempfile.TemporaryDirectory() as project, \
+                tempfile.TemporaryDirectory() as bin_dir:
+            settings = self._headless_settings(project)
+            self._cli_on_path(bin_dir)
+            empty = {"ok": True, "usage": {}}
+            counted = {"ok": True, "usage": {"input_tokens": 12, "output_tokens": 3}}
+            failed = {"ok": False, "usage": {}, "error": "timed out"}
+            self._ledger(settings, [empty, empty, failed])
+            with mock.patch.dict(os.environ, {"PATH": bin_dir}), self._help():
+                state, by, detail = host_probes.probe_usage_source(
+                    "claude", project, settings_path=settings)
+            self.assertEqual(hosts.REFUTED, state)
+            self.assertEqual("usage-source", by)
+            self.assertIn("2 successful launch(es)", detail)
+            self.assertIn("not one envelope carried a usage figure", detail)
+            self._ledger(settings, [empty, counted, failed])
+            with mock.patch.dict(os.environ, {"PATH": bin_dir}), self._help():
+                state, _by, _detail = host_probes.probe_usage_source(
+                    "claude", project, settings_path=settings)
+            self.assertEqual(hosts.PROVEN, state)
+            self._ledger(settings, [failed])                 # nothing succeeded yet: no verdict
+            with mock.patch.dict(os.environ, {"PATH": bin_dir}), self._help():
+                state, _by, _detail = host_probes.probe_usage_source(
+                    "claude", project, settings_path=settings)
+            self.assertEqual(hosts.PROVEN, state)
+
+    def test_the_proven_detail_is_the_same_before_and_after_launches(self):
+        # driver._establish_host_posture rewrites host-capabilities.json
+        # whenever a detail changes (a stale reason is a wrong disclosure),
+        # and its comment names "always write on every turn of the loop" as
+        # the hazard that rule must not become. A running launch count in the
+        # proven detail was exactly that: measured on a real run, `probed_at`
+        # moved to the last iteration. The proven detail is one string for
+        # the whole run; only the refutation carries numbers.
+        with tempfile.TemporaryDirectory() as project, \
+                tempfile.TemporaryDirectory() as bin_dir:
+            settings = self._headless_settings(project)
+            self._cli_on_path(bin_dir)
+            with mock.patch.dict(os.environ, {"PATH": bin_dir}), self._help():
+                before = host_probes.probe_usage_source("claude", project, settings_path=settings)
+            self._ledger(settings, [{"ok": True, "usage": {"input_tokens": 12, "output_tokens": 3}},
+                                    {"ok": False, "usage": {}, "error": "timed out"}])
+            with mock.patch.dict(os.environ, {"PATH": bin_dir}), self._help():
+                after_one = host_probes.probe_usage_source("claude", project, settings_path=settings)
+            self._ledger(settings, [{"ok": True, "usage": {"input_tokens": 1}} for _ in range(15)])
+            with mock.patch.dict(os.environ, {"PATH": bin_dir}), self._help():
+                after_many = host_probes.probe_usage_source("claude", project, settings_path=settings)
+        self.assertEqual(hosts.PROVEN, before[0])
+        self.assertEqual(before, after_one)
+        self.assertEqual(before, after_many)
+
+    def test_headless_is_unknown_when_the_cli_cannot_even_print_help(self):
+        # Could not measure is not "measured and broken": a `--help` the
+        # launcher cannot complete (here: a timeout) is UNKNOWN with the reason.
+        import subprocess
+        import scripts.runners.claude as claude_runner
+
+        def hangs(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+        with tempfile.TemporaryDirectory() as project, \
+                tempfile.TemporaryDirectory() as bin_dir:
+            self._cli_on_path(bin_dir)
+            with mock.patch.dict(os.environ, {"PATH": bin_dir}), \
+                    mock.patch.object(claude_runner, "DEFAULT_RUNNER", hangs):
+                state, by, detail = host_probes.probe_usage_source(
+                    "claude", project, settings_path=self._headless_settings(project))
+            self.assertEqual(hosts.UNKNOWN, state)
+            self.assertEqual("usage-source", by)
+            self.assertIn("could not run", detail)
+
+    def test_the_interrogation_goes_through_the_launcher_the_suite_refuses(self):
+        # The seam, proved from the suite's side: with no fake injected, the
+        # probe's `--help` reaches tests/conftest.py's refusal and fails
+        # loudly, instead of running whatever `claude` is on PATH. A forgotten
+        # fake is a failed test, never a real launch.
+        with tempfile.TemporaryDirectory() as project, \
+                tempfile.TemporaryDirectory() as bin_dir:
+            self._cli_on_path(bin_dir)
+            with mock.patch.dict(os.environ, {"PATH": bin_dir}), \
+                    self.assertRaisesRegex(RuntimeError, "never launch the real `claude` binary"):
+                host_probes.probe_usage_source(
+                    "claude", project, settings_path=self._headless_settings(project))
+
+    def test_a_flag_is_advertised_only_as_a_standalone_token(self):
+        self.assertTrue(host_probes._flag_advertised("-p", "  -p, --print   Print response"))
+        self.assertTrue(host_probes._flag_advertised("--output-format", "--output-format=stream-json"))
+        self.assertFalse(host_probes._flag_advertised("-p", "  --print   Print response"))
+        self.assertFalse(host_probes._flag_advertised("-p", "  --permission-mode <mode>"))
+        self.assertFalse(host_probes._flag_advertised("--output-format", "--output-formats"))
+
+    def test_headless_is_unknown_on_a_claiming_host_whose_runner_module_is_broken(self):
+        # A probe reports, never raises: a runners/<host>.py that exists but
+        # fails to import (base._headless_module re-raises that on purpose)
+        # is the family's bug, reported as UNKNOWN naming the exception
+        # rather than as a traceback out of driver.run.
+        import dataclasses
+        import scripts.runners.base as runners_base
+        ghost = dataclasses.replace(hosts.spec("claude"), name="ghost")
+        with tempfile.TemporaryDirectory() as project, \
+                mock.patch.dict(hosts.HOSTS, {"ghost": ghost}), \
+                mock.patch.object(runners_base, "runner_for",
+                                  side_effect=ImportError("runners/ghost.py: no module named yaml")):
+            state, by, detail = host_probes.probe_usage_source(
+                "ghost", project, settings_path=self._headless_settings(project))
+        self.assertEqual(hosts.UNKNOWN, state)
+        self.assertEqual("usage-source", by)
+        self.assertIn("ImportError", detail)
+        self.assertIn("no usable headless runner", detail)
+
+    def test_headless_refutes_when_the_run_folder_cannot_hold_the_ledger(self):
+        import getpass
+        if getpass.getuser() == "root":
+            self.skipTest("running as root, os.access ignores permissions")
+        with tempfile.TemporaryDirectory() as project, \
+                tempfile.TemporaryDirectory() as bin_dir:
+            self._cli_on_path(bin_dir)
+            pano = os.path.join(project, ".panopticon")
+            os.makedirs(pano)
+            os.chmod(pano, 0o500)
+            try:
+                with mock.patch.dict(os.environ, {"PATH": bin_dir}):
+                    state, by, detail = host_probes.probe_usage_source(
+                        "claude", project, settings_path=self._headless_settings(project))
+            finally:
+                os.chmod(pano, 0o700)
+            self.assertEqual(hosts.REFUTED, state)
+            self.assertEqual("usage-source", by)
+            self.assertIn("ledger", detail)
+            self.assertIn("not writable", detail)
+
+    def test_headless_is_unknown_on_a_claiming_host_with_no_headless_runner(self):
+        # A row that claims the ledger but ships no runners/<host>.py has no
+        # CLI to look for: nothing here can prove an envelope, and a vacuous
+        # PROVEN is the fail-open this epic exists to remove.
+        import dataclasses
+        ghost = dataclasses.replace(hosts.spec("claude"), name="ghost")
+        with tempfile.TemporaryDirectory() as project, \
+                mock.patch.dict(hosts.HOSTS, {"ghost": ghost}):
+            state, by, detail = host_probes.probe_usage_source(
+                "ghost", project, settings_path=self._headless_settings(project))
+        self.assertEqual(hosts.UNKNOWN, state)
+        self.assertEqual("usage-source", by)
+        self.assertIn("no usable headless runner", detail)
 
 
 class TestShadowShellScan(unittest.TestCase):
@@ -1204,6 +1481,18 @@ class TestRunProbesBuildsTheArtifact(unittest.TestCase):
         self.assertEqual(w.call_args.kwargs.get("settings_path"), "/run/host-settings.json")
         self.assertEqual(r.call_args.kwargs.get("settings_path"), "/run/host-settings.json")
 
+    def test_run_probes_hands_settings_path_to_the_usage_probe(self):
+        # Claude family PR: the usage probe follows the mode exactly as the two
+        # guard probes do (spec 5.4 applied to spec 5.5). Without this, a
+        # headless run from a directory with no transcripts refuted
+        # usage_ledger while its ledger was exact.
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(host_probes, "probe_usage_source",
+                               return_value=(hosts.PROVEN, "usage-source", "x")) as u:
+            host_probes.run_probes("claude", d, session_root=d, settings_path="/run/host-settings.json",
+                                   shadow=(hosts.UNKNOWN, None, "fixture"))
+        self.assertEqual(u.call_args.kwargs.get("settings_path"), "/run/host-settings.json")
+
 
 class TestTheEvidenceLoader(unittest.TestCase):
 
@@ -1315,7 +1604,7 @@ class TestReadGuardArmedProbe(unittest.TestCase):
             self.assertEqual(hosts.PROVEN, state)
             self.assertEqual("read-guard-armed", by)
             self.assertIn(session_root, detail)
-            self.assertIn("14 rows", detail)
+            self.assertIn("16 rows", detail)
 
     def test_it_does_not_require_the_guard_to_be_armed_right_now(self):
         from scripts import read_guard_hook
@@ -1344,7 +1633,12 @@ class TestReadGuardArmedProbe(unittest.TestCase):
             self.assertIn(claude_dir, detail)
 
     def test_a_host_that_claims_no_read_confinement_is_unknown(self):
-        for name in ("gemini", "generic", "kimi", "codex"):
+        # codex and kimi both left this tuple in their own family PRs (#1619,
+        # #1620): each now claims READ_SCOPE_CONFINED and ships its own probe
+        # (codex-read-scope, kimi-read-guard-armed), so the claude-shaped probe
+        # must never run for either. What is left is every family with no
+        # read-confinement claim at all.
+        for name in ("gemini", "generic"):
             with self.subTest(host=name):
                 state, by, _detail = host_probes.probe_read_guard_armed(name)
                 self.assertEqual(hosts.UNKNOWN, state)
@@ -1400,6 +1694,30 @@ class TestReadGuardArmedProbe(unittest.TestCase):
             ok, detail = host_probes._round_trip_confines_reads()
         self.assertFalse(ok)
         self.assertIn("env", detail)
+
+    def test_the_round_trip_proves_the_workflow_transcript_layout(self):
+        # Claude family PR: the shipped session-mode dispatch workflow
+        # (skill/workflows/dispatch.js) runs every entry as a WORKFLOW
+        # subagent, whose transcript lands under
+        # `<stem>/subagents/workflows/<run>/agent-<id>.jsonl` rather than in
+        # the Agent-tool layout beside it. The round trip binds one fake
+        # subagent through that layout; a guard that only knew the direct
+        # layout leaves it unbound (every read denied) and the probe refutes,
+        # naming the row.
+        from scripts import read_guard_hook
+        ok, detail = host_probes._round_trip_confines_reads()
+        self.assertTrue(ok, detail)
+        real = read_guard_hook.subagent_transcript
+
+        def direct_layout_only(transcript_path, agent_id):
+            found = real(transcript_path, agent_id)
+            if found and (os.sep + "workflows" + os.sep) in found:
+                return None
+            return found
+        with mock.patch.object(read_guard_hook, "subagent_transcript", direct_layout_only):
+            ok, detail = host_probes._round_trip_confines_reads()
+        self.assertFalse(ok)
+        self.assertIn("workflow", detail)
 
     def test_an_explicit_settings_path_is_the_subject_and_need_not_exist_yet(self):
         # Spec 5.4 / R-P6-5: in headless mode the runner CREATES the settings
@@ -1463,3 +1781,598 @@ class TestHeadlessSettingsPathIsNamespaceAware(unittest.TestCase):
             self.assertEqual(
                 host_probes.headless_settings_path("/repo", "setup"),
                 os.path.abspath(os.path.join("/repo", ".panopticon", "host-settings.json")))
+
+
+# --- kimi family probes (#1344) -----------------------------------------------
+
+
+def _kimi_fully_registered(directory):
+    """Register all four driver shells in kimi's block-list dialect, granting
+    exactly each template's tool policy (the state --emit-host-agents kimi
+    produces)."""
+    for role in host_probes.DRIVER_ROLES:
+        role_file = dispatch.ROLE_FILES[role]
+        allowed = dispatch.load_template(role_file)[0]["tool_policy"]["allowed"]
+        _shell(directory, dispatch.registered_agent_filename("kimi", role_file),
+               allowed, block_list=True)
+
+
+class _DoctorFake:
+    """A runner= stand-in for `kimi doctor` -- the suite never launches the
+    real host binary (FAMILY-PR-GUARDRAILS, Suite rules)."""
+
+    def __init__(self, ok=True, stdout="OK config.toml  /x/config.toml\n"):
+        self.ok = ok
+        self.stdout = stdout
+
+    def __call__(self, cmd, **kw):
+        class P:
+            stderr = ""
+        p = P()
+        p.returncode = 0 if self.ok else 1
+        p.stdout = self.stdout if self.ok else "config.toml is invalid TOML"
+        return p
+
+
+class TestKimiShellSurfaceProbe(unittest.TestCase):
+    """The kimi tool_policy_enforced probe: template parity AND the installed
+    CLI's tool vocabulary, because a name that matches nothing restricts
+    nothing (the recorded kimi finding in the guardrails)."""
+
+    def test_fully_registered_shells_on_a_known_version_are_proven(self):
+        with tempfile.TemporaryDirectory() as d:
+            _kimi_fully_registered(d)
+            state, by, detail = host_probes.probe_kimi_shell_surface(
+                "kimi", registration_dir=d, version="0.42")
+        self.assertEqual(hosts.PROVEN, state)
+        self.assertEqual(host_probes.KIMI_SHELL_SURFACE, by)
+        self.assertIn("0.42", detail)
+
+    def test_missing_shells_are_refuted_by_the_template_half(self):
+        with tempfile.TemporaryDirectory() as d:
+            state, by, detail = host_probes.probe_kimi_shell_surface(
+                "kimi", registration_dir=d, version="0.42")
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertEqual(host_probes.KIMI_SHELL_SURFACE, by)
+        self.assertIn("no shell", detail)
+
+    def test_a_shell_grant_the_template_forbids_is_refuted(self):
+        with tempfile.TemporaryDirectory() as d:
+            _kimi_fully_registered(d)
+            _shell(d, dispatch.registered_agent_filename("kimi", "scout.md"),
+                   ["Read", "Grep", "Glob", "Bash"], block_list=True)
+            state, _by, detail = host_probes.probe_kimi_shell_surface(
+                "kimi", registration_dir=d, version="0.42")
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("Bash", detail)
+
+    def test_a_tool_name_the_cli_does_not_have_is_refuted(self):
+        # The mutation the guardrails demand: narrow the vocabulary table and
+        # the probe must flip to refuted rather than wave the shells through.
+        with tempfile.TemporaryDirectory() as d:
+            _kimi_fully_registered(d)
+            import scripts.runners.kimi as kimi_runner
+            narrow = {"0.42": kimi_runner.TOOL_VOCABULARY["0.42"] - {"Read", "Bash"}}
+            with mock.patch.dict(kimi_runner.TOOL_VOCABULARY, narrow):
+                state, _by, detail = host_probes.probe_kimi_shell_surface(
+                    "kimi", registration_dir=d, version="0.42")
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("match nothing", detail)
+
+    def test_an_uncovered_cli_version_is_unknown_never_a_guess(self):
+        with tempfile.TemporaryDirectory() as d:
+            _kimi_fully_registered(d)
+            state, _by, detail = host_probes.probe_kimi_shell_surface(
+                "kimi", registration_dir=d, version="9.99")
+        self.assertEqual(hosts.UNKNOWN, state)
+        self.assertIn("9.99", detail)
+
+    def test_an_unparseable_cli_version_is_unknown(self):
+        def garbage(cmd, **kw):
+            class P:
+                returncode = 0
+                stdout = "not a version"
+                stderr = ""
+            return P()
+        with tempfile.TemporaryDirectory() as d:
+            _kimi_fully_registered(d)
+            state, _by, _detail = host_probes.probe_kimi_shell_surface(
+                "kimi", registration_dir=d, runner=garbage)
+        self.assertEqual(hosts.UNKNOWN, state)
+
+    def test_a_host_that_registers_no_shells_is_unknown(self):
+        state, by, _detail = host_probes.probe_kimi_shell_surface("gemini", version="0.42")
+        self.assertEqual(hosts.UNKNOWN, state)
+        self.assertIsNone(by)
+
+
+class TestKimiReadGuardProbe(unittest.TestCase):
+    """The kimi read_scope_confined probe: the real guard subprocess round-trip
+    (plain python -- not the host binary) plus a faked doctor validation."""
+
+    def test_the_round_trip_and_a_valid_home_are_proven(self):
+        state, by, detail = host_probes.probe_kimi_read_guard(
+            "kimi", doctor_runner=_DoctorFake())
+        self.assertEqual(hosts.PROVEN, state)
+        self.assertEqual(host_probes.KIMI_READ_GUARD, by)
+        self.assertIn("round-trip", detail)
+
+    def test_a_doctor_rejection_is_refuted(self):
+        state, _by, detail = host_probes.probe_kimi_read_guard(
+            "kimi", doctor_runner=_DoctorFake(ok=False))
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("doctor", detail)
+
+    def test_a_missing_cli_is_unknown_not_refuted(self):
+        def no_binary(cmd, **kw):
+            raise FileNotFoundError("kimi")
+        state, _by, detail = host_probes.probe_kimi_read_guard(
+            "kimi", doctor_runner=no_binary)
+        self.assertEqual(hosts.UNKNOWN, state)
+        self.assertIn("could not run", detail)
+
+    def test_a_guard_failure_is_refuted_with_the_row_named(self):
+        # The mutation, at the probe's own seam: a guard that allows an
+        # outside read must flip the probe to refuted.
+        with mock.patch.object(host_probes, "_guard_round_trip",
+                               return_value=(False, "the guard ALLOWED: bound Read outside scope")):
+            state, _by, detail = host_probes.probe_kimi_read_guard(
+                "kimi", doctor_runner=_DoctorFake())
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("ALLOWED", detail)
+
+    def test_a_host_that_claims_no_read_confinement_is_unknown(self):
+        state, by, _detail = host_probes.probe_kimi_read_guard("gemini")
+        self.assertEqual(hosts.UNKNOWN, state)
+        self.assertIsNone(by)
+
+
+class TestKimiWriteGuardProbe(unittest.TestCase):
+    def test_the_write_round_trip_is_proven(self):
+        state, by, detail = host_probes.probe_kimi_write_guard("kimi")
+        self.assertEqual(hosts.PROVEN, state)
+        self.assertEqual(host_probes.KIMI_WRITE_GUARD, by)
+        self.assertIn("round-trip", detail)
+
+    def test_a_guard_failure_is_refuted_with_the_row_named(self):
+        with mock.patch.object(host_probes, "_guard_round_trip",
+                               return_value=(False, "the guard ALLOWED: Write outside the allowlist")):
+            state, _by, detail = host_probes.probe_kimi_write_guard("kimi")
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("ALLOWED", detail)
+
+    def test_a_host_that_claims_no_write_guard_is_unknown(self):
+        state, by, _detail = host_probes.probe_kimi_write_guard("gemini")
+        self.assertEqual(hosts.UNKNOWN, state)
+        self.assertIsNone(by)
+
+
+class TestKimiModelAliasProbe(unittest.TestCase):
+    CONFIGURED = frozenset({"kimi-code/k3", "kimi-code/kimi-for-coding"})
+
+    def test_every_role_binding_a_configured_alias_is_proven(self):
+        state, by, detail = host_probes.probe_kimi_model_alias(
+            "kimi", configured=self.CONFIGURED)
+        self.assertEqual(hosts.PROVEN, state)
+        self.assertEqual(host_probes.KIMI_MODEL_ALIAS, by)
+        self.assertIn("kimi-code/k3", detail)
+
+    def test_an_unresolvable_role_is_refuted_and_named(self):
+        state, _by, detail = host_probes.probe_kimi_model_alias(
+            "kimi", configured=frozenset({"kimi-code/k3"}))
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("scout", detail)
+
+    def test_no_readable_model_table_is_refuted(self):
+        state, _by, detail = host_probes.probe_kimi_model_alias("kimi", configured=frozenset())
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("no [models] table", detail)
+
+    def test_a_host_that_claims_no_model_binding_is_unknown(self):
+        state, by, _detail = host_probes.probe_kimi_model_alias("gemini")
+        self.assertEqual(hosts.UNKNOWN, state)
+        self.assertIsNone(by)
+
+
+class TestKimiUsageWireProbe(unittest.TestCase):
+    """I4: the ledger's channel is the PER-RUN home's wire files
+    (`wire_path(self.kimi_home, session_id)`), not `~/.kimi-code/sessions`,
+    which the runner's own KIMI_CODE_HOME override guarantees the children
+    never write to. The probe proves the channel the runner reads."""
+
+    def test_the_run_homes_wire_layout_resolves_and_parses(self):
+        state, by, detail = host_probes.probe_kimi_usage_wire("kimi")
+        self.assertEqual(hosts.PROVEN, state)
+        self.assertEqual(host_probes.KIMI_USAGE_WIRE, by)
+        self.assertIn("wire.jsonl", detail)
+
+    def test_the_probe_takes_no_home_parameter_at_all(self):
+        # N4: `run_probes`' `home=` means "a stand-in for ~" to the transcript
+        # probe and meant "the per-run home to build the fixture in" here --
+        # one parameter, two meanings, and #1618 renames the other consumer in
+        # this exact neighbourhood. The kimi probe owns its own sandbox now, so
+        # there is nothing to overload.
+        import inspect
+        self.assertEqual(["host"],
+                         list(inspect.signature(host_probes.probe_kimi_usage_wire).parameters))
+
+    def test_the_fixture_session_never_lands_outside_the_probes_sandbox(self):
+        # N4: the probe used to take `run_probes`' `home=` -- a parameter that
+        # means "a stand-in for ~" to the OTHER consumer -- and wrote its
+        # fixture session there, cleaning only its own sandbox. It now has no
+        # such parameter: every path it writes is inside the tempdir it owns.
+        before = set(os.listdir(tempfile.gettempdir()))
+        _state, _by, detail = host_probes.probe_kimi_usage_wire("kimi")
+        after = set(os.listdir(tempfile.gettempdir()))
+        self.assertEqual(set(), after - before)
+        home = detail.split("run home ", 1)[1].split(" ", 1)[0]
+        self.assertFalse(os.path.exists(home))     # the sandbox is gone with it
+
+    def test_a_layout_wire_path_cannot_resolve_is_refuted(self):
+        import scripts.runners.kimi as kimi_runner
+        with mock.patch.object(kimi_runner, "wire_path", return_value=None):
+            state, _by, detail = host_probes.probe_kimi_usage_wire("kimi")
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("wire.jsonl", detail)
+
+    def test_a_parser_that_returns_the_wrong_figures_is_refuted(self):
+        import scripts.runners.kimi as kimi_runner
+        with mock.patch.object(kimi_runner, "parse_wire", return_value=({}, None)):
+            state, _by, detail = host_probes.probe_kimi_usage_wire("kimi")
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("expected", detail)
+
+    def test_a_host_that_claims_no_usage_ledger_is_unknown(self):
+        state, by, _detail = host_probes.probe_kimi_usage_wire("gemini")
+        self.assertEqual(hosts.UNKNOWN, state)
+        self.assertIsNone(by)
+
+
+class TestKimiLaunchGuard(unittest.TestCase):
+    """I3: the suite must never launch the real `kimi` binary, and that must be
+    STRUCTURAL rather than a property of today's call sites.
+
+    Every kimi spawn resolves its runner from a module attribute
+    (one `DEFAULT_RUNNER` per seam module, N1), which
+    tests/conftest.py's autouse `_no_live_host_launches` swaps for a refusal.
+    The probes must let that refusal PROPAGATE: mapping it to UNKNOWN would
+    turn "the suite tried to launch kimi" into a quiet probe state.
+    """
+
+    def test_run_probes_refuses_to_launch_the_real_binary(self):
+        import scripts.runners.base as runners_base
+        with tempfile.TemporaryDirectory() as d:
+            home = os.path.join(d, "fixture-home")
+            os.makedirs(home)
+            with open(os.path.join(home, "config.toml"), "w", encoding="utf-8") as fh:
+                fh.write('default_model = "kimi-code/k3"\n')
+            registration = os.path.join(d, "agents")
+            _kimi_fully_registered(registration)
+            with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": home}), \
+                 self.assertRaises(runners_base.LaunchRefused) as caught:
+                host_probes.run_probes("kimi", d, session_root=d,
+                                       registration_dir=registration)
+        self.assertIn("kimi", str(caught.exception))
+
+    def test_every_kimi_spawn_seam_carries_one_module_level_DEFAULT_RUNNER(self):
+        # N1: #1619's launch guard FINDS seams by AST walk and then asserts
+        # `hasattr(module, "DEFAULT_RUNNER")` on each -- one attribute per
+        # MODULE, not one per family. A module-scoped name is what survives
+        # the rebase; `KIMI_DEFAULT_RUNNER` would fail that test twice.
+        import scripts.runners.base as runners_base
+        import scripts.runners.kimi as kimi_runner
+        for module in (host_probes, kimi_runner):
+            self.assertTrue(hasattr(module, "DEFAULT_RUNNER"),
+                            "%s has no module-level DEFAULT_RUNNER" % module.__name__)
+            with self.assertRaises(runners_base.LaunchRefused):
+                module.DEFAULT_RUNNER(["kimi", "--version"])
+
+    def test_the_runner_resolves_its_launcher_from_the_module_attribute(self):
+        import scripts.runners.base as runners_base
+        import scripts.runners.kimi as kimi_runner
+        with tempfile.TemporaryDirectory() as d:
+            home = os.path.join(d, "fixture-home")
+            os.makedirs(home)
+            with open(os.path.join(home, "config.toml"), "w", encoding="utf-8") as fh:
+                fh.write('default_model = "kimi-code/k3"\n'
+                         '[models."kimi-code/k3"]\nmodel = "k3"\n')
+            with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": home}):
+                runner = kimi_runner.Runner("kimi")           # nothing injected
+                runner.prepare(os.path.join(d, "run"), review_root=d)
+                self.addCleanup(runner.teardown, "complete")  # C1: a temp home
+                with self.assertRaises(runners_base.LaunchRefused):
+                    runner.run_entry({"id": "e1", "model": "secondary",
+                                      "prompt": "x"}, {})
+
+
+def _kimi_armed_config_without(mode):
+    """A `build_merged_config` that arms every hook EXCEPT `mode`'s -- the
+    mutation the guardrails demand of a probe whose id says "armed"."""
+    import scripts.runners.kimi as kimi_runner
+    real = kimi_runner.build_merged_config
+
+    def mutated(source, scope_path, allowlist_path, *args, **kwargs):
+        merged = real(source, scope_path, allowlist_path, *args, **kwargs)
+        merged["hooks"] = [h for h in merged["hooks"]
+                           if '" %s "' % mode not in (h.get("command") or "")]
+        return merged
+    return mutated
+
+
+class TestKimiGuardArmingIsMeasured(unittest.TestCase):
+    """C3: the two probes are named "...-armed", so they must be able to refute
+    the ARMING, not only the adjudication. With the hooks deleted from
+    `build_merged_config` entirely, both used to return `proven`."""
+
+    def test_a_config_that_arms_no_hooks_refutes_both_probes(self):
+        import scripts.runners.kimi as kimi_runner
+        with mock.patch.object(kimi_runner, "build_merged_config",
+                               side_effect=lambda source, s, a, *x, **k: {"tools": {"disabled": []}}):
+            read = host_probes.probe_kimi_read_guard("kimi", doctor_runner=_DoctorFake())
+            write = host_probes.probe_kimi_write_guard("kimi")
+        for state, by, detail in (read, write):
+            self.assertEqual(hosts.REFUTED, state, detail)
+            self.assertIn("PreToolUse", detail)
+
+    def test_dropping_the_read_hook_refutes_the_read_probe(self):
+        import scripts.runners.kimi as kimi_runner
+        with mock.patch.object(kimi_runner, "build_merged_config",
+                               side_effect=_kimi_armed_config_without("read")):
+            state, _by, detail = host_probes.probe_kimi_read_guard(
+                "kimi", doctor_runner=_DoctorFake())
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("Read", detail)
+
+    def test_dropping_the_write_hook_refutes_the_write_probe(self):
+        import scripts.runners.kimi as kimi_runner
+        with mock.patch.object(kimi_runner, "build_merged_config",
+                               side_effect=_kimi_armed_config_without("write")):
+            state, _by, detail = host_probes.probe_kimi_write_guard("kimi")
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("Write", detail)
+
+    def test_dropping_the_read_hook_does_not_refute_the_write_guard(self):
+        # N7: over-refutation never blesses anything, but a reader scanning
+        # STATES would believe artifact_write_guard was broken when only read
+        # confinement is. Each probe owns its own matcher and merely notes the
+        # other's.
+        import scripts.runners.kimi as kimi_runner
+        with mock.patch.object(kimi_runner, "build_merged_config",
+                               side_effect=_kimi_armed_config_without("read")):
+            state, _by, detail = host_probes.probe_kimi_write_guard("kimi")
+        self.assertEqual(hosts.PROVEN, state)
+        self.assertIn("Read", detail)                 # the miss is still disclosed
+        self.assertIn("read guard probe", detail)
+
+    def test_dropping_the_write_hook_does_not_refute_read_confinement(self):
+        import scripts.runners.kimi as kimi_runner
+        with mock.patch.object(kimi_runner, "build_merged_config",
+                               side_effect=_kimi_armed_config_without("write")):
+            state, _by, detail = host_probes.probe_kimi_read_guard(
+                "kimi", doctor_runner=_DoctorFake())
+        self.assertEqual(hosts.PROVEN, state)
+        self.assertIn("Write", detail)
+        self.assertIn("write guard probe", detail)
+
+    def test_a_hook_pointing_at_a_nonexistent_script_is_refuted(self):
+        import scripts.runners.kimi as kimi_runner
+        with mock.patch.object(kimi_runner, "_GUARD", "/nonexistent/kimi_guard_hook.py"):
+            state, _by, detail = host_probes.probe_kimi_write_guard("kimi")
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("guard script", detail)
+
+    def test_a_config_the_writer_corrupts_is_refuted(self):
+        import scripts.kimi_toml as kimi_toml
+        with mock.patch.object(kimi_toml, "dump_toml",
+                               side_effect=lambda config: "[[mcp]]\nname = \n"):
+            state, _by, detail = host_probes.probe_kimi_write_guard("kimi")
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("valid TOML", detail)
+
+    def test_a_disabled_tool_the_runner_drops_is_refuted(self):
+        import scripts.runners.kimi as kimi_runner
+        real = kimi_runner.build_merged_config
+
+        def without_disabled(source, scope_path, allowlist_path, *args, **kwargs):
+            merged = real(source, scope_path, allowlist_path, *args, **kwargs)
+            merged["tools"] = {"disabled": []}
+            return merged
+        with mock.patch.object(kimi_runner, "build_merged_config",
+                               side_effect=without_disabled):
+            state, _by, detail = host_probes.probe_kimi_write_guard("kimi")
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("tools.disabled", detail)
+
+    def test_the_armed_detail_names_the_config_it_parsed(self):
+        state, _by, detail = host_probes.probe_kimi_write_guard("kimi")
+        self.assertEqual(hosts.PROVEN, state)
+        self.assertIn("config.toml", detail)
+
+    def test_prepare_refuses_to_run_without_the_guard_script(self):
+        import scripts.runners.kimi as kimi_runner
+        with tempfile.TemporaryDirectory() as d:
+            home = os.path.join(d, "fixture-home")
+            os.makedirs(home)
+            with open(os.path.join(home, "config.toml"), "w", encoding="utf-8") as fh:
+                fh.write('default_model = "kimi-code/k3"\n')
+            with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": home}), \
+                 mock.patch.object(kimi_runner, "_GUARD", os.path.join(d, "gone.py")):
+                runner = kimi_runner.Runner("kimi")
+                with self.assertRaises(RuntimeError) as caught:
+                    runner.prepare(os.path.join(d, "run"), review_root=d)
+        self.assertIn("gone.py", str(caught.exception))
+
+
+class TestKimiShellSurfaceIsAnAllowList(unittest.TestCase):
+    """I1: the probe's job is not only "every name exists" but "every name is
+    accounted for" -- each tool in the CLI's vocabulary is either granted by a
+    template or disabled by the per-run config. A tool in neither set is live
+    on the default-agent surface of every unenforced entry."""
+
+    def test_the_derived_disabled_set_plus_the_grants_covers_the_vocabulary(self):
+        with tempfile.TemporaryDirectory() as d:
+            _kimi_fully_registered(d)
+            state, _by, detail = host_probes.probe_kimi_shell_surface(
+                "kimi", registration_dir=d, version="0.42")
+        self.assertEqual(hosts.PROVEN, state)
+        self.assertIn("accounted for", detail)
+
+    def test_a_generated_config_that_disables_nothing_is_refuted(self):
+        # N3: the round-1 check subtracted `disabled_tools(vocabulary)` from a
+        # vocabulary it had just subtracted the same union from -- empty by
+        # construction, so it could only fire when the derivation itself was
+        # monkeypatched. The question is whether the FILE the runner writes
+        # covers the vocabulary, so the answer has to come out of that file.
+        import scripts.runners.kimi as kimi_runner
+        real = kimi_runner.build_merged_config
+
+        def disables_nothing(source, scope_path, allowlist_path, *args, **kwargs):
+            merged = real(source, scope_path, allowlist_path, *args, **kwargs)
+            merged["tools"] = {"disabled": []}
+            return merged
+        with tempfile.TemporaryDirectory() as d:
+            _kimi_fully_registered(d)
+            with mock.patch.object(kimi_runner, "build_merged_config",
+                                   side_effect=disables_nothing):
+                state, _by, detail = host_probes.probe_kimi_shell_surface(
+                    "kimi", registration_dir=d, version="0.42")
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("FetchURL", detail)
+
+    def test_a_config_the_probe_cannot_generate_is_refuted_not_proven(self):
+        # R2-4: this is OUR writer failing, not third-party data the probe
+        # cannot read (I5's tolerated fallback). A probe that could not build
+        # the artifact it measures may not report `proven` with the reason
+        # tucked into its detail.
+        with tempfile.TemporaryDirectory() as d:
+            _kimi_fully_registered(d)
+            with mock.patch.object(host_probes, "_kimi_armed_home",
+                                   side_effect=OSError("no space left on device")):
+                state, _by, detail = host_probes.probe_kimi_shell_surface(
+                    "kimi", registration_dir=d, version="0.42")
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("no space left on device", detail)
+
+    def test_every_exception_the_writer_raises_is_reported_not_raised(self):
+        # `build_merged_config` raises ValueError (M3/N5) and `dump_toml`
+        # raises TypeError (C2); neither was caught, and `run_probes` wraps no
+        # probe, so posture establishment would have died on a traceback.
+        import scripts.kimi_toml as kimi_toml
+        import scripts.runners.kimi as kimi_runner
+        for target, boom in ((kimi_toml, TypeError("cannot emit TOML")),
+                             (kimi_runner, ValueError("expected a table at `tools`"))):
+            name = "dump_toml" if target is kimi_toml else "build_merged_config"
+            with self.subTest(raises=type(boom).__name__):
+                with tempfile.TemporaryDirectory() as d:
+                    _kimi_fully_registered(d)
+                    with mock.patch.object(target, name, side_effect=boom):
+                        state, _by, detail = host_probes.probe_kimi_shell_surface(
+                            "kimi", registration_dir=d, version="0.42")
+                self.assertEqual(hosts.REFUTED, state)
+                self.assertIn(str(boom), detail)
+
+    def test_a_tool_that_is_neither_granted_nor_disabled_is_refuted(self):
+        import scripts.runners.kimi as kimi_runner
+        with tempfile.TemporaryDirectory() as d:
+            _kimi_fully_registered(d)
+            with mock.patch.object(kimi_runner, "disabled_tools",
+                                   side_effect=lambda vocabulary=None: ["Bash"]):
+                state, _by, detail = host_probes.probe_kimi_shell_surface(
+                    "kimi", registration_dir=d, version="0.42")
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("FetchURL", detail)
+
+
+class TestKimiShellSurfaceReadsTheWire(unittest.TestCase):
+    """I5: `tool_policy_enforced` rested on configuration text plus a frozen
+    belief about the CLI. The runner already owns per-run wire files, so when
+    one exists the probe compares the child's own `llm.tools_snapshot` -- the
+    EFFECTIVE surface -- against that entry's shell grant. N2: the home comes
+    from the live runner in process, never from a path recorded in the tree."""
+
+    def _home(self, snapshot=None, agent="panopticon-domain-panel"):
+        """A per-run home holding one child's wire file, as the runner's own
+        `run_home` would be. Returns its path."""
+        import scripts.runners.kimi as kimi_runner
+        home = tempfile.mkdtemp(prefix=kimi_runner.HOME_PREFIX)
+        self.addCleanup(shutil.rmtree, home, True)
+        if snapshot is not None:
+            wire = os.path.join(home, "sessions", "wd_1", "session_x",
+                                "agents", "main", "wire.jsonl")
+            os.makedirs(os.path.dirname(wire))
+            with open(wire, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps({"type": "llm.request", "modelAlias": "k3"}) + "\n")
+                fh.write(json.dumps({"type": "llm.tools_snapshot", "agent": agent,
+                                     "tools": list(snapshot)}) + "\n")
+        return home
+
+    def test_a_snapshot_matching_the_shells_grant_is_proven_and_says_so(self):
+        with tempfile.TemporaryDirectory() as d:
+            _kimi_fully_registered(d)
+            state, _by, detail = host_probes.probe_kimi_shell_surface(
+                "kimi", registration_dir=d, version="0.42",
+                run_home=self._home(snapshot=["Read", "Grep", "Glob", "Write"]))
+        self.assertEqual(hosts.PROVEN, state)
+        self.assertIn("tools_snapshot", detail)
+        self.assertIn("panopticon-domain-panel", detail)
+
+    def test_a_snapshot_wider_than_the_grant_is_refuted_naming_both_sets(self):
+        with tempfile.TemporaryDirectory() as d:
+            _kimi_fully_registered(d)
+            state, _by, detail = host_probes.probe_kimi_shell_surface(
+                "kimi", registration_dir=d, version="0.42",
+                run_home=self._home(snapshot=["Read", "Grep", "Glob", "Write", "Bash"]))
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("Bash", detail)
+        self.assertIn("panopticon-domain-panel", detail)
+
+    def test_no_wire_file_yet_falls_back_to_the_table_and_says_so(self):
+        with tempfile.TemporaryDirectory() as d:
+            _kimi_fully_registered(d)
+            state, _by, detail = host_probes.probe_kimi_shell_surface(
+                "kimi", registration_dir=d, version="0.42", run_home=self._home())
+        self.assertEqual(hosts.PROVEN, state)
+        self.assertIn("no child wire file", detail)
+        self.assertIn("rests on the version table", detail)
+
+    def test_no_run_home_at_all_falls_back_rather_than_looking_for_one(self):
+        with tempfile.TemporaryDirectory() as d:
+            _kimi_fully_registered(d)
+            state, _by, detail = host_probes.probe_kimi_shell_surface(
+                "kimi", registration_dir=d, version="0.42")
+        self.assertEqual(hosts.PROVEN, state)
+        self.assertIn("no per-run kimi home yet", detail)
+
+    def test_a_planted_pointer_and_wire_file_in_the_tree_are_never_read(self):
+        # N2, the forged-evidence half. A target that plants both a pointer
+        # file in the run folder and the directory it names cannot make this
+        # probe report an effective surface.
+        #
+        # R2-1: the round-2 version of this test omitted `run_dir=` -- the
+        # argument the attack needed and the one `run_probes` passed in
+        # production -- so it passed on the vulnerable tree, which is the one
+        # thing a test named for this must not do. The invariant is that the
+        # channel does not EXIST, so that is what is asserted: the keyword is
+        # refused outright, and the call production makes reports nothing the
+        # planted directory contains.
+        import scripts.runners.kimi as kimi_runner
+        planted = self._home(snapshot=["Bash", "FetchURL"])
+        with tempfile.TemporaryDirectory() as d:
+            registration = os.path.join(d, "agents")
+            _kimi_fully_registered(registration)
+            run_dir = os.path.join(d, "run")
+            os.makedirs(run_dir)
+            with open(os.path.join(run_dir, kimi_runner.POINTER_FILE), "w",
+                      encoding="utf-8") as fh:
+                fh.write(planted)
+            with self.assertRaises(TypeError):        # no tree-reading channel
+                host_probes.probe_kimi_shell_surface(
+                    "kimi", registration_dir=registration, version="0.42",
+                    run_dir=run_dir)
+            state, _by, detail = host_probes.probe_kimi_shell_surface(
+                "kimi", registration_dir=registration, version="0.42")
+        self.assertEqual(hosts.PROVEN, state)
+        self.assertNotIn("Bash", detail)
+        self.assertNotIn("tools_snapshot for", detail)
+        self.assertNotIn("run_dir",
+                         inspect.signature(host_probes.probe_kimi_shell_surface).parameters)

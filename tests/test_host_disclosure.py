@@ -136,15 +136,39 @@ class TestTheWordingRule(unittest.TestCase):
         self.assertIn("settings.local.json", remedy)
         self.assertIn("transcript", remedy)
 
+    def test_a_codex_disclosure_never_prints_a_claude_remedy(self):
+        # I-4: _REMEDY was keyed by capability alone, so every Codex run told
+        # the operator to create `.claude/settings.local.json` and to pass
+        # `--session-dir` naming a transcript directory Codex does not have.
+        # 5.1's rule is "name the capability, the host, the probe, and the
+        # remedy" -- a remedy for the wrong host is not a remedy.
+        unclaimed = sorted(set(hosts.CAPABILITIES) - hosts.spec("codex").claims)
+        self.assertTrue(unclaimed)
+        for capability in unclaimed:
+            with self.subTest(capability=capability):
+                text = host_disclosure.remedy(capability, "codex")
+                self.assertNotIn(".claude/settings.local.json", text)
+                self.assertNotIn("--session-dir", text)
+                self.assertNotIn("transcript", text)
+                self.assertGreater(len(text.strip()), 30)
+        codex_lines = "\n".join(host_disclosure.lines(envelope(
+            "codex", **{c: (hosts.UNKNOWN, None, "no probe") for c in unclaimed})))
+        self.assertTrue(codex_lines)
+        self.assertNotIn(".claude/settings.local.json", codex_lines)
+        self.assertNotIn("--session-dir", codex_lines)
+        # Claude's own remedies are untouched.
+        self.assertIn("settings.local.json",
+                      host_disclosure.remedy(hosts.ARTIFACT_WRITE_GUARD, "claude"))
+
     def test_the_generic_deprecation_says_what_and_why_it_is_still_here(self):
         # D4 said "deprecate now, remove when the families land", and the line
         # said generic was "removed once every remaining host clears the
         # retirement bar". That became misleading at #1621: the bar is met on
-        # this base (claude alone is examined and clears it) and generic is
-        # still the only path a Gemini operator has. The line must name the
-        # flag, say it is deprecated, say why it is unsafe to rely on, and say
-        # what it is still FOR -- never promise a removal the bar cannot
-        # trigger on its own.
+        # this base (claude, codex and kimi are the hosts it examines and
+        # all three clear it) and generic is still the only path a Gemini
+        # operator has. The line must name the flag, say it is deprecated,
+        # say why it is unsafe to rely on, and say what it is still FOR --
+        # never promise a removal the bar cannot trigger on its own.
         text = host_disclosure.GENERIC_DEPRECATION
         for token in ("--host generic", "deprecated", "unenforced",
                       "ack-gated", "family runner", "gemini"):
