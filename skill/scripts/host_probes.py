@@ -1059,7 +1059,7 @@ def probe_kimi_model_alias(host, configured=None):
             % (len(bound), len(DRIVER_ROLES), ", ".join(bound)))
 
 
-def probe_kimi_usage_wire(host, home=None):
+def probe_kimi_usage_wire(host):
     """The usage ledger's channel, end to end on the layout the runner globs.
 
     I4: the runner reads `wire_path(self.kimi_home, session_id)` -- a file the
@@ -1072,8 +1072,11 @@ def probe_kimi_usage_wire(host, home=None):
     ledger would report null rather than a figure) and when the parser returns
     anything but the figures the synthetic records carry.
 
-    `home` names the per-run home to build the fixture session in; the default
-    is a fresh sandbox, and the fixture hook is how `run_probes` pins it.
+    Everything it writes lives in the tempdir it owns (N4). It deliberately
+    takes no `home` parameter: `run_probes`' `home=` means "a stand-in for ~"
+    to the transcript probe, and taking the same argument here meant one name
+    with two meanings -- and a fixture session left behind in whatever
+    directory the caller had in mind.
     """
     import scripts.runners.kimi as kimi_runner
     if not hosts.declares(host, hosts.USAGE_LEDGER):
@@ -1090,7 +1093,7 @@ def probe_kimi_usage_wire(host, home=None):
     ]
     try:
         with tempfile.TemporaryDirectory() as sandbox:
-            run_home = home or os.path.join(sandbox, "kimi-home")
+            run_home = os.path.join(sandbox, "kimi-home")
             # The layout `wire_path` globs: <home>/sessions/*/<sid>/agents/main/
             wire = os.path.join(run_home, "sessions", "wd_probe", session_id,
                                 "agents", "main", "wire.jsonl")
@@ -1410,7 +1413,7 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
         KIMI_MODEL_ALIAS:
             lambda: probe_kimi_model_alias(host),
         KIMI_USAGE_WIRE:
-            lambda: probe_kimi_usage_wire(host, home=home),
+            lambda: probe_kimi_usage_wire(host),
     }
     if set(runners) != set(PROBE_IDS):
         raise RuntimeError("host_probes.PROBE_IDS is out of step with run_probes' runner "

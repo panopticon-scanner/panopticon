@@ -1675,26 +1675,44 @@ class TestKimiUsageWireProbe(unittest.TestCase):
     never write to. The probe proves the channel the runner reads."""
 
     def test_the_run_homes_wire_layout_resolves_and_parses(self):
-        with tempfile.TemporaryDirectory() as d:
-            state, by, detail = host_probes.probe_kimi_usage_wire("kimi", home=d)
+        state, by, detail = host_probes.probe_kimi_usage_wire("kimi")
         self.assertEqual(hosts.PROVEN, state)
         self.assertEqual(host_probes.KIMI_USAGE_WIRE, by)
-        self.assertIn(d, detail)                      # the run home is named
         self.assertIn("wire.jsonl", detail)
+
+    def test_the_probe_takes_no_home_parameter_at_all(self):
+        # N4: `run_probes`' `home=` means "a stand-in for ~" to the transcript
+        # probe and meant "the per-run home to build the fixture in" here --
+        # one parameter, two meanings, and #1618 renames the other consumer in
+        # this exact neighbourhood. The kimi probe owns its own sandbox now, so
+        # there is nothing to overload.
+        import inspect
+        self.assertEqual(["host"],
+                         list(inspect.signature(host_probes.probe_kimi_usage_wire).parameters))
+
+    def test_the_fixture_session_never_lands_outside_the_probes_sandbox(self):
+        # N4: the probe used to take `run_probes`' `home=` -- a parameter that
+        # means "a stand-in for ~" to the OTHER consumer -- and wrote its
+        # fixture session there, cleaning only its own sandbox. It now has no
+        # such parameter: every path it writes is inside the tempdir it owns.
+        before = set(os.listdir(tempfile.gettempdir()))
+        _state, _by, detail = host_probes.probe_kimi_usage_wire("kimi")
+        after = set(os.listdir(tempfile.gettempdir()))
+        self.assertEqual(set(), after - before)
+        home = detail.split("run home ", 1)[1].split(" ", 1)[0]
+        self.assertFalse(os.path.exists(home))     # the sandbox is gone with it
 
     def test_a_layout_wire_path_cannot_resolve_is_refuted(self):
         import scripts.runners.kimi as kimi_runner
-        with tempfile.TemporaryDirectory() as d, \
-             mock.patch.object(kimi_runner, "wire_path", return_value=None):
-            state, _by, detail = host_probes.probe_kimi_usage_wire("kimi", home=d)
+        with mock.patch.object(kimi_runner, "wire_path", return_value=None):
+            state, _by, detail = host_probes.probe_kimi_usage_wire("kimi")
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("wire.jsonl", detail)
 
     def test_a_parser_that_returns_the_wrong_figures_is_refuted(self):
         import scripts.runners.kimi as kimi_runner
-        with tempfile.TemporaryDirectory() as d, \
-             mock.patch.object(kimi_runner, "parse_wire", return_value=({}, None)):
-            state, _by, detail = host_probes.probe_kimi_usage_wire("kimi", home=d)
+        with mock.patch.object(kimi_runner, "parse_wire", return_value=({}, None)):
+            state, _by, detail = host_probes.probe_kimi_usage_wire("kimi")
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("expected", detail)
 
