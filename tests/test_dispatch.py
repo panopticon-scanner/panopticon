@@ -406,7 +406,7 @@ class TestEmitHostAgents(unittest.TestCase):
         self.assertIn("newfamily", str(caught.exception))
         self.assertIn("emit branch", str(caught.exception))
 
-    def test_codex_registration_advertises_no_broker_path(self):
+    def test_codex_registration_has_required_transport_without_broker_path(self):
         # M-6: emission used to bake the EMITTING interpreter's sys.executable
         # and the emitting checkout's codex_read_tools.py into every shell,
         # while command() discards both and rebuilds the broker from the
@@ -415,15 +415,18 @@ class TestEmitHostAgents(unittest.TestCase):
         import sys
         import tomllib
         with tempfile.TemporaryDirectory() as d:
-            dispatch.emit_host_agents("codex", d)
-            path = os.path.join(d, "panopticon-scout.toml")
-            with open(path, encoding="utf-8") as fh:
-                text = fh.read()
-            server = tomllib.loads(text)["mcp_servers"]["panopticon_scope"]
-            self.assertEqual(["enabled_tools"], sorted(server))
-            self.assertTrue(server["enabled_tools"])
-            self.assertNotIn(sys.executable, text)
-            self.assertNotIn("codex_read_tools.py", text)
+            for path in dispatch.emit_host_agents("codex", d):
+                with self.subTest(path=path):
+                    with open(path, encoding="utf-8") as fh:
+                        text = fh.read()
+                    server = tomllib.loads(text)["mcp_servers"]["panopticon_scope"]
+                    # Native role discovery requires a complete transport even
+                    # though the runner will replace it before a scoped launch.
+                    self.assertEqual(server["command"], "/usr/bin/false")
+                    self.assertIs(server["required"], True)
+                    self.assertTrue(server["enabled_tools"])
+                    self.assertNotIn(sys.executable, text)
+                    self.assertNotIn("codex_read_tools.py", text)
 
     def test_kimi_agent_file_includes_model_preference_and_when_to_use(self):
         with tempfile.TemporaryDirectory() as d:
