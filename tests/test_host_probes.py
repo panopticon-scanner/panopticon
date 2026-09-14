@@ -964,6 +964,73 @@ class TestUsageSourceProbe(unittest.TestCase):
         self.assertIn("ImportError", detail)
         self.assertIn("no usable headless runner", detail)
 
+    def test_a_runner_with_no_envelope_flags_is_told_that_and_not_sent_module_hunting(self):
+        # #1626 I3. `_headless_usage_source` requires three attributes off the
+        # runner, `HostRunner` declared none of them, and the ONE failure
+        # detail read "host %r has no usable headless runner naming a CLI, its
+        # envelope flags and a launcher" -- wrong and misleading for a family
+        # that shipped a perfectly good runner and simply has no
+        # ENVELOPE_FLAGS. The remedy line then sent them looking for a missing
+        # module. Now `HostRunner` declares `CLI = ""` and `ENVELOPE_FLAGS =
+        # ()`, so the attribute is always there and the probe has to decide on
+        # its VALUE -- a vacuous PROVEN (no flags means no flags missing from
+        # `--help`) is the fail-open this epic exists to remove.
+        import dataclasses
+        import scripts.runners.base as runners_base
+
+        class NoFlags(runners_base.HostRunner):
+            host = "ghost"
+            CLI = "claude"
+
+            def runner(self, *_args, **_kwargs):
+                raise AssertionError("a runner with no envelope flags is never launched")
+
+        ghost = dataclasses.replace(hosts.spec("claude"), name="ghost")
+        with tempfile.TemporaryDirectory() as project, \
+                tempfile.TemporaryDirectory() as bin_dir, \
+                mock.patch.dict(hosts.HOSTS, {"ghost": ghost}), \
+                mock.patch.object(runners_base, "runner_for", return_value=NoFlags()):
+            self._cli_on_path(bin_dir)
+            with mock.patch.dict(os.environ, {"PATH": bin_dir}):
+                state, by, detail = host_probes.probe_usage_source(
+                    "ghost", project, settings_path=self._headless_settings(project))
+        self.assertEqual(hosts.UNKNOWN, state)
+        self.assertEqual("usage-source", by)
+        self.assertIn("ENVELOPE_FLAGS", detail)
+        self.assertIn("claude", detail)                       # the CLI it DID name
+        self.assertNotIn("no usable headless runner", detail)  # the wrong sentence
+
+    def test_a_runner_that_names_no_cli_is_told_that_and_not_that_its_binary_is_missing(self):
+        # The third sentence. `CLI = ""` reached `shutil.which("")`, which
+        # answers None, and the probe REFUTED with "no `` on PATH" -- a
+        # measurement it never made, about a binary nobody named.
+        import dataclasses
+        import scripts.runners.base as runners_base
+
+        class NoCli(runners_base.HostRunner):
+            host = "ghost"
+            ENVELOPE_FLAGS = ("-p", "--output-format")
+
+            def runner(self, *_args, **_kwargs):
+                raise AssertionError("a runner that names no CLI is never launched")
+
+        ghost = dataclasses.replace(hosts.spec("claude"), name="ghost")
+        with tempfile.TemporaryDirectory() as project, \
+                mock.patch.dict(hosts.HOSTS, {"ghost": ghost}), \
+                mock.patch.object(runners_base, "runner_for", return_value=NoCli()):
+            state, by, detail = host_probes.probe_usage_source(
+                "ghost", project, settings_path=self._headless_settings(project))
+        self.assertEqual(hosts.UNKNOWN, state)
+        self.assertEqual("usage-source", by)
+        self.assertIn("names no CLI", detail)
+        # Not the pre-fix sentence, which reported a measurement it never
+        # made about a binary nobody named. (The new one may still mention
+        # PATH -- "there is no binary to look for on PATH" is true and is the
+        # point -- so the empty backticks, not the word, are what it must not
+        # say.)
+        self.assertNotIn("no `` on PATH", detail)
+        self.assertNotIn("no usable headless runner", detail)
+
     def test_headless_refutes_when_the_run_folder_cannot_hold_the_ledger(self):
         import getpass
         if getpass.getuser() == "root":

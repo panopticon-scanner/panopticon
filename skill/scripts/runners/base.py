@@ -77,6 +77,27 @@ class HostRunner:
     host = ""
     mode = "headless"
     default_concurrency = 1
+    # The binary this runner launches, and the argv tokens that make ONE
+    # launch print the parseable envelope its usage figures are read from
+    # (claude: `-p --output-format`; codex: `exec --json`).
+    #
+    # Declared here because they are part of the seam, not a private detail:
+    # `host_probes._headless_usage_source` reads both off a claiming host's
+    # runner, asks the CLI it finds on PATH to advertise exactly these flags
+    # in its `--help`, and only then believes the ledger. Before #1626 I3
+    # they were requirements a family could learn about only from an
+    # `except Exception` whose detail then named the wrong problem.
+    #
+    # Empty is legal and honest, not a stub to fill in: a runner leaving
+    # either empty reads `unknown` for `usage_ledger`, with a detail saying
+    # which one is missing. A host whose usage evidence is not a launch
+    # envelope at all (kimi reads a session wire file, and maps
+    # `usage_ledger` to its own probe) leaves ENVELOPE_FLAGS empty on
+    # purpose. What must NOT happen is a vacuous `proven` -- no flags means
+    # no flags missing from `--help`, which is why the probe decides on the
+    # VALUE rather than merely on the attribute existing.
+    CLI = ""
+    ENVELOPE_FLAGS = ()
     # A scratch directory OUTSIDE the reviewed tree that this runner's children
     # write into, once `prepare` has made one; None for a host that needs none
     # (claude arms a settings file in the run folder and keeps nothing else).

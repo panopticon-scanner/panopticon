@@ -1513,15 +1513,33 @@ def _headless_usage_source(host, settings_path):
         return (hosts.REFUTED, USAGE_SOURCE,
                 "the loop cannot write its dispatch ledger at %s: %s is not writable"
                 % (ledger, probe_dir))
+    # Three distinct failures, three distinct sentences (#1626 I3). One
+    # message covered all of them -- "has no usable headless runner naming a
+    # CLI, its envelope flags and a launcher" -- which is wrong for a family
+    # that shipped a perfectly good runner and simply left one attribute
+    # empty, and sends them looking for a missing module.
     try:
         runner = runners_base.runner_for(host, "headless")
         cli, flags, launch = runner.CLI, tuple(runner.ENVELOPE_FLAGS), runner.runner
         launch_env = runner.launch_env()
     except Exception as exc:          # noqa: BLE001 -- a probe reports, never raises
         return (hosts.UNKNOWN, USAGE_SOURCE,
-                "host %r has no usable headless runner naming a CLI, its envelope flags "
-                "and a launcher (%s: %s), so nothing here proves a launch envelope will "
-                "carry usage" % (host, type(exc).__name__, exc))
+                "host %r has no usable headless runner: %s: %s. Ship "
+                "skill/scripts/runners/%s.py exposing a Runner, so nothing here "
+                "proves a launch envelope will carry usage"
+                % (host, type(exc).__name__, exc, host))
+    if not cli:
+        return (hosts.UNKNOWN, USAGE_SOURCE,
+                "host %r ships a headless runner that names no CLI (its `CLI` is empty, "
+                "the seam's default in runners/base.py): there is no binary to look for "
+                "on PATH, so nothing here proves a launch envelope will carry usage" % host)
+    if not flags:
+        return (hosts.UNKNOWN, USAGE_SOURCE,
+                "host %r ships a headless runner naming `%s` but no envelope flags (its "
+                "`ENVELOPE_FLAGS` is empty, the seam's default in runners/base.py): "
+                "nothing here proves a launch of it prints an envelope to read usage "
+                "from, and an empty flag list would otherwise be advertised vacuously"
+                % (host, cli))
     found = shutil.which(cli)
     if not found:
         return (hosts.REFUTED, USAGE_SOURCE,

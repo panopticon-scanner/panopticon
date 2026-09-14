@@ -140,3 +140,25 @@ class TestLaunchEnv(unittest.TestCase):
         env = base.HostRunner().launch_env()
         env["PANOPTICON_ONLY_IN_THE_CHILD"] = "1"
         self.assertNotIn("PANOPTICON_ONLY_IN_THE_CHILD", os.environ)
+
+
+class TestTheUsageProbesSeamAttributes(unittest.TestCase):
+    """#1626 I3: `host_probes._headless_usage_source` reads three attributes
+    off a claiming host's runner -- `CLI`, `ENVELOPE_FLAGS` and `runner` --
+    and `HostRunner` declared none of them. A family had to learn they exist
+    from an `except Exception` whose detail then named the wrong thing.
+    """
+
+    def test_the_contract_declares_the_two_the_usage_probe_reads(self):
+        self.assertEqual("", base.HostRunner.CLI)
+        self.assertEqual((), base.HostRunner.ENVELOPE_FLAGS)
+
+    def test_a_family_that_leaves_them_empty_inherits_the_empty_defaults(self):
+        # The point of declaring them: a runner that says nothing about its
+        # CLI reads `unknown` for usage_ledger with a detail saying exactly
+        # that, instead of raising AttributeError into a detail about a
+        # missing module.
+        class Bare(base.HostRunner):
+            host = "bare"
+        self.assertEqual("", Bare().CLI)
+        self.assertEqual((), Bare().ENVELOPE_FLAGS)
