@@ -184,6 +184,14 @@ class TestSkillMd(unittest.TestCase):
         self.assertIn("`--host generic --reset`", retired)
         self.assertIn("hosts.unselectable_host_message", retired)
         self.assertNotIn("still proceeds", retired)
+        # Fix round 1: and the paragraph must keep the two cases apart. A name
+        # with no registry ROW is not "no longer selectable" -- nothing was
+        # retired -- and it never reaches either refusal, because
+        # `run_manifest.load_manifest` discards such a manifest one layer
+        # earlier. A reader who conflates them concludes the refusal has a gap
+        # it does not have.
+        self.assertIn("run_manifest.load_manifest", retired)
+        self.assertIn("discards it as unusable", retired)
 
     def test_documents_the_read_guard_on_scout_and_setup_scan_checkpoints(self):
         # I4: coverage._scout_entry and setup._setup_scan_entry also emit
