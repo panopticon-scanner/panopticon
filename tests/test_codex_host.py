@@ -459,3 +459,22 @@ def test_cleanup_never_removes_a_directory_this_module_did_not_allocate(tmp_path
     codex_host.cleanup_command([*argv[:-1], "-c", "log_dir=%s" % json.dumps(str(foreign)), "-"])
     assert (foreign / "keep").read_text() == "precious"
     assert not directory.exists()
+
+
+@pytest.mark.parametrize("catalog", [{"models": []}, {"models": [MODEL, MODEL]}])
+def test_a_refused_launch_leaves_no_runtime_directory_behind(tmp_path, catalog):
+    # N-M4: the codex-entry-* folder is created BEFORE _catalog() runs and
+    # before it is recorded in _COMMAND_DIRS, so I-8's own documented failure
+    # -- a CLI build whose catalog spells the tier differently -- leaked one
+    # directory per attempt, three per entry, on a run that was already
+    # failing and that cleanup_command could never find.
+    root, entry, env = _case(tmp_path)
+    run = root / "run"
+
+    def fake(*args, **kwargs):
+        return SimpleNamespace(returncode=0, stdout=json.dumps(catalog), stderr="")
+
+    with pytest.raises(ValueError, match="absent or ambiguous"):
+        codex_host.command(entry, env, root, run, runner=fake)
+    assert list(run.iterdir()) == []
+    assert not any(str(path).startswith(str(run)) for path in codex_host._COMMAND_DIRS)

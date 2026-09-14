@@ -245,17 +245,26 @@ def command(entry, env, review_root, run_dir, runner=None, registration_dir=None
                      "PANOPTICON_REVIEW_ROOT": str(Path(review_root).resolve())}
     config["mcp_servers"] = {"panopticon_scope": broker}
     directory = Path(tempfile.mkdtemp(prefix="codex-entry-", dir=run_path))
-    config.update({"model_catalog_json": _catalog(model, directory, runner, env,
-                                                  catalog() if catalog is not None else None),
-                   "log_dir": str(directory / "logs"), "sqlite_home": str(directory / "sqlite")})
-    overrides = list(_overrides(config))
-    # A fresh cwd UNDER the target would still discover its ancestor .codex
-    # config. Keep cwd outside it, while run configuration remains run-owned.
-    cwd = str(Path(tempfile.mkdtemp(prefix="panopticon-codex-cwd-")).resolve())
-    if Path(cwd).is_relative_to(Path(review_root).resolve()):
-        os.rmdir(cwd)
-        shutil.rmtree(directory, ignore_errors=True)     # refused: leave nothing behind
-        raise ValueError("Codex scratch cwd must be outside the review root; choose an external TMPDIR")
+    # N-M4: from here to the registry write, NOTHING may leave the runtime
+    # directory behind. It exists before _catalog() runs, and _catalog() is
+    # the documented fail-closed path (I-8: a CLI build whose bundled catalog
+    # spells the tier differently refuses every entry of that role, three
+    # times each) -- and it is not yet in _COMMAND_DIRS, so cleanup_command
+    # could never find it afterwards.
+    try:
+        config.update({"model_catalog_json": _catalog(model, directory, runner, env,
+                                                      catalog() if catalog is not None else None),
+                       "log_dir": str(directory / "logs"), "sqlite_home": str(directory / "sqlite")})
+        overrides = list(_overrides(config))
+        # A fresh cwd UNDER the target would still discover its ancestor .codex
+        # config. Keep cwd outside it, while run configuration remains run-owned.
+        cwd = str(Path(tempfile.mkdtemp(prefix="panopticon-codex-cwd-")).resolve())
+        if Path(cwd).is_relative_to(Path(review_root).resolve()):
+            os.rmdir(cwd)
+            raise ValueError("Codex scratch cwd must be outside the review root; choose an external TMPDIR")
+    except BaseException:
+        shutil.rmtree(directory, ignore_errors=True)
+        raise
     with _COMMAND_LOCK:
         _COMMAND_DIRS[cwd] = (str(directory), str(run_path))
     return ["codex", "exec", "--ignore-user-config", "--ignore-rules", "--ephemeral",
