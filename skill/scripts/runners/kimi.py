@@ -541,7 +541,7 @@ class Runner(base.HostRunner):
             previous = handler.previous       # R3-3: read live, a disarm may have relinked it
             if callable(previous):
                 previous(signum, frame)       # chained: the loop still sees it
-            elif previous == signal.SIG_DFL:
+            elif previous == signal.SIG_DFL or previous is None:   # R3-4: None = C-installed
                 signal.signal(signum, signal.SIG_DFL)
                 os.kill(os.getpid(), signum)  # die as we would have
         handler.previous = previous

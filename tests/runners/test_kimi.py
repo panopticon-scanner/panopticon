@@ -652,6 +652,22 @@ class TestHomeLocation(unittest.TestCase):
             if callbacks is not None:
                 self.assertEqual(callbacks, atexit._ncallbacks(), "an atexit callback leaked")
 
+    def test_a_c_installed_previous_handler_is_treated_as_the_default(self):
+        # R3-4: `signal.getsignal` reports a handler installed from C as None.
+        # The chain handled a callable and SIG_DFL and let None fall through,
+        # so under an embedding host the wrapper stripped the home and then
+        # RETURNED: the SIGTERM that would have ended the process did nothing.
+        # None must behave as SIG_DFL: restore the default and re-raise the
+        # signal. Measured on the wrapper directly, with the two calls that
+        # would end the process replaced -- nothing is sent to the test process.
+        r = kimi_runner.Runner("kimi")                 # no home: the strip is a no-op
+        handler = r._signal_stripper(None)
+        with mock.patch.object(signal, "signal") as install, \
+             mock.patch.object(os, "kill") as kill:
+            handler(signal.SIGTERM, None)
+        install.assert_called_once_with(signal.SIGTERM, signal.SIG_DFL)
+        kill.assert_called_once_with(os.getpid(), signal.SIGTERM)
+
     def test_teardown_refuses_a_path_that_is_not_a_temp_home(self):
         with tempfile.TemporaryDirectory() as d:
             planted = os.path.join(d, "not-a-temp-home")
