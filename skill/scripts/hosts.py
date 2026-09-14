@@ -36,6 +36,27 @@ USAGE_LEDGER = "usage_ledger"
 CAPABILITIES = (TOOL_POLICY_ENFORCED, READ_SCOPE_CONFINED,
                 ARTIFACT_WRITE_GUARD, MODEL_BINDING, USAGE_LEDGER)
 
+# The two capabilities that are OPERATIONAL rather than security (#1626 I1).
+# Spec 8.1's retirement bar excludes exactly these (D5), and
+# docs/PANOPTICON.md says of usage_ledger that it "gates nothing directly":
+# a run whose token counter went quiet is a run with a worse cost report, not
+# a run whose reviewers were unconfined. The other three ARE the enforcement
+# story, and every consumer that refuses on a posture change must refuse on
+# those alone.
+#
+# Written down here, on the table that owns the vocabulary, rather than
+# spelled out at the one call site that needs it today
+# (`driver._establish_host_posture`): the same split already exists in
+# `tests/test_generic_retirement_bar.py` as a hand-listed SECURITY_BAR, and a
+# second, independent list of "which capabilities are security" is how two
+# consumers come to disagree about it.
+#
+# It is emphatically NOT an exemption from measurement or disclosure: both are
+# probed on every invocation, both are written into host-capabilities.json
+# with their fresh state and reason, and both appear on all four disclosure
+# surfaces. What they do not do is halt a run in flight.
+OPERATIONAL_CAPABILITIES = (MODEL_BINDING, USAGE_LEDGER)
+
 # --- capability states (F3 consumes these; defined here so one module owns
 # the vocabulary) ----------------------------------------------------------
 PROVEN, REFUTED, UNKNOWN = "proven", "refuted", "unknown"
