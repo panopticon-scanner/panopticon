@@ -15,8 +15,8 @@ import tempfile
 from unittest import mock
 
 import scripts.driver as driver
-import scripts.host_probes as host_probes
 import scripts.orchestrate as orchestrate
+import scripts.probes.common as probes_common
 import scripts.phases.runio as runio
 import scripts.read_guard_hook as read_guard_hook
 import scripts.runners.base as base
@@ -582,4 +582,4 @@ class TestHostAndModeResolution(LoopCase):
             status = orchestrate.loop(self._args(d))
         self.assertEqual(status["status"], "complete", status)
         self.assertTrue(seen)
-        self.assertEqual(set(seen), {host_probes.headless_settings_path(d)})
+        self.assertEqual(set(seen), {probes_common.headless_settings_path(d)})

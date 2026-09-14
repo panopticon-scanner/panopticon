@@ -129,7 +129,7 @@ class TestRunEntry(unittest.TestCase):
 
     def test_run_entry_prepares_its_environment_through_launch_env(self):
         # #1626 I2: ONE env preparation. `run_entry` built the child
-        # environment inline, so `host_probes._cli_advertises` -- which
+        # environment inline, so `probes.common._cli_advertises` -- which
         # launches the SAME binary to read its `--help` -- could not reuse it
         # and passed no env at all. The CLAUDECODE pop now lives in
         # `launch_env`, `run_entry` calls it, and the usage probe calls it, so

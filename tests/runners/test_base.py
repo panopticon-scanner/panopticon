@@ -117,7 +117,7 @@ class TestLaunchEnv(unittest.TestCase):
     """#1626 I2: ONE env preparation per runner, reachable by the probes.
 
     `Runner.run_entry` built its child environment inline, so
-    `host_probes._cli_advertises` -- which launches the SAME binary to ask
+    `probes.common._cli_advertises` -- which launches the SAME binary to ask
     what it advertises -- had no way to use it and passed no `env` at all.
     The interrogation therefore ran under an environment the runner never
     uses. `launch_env` is that preparation named once; `run_entry` calls it,
@@ -143,7 +143,7 @@ class TestLaunchEnv(unittest.TestCase):
 
 
 class TestTheUsageProbesSeamAttributes(unittest.TestCase):
-    """#1626 I3: `host_probes._headless_usage_source` reads three attributes
+    """#1626 I3: `probes.claude._headless_usage_source` reads three attributes
     off a claiming host's runner -- `CLI`, `ENVELOPE_FLAGS` and `runner` --
     and `HostRunner` declared none of them. A family had to learn they exist
     from an `except Exception` whose detail then named the wrong thing.

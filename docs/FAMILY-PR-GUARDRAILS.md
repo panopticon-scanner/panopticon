@@ -17,7 +17,7 @@ part is a thin seam, and your PR fills in that seam for your family:
 | You deliver | Where | Reference implementation |
 |---|---|---|
 | A headless runner | `skill/scripts/runners/<host>.py` exposing `Runner(HostRunner)` — `prepare`, `run_entry`, `launch_env` if your host needs more than `os.environ`, and `CLI` / `ENVELOPE_FLAGS` if your usage figures come from a launch envelope | `skill/scripts/runners/claude.py` |
-| Probes for every capability you claim | `skill/scripts/host_probes.py` (a probe id in `PROBE_IDS` **and** `PROBE_CAPABILITY`, and the `probes=` mapping on your `HostSpec` row) | `probe_registered_shell_tools`, `probe_write_guard_armed`, `probe_read_guard_armed` |
+| Probes for every capability you claim | `skill/scripts/probes/<host>.py` for the probe functions, with the probe id registered in `skill/scripts/host_probes.py` (`PROBE_IDS` **and** `PROBE_CAPABILITY`, plus the `probes=` mapping on your `HostSpec` row). A probe that spawns your CLI puts a module-level `DEFAULT_RUNNER` in that same module and adds it to `LAUNCH_SEAMS` in `tests/conftest.py` | `probes/common.py`'s `probe_registered_shell_tools`, `probes/claude.py`'s `probe_write_guard_armed` / `probe_read_guard_armed` |
 | A shell emitter branch | `skill/scripts/dispatch.py` `emit_host_agents` (one `elif` for your `shell_format`) | the claude / kimi / codex branches already there |
 | Your registry row, and only yours | `skill/scripts/hosts.py` `HOSTS[<host>]` | any existing row |
 | Read and write confinement for your host | your own primitive: tool omission, sandbox policy, `--add-dir`, `disallowedTools`, a hook, whatever your host actually enforces | `skill/scripts/read_guard_hook.py`, `skill/scripts/write_guard_hook.py` (Claude-only by construction; copy the *idea*, not the file) |
@@ -212,9 +212,9 @@ python -m ruff check skill/scripts/ tests/
 CI runs the same two commands on Python 3.11, 3.12, 3.13, and 3.14. The
 local interpreter is newer than the CI floor, so run at least your own test
 files under 3.11 before pushing (`uv run --python 3.11 --with pytest --with
-pyyaml -q python -m pytest tests/runners tests/test_host_probes.py -q` is
-enough). Argparse and `typing` differ across that range; the 3.11 leg is the
-one that finds it.
+pyyaml -q python -m pytest tests/runners tests/probes tests/test_host_probes.py
+-q` is enough). Argparse and `typing` differ across that range; the 3.11 leg is
+the one that finds it.
 
 Then the evidence only a real run can give:
 

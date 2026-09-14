@@ -64,7 +64,7 @@ def _collect_host_usage(review_root, manifest):
     # silently stays null on a 612M-token run. The driver cannot infer the session
     # root, so let the operator state it; getcwd() remains the default because it
     # is right for the documented invocation.
-    # runio.session_dir is the SINGLE source (C2): host_probes.probe_usage_source
+    # runio.session_dir is the SINGLE source (C2): probes.claude.probe_usage_source
     # gates this collection off the same expression, so the two cannot drift
     # into asking about different transcripts again.
     session_dir = runio.session_dir(manifest)

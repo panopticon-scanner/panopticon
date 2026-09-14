@@ -20,6 +20,7 @@ import coverage_model  # noqa: E402  (5.2: the surfaces enum for the brief)
 from scripts import hosts  # noqa: E402  (#1344 F2: host readiness reads the registry)
 from scripts import codex_host  # noqa: E402  (#1344: the suite's launch guard type)
 from scripts import host_probes  # noqa: E402  (#1344 F3b: readiness probes live posture)
+import scripts.probes.common as probes_common  # noqa: E402  (#1627: the shared probe helpers)
 from scripts import host_disclosure  # noqa: E402  (#1344 F3b: one voice for the posture)
 
 
@@ -67,11 +68,11 @@ _CONTENTS_FORM_RE = re.compile(r"^/?(\*\*/)?\.panopticon/\*{1,2}$")
 _CHECK_IGNORE_LINE = re.compile(r"^(.*):(\d+):(.*)$")
 
 # The roles the DRIVER dispatches and therefore needs registered shells for.
-# #1606: was a hand-kept three-tuple shadowing host_probes.DRIVER_ROLES and
+# #1606: was a hand-kept three-tuple shadowing probes.common.DRIVER_ROLES and
 # leaving `advisor` unchecked; now the same object, one source of truth
-# (dispatch.ROLE_FILES, via host_probes -- dispatch itself is imported lazily
+# (dispatch.ROLE_FILES, via probes.common -- dispatch itself is imported lazily
 # below, script-style).
-_driver_roles = host_probes.DRIVER_ROLES
+_driver_roles = probes_common.DRIVER_ROLES
 
 
 def _git_blanket_pattern(repo, runner=subprocess.run):
@@ -371,7 +372,7 @@ def _check_host_shells(host, runner, repo_root=None):
         fresh = host_probes.run_probes(resolved_host, repo_root)
     except codex_host.LaunchRefused:
         # N-M3: the suite's no-live-launch guard, re-raised exactly as
-        # host_probes._codex_measure re-raises it. Readiness DOES reach a live
+        # probes.codex._codex_measure re-raises it. Readiness DOES reach a live
         # Codex probe (it is why tests/test_setup_flow.py has to isolate
         # them), and swallowing the refusal into a benign row would put back
         # the hole I-5 exists to close: a test that reached a real `codex` and

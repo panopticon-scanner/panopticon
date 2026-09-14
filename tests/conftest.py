@@ -82,8 +82,8 @@ import subprocess  # noqa: E402
 import pytest  # noqa: E402
 
 import scripts.codex_host as _codex_host  # noqa: E402
-import scripts.host_probes as _host_probes  # noqa: E402
 import scripts.run_tools as _run_tools  # noqa: E402
+import scripts.probes.kimi as _kimi_probes  # noqa: E402
 import scripts.runners.base as _runners_base  # noqa: E402
 import scripts.runners.claude as _claude_runner  # noqa: E402
 import scripts.runners.codex as _codex_runner  # noqa: E402
@@ -171,7 +171,7 @@ def _no_live_scanner_containers(request, monkeypatch):
 # The guardrails say the suite must never start a host binary, and until now
 # that was per-test discipline only: the launch seams defaulted to
 # subprocess.run bound as a DEFAULT ARGUMENT, unreachable by a patch, and
-# host_probes._codex_measure mapped any exception to UNKNOWN -- so a test that
+# probes.codex._codex_measure mapped any exception to UNKNOWN -- so a test that
 # did reach a live CLI and failed would still have passed. Discipline then
 # failed twice more: `setup_flow.readiness` probes `codex --version` through
 # the same unreachable default (N-M3), and `runners/claude.py` binds its
@@ -199,10 +199,14 @@ def _no_live_scanner_containers(request, monkeypatch):
 #
 # The kimi family PR (#1620) shipped the same construction a third time, as
 # `_no_live_kimi_launches`; it is folded in the same way and for the same
-# reason. Its two seams join the tuple: `runners/kimi.py`, and `host_probes`,
-# which is where `run_probes("kimi", ...)` shells out to `kimi --version` and
-# `kimi doctor` -- one module holding every family's probe spawns, so it
-# carries exactly ONE DEFAULT_RUNNER rather than a per-family sibling. The
+# reason. Its two seams join the tuple: `runners/kimi.py`, and the kimi probe
+# module, which is where `run_probes("kimi", ...)` shells out to `kimi
+# --version` and `kimi doctor`. #1627 split `host_probes` into
+# `scripts/probes/`, so that seam is now `scripts.probes.kimi` -- the ONE
+# probe module that starts a host CLI, and therefore the one that carries a
+# DEFAULT_RUNNER. The seam is named per module because the walk in
+# tests/test_host_launch_guard.py asserts the attribute on whatever module it
+# finds the launch in; a sibling's launcher would not satisfy it. The
 # guard-hook round-trips inside those probes are deliberately NOT routed
 # through it: that subprocess is `sys.executable` running the hook's own
 # protocol, and refusing it would delete the proof rather than protect it.
@@ -213,7 +217,7 @@ def _no_live_scanner_containers(request, monkeypatch):
 # disagree about is not a guarantee. `codex_host.LaunchRefused` still names
 # it, so every call site that already caught it is unchanged.
 LAUNCH_SEAMS = (_codex_host, _codex_runner, _claude_runner, _setup_flow,
-                _host_probes, _kimi_runner)
+                _kimi_probes, _kimi_runner)
 
 
 def _refused_binary(args):

@@ -7,9 +7,11 @@ THIRD door by accident -- `setup_flow.readiness()` probes `codex --version`
 through a runner bound as a DEFAULT ARGUMENT, which no monkeypatch can reach --
 and a fourth is `runners/claude.py`, which binds its launcher the same way.
 The Kimi family PR arrived with a fifth and a sixth: `runners/kimi.py`, and
-`host_probes.py`, where `run_probes("kimi", ...)` spawns `kimi --version` and
+the kimi probes, where `run_probes("kimi", ...)` spawns `kimi --version` and
 `kimi doctor` -- which is why the walk below is the pin and the count in
-tests/conftest.py is not.
+tests/conftest.py is not. #1627 moved that sixth seam from `host_probes.py`
+into `probes/kimi.py` and the walk followed it there on its own: it reads the
+whole `skill/scripts/` tree, package directories included.
 
 Per-seam discipline is what failed here twice, so this file does not name
 seams. It finds them: a module is a host-CLI launch seam if it imports
@@ -146,8 +148,8 @@ class TestEverySeamThatCanStartAHostCliIsCovered(unittest.TestCase):
         """A guard that silently found nothing would pass forever, and one
         that found everything would demand a launcher from data modules."""
         found = sorted(relative for _, relative, _ in _seams())
-        self.assertEqual(found, sorted(["codex_host.py", "host_probes.py",
-                                        "setup_flow.py",
+        self.assertEqual(found, sorted(["codex_host.py", "setup_flow.py",
+                                        os.path.join("probes", "kimi.py"),
                                         os.path.join("runners", "claude.py"),
                                         os.path.join("runners", "codex.py"),
                                         os.path.join("runners", "kimi.py")]))

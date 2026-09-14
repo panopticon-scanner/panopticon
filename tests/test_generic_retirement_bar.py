@@ -27,6 +27,7 @@ from unittest import mock
 from conftest import write_host_evidence
 from scripts import dispatch, hosts, host_probes
 import scripts.ocrdb as ocrdb
+import scripts.probes.common as probes_common
 import scripts.phases.coverage as coverage
 import scripts.phases.requests as requests
 import scripts.phases.review as review
@@ -120,7 +121,7 @@ class TestGenericRetirementBar(unittest.TestCase):
         claimed = dataclasses.replace(
             hosts.spec("gemini"), name="claimant", driver_selectable=True,
             claims=frozenset({hosts.TOOL_POLICY_ENFORCED, hosts.READ_SCOPE_CONFINED}),
-            probes={hosts.TOOL_POLICY_ENFORCED: host_probes.REGISTERED_SHELL_TOOLS,
+            probes={hosts.TOOL_POLICY_ENFORCED: probes_common.REGISTERED_SHELL_TOOLS,
                     hosts.READ_SCOPE_CONFINED: "a-probe-nobody-shipped"})
         with mock.patch.dict(hosts.HOSTS, {"claimant": claimed}):
             self.assertEqual([hosts.READ_SCOPE_CONFINED],
@@ -136,8 +137,8 @@ class TestGenericRetirementBar(unittest.TestCase):
         claimed = dataclasses.replace(
             hosts.spec("gemini"), name="claimant", driver_selectable=True,
             claims=frozenset({hosts.TOOL_POLICY_ENFORCED, hosts.READ_SCOPE_CONFINED}),
-            probes={hosts.TOOL_POLICY_ENFORCED: host_probes.REGISTERED_SHELL_TOOLS,
-                    hosts.READ_SCOPE_CONFINED: host_probes.REGISTERED_SHELL_TOOLS})
+            probes={hosts.TOOL_POLICY_ENFORCED: probes_common.REGISTERED_SHELL_TOOLS,
+                    hosts.READ_SCOPE_CONFINED: probes_common.REGISTERED_SHELL_TOOLS})
         with mock.patch.dict(hosts.HOSTS, {"claimant": claimed}):
             self.assertEqual([hosts.READ_SCOPE_CONFINED],
                              retirement_shortfalls()["claimant"])
