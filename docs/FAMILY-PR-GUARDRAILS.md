@@ -35,8 +35,17 @@ The seam's contract, in `skill/scripts/runners/base.py`:
   `RunResult.failed(entry_id, error)`. `run_batch` (a thread pool) is inherited.
 - `env` is an **overlay**: `PANOPTICON_ENTRY_ID`, `PANOPTICON_WRITE_ALLOWLIST`,
   `PANOPTICON_READ_SCOPE`. The child must get `os.environ` **plus** these three;
-  a child that gets only these three has no `PATH` and cannot start. Claude also
-  pops `CLAUDECODE` so a nested session will launch; find your own equivalent.
+  a child that gets only these three has no `PATH` and cannot start.
+- `Runner.launch_env(overlay=None) -> dict` is that merge, and it is the **one**
+  place your family prepares a child environment. The default is `os.environ`
+  plus the overlay; override it if your host needs more, and do not rebuild the
+  dict inside `run_entry` — call this. Claude's pops `CLAUDECODE` so a nested
+  session will launch, Kimi's points `KIMI_CODE_HOME` at the run's home and
+  drops its own session markers, Codex needs nothing beyond the default and so
+  does not override it; find your own equivalent. The probes call it too (the
+  usage probe interrogates your CLI's `--help` under it), so a preparation that
+  lives only in `run_entry` means the probe measures your CLI under an
+  environment you never launch with (#1626).
 - `default_concurrency` is yours to set. `driver loop --concurrency` overrides it.
 - `runner_for(host, mode)` finds you by module name. `headless_available(host)`
   is true once `skill/scripts/runners/<host>.py` exposes `Runner`; until then

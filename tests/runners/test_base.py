@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+from unittest import mock
 
 import scripts.runners.base as base
 import scripts.runners.session as session_runner
@@ -110,3 +111,32 @@ class TestGuardFileNameConstants(unittest.TestCase):
                 self.assertEqual(path, os.path.join(d, "renamed-allowlist.json"))
             for path in (runner.scope_path, guards.scope_path):
                 self.assertEqual(path, os.path.join(d, "renamed-scope.json"))
+
+
+class TestLaunchEnv(unittest.TestCase):
+    """#1626 I2: ONE env preparation per runner, reachable by the probes.
+
+    `Runner.run_entry` built its child environment inline, so
+    `host_probes._cli_advertises` -- which launches the SAME binary to ask
+    what it advertises -- had no way to use it and passed no `env` at all.
+    The interrogation therefore ran under an environment the runner never
+    uses. `launch_env` is that preparation named once; `run_entry` calls it,
+    the usage probe calls it, and a family override changes both together.
+    """
+
+    def test_the_default_is_the_process_environment_plus_the_overlay(self):
+        with mock.patch.dict(os.environ, {"PATH": "/p", "HOME": "/h"}, clear=True):
+            self.assertEqual({"PATH": "/p", "HOME": "/h", "E": "1"},
+                             base.HostRunner().launch_env({"E": "1"}))
+
+    def test_no_overlay_is_just_the_process_environment(self):
+        with mock.patch.dict(os.environ, {"PATH": "/p"}, clear=True):
+            self.assertEqual({"PATH": "/p"}, base.HostRunner().launch_env())
+
+    def test_it_is_a_copy_the_caller_may_mutate(self):
+        # The probes and the loop both hand the result straight to a
+        # subprocess call; returning os.environ itself would let one launch's
+        # preparation leak into this process and into every later one.
+        env = base.HostRunner().launch_env()
+        env["PANOPTICON_ONLY_IN_THE_CHILD"] = "1"
+        self.assertNotIn("PANOPTICON_ONLY_IN_THE_CHILD", os.environ)

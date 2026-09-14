@@ -1093,5 +1093,56 @@ class TestAnOperationalCapabilityDisclosesWithoutGating(unittest.TestCase):
         for capability in hosts.OPERATIONAL_CAPABILITIES:
             self.assertIn(capability, hosts.CAPABILITIES)
 
+class TestAProbeReportsRatherThanRaisingOutOfDriverRun(unittest.TestCase):
+    """#1626 I2: `driver run` (not `loop`) does not wrap `_establish_host_posture`.
+
+    Every exception a probe lets escape therefore reaches the operator as a
+    traceback instead of a status. `_cli_advertises` calls a FAMILY-supplied
+    callable (`Runner.runner`) and caught only three exception types; a
+    launcher with a different signature raises TypeError and a launcher that
+    refuses raises RuntimeError, and neither was one of them.
+    """
+
+    def test_a_runner_whose_launcher_raises_leaves_driver_run_returning_a_status(self):
+        import scripts.runners.base as runners_base
+
+        class WrongSignature(runners_base.HostRunner):
+            """A family runner whose launcher does not accept the probe's
+            call shape -- the single likeliest first-draft defect in a
+            first-class-host PR."""
+
+            host = "claude"
+            CLI = "claude"
+            ENVELOPE_FLAGS = ("-p", "--output-format")
+
+            def runner(self, *_args, **_kwargs):
+                raise TypeError("runner() takes 2 positional arguments but 4 were given")
+
+        review_root = tempfile.mkdtemp(prefix="review-root-")
+        self.addCleanup(shutil.rmtree, review_root, ignore_errors=True)
+        bin_dir = tempfile.mkdtemp(prefix="fake-bin-")
+        self.addCleanup(shutil.rmtree, bin_dir, ignore_errors=True)
+        cli = os.path.join(bin_dir, "claude")
+        with open(cli, "w", encoding="utf-8") as fh:
+            fh.write("#!/bin/sh\nexit 0\n")     # found by shutil.which, never run
+        os.chmod(cli, 0o755)
+        args = driver.build_parser().parse_args(["run", review_root, "--no-tools"])
+        args.mode = "headless"                   # so the probe takes the launch path
+
+        # PREPENDED: `driver run` shells out to git for its clean-tree
+        # baseline, and a PATH holding only the stub would fail that for a
+        # reason this test is not about.
+        with mock.patch.dict(os.environ,
+                             {"PATH": bin_dir + os.pathsep + os.environ.get("PATH", "")}), \
+                mock.patch.object(runners_base, "runner_for",
+                                  return_value=WrongSignature()):
+            status = driver.run(args)            # must not raise
+
+        self.assertIsInstance(status, dict)
+        self.assertIn("status", status)
+        evidence = runio.host_evidence(review_root)
+        self.assertEqual(hosts.UNKNOWN, evidence[hosts.USAGE_LEDGER]["state"])
+        self.assertIn("TypeError", evidence[hosts.USAGE_LEDGER]["detail"])
+
 if __name__ == "__main__":
     unittest.main()

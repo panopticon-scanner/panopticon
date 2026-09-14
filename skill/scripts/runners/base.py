@@ -7,6 +7,7 @@ contract lives here rather than in __init__ (layout rule: docstring-only).
 import concurrent.futures
 import dataclasses
 import importlib
+import os
 
 import scripts.read_guard_hook as read_guard_hook
 
@@ -117,6 +118,36 @@ class HostRunner:
         thing that needs it. Claude has nothing to release, so the default is
         nothing.
         """
+
+    def launch_env(self, overlay=None):
+        """The environment a child of THIS runner starts under.
+
+        ONE env preparation per runner (#1626 I2). `run_entry` used to build
+        its child environment inline, which meant `host_probes` -- which
+        launches the SAME binary to read its `--help` and decide whether the
+        usage ledger is real -- had no way to reuse it and passed no `env` at
+        all. The interrogation therefore ran under an environment the runner
+        never uses: it works today only because `--help` is answered at
+        argparse level, and the day a host's nested-session refusal moves
+        earlier in start-up, every self-scan run from inside a session
+        measures the wrong thing.
+
+        `overlay` is the loop's three-key BINDING OVERLAY (spec 4.4), or None
+        where there is no entry to bind -- a probe's `--help` has none. The
+        default is `os.environ` plus the overlay, and a family that needs
+        more overrides this ONE method: claude drops `CLAUDECODE` (a nested
+        `claude -p` refuses to start inside a Claude Code session), kimi
+        points `KIMI_CODE_HOME` at this run's home and drops its own
+        nested-session markers, codex needs nothing beyond the default and so
+        does not override it.
+
+        Always a fresh dict: callers hand the result straight to a subprocess
+        call and some of them mutate it, and returning `os.environ` itself
+        would leak one launch's preparation into this process.
+        """
+        env = dict(os.environ)
+        env.update(overlay or {})
+        return env
 
     def run_entry(self, entry, env):
         raise NotImplementedError("a host runner must implement run_entry")

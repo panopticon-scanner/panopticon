@@ -153,6 +153,26 @@ def test_run_entry_inherits_environment_and_passes_prompt_on_stdin(tmp_path):
     validate.assert_called_once_with(seen["command"], seen["env"], str(tmp_path))
 
 
+def test_run_entry_prepares_its_environment_through_launch_env(tmp_path):
+    # #1626 I2: ONE env preparation per runner. Codex's was already exactly
+    # the seam's default (os.environ plus the overlay), so it inherits
+    # `HostRunner.launch_env` rather than overriding it -- and `run_entry`
+    # calls it instead of rebuilding the dict, so a probe that needs the same
+    # environment has somewhere to get it.
+    assert codex.Runner.launch_env is base.HostRunner.launch_env
+
+    def fake_run(command, **kwargs):
+        return SimpleNamespace(stdout=envelope(START, REPLY, DONE), stderr="", returncode=0)
+
+    runner = codex.Runner(runner=fake_run)
+    runner.prepare(str(tmp_path), str(tmp_path))
+    with mock.patch.object(codex.codex_host, "command", return_value=["codex", "exec", "-"]), \
+            mock.patch.object(codex.codex_host, "validate_command"), \
+            mock.patch.object(runner, "launch_env", wraps=runner.launch_env) as prepared:
+        assert runner.run_entry(entry(), {base.ENV_ENTRY_ID: entry()["id"]}).ok
+    assert prepared.call_count == 1
+
+
 @pytest.mark.parametrize("error", [FileNotFoundError("codex"), ValueError("launch failure"),
                                   subprocess.TimeoutExpired("codex", 1)])
 def test_launch_exceptions_never_escape(tmp_path, error):

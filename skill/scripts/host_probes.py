@@ -1385,19 +1385,48 @@ def _flag_advertised(flag, text):
     return re.search(r"(?<![\w-])%s(?![\w-])" % re.escape(flag), text) is not None
 
 
-def _cli_advertises(launch, found, flags):
+def _cli_advertises(launch, found, flags, env=None, cwd=None):
     """(verdict, why): does `<found> --help`, run through the RUNNER's own
-    launcher, exit 0 and advertise every flag in `flags`? None means it could
-    not be run at all -- a probe that cannot measure says UNKNOWN, never
-    guesses. Going through the runner's launcher rather than subprocess.run
-    is deliberate: it is the one seam the suite refuses real launches at
-    (tests/conftest.py), so a test that reaches this without a fake fails
-    loudly instead of running the real binary."""
+    launcher and under the RUNNER's own environment, exit 0 and advertise
+    every flag in `flags`? None means it could not be run at all -- a probe
+    that cannot measure says UNKNOWN, never guesses. Going through the
+    runner's launcher rather than subprocess.run is deliberate: it is the one
+    seam the suite refuses real launches at (tests/conftest.py), so a test
+    that reaches this without a fake fails loudly instead of running the real
+    binary.
+
+    `env` and `cwd` come from the runner too (#1626 I2). `env` is
+    `HostRunner.launch_env()`, the same preparation `run_entry` uses for a
+    real launch -- claude's pops CLAUDECODE because a nested `claude -p`
+    refuses to start inside a Claude Code session, and interrogating the CLI
+    under an environment the runner never uses measures the wrong thing. It
+    works today only because `--help` is answered at argparse level; the day
+    that refusal moves earlier in start-up, every self-scan run from inside a
+    session would refute usage_ledger."""
+    import scripts.runners.base as runners_base
     try:
         proc = launch([found, "--help"], capture_output=True, text=True,
-                      timeout=CLI_HELP_TIMEOUT)
-    except (OSError, subprocess.SubprocessError, ValueError) as exc:
-        return None, "`%s --help` could not run: %s" % (found, exc)
+                      env=env, cwd=cwd, timeout=CLI_HELP_TIMEOUT)
+    except runners_base.LaunchRefused:
+        # The suite's structural guard, and the ONE exception that must not
+        # become a verdict: `LaunchRefused` has its own type precisely so the
+        # probes' fail-closed mapping cannot swallow it (see its docstring in
+        # runners/base.py). Swallowed, a test that actually reached a live
+        # `claude`/`codex`/`kimi` would read as a green "runtime unavailable".
+        # First, so the widened clause below cannot absorb it -- it is a
+        # RuntimeError subclass. Every other seam re-raises it the same way.
+        raise
+    except Exception as exc:          # noqa: BLE001 -- a probe reports, never raises
+        # #1626 I2. `launch` is FAMILY-supplied (`Runner.runner`): a launcher
+        # with a different signature raises TypeError, one that refuses raises
+        # whatever it likes, and neither was in the old
+        # (OSError, SubprocessError, ValueError) triple. The exception then
+        # escaped run_probes -> _establish_host_posture -> driver.run, which
+        # does not wrap it, so `driver run` printed a traceback instead of a
+        # status. The sibling block in _headless_usage_source has caught bare
+        # Exception for exactly this reason since it was written.
+        return None, ("`%s --help` could not run: %s: %s"
+                      % (found, type(exc).__name__, exc))
     if proc.returncode != 0:
         return False, ("`%s --help` exited %s: not a CLI the headless runner can drive"
                        % (found, proc.returncode))
@@ -1487,6 +1516,7 @@ def _headless_usage_source(host, settings_path):
     try:
         runner = runners_base.runner_for(host, "headless")
         cli, flags, launch = runner.CLI, tuple(runner.ENVELOPE_FLAGS), runner.runner
+        launch_env = runner.launch_env()
     except Exception as exc:          # noqa: BLE001 -- a probe reports, never raises
         return (hosts.UNKNOWN, USAGE_SOURCE,
                 "host %r has no usable headless runner naming a CLI, its envelope flags "
@@ -1498,7 +1528,15 @@ def _headless_usage_source(host, settings_path):
                 "no `%s` on PATH: the headless runner cannot launch, so no "
                 "envelope will ever carry usage and the ledger at %s stays empty"
                 % (cli, ledger))
-    advertised, why = _cli_advertises(launch, found, flags)
+    # Through the runner's OWN env preparation and cwd (#1626 I2): the
+    # interrogation asks the CLI what it advertises under the environment a
+    # real entry would get, not under the caller's. `review_root` is None on
+    # the runner this probe builds -- `runner_for` never ran `prepare`, and a
+    # `--help` needs no tree -- so `cwd` falls back to the process's own; it
+    # is read off the runner rather than hard-coded to None so a runner that
+    # DOES have one is followed.
+    advertised, why = _cli_advertises(launch, found, flags, env=launch_env,
+                                      cwd=getattr(runner, "review_root", None))
     if advertised is None:
         return (hosts.UNKNOWN, USAGE_SOURCE, why)
     if not advertised:

@@ -985,6 +985,75 @@ class TestUsageSourceProbe(unittest.TestCase):
             self.assertIn("ledger", detail)
             self.assertIn("not writable", detail)
 
+    def test_a_launcher_that_raises_anything_at_all_is_unknown_not_a_traceback(self):
+        # #1626 I2. `launch` is a FAMILY-supplied callable (`Runner.runner`).
+        # The clause here caught (OSError, SubprocessError, ValueError) while
+        # the sibling block ten lines below deliberately catches bare
+        # `Exception` with "a probe reports, never raises" -- so a runner with
+        # a different signature (TypeError) or one that refuses with a plain
+        # RuntimeError escaped run_probes -> _establish_host_posture ->
+        # driver.run, which does not wrap it: a `driver run` printed a
+        # traceback instead of a status. The three family PRs are exactly the
+        # population that hits this.
+        import subprocess as _subprocess
+        import scripts.runners.claude as claude_runner
+        cases = [TypeError("runner() takes 2 positional arguments but 4 were given"),
+                 RuntimeError("this family's launcher refuses"),
+                 _subprocess.SubprocessError("still caught, as before")]
+        for exc in cases:
+            with self.subTest(exception=type(exc).__name__):
+                def raises(cmd, _exc=exc, **kwargs):
+                    raise _exc
+                with tempfile.TemporaryDirectory() as project, \
+                        tempfile.TemporaryDirectory() as bin_dir:
+                    self._cli_on_path(bin_dir)
+                    with mock.patch.dict(os.environ, {"PATH": bin_dir}), \
+                            mock.patch.object(claude_runner, "DEFAULT_RUNNER", raises):
+                        state, by, detail = host_probes.probe_usage_source(
+                            "claude", project,
+                            settings_path=self._headless_settings(project))
+                self.assertEqual(hosts.UNKNOWN, state)
+                self.assertEqual("usage-source", by)
+                self.assertIn("could not run", detail)
+                # The detail names the exception TYPE as well as its text: a
+                # bare str(TypeError) reads like prose and tells a family
+                # nothing about where to look.
+                self.assertIn(type(exc).__name__, detail)
+
+    def test_the_interrogation_runs_under_the_runners_own_env_discipline(self):
+        # #1626 I2, the second half. `Runner.run_entry` pops CLAUDECODE
+        # because a nested `claude -p` refuses to start inside a Claude Code
+        # session; the probe launched the same binary with the caller's
+        # environment untouched, so it interrogated the CLI under an
+        # environment the runner never uses. It works today only because
+        # `--help` is handled at argparse level -- the day that refusal moves
+        # earlier in start-up, every self-scan run from inside a session
+        # refutes usage_ledger.
+        import subprocess as _subprocess
+        import scripts.runners.claude as claude_runner
+        seen = {}
+
+        def fake(cmd, **kwargs):
+            seen.update(kwargs)
+            return _subprocess.CompletedProcess(
+                cmd, 0, stdout="  -p, --print\n  --output-format <format>\n", stderr="")
+        with tempfile.TemporaryDirectory() as project, \
+                tempfile.TemporaryDirectory() as bin_dir:
+            self._cli_on_path(bin_dir)
+            with mock.patch.dict(os.environ, {"PATH": bin_dir, "CLAUDECODE": "1"}), \
+                    mock.patch.object(claude_runner, "DEFAULT_RUNNER", fake):
+                state, _by, _detail = host_probes.probe_usage_source(
+                    "claude", project, settings_path=self._headless_settings(project))
+        self.assertEqual(hosts.PROVEN, state)
+        env = seen.get("env")
+        self.assertIsInstance(env, dict)
+        self.assertNotIn("CLAUDECODE", env)
+        # ...and it is a whole ENVIRONMENT, not a filtered overlay: a child
+        # handed only the keys the runner cares about has no PATH and cannot
+        # start, which is the C1 defect run_entry already carries a comment
+        # about. One preparation, so the probe cannot regrow that bug.
+        self.assertEqual(bin_dir, env.get("PATH"))
+
     def test_headless_is_unknown_on_a_claiming_host_with_no_headless_runner(self):
         # A row that claims the ledger but ships no runners/<host>.py has no
         # CLI to look for: nothing here can prove an envelope, and a vacuous
