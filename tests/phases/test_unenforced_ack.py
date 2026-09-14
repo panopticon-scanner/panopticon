@@ -3,12 +3,12 @@
 The gate reads the host's ARTIFACT_WRITE_GUARD claim -- can its hook mediate a
 reviewer's Write? -- not TOOL_POLICY_ENFORCED and not a host name, because the
 write-guard is a Claude Code PreToolUse hook and a host can enforce a shell's
-tool list while mediating no Write at all. On `--host generic|gemini` -- both
-first-class CLI
-values -- a domain-panel/domain-advisor `Write` has NO mediation at all: no
-registered shell, no hook, only prompt prose. A write outside review_root is
-invisible to every integrity check, since validate's clean-tree diff is scoped
-to review_root.
+tool list while mediating no Write at all. On `--host generic` -- the one
+claim-nothing host the driver still accepts, gemini having left the selectable
+set (#1621, 2026-09-13) -- a domain-panel/domain-advisor `Write` has NO
+mediation at all: no registered shell, no hook, only prompt prose. A write
+outside review_root is invisible to every integrity check, since validate's
+clean-tree diff is scoped to review_root.
 
 dispatch.py used to refuse this by default and record the acceptance; the flag
 and its writer were retired in run-10 while write_guard_hook.py went on citing
@@ -84,7 +84,13 @@ class TestGate(unittest.TestCase):
         # here, so this fails if requests.py:201 is ever swapped to posture().
         self.assertIn("--host claude", message)
 
-    def test_gemini_without_the_flag_refuses_too(self):
+    def test_a_second_claim_nothing_host_refuses_on_identical_terms(self):
+        # The gate is keyed on the CLAIM, never on the name "generic". `gemini`
+        # is the registry's other claim-nothing row -- registered but no longer
+        # driver-selectable (#1621, 2026-09-13) -- and it is kept here for
+        # exactly that reason: rewriting this case to `generic` would make it a
+        # strict subset of the test above and delete the only coverage that the
+        # refusal is not spelled against one host name.
         root = self._root()
         with self.assertRaises(runio.DriverError):
             requests.require_unenforced_ack(root, _manifest("gemini"), ENTRIES)
@@ -300,14 +306,14 @@ class TestTheAckIsReadableBySynthesize(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             os.makedirs(os.path.join(root, ".panopticon"), exist_ok=True)
             path = requests.require_unenforced_ack(
-                root, _manifest("gemini", allow=True), ENTRIES)
+                root, _manifest("generic", allow=True), ENTRIES)
             self.assertTrue(integrity.read_unenforced_ack(path))
 
     def test_the_hash_binding_matches_this_runs_plan(self):
         with tempfile.TemporaryDirectory() as root:
             os.makedirs(os.path.join(root, ".panopticon"), exist_ok=True)
             path = requests.require_unenforced_ack(
-                root, _manifest("gemini", allow=True), ENTRIES)
+                root, _manifest("generic", allow=True), ENTRIES)
             ack = integrity.read_unenforced_ack(path)
             self.assertIn(ack["plan_sha256"], {integrity._plan_hash(ENTRIES)})
 
@@ -317,7 +323,7 @@ class TestTheAckIsReadableBySynthesize(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             os.makedirs(os.path.join(root, ".panopticon"), exist_ok=True)
             path = requests.require_unenforced_ack(
-                root, _manifest("gemini", allow=True), ENTRIES)
+                root, _manifest("generic", allow=True), ENTRIES)
             ack = integrity.read_unenforced_ack(path)
             other = [dict(ENTRIES[0], group="Billing")]
             self.assertNotEqual(ack["plan_sha256"], integrity._plan_hash(other))
@@ -415,7 +421,7 @@ class TestTheRefusalNamesTheGap(unittest.TestCase):
         from scripts.phases import requests, runio
         from scripts import hosts
         with tempfile.TemporaryDirectory() as review_root:
-            manifest = {"host": "gemini", "flags": {}}
+            manifest = {"host": "generic", "flags": {}}
             with self.assertRaises(runio.DriverError) as caught:
                 requests.require_unenforced_ack(
                     review_root, manifest, [{"id": "cell-1"}])

@@ -1599,7 +1599,7 @@ class TestDriverLoopCLI(unittest.TestCase):
         # I8: no literal default -- the parser leaves `--mode` unset and
         # `orchestrate.loop` resolves it from the host (headless where a
         # runner exists, session where none does). A "headless" default here
-        # is what made `driver loop --host gemini` an error instead of the
+        # is what made `driver loop --host generic` an error instead of the
         # documented degrade to session mode.
         self.assertIsNone(driver.build_parser().parse_args(["loop", "x"]).mode)
 

@@ -1196,11 +1196,16 @@ class TestReadinessNeverReadsAnUnreadableEnvelopeAsProof(unittest.TestCase):
 
 
 class TestShellLessHostsGetTheWholeDisclosure(unittest.TestCase):
-    """`gemini` and `generic` are the two driver-selectable hosts that claim
-    NOTHING, so five-of-five-unproven is their entire story -- and the
-    `enforced-shells` early return handed them one line that named the host
-    and no capability, no probe and no remedy. 5.1 names no exemption for
+    """`gemini` and `generic` are the two registry rows that claim NOTHING and
+    register no shells, so five-of-five-unproven is their entire story -- and
+    the `enforced-shells` early return handed them one line that named the
+    host and no capability, no probe and no remedy. 5.1 names no exemption for
     shell-less hosts.
+
+    Both rows are still exercised after gemini left the selectable set (#1621,
+    2026-09-13): `_check_host_shells` reads the REGISTRY, which still knows
+    gemini, and the disclosure it owes a shell-less host is a fact about the
+    row rather than about whether `--host` will accept the name.
     """
 
     def _rows(self, host):

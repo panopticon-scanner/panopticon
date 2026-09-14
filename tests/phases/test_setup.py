@@ -574,7 +574,12 @@ class TestReadinessLimitationsAreLoud(unittest.TestCase):
 
     # gemini's REAL answer, computed by the registry-backed check itself rather
     # than restated here, so a reworded detail cannot make this test pass on
-    # prose that no longer matches what setup emits.
+    # prose that no longer matches what setup emits. Still gemini after the
+    # retirement (#1621, 2026-09-13): `_check_host_shells` reads the REGISTRY,
+    # which still knows the row, and a shell-less host's readiness answer is a
+    # fact about that row. The setup RUN that carries these answers below is
+    # driven under `generic`, because `driver setup --host gemini` is now an
+    # argparse error -- the rows are the subject, the driven host is scaffold.
     GEMINI_CHECKS = setup_flow._check_host_shells("gemini", None)
 
     def test_the_gemini_limitation_reaches_the_operator(self):
@@ -583,7 +588,7 @@ class TestReadinessLimitationsAreLoud(unittest.TestCase):
                           "gemini registers no enforcement shells; reviewers "
                           "run with a prompt-advisory tool policy"),
                          rows["enforced-shells"])
-        msg, marker = self._fallback(self.GEMINI_CHECKS, host="gemini")
+        msg, marker = self._fallback(self.GEMINI_CHECKS, host="generic")
         self.assertIn("limitations", msg)
         self.assertIn("enforced-shells", msg)
         self.assertIn("gemini registers no enforcement shells", msg)
@@ -603,7 +608,7 @@ class TestReadinessLimitationsAreLoud(unittest.TestCase):
                 row = rows["host-capability:" + capability]
                 self.assertIn(host_disclosure.remedy(capability, "gemini"),
                               row[2])
-        msg, marker = self._fallback(self.GEMINI_CHECKS, host="gemini")
+        msg, marker = self._fallback(self.GEMINI_CHECKS, host="generic")
         self.assertIn(["host-capabilities", rows["host-capabilities"][2]],
                       marker["limitations"])
         self.assertIn("host-capabilities", msg)
@@ -612,7 +617,7 @@ class TestReadinessLimitationsAreLoud(unittest.TestCase):
         # It must not gate READY: `gaps` stays empty and the readiness verdict
         # stays OK. Distinct clause, distinct key -- a consumer can tell "not
         # applicable" from "fine".
-        msg, marker = self._fallback(self.GEMINI_CHECKS, host="gemini")
+        msg, marker = self._fallback(self.GEMINI_CHECKS, host="generic")
         self.assertEqual([], marker["gaps"])
         self.assertNotIn("readiness gaps", msg)
 
@@ -631,7 +636,7 @@ class TestReadinessLimitationsAreLoud(unittest.TestCase):
                   ("enforced-shells", None, "gemini registers no enforcement "
                                             "shells; reviewers run with a "
                                             "prompt-advisory tool policy")]
-        msg, marker = self._fallback(checks, host="gemini")
+        msg, marker = self._fallback(checks, host="generic")
         self.assertEqual(["docker"], marker["gaps"])
         self.assertIn("readiness gaps: docker", msg)
         self.assertIn("limitations", msg)
