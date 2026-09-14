@@ -29,6 +29,7 @@ the always-unenforced setup scan's own scope would admit it, an archived run
 folder would embed it, and the children's verbatim `wire.jsonl` would land
 beside the code being reviewed (C1). It is removed on `complete`, and stripped
 of its credential files on every other way out (N6, R2-2).
+PR evidence must quote capabilities, never this directory.
 
 MODEL BINDING. Entry models are the primary/secondary TIERS
 (phases/requests.bound_model via model_resolver). Kimi agent files cannot bind
