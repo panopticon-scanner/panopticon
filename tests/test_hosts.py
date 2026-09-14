@@ -6,6 +6,8 @@ matching today's behavior exactly -- not about any host doing anything.
 import ast
 import unittest
 
+import scripts.driver as driver
+import scripts.orchestrate as orchestrate
 from scripts import host_disclosure, host_probes, hosts
 
 
@@ -404,6 +406,90 @@ class TestRefutedBeatsProven(unittest.TestCase):
     def test_an_unrecognised_state_is_ignored_not_trusted(self):
         self.assertEqual(hosts.UNKNOWN, hosts.resolve_state(["banana"]))
         self.assertEqual(hosts.PROVEN, hosts.resolve_state(["banana", hosts.PROVEN]))
+
+
+class TestTheUnselectableRefusalIsOneSentence(unittest.TestCase):
+    """#1624: two entrypoints refuse the same manifest, so the registry owns
+    the sentence they refuse it with.
+
+    `driver loop` has refused a manifest naming a registered-but-unselectable
+    host since #1621; #1624 gave `driver run` the same refusal on the same
+    resume path. The obvious way to do that is to copy the paragraph, and a
+    copy is a thing that drifts -- one of them gains a clause, the other does
+    not, and an operator who moves between the two entrypoints is told two
+    different stories about one registry fact. The VERB is the only thing the
+    call site gets to supply; everything after the colon is a property of the
+    `driver_selectable` field, which lives here.
+    """
+
+    # The two entrypoints that read a manifest's host and may have to refuse
+    # it, each with a call name it is already known to make -- guards the
+    # guard, since an AST walk returning an empty set would pass
+    # `test_both_entrypoints_call_it` over nothing.
+    _CALL_SITES = ((orchestrate, "_status"), (driver, "_establish_host_posture"))
+
+    def _calls(self, module):
+        with open(module.__file__, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        names = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            names.add(fn.attr if isinstance(fn, ast.Attribute)
+                      else getattr(fn, "id", ""))
+        return names
+
+    def _string_constants(self, module):
+        # AST, not text: a COMMENT explaining why the sentence moved here is
+        # welcome at either call site, and this repo has flagged its own prose
+        # with a text scan three times now (see TestTheRegistryStaysPureData).
+        with open(module.__file__, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        return [node.value for node in ast.walk(tree)
+                if isinstance(node, ast.Constant) and isinstance(node.value, str)]
+
+    def test_the_two_verbs_produce_the_same_sentence(self):
+        run = hosts.unselectable_host_message("gemini", "run")
+        loop = hosts.unselectable_host_message("gemini", "loop")
+        self.assertEqual(run, loop.replace("driver loop:", "driver run:"))
+        # ...and the verb is really in there, so the assertion above cannot
+        # be satisfied by a function that ignores its second argument.
+        self.assertTrue(loop.startswith("driver loop:"), loop)
+        self.assertTrue(run.startswith("driver run:"), run)
+        self.assertNotEqual(run, loop)
+
+    def test_it_names_the_host_and_the_remedy(self):
+        message = hosts.unselectable_host_message("gemini", "run")
+        self.assertIn("gemini", message)
+        self.assertIn("registered but no longer driver-selectable", message)
+        self.assertIn("--host generic --reset", message)
+
+    def test_the_host_comes_from_the_argument(self):
+        # hosts.py is data, and this is the one function in it that formats
+        # prose -- which is exactly where a host-name literal would hide.
+        other = hosts.unselectable_host_message("ghost", "run")
+        self.assertIn("ghost", other)
+        self.assertNotIn("gemini", other)
+
+    def test_both_entrypoints_call_it(self):
+        for module, sentinel in self._CALL_SITES:
+            with self.subTest(module=module.__name__):
+                calls = self._calls(module)
+                self.assertIn(sentinel, calls, "the walk did not see the module")
+                self.assertIn("unselectable_host_message", calls)
+
+    def test_neither_entrypoint_still_spells_the_sentence_itself(self):
+        # The anti-drift half. `driver.py` legitimately carries the PARSER's
+        # different sentence ("registered but not driver-selectable"), so pin
+        # the clause only this one has.
+        for module, _ in self._CALL_SITES:
+            with self.subTest(module=module.__name__):
+                offenders = [s for s in self._string_constants(module)
+                             if "no longer driver-selectable" in s]
+                self.assertEqual([], offenders,
+                                 "%s spells the refusal itself instead of "
+                                 "asking the registry for it" % module.__name__)
 
 
 if __name__ == "__main__":  # pragma: no cover

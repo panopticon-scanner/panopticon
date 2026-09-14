@@ -338,6 +338,25 @@ def _establish_host_posture(review_root, manifest, args):
     Returns an error message when the run must stop, else None.
     """
     host = manifest.get("host", "claude")
+    # #1624: refuse a run whose manifest names a host the registry still knows
+    # but the driver may no longer pick -- BEFORE the deprecation notice and
+    # before any probe, because nothing about this run may proceed. On a
+    # resume the manifest is authoritative (`--host` is omitted; a
+    # contradicting one is refused as flag drift), so the parser's
+    # `choices`/`type=` -- this file's only other read of the selectable set
+    # -- never sees the name, and a run started under a row that has since
+    # lost `driver_selectable` (gemini, #1621) probed to all-unknown and went
+    # on emitting dispatch entries for a host `--host` refuses to name.
+    # `driver loop` has refused it since #1621; this is the same refusal, in
+    # the same words, on the primitive the loop is built out of.
+    #
+    # Read off the registry, never a host-name literal, so a family PR that
+    # flips its own row needs no edit here (`tests/test_host_posture_wiring.py`
+    # bans the literal form under `phases/`; this file follows the same rule).
+    # A host the registry has NEVER heard of is a different failure with a
+    # different remedy and is deliberately not handled here.
+    if host in hosts.known_hosts() and host not in hosts.driver_hosts():
+        return hosts.unselectable_host_message(host, "run")
     if hosts.is_deprecated(host):
         # D4: printed from the RESOLVED host, not from argv, so a resumed run
         # (--host absent, the manifest authoritative) prints it too. Every

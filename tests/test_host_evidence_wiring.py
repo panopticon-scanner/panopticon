@@ -485,8 +485,15 @@ class TestThePostureIsEstablishedEveryInvocation(unittest.TestCase):
         # this fixture genuinely reaches zero gaps under the real posture()
         # rather than merely asserting a substring that any NOT-PROVEN
         # headline also satisfies.
+        # `driver_selectable=True` (the field defaults False): #1624 made
+        # `_establish_host_posture` refuse a manifest naming a REGISTERED but
+        # unselectable host before it probes anything, and patching a row into
+        # hosts.HOSTS registers it. A synthetic host that proves all five is a
+        # model of a selectable one, so its row has to say so; the fixture was
+        # merely silent about a field that had no consequence here before.
         all_claims = hosts.HostSpec(name="proves-everything",
-                                    claims=frozenset(hosts.CAPABILITIES))
+                                    claims=frozenset(hosts.CAPABILITIES),
+                                    driver_selectable=True)
         assert host_disclosure.hosts is hosts, (
             "host_disclosure's hosts import has drifted from the canonical "
             "scripts.hosts module -- patching hosts.HOSTS below would be a "
