@@ -68,7 +68,8 @@ FORBIDDEN_IMPORTS = {
 }
 EXPECTED_PACKAGES = ("synth", "phases", "runners", "probes")  # S1 lands synth; D1 adds
 # phases; P6 adds runners; #1627 adds probes
-ENTRY_SCRIPTS = ("synthesize.py", "driver.py", "orchestrate.py")
+ENTRY_SCRIPTS = ("synthesize.py", "driver.py", "orchestrate.py",
+                 "host_probes.py")   # #1627: the probe registry re-exports nothing
 LINE_CEILING = 700
 _SKIP_DIRS = {"fixtures", "goldens", "__pycache__"}
 
