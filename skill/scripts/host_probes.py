@@ -685,13 +685,25 @@ def probe_kimi_shell_surface(host, registration_dir=None, version=None, runner=N
     # CLI's vocabulary must be either granted by a template or disabled by the
     # per-run config. Anything in neither set is live for every UNENFORCED
     # entry -- and the setup scan is always unenforced.
+    #
+    # N3: the disabled half is read out of a config.toml the RUNNER GENERATES,
+    # not recomputed from `disabled_tools()`. Recomputing subtracted the
+    # templates' union from a vocabulary it had just subtracted the same union
+    # from: empty by construction, an identity wearing a measurement's clothes.
     allowed = kimi_runner.allowed_tool_union()
-    disabled = set(kimi_runner.disabled_tools(vocabulary))
-    unaccounted = sorted(set(vocabulary) - allowed - disabled)
-    if unaccounted:
-        faults.append("neither granted by a template nor in the per-run "
-                      "tools.disabled, so live for every unenforced entry: %s"
-                      % ", ".join(unaccounted))
+    disabled, where = _kimi_generated_disabled()
+    if disabled is None:
+        surface = "the per-run config's disabled set could not be read: %s" % where
+    else:
+        unaccounted = sorted(set(vocabulary) - allowed - disabled)
+        if unaccounted:
+            faults.append("neither granted by a template nor disabled by %s, so "
+                          "live for every unenforced entry: %s"
+                          % (where, ", ".join(unaccounted)))
+        surface = ("all %d of kimi %s's tools are accounted for (%d granted by a "
+                   "template, %d disabled by %s)"
+                   % (len(vocabulary), version, len(allowed & set(vocabulary)),
+                      len(disabled), where))
     # I5: the EFFECTIVE surface, when a child has already run in this run's
     # home. The table above says what the CLI ships; the snapshot says what a
     # launched child was actually given.
@@ -716,10 +728,8 @@ def probe_kimi_shell_surface(host, registration_dir=None, version=None, runner=N
     if faults:
         return (hosts.REFUTED, KIMI_SHELL_SURFACE, "; ".join(faults))
     return (hosts.PROVEN, KIMI_SHELL_SURFACE,
-            "%s; every tool name exists in kimi %s's builtin vocabulary, and all "
-            "%d of its tools are accounted for (%d granted, %d disabled per run); %s"
-            % (base_detail, version, len(vocabulary), len(allowed & set(vocabulary)),
-               len(disabled), measured))
+            "%s; every tool name exists in kimi %s's builtin vocabulary; %s; %s"
+            % (base_detail, version, surface, measured))
 
 
 def _guard_round_trip(mode, data_path, rows, guard_path=None, runner=None):
@@ -775,6 +785,24 @@ def _kimi_armed_home(sandbox):
                                        scope_path, allowlist_path,
                                        real_home=fixture_home)
     return home, scope_path, allowlist_path
+
+
+def _kimi_generated_disabled():
+    """(tools.disabled, where) read out of a config.toml the runner generates,
+    or (None, why). The file is built and read inside a sandbox and nothing
+    survives the call."""
+    try:
+        with tempfile.TemporaryDirectory() as sandbox:
+            home, _scope, _allowlist = _kimi_armed_home(sandbox)
+            with open(os.path.join(home, "config.toml"), "rb") as fh:
+                config = tomllib.load(fh)
+    except OSError as exc:
+        return None, "the per-run config could not be generated (%s)" % exc
+    except tomllib.TOMLDecodeError as exc:
+        return None, "the generated config.toml is not valid TOML (%s)" % exc
+    tools = config.get("tools") if isinstance(config.get("tools"), dict) else {}
+    names = {t for t in (tools.get("disabled") or []) if isinstance(t, str)}
+    return names, "the config.toml the runner generates"
 
 
 def _kimi_hooks_are_armed(sandbox):

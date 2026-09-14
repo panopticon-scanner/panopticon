@@ -1868,6 +1868,28 @@ class TestKimiShellSurfaceIsAnAllowList(unittest.TestCase):
         self.assertEqual(hosts.PROVEN, state)
         self.assertIn("accounted for", detail)
 
+    def test_a_generated_config_that_disables_nothing_is_refuted(self):
+        # N3: the round-1 check subtracted `disabled_tools(vocabulary)` from a
+        # vocabulary it had just subtracted the same union from -- empty by
+        # construction, so it could only fire when the derivation itself was
+        # monkeypatched. The question is whether the FILE the runner writes
+        # covers the vocabulary, so the answer has to come out of that file.
+        import scripts.runners.kimi as kimi_runner
+        real = kimi_runner.build_merged_config
+
+        def disables_nothing(source, scope_path, allowlist_path, *args, **kwargs):
+            merged = real(source, scope_path, allowlist_path, *args, **kwargs)
+            merged["tools"] = {"disabled": []}
+            return merged
+        with tempfile.TemporaryDirectory() as d:
+            _kimi_fully_registered(d)
+            with mock.patch.object(kimi_runner, "build_merged_config",
+                                   side_effect=disables_nothing):
+                state, _by, detail = host_probes.probe_kimi_shell_surface(
+                    "kimi", registration_dir=d, version="0.42")
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("FetchURL", detail)
+
     def test_a_tool_that_is_neither_granted_nor_disabled_is_refuted(self):
         import scripts.runners.kimi as kimi_runner
         with tempfile.TemporaryDirectory() as d:
