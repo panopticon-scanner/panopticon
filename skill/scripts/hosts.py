@@ -99,12 +99,14 @@ HOSTS = {
         driver_selectable=False),
     "codex": HostSpec(
         name="codex",
-        claims=frozenset({TOOL_POLICY_ENFORCED}),
+        claims=frozenset({TOOL_POLICY_ENFORCED, READ_SCOPE_CONFINED}),
         registration_dir=CODEX_AGENTS_DIR,
         shell_format="toml",
         project_scope_dirs=(os.path.join(".codex", "agents"),),
         detect_env=("CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED"),
-        driver_selectable=False),
+        driver_selectable=True,
+        probes={TOOL_POLICY_ENFORCED: "codex-effective-tools",
+                READ_SCOPE_CONFINED: "codex-read-scope"}),
     # Selectable today with NO enforcement support of any kind -- the state
     # this epic exists to end. It claims nothing, so every consumer that reads
     # the registry treats it as unenforced, which is what already happens.

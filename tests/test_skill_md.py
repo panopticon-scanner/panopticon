@@ -528,6 +528,44 @@ class TestCodexHostDocs(unittest.TestCase):
         self.assertIn("generic", skill)
 
 
+    def test_the_read_confinement_limit_is_recorded(self):
+        # M-3: O_NOFOLLOW stops symlinks, not HARD links. A target that ships
+        # a hard link to a file outside a directory grant is readable through
+        # it. Inherent to path-based confinement (Claude's read guard has the
+        # same property), so it is recorded rather than fixed -- but recorded.
+        self.assertIn("hard link", _read_doc())
+
+    def test_the_headless_runner_sentence_has_its_antecedent(self):
+        # M-8: "...session when it does not (Claude and Codex have headless
+        # runners) -- `--mode headless` on such a host is an error". The
+        # parenthetical replaced the phrase "such a host" referred to.
+        self.assertIn("on a host without one", _read_skill_md())
+
+    def test_the_codex_model_pin_documents_its_override(self):
+        # I-8: the advisor slug is pinned to the installed build's bundled
+        # catalog, and an absent slug fails every entry of that role closed.
+        # Scoped to the sentence that states the fail-closed behaviour, not
+        # the whole guide: PANOPTICON_MODEL_* is named elsewhere for a
+        # different reason, so a doc-wide search would pass without the line.
+        sentence = next(line for line in _read_doc().splitlines()
+                        if "fails closed rather than silently selecting" in line)
+        self.assertIn("PANOPTICON_MODEL_", sentence)
+
+    def test_codex_is_documented_as_enforced_only(self):
+        # I-1: a Codex reviewer entry without a registered shell cannot run at
+        # all -- there is no unenforced fallback the way there is on Claude --
+        # and neither surface said so.
+        for text in (_read_doc(), _read_skill_md()):
+            self.assertIn("enforced-only", text)
+        # ...and that the up-front refusal stands down for `--setup`, whose
+        # single setup-scan entry needs no registered shell -- a fresh machine
+        # runs setup BEFORE it registers anything.
+        exemption = next(line for line in _read_doc().splitlines()
+                         if "enforced-only" in line)
+        self.assertIn("`--setup` is exempt", exemption)
+        self.assertIn("except under `--setup`", _read_skill_md())
+
+
 class TestGuardFailClosedDocs(unittest.TestCase):
     def test_skill_documents_fail_closed_guard(self):
         self.assertIn("fail-closed while registered", _read_doc())

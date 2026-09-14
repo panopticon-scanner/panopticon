@@ -380,6 +380,51 @@ class TestEmitHostAgents(unittest.TestCase):
             self.assertIn('sandbox_mode = "read-only"', text)
             self.assertIn("never execute target code", text)
 
+    def test_the_codex_charter_names_the_panopticon_stamp(self):
+        # M-10: one of eleven launches in the PR's own paid run was refused
+        # with "reply carries no _panopticon stamp". The charter's closing
+        # "return the exact requested JSON ... even when a role template says
+        # Write" competes for the model's attention with the return-persist
+        # preamble's stamp instruction, and never named the stamp itself.
+        self.assertIn("_panopticon", dispatch._CODEX_CHARTER)
+        with tempfile.TemporaryDirectory() as d:
+            dispatch.emit_host_agents("codex", d)
+            for name in ("panopticon-domain-panel", "panopticon-scout"):
+                with open(os.path.join(d, name + ".toml"), encoding="utf-8") as fh:
+                    self.assertIn("_panopticon", fh.read(), name)
+
+    def test_a_shell_format_with_no_emit_branch_refuses_by_name(self):
+        # M-1: the pre-existing `else` became `elif host == "codex"`, so a host
+        # given a shell_format with no branch here died on an UnboundLocalError
+        # for `lines`/`fm` -- and the comment above the chain still described
+        # the vanished `else`. The Gemini family PR reads that comment.
+        row = dataclasses.replace(hosts.spec("codex"), name="newfamily")
+        with mock.patch.dict(hosts.HOSTS, {"newfamily": row}), \
+                tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(ValueError) as caught:
+                dispatch.emit_host_agents("newfamily", d)
+        self.assertIn("newfamily", str(caught.exception))
+        self.assertIn("emit branch", str(caught.exception))
+
+    def test_codex_registration_advertises_no_broker_path(self):
+        # M-6: emission used to bake the EMITTING interpreter's sys.executable
+        # and the emitting checkout's codex_read_tools.py into every shell,
+        # while command() discards both and rebuilds the broker from the
+        # RUNNING safety_config(). The registered file advertised a broker that
+        # never launches and went stale the moment that checkout was retired.
+        import sys
+        import tomllib
+        with tempfile.TemporaryDirectory() as d:
+            dispatch.emit_host_agents("codex", d)
+            path = os.path.join(d, "panopticon-scout.toml")
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+            server = tomllib.loads(text)["mcp_servers"]["panopticon_scope"]
+            self.assertEqual(["enabled_tools"], sorted(server))
+            self.assertTrue(server["enabled_tools"])
+            self.assertNotIn(sys.executable, text)
+            self.assertNotIn("codex_read_tools.py", text)
+
     def test_kimi_agent_file_includes_model_preference_and_when_to_use(self):
         with tempfile.TemporaryDirectory() as d:
             paths = dispatch.emit_host_agents("kimi", d)

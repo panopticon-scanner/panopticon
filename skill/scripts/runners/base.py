@@ -56,6 +56,19 @@ class HostRunner:
     host = ""
     mode = "headless"
     default_concurrency = 1
+    # Handed over by the loop BEFORE prepare(), so a runner can decide what to
+    # arm from the namespace it is preparing for -- `"setup"` under `--setup`,
+    # None otherwise -- and can name the request its entries came from.
+    # runners/session.py documents both in full; they live here because every
+    # runner is given them and the Codex runner reads `namespace` in prepare().
+    dispatch_request = None
+    namespace = None
+    # M-9: whether `--max-turns` reaches anything on this host. The loop sets
+    # `runner.max_turns` unconditionally, so a runner with no native turn
+    # limit accepted the flag and ignored it in silence. True by default --
+    # the seam's reference implementation honours it -- and a family that
+    # cannot says so here, once, instead of documenting it in prose.
+    HONOURS_MAX_TURNS = True
 
     def __init__(self, host=None):
         if host:

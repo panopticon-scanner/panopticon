@@ -6,7 +6,7 @@ matching today's behavior exactly -- not about any host doing anything.
 import ast
 import unittest
 
-from scripts import host_disclosure, hosts
+from scripts import host_disclosure, host_probes, hosts
 
 
 class TestTotality(unittest.TestCase):
@@ -64,20 +64,23 @@ class TestQueries(unittest.TestCase):
         self.assertFalse(hosts.is_deprecated("no-such-host"))
 
 
-class TestTodaysBehaviourIsPreserved(unittest.TestCase):
-    """The whole point of F1/F2: the table must encode what the code does
-    today, so routing consumers through it changes nothing."""
+class TestDriverHostCapabilities(unittest.TestCase):
+    """Pin the supported hosts and the capabilities their family PRs earned.
+
+    The owner authorized retiring the F1/F2-only expectations for the Codex
+    first-class-host PR; other families' claims and selection stay unchanged.
+    """
 
     def test_the_driver_accepts_exactly_the_hosts_it_accepts_today(self):
-        self.assertEqual(("claude", "gemini", "generic"),
+        self.assertEqual(("claude", "codex", "gemini", "generic"),
                          tuple(sorted(hosts.driver_hosts())))
 
-    def test_only_claude_declares_tool_policy_enforcement_among_driver_hosts(self):
-        # `enforced = host == "claude"` at 5 sites. Any other driver-selectable
-        # host declaring it would flip those sites when they read the registry.
+    def test_claude_and_codex_declare_tool_policy_enforcement_among_driver_hosts(self):
+        # F3 routes enforcement through proven posture, not a bare claim;
+        # Codex now supplies its own effective-tool-surface probe.
         enforcing = [h for h in hosts.driver_hosts()
                      if hosts.declares(h, hosts.TOOL_POLICY_ENFORCED)]
-        self.assertEqual(["claude"], enforcing)
+        self.assertEqual(["claude", "codex"], enforcing)
 
     def test_only_claude_declares_a_usage_ledger_among_driver_hosts(self):
         # phases/synthesize.py:35 -- `if manifest.get("host") != "claude"`.
@@ -85,20 +88,33 @@ class TestTodaysBehaviourIsPreserved(unittest.TestCase):
                     if hosts.declares(h, hosts.USAGE_LEDGER)]
         self.assertEqual(["claude"], ledgered)
 
-    def test_kimi_and_codex_are_registrable_but_not_driver_selectable(self):
-        # dispatch.py can emit their shells; driver.py's --host cannot pick
-        # them. Preserving that split is what keeps F2 behavior-free.
-        for name in ("kimi", "codex"):
-            with self.subTest(host=name):
-                self.assertTrue(hosts.spec(name).registration_dir)
-                self.assertNotIn(name, hosts.driver_hosts())
+    def test_kimi_remains_registrable_but_not_driver_selectable(self):
+        # Codex earned selection in its family PR; Kimi's split is unchanged.
+        self.assertTrue(hosts.spec("kimi").registration_dir)
+        self.assertNotIn("kimi", hosts.driver_hosts())
 
-    def test_only_claude_claims_read_scope_confinement(self):
+    def test_claude_and_codex_claim_read_scope_confinement(self):
         # Spec §7.2 / plan 5: claude ships the read guard; every other host's
         # family PR must bring its own primitive before claiming this.
         claiming = [h for h in hosts.known_hosts()
                     if hosts.declares(h, hosts.READ_SCOPE_CONFINED)]
-        self.assertEqual(["claude"], claiming)
+        self.assertEqual(["claude", "codex"], claiming)
+
+    def test_codex_is_selectable_with_exactly_its_probed_security_claims(self):
+        row = hosts.spec("codex")
+        expected = {
+            hosts.TOOL_POLICY_ENFORCED: "codex-effective-tools",
+            hosts.READ_SCOPE_CONFINED: "codex-read-scope",
+        }
+        self.assertTrue(row.registration_dir)
+        self.assertTrue(row.driver_selectable)
+        self.assertIn("codex", hosts.driver_hosts())
+        self.assertEqual(frozenset(expected), row.claims)
+        self.assertEqual(expected, row.probes)
+        for capability, probe_id in expected.items():
+            with self.subTest(capability=capability):
+                self.assertIn(probe_id, host_probes.PROBE_IDS)
+                self.assertEqual(capability, host_probes.PROBE_CAPABILITY[probe_id])
 
 
 class TestPostureFailsClosed(unittest.TestCase):

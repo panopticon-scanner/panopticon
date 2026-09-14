@@ -81,7 +81,10 @@ import subprocess  # noqa: E402
 
 import pytest  # noqa: E402
 
+import scripts.codex_host as _codex_host  # noqa: E402
 import scripts.run_tools as _run_tools  # noqa: E402
+import scripts.runners.claude as _claude_runner  # noqa: E402
+import scripts.runners.codex as _codex_runner  # noqa: E402
 import scripts.setup_flow as _setup_flow  # noqa: E402
 from scripts import hosts as _hosts  # noqa: E402
 from scripts.phases import runio as _runio  # noqa: E402
@@ -141,8 +144,14 @@ class _RefusedProbe:
 
 
 def _refuse_setup_docker(runner):
-    """Swap ONLY the un-injected default; an explicit runner is the caller's."""
-    if runner is subprocess.run:
+    """Swap ONLY the un-injected default; an explicit runner is the caller's.
+
+    `setup_readiness` now resolves its un-injected default from
+    `setup_flow.DEFAULT_RUNNER`, which the launch guard below has already
+    replaced with the refusal -- so "un-injected" is either of those two, and
+    reading only the first would hand the docker probe a launcher that raises.
+    """
+    if runner is subprocess.run or runner is _refuse_host_launch:
         runner = lambda *a, **k: _RefusedProbe()   # noqa: E731
     return REAL_CHECK_DOCKER(runner)
 
@@ -155,24 +164,60 @@ def _no_live_scanner_containers(request, monkeypatch):
     monkeypatch.setattr(_setup_flow, "_check_docker", _refuse_setup_docker)
 
 
-# --- Claude family PR (#1344, family guardrails section 3, #1616): the suite
-# must never launch the real `claude` binary. Until now that guarantee was
-# per-test discipline (every runner test passes `runner=<fake>`, every loop
-# test patches `runners.base.runner_for`); a forgotten fake would have spent
-# real money on a real launch and stayed green. Now the Runner's default
-# launcher is a module attribute read at construction, and this swaps it for a
-# refusal on every test -- there is no opt-in, because there is no test that
-# should ever want the real thing.
-import scripts.runners.claude as _claude_runner  # noqa: E402
+# --- #1344: no live host-CLI launches from the unit suite --------------------
+# The guardrails say the suite must never start a host binary, and until now
+# that was per-test discipline only: the launch seams defaulted to
+# subprocess.run bound as a DEFAULT ARGUMENT, unreachable by a patch, and
+# host_probes._codex_measure mapped any exception to UNKNOWN -- so a test that
+# did reach a live CLI and failed would still have passed. Discipline then
+# failed twice more: `setup_flow.readiness` probes `codex --version` through
+# the same unreachable default (N-M3), and `runners/claude.py` binds its
+# launcher the same way.
+#
+# So the guard is a LIST OF SEAMS, not a list of hosts: every module that
+# starts a host CLI exposes a module-level DEFAULT_RUNNER, and each is swapped
+# here for a refusal whose own type the probes re-raise rather than swallowing.
+# A test that means to exercise a launch injects its own runner= and never sees
+# this. tests/test_host_launch_guard.py walks the AST for modules that launch a
+# registered host's CLI and fails if one of them is missing from this list, so
+# a fifth seam cannot be added silently.
+#
+# The Claude family PR (#1618) arrived at the same construction for its own
+# seam and shipped a claude-only autouse fixture beside it; that fixture is
+# FOLDED IN HERE rather than kept, because `_claude_runner` is already in the
+# tuple below and two autouse fixtures patching one attribute means whichever
+# runs last silently decides what the guarantee is. Its refusal text is the
+# one kept -- it names the rule and both ways out, which "test tried to launch
+# a real host CLI" did not -- with the binary read off the argv the caller was
+# about to spawn rather than hard-coded to `claude`, since one refusal now
+# answers for four seams and three different binaries. Both families read the
+# text back: tests/runners/test_claude.py off the failed RunResult,
+# tests/test_host_probes.py off the raised LaunchRefused.
+#
+# LaunchRefused lives in codex_host because that is where it was first needed;
+# nothing about it is Codex-specific and every seam raises the same type.
+LAUNCH_SEAMS = (_codex_host, _codex_runner, _claude_runner, _setup_flow)
 
 
-def _refuse_live_claude(cmd, **kwargs):
-    raise RuntimeError("the test suite must never launch the real `claude` binary "
-                       "(family guardrails section 3): pass runner=<fake> to "
-                       "Runner(...) or patch scripts.runners.base.runner_for")
+def _refused_binary(args):
+    """The binary the caller was about to launch, named from its own argv --
+    every seam here passes it first and positionally. Anything else (a call
+    shape none of them uses) degrades to the generic noun rather than raising
+    a second error on top of the refusal."""
+    argv = args[0] if args else None
+    if isinstance(argv, (list, tuple)) and argv and isinstance(argv[0], str):
+        return "`%s` binary" % os.path.basename(argv[0])
+    return "host CLI"
+
+
+def _refuse_host_launch(*args, **_kwargs):
+    raise _codex_host.LaunchRefused(
+        "the test suite must never launch the real %s (family guardrails "
+        "section 3): pass runner=<fake> to Runner(...) or patch "
+        "scripts.runners.base.runner_for" % _refused_binary(args))
 
 
 @pytest.fixture(autouse=True)
-def _no_live_claude_launches(monkeypatch):
-    monkeypatch.setattr(_claude_runner, "DEFAULT_RUNNER", _refuse_live_claude)
-
+def _no_live_host_launches(monkeypatch):
+    for seam in LAUNCH_SEAMS:
+        monkeypatch.setattr(seam, "DEFAULT_RUNNER", _refuse_host_launch)

@@ -126,10 +126,15 @@ _CHARTER = (
 
 _CODEX_CHARTER = (
     "You are panopticon's `%s` reviewer. Follow the dispatched task message "
-    "exactly; it contains your full instructions for this run. Your Codex "
-    "sandbox is read-only. Use shell commands only for read-only exploration, "
-    "never execute target code, never access the network, and return the exact "
-    "JSON shape requested by the task.\n")
+    "exactly; it contains your full instructions for this run. Use only the "
+    "scope-bound read_file, search, and list_files MCP tools. Read/Grep/Glob "
+    "in the task refer to these tools; search is literal substring matching. "
+    "For a file-scoped review, search must name one granted file and listing "
+    "is unavailable; never execute target code or access the network. "
+    "Return the exact requested JSON as your final message, even when a role "
+    "template says Write: the controller persists it. Include the task's "
+    "`_panopticon` block verbatim in that JSON -- a reply without it is "
+    "DISCARDED and the cell is treated as not done. Do not write artifacts.\n")
 
 
 def registered_agent_name(role_file):
@@ -173,8 +178,10 @@ def emit_host_agents(host, out_dir):
         # reads hosts.py; this chain decides HOW each one renders and stays
         # hardcoded on purpose -- rendering is host-specific work, not an
         # identity check (#1344 F2 leaves it alone). Keep the two in step by
-        # hand: a host given a shell_format with no branch added here falls
-        # into `else`, silently takes codex's model config, then dies on `fm`.
+        # hand: M-1, a host given a shell_format with no branch added here
+        # used to die on an UnboundLocalError for `lines`/`fm` several lines
+        # later. It now refuses by name, which is what the next family PR to
+        # add a row before its branch will read.
         if host == "claude":
             # #1036: model_resolver is the single owner of the role->model map
             # for every host (kimi/codex already source from it). registration_
@@ -203,18 +210,40 @@ def emit_host_agents(host, out_dir):
                   + ["disallowedTools:"]
                   + ["  - %s" % t for t in tp["forbidden"]]
                   + ["---"])
-        else:
+        elif host == "codex":
+            from scripts import codex_host
             cfg = model_resolver.registration_config("codex", role)
-            lines = ["name = %s" % json.dumps(agent),
-                     "description = %s" % json.dumps(meta["description"])]
-            if cfg.get("model"):
-                lines.append("model = %s" % json.dumps(cfg["model"]))
-            if cfg.get("model_reasoning_effort"):
-                lines.append("model_reasoning_effort = %s"
-                             % json.dumps(cfg["model_reasoning_effort"]))
-            lines.extend(["sandbox_mode = \"read-only\"",
-                          "developer_instructions = %s"
-                          % json.dumps(_CODEX_CHARTER % role)])
+            policy = codex_host.safety_config()
+            policy.update(name=agent, description=meta["description"],
+                          sandbox_mode="read-only", developer_instructions=_CODEX_CHARTER % role)
+            policy.update({key: cfg[key] for key in ("model", "model_reasoning_effort") if cfg.get(key)})
+            # Host vocabulary belongs here, not in the neutral role templates.
+            # Write is deliberately omitted: every Codex role is return-persist.
+            mapping = {"Read": "read_file", "Grep": "search", "Glob": "list_files"}
+            # M-6: `enabled_tools` is the ONLY field of this block command()
+            # reads -- it rebuilds the broker's command/args from the RUNNING
+            # safety_config(). Emitting them here baked this interpreter and
+            # this checkout's codex_read_tools.py into a file that outlives
+            # both, advertising a broker path that never launches.
+            policy["mcp_servers"] = {"panopticon_scope": {"enabled_tools": [
+                mapping[tool] for tool in tp["allowed"] if tool in mapping]}}
+            lines = []
+
+            def emit_values(values, prefix=()):
+                for key, value in values.items():
+                    dotted = prefix + (key,)
+                    if isinstance(value, dict):
+                        emit_values(value, dotted)
+                    else:
+                        lines.append("%s = %s" % (".".join(part if re.fullmatch(r"[A-Za-z0-9_-]+", part)
+                                                                       else json.dumps(part) for part in dotted),
+                                                  json.dumps(value)))
+
+            emit_values(policy)
+        else:
+            raise ValueError("emit-host-agents: no emit branch for host %r "
+                             "(it declares shell_format %r but nothing here "
+                             "renders it)" % (host, row.shell_format))
         path = os.path.join(out_dir, registered_agent_filename(host, role_file))
         with open(path, "w", encoding="utf-8") as fh:
             if host == "codex":

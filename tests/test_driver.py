@@ -1430,26 +1430,18 @@ class TestHostChoicesComeFromTheRegistry(unittest.TestCase):
         # nothing.
         self.assertGreaterEqual(len(self._host_choices()), 2)
 
-    def test_kimi_and_codex_are_still_not_selectable(self):
-        # Task 4 migrated five call sites from `host == "claude"` to
-        # `hosts.declares(host, hosts.TOOL_POLICY_ENFORCED)`. kimi and codex both
-        # CLAIM TOOL_POLICY_ENFORCED in the registry (they register shells and
-        # advertise the capability), so declares() already returns True for them
-        # -- it just never runs, because both are driver_selectable=False and
-        # `--host` refuses to name them.
-        #
-        # That gap is dead code only as long as this test holds. The instant
-        # either becomes driver-selectable, the five sites Task 4 migrated start
-        # granting them an ENFORCED run on the strength of an unverified claim --
-        # exactly the silent-unenforced-run bug this epic (#1344) exists to
-        # kill. F3 closes the gap for real by swapping declares() for a verified
-        # posture() check; until F3 lands, this test is the only thing standing
-        # between "flip driver_selectable=True" and that bug shipping by
-        # accident. It must fail loudly the day someone flips the flag without
-        # also doing F3's work.
-        for name in ("kimi", "codex"):
-            with self.subTest(host=name):
-                self.assertNotIn(name, hosts.driver_hosts())
+    def test_codex_is_selectable_while_kimi_remains_unselectable(self):
+        # The original interlock lasted until F3 replaced declares() with
+        # verified posture checks. F3 is shipped, and the owner authorized the
+        # Codex family PR to retire this stale pin alongside its own probes.
+        self.assertNotIn("kimi", hosts.driver_hosts())
+        self.assertIn("codex", hosts.driver_hosts())
+        choices_by_command = self._host_choices()
+        self.assertTrue(choices_by_command)
+        for command, choices in choices_by_command.items():
+            with self.subTest(command=command):
+                self.assertNotIn("kimi", choices)
+                self.assertIn("codex", choices)
 
 
 if __name__ == "__main__":
