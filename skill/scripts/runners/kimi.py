@@ -68,25 +68,14 @@ import scripts.runners.base as base
 # I3 (gate review): the launcher is a MODULE ATTRIBUTE, never a default
 # argument, and every spawn resolves it inside the body. A default argument
 # binds `subprocess.run` at import time, where `monkeypatch.setattr` cannot
-# reach it -- so tests/conftest.py's autouse `_no_live_kimi_launches` can only
+# reach it -- so tests/conftest.py's autouse `_no_live_host_launches` can only
 # refuse a real `kimi` launch if the name is looked up per call, here. The
 # sibling family PRs bind their own module attribute the same way.
 DEFAULT_RUNNER = subprocess.run
-
-
-class LaunchRefused(RuntimeError):
-    """The suite's structural guard refused a real `kimi` launch.
-
-    Raised only by the fake tests/conftest.py installs over `DEFAULT_RUNNER`
-    (and over host_probes.DEFAULT_RUNNER). Deliberately NOT an OSError: an
-    `except OSError` on a launch path would swallow it and report a probe
-    state, hiding that the suite reached for the real binary.
-
-    REBASE STEP (N1): #1619 ships the same class as
-    `scripts.codex_host.LaunchRefused` and asserts ONE class through every
-    seam, so this name becomes an alias of it (or both move to
-    `runners/base.py`). Keep the RuntimeError base either way.
-    """
+# N1, done: the rebase step this class's docstring asked for. There is ONE
+# LaunchRefused, `base.LaunchRefused`, raised by the suite's guard through
+# every seam and re-raised by every launch path; no alias is bound here
+# because layout rule 4 bans a package module re-exporting a SIBLING's name.
 
 
 # C1 (gate review): the per-run home is built under the OPERATOR's temp root,
@@ -676,7 +665,7 @@ class Runner(base.HostRunner):
         try:
             proc = launcher(cmd, cwd=self.review_root, env=run_env, capture_output=True,
                             text=True, timeout=self.entry_timeout)
-        except LaunchRefused:             # I3: the suite's guard, never a run state
+        except base.LaunchRefused:        # I3: the suite's guard, never a run state
             raise                         # (first, so no later clause can absorb it)
         except subprocess.TimeoutExpired:
             return base.RunResult.failed(entry_id, "kimi -p timed out after %ss" % self.entry_timeout)

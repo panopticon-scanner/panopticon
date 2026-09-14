@@ -13,6 +13,7 @@ import time
 
 import scripts.driver as driver
 import scripts.host_probes as host_probes
+import scripts.hosts as hosts
 import scripts.phases.engine as engine
 import scripts.phases.persist as persist
 import scripts.phases.requests as requests
@@ -111,7 +112,7 @@ class Ledger:
     """runs/<tag>/dispatch-ledger.jsonl: one line per runner call (spec 4.3)."""
 
     def __init__(self, run_dir):
-        self.path = os.path.join(run_dir, "dispatch-ledger.jsonl")
+        self.path = os.path.join(run_dir, runners_base.LEDGER_FILE)
 
     def record(self, entry, checkpoint, result, mode, host, duration_ms, refusal=None):
         """One line per runner call.
@@ -165,7 +166,7 @@ class Ledger:
             for k in USAGE_FIELDS:
                 by_field[k] += int(usage.get(k, 0) or 0)
         return {"schema_version": 1, "total": sum(by_phase.values()), "by_phase": by_phase,
-                "by_field": by_field, "source": "dispatch-ledger.jsonl",
+                "by_field": by_field, "source": runners_base.LEDGER_FILE,
                 "definition": "every token the host's envelope reported for each entry "
                               "launch, failed launches included, summed over the four "
                               "usage fields"}
@@ -306,6 +307,16 @@ def loop(args):
     mode, note = _resolve_mode(args, host)
     if note:
         print(note, file=sys.stderr, flush=True)
+    # I-3: the budget branch below reads the ledger's cumulative cost, and a
+    # host that reports no dollars leaves that at 0 for ever -- so the flag is
+    # accepted and then does nothing. Say so once, here, rather than letting an
+    # operator believe an unbounded run is bounded. Keyed on the CLAIM, not a
+    # host name: declaring no usage_ledger IS the statement that no cost comes
+    # back.
+    if budget is not None and not hosts.declares(host, hosts.USAGE_LEDGER):
+        print("driver loop: --max-budget-usd has no effect on host %r (no usage ledger); "
+              "bound the run with --max-iterations and --entry-timeout" % host,
+              file=sys.stderr, flush=True)
     # Both are resolved BEFORE `_first_run`, and the resolved mode is written
     # back onto `args`, deliberately. `driver._establish_host_posture` reads
     # `args.mode` to decide WHICH settings file the guard probes measure (spec
@@ -323,6 +334,13 @@ def loop(args):
         runner = runners_base.runner_for(host, mode)
     except ValueError as exc:
         return _status("error", str(exc))
+    # M-9: the attribute is set on the runner below whether or not the runner
+    # reads it. Say so once here rather than leaving the operator to find out
+    # from the guide.
+    if getattr(args, "max_turns", None) and not getattr(runner, "HONOURS_MAX_TURNS", True):
+        print("driver loop: --max-turns has no effect on host %r (its runner has no native "
+              "turn limit); bound each entry with --entry-timeout" % host,
+              file=sys.stderr, flush=True)
     # R-P6 Task 5 ruling 1: the SAME rule driver.run() applies to
     # manifest["session_dir"] -- never read off the on-disk manifest, which
     # never persists it (driver.run() sets it in memory, post write-manifest,
@@ -354,17 +372,22 @@ def loop(args):
         # `session_root`, which does not change across a run.
         guards = Guards(mode, session_root=session_root)
     status = _first_run(args, namespace)
-    # The reset is CONSUMED by that first driver.run (it cleared the run
-    # folder and re-minted the manifest there). Leaving args.reset set for
-    # the loop's later driver.run calls re-runs the wipe+re-mint on EVERY
-    # iteration: the second call deletes the run folder the runner just
+    # `--reset` is CONSUMED by that call. `driver.run` reads `args.reset` on
+    # every invocation and the loop hands it the same `args` each iteration,
+    # so left set it cleared the run folder and re-minted the manifest on
+    # every `_run` below: the run restarted at its first checkpoint forever.
+    # Found twice, independently. By the Claude family PR's second real
+    # `driver loop --reset`, which re-launched the same three scouts ten times
+    # (30 identical ledger rows) before it was stopped; and by the kimi family
+    # PR, where the second call deleted the run folder the runner had just
     # prepared (the kimi run's kimi-home/config.toml -- every child then
-    # failed "Model ... is not configured"; claude's host-settings.json is
-    # the same file in the same path), re-mints a fresh tag each time, and
-    # the ledger, runner and guards keep writing to the first mint's
-    # folder while the manifest points at the last. `driver loop --reset`
-    # could never have worked headless; single `driver run --reset` calls
-    # never noticed because they invoke driver.run exactly once.
+    # failed "Model ... is not configured"; claude's host-settings.json is the
+    # same file in the same path), re-minted a fresh tag each time, and left
+    # the ledger, runner and guards writing to the first mint's folder while
+    # the manifest pointed at the last. `driver loop --reset` could never have
+    # worked headless; single `driver run --reset` calls never noticed because
+    # they invoke driver.run exactly once. From here on the loop resumes the
+    # run it just started, which is what every later iteration is for.
     args.reset = False
     if status.get("status") != "checkpoint":
         return _finish(status, args, guards, ledger, namespace, mode, runner)
@@ -406,20 +429,26 @@ def loop(args):
         # host-settings.json/dispatch-ledger.jsonl/usage.json into that run's
         # runs/<tag>/ folder.
         run_dir = os.path.dirname(host_probes.headless_settings_path(review_root, namespace))
-        runner.prepare(run_dir, review_root)
         # C2/M4: the session runner prints the batch itself, so it needs the
         # two facts only the loop holds -- which request file these entries
         # came from, and whether this is the setup namespace (which every
-        # command it hints at must carry as `--setup`). Set unconditionally: a
-        # headless runner simply carries two attributes it never reads.
+        # command it hints at must carry as `--setup`). Set unconditionally.
+        #
+        # BEFORE prepare(), not after: a headless runner does read `namespace`
+        # there. The Codex runner's enforced-only preflight has to stand down
+        # for `--setup`, whose single entry is dispatched with no registered
+        # shell by design -- a fresh machine runs setup before it registers
+        # anything.
         runner.dispatch_request = os.path.abspath(
             requests.request_path(review_root, namespace))
         runner.namespace = namespace
+        runner.prepare(run_dir, review_root)
         # N2: the runner's scratch home travels to the probes IN PROCESS, on
         # `args`, because every later `driver.run` in this loop re-establishes
         # posture and the effective-surface probes need to find this run's
         # children. Host-agnostic: a runner with no scratch area leaves it
         # None, and nothing reads a path out of the reviewed tree to get it.
+        # AFTER prepare(), which is what mints it.
         args.run_home = getattr(runner, "run_home", None)
         for attr in ("max_turns", "entry_timeout"):
             if getattr(args, attr, None):

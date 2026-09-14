@@ -1430,29 +1430,32 @@ class TestHostChoicesComeFromTheRegistry(unittest.TestCase):
         # nothing.
         self.assertGreaterEqual(len(self._host_choices()), 2)
 
-    def test_codex_is_still_not_selectable(self):
-        # Task 4 migrated five call sites from `host == "claude"` to
-        # `hosts.declares(host, hosts.TOOL_POLICY_ENFORCED)`. kimi and codex both
-        # CLAIM TOOL_POLICY_ENFORCED in the registry (they register shells and
-        # advertise the capability), so declares() already returns True for them
-        # -- it just never runs, because both are driver_selectable=False and
-        # `--host` refuses to name them.
+    def test_kimi_and_codex_are_both_selectable_now(self):
+        # This was "kimi and codex are still not selectable". Task 4 migrated
+        # five call sites from `host == "claude"` to `hosts.declares(host,
+        # hosts.TOOL_POLICY_ENFORCED)`; kimi and codex both CLAIM
+        # TOOL_POLICY_ENFORCED in the registry, so declares() already returned
+        # True for them and only `driver_selectable=False` kept those sites
+        # from granting an ENFORCED run on an unverified claim -- the
+        # silent-unenforced-run bug this epic (#1344) exists to kill.
         #
-        # That gap is dead code only as long as this test holds. The instant
-        # either becomes driver-selectable, the five sites Task 4 migrated start
-        # granting them an ENFORCED run on the strength of an unverified claim --
-        # exactly the silent-unenforced-run bug this epic (#1344) exists to
-        # kill. F3 closes the gap for real by swapping declares() for a verified
-        # posture() check; until F3 lands, this test is the only thing standing
-        # between "flip driver_selectable=True" and that bug shipping by
-        # accident. It must fail loudly the day someone flips the flag without
-        # also doing F3's work. kimi graduated out of this test in its family
-        # PR (#1344): F3 landed and the PR shipped the probes and runner that
-        # make the claim measured, so the five sites grant kimi nothing
-        # unverified.
-        for name in ("codex",):
+        # The interlock lasted until F3 replaced declares() with verified
+        # posture checks. F3 is shipped, and the owner authorized each family
+        # PR to retire the stale pin alongside its own probes: the Codex family
+        # PR for `codex`, the Kimi family PR for `kimi`. Both now ship the
+        # probes and the runner that make the claim measured, so the five sites
+        # grant neither of them anything unverified. The pin stays, inverted:
+        # it fails loudly the day a family's flag is flipped back or a third
+        # host is flipped on without that work.
+        for name in ("kimi", "codex"):
             with self.subTest(host=name):
-                self.assertNotIn(name, hosts.driver_hosts())
+                self.assertIn(name, hosts.driver_hosts())
+        choices_by_command = self._host_choices()
+        self.assertTrue(choices_by_command)
+        for command, choices in choices_by_command.items():
+            for name in ("kimi", "codex"):
+                with self.subTest(command=command, host=name):
+                    self.assertIn(name, choices)
 
 
 if __name__ == "__main__":

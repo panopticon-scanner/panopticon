@@ -180,6 +180,71 @@ class TestHeadlessLoop(LoopCase):
              contextlib.redirect_stdout(io.StringIO()):
             return orchestrate.loop(args)
 
+    def test_the_loop_hands_the_runner_its_namespace_before_preparing(self):
+        # A runner cannot decide what to arm without knowing WHICH namespace
+        # it is preparing for: the Codex runner's enforced-only refusal has to
+        # stand down for `--setup`, whose only entry needs no registered
+        # shell. Both facts were handed over one line AFTER prepare().
+        class Recording(FakeRunner):
+            seen = "unset"
+
+            def prepare(self, run_dir, review_root):
+                Recording.seen = (self.namespace, self.dispatch_request)
+                super().prepare(run_dir, review_root)
+
+        d, floor = self._repo()
+        self._run(d, floor, Recording())
+        namespace, request = Recording.seen
+        self.assertIsNone(namespace)                     # a review run
+        self.assertIsNotNone(request)                    # ...but both were handed over
+        self.assertTrue(request.endswith("dispatch-request.json"), request)
+
+    def test_max_turns_warns_when_the_runner_cannot_honour_it(self):
+        # M-9: orchestrate sets `runner.max_turns` unconditionally and the
+        # Codex runner never reads it -- accepted, then silently ignored.
+        class NoTurnLimit(FakeRunner):
+            HONOURS_MAX_TURNS = False
+
+        d, floor = self._repo()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            status = self._run(d, floor, NoTurnLimit("codex"), "--allow-unenforced",
+                               "--host", "codex", "--max-turns", "3")
+        self.assertEqual(status["status"], "complete", status)
+        self.assertIn("--max-turns has no effect on host 'codex'", err.getvalue())
+        self.assertIn("--entry-timeout", err.getvalue())
+
+    def test_max_turns_is_silent_on_a_runner_that_honours_it(self):
+        d, floor = self._repo()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self._run(d, floor, FakeRunner(), "--max-turns", "3")
+        self.assertNotIn("--max-turns has no effect", err.getvalue())
+
+    def test_max_budget_warns_on_a_host_that_reports_no_dollars(self):
+        # I-3: parse_envelope refuses to fabricate a cost, so cost_usd is
+        # always None on Codex, the ledger total stays 0 and the budget branch
+        # never trips. The flag was accepted without a word.
+        d, floor = self._repo()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            # --allow-unenforced: codex claims no artifact_write_guard, so the
+            # shared §7.3 gate refuses the plan without it (I-9).
+            status = self._run(d, floor, FakeRunner("codex"), "--allow-unenforced",
+                               "--host", "codex", "--max-budget-usd", "5")
+        self.assertEqual(status["status"], "complete", status)
+        self.assertIn("--max-budget-usd has no effect on host 'codex' "
+                      "(no usage ledger)", err.getvalue())
+        self.assertIn("--max-iterations", err.getvalue())
+        self.assertIn("--entry-timeout", err.getvalue())
+
+    def test_max_budget_is_silent_on_a_host_that_keeps_a_usage_ledger(self):
+        d, floor = self._repo()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self._run(d, floor, FakeRunner(), "--max-budget-usd", "5")
+        self.assertNotIn("no usage ledger", err.getvalue())
+
     def test_the_loop_reaches_complete_through_review_and_verify(self):
         d, floor = self._repo()
         runner = FakeRunner()
@@ -331,6 +396,20 @@ class TestHeadlessLoop(LoopCase):
         status = self._run(d, floor, FakeRunner())        # already complete, no --reset
         self.assertEqual(status["status"], "error")
         self.assertIn("--reset", status["message"])
+
+    def test_a_reset_loop_resets_once_and_then_resumes_the_run_it_minted(self):
+        # Found by the Claude family PR's second real `driver loop --reset`:
+        # `args.reset` reached driver.run on EVERY iteration, so each one
+        # cleared the run folder and re-minted the manifest, and the loop
+        # re-launched its first checkpoint's entries until --max-iterations
+        # (the same three scouts ten times, 30 identical ledger rows). The
+        # first call consumes the flag; the loop then resumes its own run.
+        d, floor = self._repo()
+        self._run(d, floor, FakeRunner())                   # a complete run on disk
+        runner = FakeRunner()
+        status = self._run(d, floor, runner, "--reset", "--max-iterations", "4")
+        self.assertEqual(status["status"], "complete", status)
+        self.assertEqual(sorted(runner.launched), ["review-app-SEC", "verify-app-SEC-primary"])
 
     def test_an_unexpected_exception_disarms_and_reports_without_raising(self):
         # `loop` never raises: any bug in the loop body (not just Ctrl-C) must

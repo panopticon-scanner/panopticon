@@ -15,6 +15,19 @@ import scripts.setup_flow as setup_flow
 import shutil
 
 
+def _isolate_codex_probes(test_case):
+    """Readiness assertions must never invoke a real Codex runtime probe."""
+    for name, probe_id in (
+        ("probe_codex_tool_policy", "codex-effective-tools"),
+        ("probe_codex_read_scope", "codex-read-scope"),
+    ):
+        patcher = mock.patch.object(
+            host_probes, name,
+            return_value=(hosts.UNKNOWN, probe_id, "isolated test fixture"))
+        patcher.start()
+        test_case.addCleanup(patcher.stop)
+
+
 def _repo(test_case, with_committed=False):
     d = os.path.realpath(tempfile.mkdtemp())
     os.makedirs(os.path.join(d, "src", "checkout"))
@@ -38,6 +51,9 @@ def test_check_groups_manifest_reports_corrupt_yaml(tmp_path):
 
 
 class TestSetupFlow(unittest.TestCase):
+    def setUp(self):
+        _isolate_codex_probes(self)
+
     def _gitignore(self, repo):
         with open(os.path.join(repo, ".gitignore"), encoding="utf-8") as fh:
             return fh.read()
@@ -927,6 +943,9 @@ class TestDraftPreservesTopLevelKeys(unittest.TestCase):
 class TestReadinessCannotAssertWhatItDidNotCheck(unittest.TestCase):
     """#1344 F2: P2/P3 cease to be expressible."""
 
+    def setUp(self):
+        _isolate_codex_probes(self)
+
     def _check(self, host):
         return dict((name, (ok, detail))
                     for name, ok, detail in
@@ -1234,3 +1253,52 @@ class TestShellLessHostsGetTheWholeDisclosure(unittest.TestCase):
                         # all five fails here.
                         self.assertIn(host_disclosure.remedy(capability, host),
                                       row[2])
+
+
+class TestReadinessDoesNotSwallowTheLaunchGuard(unittest.TestCase):
+    """N-M3: readiness's `except Exception` around run_probes turned the
+    suite's no-live-launch refusal into a benign "posture could not be probed"
+    row. That is exactly the failure I-5 exists to remove, on exactly the path
+    that forced `_isolate_codex_probes` to exist -- readiness reaches a live
+    Codex probe. Latent today, because nothing in the suite gets that far;
+    structural, because the guarantee has to hold for the test nobody has
+    written yet."""
+
+    @staticmethod
+    def _runner(cmd, **kw):
+        """readiness also probes `codex --version`; that must never be the
+        real binary (the guardrails' "suite never launches a host binary",
+        which a PATH-shim run catches). Every readiness call here injects it.
+        """
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    def test_readiness_with_no_injected_runner_cannot_reach_the_real_cli(self):
+        """N-M3 round 2 fixed the two tests below by injecting a runner. That
+        is discipline, and discipline is what failed here: readiness probes
+        `codex --version` through a runner bound as a DEFAULT ARGUMENT, so the
+        autouse guard could not reach it and the NEXT test to forget would
+        launch the real binary and stay green. With the launcher read from a
+        module attribute, forgetting is now loud.
+        """
+        from scripts import codex_host
+        d = _repo(self)
+        with self.assertRaises(codex_host.LaunchRefused):
+            setup_flow.readiness(d, host="codex")
+
+    def test_a_refused_live_launch_escapes_readiness(self):
+        from scripts import codex_host
+        d = _repo(self)
+        with mock.patch.object(
+                host_probes, "run_probes",
+                side_effect=codex_host.LaunchRefused("test tried to launch the real codex CLI")):
+            with self.assertRaises(codex_host.LaunchRefused):
+                setup_flow.readiness(d, host="codex", runner=self._runner)
+
+    def test_every_other_probe_failure_is_still_a_readiness_row(self):
+        d = _repo(self)
+        with mock.patch.object(host_probes, "run_probes",
+                               side_effect=RuntimeError("probe exploded")):
+            rows = setup_flow.readiness(d, host="codex", runner=self._runner)
+        posture = dict((name, detail) for name, _ok, detail in rows)
+        self.assertIn("host-capabilities", posture)
+        self.assertIn("probe exploded", posture["host-capabilities"])

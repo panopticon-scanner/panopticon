@@ -46,12 +46,31 @@ resolve against cwd; only the script path substitutes.
   [--max-iterations N] [--max-budget-usd X] [--setup]` — the whole review on rails (the host
   contract); session mode prints `dispatch` and you `driver persist <id> --file <reply>` each
   return-persist reply, then re-run. `--mode` defaults to headless when the host has a headless
-  runner and session when it does not (every host but Claude and Kimi today) — `--mode headless` on such
-  a host is an error, not a silent downgrade.
+  runner and session when it does not (Claude, Codex and Kimi have headless runners) — `--mode headless`
+  on a host without one is an error, not a silent downgrade.
+- `driver loop [target] --host codex --mode headless` — Codex's first-class path through
+  the same loop, with scoped read/search/list tools and every role returning JSON for the
+  loop to persist. Register the Codex shells first (see the guide): Codex is enforced-only, so
+  the loop refuses up front when a role's shell is missing, except under `--setup` (whose
+  setup-scan entry needs none). Manual session mode
+  cannot prove these controls. The shared review gate still requires `--allow-unenforced`
+  when `artifact_write_guard` is unproven; obtain the operator's explicit acceptance before
+  using it. Codex reports tokens but not cost or effective model identity: dollar budgets
+  cannot bound its spend, so also set `--max-iterations` and `--entry-timeout` and narrow scope.
 - `driver persist ENTRY_ID [--file PATH] [--setup] [--pr N] [--base REF] [target]` — persist one
   return-persist reply (session mode). On a `--pr`/`--base` run pass the same `--pr`/`--base`:
   persist has to resolve the same review root the loop did (a PR run's is the PR worktree), or it
   reads a different tree's dispatch request and finds no such entry.
+- **Session mode on Claude Code is templated, never ad hoc.** Dispatch the printed batch with the
+  shipped workflow: `Workflow({scriptPath: "skill/workflows/dispatch.js", args: {checkpoint,
+  entries}})`, `entries` being the request's entries reduced to `id, agent, enforced, model,
+  marker, prompt_file, delivery, out_file` (never the inline `prompt`). It runs one subagent per
+  entry — inside its registered `panopticon-*` shell when the entry is `enforced`, on the entry's
+  `model` otherwise — marker line first (the read guard binds through the workflow transcript
+  layout) and `prompt_file` second (granted to the entry's read scope), and returns `persist`
+  (reply text per return-persist id, for `driver persist <id>`), `self_wrote` and `missing` (a
+  skipped or dead subagent, re-emitted by the next loop entry).
+  Do not hand-dispatch entries with one-off Agent calls.
 - `driver run [target] [flags]` — the single-step primitive `driver loop` calls; drive by hand
   only when debugging a phase.
 - Key flags: `--host NAME`, `--security {standard,redteam}`,

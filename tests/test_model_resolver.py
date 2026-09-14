@@ -124,8 +124,12 @@ class TestModelResolver(unittest.TestCase):
         self.assertEqual(panel["model"], "gpt-5.6-terra")
         self.assertEqual(panel["model_reasoning_effort"], "high")
         advisor = mr.registration_config("codex", "advisor")
-        self.assertEqual(advisor["model"], "gpt-5.6")
+        # Operator-approved family PR: use the installed CLI's explicit slug.
+        self.assertEqual(advisor["model"], "gpt-5.6-sol")
         self.assertEqual(advisor["model_reasoning_effort"], "high")
+        domain_advisor = mr.registration_config("codex", "domain_advisor")
+        self.assertEqual(domain_advisor["model"], "gpt-5.6-sol")
+        self.assertEqual(domain_advisor["model_reasoning_effort"], "high")
 
     def test_unknown_host_falls_back(self):
         self.assertIsNone(mr.resolve_model("generic", "domain_panel")["model"])
