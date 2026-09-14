@@ -11,6 +11,7 @@ from unittest import mock
 from scripts import dispatch, host_probes, hosts, model_resolver, write_guard_hook
 import scripts.probes.claude as claude_probes
 import scripts.probes.codex as codex_probes
+import scripts.probes.kimi as kimi_probes
 import scripts.probes.common as probes_common
 
 
@@ -404,11 +405,11 @@ class TestEntryModelBoundProbe(unittest.TestCase):
                                  codex_probes.CODEX_READ_SCOPE,
                                  # #1344 kimi family PR (#1620): the five
                                  # probes the kimi row maps its five claims to.
-                                 host_probes.KIMI_SHELL_SURFACE,
-                                 host_probes.KIMI_READ_GUARD,
-                                 host_probes.KIMI_WRITE_GUARD,
-                                 host_probes.KIMI_MODEL_ALIAS,
-                                 host_probes.KIMI_USAGE_WIRE}))
+                                 kimi_probes.KIMI_SHELL_SURFACE,
+                                 kimi_probes.KIMI_READ_GUARD,
+                                 kimi_probes.KIMI_WRITE_GUARD,
+                                 kimi_probes.KIMI_MODEL_ALIAS,
+                                 kimi_probes.KIMI_USAGE_WIRE}))
         with tempfile.TemporaryDirectory() as reg, \
              tempfile.TemporaryDirectory() as target, \
              tempfile.TemporaryDirectory() as home:
@@ -1961,18 +1962,18 @@ class TestKimiShellSurfaceProbe(unittest.TestCase):
     def test_fully_registered_shells_on_a_known_version_are_proven(self):
         with tempfile.TemporaryDirectory() as d:
             _kimi_fully_registered(d)
-            state, by, detail = host_probes.probe_kimi_shell_surface(
+            state, by, detail = kimi_probes.probe_kimi_shell_surface(
                 "kimi", registration_dir=d, version="0.42")
         self.assertEqual(hosts.PROVEN, state)
-        self.assertEqual(host_probes.KIMI_SHELL_SURFACE, by)
+        self.assertEqual(kimi_probes.KIMI_SHELL_SURFACE, by)
         self.assertIn("0.42", detail)
 
     def test_missing_shells_are_refuted_by_the_template_half(self):
         with tempfile.TemporaryDirectory() as d:
-            state, by, detail = host_probes.probe_kimi_shell_surface(
+            state, by, detail = kimi_probes.probe_kimi_shell_surface(
                 "kimi", registration_dir=d, version="0.42")
         self.assertEqual(hosts.REFUTED, state)
-        self.assertEqual(host_probes.KIMI_SHELL_SURFACE, by)
+        self.assertEqual(kimi_probes.KIMI_SHELL_SURFACE, by)
         self.assertIn("no shell", detail)
 
     def test_a_shell_grant_the_template_forbids_is_refuted(self):
@@ -1980,7 +1981,7 @@ class TestKimiShellSurfaceProbe(unittest.TestCase):
             _kimi_fully_registered(d)
             _shell(d, dispatch.registered_agent_filename("kimi", "scout.md"),
                    ["Read", "Grep", "Glob", "Bash"], block_list=True)
-            state, _by, detail = host_probes.probe_kimi_shell_surface(
+            state, _by, detail = kimi_probes.probe_kimi_shell_surface(
                 "kimi", registration_dir=d, version="0.42")
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("Bash", detail)
@@ -1993,7 +1994,7 @@ class TestKimiShellSurfaceProbe(unittest.TestCase):
             import scripts.runners.kimi as kimi_runner
             narrow = {"0.42": kimi_runner.TOOL_VOCABULARY["0.42"] - {"Read", "Bash"}}
             with mock.patch.dict(kimi_runner.TOOL_VOCABULARY, narrow):
-                state, _by, detail = host_probes.probe_kimi_shell_surface(
+                state, _by, detail = kimi_probes.probe_kimi_shell_surface(
                     "kimi", registration_dir=d, version="0.42")
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("match nothing", detail)
@@ -2001,7 +2002,7 @@ class TestKimiShellSurfaceProbe(unittest.TestCase):
     def test_an_uncovered_cli_version_is_unknown_never_a_guess(self):
         with tempfile.TemporaryDirectory() as d:
             _kimi_fully_registered(d)
-            state, _by, detail = host_probes.probe_kimi_shell_surface(
+            state, _by, detail = kimi_probes.probe_kimi_shell_surface(
                 "kimi", registration_dir=d, version="9.99")
         self.assertEqual(hosts.UNKNOWN, state)
         self.assertIn("9.99", detail)
@@ -2015,12 +2016,12 @@ class TestKimiShellSurfaceProbe(unittest.TestCase):
             return P()
         with tempfile.TemporaryDirectory() as d:
             _kimi_fully_registered(d)
-            state, _by, _detail = host_probes.probe_kimi_shell_surface(
+            state, _by, _detail = kimi_probes.probe_kimi_shell_surface(
                 "kimi", registration_dir=d, runner=garbage)
         self.assertEqual(hosts.UNKNOWN, state)
 
     def test_a_host_that_registers_no_shells_is_unknown(self):
-        state, by, _detail = host_probes.probe_kimi_shell_surface("gemini", version="0.42")
+        state, by, _detail = kimi_probes.probe_kimi_shell_surface("gemini", version="0.42")
         self.assertEqual(hosts.UNKNOWN, state)
         self.assertIsNone(by)
 
@@ -2030,14 +2031,14 @@ class TestKimiReadGuardProbe(unittest.TestCase):
     (plain python -- not the host binary) plus a faked doctor validation."""
 
     def test_the_round_trip_and_a_valid_home_are_proven(self):
-        state, by, detail = host_probes.probe_kimi_read_guard(
+        state, by, detail = kimi_probes.probe_kimi_read_guard(
             "kimi", doctor_runner=_DoctorFake())
         self.assertEqual(hosts.PROVEN, state)
-        self.assertEqual(host_probes.KIMI_READ_GUARD, by)
+        self.assertEqual(kimi_probes.KIMI_READ_GUARD, by)
         self.assertIn("round-trip", detail)
 
     def test_a_doctor_rejection_is_refuted(self):
-        state, _by, detail = host_probes.probe_kimi_read_guard(
+        state, _by, detail = kimi_probes.probe_kimi_read_guard(
             "kimi", doctor_runner=_DoctorFake(ok=False))
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("doctor", detail)
@@ -2045,7 +2046,7 @@ class TestKimiReadGuardProbe(unittest.TestCase):
     def test_a_missing_cli_is_unknown_not_refuted(self):
         def no_binary(cmd, **kw):
             raise FileNotFoundError("kimi")
-        state, _by, detail = host_probes.probe_kimi_read_guard(
+        state, _by, detail = kimi_probes.probe_kimi_read_guard(
             "kimi", doctor_runner=no_binary)
         self.assertEqual(hosts.UNKNOWN, state)
         self.assertIn("could not run", detail)
@@ -2053,35 +2054,35 @@ class TestKimiReadGuardProbe(unittest.TestCase):
     def test_a_guard_failure_is_refuted_with_the_row_named(self):
         # The mutation, at the probe's own seam: a guard that allows an
         # outside read must flip the probe to refuted.
-        with mock.patch.object(host_probes, "_guard_round_trip",
+        with mock.patch.object(kimi_probes, "_guard_round_trip",
                                return_value=(False, "the guard ALLOWED: bound Read outside scope")):
-            state, _by, detail = host_probes.probe_kimi_read_guard(
+            state, _by, detail = kimi_probes.probe_kimi_read_guard(
                 "kimi", doctor_runner=_DoctorFake())
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("ALLOWED", detail)
 
     def test_a_host_that_claims_no_read_confinement_is_unknown(self):
-        state, by, _detail = host_probes.probe_kimi_read_guard("gemini")
+        state, by, _detail = kimi_probes.probe_kimi_read_guard("gemini")
         self.assertEqual(hosts.UNKNOWN, state)
         self.assertIsNone(by)
 
 
 class TestKimiWriteGuardProbe(unittest.TestCase):
     def test_the_write_round_trip_is_proven(self):
-        state, by, detail = host_probes.probe_kimi_write_guard("kimi")
+        state, by, detail = kimi_probes.probe_kimi_write_guard("kimi")
         self.assertEqual(hosts.PROVEN, state)
-        self.assertEqual(host_probes.KIMI_WRITE_GUARD, by)
+        self.assertEqual(kimi_probes.KIMI_WRITE_GUARD, by)
         self.assertIn("round-trip", detail)
 
     def test_a_guard_failure_is_refuted_with_the_row_named(self):
-        with mock.patch.object(host_probes, "_guard_round_trip",
+        with mock.patch.object(kimi_probes, "_guard_round_trip",
                                return_value=(False, "the guard ALLOWED: Write outside the allowlist")):
-            state, _by, detail = host_probes.probe_kimi_write_guard("kimi")
+            state, _by, detail = kimi_probes.probe_kimi_write_guard("kimi")
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("ALLOWED", detail)
 
     def test_a_host_that_claims_no_write_guard_is_unknown(self):
-        state, by, _detail = host_probes.probe_kimi_write_guard("gemini")
+        state, by, _detail = kimi_probes.probe_kimi_write_guard("gemini")
         self.assertEqual(hosts.UNKNOWN, state)
         self.assertIsNone(by)
 
@@ -2090,25 +2091,25 @@ class TestKimiModelAliasProbe(unittest.TestCase):
     CONFIGURED = frozenset({"kimi-code/k3", "kimi-code/kimi-for-coding"})
 
     def test_every_role_binding_a_configured_alias_is_proven(self):
-        state, by, detail = host_probes.probe_kimi_model_alias(
+        state, by, detail = kimi_probes.probe_kimi_model_alias(
             "kimi", configured=self.CONFIGURED)
         self.assertEqual(hosts.PROVEN, state)
-        self.assertEqual(host_probes.KIMI_MODEL_ALIAS, by)
+        self.assertEqual(kimi_probes.KIMI_MODEL_ALIAS, by)
         self.assertIn("kimi-code/k3", detail)
 
     def test_an_unresolvable_role_is_refuted_and_named(self):
-        state, _by, detail = host_probes.probe_kimi_model_alias(
+        state, _by, detail = kimi_probes.probe_kimi_model_alias(
             "kimi", configured=frozenset({"kimi-code/k3"}))
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("scout", detail)
 
     def test_no_readable_model_table_is_refuted(self):
-        state, _by, detail = host_probes.probe_kimi_model_alias("kimi", configured=frozenset())
+        state, _by, detail = kimi_probes.probe_kimi_model_alias("kimi", configured=frozenset())
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("no [models] table", detail)
 
     def test_a_host_that_claims_no_model_binding_is_unknown(self):
-        state, by, _detail = host_probes.probe_kimi_model_alias("gemini")
+        state, by, _detail = kimi_probes.probe_kimi_model_alias("gemini")
         self.assertEqual(hosts.UNKNOWN, state)
         self.assertIsNone(by)
 
@@ -2120,9 +2121,9 @@ class TestKimiUsageWireProbe(unittest.TestCase):
     never write to. The probe proves the channel the runner reads."""
 
     def test_the_run_homes_wire_layout_resolves_and_parses(self):
-        state, by, detail = host_probes.probe_kimi_usage_wire("kimi")
+        state, by, detail = kimi_probes.probe_kimi_usage_wire("kimi")
         self.assertEqual(hosts.PROVEN, state)
-        self.assertEqual(host_probes.KIMI_USAGE_WIRE, by)
+        self.assertEqual(kimi_probes.KIMI_USAGE_WIRE, by)
         self.assertIn("wire.jsonl", detail)
 
     def test_the_probe_takes_no_home_parameter_at_all(self):
@@ -2133,7 +2134,7 @@ class TestKimiUsageWireProbe(unittest.TestCase):
         # there is nothing to overload.
         import inspect
         self.assertEqual(["host"],
-                         list(inspect.signature(host_probes.probe_kimi_usage_wire).parameters))
+                         list(inspect.signature(kimi_probes.probe_kimi_usage_wire).parameters))
 
     def test_the_fixture_session_never_lands_outside_the_probes_sandbox(self):
         # N4: the probe used to take `run_probes`' `home=` -- a parameter that
@@ -2141,7 +2142,7 @@ class TestKimiUsageWireProbe(unittest.TestCase):
         # fixture session there, cleaning only its own sandbox. It now has no
         # such parameter: every path it writes is inside the tempdir it owns.
         before = set(os.listdir(tempfile.gettempdir()))
-        _state, _by, detail = host_probes.probe_kimi_usage_wire("kimi")
+        _state, _by, detail = kimi_probes.probe_kimi_usage_wire("kimi")
         after = set(os.listdir(tempfile.gettempdir()))
         self.assertEqual(set(), after - before)
         home = detail.split("run home ", 1)[1].split(" ", 1)[0]
@@ -2150,19 +2151,19 @@ class TestKimiUsageWireProbe(unittest.TestCase):
     def test_a_layout_wire_path_cannot_resolve_is_refuted(self):
         import scripts.runners.kimi as kimi_runner
         with mock.patch.object(kimi_runner, "wire_path", return_value=None):
-            state, _by, detail = host_probes.probe_kimi_usage_wire("kimi")
+            state, _by, detail = kimi_probes.probe_kimi_usage_wire("kimi")
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("wire.jsonl", detail)
 
     def test_a_parser_that_returns_the_wrong_figures_is_refuted(self):
         import scripts.runners.kimi as kimi_runner
         with mock.patch.object(kimi_runner, "parse_wire", return_value=({}, None)):
-            state, _by, detail = host_probes.probe_kimi_usage_wire("kimi")
+            state, _by, detail = kimi_probes.probe_kimi_usage_wire("kimi")
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("expected", detail)
 
     def test_a_host_that_claims_no_usage_ledger_is_unknown(self):
-        state, by, _detail = host_probes.probe_kimi_usage_wire("gemini")
+        state, by, _detail = kimi_probes.probe_kimi_usage_wire("gemini")
         self.assertEqual(hosts.UNKNOWN, state)
         self.assertIsNone(by)
 
@@ -2197,10 +2198,13 @@ class TestKimiLaunchGuard(unittest.TestCase):
         # N1: #1619's launch guard FINDS seams by AST walk and then asserts
         # `hasattr(module, "DEFAULT_RUNNER")` on each -- one attribute per
         # MODULE, not one per family. A module-scoped name is what survives
-        # the rebase; `KIMI_DEFAULT_RUNNER` would fail that test twice.
+        # the rebase; `KIMI_DEFAULT_RUNNER` would fail that test twice. #1627
+        # moved the probe seam from `host_probes` to `probes/kimi.py`, the one
+        # probe module that starts a host CLI, so that is the module the
+        # attribute has to be on now.
         import scripts.runners.base as runners_base
         import scripts.runners.kimi as kimi_runner
-        for module in (host_probes, kimi_runner):
+        for module in (kimi_probes, kimi_runner):
             self.assertTrue(hasattr(module, "DEFAULT_RUNNER"),
                             "%s has no module-level DEFAULT_RUNNER" % module.__name__)
             with self.assertRaises(runners_base.LaunchRefused):
@@ -2247,8 +2251,8 @@ class TestKimiGuardArmingIsMeasured(unittest.TestCase):
         import scripts.runners.kimi as kimi_runner
         with mock.patch.object(kimi_runner, "build_merged_config",
                                side_effect=lambda source, s, a, *x, **k: {"tools": {"disabled": []}}):
-            read = host_probes.probe_kimi_read_guard("kimi", doctor_runner=_DoctorFake())
-            write = host_probes.probe_kimi_write_guard("kimi")
+            read = kimi_probes.probe_kimi_read_guard("kimi", doctor_runner=_DoctorFake())
+            write = kimi_probes.probe_kimi_write_guard("kimi")
         for state, by, detail in (read, write):
             self.assertEqual(hosts.REFUTED, state, detail)
             self.assertIn("PreToolUse", detail)
@@ -2257,7 +2261,7 @@ class TestKimiGuardArmingIsMeasured(unittest.TestCase):
         import scripts.runners.kimi as kimi_runner
         with mock.patch.object(kimi_runner, "build_merged_config",
                                side_effect=_kimi_armed_config_without("read")):
-            state, _by, detail = host_probes.probe_kimi_read_guard(
+            state, _by, detail = kimi_probes.probe_kimi_read_guard(
                 "kimi", doctor_runner=_DoctorFake())
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("Read", detail)
@@ -2266,7 +2270,7 @@ class TestKimiGuardArmingIsMeasured(unittest.TestCase):
         import scripts.runners.kimi as kimi_runner
         with mock.patch.object(kimi_runner, "build_merged_config",
                                side_effect=_kimi_armed_config_without("write")):
-            state, _by, detail = host_probes.probe_kimi_write_guard("kimi")
+            state, _by, detail = kimi_probes.probe_kimi_write_guard("kimi")
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("Write", detail)
 
@@ -2278,7 +2282,7 @@ class TestKimiGuardArmingIsMeasured(unittest.TestCase):
         import scripts.runners.kimi as kimi_runner
         with mock.patch.object(kimi_runner, "build_merged_config",
                                side_effect=_kimi_armed_config_without("read")):
-            state, _by, detail = host_probes.probe_kimi_write_guard("kimi")
+            state, _by, detail = kimi_probes.probe_kimi_write_guard("kimi")
         self.assertEqual(hosts.PROVEN, state)
         self.assertIn("Read", detail)                 # the miss is still disclosed
         self.assertIn("read guard probe", detail)
@@ -2287,7 +2291,7 @@ class TestKimiGuardArmingIsMeasured(unittest.TestCase):
         import scripts.runners.kimi as kimi_runner
         with mock.patch.object(kimi_runner, "build_merged_config",
                                side_effect=_kimi_armed_config_without("write")):
-            state, _by, detail = host_probes.probe_kimi_read_guard(
+            state, _by, detail = kimi_probes.probe_kimi_read_guard(
                 "kimi", doctor_runner=_DoctorFake())
         self.assertEqual(hosts.PROVEN, state)
         self.assertIn("Write", detail)
@@ -2296,7 +2300,7 @@ class TestKimiGuardArmingIsMeasured(unittest.TestCase):
     def test_a_hook_pointing_at_a_nonexistent_script_is_refuted(self):
         import scripts.runners.kimi as kimi_runner
         with mock.patch.object(kimi_runner, "_GUARD", "/nonexistent/kimi_guard_hook.py"):
-            state, _by, detail = host_probes.probe_kimi_write_guard("kimi")
+            state, _by, detail = kimi_probes.probe_kimi_write_guard("kimi")
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("guard script", detail)
 
@@ -2304,7 +2308,7 @@ class TestKimiGuardArmingIsMeasured(unittest.TestCase):
         import scripts.kimi_toml as kimi_toml
         with mock.patch.object(kimi_toml, "dump_toml",
                                side_effect=lambda config: "[[mcp]]\nname = \n"):
-            state, _by, detail = host_probes.probe_kimi_write_guard("kimi")
+            state, _by, detail = kimi_probes.probe_kimi_write_guard("kimi")
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("valid TOML", detail)
 
@@ -2318,12 +2322,12 @@ class TestKimiGuardArmingIsMeasured(unittest.TestCase):
             return merged
         with mock.patch.object(kimi_runner, "build_merged_config",
                                side_effect=without_disabled):
-            state, _by, detail = host_probes.probe_kimi_write_guard("kimi")
+            state, _by, detail = kimi_probes.probe_kimi_write_guard("kimi")
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("tools.disabled", detail)
 
     def test_the_armed_detail_names_the_config_it_parsed(self):
-        state, _by, detail = host_probes.probe_kimi_write_guard("kimi")
+        state, _by, detail = kimi_probes.probe_kimi_write_guard("kimi")
         self.assertEqual(hosts.PROVEN, state)
         self.assertIn("config.toml", detail)
 
@@ -2351,7 +2355,7 @@ class TestKimiShellSurfaceIsAnAllowList(unittest.TestCase):
     def test_the_derived_disabled_set_plus_the_grants_covers_the_vocabulary(self):
         with tempfile.TemporaryDirectory() as d:
             _kimi_fully_registered(d)
-            state, _by, detail = host_probes.probe_kimi_shell_surface(
+            state, _by, detail = kimi_probes.probe_kimi_shell_surface(
                 "kimi", registration_dir=d, version="0.42")
         self.assertEqual(hosts.PROVEN, state)
         self.assertIn("accounted for", detail)
@@ -2373,7 +2377,7 @@ class TestKimiShellSurfaceIsAnAllowList(unittest.TestCase):
             _kimi_fully_registered(d)
             with mock.patch.object(kimi_runner, "build_merged_config",
                                    side_effect=disables_nothing):
-                state, _by, detail = host_probes.probe_kimi_shell_surface(
+                state, _by, detail = kimi_probes.probe_kimi_shell_surface(
                     "kimi", registration_dir=d, version="0.42")
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("FetchURL", detail)
@@ -2385,9 +2389,9 @@ class TestKimiShellSurfaceIsAnAllowList(unittest.TestCase):
         # tucked into its detail.
         with tempfile.TemporaryDirectory() as d:
             _kimi_fully_registered(d)
-            with mock.patch.object(host_probes, "_kimi_armed_home",
+            with mock.patch.object(kimi_probes, "_kimi_armed_home",
                                    side_effect=OSError("no space left on device")):
-                state, _by, detail = host_probes.probe_kimi_shell_surface(
+                state, _by, detail = kimi_probes.probe_kimi_shell_surface(
                     "kimi", registration_dir=d, version="0.42")
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("no space left on device", detail)
@@ -2405,7 +2409,7 @@ class TestKimiShellSurfaceIsAnAllowList(unittest.TestCase):
                 with tempfile.TemporaryDirectory() as d:
                     _kimi_fully_registered(d)
                     with mock.patch.object(target, name, side_effect=boom):
-                        state, _by, detail = host_probes.probe_kimi_shell_surface(
+                        state, _by, detail = kimi_probes.probe_kimi_shell_surface(
                             "kimi", registration_dir=d, version="0.42")
                 self.assertEqual(hosts.REFUTED, state)
                 self.assertIn(str(boom), detail)
@@ -2416,7 +2420,7 @@ class TestKimiShellSurfaceIsAnAllowList(unittest.TestCase):
             _kimi_fully_registered(d)
             with mock.patch.object(kimi_runner, "disabled_tools",
                                    side_effect=lambda vocabulary=None: ["Bash"]):
-                state, _by, detail = host_probes.probe_kimi_shell_surface(
+                state, _by, detail = kimi_probes.probe_kimi_shell_surface(
                     "kimi", registration_dir=d, version="0.42")
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("FetchURL", detail)
@@ -2448,7 +2452,7 @@ class TestKimiShellSurfaceReadsTheWire(unittest.TestCase):
     def test_a_snapshot_matching_the_shells_grant_is_proven_and_says_so(self):
         with tempfile.TemporaryDirectory() as d:
             _kimi_fully_registered(d)
-            state, _by, detail = host_probes.probe_kimi_shell_surface(
+            state, _by, detail = kimi_probes.probe_kimi_shell_surface(
                 "kimi", registration_dir=d, version="0.42",
                 run_home=self._home(snapshot=["Read", "Grep", "Glob", "Write"]))
         self.assertEqual(hosts.PROVEN, state)
@@ -2458,7 +2462,7 @@ class TestKimiShellSurfaceReadsTheWire(unittest.TestCase):
     def test_a_snapshot_wider_than_the_grant_is_refuted_naming_both_sets(self):
         with tempfile.TemporaryDirectory() as d:
             _kimi_fully_registered(d)
-            state, _by, detail = host_probes.probe_kimi_shell_surface(
+            state, _by, detail = kimi_probes.probe_kimi_shell_surface(
                 "kimi", registration_dir=d, version="0.42",
                 run_home=self._home(snapshot=["Read", "Grep", "Glob", "Write", "Bash"]))
         self.assertEqual(hosts.REFUTED, state)
@@ -2468,7 +2472,7 @@ class TestKimiShellSurfaceReadsTheWire(unittest.TestCase):
     def test_no_wire_file_yet_falls_back_to_the_table_and_says_so(self):
         with tempfile.TemporaryDirectory() as d:
             _kimi_fully_registered(d)
-            state, _by, detail = host_probes.probe_kimi_shell_surface(
+            state, _by, detail = kimi_probes.probe_kimi_shell_surface(
                 "kimi", registration_dir=d, version="0.42", run_home=self._home())
         self.assertEqual(hosts.PROVEN, state)
         self.assertIn("no child wire file", detail)
@@ -2477,7 +2481,7 @@ class TestKimiShellSurfaceReadsTheWire(unittest.TestCase):
     def test_no_run_home_at_all_falls_back_rather_than_looking_for_one(self):
         with tempfile.TemporaryDirectory() as d:
             _kimi_fully_registered(d)
-            state, _by, detail = host_probes.probe_kimi_shell_surface(
+            state, _by, detail = kimi_probes.probe_kimi_shell_surface(
                 "kimi", registration_dir=d, version="0.42")
         self.assertEqual(hosts.PROVEN, state)
         self.assertIn("no per-run kimi home yet", detail)
@@ -2505,13 +2509,13 @@ class TestKimiShellSurfaceReadsTheWire(unittest.TestCase):
                       encoding="utf-8") as fh:
                 fh.write(planted)
             with self.assertRaises(TypeError):        # no tree-reading channel
-                host_probes.probe_kimi_shell_surface(
+                kimi_probes.probe_kimi_shell_surface(
                     "kimi", registration_dir=registration, version="0.42",
                     run_dir=run_dir)
-            state, _by, detail = host_probes.probe_kimi_shell_surface(
+            state, _by, detail = kimi_probes.probe_kimi_shell_surface(
                 "kimi", registration_dir=registration, version="0.42")
         self.assertEqual(hosts.PROVEN, state)
         self.assertNotIn("Bash", detail)
         self.assertNotIn("tools_snapshot for", detail)
         self.assertNotIn("run_dir",
-                         inspect.signature(host_probes.probe_kimi_shell_surface).parameters)
+                         inspect.signature(kimi_probes.probe_kimi_shell_surface).parameters)
