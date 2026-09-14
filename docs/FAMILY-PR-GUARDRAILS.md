@@ -62,6 +62,19 @@ The seam's contract, in `skill/scripts/runners/base.py`:
   a host whose usage evidence is not a launch envelope at all (Kimi reads a
   session wire file and maps `usage_ledger` to its own probe). What it will
   never do is read `proven` from an empty list (#1626).
+- `Runner.teardown(status)` releases whatever `prepare` acquired. The loop calls
+  it exactly once, from `orchestrate._finish`, on a terminal status and never
+  between iterations, and hands it that status so a runner can drop a scratch
+  area on `complete` and keep it for debugging otherwise. Kimi's per-run home is
+  what needed it; Claude and Codex release nothing and inherit the no-op.
+- `namespace` and `dispatch_request` are set by the loop **before** `prepare`
+  (`"setup"` under `--setup` and otherwise `None`; the absolute path the pending
+  entries came from), and `run_home` is read off the runner **after** it -- a
+  scratch directory outside the reviewed tree, so a probe can find this run's
+  children without opening a file the target is free to rewrite.
+- `HONOURS_MAX_TURNS = False` says your CLI has no turn cap for `--max-turns` to
+  reach. The loop sets `runner.max_turns` unconditionally, so declare it rather
+  than accepting the flag and ignoring it in silence; Codex does.
 - `default_concurrency` is yours to set. `driver loop --concurrency` overrides it.
 - `runner_for(host, mode)` finds you by module name. `headless_available(host)`
   is true once `skill/scripts/runners/<host>.py` exposes `Runner`; until then
