@@ -1667,19 +1667,34 @@ class TestKimiModelAliasProbe(unittest.TestCase):
 
 
 class TestKimiUsageWireProbe(unittest.TestCase):
-    def test_a_working_parser_and_a_sessions_dir_are_proven(self):
+    """I4: the ledger's channel is the PER-RUN home's wire files
+    (`wire_path(self.kimi_home, session_id)`), not `~/.kimi-code/sessions`,
+    which the runner's own KIMI_CODE_HOME override guarantees the children
+    never write to. The probe proves the channel the runner reads."""
+
+    def test_the_run_homes_wire_layout_resolves_and_parses(self):
         with tempfile.TemporaryDirectory() as d:
-            os.makedirs(os.path.join(d, "sessions"))
             state, by, detail = host_probes.probe_kimi_usage_wire("kimi", home=d)
         self.assertEqual(hosts.PROVEN, state)
         self.assertEqual(host_probes.KIMI_USAGE_WIRE, by)
-        self.assertIn("sessions", detail)
+        self.assertIn(d, detail)                      # the run home is named
+        self.assertIn("wire.jsonl", detail)
 
-    def test_no_sessions_dir_is_refuted(self):
-        with tempfile.TemporaryDirectory() as d:
+    def test_a_layout_wire_path_cannot_resolve_is_refuted(self):
+        import scripts.runners.kimi as kimi_runner
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(kimi_runner, "wire_path", return_value=None):
             state, _by, detail = host_probes.probe_kimi_usage_wire("kimi", home=d)
         self.assertEqual(hosts.REFUTED, state)
-        self.assertIn("sessions", detail)
+        self.assertIn("wire.jsonl", detail)
+
+    def test_a_parser_that_returns_the_wrong_figures_is_refuted(self):
+        import scripts.runners.kimi as kimi_runner
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(kimi_runner, "parse_wire", return_value=({}, None)):
+            state, _by, detail = host_probes.probe_kimi_usage_wire("kimi", home=d)
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("expected", detail)
 
     def test_a_host_that_claims_no_usage_ledger_is_unknown(self):
         state, by, _detail = host_probes.probe_kimi_usage_wire("gemini")

@@ -936,49 +936,65 @@ def probe_kimi_model_alias(host, configured=None):
 
 
 def probe_kimi_usage_wire(host, home=None):
-    """The usage ledger's channel: the wire parser works and this machine's
-    kimi writes session transcripts.
+    """The usage ledger's channel, end to end on the layout the runner globs.
 
-    Headless children write their wire files into the per-run home, so the
-    probe proves the MECHANISM on a synthetic wire file and treats the real
-    home's sessions directory as evidence the CLI persists sessions here at
-    all -- the same shape as the claude transcript-dir probe.
+    I4: the runner reads `wire_path(self.kimi_home, session_id)` -- a file the
+    CHILD writes under the PER-RUN home, which its own `KIMI_CODE_HOME`
+    override guarantees is not `~/.kimi-code`. The probe therefore builds a
+    per-run home, writes a synthetic session at exactly that layout, and
+    proves `wire_path` + `parse_wire` together: resolution and summation, the
+    two steps a real launch takes between a child finishing and a ledger row
+    existing. It refutes when `wire_path` cannot resolve the layout (the
+    ledger would report null rather than a figure) and when the parser returns
+    anything but the figures the synthetic records carry.
+
+    `home` names the per-run home to build the fixture session in; the default
+    is a fresh sandbox, and the fixture hook is how `run_probes` pins it.
     """
     import scripts.runners.kimi as kimi_runner
     if not hosts.declares(host, hosts.USAGE_LEDGER):
         return (hosts.UNKNOWN, None, "host %r claims no usage ledger" % host)
+    session_id = "session_probe"
+    records = [
+        {"type": "llm.request", "modelAlias": "kimi-code/k3"},
+        {"type": "usage.record", "model": "kimi-code/k3", "usageScope": "turn",
+         "usage": {"inputOther": 10, "output": 3, "inputCacheRead": 5, "inputCacheCreation": 2}},
+        {"type": "usage.record", "model": "kimi-code/k3", "usageScope": "turn",
+         "usage": {"inputOther": 7, "output": 1, "inputCacheRead": 0, "inputCacheCreation": 0}},
+        {"type": "usage.record", "model": "kimi-code/k3", "usageScope": "session",
+         "usage": {"inputOther": 999, "output": 999, "inputCacheRead": 999, "inputCacheCreation": 999}},
+    ]
     try:
         with tempfile.TemporaryDirectory() as sandbox:
-            wire = os.path.join(sandbox, "wire.jsonl")
-            records = [
-                {"type": "usage.record", "model": "kimi-code/k3", "usageScope": "turn",
-                 "usage": {"inputOther": 10, "output": 3, "inputCacheRead": 5, "inputCacheCreation": 2}},
-                {"type": "usage.record", "model": "kimi-code/k3", "usageScope": "turn",
-                 "usage": {"inputOther": 7, "output": 1, "inputCacheRead": 0, "inputCacheCreation": 0}},
-                {"type": "usage.record", "model": "kimi-code/k3", "usageScope": "session",
-                 "usage": {"inputOther": 999, "output": 999, "inputCacheRead": 999, "inputCacheCreation": 999}},
-            ]
+            run_home = home or os.path.join(sandbox, "kimi-home")
+            # The layout `wire_path` globs: <home>/sessions/*/<sid>/agents/main/
+            wire = os.path.join(run_home, "sessions", "wd_probe", session_id,
+                                "agents", "main", "wire.jsonl")
+            os.makedirs(os.path.dirname(wire), exist_ok=True)
             with open(wire, "w", encoding="utf-8") as fh:
                 for record in records:
                     fh.write(json.dumps(record) + "\n")
-            usage, model = kimi_runner.parse_wire(wire)
+            resolved = kimi_runner.wire_path(run_home, session_id)
+            usage, model = kimi_runner.parse_wire(resolved) if resolved else ({}, None)
     except OSError as exc:
         return (hosts.UNKNOWN, KIMI_USAGE_WIRE,
-                "synthetic wire round-trip could not run: %s" % exc)
+                "the per-run wire round-trip could not run: %s" % exc)
+    if resolved is None:
+        return (hosts.REFUTED, KIMI_USAGE_WIRE,
+                "a child's wire.jsonl written at the per-run home's own layout "
+                "(%s) does not resolve through wire_path, so the cost ledger "
+                "would report null rather than a figure" % wire)
     expected = {"input_tokens": 17, "output_tokens": 4,
                 "cache_read_input_tokens": 5, "cache_creation_input_tokens": 2}
     if usage != expected or model != "kimi-code/k3":
         return (hosts.REFUTED, KIMI_USAGE_WIRE,
-                "the wire parser returned %r (model %r) for a synthetic wire "
-                "file, expected %r" % (usage, model, expected))
-    root = home or os.environ.get("KIMI_CODE_HOME") or os.path.expanduser("~/.kimi-code")
-    directory = os.path.join(root, "sessions")
-    if not os.path.isdir(directory):
-        return (hosts.REFUTED, KIMI_USAGE_WIRE,
-                "the wire parser is sound, but no sessions directory at %s; "
-                "the cost ledger will report null rather than a figure" % directory)
+                "wire_path resolved %s but parse_wire returned %r (model %r), "
+                "expected %r" % (resolved, usage, model, expected))
     return (hosts.PROVEN, KIMI_USAGE_WIRE,
-            "wire parser verified on a synthetic file; %s is readable" % directory)
+            "a synthetic session under the run home %s resolves through "
+            "wire_path to %s and sums to %d input / %d output tokens, the "
+            "turn-scoped records only" % (run_home, resolved,
+                                          expected["input_tokens"], expected["output_tokens"]))
 
 
 TRANSCRIPT_DIR = "transcript-dir"
