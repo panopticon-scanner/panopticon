@@ -20,6 +20,7 @@ import scripts.orchestrate as orchestrate
 import scripts.phases.runio as runio
 import scripts.read_guard_hook as read_guard_hook
 import scripts.runners.base as base
+from scripts import hosts
 import scripts.write_guard_hook as write_guard_hook
 from test_orchestrate import (FakeRunner, LoopCase, _all_proven_artifact,
                               _write_guard_not_proven)
@@ -424,18 +425,33 @@ class TestHostAndModeResolution(LoopCase):
         self.assertIn("--host generic --reset", status["message"])
         self.assertEqual([], calls, "nothing may be dispatched for it")
 
-    def test_a_resume_under_a_host_that_is_still_selectable_is_untouched(self):
-        # The other half: the refusal above must key on the REGISTRY, so a
-        # manifest naming a host that is still selectable resumes exactly as
-        # it did before -- this is the guard against the refusal swallowing
-        # every resume.
+    def test_the_refusal_does_not_fire_for_a_host_that_is_still_selectable(self):
+        # The other half, and it has to run the SAME manipulation as the test
+        # above or it is not a guard: a resume whose manifest was rewritten to
+        # name a different host. The only difference is that the name is the
+        # OTHER selectable row, so the loop must resume through it untouched.
+        #
+        # Re-running `_claim_nothing_run` and re-asserting `("generic",
+        # "session")` -- which is what this test did at first -- is a byte
+        # copy of test_a_resume_without_host_dispatches_for_the_runs_own_host
+        # above: that one mints its host through the CLI and is about manifest
+        # AUTHORITY, and it would keep passing if the #1621 check refused
+        # every manifest-resolved host that was not the one the CLI minted.
+        # Only rewriting the manifest, as the refusal test does, exercises the
+        # `driver_hosts()` membership read.
         d, _ = self._repo(); s = self._session_root(d)
         self._claim_nothing_run(d, s)
+        path = driver.run_manifest.manifest_path(d)
+        manifest = runio._load_json(path)
+        self.assertIn("claude", hosts.driver_hosts())
+        manifest["host"] = "claude"
+        runio._write_json(path, manifest)
         calls = []
         with self._spy(calls), contextlib.redirect_stdout(io.StringIO()), \
              contextlib.redirect_stderr(io.StringIO()):
-            orchestrate.loop(self._args(d, "--mode", "session", "--session-dir", s))
-        self.assertEqual(calls, [("generic", "session")])
+            status = orchestrate.loop(self._args(d, "--mode", "session", "--session-dir", s))
+        self.assertNotEqual("error", status["status"], status)
+        self.assertEqual(calls, [("claude", "session")])
 
     def test_a_target_committed_manifest_does_not_choose_the_host(self):
         # Fix round 3: I5 reads the run's host off run-manifest.json, but
