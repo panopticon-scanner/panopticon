@@ -282,6 +282,33 @@ def test_a_recovered_turn_clears_an_earlier_transient_error():
         assert result.text == REPLY["item"]["text"]
 
 
+def test_commentary_before_the_failure_does_not_clear_it():
+    # N-I3: `if text:` treated "some agent_message has been seen" as "this
+    # turn produced its final message", and commentary legitimately precedes
+    # the final JSON (the parser's own docstring says so). The turn below
+    # never recovered: the entry must stay failed, exactly as the PR head had
+    # it, or the loop ledgers a success, discards the error text and never
+    # counts the strike.
+    commentary = {"type": "item.completed",
+                  "item": {"type": "agent_message",
+                           "text": "Let me start by reading the files."}}
+    aborted = {"type": "error", "message": "model stream aborted before the final answer"}
+    result = codex.Runner.parse_envelope("e", envelope(
+        START, commentary, aborted, DONE), 0)
+    assert not result.ok
+    assert "model stream aborted" in result.error
+
+
+def test_a_reply_after_the_failure_is_a_recovery():
+    # The other side of the same ordering: the final message ARRIVED after the
+    # failure event, so the turn did recover.
+    aborted = {"type": "error", "message": "stream reset"}
+    result = codex.Runner.parse_envelope("e", envelope(START, aborted, REPLY, DONE), 0)
+    assert result.ok, result.error
+    assert result.error is None
+    assert result.text == REPLY["item"]["text"]
+
+
 def test_a_failure_after_the_completed_turn_still_fails():
     result = codex.Runner.parse_envelope("e", envelope(
         START, REPLY, DONE, {"type": "turn.failed", "error": "transport failed"}), 0)

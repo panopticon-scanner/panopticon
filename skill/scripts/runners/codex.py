@@ -62,8 +62,13 @@ class Runner(base.HostRunner):
         """
         text, session_id, model, error = "", None, None, None
         usage, denials, completed = {}, [], False
+        # N-I3: WHEN each was last set, so a recovery can be told from
+        # commentary. Every agent_message overwrites `text`, and commentary
+        # legitimately precedes the final JSON, so "text is non-empty" does
+        # not mean "this turn produced its final message".
+        text_seq, error_seq = -1, -1
         try:
-            for line in stdout.splitlines():
+            for sequence, line in enumerate(stdout.splitlines()):
                 if not line.strip():
                     continue
                 event = json.loads(line)
@@ -74,12 +79,14 @@ class Runner(base.HostRunner):
                     session_id = event.get("thread_id")
                 elif kind == "turn.completed":
                     completed = True
-                    if text:
+                    if text and text_seq > error_seq:
                         # M-2: a `turn.failed`/`error` event the turn then
                         # RECOVERED from is not a failed entry. Leaving it set
                         # cost a retry and a strike against the three-launch
-                        # cap for a turn that produced its final message. A
-                        # failure AFTER this point still fails, because it
+                        # cap for a turn that produced its final message.
+                        # N-I3: only when the final message arrived AFTER the
+                        # failure. Commentary before it is not a recovery, and
+                        # a failure after this point still fails, because it
                         # sets `error` again below.
                         error = None
                     reported = event.get("usage")
@@ -105,6 +112,7 @@ class Runner(base.HostRunner):
                         usage[field] = usage.get(field, 0) + value
                 elif kind in ("turn.failed", "error"):
                     error = str(event.get("error") or event.get("message") or kind)
+                    error_seq = sequence
                 elif kind == "item.completed":
                     item = event.get("item") or {}
                     if not isinstance(item, dict):
@@ -114,6 +122,7 @@ class Runner(base.HostRunner):
                         text = item.get("text", "")
                         if not isinstance(text, str):
                             raise ValueError("agent message is not text")
+                        text_seq = sequence
                     elif item.get("type") == "mcp_tool_call":
                         result = item.get("result") or {}
                         # Native exec omits MCP isError from the result and
