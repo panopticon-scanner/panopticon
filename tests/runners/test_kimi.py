@@ -1,8 +1,10 @@
 import contextlib
 import dataclasses
 import datetime
+import io
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import tomllib
@@ -12,6 +14,7 @@ from unittest import mock
 import scripts.hosts as hosts
 import scripts.kimi_guard_hook as kimi_guard_hook
 import scripts.runners.base as base
+import scripts.kimi_toml as kimi_toml
 import scripts.runners.kimi as kimi_runner
 
 STREAM = "\n".join([
@@ -210,11 +213,11 @@ class TestTomlEmission(unittest.TestCase):
                   "providers": {"managed:kimi-code": {"type": "kimi", "api_key": "",
                                                       "oauth": {"storage": "file"}}},
                   "hooks": [{"event": "PreToolUse", "matcher": "Read", "timeout": 30}]}
-        back = tomllib.loads(kimi_runner.dump_toml(config))
+        back = tomllib.loads(kimi_toml.dump_toml(config))
         self.assertEqual(back, config)
 
     def test_keys_that_are_not_bare_are_quoted(self):
-        back = tomllib.loads(kimi_runner.dump_toml({"models": {"kimi-code/k3": {"model": "k3"}}}))
+        back = tomllib.loads(kimi_toml.dump_toml({"models": {"kimi-code/k3": {"model": "k3"}}}))
         self.assertEqual(back["models"]["kimi-code/k3"]["model"], "k3")
 
 
@@ -452,6 +455,43 @@ class TestHomeLocation(unittest.TestCase):
             r.teardown("complete")
             self.assertFalse(os.path.exists(home))
 
+    def test_an_errored_teardown_keeps_the_home_but_strips_its_secrets(self):
+        # N6: a kept home holds a config.toml carrying the operator's api_key
+        # verbatim and live symlinks into their OAuth stores, and nothing ever
+        # prunes it -- on a machine that errors regularly (the PR's own
+        # evidence run errored 247 launches) that is a growing set of
+        # credential handles, path-visible to every process of that uid. The
+        # debugging value is in the wire files, not the secrets.
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
+                r = kimi_runner.Runner("kimi")
+                r.prepare(os.path.join(d, "run"), review_root=d)
+            home = r.kimi_home
+            self.addCleanup(shutil.rmtree, home, True)
+            wire = os.path.join(home, "sessions", "w", "s", "agents", "main", "wire.jsonl")
+            os.makedirs(os.path.dirname(wire))
+            with open(wire, "w", encoding="utf-8") as fh:
+                fh.write("{}\n")
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                r.teardown("error")
+            self.assertTrue(os.path.isdir(home))                       # kept
+            self.assertTrue(os.path.isfile(wire))                      # and useful
+            self.assertFalse(os.path.exists(os.path.join(home, "config.toml")))
+            for item in ("credentials", "oauth"):
+                self.assertFalse(os.path.islink(os.path.join(home, item)))
+            self.assertIn(home, err.getvalue())
+            self.assertIn("config.toml", err.getvalue())
+
+    def test_a_removed_home_takes_its_pointer_file_with_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            run_dir = os.path.join(d, "run")
+            with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
+                r = kimi_runner.Runner("kimi")
+                r.prepare(run_dir, review_root=d)
+            r.teardown("complete")
+            self.assertFalse(os.path.exists(r.home_pointer))
+            self.assertEqual([], os.listdir(run_dir))
+
     def test_teardown_refuses_a_path_that_is_not_a_temp_home(self):
         with tempfile.TemporaryDirectory() as d:
             planted = os.path.join(d, "not-a-temp-home")
@@ -581,13 +621,13 @@ class TestTomlEmissionRoundTrips(unittest.TestCase):
         # "Cannot overwrite a value".
         config = {"mcp": {"servers": [{"name": "s1", "command": "a"},
                                       {"name": "s2", "command": "b"}]}}
-        self.assertEqual(config, tomllib.loads(kimi_runner.dump_toml(config)))
+        self.assertEqual(config, tomllib.loads(kimi_toml.dump_toml(config)))
 
     def test_a_scalar_after_an_array_of_tables_stays_in_its_own_table(self):
         # The old writer emitted array-of-tables headers from INSIDE the scalar
         # loop, so `y` was swallowed into the last `[[...]]`.
         config = {"a": {"list": [{"x": 1}], "y": 2}}
-        self.assertEqual(config, tomllib.loads(kimi_runner.dump_toml(config)))
+        self.assertEqual(config, tomllib.loads(kimi_toml.dump_toml(config)))
 
     def test_datetimes_dates_and_times_round_trip(self):
         config = {"last_update_check": datetime.datetime(2026, 9, 13, 12, 30, 5,
@@ -595,18 +635,18 @@ class TestTomlEmissionRoundTrips(unittest.TestCase):
                   "naive": datetime.datetime(2026, 9, 13, 12, 30, 5),
                   "day": datetime.date(2026, 9, 13),
                   "clock": datetime.time(7, 5, 1)}
-        self.assertEqual(config, tomllib.loads(kimi_runner.dump_toml(config)))
+        self.assertEqual(config, tomllib.loads(kimi_toml.dump_toml(config)))
 
     def test_tables_three_deep_round_trip(self):
         config = {"providers": {"managed:kimi-code": {"oauth": {"storage": "file",
                                                                 "key": "x"},
                                                       "api_key": "k"}},
                   "top": 1}
-        self.assertEqual(config, tomllib.loads(kimi_runner.dump_toml(config)))
+        self.assertEqual(config, tomllib.loads(kimi_toml.dump_toml(config)))
 
     def test_a_none_value_names_the_key_it_came_from(self):
         with self.assertRaises(TypeError) as caught:
-            kimi_runner.dump_toml({"tools": {"disabled": None}})
+            kimi_toml.dump_toml({"tools": {"disabled": None}})
         self.assertIn("disabled", str(caught.exception))
 
     def test_the_real_merged_config_round_trips_with_an_mcp_block(self):

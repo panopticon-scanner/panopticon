@@ -1831,8 +1831,8 @@ class TestKimiGuardArmingIsMeasured(unittest.TestCase):
         self.assertIn("guard script", detail)
 
     def test_a_config_the_writer_corrupts_is_refuted(self):
-        import scripts.runners.kimi as kimi_runner
-        with mock.patch.object(kimi_runner, "dump_toml",
+        import scripts.kimi_toml as kimi_toml
+        with mock.patch.object(kimi_toml, "dump_toml",
                                side_effect=lambda config: "[[mcp]]\nname = \n"):
             state, _by, detail = host_probes.probe_kimi_write_guard("kimi")
         self.assertEqual(hosts.REFUTED, state)

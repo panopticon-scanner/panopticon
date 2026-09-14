@@ -23,14 +23,13 @@ So `prepare` builds a per-run home: the operator's OAuth stores (`credentials`,
 The source config's other values are carried verbatim -- including any
 plaintext `api_key` the operator keeps there (stripping it would break
 api_key-authenticated installs). BECAUSE it carries that surface, the home is
-built under the operator's temp root (``$XDG_RUNTIME_DIR`` where the platform
-has one), mode 700, with `config.toml` mode 600 -- never inside the tree under
-review, where the always-unenforced setup-scan reviewer's own scope would
-admit it, an archived run folder would embed it, and the children's verbatim
-`wire.jsonl` transcripts would land beside the code being reviewed (C1). The
-run folder keeps one pointer file, ``kimi-home-path``, so a resume finds the
-same home; `teardown` removes it on `complete` and keeps it, loudly, on an
-error. PR evidence must quote capabilities, never this directory.
+built under the operator's temp root (``$XDG_RUNTIME_DIR`` where there is one),
+mode 700, `config.toml` mode 600 -- never inside the tree under review, where
+the always-unenforced setup-scan reviewer's scope would admit it, an archived
+run folder would embed it, and the children's verbatim `wire.jsonl` would land
+beside the code being reviewed (C1). `teardown` removes it on `complete` and
+keeps it stripped of its credential files on an error (N6). PR evidence must
+quote capabilities, never this directory.
 
 MODEL BINDING. Entry models are the primary/secondary TIERS
 (phases/requests.bound_model via model_resolver). Kimi agent files cannot
@@ -48,7 +47,6 @@ cannot start (kimi_guard_hook.py's docstring); and `kimi -p` gives no USD
 metering on an OAuth plan, so cost_usd is None -- the ledger's token figures
 are the honest cost signal.
 """
-import datetime
 import glob
 import json
 import os
@@ -61,6 +59,7 @@ import tomllib
 
 import scripts.dispatch as dispatch
 import scripts.hosts as hosts
+import scripts.kimi_toml as kimi_toml
 import scripts.kimi_guard_hook as kimi_guard_hook
 import scripts.model_resolver as model_resolver
 import scripts.runners.base as base
@@ -78,18 +77,14 @@ class LaunchRefused(RuntimeError):
     """The suite's structural guard refused a real `kimi` launch.
 
     Raised only by the fake tests/conftest.py installs over `DEFAULT_RUNNER`
-    (and over host_probes.DEFAULT_RUNNER). It is deliberately NOT an OSError:
-    every `except OSError` on a launch path would otherwise swallow it and
-    report a probe state, hiding the fact that the suite reached for the real
-    binary. Nothing in production raises it.
+    (and over host_probes.DEFAULT_RUNNER). Deliberately NOT an OSError: an
+    `except OSError` on a launch path would swallow it and report a probe
+    state, hiding that the suite reached for the real binary.
 
-    REBASE STEP (N1). #1619 ships the same class as
-    `scripts.codex_host.LaunchRefused`, and its guard test asserts one class
-    for the whole suite (`assertRaises(codex_host.LaunchRefused)` through
-    every seam). When that lands, this name becomes an alias of it -- one
-    class, two spellings -- or both move to `runners/base.py`; keep the
-    subclass-of-RuntimeError contract either way, since that is what keeps
-    `except OSError` on the launch paths from swallowing it.
+    REBASE STEP (N1): #1619 ships the same class as
+    `scripts.codex_host.LaunchRefused` and asserts ONE class through every
+    seam, so this name becomes an alias of it (or both move to
+    `runners/base.py`). Keep the RuntimeError base either way.
     """
 
 
@@ -101,13 +96,12 @@ class LaunchRefused(RuntimeError):
 # setup-scan reviewer (its scope is the whole review root), embedded by any
 # `zip -r` of the run folder, and reachable by the target's own tooling.
 # chmod 700 does not help there: every one of those readers is the same uid.
-# The run folder keeps only POINTER_FILE, and it is INFORMATIONAL ONLY (N2):
-# an operator debugging an errored run needs to know where the home is, but
-# nothing in this module or in the probes ever reads it back. It sits in the
-# reviewed tree, so reading it would make an untrusted file an input to where
-# this run's credential surface gets written and to what the probes call
-# evidence -- the very invariant `teardown` states for its own rmtree. Every
-# `prepare` mints a fresh home instead; nothing is ever reused.
+# The run folder keeps only POINTER_FILE, INFORMATIONAL ONLY (N2): an operator
+# debugging an errored run needs to know where the home is, but nothing here or
+# in the probes reads it back. It sits in the reviewed tree, so reading it
+# would make an untrusted file an input to where this run's credential surface
+# is written and to what the probes call evidence. Every `prepare` mints a
+# fresh home; nothing is reused.
 HOME_PREFIX = "panopticon-kimi-"
 POINTER_FILE = "kimi-home-path"
 _GUARD = os.path.abspath(kimi_guard_hook.__file__)
@@ -115,13 +109,11 @@ _GUARD = os.path.abspath(kimi_guard_hook.__file__)
 # Config itself is regenerated, not linked -- the hooks have to merge into it.
 _CREDENTIAL_ITEMS = ("credentials", "oauth")
 # The CLI's builtin tool vocabulary by major.minor, measured from a live
-# session's `llm.tools_snapshot` wire record on 0.42.0. It lives HERE, with the
-# runner that must deny them, rather than with the probe that reports on them:
-# Kimi's config offers a deny-list (`tools.disabled`) and no allow-list, so
-# turning the templates' allow-list into a closed surface requires knowing
-# every name the CLI ships. A version this table does not cover still gets the
-# union below (denying a name the CLI does not have is inert); the PROBE is
-# what refuses to bless an uncovered version.
+# session's `llm.tools_snapshot` on 0.42.0. It lives with the runner that must
+# DENY these names, not with the probe that reports on them: Kimi's config
+# offers `tools.disabled` and no allow-list, so closing the surface needs every
+# name the CLI ships. An uncovered version gets the union below (denying a name
+# the CLI lacks is inert); the PROBE is what refuses to bless one.
 TOOL_VOCABULARY = {
     "0.42": frozenset({
         "Agent", "AgentSwarm", "AskUserQuestion", "Bash", "CreateGoal",
@@ -159,14 +151,12 @@ def disabled_tools(vocabulary=None):
     """The tools the per-run config turns off for every child.
 
     I1: an ALLOW-LIST expressed as a deny-list -- the CLI's whole vocabulary
-    minus what the templates grant -- not a hand-kept three-name deny-list.
-    The old ["Agent", "AgentSwarm", "Bash"] closed 3 of 24 tools and left every
-    UNENFORCED entry (the setup scan is ALWAYS unenforced) holding
-    ReadMediaFile (a read tool the guard did not know), FetchURL and WebSearch
-    (egress, the other half of C1's exfiltration path) and
-    CronCreate/CronDelete (persistence on the operator's machine, from a review
-    of a hostile repo). For an ENFORCED entry the shell's `tools:` grant is the
-    control and this is belt-and-braces.
+    minus what the templates grant. The old three-name list closed 3 of 24 and
+    left every UNENFORCED entry (the setup scan is always one) holding
+    ReadMediaFile (a read tool the guard did not know), FetchURL/WebSearch
+    (egress, the other half of C1) and CronCreate/CronDelete (persistence on
+    the operator's machine). For an ENFORCED entry the shell's `tools:` grant
+    is the control and this is belt-and-braces.
     """
     names = (set(vocabulary) if vocabulary is not None
              else set().union(*TOOL_VOCABULARY.values()))
@@ -175,83 +165,6 @@ def disabled_tools(vocabulary=None):
 # fine with them set (measured on 0.42.0), but they are dropped so no future
 # version can read the child as attached to the parent session.
 _NESTED_MARKERS = ("KIMI_SESSION_ID", "KIMI_CODE_VERSION")
-
-
-# --- TOML emission ----------------------------------------------------------
-# Stdlib has tomllib for reading but no writer. This emits the subset TOML a
-# config.toml uses: scalars, string arrays, tables, and arrays of tables.
-
-def _toml_key(key):
-    if key and all(c.isalnum() or c in "_-" for c in key):
-        return key
-    return json.dumps(key)
-
-
-def _toml_value(value, key=None):
-    """One TOML scalar. `key` is carried only so a value this writer cannot
-    emit names the key it came from -- a bare "cannot emit TOML for None" in
-    the middle of `prepare` says nothing about which config line to look at.
-    """
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, str):
-        return json.dumps(value)
-    # datetime BEFORE date: every datetime is also a date (C2). tomllib hands
-    # these back for any TOML date-time, and a CLI config that carries one
-    # (`last_update_check`, an install stamp) used to abort the whole run.
-    if isinstance(value, datetime.datetime):
-        return value.isoformat()               # offset or local date-time
-    if isinstance(value, datetime.date):
-        return value.isoformat()               # local date
-    if isinstance(value, datetime.time):
-        return value.isoformat()               # local time
-    if isinstance(value, (int, float)):
-        return repr(value)
-    if isinstance(value, list):
-        return "[%s]" % ", ".join(_toml_value(v, key) for v in value)
-    raise TypeError("cannot emit TOML for the value at %r: %r"
-                    % (key if key is not None else "<root>", value))
-
-
-def _split(table):
-    """(scalars, arrays_of_tables, tables) -- the three things a TOML table
-    holds, separated so the emitter can order them. TOML binds every bare
-    `key = value` line to the LAST header above it, so a parent's scalars have
-    to be written before any `[[...]]` or `[...]` header of its own."""
-    scalars, arrays, tables = {}, {}, {}
-    for key, value in table.items():
-        if isinstance(value, dict):
-            tables[key] = value
-        elif isinstance(value, list) and value and all(isinstance(i, dict) for i in value):
-            arrays[key] = value
-        else:
-            scalars[key] = value
-    return scalars, arrays, tables
-
-
-def _emit_table(lines, table, path):
-    """Emit one table's body under `path` (a dotted key path, already quoted)."""
-    scalars, arrays, tables = _split(table)
-    for key, value in scalars.items():
-        lines.append("%s = %s" % (_toml_key(key), _toml_value(value, key)))
-    for key, items in arrays.items():
-        # C2: the header is the array's OWN path -- `[[mcp.servers]]`, not the
-        # parent's `[[mcp]]` -- and it comes after the parent's scalars.
-        subpath = "%s.%s" % (path, _toml_key(key)) if path else _toml_key(key)
-        for item in items:
-            lines.append("\n[[%s]]" % subpath)
-            _emit_table(lines, item, subpath)
-    for key, sub in tables.items():
-        subpath = "%s.%s" % (path, _toml_key(key)) if path else _toml_key(key)
-        lines.append("\n[%s]" % subpath)
-        _emit_table(lines, sub, subpath)
-
-
-def dump_toml(config):
-    """Serialize a tomllib-produced dict back to TOML text."""
-    lines = []
-    _emit_table(lines, config, "")
-    return "\n".join(lines) + "\n"
 
 
 def _hook_entry(matcher, mode, data_path):
@@ -265,15 +178,13 @@ _SOURCE_DEFAULT = "~/.kimi-code/config.toml"
 
 def _expect(source_path, key, value, kinds, what, items=None):
     """M3: the operator's config is THEIR file. A key this merge reads whose
-    shape it does not expect must say so in those terms -- `dict()` on an
-    array raised "dictionary update sequence element #0 has length 4", which
-    is loud (orchestrate reports it as an error status) but tells the operator
-    nothing about which line of which file to look at.
+    shape it does not expect must say so in those terms -- `dict()` on an array
+    raised "dictionary update sequence element #0 has length 4", loud but
+    naming neither file nor key.
 
-    N5: `items` checks what is IN an array, not only that it is one. A
+    N5: `items` checks what is IN an array, not only that it is one --
     `tools.disabled = [1, 2]` passed the array test and then raised "'<' not
-    supported between instances of 'str' and 'int'" from the merge -- the same
-    unnamed crash, one layer further in."""
+    supported between instances of 'str' and 'int'" from the merge."""
     if value is not None and not isinstance(value, kinds):
         raise ValueError("%s: expected %s at `%s`, found %s"
                          % (source_path or _SOURCE_DEFAULT, what, key,
@@ -331,12 +242,9 @@ def _temp_roots():
 def is_temp_home(path):
     """True when `path` is one of OUR per-run homes under a temp root.
 
-    The predicate every destructive step is bounded by (`teardown`), and the
-    one a pointer file's contents must satisfy before `prepare` will reuse
-    them: that file sits in the reviewed tree, so on a hostile target its
-    contents are the attacker's, and a `shutil.rmtree` of whatever it names
-    would be the attacker's delete. A symlink is refused outright (lstat, not
-    stat): it names one path and resolves to another.
+    The bound on every destructive step (`teardown`): an `rmtree` of a path
+    this does not admit would be someone else's delete. A symlink is refused
+    outright (lstat, not stat): it names one path and resolves to another.
     """
     if not path or not os.path.basename(os.path.normpath(path)).startswith(HOME_PREFIX):
         return False
@@ -350,9 +258,9 @@ def is_temp_home(path):
 
 
 def new_kimi_home():
-    """A fresh per-run home under $XDG_RUNTIME_DIR (when the platform has one)
-    or the temp root, mode 700. `mkdtemp` creates it exclusively, so there is
-    no window in which someone else's file or link holds the name."""
+    """A fresh per-run home under $XDG_RUNTIME_DIR (where there is one) or the
+    temp root, mode 700. `mkdtemp` creates it exclusively: no window in which
+    someone else's file or link holds the name."""
     home = tempfile.mkdtemp(prefix=HOME_PREFIX,
                             dir=os.environ.get("XDG_RUNTIME_DIR") or None)
     os.chmod(home, 0o700)
@@ -386,7 +294,7 @@ def build_kimi_home(home, scope_path, allowlist_path, real_home=None):
     source, source_path = _read_source_config(real_home)
     merged = build_merged_config(source, scope_path, allowlist_path,
                                  source_path=source_path)
-    _write_text(os.path.join(home, "config.toml"), dump_toml(merged))
+    _write_text(os.path.join(home, "config.toml"), kimi_toml.dump_toml(merged))
     return home
 
 
@@ -395,13 +303,11 @@ def _write_text(path, text):
     symlink planted at the staging name (I2).
 
     A private mirror of `write_guard_hook._atomic_write_json`'s flags rather
-    than a call into it: runners/claude.py routes its settings file through
-    that helper because it ALREADY imports the hook for `_hook_entry` ("one
-    hardened writer rather than a second open()/replace() pair here to keep in
-    step with it"), and this module imports no part of it -- kimi's guard is
-    kimi_guard_hook.py. The rule the two share is the flags: O_EXCL refuses a
-    stale leftover, O_NOFOLLOW refuses the link, and 0o600 is the mode the
-    merged config must land in whatever the umask says.
+    than a call into it: runners/claude.py uses that helper because it ALREADY
+    imports the hook for `_hook_entry`, and this module imports no part of it
+    (kimi's guard is kimi_guard_hook.py). The shared rule is the flags --
+    O_EXCL refuses a stale leftover, O_NOFOLLOW the link, 0o600 whatever the
+    umask says.
     """
     tmp = path + ".tmp"
     if os.path.islink(tmp) or os.path.exists(tmp):
@@ -411,6 +317,24 @@ def _write_text(path, text):
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(text)
     os.replace(tmp, path)
+
+
+def strip_secrets(home):
+    """Remove the credential-bearing files from a per-run home, leaving the
+    children's transcripts; returns the names removed (N6). `config.toml`
+    carries whatever the operator's config holds, `api_key` included;
+    `credentials`/`oauth` are SYMLINKS, so unlinking drops the handle, never
+    the store."""
+    removed = []
+    for name in ("config.toml",) + _CREDENTIAL_ITEMS:
+        path = os.path.join(home, name)
+        try:
+            if os.path.islink(path) or os.path.isfile(path):
+                os.unlink(path)
+                removed.append(name)
+        except OSError:
+            pass
+    return removed
 
 
 def pointer_path(run_dir):
@@ -543,18 +467,16 @@ class Runner(base.HostRunner):
         CLI's model table for alias resolution.
 
         The home lives under the temp root (C1); `run_dir` -- inside the
-        reviewed tree -- gets a pointer file naming it, for an operator
-        debugging a run, and nothing reads that file back (N2). Every prepare,
-        including a resume's, mints a FRESH home: reuse would have to re-derive
-        the path from that untrusted file, and `mkdtemp`'s exclusivity is the
-        only thing that makes "this directory is ours" true. The probes are
-        handed the live path in-process (`run_home`), never the file.
+        reviewed tree -- gets a pointer file naming it, which nothing reads
+        back (N2). Every prepare, a resume's included, mints a FRESH home:
+        reuse would re-derive the path from that untrusted file, and
+        `mkdtemp`'s exclusivity is the only thing that makes "this directory is
+        ours" true. The probes get the live path in-process (`run_home`).
         """
         self.review_root = os.path.abspath(review_root)
         # C3: a Kimi hook whose interpreter cannot start fails OPEN, so a
         # missing guard script is a SILENT un-confinement -- the one residual
-        # the hook itself cannot catch. Refuse the run instead; `loop` turns
-        # this into a reported `error` status naming the absent file.
+        # the hook cannot catch. `loop` turns this into a reported `error`.
         if not os.path.isfile(_GUARD):
             raise RuntimeError(
                 "the kimi guard hook is absent at %s; refusing to launch "
@@ -572,23 +494,41 @@ class Runner(base.HostRunner):
         self.configured = configured_models()
 
     def teardown(self, status=None):
-        """Drop the per-run home on a clean finish; keep it on an error.
+        """Drop the per-run home on a clean finish; keep it, stripped, on an error.
 
         Bounded by `is_temp_home` on the path THIS process built (never on the
         pointer file's contents, which the reviewed tree could have rewritten
-        between prepare and teardown): a run that ends any other way than
-        `complete` keeps its home so the wire files and the armed config can
-        be read afterwards, and says once where it is.
+        between prepare and teardown).
+
+        N6: a run that ends any other way than `complete` keeps its home so
+        the children's wire files can be read afterwards -- but the SECRETS go
+        anyway. Nothing prunes a kept home, so its config.toml (`api_key`
+        verbatim) and its OAuth symlinks would otherwise accumulate under a
+        path every process of that uid can see. The debugging value is in the
+        transcripts, not the credential surface.
         """
         home = self.kimi_home
         if not home or not is_temp_home(home):
             return
         if status == "complete":
             shutil.rmtree(home, ignore_errors=True)
-            self.kimi_home = None
+            self._drop_pointer()
+            self.kimi_home = self.run_home = None
             return
-        print("driver loop: the kimi run home is kept for debugging at %s" % home,
-              file=sys.stderr, flush=True)
+        removed = strip_secrets(home)
+        note = ("its %s removed, so nothing left there carries a credential"
+                % " and ".join(removed)) if removed else "it holds no credential files"
+        print("driver loop: the kimi run home is kept for debugging at %s; %s"
+              % (home, note), file=sys.stderr, flush=True)
+
+    def _drop_pointer(self):
+        """A pointer that outlives the home it names is a lie in the run
+        folder."""
+        try:
+            if self.home_pointer:
+                os.unlink(self.home_pointer)
+        except OSError:
+            pass
 
     def _shell_path(self, entry):
         directory = hosts.spec(self.host).registration_dir
