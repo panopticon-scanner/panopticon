@@ -37,7 +37,10 @@ Grep and Glob alike (measured on kimi-code 0.42.0 -- NOT Claude's
 FAIL-CLOSED, AND THE PLATFORM CAVEAT. Kimi hooks fail OPEN on script error or
 timeout ("other non-zero values default to allow"), so this script must never
 raise and never exit non-zero: every internal failure path prints a deny and
-returns 0. The one failure it cannot catch is its own interpreter failing to
+returns 0. The one deliberate exception is a payload that is not a JSON object
+-- the CLI's own shape, not the model's, where denying would block every
+legitimate call on a platform change; a bad ARGV, which is the config's doing,
+denies. The one failure it cannot catch is its own interpreter failing to
 start; that residual is documented in the runner and is why the shells' tool
 allowlists remain the primary control and this hook is the confinement layer
 on top.
@@ -193,6 +196,10 @@ def adjudicate(payload, mode, data_path, env=None):
     """(allow, reason) for one hook payload. `env` defaults to os.environ;
     probes and tests pass their own."""
     if not isinstance(payload, dict):
+        # Deliberately ALLOW, mirroring read_guard_hook/write_guard_hook: this
+        # is the host's payload, and a hook that denied on an unrecognised
+        # payload shape would block every tool call the moment the CLI's JSON
+        # moved. The argv paths in `main` are the opposite case and deny (I6).
         return True, ""
     tool_name = payload.get("tool_name", "")
     guarded = _READ_TOOLS if mode == "read" else _WRITE_TOOLS
@@ -242,7 +249,21 @@ def main(argv=None, env=None):
         payload = json.load(sys.stdin)
     except ValueError:
         return 0  # tolerant: a malformed hook payload never blocks legitimate work
-    if not isinstance(payload, dict) or len(args) < 2 or args[0] not in ("read", "write"):
+    if not isinstance(payload, dict):
+        # Same call as `adjudicate`'s, and as Claude's hook makes: the PAYLOAD
+        # is the CLI's, not the model's, so a shape this version does not
+        # recognise is a platform change and denying on it would refuse every
+        # legitimate tool call. argv below is a different thing entirely.
+        return 0
+    if len(args) < 2 or args[0] not in ("read", "write"):
+        # I6: argv is the CONFIG's, written by runners/kimi.py -- a hook the
+        # config invoked wrongly (a mis-generated config, an edit to
+        # `_hook_entry`) is precisely the case that must fail CLOSED. This
+        # used to return 0 in silence, i.e. allow everything, which is the one
+        # outcome a guard may never produce by accident.
+        _deny("kimi guard: bad hook invocation %r -- expected [read|write, "
+              "<data path>]; refusing the tool call rather than allowing it "
+              "unguarded" % (list(args),))
         return 0
     mode = args[0]
     data_path = _data_path(args[1], ENV_READ_SCOPE if mode == "read" else ENV_WRITE_ALLOWLIST, env)

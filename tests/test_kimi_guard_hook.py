@@ -201,15 +201,29 @@ class TestMain(unittest.TestCase):
         self.assertIn("deny", out)
         self.assertIn("crashed", out)
 
-    def test_malformed_payload_and_bad_argv_are_tolerantly_allowed(self):
+    def test_a_malformed_payload_is_tolerantly_allowed(self):
+        # The payload is the CLI's, not the model's -- Claude's hook makes the
+        # same call, and denying on it would break legitimate work on a CLI
+        # whose payload shape moved.
         with mock.patch("sys.stdin", io.StringIO("not json")):
             self.assertEqual(guard.main(["read", self.scope_path], env={}), 0)
+
+    def test_a_short_argv_denies_and_names_the_invocation(self):
+        # I6: argv is the CONFIG's, not the CLI's. A hook the config invoked
+        # wrongly used to allow everything in silence -- exactly the case that
+        # must fail closed, and exactly what a mis-generated config produces.
         code, out = self._main(["read"], {"tool_name": "Read"}, {})
         self.assertEqual(code, 0)
-        self.assertEqual(out, "")
+        body = json.loads(out)
+        self.assertEqual(body["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn("['read']", body["hookSpecificOutput"]["permissionDecisionReason"])
+
+    def test_an_unknown_mode_denies_and_names_the_invocation(self):
         code, out = self._main(["bogus", self.scope_path], {"tool_name": "Read"}, {})
         self.assertEqual(code, 0)
-        self.assertEqual(out, "")
+        body = json.loads(out)
+        self.assertEqual(body["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn("bogus", body["hookSpecificOutput"]["permissionDecisionReason"])
 
     def test_the_env_overlay_supplies_the_data_path_when_argv_omits_it(self):
         # The baked-in argv path wins; the env var is the fallback. main()
