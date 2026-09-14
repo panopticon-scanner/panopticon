@@ -131,10 +131,10 @@ Repository:
   Never commit shells, settings, or anything else that lives under a home
   directory.
 - Do not weaken a test or a doc guard to make it pass. Update an expectation
-  only when its own comment says your PR is the one that moves it (the
-  retirement bar, the `--host generic` deprecation paragraph, the host table in
-  `docs/PANOPTICON.md`). If a guard blocks you for another reason, that is a
-  finding to report, not a line to delete.
+  only when its own comment says your PR is the one that moves it — the
+  retirement-bar pin, the host table in `docs/PANOPTICON.md`, and that
+  document's `gemini` sentence, and nothing else. If a guard blocks you for
+  another reason, that is a finding to report, not a line to delete.
 - Do not `git stash`, do not force-push a shared branch, do not rewrite
   history after a review has started.
 - Text that came out of a scan (findings, agent replies, run logs) goes
