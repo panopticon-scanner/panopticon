@@ -146,10 +146,10 @@ class TestTheAnswersAreUnchangedGivenProof(unittest.TestCase):
 
     The `("generic", "gemini")` pairs below are the registry's two
     claim-nothing ROWS, not two selectable hosts -- #1621 left gemini
-    registered-only. The mask they exercise is a property of the row (a
-    capability the host does not claim can never read `proven`), so both are
-    still the right subjects; the test names are narrower than what they
-    assert rather than wider."""
+    registered-only, and the three tests are named for the row property they
+    actually assert (a capability the host does not CLAIM can never read
+    `proven`) rather than for what the driver accepts, which is a different
+    question and no longer the same set."""
 
     @staticmethod
     def _proof(**states):
@@ -157,7 +157,7 @@ class TestTheAnswersAreUnchangedGivenProof(unittest.TestCase):
         return {name: {"state": state, "by": "fixture", "detail": "fixture"}
                 for name, state in states.items()}
 
-    def test_claude_enforces_and_nothing_else_the_driver_accepts_does(self):
+    def test_claude_enforces_and_a_row_that_claims_nothing_never_does(self):
         proof = self._proof(**{hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN})
         self.assertEqual(
             hosts.PROVEN,
@@ -168,7 +168,7 @@ class TestTheAnswersAreUnchangedGivenProof(unittest.TestCase):
                     hosts.PROVEN,
                     hosts.posture(name, proof)[hosts.TOOL_POLICY_ENFORCED])
 
-    def test_only_claude_collects_usage(self):
+    def test_claude_collects_usage_and_a_row_that_claims_nothing_never_does(self):
         proof = self._proof(**{hosts.USAGE_LEDGER: hosts.PROVEN})
         self.assertEqual(
             hosts.PROVEN, hosts.posture("claude", proof)[hosts.USAGE_LEDGER])
@@ -186,7 +186,7 @@ class TestTheAnswersAreUnchangedGivenProof(unittest.TestCase):
             hosts.PROVEN,
             hosts.posture({}.get("host", "claude"), proof)[hosts.TOOL_POLICY_ENFORCED])
 
-    def test_only_claude_has_a_write_guard(self):
+    def test_claude_has_a_write_guard_and_a_row_that_claims_nothing_has_none(self):
         # requests.py:185 -- require_unenforced_ack returns early when the
         # host's hook mediates Write AND a probe has proven it. Same answer
         # as before the migration, given proof.
