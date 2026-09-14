@@ -1264,6 +1264,14 @@ class TestReadinessDoesNotSwallowTheLaunchGuard(unittest.TestCase):
     structural, because the guarantee has to hold for the test nobody has
     written yet."""
 
+    @staticmethod
+    def _runner(cmd, **kw):
+        """readiness also probes `codex --version`; that must never be the
+        real binary (the guardrails' "suite never launches a host binary",
+        which a PATH-shim run catches). Every readiness call here injects it.
+        """
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
     def test_a_refused_live_launch_escapes_readiness(self):
         from scripts import codex_host
         d = _repo(self)
@@ -1271,13 +1279,13 @@ class TestReadinessDoesNotSwallowTheLaunchGuard(unittest.TestCase):
                 host_probes, "run_probes",
                 side_effect=codex_host.LaunchRefused("test tried to launch the real codex CLI")):
             with self.assertRaises(codex_host.LaunchRefused):
-                setup_flow.readiness(d, host="codex")
+                setup_flow.readiness(d, host="codex", runner=self._runner)
 
     def test_every_other_probe_failure_is_still_a_readiness_row(self):
         d = _repo(self)
         with mock.patch.object(host_probes, "run_probes",
                                side_effect=RuntimeError("probe exploded")):
-            rows = setup_flow.readiness(d, host="codex")
+            rows = setup_flow.readiness(d, host="codex", runner=self._runner)
         posture = dict((name, detail) for name, _ok, detail in rows)
         self.assertIn("host-capabilities", posture)
         self.assertIn("probe exploded", posture["host-capabilities"])
