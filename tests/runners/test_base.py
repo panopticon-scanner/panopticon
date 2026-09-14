@@ -143,7 +143,7 @@ class TestLaunchEnv(unittest.TestCase):
 
 
 class TestTheUsageProbesSeamAttributes(unittest.TestCase):
-    """#1626 I3: `host_probes._headless_usage_source` reads three attributes
+    """#1626 I3: `probes.claude._headless_usage_source` reads three attributes
     off a claiming host's runner -- `CLI`, `ENVELOPE_FLAGS` and `runner` --
     and `HostRunner` declared none of them. A family had to learn they exist
     from an `except Exception` whose detail then named the wrong thing.

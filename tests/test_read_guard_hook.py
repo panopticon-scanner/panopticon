@@ -8,7 +8,8 @@ import unittest
 from unittest import mock
 
 from conftest import write_host_evidence
-from scripts import host_probes, hosts
+from scripts import hosts
+import scripts.probes.claude as claude_probes
 import scripts.ocrdb as ocrdb
 import scripts.phases.coverage as coverage
 import scripts.phases.review as review
@@ -402,7 +403,7 @@ class TestEnvBinding(unittest.TestCase):
                 json.dump({"cell-1": {"files": [os.path.realpath(inside)], "dirs": [], "reads": []},
                            "cell-2": {"files": [os.path.realpath(other)], "dirs": [], "reads": []}}, fh)
             parent = os.path.join(d, "parent.jsonl"); open(parent, "w").close()
-            host_probes._fake_subagent(parent, "agent-x", "cell-2")
+            claude_probes._fake_subagent(parent, "agent-x", "cell-2")
             payload = {"tool_name": "Read", "tool_input": {"file_path": other},
                        "agent_id": "agent-x", "transcript_path": parent}
             ok, _ = read_guard_hook.adjudicate(payload, scope_path, env={})

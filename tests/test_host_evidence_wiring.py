@@ -748,7 +748,7 @@ class TestTheDriftRefusalNamesTheRightRemedy(unittest.TestCase):
 
     def test_a_session_derived_capability_names_session_dir_first(self):
         # I3: read_scope_confined resolves off the session root exactly like
-        # the write guard (host_probes.probe_read_guard_armed), so it belongs
+        # the write guard (probes.claude.probe_read_guard_armed), so it belongs
         # in _SESSION_DERIVED alongside the other two -- mirrored here, not a
         # separate test.
         for capability in (hosts.ARTIFACT_WRITE_GUARD, hosts.USAGE_LEDGER,

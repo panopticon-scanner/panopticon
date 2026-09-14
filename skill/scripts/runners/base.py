@@ -82,7 +82,7 @@ class HostRunner:
     # (claude: `-p --output-format`; codex: `exec --json`).
     #
     # Declared here because they are part of the seam, not a private detail:
-    # `host_probes._headless_usage_source` reads both off a claiming host's
+    # `probes.claude._headless_usage_source` reads both off a claiming host's
     # runner, asks the CLI it finds on PATH to advertise exactly these flags
     # in its `--help`, and only then believes the ledger. Before #1626 I3
     # they were requirements a family could learn about only from an

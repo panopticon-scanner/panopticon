@@ -5,6 +5,7 @@ from unittest import mock
 import pytest
 
 from scripts import dispatch, host_probes, hosts
+import scripts.probes.claude as claude_probes
 import scripts.probes.common as probes_common
 
 
@@ -178,11 +179,11 @@ def test_claudes_read_guard_probe_stays_unknown_for_a_row_that_does_not_map_it(t
     # Unreachable in practice (run_probes dispatches by the row's probe id),
     # so this closes it latently -- the probe answers about the capability it
     # was MAPPED to measure, or not at all.
-    state, by, detail = host_probes.probe_read_guard_armed(
+    state, by, detail = claude_probes.probe_read_guard_armed(
         "codex", session_root=str(tmp_path))
     assert state == hosts.UNKNOWN, (state, by, detail)
     assert ".claude" not in detail
     # Claude's row maps it, so nothing about the real subject moves.
-    assert hosts.spec("claude").probes[hosts.READ_SCOPE_CONFINED] == host_probes.READ_GUARD_ARMED
-    assert host_probes.probe_read_guard_armed(
+    assert hosts.spec("claude").probes[hosts.READ_SCOPE_CONFINED] == claude_probes.READ_GUARD_ARMED
+    assert claude_probes.probe_read_guard_armed(
         "claude", session_root=str(tmp_path))[0] != hosts.UNKNOWN

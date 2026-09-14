@@ -26,7 +26,7 @@ def bound_model(host, role):
     ran on, and the registry's `model_binding` capability had nothing on the
     entry to be a claim about. `resolve_model` honours PANOPTICON_MODEL_*
     overrides; the registered shell (registration_model) does not, and that
-    gap is exactly what host_probes.probe_entry_model_bound measures.
+    gap is exactly what probes.claude.probe_entry_model_bound measures.
 
     The string, not the whole config dict: a family that needs more than a
     model id on the entry (kimi's tier aliases and context sizes) adds it in

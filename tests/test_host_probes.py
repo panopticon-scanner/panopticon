@@ -9,6 +9,7 @@ import unittest
 from unittest import mock
 
 from scripts import dispatch, host_probes, hosts, model_resolver, write_guard_hook
+import scripts.probes.claude as claude_probes
 import scripts.probes.common as probes_common
 
 
@@ -268,8 +269,8 @@ class TestEntryModelBoundProbe(unittest.TestCase):
     def test_every_registered_shell_binding_the_resolved_model_is_proven(self):
         with tempfile.TemporaryDirectory() as d:
             self._register_all(d)
-            state, by, detail = host_probes.probe_entry_model_bound("claude", d)
-        self.assertEqual((hosts.PROVEN, host_probes.ENTRY_MODEL_BOUND), (state, by))
+            state, by, detail = claude_probes.probe_entry_model_bound("claude", d)
+        self.assertEqual((hosts.PROVEN, claude_probes.ENTRY_MODEL_BOUND), (state, by))
         self.assertIn("%d/%d" % (len(dispatch.ROLE_FILES), len(dispatch.ROLE_FILES)), detail)
 
     def test_an_ambient_override_the_shell_cannot_see_is_refuted(self):
@@ -279,8 +280,8 @@ class TestEntryModelBoundProbe(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             self._register_all(d)
             with mock.patch.dict(os.environ, {"PANOPTICON_MODEL_DOMAIN_PANEL": "OVERRIDE-X"}):
-                state, by, detail = host_probes.probe_entry_model_bound("claude", d)
-        self.assertEqual((hosts.REFUTED, host_probes.ENTRY_MODEL_BOUND), (state, by))
+                state, by, detail = claude_probes.probe_entry_model_bound("claude", d)
+        self.assertEqual((hosts.REFUTED, claude_probes.ENTRY_MODEL_BOUND), (state, by))
         self.assertIn("domain_panel", detail)
         self.assertIn("OVERRIDE-X", detail)
 
@@ -291,7 +292,7 @@ class TestEntryModelBoundProbe(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             self._register_all(d)
             _model_shell(d, "claude", "domain-advisor.md", model=None)
-            state, _by, detail = host_probes.probe_entry_model_bound("claude", d)
+            state, _by, detail = claude_probes.probe_entry_model_bound("claude", d)
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("domain_advisor", detail)
 
@@ -313,18 +314,18 @@ class TestEntryModelBoundProbe(unittest.TestCase):
             resolved = model_resolver.resolve_model("claude", "domain_advisor")["model"]
             _model_shell(d, "claude", "domain-advisor.md", model=None,
                          body_decoy=resolved)
-            state, _by, detail = host_probes.probe_entry_model_bound("claude", d)
+            state, _by, detail = claude_probes.probe_entry_model_bound("claude", d)
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("domain_advisor", detail)
 
     def test_no_registered_shell_is_unknown_never_vacuously_proven(self):
         with tempfile.TemporaryDirectory() as d:
-            state, by, _detail = host_probes.probe_entry_model_bound("claude", d)
-        self.assertEqual((hosts.UNKNOWN, host_probes.ENTRY_MODEL_BOUND), (state, by))
+            state, by, _detail = claude_probes.probe_entry_model_bound("claude", d)
+        self.assertEqual((hosts.UNKNOWN, claude_probes.ENTRY_MODEL_BOUND), (state, by))
 
     def test_a_missing_registration_directory_is_unknown(self):
         nonexistent = os.path.join(tempfile.gettempdir(), "no-such-dir-%d" % os.getpid())
-        state, _by, _detail = host_probes.probe_entry_model_bound("claude", nonexistent)
+        state, _by, _detail = claude_probes.probe_entry_model_bound("claude", nonexistent)
         self.assertEqual(hosts.UNKNOWN, state)
 
     def test_a_partially_registered_host_is_proven_on_what_is_registered(self):
@@ -334,13 +335,13 @@ class TestEntryModelBoundProbe(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             _model_shell(d, "claude", "domain-panel.md",
                          model_resolver.resolve_model("claude", "domain_panel")["model"])
-            state, _by, detail = host_probes.probe_entry_model_bound("claude", d)
+            state, _by, detail = claude_probes.probe_entry_model_bound("claude", d)
         self.assertEqual(hosts.PROVEN, state)
         self.assertIn("1/%d" % len(dispatch.ROLE_FILES), detail)
         self.assertIn("scout", detail)          # the absent ones are listed
 
     def test_a_host_without_shells_is_unknown(self):
-        state, by, _detail = host_probes.probe_entry_model_bound("gemini")
+        state, by, _detail = claude_probes.probe_entry_model_bound("gemini")
         self.assertEqual((hosts.UNKNOWN, None), (state, by))
 
     def test_the_probe_compares_against_resolve_model_not_the_profile_file(self):
@@ -352,12 +353,12 @@ class TestEntryModelBoundProbe(unittest.TestCase):
             self._register_all(d)
             with mock.patch.object(model_resolver, "resolve_model",
                                    return_value={"model": "SENTINEL"}):
-                state, _by, detail = host_probes.probe_entry_model_bound("claude", d)
+                state, _by, detail = claude_probes.probe_entry_model_bound("claude", d)
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("SENTINEL", detail)
 
     def test_the_registry_names_this_probe_for_claude(self):
-        self.assertEqual(host_probes.ENTRY_MODEL_BOUND,
+        self.assertEqual(claude_probes.ENTRY_MODEL_BOUND,
                          hosts.spec("claude").probes[hosts.MODEL_BINDING])
 
     def test_run_probes_records_it_under_model_binding(self):
@@ -371,7 +372,7 @@ class TestEntryModelBoundProbe(unittest.TestCase):
             env = host_probes.run_probes("claude", target, session_root=target,
                                          registration_dir=reg, home=home)
         row = env["capabilities"][hosts.MODEL_BINDING]
-        self.assertEqual(host_probes.ENTRY_MODEL_BOUND, row["by"])
+        self.assertEqual(claude_probes.ENTRY_MODEL_BOUND, row["by"])
         self.assertIn(row["state"], (hosts.PROVEN, hosts.REFUTED))   # measured, not unknown
 
     def test_a_freshly_emitted_registration_proves(self):
@@ -381,7 +382,7 @@ class TestEntryModelBoundProbe(unittest.TestCase):
         # key order) cannot silently flip a correct machine to REFUTED.
         with tempfile.TemporaryDirectory() as d:
             dispatch.emit_host_agents("claude", d)
-            state, _by, _detail = host_probes.probe_entry_model_bound("claude", d)
+            state, _by, _detail = claude_probes.probe_entry_model_bound("claude", d)
         self.assertEqual(hosts.PROVEN, state)
 
     def test_probe_ids_name_exactly_the_shipped_runners(self):
@@ -392,10 +393,10 @@ class TestEntryModelBoundProbe(unittest.TestCase):
         # a table that disagrees, so the constant cannot rot in either direction.
         self.assertEqual(sorted(host_probes.PROBE_IDS),
                          sorted({probes_common.REGISTERED_SHELL_TOOLS,
-                                 host_probes.WRITE_GUARD_ARMED,
-                                 host_probes.USAGE_SOURCE,
-                                 host_probes.ENTRY_MODEL_BOUND,
-                                 host_probes.READ_GUARD_ARMED,
+                                 claude_probes.WRITE_GUARD_ARMED,
+                                 claude_probes.USAGE_SOURCE,
+                                 claude_probes.ENTRY_MODEL_BOUND,
+                                 claude_probes.READ_GUARD_ARMED,
                                  # #1344 codex family PR (#1619): the two
                                  # probes the codex row maps its claims to.
                                  host_probes.CODEX_EFFECTIVE_TOOLS,
@@ -464,7 +465,7 @@ class TestWriteGuardArmedProbe(unittest.TestCase):
     def test_a_working_guard_and_a_writable_settings_root_is_proven(self):
         with tempfile.TemporaryDirectory() as session_root:
             self._session_root(session_root)
-            state, by, detail = host_probes.probe_write_guard_armed(
+            state, by, detail = claude_probes.probe_write_guard_armed(
                 "claude", session_root=session_root)
             self.assertEqual(hosts.PROVEN, state)
             self.assertEqual("write-guard-armed", by)
@@ -479,7 +480,7 @@ class TestWriteGuardArmedProbe(unittest.TestCase):
             self._session_root(session_root)
             live = write_guard_hook.guard_state(session_root=session_root)
             self.assertFalse(live["armed"], "fixture precondition: not armed")
-            state, _by, _detail = host_probes.probe_write_guard_armed(
+            state, _by, _detail = claude_probes.probe_write_guard_armed(
                 "claude", session_root=session_root)
             self.assertEqual(hosts.PROVEN, state)
 
@@ -491,7 +492,7 @@ class TestWriteGuardArmedProbe(unittest.TestCase):
         # install() will then refuse to do.
         with tempfile.TemporaryDirectory() as session_root:
             os.makedirs(os.path.join(session_root, ".claude"), exist_ok=True)
-            state, _by, detail = host_probes.probe_write_guard_armed(
+            state, _by, detail = claude_probes.probe_write_guard_armed(
                 "claude", session_root=session_root)
             self.assertEqual(hosts.REFUTED, state)
             self.assertIn("settings.local.json", detail)
@@ -502,7 +503,7 @@ class TestWriteGuardArmedProbe(unittest.TestCase):
             claude_dir = self._session_root(session_root)
             os.chmod(claude_dir, 0o500)          # r-x: no writes
             try:
-                state, _by, detail = host_probes.probe_write_guard_armed(
+                state, _by, detail = claude_probes.probe_write_guard_armed(
                     "claude", session_root=session_root)
             finally:
                 os.chmod(claude_dir, 0o700)      # restore so cleanup succeeds
@@ -512,7 +513,7 @@ class TestWriteGuardArmedProbe(unittest.TestCase):
     def test_a_host_that_claims_no_write_guard_is_unknown(self):
         for name in ("gemini", "generic"):
             with self.subTest(host=name):
-                state, by, _detail = host_probes.probe_write_guard_armed(name)
+                state, by, _detail = claude_probes.probe_write_guard_armed(name)
                 self.assertEqual(hosts.UNKNOWN, state)
                 self.assertIsNone(by)
 
@@ -530,7 +531,7 @@ class TestWriteGuardArmedProbe(unittest.TestCase):
         with tempfile.TemporaryDirectory() as session_root:
             self._session_root(session_root)
             before = write_guard_hook.guard_state(session_root=session_root)
-            state, _by, _detail = host_probes.probe_write_guard_armed(
+            state, _by, _detail = claude_probes.probe_write_guard_armed(
                 "claude", session_root=session_root)
             self.assertEqual(hosts.PROVEN, state)
             self.assertEqual(
@@ -548,12 +549,12 @@ class TestWriteGuardArmedProbe(unittest.TestCase):
             self._session_root(session_root)
             resolved, _allowlist, _defaults = write_guard_hook._resolve(
                 None, None, session_root)
-            state, _by, detail = host_probes.probe_write_guard_armed(
+            state, _by, detail = claude_probes.probe_write_guard_armed(
                 "claude", session_root=session_root)
             self.assertEqual(hosts.PROVEN, state)
             self.assertIn(resolved, detail)
             os.remove(resolved)
-            state, _by, detail = host_probes.probe_write_guard_armed(
+            state, _by, detail = claude_probes.probe_write_guard_armed(
                 "claude", session_root=session_root)
             self.assertEqual(hosts.REFUTED, state)
             self.assertIn(os.path.abspath(resolved), detail)
@@ -568,13 +569,13 @@ class TestWriteGuardArmedProbe(unittest.TestCase):
                 None, None, None)
             self.assertTrue(used_defaults)
             self.assertFalse(os.path.isabs(resolved))   # cwd-relative by design
-            state, _by, detail = host_probes.probe_write_guard_armed("claude")
+            state, _by, detail = claude_probes.probe_write_guard_armed("claude")
             self.assertEqual(hosts.REFUTED, state)
             self.assertIn(os.path.abspath(resolved), detail)
             os.makedirs(os.path.dirname(resolved), exist_ok=True)
             with open(resolved, "w", encoding="utf-8") as fh:
                 fh.write("{}")
-            state, _by, _detail = host_probes.probe_write_guard_armed("claude")
+            state, _by, _detail = claude_probes.probe_write_guard_armed("claude")
             self.assertEqual(hosts.PROVEN, state)
 
     def test_defaulting_the_session_root_to_cwd_does_not_move_the_subject(self):
@@ -593,8 +594,8 @@ class TestWriteGuardArmedProbe(unittest.TestCase):
                              os.path.abspath(explicit[1]))
             self.assertNotEqual(default[2], explicit[2])   # used_defaults does differ
             self.assertEqual(
-                host_probes.probe_write_guard_armed("claude")[0],
-                host_probes.probe_write_guard_armed(
+                claude_probes.probe_write_guard_armed("claude")[0],
+                claude_probes.probe_write_guard_armed(
                     "claude", session_root=os.getcwd())[0])
 
     def test_a_sandbox_that_cannot_be_created_refutes_rather_than_raising(self):
@@ -606,12 +607,12 @@ class TestWriteGuardArmedProbe(unittest.TestCase):
         # resolves to a STATE.
         with tempfile.TemporaryDirectory() as session_root:
             self._session_root(session_root)
-            with mock.patch.object(host_probes.tempfile, "TemporaryDirectory",
+            with mock.patch.object(claude_probes.tempfile, "TemporaryDirectory",
                                    side_effect=OSError("no space left")):
-                state, by, detail = host_probes.probe_write_guard_armed(
+                state, by, detail = claude_probes.probe_write_guard_armed(
                     "claude", session_root=session_root)
         self.assertEqual(hosts.REFUTED, state)
-        self.assertEqual(host_probes.WRITE_GUARD_ARMED, by)
+        self.assertEqual(claude_probes.WRITE_GUARD_ARMED, by)
         self.assertIn("no space left", detail)
 
     def test_an_explicit_settings_path_is_the_subject_and_need_not_exist_yet(self):
@@ -621,12 +622,12 @@ class TestWriteGuardArmedProbe(unittest.TestCase):
         # after the file appears, or posture drift would refuse iteration 2.
         with tempfile.TemporaryDirectory() as run_dir:
             path = os.path.join(run_dir, "host-settings.json")
-            state1, by, detail1 = host_probes.probe_write_guard_armed("claude", settings_path=path)
+            state1, by, detail1 = claude_probes.probe_write_guard_armed("claude", settings_path=path)
             self.assertEqual(hosts.PROVEN, state1)
             self.assertIn(path, detail1)
             with open(path, "w") as fh:
                 fh.write("{}")
-            state2, _by, _d = host_probes.probe_write_guard_armed("claude", settings_path=path)
+            state2, _by, _d = claude_probes.probe_write_guard_armed("claude", settings_path=path)
             self.assertEqual(state1, state2)
 
     def test_an_unwritable_headless_directory_refutes(self):
@@ -642,7 +643,7 @@ class TestWriteGuardArmedProbe(unittest.TestCase):
             try:
                 if os.access(locked, os.W_OK):
                     self.skipTest("running as a user who can write a 0500 directory")
-                state, _by, detail = host_probes.probe_write_guard_armed(
+                state, _by, detail = claude_probes.probe_write_guard_armed(
                     "claude", settings_path=os.path.join(locked, "host-settings.json"))
             finally:
                 os.chmod(locked, 0o700)
@@ -657,16 +658,16 @@ class TestWriteGuardArmedProbe(unittest.TestCase):
         # (through install()/guard_state()/uninstall()) pass through to the
         # real function, since it legitimately calls _resolve with explicit
         # paths and an always-raise patch would fail this test falsely.
-        real_resolve = host_probes.write_guard_hook._resolve
+        real_resolve = claude_probes.write_guard_hook._resolve
         def fallback_only(settings_path, allowlist_path, session_root):
             if settings_path is None and allowlist_path is None:
                 raise AssertionError(
                     "must not fall back to _resolve when settings_path is given")
             return real_resolve(settings_path, allowlist_path, session_root)
         with tempfile.TemporaryDirectory() as run_dir:
-            with mock.patch.object(host_probes.write_guard_hook, "_resolve",
+            with mock.patch.object(claude_probes.write_guard_hook, "_resolve",
                                    side_effect=fallback_only):
-                state, _by, _d = host_probes.probe_write_guard_armed(
+                state, _by, _d = claude_probes.probe_write_guard_armed(
                     "claude", settings_path=os.path.join(run_dir, "host-settings.json"))
             self.assertEqual(hosts.PROVEN, state)
 
@@ -734,7 +735,7 @@ class TestUsageSourceProbe(unittest.TestCase):
         with tempfile.TemporaryDirectory() as home, \
                 tempfile.TemporaryDirectory() as project:
             d = self._transcripts(home, project)
-            state, by, detail = host_probes.probe_usage_source(
+            state, by, detail = claude_probes.probe_usage_source(
                 "claude", project, home=home)
             self.assertEqual(hosts.PROVEN, state)
             self.assertEqual("usage-source", by)
@@ -745,7 +746,7 @@ class TestUsageSourceProbe(unittest.TestCase):
         # and has no transcripts cannot produce one.
         with tempfile.TemporaryDirectory() as home, \
                 tempfile.TemporaryDirectory() as project:
-            state, _by, detail = host_probes.probe_usage_source(
+            state, _by, detail = claude_probes.probe_usage_source(
                 "claude", project, home=home)
             self.assertEqual(hosts.REFUTED, state)
             self.assertEqual("usage-source", _by)
@@ -766,7 +767,7 @@ class TestUsageSourceProbe(unittest.TestCase):
             d = self._transcripts(home, project)
             os.chmod(d, 0o000)
             try:
-                state, by, detail = host_probes.probe_usage_source(
+                state, by, detail = claude_probes.probe_usage_source(
                     "claude", project, home=home)
             finally:
                 os.chmod(d, 0o700)
@@ -777,12 +778,12 @@ class TestUsageSourceProbe(unittest.TestCase):
     def test_a_host_that_claims_no_usage_ledger_is_unknown(self):
         for name in ("gemini", "generic", "codex"):
             with self.subTest(host=name):
-                state, by, _detail = host_probes.probe_usage_source(name, ".")
+                state, by, _detail = claude_probes.probe_usage_source(name, ".")
                 self.assertEqual(hosts.UNKNOWN, state)
                 self.assertIsNone(by)
 
     def test_the_usage_probe_id_matches_the_registry_row(self):
-        self.assertEqual(host_probes.USAGE_SOURCE,
+        self.assertEqual(claude_probes.USAGE_SOURCE,
                          hosts.spec("claude").probes[hosts.USAGE_LEDGER])
 
     # -- headless mode: the envelope and the ledger are the subject ----------
@@ -798,7 +799,7 @@ class TestUsageSourceProbe(unittest.TestCase):
             cli = self._cli_on_path(bin_dir)
             settings = self._headless_settings(project)
             with mock.patch.dict(os.environ, {"PATH": bin_dir}), self._help():
-                state, by, detail = host_probes.probe_usage_source(
+                state, by, detail = claude_probes.probe_usage_source(
                     "claude", project, home=home, settings_path=settings)
             self.assertEqual(hosts.PROVEN, state)
             self.assertEqual("usage-source", by)
@@ -821,7 +822,7 @@ class TestUsageSourceProbe(unittest.TestCase):
             self._transcripts(home, project)
             settings = self._headless_settings(project)
             with mock.patch.dict(os.environ, {"PATH": empty_bin}):
-                state, by, detail = host_probes.probe_usage_source(
+                state, by, detail = claude_probes.probe_usage_source(
                     "claude", project, home=home, settings_path=settings)
             self.assertEqual(hosts.REFUTED, state)
             self.assertEqual("usage-source", by)
@@ -839,13 +840,13 @@ class TestUsageSourceProbe(unittest.TestCase):
             self._cli_on_path(bin_dir)
             with mock.patch.dict(os.environ, {"PATH": bin_dir}), \
                     self._help("usage: something-else [--verbose] [--print]"):
-                state, by, detail = host_probes.probe_usage_source(
+                state, by, detail = claude_probes.probe_usage_source(
                     "claude", project, settings_path=settings)
             self.assertEqual(hosts.REFUTED, state)
             self.assertEqual("usage-source", by)
             self.assertIn("does not advertise -p, --output-format", detail)   # --print is not -p
             with mock.patch.dict(os.environ, {"PATH": bin_dir}), self._help(returncode=3):
-                state, _by, detail = host_probes.probe_usage_source(
+                state, _by, detail = claude_probes.probe_usage_source(
                     "claude", project, settings_path=settings)
             self.assertEqual(hosts.REFUTED, state)
             self.assertIn("exited 3", detail)
@@ -865,7 +866,7 @@ class TestUsageSourceProbe(unittest.TestCase):
             failed = {"ok": False, "usage": {}, "error": "timed out"}
             self._ledger(settings, [empty, empty, failed])
             with mock.patch.dict(os.environ, {"PATH": bin_dir}), self._help():
-                state, by, detail = host_probes.probe_usage_source(
+                state, by, detail = claude_probes.probe_usage_source(
                     "claude", project, settings_path=settings)
             self.assertEqual(hosts.REFUTED, state)
             self.assertEqual("usage-source", by)
@@ -873,12 +874,12 @@ class TestUsageSourceProbe(unittest.TestCase):
             self.assertIn("not one envelope carried a usage figure", detail)
             self._ledger(settings, [empty, counted, failed])
             with mock.patch.dict(os.environ, {"PATH": bin_dir}), self._help():
-                state, _by, _detail = host_probes.probe_usage_source(
+                state, _by, _detail = claude_probes.probe_usage_source(
                     "claude", project, settings_path=settings)
             self.assertEqual(hosts.PROVEN, state)
             self._ledger(settings, [failed])                 # nothing succeeded yet: no verdict
             with mock.patch.dict(os.environ, {"PATH": bin_dir}), self._help():
-                state, _by, _detail = host_probes.probe_usage_source(
+                state, _by, _detail = claude_probes.probe_usage_source(
                     "claude", project, settings_path=settings)
             self.assertEqual(hosts.PROVEN, state)
 
@@ -895,14 +896,14 @@ class TestUsageSourceProbe(unittest.TestCase):
             settings = self._headless_settings(project)
             self._cli_on_path(bin_dir)
             with mock.patch.dict(os.environ, {"PATH": bin_dir}), self._help():
-                before = host_probes.probe_usage_source("claude", project, settings_path=settings)
+                before = claude_probes.probe_usage_source("claude", project, settings_path=settings)
             self._ledger(settings, [{"ok": True, "usage": {"input_tokens": 12, "output_tokens": 3}},
                                     {"ok": False, "usage": {}, "error": "timed out"}])
             with mock.patch.dict(os.environ, {"PATH": bin_dir}), self._help():
-                after_one = host_probes.probe_usage_source("claude", project, settings_path=settings)
+                after_one = claude_probes.probe_usage_source("claude", project, settings_path=settings)
             self._ledger(settings, [{"ok": True, "usage": {"input_tokens": 1}} for _ in range(15)])
             with mock.patch.dict(os.environ, {"PATH": bin_dir}), self._help():
-                after_many = host_probes.probe_usage_source("claude", project, settings_path=settings)
+                after_many = claude_probes.probe_usage_source("claude", project, settings_path=settings)
         self.assertEqual(hosts.PROVEN, before[0])
         self.assertEqual(before, after_one)
         self.assertEqual(before, after_many)
@@ -920,7 +921,7 @@ class TestUsageSourceProbe(unittest.TestCase):
             self._cli_on_path(bin_dir)
             with mock.patch.dict(os.environ, {"PATH": bin_dir}), \
                     mock.patch.object(claude_runner, "DEFAULT_RUNNER", hangs):
-                state, by, detail = host_probes.probe_usage_source(
+                state, by, detail = claude_probes.probe_usage_source(
                     "claude", project, settings_path=self._headless_settings(project))
             self.assertEqual(hosts.UNKNOWN, state)
             self.assertEqual("usage-source", by)
@@ -936,7 +937,7 @@ class TestUsageSourceProbe(unittest.TestCase):
             self._cli_on_path(bin_dir)
             with mock.patch.dict(os.environ, {"PATH": bin_dir}), \
                     self.assertRaisesRegex(RuntimeError, "never launch the real `claude` binary"):
-                host_probes.probe_usage_source(
+                claude_probes.probe_usage_source(
                     "claude", project, settings_path=self._headless_settings(project))
 
     def test_a_flag_is_advertised_only_as_a_standalone_token(self):
@@ -958,7 +959,7 @@ class TestUsageSourceProbe(unittest.TestCase):
                 mock.patch.dict(hosts.HOSTS, {"ghost": ghost}), \
                 mock.patch.object(runners_base, "runner_for",
                                   side_effect=ImportError("runners/ghost.py: no module named yaml")):
-            state, by, detail = host_probes.probe_usage_source(
+            state, by, detail = claude_probes.probe_usage_source(
                 "ghost", project, settings_path=self._headless_settings(project))
         self.assertEqual(hosts.UNKNOWN, state)
         self.assertEqual("usage-source", by)
@@ -993,7 +994,7 @@ class TestUsageSourceProbe(unittest.TestCase):
                 mock.patch.object(runners_base, "runner_for", return_value=NoFlags()):
             self._cli_on_path(bin_dir)
             with mock.patch.dict(os.environ, {"PATH": bin_dir}):
-                state, by, detail = host_probes.probe_usage_source(
+                state, by, detail = claude_probes.probe_usage_source(
                     "ghost", project, settings_path=self._headless_settings(project))
         self.assertEqual(hosts.UNKNOWN, state)
         self.assertEqual("usage-source", by)
@@ -1019,7 +1020,7 @@ class TestUsageSourceProbe(unittest.TestCase):
         with tempfile.TemporaryDirectory() as project, \
                 mock.patch.dict(hosts.HOSTS, {"ghost": ghost}), \
                 mock.patch.object(runners_base, "runner_for", return_value=NoCli()):
-            state, by, detail = host_probes.probe_usage_source(
+            state, by, detail = claude_probes.probe_usage_source(
                 "ghost", project, settings_path=self._headless_settings(project))
         self.assertEqual(hosts.UNKNOWN, state)
         self.assertEqual("usage-source", by)
@@ -1044,7 +1045,7 @@ class TestUsageSourceProbe(unittest.TestCase):
             os.chmod(pano, 0o500)
             try:
                 with mock.patch.dict(os.environ, {"PATH": bin_dir}):
-                    state, by, detail = host_probes.probe_usage_source(
+                    state, by, detail = claude_probes.probe_usage_source(
                         "claude", project, settings_path=self._headless_settings(project))
             finally:
                 os.chmod(pano, 0o700)
@@ -1077,7 +1078,7 @@ class TestUsageSourceProbe(unittest.TestCase):
                     self._cli_on_path(bin_dir)
                     with mock.patch.dict(os.environ, {"PATH": bin_dir}), \
                             mock.patch.object(claude_runner, "DEFAULT_RUNNER", raises):
-                        state, by, detail = host_probes.probe_usage_source(
+                        state, by, detail = claude_probes.probe_usage_source(
                             "claude", project,
                             settings_path=self._headless_settings(project))
                 self.assertEqual(hosts.UNKNOWN, state)
@@ -1110,7 +1111,7 @@ class TestUsageSourceProbe(unittest.TestCase):
             self._cli_on_path(bin_dir)
             with mock.patch.dict(os.environ, {"PATH": bin_dir, "CLAUDECODE": "1"}), \
                     mock.patch.object(claude_runner, "DEFAULT_RUNNER", fake):
-                state, _by, _detail = host_probes.probe_usage_source(
+                state, _by, _detail = claude_probes.probe_usage_source(
                     "claude", project, settings_path=self._headless_settings(project))
         self.assertEqual(hosts.PROVEN, state)
         env = seen.get("env")
@@ -1130,7 +1131,7 @@ class TestUsageSourceProbe(unittest.TestCase):
         ghost = dataclasses.replace(hosts.spec("claude"), name="ghost")
         with tempfile.TemporaryDirectory() as project, \
                 mock.patch.dict(hosts.HOSTS, {"ghost": ghost}):
-            state, by, detail = host_probes.probe_usage_source(
+            state, by, detail = claude_probes.probe_usage_source(
                 "ghost", project, settings_path=self._headless_settings(project))
         self.assertEqual(hosts.UNKNOWN, state)
         self.assertEqual("usage-source", by)
@@ -1609,9 +1610,9 @@ class TestRunProbesBuildsTheArtifact(unittest.TestCase):
 
     def test_run_probes_hands_settings_path_to_both_guard_probes(self):
         with tempfile.TemporaryDirectory() as d, \
-             mock.patch.object(host_probes, "probe_write_guard_armed",
+             mock.patch.object(claude_probes, "probe_write_guard_armed",
                                return_value=(hosts.PROVEN, "write-guard-armed", "x")) as w, \
-             mock.patch.object(host_probes, "probe_read_guard_armed",
+             mock.patch.object(claude_probes, "probe_read_guard_armed",
                                return_value=(hosts.PROVEN, "read-guard-armed", "x")) as r:
             host_probes.run_probes("claude", d, session_root=d, settings_path="/run/host-settings.json",
                                    shadow=(hosts.UNKNOWN, None, "fixture"))
@@ -1624,7 +1625,7 @@ class TestRunProbesBuildsTheArtifact(unittest.TestCase):
         # headless run from a directory with no transcripts refuted
         # usage_ledger while its ledger was exact.
         with tempfile.TemporaryDirectory() as d, \
-             mock.patch.object(host_probes, "probe_usage_source",
+             mock.patch.object(claude_probes, "probe_usage_source",
                                return_value=(hosts.PROVEN, "usage-source", "x")) as u:
             host_probes.run_probes("claude", d, session_root=d, settings_path="/run/host-settings.json",
                                    shadow=(hosts.UNKNOWN, None, "fixture"))
@@ -1737,7 +1738,7 @@ class TestReadGuardArmedProbe(unittest.TestCase):
     def test_a_working_guard_and_a_writable_settings_root_is_proven(self):
         with tempfile.TemporaryDirectory() as session_root:
             self._session_root(session_root)
-            state, by, detail = host_probes.probe_read_guard_armed("claude", session_root=session_root)
+            state, by, detail = claude_probes.probe_read_guard_armed("claude", session_root=session_root)
             self.assertEqual(hosts.PROVEN, state)
             self.assertEqual("read-guard-armed", by)
             self.assertIn(session_root, detail)
@@ -1748,13 +1749,13 @@ class TestReadGuardArmedProbe(unittest.TestCase):
         with tempfile.TemporaryDirectory() as session_root:
             self._session_root(session_root)
             self.assertFalse(read_guard_hook.guard_state(session_root=session_root)["armed"])
-            state, _by, _detail = host_probes.probe_read_guard_armed("claude", session_root=session_root)
+            state, _by, _detail = claude_probes.probe_read_guard_armed("claude", session_root=session_root)
             self.assertEqual(hosts.PROVEN, state)
 
     def test_a_missing_settings_file_is_refuted(self):
         with tempfile.TemporaryDirectory() as session_root:
             os.makedirs(os.path.join(session_root, ".claude"), exist_ok=True)
-            state, _by, detail = host_probes.probe_read_guard_armed("claude", session_root=session_root)
+            state, _by, detail = claude_probes.probe_read_guard_armed("claude", session_root=session_root)
             self.assertEqual(hosts.REFUTED, state)
             self.assertIn("settings.local.json", detail)
 
@@ -1763,7 +1764,7 @@ class TestReadGuardArmedProbe(unittest.TestCase):
             claude_dir = self._session_root(session_root)
             os.chmod(claude_dir, 0o500)
             try:
-                state, _by, detail = host_probes.probe_read_guard_armed("claude", session_root=session_root)
+                state, _by, detail = claude_probes.probe_read_guard_armed("claude", session_root=session_root)
             finally:
                 os.chmod(claude_dir, 0o700)
             self.assertEqual(hosts.REFUTED, state)
@@ -1777,7 +1778,7 @@ class TestReadGuardArmedProbe(unittest.TestCase):
         # read-confinement claim at all.
         for name in ("gemini", "generic"):
             with self.subTest(host=name):
-                state, by, _detail = host_probes.probe_read_guard_armed(name)
+                state, by, _detail = claude_probes.probe_read_guard_armed(name)
                 self.assertEqual(hosts.UNKNOWN, state)
                 self.assertIsNone(by)
 
@@ -1794,7 +1795,7 @@ class TestReadGuardArmedProbe(unittest.TestCase):
             }
             for name, patch in cases.items():
                 with self.subTest(case=name), patch:
-                    state, by, detail = host_probes.probe_read_guard_armed("claude", session_root=session_root)
+                    state, by, detail = claude_probes.probe_read_guard_armed("claude", session_root=session_root)
                     self.assertEqual(hosts.REFUTED, state)
                     self.assertEqual("read-guard-armed", by)
                     self.assertIn("the guard", detail)
@@ -1803,7 +1804,7 @@ class TestReadGuardArmedProbe(unittest.TestCase):
         with tempfile.TemporaryDirectory() as session_root:
             self._session_root(session_root)
             settings = os.path.join(session_root, ".claude", "settings.local.json")
-            host_probes.probe_read_guard_armed("claude", session_root=session_root)
+            claude_probes.probe_read_guard_armed("claude", session_root=session_root)
             self.assertEqual("{}", open(settings, encoding="utf-8").read())
             self.assertFalse(os.path.exists(os.path.join(session_root, ".panopticon", "read-scope.json")))
 
@@ -1822,13 +1823,13 @@ class TestReadGuardArmedProbe(unittest.TestCase):
         # denied outside) and an agent_type-only payload (denied). Pinned by
         # mutating adjudicate to ignore `env` and watching the verdict flip.
         from scripts import read_guard_hook
-        ok, detail = host_probes._round_trip_confines_reads()
+        ok, detail = claude_probes._round_trip_confines_reads()
         self.assertTrue(ok, detail)
         real = read_guard_hook.adjudicate
         def ignores_env(payload, scope_path, env=None):
             return real(payload, scope_path, env={})
         with mock.patch.object(read_guard_hook, "adjudicate", ignores_env):
-            ok, detail = host_probes._round_trip_confines_reads()
+            ok, detail = claude_probes._round_trip_confines_reads()
         self.assertFalse(ok)
         self.assertIn("env", detail)
 
@@ -1842,7 +1843,7 @@ class TestReadGuardArmedProbe(unittest.TestCase):
         # layout leaves it unbound (every read denied) and the probe refutes,
         # naming the row.
         from scripts import read_guard_hook
-        ok, detail = host_probes._round_trip_confines_reads()
+        ok, detail = claude_probes._round_trip_confines_reads()
         self.assertTrue(ok, detail)
         real = read_guard_hook.subagent_transcript
 
@@ -1852,7 +1853,7 @@ class TestReadGuardArmedProbe(unittest.TestCase):
                 return None
             return found
         with mock.patch.object(read_guard_hook, "subagent_transcript", direct_layout_only):
-            ok, detail = host_probes._round_trip_confines_reads()
+            ok, detail = claude_probes._round_trip_confines_reads()
         self.assertFalse(ok)
         self.assertIn("workflow", detail)
 
@@ -1863,12 +1864,12 @@ class TestReadGuardArmedProbe(unittest.TestCase):
         # after the file appears, or posture drift would refuse iteration 2.
         with tempfile.TemporaryDirectory() as run_dir:
             path = os.path.join(run_dir, "host-settings.json")
-            state1, by, detail1 = host_probes.probe_read_guard_armed("claude", settings_path=path)
+            state1, by, detail1 = claude_probes.probe_read_guard_armed("claude", settings_path=path)
             self.assertEqual(hosts.PROVEN, state1)
             self.assertIn(path, detail1)
             with open(path, "w") as fh:
                 fh.write("{}")
-            state2, _by, _d = host_probes.probe_read_guard_armed("claude", settings_path=path)
+            state2, _by, _d = claude_probes.probe_read_guard_armed("claude", settings_path=path)
             self.assertEqual(state1, state2)
 
     def test_an_unwritable_headless_directory_refutes(self):
@@ -1878,7 +1879,7 @@ class TestReadGuardArmedProbe(unittest.TestCase):
             try:
                 if os.access(locked, os.W_OK):
                     self.skipTest("running as a user who can write a 0500 directory")
-                state, _by, detail = host_probes.probe_read_guard_armed(
+                state, _by, detail = claude_probes.probe_read_guard_armed(
                     "claude", settings_path=os.path.join(locked, "host-settings.json"))
             finally:
                 os.chmod(locked, 0o700)
@@ -1891,16 +1892,16 @@ class TestReadGuardArmedProbe(unittest.TestCase):
         # ONLY for the session-root fallback call `_resolve(None, None,
         # <anything>)`; the sandbox round trip's explicit-path calls pass
         # through to the real function.
-        real_resolve = host_probes.read_guard_hook._resolve
+        real_resolve = claude_probes.read_guard_hook._resolve
         def fallback_only(settings_path, allowlist_path, session_root):
             if settings_path is None and allowlist_path is None:
                 raise AssertionError(
                     "must not fall back to _resolve when settings_path is given")
             return real_resolve(settings_path, allowlist_path, session_root)
         with tempfile.TemporaryDirectory() as run_dir:
-            with mock.patch.object(host_probes.read_guard_hook, "_resolve",
+            with mock.patch.object(claude_probes.read_guard_hook, "_resolve",
                                    side_effect=fallback_only):
-                state, _by, _d = host_probes.probe_read_guard_armed(
+                state, _by, _d = claude_probes.probe_read_guard_armed(
                     "claude", settings_path=os.path.join(run_dir, "host-settings.json"))
             self.assertEqual(hosts.PROVEN, state)
 
