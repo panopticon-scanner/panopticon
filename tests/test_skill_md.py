@@ -728,3 +728,41 @@ class TestDriverLoopContract(unittest.TestCase):
         # I6 (fix round 3): the persist verb's own --pr/--base, in the line a
         # reader copies the invocation from.
         self.assertIn("[--pr N] [--base REF]", skill)
+
+
+class TestClaudeSessionModeWorkflowTemplate(unittest.TestCase):
+    """Claude family PR (#1344): session-mode dispatch on Claude Code is a
+    shipped workflow template, mandated by SKILL.md, not an ad-hoc fan-out."""
+
+    WORKFLOW = os.path.join(ROOT, "workflows", "dispatch.js")
+
+    def test_the_dispatch_workflow_ships_with_its_meta_and_the_binding_rules(self):
+        self.assertTrue(os.path.isfile(self.WORKFLOW), self.WORKFLOW)
+        with open(self.WORKFLOW, encoding="utf-8") as fh:
+            js = fh.read()
+        self.assertIn("export const meta = {", js)
+        for token in ("name: 'panopticon-dispatch'", "agentType", "prompt_file",
+                      "e.marker + '\\n'", "return_json", "missing"):
+            with self.subTest(token=token):
+                self.assertIn(token, js)
+
+    def test_the_dispatch_workflow_parses_as_javascript(self):
+        import shutil
+        import subprocess
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is not installed here; CI's runners have it")
+        proc = subprocess.run([node, "--check", self.WORKFLOW], capture_output=True, text=True)
+        self.assertEqual(0, proc.returncode, proc.stderr)
+
+    def test_skill_md_mandates_the_workflow_for_session_mode_on_claude(self):
+        skill = _read_skill_md()
+        self.assertIn("skill/workflows/dispatch.js", skill)
+        self.assertIn("Do not hand-dispatch entries with one-off Agent calls", skill)
+        self.assertIn("marker, prompt_file, delivery, out_file", skill)
+
+    def test_the_guide_names_the_workflow_and_grants_the_prompt_file_to_the_read_scope(self):
+        doc = _read_doc()
+        run_loop = _section(doc, "## Driver run-loop", "## Driver setup")
+        self.assertIn("skill/workflows/dispatch.js", run_loop)
+        self.assertIn("granted to the entry's read scope (`scope.reads`", run_loop)

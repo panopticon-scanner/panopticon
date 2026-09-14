@@ -370,6 +370,20 @@ class TestHeadlessLoop(LoopCase):
         self.assertEqual(status["status"], "error")
         self.assertIn("--reset", status["message"])
 
+    def test_a_reset_loop_resets_once_and_then_resumes_the_run_it_minted(self):
+        # Found by the Claude family PR's second real `driver loop --reset`:
+        # `args.reset` reached driver.run on EVERY iteration, so each one
+        # cleared the run folder and re-minted the manifest, and the loop
+        # re-launched its first checkpoint's entries until --max-iterations
+        # (the same three scouts ten times, 30 identical ledger rows). The
+        # first call consumes the flag; the loop then resumes its own run.
+        d, floor = self._repo()
+        self._run(d, floor, FakeRunner())                   # a complete run on disk
+        runner = FakeRunner()
+        status = self._run(d, floor, runner, "--reset", "--max-iterations", "4")
+        self.assertEqual(status["status"], "complete", status)
+        self.assertEqual(sorted(runner.launched), ["review-app-SEC", "verify-app-SEC-primary"])
+
     def test_an_unexpected_exception_disarms_and_reports_without_raising(self):
         # `loop` never raises: any bug in the loop body (not just Ctrl-C) must
         # still land the run in a reported error with both guards torn down --

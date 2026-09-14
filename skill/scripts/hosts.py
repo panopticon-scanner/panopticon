@@ -86,7 +86,7 @@ HOSTS = {
         probes={TOOL_POLICY_ENFORCED: "registered-shell-tools",
                 ARTIFACT_WRITE_GUARD: "write-guard-armed",
                 MODEL_BINDING: "entry-model-bound",
-                USAGE_LEDGER: "transcript-dir",
+                USAGE_LEDGER: "usage-source",
                 READ_SCOPE_CONFINED: "read-guard-armed"}),
     "kimi": HostSpec(
         name="kimi",

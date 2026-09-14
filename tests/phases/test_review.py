@@ -134,9 +134,33 @@ class TestCellFanOut(unittest.TestCase):
             with self.subTest(entry=e["id"]):
                 self.assertEqual(requests.entry_marker(e["id"]).rstrip("\n"), e["marker"])
                 self.assertTrue(e["prompt"].startswith(e["marker"] + "\n"))
-                self.assertEqual(requests.scope(files=e["files"]), e["scope"])
+                # `reads` is the prompt's own pointer set -- the SEC checklist
+                # (Claude family PR; test_the_sec_cell_may_read_the_checklist_
+                # its_prompt_points_at covers the grant) plus the prompt file
+                # that write_dispatch_request stamps and grants on every entry.
+                self.assertEqual(requests.scope(files=e["files"],
+                                                reads=review._cell_reads(e["domain"]) + [e["prompt_file"]]),
+                                 e["scope"])
                 self.assertTrue(e["scope"]["files"])
                 self.assertTrue(all(os.path.isabs(p) for p in e["scope"]["files"]))
+
+    def test_the_sec_cell_may_read_the_checklist_its_prompt_points_at(self):
+        # Surfaced by the Claude family PR's first real headless run: the SEC
+        # prompt hands the reviewer an absolute checklist path
+        # (_render_security_checklist) and the read guard denied it -- the
+        # scope granted the cell's files and nothing else, so the pointer was a
+        # dead end. The grant and the pointer now share one spelling, and a
+        # non-SEC cell is granted nothing extra.
+        bundle = ocrdb.load_bundle()
+        with self._menu_stub():
+            sec = review._cell_entry(self.root, self.manifest, "Auth", "SEC", ["a.py"], [], "claude", bundle)
+            dat = review._cell_entry(self.root, self.manifest, "Auth", "DAT", ["a.py"], [], "claude", bundle)
+        path = review._security_checklist_path()
+        self.assertTrue(os.path.isfile(path), path)
+        self.assertEqual([path], sec["scope"]["reads"])
+        self.assertIn("Read `%s`" % path, sec["prompt"])
+        self.assertEqual([], dat["scope"]["reads"])
+        self.assertNotIn("security-checklists", dat["prompt"])
 
     def test_cell_entries_carry_their_scope_as_absolute_paths(self):
         # spec 7.2: machine-readable, exactly as out_file is for the write

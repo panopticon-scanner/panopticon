@@ -27,6 +27,39 @@ for _p in reversed((_TESTS,
         sys.path.remove(_p)
     sys.path.insert(0, _p)
 
+# --- Family guardrails section 3, Suite: "tests use temp dirs only ... never
+# a home directory". The session-mode usage probe resolves
+# `~/.claude/projects/<slug>` whenever a caller passes no `home=`, and four
+# `run_probes("claude", ...)` calls in the wiring tests did exactly that -- so
+# on a workstation whose real home held transcripts for the test's cwd the
+# probe answered differently from CI (found by the Claude family PR's review
+# workflow). One throwaway home for the whole process rather than four
+# `home=` arguments: a future caller cannot reach the real one by forgetting.
+# Set HERE, before `scripts.hosts` below expands `~` into the registry's
+# registration dirs at import, so those import-time expansions and every
+# test-time `expanduser("~")` name the same empty directory (a per-test
+# fixture would leave the registry pointing at the real home and the two
+# disagreeing). Tests that commit to temp repos set their identity with
+# `-c user.name=`, so the operator's global config going out of reach
+# changes nothing they measure.
+#
+# Minted ONCE per process and handed on through the environment: this file
+# is imported twice -- as pytest's conftest module and, because tests/ is on
+# sys.path, as `conftest` by the tests that `from conftest import
+# write_host_evidence` -- and a second mkdtemp here moved HOME out from
+# under the registry the first import had already expanded.
+import atexit  # noqa: E402
+import shutil  # noqa: E402
+import tempfile  # noqa: E402
+
+_TEST_HOME = os.environ.get("PANOPTICON_TEST_HOME")
+if not _TEST_HOME:
+    _TEST_HOME = tempfile.mkdtemp(prefix="panopticon-test-home-")
+    os.environ["PANOPTICON_TEST_HOME"] = _TEST_HOME
+    atexit.register(shutil.rmtree, _TEST_HOME, ignore_errors=True)
+os.environ["HOME"] = _TEST_HOME
+os.environ["USERPROFILE"] = _TEST_HOME        # Windows' spelling of the same thing
+
 # Bind tests/tools as the bare `tools` package NOW, while tests/ is at
 # sys.path[0]. Entry scripts (skill/scripts/synthesize.py, driver.py,
 # score_gate.py) each `sys.path.insert(0, skill/scripts)` when imported, after
@@ -149,13 +182,39 @@ def _no_live_scanner_containers(request, monkeypatch):
 # registered host's CLI and fails if one of them is missing from this list, so
 # a fifth seam cannot be added silently.
 #
+# The Claude family PR (#1618) arrived at the same construction for its own
+# seam and shipped a claude-only autouse fixture beside it; that fixture is
+# FOLDED IN HERE rather than kept, because `_claude_runner` is already in the
+# tuple below and two autouse fixtures patching one attribute means whichever
+# runs last silently decides what the guarantee is. Its refusal text is the
+# one kept -- it names the rule and both ways out, which "test tried to launch
+# a real host CLI" did not -- with the binary read off the argv the caller was
+# about to spawn rather than hard-coded to `claude`, since one refusal now
+# answers for four seams and three different binaries. Both families read the
+# text back: tests/runners/test_claude.py off the failed RunResult,
+# tests/test_host_probes.py off the raised LaunchRefused.
+#
 # LaunchRefused lives in codex_host because that is where it was first needed;
 # nothing about it is Codex-specific and every seam raises the same type.
 LAUNCH_SEAMS = (_codex_host, _codex_runner, _claude_runner, _setup_flow)
 
 
-def _refuse_host_launch(*_args, **_kwargs):
-    raise _codex_host.LaunchRefused("test tried to launch a real host CLI")
+def _refused_binary(args):
+    """The binary the caller was about to launch, named from its own argv --
+    every seam here passes it first and positionally. Anything else (a call
+    shape none of them uses) degrades to the generic noun rather than raising
+    a second error on top of the refusal."""
+    argv = args[0] if args else None
+    if isinstance(argv, (list, tuple)) and argv and isinstance(argv[0], str):
+        return "`%s` binary" % os.path.basename(argv[0])
+    return "host CLI"
+
+
+def _refuse_host_launch(*args, **_kwargs):
+    raise _codex_host.LaunchRefused(
+        "the test suite must never launch the real %s (family guardrails "
+        "section 3): pass runner=<fake> to Runner(...) or patch "
+        "scripts.runners.base.runner_for" % _refused_binary(args))
 
 
 @pytest.fixture(autouse=True)

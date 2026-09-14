@@ -234,7 +234,7 @@ def session_dir(manifest):
 
     See synthesize.py's #calibration-2/#calibration-4 comment; this is that
     expression, single-sourced so the PROBE that gates the token ledger
-    (host_probes.probe_transcript_dir, via driver._establish_host_posture) and
+    (host_probes.probe_usage_source, via driver._establish_host_posture) and
     the COLLECTOR that builds it (synthesize._collect_host_usage) cannot
     disagree about which transcript they mean. They did disagree: the probe
     was handed `args.target` and refuted off the scanned repo's slug, which

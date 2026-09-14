@@ -23,7 +23,10 @@ does it inside a `tempfile.TemporaryDirectory()`.
 import concurrent.futures
 import json
 import os
+import re
+import shutil
 import stat
+import subprocess
 import tempfile
 
 from scripts import (collect_usage, dispatch, hosts, model_resolver,
@@ -259,9 +262,13 @@ def headless_settings_path(review_root, namespace=None):
     return os.path.abspath(runio._pano(review_root, runners_base.SETTINGS_FILE))
 
 
-def _headless_subject_ok(settings_path):
-    """(ok, detail): the runner creates the file itself, so demand only that
-    its directory exists or can be created, and is writable."""
+def _headless_subject_dir(settings_path):
+    """(writable, probe_dir): the run folder the headless loop writes into.
+
+    The runner creates `settings_path` itself, so the question is only
+    whether its directory exists or can be created, and is writable --
+    answered off the nearest existing ancestor. Shared by the two guard
+    probes and the usage probe, which word the failure differently."""
     settings_dir = os.path.dirname(os.path.abspath(settings_path)) or "."
     probe_dir = settings_dir
     while not os.path.isdir(probe_dir):
@@ -269,7 +276,13 @@ def _headless_subject_ok(settings_path):
         if parent == probe_dir:
             break
         probe_dir = parent
-    if not os.access(probe_dir, os.W_OK):
+    return os.access(probe_dir, os.W_OK), probe_dir
+
+
+def _headless_subject_ok(settings_path):
+    """(ok, detail) for the guard probes, off `_headless_subject_dir`."""
+    writable, probe_dir = _headless_subject_dir(settings_path)
+    if not writable:
         return False, "the runner cannot arm its guards: %s is not writable" % probe_dir
     return True, ""
 
@@ -381,11 +394,17 @@ def probe_write_guard_armed(host, session_root=None, settings_path=None):
 READ_GUARD_ARMED = "read-guard-armed"
 
 
-def _fake_subagent(parent_transcript, agent_id, entry_id):
-    """A subagent transcript in the Agent-tool layout the spike measured: the
-    first user record is the dispatch prompt, marker on line 1."""
+def _fake_subagent(parent_transcript, agent_id, entry_id, layout="direct"):
+    """A subagent transcript with the dispatch prompt as its first user
+    record, marker on line 1, in one of the two layouts the read guard binds
+    through: the Agent-tool layout the plan-5 spike measured (`direct`,
+    `<stem>/subagents/agent-<id>.jsonl`) or the Workflow-tool layout the
+    shipped session-mode dispatch workflow relies on (`workflow`,
+    `<stem>/subagents/workflows/<run>/agent-<id>.jsonl`)."""
     stem = parent_transcript[:-len(".jsonl")]
     directory = os.path.join(stem, "subagents")
+    if layout == "workflow":
+        directory = os.path.join(directory, "workflows", "wf-probe")
     os.makedirs(directory, exist_ok=True)
     record = {"type": "user", "isSidechain": True, "agentId": agent_id,
               "message": {"role": "user", "content": [
@@ -416,6 +435,7 @@ def _round_trip_confines_reads():
                 fh.write("")
             _fake_subagent(parent, "agent-x", "probe-cell")
             _fake_subagent(parent, "agent-z", "probe-scan")
+            _fake_subagent(parent, "agent-w", "probe-cell", layout="workflow")
             read_guard_hook.install(
                 [{"id": "probe-cell", "scope": {"files": [inside], "dirs": [], "reads": []}},
                  {"id": "probe-scan", "scope": {"files": [], "dirs": [root], "reads": []}}],
@@ -444,6 +464,10 @@ def _round_trip_confines_reads():
                 ("directory-scoped Grep inside its dir", call("Grep", "agent-z", pattern="x", path=root), True),
                 ("directory-scoped Glob inside its dir", call("Glob", "agent-z", pattern="*.py", path=root), True),
                 ("directory-scoped Read outside its dir", call("Read", "agent-z", file_path=outside), False),
+                # The Workflow-tool transcript layout (Claude family PR): the
+                # shipped dispatch workflow binds every entry through it.
+                ("workflow-layout Read inside scope", call("Read", "agent-w", file_path=inside), True),
+                ("workflow-layout Read outside scope", call("Read", "agent-w", file_path=outside), False),
             )
             for name, got, want in rows:
                 if got != want:
@@ -532,7 +556,7 @@ def probe_read_guard_armed(host, session_root=None, settings_path=None):
             "%s; the host will arm at %s" % (detail, settings_path))
 
 
-TRANSCRIPT_DIR = "transcript-dir"
+USAGE_SOURCE = "usage-source"
 
 CODEX_EFFECTIVE_TOOLS = "codex-effective-tools"
 CODEX_READ_SCOPE = "codex-read-scope"
@@ -688,7 +712,7 @@ def probe_codex_read_scope(host, registration_dir=None, settings_path=None, meas
 # retirement bar (tests/test_generic_retirement_bar.py) reads this as "the
 # shipped probes" (spec 8.1), so it must not drift from the runner table:
 # run_probes refuses to build a table that disagrees with it.
-PROBE_IDS = (REGISTERED_SHELL_TOOLS, WRITE_GUARD_ARMED, TRANSCRIPT_DIR,
+PROBE_IDS = (REGISTERED_SHELL_TOOLS, WRITE_GUARD_ARMED, USAGE_SOURCE,
             ENTRY_MODEL_BOUND, READ_GUARD_ARMED, CODEX_EFFECTIVE_TOOLS, CODEX_READ_SCOPE)
 
 # Which capability each shipped probe MEASURES. The retirement bar reads this
@@ -698,20 +722,170 @@ PROBE_IDS = (REGISTERED_SHELL_TOOLS, WRITE_GUARD_ARMED, TRANSCRIPT_DIR,
 # run_probes is row-driven, the live posture).
 PROBE_CAPABILITY = {REGISTERED_SHELL_TOOLS: hosts.TOOL_POLICY_ENFORCED,
                     WRITE_GUARD_ARMED: hosts.ARTIFACT_WRITE_GUARD,
-                    TRANSCRIPT_DIR: hosts.USAGE_LEDGER,
+                    USAGE_SOURCE: hosts.USAGE_LEDGER,
                     ENTRY_MODEL_BOUND: hosts.MODEL_BINDING,
                     READ_GUARD_ARMED: hosts.READ_SCOPE_CONFINED,
                     CODEX_EFFECTIVE_TOOLS: hosts.TOOL_POLICY_ENFORCED,
                     CODEX_READ_SCOPE: hosts.READ_SCOPE_CONFINED}
 
 
-def probe_transcript_dir(host, session_dir, home=None):
-    """The host's own transcript directory for this SESSION exists and reads.
+CLI_HELP_TIMEOUT = 30    # seconds; a CLI that cannot print --help inside this is unmeasurable
+
+
+def _flag_advertised(flag, text):
+    """Is `flag` a standalone token of `text`? `-p` must not match inside
+    `--print` or `--permission-mode`; `--output-format=stream-json` still
+    advertises `--output-format`."""
+    return re.search(r"(?<![\w-])%s(?![\w-])" % re.escape(flag), text) is not None
+
+
+def _cli_advertises(launch, found, flags):
+    """(verdict, why): does `<found> --help`, run through the RUNNER's own
+    launcher, exit 0 and advertise every flag in `flags`? None means it could
+    not be run at all -- a probe that cannot measure says UNKNOWN, never
+    guesses. Going through the runner's launcher rather than subprocess.run
+    is deliberate: it is the one seam the suite refuses real launches at
+    (tests/conftest.py), so a test that reaches this without a fake fails
+    loudly instead of running the real binary."""
+    try:
+        proc = launch([found, "--help"], capture_output=True, text=True,
+                      timeout=CLI_HELP_TIMEOUT)
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        return None, "`%s --help` could not run: %s" % (found, exc)
+    if proc.returncode != 0:
+        return False, ("`%s --help` exited %s: not a CLI the headless runner can drive"
+                       % (found, proc.returncode))
+    text = "%s\n%s" % (proc.stdout or "", proc.stderr or "")
+    missing = [f for f in flags if not _flag_advertised(f, text)]
+    if missing:
+        return False, ("`%s --help` does not advertise %s, so a launch would print no "
+                       "JSON envelope to read usage from" % (found, ", ".join(missing)))
+    return True, "`%s --help` advertises %s" % (found, ", ".join(flags))
+
+
+def _ledger_carries_usage(ledger):
+    """(verdict, how) from the rows the loop has ALREADY written to `ledger`
+    for this run -- the surface this probe names as its evidence, read back
+    on every re-probe. None: no ledger yet, or no successful launch in it
+    (nothing to measure). False: successful launches, and not one envelope
+    carried a usage figure -- the capability, measured and absent. True
+    otherwise. A single odd row never refutes; systematic absence does.
+
+    `how` is worded for the REFUTATION. The proven detail must not carry a
+    running count: `driver._establish_host_posture` rewrites the evidence
+    artifact whenever any capability's detail changes, and a count that
+    grows with every batch would make that an "always write" on every turn
+    of the loop -- the very hazard its comment says it avoids -- and move
+    `probed_at` to the last iteration rather than the run's start."""
+    try:
+        with open(ledger, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return None, "no launch ledgered yet"
+    ok_rows = []
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and row.get("ok"):
+            ok_rows.append(row)
+    if not ok_rows:
+        return None, "no successful launch ledgered yet"
+
+    def carried(row):
+        usage = row.get("usage")
+        return isinstance(usage, dict) and any(
+            isinstance(v, (int, float)) and v > 0 for v in usage.values())
+    with_usage = sum(1 for r in ok_rows if carried(r))
+    if not with_usage:
+        return False, ("%d successful launch(es) ledgered at %s and not one envelope "
+                       "carried a usage figure: this CLI's envelope reports none"
+                       % (len(ok_rows), ledger))
+    return True, "%d of %d successful launches ledgered so far carried usage" % (with_usage, len(ok_rows))
+
+
+def _headless_usage_source(host, settings_path):
+    """The headless half of `probe_usage_source`: can the loop ledger what
+    the runner's envelope reports?
+
+    Each measurement can refute. The run folder must be able to hold the
+    ledger the loop appends after every launch (`runners.base.LEDGER_FILE`,
+    beside `settings_path`). The CLI the host's headless runner launches
+    must be on PATH -- no launch, no envelope, no figure -- and must be the
+    thing the runner drives: its `--help` runs and advertises the runner's
+    own `ENVELOPE_FLAGS`, the tokens that make a launch print the envelope.
+    Existence alone was this branch's review objection: any executable
+    named `claude` proved the ledger. And once the loop has ledgered
+    successful launches, their envelopes are the evidence: if not one of
+    them carried usage, the capability is refuted on what was measured, not
+    on what a launch might do. Name, flags and launcher are all the runner's
+    own (`Runner.CLI`, `Runner.ENVELOPE_FLAGS`, `Runner.runner`), never
+    re-spelled here, so a family that renames its binary or a flag moves
+    this probe with it -- and the launcher is the seam the suite refuses
+    real launches at.
+
+    A claiming host with no usable headless runner is UNKNOWN whatever makes
+    it unusable (no module, a module that fails to import, a Runner without
+    the three attributes): nothing here can name a CLI to look for, a
+    vacuous PROVEN is the fail-open this epic exists to remove, and a probe
+    reports rather than raises."""
+    import scripts.runners.base as runners_base
+    writable, probe_dir = _headless_subject_dir(settings_path)
+    ledger = os.path.join(os.path.dirname(os.path.abspath(settings_path)),
+                         runners_base.LEDGER_FILE)
+    if not writable:
+        return (hosts.REFUTED, USAGE_SOURCE,
+                "the loop cannot write its dispatch ledger at %s: %s is not writable"
+                % (ledger, probe_dir))
+    try:
+        runner = runners_base.runner_for(host, "headless")
+        cli, flags, launch = runner.CLI, tuple(runner.ENVELOPE_FLAGS), runner.runner
+    except Exception as exc:          # noqa: BLE001 -- a probe reports, never raises
+        return (hosts.UNKNOWN, USAGE_SOURCE,
+                "host %r has no usable headless runner naming a CLI, its envelope flags "
+                "and a launcher (%s: %s), so nothing here proves a launch envelope will "
+                "carry usage" % (host, type(exc).__name__, exc))
+    found = shutil.which(cli)
+    if not found:
+        return (hosts.REFUTED, USAGE_SOURCE,
+                "no `%s` on PATH: the headless runner cannot launch, so no "
+                "envelope will ever carry usage and the ledger at %s stays empty"
+                % (cli, ledger))
+    advertised, why = _cli_advertises(launch, found, flags)
+    if advertised is None:
+        return (hosts.UNKNOWN, USAGE_SOURCE, why)
+    if not advertised:
+        return (hosts.REFUTED, USAGE_SOURCE, why)
+    ledgered, how = _ledger_carries_usage(ledger)
+    if ledgered is False:
+        return (hosts.REFUTED, USAGE_SOURCE, how)
+    # One detail for the whole run, before the first launch and after the
+    # last: see _ledger_carries_usage on why no count appears here.
+    return (hosts.PROVEN, USAGE_SOURCE,
+            "headless: usage is read from the JSON envelope of every `%s` launch "
+            "(%s; %s) and ledgered at %s, every successful launch ledgered there "
+            "carrying its figure; the session's transcripts are not consulted"
+            % (cli, found, why, ledger))
+
+
+def probe_usage_source(host, session_dir, home=None, settings_path=None):
+    """Where this host's usage figures come from, and that the source is
+    reachable. The probe follows the MODE, exactly as the two guard probes do
+    (spec 5.4 applied to spec 5.5): `settings_path` names the file a headless
+    runner will arm, and with it the subject is the launch envelope plus the
+    run-folder ledger (`_headless_usage_source`); without it -- session mode,
+    or plain `driver run` -- the subject is the host's own transcript
+    directory for this SESSION, which is what `collect_usage` reads.
+
+    Before the Claude family PR this was `transcript-dir` and knew only the
+    session surface, so a headless run launched from any directory without
+    transcripts (every fresh target) REFUTED a ledger that was exact.
 
     Operational rather than security -- 8.1 excludes usage_ledger from F5's
     bar, and it gates nothing directly. But it DOES gate
-    `synthesize._collect_host_usage`, so the directory it asks about has to be
-    the one that collector will read.
+    `synthesize._collect_host_usage`, so in session mode the directory it
+    asks about has to be the one that collector will read.
 
     `session_dir` is where the HOST SESSION runs -- NOT the review root, and
     NOT the target. synthesize.py:52-66 spends fourteen lines
@@ -728,17 +902,19 @@ def probe_transcript_dir(host, session_dir, home=None):
     """
     if not hosts.declares(host, hosts.USAGE_LEDGER):
         return (hosts.UNKNOWN, None, "host %r claims no usage ledger" % host)
+    if settings_path is not None:
+        return _headless_usage_source(host, settings_path)
     root = home or os.path.expanduser("~")
     directory = os.path.join(root, ".claude", "projects",
                              collect_usage.project_slug(session_dir))
     if not os.path.isdir(directory):
-        return (hosts.REFUTED, TRANSCRIPT_DIR,
+        return (hosts.REFUTED, USAGE_SOURCE,
                 "no transcript directory at %s; the cost ledger will report "
                 "null rather than a figure" % directory)
     if not os.access(directory, os.R_OK):
-        return (hosts.REFUTED, TRANSCRIPT_DIR,
+        return (hosts.REFUTED, USAGE_SOURCE,
                 "%s is not readable" % directory)
-    return (hosts.PROVEN, TRANSCRIPT_DIR, "%s is readable" % directory)
+    return (hosts.PROVEN, USAGE_SOURCE, "session: %s is readable" % directory)
 
 
 SHADOW_SHELL_SCAN = "shadow-shell-scan"
@@ -916,8 +1092,10 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
 
     `settings_path` (plan 6, spec 5.4) names the file a HEADLESS runner will
     arm; when given, it is the two guard probes' subject INSTEAD of
-    `session_root`. `None` (session mode, or plain `driver run`) leaves them
-    probing the session root exactly as before.
+    `session_root`, and the usage probe's cue to measure the launch envelope
+    and run-folder ledger instead of the session's transcripts (spec 5.5).
+    `None` (session mode, or plain `driver run`) leaves all three probing the
+    session root exactly as before.
     """
     findings = {}          # capability -> list of (state, by, detail)
     session_root = session_root or os.getcwd()
@@ -944,8 +1122,9 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
         WRITE_GUARD_ARMED:
             lambda: probe_write_guard_armed(host, session_root=session_root,
                                             settings_path=settings_path),
-        TRANSCRIPT_DIR:
-            lambda: probe_transcript_dir(host, session_root, home=home),
+        USAGE_SOURCE:
+            lambda: probe_usage_source(host, session_root, home=home,
+                                       settings_path=settings_path),
         ENTRY_MODEL_BOUND:
             lambda: probe_entry_model_bound(host, registration_dir),
         READ_GUARD_ARMED:

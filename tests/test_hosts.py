@@ -311,7 +311,7 @@ class TestTheRegistryNamesItsProbes(unittest.TestCase):
             {hosts.TOOL_POLICY_ENFORCED: "registered-shell-tools",
              hosts.ARTIFACT_WRITE_GUARD: "write-guard-armed",
              hosts.MODEL_BINDING: "entry-model-bound",
-             hosts.USAGE_LEDGER: "transcript-dir",
+             hosts.USAGE_LEDGER: "usage-source",
              hosts.READ_SCOPE_CONFINED: "read-guard-armed"},
             row.probes)
 

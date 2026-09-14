@@ -9,15 +9,23 @@ import scripts.runners.base as base
 import scripts.write_guard_hook as write_guard_hook
 
 
-# The launcher, as a MODULE attribute rather than a default argument, for the
-# reason spelled out in runners/codex.py: a default argument is bound at import
-# and no monkeypatch can swap it, so the suite's autouse guard cannot refuse an
-# un-injected launch of the real `claude` binary through this seam.
+# The launcher a Runner built without an injected `runner=` uses. Read at
+# CONSTRUCTION, never bound as a default argument: tests/conftest.py swaps it
+# for a refusal for the whole suite (family guardrails section 3, #1616), so
+# forgetting `runner=<fake>` in a test costs one failed RunResult rather than a
+# real `claude -p` launch and the money it spends.
 DEFAULT_RUNNER = subprocess.run
 
 
 class Runner(base.HostRunner):
     CLI = "claude"
+    # The two argv tokens that make a launch print the JSON envelope `usage`
+    # is read from (`command` below puts both on every argv). The usage probe
+    # asks the CLI it finds on PATH to advertise exactly these, so any
+    # executable that happens to be called `claude` no longer proves the
+    # ledger; the rest of the argv (`--max-turns`, e.g.) is not in `--help`
+    # and not the envelope's business.
+    ENVELOPE_FLAGS = ("-p", "--output-format")
     mode = "headless"
     default_concurrency = 8
 

@@ -49,8 +49,10 @@ _REMEDY = {
         "ensure the host session's .claude/settings.local.json exists (pass "
         "--session-dir if the session runs outside the reviewed tree)",
     hosts.USAGE_LEDGER:
-        "pass --session-dir naming the directory the %(host)s session runs in, "
-        "so its transcript can be found",
+        "headless: put the %(host)s CLI on PATH and make the run folder writable "
+        "so every launch's envelope can be ledgered; session: pass --session-dir "
+        "naming the directory the %(host)s session runs in, so its transcript "
+        "can be found",
     hosts.READ_SCOPE_CONFINED:
         "ensure the host session's .claude/settings.local.json exists and its "
         "transcript directory is readable (pass --session-dir if the session runs "
