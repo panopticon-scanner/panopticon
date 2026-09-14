@@ -8,6 +8,7 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import threading
 import tomllib
 import unittest
 from unittest import mock
@@ -545,6 +546,57 @@ class TestHomeLocation(unittest.TestCase):
             # the run is over: the handlers come back off, so a suite that
             # prepares many runners does not stack wrappers on SIGTERM.
             self.assertIsNone(r._crash_strip)
+
+    def test_an_interrupt_mid_batch_leaves_the_config_in_place_until_the_pool_drains(self):
+        # R3-1: a Ctrl-C raises KeyboardInterrupt in the main thread inside
+        # run_batch's `with ThreadPoolExecutor`, whose __exit__ JOINS every
+        # queued entry -- nothing is cancelled. Each of those still launches
+        # with KIMI_CODE_HOME pointing at this home, and its config.toml is
+        # the ONLY place the guard hooks and the derived deny-list are
+        # registered: strip it before the drain and every remaining child runs
+        # fail-open. orchestrate.loop already routes KeyboardInterrupt to
+        # teardown("error") AFTER the drain, so `prepare` must leave SIGINT
+        # alone. Real Runner, real run_batch, fake run_entry; the interrupt is
+        # raised the way the driver's own handler raises it -- no signal is sent.
+        with tempfile.TemporaryDirectory() as d:
+            before = signal.getsignal(signal.SIGINT)
+            with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
+                r = kimi_runner.Runner("kimi")
+                r.prepare(os.path.join(d, "run"), review_root=d)
+            home = r.kimi_home
+            self.addCleanup(shutil.rmtree, home, True)
+            self.addCleanup(r.teardown, "error")
+            self.assertIs(before, signal.getsignal(signal.SIGINT),
+                          "prepare must not install a SIGINT handler")
+            config = os.path.join(home, "config.toml")
+            seen, interrupted = [], threading.Event()
+
+            def fake_run_entry(entry, env):
+                if entry["id"] != "e0":
+                    interrupted.wait(5)          # queued behind the interrupt
+                seen.append((entry["id"], os.path.isfile(config)))
+                if entry["id"] == "e0":
+                    try:
+                        handler = signal.getsignal(signal.SIGINT)
+                        if callable(handler):
+                            handler(signal.SIGINT, None)      # what a Ctrl-C would run
+                    finally:
+                        interrupted.set()
+                    raise KeyboardInterrupt
+                return base.RunResult(entry_id=entry["id"], ok=True, text="", usage={},
+                                      cost_usd=None, model=None, session_id=None,
+                                      denials=[], error=None)
+
+            entries = [{"id": "e%d" % i} for i in range(4)]
+            with mock.patch.object(r, "run_entry", fake_run_entry), \
+                 self.assertRaises(KeyboardInterrupt):
+                base.HostRunner.run_batch(r, entries, 2, lambda e: {})
+            self.assertEqual(4, len(seen), "the pool drains every queued entry")
+            self.assertEqual([], [eid for eid, present in seen if not present],
+                             "entries launched after the interrupt saw no config.toml: %r" % seen)
+            self.assertTrue(os.path.isfile(config), "config.toml must survive the drain")
+            r.teardown("error")                  # the loop's path: strip AFTER the drain
+            self.assertFalse(os.path.exists(config))
 
     def test_teardown_refuses_a_path_that_is_not_a_temp_home(self):
         with tempfile.TemporaryDirectory() as d:

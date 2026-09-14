@@ -511,15 +511,20 @@ class Runner(base.HostRunner):
         `teardown` runs from orchestrate._finish, so a `kill`, an OOM kill or a
         power loss leaves the home behind -- and since N2 removed reuse, no
         later run adopts it. `atexit` covers a normal-ish exit and an unhandled
-        exception; SIGINT/SIGTERM go on top, CHAINING to whatever was there
-        (the loop's KeyboardInterrupt path is one of those). SIGKILL nobody can
-        catch: that residual is in docs/PANOPTICON.md.
+        exception; SIGTERM goes on top, CHAINING to whatever was there. SIGINT
+        is deliberately NOT here (R3-1): KeyboardInterrupt is already routed by
+        orchestrate.loop to teardown("error") AFTER run_batch's pool has
+        drained, and a handler strips BEFORE the drain -- every entry still
+        queued would then launch against a home with no config.toml, i.e. no
+        guard hooks. SIGTERM is safe on this side of the drain because its
+        chain ends in SIG_DFL, which ends the process: nothing launches after
+        it. SIGKILL nobody can catch: that residual is in docs/PANOPTICON.md.
         """
         if self._crash_strip is not None:
             return
         self._crash_strip = self._strip_on_exit
         atexit.register(self._crash_strip)
-        for name in ("SIGINT", "SIGTERM"):
+        for name in ("SIGTERM",):
             signum = getattr(signal, name, None)
             if signum is None:
                 continue
@@ -543,7 +548,7 @@ class Runner(base.HostRunner):
 
     def _disarm_crash_strippers(self):
         """The run is over: take ours back off, so a process that prepares more
-        than once does not stack wrappers on SIGINT."""
+        than once does not stack wrappers on SIGTERM."""
         if self._crash_strip is not None:
             atexit.unregister(self._crash_strip)
             self._crash_strip = None
