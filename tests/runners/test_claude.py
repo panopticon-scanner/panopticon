@@ -127,6 +127,30 @@ class TestRunEntry(unittest.TestCase):
         self.assertIn("--max-turns", seen["cmd"]); self.assertIn("12", seen["cmd"])
         self.assertEqual(seen["kw"]["timeout"], r.entry_timeout)
 
+    def test_run_entry_prepares_its_environment_through_launch_env(self):
+        # #1626 I2: ONE env preparation. `run_entry` built the child
+        # environment inline, so `host_probes._cli_advertises` -- which
+        # launches the SAME binary to read its `--help` -- could not reuse it
+        # and passed no env at all. The CLAUDECODE pop now lives in
+        # `launch_env`, `run_entry` calls it, and the usage probe calls it, so
+        # the interrogation and the launch cannot diverge.
+        def fake_run(cmd, **kw):
+            class P: returncode = 0; stdout = json.dumps(ENVELOPE); stderr = ""
+            return P()
+        with tempfile.TemporaryDirectory() as d:
+            r = claude_runner.Runner("claude", runner=fake_run)
+            r.prepare(d, review_root=d)
+            with mock.patch.object(r, "launch_env", wraps=r.launch_env) as prepared:
+                r.run_entry(_entry(True), {base.ENV_ENTRY_ID: "review-app-SEC"})
+        self.assertEqual(1, prepared.call_count)
+
+    def test_launch_env_drops_the_nested_session_marker_with_no_entry_at_all(self):
+        # The probe calls it with no overlay and no entry: there is no entry
+        # to launch, only a `--help` to read. The pop still has to happen.
+        with mock.patch.dict(os.environ, {"PATH": "/p", "CLAUDECODE": "1"}, clear=True):
+            env = claude_runner.Runner("claude", runner=lambda *a, **k: None).launch_env()
+        self.assertEqual({"PATH": "/p"}, env)
+
     def test_a_timeout_or_launch_failure_is_a_failed_result(self):
         import subprocess
         def boom(cmd, **kw):

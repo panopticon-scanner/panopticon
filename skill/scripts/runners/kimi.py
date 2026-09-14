@@ -636,10 +636,23 @@ class Runner(base.HostRunner):
                 entry_id, "kimi -p exited %s: %s" % (returncode, detail[:200]))
         return text, session_id
 
+    def launch_env(self, overlay=None):
+        """The seam's preparation plus this family's three rules: point the child
+        at THIS run's Kimi home, cap its steps, drop the markers saying it is
+        already inside a Kimi session. Extracted from run_entry unchanged (#1626
+        I2) so one method answers for every launch, a probe's included."""
+        run_env = super().launch_env(overlay)
+        run_env["KIMI_CODE_HOME"] = self.kimi_home
+        run_env["KIMI_LOOP_MAX_STEPS_PER_TURN"] = str(int(self.max_turns))
+        for marker in _NESTED_MARKERS:
+            run_env.pop(marker, None)
+        return run_env
+
     def run_entry(self, entry, env):
         # `env` is the loop's three-key BINDING OVERLAY (spec 4.4), never a
         # whole environment -- the child inherits os.environ and the overlay
         # goes ON TOP (C1: an overlay-only child has no PATH and cannot start).
+        # `launch_env` above is where that merge and this family's own go, once.
         entry_id = entry.get("id")
         if entry.get("enforced") and entry.get("agent"):
             shell = self._shell_path(entry)
@@ -654,12 +667,7 @@ class Runner(base.HostRunner):
                 return base.RunResult.failed(
                     entry_id, "entry model %r does not resolve to a model alias "
                     "the installed Kimi CLI has configured" % entry["model"])
-        run_env = dict(os.environ)
-        run_env.update(env)
-        run_env["KIMI_CODE_HOME"] = self.kimi_home
-        run_env["KIMI_LOOP_MAX_STEPS_PER_TURN"] = str(int(self.max_turns))
-        for marker in _NESTED_MARKERS:
-            run_env.pop(marker, None)
+        run_env = self.launch_env(env)
         cmd = self.command(entry, alias)
         launcher = DEFAULT_RUNNER if self.runner is None else self.runner
         try:

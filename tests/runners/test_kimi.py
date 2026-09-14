@@ -319,6 +319,21 @@ class TestRunEntry(unittest.TestCase):
         self.assertEqual(seen["kw"]["cwd"], os.path.abspath(d))
         self.assertEqual(seen["kw"]["timeout"], r.entry_timeout)
 
+    def test_run_entry_prepares_its_environment_through_launch_env(self):
+        # #1626 I2: ONE env preparation per runner. Kimi's discipline -- the
+        # per-run KIMI_CODE_HOME, the step cap, and dropping the nested-session
+        # markers -- moved into `launch_env` unchanged (the test above still
+        # asserts every one of them on the child), and `run_entry` calls it.
+        seen = {}
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
+            r = kimi_runner.Runner("kimi", runner=self._fake_run(seen))
+            r.prepare(os.path.join(d, "run"), review_root=d)
+            self.addCleanup(r.teardown, "complete")
+            with mock.patch.object(r, "launch_env", wraps=r.launch_env) as prepared:
+                r.run_entry(_entry(False), self._env())
+        self.assertEqual(1, prepared.call_count)
+
     def test_usage_and_model_come_back_from_the_wire_file(self):
         seen = {}
         with tempfile.TemporaryDirectory() as d, \

@@ -16,7 +16,7 @@ part is a thin seam, and your PR fills in that seam for your family:
 
 | You deliver | Where | Reference implementation |
 |---|---|---|
-| A headless runner | `skill/scripts/runners/<host>.py` exposing `Runner(HostRunner)` | `skill/scripts/runners/claude.py` |
+| A headless runner | `skill/scripts/runners/<host>.py` exposing `Runner(HostRunner)` — `prepare`, `run_entry`, `launch_env` if your host needs more than `os.environ`, and `CLI` / `ENVELOPE_FLAGS` if your usage figures come from a launch envelope | `skill/scripts/runners/claude.py` |
 | Probes for every capability you claim | `skill/scripts/host_probes.py` (a probe id in `PROBE_IDS` **and** `PROBE_CAPABILITY`, and the `probes=` mapping on your `HostSpec` row) | `probe_registered_shell_tools`, `probe_write_guard_armed`, `probe_read_guard_armed` |
 | A shell emitter branch | `skill/scripts/dispatch.py` `emit_host_agents` (one `elif` for your `shell_format`) | the claude / kimi / codex branches already there |
 | Your registry row, and only yours | `skill/scripts/hosts.py` `HOSTS[<host>]` | any existing row |
@@ -35,8 +35,28 @@ The seam's contract, in `skill/scripts/runners/base.py`:
   `RunResult.failed(entry_id, error)`. `run_batch` (a thread pool) is inherited.
 - `env` is an **overlay**: `PANOPTICON_ENTRY_ID`, `PANOPTICON_WRITE_ALLOWLIST`,
   `PANOPTICON_READ_SCOPE`. The child must get `os.environ` **plus** these three;
-  a child that gets only these three has no `PATH` and cannot start. Claude also
-  pops `CLAUDECODE` so a nested session will launch; find your own equivalent.
+  a child that gets only these three has no `PATH` and cannot start.
+- `Runner.launch_env(overlay=None) -> dict` is that merge, and it is the **one**
+  place your family prepares a child environment. The default is `os.environ`
+  plus the overlay; override it if your host needs more, and do not rebuild the
+  dict inside `run_entry` — call this. Claude's pops `CLAUDECODE` so a nested
+  session will launch, Kimi's points `KIMI_CODE_HOME` at the run's home and
+  drops its own session markers, Codex needs nothing beyond the default and so
+  does not override it; find your own equivalent. The probes call it too (the
+  usage probe interrogates your CLI's `--help` under it), so a preparation that
+  lives only in `run_entry` means the probe measures your CLI under an
+  environment you never launch with (#1626).
+- `CLI` and `ENVELOPE_FLAGS` name the binary you launch and the argv tokens that
+  make ONE launch print the parseable envelope your usage figures come from
+  (claude: `-p --output-format`; codex: `exec --json`). The **usage-source probe
+  reads them**: it looks for `CLI` on PATH and requires its `--help` to advertise
+  every flag in `ENVELOPE_FLAGS` before it will believe the dispatch ledger, so
+  any executable that merely shares your binary's name proves nothing. Leaving
+  either empty is legal and honest — the probe reads `unknown` for
+  `usage_ledger` and its detail says which one you left empty — and is right for
+  a host whose usage evidence is not a launch envelope at all (Kimi reads a
+  session wire file and maps `usage_ledger` to its own probe). What it will
+  never do is read `proven` from an empty list (#1626).
 - `default_concurrency` is yours to set. `driver loop --concurrency` overrides it.
 - `runner_for(host, mode)` finds you by module name. `headless_available(host)`
   is true once `skill/scripts/runners/<host>.py` exposes `Runner`; until then

@@ -94,21 +94,33 @@ class Runner(base.HostRunner):
                                usage=usage, cost_usd=data.get("total_cost_usd"), model=model,
                                session_id=data.get("session_id"), denials=denials, error=error)
 
+    def launch_env(self, overlay=None):
+        """The seam's preparation (`base.HostRunner.launch_env`) plus this
+        family's one rule: a nested `claude -p` refuses to start inside a
+        Claude Code session, so the marker that says "you are already inside
+        one" must not survive into the child.
+
+        Dropped AFTER the merge, since it is `os.environ` that carries it and
+        the overlay never does -- the order the inline version used, kept.
+
+        Called by `run_entry` for every launch AND by the usage probe's
+        `--help` interrogation (#1626 I2), which is the point: the probe asks
+        the CLI what it advertises under the same environment a real entry
+        gets, not under the caller's.
+        """
+        run_env = super().launch_env(overlay)
+        run_env.pop("CLAUDECODE", None)
+        return run_env
+
     def run_entry(self, entry, env):
         # C1 (final review): `env` is the loop's three-key BINDING OVERLAY
         # (spec 4.4), never a whole environment -- so the child inherits this
         # process's os.environ and the overlay goes ON TOP. Replacing the
         # environment with the overlay alone left the child with no PATH and
         # no HOME, and `claude` was then unfindable: every entry of every run
-        # failed with FileNotFoundError.
-        #
-        # A nested `claude -p` refuses to start inside a Claude Code session,
-        # so the marker that says "you're already inside one" must not survive
-        # into the child's environment -- dropped AFTER the merge, since it is
-        # os.environ that carries it.
-        run_env = dict(os.environ)
-        run_env.update(env)
-        run_env.pop("CLAUDECODE", None)
+        # failed with FileNotFoundError. `launch_env` is where that merge --
+        # and this family's CLAUDECODE pop -- now lives, once.
+        run_env = self.launch_env(env)
         cmd = self.command(entry, self.settings_path, self.max_turns)
         try:
             proc = self.runner(cmd, cwd=self.review_root, env=run_env, capture_output=True,
