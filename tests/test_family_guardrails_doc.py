@@ -75,6 +75,11 @@ class TestFamilyGuardrailsDoc(unittest.TestCase):
         # sentence: a driver-selectable row that maps probes must be named in
         # section 2 with its runner module and EVERY probe id it maps. A new
         # family that flips a row and leaves this document alone fails here.
+        #
+        # Section 3 lets you move an expectation only when its own comment says
+        # your PR is the one that moves it, so: THE PR THAT FLIPS A ROW MOVES
+        # THIS ONE, by adding its host's paragraph to section 2 in the same
+        # commit as the probes. Nothing here is to be relaxed instead.
         section = _section(_read_doc(), 2)
         probed = [h for h in hosts.driver_hosts() if hosts.spec(h).probes]
         self.assertTrue(probed, "a guard over zero hosts proves nothing")
@@ -90,7 +95,8 @@ class TestFamilyGuardrailsDoc(unittest.TestCase):
         # not selectable, section 2 has to say exactly that and point its
         # operators at the fallback. If a future Gemini PR flips the row back,
         # this guard fails until section 2 is rewritten to match -- which is
-        # the same PR that re-pins the retirement bar.
+        # the same PR that re-pins the retirement bar, and which is therefore
+        # the one authorised to move this assertion (section 3).
         section = _section(_read_doc(), 2)
         self.assertIn("gemini", hosts.known_hosts())
         self.assertFalse(hosts.spec("gemini").driver_selectable)
@@ -103,7 +109,9 @@ class TestFamilyGuardrailsDoc(unittest.TestCase):
         # operator pasting the prompt would have launched an agent to redo
         # merged work. The prompt is now for a re-attempt or a new host, and
         # this guard is what keeps it that way: no host that already ships a
-        # runner module may be named in section 6 at all.
+        # runner module may be named in section 6 at all. The PR that ships a
+        # runner is the one that moves this (section 3): its own host leaves
+        # section 6 in the same commit, the way codex and kimi should have.
         section = _section(_read_doc(), 6)
         self.assertIn("feat/1344-<host>-first-class-host", section)
         landed = [h for h in hosts.driver_hosts() if runners_base.headless_available(h)]
@@ -117,7 +125,9 @@ class TestFamilyGuardrailsDoc(unittest.TestCase):
         # generic` is still the only path for a host with no family runner, so
         # deleting it is an owner policy call. Section 7 says so and points at
         # the spec section that carries the write-up (panopticon-docs #55).
-        # When someone deletes the row, this guard goes with the section.
+        # When someone deletes the row, this guard goes with the section: F5 is
+        # the PR that moves it, and it is an OWNER decision, never a family
+        # PR's to take (section 3).
         section = _section(_read_doc(), 7)
         self.assertTrue(hosts.spec("generic").driver_selectable)
         self.assertTrue(hosts.is_deprecated("generic"))
